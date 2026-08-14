@@ -17,7 +17,7 @@ const result = await sdk.compactContinuation.runCompactContinuation(ref, {
   providerUsage: { available: true, inputTokens, cacheCreationTokens, cacheReadTokens, total, domain: "provider_reported_input" },
   postMeasurementEstimate: { tokens, source, domain: "source_labelled_estimate" },
   policy: { upperTriggerTokens, lowerTargetTokens, hostCapability: "full_state_machine" },
-  continuation: { kind: "active_non_tool" } | { kind: "pending_correlated_tool_result", toolCallId, correlationValid } | { kind: "none" },
+  continuation: { kind: "active_non_tool" } | { kind: "pending_correlated_tool_result", protectedToolCallIds, correlationValid } | { kind: "none" },
   writerClaim: "none", // host posture for oracle; durable ownership always re-read from storage
   captureComplete: true,
   providerIdentityValid: true,
@@ -102,7 +102,7 @@ If `readPendingBoundary` returns a row and `facts.attemptId !== pending.attemptI
 `intent_hash` / `intent_json` on `compact_continuation_attempt`):
 
 - contract version, attempt id, actor, harness
-- continuation kind + toolCallId (correlationValid is posture)
+- continuation kind + protectedToolCallIds (correlationValid is posture)
 - policy, compact profile/params
 
 **Retry posture** (may change; appended per invocation as stage `retry_posture`):

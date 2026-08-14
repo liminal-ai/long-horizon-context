@@ -587,3 +587,91 @@ export function maxEventOrder(db: DatabaseSync): number {
   };
   return Number(row.m);
 }
+
+// ── Host validation (schema v11) ─────────────────────────────────────────────
+
+export type HostValidationStatus = "awaiting" | "ok" | "failed";
+
+export type HostValidationRow = {
+  attemptId: string;
+  status: HostValidationStatus;
+  reason: string | null;
+  recordedAt: string;
+  updatedAt: string;
+};
+
+export function readHostValidation(db: DatabaseSync, attemptId: string): HostValidationRow | null {
+  const row = db
+    .prepare(
+      `SELECT attempt_id, status, reason, recorded_at, updated_at
+       FROM compact_continuation_host_validation WHERE attempt_id = ?`,
+    )
+    .get(attemptId) as
+    | {
+        attempt_id: string;
+        status: string;
+        reason: string | null;
+        recorded_at: string;
+        updated_at: string;
+      }
+    | undefined;
+  if (row === undefined) return null;
+  return {
+    attemptId: row.attempt_id,
+    status: row.status as HostValidationStatus,
+    reason: row.reason,
+    recordedAt: row.recorded_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * Record awaiting host validation after successful core install.
+ * Idempotent for same attempt when already awaiting; refuses overwrite of terminal ok/failed.
+ */
+export function recordHostValidationAwaiting(db: DatabaseSync, attemptId: string, recordedAt: string): void {
+  const existing = readHostValidation(db, attemptId);
+  if (existing !== null) {
+    if (existing.status === "awaiting") return;
+    throw new Error(`host validation already terminal for attempt ${attemptId} (status=${existing.status})`);
+  }
+  db.prepare(
+    `INSERT INTO compact_continuation_host_validation (attempt_id, status, reason, recorded_at, updated_at)
+     VALUES (?, 'awaiting', NULL, ?, ?)`,
+  ).run(attemptId, recordedAt, recordedAt);
+}
+
+/**
+ * Host records full-body validation result. Does not roll back core install.
+ * Only transitions from awaiting (or inserts failed/ok when missing for repair).
+ */
+export function recordHostValidationResult(
+  db: DatabaseSync,
+  attemptId: string,
+  result: "ok" | "failed",
+  updatedAt: string,
+  reason?: string,
+): HostValidationRow {
+  const existing = readHostValidation(db, attemptId);
+  if (existing !== null && (existing.status === "ok" || existing.status === "failed")) {
+    if (existing.status === result) return existing;
+    throw new Error(
+      `host validation already recorded as ${existing.status} for attempt ${attemptId}; cannot set ${result}`,
+    );
+  }
+  if (existing === null) {
+    db.prepare(
+      `INSERT INTO compact_continuation_host_validation (attempt_id, status, reason, recorded_at, updated_at)
+       VALUES (?, ?, ?, ?, ?)`,
+    ).run(attemptId, result, reason ?? null, updatedAt, updatedAt);
+  } else {
+    db.prepare(
+      `UPDATE compact_continuation_host_validation
+       SET status = ?, reason = ?, updated_at = ?
+       WHERE attempt_id = ? AND status = 'awaiting'`,
+    ).run(result, reason ?? null, updatedAt, attemptId);
+  }
+  const row = readHostValidation(db, attemptId);
+  if (row === null) throw new Error(`host validation write failed for ${attemptId}`);
+  return row;
+}

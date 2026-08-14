@@ -1,0 +1,320 @@
+{
+  "name": "host_validation_failed_after_core_install",
+  "contractVersion": "2.0.0",
+  "description": "Host validation failure after successful core install refuses without rolling back core install.",
+  "coverage": [
+    "host_validation_failed",
+    "protected_escalation"
+  ],
+  "inputValidation": "accept",
+  "input": {
+    "contractVersion": "2.0.0",
+    "seam": {
+      "modelResponseComplete": true,
+      "requestedToolsSettled": true,
+      "captureFlushed": true,
+      "beforeNextProviderRequest": true,
+      "insideTransportRetry": false,
+      "inputEpochAtDecision": 1,
+      "inputEpochAtApply": 1
+    },
+    "providerUsage": {
+      "available": true,
+      "inputTokens": 90000,
+      "cacheCreationTokens": 5000,
+      "cacheReadTokens": 10000,
+      "total": 105000,
+      "domain": "provider_reported_input"
+    },
+    "postMeasurementEstimate": {
+      "tokens": 0,
+      "source": "lhc_token_estimate",
+      "domain": "source_labelled_estimate"
+    },
+    "policy": {
+      "upperTriggerTokens": 100000,
+      "lowerTargetTokens": 40000,
+      "hostCapability": "full_state_machine",
+      "safeRunwayThresholdTokens": 120000,
+      "safeRunwayThresholdSource": "host_safe_runway"
+    },
+    "continuation": {
+      "kind": "pending_correlated_tool_result",
+      "protectedToolCallIds": [
+        "call-a",
+        "call-b"
+      ],
+      "correlationValid": true
+    },
+    "invariants": {
+      "captureComplete": true,
+      "providerIdentityValid": true,
+      "singleOpenTurn": true,
+      "writerClaim": "none"
+    },
+    "forcedContinuationBoundary": {
+      "applied": true,
+      "continuationTurnId": "t4",
+      "forcedThisSeam": true,
+      "markerAlreadyPersisted": false
+    },
+    "compactMaterial": {
+      "derivationsMissingOrFailed": false,
+      "lowerTargetMet": true,
+      "compactStructurallyValid": true,
+      "installSucceeds": true,
+      "usefulReduction": true,
+      "canProduceValidProviderRequest": true,
+      "projectedPressureTokens": 80000,
+      "renderedSavingsTokens": 30000,
+      "renderedSavingsSource": "lhc_rendered_history_estimate",
+      "renderedSavingsDomain": "source_labelled_estimate",
+      "safeRunwayThresholdTokens": 100000,
+      "safeRunwayThresholdSource": "host_safe_runway",
+      "projectedPressureSafe": true,
+      "protectedEscalationApplied": true,
+      "visibilityBoundaryBefore": 10,
+      "visibilityBoundaryAfter": 50,
+      "compactPointAtInstall": 8,
+      "maximalPruneInsufficient": false,
+      "hostValidationStatus": "failed"
+    }
+  },
+  "expected": {
+    "outcome": "refuse",
+    "terminalState": "terminal_refuse",
+    "transitionPath": [
+      "at_seam",
+      "checking_invariants",
+      "evaluating_pressure",
+      "path_continue_turn",
+      "compacting",
+      "installing",
+      "terminal_refuse"
+    ],
+    "effects": [
+      {
+        "type": "claim_writer",
+        "writer": "lhc"
+      },
+      {
+        "type": "force_turn_end",
+        "reason": "context_compact_continue",
+        "outcome": "completed",
+        "opensContinuationTurn": true,
+        "continuationTurnCount": 1,
+        "continuationTurnId": "t4"
+      },
+      {
+        "type": "compact",
+        "lowerTargetDomain": "lhc_rendered_history",
+        "lowerTargetTokens": 40000,
+        "allowDegradedDerivations": true
+      },
+      {
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "continuationTurnId": "t4",
+        "idempotencyKey": "lhc.compact_continuation:t4",
+        "semantics": {
+          "cause": "context_compacted_task_in_progress",
+          "action": "continue_existing_task",
+          "newUserRequest": false,
+          "waitForUser": false
+        },
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
+      },
+      {
+        "type": "preserve_tool_pairs_verbatim",
+        "protectedToolCallIds": [
+          "call-a",
+          "call-b"
+        ],
+        "location": "open_turn_tail"
+      },
+      {
+        "type": "advance_visibility_boundary",
+        "previousBoundary": 10,
+        "newBoundary": 50,
+        "compactPoint": 8
+      },
+      {
+        "type": "install_serving_view"
+      },
+      {
+        "type": "await_host_validation",
+        "attemptIdScope": "current_attempt"
+      },
+      {
+        "type": "record_host_validation",
+        "result": "failed",
+        "reason": "host_reported_provider_body_unsafe"
+      },
+      {
+        "type": "refuse",
+        "code": "host_validation_failed",
+        "reason": "host full-body validation failed after core install"
+      },
+      {
+        "type": "record_receipt",
+        "durable": true,
+        "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
+      }
+    ],
+    "receipt": {
+      "contractVersion": "2.0.0",
+      "outcome": "refuse",
+      "reasonCode": "host_validation_failed",
+      "turnEndReason": "context_compact_continue",
+      "pressure": {
+        "providerBaseTokens": 105000,
+        "providerBaseDomain": "provider_reported_input",
+        "estimateTokens": 0,
+        "estimateSource": "lhc_token_estimate",
+        "estimateDomain": "source_labelled_estimate",
+        "nextRequestPressureTokens": 105000,
+        "upperTriggerTokens": 100000,
+        "atOrAboveTrigger": true,
+        "projectedPressureTokens": 80000,
+        "renderedSavingsTokens": 30000,
+        "renderedSavingsSource": "lhc_rendered_history_estimate",
+        "renderedSavingsDomain": "source_labelled_estimate",
+        "safeRunwayThresholdTokens": 100000,
+        "safeRunwayThresholdSource": "host_safe_runway",
+        "projectedPressureSafe": true
+      },
+      "lowerTarget": {
+        "domain": "lhc_rendered_history",
+        "tokens": 40000,
+        "met": true,
+        "isSuccessGate": false
+      },
+      "fidelity": "full",
+      "degradationReasons": [],
+      "continuation": {
+        "opened": true,
+        "markerServed": true,
+        "sameAgenticTurnPreserved": false
+      },
+      "reliefPath": "host_validation_failed",
+      "protectedToolCallIds": [
+        "call-a",
+        "call-b"
+      ],
+      "effects": [
+        {
+          "type": "claim_writer",
+          "writer": "lhc"
+        },
+        {
+          "type": "force_turn_end",
+          "reason": "context_compact_continue",
+          "outcome": "completed",
+          "opensContinuationTurn": true,
+          "continuationTurnCount": 1,
+          "continuationTurnId": "t4"
+        },
+        {
+          "type": "compact",
+          "lowerTargetDomain": "lhc_rendered_history",
+          "lowerTargetTokens": 40000,
+          "allowDegradedDerivations": true
+        },
+        {
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "continuationTurnId": "t4",
+          "idempotencyKey": "lhc.compact_continuation:t4",
+          "semantics": {
+            "cause": "context_compacted_task_in_progress",
+            "action": "continue_existing_task",
+            "newUserRequest": false,
+            "waitForUser": false
+          },
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
+        },
+        {
+          "type": "preserve_tool_pairs_verbatim",
+          "protectedToolCallIds": [
+            "call-a",
+            "call-b"
+          ],
+          "location": "open_turn_tail"
+        },
+        {
+          "type": "advance_visibility_boundary",
+          "previousBoundary": 10,
+          "newBoundary": 50,
+          "compactPoint": 8
+        },
+        {
+          "type": "install_serving_view"
+        },
+        {
+          "type": "await_host_validation",
+          "attemptIdScope": "current_attempt"
+        },
+        {
+          "type": "record_host_validation",
+          "result": "failed",
+          "reason": "host_reported_provider_body_unsafe"
+        },
+        {
+          "type": "refuse",
+          "code": "host_validation_failed",
+          "reason": "host full-body validation failed after core install"
+        },
+        {
+          "type": "record_receipt",
+          "durable": true,
+          "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
+        }
+      ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": false,
+        "forcedContinuationBoundaryApplied": true,
+        "continuationTurnOpened": true,
+        "continuationTurnId": "t4",
+        "markerPersisted": true,
+        "markerServed": true,
+        "originalAgenticTurnStillOpen": false,
+        "nextProviderRequestAllowed": false,
+        "reliefPath": "host_validation_failed",
+        "protectedToolCallIds": [
+          "call-a",
+          "call-b"
+        ],
+        "visibilityBoundaryBefore": 10,
+        "visibilityBoundaryAfter": 50,
+        "hostValidationStatus": "failed",
+        "coreInstallRetainedPendingHostValidation": true
+      },
+      "refused": true,
+      "refuseCode": "host_validation_failed",
+      "skipped": false,
+      "skipCode": null,
+      "transitionPath": [
+        "at_seam",
+        "checking_invariants",
+        "evaluating_pressure",
+        "path_continue_turn",
+        "compacting",
+        "installing",
+        "terminal_refuse"
+      ]
+    }
+  }
+}

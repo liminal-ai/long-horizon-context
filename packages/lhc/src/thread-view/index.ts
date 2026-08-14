@@ -37,6 +37,7 @@ import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads
 import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
 import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
+import { previewProtectedVisibilityBoundary, type ProtectedBoundaryPreview } from "./internal/protected-boundary.js";
 import { compactStopped, computeArrangement } from "./internal/compact-compute.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
@@ -806,6 +807,32 @@ export type InstallPreparedOptions = {
    * idempotency key matches (continue-turn marker). Any other drift refuses.
    */
   allowedMarkerIdempotencyKey?: string;
+  /**
+   * Atomic visibility-boundary advance installed with the prepared view.
+   * Must be >= compact point and >= current boundary (monotonic). When omitted,
+   * compact reset writes boundary = compactPoint (historical behavior).
+   */
+  visibilityBoundary?: number;
+  /**
+   * Expected current boundary at install time. When set, install refuses if
+   * durable boundary drifted since prepare/preview.
+   */
+  expectedPreviousBoundary?: number;
+};
+
+export type { ProtectedBoundaryPreview };
+
+export type PrepareCompactOptions = {
+  profile?: string;
+  params?: ViewCompactParams;
+  signal?: { aborted: boolean };
+  /**
+   * Read-only boundary override for candidate rendering / source fingerprint.
+   * Does not mutate durable boundary. Fingerprint still includes the durable
+   * boundary in structureDigest; override is applied only at render time via
+   * install options or assembleCandidate override.
+   */
+  visibilityBoundaryOverride?: number;
 };
 
 function buildPreparedFromArrangement(
@@ -981,7 +1008,7 @@ export class StalePreparedCompactError extends Error {
  */
 export async function prepareCompact(
   ref: ThreadRef,
-  opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
+  opts: PrepareCompactOptions = {},
 ): Promise<OpResult<PreparedCompact>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
@@ -1063,6 +1090,7 @@ export async function installPreparedCompact(
     const markerKey = opts.allowedMarkerIdempotencyKey;
 
     try {
+      const proposedBoundary = opts.visibilityBoundary;
       replaceViewSnapshot(
         db,
         {
@@ -1092,6 +1120,7 @@ export async function installPreparedCompact(
             derivationCounts: prepared.derivationCounts,
           }),
           bands: prepared.bands,
+          ...(proposedBoundary !== undefined ? { visibilityBoundary: proposedBoundary } : {}),
         },
         () => {
           // Inside BEGIN IMMEDIATE — atomic with replace.
@@ -1103,6 +1132,25 @@ export async function installPreparedCompact(
           );
           if (!sourceCheck.ok) {
             throw new StalePreparedCompactError(sourceCheck.reason);
+          }
+          // Boundary monotonicity / expected previous checks (atomic with install).
+          const currentBoundary = readBoundaryPosition(db);
+          if (opts.expectedPreviousBoundary !== undefined && currentBoundary !== opts.expectedPreviousBoundary) {
+            throw new StalePreparedCompactError(
+              `visibility boundary drifted ${opts.expectedPreviousBoundary}→${currentBoundary} since prepare`,
+            );
+          }
+          if (proposedBoundary !== undefined) {
+            if (proposedBoundary < prepared.selection.compactPoint) {
+              throw new StalePreparedCompactError(
+                `proposed visibility boundary ${proposedBoundary} is behind compact point ${prepared.selection.compactPoint}`,
+              );
+            }
+            if (proposedBoundary < currentBoundary) {
+              throw new StalePreparedCompactError(
+                `proposed visibility boundary ${proposedBoundary} would move backward from ${currentBoundary}`,
+              );
+            }
           }
           // Validated pre-replace source (includes marker when present).
           // installedViewId / structureDigest are pre-replace / pre empty-chunk-drop.
@@ -1169,6 +1217,36 @@ export async function installPreparedCompact(
     return storageFailure(`view installPreparedCompact failed: ${detail(cause)}`);
   } finally {
     db.close();
+  }
+}
+
+/**
+ * Read-only protected visibility-boundary preview. Never mutates durable state.
+ * Protected results are accounted at full size; only older unprotected
+ * tool_result rows are eligible; boundary never moves backward and stays
+ * strictly before the earliest protected result event.
+ */
+export async function previewProtectedBoundary(
+  ref: ThreadRef,
+  params: {
+    protectedToolCallIds: readonly string[];
+    targetZoneTokens?: number;
+    compactPointOverride?: number;
+  },
+): Promise<OpResult<ProtectedBoundaryPreview>> {
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  const { filePath } = resolved.value;
+  if (!existsSync(filePath)) return threadNotFound(filePath);
+  try {
+    return await createDbReadTransaction(ref, (transaction) =>
+      previewProtectedVisibilityBoundary(transaction.db, params.protectedToolCallIds, {
+        ...(params.targetZoneTokens !== undefined ? { targetZoneTokens: params.targetZoneTokens } : {}),
+        ...(params.compactPointOverride !== undefined ? { compactPointOverride: params.compactPointOverride } : {}),
+      }),
+    );
+  } catch (cause) {
+    return storageFailure(`view previewProtectedBoundary failed: ${detail(cause)}`);
   }
 }
 

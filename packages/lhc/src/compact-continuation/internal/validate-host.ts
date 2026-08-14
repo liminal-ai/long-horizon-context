@@ -58,7 +58,13 @@ const SEAM_KEYS = [
   "inputEpochAtApply",
 ] as const;
 
-const POLICY_KEYS = ["upperTriggerTokens", "lowerTargetTokens", "hostCapability"] as const;
+const POLICY_KEYS = [
+  "upperTriggerTokens",
+  "lowerTargetTokens",
+  "hostCapability",
+  "safeRunwayThresholdTokens",
+  "safeRunwayThresholdSource",
+] as const;
 const ESTIMATE_KEYS = ["tokens", "source", "domain"] as const;
 const COMPACT_KEYS = ["profile", "params"] as const;
 const PARAMS_KEYS = ["lowerBound", "percentages"] as const;
@@ -126,6 +132,16 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
   if (policy.obj["hostCapability"] !== "full_state_machine" && policy.obj["hostCapability"] !== "capability_limited") {
     return reject("policy.hostCapability must be full_state_machine|capability_limited");
   }
+  if (policy.obj["safeRunwayThresholdTokens"] !== undefined && !isNonNegInt(policy.obj["safeRunwayThresholdTokens"])) {
+    return reject("policy.safeRunwayThresholdTokens must be a non-negative integer when present");
+  }
+  if (
+    policy.obj["safeRunwayThresholdSource"] !== undefined &&
+    (typeof policy.obj["safeRunwayThresholdSource"] !== "string" ||
+      policy.obj["safeRunwayThresholdSource"].length === 0)
+  ) {
+    return reject("policy.safeRunwayThresholdSource must be a non-empty string when present");
+  }
 
   const usage = closedObject(facts["providerUsage"], "providerUsage", [
     "available",
@@ -177,15 +193,38 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
     return reject("postMeasurementEstimate.domain must be source_labelled_estimate");
   }
 
-  const cont = closedObject(facts["continuation"], "continuation", ["kind", "toolCallId", "correlationValid"]);
+  const cont = closedObject(facts["continuation"], "continuation", [
+    "kind",
+    "protectedToolCallIds",
+    "correlationValid",
+    "toolCallId", // rejected below — dual-field shim forbidden
+  ]);
   if (!cont.ok) return cont.error;
   if (cont.obj["kind"] === "none" || cont.obj["kind"] === "active_non_tool") {
     if (Object.keys(cont.obj).length !== 1) {
       return reject(`continuation kind ${String(cont.obj["kind"])} must not carry extra fields`);
     }
   } else if (cont.obj["kind"] === "pending_correlated_tool_result") {
-    if (!isNonEmptyString(cont.obj["toolCallId"]) || typeof cont.obj["correlationValid"] !== "boolean") {
-      return reject("pending_correlated_tool_result requires toolCallId and correlationValid");
+    if (cont.obj["toolCallId"] !== undefined) {
+      return reject("continuation.toolCallId removed in contract 2.0.0; use protectedToolCallIds");
+    }
+    const ids = cont.obj["protectedToolCallIds"];
+    if (!Array.isArray(ids) || ids.length === 0) {
+      return reject("pending_correlated_tool_result requires non-empty protectedToolCallIds");
+    }
+    let prev: string | null = null;
+    const seen = new Set<string>();
+    for (const id of ids) {
+      if (typeof id !== "string" || id.length === 0) {
+        return reject("protectedToolCallIds entries must be non-empty strings");
+      }
+      if (seen.has(id)) return reject("protectedToolCallIds must be unique");
+      seen.add(id);
+      if (prev !== null && id < prev) return reject("protectedToolCallIds must be sorted ascending");
+      prev = id;
+    }
+    if (typeof cont.obj["correlationValid"] !== "boolean") {
+      return reject("pending_correlated_tool_result requires correlationValid boolean");
     }
   } else {
     return reject(`unknown continuation.kind ${String(cont.obj["kind"])}`);

@@ -33,7 +33,7 @@
 // ── Version and stable strings ───────────────────────────────────────────────
 
 /** Semver of this contract surface. Fixtures pin the same string. */
-export const COMPACT_CONTINUATION_CONTRACT_VERSION = "1.0.0" as const;
+export const COMPACT_CONTINUATION_CONTRACT_VERSION = "2.0.0" as const;
 
 /** Canonical turn_end / outcome reason when a continuation turn is opened. */
 export const CONTEXT_COMPACT_CONTINUE_REASON = "context_compact_continue" as const;
@@ -196,6 +196,7 @@ export type CompactContinuationOutcomeKind =
   | "continue_normal"
   | "compact_preserve_tool"
   | "compact_continue_turn"
+  | "compact_preserve_tool_escalated"
   | "normal_complete"
   | "degraded_compact"
   | "no_reduction"
@@ -206,11 +207,41 @@ export const COMPACT_CONTINUATION_OUTCOME_KINDS: readonly CompactContinuationOut
   "continue_normal",
   "compact_preserve_tool",
   "compact_continue_turn",
+  "compact_preserve_tool_escalated",
   "normal_complete",
   "degraded_compact",
   "no_reduction",
   "skip_seam",
   "refuse",
+] as const;
+
+/**
+ * Durable relief-path vocabulary (receipt/identity). Distinct from outcome when
+ * outcome folds degraded/no_reduction under the same install result.
+ * - normal_preserve: ordinary preserve installed without escalation
+ * - protected_escalation: forced boundary + protected boundary + atomic install
+ * - core_install_failed: atomic view+boundary (or preserve install) failed; rolled back
+ * - host_validation_awaiting: core install succeeded; host body not yet acknowledged
+ * - host_validation_failed: host recorded full-body validation failure after core install
+ * - host_validation_ok: host recorded successful body validation (send may proceed)
+ */
+export type CompactContinuationReliefPath =
+  | "none"
+  | "normal_preserve"
+  | "protected_escalation"
+  | "core_install_failed"
+  | "host_validation_awaiting"
+  | "host_validation_failed"
+  | "host_validation_ok";
+
+export const COMPACT_CONTINUATION_RELIEF_PATHS: readonly CompactContinuationReliefPath[] = [
+  "none",
+  "normal_preserve",
+  "protected_escalation",
+  "core_install_failed",
+  "host_validation_awaiting",
+  "host_validation_failed",
+  "host_validation_ok",
 ] as const;
 
 // ── Skip codes (closed; distinct from refuse) ────────────────────────────────
@@ -262,15 +293,21 @@ export type CompactContinuationRefuseCode =
   /**
    * Invalid forced-boundary / continuation-state combination. Covers:
    * - `forcedContinuationBoundary.applied` is true but `continuation.kind` is
-   *   not `active_non_tool` (illegal v1 pairing);
+   *   not `active_non_tool` (illegal v2 pairing);
    * - `active_non_tool` above trigger with
    *   `forcedContinuationBoundary: { applied: false }` (runtime must force the
    *   boundary first and re-enter with the continuation turn id);
    * - applied boundary with empty/missing `continuationTurnId`.
    */
   | "invalid_pending_boundary_continuation"
-  /** Input contractVersion is not this oracle version; not an accepted v1 seam. */
-  | "unsupported_contract_version";
+  /** Input contractVersion is not this oracle version; not an accepted v2 seam. */
+  | "unsupported_contract_version"
+  /** Protected pairs invalid: missing/duplicate/wrong-turn/not-in-tail/order. */
+  | "invalid_protected_tool_pairs"
+  /** Maximal eligible unprotected pruning cannot produce safe projected runway. */
+  | "unsafe_runway"
+  /** Host recorded full-body validation failure after successful core install. */
+  | "host_validation_failed";
 
 export const COMPACT_CONTINUATION_REFUSE_CODES: readonly CompactContinuationRefuseCode[] = [
   "incomplete_capture",
@@ -283,6 +320,9 @@ export const COMPACT_CONTINUATION_REFUSE_CODES: readonly CompactContinuationRefu
   "no_valid_provider_request",
   "invalid_pending_boundary_continuation",
   "unsupported_contract_version",
+  "invalid_protected_tool_pairs",
+  "unsafe_runway",
+  "host_validation_failed",
 ] as const;
 
 // ── Effects (ordered, applied by runtime in later stories) ───────────────────
@@ -332,10 +372,36 @@ export type CompactContinuationEffect =
       allowDegradedDerivations: true;
     }
   | {
-      type: "preserve_tool_pair_verbatim";
-      toolCallId: string;
-      /** Current call/result pair stays in the open-turn tail. */
+      type: "preserve_tool_pairs_verbatim";
+      /** Sorted unique protected tool-call IDs kept full in the open-turn tail. */
+      protectedToolCallIds: string[];
+      /** Current call/result pairs stay in the open-turn tail. */
       location: "open_turn_tail";
+    }
+  | {
+      /**
+       * Advance the visibility boundary together with serving-view install
+       * (protected-escalation atomic core install). Boundary is monotonic and
+       * strictly before the earliest protected result event.
+       */
+      type: "advance_visibility_boundary";
+      previousBoundary: number;
+      newBoundary: number;
+      compactPoint: number;
+    }
+  | {
+      /**
+       * Host must validate the provider request body after core install.
+       * LHC never claims the host body was validated inside the core.
+       */
+      type: "await_host_validation";
+      attemptIdScope: "current_attempt";
+    }
+  | {
+      type: "record_host_validation";
+      result: "ok" | "failed";
+      /** Provider-neutral reason when failed; absent on ok. */
+      reason?: string;
     }
   | {
       /**
@@ -442,11 +508,23 @@ export type WorkContinuation =
   | { kind: "none" }
   | {
       kind: "pending_correlated_tool_result";
-      toolCallId: string;
-      /** Call/result correlation can be proven for the protected pair. */
+      /**
+       * Sorted, unique, non-empty set of response-scoped client-executed
+       * pending tool-call IDs whose call/result pairs stay full in the open
+       * tail. Contract 2.0.0 — no single-id field and no dual-field shim.
+       */
+      protectedToolCallIds: string[];
+      /** Call/result correlation can be proven for every protected id. */
       correlationValid: boolean;
     }
   | { kind: "active_non_tool" };
+
+/** Normalize protected IDs: unique, non-empty strings, sorted ascending. */
+export function normalizeProtectedToolCallIds(ids: readonly string[] | null | undefined): string[] {
+  if (!Array.isArray(ids)) return [];
+  const out = [...new Set(ids.filter((id) => typeof id === "string" && id.length > 0))].sort();
+  return out;
+}
 
 /**
  * Forced continuation-boundary identity for the whole-seam oracle.
@@ -546,7 +624,7 @@ export type CompactMaterialFacts = {
   lowerTargetMet: boolean;
   /** Compact assembly can run to a structurally valid band arrangement. */
   compactStructurallyValid: boolean;
-  /** Host can install/serve the resulting request body. */
+  /** Core install of serving view (+ optional boundary) succeeded. */
   installSucceeds: boolean;
   /**
    * Whether the compact reclaims useful served size. False is a first-class
@@ -558,6 +636,45 @@ export type CompactMaterialFacts = {
    * after best-effort compact — hard refuse.
    */
   canProduceValidProviderRequest: boolean;
+  /**
+   * Projected next-request pressure after relief (provider base + growth − savings).
+   * Null when provider base is unavailable.
+   */
+  projectedPressureTokens: number | null;
+  /** Source-labelled rendered savings (current served − candidate served). */
+  renderedSavingsTokens: number;
+  renderedSavingsSource: string;
+  renderedSavingsDomain: SourceLabelledEstimateAccounting;
+  /**
+   * Host-supplied safe-runway threshold (not the lower target). Required for
+   * pending-tool escalation classification when pressure evaluation runs.
+   */
+  safeRunwayThresholdTokens: number | null;
+  safeRunwayThresholdSource: string | null;
+  /** True when projected pressure is below the safe-runway threshold. */
+  projectedPressureSafe: boolean | null;
+  /**
+   * True when the attempt escalated through a protected continuation boundary
+   * (force + protected visibility prune + marker) rather than normal preserve.
+   */
+  protectedEscalationApplied: boolean;
+  /** Visibility boundary before the atomic install (null when not advanced). */
+  visibilityBoundaryBefore: number | null;
+  /** Visibility boundary after atomic install (null when not advanced). */
+  visibilityBoundaryAfter: number | null;
+  /** Compact point of the prepared/installed view (for boundary effect). */
+  compactPointAtInstall: number | null;
+  /**
+   * Maximal eligible unprotected prune still leaves projected pressure unsafe.
+   * Distinct from structural compact failure.
+   */
+  maximalPruneInsufficient: boolean;
+  /**
+   * Host full-body validation status for this attempt.
+   * `not_required` for paths that do not need post-install host validation.
+   * LHC never claims the provider body was validated inside the core.
+   */
+  hostValidationStatus: "not_required" | "awaiting" | "ok" | "failed";
 };
 
 export type CompactContinuationPolicy = {
@@ -566,6 +683,14 @@ export type CompactContinuationPolicy = {
   /** Lower target in LHC rendered-history domain. */
   lowerTargetTokens: number;
   hostCapability: CompactContinuationHostCapability;
+  /**
+   * Host-supplied safe-runway threshold in source-labelled projected-pressure
+   * domain. Not the lower target. Optional on non-pending paths; required for
+   * pending-tool escalation decisions at runtime.
+   */
+  safeRunwayThresholdTokens?: number;
+  /** Source label for the safe-runway threshold (e.g. host_auto_compact_scope). */
+  safeRunwayThresholdSource?: string;
 };
 
 /**
@@ -575,9 +700,9 @@ export type CompactContinuationPolicy = {
  */
 export type CompactContinuationInput = {
   /**
-   * Must equal `COMPACT_CONTINUATION_CONTRACT_VERSION` for an accepted v1 seam.
+   * Must equal `COMPACT_CONTINUATION_CONTRACT_VERSION` for an accepted v2 seam.
    * Unsupported versions refuse with `unsupported_contract_version` and do not
-   * claim acceptance of the input as v1.
+   * claim acceptance of the input as v2.
    */
   contractVersion: string;
   // ── pre-decision facts ────────────────────────────────────────────────────
@@ -590,7 +715,7 @@ export type CompactContinuationInput = {
   /**
    * Forced boundary identity (or none). Replaces the prior bare boolean.
    *
-   * **Legal v1 when applied:** requires `continuation.kind === "active_non_tool"`.
+   * **Legal v2 when applied:** requires `continuation.kind === "active_non_tool"`.
    * Pairing with `none` or `pending_correlated_tool_result` is
    * `invalid_pending_boundary_continuation`. Active non-tool above trigger with
    * `{ applied: false }` is the same refuse (runtime must force first).
@@ -627,6 +752,18 @@ export type CompactContinuationPressureReceipt = {
   upperTriggerTokens: number;
   /** null when pressure cannot be evaluated (no provider base). */
   atOrAboveTrigger: boolean | null;
+  /**
+   * Projected pressure after relief: provider base + growth − rendered savings.
+   * Null when provider base is unavailable.
+   */
+  projectedPressureTokens: number | null;
+  renderedSavingsTokens: number | null;
+  renderedSavingsSource: string | null;
+  renderedSavingsDomain: SourceLabelledEstimateAccounting | null;
+  safeRunwayThresholdTokens: number | null;
+  safeRunwayThresholdSource: string | null;
+  /** null when projected pressure or threshold unavailable. */
+  projectedPressureSafe: boolean | null;
 };
 
 export type CompactContinuationLowerTargetReceipt = {
@@ -690,19 +827,47 @@ export type CompactContinuationResidualState = {
   originalAgenticTurnStillOpen: boolean;
   /**
    * This state-machine receipt has authorized a fresh next provider request.
-   * False on refuse, skip (wait and re-evaluate), and post-boundary failures.
+   * False on refuse, skip (wait and re-evaluate), post-boundary failures, and
+   * while host validation is still awaiting / failed.
    *
    * **Does not cancel an already in-flight transport retry.** For
    * `transport_retry` skips, this means the compact-continuation machine has
    * not authorized a *new* governed request; the in-flight retry proceeds under
    * transport rules alone.
+   *
+   * **Does not claim the host provider body was validated inside LHC.** When
+   * residual requires host validation, this stays false until the host records
+   * an explicit ok acknowledgment.
    */
   nextProviderRequestAllowed: boolean;
+  /** Durable relief path classification for this attempt. */
+  reliefPath: CompactContinuationReliefPath;
+  /**
+   * Sorted protected tool-call IDs for pending-tool / escalated paths; empty
+   * when not applicable.
+   */
+  protectedToolCallIds: string[];
+  /** Visibility boundary before core install; null when unchanged/not advanced. */
+  visibilityBoundaryBefore: number | null;
+  /** Visibility boundary after core install; null when unchanged/not advanced. */
+  visibilityBoundaryAfter: number | null;
+  /** Compact point of the prepared/installed view (for boundary effect). */
+  /**
+   * Host validation residual. `not_required` when the path does not need
+   * post-install host body validation. LHC never sets `ok` for a body it did
+   * not receive acknowledgment for.
+   */
+  hostValidationStatus: "not_required" | "awaiting" | "ok" | "failed";
+  /**
+   * True when a successful core install remains installed but next request is
+   * blocked pending host validation (or after host-validation failure).
+   */
+  coreInstallRetainedPendingHostValidation: boolean;
 };
 
 export type CompactContinuationReceipt = {
   /**
-   * Oracle contract version that produced this receipt (`1.0.0`).
+   * Oracle contract version that produced this receipt (`2.0.0`).
    * For `unsupported_contract_version`, this is still the oracle version that
    * classified the refuse — not acceptance of the input version. The rejected
    * input version appears only in `reasonCode` / refuse reason text.
@@ -725,6 +890,10 @@ export type CompactContinuationReceipt = {
     markerServed: boolean;
     sameAgenticTurnPreserved: boolean;
   };
+  /** Durable path vocabulary (normal preserve / protected escalation / …). */
+  reliefPath: CompactContinuationReliefPath;
+  /** Sorted protected tool-call IDs when pending-tool path applies. */
+  protectedToolCallIds: string[];
   /**
    * Ordered effects the runtime applied or attempted on this seam, including
    * post-claim failures (claim + attempted stages + refuse + receipt + release).
@@ -865,6 +1034,15 @@ export const COMPACT_CONTINUATION_INVARIANTS = [
   "stable_turn_end_reason_context_compact_continue",
   "no_false_parity_for_capability_limited_hosts",
   "pure_function_is_whole_seam_oracle_not_pre_effect_plan",
+  "protected_tool_call_ids_sorted_unique_nonempty",
+  "projected_pressure_is_base_plus_growth_minus_savings",
+  "safe_runway_threshold_is_not_lower_target",
+  "protected_results_budgeted_full_before_prune",
+  "visibility_boundary_monotonic_before_earliest_protected_result",
+  "atomic_view_and_boundary_install_or_neither",
+  "host_validation_never_claimed_inside_lhc_core",
+  "host_validation_failure_does_not_rollback_core_install",
+  "no_dual_field_toolcallid_shim",
 ] as const;
 
 export type CompactContinuationInvariantId = (typeof COMPACT_CONTINUATION_INVARIANTS)[number];

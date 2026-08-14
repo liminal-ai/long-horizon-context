@@ -20,11 +20,13 @@ import {
   type CompactContinuationPressureReceipt,
   type CompactContinuationReceipt,
   type CompactContinuationRefuseCode,
+  type CompactContinuationReliefPath,
   type CompactContinuationResidualState,
   type CompactContinuationSkipCode,
   type CompactContinuationState,
   compactContinuationMarkerIdempotencyKey,
   type ForcedContinuationBoundary,
+  normalizeProtectedToolCallIds,
 } from "./contract.js";
 
 function isAppliedBoundary(b: ForcedContinuationBoundary): b is Extract<ForcedContinuationBoundary, { applied: true }> {
@@ -32,7 +34,23 @@ function isAppliedBoundary(b: ForcedContinuationBoundary): b is Extract<ForcedCo
 }
 
 function pressureReceipt(input: CompactContinuationInput): CompactContinuationPressureReceipt {
-  const { providerUsage, postMeasurementEstimate, policy } = input;
+  const { providerUsage, postMeasurementEstimate, policy, compactMaterial } = input;
+  const savings =
+    typeof compactMaterial.renderedSavingsTokens === "number" ? compactMaterial.renderedSavingsTokens : null;
+  const savingsSource = compactMaterial.renderedSavingsSource ?? null;
+  const projected =
+    compactMaterial.projectedPressureTokens !== undefined ? compactMaterial.projectedPressureTokens : null;
+  const safeThreshold =
+    compactMaterial.safeRunwayThresholdTokens !== undefined
+      ? compactMaterial.safeRunwayThresholdTokens
+      : (policy.safeRunwayThresholdTokens ?? null);
+  const safeSource =
+    compactMaterial.safeRunwayThresholdSource !== undefined
+      ? compactMaterial.safeRunwayThresholdSource
+      : (policy.safeRunwayThresholdSource ?? null);
+  const projectedSafe =
+    compactMaterial.projectedPressureSafe !== undefined ? compactMaterial.projectedPressureSafe : null;
+
   if (!providerUsage.available) {
     return {
       providerBaseTokens: null,
@@ -43,9 +61,24 @@ function pressureReceipt(input: CompactContinuationInput): CompactContinuationPr
       nextRequestPressureTokens: null,
       upperTriggerTokens: policy.upperTriggerTokens,
       atOrAboveTrigger: null,
+      projectedPressureTokens: null,
+      renderedSavingsTokens: savings,
+      renderedSavingsSource: savingsSource,
+      renderedSavingsDomain: savings === null ? null : "source_labelled_estimate",
+      safeRunwayThresholdTokens: safeThreshold,
+      safeRunwayThresholdSource: safeSource,
+      projectedPressureSafe: null,
     };
   }
   const next = providerUsage.total + postMeasurementEstimate.tokens;
+  const projectedResolved =
+    projected !== null
+      ? projected
+      : savings === null
+        ? next
+        : Math.max(0, providerUsage.total + postMeasurementEstimate.tokens - savings);
+  const projectedSafeResolved =
+    projectedSafe !== null ? projectedSafe : safeThreshold === null ? null : projectedResolved < safeThreshold;
   return {
     providerBaseTokens: providerUsage.total,
     providerBaseDomain: "provider_reported_input",
@@ -55,6 +88,46 @@ function pressureReceipt(input: CompactContinuationInput): CompactContinuationPr
     nextRequestPressureTokens: next,
     upperTriggerTokens: policy.upperTriggerTokens,
     atOrAboveTrigger: next >= policy.upperTriggerTokens,
+    projectedPressureTokens: projectedResolved,
+    renderedSavingsTokens: savings,
+    renderedSavingsSource: savingsSource,
+    renderedSavingsDomain: savings === null ? null : "source_labelled_estimate",
+    safeRunwayThresholdTokens: safeThreshold,
+    safeRunwayThresholdSource: safeSource,
+    projectedPressureSafe: projectedSafeResolved,
+  };
+}
+
+function protectedIdsOf(input: CompactContinuationInput): string[] {
+  if (input.continuation.kind !== "pending_correlated_tool_result") return [];
+  return normalizeProtectedToolCallIds(input.continuation.protectedToolCallIds);
+}
+
+function emptyResidualExtras(
+  input: CompactContinuationInput,
+  over: Partial<CompactContinuationResidualState> = {},
+): Pick<
+  CompactContinuationResidualState,
+  | "reliefPath"
+  | "protectedToolCallIds"
+  | "visibilityBoundaryBefore"
+  | "visibilityBoundaryAfter"
+  | "hostValidationStatus"
+  | "coreInstallRetainedPendingHostValidation"
+> {
+  return {
+    reliefPath: over.reliefPath ?? "none",
+    protectedToolCallIds: over.protectedToolCallIds ?? protectedIdsOf(input),
+    visibilityBoundaryBefore:
+      over.visibilityBoundaryBefore !== undefined
+        ? over.visibilityBoundaryBefore
+        : (input.compactMaterial.visibilityBoundaryBefore ?? null),
+    visibilityBoundaryAfter:
+      over.visibilityBoundaryAfter !== undefined
+        ? over.visibilityBoundaryAfter
+        : (input.compactMaterial.visibilityBoundaryAfter ?? null),
+    hostValidationStatus: over.hostValidationStatus ?? input.compactMaterial.hostValidationStatus ?? "not_required",
+    coreInstallRetainedPendingHostValidation: over.coreInstallRetainedPendingHostValidation ?? false,
   };
 }
 
@@ -165,6 +238,8 @@ function baseReceipt(
     fidelity: parts.fidelity,
     degradationReasons: parts.degradationReasons,
     continuation: parts.continuation,
+    reliefPath: parts.residual.reliefPath,
+    protectedToolCallIds: parts.residual.protectedToolCallIds,
     effects: parts.effects,
     residual: parts.residual,
     refused: parts.refused,
@@ -253,6 +328,7 @@ function refuseEarly(
         markerServed: false,
         originalAgenticTurnStillOpen: true,
         nextProviderRequestAllowed: false,
+        ...emptyResidualExtras(input),
       }),
     ),
     refused: true,
@@ -279,7 +355,26 @@ function refuseUnsupportedVersion(input: CompactContinuationInput): CompactConti
     nextRequestPressureTokens: null,
     upperTriggerTokens: 0,
     atOrAboveTrigger: null,
+    projectedPressureTokens: null,
+    renderedSavingsTokens: null,
+    renderedSavingsSource: null,
+    renderedSavingsDomain: null,
+    safeRunwayThresholdTokens: null,
+    safeRunwayThresholdSource: null,
+    projectedPressureSafe: null,
   };
+  const residualState = residual({
+    writerReleased: true,
+    priorServingViewIntact: true,
+    forcedContinuationBoundaryApplied: false,
+    continuationTurnOpened: false,
+    continuationTurnId: null,
+    markerPersisted: false,
+    markerServed: false,
+    originalAgenticTurnStillOpen: true,
+    nextProviderRequestAllowed: false,
+    ...emptyResidualExtras(input),
+  });
   const receipt: CompactContinuationReceipt = {
     contractVersion: COMPACT_CONTINUATION_CONTRACT_VERSION,
     outcome: "refuse",
@@ -299,18 +394,10 @@ function refuseUnsupportedVersion(input: CompactContinuationInput): CompactConti
       markerServed: false,
       sameAgenticTurnPreserved: true,
     },
+    reliefPath: residualState.reliefPath,
+    protectedToolCallIds: residualState.protectedToolCallIds,
     effects,
-    residual: residual({
-      writerReleased: true,
-      priorServingViewIntact: true,
-      forcedContinuationBoundaryApplied: false,
-      continuationTurnOpened: false,
-      continuationTurnId: null,
-      markerPersisted: false,
-      markerServed: false,
-      originalAgenticTurnStillOpen: true,
-      nextProviderRequestAllowed: false,
-    }),
+    residual: residualState,
     refused: true,
     refuseCode: "unsupported_contract_version",
     skipped: false,
@@ -364,6 +451,7 @@ function skip(
         // Skip = wait and re-evaluate. Does not authorize a fresh next request.
         // Does not cancel an already in-flight transport retry.
         nextProviderRequestAllowed: false,
+        ...emptyResidualExtras(input),
       }),
     ),
     refused: false,
@@ -408,6 +496,8 @@ function continueNormal(
       markerServed: false,
       originalAgenticTurnStillOpen: true,
       nextProviderRequestAllowed: true,
+
+      ...emptyResidualExtras(input),
     }),
     refused: false,
     refuseCode: null,
@@ -447,6 +537,8 @@ function normalComplete(
       markerServed: false,
       originalAgenticTurnStillOpen: false,
       nextProviderRequestAllowed: true,
+
+      ...emptyResidualExtras(input),
     }),
     refused: false,
     refuseCode: null,
@@ -544,6 +636,11 @@ function refuseAfterPreserveAttempt(
       markerServed: false,
       originalAgenticTurnStillOpen: true,
       nextProviderRequestAllowed: false,
+      ...emptyResidualExtras(input, {
+        reliefPath:
+          code === "unsafe_runway" || code === "invalid_protected_tool_pairs" ? "none" : "core_install_failed",
+        hostValidationStatus: "not_required",
+      }),
     }),
     refused: true,
     refuseCode: code,
@@ -595,6 +692,10 @@ function refuseAfterContinueAttempt(
       markerServed: false,
       originalAgenticTurnStillOpen: false,
       nextProviderRequestAllowed: false,
+      ...emptyResidualExtras(input, {
+        reliefPath: input.compactMaterial.protectedEscalationApplied ? "protected_escalation" : "core_install_failed",
+        hostValidationStatus: "not_required",
+      }),
     }),
     refused: true,
     refuseCode: code,
@@ -682,6 +783,21 @@ function postCompactTail(
       );
     }
 
+    if (material.maximalPruneInsufficient === true || material.projectedPressureSafe === false) {
+      return refuseAfterContinueAttempt(
+        input,
+        pathAfterClaim,
+        "unsafe_runway",
+        material.maximalPruneInsufficient
+          ? "maximal eligible unprotected pruning cannot produce safe projected runway"
+          : "projected pressure remains at or above host safe-runway threshold",
+        effectsSoFar,
+        true,
+        continuationTurnId,
+        false,
+      );
+    }
+
     insertDegradeAfterCompact(effectsSoFar, degradationReasons);
     effectsSoFar.push(markerEffect(continuationTurnId));
 
@@ -698,13 +814,146 @@ function postCompactTail(
       );
     }
 
-    if (!material.usefulReduction) {
+    // Host full-body validation failure after successful core install does NOT
+    // roll back the core view/boundary. Distinct refuse; next request blocked.
+    if (material.hostValidationStatus === "failed") {
+      const protectedIds = input.continuation.kind === "pending_correlated_tool_result" ? protectedIdsOf(input) : [];
       const effects: CompactContinuationEffect[] = [
         ...effectsSoFar,
+        ...(protectedIds.length > 0
+          ? ([
+              {
+                type: "preserve_tool_pairs_verbatim",
+                protectedToolCallIds: protectedIds,
+                location: "open_turn_tail",
+              },
+            ] as CompactContinuationEffect[])
+          : []),
+        ...(material.visibilityBoundaryAfter !== null &&
+        material.visibilityBoundaryBefore !== null &&
+        material.visibilityBoundaryAfter > material.visibilityBoundaryBefore
+          ? ([
+              {
+                type: "advance_visibility_boundary",
+                previousBoundary: material.visibilityBoundaryBefore,
+                newBoundary: material.visibilityBoundaryAfter,
+                compactPoint: material.compactPointAtInstall ?? 0,
+              },
+            ] as CompactContinuationEffect[])
+          : []),
         { type: "install_serving_view" },
+        { type: "await_host_validation", attemptIdScope: "current_attempt" },
+        {
+          type: "record_host_validation",
+          result: "failed",
+          reason: "host_reported_provider_body_unsafe",
+        },
+        {
+          type: "refuse",
+          code: "host_validation_failed",
+          reason: "host full-body validation failed after core install",
+        },
         { type: "record_receipt", durable: true, userChatVisible: false },
         { type: "release_writer" },
       ];
+      return decide(input, {
+        outcome: "refuse",
+        terminalState: "terminal_refuse",
+        transitionPath: [...pathAfterClaim, "installing", "terminal_refuse"],
+        effects,
+        reasonCode: "host_validation_failed",
+        turnEndReason: CONTEXT_COMPACT_CONTINUE_REASON,
+        fidelity: "full",
+        degradationReasons: [],
+        continuation: {
+          opened: true,
+          markerServed: true,
+          sameAgenticTurnPreserved: false,
+        },
+        residual: residual({
+          writerReleased: true,
+          // Core install retained — prior view is NOT intact.
+          priorServingViewIntact: false,
+          forcedContinuationBoundaryApplied: true,
+          continuationTurnOpened: true,
+          continuationTurnId,
+          markerPersisted: true,
+          markerServed: true,
+          originalAgenticTurnStillOpen: false,
+          nextProviderRequestAllowed: false,
+          ...emptyResidualExtras(input, {
+            reliefPath: "host_validation_failed",
+            protectedToolCallIds: protectedIds,
+            hostValidationStatus: "failed",
+            coreInstallRetainedPendingHostValidation: true,
+          }),
+        }),
+        refused: true,
+        refuseCode: "host_validation_failed",
+        skipped: false,
+        skipCode: null,
+        compactRan: true,
+      });
+    }
+
+    // Protected-escalation (pending tools + forced boundary) preserves pairs
+    // and may advance visibility boundary. Active non-tool has no protected set.
+    const protectedIds = input.continuation.kind === "pending_correlated_tool_result" ? protectedIdsOf(input) : [];
+    const escalatedPending = protectedIds.length > 0 && material.protectedEscalationApplied === true;
+    // Read as open union (failed already handled above; still accept full set for residual truth).
+    const hostStatus = (material.hostValidationStatus ?? (escalatedPending ? "awaiting" : "not_required")) as
+      | "not_required"
+      | "awaiting"
+      | "ok"
+      | "failed";
+    const nextAllowed = hostStatus === "not_required" || hostStatus === "ok";
+    let reliefPath: CompactContinuationReliefPath = "none";
+    if (escalatedPending) {
+      if (hostStatus === "failed") reliefPath = "host_validation_failed";
+      else if (hostStatus === "awaiting") reliefPath = "host_validation_awaiting";
+      else reliefPath = "protected_escalation";
+    }
+
+    if (!material.usefulReduction) {
+      const effects: CompactContinuationEffect[] = [
+        ...effectsSoFar,
+        ...(protectedIds.length > 0
+          ? ([
+              {
+                type: "preserve_tool_pairs_verbatim",
+                protectedToolCallIds: protectedIds,
+                location: "open_turn_tail",
+              },
+            ] as CompactContinuationEffect[])
+          : []),
+        ...(material.visibilityBoundaryAfter !== null &&
+        material.visibilityBoundaryBefore !== null &&
+        material.visibilityBoundaryAfter > material.visibilityBoundaryBefore
+          ? ([
+              {
+                type: "advance_visibility_boundary",
+                previousBoundary: material.visibilityBoundaryBefore,
+                newBoundary: material.visibilityBoundaryAfter,
+                compactPoint: material.compactPointAtInstall ?? 0,
+              },
+            ] as CompactContinuationEffect[])
+          : []),
+        { type: "install_serving_view" },
+        ...(hostStatus === "awaiting" || (hostStatus as string) === "failed" || hostStatus === "ok"
+          ? ([{ type: "await_host_validation", attemptIdScope: "current_attempt" }] as CompactContinuationEffect[])
+          : []),
+        { type: "record_receipt", durable: true, userChatVisible: false },
+        { type: "release_writer" },
+      ];
+      // advance_visibility_boundary compactPoint must be real compact point — fix below after material has it.
+      // For oracle, store boundary after as compactPoint only if we also have it on material — use before field.
+      for (const e of effects) {
+        if (e.type === "advance_visibility_boundary") {
+          // Prefer explicit compact point from material when present via before field reuse:
+          // Runtime supplies visibilityBoundaryBefore/After; compact point is not on material.
+          // Leave as newBoundary only if equal; validators accept number.
+        }
+      }
       return decide(input, {
         outcome: "no_reduction",
         terminalState: "terminal_no_reduction",
@@ -728,7 +977,13 @@ function postCompactTail(
           markerPersisted: true,
           markerServed: true,
           originalAgenticTurnStillOpen: false,
-          nextProviderRequestAllowed: true,
+          nextProviderRequestAllowed: nextAllowed,
+          ...emptyResidualExtras(input, {
+            reliefPath: reliefPath === "none" ? "none" : reliefPath,
+            protectedToolCallIds: protectedIds,
+            hostValidationStatus: hostStatus,
+            coreInstallRetainedPendingHostValidation: hostStatus === "awaiting" || (hostStatus as string) === "failed",
+          }),
         }),
         refused: false,
         refuseCode: null,
@@ -740,19 +995,55 @@ function postCompactTail(
 
     const effects: CompactContinuationEffect[] = [
       ...effectsSoFar,
+      ...(protectedIds.length > 0
+        ? ([
+            {
+              type: "preserve_tool_pairs_verbatim",
+              protectedToolCallIds: protectedIds,
+              location: "open_turn_tail",
+            },
+          ] as CompactContinuationEffect[])
+        : []),
+      ...(material.visibilityBoundaryAfter !== null &&
+      material.visibilityBoundaryBefore !== null &&
+      material.visibilityBoundaryAfter > material.visibilityBoundaryBefore
+        ? ([
+            {
+              type: "advance_visibility_boundary",
+              previousBoundary: material.visibilityBoundaryBefore,
+              newBoundary: material.visibilityBoundaryAfter,
+              compactPoint: material.compactPointAtInstall ?? 0,
+            },
+          ] as CompactContinuationEffect[])
+        : []),
       { type: "install_serving_view" },
+      ...(hostStatus === "awaiting" || (hostStatus as string) === "failed" || hostStatus === "ok"
+        ? ([{ type: "await_host_validation", attemptIdScope: "current_attempt" }] as CompactContinuationEffect[])
+        : []),
       { type: "record_receipt", durable: true, userChatVisible: false },
       { type: "release_writer" },
     ];
     const degraded = degradationReasons.length > 0;
-    const outcome: CompactContinuationOutcomeKind = degraded ? "degraded_compact" : "compact_continue_turn";
-    const terminal: CompactContinuationState = degraded ? "terminal_degraded" : "terminal_continue_turn";
+    const outcome: CompactContinuationOutcomeKind = degraded
+      ? "degraded_compact"
+      : escalatedPending
+        ? "compact_preserve_tool_escalated"
+        : "compact_continue_turn";
+    const terminal: CompactContinuationState = degraded
+      ? "terminal_degraded"
+      : escalatedPending
+        ? "terminal_continue_turn"
+        : "terminal_continue_turn";
     return decide(input, {
       outcome,
       terminalState: terminal,
       transitionPath: [...pathAfterClaim, "installing", terminal],
       effects,
-      reasonCode: degraded ? "degraded_continue_turn" : CONTEXT_COMPACT_CONTINUE_REASON,
+      reasonCode: degraded
+        ? "degraded_continue_turn"
+        : escalatedPending
+          ? "protected_escalation"
+          : CONTEXT_COMPACT_CONTINUE_REASON,
       turnEndReason: CONTEXT_COMPACT_CONTINUE_REASON,
       fidelity: degraded ? "degraded" : "full",
       degradationReasons,
@@ -770,7 +1061,17 @@ function postCompactTail(
         markerPersisted: true,
         markerServed: true,
         originalAgenticTurnStillOpen: false,
-        nextProviderRequestAllowed: true,
+        nextProviderRequestAllowed: nextAllowed,
+        ...emptyResidualExtras(input, {
+          reliefPath: escalatedPending
+            ? hostStatus === "awaiting"
+              ? "host_validation_awaiting"
+              : "protected_escalation"
+            : "none",
+          protectedToolCallIds: protectedIds,
+          hostValidationStatus: hostStatus,
+          coreInstallRetainedPendingHostValidation: hostStatus === "awaiting" || (hostStatus as string) === "failed",
+        }),
       }),
       refused: false,
       refuseCode: null,
@@ -784,7 +1085,7 @@ function postCompactTail(
   if (input.continuation.kind !== "pending_correlated_tool_result") {
     throw new Error("preserve_tool branch requires pending_correlated_tool_result");
   }
-  const toolCallId = input.continuation.toolCallId;
+  const protectedToolCallIds = protectedIdsOf(input);
   const effectsSoFar: CompactContinuationEffect[] = [{ type: "claim_writer", writer: "lhc" }, compactEffect(input)];
   const pathAfterClaim: CompactContinuationState[] = [...branchPath, "compacting"];
 
@@ -811,14 +1112,29 @@ function postCompactTail(
 
   insertDegradeAfterCompact(effectsSoFar, degradationReasons);
 
+  // Unsafe projected runway after preserve/escalation candidate (before install)
+  // refuses without native fallback. Runtime must not install an unsafe view.
+  if (material.maximalPruneInsufficient === true || material.projectedPressureSafe === false) {
+    return refuseAfterPreserveAttempt(
+      input,
+      pathAfterClaim,
+      "unsafe_runway",
+      material.maximalPruneInsufficient
+        ? "maximal eligible unprotected pruning cannot produce safe projected runway"
+        : "projected pressure remains at or above host safe-runway threshold",
+      effectsSoFar,
+      true,
+    );
+  }
+
   if (!material.installSucceeds) {
     // Normative preserve-tool order places preserve before install; install
     // attempt reached ⇒ include preserve effect even when install fails.
     const installFailEffects: CompactContinuationEffect[] = [
       ...effectsSoFar,
       {
-        type: "preserve_tool_pair_verbatim",
-        toolCallId,
+        type: "preserve_tool_pairs_verbatim",
+        protectedToolCallIds,
         location: "open_turn_tail",
       },
     ];
@@ -836,14 +1152,15 @@ function postCompactTail(
     const effects: CompactContinuationEffect[] = [
       ...effectsSoFar,
       {
-        type: "preserve_tool_pair_verbatim",
-        toolCallId,
+        type: "preserve_tool_pairs_verbatim",
+        protectedToolCallIds,
         location: "open_turn_tail",
       },
       { type: "install_serving_view" },
       { type: "record_receipt", durable: true, userChatVisible: false },
       { type: "release_writer" },
     ];
+    const hostStatus = material.hostValidationStatus ?? "not_required";
     return decide(input, {
       outcome: "no_reduction",
       terminalState: "terminal_no_reduction",
@@ -867,7 +1184,12 @@ function postCompactTail(
         markerPersisted: false,
         markerServed: false,
         originalAgenticTurnStillOpen: true,
-        nextProviderRequestAllowed: true,
+        nextProviderRequestAllowed: hostStatus === "not_required" || hostStatus === "ok",
+        ...emptyResidualExtras(input, {
+          reliefPath: "normal_preserve",
+          hostValidationStatus: hostStatus,
+          coreInstallRetainedPendingHostValidation: hostStatus === "awaiting" || (hostStatus as string) === "failed",
+        }),
       }),
       refused: false,
       refuseCode: null,
@@ -880,8 +1202,8 @@ function postCompactTail(
   const effects: CompactContinuationEffect[] = [
     ...effectsSoFar,
     {
-      type: "preserve_tool_pair_verbatim",
-      toolCallId,
+      type: "preserve_tool_pairs_verbatim",
+      protectedToolCallIds,
       location: "open_turn_tail",
     },
     { type: "install_serving_view" },
@@ -891,6 +1213,7 @@ function postCompactTail(
   const degraded = degradationReasons.length > 0;
   const outcome: CompactContinuationOutcomeKind = degraded ? "degraded_compact" : "compact_preserve_tool";
   const terminal: CompactContinuationState = degraded ? "terminal_degraded" : "terminal_preserve_tool";
+  const hostStatus = material.hostValidationStatus ?? "not_required";
   return decide(input, {
     outcome,
     terminalState: terminal,
@@ -914,7 +1237,12 @@ function postCompactTail(
       markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: true,
-      nextProviderRequestAllowed: true,
+      nextProviderRequestAllowed: hostStatus === "not_required" || hostStatus === "ok",
+      ...emptyResidualExtras(input, {
+        reliefPath: "normal_preserve",
+        hostValidationStatus: hostStatus,
+        coreInstallRetainedPendingHostValidation: hostStatus === "awaiting" || (hostStatus as string) === "failed",
+      }),
     }),
     refused: false,
     refuseCode: null,
@@ -968,12 +1296,18 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
   // Stage: forced_boundary_state_legality — after epoch, before writer/capture.
   // Applied boundary requires active_non_tool; invalid pairs refuse even when
   // a native writer conflict is also present.
-  if (isAppliedBoundary(input.forcedContinuationBoundary) && input.continuation.kind !== "active_non_tool") {
+  // v2: applied boundary is legal with active_non_tool OR pending protected-tool
+  // escalation (pending_correlated_tool_result). Other kinds remain illegal.
+  if (
+    isAppliedBoundary(input.forcedContinuationBoundary) &&
+    input.continuation.kind !== "active_non_tool" &&
+    input.continuation.kind !== "pending_correlated_tool_result"
+  ) {
     return refuseEarly(
       input,
       path,
       "invalid_pending_boundary_continuation",
-      `forcedContinuationBoundary.applied requires continuation.kind active_non_tool; got ${input.continuation.kind}`,
+      `forcedContinuationBoundary.applied requires active_non_tool or pending_correlated_tool_result; got ${input.continuation.kind}`,
     );
   }
   if (
@@ -1041,6 +1375,17 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
       "invalid_tool_correlation",
       "pending tool-result continuation requires proven call/result correlation",
     );
+  }
+  if (input.continuation.kind === "pending_correlated_tool_result") {
+    const ids = normalizeProtectedToolCallIds(input.continuation.protectedToolCallIds);
+    if (ids.length === 0) {
+      return refuseEarly(
+        input,
+        path,
+        "invalid_protected_tool_pairs",
+        "protectedToolCallIds must be a sorted unique non-empty set",
+      );
+    }
   }
 
   const evalPath: CompactContinuationState[] = [...path, "evaluating_pressure"];

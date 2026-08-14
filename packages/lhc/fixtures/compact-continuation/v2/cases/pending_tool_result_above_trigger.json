@@ -1,0 +1,223 @@
+{
+  "name": "pending_tool_result_above_trigger",
+  "contractVersion": "2.0.0",
+  "description": "Above trigger with pending correlated tool result: keep turn open, preserve pair, no marker.",
+  "coverage": [
+    "pending_tool_result_continuation"
+  ],
+  "inputValidation": "accept",
+  "input": {
+    "contractVersion": "2.0.0",
+    "seam": {
+      "modelResponseComplete": true,
+      "requestedToolsSettled": true,
+      "captureFlushed": true,
+      "beforeNextProviderRequest": true,
+      "insideTransportRetry": false,
+      "inputEpochAtDecision": 1,
+      "inputEpochAtApply": 1
+    },
+    "providerUsage": {
+      "available": true,
+      "inputTokens": 90000,
+      "cacheCreationTokens": 5000,
+      "cacheReadTokens": 10000,
+      "total": 105000,
+      "domain": "provider_reported_input"
+    },
+    "postMeasurementEstimate": {
+      "tokens": 2000,
+      "source": "lhc_token_estimate",
+      "domain": "source_labelled_estimate"
+    },
+    "policy": {
+      "upperTriggerTokens": 100000,
+      "lowerTargetTokens": 40000,
+      "hostCapability": "full_state_machine",
+      "safeRunwayThresholdTokens": 120000,
+      "safeRunwayThresholdSource": "host_safe_runway"
+    },
+    "continuation": {
+      "kind": "pending_correlated_tool_result",
+      "protectedToolCallIds": [
+        "call-42"
+      ],
+      "correlationValid": true
+    },
+    "invariants": {
+      "captureComplete": true,
+      "providerIdentityValid": true,
+      "singleOpenTurn": true,
+      "writerClaim": "none"
+    },
+    "forcedContinuationBoundary": {
+      "applied": false
+    },
+    "compactMaterial": {
+      "derivationsMissingOrFailed": false,
+      "lowerTargetMet": true,
+      "compactStructurallyValid": true,
+      "installSucceeds": true,
+      "usefulReduction": true,
+      "canProduceValidProviderRequest": true,
+      "projectedPressureTokens": 107000,
+      "renderedSavingsTokens": 0,
+      "renderedSavingsSource": "lhc_rendered_history_estimate",
+      "renderedSavingsDomain": "source_labelled_estimate",
+      "safeRunwayThresholdTokens": 120000,
+      "safeRunwayThresholdSource": "host_safe_runway",
+      "projectedPressureSafe": true,
+      "protectedEscalationApplied": false,
+      "visibilityBoundaryBefore": null,
+      "visibilityBoundaryAfter": null,
+      "compactPointAtInstall": null,
+      "maximalPruneInsufficient": false,
+      "hostValidationStatus": "not_required"
+    }
+  },
+  "expected": {
+    "outcome": "compact_preserve_tool",
+    "terminalState": "terminal_preserve_tool",
+    "transitionPath": [
+      "at_seam",
+      "checking_invariants",
+      "evaluating_pressure",
+      "path_preserve_tool",
+      "compacting",
+      "installing",
+      "terminal_preserve_tool"
+    ],
+    "effects": [
+      {
+        "type": "claim_writer",
+        "writer": "lhc"
+      },
+      {
+        "type": "compact",
+        "lowerTargetDomain": "lhc_rendered_history",
+        "lowerTargetTokens": 40000,
+        "allowDegradedDerivations": true
+      },
+      {
+        "type": "preserve_tool_pairs_verbatim",
+        "protectedToolCallIds": [
+          "call-42"
+        ],
+        "location": "open_turn_tail"
+      },
+      {
+        "type": "install_serving_view"
+      },
+      {
+        "type": "record_receipt",
+        "durable": true,
+        "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
+      }
+    ],
+    "receipt": {
+      "contractVersion": "2.0.0",
+      "outcome": "compact_preserve_tool",
+      "reasonCode": "compact_preserve_tool",
+      "turnEndReason": null,
+      "pressure": {
+        "providerBaseTokens": 105000,
+        "providerBaseDomain": "provider_reported_input",
+        "estimateTokens": 2000,
+        "estimateSource": "lhc_token_estimate",
+        "estimateDomain": "source_labelled_estimate",
+        "nextRequestPressureTokens": 107000,
+        "upperTriggerTokens": 100000,
+        "atOrAboveTrigger": true,
+        "projectedPressureTokens": 107000,
+        "renderedSavingsTokens": 0,
+        "renderedSavingsSource": "lhc_rendered_history_estimate",
+        "renderedSavingsDomain": "source_labelled_estimate",
+        "safeRunwayThresholdTokens": 120000,
+        "safeRunwayThresholdSource": "host_safe_runway",
+        "projectedPressureSafe": true
+      },
+      "lowerTarget": {
+        "domain": "lhc_rendered_history",
+        "tokens": 40000,
+        "met": true,
+        "isSuccessGate": false
+      },
+      "fidelity": "full",
+      "degradationReasons": [],
+      "continuation": {
+        "opened": false,
+        "markerServed": false,
+        "sameAgenticTurnPreserved": true
+      },
+      "reliefPath": "normal_preserve",
+      "protectedToolCallIds": [
+        "call-42"
+      ],
+      "effects": [
+        {
+          "type": "claim_writer",
+          "writer": "lhc"
+        },
+        {
+          "type": "compact",
+          "lowerTargetDomain": "lhc_rendered_history",
+          "lowerTargetTokens": 40000,
+          "allowDegradedDerivations": true
+        },
+        {
+          "type": "preserve_tool_pairs_verbatim",
+          "protectedToolCallIds": [
+            "call-42"
+          ],
+          "location": "open_turn_tail"
+        },
+        {
+          "type": "install_serving_view"
+        },
+        {
+          "type": "record_receipt",
+          "durable": true,
+          "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
+        }
+      ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": false,
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "continuationTurnId": null,
+        "markerPersisted": false,
+        "markerServed": false,
+        "originalAgenticTurnStillOpen": true,
+        "nextProviderRequestAllowed": true,
+        "reliefPath": "normal_preserve",
+        "protectedToolCallIds": [
+          "call-42"
+        ],
+        "visibilityBoundaryBefore": null,
+        "visibilityBoundaryAfter": null,
+        "hostValidationStatus": "not_required",
+        "coreInstallRetainedPendingHostValidation": false
+      },
+      "refused": false,
+      "refuseCode": null,
+      "skipped": false,
+      "skipCode": null,
+      "transitionPath": [
+        "at_seam",
+        "checking_invariants",
+        "evaluating_pressure",
+        "path_preserve_tool",
+        "compacting",
+        "installing",
+        "terminal_preserve_tool"
+      ]
+    }
+  }
+}

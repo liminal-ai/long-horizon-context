@@ -1,0 +1,171 @@
+{
+  "name": "input_epoch_changed",
+  "contractVersion": "2.0.0",
+  "description": "Input epoch change between decision and apply skips the seam safely.",
+  "coverage": [
+    "stale_epoch_or_transport_retry"
+  ],
+  "inputValidation": "accept",
+  "input": {
+    "contractVersion": "2.0.0",
+    "seam": {
+      "modelResponseComplete": true,
+      "requestedToolsSettled": true,
+      "captureFlushed": true,
+      "beforeNextProviderRequest": true,
+      "insideTransportRetry": false,
+      "inputEpochAtDecision": 1,
+      "inputEpochAtApply": 2
+    },
+    "providerUsage": {
+      "available": true,
+      "inputTokens": 90000,
+      "cacheCreationTokens": 5000,
+      "cacheReadTokens": 10000,
+      "total": 105000,
+      "domain": "provider_reported_input"
+    },
+    "postMeasurementEstimate": {
+      "tokens": 0,
+      "source": "lhc_token_estimate",
+      "domain": "source_labelled_estimate"
+    },
+    "policy": {
+      "upperTriggerTokens": 100000,
+      "lowerTargetTokens": 40000,
+      "hostCapability": "full_state_machine",
+      "safeRunwayThresholdTokens": 120000,
+      "safeRunwayThresholdSource": "host_safe_runway"
+    },
+    "continuation": {
+      "kind": "active_non_tool"
+    },
+    "invariants": {
+      "captureComplete": true,
+      "providerIdentityValid": true,
+      "singleOpenTurn": true,
+      "writerClaim": "none"
+    },
+    "forcedContinuationBoundary": {
+      "applied": false
+    },
+    "compactMaterial": {
+      "derivationsMissingOrFailed": false,
+      "lowerTargetMet": true,
+      "compactStructurallyValid": true,
+      "installSucceeds": true,
+      "usefulReduction": true,
+      "canProduceValidProviderRequest": true,
+      "projectedPressureTokens": 107000,
+      "renderedSavingsTokens": 0,
+      "renderedSavingsSource": "lhc_rendered_history_estimate",
+      "renderedSavingsDomain": "source_labelled_estimate",
+      "safeRunwayThresholdTokens": 120000,
+      "safeRunwayThresholdSource": "host_safe_runway",
+      "projectedPressureSafe": true,
+      "protectedEscalationApplied": false,
+      "visibilityBoundaryBefore": null,
+      "visibilityBoundaryAfter": null,
+      "compactPointAtInstall": null,
+      "maximalPruneInsufficient": false,
+      "hostValidationStatus": "not_required"
+    }
+  },
+  "expected": {
+    "outcome": "skip_seam",
+    "terminalState": "terminal_skip",
+    "transitionPath": [
+      "at_seam",
+      "checking_invariants",
+      "terminal_skip"
+    ],
+    "effects": [
+      {
+        "type": "skip_seam",
+        "code": "input_epoch_changed",
+        "reason": "input epoch changed (1→2); skip seam"
+      },
+      {
+        "type": "record_receipt",
+        "durable": true,
+        "userChatVisible": false
+      }
+    ],
+    "receipt": {
+      "contractVersion": "2.0.0",
+      "outcome": "skip_seam",
+      "reasonCode": "input_epoch_changed",
+      "turnEndReason": null,
+      "pressure": {
+        "providerBaseTokens": 105000,
+        "providerBaseDomain": "provider_reported_input",
+        "estimateTokens": 0,
+        "estimateSource": "lhc_token_estimate",
+        "estimateDomain": "source_labelled_estimate",
+        "nextRequestPressureTokens": 105000,
+        "upperTriggerTokens": 100000,
+        "atOrAboveTrigger": true,
+        "projectedPressureTokens": 107000,
+        "renderedSavingsTokens": 0,
+        "renderedSavingsSource": "lhc_rendered_history_estimate",
+        "renderedSavingsDomain": "source_labelled_estimate",
+        "safeRunwayThresholdTokens": 120000,
+        "safeRunwayThresholdSource": "host_safe_runway",
+        "projectedPressureSafe": true
+      },
+      "lowerTarget": {
+        "domain": "lhc_rendered_history",
+        "tokens": 40000,
+        "met": null,
+        "isSuccessGate": false
+      },
+      "fidelity": "full",
+      "degradationReasons": [],
+      "continuation": {
+        "opened": false,
+        "markerServed": false,
+        "sameAgenticTurnPreserved": true
+      },
+      "reliefPath": "none",
+      "protectedToolCallIds": [],
+      "effects": [
+        {
+          "type": "skip_seam",
+          "code": "input_epoch_changed",
+          "reason": "input epoch changed (1→2); skip seam"
+        },
+        {
+          "type": "record_receipt",
+          "durable": true,
+          "userChatVisible": false
+        }
+      ],
+      "residual": {
+        "writerReleased": true,
+        "priorServingViewIntact": true,
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "continuationTurnId": null,
+        "markerPersisted": false,
+        "markerServed": false,
+        "originalAgenticTurnStillOpen": true,
+        "nextProviderRequestAllowed": false,
+        "reliefPath": "none",
+        "protectedToolCallIds": [],
+        "visibilityBoundaryBefore": null,
+        "visibilityBoundaryAfter": null,
+        "hostValidationStatus": "not_required",
+        "coreInstallRetainedPendingHostValidation": false
+      },
+      "refused": false,
+      "refuseCode": null,
+      "skipped": true,
+      "skipCode": "input_epoch_changed",
+      "transitionPath": [
+        "at_seam",
+        "checking_invariants",
+        "terminal_skip"
+      ]
+    }
+  }
+}

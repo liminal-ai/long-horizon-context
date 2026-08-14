@@ -67,6 +67,8 @@ function baseFacts(overrides: Partial<CompactContinuationHostFacts> = {}): Compa
       upperTriggerTokens: 100000,
       lowerTargetTokens: 400,
       hostCapability: "full_state_machine",
+      safeRunwayThresholdTokens: 200000,
+      safeRunwayThresholdSource: "host_safe_runway",
     },
     continuation: overrides.continuation ?? { kind: "active_non_tool" },
     writerClaim: overrides.writerClaim ?? "none",
@@ -265,7 +267,7 @@ describe("LIM-61 compact-continuation runtime", () => {
         attemptId: "health-corr",
         continuation: {
           kind: "pending_correlated_tool_result",
-          toolCallId: "call-bad-corr",
+          protectedToolCallIds: ["call-bad-corr"],
           correlationValid: false,
         },
       }),
@@ -282,7 +284,7 @@ describe("LIM-61 compact-continuation runtime", () => {
         attemptId: "health-pair-missing",
         continuation: {
           kind: "pending_correlated_tool_result",
-          toolCallId: "call-does-not-exist",
+          protectedToolCallIds: ["call-does-not-exist"],
           correlationValid: true,
         },
       }),
@@ -422,7 +424,11 @@ describe("LIM-61 compact-continuation runtime", () => {
       { filePath: fixture.filePath },
       baseFacts({
         attemptId: "tool-success-1",
-        continuation: { kind: "pending_correlated_tool_result", toolCallId, correlationValid: true },
+        continuation: {
+          kind: "pending_correlated_tool_result",
+          protectedToolCallIds: [toolCallId],
+          correlationValid: true,
+        },
       }),
     );
     expect(result.ok).toBe(true);
@@ -960,7 +966,11 @@ describe("LIM-61 compact-continuation runtime", () => {
       attemptId: "identity-inspect-1",
       actor: "recovery-actor",
       harness: "recovery-harness",
-      continuation: { kind: "pending_correlated_tool_result", toolCallId, correlationValid: true },
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: [toolCallId],
+        correlationValid: true,
+      },
       policy: {
         upperTriggerTokens: 77_000,
         lowerTargetTokens: 321,
@@ -999,7 +1009,7 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(inspected.value.harness).toBe("recovery-harness");
     expect(inspected.value.continuation).toEqual({
       kind: "pending_correlated_tool_result",
-      toolCallId,
+      protectedToolCallIds: [toolCallId],
     });
     expect(inspected.value.policy).toEqual({
       upperTriggerTokens: 77_000,
@@ -1016,9 +1026,10 @@ describe("LIM-61 compact-continuation runtime", () => {
     // Corrupt intent_json → storage_failure; never synthesizes/clears claim.
     const db = openRaw(fixture.filePath);
     try {
-      db.prepare(
-        `UPDATE compact_continuation_attempt SET intent_json = ? WHERE attempt_id = ?`,
-      ).run("{not-json", "identity-inspect-1");
+      db.prepare(`UPDATE compact_continuation_attempt SET intent_json = ? WHERE attempt_id = ?`).run(
+        "{not-json",
+        "identity-inspect-1",
+      );
     } finally {
       db.close();
     }
@@ -1040,7 +1051,7 @@ describe("LIM-61 compact-continuation runtime", () => {
       attemptId: "preserve-claim-only-1",
       continuation: {
         kind: "pending_correlated_tool_result",
-        toolCallId,
+        protectedToolCallIds: [toolCallId],
         correlationValid: true,
       },
       // Seed both tool call+result so preserve path can prove the pair.
@@ -1081,7 +1092,7 @@ describe("LIM-61 compact-continuation runtime", () => {
     }
     expect(identity.value.continuation).toEqual({
       kind: "pending_correlated_tool_result",
-      toolCallId,
+      protectedToolCallIds: [toolCallId],
     });
 
     // Live seam has a different kind and no toolCallId X — must still re-enter with stored identity.
@@ -1098,10 +1109,7 @@ describe("LIM-61 compact-continuation runtime", () => {
       compact: { params: { lowerBound: 1 } },
     });
     // Without stored identity: conflict.
-    const conflict = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      liveDrift,
-    );
+    const conflict = await compactContinuation.runCompactContinuation({ filePath: fixture.filePath }, liveDrift);
     expect(conflict.ok).toBe(false);
     if (conflict.ok) return;
     expect(conflict.error.code).toBe("compact_continuation_attempt_conflict");
@@ -1122,7 +1130,7 @@ describe("LIM-61 compact-continuation runtime", () => {
         identity.value.continuation.kind === "pending_correlated_tool_result"
           ? {
               kind: "pending_correlated_tool_result",
-              toolCallId: identity.value.continuation.toolCallId,
+              protectedToolCallIds: identity.value.continuation.protectedToolCallIds,
               correlationValid: true,
             }
           : identity.value.continuation,
@@ -1151,10 +1159,7 @@ describe("LIM-61 compact-continuation runtime", () => {
         domain: "source_labelled_estimate",
       },
     });
-    const recovered = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      recoveredFacts,
-    );
+    const recovered = await compactContinuation.runCompactContinuation({ filePath: fixture.filePath }, recoveredFacts);
     expect(recovered.ok).toBe(true);
     if (!recovered.ok) return;
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
@@ -1423,7 +1428,7 @@ describe("LIM-61 compact-continuation runtime", () => {
       { filePath: fixture.filePath },
       baseFacts({
         attemptId: "identity-1",
-        continuation: { kind: "pending_correlated_tool_result", toolCallId: "x", correlationValid: true },
+        continuation: { kind: "pending_correlated_tool_result", protectedToolCallIds: ["x"], correlationValid: true },
       }),
     );
     expect(kindDrift.ok).toBe(false);

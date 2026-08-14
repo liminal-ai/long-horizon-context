@@ -1,9 +1,14 @@
 /**
- * Durable proof of a pending correlated tool call/result pair in the open tail.
+ * Durable proof of pending correlated tool call/result pairs in the open tail.
  * Host correlationValid is necessary but not sufficient.
+ *
+ * Contract 2.0.0: prove a sorted unique non-empty set of protected IDs. Each ID
+ * must have exactly one live call and result, ordered in the same current open
+ * turn after the compact point.
  */
 
 import type { DatabaseSync } from "node:sqlite";
+import { normalizeProtectedToolCallIds } from "../../shared-tech/compact-continuation/index.js";
 import { readOpenTurnIds } from "./store.js";
 
 export type ToolPairProof =
@@ -31,8 +36,26 @@ export type ToolPairProof =
         | "wrong_turn"
         | "not_in_open_tail"
         | "unreadable_payload"
-        | "tool_call_id_mismatch";
+        | "tool_call_id_mismatch"
+        | "empty_protected_set"
+        | "duplicate_protected_id";
       detail: string;
+    };
+
+export type ProtectedToolPairSetProof =
+  | {
+      ok: true;
+      protectedToolCallIds: string[];
+      pairs: Array<Extract<ToolPairProof, { ok: true }>>;
+      /** Earliest protected tool_result source_event_order. */
+      earliestProtectedResultOrder: number;
+      turnId: string;
+    }
+  | {
+      ok: false;
+      reason: Extract<ToolPairProof, { ok: false }>["reason"];
+      detail: string;
+      failedToolCallId?: string;
     };
 
 /**
@@ -145,7 +168,6 @@ export function provePendingToolPair(db: DatabaseSync, toolCallId: string): Tool
     resultContent = parsed.content;
     const callParsed = JSON.parse(call.content) as { toolCallId?: unknown };
     if (callParsed.toolCallId !== toolCallId) {
-      // json_extract matched the row, but payload object disagrees (corrupt block).
       return {
         ok: false,
         reason: "tool_call_id_mismatch",
@@ -173,5 +195,70 @@ export function provePendingToolPair(db: DatabaseSync, toolCallId: string): Tool
     resultEventOrder: resultOrder,
     turnId,
     resultContent,
+  };
+}
+
+/**
+ * Prove the full protected set: sorted unique non-empty; every id has exactly
+ * one live call/result pair in the same open turn after the compact point.
+ */
+export function proveProtectedToolPairSet(
+  db: DatabaseSync,
+  protectedToolCallIds: readonly string[],
+): ProtectedToolPairSetProof {
+  const normalized = normalizeProtectedToolCallIds(protectedToolCallIds);
+  if (normalized.length === 0) {
+    return { ok: false, reason: "empty_protected_set", detail: "protectedToolCallIds must be non-empty" };
+  }
+  if (
+    normalized.length !== new Set(protectedToolCallIds.filter((id) => typeof id === "string" && id.length > 0)).size
+  ) {
+    // normalize already unique; detect input duplicates that differed only by empties.
+  }
+  if (protectedToolCallIds.length !== normalized.length) {
+    // Either empties or duplicates in input.
+    const nonEmpty = protectedToolCallIds.filter((id) => typeof id === "string" && id.length > 0);
+    if (nonEmpty.length !== new Set(nonEmpty).size) {
+      return { ok: false, reason: "duplicate_protected_id", detail: "protectedToolCallIds contains duplicates" };
+    }
+  }
+
+  const pairs: Array<Extract<ToolPairProof, { ok: true }>> = [];
+  for (const id of normalized) {
+    const proof = provePendingToolPair(db, id);
+    if (!proof.ok) {
+      return {
+        ok: false,
+        reason: proof.reason,
+        detail: proof.detail,
+        failedToolCallId: id,
+      };
+    }
+    pairs.push(proof);
+  }
+
+  const turnId = pairs[0]!.turnId;
+  for (const p of pairs) {
+    if (p.turnId !== turnId) {
+      return {
+        ok: false,
+        reason: "wrong_turn",
+        detail: `protected pairs span multiple turns (${turnId} vs ${p.turnId})`,
+        failedToolCallId: p.toolCallId,
+      };
+    }
+  }
+
+  let earliest = pairs[0]!.resultEventOrder;
+  for (const p of pairs) {
+    if (p.resultEventOrder < earliest) earliest = p.resultEventOrder;
+  }
+
+  return {
+    ok: true,
+    protectedToolCallIds: normalized,
+    pairs,
+    earliestProtectedResultOrder: earliest,
+    turnId,
   };
 }

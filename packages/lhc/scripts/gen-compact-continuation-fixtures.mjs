@@ -14,12 +14,14 @@ const mod = await import(join(pkgRoot, "src/shared-tech/compact-continuation/ind
 const { COMPACT_CONTINUATION_CONTRACT_VERSION, decideCompactContinuation } = mod;
 
 const V = COMPACT_CONTINUATION_CONTRACT_VERSION;
-const baseDir = join(pkgRoot, "fixtures/compact-continuation/v1");
+const baseDir = join(pkgRoot, "fixtures/compact-continuation/v2");
 
 const basePolicy = {
   upperTriggerTokens: 100_000,
   lowerTargetTokens: 40_000,
   hostCapability: "full_state_machine",
+  safeRunwayThresholdTokens: 120_000,
+  safeRunwayThresholdSource: "host_safe_runway",
 };
 
 const goodSeam = {
@@ -46,6 +48,19 @@ const goodMaterial = {
   installSucceeds: true,
   usefulReduction: true,
   canProduceValidProviderRequest: true,
+  projectedPressureTokens: 107_000,
+  renderedSavingsTokens: 0,
+  renderedSavingsSource: "lhc_rendered_history_estimate",
+  renderedSavingsDomain: "source_labelled_estimate",
+  safeRunwayThresholdTokens: 120_000,
+  safeRunwayThresholdSource: "host_safe_runway",
+  projectedPressureSafe: true,
+  protectedEscalationApplied: false,
+  visibilityBoundaryBefore: null,
+  visibilityBoundaryAfter: null,
+  compactPointAtInstall: null,
+  maximalPruneInsufficient: false,
+  hostValidationStatus: "not_required",
 };
 
 const providerAbove = {
@@ -78,7 +93,7 @@ function appliedBoundary(continuationTurnId, forcedThisSeam, markerAlreadyPersis
 
 function makeInput(over = {}) {
   return {
-    contractVersion: V,
+    contractVersion: over.contractVersion ?? V,
     seam: { ...goodSeam, ...(over.seam || {}) },
     providerUsage: over.providerUsage ?? providerAbove,
     postMeasurementEstimate: over.postMeasurementEstimate ?? est(0),
@@ -139,7 +154,7 @@ const cases = [
       postMeasurementEstimate: est(2_000),
       continuation: {
         kind: "pending_correlated_tool_result",
-        toolCallId: "call-42",
+        protectedToolCallIds: ["call-42"],
         correlationValid: true,
       },
     }),
@@ -202,7 +217,7 @@ const cases = [
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
-        toolCallId: "call-bad",
+        protectedToolCallIds: ["call-bad"],
         correlationValid: false,
       },
     }),
@@ -223,7 +238,7 @@ const cases = [
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
-        toolCallId: "call-42",
+        protectedToolCallIds: ["call-42"],
         correlationValid: true,
       },
       compactMaterial: { ...goodMaterial, compactStructurallyValid: false },
@@ -259,7 +274,7 @@ const cases = [
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
-        toolCallId: "call-42",
+        protectedToolCallIds: ["call-42"],
         correlationValid: true,
       },
       compactMaterial: { ...goodMaterial, installSucceeds: false },
@@ -378,7 +393,7 @@ const cases = [
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
-        toolCallId: "call-42",
+        protectedToolCallIds: ["call-42"],
         correlationValid: true,
       },
       compactMaterial: {
@@ -437,16 +452,26 @@ const cases = [
     }),
   },
   {
-    name: "pending_boundary_illegal_kind_tool",
-    coverage: ["invalid_pending_boundary_continuation"],
-    description: "forcedContinuationBoundary with pending tool result is invalid continuation state.",
+    name: "pending_boundary_protected_tool_escalation",
+    coverage: ["protected_escalation", "pending_tool_result_continuation"],
+    description: "v2: forced boundary + protected tool set is protected escalation (legal).",
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
-        toolCallId: "call-42",
+        protectedToolCallIds: ["call-42"],
         correlationValid: true,
       },
       forcedContinuationBoundary: appliedBoundary("t2", false),
+      compactMaterial: {
+        protectedEscalationApplied: true,
+        hostValidationStatus: "awaiting",
+        projectedPressureSafe: true,
+        projectedPressureTokens: 80_000,
+        renderedSavingsTokens: 20_000,
+        visibilityBoundaryBefore: 10,
+        visibilityBoundaryAfter: 40,
+        compactPointAtInstall: 5,
+      },
     }),
   },
   {
@@ -528,6 +553,206 @@ const cases = [
       invariants: { ...goodInvariants, writerClaim: "lhc", captureComplete: false },
     }),
   },
+  // ── LIM-67 v2.0.0 ────────────────────────────────────────────────────────
+  {
+    name: "preserve_sufficient_safe_runway",
+    coverage: ["pending_tool_result_continuation", "preserve_sufficient", "projected_pressure_formula"],
+    description:
+      "Pending preserve with useful reduction and projected pressure below safe runway installs normal preserve.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-42"],
+        correlationValid: true,
+      },
+      postMeasurementEstimate: est(2000),
+      compactMaterial: {
+        usefulReduction: true,
+        projectedPressureTokens: 80_000,
+        renderedSavingsTokens: 27_000,
+        renderedSavingsSource: "lhc_rendered_history_estimate",
+        renderedSavingsDomain: "source_labelled_estimate",
+        safeRunwayThresholdTokens: 100_000,
+        safeRunwayThresholdSource: "host_safe_runway",
+        projectedPressureSafe: true,
+        protectedEscalationApplied: false,
+        hostValidationStatus: "not_required",
+      },
+    }),
+  },
+  {
+    name: "no_reduction_escalation_material",
+    coverage: ["pending_tool_result_continuation", "no_reduction_escalation", "protected_escalation"],
+    description:
+      "Escalated pending path with no useful reduction after protected boundary still installs (no_reduction).",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-a", "call-b"],
+        correlationValid: true,
+      },
+      forcedContinuationBoundary: appliedBoundary("t3", true, false),
+      compactMaterial: {
+        usefulReduction: false,
+        protectedEscalationApplied: true,
+        projectedPressureTokens: 90_000,
+        renderedSavingsTokens: 15_000,
+        renderedSavingsSource: "lhc_rendered_history_estimate",
+        renderedSavingsDomain: "source_labelled_estimate",
+        safeRunwayThresholdTokens: 100_000,
+        safeRunwayThresholdSource: "host_safe_runway",
+        projectedPressureSafe: true,
+        visibilityBoundaryBefore: 10,
+        visibilityBoundaryAfter: 40,
+        compactPointAtInstall: 5,
+        hostValidationStatus: "awaiting",
+      },
+    }),
+  },
+  {
+    name: "unsafe_runway_refuse",
+    coverage: ["unsafe_runway", "maximal_prune_unsafe", "projected_pressure_formula"],
+    description: "Maximal eligible pruning still leaves projected pressure unsafe — refuse without install.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-42"],
+        correlationValid: true,
+      },
+      compactMaterial: {
+        compactStructurallyValid: true,
+        canProduceValidProviderRequest: true,
+        installSucceeds: false,
+        usefulReduction: false,
+        projectedPressureTokens: 150_000,
+        renderedSavingsTokens: 5_000,
+        renderedSavingsSource: "lhc_rendered_history_estimate",
+        renderedSavingsDomain: "source_labelled_estimate",
+        safeRunwayThresholdTokens: 100_000,
+        safeRunwayThresholdSource: "host_safe_runway",
+        projectedPressureSafe: false,
+        maximalPruneInsufficient: true,
+        protectedEscalationApplied: false,
+        hostValidationStatus: "not_required",
+      },
+    }),
+  },
+  {
+    name: "parallel_protected_ids",
+    coverage: ["parallel_protected_ids", "pending_tool_result_continuation"],
+    description: "Multiple sorted protected IDs preserved on normal preserve path.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-a", "call-b", "call-c"],
+        correlationValid: true,
+      },
+      compactMaterial: {
+        projectedPressureTokens: 70_000,
+        renderedSavingsTokens: 40_000,
+        renderedSavingsSource: "lhc_rendered_history_estimate",
+        renderedSavingsDomain: "source_labelled_estimate",
+        safeRunwayThresholdTokens: 100_000,
+        safeRunwayThresholdSource: "host_safe_runway",
+        projectedPressureSafe: true,
+      },
+    }),
+  },
+  {
+    name: "protected_ids_empty_reject",
+    coverage: ["invalid_protected_pairs"],
+    description: "Empty protectedToolCallIds is input-invalid / fails closed.",
+    inputValidation: "reject",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: [],
+        correlationValid: true,
+      },
+    }),
+  },
+  {
+    name: "legacy_toolCallId_reject",
+    coverage: ["no_dual_field_shim"],
+    description: "Legacy single toolCallId field is rejected (no dual-field shim).",
+    inputValidation: "reject",
+    input: {
+      contractVersion: V,
+      seam: { ...goodSeam },
+      providerUsage: providerAbove,
+      postMeasurementEstimate: est(0),
+      policy: { ...basePolicy },
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        toolCallId: "call-legacy",
+        correlationValid: true,
+      },
+      invariants: { ...goodInvariants },
+      forcedContinuationBoundary: { applied: false },
+      compactMaterial: { ...goodMaterial },
+    },
+  },
+  {
+    name: "unsupported_contract_version_1",
+    coverage: ["unsupported_contract_version"],
+    description: "Contract 1.0.0 inputs fail closed under 2.0.0 oracle.",
+    input: makeInput({
+      contractVersion: "1.0.0",
+      continuation: { kind: "active_non_tool" },
+    }),
+  },
+  {
+    name: "lower_target_miss_safe_runway",
+    coverage: ["lower_target_missed", "safe_runway_not_lower_target"],
+    description: "Lower target miss is not a refuse when projected pressure is under safe runway.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-42"],
+        correlationValid: true,
+      },
+      compactMaterial: {
+        lowerTargetMet: false,
+        usefulReduction: true,
+        projectedPressureTokens: 90_000,
+        renderedSavingsTokens: 20_000,
+        renderedSavingsSource: "lhc_rendered_history_estimate",
+        renderedSavingsDomain: "source_labelled_estimate",
+        safeRunwayThresholdTokens: 100_000,
+        safeRunwayThresholdSource: "host_safe_runway",
+        projectedPressureSafe: true,
+      },
+    }),
+  },
+  {
+    name: "host_validation_failed_after_core_install",
+    coverage: ["host_validation_failed", "protected_escalation"],
+    description: "Host validation failure after successful core install refuses without rolling back core install.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-a", "call-b"],
+        correlationValid: true,
+      },
+      forcedContinuationBoundary: appliedBoundary("t4", true, false),
+      compactMaterial: {
+        installSucceeds: true,
+        usefulReduction: true,
+        protectedEscalationApplied: true,
+        projectedPressureTokens: 80_000,
+        renderedSavingsTokens: 30_000,
+        renderedSavingsSource: "lhc_rendered_history_estimate",
+        renderedSavingsDomain: "source_labelled_estimate",
+        safeRunwayThresholdTokens: 100_000,
+        safeRunwayThresholdSource: "host_safe_runway",
+        projectedPressureSafe: true,
+        visibilityBoundaryBefore: 10,
+        visibilityBoundaryAfter: 50,
+        compactPointAtInstall: 8,
+        hostValidationStatus: "failed",
+      },
+    }),
+  },
 ];
 
 mkdirSync(join(baseDir, "cases"), { recursive: true });
@@ -543,7 +768,71 @@ for (const c of cases) {
       `case ${c.name}: inputValidation must be "accept" | "reject", got ${JSON.stringify(inputValidation)}`,
     );
   }
-  const expected = decideCompactContinuation(c.input);
+  let expected;
+  try {
+    expected = decideCompactContinuation(c.input);
+  } catch (err) {
+    if (inputValidation !== INPUT_VALIDATION.reject) throw err;
+    // Placeholder expected for pure validation-reject fixtures (not parity-compared).
+    expected = {
+      outcome: "refuse",
+      terminalState: "terminal_refuse",
+      transitionPath: ["idle", "terminal_refuse"],
+      effects: [],
+      receipt: {
+        contractVersion: V,
+        outcome: "refuse",
+        reasonCode: "input_rejected",
+        turnEndReason: null,
+        pressure: {
+          providerBaseTokens: null,
+          providerBaseDomain: "provider_reported_input",
+          estimateTokens: 0,
+          estimateSource: "none",
+          estimateDomain: "source_labelled_estimate",
+          nextRequestPressureTokens: null,
+          upperTriggerTokens: 0,
+          atOrAboveTrigger: null,
+          projectedPressureTokens: null,
+          renderedSavingsTokens: null,
+          renderedSavingsSource: null,
+          renderedSavingsDomain: null,
+          safeRunwayThresholdTokens: null,
+          safeRunwayThresholdSource: null,
+          projectedPressureSafe: null,
+        },
+        lowerTarget: { domain: "lhc_rendered_history", tokens: 0, met: null, isSuccessGate: false },
+        fidelity: "full",
+        degradationReasons: [],
+        continuation: { opened: false, markerServed: false, sameAgenticTurnPreserved: true },
+        reliefPath: "none",
+        protectedToolCallIds: [],
+        effects: [],
+        residual: {
+          writerReleased: true,
+          priorServingViewIntact: true,
+          forcedContinuationBoundaryApplied: false,
+          continuationTurnOpened: false,
+          continuationTurnId: null,
+          markerPersisted: false,
+          markerServed: false,
+          originalAgenticTurnStillOpen: true,
+          nextProviderRequestAllowed: false,
+          reliefPath: "none",
+          protectedToolCallIds: [],
+          visibilityBoundaryBefore: null,
+          visibilityBoundaryAfter: null,
+          hostValidationStatus: "not_required",
+          coreInstallRetainedPendingHostValidation: false,
+        },
+        refused: true,
+        refuseCode: "unsupported_contract_version",
+        skipped: false,
+        skipCode: null,
+        transitionPath: ["idle", "terminal_refuse"],
+      },
+    };
+  }
   const body = {
     name: c.name,
     contractVersion: V,
@@ -596,6 +885,18 @@ const requiredCoverage = [
   "marker_residual_state",
   "settled_seam_lhc_claim_early_refuse",
   "preserve_tool_on_install_failure",
+  "preserve_sufficient",
+  "no_reduction_escalation",
+  "protected_escalation",
+  "unsafe_runway",
+  "maximal_prune_unsafe",
+  "projected_pressure_formula",
+  "parallel_protected_ids",
+  "invalid_protected_pairs",
+  "no_dual_field_shim",
+  "unsupported_contract_version",
+  "safe_runway_not_lower_target",
+  "host_validation_failed",
 ];
 
 const manifest = {

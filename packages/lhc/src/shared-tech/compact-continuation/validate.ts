@@ -12,6 +12,7 @@ import {
   COMPACT_CONTINUATION_MARKER_KIND,
   COMPACT_CONTINUATION_OUTCOME_KINDS,
   COMPACT_CONTINUATION_REFUSE_CODES,
+  COMPACT_CONTINUATION_RELIEF_PATHS,
   COMPACT_CONTINUATION_SKIP_CODES,
   COMPACT_CONTINUATION_STATES,
   COMPACT_CONTINUATION_WRITER_CLAIMS,
@@ -22,6 +23,7 @@ import {
   type CompactContinuationOutcomeKind,
   type CompactContinuationState,
   compactContinuationMarkerIdempotencyKey,
+  normalizeProtectedToolCallIds,
 } from "./contract.js";
 
 export type ValidationIssue = {
@@ -78,7 +80,10 @@ const EFFECT_TYPES = new Set([
   "release_writer",
   "force_turn_end",
   "compact",
-  "preserve_tool_pair_verbatim",
+  "preserve_tool_pairs_verbatim",
+  "advance_visibility_boundary",
+  "await_host_validation",
+  "record_host_validation",
   "insert_continuation_marker",
   "install_serving_view",
   "record_receipt",
@@ -86,6 +91,8 @@ const EFFECT_TYPES = new Set([
   "skip_seam",
   "refuse",
 ]);
+const RELIEF_SET = new Set<string>(COMPACT_CONTINUATION_RELIEF_PATHS);
+const HOST_VALIDATION_SET = new Set(["not_required", "awaiting", "ok", "failed"]);
 
 function requireBool(obj: Record<string, unknown>, key: string, path: string, issues: ValidationIssue[]): void {
   if (!isBool(obj[key])) {
@@ -201,7 +208,18 @@ function validatePolicy(raw: unknown, issues: ValidationIssue[]): void {
     issues.push(issue("policy", "required object"));
     return;
   }
-  rejectUnknownKeys(raw, ["upperTriggerTokens", "lowerTargetTokens", "hostCapability"], "policy", issues);
+  rejectUnknownKeys(
+    raw,
+    [
+      "upperTriggerTokens",
+      "lowerTargetTokens",
+      "hostCapability",
+      "safeRunwayThresholdTokens",
+      "safeRunwayThresholdSource",
+    ],
+    "policy",
+    issues,
+  );
   if (!isSafeNonNegInt(raw["upperTriggerTokens"])) {
     issues.push(issue("policy.upperTriggerTokens", "must be a non-negative safe integer"));
   }
@@ -210,6 +228,14 @@ function validatePolicy(raw: unknown, issues: ValidationIssue[]): void {
   }
   if (typeof raw["hostCapability"] !== "string" || !CAP_SET.has(raw["hostCapability"])) {
     issues.push(issue("policy.hostCapability", "must be full_state_machine or capability_limited"));
+  }
+  if (raw["safeRunwayThresholdTokens"] !== undefined && !isSafeNonNegInt(raw["safeRunwayThresholdTokens"])) {
+    issues.push(issue("policy.safeRunwayThresholdTokens", "must be a non-negative safe integer when present"));
+  }
+  if (raw["safeRunwayThresholdSource"] !== undefined) {
+    if (typeof raw["safeRunwayThresholdSource"] !== "string" || raw["safeRunwayThresholdSource"].length === 0) {
+      issues.push(issue("policy.safeRunwayThresholdSource", "must be a non-empty string when present"));
+    }
   }
 }
 
@@ -226,11 +252,38 @@ function validateContinuation(raw: unknown, issues: ValidationIssue[]): void {
   if (kind === "none" || kind === "active_non_tool") {
     rejectUnknownKeys(raw, ["kind"], "continuation", issues);
   } else {
-    rejectUnknownKeys(raw, ["kind", "toolCallId", "correlationValid"], "continuation", issues);
+    rejectUnknownKeys(raw, ["kind", "protectedToolCallIds", "correlationValid"], "continuation", issues);
   }
   if (kind === "pending_correlated_tool_result") {
-    if (typeof raw["toolCallId"] !== "string" || raw["toolCallId"].length === 0) {
-      issues.push(issue("continuation.toolCallId", "required non-empty string"));
+    // Reject dual-field shim / legacy single id.
+    if ("toolCallId" in raw) {
+      issues.push(issue("continuation.toolCallId", "removed in contract 2.0.0; use protectedToolCallIds"));
+    }
+    const ids = raw["protectedToolCallIds"];
+    if (!Array.isArray(ids) || ids.length === 0) {
+      issues.push(issue("continuation.protectedToolCallIds", "required non-empty string array"));
+    } else {
+      const seen = new Set<string>();
+      let prev: string | null = null;
+      for (let i = 0; i < ids.length; i++) {
+        const id = ids[i];
+        if (typeof id !== "string" || id.length === 0) {
+          issues.push(issue(`continuation.protectedToolCallIds[${i}]`, "must be non-empty string"));
+          continue;
+        }
+        if (seen.has(id)) {
+          issues.push(issue(`continuation.protectedToolCallIds[${i}]`, "duplicate id"));
+        }
+        seen.add(id);
+        if (prev !== null && id < prev) {
+          issues.push(issue("continuation.protectedToolCallIds", "must be sorted ascending"));
+        }
+        prev = id;
+      }
+      const normalized = normalizeProtectedToolCallIds(ids.filter((x): x is string => typeof x === "string"));
+      if (normalized.length !== ids.length) {
+        issues.push(issue("continuation.protectedToolCallIds", "must be unique non-empty strings"));
+      }
     }
     if (!isBool(raw["correlationValid"])) {
       issues.push(issue("continuation.correlationValid", "must be a boolean"));
@@ -314,6 +367,19 @@ function validateMaterial(raw: unknown, issues: ValidationIssue[]): void {
       "installSucceeds",
       "usefulReduction",
       "canProduceValidProviderRequest",
+      "projectedPressureTokens",
+      "renderedSavingsTokens",
+      "renderedSavingsSource",
+      "renderedSavingsDomain",
+      "safeRunwayThresholdTokens",
+      "safeRunwayThresholdSource",
+      "projectedPressureSafe",
+      "protectedEscalationApplied",
+      "visibilityBoundaryBefore",
+      "visibilityBoundaryAfter",
+      "compactPointAtInstall",
+      "maximalPruneInsufficient",
+      "hostValidationStatus",
     ],
     "compactMaterial",
     issues,
@@ -325,8 +391,44 @@ function validateMaterial(raw: unknown, issues: ValidationIssue[]): void {
     "installSucceeds",
     "usefulReduction",
     "canProduceValidProviderRequest",
+    "protectedEscalationApplied",
+    "maximalPruneInsufficient",
   ] as const) {
     requireBool(raw, k, "compactMaterial", issues);
+  }
+  if (!(raw["projectedPressureTokens"] === null || isSafeNonNegInt(raw["projectedPressureTokens"]))) {
+    issues.push(issue("compactMaterial.projectedPressureTokens", "must be null or non-negative safe integer"));
+  }
+  if (!isSafeNonNegInt(raw["renderedSavingsTokens"])) {
+    issues.push(issue("compactMaterial.renderedSavingsTokens", "must be a non-negative safe integer"));
+  }
+  if (typeof raw["renderedSavingsSource"] !== "string" || raw["renderedSavingsSource"].length === 0) {
+    issues.push(issue("compactMaterial.renderedSavingsSource", "must be a non-empty string"));
+  }
+  if (raw["renderedSavingsDomain"] !== "source_labelled_estimate") {
+    issues.push(issue("compactMaterial.renderedSavingsDomain", 'must be "source_labelled_estimate"'));
+  }
+  if (!(raw["safeRunwayThresholdTokens"] === null || isSafeNonNegInt(raw["safeRunwayThresholdTokens"]))) {
+    issues.push(issue("compactMaterial.safeRunwayThresholdTokens", "must be null or non-negative safe integer"));
+  }
+  if (
+    !(
+      raw["safeRunwayThresholdSource"] === null ||
+      (typeof raw["safeRunwayThresholdSource"] === "string" && raw["safeRunwayThresholdSource"].length > 0)
+    )
+  ) {
+    issues.push(issue("compactMaterial.safeRunwayThresholdSource", "must be null or non-empty string"));
+  }
+  if (!(raw["projectedPressureSafe"] === null || isBool(raw["projectedPressureSafe"]))) {
+    issues.push(issue("compactMaterial.projectedPressureSafe", "must be boolean or null"));
+  }
+  for (const k of ["visibilityBoundaryBefore", "visibilityBoundaryAfter", "compactPointAtInstall"] as const) {
+    if (!(raw[k] === null || isSafeNonNegInt(raw[k]))) {
+      issues.push(issue(`compactMaterial.${k}`, "must be null or non-negative safe integer"));
+    }
+  }
+  if (typeof raw["hostValidationStatus"] !== "string" || !HOST_VALIDATION_SET.has(raw["hostValidationStatus"])) {
+    issues.push(issue("compactMaterial.hostValidationStatus", "must be not_required|awaiting|ok|failed"));
   }
 }
 
@@ -462,12 +564,43 @@ function validateEffect(effect: unknown, path: string, issues: ValidationIssue[]
       issues.push(issue(`${path}.durable`, "must be true"));
     }
   }
-  if (type === "preserve_tool_pair_verbatim") {
-    if (typeof effect["toolCallId"] !== "string" || effect["toolCallId"].length === 0) {
-      issues.push(issue(`${path}.toolCallId`, "required non-empty string"));
+  if (type === "preserve_tool_pairs_verbatim") {
+    const ids = effect["protectedToolCallIds"];
+    if (!Array.isArray(ids) || ids.length === 0) {
+      issues.push(issue(`${path}.protectedToolCallIds`, "required non-empty string array"));
+    } else {
+      for (let i = 0; i < ids.length; i++) {
+        if (typeof ids[i] !== "string" || ids[i].length === 0) {
+          issues.push(issue(`${path}.protectedToolCallIds[${i}]`, "must be non-empty string"));
+        }
+      }
     }
     if (effect["location"] !== "open_turn_tail") {
       issues.push(issue(`${path}.location`, 'must be "open_turn_tail"'));
+    }
+  }
+  if (type === "advance_visibility_boundary") {
+    for (const k of ["previousBoundary", "newBoundary", "compactPoint"] as const) {
+      if (!isSafeNonNegInt(effect[k])) {
+        issues.push(issue(`${path}.${k}`, "must be a non-negative safe integer"));
+      }
+    }
+    if (
+      isSafeNonNegInt(effect["previousBoundary"]) &&
+      isSafeNonNegInt(effect["newBoundary"]) &&
+      effect["newBoundary"] < effect["previousBoundary"]
+    ) {
+      issues.push(issue(`${path}.newBoundary`, "must be >= previousBoundary (monotonic)"));
+    }
+  }
+  if (type === "await_host_validation") {
+    if (effect["attemptIdScope"] !== "current_attempt") {
+      issues.push(issue(`${path}.attemptIdScope`, 'must be "current_attempt"'));
+    }
+  }
+  if (type === "record_host_validation") {
+    if (effect["result"] !== "ok" && effect["result"] !== "failed") {
+      issues.push(issue(`${path}.result`, 'must be "ok" or "failed"'));
     }
   }
   if (type === "skip_seam") {
@@ -496,8 +629,23 @@ function validateResidual(raw: unknown, issues: ValidationIssue[]): void {
     "markerServed",
     "originalAgenticTurnStillOpen",
     "nextProviderRequestAllowed",
+    "coreInstallRetainedPendingHostValidation",
   ] as const) {
     requireBool(raw, k, "residual", issues);
+  }
+  if (typeof raw["reliefPath"] !== "string" || !RELIEF_SET.has(raw["reliefPath"])) {
+    issues.push(issue("residual.reliefPath", "unknown relief path"));
+  }
+  if (!Array.isArray(raw["protectedToolCallIds"])) {
+    issues.push(issue("residual.protectedToolCallIds", "must be an array"));
+  }
+  if (typeof raw["hostValidationStatus"] !== "string" || !HOST_VALIDATION_SET.has(raw["hostValidationStatus"])) {
+    issues.push(issue("residual.hostValidationStatus", "must be not_required|awaiting|ok|failed"));
+  }
+  for (const k of ["visibilityBoundaryBefore", "visibilityBoundaryAfter"] as const) {
+    if (!(raw[k] === null || isSafeNonNegInt(raw[k]))) {
+      issues.push(issue(`residual.${k}`, "must be null or non-negative safe integer"));
+    }
   }
   if (raw["writerReleased"] !== true) {
     issues.push(issue("residual.writerReleased", "terminal receipts must release the writer"));
@@ -632,7 +780,7 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
     const types = raw["effects"].map((e) => (isObject(e) ? e["type"] : null));
     const hasForce = types.includes("force_turn_end");
     const hasMarker = types.includes("insert_continuation_marker");
-    const hasPreserve = types.includes("preserve_tool_pair_verbatim");
+    const hasPreserve = types.includes("preserve_tool_pairs_verbatim");
     const hasInstall = types.includes("install_serving_view");
     const hasClaim = types.includes("claim_writer");
     const hasRelease = types.includes("release_writer");
@@ -663,15 +811,20 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
       }
     }
 
-    // Mutual exclusions: preserve vs marker / force.
-    if (hasPreserve && hasMarker) {
+    // Mutual exclusions: ordinary preserve vs marker/force.
+    // Contract 2.0.0 protected escalation intentionally combines force + marker
+    // + preserve_tool_pairs_verbatim (and optional boundary advance).
+    const hasAdvance = types.includes("advance_visibility_boundary");
+    const protectedEscalationEffects = hasPreserve && (hasForce || hasMarker || hasAdvance);
+    if (hasPreserve && hasMarker && !protectedEscalationEffects) {
       issues.push(issue("effects", "preserve_tool and continuation marker are mutually exclusive"));
     }
-    if (hasPreserve && hasForce) {
+    if (hasPreserve && hasForce && !protectedEscalationEffects) {
       issues.push(issue("effects", "preserve_tool path must not force turn_end"));
     }
-    if (hasForce && hasPreserve) {
-      issues.push(issue("effects", "continue-turn path must not preserve tool pair"));
+    // When preserve pairs with force/marker it is protected escalation — allowed.
+    if (hasPreserve && hasForce && !hasMarker && hasAdvance) {
+      // force without marker is incomplete escalation; still allow residual refuse paths.
     }
 
     // force_turn_end implies opensContinuationTurn semantics (no separate open effect).

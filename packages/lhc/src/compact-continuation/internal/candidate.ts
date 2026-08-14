@@ -4,7 +4,6 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import type { CompactMaterialFacts } from "../../shared-tech/compact-continuation/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { PreparedCompact } from "../../thread-view/index.js";
 import { assembleView } from "../../thread-view/internal/assemble.js";
@@ -24,7 +23,13 @@ export type CandidateAssembly = {
   candidateTokens: number;
   currentServedTokens: number;
   structuralIssues: string[];
-  material: Omit<CompactMaterialFacts, "installSucceeds">;
+  material: {
+    derivationsMissingOrFailed: boolean;
+    lowerTargetMet: boolean;
+    compactStructurallyValid: boolean;
+    usefulReduction: boolean;
+    canProduceValidProviderRequest: boolean;
+  };
 };
 
 /**
@@ -35,9 +40,11 @@ export function assembleCandidateFromPrepared(
   db: DatabaseSync,
   prepared: PreparedCompact,
   lowerTargetTokens: number,
+  opts: { boundaryPositionOverride?: number } = {},
 ): CandidateAssembly {
   const compactPoint = prepared.selection.compactPoint;
-  const boundaryPosition = readBoundaryPosition(db);
+  const boundaryPosition =
+    opts.boundaryPositionOverride !== undefined ? opts.boundaryPositionOverride : readBoundaryPosition(db);
   const tailRows = readTailMessages(db, compactPoint);
   const renderCtx = {
     boundaryPosition,

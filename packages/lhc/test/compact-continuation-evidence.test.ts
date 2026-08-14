@@ -68,6 +68,8 @@ function baseFacts(overrides: Partial<CompactContinuationHostFacts> = {}): Compa
       upperTriggerTokens: 100000,
       lowerTargetTokens: 400,
       hostCapability: "full_state_machine",
+      safeRunwayThresholdTokens: 200000,
+      safeRunwayThresholdSource: "host_safe_runway",
     },
     continuation: overrides.continuation ?? { kind: "active_non_tool" },
     writerClaim: overrides.writerClaim ?? "none",
@@ -227,7 +229,7 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
         attemptId: `pair-${name}`,
         continuation: {
           kind: "pending_correlated_tool_result",
-          toolCallId,
+          protectedToolCallIds: [toolCallId],
           correlationValid: true,
         },
       }),
@@ -530,7 +532,7 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
         attemptId: "pair-valid-above",
         continuation: {
           kind: "pending_correlated_tool_result",
-          toolCallId: "call-ok-above",
+          protectedToolCallIds: ["call-ok-above"],
           correlationValid: true,
         },
       }),
@@ -1085,13 +1087,13 @@ describe("LIM-61 evidence: closed validation table", () => {
     ],
     [
       "continuation active extra",
-      { ...valid, continuation: { kind: "active_non_tool", toolCallId: "x" } },
-      /must not carry extra fields/,
+      { ...valid, continuation: { kind: "active_non_tool", x: 1 } },
+      /must not carry extra fields|unknown field/,
     ],
     [
       "continuation tool missing fields",
       { ...valid, continuation: { kind: "pending_correlated_tool_result" } },
-      /requires toolCallId and correlationValid/,
+      /protectedToolCallIds/,
     ],
     [
       "compact unknown",
@@ -1314,7 +1316,7 @@ describe("LIM-61 evidence: public export surface", () => {
 });
 
 describe("LIM-61 evidence: schema version current", () => {
-  it("fresh threads are schema v10", async () => {
+  it("fresh threads are schema v11", async () => {
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
@@ -1323,7 +1325,7 @@ describe("LIM-61 evidence: schema version current", () => {
     try {
       const v = Number((db.prepare(`PRAGMA user_version`).get() as { user_version: number | bigint }).user_version);
       expect(v).toBe(CURRENT_THREAD_SCHEMA_VERSION);
-      expect(v).toBe(10);
+      expect(v).toBe(11);
       const idx = db
         .prepare(
           `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_compact_continuation_boundary_one_unresolved'`,

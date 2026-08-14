@@ -215,6 +215,12 @@ export interface ViewReplaceInput {
   gapsJson: string;
   sourceStateJson: string;
   bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
+  /**
+   * Visibility boundary written in the same transaction as the view replace.
+   * Defaults to compactPoint (historical compact reset). Protected-escalation
+   * installs may advance to a higher proposed boundary atomically.
+   */
+  visibilityBoundary?: number;
 }
 
 // Compact's one transaction: delete the singleton view row (the FK cascade
@@ -260,8 +266,12 @@ export function replaceViewSnapshot(
     for (const band of input.bands) {
       insertBand.run(input.viewId, band.band, band.renderedText, band.tokenCount);
     }
+    const boundaryPosition = input.visibilityBoundary !== undefined ? input.visibilityBoundary : input.compactPoint;
+    if (boundaryPosition < input.compactPoint) {
+      throw new Error(`visibility boundary ${boundaryPosition} would land behind compact point ${input.compactPoint}`);
+    }
     db.prepare(`UPDATE view_boundary SET position = ?, updated_at = ? WHERE thread_singleton = 1`).run(
-      input.compactPoint,
+      boundaryPosition,
       input.createdAt,
     );
     db.exec("COMMIT;");

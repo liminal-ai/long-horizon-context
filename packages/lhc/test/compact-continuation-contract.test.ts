@@ -36,7 +36,7 @@ import {
   type WorkContinuation,
 } from "../src/shared-tech/compact-continuation/index.js";
 
-const fixturesRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "compact-continuation", "v1");
+const fixturesRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "compact-continuation", "v2");
 
 /** Closed fixture vocabulary: validateCompactContinuationInput expectation. */
 const INPUT_VALIDATION_VALUES = ["accept", "reject"] as const;
@@ -79,7 +79,77 @@ function loadCase(rel: string): FixtureCase {
   return JSON.parse(readFileSync(join(fixturesRoot, rel), "utf8")) as FixtureCase;
 }
 
+function baseMaterial(over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    derivationsMissingOrFailed: false,
+    lowerTargetMet: true,
+    compactStructurallyValid: true,
+    installSucceeds: true,
+    usefulReduction: true,
+    canProduceValidProviderRequest: true,
+    projectedPressureTokens: 105_000,
+    renderedSavingsTokens: 0,
+    renderedSavingsSource: "lhc_rendered_history_estimate",
+    renderedSavingsDomain: "source_labelled_estimate",
+    safeRunwayThresholdTokens: 120_000,
+    safeRunwayThresholdSource: "host_safe_runway",
+    projectedPressureSafe: true,
+    protectedEscalationApplied: false,
+    visibilityBoundaryBefore: null,
+    visibilityBoundaryAfter: null,
+    compactPointAtInstall: null,
+    maximalPruneInsufficient: false,
+    hostValidationStatus: "not_required",
+    ...over,
+  };
+}
+
 function baseInput(over: Record<string, unknown> = {}): Record<string, unknown> {
+  const seamOver = (over["seam"] as Record<string, unknown> | undefined) ?? {};
+  const policyOver = (over["policy"] as Record<string, unknown> | undefined) ?? {};
+  const invOver = (over["invariants"] as Record<string, unknown> | undefined) ?? {};
+  const matOver = (over["compactMaterial"] as Record<string, unknown> | undefined) ?? {};
+  const estOver = (over["postMeasurementEstimate"] as Record<string, unknown> | undefined) ?? {};
+  const usageOver = over["providerUsage"] as Record<string, unknown> | undefined;
+
+  let providerUsage: Record<string, unknown>;
+  if (usageOver === undefined) {
+    providerUsage = {
+      available: true,
+      inputTokens: 105_000,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      total: 105_000,
+      domain: "provider_reported_input",
+    };
+  } else if (usageOver["available"] === false) {
+    providerUsage = {
+      available: false,
+      reason: usageOver["reason"] ?? "missing",
+      domain: usageOver["domain"] ?? "provider_reported_input",
+    };
+  } else {
+    providerUsage = {
+      available: true,
+      inputTokens: 105_000,
+      cacheCreationTokens: 0,
+      cacheReadTokens: 0,
+      total: 105_000,
+      domain: "provider_reported_input",
+      ...usageOver,
+    };
+  }
+
+  const {
+    seam: _s,
+    policy: _p,
+    invariants: _i,
+    compactMaterial: _m,
+    postMeasurementEstimate: _e,
+    providerUsage: _u,
+    ...rest
+  } = over;
+
   return {
     contractVersion: COMPACT_CONTINUATION_CONTRACT_VERSION,
     seam: {
@@ -90,24 +160,22 @@ function baseInput(over: Record<string, unknown> = {}): Record<string, unknown> 
       insideTransportRetry: false,
       inputEpochAtDecision: 0,
       inputEpochAtApply: 0,
+      ...seamOver,
     },
-    providerUsage: {
-      available: true,
-      inputTokens: 105_000,
-      cacheCreationTokens: 0,
-      cacheReadTokens: 0,
-      total: 105_000,
-      domain: "provider_reported_input",
-    },
+    providerUsage,
     postMeasurementEstimate: {
       tokens: 0,
       source: "lhc_token_estimate",
       domain: "source_labelled_estimate",
+      ...estOver,
     },
     policy: {
       upperTriggerTokens: 100_000,
       lowerTargetTokens: 40_000,
       hostCapability: "full_state_machine",
+      safeRunwayThresholdTokens: 120_000,
+      safeRunwayThresholdSource: "host_safe_runway",
+      ...policyOver,
     },
     continuation: { kind: "active_non_tool" },
     invariants: {
@@ -115,23 +183,17 @@ function baseInput(over: Record<string, unknown> = {}): Record<string, unknown> 
       providerIdentityValid: true,
       singleOpenTurn: true,
       writerClaim: "none",
+      ...invOver,
     },
     forcedContinuationBoundary: { applied: false },
-    compactMaterial: {
-      derivationsMissingOrFailed: false,
-      lowerTargetMet: true,
-      compactStructurallyValid: true,
-      installSucceeds: true,
-      usefulReduction: true,
-      canProduceValidProviderRequest: true,
-    },
-    ...over,
+    compactMaterial: baseMaterial(matOver),
+    ...rest,
   };
 }
 
 describe("compact-continuation contract surface", () => {
   it("pins version and stable strings", () => {
-    expect(COMPACT_CONTINUATION_CONTRACT_VERSION).toBe("1.0.0");
+    expect(COMPACT_CONTINUATION_CONTRACT_VERSION).toBe("2.0.0");
     expect(CONTEXT_COMPACT_CONTINUE_REASON).toBe("context_compact_continue");
     expect(COMPACT_CONTINUATION_MARKER_KIND).toBe("lhc.compact_continuation");
   });
@@ -142,6 +204,9 @@ describe("compact-continuation contract surface", () => {
     expect(COMPACT_CONTINUATION_OUTCOME_KINDS).toContain("compact_preserve_tool");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).toContain("native_writer_conflict");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).toContain("unsupported_contract_version");
+    expect(COMPACT_CONTINUATION_REFUSE_CODES).toContain("unsafe_runway");
+    expect(COMPACT_CONTINUATION_REFUSE_CODES).toContain("host_validation_failed");
+    expect(COMPACT_CONTINUATION_OUTCOME_KINDS).toContain("compact_preserve_tool_escalated");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).toContain("invalid_pending_boundary_continuation");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).not.toContain("transport_retry");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).not.toContain("not_at_settled_seam");
@@ -291,7 +356,7 @@ describe("compact-continuation decision invariants", () => {
       modelVisible: true,
       userChatVisible: false,
     });
-    expect(actual.effects.some((e) => e.type === "preserve_tool_pair_verbatim")).toBe(false);
+    expect(actual.effects.some((e) => e.type === "preserve_tool_pairs_verbatim")).toBe(false);
     expect(actual.receipt.continuation.opened).toBe(true);
     expect(actual.receipt.residual.continuationTurnOpened).toBe(true);
     expect(actual.receipt.residual.markerPersisted).toBe(true);
@@ -309,8 +374,8 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.effects).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          type: "preserve_tool_pair_verbatim",
-          toolCallId: "call-42",
+          type: "preserve_tool_pairs_verbatim",
+          protectedToolCallIds: ["call-42"],
         }),
       ]),
     );
@@ -531,7 +596,7 @@ describe("compact-continuation decision invariants", () => {
         baseInput({
           continuation: {
             kind: "pending_correlated_tool_result",
-            toolCallId: "call-42",
+            protectedToolCallIds: ["call-42"],
             correlationValid: true,
           },
           compactMaterial: {
@@ -635,7 +700,7 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(false);
   });
 
-  it("pending boundary with tool continuation refuses as invalid continuation state", () => {
+  it("pending boundary with tool continuation is legal for protected escalation (v2)", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
@@ -647,13 +712,22 @@ describe("compact-continuation decision invariants", () => {
           },
           continuation: {
             kind: "pending_correlated_tool_result",
-            toolCallId: "call-1",
+            protectedToolCallIds: ["call-42"],
             correlationValid: true,
+          },
+          compactMaterial: {
+            protectedEscalationApplied: true,
+            hostValidationStatus: "awaiting",
+            projectedPressureSafe: true,
+            usefulReduction: true,
+            installSucceeds: true,
           },
         }),
       ),
     );
-    expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
+    expect(actual.receipt.refused).toBe(false);
+    expect(actual.receipt.residual.forcedContinuationBoundaryApplied).toBe(true);
+    expect(actual.receipt.protectedToolCallIds).toEqual(["call-42"]);
   });
 
   it("skip with pending boundary preserves residual boundary truth", () => {
@@ -746,14 +820,15 @@ describe("compact-continuation decision invariants", () => {
     expect(v.ok).toBe(false);
     expect(v.issues.some((i) => i.message.includes("unknown field"))).toBe(true);
 
-    const badUsage = baseInput({
+    const badUsage = {
+      ...baseInput(),
       providerUsage: {
         available: false,
         reason: "missing",
         domain: "provider_reported_input",
         inputTokens: 1,
       },
-    });
+    };
     const v2 = validateCompactContinuationInput(badUsage);
     expect(v2.ok).toBe(false);
   });
@@ -877,13 +952,13 @@ describe("compact-continuation decision invariants", () => {
     expect(types.indexOf("claim_writer")).toBeLessThan(types.indexOf("release_writer"));
   });
 
-  it("install_failed preserve-tool includes preserve_tool_pair_verbatim and keeps turn open", () => {
+  it("install_failed preserve-tool includes preserve_tool_pairs_verbatim and keeps turn open", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
           continuation: {
             kind: "pending_correlated_tool_result",
-            toolCallId: "call-99",
+            protectedToolCallIds: ["call-99"],
             correlationValid: true,
           },
           compactMaterial: {
@@ -900,9 +975,9 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.outcome).toBe("refuse");
     expect(actual.receipt.refuseCode).toBe("install_failed");
     const types = actual.effects.map((e) => e.type);
-    expect(types).toContain("preserve_tool_pair_verbatim");
-    expect(types.indexOf("compact")).toBeLessThan(types.indexOf("preserve_tool_pair_verbatim"));
-    expect(types.indexOf("preserve_tool_pair_verbatim")).toBeLessThan(types.indexOf("refuse"));
+    expect(types).toContain("preserve_tool_pairs_verbatim");
+    expect(types.indexOf("compact")).toBeLessThan(types.indexOf("preserve_tool_pairs_verbatim"));
+    expect(types.indexOf("preserve_tool_pairs_verbatim")).toBeLessThan(types.indexOf("refuse"));
     expect(types).not.toContain("insert_continuation_marker");
     expect(types).not.toContain("install_serving_view");
     expect(actual.receipt.residual).toMatchObject({
@@ -915,8 +990,8 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.effects).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          type: "preserve_tool_pair_verbatim",
-          toolCallId: "call-99",
+          type: "preserve_tool_pairs_verbatim",
+          protectedToolCallIds: ["call-99"],
           location: "open_turn_tail",
         }),
       ]),

@@ -1,0 +1,462 @@
+{
+  "contractVersion": "2.0.0",
+  "contractId": "lhc.compact_continuation",
+  "description": "Table-driven parity fixtures for the compact-continuation state machine (LIM-60). TypeScript and Rust consumers must match expected decisions exactly.",
+  "cases": [
+    {
+      "file": "cases/no_authoritative_provider_usage.json",
+      "name": "no_authoritative_provider_usage",
+      "coverage": [
+        "no_authoritative_provider_usage"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/below_trigger.json",
+      "name": "below_trigger",
+      "coverage": [
+        "below_trigger"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/normal_completion_below_pressure.json",
+      "name": "normal_completion_below_pressure",
+      "coverage": [
+        "normal_completion"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/normal_completion_above_pressure.json",
+      "name": "normal_completion_above_pressure",
+      "coverage": [
+        "normal_completion"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pending_tool_result_above_trigger.json",
+      "name": "pending_tool_result_above_trigger",
+      "coverage": [
+        "pending_tool_result_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/active_non_tool_above_trigger.json",
+      "name": "active_non_tool_above_trigger",
+      "coverage": [
+        "active_non_tool_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/derivation_gaps_degraded_compact.json",
+      "name": "derivation_gaps_degraded_compact",
+      "coverage": [
+        "derivation_gaps_degraded"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/lower_target_missed_valid_request.json",
+      "name": "lower_target_missed_valid_request",
+      "coverage": [
+        "lower_target_missed"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/incomplete_capture.json",
+      "name": "incomplete_capture",
+      "coverage": [
+        "incomplete_capture"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/invalid_tool_correlation.json",
+      "name": "invalid_tool_correlation",
+      "coverage": [
+        "invalid_tool_correlation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/invalid_provider_identity.json",
+      "name": "invalid_provider_identity",
+      "coverage": [
+        "invalid_provider_identity"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/compact_failed_preserve_tool.json",
+      "name": "compact_failed_preserve_tool",
+      "coverage": [
+        "compact_install_failure",
+        "pending_tool_result_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/compact_failed_continue_turn.json",
+      "name": "compact_failed_continue_turn",
+      "coverage": [
+        "compact_install_failure",
+        "active_non_tool_continuation",
+        "post_boundary_failure"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/install_failed_continue_turn.json",
+      "name": "install_failed_continue_turn",
+      "coverage": [
+        "compact_install_failure",
+        "active_non_tool_continuation",
+        "post_boundary_failure"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/install_failed_preserve_tool.json",
+      "name": "install_failed_preserve_tool",
+      "coverage": [
+        "compact_install_failure",
+        "pending_tool_result_continuation",
+        "preserve_tool_on_install_failure"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/native_writer_conflict.json",
+      "name": "native_writer_conflict",
+      "coverage": [
+        "native_writer_conflict"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/input_epoch_changed.json",
+      "name": "input_epoch_changed",
+      "coverage": [
+        "stale_epoch_or_transport_retry"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/transport_retry_attempt.json",
+      "name": "transport_retry_attempt",
+      "coverage": [
+        "stale_epoch_or_transport_retry"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/not_at_settled_seam.json",
+      "name": "not_at_settled_seam",
+      "coverage": [
+        "stale_epoch_or_transport_retry"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/no_useful_reduction.json",
+      "name": "no_useful_reduction",
+      "coverage": [
+        "no_useful_reduction"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pressure_from_estimate_crosses_trigger.json",
+      "name": "pressure_from_estimate_crosses_trigger",
+      "coverage": [
+        "active_non_tool_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/capability_limited_identical_decision.json",
+      "name": "capability_limited_identical_decision",
+      "coverage": [
+        "capability_limited",
+        "active_non_tool_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pending_forced_boundary_repair.json",
+      "name": "pending_forced_boundary_repair",
+      "coverage": [
+        "pending_boundary_repair",
+        "active_non_tool_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pending_forced_boundary_compact_failed.json",
+      "name": "pending_forced_boundary_compact_failed",
+      "coverage": [
+        "pending_boundary_repair",
+        "post_boundary_failure",
+        "compact_install_failure"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/install_failed_no_reduction_continue_turn.json",
+      "name": "install_failed_no_reduction_continue_turn",
+      "coverage": [
+        "compact_install_failure",
+        "active_non_tool_continuation",
+        "install_over_no_reduction"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/install_failed_no_reduction_preserve_tool.json",
+      "name": "install_failed_no_reduction_preserve_tool",
+      "coverage": [
+        "compact_install_failure",
+        "pending_tool_result_continuation",
+        "install_over_no_reduction"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pending_boundary_missing_provider_usage.json",
+      "name": "pending_boundary_missing_provider_usage",
+      "coverage": [
+        "pending_boundary_repair",
+        "pending_boundary_pressure_precedence"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pending_boundary_below_trigger.json",
+      "name": "pending_boundary_below_trigger",
+      "coverage": [
+        "pending_boundary_repair",
+        "pending_boundary_pressure_precedence"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pending_boundary_illegal_kind_vs_native.json",
+      "name": "pending_boundary_illegal_kind_vs_native",
+      "coverage": [
+        "invalid_pending_boundary_continuation",
+        "forced_boundary_legality_precedence"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pending_boundary_illegal_kind_none.json",
+      "name": "pending_boundary_illegal_kind_none",
+      "coverage": [
+        "invalid_pending_boundary_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pending_boundary_protected_tool_escalation.json",
+      "name": "pending_boundary_protected_tool_escalation",
+      "coverage": [
+        "protected_escalation",
+        "pending_tool_result_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/fresh_force_marker_already_persisted_illegal.json",
+      "name": "fresh_force_marker_already_persisted_illegal",
+      "coverage": [
+        "invalid_pending_boundary_continuation",
+        "fresh_force_marker_already_persisted_illegal",
+        "forced_boundary_legality_precedence"
+      ],
+      "inputValidation": "reject"
+    },
+    {
+      "file": "cases/writer_claim_lhc_idempotent.json",
+      "name": "writer_claim_lhc_idempotent",
+      "coverage": [
+        "writer_claim_lhc_idempotent",
+        "active_non_tool_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/pending_boundary_skip_preserves_residual.json",
+      "name": "pending_boundary_skip_preserves_residual",
+      "coverage": [
+        "pending_boundary_residual_on_skip"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/active_non_tool_missing_forced_boundary.json",
+      "name": "active_non_tool_missing_forced_boundary",
+      "coverage": [
+        "invalid_pending_boundary_continuation",
+        "missing_forced_boundary_above_trigger"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/open_turn_invariant_broken.json",
+      "name": "open_turn_invariant_broken",
+      "coverage": [
+        "open_turn_invariant_broken",
+        "record_request_health_refuse"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/repair_prior_marker_compact_failed.json",
+      "name": "repair_prior_marker_compact_failed",
+      "coverage": [
+        "pending_boundary_repair",
+        "post_boundary_failure",
+        "marker_residual_state"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/writer_claim_lhc_incomplete_capture.json",
+      "name": "writer_claim_lhc_incomplete_capture",
+      "coverage": [
+        "writer_claim_lhc_idempotent",
+        "settled_seam_lhc_claim_early_refuse"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/preserve_sufficient_safe_runway.json",
+      "name": "preserve_sufficient_safe_runway",
+      "coverage": [
+        "pending_tool_result_continuation",
+        "preserve_sufficient",
+        "projected_pressure_formula"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/no_reduction_escalation_material.json",
+      "name": "no_reduction_escalation_material",
+      "coverage": [
+        "pending_tool_result_continuation",
+        "no_reduction_escalation",
+        "protected_escalation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/unsafe_runway_refuse.json",
+      "name": "unsafe_runway_refuse",
+      "coverage": [
+        "unsafe_runway",
+        "maximal_prune_unsafe",
+        "projected_pressure_formula"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/parallel_protected_ids.json",
+      "name": "parallel_protected_ids",
+      "coverage": [
+        "parallel_protected_ids",
+        "pending_tool_result_continuation"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/protected_ids_empty_reject.json",
+      "name": "protected_ids_empty_reject",
+      "coverage": [
+        "invalid_protected_pairs"
+      ],
+      "inputValidation": "reject"
+    },
+    {
+      "file": "cases/legacy_toolCallId_reject.json",
+      "name": "legacy_toolCallId_reject",
+      "coverage": [
+        "no_dual_field_shim"
+      ],
+      "inputValidation": "reject"
+    },
+    {
+      "file": "cases/unsupported_contract_version_1.json",
+      "name": "unsupported_contract_version_1",
+      "coverage": [
+        "unsupported_contract_version"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/lower_target_miss_safe_runway.json",
+      "name": "lower_target_miss_safe_runway",
+      "coverage": [
+        "lower_target_missed",
+        "safe_runway_not_lower_target"
+      ],
+      "inputValidation": "accept"
+    },
+    {
+      "file": "cases/host_validation_failed_after_core_install.json",
+      "name": "host_validation_failed_after_core_install",
+      "coverage": [
+        "host_validation_failed",
+        "protected_escalation"
+      ],
+      "inputValidation": "accept"
+    }
+  ],
+  "requiredCoverage": [
+    "no_authoritative_provider_usage",
+    "below_trigger",
+    "normal_completion",
+    "pending_tool_result_continuation",
+    "active_non_tool_continuation",
+    "derivation_gaps_degraded",
+    "lower_target_missed",
+    "incomplete_capture",
+    "invalid_tool_correlation",
+    "invalid_provider_identity",
+    "compact_install_failure",
+    "native_writer_conflict",
+    "stale_epoch_or_transport_retry",
+    "no_useful_reduction",
+    "capability_limited",
+    "pending_boundary_repair",
+    "post_boundary_failure",
+    "install_over_no_reduction",
+    "pending_boundary_pressure_precedence",
+    "invalid_pending_boundary_continuation",
+    "fresh_force_marker_already_persisted_illegal",
+    "writer_claim_lhc_idempotent",
+    "pending_boundary_residual_on_skip",
+    "missing_forced_boundary_above_trigger",
+    "open_turn_invariant_broken",
+    "record_request_health_refuse",
+    "marker_residual_state",
+    "settled_seam_lhc_claim_early_refuse",
+    "preserve_tool_on_install_failure",
+    "preserve_sufficient",
+    "no_reduction_escalation",
+    "protected_escalation",
+    "unsafe_runway",
+    "maximal_prune_unsafe",
+    "projected_pressure_formula",
+    "parallel_protected_ids",
+    "invalid_protected_pairs",
+    "no_dual_field_shim",
+    "unsupported_contract_version",
+    "safe_runway_not_lower_target",
+    "host_validation_failed"
+  ]
+}

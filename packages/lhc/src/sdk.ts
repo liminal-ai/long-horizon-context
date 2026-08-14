@@ -334,8 +334,16 @@ export interface ThreadViewSurface {
   ): Promise<OpResult<PreviewCompactOutcome>>;
   prepareCompact(
     ref: threadsDomain.ThreadRef,
-    opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
+    opts?: threadViewDomain.PrepareCompactOptions,
   ): Promise<OpResult<threadViewDomain.PreparedCompact>>;
+  previewProtectedBoundary(
+    ref: threadsDomain.ThreadRef,
+    params: {
+      protectedToolCallIds: readonly string[];
+      targetZoneTokens?: number;
+      compactPointOverride?: number;
+    },
+  ): Promise<OpResult<threadViewDomain.ProtectedBoundaryPreview>>;
   installPreparedCompact(
     ref: threadsDomain.ThreadRef,
     prepared: threadViewDomain.PreparedCompact,
@@ -787,6 +795,7 @@ export function initLhc(config: SdkConfig): Lhc {
         describe: threadViewDomain.describe,
         previewCompact: threadViewDomain.previewCompact,
         prepareCompact: threadViewDomain.prepareCompact,
+        previewProtectedBoundary: threadViewDomain.previewProtectedBoundary,
         installPreparedCompact: threadViewDomain.installPreparedCompact,
         compact: threadViewDomain.compact,
         materialize: threadViewDomain.materialize,

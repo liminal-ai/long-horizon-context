@@ -18,9 +18,9 @@
  *    quiet/health/mutating facts; quiet/health release the owned claim; mutating
  *    resumes. Fresh attempts stay blocked until the owner resumes or releases.
  *    Hosts must re-enter with the **stored** operation identity from
- *    `getCompactContinuationAttemptIntent` (continuation kind/toolCallId, policy,
+ *    `getCompactContinuationAttemptIntent` (continuation kind/protectedToolCallIds, policy,
  *    compact, actor/harness) — live seam continuation cannot recreate a
- *    response-scoped toolCallId after restart.
+ *    response-scoped protectedToolCallIds after restart.
  * 6. Stage history is append-only via `listCompactContinuationStages` (includes
  *    per-entry `retry_posture` snapshots).
  *
@@ -46,6 +46,8 @@ export {
   listCompactContinuationReceipts,
   listCompactContinuationStages,
   parseStoredOperationIdentity,
+  recordCompactContinuationHostValidation,
+  getCompactContinuationHostValidation,
   runCompactContinuation,
 } from "./internal/run.js";
 
@@ -59,5 +61,10 @@ export type {
   WriterClaimRow,
 } from "./internal/store.js";
 
-export { provePendingToolPair, type ToolPairProof } from "./internal/tool-pair.js";
+export {
+  provePendingToolPair,
+  proveProtectedToolPairSet,
+  type ProtectedToolPairSetProof,
+  type ToolPairProof,
+} from "./internal/tool-pair.js";
 export { validateHostFacts } from "./internal/validate-host.js";

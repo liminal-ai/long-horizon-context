@@ -1,15 +1,15 @@
-# Compact-continuation contract v1
+# Compact-continuation contract v2
 
 Provider-neutral state machine for **LHC-owned context relief at a settled model-turn seam** when agentic work continues across a compact boundary.
 
 | Field | Value |
 |---|---|
-| Contract version | `1.0.0` (`COMPACT_CONTINUATION_CONTRACT_VERSION`) |
+| Contract version | `2.0.0` (`COMPACT_CONTINUATION_CONTRACT_VERSION`) |
 | Stable turn-end reason | `context_compact_continue` |
 | Marker kind | `lhc.compact_continuation` |
 | Story | LIM-60 (define + fixtures); runtime stages = LIM-61 |
 | Module | `packages/lhc/src/shared-tech/compact-continuation/` |
-| Parity fixtures | `packages/lhc/fixtures/compact-continuation/v1/` |
+| Parity fixtures | `packages/lhc/fixtures/compact-continuation/v2/` |
 | Cross-host cert | `docs/compact-continuation-certification.md` (LIM-65) |
 
 ## Pure-function protocol
@@ -107,7 +107,7 @@ takes precedence over fresh pressure/usage; requires
 
 ## Fixtures
 
-JSON under `packages/lhc/fixtures/compact-continuation/v1/cases/`. Regenerate:
+JSON under `packages/lhc/fixtures/compact-continuation/v2/cases/`. Regenerate:
 
 ```bash
 pnpm exec tsx scripts/gen-compact-continuation-fixtures.mjs

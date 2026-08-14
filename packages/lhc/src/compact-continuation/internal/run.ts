@@ -62,19 +62,22 @@ import {
   persistReceipt,
   readAttemptIntent,
   readForceIntent,
+  readHostValidation,
   readOpenTurnIds,
   readOpenTurnMemberCount,
   readPendingBoundary,
   readReceiptByAttemptId,
   readWriterClaim,
   recordForceIntent,
+  recordHostValidationAwaiting,
+  recordHostValidationResult,
   releaseLhcWriter,
   type StageName,
   type StoredCompactContinuationReceipt,
   upsertBoundary,
   type WriterClaimRow,
 } from "./store.js";
-import { provePendingToolPair } from "./tool-pair.js";
+import { provePendingToolPair, proveProtectedToolPairSet } from "./tool-pair.js";
 import { validateHostFacts } from "./validate-host.js";
 
 // ── Host input ──────────────────────────────────────────────────────────────
@@ -206,6 +209,19 @@ function emptyMaterial(): CompactMaterialFacts {
     installSucceeds: false,
     usefulReduction: false,
     canProduceValidProviderRequest: false,
+    projectedPressureTokens: null,
+    renderedSavingsTokens: 0,
+    renderedSavingsSource: "lhc_rendered_history_estimate",
+    renderedSavingsDomain: "source_labelled_estimate",
+    safeRunwayThresholdTokens: null,
+    safeRunwayThresholdSource: null,
+    projectedPressureSafe: null,
+    protectedEscalationApplied: false,
+    visibilityBoundaryBefore: null,
+    visibilityBoundaryAfter: null,
+    compactPointAtInstall: null,
+    maximalPruneInsufficient: false,
+    hostValidationStatus: "not_required",
   };
 }
 
@@ -215,8 +231,8 @@ function applyMaterialHooks(
 ): CompactMaterialFacts {
   if (hooks === undefined) return base;
   return {
+    ...base,
     derivationsMissingOrFailed: hooks.forceDerivationsMissingOrFailed ?? base.derivationsMissingOrFailed,
-    lowerTargetMet: base.lowerTargetMet,
     compactStructurallyValid: hooks.forceCompactStructurallyValid ?? base.compactStructurallyValid,
     installSucceeds: hooks.forceInstallSucceeds ?? base.installSucceeds,
     usefulReduction: hooks.forceUsefulReduction ?? base.usefulReduction,
@@ -264,6 +280,63 @@ function toRunResult(
     refuseReceiptFidelityDescribes: "installed_view_only",
     replayedTerminalAttempt: extras.replayedTerminalAttempt,
     pendingBoundary: extras.pendingBoundary,
+  };
+}
+
+function projectedPressureOf(
+  facts: CompactContinuationHostFacts,
+  currentServedTokens: number,
+  candidateTokens: number,
+): {
+  projected: number | null;
+  savings: number;
+  safe: boolean | null;
+  threshold: number | null;
+  thresholdSource: string | null;
+} {
+  const savings = Math.max(0, currentServedTokens - candidateTokens);
+  const threshold = facts.policy.safeRunwayThresholdTokens ?? null;
+  const thresholdSource = facts.policy.safeRunwayThresholdSource ?? null;
+  if (!facts.providerUsage.available) {
+    return { projected: null, savings, safe: null, threshold, thresholdSource };
+  }
+  const projected = Math.max(0, facts.providerUsage.total + facts.postMeasurementEstimate.tokens - savings);
+  const safe = threshold === null ? null : projected < threshold;
+  return { projected, savings, safe, threshold, thresholdSource };
+}
+
+function materialFromCandidate(
+  facts: CompactContinuationHostFacts,
+  candidate: {
+    material: {
+      derivationsMissingOrFailed: boolean;
+      lowerTargetMet: boolean;
+      compactStructurallyValid: boolean;
+      usefulReduction: boolean;
+      canProduceValidProviderRequest: boolean;
+    };
+    candidateTokens: number;
+    currentServedTokens: number;
+  },
+  over: Partial<CompactMaterialFacts> = {},
+): CompactMaterialFacts {
+  const proj = projectedPressureOf(facts, candidate.currentServedTokens, candidate.candidateTokens);
+  return {
+    ...emptyMaterial(),
+    derivationsMissingOrFailed: candidate.material.derivationsMissingOrFailed,
+    lowerTargetMet: candidate.material.lowerTargetMet,
+    compactStructurallyValid: candidate.material.compactStructurallyValid,
+    usefulReduction: candidate.material.usefulReduction,
+    canProduceValidProviderRequest: candidate.material.canProduceValidProviderRequest,
+    installSucceeds: false,
+    projectedPressureTokens: proj.projected,
+    renderedSavingsTokens: proj.savings,
+    renderedSavingsSource: "lhc_rendered_history_estimate",
+    renderedSavingsDomain: "source_labelled_estimate",
+    safeRunwayThresholdTokens: proj.threshold,
+    safeRunwayThresholdSource: proj.thresholdSource,
+    projectedPressureSafe: proj.safe,
+    ...over,
   };
 }
 
@@ -342,7 +415,10 @@ function stableStringify(value: unknown): string {
 export function computeOperationIdentity(facts: CompactContinuationHostFacts): Record<string, unknown> {
   const continuationIdentity: Record<string, unknown> =
     facts.continuation.kind === "pending_correlated_tool_result"
-      ? { kind: facts.continuation.kind, toolCallId: facts.continuation.toolCallId }
+      ? {
+          kind: facts.continuation.kind,
+          protectedToolCallIds: [...facts.continuation.protectedToolCallIds].sort(),
+        }
       : { kind: facts.continuation.kind };
   return {
     contractVersion: COMPACT_CONTINUATION_CONTRACT_VERSION,
@@ -413,7 +489,7 @@ export type StoredOperationIdentity = {
   continuation:
     | { kind: "none" }
     | { kind: "active_non_tool" }
-    | { kind: "pending_correlated_tool_result"; toolCallId: string };
+    | { kind: "pending_correlated_tool_result"; protectedToolCallIds: string[] };
   policy: CompactContinuationPolicy;
   compact?: { profile?: string; params?: ViewCompactParams };
   /** Stored sha256 of intent_json (identity bytes as written). */
@@ -449,22 +525,16 @@ export function parseStoredOperationIdentity(row: AttemptRow): StoredOperationId
     parsed = JSON.parse(row.intentJson);
   } catch (cause) {
     const msg = cause instanceof Error ? cause.message : String(cause);
-    throw new Error(
-      `compact-continuation attempt intent JSON corrupt for attemptId=${row.attemptId}: ${msg}`,
-    );
+    throw new Error(`compact-continuation attempt intent JSON corrupt for attemptId=${row.attemptId}: ${msg}`);
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(
-      `compact-continuation attempt intent JSON must be an object for attemptId=${row.attemptId}`,
-    );
+    throw new Error(`compact-continuation attempt intent JSON must be an object for attemptId=${row.attemptId}`);
   }
   const obj = parsed as Record<string, unknown>;
   const contractVersion = requireStringField(obj, "contractVersion", "operation identity");
   const attemptId = requireStringField(obj, "attemptId", "operation identity");
   if (attemptId !== row.attemptId) {
-    throw new Error(
-      `operation identity attemptId mismatch: row=${row.attemptId} json=${attemptId}`,
-    );
+    throw new Error(`operation identity attemptId mismatch: row=${row.attemptId} json=${attemptId}`);
   }
   const actor = requireStringField(obj, "actor", "operation identity");
   const harness = requireStringField(obj, "harness", "operation identity");
@@ -481,8 +551,21 @@ export function parseStoredOperationIdentity(row: AttemptRow): StoredOperationId
   } else if (contKind === "active_non_tool") {
     continuation = { kind: "active_non_tool" };
   } else if (contKind === "pending_correlated_tool_result") {
-    const toolCallId = requireStringField(contObj, "toolCallId", "operation identity.continuation");
-    continuation = { kind: "pending_correlated_tool_result", toolCallId };
+    const idsRaw = contObj["protectedToolCallIds"];
+    if (!Array.isArray(idsRaw) || idsRaw.length === 0) {
+      throw new Error("operation identity: protectedToolCallIds must be a non-empty array");
+    }
+    const protectedToolCallIds: string[] = [];
+    for (const id of idsRaw) {
+      if (typeof id !== "string" || id.length === 0) {
+        throw new Error("operation identity: protectedToolCallIds entries must be non-empty strings");
+      }
+      protectedToolCallIds.push(id);
+    }
+    continuation = {
+      kind: "pending_correlated_tool_result",
+      protectedToolCallIds: [...protectedToolCallIds].sort(),
+    };
   } else {
     throw new Error(`operation identity: unknown continuation.kind '${contKind}'`);
   }
@@ -501,6 +584,20 @@ export function parseStoredOperationIdentity(row: AttemptRow): StoredOperationId
     lowerTargetTokens: requireFiniteNumber(policyObj, "lowerTargetTokens", "operation identity.policy"),
     hostCapability,
   };
+  if (policyObj["safeRunwayThresholdTokens"] !== undefined) {
+    policy.safeRunwayThresholdTokens = requireFiniteNumber(
+      policyObj,
+      "safeRunwayThresholdTokens",
+      "operation identity.policy",
+    );
+  }
+  if (policyObj["safeRunwayThresholdSource"] !== undefined) {
+    const src = policyObj["safeRunwayThresholdSource"];
+    if (typeof src !== "string" || src.length === 0) {
+      throw new Error("operation identity: policy.safeRunwayThresholdSource must be a non-empty string");
+    }
+    policy.safeRunwayThresholdSource = src;
+  }
 
   let compact: StoredOperationIdentity["compact"];
   if (obj["compact"] !== undefined) {
@@ -1051,13 +1148,19 @@ async function runCompactContinuationInner(
     !singleOpenTurn ||
     (facts.continuation.kind === "pending_correlated_tool_result" && !facts.continuation.correlationValid);
 
-  // Durable tool-pair proof for pending-tool path (host correlation insufficient).
+  // Durable protected-pair-set proof for pending-tool path (host correlation insufficient).
   let toolPairOk = true;
+  let protectedSetProof: Awaited<ReturnType<typeof proveProtectedToolPairSet>> | null = null;
   if (facts.continuation.kind === "pending_correlated_tool_result") {
-    const toolCallId = facts.continuation.toolCallId;
     if (facts.continuation.correlationValid) {
-      const proof = await createDbReadTransaction(ref, (tx) => provePendingToolPair(tx.db, toolCallId));
+      const proof = await createDbReadTransaction(ref, (tx) =>
+        proveProtectedToolPairSet(
+          tx.db,
+          facts.continuation.kind === "pending_correlated_tool_result" ? facts.continuation.protectedToolCallIds : [],
+        ),
+      );
       if (!proof.ok) return proof;
+      protectedSetProof = proof.value;
       if (!proof.value.ok) {
         toolPairOk = false;
       }
@@ -1067,7 +1170,12 @@ async function runCompactContinuationInner(
   }
 
   // Illegal applied-boundary + wrong continuation kind (repair path only).
-  if (forcedFromPending.applied && facts.continuation.kind !== "active_non_tool") {
+  // v2: pending_correlated_tool_result is legal with applied boundary (protected escalation).
+  if (
+    forcedFromPending.applied &&
+    facts.continuation.kind !== "active_non_tool" &&
+    facts.continuation.kind !== "pending_correlated_tool_result"
+  ) {
     const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
     const decision = decideCompactContinuation(
       buildOracleInput(
@@ -1145,9 +1253,14 @@ async function runCompactContinuationInner(
   // ── Pressure / branch (no claim yet) ────────────────────────────────────
   const pressure = pressureAtOrAbove(facts);
   // Repair pending boundary always takes continue-turn path regardless of pressure.
-  const needsContinueTurn =
+  // let so pending-tool path can escalate to continue-turn mid-attempt.
+  let needsContinueTurn =
     forcedFromPending.applied || (pressure === true && facts.continuation.kind === "active_non_tool");
-  const needsPreserveTool =
+  // Protected-escalation repair: pending boundary + pending tool set also continues.
+  if (forcedFromPending.applied && facts.continuation.kind === "pending_correlated_tool_result" && toolPairOk) {
+    needsContinueTurn = true;
+  }
+  let needsPreserveTool =
     !forcedFromPending.applied &&
     pressure === true &&
     facts.continuation.kind === "pending_correlated_tool_result" &&
@@ -1221,6 +1334,47 @@ async function runCompactContinuationInner(
   let markerPersistedDurable = pendingBoundary?.markerPersisted ?? false;
 
   try {
+    // ── Pending-tool prepare/evaluate (may escalate to continue-turn) ─────
+    let pendingEscalated = false;
+    let proposedVisibilityBoundary: number | null = null;
+    let visibilityBoundaryBefore: number | null = null;
+    let protectedIds: string[] =
+      facts.continuation.kind === "pending_correlated_tool_result"
+        ? [...facts.continuation.protectedToolCallIds].sort()
+        : [];
+
+    if (needsPreserveTool && !needsContinueTurn && hooks?.skipRealCompact !== true) {
+      // 1) Prepare ordinary preserve candidate without installing.
+      const prepOpts: { profile?: string; params?: ViewCompactParams } = {};
+      if (facts.compact?.profile !== undefined) prepOpts.profile = facts.compact.profile;
+      if (facts.compact?.params !== undefined) prepOpts.params = facts.compact.params;
+      const prep0 = await threadView.prepareCompact(ref, prepOpts);
+      if (prep0.ok) {
+        const cand0 = await createDbReadTransaction(ref, (tx) =>
+          assembleCandidateFromPrepared(tx.db, prep0.value, facts.policy.lowerTargetTokens),
+        );
+        if (!cand0.ok) {
+          const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+          if (!rel.ok) return rel;
+          return cand0;
+        }
+        const proj0 = projectedPressureOf(facts, cand0.value.currentServedTokens, cand0.value.candidateTokens);
+        const preserveUseful = cand0.value.material.usefulReduction;
+        const preserveSafe = proj0.safe === true;
+        if (preserveUseful && preserveSafe && cand0.value.material.compactStructurallyValid) {
+          // Normal preserve path: keep prepared for install below.
+          // Fall through with needsPreserveTool; material filled in prepare section.
+        } else {
+          // Escalate before any preserve install: force boundary + protected prune.
+          pendingEscalated = true;
+          // Flip into continue-turn flow for force/marker; continuation kind stays pending set.
+          // Force path uses needsContinueTurn — set local flag.
+          needsContinueTurn = true;
+          needsPreserveTool = false;
+        }
+      }
+    }
+
     // ── Force boundary if fresh continue-turn ─────────────────────────────
     if (needsContinueTurn && !forcedFromPending.applied) {
       const openCheck = await createDbReadTransaction(ref, (tx) => {
@@ -1497,59 +1651,101 @@ async function runCompactContinuationInner(
       markerPersistedDurable = forcedFromPending.markerAlreadyPersisted;
     }
 
+    // ── Protected visibility boundary (escalated pending only) ────────────
+    let maximalPruneInsufficient = false;
+    if (
+      (pendingEscalated || (needsContinueTurn && facts.continuation.kind === "pending_correlated_tool_result")) &&
+      protectedIds.length > 0 &&
+      hooks?.skipRealCompact !== true
+    ) {
+      const threshold = facts.policy.safeRunwayThresholdTokens;
+      const preview = await threadView.previewProtectedBoundary(ref, {
+        protectedToolCallIds: protectedIds,
+        ...(threshold !== undefined ? { targetZoneTokens: threshold } : {}),
+      });
+      if (!preview.ok) {
+        const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+        if (!rel.ok) return rel;
+        return preview;
+      }
+      visibilityBoundaryBefore = preview.value.previousBoundary;
+      proposedVisibilityBoundary = preview.value.proposedBoundary;
+      maximalPruneInsufficient = preview.value.maximalPruneInsufficient;
+    }
+
     // ── Compact prepare + candidate material ──────────────────────────────
     let prepared: threadView.PreparedCompact | null = null;
 
     if (hooks?.skipRealCompact === true) {
       material = applyMaterialHooks(
         {
-          derivationsMissingOrFailed: false,
+          ...emptyMaterial(),
           lowerTargetMet: true,
           compactStructurallyValid: true,
           installSucceeds: true,
           usefulReduction: true,
           canProduceValidProviderRequest: true,
+          projectedPressureSafe: true,
+          projectedPressureTokens: 0,
         },
         hooks,
       );
     } else {
-      const prepOpts: { profile?: string; params?: ViewCompactParams } = {};
+      const prepOpts: threadView.PrepareCompactOptions = {};
       if (facts.compact?.profile !== undefined) prepOpts.profile = facts.compact.profile;
       if (facts.compact?.params !== undefined) prepOpts.params = facts.compact.params;
+      if (proposedVisibilityBoundary !== null) {
+        prepOpts.visibilityBoundaryOverride = proposedVisibilityBoundary;
+      }
       const prep = await threadView.prepareCompact(ref, prepOpts);
       if (!prep.ok) {
-        material = applyMaterialHooks(
-          {
-            derivationsMissingOrFailed: false,
-            lowerTargetMet: false,
-            compactStructurallyValid: false,
-            installSucceeds: false,
-            usefulReduction: false,
-            canProduceValidProviderRequest: false,
-          },
-          hooks,
-        );
+        material = applyMaterialHooks(emptyMaterial(), hooks);
       } else {
         prepared = prep.value;
         const candidate = await createDbReadTransaction(ref, (tx) =>
-          assembleCandidateFromPrepared(tx.db, prepared!, facts.policy.lowerTargetTokens),
+          assembleCandidateFromPrepared(tx.db, prepared!, facts.policy.lowerTargetTokens, {
+            ...(proposedVisibilityBoundary !== null ? { boundaryPositionOverride: proposedVisibilityBoundary } : {}),
+          }),
         );
         if (!candidate.ok) {
           const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
           if (!rel.ok) return rel;
           return candidate;
         }
+        const escalated =
+          pendingEscalated || (needsContinueTurn && facts.continuation.kind === "pending_correlated_tool_result");
         material = applyMaterialHooks(
-          {
-            ...candidate.value.material,
-            installSucceeds: false,
-          },
+          materialFromCandidate(facts, candidate.value, {
+            protectedEscalationApplied: escalated,
+            visibilityBoundaryBefore,
+            visibilityBoundaryAfter: proposedVisibilityBoundary,
+            compactPointAtInstall: prepared.selection.compactPoint,
+            maximalPruneInsufficient,
+            hostValidationStatus: escalated ? "awaiting" : "not_required",
+          }),
           hooks,
         );
+        // If escalated maximal prune still unsafe — refuse without install.
+        if (escalated && (material.maximalPruneInsufficient || material.projectedPressureSafe === false)) {
+          material = {
+            ...material,
+            installSucceeds: false,
+            compactStructurallyValid: true,
+            canProduceValidProviderRequest: true,
+            usefulReduction: false,
+            maximalPruneInsufficient: true,
+            projectedPressureSafe: false,
+            hostValidationStatus: "not_required",
+          };
+          prepared = null; // do not install
+        }
         const prepLog = await stageLog(ref, facts.attemptId, "compact_prepared", clock, {
           candidateTokens: candidate.value.candidateTokens,
           currentServedTokens: candidate.value.currentServedTokens,
           structuralIssues: candidate.value.structuralIssues,
+          projectedPressureTokens: material.projectedPressureTokens,
+          protectedEscalationApplied: material.protectedEscalationApplied,
+          proposedVisibilityBoundary,
         });
         if (!prepLog.ok) {
           const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
@@ -1668,7 +1864,17 @@ async function runCompactContinuationInner(
           if (!rel.ok) return rel;
           return candidate2;
         }
-        material = applyMaterialHooks({ ...candidate2.value.material, installSucceeds: false }, hooks);
+        material = applyMaterialHooks(
+          materialFromCandidate(facts, candidate2.value, {
+            protectedEscalationApplied: material.protectedEscalationApplied,
+            visibilityBoundaryBefore: material.visibilityBoundaryBefore,
+            visibilityBoundaryAfter: material.visibilityBoundaryAfter,
+            compactPointAtInstall: material.compactPointAtInstall,
+            maximalPruneInsufficient: material.maximalPruneInsufficient,
+            hostValidationStatus: material.hostValidationStatus,
+          }),
+          hooks,
+        );
       }
 
       if (hooks?.interruptAfterMarker === true) {
@@ -1731,6 +1937,12 @@ async function runCompactContinuationInner(
             forcedContinuationBoundary.continuationTurnId,
           );
         }
+        if (proposedVisibilityBoundary !== null) {
+          installOpts.visibilityBoundary = proposedVisibilityBoundary;
+          if (visibilityBoundaryBefore !== null) {
+            installOpts.expectedPreviousBoundary = visibilityBoundaryBefore;
+          }
+        }
         const installed = await threadView.installPreparedCompact(ref, prepared, installOpts);
         if (!installed.ok) {
           material = { ...material, installSucceeds: false };
@@ -1742,13 +1954,39 @@ async function runCompactContinuationInner(
             lowerTargetMet: installed.value.totalTokens <= facts.policy.lowerTargetTokens,
           };
           compactReceipt = installed.value;
-          const instLog = await stageLog(ref, facts.attemptId, "install_succeeded", clock, {
-            viewId: installed.value.viewId,
-          });
-          if (!instLog.ok) {
-            const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
-            if (!rel.ok) return rel;
-            return instLog;
+          material = {
+            ...material,
+            installSucceeds: true,
+            compactPointAtInstall: installed.value.compactPoint,
+            visibilityBoundaryAfter: proposedVisibilityBoundary ?? material.visibilityBoundaryAfter,
+          };
+          if (material.protectedEscalationApplied && material.hostValidationStatus === "awaiting") {
+            const hv = await createDbWriteTransaction(
+              ref,
+              (tx) => {
+                recordHostValidationAwaiting(tx.db, facts.attemptId, clock().toISOString());
+                appendStageLog(tx.db, facts.attemptId, "install_succeeded", clock().toISOString(), {
+                  viewId: installed.value.viewId,
+                  hostValidation: "awaiting",
+                });
+                return true as const;
+              },
+              clock,
+            );
+            if (!hv.ok) {
+              const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+              if (!rel.ok) return rel;
+              return hv;
+            }
+          } else {
+            const instLog = await stageLog(ref, facts.attemptId, "install_succeeded", clock, {
+              viewId: installed.value.viewId,
+            });
+            if (!instLog.ok) {
+              const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+              if (!rel.ok) return rel;
+              return instLog;
+            }
           }
         }
       } else if (hooks?.skipRealCompact === true) {
@@ -1975,5 +2213,60 @@ export async function listCompactContinuationStages(
     return await createDbReadTransaction(ref, (tx) => listStageLog(tx.db, attemptId));
   } catch (cause) {
     return storageFailure(`compact-continuation stage log read failed: ${detail(cause)}`);
+  }
+}
+
+/**
+ * Provider-neutral host validation acknowledgment after successful core install.
+ * Does not roll back core view/boundary. Blocks next provider request until ok
+ * when status is awaiting/failed. LHC never validates the host provider body.
+ */
+export async function recordCompactContinuationHostValidation(
+  ref: ThreadRef,
+  attemptId: string,
+  result: "ok" | "failed",
+  opts: { reason?: string; clock?: () => Date } = {},
+): Promise<OpResult<{ attemptId: string; status: "ok" | "failed"; reason: string | null }>> {
+  if (typeof attemptId !== "string" || attemptId.length === 0) {
+    return storageFailure("host validation requires non-empty attemptId");
+  }
+  if (result !== "ok" && result !== "failed") {
+    return storageFailure("host validation result must be ok|failed");
+  }
+  const clock = opts.clock ?? (() => new Date());
+  try {
+    return await createDbWriteTransaction(
+      ref,
+      (tx) => {
+        const row = recordHostValidationResult(tx.db, attemptId, result, clock().toISOString(), opts.reason);
+        appendStageLog(tx.db, attemptId, "receipt_recorded", clock().toISOString(), {
+          hostValidation: result,
+          reason: opts.reason ?? null,
+        });
+        return {
+          attemptId,
+          status: row.status === "ok" || row.status === "failed" ? row.status : result,
+          reason: row.reason,
+        };
+      },
+      clock,
+    );
+  } catch (cause) {
+    return storageFailure(`host validation record failed: ${detail(cause)}`);
+  }
+}
+
+export async function getCompactContinuationHostValidation(
+  ref: ThreadRef,
+  attemptId: string,
+): Promise<OpResult<{ attemptId: string; status: "awaiting" | "ok" | "failed"; reason: string | null } | null>> {
+  try {
+    return await createDbReadTransaction(ref, (tx) => {
+      const row = readHostValidation(tx.db, attemptId);
+      if (row === null) return null;
+      return { attemptId: row.attemptId, status: row.status, reason: row.reason };
+    });
+  } catch (cause) {
+    return storageFailure(`host validation read failed: ${detail(cause)}`);
   }
 }

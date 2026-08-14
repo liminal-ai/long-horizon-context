@@ -11,6 +11,7 @@ export const THREAD_SCHEMA_VERSION_7 = 7;
 export const THREAD_SCHEMA_VERSION_8 = 8;
 export const THREAD_SCHEMA_VERSION_9 = 9;
 export const THREAD_SCHEMA_VERSION_10 = 10;
+export const THREAD_SCHEMA_VERSION_11 = 11;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -153,6 +154,15 @@ export function compactContinuationCurrentSchemaStatements(): string[] {
       continuation_turn_id TEXT,
       recorded_at TEXT NOT NULL
     );`,
+    // v11: post-core-install host validation (provider-neutral). Core never
+    // claims the host body was validated inside LHC.
+    `CREATE TABLE IF NOT EXISTS compact_continuation_host_validation (
+      attempt_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL CHECK (status IN ('awaiting', 'ok', 'failed')),
+      reason TEXT,
+      recorded_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );`,
   ];
 }
 
@@ -172,6 +182,19 @@ function migrateCompactContinuationV9(db: DatabaseSync): void {
       status TEXT NOT NULL CHECK (status IN ('intent', 'applied', 'reconciled')),
       continuation_turn_id TEXT,
       recorded_at TEXT NOT NULL
+    );`,
+  );
+}
+
+/** v10→v11: host validation status for post-core-install body acknowledgment. */
+function migrateCompactContinuationV11(db: DatabaseSync): void {
+  db.exec(
+    `CREATE TABLE IF NOT EXISTS compact_continuation_host_validation (
+      attempt_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL CHECK (status IN ('awaiting', 'ok', 'failed')),
+      reason TEXT,
+      recorded_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
     );`,
   );
 }
@@ -463,6 +486,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_9) {
       migrateCompactContinuationV10(db);
       version = THREAD_SCHEMA_VERSION_10;
+    }
+    if (version === THREAD_SCHEMA_VERSION_10) {
+      migrateCompactContinuationV11(db);
+      version = THREAD_SCHEMA_VERSION_11;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);
