@@ -1,470 +1,259 @@
 # Long Horizon Context (LHC)
 
-Long Horizon Context (LHC) is a durable context-management system for AI coding agents. Long-running sessions outgrow any context window; the usual answer — summarize the past and drop the originals — compounds into a cliff, where everything before the last compact is one lossy paragraph with no way back.
+Long Horizon Context (LHC) is a durable context-management system for AI
+agents. Long-running conversations eventually outgrow a model's context
+window. A conventional compact replaces the older conversation with one lossy
+summary. Repeating that process creates a context cliff: detail disappears and
+the agent cannot recover it.
 
-LHC keeps the **full record**: every session event is captured durably into a per-thread SQLite file, append-only, as the source of truth. What the model sees is a **rendering** of that record — a fidelity **ramp**, not a cliff: recent work verbatim, then progressively compressed bands (smooth, detailed, brief) reaching back through the whole history. Because the record is never destroyed, every view is rebuildable at any fidelity, at any time.
+LHC keeps an append-only **canonical event record**. It serves a rebuildable
+**fidelity ramp** over that record: recent work stays full, then older work
+moves through smooth, detailed, and brief bands. The working context becomes
+smaller without making the underlying conversation unreachable.
 
-Compressed history stays **addressable**: every turn and message carries a stable id (`<t211>`, `<m3177>`) visible in the served view, and retrieval operations (`getTurns` / `getMessages`) pull any of them back at full fidelity on demand — with token budgets, slice/continuation receipts, and a durable impression log of what was recalled.
+Served history remains addressable. Turns and messages carry stable ids such as
+`t211` and `m3177`. Bounded retrieval operations let an agent pull a labeled
+turn rendering or a verbatim message back into working context, with slicing
+receipts when an item is larger than the retrieval budget.
 
-The system is an SDK consumed by host harnesses. The **TypeScript core is the contract source**; certified ports exist in **Rust**, **Python**, and **Convex**, and host integrations exist for multiple harnesses (below).
+## Architecture
 
-## Hosts
-
-| Host | Integration |
-|---|---|
-| [PI](https://github.com/earendil-works/pi) (Earendil Works) | `pi-lhc` extension — the reference integration; PI is vendored here as a submodule |
-| Codex CLI (OpenAI) | [maintained fork](https://github.com/liminal-ai/codex-lhc), native Rust integration via the vendored `lhc-rs` port |
-| Grok Build (xAI) | [maintained fork](https://github.com/liminal-ai/grok-build-lhc), native Rust integration via the vendored `lhc-rs` port |
-| Claude Code (Anthropic) | `cc-lhc` wrapper — certified closed-host integration with rollout capture, retrieval, and automatic context handoff |
-| t3code | `t3code-lhc` host package for the t3code web harness |
-
-Maintenance patterns for all of these (fork sync drills, wrapper patterns) are in `docs/host-integrations.md`.
-
-## Packages
-
+```text
+host events
+    |
+    v
+append-only canonical event record
+    |
+    +--> messages and agentic turns
+    |        |
+    |        +--> derivations and chunks
+    |                  |
+    |                  v
+    |          compacted thread view
+    |          brief -> detailed -> smooth -> full tail
+    |
+    +--> stable tN/mN retrieval
+             |
+             v
+       recalled history + impression log
 ```
-packages/
-├── lhc/         Core SDK (TypeScript, contract source) — event storage, derivation
-│                pipeline, smart compact, thread views, retrieval
-├── lhc-rs/      Rust port — certified against the TS contract (exact-count test gate);
-│                vendored by the codex and grok forks
-├── lhc-py/      Python port — certified against the TS contract
-├── lhc-convex/  Convex port — certified against the TS contract
-├── pi-lhc/      PI extension — captures PI events into LHC, bridges compact, serves
-│                context, registers retrieval tools
-├── cc-lhc/      Claude Code wrapper — PTY passthrough, bound rollout capture, Bash
-│                retrieval, ctrl-] control panel, claude -p inference, and automatic
-│                compact via rollout rebuild + controlled child respawn
-└── t3code-lhc/  t3code host — provider-conversation capture, operator-driven context swap
+
+The main boundaries are deliberate:
+
+- The canonical event record is append-only.
+- Messages, turns, chunks, derivations, views, and host session files are
+  projections or renderings. They can be rebuilt.
+- TypeScript is the contract source.
+- The host owns event capture, storage location, lifecycle, model access, and
+  context injection.
+- LHC does not call a model or network service directly. The host supplies the
+  inference function.
+- LHC prefers explicit degradation and visible gaps over silent omission.
+
+An **agentic turn** begins with a user prompt and ends with the final assistant
+response. It can contain multiple **model turns**, where each model turn is one
+model request and response cycle.
+
+## Implementations
+
+| Implementation | Role | Current status |
+| --- | --- | --- |
+| [`lhc`](packages/lhc) | TypeScript SDK and contract source | Repository SDK and contract source; not published as a standalone registry package |
+| [`lhc-rs`](packages/lhc-rs) | Host-agnostic Rust port | Certified against the TypeScript contract; consumed by the Codex and Grok forks |
+| [`lhc-py`](packages/lhc-py) | Python port | Certified against the TypeScript contract; consumed by Hermes |
+| [`lhc-convex`](packages/lhc-convex) | Convex implementation | Released through the current tagging and retrieval wave; downstream propagation continues independently |
+
+Port certification proves the contract surface owned by that port. It does not
+imply that every implementation is published to a package registry or already
+contains every later feature from another port.
+
+## Host integrations
+
+| Host | Integration | Distribution |
+| --- | --- | --- |
+| [PI](https://github.com/earendil-works/pi) | [`pi-lhc`](packages/pi-lhc), the reference extension integration | Built from this repository |
+| Codex CLI | Native Rust integration in the maintained [`codex-lhc`](https://github.com/liminal-ai/codex-lhc) fork | Fork release |
+| Grok Build | Native Rust integration in the maintained [`grok-build-lhc`](https://github.com/liminal-ai/grok-build-lhc) fork | Fork release |
+| Claude Code | [`cc-lhc`](packages/cc-lhc), a closed-host PTY wrapper | Public npm package and GitHub bundles |
+| Hermes Agent | Native Python integration in the maintained [`hermes-lhc`](https://github.com/liminal-ai/hermes-lhc) fork using `context.engine: lhc` | Fork installation |
+| t3code | Native integration in the external maintained [`liminal-ai/t3code`](https://github.com/liminal-ai/t3code) fork | External fork; [`packages/t3code-lhc`](packages/t3code-lhc) contains documentation only |
+
+Hosts do not have identical capabilities. The integration surface determines
+how each host captures events, exposes retrieval, and replaces its working
+context. See [host integrations](docs/host-integrations.md) for the capability
+and maintenance boundaries.
+
+## Install cc-lhc
+
+`cc-lhc` is the public end-user package in this repository. It wraps an
+installed Claude Code CLI, captures its rollout into LHC, exposes retrieval
+through the same `cc-lhc` command, and performs controlled context handoffs.
+
+Prerequisites:
+
+- Node.js 24.3 or later.
+- An installed and authenticated Claude Code CLI.
+- Linux, macOS, or native Windows on x64 or ARM64.
+
+### npm
+
+```sh
+npm install --global cc-lhc
+cc-lhc --lhc-help
 ```
 
-### `lhc` — The Core SDK
+Update an npm-owned installation with:
 
-A Node.js library with no CLI. The public API is a single `initLhc(config)` function that returns an `Lhc` object with domain namespaces: `threads`, `intakeStream`, `messages`, `turns`, `threadView`, `inspect`, `logging`, and `work`.
+```sh
+npm install --global cc-lhc@latest
+```
 
-All state is persisted to a per-thread SQLite file (WAL mode, `node:sqlite`). The SDK never touches a network; inference calls are delegated to the host through a `ModelCall` callback.
+### Complete GitHub bundles
 
-### `pi-lhc` — The PI Connector
+These installers download a checksum-verified runtime bundle for the detected
+platform. They do not invoke npm or a native compiler on the client.
 
-A PI extension that hooks into PI's session lifecycle. It captures PI events into an LHC thread, intercepts PI's compaction requests to run LHC smart compact instead, and seeds PI sessions from LHC thread views so agents start with full context history. It also provides the `pi-lhc` binary for launcher-owned startup.
-
-`pi-lhc` depends on `lhc` (workspace dependency) and on PI's packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-agent-core`) via `file:` references into `vendor/pi`. pnpm overrides in `pnpm-workspace.yaml` force the transitive `pi-ai`/`pi-agent-core`/`pi-tui`/`pi-protocol`/`pi-client` deps to the vendored packages as well — without them, pnpm resolves those from the npm registry (or fails on unpublished ones) and the vendored submodule build never reaches the runtime.
-
-#### Slash commands
-
-| Command | What it does |
-|---|---|
-| `/lhc-rehydrate` | Fresh PI session seeded from the latest LHC thread view |
-| `/lhc-tool-prune [targetTokens]` | Advance the visibility boundary — older tool results render truncated (default target 32k) |
-| `/lhc-export-pi-session` | Export the live in-memory PI session to a text file (fidelity diffing) |
-| `/lhc-export-threadview` | Export LHC's canonical render of the thread (fidelity diffing) |
-
-### `cc-lhc` — The Claude Code Wrapper
-
-Wraps the closed `claude` CLI in a PTY and binds its rollout stream to one LHC
-thread. It provides canonical capture, stable `<tN>`/`<mN>` labels, model-callable
-retrieval through Bash, a `claude -p` derivation lane, provider-usage-driven
-automatic compact, and manual compact/prune through the ctrl-] control panel.
-For respawn-safe interactive launches, context changes rebuild a new rollout and
-use a transactionally controlled child respawn; lineage and retrieval advance
-only after replacement capture and child liveness are proven. Unsafe launch argv
-degrades to an explicit external-resume path rather than risking prompt replay.
-State is isolated under `~/.cc-lhc/`.
-
-Run `cc-lhc --lhc-help` for wrapper flags and commands. The retained whole-product
-certification against Claude Code 2.1.226 is in
-`packages/cc-lhc/test/fixtures/slice7-certification-evidence.md`.
-
-## Installing the Claude Code Harness (cc-lhc)
-
-cc-lhc targets Linux (x64, arm64), macOS (x64, arm64), and native Windows (x64, arm64) — the six targets in `packages/cc-lhc-native/targets.json`. The `native-platforms` GitHub workflow builds and tests every target. The native process-identity addon is delivered as checksum-verified prebuilt binaries, so a fresh install needs no compiler.
-
-Prerequisites are Node 24.3 or later and an installed, authenticated Claude
-Code CLI. Install the published release directly from GitHub on Linux or
-macOS:
+Linux or macOS:
 
 ```sh
 curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.1.0/install.sh | sh
 ```
 
-Install it from PowerShell on Windows:
+Windows PowerShell:
 
 ```powershell
 irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.1.0/install.ps1 | iex
 ```
 
-Both installers detect x64 or ARM64, download the matching complete runtime
-bundle, and verify it before installation. The URL path does not invoke npm or
-a compiler on the client. Node 24.3 or later and an authenticated Claude Code
-CLI remain prerequisites. The normal `npm install --global cc-lhc` path remains
-supported.
+Update a script-owned installation by running the installer from the desired
+new release. The installer replaces its managed runtime and preserves LHC
+state. Do not mix npm-owned and script-owned installations without first
+removing the old launcher; otherwise two `cc-lhc` commands can exist on
+`PATH`.
 
-To set up cc-lhc on a machine that has Claude Code (no PI needed), give an AI coding agent this instruction — or follow it yourself:
+Release assets and checksums are on the
+[`cc-lhc-v0.1.0` release](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.1.0).
 
-```
-Clone --recursive https://github.com/liminal-ai/long-horizon-context.git, then read
-.setup/cc-lhc-standalone.md in the clone and follow it to set up cc-lhc.
-```
+### Use
 
-The setup doc is written for an agent to execute: prerequisite checks and shim install are scripted (`.setup/scripts/`), each step carries its own verification, and the vendored PI submodule is checked out but never built for this profile.
+Run Claude Code through the wrapper:
 
-## Installing the PI Harness (pi-lhc)
-
-To set up pi-lhc on a machine that will use PI, give an AI coding agent this instruction — or follow it yourself:
-
-```
-Clone --recursive https://github.com/liminal-ai/long-horizon-context.git, then read
-.setup/pi-lhc-standalone.md in the clone and follow it to set up pi-lhc.
+```sh
+cc-lhc
 ```
 
-The setup doc is written for an agent to execute: prerequisite checks and shim install are scripted (`.setup/scripts/`), each step carries its own verification, and — unlike cc-lhc — the vendored PI submodule **must be built** (`cd vendor/pi && npm ci && npm run build`) before `pi-lhc` is built. Fresh state lives under `~/.pi-lhc` (override `PI_LHC_HOME`); machines with existing `~/.lhc` / `~/.pi/agent` state use `scripts/migrate-to-pi-lhc.mjs`.
+The same executable provides one-shot retrieval operations while an
+interactive wrapper process can remain active:
 
----
-
-## Core Concepts
-
-### Threads and Events
-
-A **thread** is one durable conversation, stored as a SQLite file and tracked in a central registry. Hosts own the registry location: pi-lhc uses `~/.pi-lhc/registry.sqlite` (override `PI_LHC_HOME`), cc-lhc uses `~/.cc-lhc/`. Every piece of content entering LHC is an **event** — a typed, immutable record with an idempotency key:
-
-| Event Kind | Source |
-|---|---|
-| `user_prompt` | User message |
-| `assistant_text` | Model response text |
-| `assistant_thinking` | Chain-of-thought |
-| `tool_call` | Tool invocation |
-| `tool_result` | Tool output |
-| `turn_end` | Turn boundary marker |
-| `runtime_note` | System annotations |
-| `model_change` | Model switch |
-| `thinking_level_change` | Thinking level switch |
-
-Events are recorded through `intakeStream.messageEvents()` in atomic batches. Idempotency keys make crash-replay safe — re-delivering the same event is a no-op skip.
-
-### Messages
-
-Each event (except `turn_end`) is projected into a **message** with typed blocks and a token estimate. Messages are the unit of content the rest of the system works with.
-
-### Turns
-
-A **turn** is one user↔agent exchange. The turn state machine enforces exactly one open turn at all times:
-
-- A `user_prompt` arriving when the open turn has members closes the current turn and opens a new one.
-- A `turn_end` event arriving when the open turn has members closes it and opens a new one.
-- Closing a turn queues derivation work for it.
-
-In the PI connector, one LHC turn spans an entire agent run (all steps). PI's per-step `turn_end` is explicitly not used as an LHC boundary — only `agent_end` closes the LHC turn.
-
-### Derivations
-
-A **derivation** is a compressed or summarized form of source content, produced either deterministically or through LLM inference. Derivations are the core of how LHC reduces context size while preserving information.
-
-There are seven derivation kinds, organized in a dependency hierarchy:
-
-```
-Events → Messages
-           ├── smoothed_prompt        (inference)  Cleaned user prompts
-           └── tool_result_summary    (inference)  Condensed tool outputs
-                    ↓
-              Turns
-           ├── turn_rendering          (deterministic)  Structured turn text with tool-run grouping
-           ├── pre_detailed_assembly   (deterministic)  Dialogue-register (prompts + responses only)
-           └── detailed_turn_compression (inference)    Compressed turn dialogue
-                    ↓
-              Chunks
-           ├── chunk_summary_detailed  (deterministic)  Concatenated member compressions
-           └── chunk_summary_brief     (inference)      Historical memory note
+```sh
+cc-lhc get-turns t211
+cc-lhc get-messages m3177
 ```
 
-Each derivation has a state (`pending` → `ready` | `failed` | `blocked`) and a `source_version` used for optimistic concurrency. When a message is edited or deleted, the full derivation chain is invalidated and re-queued at the next source version.
+Press `ctrl-]` in the interactive wrapper to open the LHC control panel.
+Automatic compact uses provider-reported context usage for its trigger and LHC
+rendered-token accounting for its target. Controlled handoffs preserve the
+latest confirmed Claude effort and permission mode.
 
-### Chunks
+Claude Code is closed source, so cc-lhc keeps explicit boundaries. In-app
+`/resume` is not a safe LHC continuation path. Use `cc-lhc --resume` or
+`cc-lhc --continue`. Rebuilt session files omit signed thinking when exact
+stored and live request identity cannot be proven.
 
-**Chunks** group consecutive closed turns by accumulated token count. When a turn is placed into a chunk and the chunk's token total crosses a configurable target (~2200 tokens), the chunk closes and its summary derivations are queued. Chunks are the unit of historical context compression.
+The retained whole-product certification evidence is for Claude Code 2.1.226.
+It is evidence for that artifact, not a guarantee for every future Claude Code
+release. See the [cc-lhc README](packages/cc-lhc/README.md) for current policy,
+recovery, configuration, verification, and compatibility details.
 
-### The Durable Work Queue
+## Use the TypeScript SDK
 
-Derivation work is processed through a SQLite-backed work queue with:
+The TypeScript SDK is a repository package, not a published standalone npm
+package. Its public entry point is `initLhc(config)`. The returned object
+contains these domains:
 
-- **Claim/lease mechanics** — Items are claimed with a time-limited lease. An expired lease is reclaimable by another process.
-- **Epoch fencing** — Every claim increments a `claim_epoch`. Completion writes check `WHERE claim_epoch = ?`, so a stale claimant's write harmlessly misses after a reclaim.
-- **Source-version checking** — Completion UPDATEs match `WHERE source_version = ?`. If a mutation cascade bumped the version, the stale completion is discarded.
-- **Exponential backoff** — Failed retryable items go back to `queued` with an `eligible_at` pushed out by `min(base × 2^attempts, cap)`.
-- **FIFO, no skip-ahead** — Only the oldest live item can be claimed. A backing-off or in-flight head gates everything behind it.
+- `threads`
+- `intakeStream`
+- `messages`
+- `turns`
+- `retrieval`
+- `threadView`
+- `inspect`
+- `logging`
+- `work`
 
-In **background mode**, the scheduler runs a per-thread single-flight drain loop with pending-flag coalescing. Enqueues poke the scheduler; a wake timer handles retry backoff and expired leases. In **manual mode**, the queue is only drained by explicit `work.drain()` calls.
+The host supplies a `ModelCall` function or the four inference callbacks. All
+thread state is stored in per-thread SQLite files through `node:sqlite`.
 
-### Smart Compact and Thread Views
+See the [SDK README](packages/lhc/README.md) for initialization, types, domain
+operations, derivation behavior, retrieval receipts, smart compact, prune, and
+the durable work queue.
 
-A **thread view** is the assembled context window served to the LLM. It has two layers:
+## Build from source
 
-1. **Bands** (compacted history) — Stored snapshot of compressed historical content, produced by smart compact.
-2. **Tail** (recent content) — Live messages after the compact point, rendered at full fidelity.
+The workspace development floor is Node.js 24.17 or later with pnpm 11.8.0.
+This is higher than the packaged cc-lhc runtime floor because the complete
+workspace also builds the SDK, ports, tests, and vendored PI integration.
 
-**Smart compact** runs a pure selection algorithm over the thread's turns and chunks:
-
-1. **Compact point** — Walk messages newest-first until the token sum fills the `full` band budget. Snap to a turn boundary.
-2. **Smooth band** — Banded closed turns, newest-first, using `detailed_turn_compression` content (or fallbacks).
-3. **Detailed band** — Closed chunks older than smooth coverage, using `chunk_summary_detailed`.
-4. **Brief band** — Remaining older chunks, using `chunk_summary_brief`.
-
-Three built-in view profiles control the budget allocation:
-
-| Profile | Full | Smooth | Detailed | Brief |
-|---|---|---|---|---|
-| `continuation` | 30% | 30% | 20% | 20% |
-| `conversation` | 12% | 48% | 20% | 20% |
-| `coding` | 25% | 35% | 20% | 20% |
-
-A **visibility boundary** controls tool-result rendering: results behind the boundary render short, saving tokens while the canonical record retains full content.
-
-### Stable Addressing and Retrieval
-
-Served history is **addressable**. Turn renderings wrap each turn in `<tN>…</tN>` tags with `<mN>…</mN>` tags on each message; chunk summaries carry a `<turns>t10 t11</turns>` span header at serve time, so even brief-band history exposes the ids it covers. Ids are stable addresses into the record.
-
-The `retrieval` domain resolves them back to content:
-
-- **`retrieval.getTurns(ids)`** — the smoothed turn rendering, labels included.
-- **`retrieval.getMessages(ids)`** — verbatim original message content.
-
-Both operations enforce a per-call token budget with an in-order budget walk: items that fit are served whole; the item that crosses the budget is served as an exact token slice with a continuation receipt (`fromToken` resumes it); items past a spent budget get explicit refusal receipts naming their size. An optional `byteBudget` produces byte-fitting slices for hosts whose machinery truncates tool output by bytes. Slices never split a multi-byte character.
-
-Every requested id writes one row to the thread's **impression log** (schema v6) — a durable record of what was recalled, when, by which surface, and whether it was served — the evidence base for future salience work. Hosts expose the operations to the model as tools (`get_turns` / `get_messages`), with output wrapped in an explicit historical envelope so recalled prompts read as records, not live instructions.
-
-Capture also preserves **thinking signatures and model identity**: `assistant_thinking` events carry an optional opaque provider signature, and assistant messages record the provider/model/API identity that produced them — frozen at request preparation, replayed only under exact identity match, so provider-signed reasoning survives resume without ever being replayed across a model boundary.
-
-### Inference Adapter
-
-LHC never calls an LLM directly. The host provides a `ModelCall` function that LHC's inference adapter wraps with:
-
-- **Prompt templates** — A name-keyed registry of versioned prompt templates (e.g., `smoothing-v1`, `tool-result-v2`). Each template renders input into `{ role, content }[]` messages.
-- **Per-kind routing** — Each derivation kind can use a different provider/model/prompt combination via `ModelAssignment` config.
-- **Input bounding** — Large tool results are truncated to head+tail before prompt rendering.
-- **Failure classification** — Host failures are classified as retryable (`rate_limit`, `timeout`, `network`, `empty_output`) or terminal (`auth`, `invalid_request`).
-- **Safe call** — try/catch + timeout race around the host function, so host behavior can never crash a drain.
-
-### Inspect and Diagnostics
-
-The `inspect` domain is a pure read-only consumer of all other domains. It provides:
-
-- **Overview** — Thread identity, event/message/turn/chunk counts, derivation states, view summary.
-- **Health** — Derivation state bucketing, failure detail, repair preview, capture gap detection.
-- **View** — Stored snapshot contents with serving-cost measurement.
-
----
-
-## How PI-LHC Works
-
-### Capture Flow
-
-```
-PI message_end hook
-  → mapMessage (fan-out: thinking → text → tool_call per call)
-  → TurnAccumulator tracks open turn
-  → capture() → intakeStream.messageEvents()
-  → Events, messages, turns written atomically in one SQLite transaction
-  → Work items enqueued for derivation
-  → Background scheduler drains the queue
-```
-
-PI's `agent_end` hook emits the `turn_end` that closes the LHC turn. Capture failures record durable gaps (queryable `runtime_note` events) rather than throwing into PI hooks.
-
-### Context Serving
-
-Context is served by **session seeding**, not PI's context hook:
-
-1. **Launcher startup** — The `pi-lhc` binary resolves the LHC thread, reads `getSessionThreadView()`, and appends the entries to an in-memory PI `SessionManager` before PI starts.
-2. **Rehydrate** — The `/lhc-rehydrate` command creates a fresh PI session seeded from the latest LHC thread view.
-3. **Compact** — PI's `session_before_compact` is intercepted; LHC runs smart compact and returns the result to PI.
-
-### Compact Bridge
-
-When PI requests compaction, the connector:
-
-1. Flushes pending capture.
-2. Checks the serving-context token count is above a 50k floor.
-3. Runs `threadView.previewCompact` / `threadView.compact` with LHC's profile.
-4. Maps LHC's `firstKeptMessageId` back to a PI session entry id (via live idempotency key parsing or the seed-entry-map).
-5. Returns a `CompactionResult` with rendered band text as the summary.
-
----
-
-## Building and Testing
-
-### Prerequisites
-
-- **Node.js** ≥ 24.17.0 (uses the stable `node:sqlite` built-in; majors above 24 are untested but not blocked)
-- **pnpm** 11.8.0+
-
-### Setup
-
-```bash
-git clone --recursive <repo-url>        # or: git submodule update --init
+```sh
+git clone --recursive https://github.com/liminal-ai/long-horizon-context.git
+cd long-horizon-context
 cd vendor/pi && npm ci && npm run build && cd ../..
-pnpm install
+pnpm install --frozen-lockfile
 pnpm build
 ```
 
-The submodule build comes first — `pi-lhc` links against `vendor/pi`'s built `dist/` output.
+Useful verification commands:
 
-### Vendored PI (submodule)
-
-`vendor/pi` is a git submodule pointing directly at upstream [earendil-works/pi](https://github.com/earendil-works/pi) `main`, pinned to a validated SHA (currently v0.84.x). The pin may sit ahead of the latest npm release; consuming unreleased upstream commits is the main reason for vendoring. The pin is **stock upstream** — there are currently no local patches (the previous thinking-signature fix landed upstream as #6457). If a patch ever becomes necessary before upstream can take it: re-point the submodule at a fork carrying a short rebased patch stack on top of upstream, and drop patches as upstream fixes land.
-
-Syncing with upstream (fetch in the submodule, then bump the pin here):
-
-```bash
-cd vendor/pi
-git fetch origin
-git checkout origin/main   # or a specific SHA after validating
-npm ci && npm run build
-cd ../..
-pnpm install
-# rebuild + verify pi-lhc, then commit the submodule pin bump in the outer repo
+```sh
+pnpm --config.verify-deps-before-run=false --filter lhc run verify
+pnpm --config.verify-deps-before-run=false --filter pi-lhc run verify
+pnpm --config.verify-deps-before-run=false --filter cc-lhc run verify
 ```
 
-Note: PI's build regenerates model-catalog files inside the submodule; if `git status` shows `vendor/pi` dirty after a build, that's what it is and it's discardable.
+To install a source checkout for one host, follow the ordered setup guide:
 
-### Build
+- [cc-lhc standalone setup](.setup/cc-lhc-standalone.md)
+- [pi-lhc standalone setup](.setup/pi-lhc-standalone.md)
 
-```bash
-pnpm build           # Build all packages
-```
+The PI setup builds the stock vendored PI submodule before it builds `pi-lhc`.
+The cc-lhc standalone setup does not build PI.
 
-`lhc` compiles TypeScript to `dist/` via `tsc`. `pi-lhc` depends on the built `lhc` output.
+## Core concepts
 
-### Test
+- **Canonical event record** — Host events stored in order as the durable
+  source of truth.
+- **Message** — A readable projection of one captured event, with typed blocks
+  and a token estimate.
+- **Agentic turn** — One user prompt through the final assistant response.
+- **Derivation** — A deterministic or model-produced representation of source
+  content. Derivations are versioned and rebuildable.
+- **Chunk** — Consecutive closed agentic turns grouped for historical
+  compression.
+- **Thread view** — Stored compacted bands plus the recent full tail served to
+  a model.
+- **Smart compact** — Selection and rendering of a new thread view under a
+  target budget.
+- **Visibility boundary** — The point behind which old tool results render in
+  shortened form while their canonical content remains available.
+- **Stable address** — A `tN` turn id or `mN` message id visible in served
+  history.
+- **Retrieval** — Bounded drill-down by stable address. `getTurns` serves
+  labeled turn renderings. `getMessages` serves verbatim message content.
+- **Impression** — A durable record of a retrieval request and its served or
+  unserved result.
 
-```bash
-# Fast tests (no real LLM calls)
-pnpm --filter lhc test         # ~60 test files, ~520 tests
-pnpm --filter pi-lhc test      # ~53 test files, ~380 tests
-pnpm --filter cc-lhc test      # ~17 test files, ~250 tests
+## Documentation
 
-# Integration tests (requires OPENROUTER_API_KEY)
-pnpm --filter lhc test:integration
-
-# Everything
-pnpm --filter lhc test:all
-```
-
-### Verify (lint + typecheck + test)
-
-```bash
-pnpm --filter lhc verify       # Format check, Biome lint, typecheck, fast tests
-pnpm --filter pi-lhc verify
-pnpm --filter lhc verify:all   # Above + integration tests
-```
-
-### Format and Lint
-
-```bash
-pnpm format          # Auto-fix formatting (Biome)
-pnpm lint            # Biome check
-```
-
-### Key Test Patterns
-
-- **Deterministic inference callbacks** — Tests use `createDeterministicInferenceCallbacks()` which produces stable `marker(fnv1a-digest:prefix)` text from input, so derivation content is predictable without real LLM calls.
-- **Temp thread files** — Tests create temporary SQLite files via `tmp.fileSync()` and clean up after.
-- **Golden tests** — Smart compact selection has golden JSON files (`test/goldens/`) pinning exact arrangement output.
-- **Real inference tests** — Gated behind `LHC_RUN_INTEGRATION=1` and `OPENROUTER_API_KEY`, these run all seven derivation kinds against a live model (default: `openai/gpt-4o-mini` via OpenRouter).
-
----
-
-## Project Structure
-
-```
-packages/lhc/src/
-├── sdk.ts                    initLhc() and the Lhc public surface
-├── threads/                  Thread creation, registry, resolution
-│   └── internal/
-│       ├── create.ts         SQLite schema (15 tables), file creation, migration
-│       └── registry.ts       registry CRUD (host supplies path; SDK default ~/.lhc)
-├── intake-stream/            Event recording pipeline
-│   └── internal/
-│       ├── pipeline.ts       Batch transaction: validate → record → project → queue
-│       └── validate.ts       Three-layer closed validation (Effect Schema)
-├── messages/                 Message projection, derivation, mutation
-│   └── internal/
-│       ├── handlers.ts       prompt_smoothing + tool_result_summary work handlers
-│       ├── cascade.ts        Edit/delete derivation chain invalidation
-│       ├── classify-tool-result.ts  Rule-based tool output classification
-│       ├── smoothing.ts      Deterministic prompt cleanup (code-fence-aware)
-│       └── derive.ts         Synchronous + durable message derivation
-├── turns/                    Turn state machine, composition, chunks
-│   └── internal/
-│       ├── derive.ts         4 work handlers: turn assembly, compression, chunk summaries
-│       ├── compose.ts        Rendering composition with tool-run grouping
-│       ├── chunks.ts         Chunk placement and close policy
-│       └── derivations.ts    Turn/chunk derivation reads and reports
-├── thread-view/              View assembly and smart compact
-│   └── internal/
-│       ├── select.ts         Pure selection walk (the compact algorithm)
-│       ├── compact-compute.ts  Compact arrangement computation
-│       ├── snapshot.ts       Stored view CRUD (atomic replace)
-│       ├── session-view.ts   PI session format builder
-│       ├── profiles.ts       Built-in profiles and validation
-│       └── render.ts         Band and tail message rendering
-├── inspect/                  Read-only diagnostic reports (overview, health, view)
-└── shared-tech/              Technical infrastructure
-    ├── work-queue/           Durable FIFO queue with claim/epoch/version fencing
-    ├── durable-work/         Derivation completion mechanics
-    ├── scheduler.ts          Background per-thread drain loop
-    ├── inference-adapter.ts  ModelCall → InferenceCallbacks adapter
-    ├── prompts/              Versioned prompt templates (7 templates)
-    ├── persist.ts            Read/write transaction helpers
-    ├── context.ts            AsyncLocalStorage-based per-SDK instance scoping
-    ├── logging/              Operational + derivation audit logs
-    └── token-counting/       js-tiktoken o200k_base estimator
-
-packages/pi-lhc/src/
-├── index.ts                  Extension entry, hook rail, connector factory
-├── capture/                  PI event → LHC event conversion
-│   ├── map-message.ts        Message fan-out mapping
-│   ├── converter.ts          Isolated flush with gap recording
-│   ├── idempotency.ts        4-tier stable event key construction
-│   ├── turn-accumulator.ts   LHC turn boundary tracking
-│   └── runtime-changes.ts    Model/thinking-level change mapping
-├── compact/                  Smart compact bridge
-│   ├── handler.ts            session_before_compact handler
-│   ├── result-mapping.ts     LHC message id → PI entry id mapping
-│   ├── seed-entry-map.ts     Cross-session compact continuity
-│   └── profile.ts            Compact profile + floor config
-├── inference/                PI-backed inference wiring
-│   ├── model-call.ts         createModelCall via PI registry + pi-ai
-│   ├── assignments.ts        Operator assignment config loading
-│   └── startup-validation.ts Model registry reachability probes
-├── launcher/                 pi-lhc binary and startup
-│   ├── run.ts                Launcher entry point
-│   ├── startup.ts            Thread resolve → session seed → PI runtime
-│   └── seed-session.ts       LHC thread-view → PI SessionManager
-├── lifecycle/                Session state and thread management
-│   ├── instance.ts           initInstance / disposeInstance
-│   ├── state.ts              Plain-data SessionState
-│   ├── thread-resolution.ts  Launch flag → thread resolution
-│   ├── picker.ts             --lhc-resume CWD-scoped picker
-│   ├── fork.ts               Fork detection and event replay
-│   ├── rehydrate.ts          /lhc-rehydrate command
-│   └── thread-entry.ts       Durable pi-lhc.thread PI session entry
-├── serving/                  Context serving
-│   └── context.ts            SessionThreadView → PI SessionManager mapping
-└── pi/
-    └── types.ts              Local PI type declarations
-```
-
-## Further Reading
-
-- `docs/onboard/01-core-concepts.md` — vocabulary and the record/derivation model
-- `docs/onboard/02-domain-design.md` — per-domain design detail
-- `docs/onboard/03-decisions-brief.md` — the ~60 high-leverage rulings (orientation cut)
-- `docs/lexicon.md` — project vocabulary staging (terms enter once decided)
-- `docs/onboard/04-host-pi-lhc.md` — the PI connector host: capture, seeding, compact bridge, known debt
-- `docs/onboard/05-host-cc-lhc.md` — the Claude Code wrapper host: PTY, leader-key modal, rollout capture, in-app resume flow
-- `docs/host-integrations.md` — all maintained hosts: the fork/patch process (codex, grok, hermes) and the non-fork patterns (pi extension, claude code wrapper)
-- `docs/decision-registry.md` — full decision registry (canonical authority)
-- `docs/fixes-feature-log.md` — running log of fixes, features, and open items
+- [Core concepts](docs/onboard/01-core-concepts.md)
+- [Domain design](docs/onboard/02-domain-design.md)
+- [Decision brief](docs/onboard/03-decisions-brief.md)
+- [PI host](docs/onboard/04-host-pi-lhc.md)
+- [cc-lhc host](docs/onboard/05-host-cc-lhc.md)
+- [Host integrations and fork maintenance](docs/host-integrations.md)
+- [Project lexicon](docs/lexicon.md)
+- [Decision registry](docs/decision-registry.md)
+- [Ethical framework](docs/ethical-framework.md)
 
 ## License
 
-Private — not published.
+This repository is licensed under the [MIT License](LICENSE).

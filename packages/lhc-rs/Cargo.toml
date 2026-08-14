@@ -3,7 +3,7 @@ name = "lhc"
 version = "0.1.0"
 edition = "2024"
 description = "Rust port of the LHC (long-horizon context) SDK — event-sourced capture, derivations, smart compaction"
-license = "UNLICENSED"
+license = "MIT"
 publish = false
 
 [dependencies]
