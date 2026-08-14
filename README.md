@@ -77,7 +77,27 @@ certification against Claude Code 2.1.226 is in
 
 ## Installing the Claude Code Harness (cc-lhc)
 
-cc-lhc targets Linux (x64, arm64), macOS (x64, arm64), and native Windows (x64, arm64) — the six targets in `packages/cc-lhc-native/targets.json`. The `native-platforms` GitHub workflow defines a required build-and-test leg for every one of the six; it has not yet had a successful run on GitHub, so until it does, Linux is the only target with executed end-to-end evidence and the other five rest on the workflow definition plus local cross-platform test gates. The native process-identity addon is delivered as checksum-verified prebuilt binaries, so a fresh install needs no compiler.
+cc-lhc targets Linux (x64, arm64), macOS (x64, arm64), and native Windows (x64, arm64) — the six targets in `packages/cc-lhc-native/targets.json`. The `native-platforms` GitHub workflow builds and tests every target. The native process-identity addon is delivered as checksum-verified prebuilt binaries, so a fresh install needs no compiler.
+
+Prerequisites are Node 24.3 or later and an installed, authenticated Claude
+Code CLI. Install the published release directly from GitHub on Linux or
+macOS:
+
+```sh
+curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.1.0/install.sh | sh
+```
+
+Install it from PowerShell on Windows:
+
+```powershell
+irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.1.0/install.ps1 | iex
+```
+
+Both installers detect x64 or ARM64, download the matching complete runtime
+bundle, and verify it before installation. The URL path does not invoke npm or
+a compiler on the client. Node 24.3 or later and an authenticated Claude Code
+CLI remain prerequisites. The normal `npm install --global cc-lhc` path remains
+supported.
 
 To set up cc-lhc on a machine that has Claude Code (no PI needed), give an AI coding agent this instruction — or follow it yourself:
 

@@ -21,6 +21,8 @@ on:
     paths:
       - ".github/workflows/native-platforms.yml"
       - ".setup/**"
+      - "install.sh"
+      - "install.ps1"
       - "packages/cc-lhc/**"
       - "packages/cc-lhc-native/**"
       - "packages/lhc/**"
@@ -121,6 +123,105 @@ jobs:
       - name: Smoke global npm install without a compiler
         run: node packages/cc-lhc/scripts/smoke-npm-package.mjs build/cc-lhc-npm
 
+      - name: Assemble standalone runtime bundle
+        run: >-
+          node packages/cc-lhc/scripts/assemble-standalone-bundle.mjs
+          --package-root build/cc-lhc-npm
+          --target ${{ matrix.target }}
+          --out build/cc-lhc-standalone
+          --source-commit ${{ github.sha }}
+
+      - name: Check standalone runtime bundle
+        run: >-
+          node packages/cc-lhc/scripts/check-standalone-bundle.mjs
+          build/cc-lhc-standalone/cc-lhc-v0.1.0-${{ matrix.target }}
+
+      - name: Package standalone runtime bundle (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          bundle="cc-lhc-v0.1.0-${TARGET}"
+          asset="${bundle}.tar.gz"
+          mkdir -p build/standalone-assets
+          tar -C build/cc-lhc-standalone -czf "build/standalone-assets/${asset}" "$bundle"
+          if command -v sha256sum >/dev/null 2>&1; then
+            (cd build/standalone-assets && sha256sum "$asset" > SHA256SUMS)
+          else
+            (cd build/standalone-assets && shasum -a 256 "$asset" > SHA256SUMS)
+          fi
+
+      - name: Package standalone runtime bundle (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          $bundle = "cc-lhc-v0.1.0-$env:TARGET"
+          $asset = "$bundle.zip"
+          New-Item -ItemType Directory -Path build/standalone-assets -Force | Out-Null
+          Push-Location build/cc-lhc-standalone
+          try {
+            Compress-Archive -Path $bundle -DestinationPath "../standalone-assets/$asset"
+          } finally {
+            Pop-Location
+          }
+          $hash = (Get-FileHash "build/standalone-assets/$asset" -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -Path build/standalone-assets/SHA256SUMS -Value "$hash  $asset" -Encoding Ascii
+
+      - name: Smoke standalone URL installer (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d "${TMPDIR:-/tmp}/cc-lhc-installer-smoke.XXXXXX")"
+          cleanup() { case "$scratch" in "${TMPDIR:-/tmp}"/cc-lhc-installer-smoke.*) rm -rf -- "$scratch" ;; esac; }
+          trap cleanup EXIT
+          mkdir -p "$scratch/home/.cc-lhc"
+          touch "$scratch/home/.cc-lhc/preserve-me"
+          HOME="$scratch/home" \
+          CC_LHC_PREFIX="$scratch/prefix" \
+          CC_LHC_INSTALL_ROOT="$scratch/store" \
+          ./install.sh --version 0.1.0 --asset-dir build/standalone-assets
+          CC_LHC_NATIVE_REQUIRE_ADDON=1 "$scratch/prefix/bin/cc-lhc" --lhc-help >/dev/null
+          HOME="$scratch/home" \
+          CC_LHC_PREFIX="$scratch/prefix" \
+          CC_LHC_INSTALL_ROOT="$scratch/store" \
+          ./install.sh --uninstall
+          test -f "$scratch/home/.cc-lhc/preserve-me"
+          test ! -e "$scratch/store"
+
+      - name: Smoke standalone URL installer (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $scratch = Join-Path ([System.IO.Path]::GetTempPath()) "cc-lhc-installer-smoke-$([guid]::NewGuid())"
+          $prefix = Join-Path $scratch prefix
+          $store = Join-Path $scratch store
+          try {
+            & ./install.ps1 -Version 0.1.0 -Prefix $prefix -InstallRoot $store -AssetDir build/standalone-assets
+            if ($LASTEXITCODE -ne 0) { throw "installer failed" }
+            $env:CC_LHC_NATIVE_REQUIRE_ADDON = "1"
+            & (Join-Path $prefix "bin/cc-lhc.cmd") --lhc-help | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw "installed launcher failed" }
+            & ./install.ps1 -Prefix $prefix -InstallRoot $store -Uninstall
+            if (Test-Path $store) { throw "uninstall left the managed store" }
+          } finally {
+            Remove-Item Env:CC_LHC_NATIVE_REQUIRE_ADDON -ErrorAction SilentlyContinue
+            if (Test-Path $scratch) { Remove-Item $scratch -Recurse -Force }
+          }
+
+      - name: Preserve standalone runtime bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: standalone-${{ matrix.target }}
+          path: |
+            build/standalone-assets/*.tar.gz
+            build/standalone-assets/*.zip
+          if-no-files-found: error
+
       - name: Preserve native prebuild for package aggregation
         uses: actions/upload-artifact@v7
         with:
@@ -197,4 +298,60 @@ jobs:
         with:
           name: cc-lhc-npm-package
           path: build/npm-artifact/*.tgz
+          if-no-files-found: error
+
+  standalone-release:
+    name: standalone-release
+    needs: native
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout release scripts
+        uses: actions/checkout@v7
+
+      - name: Download all standalone bundles
+        uses: actions/download-artifact@v8
+        with:
+          pattern: standalone-*
+          path: build/standalone-release
+          merge-multiple: true
+
+      - name: Assemble standalone release candidate
+        run: |
+          set -euo pipefail
+          cd build/standalone-release
+          expected=(
+            cc-lhc-v0.1.0-linux-x64.tar.gz
+            cc-lhc-v0.1.0-linux-arm64.tar.gz
+            cc-lhc-v0.1.0-darwin-x64.tar.gz
+            cc-lhc-v0.1.0-darwin-arm64.tar.gz
+            cc-lhc-v0.1.0-win32-x64.zip
+            cc-lhc-v0.1.0-win32-arm64.zip
+          )
+          for asset in "${expected[@]}"; do test -f "$asset"; done
+          test "$(find . -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) -type f | wc -l)" -eq 6
+          sha256sum "${expected[@]}" > SHA256SUMS
+          cp ../../install.sh ../../install.ps1 .
+          SOURCE_COMMIT="$GITHUB_SHA" node --input-type=module <<'NODE'
+          import { createHash } from "node:crypto";
+          import { readdirSync, readFileSync, writeFileSync } from "node:fs";
+          const assets = readdirSync(".").filter((name) => /\.(?:tar\.gz|zip)$/.test(name)).sort();
+          const hashes = Object.fromEntries(assets.map((name) => [
+            name,
+            createHash("sha256").update(readFileSync(name)).digest("hex"),
+          ]));
+          writeFileSync("release-manifest.json", `${JSON.stringify({
+            schemaVersion: 1,
+            product: "cc-lhc",
+            version: "0.1.0",
+            sourceCommit: process.env.SOURCE_COMMIT,
+            assets: hashes,
+          }, null, 2)}\n`);
+          NODE
+          sha256sum --check --strict SHA256SUMS
+
+      - name: Preserve standalone release candidate
+        uses: actions/upload-artifact@v7
+        with:
+          name: cc-lhc-standalone-release
+          path: build/standalone-release/*
           if-no-files-found: error
