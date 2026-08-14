@@ -24,7 +24,27 @@ the package build.
 ## Install
 
 Prerequisites are Node 24.3 or later and an installed, authenticated Claude
-Code CLI. Install the wrapper globally:
+Code CLI.
+
+Install on Linux or macOS from the checksum-verified GitHub release:
+
+```sh
+curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.1.0/install.sh | sh
+```
+
+Install on Windows from PowerShell:
+
+```powershell
+irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.1.0/install.ps1 | iex
+```
+
+The installers detect x64 or ARM64, download the matching complete runtime
+bundle, and verify its SHA-256 before installation. The bundle includes all
+JavaScript dependencies, the target PTY runtime, and the native identity addon.
+The client does not invoke npm or a compiler. Node 24.3 or later and an
+authenticated Claude Code CLI remain prerequisites.
+
+The ordinary npm installation remains available:
 
 ```text
 npm install --global cc-lhc

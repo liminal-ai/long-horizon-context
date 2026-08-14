@@ -1,8 +1,8 @@
 # Setup: cc-lhc standalone
 
-Audience: an AI coding agent (or a person) setting up cc-lhc on a machine that has Claude Code and will NOT use PI. Supported platforms are exactly the six native targets in `packages/cc-lhc-native/targets.json`: Linux (x64, arm64), macOS (x64, arm64), and Windows (x64, arm64) — native Windows, no WSL required. Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
+Audience: an AI coding agent (or a person) building cc-lhc from a source checkout on a machine that has Claude Code and will NOT use PI. Published npm and complete-bundle installation paths are in the root README. Supported platforms are exactly the six native targets in `packages/cc-lhc-native/targets.json`: Linux (x64, arm64), macOS (x64, arm64), and Windows (x64, arm64) — native Windows, no WSL required. Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
 
-> Kickoff lives in the repo README ("Installing the Claude Code Harness"). Everything below assumes the agent is reading this file inside a completed clone. Commands are written for a POSIX shell. The plain `git`/`node`/`pnpm` invocations work verbatim in PowerShell and cmd as well; the one place the syntax genuinely differs (setting an environment variable for a single command) gives explicit POSIX, PowerShell, and cmd forms.
+> Kickoff lives in the repo README ("Install cc-lhc"). Everything below assumes the agent is reading this file inside a completed clone. Commands are written for a POSIX shell. The plain `git`/`node`/`pnpm` invocations work verbatim in PowerShell and cmd as well; the one place the syntax genuinely differs (setting an environment variable for a single command) gives explicit POSIX, PowerShell, and cmd forms.
 >
 > Known issue: pnpm 11.8.0 can crash in its pre-run dependency verification (`Cannot destructure property 'importMethod'`) before running anything — tracked as open bug `long-horizon-context-52k`. Every `pnpm … run …` command below therefore passes `--config.verify-deps-before-run=false` to bypass that broken pre-run check (it does not weaken the install itself). If a pnpm command still fails before your script starts, invoke the underlying tool directly (e.g. `node node_modules/typescript/bin/tsc -p packages/<pkg>/tsconfig.json`, `npx vitest run` from the package directory).
 
@@ -35,7 +35,7 @@ All lines must PASS before continuing. The script needs only Node, so if even No
 From the repo root:
 
 ```bash
-pnpm install
+pnpm install --frozen-lockfile
 pnpm --config.verify-deps-before-run=false --filter lhc run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc run build
@@ -45,14 +45,14 @@ Do not run the root `pnpm build` — it builds every package including PI-depend
 
 ## Step 4: Build the native identity addon
 
-cc-lhc's single-ownership invariant uses a small native Node-API addon (`cc-lhc-native`) for exact process identity. Until npm packaging exists, build that addon from the checkout:
+cc-lhc's single-ownership invariant uses a small native Node-API addon (`cc-lhc-native`) for exact process identity. A source checkout builds that addon locally:
 
 ```bash
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run stage:prebuild
 ```
 
-This pre-publication checkout builds the addon from source. `node-gyp` needs Python plus the native compiler toolchain: GCC/Make on Linux, Xcode Command Line Tools on macOS, or Visual Studio Build Tools with the Desktop C++ workload on Windows. The eventual npm package will install the matching prebuilt addon; that packaging is intentionally deferred until the source version has been dogfooded and signed off.
+`node-gyp` needs Python plus the native compiler toolchain: GCC/Make on Linux, Xcode Command Line Tools on macOS, or Visual Studio Build Tools with the Desktop C++ workload on Windows. Published npm packages and GitHub runtime bundles include the matching prebuilt addon and do not compile it on the client. This source-development profile still builds it to prove the local checkout.
 
 **Verify:** `node packages/cc-lhc/dist/bin.js --version` prints the Claude Code version banner (it passes through to the real `claude`). For full confidence run the deterministic suite with the compiled addon made mandatory:
 
@@ -65,7 +65,7 @@ $env:CC_LHC_NATIVE_REQUIRE_ADDON="1"; pnpm --config.verify-deps-before-run=false
 cmd /c "set CC_LHC_NATIVE_REQUIRE_ADDON=1&& pnpm --config.verify-deps-before-run=false --filter cc-lhc run test"
 ```
 
-The current suite contains 658 tests. Platform-specific tests may skip where they do not apply; zero failures is the bar on every platform.
+Platform-specific tests may skip where they do not apply; zero failures is the bar on every platform.
 
 ## Step 5: Put `cc-lhc` on PATH
 
@@ -115,7 +115,7 @@ If ctrl-] does not open the command panel, capture a debug log — POSIX: `CC_LH
 cd <repo>
 git pull
 git submodule update --init
-pnpm install
+pnpm install --frozen-lockfile
 pnpm --config.verify-deps-before-run=false --filter lhc run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native

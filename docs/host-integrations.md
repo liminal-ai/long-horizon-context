@@ -1,6 +1,6 @@
 # Host integrations — how LHC stays attached to its harnesses
 
-Last verified against code: 2026-08-06. Precedence when facts disagree: code,
+Last verified against code: 2026-08-14. Precedence when facts disagree: code,
 then each fork's `FORK.md`, then this doc.
 
 LHC is an SDK; every harness it serves needs an integration surface. Because
@@ -58,8 +58,8 @@ a small, mechanical repair job.
 
 | Host | Upstream | Fork / integration | Local | Patch model | Gate | Launcher |
 |---|---|---|---|---|---|---|
-| codex | openai/codex (~760 commits/mo) | liminal-ai/codex-lhc, branch `lhc` | `/srv/work/codex` | state diffs from `patches/lhc/BASE` | `scripts/check-lhc-hooks.sh` (52 markers + full matrix) | `codex-lhc` (`--enable lhc_capture`) |
-| grok | xai-org/grok-build (daily monorepo squash-syncs; may reset history) | liminal-ai/grok-build-lhc, branch `lhc` | `/srv/work/grok-build` | one state diff from `patches/BASE` | `scripts/check-lhc-hooks.sh` (10 markers + suites) | `grok-lhc` (env `GROK_LHC=1`) |
+| codex | openai/codex (~760 commits/mo) | liminal-ai/codex-lhc, branch `lhc` | `/srv/work/codex` | state diffs from `patches/lhc/BASE` | `scripts/check-lhc-hooks.sh` (52 markers + full matrix) | `codex-lhc` (LHC on by default; `lhc_capture = false` is the kill switch) |
+| grok | xai-org/grok-build (daily monorepo squash-syncs; may reset history) | liminal-ai/grok-build-lhc, branch `lhc` | `/srv/work/grok-build` | one state diff from `patches/BASE` | `scripts/check-lhc-hooks.sh` (10 markers + suites) | `grok` (LHC on by default; `GROK_LHC=0` is the kill switch) |
 | hermes | NousResearch/hermes-agent (~150 commits/day, stable history) | liminal-ai/hermes-lhc, branch `lhc-engine` | `/srv/work/hermes-agent` | merge-forward, no patch files | plugin pytest suite incl. hook tripwire + host-contract tests | `hermes` (editable install; `context.engine: lhc`) |
 | pi | earendil-works/pi | none needed — extension | `packages/pi-lhc` + `vendor/pi` submodule | n/a (stock upstream pin) | `pnpm --filter pi-lhc run verify` | `pi-lhc` |
 | claude code | closed source | none possible — wrapper | `packages/cc-lhc` | n/a | `pnpm --filter cc-lhc` verify | `cc-lhc` |
@@ -94,20 +94,21 @@ never casually.
 ## codex (native fork)
 
 Adapter crate `codex-rs/lhc/codex-lhc-host` plus vendored `lhc-rs` submodule
-(`codex-rs/lhc/vendor/long-horizon-context`). Capture is gated by
-`Feature::LhcCapture` (`--enable lhc_capture`), default OFF; with the flag off
-the binary is behaviorally stock. Storage under `~/.codex/lhc/`. The launcher
-`~/.local/bin/codex-lhc` runs the fork's release binary. The retired
+(`codex-rs/lhc/vendor/long-horizon-context`). LHC capture and compact are on
+by default because this is the product fork. The troubleshooting kill switch
+is `lhc_capture = false`. Storage is under `~/.codex/lhc/`. The launcher
+`codex-lhc` runs the fork's release binary. The retired
 TypeScript wrapper (`packages/codex-lhc`) was deleted 2026-08-06 — this fork
 is the sole Codex integration.
 
 ## grok (native fork)
 
-Adapter crate `crates/lhc/grok-lhc-host` plus vendored `lhc-rs`. Capture gated
-by `GROK_LHC=1` / `[lhc] enabled`; compact runs in Shadow mode unless Replace
-is explicitly armed (`GROK_LHC_COMPACT=replace` **and**
-`GROK_LHC_COMPACT_EXPERIMENTAL=1`). Storage default `~/.lhc` (override
-`GROK_LHC_ROOT`). Derivation inference defaults to grok-4.5 at low thinking.
+Adapter crate `crates/lhc/grok-lhc-host` plus vendored `lhc-rs`. Capture,
+serving, and Replace compact are on by default in the product fork. Disable
+LHC only for troubleshooting with `GROK_LHC=0` or
+`[lhc] enabled = false`. There is no Shadow compact path. Storage defaults to
+`~/.grok-lhc` (override with `GROK_LHC_ROOT` or `[lhc].root`). Derivation
+inference defaults to grok-4.5 at low thinking.
 Upstream accepts no external PRs and may rewrite history — the patch file is
 the fork's durable form; the recovery drill is rehearsed.
 
@@ -156,12 +157,16 @@ Claude Code is closed source with hooks too limited to host LHC, so `cc-lhc`
 takes the outside position: it owns the `claude` process under a PTY with
 transparent passthrough, **watches the rollout JSONL** Claude Code writes and
 captures those records into the LHC thread, and exposes LHC commands through a
-leader-key modal (ctrl-]). Because nothing can be injected into a running
-session, compact/prune **rebuilds a fresh rollout file** from the thread view
-and hot-swaps it via `/resume`. Maintenance obligation: none against a fork —
-but the rollout format and resume mechanics are reverse-engineered, so Claude
-Code releases can move them silently; the wrapper's format mapping is the
-brittle seam. Host docs: `docs/onboard/05-host-cc-lhc.md`.
+leader-key modal (ctrl-]). Compact/prune **rebuilds a fresh rollout file** from
+the thread view. For a respawn-safe launch, the wrapper terminates the old
+child and starts a new child with external `--resume <new-id>` after lineage,
+capture, and liveness checks succeed. User-issued in-app `/resume` is not a
+supported handoff path. A launch form that cannot be replayed safely receives
+an explicit external-resume receipt instead. Maintenance obligation: none
+against a fork — but the rollout format and resume mechanics are
+reverse-engineered, so Claude Code releases can move them silently; the
+wrapper's format mapping is the brittle seam. Host docs:
+`docs/onboard/05-host-cc-lhc.md`.
 
 ## t3code (external fork, docs here)
 
