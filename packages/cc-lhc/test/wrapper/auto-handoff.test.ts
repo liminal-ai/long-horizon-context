@@ -296,7 +296,10 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
         isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
         generation,
       );
-      if (opts.onLifecycle !== undefined && !isRebuilt) lifecycleSink = opts.onLifecycle;
+      if (!isRebuilt) {
+        if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+        opts.onRuntimeSettings?.({ effort: "max", permissionMode: "auto" });
+      }
       return scripted.session;
     };
 
@@ -309,7 +312,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       terminalOutput += chunk.toString("utf8");
     });
 
-    const runPromise = run([], {
+    const runPromise = run(["--effort", "medium", "--permission-mode", "manual"], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
         const fake = makeFakePty(1000 + spawned.length, `child${spawned.length}`, args, true);
@@ -365,6 +368,9 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     // The respawned child carries the native backstop through the supported surface.
     expect(spawned[1]!.args).toContain("--autocompact");
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--autocompact") + 1]).toBe("1000000");
+    // Wrapper-owned handoff preserves the latest confirmed Claude runtime choices.
+    expect(spawned[1]!.args[spawned[1]!.args.indexOf("--effort") + 1]).toBe("max");
+    expect(spawned[1]!.args[spawned[1]!.args.indexOf("--permission-mode") + 1]).toBe("auto");
 
     // The SDK received the configured profile and lower bound.
     expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), {

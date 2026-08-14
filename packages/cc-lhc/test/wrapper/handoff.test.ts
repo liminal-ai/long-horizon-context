@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { HandoffRequest } from "../../src/commands/context-mutation.js";
 import {
   executeHandoff,
+  formatHandoffResult,
   type HandoffChild,
   type HandoffPorts,
   type RecoveryArtifact,
@@ -90,7 +91,7 @@ function makeHarness(overrides: Partial<HandoffPorts> = {}): Harness {
       return childFor(sessionId);
     },
     currentChild: () => childFor("current"),
-    killCurrentChild: () => {
+    killCurrentChild: async () => {
       calls.push("killCurrentChild");
     },
     startRebuiltCapture: () => {
@@ -473,5 +474,35 @@ describe("executeHandoff", () => {
     const publishIdx = h.calls.indexOf("publishReadyDescriptor");
     const rollbackReadyIdx = h.calls.lastIndexOf("awaitCaptureReady");
     if (publishIdx !== -1) expect(publishIdx).toBeGreaterThan(rollbackReadyIdx);
+  });
+});
+
+describe("formatHandoffResult", () => {
+  it("does not call an old-child-survived outcome a recovery write failure", () => {
+    expect(
+      formatHandoffResult({
+        kind: "failed",
+        reason: "old child did not exit",
+        oldSessionId: "old",
+        rebuiltSessionId: "new",
+        childAlive: true,
+        recoveryArtifactPath: null,
+        retainedInputBytes: 0,
+      }),
+    ).toBe("handoff FAILED: old child did not exit; old session old continues; no recovery artifact required");
+  });
+
+  it("names a real retained-input recovery write failure", () => {
+    expect(
+      formatHandoffResult({
+        kind: "failed",
+        reason: "rollback failed",
+        oldSessionId: "old",
+        rebuiltSessionId: "new",
+        childAlive: false,
+        recoveryArtifactPath: null,
+        retainedInputBytes: 17,
+      }),
+    ).toContain("recovery artifact write FAILED; retained input 17 byte(s)");
   });
 });

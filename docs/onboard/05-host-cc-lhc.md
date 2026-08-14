@@ -224,9 +224,10 @@ use an alternate-screen panel.
 
 Press ctrl-] (configurable through `CC_LHC_LEADER`) for `status`, `stats`,
 `compact`, `prune`, `export`, `auto`, `bounds`, and `help`. The modal recognizes
-raw, kitty CSI-u, and xterm modifyOtherKeys encodings; it preserves escape and
-bracketed-paste traffic and holds child output while open. Overflow cancels the
-panel and flushes held bytes rather than dropping them.
+raw, kitty CSI-u, xterm modifyOtherKeys, and Windows Terminal win32 input
+encodings; it preserves escape and bracketed-paste traffic and holds child
+output while open. Overflow cancels the panel and flushes held bytes rather
+than dropping them.
 
 The advisory notifier recognizes high-confidence user-originated `/resume`,
 `/clear`, and `/compact` input and warns without changing or blocking it. It is
