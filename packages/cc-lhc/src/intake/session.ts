@@ -36,6 +36,10 @@ import {
 } from "../rollout/discover.js";
 import type { ExpectedSession } from "../rollout/expected-session.js";
 import type { RolloutLineItem, WatcherEmission } from "../rollout/types.js";
+import {
+  observeClaudeRuntimeSettings,
+  type ClaudeRuntimeSettings,
+} from "../rollout/runtime-settings.js";
 import { type RolloutWatcher, watchRolloutFile } from "../rollout/watcher.js";
 import { type CaptureStats, emptyCaptureStats } from "../stats.js";
 import {
@@ -158,6 +162,8 @@ export interface CaptureSessionDeps {
   drainSettledCapMs?: number;
   createThreadFn?: typeof createCaptureThread;
   onLifecycle?: (signals: readonly LifecycleSignal[]) => void;
+  /** Latest runtime choices explicitly recorded by the bound Claude rollout. */
+  onRuntimeSettings?: (settings: Readonly<ClaudeRuntimeSettings>) => void;
   /** Generation id seed (tests / restart counters). */
   generationSeed?: number;
   /** Test seam: injectable watcher I/O (fstat/read failures). */
@@ -342,6 +348,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     deps.generationSeed ??
     (deps.continueCapture?.priorGeneration !== undefined ? deps.continueCapture.priorGeneration + 1 : 1);
   let captureHealth: CaptureGenerationState = createCaptureGeneration(genSeed);
+  let runtimeSettings: ClaudeRuntimeSettings = {};
 
   const publishLifecycle = (signals: readonly LifecycleSignal[]): void => {
     if (userOnLifecycle === undefined || signals.length === 0) return;
@@ -445,6 +452,12 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             stats.parseFailures += 1;
             logError(`cc-lhc parse fail: ${emission.error}`);
             continue;
+          }
+
+          const nextRuntimeSettings = observeClaudeRuntimeSettings(runtimeSettings, emission.item);
+          if (nextRuntimeSettings !== runtimeSettings) {
+            runtimeSettings = nextRuntimeSettings;
+            deps.onRuntimeSettings?.({ ...runtimeSettings });
           }
 
           stats.skippedSidechain += observed.stats.sidechain;

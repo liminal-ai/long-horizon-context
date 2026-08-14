@@ -75,6 +75,10 @@ import {
 } from "../runtime/session-owner.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import type { ExpectedSession } from "../rollout/expected-session.js";
+import {
+  applyClaudeRuntimeSettings,
+  type ClaudeRuntimeSettings,
+} from "../rollout/runtime-settings.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
 import {
   forceKillChildTree,
@@ -258,6 +262,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     );
   }
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
+  let observedRuntimeSettings: ClaudeRuntimeSettings = {};
+  let handoffRuntimeSettings: ClaudeRuntimeSettings | undefined;
+  const onRuntimeSettings = (settings: Readonly<ClaudeRuntimeSettings>): void => {
+    // A replacement rollout emits permission mode before its first assistant
+    // response. Keep the prior confirmed effort until Claude confirms a newer one.
+    observedRuntimeSettings = { ...observedRuntimeSettings, ...settings };
+  };
 
   let expectedSession: ExpectedSession | undefined;
   const ownedSessionLeases = new Map<string, SessionOwnerLease>();
@@ -702,6 +713,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       log: (message) => wrapperLog.info(message),
       logError: (message) => wrapperLog.warn(message),
       onLifecycle: onCaptureLifecycle,
+      onRuntimeSettings,
     });
     process.on("SIGUSR1", onSigusr1);
   }
@@ -1339,6 +1351,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const spawnHandoffChild = (sessionId: string): HandoffChild => {
       ensureSessionOwner(sessionId);
       let respawnArgv = respawnChildArgv(respawnRest, respawnPassthrough, sessionId);
+      if (handoffRuntimeSettings !== undefined) {
+        respawnArgv = applyClaudeRuntimeSettings(respawnArgv, handoffRuntimeSettings);
+      }
       if (nativeBackstopArgs.length > 0) respawnArgv = [...nativeBackstopArgs, ...respawnArgv];
       // Fresh descriptor per child generation: the old one is closed at commit;
       // ready→ready with a different binding is an illegal transition.
@@ -1411,6 +1426,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       childDiedDuringHandoff = false;
       const leaseGeneration = captureSession?.getCaptureGeneration() ?? 0;
       const oldCaptureSnapshot = captureSession;
+      handoffRuntimeSettings = { ...observedRuntimeSettings };
       const ports: HandoffPorts = {
         preCommitGate: (): string | null => {
           if (respawnUnsafeReason !== null) {
@@ -1533,6 +1549,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             log: (message) => wrapperLog.info(message),
             logError: (message) => wrapperLog.warn(message),
             onLifecycle: onCaptureLifecycle,
+            onRuntimeSettings,
           });
         },
         startRollbackCapture: (oldSessionId: string): void => {
@@ -1556,6 +1573,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             log: (message) => wrapperLog.info(message),
             logError: (message) => wrapperLog.warn(message),
             onLifecycle: onCaptureLifecycle,
+            onRuntimeSettings,
           });
         },
         awaitCaptureReady: awaitCaptureReadyAfterReplay,
@@ -1648,6 +1666,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         }
         return result;
       } finally {
+        handoffRuntimeSettings = undefined;
         handoffInProgress = false;
       }
     };
