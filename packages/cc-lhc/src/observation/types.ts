@@ -4,6 +4,7 @@ export type LifecycleSignalKind =
   | "session_bound"
   | "turn_opened"
   | "sampling_observed"
+  | "post_measurement_estimate"
   | "turn_settled"
   | "native_compact_observed"
   | "session_mismatch_observed"
@@ -21,6 +22,15 @@ export type LifecycleSignal =
       samplingId: string;
       model?: string;
       providerUsage?: Record<string, unknown>;
+    }
+  | {
+      /**
+       * Source-labelled estimate of content captured after the last provider
+       * request. Never authoritative as provider usage (LIM-64).
+       */
+      kind: "post_measurement_estimate";
+      tokens: number;
+      source: string;
     }
   | { kind: "turn_settled"; reason: TurnSettleReason }
   | { kind: "native_compact_observed"; summaryPreview?: string }

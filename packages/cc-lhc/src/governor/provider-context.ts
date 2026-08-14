@@ -1,10 +1,16 @@
 /**
- * Provider-context arithmetic for one unique sampling attempt.
- * Formula: input_tokens + cache_creation_input_tokens + cache_read_input_tokens
+ * Provider-context arithmetic for one unique sampling attempt, plus
+ * source-labelled next-request pressure (LIM-64).
+ *
+ * Provider formula: input_tokens + cache_creation_input_tokens + cache_read_input_tokens
  * Uses only finite safe integers; invalid components fail closed (null).
+ *
+ * Predicted next-request pressure = provider total + post-measurement estimate.
+ * The estimate is never relabelled as provider usage.
  */
 
-import type { ProviderContextTokens } from "./types.js";
+import type { GovernorPressureReceipt, PostMeasurementEstimate, ProviderContextTokens } from "./types.js";
+import { EMPTY_POST_MEASUREMENT_ESTIMATE } from "./types.js";
 
 const USAGE_KEYS = {
   input: ["input_tokens", "inputTokens"],
@@ -22,7 +28,7 @@ function readNonNegInt(raw: unknown): number | null {
 
 function pickField(usage: Record<string, unknown>, keys: readonly string[]): number | null {
   for (const key of keys) {
-    if (Object.prototype.hasOwnProperty.call(usage, key)) {
+    if (Object.hasOwn(usage, key)) {
       return readNonNegInt(usage[key]);
     }
   }
@@ -42,23 +48,21 @@ export function providerContextFromUsage(
   if (usage === null || usage === undefined) return null;
   if (typeof usage !== "object" || Array.isArray(usage)) return null;
 
-  const hasInputKey = USAGE_KEYS.input.some((k) =>
-    Object.prototype.hasOwnProperty.call(usage, k),
-  );
+  const hasInputKey = USAGE_KEYS.input.some((k) => Object.hasOwn(usage, k));
   if (!hasInputKey) return null;
 
   const inputTokens = pickField(usage, USAGE_KEYS.input);
   if (inputTokens === null) return null;
 
   let cacheCreationInputTokens = 0;
-  if (USAGE_KEYS.cacheCreation.some((k) => Object.prototype.hasOwnProperty.call(usage, k))) {
+  if (USAGE_KEYS.cacheCreation.some((k) => Object.hasOwn(usage, k))) {
     const v = pickField(usage, USAGE_KEYS.cacheCreation);
     if (v === null) return null;
     cacheCreationInputTokens = v;
   }
 
   let cacheReadInputTokens = 0;
-  if (USAGE_KEYS.cacheRead.some((k) => Object.prototype.hasOwnProperty.call(usage, k))) {
+  if (USAGE_KEYS.cacheRead.some((k) => Object.hasOwn(usage, k))) {
     const v = pickField(usage, USAGE_KEYS.cacheRead);
     if (v === null) return null;
     cacheReadInputTokens = v;
@@ -78,4 +82,86 @@ export function providerContextFromUsage(
 /** True when total is at or above the upper trigger. */
 export function atOrAboveUpper(total: number, upperBoundTokens: number): boolean {
   return total >= upperBoundTokens;
+}
+
+/**
+ * Normalize a host-supplied estimate. Invalid numbers fail closed to zero
+ * tokens with the empty estimate shape (never invent provider usage).
+ */
+export function normalizePostMeasurementEstimate(
+  estimate: PostMeasurementEstimate | null | undefined,
+): PostMeasurementEstimate {
+  if (estimate === null || estimate === undefined) {
+    return { ...EMPTY_POST_MEASUREMENT_ESTIMATE };
+  }
+  const tokens = readNonNegInt(estimate.tokens);
+  const source =
+    typeof estimate.source === "string" && estimate.source.trim() !== ""
+      ? estimate.source
+      : EMPTY_POST_MEASUREMENT_ESTIMATE.source;
+  if (tokens === null) {
+    return { tokens: 0, source, domain: "source_labelled_estimate" };
+  }
+  return { tokens, source, domain: "source_labelled_estimate" };
+}
+
+/**
+ * Build a pressure receipt from authoritative provider usage + labelled estimate.
+ * Does not double-count: estimate is a separate domain.
+ */
+export function buildPressureReceipt(
+  providerContext: ProviderContextTokens | null,
+  estimate: PostMeasurementEstimate | null | undefined,
+  upperTriggerTokens: number,
+): GovernorPressureReceipt {
+  const est = normalizePostMeasurementEstimate(estimate);
+  if (providerContext === null) {
+    return {
+      providerBaseTokens: null,
+      providerBaseDomain: "provider_reported_input",
+      estimateTokens: est.tokens,
+      estimateSource: est.source,
+      estimateDomain: "source_labelled_estimate",
+      nextRequestPressureTokens: null,
+      upperTriggerTokens,
+      atOrAboveTrigger: null,
+    };
+  }
+  const next = providerContext.total + est.tokens;
+  if (!Number.isSafeInteger(next)) {
+    return {
+      providerBaseTokens: providerContext.total,
+      providerBaseDomain: "provider_reported_input",
+      estimateTokens: est.tokens,
+      estimateSource: est.source,
+      estimateDomain: "source_labelled_estimate",
+      nextRequestPressureTokens: null,
+      upperTriggerTokens,
+      atOrAboveTrigger: null,
+    };
+  }
+  return {
+    providerBaseTokens: providerContext.total,
+    providerBaseDomain: "provider_reported_input",
+    estimateTokens: est.tokens,
+    estimateSource: est.source,
+    estimateDomain: "source_labelled_estimate",
+    nextRequestPressureTokens: next,
+    upperTriggerTokens,
+    atOrAboveTrigger: next >= upperTriggerTokens,
+  };
+}
+
+/**
+ * Heuristic host estimate: ~4 bytes per token for UTF-8 captured text after
+ * the provider request. Labelled so it is never confused with provider usage.
+ */
+export function estimateTokensFromCapturedBytes(bytes: number, source = "host_byte_estimate"): PostMeasurementEstimate {
+  const safe = readNonNegInt(bytes) ?? 0;
+  const tokens = Math.floor(safe / 4);
+  return {
+    tokens: Number.isSafeInteger(tokens) ? tokens : 0,
+    source,
+    domain: "source_labelled_estimate",
+  };
 }

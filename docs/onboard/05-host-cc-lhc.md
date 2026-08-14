@@ -52,9 +52,15 @@ The wrapper has four main lanes:
    subprocesses with session persistence disabled.
 3. **Retrieval:** expose stable `tN`/`mN` retrieval through ordinary Bash tool
    calls, bound by an inherited per-wrapper capability descriptor.
-4. **Context lifecycle:** use provider-reported usage and rollout turn
-   boundaries to compact/prune, rebuild a rollout, and replace the Claude child
-   without changing the LHC thread.
+4. **Context lifecycle (capability-limited):** use provider-reported usage
+   (input + cache creation + cache read), a source-labelled post-measurement
+   estimate for content captured after the last provider request, and rollout
+   turn boundaries to classify pressure. Mutation runs only at a Claude-safe
+   settled seam: fenced compact/prune, rebuild a rollout, and replace the Claude
+   child via controlled handoff without changing the LHC thread. Open-turn
+   threshold crossings are classified and durably receipted but not mutated
+   mid-turn. This host does not perform Codex-style in-place mid-agentic-turn
+   request replacement, tool-tail preservation, or continuation markers.
 
 ## Capture and canonical attribution
 
@@ -122,7 +128,7 @@ mistake for user sessions. Each child is tracked and terminated during wrapper
 shutdown. `--lhc-no-inference` or `CC_LHC_NO_INFERENCE=1` disables model-backed
 derivation while preserving capture.
 
-## Context policy and governor
+## Context policy and governor (capability-limited)
 
 Policy precedence is builtin → user → project → launch/session. User config is
 `$XDG_CONFIG_HOME/cc-lhc/config.json` (falling back to
@@ -130,27 +136,48 @@ Policy precedence is builtin → user → project → launch/session. User confi
 fields and invalid bounds fail visibly.
 
 Invalid or unknown policy is reported and disarms automatic policy; Claude and
-canonical capture continue. Certified built-ins are:
+canonical capture continue. Current code built-ins (see
+`packages/cc-lhc/src/governor/config.ts`) are:
 
 | Setting | Default |
 | --- | ---: |
 | automatic compact | on |
-| compact target | 240,000 tokens |
-| trigger | 500,000 provider-reported tokens |
+| compact target (lower) | 180,000 tokens (LHC rendered-history domain) |
+| trigger (upper) | 360,000 tokens (provider-reported input domain) |
 | minimum runway | 50,000 tokens |
 | retry growth after failure | 10,000 tokens |
 | LHC profile | `continuation` |
 | automatic prune | off |
 | native compact | emergency backstop at 1,000,000 tokens |
+| host capability | `capability_limited` (not Codex full state machine) |
 
-Provider usage is authoritative. Observations are deduplicated and folded with
-capture health, descriptor readiness, turn state, active mutation, input epoch,
-and cooldown/hysteresis state. Automatic compact runs only at a confirmed
-settled boundary. The final pre-commit gate rechecks that no user input or
-lifecycle change invalidated the observation.
+Provider-reported input usage is authoritative: **input + cache creation +
+cache read**. Predicted next-request pressure adds a **source-labelled**
+estimate for content captured after that provider request; the estimate is never
+relabelled as provider usage. Missing or invalid latest usage clears older
+authority and cannot trigger a stale compact.
+
+Observations are named decisions (not prose-only logs), folded with capture
+health, descriptor readiness, turn state, active mutation, input epoch,
+native-summary attention, and cooldown/hysteresis. Threshold crossing during an
+**open** agentic turn is classified and written as a durable receipt with
+`wouldMutate=false` — Claude Code has no mid-turn request-replacement seam.
+Automatic compact/handoff runs only at a confirmed **settled** boundary. The
+final pre-commit gate rechecks that no user input or lifecycle change
+invalidated the observation. Native summary observation latches
+`native_summary_attention` so LHC does not race the native writer.
+
+Durable governor receipts live in `cc-lhc.sqlite` (`cc_governor_receipts`),
+tied to settle/usage/capture generation and optional handoff outcome. They
+survive wrapper restart and are inspectable independently of `wrapper.log`.
 
 `--lhc-observe-only` reports decisions without mutation. The control panel's
 `auto` and `bounds` edits apply only to the current wrapper lifetime.
+
+**What this host cannot do (v1, by design):** Codex-style in-place mid-agentic-
+turn continuation, synthetic tool-tail preservation, forced
+`context_compact_continue` boundaries, or any claim of same-agentic-turn
+parity with the full compact-continuation state machine.
 
 ## Compact/prune transaction
 

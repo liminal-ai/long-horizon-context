@@ -48,8 +48,18 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   A wrapper-owned runtime descriptor binds each invocation to the exact live
   session and LHC thread. Stale ownership, malformed state, and session
   mismatch fail closed before archive access or impression writes.
-- **Context governance.** Provider-reported usage drives automatic compact at
-  confirmed turn boundaries. Built-in policy targets 180k, triggers at 360k,
+- **Capability-limited context governance (LIM-64).** Provider-reported input
+  usage is authoritative and includes input + cache creation + cache read.
+  Predicted next-request pressure adds a **source-labelled** estimate for
+  content captured after that provider request (never double-counted as
+  provider usage). Missing or invalid latest usage clears stale authority.
+  Classification uses explicit named states and durable receipts. Threshold
+  crossing during an open agentic turn is observed and receipted but **not**
+  mutated mid-turn — Claude Code cannot replace the in-flight request the way
+  Codex full continuation can. At the next Claude-safe settled seam, policy may
+  run the existing fenced compact/rebuild and wrapper-owned controlled handoff.
+  Native summary observation is an explicit attention path; LHC does not silently
+  race the native writer. Built-in policy targets 180k, triggers at 360k,
   reserves 50k runway, keeps native compact as a 1M emergency backstop, and
   leaves automatic prune off.
 - **Controlled handoff.** On a respawn-safe interactive launch, compact/prune
@@ -58,7 +68,8 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   through old-child exit; lineage and the ready descriptor advance only after
   replacement capture and child liveness are proven. User input is buffered
   after the transaction's commit point and delivered exactly once, or retained
-  in a recovery artifact.
+  in a recovery artifact. This is **not** same-agentic-turn continuation: there
+  is no synthetic tool-tail preservation and no Codex parity claim.
 - **Single ownership.** A process-identity lease prevents two wrappers from
   owning the same Claude session, including across PID reuse.
 
@@ -132,7 +143,7 @@ environment surface.
 | Path under `~/.cc-lhc` | Purpose |
 | --- | --- |
 | `registry.sqlite` | Thread registry |
-| `cc-lhc.sqlite` | Claude-session lineage and capture metadata |
+| `cc-lhc.sqlite` | Claude-session lineage, capture metadata, and durable governor receipts (`cc_governor_receipts`) |
 | `threads/<uuid>.sqlite` | Per-thread LHC record, derivations, views, and impressions |
 | `owners/*.json` | Exclusive live-session ownership leases |
 | `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600 on POSIX; on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile, so these inherit the profile's default ACLs — no POSIX modes and no bespoke DACL there) |
@@ -142,6 +153,22 @@ environment surface.
 Runtime descriptors live in a private runtime directory and are capabilities,
 not durable state. Rebuilt Claude rollouts remain under Claude's normal
 `~/.claude/projects/` layout. The original rollout is never rewritten.
+
+## Capability boundary vs Codex full continuation
+
+| | **cc-lhc (capability-limited)** | **Codex (full state machine)** |
+| --- | --- | --- |
+| Mid-agentic-turn request replacement | **No** — closed CLI, no injection seam | Yes — in-place next-request install |
+| When compact may run | Claude-safe **settled** seam only | Settled model-turn seam inside an open agentic turn |
+| Open-turn threshold | Classify + durable receipt; `wouldMutate=false` | May compact / preserve tool tail / force continuation |
+| Continuation marker / `context_compact_continue` | **Not fabricated** | Typed marker + forced boundary when applicable |
+| Handoff | Rebuild rollout + `claude --resume` (new session id) | Serve compacted view into the same agentic turn |
+| Native writer | Explicit `native_summary_attention`; no silent race | One-writer rules with native conflict refuse |
+| Receipts | Structured rows in `cc-lhc.sqlite` + rollout operation note | Compact-continuation receipt in thread DB |
+
+v1 accepts this difference honestly. Shared LIM-60/61 strings and pressure
+accounting are reused where they remain truthful; cc-lhc does not claim effects
+Claude Code cannot perform.
 
 ## Operational boundaries
 

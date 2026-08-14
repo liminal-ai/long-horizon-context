@@ -4,16 +4,33 @@ import { join } from "node:path";
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
 import {
-  formatTokensShort,
-  runContextMutation,
   type ContextMutationPlan,
+  formatTokensShort,
   type HandoffRequest,
+  runContextMutation,
 } from "../commands/context-mutation.js";
 import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from "../commands/dispatch.js";
+import { formatRebuildRelaunchGuidance, registerRebuiltSessionLineage } from "../commands/rebuild-receipt.js";
 import {
-  formatRebuildRelaunchGuidance,
-  registerRebuiltSessionLineage,
-} from "../commands/rebuild-receipt.js";
+  applyGovernorLifecycleBatch,
+  type ContextPolicyPartial,
+  createGovernorRuntimeState,
+  formatGovernorObserveLogLine,
+  type GovernorHandoffOutcome,
+  type GovernorReceiptStore,
+  type GovernorRuntimeState,
+  loadContextPolicy,
+  noteGovernorInput,
+  openGovernorReceiptStore,
+  policySourcesSummary,
+  projectConfigPath,
+  type ResolvedContextPolicy,
+  setGovernorCaptureHealth,
+  setGovernorDescriptorReady,
+  setGovernorOperationInFlight,
+  userConfigPath,
+  validateContextPolicy,
+} from "../governor/index.js";
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
 import {
   LaunchGrammarError,
@@ -24,6 +41,30 @@ import {
 import { defaultLineageDbPath } from "../intake/lineage-db.js";
 import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
 import { type CaptureSession, startCaptureSession } from "../intake/session.js";
+import type { LifecycleSignal } from "../observation/types.js";
+import { injectRetrievalGuidance } from "../retrieval/guidance.js";
+import type { ExpectedSession } from "../rollout/expected-session.js";
+import {
+  closeAndRemove,
+  createOpeningDescriptor,
+  type DescriptorIo,
+  markDegraded,
+  markReady,
+  newDescriptorPath,
+  type RevocationResult,
+  RUNTIME_DESCRIPTOR_ENV,
+  type RuntimeDescriptorV1,
+  revokeCapability,
+  revokeDescriptor,
+} from "../runtime/descriptor.js";
+import { ProcessIdentityUnavailableError } from "../runtime/process-identity.js";
+import {
+  acquireSessionOwner,
+  type SessionOwnerLease,
+  SessionOwnershipConflictError,
+} from "../runtime/session-owner.js";
+import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
+import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
 import {
   DEFAULT_CAPTURE_READY_TIMEOUT_MS,
   DEFAULT_CHILD_LIVENESS_TIMEOUT_MS,
@@ -34,47 +75,6 @@ import {
   type HandoffResult,
   type RecoveryArtifact,
 } from "./handoff.js";
-import {
-  applyGovernorLifecycleBatch,
-  createGovernorRuntimeState,
-  formatGovernorObserveLogLine,
-  loadContextPolicy,
-  noteGovernorInput,
-  policySourcesSummary,
-  projectConfigPath,
-  userConfigPath,
-  validateContextPolicy,
-  setGovernorCaptureHealth,
-  setGovernorDescriptorReady,
-  setGovernorOperationInFlight,
-  type ContextPolicyPartial,
-  type GovernorRuntimeState,
-  type ResolvedContextPolicy,
-} from "../governor/index.js";
-import type { LifecycleSignal } from "../observation/types.js";
-import { injectRetrievalGuidance } from "../retrieval/guidance.js";
-import {
-  closeAndRemove,
-  createOpeningDescriptor,
-  type DescriptorIo,
-  markDegraded,
-  markReady,
-  newDescriptorPath,
-  revokeCapability,
-  revokeDescriptor,
-  RUNTIME_DESCRIPTOR_ENV,
-  type RevocationResult,
-  type RuntimeDescriptorV1,
-} from "../runtime/descriptor.js";
-import { ProcessIdentityUnavailableError } from "../runtime/process-identity.js";
-import {
-  acquireSessionOwner,
-  SessionOwnershipConflictError,
-  type SessionOwnerLease,
-} from "../runtime/session-owner.js";
-import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
-import type { ExpectedSession } from "../rollout/expected-session.js";
-import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
 import { createInputDebugLogger } from "./input-debug.js";
 import {
   createInputState,
@@ -160,6 +160,11 @@ export type RunOptions = {
   resolvedContextPolicy?: ResolvedContextPolicy;
   /** Test hook: inspect governor runtime state after lifecycle. */
   onGovernorObserve?: (record: import("../governor/index.js").GovernorObserveRecord) => void;
+  /**
+   * Test hook: durable governor receipt store path (defaults to lineage DB under CC_LHC_HOME).
+   * Pass a temp path in tests to avoid shared ~/.cc-lhc pollution.
+   */
+  governorReceiptDbPath?: string;
   /** Test hook: observe controlled-handoff results (auto and manual). */
   onHandoffResult?: (result: HandoffResult) => void;
   /** Test hooks: handoff timing (SIGTERM grace, SIGKILL wait, capture-ready cap, liveness caps). */
@@ -235,9 +240,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     options.resolvedContextPolicy ??
     loadContextPolicy({
       cwd: process.cwd(),
-      ...(options.contextPolicyOverrides !== undefined
-        ? { sessionOverrides: options.contextPolicyOverrides }
-        : {}),
+      ...(options.contextPolicyOverrides !== undefined ? { sessionOverrides: options.contextPolicyOverrides } : {}),
     });
   if (!resolvedContextPolicy.armed) {
     for (const err of resolvedContextPolicy.errors) {
@@ -252,6 +255,42 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     );
   }
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
+  /** Durable LIM-64 observe/handoff receipts (SQLite; survives restart). */
+  let governorReceiptStore: GovernorReceiptStore | null = null;
+  try {
+    governorReceiptStore = openGovernorReceiptStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
+  } catch (cause) {
+    wrapperLog.warn(
+      `cc-lhc governor receipt store unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+  const persistGovernorObserve = (record: import("../governor/index.js").GovernorObserveRecord): void => {
+    if (governorReceiptStore === null) return;
+    try {
+      const rollout = captureSession?.getRolloutInfo();
+      const ctx = captureSession?.getCommandContext();
+      governorReceiptStore.appendObserve({
+        observe: record,
+        sessionId: rollout?.sessionId ?? null,
+        threadId: ctx?.stats.threadId ?? null,
+      });
+    } catch (cause) {
+      wrapperLog.warn(
+        `cc-lhc governor receipt append failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  };
+  const attachGovernorHandoffOutcome = (outcome: GovernorHandoffOutcome): void => {
+    if (governorReceiptStore === null) return;
+    try {
+      const rollout = captureSession?.getRolloutInfo();
+      governorReceiptStore.attachHandoffOutcomeToLatestWouldMutate(rollout?.sessionId ?? null, outcome);
+    } catch (cause) {
+      wrapperLog.warn(
+        `cc-lhc governor receipt handoff attach failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  };
 
   let expectedSession: ExpectedSession | undefined;
   const ownedSessionLeases = new Map<string, SessionOwnerLease>();
@@ -283,9 +322,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       resumeSessionIdForLineage = plan.resumeSessionIdForLineage;
       respawnRest = plan.rest;
       respawnPassthrough = plan.passthrough;
-      wrapperLog.info(
-        `cc-lhc expected session ${expectedSession.sessionId} (source=${expectedSession.source})`,
-      );
+      wrapperLog.info(`cc-lhc expected session ${expectedSession.sessionId} (source=${expectedSession.source})`);
       ensureSessionOwner(expectedSession.sessionId);
       const safety = respawnArgvSafety(respawnRest, respawnPassthrough);
       if (!safety.safe) {
@@ -311,14 +348,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // CLI surface. Applied to the initial spawn and every respawn.
   const userChoseAutocompact = argv.some(
     (arg, i) =>
-      argv.slice(0, i + 1).every((a) => a !== "--") &&
-      (arg === "--autocompact" || arg.startsWith("--autocompact=")),
+      argv.slice(0, i + 1).every((a) => a !== "--") && (arg === "--autocompact" || arg.startsWith("--autocompact=")),
   );
   const nativeBackstopArgs: string[] =
-    !noCapture &&
-    !userChoseAutocompact &&
-    resolvedContextPolicy.armed &&
-    options.disableNativeBackstopArgs !== true
+    !noCapture && !userChoseAutocompact && resolvedContextPolicy.armed && options.disableNativeBackstopArgs !== true
       ? ["--autocompact", String(resolvedContextPolicy.policy.nativeBackstopTokens)]
       : [];
   if (nativeBackstopArgs.length > 0) {
@@ -527,8 +560,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const ctx = captureSession.getCommandContext();
       const rollout = captureSession.getRolloutInfo();
       const threadRef = ctx.threadRef;
-      const threadId =
-        threadRef !== undefined && "threadId" in threadRef ? threadRef.threadId : "";
+      const threadId = threadRef !== undefined && "threadId" in threadRef ? threadRef.threadId : "";
       const registryPath =
         threadRef !== undefined && "registryPath" in threadRef && threadRef.registryPath !== undefined
           ? threadRef.registryPath
@@ -553,9 +585,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         },
         descriptorIo,
       );
-      wrapperLog.info(
-        `cc-lhc runtime descriptor ready thread=${threadId} session=${rollout.sessionId}`,
-      );
+      wrapperLog.info(`cc-lhc runtime descriptor ready thread=${threadId} session=${rollout.sessionId}`);
       governorState = setGovernorDescriptorReady(governorState, true);
     } catch (cause) {
       wrapperLog.warn(
@@ -579,26 +609,26 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
 
     // Slice 3 observe-only: pure decide + wrapper-log record; never mutate.
-    const observed = applyGovernorLifecycleBatch(
-      governorState,
-      signals,
-      resolvedContextPolicy,
-    );
+    const observed = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy);
     governorState = observed.state;
     for (const record of observed.observes) {
       wrapperLog.info(formatGovernorObserveLogLine(record));
+      persistGovernorObserve(record);
       options.onGovernorObserve?.(record);
-      if (record.providerContextTotal !== null && record.providerContextTotal > 0) {
+      // Use predicted next-request pressure for floor learning when available;
+      // fall back to authoritative provider total only.
+      const pressureForFloor = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
+      if (pressureForFloor !== null && pressureForFloor > 0) {
         minObservedProviderTotal =
-          minObservedProviderTotal === null
-            ? record.providerContextTotal
-            : Math.min(minObservedProviderTotal, record.providerContextTotal);
+          minObservedProviderTotal === null ? pressureForFloor : Math.min(minObservedProviderTotal, pressureForFloor);
       }
-      // Slice 4: an executable would_compact starts ONE automatic operation,
+      // Capability-limited: executable would_compact only at a settled seam
+      // (wouldMutate is false during open turns). Starts ONE automatic operation,
       // scheduled off the capture batch path (the handoff stops capture; doing
       // that inline would deadlock the batch queue it runs on).
       if (
         record.wouldMutate === true &&
+        record.observePhase === "settled_seam" &&
         !exited &&
         !handoffInProgress &&
         !autoOperationScheduled &&
@@ -606,9 +636,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         Date.now() >= autoBlockedUntilMs
       ) {
         autoOperationScheduled = true;
-        // Freeze the trigger at THIS decision: later lifecycle updates must not
-        // change what the durable receipt reports as the trigger context.
-        const frozenTriggerTokens = record.providerContextTotal;
+        // Freeze the trigger at THIS decision: use predicted next-request pressure
+        // (provider + source-labelled estimate) for the durable mutation receipt.
+        const frozenTriggerTokens = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
         setImmediate(() => {
           void runAutoOperation(frozenTriggerTokens).finally(() => {
             autoOperationScheduled = false;
@@ -625,11 +655,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // descriptor capability is already non-ready/absent, further reasons are
         // diagnostics only — never re-publish or treat as fatal re-transition.
         wrapperLog.warn(`cc-lhc capture degraded: ${signal.reason}`);
-        governorState = setGovernorCaptureHealth(
-          governorState,
-          false,
-          signal.generation,
-        );
+        governorState = setGovernorCaptureHealth(governorState, false, signal.generation);
         governorState = setGovernorDescriptorReady(governorState, false);
         if (descriptorCapabilityRevoked || runtimeDescriptorPath === undefined) {
           continue;
@@ -687,9 +713,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       startedAt,
       noInference,
       expectedSession,
-      ...(resumeSessionIdForLineage !== undefined
-        ? { resumeSessionId: resumeSessionIdForLineage }
-        : {}),
+      ...(resumeSessionIdForLineage !== undefined ? { resumeSessionId: resumeSessionIdForLineage } : {}),
       lineageDbPath: defaultLineageDbPath(),
       log: (message) => wrapperLog.info(message),
       logError: (message) => wrapperLog.warn(message),
@@ -711,9 +735,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     runtimeDescriptor = undefined;
     const rev = revokeCapability(path, current, "closed", undefined, descriptorIo);
     if (!rev.ok) {
-      wrapperLog.warn(
-        `cc-lhc capture/retrieval FATAL: child-exit revoke unproven: ${rev.reason}`,
-      );
+      wrapperLog.warn(`cc-lhc capture/retrieval FATAL: child-exit revoke unproven: ${rev.reason}`);
       fatalRevocationExit = true;
     }
     return rev;
@@ -914,6 +936,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         await captureSession.stop().catch(() => {});
         printExitStats();
         killAllInferenceChildren();
+      }
+      if (governorReceiptStore !== null) {
+        try {
+          governorReceiptStore.close();
+        } catch {
+          // best effort
+        }
+        governorReceiptStore = null;
       }
       cleanup();
       resolve(exitCode);
@@ -1116,7 +1146,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
       const provider = governorState.latestProviderContext;
       const providerText =
-        provider === null ? "provider context: none observed yet" : `provider context ${formatTokensShort(provider.total)}`;
+        provider === null
+          ? "provider context: none observed yet"
+          : `provider context ${formatTokensShort(provider.total)}`;
       if (!resolvedContextPolicy.armed) {
         rows.push(`${providerText} · policy INVALID (auto disabled)`);
         for (const err of resolvedContextPolicy.errors.slice(0, 3)) rows.push(`  config error: ${err}`);
@@ -1142,8 +1174,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       if (lastAction === null) {
         rows.push("last action: none this wrapper session");
       } else {
-        const parts = [`${lastAction.operation === "prune" ? "pruned" : "compacted"} ${formatAgo(lastAction.atMs)} (${lastAction.origin})`];
-        if (lastAction.triggerTokens !== undefined) parts.push(`trigger ${formatTokensShort(lastAction.triggerTokens)}`);
+        const parts = [
+          `${lastAction.operation === "prune" ? "pruned" : "compacted"} ${formatAgo(lastAction.atMs)} (${lastAction.origin})`,
+        ];
+        if (lastAction.triggerTokens !== undefined)
+          parts.push(`trigger ${formatTokensShort(lastAction.triggerTokens)}`);
         if (lastAction.zoneBefore !== undefined && lastAction.zoneAfter !== undefined)
           parts.push(`zone ${formatTokensShort(lastAction.zoneBefore)} -> ${formatTokensShort(lastAction.zoneAfter)}`);
         if (lastAction.viewTokens !== undefined) parts.push(`view ${formatTokensShort(lastAction.viewTokens)}`);
@@ -1167,9 +1202,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         rows.push("WARNING: automatic handoff disabled for this launch form (see wrapper log)");
       }
 
-      rows.push(
-        "edits (auto/bounds) are session-scoped: live now, survive handoffs, lost at wrapper exit",
-      );
+      rows.push("edits (auto/bounds) are session-scoped: live now, survive handoffs, lost at wrapper exit");
       rows.push(
         `precedence: builtin < user ${userConfigPath()} < project ${projectConfigPath(process.cwd())} < session`,
       );
@@ -1302,12 +1335,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // ---- Slice 4: controlled handoff machinery ----
     const sigtermGraceMs = options.handoffTimeouts?.sigtermGraceMs ?? 3_000;
     const sigkillWaitMs = options.handoffTimeouts?.sigkillWaitMs ?? 2_000;
-    const captureReadyTimeoutMs =
-      options.handoffTimeouts?.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY_TIMEOUT_MS;
-    const childLivenessTimeoutMs =
-      options.handoffTimeouts?.childLivenessTimeoutMs ?? DEFAULT_CHILD_LIVENESS_TIMEOUT_MS;
-    const childStableWindowMs =
-      options.handoffTimeouts?.childStableWindowMs ?? DEFAULT_CHILD_STABLE_WINDOW_MS;
+    const captureReadyTimeoutMs = options.handoffTimeouts?.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY_TIMEOUT_MS;
+    const childLivenessTimeoutMs = options.handoffTimeouts?.childLivenessTimeoutMs ?? DEFAULT_CHILD_LIVENESS_TIMEOUT_MS;
+    const childStableWindowMs = options.handoffTimeouts?.childStableWindowMs ?? DEFAULT_CHILD_STABLE_WINDOW_MS;
 
     const waitForExpectedExit = (timeoutMs: number): Promise<boolean> =>
       new Promise<boolean>((resolveWait) => {
@@ -1622,6 +1652,28 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           // provider pressure. Cool down so a failed handoff cannot self-retrigger.
           autoBlockedUntilMs = Date.now() + HANDOFF_FAILURE_COOLDOWN_MS;
         }
+        const handoffOutcome: GovernorHandoffOutcome =
+          result.kind === "success"
+            ? {
+                kind: "handoff_success",
+                newSessionId: result.newSessionId,
+                flushedInputBytes: result.flushedInputBytes,
+              }
+            : result.kind === "cancelled"
+              ? { kind: "handoff_cancelled", detail: result.reason }
+              : result.kind === "rolled_back"
+                ? {
+                    kind: "handoff_rolled_back",
+                    detail: result.reason,
+                    oldSessionId: result.oldSessionId,
+                  }
+                : {
+                    kind: "handoff_failed",
+                    detail: result.reason,
+                    oldSessionId: result.oldSessionId,
+                    rebuiltSessionId: result.rebuiltSessionId,
+                  };
+        attachGovernorHandoffOutcome(handoffOutcome);
         options.onHandoffResult?.(result);
         if (result.kind === "failed" && !result.childAlive) {
           wrapperLog.warn(
@@ -1673,6 +1725,22 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             summary: `auto compact ${outcome.kind}: ${outcome.messages[outcome.messages.length - 1] ?? "(no detail)"}`,
             atMs: Date.now(),
           };
+          const mutationOutcome: GovernorHandoffOutcome =
+            outcome.kind === "refused"
+              ? {
+                  kind: "mutation_refused",
+                  detail: outcome.messages.join(" | ") || "refused",
+                }
+              : outcome.kind === "partial"
+                ? {
+                    kind: "mutation_partial",
+                    detail: outcome.messages.join(" | ") || "partial",
+                  }
+                : {
+                    kind: "mutation_noop",
+                    detail: outcome.messages.join(" | ") || "noop",
+                  };
+          attachGovernorHandoffOutcome(mutationOutcome);
           return;
         }
         await performHandoff(outcome.handoff, epochChanged);
