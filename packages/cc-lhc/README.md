@@ -86,7 +86,8 @@ change source versions; `--dry-run` reports the planned changes.
 
 Press **ctrl-]** while Claude is running. The wrapper opens an alternate-screen
 panel so it never writes diagnostics into Claude's input box. Override the key
-with `CC_LHC_LEADER`.
+with `CC_LHC_LEADER`. The panel recognizes raw, kitty CSI-u, xterm
+modifyOtherKeys, and Windows Terminal win32 input events.
 
 | Command | Effect |
 | --- | --- |

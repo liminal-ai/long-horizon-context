@@ -35,6 +35,14 @@ function feedAll(
   return { state: current, toPty, actions };
 }
 
+function win32Key(virtualKey: number, unicodeChar: number, keyDown = 1, controlKeyState = 0): string {
+  return `\x1b[${virtualKey};0;${unicodeChar};${keyDown};${controlKeyState};1_`;
+}
+
+function win32Text(text: string): string[] {
+  return [...text].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0)));
+}
+
 describe("hazardous-command matcher", () => {
   it("matches only the verified straight-line commands", () => {
     expect(matchHazardousCommand("/resume")).toBe("/resume");
@@ -164,6 +172,54 @@ describe("hazard notifier: straight-line interception", () => {
     const result = feedAll(createInputState(), ["/clear", Buffer.from("\x1b[13;5u", "latin1")]);
     expect(result.actions).toEqual([]);
     expect(result.toPty.toString("latin1")).toBe("/clear\x1b[13;5u");
+  });
+
+  it("tracks win32-mode text and holds the exact encoded Enter", () => {
+    const encodedEnter = win32Key(13, 13);
+    const submitted = feedAll(createInputState(), [...win32Text("/clear"), encodedEnter]);
+    expect(submitted.toPty.toString("latin1")).toBe(win32Text("/clear").join(""));
+    expect(submitted.actions).toEqual([{ kind: "notifier_open", command: "/clear" }]);
+
+    const continued = feed(submitted.state, encodedEnter);
+    expect(continued.actions).toEqual([
+      { kind: "notifier_continue", enterBytes: [...Buffer.from(encodedEnter, "latin1")] },
+    ]);
+  });
+
+  it("accepts encoded n as return and keeps the hazardous line available for re-Enter", () => {
+    const encodedEnter = win32Key(13, 13);
+    const open = feedAll(createInputState(), [...win32Text("/resume abc"), encodedEnter]);
+    const returned = feed(open.state, win32Key(78, 110));
+    expect(returned.actions).toEqual([{ kind: "notifier_return" }]);
+    const again = feed(returned.state, encodedEnter);
+    expect(again.actions).toEqual([{ kind: "notifier_open", command: "/resume" }]);
+  });
+
+  it("keeps win32 key-up and modifier events neutral but poisons navigation", () => {
+    const prefix = feedAll(createInputState(), [
+      ...win32Text("/cle"),
+      win32Key(17, 0, 1, 40), // control down: no edit
+      win32Key(17, 0, 0, 40), // control up
+      win32Key(69, 101, 0), // printable key release
+      ...win32Text("ar"),
+      win32Key(13, 13),
+    ]);
+    expect(prefix.actions).toEqual([{ kind: "notifier_open", command: "/clear" }]);
+
+    const navigated = feedAll(createInputState(), [
+      ...win32Text("/clear"),
+      win32Key(37, 0), // left arrow key-down
+      win32Key(13, 13),
+    ]);
+    expect(navigated.actions).toEqual([]);
+    expect(navigated.toPty.toString("latin1")).toContain(win32Key(37, 0));
+  });
+
+  it("forwards a non-hazardous win32-mode line byte-exact", () => {
+    const events = [...win32Text("/help"), win32Key(13, 13)];
+    const result = feedAll(createInputState(), events);
+    expect(result.actions).toEqual([]);
+    expect(result.toPty.toString("latin1")).toBe(events.join(""));
   });
 
   it("rapid input in one chunk: earlier lines forward, the hazardous line still intercepts", () => {

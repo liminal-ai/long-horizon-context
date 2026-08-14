@@ -70,7 +70,7 @@ export interface HandoffPorts {
   /** Writer to the currently attached child (used when the old child survives). */
   currentChild(): HandoffChild;
   /** Hard-kill the current (replacement) child after a failed handoff step. */
-  killCurrentChild(): void;
+  killCurrentChild(): Promise<void>;
   /**
    * Start capture bound to the exact rebuilt session via the direct pending
    * capability (thread/sdk/prefix passed in-process; no lineage lookup).
@@ -123,6 +123,30 @@ export type HandoffResult =
       recoveryArtifactPath: string | null;
       retainedInputBytes: number;
     };
+
+/** User-facing handoff result. It distinguishes absence from failed recovery. */
+export function formatHandoffResult(result: HandoffResult): string {
+  switch (result.kind) {
+    case "success":
+      return `handoff complete — session ${result.newSessionId} live`;
+    case "cancelled":
+      return `handoff cancelled: ${result.reason}`;
+    case "rolled_back":
+      return `handoff rolled back to ${result.oldSessionId}: ${result.reason}`;
+    case "failed": {
+      if (result.childAlive && result.retainedInputBytes === 0 && result.recoveryArtifactPath === null) {
+        return `handoff FAILED: ${result.reason}; old session ${result.oldSessionId} continues; ` +
+          "no recovery artifact required";
+      }
+      const recovery =
+        result.recoveryArtifactPath === null
+          ? "recovery artifact write FAILED"
+          : `recovery ${result.recoveryArtifactPath}`;
+      return `handoff FAILED: ${result.reason}; old=${result.oldSessionId} rebuilt=${result.rebuiltSessionId}; ` +
+        `${recovery}; retained input ${result.retainedInputBytes} byte(s)`;
+    }
+  }
+}
 
 export interface HandoffOptions {
   captureReadyTimeoutMs?: number;
@@ -193,14 +217,14 @@ export async function executeHandoff(
   try {
     ports.startRebuiltCapture(request);
   } catch (cause) {
-    ports.killCurrentChild();
+    await ports.killCurrentChild();
     await ports.stopCurrentCapture().catch(() => {});
     return rollback(request, ports, rollbackTimeouts, `rebuilt capture start failed: ${reasonOf(cause)}`);
   }
 
   const ready = await ports.awaitCaptureReady(readyTimeoutMs);
   if (ready !== "ready") {
-    ports.killCurrentChild();
+    await ports.killCurrentChild();
     await ports.stopCurrentCapture().catch(() => {});
     return rollback(request, ports, rollbackTimeouts, `replacement capture ${ready}`);
   }

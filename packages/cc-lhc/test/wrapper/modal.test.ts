@@ -45,6 +45,10 @@ function executed(actions: InputAction[]): string[] {
   return actions.filter((action) => action.kind === "execute").map((action) => action.commandLine);
 }
 
+function win32Key(virtualKey: number, unicodeChar: number, keyDown = 1, controlKeyState = 0): string {
+  return `\x1b[${virtualKey};0;${unicodeChar};${keyDown};${controlKeyState};1_`;
+}
+
 describe("passthrough", () => {
   it("forwards ordinary bytes verbatim with no echo and no actions", () => {
     const result = feed(createInputState(), "hello world\r", "\x7f\x03\x15");
@@ -323,6 +327,42 @@ describe("passthrough", () => {
       expect(detached.pty).toBe("");
     });
   });
+
+  describe("Windows Terminal win32 input mode", () => {
+    it("opens the modal on the encoded leader and never forwards the event", () => {
+      const leader = "\x1b[221;27;29;1;40;1_";
+      const result = feed(createInputState(), ...leader.split(""));
+      expect(result.pty).toBe("");
+      expect(result.actions).toEqual([{ kind: "enter_modal" }]);
+      expect(result.state.mode).toBe("modal");
+    });
+
+    it("forwards malformed six-field events and does not claim them", () => {
+      for (const malformed of ["\x1b[221;27;29;2;40;1_", "\x1b[221;27;29;1;40_", "\x1b[221;27;x;1;40;1_"]) {
+        const result = feed(createInputState(), malformed);
+        expect(result.pty).toBe(malformed);
+        expect(result.actions).toEqual([]);
+      }
+    });
+
+    it("does not open on release and honors a custom leader by unicode value", () => {
+      const release = feed(createInputState(), win32Key(221, 29, 0, 40));
+      expect(release.pty).toBe(win32Key(221, 29, 0, 40));
+      expect(release.actions).toEqual([]);
+
+      const custom = feed(createInputState(0x1f), win32Key(189, 31, 1, 40));
+      expect(custom.actions).toEqual([{ kind: "enter_modal" }]);
+      const wrong = feed(createInputState(0x1f), win32Key(221, 29, 1, 40));
+      expect(wrong.pty).toBe(win32Key(221, 29, 1, 40));
+    });
+
+    it("keeps an encoded leader literal inside bracketed paste", () => {
+      const leader = win32Key(221, 29, 1, 40);
+      const result = feed(createInputState(), `\x1b[200~before${leader}after\x1b[201~`);
+      expect(result.actions).toEqual([]);
+      expect(result.pty).toBe(`\x1b[200~before${leader}after\x1b[201~`);
+    });
+  });
 });
 
 describe("modal line editor", () => {
@@ -462,6 +502,50 @@ describe("modal line editor", () => {
     expect(release.state.mode).toBe("modal");
   });
 
+  it("edits and submits with Windows Terminal win32 key events", () => {
+    const text = [..."status"].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0)));
+    const submitted = feed(openModal(), ...text, win32Key(13, 13));
+    expect(executed(submitted.actions)).toEqual(["/lhc-status"]);
+    expect(submitted.pty).toBe("");
+
+    const edited = feed(
+      openModal(),
+      win32Key(83, 115),
+      win32Key(84, 116),
+      win32Key(88, 120),
+      win32Key(8, 8),
+      ...[..."atus"].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0))),
+      win32Key(13, 13),
+    );
+    expect(executed(edited.actions)).toEqual(["/lhc-status"]);
+  });
+
+  it("handles encoded Ctrl-U, Escape, Ctrl-C, and leader release", () => {
+    const cleared = feed(
+      openModal(),
+      ...[..."wrong"].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0))),
+      win32Key(85, 21, 1, 40),
+      ...[..."stats"].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0))),
+      win32Key(13, 13),
+    );
+    expect(executed(cleared.actions)).toEqual(["/lhc-stats"]);
+
+    for (const cancel of [win32Key(27, 27), win32Key(67, 3, 1, 40)]) {
+      const result = feed(openModal(), cancel);
+      expect(result.actions).toEqual([{ kind: "exit_modal" }]);
+    }
+
+    const opened = feed(createInputState(), win32Key(221, 29, 1, 40));
+    const release = feed(opened.state, win32Key(221, 29, 0, 40));
+    expect(release.actions).toEqual([]);
+    expect(release.pty).toBe("");
+    expect(release.state.mode).toBe("modal");
+
+    const leaderAgain = feed(release.state, win32Key(221, 29, 1, 40));
+    expect(leaderAgain.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(leaderAgain.state.mode).toBe("passthrough");
+  });
+
   it("drops navigation keys and mouse reports while modal", () => {
     const result = feed(openModal(), "\x1b[A", "\x1b[3~", "\x1b[<35;10;5M", "status\r");
     expect(result.pty).toBe("");
@@ -522,7 +606,7 @@ describe("executing mode", () => {
     expect(detached.pty).toBe("");
   });
 
-  it("kitty and modifyOtherKeys ctrl-C DETACH while executing — the only ctrl-C a kitty terminal sends", () => {
+  it("encoded ctrl-C DETACHES while executing", () => {
     // claude pushes kitty disambiguate mode, so iTerm2/Warp/Ghostty deliver
     // ctrl-C as CSI 99;5u — before the fix nothing could detach there.
     const kitty = feed(startExecuting(), "\x1b[99;5u");
@@ -533,6 +617,11 @@ describe("executing mode", () => {
     const modifyOtherKeys = feed(startExecuting(), "\x1b[27;5;99~");
     expect(modifyOtherKeys.actions).toEqual([{ kind: "exit_modal" }]);
     expect(modifyOtherKeys.pty).toBe("");
+
+    const win32 = feed(startExecuting(), win32Key(67, 3, 1, 40));
+    expect(win32.actions).toEqual([{ kind: "exit_modal" }]);
+    expect(win32.state.mode).toBe("passthrough");
+    expect(win32.pty).toBe("");
 
     // release events and other modifiers stay inert
     const release = feed(startExecuting(), "\x1b[99;5:3u");

@@ -29,6 +29,7 @@ import {
   DEFAULT_CHILD_LIVENESS_TIMEOUT_MS,
   DEFAULT_CHILD_STABLE_WINDOW_MS,
   executeHandoff,
+  formatHandoffResult,
   type HandoffChild,
   type HandoffPorts,
   type HandoffResult,
@@ -75,6 +76,11 @@ import {
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import type { ExpectedSession } from "../rollout/expected-session.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
+import {
+  forceKillChildTree,
+  requestPtyTermination,
+  runTaskkillTree,
+} from "./child-termination.js";
 import { createInputDebugLogger } from "./input-debug.js";
 import {
   createInputState,
@@ -438,6 +444,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   } | null = null;
   /** Most recent non-success outcome (health visibility; never claims success). */
   let lastAttempt: { summary: string; atMs: number } | null = null;
+  /** Detached manual handoff receipts shown once on the next panel open. */
+  let pendingPanelNotices: string[] = [];
   /** Smallest settled provider context seen: the observed Claude host overhead floor. */
   let minObservedProviderTotal: number | null = null;
   /** One auto operation scheduled/coalesced at a time. */
@@ -464,7 +472,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // best effort
     }
     try {
-      currentPty.kill("SIGKILL");
+      requestPtyTermination(currentPty, process.platform, "SIGKILL");
     } catch {
       // kill may throw; still exit the owner process
     }
@@ -868,7 +876,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const forwardSignal = (signal: NodeJS.Signals): void => {
     restoreIfModal();
     if (!exited) {
-      currentPty.kill(signal);
+      requestPtyTermination(currentPty, process.platform, signal);
     }
   };
   process.on("SIGINT", forwardSignal);
@@ -900,7 +908,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       if (fatalRevocationExit || !rev.ok) {
         // Owner must die even if child kill fails — invalidate OS identity.
         try {
-          currentPty.kill("SIGKILL");
+          requestPtyTermination(currentPty, process.platform, "SIGKILL");
         } catch {
           // already dead or kill throws
         }
@@ -926,7 +934,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // screen, so receipts stay readable whatever the main-screen TUI is doing.
     // One keypress (Esc/ctrl-C/leader) dismisses: leave the alt screen (the
     // terminal restores CC's layout exactly), then flush the held output.
-    const settleCommand = (messages: string[], label: string): void => {
+    const settleCommand = (messages: string[], label: string, retainForNextPanel = false): void => {
       stopExecutingTicker();
       if (inputState.mode === "executing") {
         if (messages.length === 0) {
@@ -952,6 +960,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // reopened: the child owns the live screen, so the receipt goes to the
       // wrapper log (doctrine — never write into CC's UI).
       for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): [${label}] ${message}`);
+      if (retainForNextPanel && messages.length > 0) {
+        pendingPanelNotices = [`${label} finished:`, ...messages.flatMap((message) => message.split("\n"))];
+      }
     };
 
     /** Atomic session-scoped policy edit: validate the whole candidate with the
@@ -1039,14 +1050,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             outputHold.flush();
             try {
               const result = await performHandoff(outcome.handoff, epochChanged);
-              const summary =
-                result.kind === "success"
-                  ? `handoff complete — session ${result.newSessionId} live`
-                  : result.kind === "cancelled"
-                    ? `handoff cancelled: ${result.reason}`
-                    : result.kind === "rolled_back"
-                      ? `handoff rolled back to ${result.oldSessionId}: ${result.reason}`
-                      : `handoff FAILED: ${result.reason} (recovery: ${result.recoveryArtifactPath ?? "unwritten"})`;
+              const summary = formatHandoffResult(result);
               const extra: string[] = [];
               if (result.kind === "cancelled" && respawnUnsafeReason !== null) {
                 // Manual recovery for a launch form that cannot respawn: bind
@@ -1072,7 +1076,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                   extra.push(`rebuilt artifact not registered (${lineage.reason}); re-run compact after relaunch`);
                 }
               }
-              settleCommand([...outcome.messages, summary, ...extra], label);
+              settleCommand([...outcome.messages, summary, ...extra], label, true);
             } finally {
               governorState = setGovernorOperationInFlight(governorState, false);
             }
@@ -1182,7 +1186,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           modalGeneration += 1;
           outputHold.hold();
           altScreen.enter();
-          inputState = { ...inputState, panelRows: buildPanelStatusRows() };
+          inputState = {
+            ...inputState,
+            panelRows: [...buildPanelStatusRows(), ...pendingPanelNotices],
+          };
+          pendingPanelNotices = [];
         } else if (action.kind === "exit_modal") {
           // Leave BEFORE flushing: the terminal restores CC's main screen,
           // then the held bytes land on it in order.
@@ -1451,22 +1459,26 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         terminateOldChild: async (): Promise<{ exited: boolean; escalated: boolean }> => {
           const pty = currentPty;
           expectedExitPty = pty;
-          try {
-            pty.kill("SIGTERM");
-          } catch {
-            // may already be dead; the waiter resolves via onExit or timeout
-          }
+          const initial = requestPtyTermination(pty, process.platform, "SIGTERM");
+          wrapperLog.info(
+            `cc-lhc handoff: requested child termination pid=${pty.pid} via ${initial.method}`,
+          );
           const graceful = await waitForExpectedExit(sigtermGraceMs);
           if (graceful) return { exited: true, escalated: false };
-          try {
-            process.kill(-pty.pid, "SIGKILL");
-          } catch {
-            try {
-              pty.kill("SIGKILL");
-            } catch {
-              // fall through to the bounded wait
-            }
-          }
+          const forced = await forceKillChildTree(pty.pid, {
+            platform: process.platform,
+            selfPid: process.pid,
+            killGroup: (pid) => process.kill(-pid, "SIGKILL"),
+            closePty: () => {
+              if (process.platform === "win32") pty.kill();
+              else pty.kill("SIGKILL");
+            },
+            taskkill: (pid) => runTaskkillTree(pid),
+          });
+          wrapperLog.info(
+            `cc-lhc handoff: forced child termination pid=${pty.pid} via ${forced.method} ` +
+              `(${forced.attempted.join(",") || "none"})`,
+          );
           const killed = await waitForExpectedExit(sigkillWaitMs);
           if (!killed) expectedExitPty = null;
           return { exited: killed, escalated: true };
@@ -1476,19 +1488,24 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         },
         spawnChild: spawnHandoffChild,
         currentChild: (): HandoffChild => ({ write: (data: string) => currentPty.write(data) }),
-        killCurrentChild: (): void => {
+        killCurrentChild: async (): Promise<void> => {
           const pty = currentPty;
           expectedExitPty = pty;
           expectedExitResolve = null;
-          try {
-            process.kill(-pty.pid, "SIGKILL");
-          } catch {
-            try {
-              pty.kill("SIGKILL");
-            } catch {
-              // already dead
-            }
-          }
+          const forced = await forceKillChildTree(pty.pid, {
+            platform: process.platform,
+            selfPid: process.pid,
+            killGroup: (pid) => process.kill(-pid, "SIGKILL"),
+            closePty: () => {
+              if (process.platform === "win32") pty.kill();
+              else pty.kill("SIGKILL");
+            },
+            taskkill: (pid) => runTaskkillTree(pid),
+          });
+          wrapperLog.info(
+            `cc-lhc handoff: cleanup child pid=${pty.pid} via ${forced.method} ` +
+              `(${forced.attempted.join(",") || "none"})`,
+          );
         },
         startRebuiltCapture: (handoffRequest: HandoffRequest): void => {
           const ctx = oldCaptureSnapshot?.getCommandContext();

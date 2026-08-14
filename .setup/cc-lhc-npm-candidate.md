@@ -16,6 +16,35 @@ The candidate is deliberately locked:
 Lee must approve the public name, npm scope, license, and first version before
 those locks are removed.
 
+## First-publication handoff
+
+The local and CI candidates need no npm credentials. When the package is ready
+for its first public release, Lee must supply only the registry decisions and
+proof of presence:
+
+1. Choose the final package name and whether it is unscoped or belongs to an
+   npm user/organization scope. An organization scope must already exist and
+   Lee's npm account must have publish access.
+2. Choose the public license and first version.
+3. Sign in with an npm account that has two-factor authentication enabled, and
+   verify the active identity with `npm whoami`.
+4. Inspect the exact all-target tarball and its `npm pack --dry-run --json`
+   manifest before removing the candidate's `private` and `publishLocked`
+   guards.
+5. Prefer `npm stage publish` for the first release. Lee can inspect and
+   approve the staged package with 2FA before it becomes public. A scoped
+   public package also needs public access selected when it is published.
+
+After the package exists, configure npm trusted publishing for a dedicated
+GitHub Actions release workflow. Use a GitHub-hosted runner, OIDC
+`id-token: write`, and stage-only permission so later builds still require
+Lee's approval. Do not create or store a long-lived npm publish token.
+
+References:
+
+- https://docs.npmjs.com/creating-and-publishing-scoped-public-packages/
+- https://docs.npmjs.com/trusted-publishers/
+
 ## Package shape
 
 The tarball contains the cc-lhc JavaScript runtime plus two private bundled

@@ -17,7 +17,7 @@
 // settles), Esc/ctrl-C/leader cancel. While EXECUTING the same three keys
 // DETACH — the panel closes and output resumes while the command keeps
 // running — in every encoding a terminal may deliver them (raw byte, kitty
-// CSI-u, xterm modifyOtherKeys). A stuck command must never hold the screen
+// CSI-u, xterm modifyOtherKeys, Windows Terminal win32 input). A stuck command must never hold the screen
 // hostage: the freeze this fixed was a kitty terminal (claude pushes kitty
 // disambiguate mode) sending ctrl-C as CSI 99;5u, which the executing gate
 // dropped — leaving NO working escape key. Ambiguity about "whose input box
@@ -67,10 +67,9 @@ export type EscapeTracking =
   | { kind: "csi"; params: string }
   /**
    * Passthrough-only: a numeric CSI prefix HELD (not yet forwarded) because it
-   * may be the kitty encoding of the leader — claude pushes kitty disambiguate
-   * mode, and kitty-protocol terminals (iTerm2, Warp, Ghostty) deliver ctrl-]
-   * as CSI 93;5u, never as raw 0x1d. The held bytes forward intact the moment
-   * the sequence classifies as anything else.
+   * may encode the leader — Claude pushes kitty disambiguate mode, while
+   * Windows Terminal emits six-field win32 input events after CSI ?9001h. The
+   * held bytes forward intact when the sequence classifies as anything else.
    */
   | { kind: "csi_candidate"; params: string }
   | { kind: "string_term" }
@@ -122,7 +121,7 @@ export interface InputState {
   hazardPoisoned: boolean;
   /** Notifier feature switch (off: zero recognition, pure passthrough). */
   notifierEnabled: boolean;
-  /** Exact Enter bytes held while the notifier overlay is up (raw \r or kitty CSI). */
+  /** Exact Enter bytes held while the notifier overlay is up (raw or encoded CSI). */
   heldEnter: number[];
   /** The recognized command shown in the overlay. */
   notifierCommand: string;
@@ -301,6 +300,54 @@ export function isModifyOtherKeysLeaderParams(params: string, leaderByte: number
   return fields[0] === "27" && fields[1] === "5" && Number.parseInt(code, 10) === kittyLeaderCode(leaderByte);
 }
 
+/** Windows Terminal win32-input-mode key event: CSI Vk;Sc;Uc;Kd;Cs;Rc _. */
+export interface Win32KeyEvent {
+  virtualKey: number;
+  scanCode: number;
+  unicodeChar: number;
+  keyDown: boolean;
+  controlKeyState: number;
+  repeatCount: number;
+}
+
+/**
+ * Parse the six-field sequence emitted after an application enables Windows
+ * Terminal's win32 input mode (CSI ?9001h). The final `_` is handled by the
+ * caller. Empty fields are protocol zeroes; every other field must be decimal.
+ */
+export function parseWin32KeyParams(params: string): Win32KeyEvent | null {
+  const fields = params.split(";");
+  if (fields.length !== 6 || fields.some((field) => !/^\d*$/.test(field))) return null;
+  const values = fields.map((field) => (field === "" ? 0 : Number.parseInt(field, 10)));
+  if (values.some((value) => !Number.isSafeInteger(value))) return null;
+  if (values[3] !== 0 && values[3] !== 1) return null;
+  return {
+    virtualKey: values[0]!,
+    scanCode: values[1]!,
+    unicodeChar: values[2]!,
+    keyDown: values[3] === 1,
+    controlKeyState: values[4]!,
+    repeatCount: values[5]!,
+  };
+}
+
+export function isWin32LeaderParams(params: string, leaderByte: number): boolean {
+  const event = parseWin32KeyParams(params);
+  return event?.keyDown === true && event.unicodeChar === leaderByte;
+}
+
+/** Key-only modifier events do not edit Claude's input line. */
+function isWin32ModifierEvent(event: Win32KeyEvent): boolean {
+  return (
+    event.virtualKey === 0x10 || // shift
+    event.virtualKey === 0x11 || // control
+    event.virtualKey === 0x12 || // alt/menu
+    event.virtualKey === 0x5b || // left Windows
+    event.virtualKey === 0x5c || // right Windows
+    (event.virtualKey >= 0xa0 && event.virtualKey <= 0xa5) // left/right shift/control/alt
+  );
+}
+
 /** CSI finals for cursor/navigation keys — user keys, dropped while modal. */
 function isNavigationCsi(finalByte: number): boolean {
   // A/B/C/D arrows, E/F/H home-end variants, ~ (del/pgup/pgdn/…)
@@ -321,7 +368,13 @@ function isMouseCsi(params: string, finalByte: number): boolean {
   return (finalByte === 0x4d || finalByte === 0x6d) && params.startsWith("<");
 }
 
-type ModalKey = { kind: "enter" } | { kind: "cancel" } | { kind: "backspace" } | { kind: "none" };
+type ModalKey =
+  | { kind: "enter" }
+  | { kind: "cancel" }
+  | { kind: "backspace" }
+  | { kind: "clear" }
+  | { kind: "text"; value: string }
+  | { kind: "none" };
 
 interface StepOutcome {
   state: InputState;
@@ -380,7 +433,7 @@ function enterModal(state: InputState): StepOutcome {
   };
 }
 
-/** Param chars a kitty key sequence can contain: digits, ';', ':'. */
+/** Param chars a held encoded-key sequence can contain: digits, ';', ':'. */
 function isCandidateParamByte(byte: number): boolean {
   return (byte >= 0x30 && byte <= 0x39) || byte === 0x3b || byte === 0x3a;
 }
@@ -431,9 +484,11 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
 
     case "csi_candidate": {
       if (isCsiFinal(byte)) {
+        const win32 = byte === 0x5f ? parseWin32KeyParams(mode.params) : null;
         const isLeaderKey =
           (byte === 0x75 && isKittyLeaderParams(mode.params, state.leaderByte)) ||
-          (byte === 0x7e && isModifyOtherKeysLeaderParams(mode.params, state.leaderByte));
+          (byte === 0x7e && isModifyOtherKeysLeaderParams(mode.params, state.leaderByte)) ||
+          (byte === 0x5f && isWin32LeaderParams(mode.params, state.leaderByte));
         if (isLeaderKey && !state.inPaste) {
           // Encoded leader press/repeat (kitty CSI-u or xterm modifyOtherKeys):
           // enter modal, swallow the sequence — nothing of it reaches the child.
@@ -446,6 +501,27 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
           const opened = maybeOpenNotifier(cleared, held);
           if (opened !== null) return opened;
           return { state: hazardBoundary(cleared), toPty: Buffer.from(held) };
+        }
+        if (win32 !== null) {
+          const cleared = { ...state, escape: null, heldSeq: [] };
+          if (state.inPaste) {
+            return { state: hazardPoison(cleared), toPty: Buffer.from(held) };
+          }
+          if (!win32.keyDown || isWin32ModifierEvent(win32)) {
+            return { state: cleared, toPty: Buffer.from(held) };
+          }
+          if (win32.unicodeChar === 0x0d) {
+            const opened = maybeOpenNotifier(cleared, held);
+            if (opened !== null) return opened;
+            return { state: hazardBoundary(cleared), toPty: Buffer.from(held) };
+          }
+          if (win32.unicodeChar === 0x03) {
+            return { state: hazardBoundary(cleared), toPty: Buffer.from(held) };
+          }
+          if (win32.unicodeChar >= 0x20 && win32.unicodeChar <= 0x7e) {
+            return { state: hazardAppend(cleared, win32.unicodeChar), toPty: Buffer.from(held) };
+          }
+          return { state: hazardPoison(cleared), toPty: Buffer.from(held) };
         }
         let inPaste = state.inPaste;
         if (byte === 0x7e && mode.params === "200") inPaste = true;
@@ -663,6 +739,27 @@ function submitModalLine(state: InputState): StepOutcome {
  * terminal responses belong to the child, so the held bytes forward verbatim.
  */
 function classifyModalCsi(params: string, finalByte: number, state: InputState): { key: ModalKey; forward: boolean } {
+  if (finalByte === 0x5f) {
+    const event = parseWin32KeyParams(params);
+    if (event !== null) {
+      // Win32 input events belong to our modal editor. Consume releases and
+      // modifier-only events, and map key-down events by their resolved Uc.
+      if (!event.keyDown || isWin32ModifierEvent(event)) return { key: { kind: "none" }, forward: false };
+      if (!state.inPaste && (event.unicodeChar === state.leaderByte || event.unicodeChar === 0x03)) {
+        return { key: { kind: "cancel" }, forward: false };
+      }
+      if (event.unicodeChar === 0x0d) return { key: { kind: "enter" }, forward: false };
+      if (event.unicodeChar === 0x1b) return { key: { kind: "cancel" }, forward: false };
+      if (event.unicodeChar === 0x08 || event.unicodeChar === 0x7f) {
+        return { key: { kind: "backspace" }, forward: false };
+      }
+      if (event.unicodeChar === 0x15) return { key: { kind: "clear" }, forward: false };
+      if (event.unicodeChar >= 0x20 && event.unicodeChar <= 0x7e) {
+        return { key: { kind: "text", value: String.fromCharCode(event.unicodeChar) }, forward: false };
+      }
+      return { key: { kind: "none" }, forward: false };
+    }
+  }
   const encodedLeader =
     (finalByte === 0x75 && isKittyLeaderParams(params, state.leaderByte)) ||
     (finalByte === 0x7e && isModifyOtherKeysLeaderParams(params, state.leaderByte));
@@ -701,6 +798,7 @@ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
     // cancel-family returns (forward nothing). Everything else is dropped.
     if (key.kind === "enter") return notifierResolve(state, true);
     if (key.kind === "cancel") return notifierResolve(state, false);
+    if (key.kind === "text" && key.value.toLowerCase() === "n") return notifierResolve(state, false);
     return { state };
   }
   if (state.mode === "executing") {
@@ -719,6 +817,10 @@ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
     case "backspace":
       if (state.line.length === 0) return { state };
       return { state: { ...state, line: state.line.slice(0, -1) } };
+    case "clear":
+      return { state: { ...state, line: "" } };
+    case "text":
+      return { state: { ...state, line: state.line + key.value } };
     case "none":
       return { state };
   }
