@@ -13,20 +13,26 @@ This document is the durable operational matrix. It is intentionally receipt-hea
 
 | Surface | Worktree / path | Branch | Exact HEAD | Role |
 |---|---|---|---|---|
-| Canonical LHC | `/srv/work/lhc-compact-continuation` | `feature/compact-continuation` | **`a4b3334`** (`a4b3334e601a5a81864a1f1fee8351c1373b0663`) | Story branch tip (includes LIM-64 cc-lhc) |
-| Shared TS/Rust contract + runtime freeze | same | same | **`6232317`** (`62323173855b48bb79100b63c4ee196f90dff635`) | LIM-60…63A/63 inspection surface; host pin target |
-| Codex companion | `/srv/work/codex-compact-continuation` | `feature/compact-continuation` | **`e73eedb2c7`** (`e73eedb2c789fdd1c9848a8affc99eea7df8964f`) | Full mid-agentic-turn host integration |
-| Vendored LHC pin (Codex) | `codex-rs/lhc/vendor/long-horizon-context` | gitlink | **`6232317`** | Certified SDK pin used by Codex |
-| cc-lhc story range | `packages/cc-lhc` on canonical branch | — | **`6232317..a4b3334`** (5 commits; tip `a4b3334`) | Capability-limited governance |
+| Canonical LHC | `/srv/work/lhc-compact-continuation` | `feature/compact-continuation` | **tip = HEAD** (LIM-65 cert commits on `a4b3334`) | Story branch; resolve tip with `git rev-parse HEAD` |
+| LIM-64 product tip | same | same | **`a4b3334`** (`a4b3334e601a5a81864a1f1fee8351c1373b0663`) | Last cc-lhc product commit before cert docs |
+| Shared TS/Rust contract + runtime freeze | same | same | **`6232317`** (`62323173855b48bb79100b63c4ee196f90dff635`) | LIM-60…63 inspection surface; host pin target |
+| Codex product close | `/srv/work/codex-compact-continuation` | `feature/compact-continuation` | **`e73eedb2c7`** (`e73eedb2c789fdd1c9848a8affc99eea7df8964f`) | Full mid-agentic-turn host (tripwire green) |
+| Codex + FORK pin text | same | same | **`390ce0630e`** (`390ce0630e250147daf1562e3fdd41ee5368c007`) | Narrow docs-only pin-text align on top of product close |
+| Vendored LHC pin (Codex) | `codex-rs/lhc/vendor/long-horizon-context` | gitlink | **`6232317`** | Certified SDK pin used by Codex (unchanged) |
+| cc-lhc story range | `packages/cc-lhc` on canonical branch | — | **`6232317..a4b3334`** (5 product commits) | Capability-limited governance |
 
 **Package freeze check (independent):**
 
 ```text
 git diff --stat 6232317..a4b3334 -- packages/lhc packages/lhc-rs
-# empty — no TS/Rust SDK source drift after the shared pin
+# empty — no TS/Rust SDK source drift through LIM-64 product tip
+
+git diff --stat 6232317..HEAD -- packages/lhc packages/lhc-rs
+# ledger-only after LIM-65: packages/lhc-rs/scripts/check_gate.py + README
+# (720 exact count); no runtime/contract behavior files
 ```
 
-Post-`6232317` commits on the canonical branch touch **only** `packages/cc-lhc` (LIM-64). A LIM-65 ledger-only touch may adjust `packages/lhc-rs/scripts/check_gate.py` + README expected counts to match cargo reality; that is not a behavior change.
+Product commits after `6232317` through `a4b3334` touch **only** `packages/cc-lhc` (LIM-64). LIM-65 adds the certification document, nearby links, and the lhc-rs exact-count ledger sync (not a behavior change).
 
 ### Linear story map (LIM-60…65)
 
@@ -248,11 +254,15 @@ Confirmed only (no speculative backlog):
 - **LIM-65 is ready for orchestrator / Fable inspection.**
 - **Do not mark the Feature Epic complete** until fresh Fable review accepts this certification artifact.
 
-### Heads at certification authoring
+### Stable heads (resolve cert tip with git)
 
 ```text
-lhc-compact-continuation  feature/compact-continuation  a4b3334  (+ LIM-65 cert commit)
-shared SDK pin            6232317  (packages/lhc + packages/lhc-rs freeze)
-codex-compact-continuation feature/compact-continuation e73eedb2c7
-vendor gitlink            6232317
+lhc-compact-continuation   feature/compact-continuation
+  LIM-64 product tip       a4b3334
+  LIM-65 cert stack        on top of a4b3334 (docs + gate ledger only)
+  resolve tip              git -C /srv/work/lhc-compact-continuation rev-parse HEAD
+shared SDK product freeze  6232317
+codex product close        e73eedb2c7
+codex FORK pin text        390ce0630e  (docs only; vendor still 6232317)
+vendor gitlink             6232317
 ```
