@@ -41,6 +41,8 @@ export const DEFAULT_MODEL_COMPACT_SETTINGS: readonly ModelCompactSettings[] = [
   // compact is a near-total prompt-cache miss, so cycles must stay long
   // enough to amortize it.
   { match: "fable", triggerTokens: 400_000, lowerBound: 200_000, percentages: { ...DEFAULT_PERCENTAGES } },
+  // Opus 4.6: use its 1M provider window for a long 140k→350k working cycle.
+  { match: "opus-4-6", triggerTokens: 350_000, lowerBound: 140_000, percentages: { ...DEFAULT_PERCENTAGES } },
   { match: "glm", triggerTokens: 350_000, lowerBound: 140_000, percentages: { ...DEFAULT_PERCENTAGES } },
   { match: "grok", triggerTokens: 300_000, lowerBound: 100_000, percentages: { ...DEFAULT_PERCENTAGES } },
   // sol: no connector trigger. Its 272k window puts PI's native threshold at

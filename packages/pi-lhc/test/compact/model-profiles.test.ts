@@ -17,6 +17,11 @@ describe("resolveModelCompactSettings", () => {
       triggerTokens: 400_000,
       lowerBound: 200_000,
     });
+    expect(resolveModelCompactSettings("claude-opus-4-6")).toMatchObject({
+      triggerTokens: 350_000,
+      lowerBound: 140_000,
+      percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 },
+    });
     expect(resolveModelCompactSettings("GLM-5.2")).toMatchObject({ triggerTokens: 350_000, lowerBound: 140_000 });
     expect(resolveModelCompactSettings("grok-4.5")).toMatchObject({ triggerTokens: 300_000, lowerBound: 100_000 });
     // sol ships without a connector trigger: PI's native threshold
