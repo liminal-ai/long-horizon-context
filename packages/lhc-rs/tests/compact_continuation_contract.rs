@@ -1,5 +1,5 @@
 //! LIM-62: compact-continuation contract parity against the canonical TypeScript
-//! fixture store (`packages/lhc/fixtures/compact-continuation/v1`).
+//! fixture store (`packages/lhc/fixtures/compact-continuation/v2`).
 //!
 //! Consumes fixtures **in place** via `CARGO_MANIFEST_DIR` — no fork/copy.
 //! Also ports the independent LIM-60 behavioral probes from
@@ -27,25 +27,26 @@ use lhc::shared_tech::compact_continuation::{
     CompactContinuationPolicy, CompactContinuationRefuseCode, CompactContinuationSeam,
     CompactContinuationSkipCode, CompactContinuationState, CompactMaterialFacts,
     ForcedContinuationBoundary, ForcedContinuationBoundaryApplied,
-    ForcedContinuationBoundaryNotApplied, PostMeasurementEstimate, ProviderUsageAuthority,
-    ProviderUsageAvailable, ProviderUsageUnavailable, ProviderUsageUnavailableReason,
-    ValidationResult, WorkContinuation, WriterClaim, as_compact_continuation_input,
-    assert_decision_parity, compact_continuation_marker_idempotency_key,
-    decide_compact_continuation, validate_compact_continuation_decision,
-    validate_compact_continuation_input, validate_compact_continuation_receipt,
+    ForcedContinuationBoundaryNotApplied, HostValidationStatusFact, PostMeasurementEstimate,
+    ProviderUsageAuthority, ProviderUsageAvailable, ProviderUsageUnavailable,
+    ProviderUsageUnavailableReason, ValidationResult, WorkContinuation, WriterClaim,
+    as_compact_continuation_input, assert_decision_parity,
+    compact_continuation_marker_idempotency_key, decide_compact_continuation,
+    validate_compact_continuation_decision, validate_compact_continuation_input,
+    validate_compact_continuation_receipt,
 };
 use lhc::shared_tech::js_json::js_json_stringify_of;
 
 // ── Fixture location (canonical TS store; never forked) ──────────────────────
 
 fn fixtures_root() -> PathBuf {
-    // packages/lhc-rs → packages/lhc/fixtures/compact-continuation/v1
+    // packages/lhc-rs → packages/lhc/fixtures/compact-continuation/v2
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("lhc")
         .join("fixtures")
         .join("compact-continuation")
-        .join("v1")
+        .join("v2")
 }
 
 #[derive(Debug, Deserialize)]
@@ -113,10 +114,87 @@ fn assert_input_validation(value: &str, label: &str) {
     );
 }
 
+fn base_material(over: Value) -> Value {
+    let mut base = json!({
+        "derivationsMissingOrFailed": false,
+        "lowerTargetMet": true,
+        "compactStructurallyValid": true,
+        "installSucceeds": true,
+        "usefulReduction": true,
+        "canProduceValidProviderRequest": true,
+        "projectedPressureTokens": 105_000,
+        "renderedSavingsTokens": 0,
+        "renderedSavingsSource": "lhc_rendered_history_estimate",
+        "renderedSavingsDomain": "source_labelled_estimate",
+        "safeRunwayThresholdTokens": 120_000,
+        "safeRunwayThresholdSource": "host_safe_runway",
+        "projectedPressureSafe": true,
+        "protectedEscalationApplied": false,
+        "visibilityBoundaryBefore": null,
+        "visibilityBoundaryAfter": null,
+        "compactPointAtInstall": null,
+        "maximalPruneInsufficient": false,
+        "hostValidationStatus": "not_required",
+    });
+    if let (Some(base_obj), Some(over_obj)) = (base.as_object_mut(), over.as_object()) {
+        for (k, v) in over_obj {
+            base_obj.insert(k.clone(), v.clone());
+        }
+    }
+    base
+}
+
+/// TS-parity base input: section overrides merge (seam/policy/invariants/
+/// compactMaterial/postMeasurementEstimate/providerUsage); other keys replace.
 fn base_input(over: Value) -> Value {
+    let over_obj = over.as_object().cloned().unwrap_or_default();
+    let section = |name: &str| over_obj.get(name).cloned().unwrap_or(json!({}));
+
+    let usage_over = over_obj.get("providerUsage").cloned();
+    let provider_usage = match usage_over {
+        None => json!({
+            "available": true,
+            "inputTokens": 105_000,
+            "cacheCreationTokens": 0,
+            "cacheReadTokens": 0,
+            "total": 105_000,
+            "domain": "provider_reported_input",
+        }),
+        Some(u) if u.get("available") == Some(&json!(false)) => json!({
+            "available": false,
+            "reason": u.get("reason").cloned().unwrap_or(json!("missing")),
+            "domain": u.get("domain").cloned().unwrap_or(json!("provider_reported_input")),
+        }),
+        Some(u) => {
+            let mut base = json!({
+                "available": true,
+                "inputTokens": 105_000,
+                "cacheCreationTokens": 0,
+                "cacheReadTokens": 0,
+                "total": 105_000,
+                "domain": "provider_reported_input",
+            });
+            if let (Some(b), Some(o)) = (base.as_object_mut(), u.as_object()) {
+                for (k, v) in o {
+                    b.insert(k.clone(), v.clone());
+                }
+            }
+            base
+        }
+    };
+
+    let merge = |mut base: Value, over: Value| -> Value {
+        if let (Some(b), Some(o)) = (base.as_object_mut(), over.as_object()) {
+            for (k, v) in o {
+                b.insert(k.clone(), v.clone());
+            }
+        }
+        base
+    };
+
     let mut base = json!({
         "contractVersion": COMPACT_CONTINUATION_CONTRACT_VERSION,
-        "seam": {
+        "seam": merge(json!({
             "modelResponseComplete": true,
             "requestedToolsSettled": true,
             "captureFlushed": true,
@@ -124,44 +202,43 @@ fn base_input(over: Value) -> Value {
             "insideTransportRetry": false,
             "inputEpochAtDecision": 0,
             "inputEpochAtApply": 0,
-        },
-        "providerUsage": {
-            "available": true,
-            "inputTokens": 105_000,
-            "cacheCreationTokens": 0,
-            "cacheReadTokens": 0,
-            "total": 105_000,
-            "domain": "provider_reported_input",
-        },
-        "postMeasurementEstimate": {
+        }), section("seam")),
+        "providerUsage": provider_usage,
+        "postMeasurementEstimate": merge(json!({
             "tokens": 0,
             "source": "lhc_token_estimate",
             "domain": "source_labelled_estimate",
-        },
-        "policy": {
+        }), section("postMeasurementEstimate")),
+        "policy": merge(json!({
             "upperTriggerTokens": 100_000,
             "lowerTargetTokens": 40_000,
             "hostCapability": "full_state_machine",
-        },
+            "safeRunwayThresholdTokens": 120_000,
+            "safeRunwayThresholdSource": "host_safe_runway",
+        }), section("policy")),
         "continuation": { "kind": "active_non_tool" },
-        "invariants": {
+        "invariants": merge(json!({
             "captureComplete": true,
             "providerIdentityValid": true,
             "singleOpenTurn": true,
             "writerClaim": "none",
-        },
+        }), section("invariants")),
         "forcedContinuationBoundary": { "applied": false },
-        "compactMaterial": {
-            "derivationsMissingOrFailed": false,
-            "lowerTargetMet": true,
-            "compactStructurallyValid": true,
-            "installSucceeds": true,
-            "usefulReduction": true,
-            "canProduceValidProviderRequest": true,
-        },
+        "compactMaterial": base_material(section("compactMaterial")),
     });
-    if let (Some(base_obj), Some(over_obj)) = (base.as_object_mut(), over.as_object()) {
-        for (k, v) in over_obj {
+    if let Some(base_obj) = base.as_object_mut() {
+        for (k, v) in &over_obj {
+            if matches!(
+                k.as_str(),
+                "seam"
+                    | "policy"
+                    | "invariants"
+                    | "compactMaterial"
+                    | "postMeasurementEstimate"
+                    | "providerUsage"
+            ) {
+                continue;
+            }
             base_obj.insert(k.clone(), v.clone());
         }
     }
@@ -176,7 +253,7 @@ fn effect_types(decision: &CompactContinuationDecision) -> Vec<&'static str> {
 
 #[test]
 fn pins_version_and_stable_strings() {
-    assert_eq!(COMPACT_CONTINUATION_CONTRACT_VERSION, "1.0.0");
+    assert_eq!(COMPACT_CONTINUATION_CONTRACT_VERSION, "2.0.0");
     assert_eq!(CONTEXT_COMPACT_CONTINUE_REASON, "context_compact_continue");
     assert_eq!(COMPACT_CONTINUATION_MARKER_KIND, "lhc.compact_continuation");
     assert_eq!(
@@ -192,6 +269,10 @@ fn pins_version_and_stable_strings() {
         "context_compacted_task_in_progress"
     );
     assert_eq!(COMPACT_CONTINUATION_MARKER_ACTION, "continue_existing_task");
+    assert!(COMPACT_CONTINUATION_REFUSE_CODES.contains(&"unsafe_runway"));
+    assert!(COMPACT_CONTINUATION_REFUSE_CODES.contains(&"host_validation_failed"));
+    assert!(COMPACT_CONTINUATION_REFUSE_CODES.contains(&"invalid_protected_tool_pairs"));
+    assert!(COMPACT_CONTINUATION_OUTCOME_KINDS.contains(&"compact_preserve_tool_escalated"));
     assert!(COMPACT_CONTINUATION_INPUT_CLOSED_SHAPE);
     assert!(COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE.contains("per-variant closed structs"));
 }
@@ -236,7 +317,7 @@ fn exports_closed_vocabularies() {
     assert_eq!(COMPACT_CONTINUATION_WRITER_CLAIMS.len(), 4);
 }
 
-// ── Manifest + 38-case fixture parity ────────────────────────────────────────
+// ── Manifest + 47-case fixture parity ────────────────────────────────────────
 
 #[test]
 fn manifest_version_and_required_coverage_are_complete() {
@@ -249,8 +330,8 @@ fn manifest_version_and_required_coverage_are_complete() {
     assert!(manifest.cases.len() >= 18);
     assert_eq!(
         manifest.cases.len(),
-        38,
-        "LIM-62 expects exactly 38 fixture cases"
+        47,
+        "LIM-67 expects exactly 47 fixture cases"
     );
 
     let covered: HashSet<&str> = manifest
@@ -304,9 +385,9 @@ fn every_cases_json_file_is_listed_in_manifest() {
 }
 
 #[test]
-fn all_38_fixture_cases_match_oracle_exactly() {
+fn all_47_fixture_cases_match_oracle_exactly() {
     let manifest = load_manifest();
-    assert_eq!(manifest.cases.len(), 38);
+    assert_eq!(manifest.cases.len(), 47);
 
     for entry in &manifest.cases {
         let fixture = load_case(&entry.file);
@@ -360,17 +441,38 @@ fn all_38_fixture_cases_match_oracle_exactly() {
         // For reject cases, still evaluate the total oracle on the raw typed
         // shape (mirrors TS cast path) so residual refuse behavior is pinned.
         let actual = if fixture.input_validation == "reject" {
-            // Deserialize without as_* (input is intentionally invalid).
-            // The illegal fresh-force case is still a structurally deserializable
-            // object for the total evaluator.
-            let typed: CompactContinuationInputViaValue = CompactContinuationInputViaValue(
-                serde_json::from_value(fixture.input.clone()).unwrap_or_else(|e| {
-                    panic!(
-                        "case {}: reject fixture must still deserialize for total oracle: {e}",
-                        entry.name
-                    )
-                }),
-            );
+            // Deserialize without as_* (input is intentionally invalid). The
+            // TS oracle is structurally typed: unknown props are invisible and
+            // missing arrays normalize to empty. Mirror that for reject cases
+            // that are not strictly deserializable (e.g. legacy toolCallId —
+            // dual-field shim rejected at the type boundary).
+            let typed_value = match serde_json::from_value::<
+                lhc::shared_tech::compact_continuation::CompactContinuationInput,
+            >(fixture.input.clone())
+            {
+                Ok(v) => v,
+                Err(_) => {
+                    let mut lenient = fixture.input.clone();
+                    if let Some(cont) = lenient
+                        .get_mut("continuation")
+                        .and_then(|c| c.as_object_mut())
+                        && cont.get("kind").and_then(|k| k.as_str())
+                            == Some("pending_correlated_tool_result")
+                    {
+                        cont.remove("toolCallId");
+                        cont.entry("protectedToolCallIds".to_string())
+                            .or_insert(json!([]));
+                    }
+                    serde_json::from_value(lenient).unwrap_or_else(|e| {
+                        panic!(
+                            "case {}: reject fixture must still deserialize for total oracle: {e}",
+                            entry.name
+                        )
+                    })
+                }
+            };
+            let typed: CompactContinuationInputViaValue =
+                CompactContinuationInputViaValue(typed_value);
             decide_compact_continuation(&typed.0)
         } else {
             let input = as_compact_continuation_input(&fixture.input)
@@ -488,7 +590,7 @@ fn active_non_tool_forces_boundary_before_compact() {
     let compact_i = types.iter().position(|t| *t == "compact").unwrap();
     assert!(force_i < compact_i);
     assert!(!types.contains(&"open_continuation_turn"));
-    assert!(!types.iter().any(|t| *t == "preserve_tool_pair_verbatim"));
+    assert!(!types.iter().any(|t| *t == "preserve_tool_pairs_verbatim"));
     assert!(actual.receipt.continuation.opened);
     assert!(actual.receipt.residual.marker_persisted);
     assert!(actual.receipt.residual.marker_served);
@@ -508,7 +610,7 @@ fn pending_tool_path_preserves_pair_no_marker() {
     let types = effect_types(&actual);
     assert!(!types.contains(&"insert_continuation_marker"));
     assert!(!types.contains(&"force_turn_end"));
-    assert!(types.contains(&"preserve_tool_pair_verbatim"));
+    assert!(types.contains(&"preserve_tool_pairs_verbatim"));
 }
 
 #[test]
@@ -755,7 +857,7 @@ fn install_failure_wins_over_no_reduction_preserve_tool() {
     let raw = base_input(json!({
         "continuation": {
             "kind": "pending_correlated_tool_result",
-            "toolCallId": "call-42",
+            "protectedToolCallIds": ["call-42"],
             "correlationValid": true,
         },
         "compactMaterial": {
@@ -859,7 +961,7 @@ fn pending_boundary_kind_none_refuses() {
 }
 
 #[test]
-fn pending_boundary_tool_continuation_refuses() {
+fn pending_boundary_tool_continuation_is_legal_protected_escalation_v2() {
     let raw = base_input(json!({
         "forcedContinuationBoundary": {
             "applied": true,
@@ -869,14 +971,23 @@ fn pending_boundary_tool_continuation_refuses() {
         },
         "continuation": {
             "kind": "pending_correlated_tool_result",
-            "toolCallId": "call-1",
+            "protectedToolCallIds": ["call-42"],
             "correlationValid": true,
+        },
+        "compactMaterial": {
+            "protectedEscalationApplied": true,
+            "hostValidationStatus": "awaiting",
+            "projectedPressureSafe": true,
+            "usefulReduction": true,
+            "installSucceeds": true,
         },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
+    assert!(!actual.receipt.refused);
+    assert!(actual.receipt.residual.forced_continuation_boundary_applied);
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidPendingBoundaryContinuation)
+        actual.receipt.protected_tool_call_ids,
+        vec!["call-42".to_string()]
     );
 }
 
@@ -974,14 +1085,13 @@ fn rejects_unknown_fields_closed_shape() {
     assert!(!v.ok);
     assert!(v.issues.iter().any(|i| i.message.contains("unknown field")));
 
-    let bad_usage = base_input(json!({
-        "providerUsage": {
-            "available": false,
-            "reason": "missing",
-            "domain": "provider_reported_input",
-            "inputTokens": 1,
-        },
-    }));
+    let mut bad_usage = base_input(json!({}));
+    bad_usage["providerUsage"] = json!({
+        "available": false,
+        "reason": "missing",
+        "domain": "provider_reported_input",
+        "inputTokens": 1,
+    });
     let v2 = validate_compact_continuation_input(&bad_usage);
     assert!(!v2.ok);
 }
@@ -1109,7 +1219,7 @@ fn install_failed_preserve_tool_includes_preserve_effect() {
     let raw = base_input(json!({
         "continuation": {
             "kind": "pending_correlated_tool_result",
-            "toolCallId": "call-99",
+            "protectedToolCallIds": ["call-99"],
             "correlationValid": true,
         },
         "compactMaterial": {
@@ -1127,7 +1237,7 @@ fn install_failed_preserve_tool_includes_preserve_effect() {
         Some(CompactContinuationRefuseCode::InstallFailed)
     );
     let types = effect_types(&actual);
-    assert!(types.contains(&"preserve_tool_pair_verbatim"));
+    assert!(types.contains(&"preserve_tool_pairs_verbatim"));
     assert!(!types.contains(&"insert_continuation_marker"));
     assert!(actual.receipt.residual.original_agentic_turn_still_open);
 }
@@ -1440,7 +1550,7 @@ fn effects_vs_residual_documented_rule_pin() {
 fn raw_fixture_expected_bytes_not_only_typed_round_trip() {
     // Narrow regression: comparing only typed-expected JSON would miss field-
     // order drift. The fixture loader retains raw expected Value; assert it
-    // still matches the typed form for a representative case (and the 38-case
+    // still matches the typed form for a representative case (and the 47-case
     // loop asserts actual vs raw for every case).
     let fixture = load_case("cases/active_non_tool_above_trigger.json");
     let typed = js_json_stringify_of(&fixture.expected).unwrap();
@@ -1585,6 +1695,8 @@ fn hand_built_base(continuation: WorkContinuation) -> CompactContinuationInput {
             domain: "source_labelled_estimate".to_string(),
         },
         policy: CompactContinuationPolicy {
+            safe_runway_threshold_tokens: None,
+            safe_runway_threshold_source: None,
             upper_trigger_tokens: 100_000,
             lower_target_tokens: 40_000,
             host_capability: CompactContinuationHostCapability::FullStateMachine,
@@ -1604,6 +1716,19 @@ fn hand_built_base(continuation: WorkContinuation) -> CompactContinuationInput {
             install_succeeds: true,
             useful_reduction: true,
             can_produce_valid_provider_request: true,
+            projected_pressure_tokens: None,
+            rendered_savings_tokens: 0,
+            rendered_savings_source: "lhc_rendered_history_estimate".to_string(),
+            rendered_savings_domain: "source_labelled_estimate".to_string(),
+            safe_runway_threshold_tokens: None,
+            safe_runway_threshold_source: None,
+            projected_pressure_safe: None,
+            protected_escalation_applied: false,
+            visibility_boundary_before: None,
+            visibility_boundary_after: None,
+            compact_point_at_install: None,
+            maximal_prune_insufficient: false,
+            host_validation_status: HostValidationStatusFact::NotRequired,
         },
     }
 }
@@ -1615,7 +1740,7 @@ fn decide_does_not_panic_on_near_i64_max_pressure_sum() {
         WorkContinuation::None,
         WorkContinuation::ActiveNonTool,
         WorkContinuation::PendingCorrelatedToolResult {
-            tool_call_id: "c1".to_string(),
+            protected_tool_call_ids: vec!["c1".to_string()],
             correlation_valid: true,
         },
     ] {
@@ -1645,7 +1770,7 @@ fn decide_does_not_panic_for_every_continuation_kind_hand_built() {
         hand_built_base(WorkContinuation::None),
         hand_built_base(WorkContinuation::ActiveNonTool),
         hand_built_base(WorkContinuation::PendingCorrelatedToolResult {
-            tool_call_id: "c1".to_string(),
+            protected_tool_call_ids: vec!["c1".to_string()],
             correlation_valid: true,
         }),
         {
@@ -1782,7 +1907,7 @@ fn direct_serde_work_continuation_rejects_unknown_fields() {
 
     let tool: WorkContinuation = serde_json::from_value(json!({
         "kind": "pending_correlated_tool_result",
-        "toolCallId": "c1",
+        "protectedToolCallIds": ["c1"],
         "correlationValid": true,
     }))
     .unwrap();
@@ -1790,6 +1915,16 @@ fn direct_serde_work_continuation_rejects_unknown_fields() {
         tool,
         WorkContinuation::PendingCorrelatedToolResult { .. }
     ));
+
+    // Contract 2.0.0: legacy single toolCallId is rejected — no dual-field shim.
+    assert!(
+        serde_json::from_value::<WorkContinuation>(json!({
+            "kind": "pending_correlated_tool_result",
+            "toolCallId": "c1",
+            "correlationValid": true,
+        }))
+        .is_err()
+    );
 
     // Unknown field on none / active_non_tool.
     assert!(
@@ -1976,7 +2111,7 @@ fn no_valid_provider_request_preserve_tool_refuses() {
     let raw = base_input(json!({
         "continuation": {
             "kind": "pending_correlated_tool_result",
-            "toolCallId": "call-nv",
+            "protectedToolCallIds": ["call-nv"],
             "correlationValid": true,
         },
         "compactMaterial": {
@@ -1997,7 +2132,7 @@ fn no_valid_provider_request_preserve_tool_refuses() {
     let types = effect_types(&actual);
     assert!(types.contains(&"claim_writer"));
     assert!(types.contains(&"compact"));
-    assert!(!types.contains(&"preserve_tool_pair_verbatim")); // compact fails request before preserve install stage
+    assert!(!types.contains(&"preserve_tool_pairs_verbatim")); // compact fails request before preserve install stage
     assert!(!types.contains(&"install_serving_view"));
     assert!(types.contains(&"release_writer"));
     assert!(actual.receipt.residual.original_agentic_turn_still_open);

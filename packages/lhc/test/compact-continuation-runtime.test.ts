@@ -10,6 +10,7 @@ import {
   initLhc,
   intakeStream,
   type Lhc,
+  type MessageEventInput,
   messages,
   provePendingToolPair,
   threads,
@@ -1605,5 +1606,170 @@ describe("LIM-61 compact-continuation runtime", () => {
       seam: { ...SETTLED_SEAM, extraFlag: true },
     });
     expect(unknownNested?.reason).toMatch(/unknown field seam\.extraFlag/);
+  });
+});
+
+describe("LIM-67 pending-tool protected escalation runtime", () => {
+  const PROTECTED_ID = "call-protected-1";
+
+  /** One open agentic turn: older huge unprotected tool results, then the protected pair. */
+  async function seedEscalationTurn(filePath: string): Promise<void> {
+    const events: MessageEventInput[] = [
+      validEvent("user_prompt", { payload: { text: "sustained tool work" } }),
+      validEvent("assistant_text", { payload: { text: "running the long tool loop" } }),
+    ];
+    for (let i = 1; i <= 3; i++) {
+      events.push(
+        validEvent("tool_call", {
+          payload: { toolCallId: `call-old-${i}`, toolName: "read_file", arguments: { path: `old-${i}.txt` } },
+        }),
+        validEvent("tool_result", {
+          payload: { toolCallId: `call-old-${i}`, content: `old bulky data ${i} `.repeat(1500), isError: false },
+        }),
+      );
+    }
+    events.push(
+      validEvent("tool_call", {
+        payload: { toolCallId: PROTECTED_ID, toolName: "read_file", arguments: { path: "current.txt" } },
+      }),
+      validEvent("tool_result", {
+        payload: { toolCallId: PROTECTED_ID, content: "protected verbatim payload", isError: false },
+      }),
+    );
+    const batch = await intakeStream.messageEvents({ filePath }, events);
+    if (!batch.ok) throw new Error(batch.error.reason);
+  }
+
+  function escalationFacts(
+    attemptId: string,
+    safeRunwayThresholdTokens: number,
+  ): CompactContinuationHostFacts {
+    return baseFacts({
+      attemptId,
+      providerUsage: {
+        available: true,
+        inputTokens: 290000,
+        cacheCreationTokens: 5000,
+        cacheReadTokens: 5000,
+        total: 300000,
+        domain: "provider_reported_input",
+      },
+      postMeasurementEstimate: { tokens: 2000, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+      policy: {
+        upperTriggerTokens: 100000,
+        lowerTargetTokens: 500000,
+        hostCapability: "full_state_machine",
+        safeRunwayThresholdTokens,
+        safeRunwayThresholdSource: "host_safe_runway",
+      },
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: [PROTECTED_ID],
+        correlationValid: true,
+      },
+    });
+  }
+
+  it("escalates ineffective preserve through protected boundary and installs (maximal retry)", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedEscalationTurn(fixture.filePath);
+    const before = snapshotCanonical(fixture.filePath);
+
+    // Preserve alone saves ~nothing (results are in the open tail), so projected
+    // pressure stays above the threshold until the protected boundary prunes the
+    // older unprotected bodies.
+    const result = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      escalationFacts("escalate-install-1", 298000),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const receipt = result.value.receipt;
+    expect(receipt.outcome).toBe("compact_preserve_tool_escalated");
+    expect(receipt.reliefPath).toBe("host_validation_awaiting");
+    expect(receipt.protectedToolCallIds).toEqual([PROTECTED_ID]);
+    expect(receipt.residual.nextProviderRequestAllowed).toBe(false);
+    expect(receipt.residual.hostValidationStatus).toBe("awaiting");
+    expect(receipt.residual.markerPersisted).toBe(true);
+    expect(receipt.residual.markerServed).toBe(true);
+    expect(receipt.residual.visibilityBoundaryAfter).not.toBeNull();
+    expect(receipt.residual.visibilityBoundaryAfter!).toBeGreaterThan(receipt.residual.visibilityBoundaryBefore ?? 0);
+    expect(receipt.effects.some((e) => e.type === "advance_visibility_boundary")).toBe(true);
+    expect(receipt.effects.some((e) => e.type === "preserve_tool_pairs_verbatim")).toBe(true);
+
+    // One forced boundary, one marker, view installed.
+    const after = snapshotCanonical(fixture.filePath);
+    expect(after.turnCount).toBe(before.turnCount + 1);
+    expect(after.markerCount).toBe(1);
+    expect(after.viewId).not.toBe(before.viewId);
+
+    // Protected pair stays canonical and verbatim.
+    const listed = await messages.list({ filePath: fixture.filePath });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const protectedResult = listed.value.find(
+      (m) => m.kind === "tool_result" && m.blocks.some((b) => b.content["toolCallId"] === PROTECTED_ID),
+    );
+    expect(protectedResult?.blocks[0]?.content["content"]).toBe("protected verbatim payload");
+
+    // Host validation acknowledgment flips awaiting → ok.
+    const hv = await compactContinuation.getCompactContinuationHostValidation(
+      { filePath: fixture.filePath },
+      "escalate-install-1",
+    );
+    expect(hv.ok).toBe(true);
+    if (!hv.ok) return;
+    expect(hv.value?.status).toBe("awaiting");
+    const ack = await compactContinuation.recordCompactContinuationHostValidation(
+      { filePath: fixture.filePath },
+      "escalate-install-1",
+      "ok",
+    );
+    expect(ack.ok).toBe(true);
+    const hv2 = await compactContinuation.getCompactContinuationHostValidation(
+      { filePath: fixture.filePath },
+      "escalate-install-1",
+    );
+    expect(hv2.ok).toBe(true);
+    if (!hv2.ok) return;
+    expect(hv2.value?.status).toBe("ok");
+  });
+
+  it("unsafe runway after maximal prune refuses truthfully: no install, no marker", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedEscalationTurn(fixture.filePath);
+    const before = snapshotCanonical(fixture.filePath);
+
+    const result = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      escalationFacts("escalate-unsafe-1", 1000),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const receipt = result.value.receipt;
+    expect(receipt.outcome).toBe("refuse");
+    expect(receipt.refuseCode).toBe("unsafe_runway");
+    expect(receipt.reliefPath).toBe("protected_escalation");
+    // Receipt stays truthful: no marker was persisted on the refused attempt.
+    expect(receipt.residual.markerPersisted).toBe(false);
+    expect(receipt.residual.markerServed).toBe(false);
+    expect(receipt.residual.priorServingViewIntact).toBe(true);
+    expect(receipt.residual.nextProviderRequestAllowed).toBe(false);
+    expect(receipt.effects.some((e) => e.type === "insert_continuation_marker")).toBe(false);
+    expect(receipt.effects.some((e) => e.type === "install_serving_view")).toBe(false);
+
+    const after = snapshotCanonical(fixture.filePath);
+    // Forced boundary is durable (repairable), but no marker and no new view.
+    expect(after.turnCount).toBe(before.turnCount + 1);
+    expect(after.markerCount).toBe(0);
+    expect(after.viewId).toBe(before.viewId);
+
+    const pending = await compactContinuation.getPendingCompactContinuationBoundary({
+      filePath: fixture.filePath,
+    });
+    expect(pending.ok).toBe(true);
+    if (!pending.ok) return;
+    expect(pending.value?.status).toBe("failed_repairable");
+    expect(pending.value?.markerPersisted).toBe(false);
   });
 });

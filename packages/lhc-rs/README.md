@@ -8,8 +8,8 @@ across the full project).** The host-agnostic Cargo library meets the final
 Phase 2 gate:
 
 ```text
-classified=735 cargo-reported=735 (binaries: 71)
-passed=720 notimpl=0 ignored=15
+classified=739 cargo-reported=739 (binaries: 72)
+passed=724 notimpl=0 ignored=15
 wrong=0 suspicious=0
 ```
 
@@ -33,14 +33,15 @@ The governing handoff is
 - Profile `lowerBound` / band percentages are Amendment I `f64` (not `i64`);
   visibility budgets remain `f64` per Wave 6 rulings.
 - Gate: `python3 scripts/check_gate.py` — final mode (zero real Phase-2
-  todos) requires exact `720/0/15/0/0` (passed/notimpl/ignored/wrong/
+  todos) requires exact `724/0/15/0/0` (passed/notimpl/ignored/wrong/
   suspicious) with the transitional name allowlist retired
   (`scripts/gate_allowlist.txt` deleted). The gate hardcodes the expected
   passed count; slices that add tests must update `scripts/check_gate.py`
   and this README in the same commit. Compact-continuation through LIM-63
-  (pure contract + live runtime + stored attempt-identity inspection) is
-  included in the 720 ledger; `packages/lhc` / `packages/lhc-rs` code is
-  frozen at `6232317` for host certification.
+  (pure contract + live runtime + stored attempt-identity inspection) plus
+  the LIM-67 contract 2.0.0 protected pending-tool escalation (protected
+  boundary preview, atomic view+boundary install, host-validation state) is
+  included in the 724 ledger.
 
 ## Working on the port
 

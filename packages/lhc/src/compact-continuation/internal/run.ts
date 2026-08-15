@@ -1653,6 +1653,7 @@ async function runCompactContinuationInner(
 
     // ── Protected visibility boundary (escalated pending only) ────────────
     let maximalPruneInsufficient = false;
+    let boundaryWalkTargetLimited = false;
     if (
       (pendingEscalated || (needsContinueTurn && facts.continuation.kind === "pending_correlated_tool_result")) &&
       protectedIds.length > 0 &&
@@ -1671,6 +1672,7 @@ async function runCompactContinuationInner(
       visibilityBoundaryBefore = preview.value.previousBoundary;
       proposedVisibilityBoundary = preview.value.proposedBoundary;
       maximalPruneInsufficient = preview.value.maximalPruneInsufficient;
+      boundaryWalkTargetLimited = threshold !== undefined;
     }
 
     // ── Compact prepare + candidate material ──────────────────────────────
@@ -1725,16 +1727,78 @@ async function runCompactContinuationInner(
           }),
           hooks,
         );
-        // If escalated maximal prune still unsafe — refuse without install.
-        if (escalated && (material.maximalPruneInsufficient || material.projectedPressureSafe === false)) {
+        // Escalated candidate unsafe at the target-limited walk: before any
+        // refuse, apply maximal eligible pruning once (story: refuse only when
+        // maximal eligible pruning still cannot produce safe runway).
+        if (
+          escalated &&
+          material.projectedPressureSafe === false &&
+          boundaryWalkTargetLimited &&
+          material.compactStructurallyValid
+        ) {
+          const maximalPreview = await threadView.previewProtectedBoundary(ref, {
+            protectedToolCallIds: protectedIds,
+          });
+          if (!maximalPreview.ok) {
+            const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+            if (!rel.ok) return rel;
+            return maximalPreview;
+          }
+          if (
+            proposedVisibilityBoundary !== null &&
+            maximalPreview.value.proposedBoundary > proposedVisibilityBoundary
+          ) {
+            proposedVisibilityBoundary = maximalPreview.value.proposedBoundary;
+            const maxPrep = await threadView.prepareCompact(ref, {
+              ...prepOpts,
+              visibilityBoundaryOverride: proposedVisibilityBoundary,
+            });
+            if (maxPrep.ok) {
+              prepared = maxPrep.value;
+              const maxCandidate = await createDbReadTransaction(ref, (tx) =>
+                assembleCandidateFromPrepared(tx.db, prepared!, facts.policy.lowerTargetTokens, {
+                  boundaryPositionOverride: proposedVisibilityBoundary!,
+                }),
+              );
+              if (!maxCandidate.ok) {
+                const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
+                if (!rel.ok) return rel;
+                return maxCandidate;
+              }
+              material = applyMaterialHooks(
+                materialFromCandidate(facts, maxCandidate.value, {
+                  protectedEscalationApplied: true,
+                  visibilityBoundaryBefore,
+                  visibilityBoundaryAfter: proposedVisibilityBoundary,
+                  compactPointAtInstall: prepared.selection.compactPoint,
+                  maximalPruneInsufficient: maximalPreview.value.maximalPruneInsufficient,
+                  hostValidationStatus: "awaiting",
+                }),
+                hooks,
+              );
+            }
+          }
+        }
+        // Pressure formula is authoritative. When the projected pressure is
+        // provably safe, the zone-proxy insufficiency flag is advisory noise —
+        // clear it so oracle classification matches the installed reality.
+        if (escalated && material.projectedPressureSafe === true && material.maximalPruneInsufficient) {
+          material = { ...material, maximalPruneInsufficient: false };
+        }
+        // If escalated and, after maximal eligible pruning, projected runway is
+        // still unsafe — refuse without install. Facts stay as computed so a
+        // structurally failed candidate still classifies compact_failed, and
+        // maximalPruneInsufficient is now proven (maximal advance evaluated).
+        if (
+          escalated &&
+          (material.projectedPressureSafe === false ||
+            (material.projectedPressureSafe === null && material.maximalPruneInsufficient))
+        ) {
           material = {
             ...material,
             installSucceeds: false,
-            compactStructurallyValid: true,
-            canProduceValidProviderRequest: true,
             usefulReduction: false,
             maximalPruneInsufficient: true,
-            projectedPressureSafe: false,
             hostValidationStatus: "not_required",
           };
           prepared = null; // do not install
@@ -1756,11 +1820,15 @@ async function runCompactContinuationInner(
     }
 
     // ── Marker before install (continue-turn only, when structure valid) ──
+    // Skipped when the attempt already resolved not to install (prepared
+    // cleared, e.g. unsafe-runway refuse): a marker persisted on a certain
+    // refuse would contradict the receipt residual. Repair reasserts by key.
     if (
       needsContinueTurn &&
       forcedContinuationBoundary.applied === true &&
       material.compactStructurallyValid &&
-      material.canProduceValidProviderRequest
+      material.canProduceValidProviderRequest &&
+      (prepared !== null || hooks?.skipRealCompact === true)
     ) {
       const cTurnId = forcedContinuationBoundary.continuationTurnId;
       const already = await createDbReadTransaction(ref, (tx) =>
@@ -1857,7 +1925,12 @@ async function runCompactContinuationInner(
       // Do not silently keep pre-marker material when re-assembly fails.
       if (prepared !== null && hooks?.skipRealCompact !== true) {
         const candidate2 = await createDbReadTransaction(ref, (tx) =>
-          assembleCandidateFromPrepared(tx.db, prepared!, facts.policy.lowerTargetTokens),
+          // Same boundary override as the pre-marker assembly: dropping it here
+          // would recompute escalated savings against full bodies and misreport
+          // an installed-safe candidate as unsafe.
+          assembleCandidateFromPrepared(tx.db, prepared!, facts.policy.lowerTargetTokens, {
+            ...(proposedVisibilityBoundary !== null ? { boundaryPositionOverride: proposedVisibilityBoundary } : {}),
+          }),
         );
         if (!candidate2.ok) {
           const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
@@ -2098,8 +2171,14 @@ async function runCompactContinuationInner(
         // compact_failed: candidate structure invalid (never reached a valid install).
         // install_failed: valid candidate reached install and install failed.
         const reachedValidCandidate = material.compactStructurallyValid && material.canProduceValidProviderRequest;
+        // unsafe_runway refuses before any install attempt — never log it as an
+        // install failure.
         const failStage: StageName =
-          reachedValidCandidate && material.installSucceeds === false ? "install_failed" : "compact_failed";
+          decision.receipt.refuseCode === "unsafe_runway"
+            ? "unsafe_runway_refused"
+            : reachedValidCandidate && material.installSucceeds === false
+              ? "install_failed"
+              : "compact_failed";
         finalizeOpts.terminal = false;
         finalizeOpts.boundaryUpdate = {
           continuationTurnId: finalBoundary.continuationTurnId,

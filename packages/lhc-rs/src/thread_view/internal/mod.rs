@@ -10,6 +10,7 @@ pub mod compact_compute;
 pub(crate) mod exact_i64;
 pub mod materialize;
 pub mod profiles;
+pub mod protected_boundary;
 pub mod render;
 pub mod seam;
 pub mod select;

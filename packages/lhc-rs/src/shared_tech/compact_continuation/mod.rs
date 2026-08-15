@@ -1,4 +1,4 @@
-//! Compact-continuation contract v1 — pure whole-seam parity/receipt oracle.
+//! Compact-continuation contract 2.0.0 — pure whole-seam parity/receipt oracle.
 //!
 //! Ported from `packages/lhc/src/shared-tech/compact-continuation/`.
 //!
@@ -36,7 +36,7 @@
 //! wrong discriminants and unknown fields, but does **not** replace the
 //! validator (e.g. safe-integer bounds, total = sum components).
 //!
-//! Parity fixtures live in `packages/lhc/fixtures/compact-continuation/v1/`
+//! Parity fixtures live in `packages/lhc/fixtures/compact-continuation/v2/`
 //! (canonical TypeScript store; Rust tests consume them in place).
 
 mod contract;

@@ -11,12 +11,13 @@ use fixtures::{
     temp_store, valid_event,
 };
 use lhc::compact_continuation::{
-    BoundaryStatus, CompactContinuationHostFacts, WriterClaimKind, compute_operation_identity,
-    compute_retry_posture, get_compact_continuation_attempt_intent,
-    get_compact_continuation_receipt, get_compact_continuation_writer_claim,
-    get_pending_compact_continuation_boundary, has_compact_continuation_marker,
-    hash_attempt_intent, list_compact_continuation_stages, prove_pending_tool_pair,
-    run_compact_continuation, validate_host_facts,
+    BoundaryStatus, CompactContinuationHostFacts, HostValidationStatus, WriterClaimKind,
+    compute_operation_identity, compute_retry_posture, get_compact_continuation_attempt_intent,
+    get_compact_continuation_host_validation, get_compact_continuation_receipt,
+    get_compact_continuation_writer_claim, get_pending_compact_continuation_boundary,
+    has_compact_continuation_marker, hash_attempt_intent, list_compact_continuation_stages,
+    prove_pending_tool_pair, record_compact_continuation_host_validation, run_compact_continuation,
+    validate_host_facts,
 };
 use lhc::messages::{self, MessageKind, MessageListOptions};
 use lhc::shared_tech::compact_continuation::{
@@ -84,6 +85,8 @@ fn base_facts(attempt_id: &str, cont: WorkContinuation) -> CompactContinuationHo
             domain: "source_labelled_estimate".into(),
         },
         policy: CompactContinuationPolicy {
+            safe_runway_threshold_tokens: Some(200_000),
+            safe_runway_threshold_source: Some("host_safe_runway".into()),
             upper_trigger_tokens: 100_000,
             lower_target_tokens: 400,
             host_capability: CompactContinuationHostCapability::FullStateMachine,
@@ -465,7 +468,7 @@ async fn b1_health_refusals_do_not_mutate() {
         base_facts(
             "health-corr",
             WorkContinuation::PendingCorrelatedToolResult {
-                tool_call_id: "call-bad-corr".into(),
+                protected_tool_call_ids: vec!["call-bad-corr".into()],
                 correlation_valid: false,
             },
         ),
@@ -483,7 +486,7 @@ async fn b1_health_refusals_do_not_mutate() {
         base_facts(
             "health-pair-missing",
             WorkContinuation::PendingCorrelatedToolResult {
-                tool_call_id: "call-does-not-exist".into(),
+                protected_tool_call_ids: vec!["call-does-not-exist".into()],
                 correlation_valid: true,
             },
         ),
@@ -643,7 +646,7 @@ async fn tool_result_branch_preserves_pair_no_marker() {
         base_facts(
             "tool-success-1",
             WorkContinuation::PendingCorrelatedToolResult {
-                tool_call_id: tool_call_id.into(),
+                protected_tool_call_ids: vec![tool_call_id.into()],
                 correlation_valid: true,
             },
         ),
@@ -1275,6 +1278,8 @@ async fn input_validation_rejects_malformed() {
             domain: "source_labelled_estimate".into(),
         },
         policy: CompactContinuationPolicy {
+            safe_runway_threshold_tokens: None,
+            safe_runway_threshold_source: None,
             upper_trigger_tokens: 100,
             lower_target_tokens: 50,
             host_capability: CompactContinuationHostCapability::FullStateMachine,
@@ -1624,7 +1629,7 @@ async fn m2_identity_drift_conflict_posture_drift_accepted_audited() {
         base_facts(
             "identity-1",
             WorkContinuation::PendingCorrelatedToolResult {
-                tool_call_id: "x".into(),
+                protected_tool_call_ids: vec!["x".into()],
                 correlation_valid: true,
             },
         ),
@@ -1989,13 +1994,15 @@ async fn attempt_intent_inspect_returns_stored_identity_and_rejects_corrupt() {
     let mut facts = base_facts(
         "identity-inspect-1",
         WorkContinuation::PendingCorrelatedToolResult {
-            tool_call_id: tool_call_id.into(),
+            protected_tool_call_ids: vec![tool_call_id.into()],
             correlation_valid: true,
         },
     );
     facts.actor = "recovery-actor".into();
     facts.harness = "recovery-harness".into();
     facts.policy = CompactContinuationPolicy {
+        safe_runway_threshold_tokens: None,
+        safe_runway_threshold_source: None,
         upper_trigger_tokens: 77_000,
         lower_target_tokens: 321,
         host_capability: CompactContinuationHostCapability::FullStateMachine,
@@ -2042,8 +2049,11 @@ async fn attempt_intent_inspect_returns_stored_identity_and_rejects_corrupt() {
     assert_eq!(inspected.actor, "recovery-actor");
     assert_eq!(inspected.harness, "recovery-harness");
     match &inspected.continuation {
-        WorkContinuation::PendingCorrelatedToolResult { tool_call_id: id, .. } => {
-            assert_eq!(id, tool_call_id);
+        WorkContinuation::PendingCorrelatedToolResult {
+            protected_tool_call_ids: ids,
+            ..
+        } => {
+            assert_eq!(ids, &vec![tool_call_id.to_string()]);
         }
         other => panic!("expected pending tool identity, got {other:?}"),
     }
@@ -2055,13 +2065,11 @@ async fn attempt_intent_inspect_returns_stored_identity_and_rejects_corrupt() {
     // Corrupt intent_json → storage_failure; claim remains held.
     {
         let db = open_raw(&path);
-        db.prepare(
-            "UPDATE compact_continuation_attempt SET intent_json = ? WHERE attempt_id = ?",
-        )
-        .run(&[
-            SqlParam::from("{not-json"),
-            SqlParam::from("identity-inspect-1"),
-        ]);
+        db.prepare("UPDATE compact_continuation_attempt SET intent_json = ? WHERE attempt_id = ?")
+            .run(&[
+                SqlParam::from("{not-json"),
+                SqlParam::from("identity-inspect-1"),
+            ]);
         db.close();
     }
     let corrupt = get_compact_continuation_attempt_intent(ref_.clone(), "identity-inspect-1").await;
@@ -2118,7 +2126,7 @@ async fn claim_only_preserve_reentry_uses_stored_identity_despite_live_drift() {
     let preserve = base_facts(
         "preserve-claim-only-1",
         WorkContinuation::PendingCorrelatedToolResult {
-            tool_call_id: tool_call_id.into(),
+            protected_tool_call_ids: vec![tool_call_id.into()],
             correlation_valid: true,
         },
     );
@@ -2143,6 +2151,8 @@ async fn claim_only_preserve_reentry_uses_stored_identity_despite_live_drift() {
     let mut live_drift = base_facts("preserve-claim-only-1", WorkContinuation::ActiveNonTool);
     live_drift.writer_claim = WriterClaim::Lhc;
     live_drift.policy = CompactContinuationPolicy {
+        safe_runway_threshold_tokens: None,
+        safe_runway_threshold_source: None,
         upper_trigger_tokens: 999_999,
         lower_target_tokens: 1,
         host_capability: CompactContinuationHostCapability::FullStateMachine,
@@ -2173,12 +2183,13 @@ async fn claim_only_preserve_reentry_uses_stored_identity_despite_live_drift() {
     let mut recovered = base_facts(
         &identity.attempt_id,
         match &identity.continuation {
-            WorkContinuation::PendingCorrelatedToolResult { tool_call_id, .. } => {
-                WorkContinuation::PendingCorrelatedToolResult {
-                    tool_call_id: tool_call_id.clone(),
-                    correlation_valid: true,
-                }
-            }
+            WorkContinuation::PendingCorrelatedToolResult {
+                protected_tool_call_ids,
+                ..
+            } => WorkContinuation::PendingCorrelatedToolResult {
+                protected_tool_call_ids: protected_tool_call_ids.clone(),
+                correlation_valid: true,
+            },
             other => other.clone(),
         },
     );
@@ -2396,10 +2407,7 @@ async fn n5_preskip_with_pending_feeds_oracle_boundary_and_releases_writer() {
         Some(c_turn.as_str())
     );
     assert_eq!(
-        skip.receipt
-            .residual
-            .continuation_turn_id
-            .as_deref(),
+        skip.receipt.residual.continuation_turn_id.as_deref(),
         Some(c_turn.as_str())
     );
     // Same-owner writer released on pre-seam skip (TS releaseWriter: ownsWriter).
@@ -2520,9 +2528,7 @@ async fn n5_force_turn_end_no_new_turn_is_attempt_conflict() {
             ]);
         // Sanity: force key resolves to no turn.
         let found = db
-            .prepare(
-                "SELECT turn_id FROM turns WHERE opened_at_event_order = ? LIMIT 1",
-            )
+            .prepare("SELECT turn_id FROM turns WHERE opened_at_event_order = ? LIMIT 1")
             .get_params(&[SqlParam::from(next)]);
         assert!(found.is_none(), "force key must not resolve a turn");
         db.close();
@@ -2551,9 +2557,7 @@ async fn n5_force_turn_end_no_new_turn_is_attempt_conflict() {
         }
         OpResult::Ok { value } => panic!(
             "expected attempt_conflict, got ok outcome={:?} refuse={:?} reason={}",
-            value.receipt.outcome,
-            value.receipt.refuse_code,
-            value.receipt.reason_code
+            value.receipt.outcome, value.receipt.refuse_code, value.receipt.reason_code
         ),
     }
 }
@@ -2598,7 +2602,7 @@ async fn n5_wrong_kind_with_applied_boundary_refuses_without_stealing() {
         base_facts(
             "n5-wrong-kind-1",
             WorkContinuation::PendingCorrelatedToolResult {
-                tool_call_id: "ghost-tool".into(),
+                protected_tool_call_ids: vec!["ghost-tool".into()],
                 correlation_valid: true,
             },
         ),
@@ -2638,4 +2642,273 @@ async fn n5_wrong_kind_with_applied_boundary_refuses_without_stealing() {
         Some(c_turn.as_str())
     );
     assert!(repaired.pending_boundary.is_none() || success_outcomes(repaired.receipt.outcome));
+}
+
+// ── LIM-67 pending-tool protected escalation runtime ─────────────────────────
+
+const PROTECTED_ID: &str = "call-protected-1";
+
+/// One open agentic turn: older huge unprotected tool results, then the
+/// protected pair.
+async fn seed_escalation_turn(ref_: &ThreadRef) {
+    let mut events = vec![
+        valid_event(
+            kind::USER_PROMPT,
+            UserPromptOverrides {
+                payload: Some(UserPromptPayload {
+                    text: "sustained tool work".into(),
+                }),
+                ..Default::default()
+            },
+        ),
+        valid_event(
+            kind::ASSISTANT_TEXT,
+            AssistantTextOverrides {
+                payload: Some(AssistantTextPayload {
+                    text: "running the long tool loop".into(),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        ),
+    ];
+    for i in 1..=3 {
+        let id = format!("call-old-{i}");
+        events.push(valid_event(
+            kind::TOOL_CALL,
+            ToolCallOverrides {
+                payload: Some(ToolCallPayload {
+                    tool_call_id: id.clone(),
+                    tool_name: "read_file".into(),
+                    arguments: {
+                        let mut m = Map::new();
+                        m.insert("path".into(), json!(format!("old-{i}.txt")));
+                        m
+                    },
+                }),
+                ..Default::default()
+            },
+        ));
+        events.push(valid_event(
+            kind::TOOL_RESULT,
+            ToolResultOverrides {
+                payload: Some(ToolResultPayload {
+                    tool_call_id: id,
+                    content: format!("old bulky data {i} ").repeat(1500),
+                    is_error: Some(false),
+                }),
+                ..Default::default()
+            },
+        ));
+    }
+    events.push(valid_event(
+        kind::TOOL_CALL,
+        ToolCallOverrides {
+            payload: Some(ToolCallPayload {
+                tool_call_id: PROTECTED_ID.into(),
+                tool_name: "read_file".into(),
+                arguments: {
+                    let mut m = Map::new();
+                    m.insert("path".into(), json!("current.txt"));
+                    m
+                },
+            }),
+            ..Default::default()
+        },
+    ));
+    events.push(valid_event(
+        kind::TOOL_RESULT,
+        ToolResultOverrides {
+            payload: Some(ToolResultPayload {
+                tool_call_id: PROTECTED_ID.into(),
+                content: "protected verbatim payload".into(),
+                is_error: Some(false),
+            }),
+            ..Default::default()
+        },
+    ));
+    let batch = intake_stream::message_events(ref_.clone(), &events).await;
+    assert!(matches!(batch, OpResult::Ok { .. }));
+}
+
+fn escalation_facts(attempt_id: &str, safe_runway_threshold: i64) -> CompactContinuationHostFacts {
+    let mut facts = base_facts(
+        attempt_id,
+        WorkContinuation::PendingCorrelatedToolResult {
+            protected_tool_call_ids: vec![PROTECTED_ID.to_string()],
+            correlation_valid: true,
+        },
+    );
+    facts.provider_usage = ProviderUsageAuthority::Available(ProviderUsageAvailable {
+        available: true,
+        input_tokens: 290_000,
+        cache_creation_tokens: 5_000,
+        cache_read_tokens: 5_000,
+        total: 300_000,
+        domain: "provider_reported_input".into(),
+    });
+    facts.post_measurement_estimate = PostMeasurementEstimate {
+        tokens: 2_000,
+        source: "lhc_token_estimate".into(),
+        domain: "source_labelled_estimate".into(),
+    };
+    facts.policy = CompactContinuationPolicy {
+        upper_trigger_tokens: 100_000,
+        lower_target_tokens: 500_000,
+        host_capability: CompactContinuationHostCapability::FullStateMachine,
+        safe_runway_threshold_tokens: Some(safe_runway_threshold),
+        safe_runway_threshold_source: Some("host_safe_runway".into()),
+    };
+    facts
+}
+
+#[tokio::test]
+async fn escalates_ineffective_preserve_through_protected_boundary_and_installs() {
+    let store = temp_store();
+    let fixture = derived_thread_fixture(
+        &store,
+        DerivedThreadOptions {
+            failures: Some(false),
+        },
+    )
+    .await;
+    let path = fixture.file_path.clone();
+    let ref_ = ThreadRef::file_path(&path);
+    seed_escalation_turn(&ref_).await;
+    let before = snapshot_canonical(&path);
+
+    // Preserve alone saves ~nothing (results are in the open tail), so projected
+    // pressure stays above the threshold until the protected boundary prunes the
+    // older unprotected bodies (via the maximal retry).
+    let result = run_compact_continuation(
+        ref_.clone(),
+        escalation_facts("escalate-install-1", 298_000),
+    )
+    .await
+    .expect_ok();
+    let receipt = &result.receipt;
+    assert_eq!(
+        receipt.outcome,
+        CompactContinuationOutcomeKind::CompactPreserveToolEscalated
+    );
+    assert_eq!(
+        receipt.relief_path,
+        lhc::shared_tech::compact_continuation::CompactContinuationReliefPath::HostValidationAwaiting
+    );
+    assert_eq!(
+        receipt.protected_tool_call_ids,
+        vec![PROTECTED_ID.to_string()]
+    );
+    assert!(!receipt.residual.next_provider_request_allowed);
+    assert_eq!(
+        receipt.residual.host_validation_status,
+        lhc::shared_tech::compact_continuation::HostValidationStatusFact::Awaiting
+    );
+    assert!(receipt.residual.marker_persisted);
+    assert!(receipt.residual.marker_served);
+    let vb_after = receipt
+        .residual
+        .visibility_boundary_after
+        .expect("boundary advanced");
+    assert!(vb_after > receipt.residual.visibility_boundary_before.unwrap_or(0));
+    let types: Vec<&str> = receipt.effects.iter().map(|e| e.type_str()).collect();
+    assert!(types.contains(&"advance_visibility_boundary"));
+    assert!(types.contains(&"preserve_tool_pairs_verbatim"));
+
+    // One forced boundary, one marker, view installed.
+    let after = snapshot_canonical(&path);
+    assert_eq!(after.turn_count, before.turn_count + 1);
+    assert_eq!(after.marker_count, 1);
+    assert_ne!(after.view_id, before.view_id);
+
+    // Protected pair stays canonical and verbatim.
+    let listed = messages::list(ref_.clone(), None).await.expect_ok();
+    let protected_result = listed
+        .iter()
+        .find(|m| {
+            m.kind.as_str() == "tool_result"
+                && lhc::shared_tech::js_json::js_json_stringify_of(m)
+                    .unwrap()
+                    .contains(PROTECTED_ID)
+        })
+        .expect("protected result present");
+    assert!(
+        lhc::shared_tech::js_json::js_json_stringify_of(protected_result)
+            .unwrap()
+            .contains("protected verbatim payload")
+    );
+
+    // Host validation acknowledgment flips awaiting → ok.
+    let hv = get_compact_continuation_host_validation(ref_.clone(), "escalate-install-1")
+        .await
+        .expect_ok()
+        .expect("awaiting row");
+    assert_eq!(hv.status, HostValidationStatus::Awaiting);
+    let ack = record_compact_continuation_host_validation(
+        ref_.clone(),
+        "escalate-install-1",
+        HostValidationStatus::Ok,
+        None,
+        None,
+    )
+    .await
+    .expect_ok();
+    assert_eq!(ack.status, HostValidationStatus::Ok);
+    let hv2 = get_compact_continuation_host_validation(ref_.clone(), "escalate-install-1")
+        .await
+        .expect_ok()
+        .expect("row");
+    assert_eq!(hv2.status, HostValidationStatus::Ok);
+}
+
+#[tokio::test]
+async fn unsafe_runway_after_maximal_prune_refuses_truthfully() {
+    let store = temp_store();
+    let fixture = derived_thread_fixture(
+        &store,
+        DerivedThreadOptions {
+            failures: Some(false),
+        },
+    )
+    .await;
+    let path = fixture.file_path.clone();
+    let ref_ = ThreadRef::file_path(&path);
+    seed_escalation_turn(&ref_).await;
+    let before = snapshot_canonical(&path);
+
+    let result =
+        run_compact_continuation(ref_.clone(), escalation_facts("escalate-unsafe-1", 1_000))
+            .await
+            .expect_ok();
+    let receipt = &result.receipt;
+    assert_eq!(receipt.outcome, CompactContinuationOutcomeKind::Refuse);
+    assert_eq!(
+        receipt.refuse_code,
+        Some(CompactContinuationRefuseCode::UnsafeRunway)
+    );
+    assert_eq!(
+        receipt.relief_path,
+        lhc::shared_tech::compact_continuation::CompactContinuationReliefPath::ProtectedEscalation
+    );
+    // Receipt stays truthful: no marker was persisted on the refused attempt.
+    assert!(!receipt.residual.marker_persisted);
+    assert!(!receipt.residual.marker_served);
+    assert!(receipt.residual.prior_serving_view_intact);
+    assert!(!receipt.residual.next_provider_request_allowed);
+    let types: Vec<&str> = receipt.effects.iter().map(|e| e.type_str()).collect();
+    assert!(!types.contains(&"insert_continuation_marker"));
+    assert!(!types.contains(&"install_serving_view"));
+
+    let after = snapshot_canonical(&path);
+    // Forced boundary is durable (repairable), but no marker and no new view.
+    assert_eq!(after.turn_count, before.turn_count + 1);
+    assert_eq!(after.marker_count, 0);
+    assert_eq!(after.view_id, before.view_id);
+
+    let pending = get_pending_compact_continuation_boundary(ref_.clone())
+        .await
+        .expect_ok()
+        .expect("pending boundary");
+    assert_eq!(pending.status, BoundaryStatus::FailedRepairable);
+    assert!(!pending.marker_persisted);
 }

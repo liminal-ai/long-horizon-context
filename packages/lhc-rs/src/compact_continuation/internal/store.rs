@@ -85,6 +85,7 @@ pub enum StageName {
     InstallSucceeded,
     InstallFailed,
     CompactFailed,
+    UnsafeRunwayRefused,
     ReceiptRecorded,
     WriterReleased,
     Interrupted,
@@ -104,6 +105,7 @@ impl StageName {
             StageName::InstallSucceeded => "install_succeeded",
             StageName::InstallFailed => "install_failed",
             StageName::CompactFailed => "compact_failed",
+            StageName::UnsafeRunwayRefused => "unsafe_runway_refused",
             StageName::ReceiptRecorded => "receipt_recorded",
             StageName::WriterReleased => "writer_released",
             StageName::Interrupted => "interrupted",
@@ -701,4 +703,162 @@ pub fn max_event_order(db: &Db) -> i64 {
         .get()
         .expect("max event order");
     map_i64(&row, "m")
+}
+
+// ── Host validation (schema v11) ─────────────────────────────────────────────
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostValidationStatus {
+    Awaiting,
+    Ok,
+    Failed,
+}
+
+impl HostValidationStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Awaiting => "awaiting",
+            Self::Ok => "ok",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_str_exact(s: &str) -> Option<Self> {
+        Some(match s {
+            "awaiting" => Self::Awaiting,
+            "ok" => Self::Ok,
+            "failed" => Self::Failed,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostValidationRow {
+    pub attempt_id: String,
+    pub status: HostValidationStatus,
+    pub reason: Option<String>,
+    pub recorded_at: String,
+    pub updated_at: String,
+}
+
+pub fn read_host_validation(db: &Db, attempt_id: &str) -> Option<HostValidationRow> {
+    let row = db
+        .prepare(
+            "SELECT attempt_id, status, reason, recorded_at, updated_at
+             FROM compact_continuation_host_validation WHERE attempt_id = ?",
+        )
+        .get_params(&[SqlParam::from(attempt_id)])?;
+    let status_str = row.get("status").and_then(|v| v.as_str()).unwrap_or("");
+    let status = HostValidationStatus::from_str_exact(status_str)
+        .unwrap_or_else(|| panic!("invalid host validation status '{status_str}'"));
+    Some(HostValidationRow {
+        attempt_id: row
+            .get("attempt_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        status,
+        reason: row
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string()),
+        recorded_at: row
+            .get("recorded_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        updated_at: row
+            .get("updated_at")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string(),
+    })
+}
+
+/// Record awaiting host validation after successful core install.
+/// Idempotent for same attempt when already awaiting; panics on overwrite of
+/// terminal ok/failed (mirrors the TS throw; caught at the operation boundary).
+pub fn record_host_validation_awaiting(db: &Db, attempt_id: &str, recorded_at: &str) {
+    if let Some(existing) = read_host_validation(db, attempt_id) {
+        if existing.status == HostValidationStatus::Awaiting {
+            return;
+        }
+        panic!(
+            "host validation already terminal for attempt {attempt_id} (status={})",
+            existing.status.as_str()
+        );
+    }
+    db.prepare(
+        "INSERT INTO compact_continuation_host_validation (attempt_id, status, reason, recorded_at, updated_at)
+         VALUES (?, 'awaiting', NULL, ?, ?)",
+    )
+    .run(&[
+        SqlParam::from(attempt_id),
+        SqlParam::from(recorded_at),
+        SqlParam::from(recorded_at),
+    ]);
+}
+
+/// Host records full-body validation result. Does not roll back core install.
+/// Only transitions from awaiting (or inserts failed/ok when missing for repair).
+pub fn record_host_validation_result(
+    db: &Db,
+    attempt_id: &str,
+    result: HostValidationStatus,
+    updated_at: &str,
+    reason: Option<&str>,
+) -> HostValidationRow {
+    assert!(
+        matches!(
+            result,
+            HostValidationStatus::Ok | HostValidationStatus::Failed
+        ),
+        "host validation result must be ok|failed"
+    );
+    let existing = read_host_validation(db, attempt_id);
+    if let Some(existing) = &existing
+        && matches!(
+            existing.status,
+            HostValidationStatus::Ok | HostValidationStatus::Failed
+        )
+    {
+        if existing.status == result {
+            return existing.clone();
+        }
+        panic!(
+            "host validation already recorded as {} for attempt {attempt_id}; cannot set {}",
+            existing.status.as_str(),
+            result.as_str()
+        );
+    }
+    if existing.is_none() {
+        db.prepare(
+            "INSERT INTO compact_continuation_host_validation (attempt_id, status, reason, recorded_at, updated_at)
+             VALUES (?, ?, ?, ?, ?)",
+        )
+        .run(&[
+            SqlParam::from(attempt_id),
+            SqlParam::from(result.as_str()),
+            SqlParam::from(reason),
+            SqlParam::from(updated_at),
+            SqlParam::from(updated_at),
+        ]);
+    } else {
+        db.prepare(
+            "UPDATE compact_continuation_host_validation
+             SET status = ?, reason = ?, updated_at = ?
+             WHERE attempt_id = ? AND status = 'awaiting'",
+        )
+        .run(&[
+            SqlParam::from(result.as_str()),
+            SqlParam::from(reason),
+            SqlParam::from(updated_at),
+            SqlParam::from(attempt_id),
+        ]);
+    }
+    read_host_validation(db, attempt_id)
+        .unwrap_or_else(|| panic!("host validation write failed for {attempt_id}"))
 }

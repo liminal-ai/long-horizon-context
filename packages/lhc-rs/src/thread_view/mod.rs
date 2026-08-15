@@ -24,9 +24,7 @@ use crate::messages;
 use crate::shared_tech::context::{resolve_instance_config, resolve_instance_view_config};
 use crate::shared_tech::derivation::{DerivationReportEntry, DerivationState};
 use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult, storage_failure};
-use crate::shared_tech::js_json::{
-    js_json_stringify, js_number_value, js_string_of_number,
-};
+use crate::shared_tech::js_json::{js_json_stringify, js_number_value, js_string_of_number};
 use crate::shared_tech::logging::{LogEntry, LogLevel, write_log};
 use crate::shared_tech::persist::{
     DbReadTransaction, DbTransaction, DbWriteTransaction, create_db_read_transaction,
@@ -54,6 +52,8 @@ use internal::materialize::{
     MaterializeEntry, MaterializeInput, path_resolve, write_pi_session_file,
 };
 use internal::profiles::{default_resolved_view_config, profile_violation};
+pub use internal::protected_boundary::ProtectedBoundaryPreview;
+use internal::protected_boundary::{ProtectedBoundaryOpts, preview_protected_visibility_boundary};
 use internal::render::{
     AssembledContextRole, LITERAL_DERIVATION_STORED_MEMBER_CONCAT, assemble_band_text,
 };
@@ -1102,6 +1102,13 @@ pub struct InstallPreparedOptions {
     pub created_at: Option<String>,
     /// When set, allow exactly one additional marker event after prepare.
     pub allowed_marker_idempotency_key: Option<String>,
+    /// Atomic visibility-boundary advance installed with the prepared view.
+    /// Must be >= compact point and >= current boundary (monotonic). When
+    /// omitted, compact reset writes boundary = compactPoint (historical).
+    pub visibility_boundary: Option<i64>,
+    /// Expected current boundary at install time. When set, install refuses if
+    /// the durable boundary drifted since prepare/preview.
+    pub expected_previous_boundary: Option<i64>,
 }
 
 /// Resolve every turn id whose messages feed prepared band text.
@@ -1632,6 +1639,8 @@ pub async fn install_prepared_compact(
         let placeholder_json =
             js_json_stringify(&serde_json::to_value(&placeholder_source).unwrap_or(Value::Null));
 
+        let proposed_boundary = opts.visibility_boundary;
+        let expected_previous_boundary = opts.expected_previous_boundary;
         let mut before = |db: &Db| -> Option<String> {
             // Inside BEGIN IMMEDIATE — atomic with replace (TS install TOCTOU seam).
             fire_view_injection_with_db(ViewInjectionPoint::CompactInstallBeforeValidate, db);
@@ -1640,6 +1649,28 @@ pub async fn install_prepared_compact(
             {
                 // Panic with a typed message so outer catch can map to stale_prepared_compact.
                 panic!("stale_prepared_compact:{reason}");
+            }
+            // Boundary monotonicity / expected previous checks (atomic with install).
+            let current_boundary = read_boundary_position(db);
+            if let Some(expected) = expected_previous_boundary
+                && current_boundary != expected
+            {
+                panic!(
+                    "stale_prepared_compact:visibility boundary drifted {expected}\u{2192}{current_boundary} since prepare"
+                );
+            }
+            if let Some(proposed) = proposed_boundary {
+                if proposed < prepared.selection.compact_point {
+                    panic!(
+                        "stale_prepared_compact:proposed visibility boundary {proposed} is behind compact point {}",
+                        prepared.selection.compact_point
+                    );
+                }
+                if proposed < current_boundary {
+                    panic!(
+                        "stale_prepared_compact:proposed visibility boundary {proposed} would move backward from {current_boundary}"
+                    );
+                }
             }
             let selected = if prepared.selected_source_turn_ids.is_empty() {
                 selected_source_turn_ids_from_selection(db, &prepared.selection)
@@ -1694,6 +1725,7 @@ pub async fn install_prepared_compact(
                             token_count: b.token_count,
                         })
                         .collect(),
+                    visibility_boundary: proposed_boundary,
                 },
                 Some(&mut before),
             );
@@ -1791,6 +1823,47 @@ pub async fn install_prepared_compact(
     }
 }
 
+/// Read-only protected visibility-boundary preview. Never mutates durable state.
+/// Protected results are accounted at full size; only older unprotected
+/// tool_result rows are eligible; boundary never moves backward and stays
+/// strictly before the earliest protected result event.
+pub async fn preview_protected_boundary(
+    ref_: ThreadRef,
+    protected_tool_call_ids: Vec<String>,
+    opts: ProtectedBoundaryOpts,
+) -> OpResult<ProtectedBoundaryPreview> {
+    let resolved = resolve_thread_ref(ref_).await;
+    let OpResult::Ok { value: resolved } = resolved else {
+        return match resolved {
+            OpResult::Err { error } => OpResult::Err { error },
+            OpResult::Ok { .. } => unreachable!(),
+        };
+    };
+    let file_path = resolved.file_path;
+    if !Path::new(&file_path).exists() {
+        return thread_not_found(&file_path);
+    }
+    let read = AssertUnwindSafe(create_db_read_transaction(
+        ThreadRef::file_path(file_path.clone()),
+        move |transaction| {
+            let ids = protected_tool_call_ids.clone();
+            let opts = opts.clone();
+            Box::pin(
+                async move { preview_protected_visibility_boundary(transaction.db, &ids, &opts) },
+            )
+        },
+    ))
+    .catch_unwind()
+    .await;
+    match read {
+        Ok(result) => result,
+        Err(payload) => storage_failure(&format!(
+            "view previewProtectedBoundary failed: {}",
+            panic_detail(payload)
+        )),
+    }
+}
+
 /// TS `compact` — PARTIAL (Wave 5 chunk-compact-recovery); full body Phase 2.
 pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactReceipt> {
     let prepared = prepare_compact(ref_.clone(), opts.clone()).await;
@@ -1801,6 +1874,8 @@ pub async fn compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactRece
         };
     };
     let install_opts = InstallPreparedOptions {
+        visibility_boundary: None,
+        expected_previous_boundary: None,
         signal: opts.signal,
         created_at: None,
         allowed_marker_idempotency_key: None,

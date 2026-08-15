@@ -14,8 +14,9 @@ use crate::shared_tech::compact_continuation::{
     CompactContinuationInvariants, CompactContinuationPolicy, CompactContinuationReceipt,
     CompactContinuationSeam, CompactMaterialFacts, ForcedContinuationBoundary,
     ForcedContinuationBoundaryApplied, ForcedContinuationBoundaryNotApplied,
-    PostMeasurementEstimate, ProviderUsageAuthority, WorkContinuation, WriterClaim,
-    compact_continuation_marker_idempotency_key, decide_compact_continuation,
+    HostValidationStatusFact, PostMeasurementEstimate, ProviderUsageAuthority, WorkContinuation,
+    WriterClaim, compact_continuation_marker_idempotency_key, decide_compact_continuation,
+    js_string_cmp,
 };
 use crate::shared_tech::context::resolve_instance_config;
 use crate::shared_tech::derivation::Clock;
@@ -24,22 +25,26 @@ use crate::shared_tech::js_json::js_json_stringify;
 use crate::shared_tech::persist::{create_db_read_transaction, create_db_write_transaction};
 use crate::shared_tech::sha256::sha256_hex;
 use crate::shared_tech::view::{CompactReceipt, ViewCompactParams};
+use crate::thread_view::internal::protected_boundary::ProtectedBoundaryOpts;
 use crate::thread_view::{
     CompactOpts, InstallPreparedOptions, install_prepared_compact, prepare_compact,
+    preview_protected_boundary,
 };
 use crate::threads::{ThreadRef, resolve_thread_ref};
 
-use super::candidate::assemble_candidate_from_prepared;
+use super::candidate::{CandidateAssembly, assemble_candidate_from_prepared_with};
 use super::store::{
-    AttemptRow, BoundaryRow, InsertAttemptIntentResult, StageName,
+    AttemptRow, BoundaryRow, HostValidationStatus, InsertAttemptIntentResult, StageName,
     StoredCompactContinuationReceipt, WriterClaimKind, WriterClaimRow, append_stage_log,
-    claim_lhc_writer, find_continuation_turn_from_force_key, insert_attempt_intent, list_boundaries,
-    list_receipts, list_stage_log, mark_force_intent_applied, marker_exists_by_idempotency_key,
-    persist_receipt, read_attempt_intent, read_force_intent, read_open_turn_ids,
-    read_open_turn_member_count, read_pending_boundary, read_receipt_by_attempt_id,
-    read_writer_claim, record_force_intent, release_lhc_writer, upsert_boundary,
+    claim_lhc_writer, find_continuation_turn_from_force_key, insert_attempt_intent,
+    list_boundaries, list_receipts, list_stage_log, mark_force_intent_applied,
+    marker_exists_by_idempotency_key, persist_receipt, read_attempt_intent, read_force_intent,
+    read_host_validation, read_open_turn_ids, read_open_turn_member_count, read_pending_boundary,
+    read_receipt_by_attempt_id, read_writer_claim, record_force_intent,
+    record_host_validation_awaiting, record_host_validation_result, release_lhc_writer,
+    upsert_boundary,
 };
-use super::tool_pair::{ToolPairProof, prove_pending_tool_pair};
+use super::tool_pair::{ProtectedToolPairSetProof, prove_protected_tool_pair_set};
 use super::validate_host::validate_host_facts;
 
 // ── Host input ──────────────────────────────────────────────────────────────
@@ -157,6 +162,103 @@ fn empty_material() -> CompactMaterialFacts {
         install_succeeds: false,
         useful_reduction: false,
         can_produce_valid_provider_request: false,
+        projected_pressure_tokens: None,
+        rendered_savings_tokens: 0,
+        rendered_savings_source: "lhc_rendered_history_estimate".to_string(),
+        rendered_savings_domain: "source_labelled_estimate".to_string(),
+        safe_runway_threshold_tokens: None,
+        safe_runway_threshold_source: None,
+        projected_pressure_safe: None,
+        protected_escalation_applied: false,
+        visibility_boundary_before: None,
+        visibility_boundary_after: None,
+        compact_point_at_install: None,
+        maximal_prune_insufficient: false,
+        host_validation_status: HostValidationStatusFact::NotRequired,
+    }
+}
+
+/// Projected post-relief pressure (pinned formula):
+/// authoritative provider base + source-labelled growth − source-labelled savings.
+struct ProjectedPressure {
+    projected: Option<i64>,
+    savings: i64,
+    safe: Option<bool>,
+    threshold: Option<i64>,
+    threshold_source: Option<String>,
+}
+
+fn projected_pressure_of(
+    facts: &CompactContinuationHostFacts,
+    current_served_tokens: i64,
+    candidate_tokens: i64,
+) -> ProjectedPressure {
+    let savings = (current_served_tokens - candidate_tokens).max(0);
+    let threshold = facts.policy.safe_runway_threshold_tokens;
+    let threshold_source = facts.policy.safe_runway_threshold_source.clone();
+    let Some(total) = facts.provider_usage.available_total() else {
+        return ProjectedPressure {
+            projected: None,
+            savings,
+            safe: None,
+            threshold,
+            threshold_source,
+        };
+    };
+    let projected = (total + facts.post_measurement_estimate.tokens - savings).max(0);
+    let safe = threshold.map(|t| projected < t);
+    ProjectedPressure {
+        projected: Some(projected),
+        savings,
+        safe,
+        threshold,
+        threshold_source,
+    }
+}
+
+/// Material-facts overrides layered onto a candidate assembly (TS `materialFromCandidate`).
+#[derive(Default, Clone)]
+struct MaterialOverrides {
+    protected_escalation_applied: bool,
+    visibility_boundary_before: Option<i64>,
+    visibility_boundary_after: Option<i64>,
+    compact_point_at_install: Option<i64>,
+    maximal_prune_insufficient: bool,
+    host_validation_status: Option<HostValidationStatusFact>,
+}
+
+fn material_from_candidate(
+    facts: &CompactContinuationHostFacts,
+    candidate: &CandidateAssembly,
+    over: &MaterialOverrides,
+) -> CompactMaterialFacts {
+    let proj = projected_pressure_of(
+        facts,
+        candidate.current_served_tokens,
+        candidate.candidate_tokens,
+    );
+    CompactMaterialFacts {
+        derivations_missing_or_failed: candidate.material.derivations_missing_or_failed,
+        lower_target_met: candidate.material.lower_target_met,
+        compact_structurally_valid: candidate.material.compact_structurally_valid,
+        install_succeeds: false,
+        useful_reduction: candidate.material.useful_reduction,
+        can_produce_valid_provider_request: candidate.material.can_produce_valid_provider_request,
+        projected_pressure_tokens: proj.projected,
+        rendered_savings_tokens: proj.savings,
+        rendered_savings_source: "lhc_rendered_history_estimate".to_string(),
+        rendered_savings_domain: "source_labelled_estimate".to_string(),
+        safe_runway_threshold_tokens: proj.threshold,
+        safe_runway_threshold_source: proj.threshold_source,
+        projected_pressure_safe: proj.safe,
+        protected_escalation_applied: over.protected_escalation_applied,
+        visibility_boundary_before: over.visibility_boundary_before,
+        visibility_boundary_after: over.visibility_boundary_after,
+        compact_point_at_install: over.compact_point_at_install,
+        maximal_prune_insufficient: over.maximal_prune_insufficient,
+        host_validation_status: over
+            .host_validation_status
+            .unwrap_or(HostValidationStatusFact::NotRequired),
     }
 }
 
@@ -171,7 +273,6 @@ fn apply_material_hooks(
         derivations_missing_or_failed: hooks
             .force_derivations_missing_or_failed
             .unwrap_or(base.derivations_missing_or_failed),
-        lower_target_met: base.lower_target_met,
         compact_structurally_valid: hooks
             .force_compact_structurally_valid
             .unwrap_or(base.compact_structurally_valid),
@@ -184,6 +285,7 @@ fn apply_material_hooks(
         can_produce_valid_provider_request: hooks
             .force_can_produce_valid_provider_request
             .unwrap_or(base.can_produce_valid_provider_request),
+        ..base
     }
 }
 
@@ -343,10 +445,15 @@ pub fn stable_stringify(value: &Value) -> String {
 
 pub fn compute_operation_identity(facts: &CompactContinuationHostFacts) -> Map<String, Value> {
     let continuation_identity = match &facts.continuation {
-        WorkContinuation::PendingCorrelatedToolResult { tool_call_id, .. } => {
+        WorkContinuation::PendingCorrelatedToolResult {
+            protected_tool_call_ids,
+            ..
+        } => {
+            let mut sorted = protected_tool_call_ids.clone();
+            sorted.sort_by(|a, b| js_string_cmp(a, b));
             json!({
                 "kind": "pending_correlated_tool_result",
-                "toolCallId": tool_call_id,
+                "protectedToolCallIds": sorted,
             })
         }
         WorkContinuation::None => json!({ "kind": "none" }),
@@ -464,7 +571,9 @@ fn require_i64_field(obj: &Map<String, Value>, key: &str, ctx: &str) -> Result<i
 
 /// Fail-fast parse of a stored attempt-intent row into operation identity.
 /// Never synthesizes missing fields.
-pub fn parse_stored_operation_identity(row: &AttemptRow) -> Result<StoredOperationIdentity, String> {
+pub fn parse_stored_operation_identity(
+    row: &AttemptRow,
+) -> Result<StoredOperationIdentity, String> {
     let parsed: Value = serde_json::from_str(&row.intent_json).map_err(|e| {
         format!(
             "compact-continuation attempt intent JSON corrupt for attemptId={}: {e}",
@@ -497,12 +606,34 @@ pub fn parse_stored_operation_identity(row: &AttemptRow) -> Result<StoredOperati
         "none" => WorkContinuation::None,
         "active_non_tool" => WorkContinuation::ActiveNonTool,
         "pending_correlated_tool_result" => {
-            let tool_call_id =
-                require_string_field(cont_obj, "toolCallId", "operation identity.continuation")?;
+            let ids_raw = cont_obj
+                .get("protectedToolCallIds")
+                .and_then(|v| v.as_array())
+                .ok_or_else(|| {
+                    "operation identity: protectedToolCallIds must be a non-empty array".to_string()
+                })?;
+            if ids_raw.is_empty() {
+                return Err(
+                    "operation identity: protectedToolCallIds must be a non-empty array".into(),
+                );
+            }
+            let mut protected_tool_call_ids: Vec<String> = Vec::new();
+            for id in ids_raw {
+                match id.as_str() {
+                    Some(id) if !id.is_empty() => protected_tool_call_ids.push(id.to_string()),
+                    _ => {
+                        return Err(
+                            "operation identity: protectedToolCallIds entries must be non-empty strings"
+                                .into(),
+                        );
+                    }
+                }
+            }
+            protected_tool_call_ids.sort_by(|a, b| js_string_cmp(a, b));
             // correlationValid is posture; stored identity omits it. Hosts rebuild
             // with a fresh correlationValid on re-entry (typically true after repair).
             WorkContinuation::PendingCorrelatedToolResult {
-                tool_call_id,
+                protected_tool_call_ids,
                 correlation_valid: true,
             }
         }
@@ -532,7 +663,7 @@ pub fn parse_stored_operation_identity(row: &AttemptRow) -> Result<StoredOperati
             ));
         }
     };
-    let policy = CompactContinuationPolicy {
+    let mut policy = CompactContinuationPolicy {
         upper_trigger_tokens: require_i64_field(
             policy_obj,
             "upperTriggerTokens",
@@ -544,16 +675,37 @@ pub fn parse_stored_operation_identity(row: &AttemptRow) -> Result<StoredOperati
             "operation identity.policy",
         )?,
         host_capability,
+        safe_runway_threshold_tokens: None,
+        safe_runway_threshold_source: None,
     };
+    if policy_obj.contains_key("safeRunwayThresholdTokens") {
+        policy.safe_runway_threshold_tokens = Some(require_i64_field(
+            policy_obj,
+            "safeRunwayThresholdTokens",
+            "operation identity.policy",
+        )?);
+    }
+    if let Some(src_val) = policy_obj.get("safeRunwayThresholdSource") {
+        match src_val.as_str() {
+            Some(src) if !src.is_empty() => {
+                policy.safe_runway_threshold_source = Some(src.to_string());
+            }
+            _ => {
+                return Err(
+                    "operation identity: policy.safeRunwayThresholdSource must be a non-empty string"
+                        .into(),
+                );
+            }
+        }
+    }
 
     let compact = if let Some(compact_val) = obj.get("compact") {
         if compact_val.is_null() {
             None
         } else {
             Some(
-                serde_json::from_value::<HostCompactOpts>(compact_val.clone()).map_err(|e| {
-                    format!("operation identity: compact parse failed: {e}")
-                })?,
+                serde_json::from_value::<HostCompactOpts>(compact_val.clone())
+                    .map_err(|e| format!("operation identity: compact parse failed: {e}"))?,
             )
         }
     } else {
@@ -1333,17 +1485,17 @@ async fn run_compact_continuation_inner(
         .await;
     }
 
-    // Health / tool pair
+    // Health / protected tool-pair set (host correlation insufficient).
     let mut tool_pair_ok = true;
     if let WorkContinuation::PendingCorrelatedToolResult {
-        tool_call_id,
+        protected_tool_call_ids,
         correlation_valid,
     } = &facts.continuation
     {
         if *correlation_valid {
             let proof = create_db_read_transaction(ref_.clone(), {
-                let tool_call_id = tool_call_id.clone();
-                move |tx| Box::pin(async move { prove_pending_tool_pair(tx.db, &tool_call_id) })
+                let ids = protected_tool_call_ids.clone();
+                move |tx| Box::pin(async move { prove_protected_tool_pair_set(tx.db, &ids) })
             })
             .await;
             let OpResult::Ok { value: proof } = proof else {
@@ -1352,17 +1504,20 @@ async fn run_compact_continuation_inner(
                     OpResult::Ok { .. } => unreachable!(),
                 };
             };
-            tool_pair_ok = matches!(proof, ToolPairProof::Ok { .. });
+            tool_pair_ok = matches!(proof, ProtectedToolPairSetProof::Ok { .. });
         } else {
             tool_pair_ok = false;
         }
     }
 
     // Illegal applied-boundary + wrong continuation kind (repair path only).
-    // TS refuses via oracle without forcing a new boundary; keep residual
-    // truthful when the durable pending still needs active_non_tool repair.
+    // v2: pending_correlated_tool_result is legal with applied boundary
+    // (protected escalation).
     if matches!(forced_from_pending, ForcedContinuationBoundary::Applied(_))
-        && !matches!(facts.continuation, WorkContinuation::ActiveNonTool)
+        && !matches!(
+            facts.continuation,
+            WorkContinuation::ActiveNonTool | WorkContinuation::PendingCorrelatedToolResult { .. }
+        )
     {
         let owns_writer = durable_writer.claim == WriterClaimKind::Lhc
             && durable_writer.attempt_id.as_deref() == Some(facts.attempt_id.as_str());
@@ -1412,11 +1567,13 @@ async fn run_compact_continuation_inner(
     if health_bad || !tool_pair_ok {
         let mut cont = facts.continuation.clone();
         if !tool_pair_ok {
-            if let WorkContinuation::PendingCorrelatedToolResult { tool_call_id, .. } =
-                &facts.continuation
+            if let WorkContinuation::PendingCorrelatedToolResult {
+                protected_tool_call_ids,
+                ..
+            } = &facts.continuation
             {
                 cont = WorkContinuation::PendingCorrelatedToolResult {
-                    tool_call_id: tool_call_id.clone(),
+                    protected_tool_call_ids: protected_tool_call_ids.clone(),
                     correlation_valid: false,
                 };
             }
@@ -1473,11 +1630,23 @@ async fn run_compact_continuation_inner(
         .await;
     }
 
-    // Pressure / branch
+    // Pressure / branch. Repair pending boundary always takes continue-turn
+    // path regardless of pressure; a pending protected-tool set with a durable
+    // boundary also resumes as continue-turn (protected-escalation repair).
     let pressure = pressure_at_or_above(&facts);
-    let needs_continue_turn = matches!(forced_from_pending, ForcedContinuationBoundary::Applied(_))
-        || (pressure == Some(true)
-            && matches!(facts.continuation, WorkContinuation::ActiveNonTool));
+    let mut needs_continue_turn =
+        matches!(forced_from_pending, ForcedContinuationBoundary::Applied(_))
+            || (pressure == Some(true)
+                && matches!(facts.continuation, WorkContinuation::ActiveNonTool));
+    if matches!(forced_from_pending, ForcedContinuationBoundary::Applied(_))
+        && matches!(
+            facts.continuation,
+            WorkContinuation::PendingCorrelatedToolResult { .. }
+        )
+        && tool_pair_ok
+    {
+        needs_continue_turn = true;
+    }
     let needs_preserve_tool =
         !matches!(forced_from_pending, ForcedContinuationBoundary::Applied(_))
             && pressure == Some(true)
@@ -1627,13 +1796,14 @@ async fn read_attempt_for_hash_check(
 }
 
 /// Continue-turn and preserve-tool mutation paths after writer claim.
+#[allow(clippy::too_many_arguments)] // mirrors the TS staged runtime flow
 async fn execute_compact_paths(
     ref_: ThreadRef,
     facts: &CompactContinuationHostFacts,
     clock: Clock,
     hooks: Option<&CompactContinuationTestHooks>,
-    needs_continue_turn: bool,
-    _needs_preserve_tool: bool,
+    mut needs_continue_turn: bool,
+    mut needs_preserve_tool: bool,
     mut forced_continuation_boundary: ForcedContinuationBoundary,
     pending_boundary: Option<BoundaryRow>,
     force_intent: Option<super::store::ForceIntentRow>,
@@ -1654,6 +1824,75 @@ async fn execute_compact_paths(
         .as_ref()
         .map(|b| b.marker_persisted)
         .unwrap_or(false);
+
+    // ── Pending-tool prepare/evaluate (may escalate to continue-turn) ─────
+    // Ordinary preserve is prepared and evaluated WITHOUT installing. When it
+    // cannot create useful, safe runway, escalate before any preserve install:
+    // force one continuation boundary and prune only older unprotected results.
+    let mut pending_escalated = false;
+    let mut proposed_visibility_boundary: Option<i64> = None;
+    let mut visibility_boundary_before: Option<i64> = None;
+    let protected_ids: Vec<String> = match &facts.continuation {
+        WorkContinuation::PendingCorrelatedToolResult {
+            protected_tool_call_ids,
+            ..
+        } => {
+            let mut ids = protected_tool_call_ids.clone();
+            ids.sort_by(|a, b| js_string_cmp(a, b));
+            ids
+        }
+        _ => Vec::new(),
+    };
+
+    if needs_preserve_tool && !needs_continue_turn && !hooks.is_some_and(|h| h.skip_real_compact) {
+        // 1) Prepare ordinary preserve candidate without installing.
+        let prep_opts = CompactOpts {
+            profile: facts.compact.as_ref().and_then(|c| c.profile.clone()),
+            params: facts.compact.as_ref().and_then(|c| c.params.clone()),
+            signal: None,
+        };
+        let prep0 = prepare_compact(ref_.clone(), prep_opts).await;
+        if let OpResult::Ok { value: prep0 } = prep0 {
+            let lower = facts.policy.lower_target_tokens;
+            let cand0 = create_db_read_transaction(ref_.clone(), {
+                let prep0 = prep0.clone();
+                move |tx| {
+                    Box::pin(async move {
+                        assemble_candidate_from_prepared_with(tx.db, &prep0, lower, None)
+                    })
+                }
+            })
+            .await;
+            let OpResult::Ok { value: cand0 } = cand0 else {
+                let rel =
+                    release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone())
+                        .await;
+                if !matches!(rel, OpResult::Ok { .. }) {
+                    return match rel {
+                        OpResult::Err { error } => OpResult::Err { error },
+                        OpResult::Ok { .. } => unreachable!(),
+                    };
+                }
+                return match cand0 {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            };
+            let proj0 =
+                projected_pressure_of(facts, cand0.current_served_tokens, cand0.candidate_tokens);
+            let preserve_useful = cand0.material.useful_reduction;
+            let preserve_safe = proj0.safe == Some(true);
+            if preserve_useful && preserve_safe && cand0.material.compact_structurally_valid {
+                // Normal preserve path: prepared again for install below.
+            } else {
+                // Escalate before any preserve install: force boundary + protected prune.
+                pending_escalated = true;
+                needs_continue_turn = true;
+                needs_preserve_tool = false;
+            }
+        }
+    }
+    let _ = needs_preserve_tool;
 
     // Force boundary for fresh continue-turn
     if needs_continue_turn
@@ -2050,20 +2289,62 @@ async fn execute_compact_paths(
         .await;
     }
 
+    // ── Protected visibility boundary (escalated pending only) ────────────
+    let skip_real = hooks.is_some_and(|h| h.skip_real_compact);
+    let escalated = pending_escalated
+        || (needs_continue_turn
+            && matches!(
+                facts.continuation,
+                WorkContinuation::PendingCorrelatedToolResult { .. }
+            ));
+    let mut maximal_prune_insufficient = false;
+    let mut boundary_walk_target_limited = false;
+    if escalated && !protected_ids.is_empty() && !skip_real {
+        let threshold = facts.policy.safe_runway_threshold_tokens;
+        let preview = preview_protected_boundary(
+            ref_.clone(),
+            protected_ids.clone(),
+            ProtectedBoundaryOpts {
+                target_zone_tokens: threshold,
+                compact_point_override: None,
+            },
+        )
+        .await;
+        let OpResult::Ok { value: preview } = preview else {
+            let rel =
+                release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone()).await;
+            if !matches!(rel, OpResult::Ok { .. }) {
+                return match rel {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            }
+            return match preview {
+                OpResult::Err { error } => OpResult::Err { error },
+                OpResult::Ok { .. } => unreachable!(),
+            };
+        };
+        visibility_boundary_before = Some(preview.previous_boundary);
+        proposed_visibility_boundary = Some(preview.proposed_boundary);
+        maximal_prune_insufficient = preview.maximal_prune_insufficient;
+        boundary_walk_target_limited = threshold.is_some();
+    }
+
     // ── Compact prepare + candidate material (TS run.ts 1320–1380) ──────
     // Invalid candidates must never insert a marker or replace the serving view.
-    let skip_real = hooks.is_some_and(|h| h.skip_real_compact);
     let mut prepared: Option<crate::thread_view::PreparedCompact> = None;
 
     if skip_real {
         material = apply_material_hooks(
             CompactMaterialFacts {
-                derivations_missing_or_failed: false,
                 lower_target_met: true,
                 compact_structurally_valid: true,
                 install_succeeds: true,
                 useful_reduction: true,
                 can_produce_valid_provider_request: true,
+                projected_pressure_safe: Some(true),
+                projected_pressure_tokens: Some(0),
+                ..empty_material()
             },
             hooks,
         );
@@ -2092,11 +2373,17 @@ async fn execute_compact_paths(
                     );
                 }
                 let lower = facts.policy.lower_target_tokens;
+                let boundary_override = proposed_visibility_boundary;
                 let assembly = create_db_read_transaction(ref_.clone(), {
                     let prepared = prepared.clone().expect("prepared just set");
                     move |tx| {
                         Box::pin(async move {
-                            assemble_candidate_from_prepared(tx.db, &prepared, lower)
+                            assemble_candidate_from_prepared_with(
+                                tx.db,
+                                &prepared,
+                                lower,
+                                boundary_override,
+                            )
                         })
                     }
                 })
@@ -2104,22 +2391,158 @@ async fn execute_compact_paths(
                 match assembly {
                     OpResult::Ok { value: assembly } => {
                         material = apply_material_hooks(
-                            CompactMaterialFacts {
-                                derivations_missing_or_failed: assembly
-                                    .material
-                                    .derivations_missing_or_failed,
-                                lower_target_met: assembly.material.lower_target_met,
-                                compact_structurally_valid: assembly
-                                    .material
-                                    .compact_structurally_valid,
-                                install_succeeds: false,
-                                useful_reduction: assembly.material.useful_reduction,
-                                can_produce_valid_provider_request: assembly
-                                    .material
-                                    .can_produce_valid_provider_request,
-                            },
+                            material_from_candidate(
+                                facts,
+                                &assembly,
+                                &MaterialOverrides {
+                                    protected_escalation_applied: escalated,
+                                    visibility_boundary_before,
+                                    visibility_boundary_after: proposed_visibility_boundary,
+                                    compact_point_at_install: prepared
+                                        .as_ref()
+                                        .map(|p| p.selection.compact_point),
+                                    maximal_prune_insufficient,
+                                    host_validation_status: Some(if escalated {
+                                        HostValidationStatusFact::Awaiting
+                                    } else {
+                                        HostValidationStatusFact::NotRequired
+                                    }),
+                                },
+                            ),
                             hooks,
                         );
+                        // Escalated candidate unsafe at the target-limited walk: before
+                        // any refuse, apply maximal eligible pruning once (story: refuse
+                        // only when maximal eligible pruning still cannot produce safe
+                        // runway).
+                        if escalated
+                            && material.projected_pressure_safe == Some(false)
+                            && boundary_walk_target_limited
+                            && material.compact_structurally_valid
+                        {
+                            let maximal_preview = preview_protected_boundary(
+                                ref_.clone(),
+                                protected_ids.clone(),
+                                ProtectedBoundaryOpts::default(),
+                            )
+                            .await;
+                            let OpResult::Ok {
+                                value: maximal_preview,
+                            } = maximal_preview
+                            else {
+                                let rel = release_own_writer_if_held(
+                                    ref_.clone(),
+                                    &facts.attempt_id,
+                                    clock.clone(),
+                                )
+                                .await;
+                                if !matches!(rel, OpResult::Ok { .. }) {
+                                    return match rel {
+                                        OpResult::Err { error } => OpResult::Err { error },
+                                        OpResult::Ok { .. } => unreachable!(),
+                                    };
+                                }
+                                return match maximal_preview {
+                                    OpResult::Err { error } => OpResult::Err { error },
+                                    OpResult::Ok { .. } => unreachable!(),
+                                };
+                            };
+                            if proposed_visibility_boundary
+                                .is_some_and(|p| maximal_preview.proposed_boundary > p)
+                            {
+                                proposed_visibility_boundary =
+                                    Some(maximal_preview.proposed_boundary);
+                                let max_prep_opts = CompactOpts {
+                                    profile: facts.compact.as_ref().and_then(|c| c.profile.clone()),
+                                    params: facts.compact.as_ref().and_then(|c| c.params.clone()),
+                                    signal: None,
+                                };
+                                let max_prep = prepare_compact(ref_.clone(), max_prep_opts).await;
+                                if let OpResult::Ok { value: max_prep } = max_prep {
+                                    prepared = Some(max_prep);
+                                    let boundary_override = proposed_visibility_boundary;
+                                    let max_candidate = create_db_read_transaction(ref_.clone(), {
+                                        let prepared = prepared.clone().expect("prepared just set");
+                                        move |tx| {
+                                            Box::pin(async move {
+                                                assemble_candidate_from_prepared_with(
+                                                    tx.db,
+                                                    &prepared,
+                                                    lower,
+                                                    boundary_override,
+                                                )
+                                            })
+                                        }
+                                    })
+                                    .await;
+                                    let OpResult::Ok {
+                                        value: max_candidate,
+                                    } = max_candidate
+                                    else {
+                                        let rel = release_own_writer_if_held(
+                                            ref_.clone(),
+                                            &facts.attempt_id,
+                                            clock.clone(),
+                                        )
+                                        .await;
+                                        if !matches!(rel, OpResult::Ok { .. }) {
+                                            return match rel {
+                                                OpResult::Err { error } => OpResult::Err { error },
+                                                OpResult::Ok { .. } => unreachable!(),
+                                            };
+                                        }
+                                        return match max_candidate {
+                                            OpResult::Err { error } => OpResult::Err { error },
+                                            OpResult::Ok { .. } => unreachable!(),
+                                        };
+                                    };
+                                    material = apply_material_hooks(
+                                        material_from_candidate(
+                                            facts,
+                                            &max_candidate,
+                                            &MaterialOverrides {
+                                                protected_escalation_applied: true,
+                                                visibility_boundary_before,
+                                                visibility_boundary_after:
+                                                    proposed_visibility_boundary,
+                                                compact_point_at_install: prepared
+                                                    .as_ref()
+                                                    .map(|p| p.selection.compact_point),
+                                                maximal_prune_insufficient: maximal_preview
+                                                    .maximal_prune_insufficient,
+                                                host_validation_status: Some(
+                                                    HostValidationStatusFact::Awaiting,
+                                                ),
+                                            },
+                                        ),
+                                        hooks,
+                                    );
+                                }
+                            }
+                        }
+                        // Pressure formula is authoritative. When projected pressure is
+                        // provably safe, the zone-proxy insufficiency flag is advisory
+                        // noise — clear it so classification matches installed reality.
+                        if escalated
+                            && material.projected_pressure_safe == Some(true)
+                            && material.maximal_prune_insufficient
+                        {
+                            material.maximal_prune_insufficient = false;
+                        }
+                        // If escalated and, after maximal eligible pruning, projected
+                        // runway is still unsafe — refuse without install. Structural
+                        // facts stay as computed; maximalPruneInsufficient is now proven.
+                        if escalated
+                            && (material.projected_pressure_safe == Some(false)
+                                || (material.projected_pressure_safe.is_none()
+                                    && material.maximal_prune_insufficient))
+                        {
+                            material.install_succeeds = false;
+                            material.useful_reduction = false;
+                            material.maximal_prune_insufficient = true;
+                            material.host_validation_status = HostValidationStatusFact::NotRequired;
+                            prepared = None; // do not install
+                        }
                         let prep_log = stage_log(
                             ref_.clone(),
                             &facts.attempt_id,
@@ -2138,6 +2561,18 @@ async fn execute_compact_paths(
                                 m.insert(
                                     "structuralIssues".into(),
                                     json!(assembly.structural_issues),
+                                );
+                                m.insert(
+                                    "projectedPressureTokens".into(),
+                                    json!(material.projected_pressure_tokens),
+                                );
+                                m.insert(
+                                    "protectedEscalationApplied".into(),
+                                    json!(material.protected_escalation_applied),
+                                );
+                                m.insert(
+                                    "proposedVisibilityBoundary".into(),
+                                    json!(proposed_visibility_boundary),
                                 );
                                 m
                             }),
@@ -2181,17 +2616,7 @@ async fn execute_compact_paths(
             }
             OpResult::Err { .. } => {
                 // Prepare failed: degrade material; no marker, no install.
-                material = apply_material_hooks(
-                    CompactMaterialFacts {
-                        derivations_missing_or_failed: false,
-                        lower_target_met: false,
-                        compact_structurally_valid: false,
-                        install_succeeds: false,
-                        useful_reduction: false,
-                        can_produce_valid_provider_request: false,
-                    },
-                    hooks,
-                );
+                material = apply_material_hooks(empty_material(), hooks);
             }
         }
     }
@@ -2203,10 +2628,14 @@ async fn execute_compact_paths(
         forced_continuation_boundary,
         ForcedContinuationBoundary::Applied(_)
     );
+    // Skipped when the attempt already resolved not to install (prepared cleared,
+    // e.g. unsafe-runway refuse): a marker persisted on a certain refuse would
+    // contradict the receipt residual. Repair reasserts by key.
     if needs_continue_turn
         && forced_applied
         && material.compact_structurally_valid
         && material.can_produce_valid_provider_request
+        && (prepared.is_some() || skip_real)
     {
         let c_turn = match &forced_continuation_boundary {
             ForcedContinuationBoundary::Applied(a) => a.continuation_turn_id.clone(),
@@ -2382,15 +2811,24 @@ async fn execute_compact_paths(
             };
         }
 
-        // Re-evaluate candidate after marker lands so model-visible structure includes it.
+        // Re-evaluate candidate after marker lands so model-visible structure
+        // includes it. Same boundary override as the pre-marker assembly:
+        // dropping it would recompute escalated savings against full bodies and
+        // misreport an installed-safe candidate as unsafe.
         if let Some(ref prepared_val) = prepared {
             if !skip_real {
                 let lower = facts.policy.lower_target_tokens;
+                let boundary_override = proposed_visibility_boundary;
                 let assembly2 = create_db_read_transaction(ref_.clone(), {
                     let prepared = prepared_val.clone();
                     move |tx| {
                         Box::pin(async move {
-                            assemble_candidate_from_prepared(tx.db, &prepared, lower)
+                            assemble_candidate_from_prepared_with(
+                                tx.db,
+                                &prepared,
+                                lower,
+                                boundary_override,
+                            )
                         })
                     }
                 })
@@ -2398,20 +2836,19 @@ async fn execute_compact_paths(
                 match assembly2 {
                     OpResult::Ok { value: assembly } => {
                         material = apply_material_hooks(
-                            CompactMaterialFacts {
-                                derivations_missing_or_failed: assembly
-                                    .material
-                                    .derivations_missing_or_failed,
-                                lower_target_met: assembly.material.lower_target_met,
-                                compact_structurally_valid: assembly
-                                    .material
-                                    .compact_structurally_valid,
-                                install_succeeds: false,
-                                useful_reduction: assembly.material.useful_reduction,
-                                can_produce_valid_provider_request: assembly
-                                    .material
-                                    .can_produce_valid_provider_request,
-                            },
+                            material_from_candidate(
+                                facts,
+                                &assembly,
+                                &MaterialOverrides {
+                                    protected_escalation_applied: material
+                                        .protected_escalation_applied,
+                                    visibility_boundary_before: material.visibility_boundary_before,
+                                    visibility_boundary_after: material.visibility_boundary_after,
+                                    compact_point_at_install: material.compact_point_at_install,
+                                    maximal_prune_insufficient: material.maximal_prune_insufficient,
+                                    host_validation_status: Some(material.host_validation_status),
+                                },
+                            ),
                             hooks,
                         );
                     }
@@ -2533,6 +2970,12 @@ async fn execute_compact_paths(
                     signal: None,
                     created_at: Some(clock_iso(&clock)),
                     allowed_marker_idempotency_key: marker_key,
+                    visibility_boundary: proposed_visibility_boundary,
+                    expected_previous_boundary: if proposed_visibility_boundary.is_some() {
+                        visibility_boundary_before
+                    } else {
+                        None
+                    },
                 },
             )
             .await;
@@ -2544,36 +2987,92 @@ async fn execute_compact_paths(
                         .unwrap_or(material.useful_reduction);
                     material.lower_target_met =
                         value.total_tokens <= facts.policy.lower_target_tokens;
+                    material.compact_point_at_install = Some(value.compact_point);
+                    material.visibility_boundary_after =
+                        proposed_visibility_boundary.or(material.visibility_boundary_after);
                     compact_receipt = Some(value.clone());
-                    let inst_log = stage_log(
-                        ref_.clone(),
-                        &facts.attempt_id,
-                        StageName::InstallSucceeded,
-                        clock.clone(),
-                        Some({
-                            let mut m = Map::new();
-                            m.insert("viewId".into(), json!(value.view_id));
-                            m
-                        }),
-                    )
-                    .await;
-                    if !matches!(inst_log, OpResult::Ok { .. }) {
-                        let rel = release_own_writer_if_held(
+                    if material.protected_escalation_applied
+                        && material.host_validation_status == HostValidationStatusFact::Awaiting
+                    {
+                        // Durable awaiting host validation + install stage in one txn.
+                        let hv = create_db_write_transaction(
                             ref_.clone(),
-                            &facts.attempt_id,
-                            clock.clone(),
+                            {
+                                let attempt_id = facts.attempt_id.clone();
+                                let view_id = value.view_id.clone();
+                                let clock = clock.clone();
+                                move |tx| {
+                                    Box::pin(async move {
+                                        record_host_validation_awaiting(
+                                            tx.db,
+                                            &attempt_id,
+                                            &clock_iso(&clock),
+                                        );
+                                        let mut m = Map::new();
+                                        m.insert("viewId".into(), json!(view_id));
+                                        m.insert("hostValidation".into(), json!("awaiting"));
+                                        append_stage_log(
+                                            tx.db,
+                                            &attempt_id,
+                                            StageName::InstallSucceeded,
+                                            &clock_iso(&clock),
+                                            Some(&m),
+                                        );
+                                    })
+                                }
+                            },
+                            Some(clock.clone()),
                         )
                         .await;
-                        if !matches!(rel, OpResult::Ok { .. }) {
-                            return match rel {
+                        if !matches!(hv, OpResult::Ok { .. }) {
+                            let rel = release_own_writer_if_held(
+                                ref_.clone(),
+                                &facts.attempt_id,
+                                clock.clone(),
+                            )
+                            .await;
+                            if !matches!(rel, OpResult::Ok { .. }) {
+                                return match rel {
+                                    OpResult::Err { error } => OpResult::Err { error },
+                                    OpResult::Ok { .. } => unreachable!(),
+                                };
+                            }
+                            return match hv {
                                 OpResult::Err { error } => OpResult::Err { error },
                                 OpResult::Ok { .. } => unreachable!(),
                             };
                         }
-                        return match inst_log {
-                            OpResult::Err { error } => OpResult::Err { error },
-                            OpResult::Ok { .. } => unreachable!(),
-                        };
+                    } else {
+                        let inst_log = stage_log(
+                            ref_.clone(),
+                            &facts.attempt_id,
+                            StageName::InstallSucceeded,
+                            clock.clone(),
+                            Some({
+                                let mut m = Map::new();
+                                m.insert("viewId".into(), json!(value.view_id));
+                                m
+                            }),
+                        )
+                        .await;
+                        if !matches!(inst_log, OpResult::Ok { .. }) {
+                            let rel = release_own_writer_if_held(
+                                ref_.clone(),
+                                &facts.attempt_id,
+                                clock.clone(),
+                            )
+                            .await;
+                            if !matches!(rel, OpResult::Ok { .. }) {
+                                return match rel {
+                                    OpResult::Err { error } => OpResult::Err { error },
+                                    OpResult::Ok { .. } => unreachable!(),
+                                };
+                            }
+                            return match inst_log {
+                                OpResult::Err { error } => OpResult::Err { error },
+                                OpResult::Ok { .. } => unreachable!(),
+                            };
+                        }
                     }
                 }
                 OpResult::Err { .. } => {
@@ -2710,7 +3209,12 @@ async fn execute_compact_paths(
     ));
 
     // Boundary completion vs failed_repairable (nonterminal until repair succeeds).
-    let success_outcomes = ["compact_continue_turn", "degraded_compact", "no_reduction"];
+    let success_outcomes = [
+        "compact_continue_turn",
+        "compact_preserve_tool_escalated",
+        "degraded_compact",
+        "no_reduction",
+    ];
     let outcome_str = decision.outcome.as_str();
     let install_ok = material.install_succeeds;
     let success = success_outcomes.contains(&outcome_str) && install_ok;
@@ -2747,7 +3251,13 @@ async fn execute_compact_paths(
             // install_failed: valid candidate reached install and install failed.
             let reached_valid_candidate =
                 material.compact_structurally_valid && material.can_produce_valid_provider_request;
-            let fail_stage = if reached_valid_candidate && !material.install_succeeds {
+            // unsafe_runway refuses before any install attempt — never log it as
+            // an install failure.
+            let unsafe_refuse = decision.receipt.refuse_code
+                == Some(crate::shared_tech::compact_continuation::CompactContinuationRefuseCode::UnsafeRunway);
+            let fail_stage = if unsafe_refuse {
+                "unsafe_runway_refused"
+            } else if reached_valid_candidate && !material.install_succeeds {
                 "install_failed"
             } else {
                 "compact_failed"
@@ -2764,7 +3274,9 @@ async fn execute_compact_paths(
             let fail_log = stage_log(
                 ref_.clone(),
                 &facts.attempt_id,
-                if fail_stage == "install_failed" {
+                if fail_stage == "unsafe_runway_refused" {
+                    StageName::UnsafeRunwayRefused
+                } else if fail_stage == "install_failed" {
                     StageName::InstallFailed
                 } else {
                     StageName::CompactFailed
@@ -2867,6 +3379,96 @@ pub async fn list_compact_continuation_stages(
     let attempt_id = attempt_id.to_string();
     create_db_read_transaction(ref_, move |tx| {
         Box::pin(async move { list_stage_log(tx.db, &attempt_id) })
+    })
+    .await
+}
+
+// ── Host validation acknowledgment (LIM-67) ─────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostValidationAck {
+    pub attempt_id: String,
+    pub status: HostValidationStatus,
+    pub reason: Option<String>,
+}
+
+/// Provider-neutral host validation acknowledgment after successful core install.
+/// Does not roll back core view/boundary. Blocks next provider request until ok
+/// when status is awaiting/failed. LHC never validates the host provider body.
+pub async fn record_compact_continuation_host_validation(
+    ref_: ThreadRef,
+    attempt_id: &str,
+    result: HostValidationStatus,
+    reason: Option<String>,
+    clock: Option<Clock>,
+) -> OpResult<HostValidationAck> {
+    if attempt_id.is_empty() {
+        return storage_failure("host validation requires non-empty attemptId");
+    }
+    if !matches!(
+        result,
+        HostValidationStatus::Ok | HostValidationStatus::Failed
+    ) {
+        return storage_failure("host validation result must be ok|failed");
+    }
+    let clock = clock.unwrap_or_else(default_clock);
+    let attempt_id = attempt_id.to_string();
+    let write = create_db_write_transaction(
+        ref_,
+        {
+            let attempt_id = attempt_id.clone();
+            let reason = reason.clone();
+            let clock = clock.clone();
+            move |tx| {
+                Box::pin(async move {
+                    let row = record_host_validation_result(
+                        tx.db,
+                        &attempt_id,
+                        result,
+                        &clock_iso(&clock),
+                        reason.as_deref(),
+                    );
+                    let mut m = Map::new();
+                    m.insert("hostValidation".into(), json!(result.as_str()));
+                    m.insert("reason".into(), json!(reason));
+                    append_stage_log(
+                        tx.db,
+                        &attempt_id,
+                        StageName::ReceiptRecorded,
+                        &clock_iso(&clock),
+                        Some(&m),
+                    );
+                    HostValidationAck {
+                        attempt_id: attempt_id.clone(),
+                        status: row.status,
+                        reason: row.reason,
+                    }
+                })
+            }
+        },
+        Some(clock),
+    )
+    .await;
+    match write {
+        OpResult::Ok { value } => OpResult::Ok { value },
+        OpResult::Err { error } => OpResult::Err { error },
+    }
+}
+
+pub async fn get_compact_continuation_host_validation(
+    ref_: ThreadRef,
+    attempt_id: &str,
+) -> OpResult<Option<HostValidationAck>> {
+    let attempt_id = attempt_id.to_string();
+    create_db_read_transaction(ref_, move |tx| {
+        Box::pin(async move {
+            read_host_validation(tx.db, &attempt_id).map(|row| HostValidationAck {
+                attempt_id: row.attempt_id,
+                status: row.status,
+                reason: row.reason,
+            })
+        })
     })
     .await
 }

@@ -11,20 +11,25 @@
 mod internal;
 
 pub use internal::run::{
-    CompactContinuationHostFacts, CompactContinuationRunResult, HostCompactOpts,
+    CompactContinuationHostFacts, CompactContinuationRunResult, HostCompactOpts, HostValidationAck,
     StoredOperationIdentity, compute_attempt_intent, compute_operation_identity,
     compute_retry_posture, get_compact_continuation_attempt_intent,
-    get_compact_continuation_receipt, get_compact_continuation_writer_claim,
-    get_pending_compact_continuation_boundary, has_compact_continuation_marker,
-    hash_attempt_intent, hash_record, list_compact_continuation_boundaries,
-    list_compact_continuation_receipts, list_compact_continuation_stages,
-    parse_stored_operation_identity, run_compact_continuation,
+    get_compact_continuation_host_validation, get_compact_continuation_receipt,
+    get_compact_continuation_writer_claim, get_pending_compact_continuation_boundary,
+    has_compact_continuation_marker, hash_attempt_intent, hash_record,
+    list_compact_continuation_boundaries, list_compact_continuation_receipts,
+    list_compact_continuation_stages, parse_stored_operation_identity,
+    record_compact_continuation_host_validation, run_compact_continuation,
 };
 pub use internal::store::{
-    AttemptRow, BoundaryRow, BoundaryStatus, ForceIntentRow, StageLogEntry, StageName,
-    StoredCompactContinuationReceipt, WriterClaimKind, WriterClaimRow,
+    AttemptRow, BoundaryRow, BoundaryStatus, ForceIntentRow, HostValidationRow,
+    HostValidationStatus, StageLogEntry, StageName, StoredCompactContinuationReceipt,
+    WriterClaimKind, WriterClaimRow,
 };
-pub use internal::tool_pair::{ToolPairFailReason, ToolPairProof, prove_pending_tool_pair};
+pub use internal::tool_pair::{
+    ProtectedToolPairSetProof, ToolPairFailReason, ToolPairOk, ToolPairProof,
+    prove_pending_tool_pair, prove_protected_tool_pair_set,
+};
 pub use internal::validate_host::validate_host_facts;
 
 /// Test-only surface — reachable from integration tests and

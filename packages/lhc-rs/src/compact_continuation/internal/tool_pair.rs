@@ -4,6 +4,8 @@ use serde_json::Value;
 
 use crate::shared_tech::storage::{Db, SqlParam};
 
+use crate::shared_tech::compact_continuation::normalize_protected_tool_call_ids;
+
 use super::store::read_open_turn_ids;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -37,6 +39,8 @@ pub enum ToolPairFailReason {
     NotInOpenTail,
     UnreadablePayload,
     ToolCallIdMismatch,
+    EmptyProtectedSet,
+    DuplicateProtectedId,
 }
 
 impl ToolPairFailReason {
@@ -54,6 +58,8 @@ impl ToolPairFailReason {
             ToolPairFailReason::NotInOpenTail => "not_in_open_tail",
             ToolPairFailReason::UnreadablePayload => "unreadable_payload",
             ToolPairFailReason::ToolCallIdMismatch => "tool_call_id_mismatch",
+            ToolPairFailReason::EmptyProtectedSet => "empty_protected_set",
+            ToolPairFailReason::DuplicateProtectedId => "duplicate_protected_id",
         }
     }
 }
@@ -232,5 +238,122 @@ pub fn prove_pending_tool_pair(db: &Db, tool_call_id: &str) -> ToolPairProof {
         result_event_order: result_order,
         turn_id,
         result_content,
+    }
+}
+
+/// Contract 2.0.0 protected-set proof outcome.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ProtectedToolPairSetProof {
+    Ok {
+        protected_tool_call_ids: Vec<String>,
+        pairs: Vec<ToolPairOk>,
+        /// Earliest protected tool_result source_event_order.
+        earliest_protected_result_order: i64,
+        turn_id: String,
+    },
+    Err {
+        reason: ToolPairFailReason,
+        detail: String,
+        failed_tool_call_id: Option<String>,
+    },
+}
+
+/// The success payload of one proven pair (mirrors `ToolPairProof::Ok`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ToolPairOk {
+    pub tool_call_id: String,
+    pub call_message_id: String,
+    pub result_message_id: String,
+    pub call_event_order: i64,
+    pub result_event_order: i64,
+    pub turn_id: String,
+    pub result_content: String,
+}
+
+/// Prove the full protected set: sorted unique non-empty; every id has exactly
+/// one live call/result pair in the same open turn after the compact point.
+pub fn prove_protected_tool_pair_set(
+    db: &Db,
+    protected_tool_call_ids: &[String],
+) -> ProtectedToolPairSetProof {
+    let normalized = normalize_protected_tool_call_ids(protected_tool_call_ids);
+    if normalized.is_empty() {
+        return ProtectedToolPairSetProof::Err {
+            reason: ToolPairFailReason::EmptyProtectedSet,
+            detail: "protectedToolCallIds must be non-empty".into(),
+            failed_tool_call_id: None,
+        };
+    }
+    if protected_tool_call_ids.len() != normalized.len() {
+        // Either empties or duplicates in input.
+        let non_empty: Vec<&String> = protected_tool_call_ids
+            .iter()
+            .filter(|id| !id.is_empty())
+            .collect();
+        let unique: std::collections::BTreeSet<&String> = non_empty.iter().copied().collect();
+        if non_empty.len() != unique.len() {
+            return ProtectedToolPairSetProof::Err {
+                reason: ToolPairFailReason::DuplicateProtectedId,
+                detail: "protectedToolCallIds contains duplicates".into(),
+                failed_tool_call_id: None,
+            };
+        }
+    }
+
+    let mut pairs: Vec<ToolPairOk> = Vec::new();
+    for id in &normalized {
+        match prove_pending_tool_pair(db, id) {
+            ToolPairProof::Ok {
+                tool_call_id,
+                call_message_id,
+                result_message_id,
+                call_event_order,
+                result_event_order,
+                turn_id,
+                result_content,
+            } => pairs.push(ToolPairOk {
+                tool_call_id,
+                call_message_id,
+                result_message_id,
+                call_event_order,
+                result_event_order,
+                turn_id,
+                result_content,
+            }),
+            ToolPairProof::Err { reason, detail } => {
+                return ProtectedToolPairSetProof::Err {
+                    reason,
+                    detail,
+                    failed_tool_call_id: Some(id.clone()),
+                };
+            }
+        }
+    }
+
+    let turn_id = pairs[0].turn_id.clone();
+    for p in &pairs {
+        if p.turn_id != turn_id {
+            return ProtectedToolPairSetProof::Err {
+                reason: ToolPairFailReason::WrongTurn,
+                detail: format!(
+                    "protected pairs span multiple turns ({turn_id} vs {})",
+                    p.turn_id
+                ),
+                failed_tool_call_id: Some(p.tool_call_id.clone()),
+            };
+        }
+    }
+
+    let earliest = pairs
+        .iter()
+        .map(|p| p.result_event_order)
+        .min()
+        .expect("non-empty pairs");
+
+    ProtectedToolPairSetProof::Ok {
+        protected_tool_call_ids: normalized,
+        pairs,
+        earliest_protected_result_order: earliest,
+        turn_id,
     }
 }

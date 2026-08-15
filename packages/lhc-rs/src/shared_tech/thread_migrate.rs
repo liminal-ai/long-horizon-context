@@ -20,6 +20,7 @@ pub const THREAD_SCHEMA_VERSION_7: i64 = 7;
 pub const THREAD_SCHEMA_VERSION_8: i64 = 8;
 pub const THREAD_SCHEMA_VERSION_9: i64 = 9;
 pub const THREAD_SCHEMA_VERSION_10: i64 = 10;
+pub const THREAD_SCHEMA_VERSION_11: i64 = 11;
 
 const OLD_DERIVATION_TYPE: &str = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE: &str = "detailed_turn_compression";
@@ -172,6 +173,15 @@ const COMPACT_CONTINUATION_CURRENT_SCHEMA_STATEMENTS: &[&str] = &[
       continuation_turn_id TEXT,
       recorded_at TEXT NOT NULL
     );"#,
+    // v11: post-core-install host validation (provider-neutral). Core never
+    // claims the host body was validated inside LHC.
+    r#"CREATE TABLE IF NOT EXISTS compact_continuation_host_validation (
+      attempt_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL CHECK (status IN ('awaiting', 'ok', 'failed')),
+      reason TEXT,
+      recorded_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );"#,
 ];
 
 pub fn compact_continuation_current_schema_statements() -> Vec<&'static str> {
@@ -220,6 +230,19 @@ fn migrate_compact_continuation_v10(db: &Db) {
         r#"CREATE UNIQUE INDEX IF NOT EXISTS idx_compact_continuation_boundary_one_unresolved
        ON compact_continuation_boundary ((1))
        WHERE status IN ('pending', 'failed_repairable');"#,
+    );
+}
+
+/// v10→v11: host validation status for post-core-install body acknowledgment.
+fn migrate_compact_continuation_v11(db: &Db) {
+    db.exec(
+        r#"CREATE TABLE IF NOT EXISTS compact_continuation_host_validation (
+      attempt_id TEXT PRIMARY KEY,
+      status TEXT NOT NULL CHECK (status IN ('awaiting', 'ok', 'failed')),
+      reason TEXT,
+      recorded_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );"#,
     );
 }
 
@@ -657,6 +680,10 @@ pub fn migrate_thread_schema(db: &Db) {
         if version == THREAD_SCHEMA_VERSION_9 {
             migrate_compact_continuation_v10(db);
             version = THREAD_SCHEMA_VERSION_10;
+        }
+        if version == THREAD_SCHEMA_VERSION_10 {
+            migrate_compact_continuation_v11(db);
+            version = THREAD_SCHEMA_VERSION_11;
         }
         if version != CURRENT_THREAD_SCHEMA_VERSION {
             panic!("unsupported thread schema version {version}");

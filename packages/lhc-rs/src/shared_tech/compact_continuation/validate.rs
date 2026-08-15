@@ -12,10 +12,10 @@ use super::contract::{
     COMPACT_CONTINUATION_MARKER_ACTION, COMPACT_CONTINUATION_MARKER_CAUSE,
     COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX, COMPACT_CONTINUATION_MARKER_KIND,
     COMPACT_CONTINUATION_OUTCOME_KINDS, COMPACT_CONTINUATION_REFUSE_CODES,
-    COMPACT_CONTINUATION_SKIP_CODES, COMPACT_CONTINUATION_STATES,
-    COMPACT_CONTINUATION_WRITER_CLAIMS, CONTEXT_COMPACT_CONTINUE_REASON,
-    CompactContinuationDecision, CompactContinuationInput,
-    compact_continuation_marker_idempotency_key,
+    COMPACT_CONTINUATION_RELIEF_PATHS, COMPACT_CONTINUATION_SKIP_CODES,
+    COMPACT_CONTINUATION_STATES, COMPACT_CONTINUATION_WRITER_CLAIMS,
+    CONTEXT_COMPACT_CONTINUE_REASON, CompactContinuationDecision, CompactContinuationInput,
+    compact_continuation_marker_idempotency_key, js_string_cmp,
 };
 use crate::shared_tech::js_json::js_json_stringify_of;
 
@@ -281,7 +281,13 @@ fn validate_policy(raw: &Value, issues: &mut Vec<ValidationIssue>) {
     };
     reject_unknown_keys(
         obj,
-        &["upperTriggerTokens", "lowerTargetTokens", "hostCapability"],
+        &[
+            "upperTriggerTokens",
+            "lowerTargetTokens",
+            "hostCapability",
+            "safeRunwayThresholdTokens",
+            "safeRunwayThresholdSource",
+        ],
         "policy",
         issues,
     );
@@ -303,6 +309,22 @@ fn validate_policy(raw: &Value, issues: &mut Vec<ValidationIssue>) {
             "policy.hostCapability",
             "must be full_state_machine or capability_limited",
         )),
+    }
+    if let Some(threshold) = obj.get("safeRunwayThresholdTokens")
+        && !is_safe_non_neg_int(threshold)
+    {
+        issues.push(issue(
+            "policy.safeRunwayThresholdTokens",
+            "must be a non-negative safe integer when present",
+        ));
+    }
+    if let Some(source) = obj.get("safeRunwayThresholdSource")
+        && !source.as_str().is_some_and(|s| !s.is_empty())
+    {
+        issues.push(issue(
+            "policy.safeRunwayThresholdSource",
+            "must be a non-empty string when present",
+        ));
     }
 }
 
@@ -328,17 +350,60 @@ fn validate_continuation(raw: &Value, issues: &mut Vec<ValidationIssue>) {
     } else {
         reject_unknown_keys(
             obj,
-            &["kind", "toolCallId", "correlationValid"],
+            &["kind", "protectedToolCallIds", "correlationValid"],
             "continuation",
             issues,
         );
     }
     if kind == Some("pending_correlated_tool_result") {
-        match obj.get("toolCallId").and_then(|v| v.as_str()) {
-            Some(s) if !s.is_empty() => {}
-            _ => issues.push(issue(
+        // Reject dual-field shim / legacy single id.
+        if obj.contains_key("toolCallId") {
+            issues.push(issue(
                 "continuation.toolCallId",
-                "required non-empty string",
+                "removed in contract 2.0.0; use protectedToolCallIds",
+            ));
+        }
+        match obj.get("protectedToolCallIds").and_then(|v| v.as_array()) {
+            Some(ids) if !ids.is_empty() => {
+                let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+                let mut prev: Option<&str> = None;
+                let mut string_count = 0usize;
+                for (i, id) in ids.iter().enumerate() {
+                    let Some(id) = id.as_str().filter(|v| !v.is_empty()) else {
+                        issues.push(issue(
+                            format!("continuation.protectedToolCallIds[{i}]"),
+                            "must be non-empty string",
+                        ));
+                        continue;
+                    };
+                    string_count += 1;
+                    if !seen.insert(id) {
+                        issues.push(issue(
+                            format!("continuation.protectedToolCallIds[{i}]"),
+                            "duplicate id",
+                        ));
+                    }
+                    if let Some(prev) = prev
+                        && js_string_cmp(id, prev) == std::cmp::Ordering::Less
+                    {
+                        issues.push(issue(
+                            "continuation.protectedToolCallIds",
+                            "must be sorted ascending",
+                        ));
+                    }
+                    prev = Some(id);
+                }
+                // TS: normalized (unique non-empty) length must equal input length.
+                if seen.len() != ids.len() || string_count != ids.len() {
+                    issues.push(issue(
+                        "continuation.protectedToolCallIds",
+                        "must be unique non-empty strings",
+                    ));
+                }
+            }
+            _ => issues.push(issue(
+                "continuation.protectedToolCallIds",
+                "required non-empty string array",
             )),
         }
         if !obj.get("correlationValid").map(is_bool).unwrap_or(false) {
@@ -459,6 +524,19 @@ fn validate_material(raw: &Value, issues: &mut Vec<ValidationIssue>) {
             "installSucceeds",
             "usefulReduction",
             "canProduceValidProviderRequest",
+            "projectedPressureTokens",
+            "renderedSavingsTokens",
+            "renderedSavingsSource",
+            "renderedSavingsDomain",
+            "safeRunwayThresholdTokens",
+            "safeRunwayThresholdSource",
+            "projectedPressureSafe",
+            "protectedEscalationApplied",
+            "visibilityBoundaryBefore",
+            "visibilityBoundaryAfter",
+            "compactPointAtInstall",
+            "maximalPruneInsufficient",
+            "hostValidationStatus",
         ],
         "compactMaterial",
         issues,
@@ -470,8 +548,85 @@ fn validate_material(raw: &Value, issues: &mut Vec<ValidationIssue>) {
         "installSucceeds",
         "usefulReduction",
         "canProduceValidProviderRequest",
+        "protectedEscalationApplied",
+        "maximalPruneInsufficient",
     ] {
         require_bool(obj, k, "compactMaterial", issues);
+    }
+    match obj.get("projectedPressureTokens") {
+        Some(Value::Null) => {}
+        Some(v) if is_safe_non_neg_int(v) => {}
+        _ => issues.push(issue(
+            "compactMaterial.projectedPressureTokens",
+            "must be null or non-negative safe integer",
+        )),
+    }
+    if !is_safe_non_neg_int(obj.get("renderedSavingsTokens").unwrap_or(&Value::Null)) {
+        issues.push(issue(
+            "compactMaterial.renderedSavingsTokens",
+            "must be a non-negative safe integer",
+        ));
+    }
+    if !obj
+        .get("renderedSavingsSource")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty())
+    {
+        issues.push(issue(
+            "compactMaterial.renderedSavingsSource",
+            "must be a non-empty string",
+        ));
+    }
+    if obj.get("renderedSavingsDomain").and_then(|v| v.as_str()) != Some("source_labelled_estimate")
+    {
+        issues.push(issue(
+            "compactMaterial.renderedSavingsDomain",
+            "must be \"source_labelled_estimate\"",
+        ));
+    }
+    match obj.get("safeRunwayThresholdTokens") {
+        Some(Value::Null) => {}
+        Some(v) if is_safe_non_neg_int(v) => {}
+        _ => issues.push(issue(
+            "compactMaterial.safeRunwayThresholdTokens",
+            "must be null or non-negative safe integer",
+        )),
+    }
+    match obj.get("safeRunwayThresholdSource") {
+        Some(Value::Null) => {}
+        Some(v) if v.as_str().is_some_and(|s| !s.is_empty()) => {}
+        _ => issues.push(issue(
+            "compactMaterial.safeRunwayThresholdSource",
+            "must be null or non-empty string",
+        )),
+    }
+    match obj.get("projectedPressureSafe") {
+        Some(Value::Null) | Some(Value::Bool(_)) => {}
+        _ => issues.push(issue(
+            "compactMaterial.projectedPressureSafe",
+            "must be boolean or null",
+        )),
+    }
+    for k in [
+        "visibilityBoundaryBefore",
+        "visibilityBoundaryAfter",
+        "compactPointAtInstall",
+    ] {
+        match obj.get(k) {
+            Some(Value::Null) => {}
+            Some(v) if is_safe_non_neg_int(v) => {}
+            _ => issues.push(issue(
+                format!("compactMaterial.{k}"),
+                "must be null or non-negative safe integer",
+            )),
+        }
+    }
+    match obj.get("hostValidationStatus").and_then(|v| v.as_str()) {
+        Some("not_required") | Some("awaiting") | Some("ok") | Some("failed") => {}
+        _ => issues.push(issue(
+            "compactMaterial.hostValidationStatus",
+            "must be not_required|awaiting|ok|failed",
+        )),
     }
 }
 
@@ -557,7 +712,10 @@ const EFFECT_TYPES: &[&str] = &[
     "release_writer",
     "force_turn_end",
     "compact",
-    "preserve_tool_pair_verbatim",
+    "preserve_tool_pairs_verbatim",
+    "advance_visibility_boundary",
+    "await_host_validation",
+    "record_host_validation",
     "insert_continuation_marker",
     "install_serving_view",
     "record_receipt",
@@ -686,12 +844,21 @@ fn validate_effect(effect: &Value, path: &str, issues: &mut Vec<ValidationIssue>
             issues.push(issue(format!("{path}.durable"), "must be true"));
         }
     }
-    if type_str == "preserve_tool_pair_verbatim" {
-        match obj.get("toolCallId").and_then(|v| v.as_str()) {
-            Some(s) if !s.is_empty() => {}
+    if type_str == "preserve_tool_pairs_verbatim" {
+        match obj.get("protectedToolCallIds").and_then(|v| v.as_array()) {
+            Some(ids) if !ids.is_empty() => {
+                for (i, id) in ids.iter().enumerate() {
+                    if !id.as_str().is_some_and(|s| !s.is_empty()) {
+                        issues.push(issue(
+                            format!("{path}.protectedToolCallIds[{i}]"),
+                            "must be non-empty string",
+                        ));
+                    }
+                }
+            }
             _ => issues.push(issue(
-                format!("{path}.toolCallId"),
-                "required non-empty string",
+                format!("{path}.protectedToolCallIds"),
+                "required non-empty string array",
             )),
         }
         if obj.get("location").and_then(|v| v.as_str()) != Some("open_turn_tail") {
@@ -700,6 +867,45 @@ fn validate_effect(effect: &Value, path: &str, issues: &mut Vec<ValidationIssue>
                 "must be \"open_turn_tail\"",
             ));
         }
+    }
+    if type_str == "advance_visibility_boundary" {
+        for k in ["previousBoundary", "newBoundary", "compactPoint"] {
+            if !is_safe_non_neg_int(obj.get(k).unwrap_or(&Value::Null)) {
+                issues.push(issue(
+                    format!("{path}.{k}"),
+                    "must be a non-negative safe integer",
+                ));
+            }
+        }
+        if let (Some(prev), Some(new)) = (
+            obj.get("previousBoundary").and_then(as_safe_non_neg_int),
+            obj.get("newBoundary").and_then(as_safe_non_neg_int),
+        ) && new < prev
+        {
+            issues.push(issue(
+                format!("{path}.newBoundary"),
+                "must be >= previousBoundary (monotonic)",
+            ));
+        }
+    }
+    if type_str == "await_host_validation"
+        && obj.get("attemptIdScope").and_then(|v| v.as_str()) != Some("current_attempt")
+    {
+        issues.push(issue(
+            format!("{path}.attemptIdScope"),
+            "must be \"current_attempt\"",
+        ));
+    }
+    if type_str == "record_host_validation"
+        && !matches!(
+            obj.get("result").and_then(|v| v.as_str()),
+            Some("ok") | Some("failed")
+        )
+    {
+        issues.push(issue(
+            format!("{path}.result"),
+            "must be \"ok\" or \"failed\"",
+        ));
     }
     if type_str == "skip_seam" {
         match obj.get("code").and_then(|v| v.as_str()) {
@@ -735,8 +941,33 @@ fn validate_residual(raw: &Value, issues: &mut Vec<ValidationIssue>) {
         "markerServed",
         "originalAgenticTurnStillOpen",
         "nextProviderRequestAllowed",
+        "coreInstallRetainedPendingHostValidation",
     ] {
         require_bool(obj, k, "residual", issues);
+    }
+    match obj.get("reliefPath").and_then(|v| v.as_str()) {
+        Some(p) if COMPACT_CONTINUATION_RELIEF_PATHS.contains(&p) => {}
+        _ => issues.push(issue("residual.reliefPath", "unknown relief path")),
+    }
+    if !matches!(obj.get("protectedToolCallIds"), Some(Value::Array(_))) {
+        issues.push(issue("residual.protectedToolCallIds", "must be an array"));
+    }
+    match obj.get("hostValidationStatus").and_then(|v| v.as_str()) {
+        Some("not_required") | Some("awaiting") | Some("ok") | Some("failed") => {}
+        _ => issues.push(issue(
+            "residual.hostValidationStatus",
+            "must be not_required|awaiting|ok|failed",
+        )),
+    }
+    for k in ["visibilityBoundaryBefore", "visibilityBoundaryAfter"] {
+        match obj.get(k) {
+            Some(Value::Null) => {}
+            Some(v) if is_safe_non_neg_int(v) => {}
+            _ => issues.push(issue(
+                format!("residual.{k}"),
+                "must be null or non-negative safe integer",
+            )),
+        }
     }
     if obj.get("writerReleased").and_then(|v| v.as_bool()) != Some(true) {
         issues.push(issue(
@@ -968,7 +1199,7 @@ pub fn validate_compact_continuation_receipt(raw: &Value) -> ValidationResult {
         let has = |t: &str| types.contains(&Some(t));
         let has_force = has("force_turn_end");
         let has_marker = has("insert_continuation_marker");
-        let has_preserve = has("preserve_tool_pair_verbatim");
+        let has_preserve = has("preserve_tool_pairs_verbatim");
         let has_install = has("install_serving_view");
         let has_claim = has("claim_writer");
         let has_release = has("release_writer");
@@ -1039,13 +1270,18 @@ pub fn validate_compact_continuation_receipt(raw: &Value) -> ValidationResult {
             }
         }
 
-        if has_preserve && has_marker {
+        // Mutual exclusions: ordinary preserve vs marker/force. Contract 2.0.0
+        // protected escalation intentionally combines force + marker +
+        // preserve_tool_pairs_verbatim (and optional boundary advance).
+        let has_advance = has("advance_visibility_boundary");
+        let protected_escalation_effects = has_preserve && (has_force || has_marker || has_advance);
+        if has_preserve && has_marker && !protected_escalation_effects {
             issues.push(issue(
                 "effects",
                 "preserve_tool and continuation marker are mutually exclusive",
             ));
         }
-        if has_preserve && has_force {
+        if has_preserve && has_force && !protected_escalation_effects {
             issues.push(issue(
                 "effects",
                 "preserve_tool path must not force turn_end",

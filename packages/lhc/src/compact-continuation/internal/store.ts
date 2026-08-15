@@ -35,6 +35,7 @@ export type StageName =
   | "install_succeeded"
   | "install_failed"
   | "compact_failed"
+  | "unsafe_runway_refused"
   | "receipt_recorded"
   | "writer_released"
   | "interrupted"

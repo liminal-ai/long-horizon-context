@@ -82,6 +82,8 @@ fn base_facts(attempt_id: &str, cont: WorkContinuation) -> CompactContinuationHo
             domain: "source_labelled_estimate".into(),
         },
         policy: CompactContinuationPolicy {
+            safe_runway_threshold_tokens: Some(200_000),
+            safe_runway_threshold_source: Some("host_safe_runway".into()),
             upper_trigger_tokens: 100_000,
             lower_target_tokens: 400,
             host_capability: CompactContinuationHostCapability::FullStateMachine,
@@ -458,7 +460,7 @@ async fn assert_refuse_before_claim(
         base_facts(
             &format!("pair-{name}"),
             WorkContinuation::PendingCorrelatedToolResult {
-                tool_call_id: tool_call_id.into(),
+                protected_tool_call_ids: vec![tool_call_id.into()],
                 correlation_valid: true,
             },
         ),
@@ -806,7 +808,7 @@ async fn tool_pair_valid_preserve_path_claims_releases() {
         base_facts(
             "pair-valid-above",
             WorkContinuation::PendingCorrelatedToolResult {
-                tool_call_id: "call-ok-above".into(),
+                protected_tool_call_ids: vec!["call-ok-above".into()],
                 correlation_valid: true,
             },
         ),
@@ -1699,7 +1701,7 @@ async fn preserve_tool_invalid_candidate_no_install_no_marker() {
         base_facts(
             "preserve-invalid-1",
             WorkContinuation::PendingCorrelatedToolResult {
-                tool_call_id: "call-preserve-bad".into(),
+                protected_tool_call_ids: vec!["call-preserve-bad".into()],
                 correlation_valid: true,
             },
         ),
@@ -1767,7 +1769,7 @@ async fn valid_active_and_preserve_install_exactly_once() {
             base_facts(
                 "valid-preserve-once",
                 WorkContinuation::PendingCorrelatedToolResult {
-                    tool_call_id: "call-once".into(),
+                    protected_tool_call_ids: vec!["call-once".into()],
                     correlation_valid: true,
                 },
             ),
@@ -2190,7 +2192,7 @@ fn public_sdk_does_not_export_run_for_tests() {
 }
 
 #[tokio::test]
-async fn fresh_threads_are_schema_v10() {
+async fn fresh_threads_are_schema_v11() {
     let store = temp_store();
     let file_path = match new_thread(NewThreadInput {
         file_path: store.thread_path(None).to_string_lossy().into_owned(),
@@ -2210,7 +2212,13 @@ async fn fresh_threads_are_schema_v10() {
         .and_then(|r| r.get("user_version").and_then(|v| v.as_i64()))
         .unwrap_or(0);
     assert_eq!(v, CURRENT_THREAD_SCHEMA_VERSION);
-    assert_eq!(v, 10);
+    assert_eq!(v, 11);
+    let hv = db
+        .prepare(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_host_validation'",
+        )
+        .get();
+    assert!(hv.is_some());
     let idx = db
         .prepare(
             "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_compact_continuation_boundary_one_unresolved'",
@@ -2272,8 +2280,8 @@ async fn marker_user_chat_hidden_model_visible() {
 }
 
 #[test]
-fn current_schema_version_is_10() {
-    assert_eq!(CURRENT_THREAD_SCHEMA_VERSION, 10);
+fn current_schema_version_is_11() {
+    assert_eq!(CURRENT_THREAD_SCHEMA_VERSION, 11);
 }
 
 #[tokio::test]

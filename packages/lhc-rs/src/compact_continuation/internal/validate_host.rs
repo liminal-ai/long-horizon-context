@@ -75,7 +75,13 @@ const SEAM_KEYS: &[&str] = &[
     "inputEpochAtDecision",
     "inputEpochAtApply",
 ];
-const POLICY_KEYS: &[&str] = &["upperTriggerTokens", "lowerTargetTokens", "hostCapability"];
+const POLICY_KEYS: &[&str] = &[
+    "upperTriggerTokens",
+    "lowerTargetTokens",
+    "hostCapability",
+    "safeRunwayThresholdTokens",
+    "safeRunwayThresholdSource",
+];
 const ESTIMATE_KEYS: &[&str] = &["tokens", "source", "domain"];
 const COMPACT_KEYS: &[&str] = &["profile", "params"];
 const PARAMS_KEYS: &[&str] = &["lowerBound", "percentages"];
@@ -179,6 +185,20 @@ pub fn validate_host_facts(raw: &Value) -> Option<ErrorResult> {
             "policy.hostCapability must be full_state_machine|capability_limited",
         ));
     }
+    if let Some(threshold) = policy.get("safeRunwayThresholdTokens")
+        && !is_non_neg_int(threshold)
+    {
+        return Some(reject(
+            "policy.safeRunwayThresholdTokens must be a non-negative integer when present",
+        ));
+    }
+    if let Some(source) = policy.get("safeRunwayThresholdSource")
+        && !is_non_empty_string(source)
+    {
+        return Some(reject(
+            "policy.safeRunwayThresholdSource must be a non-empty string when present",
+        ));
+    }
 
     let usage_val = top.get("providerUsage").cloned().unwrap_or(Value::Null);
     let usage = match closed_object(
@@ -276,7 +296,14 @@ pub fn validate_host_facts(raw: &Value) -> Option<ErrorResult> {
     let cont = match closed_object(
         &cont_val,
         "continuation",
-        &["kind", "toolCallId", "correlationValid"],
+        // toolCallId listed only so the closed-object gate does not mask the
+        // specific dual-field-shim rejection below.
+        &[
+            "kind",
+            "protectedToolCallIds",
+            "correlationValid",
+            "toolCallId",
+        ],
     ) {
         Ok(o) => o,
         Err(e) => return Some(e),
@@ -291,11 +318,43 @@ pub fn validate_host_facts(raw: &Value) -> Option<ErrorResult> {
             }
         }
         Some("pending_correlated_tool_result") => {
-            if !cont.get("toolCallId").is_some_and(is_non_empty_string)
-                || !matches!(cont.get("correlationValid"), Some(Value::Bool(_)))
-            {
+            if cont.contains_key("toolCallId") {
                 return Some(reject(
-                    "pending_correlated_tool_result requires toolCallId and correlationValid",
+                    "continuation.toolCallId removed in contract 2.0.0; use protectedToolCallIds",
+                ));
+            }
+            let Some(Value::Array(ids)) = cont.get("protectedToolCallIds") else {
+                return Some(reject(
+                    "pending_correlated_tool_result requires non-empty protectedToolCallIds",
+                ));
+            };
+            if ids.is_empty() {
+                return Some(reject(
+                    "pending_correlated_tool_result requires non-empty protectedToolCallIds",
+                ));
+            }
+            let mut prev: Option<&str> = None;
+            let mut seen: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+            for id in ids {
+                let Some(id) = id.as_str().filter(|s| !s.is_empty()) else {
+                    return Some(reject(
+                        "protectedToolCallIds entries must be non-empty strings",
+                    ));
+                };
+                if !seen.insert(id) {
+                    return Some(reject("protectedToolCallIds must be unique"));
+                }
+                if let Some(prev) = prev
+                    && crate::shared_tech::compact_continuation::js_string_cmp(id, prev)
+                        == std::cmp::Ordering::Less
+                {
+                    return Some(reject("protectedToolCallIds must be sorted ascending"));
+                }
+                prev = Some(id);
+            }
+            if !matches!(cont.get("correlationValid"), Some(Value::Bool(_))) {
+                return Some(reject(
+                    "pending_correlated_tool_result requires correlationValid boolean",
                 ));
             }
         }

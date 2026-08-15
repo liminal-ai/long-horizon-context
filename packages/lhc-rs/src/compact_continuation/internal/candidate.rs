@@ -40,14 +40,19 @@ pub struct CompactMaterialFactsPartial {
     pub can_produce_valid_provider_request: bool,
 }
 
-/// Assemble a candidate LHC request from prepared bands + current eligible tail.
-pub fn assemble_candidate_from_prepared(
+/// Assemble a candidate LHC request from prepared bands + current eligible tail,
+/// with an optional read-only visibility-boundary override for
+/// protected-escalation candidate rendering (TS `opts.boundaryPositionOverride`).
+/// Never mutates durable state.
+pub fn assemble_candidate_from_prepared_with(
     db: &Db,
     prepared: &PreparedCompact,
     lower_target_tokens: i64,
+    boundary_position_override: Option<i64>,
 ) -> CandidateAssembly {
     let compact_point = prepared.selection.compact_point;
-    let boundary_position = read_boundary_position(db);
+    let boundary_position =
+        boundary_position_override.unwrap_or_else(|| read_boundary_position(db));
     let tail_rows = read_tail_messages(db, compact_point);
     let render_ctx = TailRenderContext {
         boundary_position,

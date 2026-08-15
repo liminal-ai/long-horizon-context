@@ -1,4 +1,4 @@
-//! Compact-continuation contract v1 — types, vocabularies, stable strings.
+//! Compact-continuation contract 2.0.0 — types, vocabularies, stable strings.
 //!
 //! Ported from `packages/lhc/src/shared-tech/compact-continuation/contract.ts`.
 //! Field order on Serialize shapes matches TypeScript object construction so
@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 // ── Version and stable strings ───────────────────────────────────────────────
 
 /// Semver of this contract surface. Fixtures pin the same string.
-pub const COMPACT_CONTINUATION_CONTRACT_VERSION: &str = "1.0.0";
+pub const COMPACT_CONTINUATION_CONTRACT_VERSION: &str = "2.0.0";
 
 /// Canonical turn_end / outcome reason when a continuation turn is opened.
 pub const CONTEXT_COMPACT_CONTINUE_REASON: &str = "context_compact_continue";
@@ -232,6 +232,8 @@ pub enum CompactContinuationOutcomeKind {
     CompactPreserveTool,
     #[serde(rename = "compact_continue_turn")]
     CompactContinueTurn,
+    #[serde(rename = "compact_preserve_tool_escalated")]
+    CompactPreserveToolEscalated,
     #[serde(rename = "normal_complete")]
     NormalComplete,
     #[serde(rename = "degraded_compact")]
@@ -250,6 +252,7 @@ impl CompactContinuationOutcomeKind {
             Self::ContinueNormal => "continue_normal",
             Self::CompactPreserveTool => "compact_preserve_tool",
             Self::CompactContinueTurn => "compact_continue_turn",
+            Self::CompactPreserveToolEscalated => "compact_preserve_tool_escalated",
             Self::NormalComplete => "normal_complete",
             Self::DegradedCompact => "degraded_compact",
             Self::NoReduction => "no_reduction",
@@ -263,6 +266,7 @@ impl CompactContinuationOutcomeKind {
             "continue_normal" => Self::ContinueNormal,
             "compact_preserve_tool" => Self::CompactPreserveTool,
             "compact_continue_turn" => Self::CompactContinueTurn,
+            "compact_preserve_tool_escalated" => Self::CompactPreserveToolEscalated,
             "normal_complete" => Self::NormalComplete,
             "degraded_compact" => Self::DegradedCompact,
             "no_reduction" => Self::NoReduction,
@@ -277,6 +281,7 @@ pub const COMPACT_CONTINUATION_OUTCOME_KINDS: &[&str] = &[
     "continue_normal",
     "compact_preserve_tool",
     "compact_continue_turn",
+    "compact_preserve_tool_escalated",
     "normal_complete",
     "degraded_compact",
     "no_reduction",
@@ -343,6 +348,12 @@ pub enum CompactContinuationRefuseCode {
     InvalidPendingBoundaryContinuation,
     #[serde(rename = "unsupported_contract_version")]
     UnsupportedContractVersion,
+    #[serde(rename = "invalid_protected_tool_pairs")]
+    InvalidProtectedToolPairs,
+    #[serde(rename = "unsafe_runway")]
+    UnsafeRunway,
+    #[serde(rename = "host_validation_failed")]
+    HostValidationFailed,
 }
 
 impl CompactContinuationRefuseCode {
@@ -358,6 +369,9 @@ impl CompactContinuationRefuseCode {
             Self::NoValidProviderRequest => "no_valid_provider_request",
             Self::InvalidPendingBoundaryContinuation => "invalid_pending_boundary_continuation",
             Self::UnsupportedContractVersion => "unsupported_contract_version",
+            Self::InvalidProtectedToolPairs => "invalid_protected_tool_pairs",
+            Self::UnsafeRunway => "unsafe_runway",
+            Self::HostValidationFailed => "host_validation_failed",
         }
     }
 
@@ -373,6 +387,9 @@ impl CompactContinuationRefuseCode {
             "no_valid_provider_request" => Self::NoValidProviderRequest,
             "invalid_pending_boundary_continuation" => Self::InvalidPendingBoundaryContinuation,
             "unsupported_contract_version" => Self::UnsupportedContractVersion,
+            "invalid_protected_tool_pairs" => Self::InvalidProtectedToolPairs,
+            "unsafe_runway" => Self::UnsafeRunway,
+            "host_validation_failed" => Self::HostValidationFailed,
             _ => return None,
         })
     }
@@ -389,7 +406,122 @@ pub const COMPACT_CONTINUATION_REFUSE_CODES: &[&str] = &[
     "no_valid_provider_request",
     "invalid_pending_boundary_continuation",
     "unsupported_contract_version",
+    "invalid_protected_tool_pairs",
+    "unsafe_runway",
+    "host_validation_failed",
 ];
+
+// ── Relief paths / host validation (contract 2.0.0) ──────────────────────────
+
+/// Durable relief-path vocabulary (receipt/identity).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CompactContinuationReliefPath {
+    #[serde(rename = "none")]
+    None,
+    #[serde(rename = "normal_preserve")]
+    NormalPreserve,
+    #[serde(rename = "protected_escalation")]
+    ProtectedEscalation,
+    #[serde(rename = "core_install_failed")]
+    CoreInstallFailed,
+    #[serde(rename = "host_validation_awaiting")]
+    HostValidationAwaiting,
+    #[serde(rename = "host_validation_failed")]
+    HostValidationFailed,
+    #[serde(rename = "host_validation_ok")]
+    HostValidationOk,
+}
+
+impl CompactContinuationReliefPath {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::NormalPreserve => "normal_preserve",
+            Self::ProtectedEscalation => "protected_escalation",
+            Self::CoreInstallFailed => "core_install_failed",
+            Self::HostValidationAwaiting => "host_validation_awaiting",
+            Self::HostValidationFailed => "host_validation_failed",
+            Self::HostValidationOk => "host_validation_ok",
+        }
+    }
+
+    pub fn from_str_exact(s: &str) -> Option<Self> {
+        Some(match s {
+            "none" => Self::None,
+            "normal_preserve" => Self::NormalPreserve,
+            "protected_escalation" => Self::ProtectedEscalation,
+            "core_install_failed" => Self::CoreInstallFailed,
+            "host_validation_awaiting" => Self::HostValidationAwaiting,
+            "host_validation_failed" => Self::HostValidationFailed,
+            "host_validation_ok" => Self::HostValidationOk,
+            _ => return None,
+        })
+    }
+}
+
+pub const COMPACT_CONTINUATION_RELIEF_PATHS: &[&str] = &[
+    "none",
+    "normal_preserve",
+    "protected_escalation",
+    "core_install_failed",
+    "host_validation_awaiting",
+    "host_validation_failed",
+    "host_validation_ok",
+];
+
+/// Host full-body validation status for an attempt.
+/// `not_required` for paths that do not need post-install host validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum HostValidationStatusFact {
+    #[serde(rename = "not_required")]
+    NotRequired,
+    #[serde(rename = "awaiting")]
+    Awaiting,
+    #[serde(rename = "ok")]
+    Ok,
+    #[serde(rename = "failed")]
+    Failed,
+}
+
+impl HostValidationStatusFact {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NotRequired => "not_required",
+            Self::Awaiting => "awaiting",
+            Self::Ok => "ok",
+            Self::Failed => "failed",
+        }
+    }
+
+    pub fn from_str_exact(s: &str) -> Option<Self> {
+        Some(match s {
+            "not_required" => Self::NotRequired,
+            "awaiting" => Self::Awaiting,
+            "ok" => Self::Ok,
+            "failed" => Self::Failed,
+            _ => return None,
+        })
+    }
+}
+
+/// JS `<` string ordering (UTF-16 code-unit lexicographic), matching TS `.sort()`.
+pub fn js_string_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    crate::shared_tech::js_json::js_char_codes(a)
+        .cmp(&crate::shared_tech::js_json::js_char_codes(b))
+}
+
+/// Normalize protected IDs: unique, non-empty strings, sorted ascending
+/// (JS UTF-16 code-unit order, matching the TypeScript oracle).
+pub fn normalize_protected_tool_call_ids(ids: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for id in ids {
+        if !id.is_empty() && !out.contains(id) {
+            out.push(id.clone());
+        }
+    }
+    out.sort_by(|a, b| js_string_cmp(a, b));
+    out
+}
 
 // ── Effects ──────────────────────────────────────────────────────────────────
 
@@ -438,11 +570,31 @@ pub enum CompactContinuationEffect {
         #[serde(rename = "allowDegradedDerivations")]
         allow_degraded_derivations: bool,
     },
-    #[serde(rename = "preserve_tool_pair_verbatim")]
-    PreserveToolPairVerbatim {
-        #[serde(rename = "toolCallId")]
-        tool_call_id: String,
+    #[serde(rename = "preserve_tool_pairs_verbatim")]
+    PreserveToolPairsVerbatim {
+        #[serde(rename = "protectedToolCallIds")]
+        protected_tool_call_ids: Vec<String>,
         location: String,
+    },
+    #[serde(rename = "advance_visibility_boundary")]
+    AdvanceVisibilityBoundary {
+        #[serde(rename = "previousBoundary")]
+        previous_boundary: i64,
+        #[serde(rename = "newBoundary")]
+        new_boundary: i64,
+        #[serde(rename = "compactPoint")]
+        compact_point: i64,
+    },
+    #[serde(rename = "await_host_validation")]
+    AwaitHostValidation {
+        #[serde(rename = "attemptIdScope")]
+        attempt_id_scope: String,
+    },
+    #[serde(rename = "record_host_validation")]
+    RecordHostValidation {
+        result: String,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
     },
     #[serde(rename = "insert_continuation_marker")]
     InsertContinuationMarker {
@@ -490,8 +642,15 @@ impl CompactContinuationEffect {
             Self::ReleaseWriter => CompactContinuationEffectType::ReleaseWriter,
             Self::ForceTurnEnd { .. } => CompactContinuationEffectType::ForceTurnEnd,
             Self::Compact { .. } => CompactContinuationEffectType::Compact,
-            Self::PreserveToolPairVerbatim { .. } => {
-                CompactContinuationEffectType::PreserveToolPairVerbatim
+            Self::PreserveToolPairsVerbatim { .. } => {
+                CompactContinuationEffectType::PreserveToolPairsVerbatim
+            }
+            Self::AdvanceVisibilityBoundary { .. } => {
+                CompactContinuationEffectType::AdvanceVisibilityBoundary
+            }
+            Self::AwaitHostValidation { .. } => CompactContinuationEffectType::AwaitHostValidation,
+            Self::RecordHostValidation { .. } => {
+                CompactContinuationEffectType::RecordHostValidation
             }
             Self::InsertContinuationMarker { .. } => {
                 CompactContinuationEffectType::InsertContinuationMarker
@@ -515,7 +674,10 @@ pub enum CompactContinuationEffectType {
     ReleaseWriter,
     ForceTurnEnd,
     Compact,
-    PreserveToolPairVerbatim,
+    PreserveToolPairsVerbatim,
+    AdvanceVisibilityBoundary,
+    AwaitHostValidation,
+    RecordHostValidation,
     InsertContinuationMarker,
     InstallServingView,
     RecordReceipt,
@@ -531,7 +693,10 @@ impl CompactContinuationEffectType {
             Self::ReleaseWriter => "release_writer",
             Self::ForceTurnEnd => "force_turn_end",
             Self::Compact => "compact",
-            Self::PreserveToolPairVerbatim => "preserve_tool_pair_verbatim",
+            Self::PreserveToolPairsVerbatim => "preserve_tool_pairs_verbatim",
+            Self::AdvanceVisibilityBoundary => "advance_visibility_boundary",
+            Self::AwaitHostValidation => "await_host_validation",
+            Self::RecordHostValidation => "record_host_validation",
             Self::InsertContinuationMarker => "insert_continuation_marker",
             Self::InstallServingView => "install_serving_view",
             Self::RecordReceipt => "record_receipt",
@@ -678,8 +843,8 @@ pub enum WorkContinuation {
     None,
     #[serde(rename = "pending_correlated_tool_result")]
     PendingCorrelatedToolResult {
-        #[serde(rename = "toolCallId")]
-        tool_call_id: String,
+        #[serde(rename = "protectedToolCallIds")]
+        protected_tool_call_ids: Vec<String>,
         #[serde(rename = "correlationValid")]
         correlation_valid: bool,
     },
@@ -690,7 +855,7 @@ pub enum WorkContinuation {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct WorkContinuationToolWire {
-    tool_call_id: String,
+    protected_tool_call_ids: Vec<String>,
     correlation_valid: bool,
 }
 
@@ -730,6 +895,12 @@ impl<'de> Deserialize<'de> for WorkContinuation {
                 Ok(Self::ActiveNonTool)
             }
             "pending_correlated_tool_result" => {
+                // Contract 2.0.0: single toolCallId removed; no dual-field shim.
+                if obj.contains_key("toolCallId") {
+                    return Err(de::Error::custom(
+                        "continuation.toolCallId removed in contract 2.0.0; use protectedToolCallIds",
+                    ));
+                }
                 // Drop kind, parse closed tool fields.
                 let mut map = obj.clone();
                 map.remove("kind");
@@ -737,7 +908,7 @@ impl<'de> Deserialize<'de> for WorkContinuation {
                     serde_json::from_value(serde_json::Value::Object(map))
                         .map_err(de::Error::custom)?;
                 Ok(Self::PendingCorrelatedToolResult {
-                    tool_call_id: wire.tool_call_id,
+                    protected_tool_call_ids: wire.protected_tool_call_ids,
                     correlation_valid: wire.correlation_valid,
                 })
             }
@@ -886,7 +1057,7 @@ pub struct CompactContinuationInvariants {
     pub writer_claim: WriterClaim,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CompactMaterialFacts {
     pub derivations_missing_or_failed: bool,
@@ -895,6 +1066,19 @@ pub struct CompactMaterialFacts {
     pub install_succeeds: bool,
     pub useful_reduction: bool,
     pub can_produce_valid_provider_request: bool,
+    pub projected_pressure_tokens: Option<i64>,
+    pub rendered_savings_tokens: i64,
+    pub rendered_savings_source: String,
+    pub rendered_savings_domain: String,
+    pub safe_runway_threshold_tokens: Option<i64>,
+    pub safe_runway_threshold_source: Option<String>,
+    pub projected_pressure_safe: Option<bool>,
+    pub protected_escalation_applied: bool,
+    pub visibility_boundary_before: Option<i64>,
+    pub visibility_boundary_after: Option<i64>,
+    pub compact_point_at_install: Option<i64>,
+    pub maximal_prune_insufficient: bool,
+    pub host_validation_status: HostValidationStatusFact,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -903,6 +1087,10 @@ pub struct CompactContinuationPolicy {
     pub upper_trigger_tokens: i64,
     pub lower_target_tokens: i64,
     pub host_capability: CompactContinuationHostCapability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_runway_threshold_tokens: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub safe_runway_threshold_source: Option<String>,
 }
 
 /// Pre-decision facts plus attempt results for the whole-seam oracle.
@@ -933,6 +1121,13 @@ pub struct CompactContinuationPressureReceipt {
     pub next_request_pressure_tokens: Option<i64>,
     pub upper_trigger_tokens: i64,
     pub at_or_above_trigger: Option<bool>,
+    pub projected_pressure_tokens: Option<i64>,
+    pub rendered_savings_tokens: Option<i64>,
+    pub rendered_savings_source: Option<String>,
+    pub rendered_savings_domain: Option<String>,
+    pub safe_runway_threshold_tokens: Option<i64>,
+    pub safe_runway_threshold_source: Option<String>,
+    pub projected_pressure_safe: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -956,6 +1151,12 @@ pub struct CompactContinuationResidualState {
     pub marker_served: bool,
     pub original_agentic_turn_still_open: bool,
     pub next_provider_request_allowed: bool,
+    pub relief_path: CompactContinuationReliefPath,
+    pub protected_tool_call_ids: Vec<String>,
+    pub visibility_boundary_before: Option<i64>,
+    pub visibility_boundary_after: Option<i64>,
+    pub host_validation_status: HostValidationStatusFact,
+    pub core_install_retained_pending_host_validation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -978,6 +1179,8 @@ pub struct CompactContinuationReceipt {
     pub fidelity: String,
     pub degradation_reasons: Vec<String>,
     pub continuation: CompactContinuationReceiptContinuation,
+    pub relief_path: CompactContinuationReliefPath,
+    pub protected_tool_call_ids: Vec<String>,
     pub effects: Vec<CompactContinuationEffect>,
     pub residual: CompactContinuationResidualState,
     pub refused: bool,
@@ -1049,6 +1252,15 @@ pub const COMPACT_CONTINUATION_INVARIANTS: &[&str] = &[
     "stable_turn_end_reason_context_compact_continue",
     "no_false_parity_for_capability_limited_hosts",
     "pure_function_is_whole_seam_oracle_not_pre_effect_plan",
+    "protected_tool_call_ids_sorted_unique_nonempty",
+    "projected_pressure_is_base_plus_growth_minus_savings",
+    "safe_runway_threshold_is_not_lower_target",
+    "protected_results_budgeted_full_before_prune",
+    "visibility_boundary_monotonic_before_earliest_protected_result",
+    "atomic_view_and_boundary_install_or_neither",
+    "host_validation_never_claimed_inside_lhc_core",
+    "host_validation_failure_does_not_rollback_core_install",
+    "no_dual_field_toolcallid_shim",
 ];
 
 pub type CompactContinuationInvariantId = &'static str;

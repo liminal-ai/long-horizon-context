@@ -17,9 +17,10 @@ use super::contract::{
     CompactContinuationMarkerSemantics, CompactContinuationOutcomeKind,
     CompactContinuationPressureReceipt, CompactContinuationReceipt,
     CompactContinuationReceiptContinuation, CompactContinuationRefuseCode,
-    CompactContinuationResidualState, CompactContinuationSkipCode, CompactContinuationState,
-    ForcedContinuationBoundary, ForcedContinuationBoundaryApplied, WorkContinuation, WriterClaim,
-    compact_continuation_marker_idempotency_key,
+    CompactContinuationReliefPath, CompactContinuationResidualState, CompactContinuationSkipCode,
+    CompactContinuationState, ForcedContinuationBoundary, ForcedContinuationBoundaryApplied,
+    HostValidationStatusFact, WorkContinuation, WriterClaim,
+    compact_continuation_marker_idempotency_key, normalize_protected_tool_call_ids,
 };
 
 fn is_applied_boundary(
@@ -43,6 +44,16 @@ fn pressure_receipt(input: &CompactContinuationInput) -> CompactContinuationPres
     let provider_usage = &input.provider_usage;
     let estimate = &input.post_measurement_estimate;
     let policy = &input.policy;
+    let material = &input.compact_material;
+    // Typed material always carries these facts (TS validated inputs likewise);
+    // savings is a required non-negative integer, so its domain label is fixed.
+    let savings = Some(material.rendered_savings_tokens);
+    let savings_source = Some(material.rendered_savings_source.clone());
+    let projected = material.projected_pressure_tokens;
+    let safe_threshold = material.safe_runway_threshold_tokens;
+    let safe_source = material.safe_runway_threshold_source.clone();
+    let projected_safe = material.projected_pressure_safe;
+
     match provider_usage.available_total() {
         None => CompactContinuationPressureReceipt {
             provider_base_tokens: None,
@@ -53,21 +64,43 @@ fn pressure_receipt(input: &CompactContinuationInput) -> CompactContinuationPres
             next_request_pressure_tokens: None,
             upper_trigger_tokens: policy.upper_trigger_tokens,
             at_or_above_trigger: None,
+            projected_pressure_tokens: None,
+            rendered_savings_tokens: savings,
+            rendered_savings_source: savings_source,
+            rendered_savings_domain: Some("source_labelled_estimate".to_string()),
+            safe_runway_threshold_tokens: safe_threshold,
+            safe_runway_threshold_source: safe_source,
+            projected_pressure_safe: None,
         },
         Some(total) => match checked_pressure_sum(total, estimate.tokens) {
-            Some(next) => CompactContinuationPressureReceipt {
-                provider_base_tokens: Some(total),
-                provider_base_domain: "provider_reported_input".to_string(),
-                estimate_tokens: estimate.tokens,
-                estimate_source: estimate.source.clone(),
-                estimate_domain: "source_labelled_estimate".to_string(),
-                next_request_pressure_tokens: Some(next),
-                upper_trigger_tokens: policy.upper_trigger_tokens,
-                at_or_above_trigger: Some(next >= policy.upper_trigger_tokens),
-            },
+            Some(next) => {
+                let projected_resolved = match projected {
+                    Some(p) => Some(p),
+                    None => Some((next - material.rendered_savings_tokens).max(0)),
+                };
+                let projected_safe_resolved = match projected_safe {
+                    Some(v) => Some(v),
+                    None => safe_threshold.map(|t| projected_resolved.expect("resolved above") < t),
+                };
+                CompactContinuationPressureReceipt {
+                    provider_base_tokens: Some(total),
+                    provider_base_domain: "provider_reported_input".to_string(),
+                    estimate_tokens: estimate.tokens,
+                    estimate_source: estimate.source.clone(),
+                    estimate_domain: "source_labelled_estimate".to_string(),
+                    next_request_pressure_tokens: Some(next),
+                    upper_trigger_tokens: policy.upper_trigger_tokens,
+                    at_or_above_trigger: Some(next >= policy.upper_trigger_tokens),
+                    projected_pressure_tokens: projected_resolved,
+                    rendered_savings_tokens: savings,
+                    rendered_savings_source: savings_source,
+                    rendered_savings_domain: Some("source_labelled_estimate".to_string()),
+                    safe_runway_threshold_tokens: safe_threshold,
+                    safe_runway_threshold_source: safe_source,
+                    projected_pressure_safe: projected_safe_resolved,
+                }
+            }
             // Overflow on unvalidated hand-built input: do not invent pressure.
-            // Mirrors missing-provider posture for the receipt numbers while
-            // still recording the attempted base total for inspectability.
             None => CompactContinuationPressureReceipt {
                 provider_base_tokens: Some(total),
                 provider_base_domain: "provider_reported_input".to_string(),
@@ -77,8 +110,105 @@ fn pressure_receipt(input: &CompactContinuationInput) -> CompactContinuationPres
                 next_request_pressure_tokens: None,
                 upper_trigger_tokens: policy.upper_trigger_tokens,
                 at_or_above_trigger: None,
+                projected_pressure_tokens: None,
+                rendered_savings_tokens: savings,
+                rendered_savings_source: savings_source,
+                rendered_savings_domain: Some("source_labelled_estimate".to_string()),
+                safe_runway_threshold_tokens: safe_threshold,
+                safe_runway_threshold_source: safe_source,
+                projected_pressure_safe: None,
             },
         },
+    }
+}
+
+fn protected_ids_of(input: &CompactContinuationInput) -> Vec<String> {
+    match &input.continuation {
+        WorkContinuation::PendingCorrelatedToolResult {
+            protected_tool_call_ids,
+            ..
+        } => normalize_protected_tool_call_ids(protected_tool_call_ids),
+        _ => Vec::new(),
+    }
+}
+
+/// Residual-extras defaults mirroring TS `emptyResidualExtras`: overrides win,
+/// otherwise fall back to the compact-material facts.
+#[derive(Default)]
+struct ResidualExtrasOver {
+    relief_path: Option<CompactContinuationReliefPath>,
+    protected_tool_call_ids: Option<Vec<String>>,
+    visibility_boundary_before: Option<Option<i64>>,
+    visibility_boundary_after: Option<Option<i64>>,
+    host_validation_status: Option<HostValidationStatusFact>,
+    core_install_retained_pending_host_validation: Option<bool>,
+}
+
+struct ResidualExtras {
+    relief_path: CompactContinuationReliefPath,
+    protected_tool_call_ids: Vec<String>,
+    visibility_boundary_before: Option<i64>,
+    visibility_boundary_after: Option<i64>,
+    host_validation_status: HostValidationStatusFact,
+    core_install_retained_pending_host_validation: bool,
+}
+
+fn residual_extras(input: &CompactContinuationInput, over: ResidualExtrasOver) -> ResidualExtras {
+    ResidualExtras {
+        relief_path: over
+            .relief_path
+            .unwrap_or(CompactContinuationReliefPath::None),
+        protected_tool_call_ids: over
+            .protected_tool_call_ids
+            .unwrap_or_else(|| protected_ids_of(input)),
+        visibility_boundary_before: over
+            .visibility_boundary_before
+            .unwrap_or(input.compact_material.visibility_boundary_before),
+        visibility_boundary_after: over
+            .visibility_boundary_after
+            .unwrap_or(input.compact_material.visibility_boundary_after),
+        host_validation_status: over
+            .host_validation_status
+            .unwrap_or(input.compact_material.host_validation_status),
+        core_install_retained_pending_host_validation: over
+            .core_install_retained_pending_host_validation
+            .unwrap_or(false),
+    }
+}
+
+/// Base residual with default extras, mirroring TS literal + `...emptyResidualExtras(input)`.
+#[allow(clippy::too_many_arguments)] // mirrors the TS residual literal field list
+fn base_residual(
+    input: &CompactContinuationInput,
+    writer_released: bool,
+    prior_serving_view_intact: bool,
+    forced_continuation_boundary_applied: bool,
+    continuation_turn_opened: bool,
+    continuation_turn_id: Option<String>,
+    marker_persisted: bool,
+    marker_served: bool,
+    original_agentic_turn_still_open: bool,
+    next_provider_request_allowed: bool,
+    over: ResidualExtrasOver,
+) -> CompactContinuationResidualState {
+    let extras = residual_extras(input, over);
+    CompactContinuationResidualState {
+        writer_released,
+        prior_serving_view_intact,
+        forced_continuation_boundary_applied,
+        continuation_turn_opened,
+        continuation_turn_id,
+        marker_persisted,
+        marker_served,
+        original_agentic_turn_still_open,
+        next_provider_request_allowed,
+        relief_path: extras.relief_path,
+        protected_tool_call_ids: extras.protected_tool_call_ids,
+        visibility_boundary_before: extras.visibility_boundary_before,
+        visibility_boundary_after: extras.visibility_boundary_after,
+        host_validation_status: extras.host_validation_status,
+        core_install_retained_pending_host_validation: extras
+            .core_install_retained_pending_host_validation,
     }
 }
 
@@ -184,6 +314,8 @@ fn base_receipt(
         fidelity: parts.fidelity.clone(),
         degradation_reasons: parts.degradation_reasons.clone(),
         continuation: parts.continuation.clone(),
+        relief_path: parts.residual.relief_path,
+        protected_tool_call_ids: parts.residual.protected_tool_call_ids.clone(),
         effects: parts.effects.clone(),
         residual: parts.residual.clone(),
         refused: parts.refused,
@@ -237,17 +369,19 @@ fn refuse_early(
             },
             residual: applied_boundary_residual_overlay(
                 input,
-                CompactContinuationResidualState {
-                    writer_released: true,
-                    prior_serving_view_intact: true,
-                    forced_continuation_boundary_applied: false,
-                    continuation_turn_opened: false,
-                    continuation_turn_id: None,
-                    marker_persisted: false,
-                    marker_served: false,
-                    original_agentic_turn_still_open: true,
-                    next_provider_request_allowed: false,
-                },
+                base_residual(
+                    input,
+                    true,
+                    true,
+                    false,
+                    false,
+                    None,
+                    false,
+                    false,
+                    true,
+                    false,
+                    ResidualExtrasOver::default(),
+                ),
             ),
             refused: true,
             refuse_code: Some(code),
@@ -282,18 +416,27 @@ fn refuse_unsupported_version(input: &CompactContinuationInput) -> CompactContin
         next_request_pressure_tokens: None,
         upper_trigger_tokens: 0,
         at_or_above_trigger: None,
+        projected_pressure_tokens: None,
+        rendered_savings_tokens: None,
+        rendered_savings_source: None,
+        rendered_savings_domain: None,
+        safe_runway_threshold_tokens: None,
+        safe_runway_threshold_source: None,
+        projected_pressure_safe: None,
     };
-    let residual = CompactContinuationResidualState {
-        writer_released: true,
-        prior_serving_view_intact: true,
-        forced_continuation_boundary_applied: false,
-        continuation_turn_opened: false,
-        continuation_turn_id: None,
-        marker_persisted: false,
-        marker_served: false,
-        original_agentic_turn_still_open: true,
-        next_provider_request_allowed: false,
-    };
+    let residual = base_residual(
+        input,
+        true,
+        true,
+        false,
+        false,
+        None,
+        false,
+        false,
+        true,
+        false,
+        ResidualExtrasOver::default(),
+    );
     let transition_path = vec![
         CompactContinuationState::Idle,
         CompactContinuationState::TerminalRefuse,
@@ -317,6 +460,8 @@ fn refuse_unsupported_version(input: &CompactContinuationInput) -> CompactContin
             marker_served: false,
             same_agentic_turn_preserved: true,
         },
+        relief_path: residual.relief_path,
+        protected_tool_call_ids: residual.protected_tool_call_ids.clone(),
         effects: effects.clone(),
         residual,
         refused: true,
@@ -375,17 +520,19 @@ fn skip(
             },
             residual: applied_boundary_residual_overlay(
                 input,
-                CompactContinuationResidualState {
-                    writer_released: true,
-                    prior_serving_view_intact: true,
-                    forced_continuation_boundary_applied: false,
-                    continuation_turn_opened: false,
-                    continuation_turn_id: None,
-                    marker_persisted: false,
-                    marker_served: false,
-                    original_agentic_turn_still_open: true,
-                    next_provider_request_allowed: false,
-                },
+                base_residual(
+                    input,
+                    true,
+                    true,
+                    false,
+                    false,
+                    None,
+                    false,
+                    false,
+                    true,
+                    false,
+                    ResidualExtrasOver::default(),
+                ),
             ),
             refused: false,
             refuse_code: None,
@@ -427,17 +574,19 @@ fn continue_normal(
                 marker_served: false,
                 same_agentic_turn_preserved: true,
             },
-            residual: CompactContinuationResidualState {
-                writer_released: true,
-                prior_serving_view_intact: true,
-                forced_continuation_boundary_applied: false,
-                continuation_turn_opened: false,
-                continuation_turn_id: None,
-                marker_persisted: false,
-                marker_served: false,
-                original_agentic_turn_still_open: true,
-                next_provider_request_allowed: true,
-            },
+            residual: base_residual(
+                input,
+                true,
+                true,
+                false,
+                false,
+                None,
+                false,
+                false,
+                true,
+                true,
+                ResidualExtrasOver::default(),
+            ),
             refused: false,
             refuse_code: None,
             skipped: false,
@@ -475,17 +624,19 @@ fn normal_complete(
                 marker_served: false,
                 same_agentic_turn_preserved: false,
             },
-            residual: CompactContinuationResidualState {
-                writer_released: true,
-                prior_serving_view_intact: true,
-                forced_continuation_boundary_applied: false,
-                continuation_turn_opened: false,
-                continuation_turn_id: None,
-                marker_persisted: false,
-                marker_served: false,
-                original_agentic_turn_still_open: false,
-                next_provider_request_allowed: true,
-            },
+            residual: base_residual(
+                input,
+                true,
+                true,
+                false,
+                false,
+                None,
+                false,
+                false,
+                false,
+                true,
+                ResidualExtrasOver::default(),
+            ),
             refused: false,
             refuse_code: None,
             skipped: false,
@@ -573,17 +724,33 @@ fn refuse_after_preserve_attempt(
                 marker_served: false,
                 same_agentic_turn_preserved: true,
             },
-            residual: CompactContinuationResidualState {
-                writer_released: true,
-                prior_serving_view_intact: true,
-                forced_continuation_boundary_applied: false,
-                continuation_turn_opened: false,
-                continuation_turn_id: None,
-                marker_persisted: false,
-                marker_served: false,
-                original_agentic_turn_still_open: true,
-                next_provider_request_allowed: false,
-            },
+            residual: base_residual(
+                input,
+                true,
+                true,
+                false,
+                false,
+                None,
+                false,
+                false,
+                true,
+                false,
+                ResidualExtrasOver {
+                    relief_path: Some(
+                        if matches!(
+                            code,
+                            CompactContinuationRefuseCode::UnsafeRunway
+                                | CompactContinuationRefuseCode::InvalidProtectedToolPairs
+                        ) {
+                            CompactContinuationReliefPath::None
+                        } else {
+                            CompactContinuationReliefPath::CoreInstallFailed
+                        },
+                    ),
+                    host_validation_status: Some(HostValidationStatusFact::NotRequired),
+                    ..Default::default()
+                },
+            ),
             refused: true,
             refuse_code: Some(code),
             skipped: false,
@@ -633,17 +800,27 @@ fn refuse_after_continue_attempt(
                 marker_served: false,
                 same_agentic_turn_preserved: false,
             },
-            residual: CompactContinuationResidualState {
-                writer_released: true,
-                prior_serving_view_intact: true,
-                forced_continuation_boundary_applied: true,
-                continuation_turn_opened: true,
-                continuation_turn_id: Some(continuation_turn_id.to_string()),
+            residual: base_residual(
+                input,
+                true,
+                true,
+                true,
+                true,
+                Some(continuation_turn_id.to_string()),
                 marker_persisted,
-                marker_served: false,
-                original_agentic_turn_still_open: false,
-                next_provider_request_allowed: false,
-            },
+                false,
+                false,
+                false,
+                ResidualExtrasOver {
+                    relief_path: Some(if input.compact_material.protected_escalation_applied {
+                        CompactContinuationReliefPath::ProtectedEscalation
+                    } else {
+                        CompactContinuationReliefPath::CoreInstallFailed
+                    }),
+                    host_validation_status: Some(HostValidationStatusFact::NotRequired),
+                    ..Default::default()
+                },
+            ),
             refused: true,
             refuse_code: Some(code),
             skipped: false,
@@ -680,12 +857,13 @@ fn post_compact_tail(
     let material = &input.compact_material;
     let degradation_reasons = degradation_reasons_of(input);
     let branch_state = match branch {
-        Branch::PreserveTool { .. } => CompactContinuationState::PathPreserveTool,
+        Branch::PreserveTool => CompactContinuationState::PathPreserveTool,
         Branch::ContinueTurn => CompactContinuationState::PathContinueTurn,
     };
     let mut branch_path = path.to_vec();
     branch_path.push(branch_state);
 
+    // ── continue_turn: claim → [force if this seam] → compact → marker → … ──
     if matches!(branch, Branch::ContinueTurn) {
         let Some(boundary) = is_applied_boundary(&input.forced_continuation_boundary) else {
             return refuse_early(
@@ -742,6 +920,23 @@ fn post_compact_tail(
             );
         }
 
+        if material.maximal_prune_insufficient || material.projected_pressure_safe == Some(false) {
+            return refuse_after_continue_attempt(
+                input,
+                &path_after_claim,
+                CompactContinuationRefuseCode::UnsafeRunway,
+                if material.maximal_prune_insufficient {
+                    "maximal eligible unprotected pruning cannot produce safe projected runway"
+                } else {
+                    "projected pressure remains at or above host safe-runway threshold"
+                },
+                effects_so_far,
+                true,
+                &continuation_turn_id,
+                false,
+            );
+        }
+
         insert_degrade_after_compact(&mut effects_so_far, &degradation_reasons);
         effects_so_far.push(marker_effect(&continuation_turn_id));
 
@@ -760,9 +955,141 @@ fn post_compact_tail(
             );
         }
 
+        let protected_ids = protected_ids_of(input);
+
+        // Shared effect suffix builder: protected pairs + boundary advance.
+        let boundary_advance = match (
+            material.visibility_boundary_before,
+            material.visibility_boundary_after,
+        ) {
+            (Some(before), Some(after)) if after > before => {
+                Some(CompactContinuationEffect::AdvanceVisibilityBoundary {
+                    previous_boundary: before,
+                    new_boundary: after,
+                    compact_point: material.compact_point_at_install.unwrap_or(0),
+                })
+            }
+            _ => None,
+        };
+
+        // Host full-body validation failure after successful core install does NOT
+        // roll back the core view/boundary. Distinct refuse; next request blocked.
+        if material.host_validation_status == HostValidationStatusFact::Failed {
+            let mut effects = effects_so_far.clone();
+            if !protected_ids.is_empty() {
+                effects.push(CompactContinuationEffect::PreserveToolPairsVerbatim {
+                    protected_tool_call_ids: protected_ids.clone(),
+                    location: "open_turn_tail".to_string(),
+                });
+            }
+            if let Some(adv) = boundary_advance.clone() {
+                effects.push(adv);
+            }
+            effects.push(CompactContinuationEffect::InstallServingView);
+            effects.push(CompactContinuationEffect::AwaitHostValidation {
+                attempt_id_scope: "current_attempt".to_string(),
+            });
+            effects.push(CompactContinuationEffect::RecordHostValidation {
+                result: "failed".to_string(),
+                reason: Some("host_reported_provider_body_unsafe".to_string()),
+            });
+            effects.push(CompactContinuationEffect::Refuse {
+                code: CompactContinuationRefuseCode::HostValidationFailed,
+                reason: "host full-body validation failed after core install".to_string(),
+            });
+            effects.push(CompactContinuationEffect::RecordReceipt {
+                durable: true,
+                user_chat_visible: false,
+            });
+            effects.push(CompactContinuationEffect::ReleaseWriter);
+            let mut transition_path = path_after_claim.clone();
+            transition_path.push(CompactContinuationState::Installing);
+            transition_path.push(CompactContinuationState::TerminalRefuse);
+            return decide(
+                input,
+                DecideParts {
+                    outcome: CompactContinuationOutcomeKind::Refuse,
+                    terminal_state: CompactContinuationState::TerminalRefuse,
+                    transition_path,
+                    effects,
+                    reason_code: "host_validation_failed".to_string(),
+                    turn_end_reason: Some(CONTEXT_COMPACT_CONTINUE_REASON.to_string()),
+                    fidelity: "full".to_string(),
+                    degradation_reasons: vec![],
+                    continuation: CompactContinuationReceiptContinuation {
+                        opened: true,
+                        marker_served: true,
+                        same_agentic_turn_preserved: false,
+                    },
+                    residual: base_residual(
+                        input,
+                        true,
+                        // Core install retained — prior view is NOT intact.
+                        false,
+                        true,
+                        true,
+                        Some(continuation_turn_id),
+                        true,
+                        true,
+                        false,
+                        false,
+                        ResidualExtrasOver {
+                            relief_path: Some(CompactContinuationReliefPath::HostValidationFailed),
+                            protected_tool_call_ids: Some(protected_ids),
+                            host_validation_status: Some(HostValidationStatusFact::Failed),
+                            core_install_retained_pending_host_validation: Some(true),
+                            ..Default::default()
+                        },
+                    ),
+                    refused: true,
+                    refuse_code: Some(CompactContinuationRefuseCode::HostValidationFailed),
+                    skipped: false,
+                    skip_code: None,
+                    compact_ran: true,
+                },
+            );
+        }
+
+        // Protected-escalation (pending tools + forced boundary) preserves pairs
+        // and may advance visibility boundary. Active non-tool has no protected set.
+        let escalated_pending = !protected_ids.is_empty() && material.protected_escalation_applied;
+        let host_status = material.host_validation_status;
+        let next_allowed = matches!(
+            host_status,
+            HostValidationStatusFact::NotRequired | HostValidationStatusFact::Ok
+        );
+        let relief_path = if escalated_pending {
+            match host_status {
+                HostValidationStatusFact::Failed => {
+                    CompactContinuationReliefPath::HostValidationFailed
+                }
+                HostValidationStatusFact::Awaiting => {
+                    CompactContinuationReliefPath::HostValidationAwaiting
+                }
+                _ => CompactContinuationReliefPath::ProtectedEscalation,
+            }
+        } else {
+            CompactContinuationReliefPath::None
+        };
+        let needs_await_effect = host_status != HostValidationStatusFact::NotRequired;
+
         if !material.useful_reduction {
             let mut effects = effects_so_far;
+            if !protected_ids.is_empty() {
+                effects.push(CompactContinuationEffect::PreserveToolPairsVerbatim {
+                    protected_tool_call_ids: protected_ids.clone(),
+                    location: "open_turn_tail".to_string(),
+                });
+            }
+            if let Some(adv) = boundary_advance.clone() {
+                effects.push(adv);
+            }
             effects.push(CompactContinuationEffect::InstallServingView);
+            if needs_await_effect {
+                effects.push(CompactContinuationEffect::AwaitHostValidation {
+                    attempt_id_scope: "current_attempt".to_string(),
+                });
+            }
             effects.push(CompactContinuationEffect::RecordReceipt {
                 durable: true,
                 user_chat_visible: false,
@@ -791,17 +1118,29 @@ fn post_compact_tail(
                         marker_served: true,
                         same_agentic_turn_preserved: false,
                     },
-                    residual: CompactContinuationResidualState {
-                        writer_released: true,
-                        prior_serving_view_intact: false,
-                        forced_continuation_boundary_applied: true,
-                        continuation_turn_opened: true,
-                        continuation_turn_id: Some(continuation_turn_id),
-                        marker_persisted: true,
-                        marker_served: true,
-                        original_agentic_turn_still_open: false,
-                        next_provider_request_allowed: true,
-                    },
+                    residual: base_residual(
+                        input,
+                        true,
+                        false,
+                        true,
+                        true,
+                        Some(continuation_turn_id),
+                        true,
+                        true,
+                        false,
+                        next_allowed,
+                        ResidualExtrasOver {
+                            relief_path: Some(relief_path),
+                            protected_tool_call_ids: Some(protected_ids),
+                            host_validation_status: Some(host_status),
+                            core_install_retained_pending_host_validation: Some(matches!(
+                                host_status,
+                                HostValidationStatusFact::Awaiting
+                                    | HostValidationStatusFact::Failed
+                            )),
+                            ..Default::default()
+                        },
+                    ),
                     refused: false,
                     refuse_code: None,
                     skipped: false,
@@ -812,7 +1151,21 @@ fn post_compact_tail(
         }
 
         let mut effects = effects_so_far;
+        if !protected_ids.is_empty() {
+            effects.push(CompactContinuationEffect::PreserveToolPairsVerbatim {
+                protected_tool_call_ids: protected_ids.clone(),
+                location: "open_turn_tail".to_string(),
+            });
+        }
+        if let Some(adv) = boundary_advance {
+            effects.push(adv);
+        }
         effects.push(CompactContinuationEffect::InstallServingView);
+        if needs_await_effect {
+            effects.push(CompactContinuationEffect::AwaitHostValidation {
+                attempt_id_scope: "current_attempt".to_string(),
+            });
+        }
         effects.push(CompactContinuationEffect::RecordReceipt {
             durable: true,
             user_chat_visible: false,
@@ -821,6 +1174,8 @@ fn post_compact_tail(
         let degraded = !degradation_reasons.is_empty();
         let outcome = if degraded {
             CompactContinuationOutcomeKind::DegradedCompact
+        } else if escalated_pending {
+            CompactContinuationOutcomeKind::CompactPreserveToolEscalated
         } else {
             CompactContinuationOutcomeKind::CompactContinueTurn
         };
@@ -841,6 +1196,8 @@ fn post_compact_tail(
                 effects,
                 reason_code: if degraded {
                     "degraded_continue_turn".to_string()
+                } else if escalated_pending {
+                    "protected_escalation".to_string()
                 } else {
                     CONTEXT_COMPACT_CONTINUE_REASON.to_string()
                 },
@@ -856,17 +1213,36 @@ fn post_compact_tail(
                     marker_served: true,
                     same_agentic_turn_preserved: false,
                 },
-                residual: CompactContinuationResidualState {
-                    writer_released: true,
-                    prior_serving_view_intact: false,
-                    forced_continuation_boundary_applied: true,
-                    continuation_turn_opened: true,
-                    continuation_turn_id: Some(continuation_turn_id),
-                    marker_persisted: true,
-                    marker_served: true,
-                    original_agentic_turn_still_open: false,
-                    next_provider_request_allowed: true,
-                },
+                residual: base_residual(
+                    input,
+                    true,
+                    false,
+                    true,
+                    true,
+                    Some(continuation_turn_id),
+                    true,
+                    true,
+                    false,
+                    next_allowed,
+                    ResidualExtrasOver {
+                        relief_path: Some(if escalated_pending {
+                            if host_status == HostValidationStatusFact::Awaiting {
+                                CompactContinuationReliefPath::HostValidationAwaiting
+                            } else {
+                                CompactContinuationReliefPath::ProtectedEscalation
+                            }
+                        } else {
+                            CompactContinuationReliefPath::None
+                        }),
+                        protected_tool_call_ids: Some(protected_ids),
+                        host_validation_status: Some(host_status),
+                        core_install_retained_pending_host_validation: Some(matches!(
+                            host_status,
+                            HostValidationStatusFact::Awaiting | HostValidationStatusFact::Failed
+                        )),
+                        ..Default::default()
+                    },
+                ),
                 refused: false,
                 refuse_code: None,
                 skipped: false,
@@ -876,17 +1252,8 @@ fn post_compact_tail(
         );
     }
 
-    // preserve_tool — tool id is carried only from PendingCorrelatedToolResult
-    // via Branch selection at the call site (no panic on impossible hand-built state).
-    let Branch::PreserveTool { tool_call_id } = branch else {
-        // Exhaustive: ContinueTurn already returned above.
-        return refuse_early(
-            input,
-            &branch_path,
-            CompactContinuationRefuseCode::InvalidToolCorrelation,
-            "preserve_tool branch requires pending_correlated_tool_result",
-        );
-    };
+    // ── preserve_tool ─────────────────────────────────────────────────────────
+    let protected_tool_call_ids = protected_ids_of(input);
     let mut effects_so_far = vec![
         CompactContinuationEffect::ClaimWriter {
             writer: ClaimWriterTarget::Lhc,
@@ -919,10 +1286,27 @@ fn post_compact_tail(
 
     insert_degrade_after_compact(&mut effects_so_far, &degradation_reasons);
 
+    // Unsafe projected runway after preserve/escalation candidate (before install)
+    // refuses without native fallback. Runtime must not install an unsafe view.
+    if material.maximal_prune_insufficient || material.projected_pressure_safe == Some(false) {
+        return refuse_after_preserve_attempt(
+            input,
+            &path_after_claim,
+            CompactContinuationRefuseCode::UnsafeRunway,
+            if material.maximal_prune_insufficient {
+                "maximal eligible unprotected pruning cannot produce safe projected runway"
+            } else {
+                "projected pressure remains at or above host safe-runway threshold"
+            },
+            effects_so_far,
+            true,
+        );
+    }
+
     if !material.install_succeeds {
         let mut install_fail_effects = effects_so_far;
-        install_fail_effects.push(CompactContinuationEffect::PreserveToolPairVerbatim {
-            tool_call_id,
+        install_fail_effects.push(CompactContinuationEffect::PreserveToolPairsVerbatim {
+            protected_tool_call_ids: protected_tool_call_ids.clone(),
             location: "open_turn_tail".to_string(),
         });
         let mut path_installing = path_after_claim.clone();
@@ -937,10 +1321,20 @@ fn post_compact_tail(
         );
     }
 
+    let host_status = material.host_validation_status;
+    let next_allowed = matches!(
+        host_status,
+        HostValidationStatusFact::NotRequired | HostValidationStatusFact::Ok
+    );
+    let core_retained = matches!(
+        host_status,
+        HostValidationStatusFact::Awaiting | HostValidationStatusFact::Failed
+    );
+
     if !material.useful_reduction {
         let mut effects = effects_so_far;
-        effects.push(CompactContinuationEffect::PreserveToolPairVerbatim {
-            tool_call_id,
+        effects.push(CompactContinuationEffect::PreserveToolPairsVerbatim {
+            protected_tool_call_ids: protected_tool_call_ids.clone(),
             location: "open_turn_tail".to_string(),
         });
         effects.push(CompactContinuationEffect::InstallServingView);
@@ -972,17 +1366,24 @@ fn post_compact_tail(
                     marker_served: false,
                     same_agentic_turn_preserved: true,
                 },
-                residual: CompactContinuationResidualState {
-                    writer_released: true,
-                    prior_serving_view_intact: false,
-                    forced_continuation_boundary_applied: false,
-                    continuation_turn_opened: false,
-                    continuation_turn_id: None,
-                    marker_persisted: false,
-                    marker_served: false,
-                    original_agentic_turn_still_open: true,
-                    next_provider_request_allowed: true,
-                },
+                residual: base_residual(
+                    input,
+                    true,
+                    false,
+                    false,
+                    false,
+                    None,
+                    false,
+                    false,
+                    true,
+                    next_allowed,
+                    ResidualExtrasOver {
+                        relief_path: Some(CompactContinuationReliefPath::NormalPreserve),
+                        host_validation_status: Some(host_status),
+                        core_install_retained_pending_host_validation: Some(core_retained),
+                        ..Default::default()
+                    },
+                ),
                 refused: false,
                 refuse_code: None,
                 skipped: false,
@@ -993,8 +1394,8 @@ fn post_compact_tail(
     }
 
     let mut effects = effects_so_far;
-    effects.push(CompactContinuationEffect::PreserveToolPairVerbatim {
-        tool_call_id,
+    effects.push(CompactContinuationEffect::PreserveToolPairsVerbatim {
+        protected_tool_call_ids: protected_tool_call_ids.clone(),
         location: "open_turn_tail".to_string(),
     });
     effects.push(CompactContinuationEffect::InstallServingView);
@@ -1041,17 +1442,24 @@ fn post_compact_tail(
                 marker_served: false,
                 same_agentic_turn_preserved: true,
             },
-            residual: CompactContinuationResidualState {
-                writer_released: true,
-                prior_serving_view_intact: false,
-                forced_continuation_boundary_applied: false,
-                continuation_turn_opened: false,
-                continuation_turn_id: None,
-                marker_persisted: false,
-                marker_served: false,
-                original_agentic_turn_still_open: true,
-                next_provider_request_allowed: true,
-            },
+            residual: base_residual(
+                input,
+                true,
+                false,
+                false,
+                false,
+                None,
+                false,
+                false,
+                true,
+                next_allowed,
+                ResidualExtrasOver {
+                    relief_path: Some(CompactContinuationReliefPath::NormalPreserve),
+                    host_validation_status: Some(host_status),
+                    core_install_retained_pending_host_validation: Some(core_retained),
+                    ..Default::default()
+                },
+            ),
             refused: false,
             refuse_code: None,
             skipped: false,
@@ -1061,12 +1469,10 @@ fn post_compact_tail(
     )
 }
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Branch {
-    /// Tool-preserve path; `tool_call_id` taken only from a proven pending tool kind.
-    PreserveTool {
-        tool_call_id: String,
-    },
+    /// Tool-preserve path; protected ids read from the proven pending tool kind.
+    PreserveTool,
     ContinueTurn,
 }
 
@@ -1125,15 +1531,20 @@ pub fn decide_compact_continuation(
     }
 
     // Stage: forced_boundary_state_legality — after epoch, before writer/capture.
+    // v2: applied boundary is legal with active_non_tool OR pending protected-tool
+    // escalation (pending_correlated_tool_result). Other kinds remain illegal.
     if is_applied_boundary(&input.forced_continuation_boundary).is_some()
-        && !matches!(input.continuation, WorkContinuation::ActiveNonTool)
+        && !matches!(
+            input.continuation,
+            WorkContinuation::ActiveNonTool | WorkContinuation::PendingCorrelatedToolResult { .. }
+        )
     {
         return refuse_early(
             input,
             &path,
             CompactContinuationRefuseCode::InvalidPendingBoundaryContinuation,
             &format!(
-                "forcedContinuationBoundary.applied requires continuation.kind active_non_tool; got {}",
+                "forcedContinuationBoundary.applied requires active_non_tool or pending_correlated_tool_result; got {}",
                 input.continuation.kind_str()
             ),
         );
@@ -1211,6 +1622,19 @@ pub fn decide_compact_continuation(
             "pending tool-result continuation requires proven call/result correlation",
         );
     }
+    if let WorkContinuation::PendingCorrelatedToolResult {
+        protected_tool_call_ids,
+        ..
+    } = &input.continuation
+        && normalize_protected_tool_call_ids(protected_tool_call_ids).is_empty()
+    {
+        return refuse_early(
+            input,
+            &path,
+            CompactContinuationRefuseCode::InvalidProtectedToolPairs,
+            "protectedToolCallIds must be a sorted unique non-empty set",
+        );
+    }
 
     let mut eval_path = path;
     eval_path.push(CompactContinuationState::EvaluatingPressure);
@@ -1238,15 +1662,11 @@ pub fn decide_compact_continuation(
         return normal_complete(input, &eval_path, "normal_complete_above_pressure");
     }
 
-    if let WorkContinuation::PendingCorrelatedToolResult { tool_call_id, .. } = &input.continuation
-    {
-        return post_compact_tail(
-            input,
-            &eval_path,
-            Branch::PreserveTool {
-                tool_call_id: tool_call_id.clone(),
-            },
-        );
+    if matches!(
+        input.continuation,
+        WorkContinuation::PendingCorrelatedToolResult { .. }
+    ) {
+        return post_compact_tail(input, &eval_path, Branch::PreserveTool);
     }
 
     // active_non_tool above trigger without applied boundary

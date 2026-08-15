@@ -479,6 +479,10 @@ pub struct ViewReplaceInput {
     pub gaps_json: String,
     pub source_state_json: String,
     pub bands: Vec<ViewReplaceBand>,
+    /// Visibility boundary written in the same transaction as the view replace.
+    /// Defaults to compact_point (historical compact reset). Protected-escalation
+    /// installs may advance to a higher proposed boundary atomically.
+    pub visibility_boundary: Option<i64>,
 }
 
 /// Compact's one transaction: delete the singleton view row (the FK cascade
@@ -533,8 +537,15 @@ pub fn replace_view_snapshot_with(
                 SqlParam::from(band.token_count),
             ]);
         }
+        let boundary_position = input.visibility_boundary.unwrap_or(input.compact_point);
+        if boundary_position < input.compact_point {
+            panic!(
+                "visibility boundary {boundary_position} would land behind compact point {}",
+                input.compact_point
+            );
+        }
         db.prepare(SQL_RESET_BOUNDARY).run(&[
-            SqlParam::from(input.compact_point),
+            SqlParam::from(boundary_position),
             SqlParam::from(input.created_at.as_str()),
         ]);
         db.exec(SQL_COMMIT);
