@@ -1,0 +1,24 @@
+{
+  "name": "lhc-triage",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Read-only traversal and context-health triage CLI for LHC thread stores.",
+  "type": "module",
+  "bin": {
+    "lhc-triage": "./src/cli.mjs"
+  },
+  "files": [
+    "src",
+    "skill",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "node --check src/cli.mjs && node --check src/thread-reader.mjs",
+    "build": "node --check src/cli.mjs && node --check src/thread-reader.mjs",
+    "verify": "npm run typecheck && npm test"
+  },
+  "engines": {
+    "node": ">=24.17.0"
+  }
+}
