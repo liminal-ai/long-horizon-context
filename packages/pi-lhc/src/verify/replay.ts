@@ -259,6 +259,8 @@ function expectedBlocks(event: MessageEventInput): MessageRecord["blocks"] {
       return [{ blockType: "model_change", content: event.payload }];
     case "thinking_level_change":
       return [{ blockType: "thinking_level_change", content: event.payload }];
+    case "compact_continuation_marker":
+      return [{ blockType: "compact_continuation_marker", content: event.payload }];
     case "tool_call":
       return [
         {

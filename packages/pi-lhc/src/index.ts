@@ -21,9 +21,11 @@ import { createCompactDiagnosticsBuffer, recordCompactCancel } from "./compact/d
 import { type CompactDiagnostic, handleSessionBeforeCompact } from "./compact/handler.js";
 import {
   loadModelCompactSettings as loadModelCompactSettingsImpl,
+  parseCompactPercentages,
   resolveModelCompactSettings,
   shouldTriggerModelCompact,
   toCompactParams,
+  withCompactPercentages,
 } from "./compact/model-profiles.js";
 import { findSeedEntryMapInBranch } from "./compact/seed-entry-map.js";
 import { defaultNewThreadFilePath, defaultRegistryPath } from "./home.js";
@@ -33,7 +35,7 @@ import { report, type StartupValidationReporter, validateReachable } from "./inf
 import { detectForkFromSessionTree, forkInfoFromHook, seedFork } from "./lifecycle/fork.js";
 import { disposeInstance, initInstance } from "./lifecycle/instance.js";
 import { takeLauncherOwnedStartup } from "./lifecycle/launcher-startup.js";
-import { readLhcLaunchFlags, registerLhcFlags } from "./lifecycle/lhc-launch-flags.js";
+import { LHC_FLAG_BAND_PERCENTAGES, readLhcLaunchFlags, registerLhcFlags } from "./lifecycle/lhc-launch-flags.js";
 import { pickThread, type ThreadChoice } from "./lifecycle/picker.js";
 import {
   clearPendingRehydrate,
@@ -84,9 +86,11 @@ export {
   FALLBACK_COMPACT_SETTINGS,
   loadModelCompactSettings,
   type ModelCompactSettings,
+  parseCompactPercentages,
   resolveModelCompactSettings,
   shouldTriggerModelCompact,
   toCompactParams,
+  withCompactPercentages,
 } from "./compact/model-profiles.js";
 export { DEFAULT_COMPACT_PROFILE } from "./compact/profile.js";
 export {
@@ -383,6 +387,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   const buildSdkConfig =
     deps.buildSdkConfig ?? ((ctx: ExtensionContext) => defaultBuildSdkConfig(ctx, deps.assignmentConfig));
   const modelCompactSettings = loadModelCompactSettingsImpl(deps.compactSettingsConfig);
+  let compactPercentagesOverride: ReturnType<typeof parseCompactPercentages> | null = null;
+  const modelCompactSettingsFor = (modelId: string | undefined) =>
+    withCompactPercentages(resolveModelCompactSettings(modelId, modelCompactSettings), compactPercentagesOverride);
   // Connector-side auto-compact trigger state. In-flight prevents overlap;
   // last-attempt + growth guard prevents hammering a cancelling compact
   // (e.g. capture_incomplete) every turn at the same context size.
@@ -943,7 +950,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     // Queued follow-ups start a new run immediately; compacting now would race
     // it. The next agent_settled re-checks.
     if (ctx.hasPendingMessages?.() === true) return;
-    const settings = resolveModelCompactSettings(ctx.model?.id, modelCompactSettings);
+    const settings = modelCompactSettingsFor(ctx.model?.id);
     const usage = ctx.getContextUsage?.();
     const trigger = settings.triggerTokens;
     if (
@@ -1016,7 +1023,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
             return instance.sdk.threadView.getSessionThreadView(state.threadRef);
           },
           findSeedEntryMap: findSeedEntryMapInBranch,
-          compactParams: toCompactParams(resolveModelCompactSettings(ctx.model?.id, modelCompactSettings)),
+          compactParams: toCompactParams(modelCompactSettingsFor(ctx.model?.id)),
           recordCancel: async (diagnostic) => {
             await recordCompactCancel({
               diagnostic,
@@ -1176,6 +1183,15 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     treeHandler: onBeforeTree,
     register(pi: ExtensionAPI): void {
       registerLhcFlags(pi);
+      const flagPercentages = pi.getFlag(LHC_FLAG_BAND_PERCENTAGES);
+      const configuredPercentages =
+        typeof flagPercentages === "string" && flagPercentages !== ""
+          ? flagPercentages
+          : process.env.PI_LHC_BAND_PERCENTAGES;
+      compactPercentagesOverride =
+        configuredPercentages === undefined || configuredPercentages === ""
+          ? null
+          : parseCompactPercentages(configuredPercentages);
       extensionPi = pi;
       readLaunchFromPi = () => readLhcLaunchFlags(pi.getFlag.bind(pi));
       appendThreadEntry = (entry) => {

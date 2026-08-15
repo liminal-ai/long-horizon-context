@@ -144,6 +144,8 @@ export function launcherHelpText(): string {
     "  --lhc-thread <id>     Attach to an LHC thread by full or partial id",
     "  --lhc-resume          Cwd-scoped picker over registry threads",
     "  --lhc-continue        Attach to the most recently created LHC thread",
+    "  --lhc-band-percentages <f,s,d,b>",
+    "                        Session compact band mix (default 25,25,25,25)",
     "  --lhc-help            Show this help",
     "",
     "Supported PI runtime/config flags:",

@@ -65,6 +65,29 @@ export class CompactSettingsValidationError extends Error {
   }
 }
 
+/** Parse the per-session CLI/env form in full,smooth,detailed,brief order. */
+export function parseCompactPercentages(value: string): CompactPercentages {
+  const parts = value.split(",").map((part) => Number(part.trim()));
+  if (parts.length !== 4 || parts.some((part) => !Number.isFinite(part) || part < 0)) {
+    throw new CompactSettingsValidationError(
+      "band percentages must be four non-negative numbers in full,smooth,detailed,brief order",
+    );
+  }
+  const [full, smooth, detailed, brief] = parts as [number, number, number, number];
+  const sum = full + smooth + detailed + brief;
+  if (sum !== 100) {
+    throw new CompactSettingsValidationError(`band percentages must sum to 100 (got ${sum})`);
+  }
+  return { full, smooth, detailed, brief };
+}
+
+export function withCompactPercentages(
+  settings: ModelCompactSettings,
+  percentages: CompactPercentages | null,
+): ModelCompactSettings {
+  return percentages === null ? settings : { ...settings, percentages: { ...percentages } };
+}
+
 function validateEntry(entry: ModelCompactSettings, label: string): void {
   if (entry.match.trim() === "" && label !== "fallback") {
     throw new CompactSettingsValidationError(`${label}: match must be a non-empty string`);

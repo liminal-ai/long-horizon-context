@@ -5,6 +5,7 @@ import {
   DEFAULT_MODEL_COMPACT_SETTINGS,
   FALLBACK_COMPACT_SETTINGS,
   loadModelCompactSettings,
+  parseCompactPercentages,
   resolveModelCompactSettings,
   shouldTriggerModelCompact,
   toCompactParams,
@@ -48,7 +49,7 @@ describe("resolveModelCompactSettings", () => {
     const params = toCompactParams(resolveModelCompactSettings("claude-fable-5"));
     expect(params).toEqual({
       lowerBound: 200_000,
-      percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
+      percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 },
     });
   });
 });
@@ -83,9 +84,20 @@ describe("loadModelCompactSettings", () => {
     expect(table[0]).toMatchObject({
       match: "custom",
       lowerBound: 60_000,
-      percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
+      percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 },
     });
     expect(table[0]?.triggerTokens).toBeUndefined();
+  });
+});
+
+describe("parseCompactPercentages", () => {
+  it("parses a per-session full,smooth,detailed,brief mix", () => {
+    expect(parseCompactPercentages("10, 20, 30, 40")).toEqual({ full: 10, smooth: 20, detailed: 30, brief: 40 });
+  });
+
+  it("rejects malformed or non-totaling session mixes", () => {
+    expect(() => parseCompactPercentages("25,25,50")).toThrow(/four non-negative numbers/);
+    expect(() => parseCompactPercentages("25,25,25,20")).toThrow(/sum to 100/);
   });
 });
 

@@ -3,7 +3,7 @@ import type { ViewCompactParams } from "lhc";
 /** Explicit compact params pi-lhc passes to previewCompact and compact. */
 export const DEFAULT_COMPACT_PROFILE = {
   lowerBound: 120_000,
-  percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
+  percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 },
 } as const satisfies ViewCompactParams & {
   lowerBound: number;
   percentages: { full: number; smooth: number; detailed: number; brief: number };

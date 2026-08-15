@@ -5,6 +5,7 @@ import type { LaunchFlags } from "./thread-resolution.js";
 export const LHC_FLAG_THREAD = "lhc-thread";
 export const LHC_FLAG_RESUME = "lhc-resume";
 export const LHC_FLAG_CONTINUE = "lhc-continue";
+export const LHC_FLAG_BAND_PERCENTAGES = "lhc-band-percentages";
 
 export interface LhcFlagSpec {
   name: string;
@@ -13,7 +14,7 @@ export interface LhcFlagSpec {
   default?: boolean | string;
 }
 
-/** Metadata for the three pi-lhc extension CLI flags (surfaced in PI help as `--<name>`). */
+/** Metadata for pi-lhc extension CLI flags (surfaced in PI help as `--<name>`). */
 export const LHC_EXTENSION_FLAG_SPECS: readonly LhcFlagSpec[] = [
   {
     name: LHC_FLAG_THREAD,
@@ -31,6 +32,11 @@ export const LHC_EXTENSION_FLAG_SPECS: readonly LhcFlagSpec[] = [
     description: "Continue the most recently created LHC thread",
     type: "boolean",
     default: false,
+  },
+  {
+    name: LHC_FLAG_BAND_PERCENTAGES,
+    description: "Session compact bands as full,smooth,detailed,brief percentages (default 25,25,25,25)",
+    type: "string",
   },
 ];
 

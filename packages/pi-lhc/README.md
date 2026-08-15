@@ -40,9 +40,10 @@ pi-lhc [LHC flags] [PI runtime flags] [--print message]
 | `--lhc-thread <id>` | Attach to an existing thread by full or partial id. Ambiguous prefixes fail. |
 | `--lhc-resume` | CWD-scoped picker: lists threads registered under this directory with title and creation time. One candidate auto-selects; multiple candidates present an interactive picker. |
 | `--lhc-continue` | Attach to the most recently created thread (any CWD). |
+| `--lhc-band-percentages <f,s,d,b>` | Set this session's full/smooth/detailed/brief compact allocation. Default: `25,25,25,25`. Values must sum to 100. |
 | `--lhc-help` | Show launcher help and exit. |
 
-These flags are mutually exclusive. Setting more than one produces `conflicting_lhc_launch_flags`.
+The three thread-selection flags are mutually exclusive. Setting more than one produces `conflicting_lhc_launch_flags`. Band allocation can also be supplied as `PI_LHC_BAND_PERCENTAGES`; the session flag takes precedence.
 
 ### Blocked PI Session Flags
 
@@ -84,7 +85,7 @@ PI calls `activate(pi)`, which creates a connector and registers:
 - 9 Epic 1 hooks (capture and lifecycle)
 - 2 compact hooks
 - 4 commands (`/lhc-rehydrate`, `/lhc-tool-prune`, `/lhc-export-threadview`, `/lhc-export-pi-session`)
-- 3 extension flags (`--lhc-thread`, `--lhc-resume`, `--lhc-continue`)
+- 4 extension flags (`--lhc-thread`, `--lhc-resume`, `--lhc-continue`, `--lhc-band-percentages`)
 
 ### Registered Hooks
 
