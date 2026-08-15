@@ -9,7 +9,6 @@ import {
   THREAD_SCHEMA_VERSION_5,
   THREAD_SCHEMA_VERSION_6,
   THREAD_SCHEMA_VERSION_7,
-  THREAD_SCHEMA_VERSION_10,
   THREAD_SCHEMA_VERSION_11,
 } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";

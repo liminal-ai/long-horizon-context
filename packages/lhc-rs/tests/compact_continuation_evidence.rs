@@ -954,7 +954,7 @@ async fn prepare_with_open_continuation(
 }
 
 #[tokio::test]
-async fn marker_allowed_install_and_unrelated_mutation_stale() {
+async fn marker_and_source_changes_after_prepare_activate() {
     let (_store, ref_, path) = fixture_thread().await;
     seed_open_agentic_turn(&ref_).await;
     let (prepared, continuation_turn_id, _view_before) =
@@ -1031,8 +1031,7 @@ async fn marker_allowed_install_and_unrelated_mutation_stale() {
     .run(&[SqlParam::from(mid)]);
     db.close();
 
-    let view_before_install = snapshot_canonical(&path2).view_id;
-    let stale = thread_view::install_prepared_compact(
+    let activated = thread_view::install_prepared_compact(
         ref2.clone(),
         prep2,
         InstallPreparedOptions {
@@ -1040,16 +1039,16 @@ async fn marker_allowed_install_and_unrelated_mutation_stale() {
             ..Default::default()
         },
     )
-    .await;
-    match stale {
-        OpResult::Err { error } => assert_eq!(error.code, ErrorCode::StalePreparedCompact),
-        OpResult::Ok { .. } => panic!("expected stale"),
-    }
-    assert_eq!(snapshot_canonical(&path2).view_id, view_before_install);
+    .await
+    .expect_ok();
+    assert_eq!(
+        snapshot_canonical(&path2).view_id.as_deref(),
+        Some(activated.view_id.as_str())
+    );
 }
 
 #[tokio::test]
-async fn strict_derivation_content_mutation_refuses() {
+async fn derivation_changes_after_prepare_activate() {
     let (_store, ref_, path) = fixture_thread().await;
     let db0 = open_raw(&path);
     let row = db0
@@ -1084,7 +1083,6 @@ async fn strict_derivation_content_mutation_refuses() {
     let prep = thread_view::prepare_compact(ref_.clone(), compact_params())
         .await
         .expect_ok();
-    let view_before = snapshot_canonical(&path).view_id;
     let db = open_raw(&path);
     let changed = db
         .prepare(
@@ -1099,21 +1097,21 @@ async fn strict_derivation_content_mutation_refuses() {
     assert_eq!(changed.changes, 1);
     db.close();
 
-    match thread_view::install_prepared_compact(
+    let activated = thread_view::install_prepared_compact(
         ref_.clone(),
         prep,
         InstallPreparedOptions::default(),
     )
     .await
-    {
-        OpResult::Err { error } => assert_eq!(error.code, ErrorCode::StalePreparedCompact),
-        OpResult::Ok { .. } => panic!("expected refuse"),
-    }
-    assert_eq!(snapshot_canonical(&path).view_id, view_before);
+    .expect_ok();
+    assert_eq!(
+        snapshot_canonical(&path).view_id.as_deref(),
+        Some(activated.view_id.as_str())
+    );
 }
 
 #[tokio::test]
-async fn strict_messages_remove_refuses_install() {
+async fn message_changes_after_prepare_activate() {
     let (_store, ref_, path) = fixture_thread().await;
     let listed = messages::list(ref_.clone(), None).await.expect_ok();
     let removable = listed
@@ -1123,7 +1121,6 @@ async fn strict_messages_remove_refuses_install() {
     let prep = thread_view::prepare_compact(ref_.clone(), compact_params())
         .await
         .expect_ok();
-    let view_b = snapshot_canonical(&path).view_id;
     let removed = messages::remove(
         ref_.clone(),
         RemoveInput {
@@ -1132,21 +1129,21 @@ async fn strict_messages_remove_refuses_install() {
     )
     .await;
     assert!(removed.is_ok());
-    match thread_view::install_prepared_compact(
+    let activated = thread_view::install_prepared_compact(
         ref_.clone(),
         prep,
         InstallPreparedOptions::default(),
     )
     .await
-    {
-        OpResult::Err { error } => assert_eq!(error.code, ErrorCode::StalePreparedCompact),
-        OpResult::Ok { .. } => panic!("expected refuse"),
-    }
-    assert_eq!(snapshot_canonical(&path).view_id, view_b);
+    .expect_ok();
+    assert_eq!(
+        snapshot_canonical(&path).view_id.as_deref(),
+        Some(activated.view_id.as_str())
+    );
 }
 
 #[tokio::test]
-async fn strict_concurrent_view_replacement_second_stale() {
+async fn second_coherent_prepared_view_can_replace_first() {
     let (_store, ref_, path) = fixture_thread().await;
     seed_open_agentic_turn(&ref_).await;
     let prep_a = thread_view::prepare_compact(ref_.clone(), compact_params())
@@ -1164,17 +1161,17 @@ async fn strict_concurrent_view_replacement_second_stale() {
     .expect_ok();
     let view_after_a = snapshot_canonical(&path).view_id;
     assert_eq!(view_after_a.as_deref(), Some(inst_a.view_id.as_str()));
-    match thread_view::install_prepared_compact(
+    let inst_b = thread_view::install_prepared_compact(
         ref_.clone(),
         prep_b,
         InstallPreparedOptions::default(),
     )
     .await
-    {
-        OpResult::Err { error } => assert_eq!(error.code, ErrorCode::StalePreparedCompact),
-        OpResult::Ok { .. } => panic!("expected stale"),
-    }
-    assert_eq!(snapshot_canonical(&path).view_id, view_after_a);
+    .expect_ok();
+    assert_eq!(
+        snapshot_canonical(&path).view_id.as_deref(),
+        Some(inst_b.view_id.as_str())
+    );
 }
 
 #[tokio::test]
@@ -1222,7 +1219,7 @@ async fn compact_install_before_validate_runs_inside_write_txn() {
 }
 
 #[tokio::test]
-async fn message_excerpt_band_source_mutation_refuses() {
+async fn message_excerpt_source_change_after_prepare_activates() {
     let store = temp_store();
     let double = create_inference_callbacks_double();
     let _sdk = init_lhc(SdkConfig {
@@ -1356,7 +1353,6 @@ async fn message_excerpt_band_source_mutation_refuses() {
             .map(|b| b.rendered_text.contains("unique-excerpt-marker-"))
             .unwrap_or(false)
     );
-    let view_before = snapshot_canonical(&file_path).view_id;
     let db = open_raw(&file_path);
     let row = db
         .prepare(
@@ -1377,27 +1373,26 @@ async fn message_excerpt_band_source_mutation_refuses() {
     )
     .run(&[SqlParam::from(mid)]);
     db.close();
-    match thread_view::install_prepared_compact(
+    let activated = thread_view::install_prepared_compact(
         ref_.clone(),
         prep2,
         InstallPreparedOptions::default(),
     )
     .await
-    {
-        OpResult::Err { error } => assert_eq!(error.code, ErrorCode::StalePreparedCompact),
-        OpResult::Ok { .. } => panic!("expected refuse"),
-    }
-    assert_eq!(snapshot_canonical(&file_path).view_id, view_before);
+    .expect_ok();
+    assert_eq!(
+        snapshot_canonical(&file_path).view_id.as_deref(),
+        Some(activated.view_id.as_str())
+    );
 }
 
 #[tokio::test]
-async fn source_block_mutation_without_event_refuses() {
+async fn source_block_change_after_prepare_activates() {
     let (_store, ref_, path) = fixture_thread().await;
     seed_open_agentic_turn(&ref_).await;
     let prep = thread_view::prepare_compact(ref_.clone(), compact_params())
         .await
         .expect_ok();
-    let view_before = snapshot_canonical(&path).view_id;
     let db = open_raw(&path);
     db.prepare(
         r#"UPDATE message_block SET content = json_set(content, '$.text', 'BLOCK-MUT')
@@ -1408,17 +1403,17 @@ async fn source_block_mutation_without_event_refuses() {
     )
     .run(&[]);
     db.close();
-    match thread_view::install_prepared_compact(
+    let activated = thread_view::install_prepared_compact(
         ref_.clone(),
         prep,
         InstallPreparedOptions::default(),
     )
     .await
-    {
-        OpResult::Err { error } => assert_eq!(error.code, ErrorCode::StalePreparedCompact),
-        OpResult::Ok { .. } => panic!("expected refuse"),
-    }
-    assert_eq!(snapshot_canonical(&path).view_id, view_before);
+    .expect_ok();
+    assert_eq!(
+        snapshot_canonical(&path).view_id.as_deref(),
+        Some(activated.view_id.as_str())
+    );
 }
 
 // ── invalid candidate / install labels ────────────────────────────────────

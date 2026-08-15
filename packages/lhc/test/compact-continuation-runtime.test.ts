@@ -615,7 +615,7 @@ describe("LIM-61 compact-continuation runtime", () => {
     }
   });
 
-  it("M4: stale prepared compact install refuses; prior view intact", async () => {
+  it("M4: normal source progress after prepare does not block activation", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     const prepared = await fixture.sdk.threadView.prepareCompact(
       { filePath: fixture.filePath },
@@ -633,11 +633,10 @@ describe("LIM-61 compact-continuation runtime", () => {
       { filePath: fixture.filePath },
       prepared.value,
     );
-    expect(installed.ok).toBe(false);
-    if (installed.ok) return;
-    expect(installed.error.code).toBe("stale_prepared_compact");
+    expect(installed.ok).toBe(true);
+    if (!installed.ok) return;
 
-    // Public compact still works after refuse.
+    // Public compact also remains available after activation.
     const compact = await fixture.sdk.threadView.compact(
       { filePath: fixture.filePath },
       { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
@@ -1537,7 +1536,7 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(JSON.stringify(receiptAfter.value?.receipt)).toBe(receiptJson);
   });
 
-  it("M4: successful install source_state_json matches post-marker max event order", async () => {
+  it("M4: activated view records its prepared source while later marker remains canonical", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
     const result = await compactContinuation.runCompactContinuation(
@@ -1555,8 +1554,8 @@ describe("LIM-61 compact-continuation runtime", () => {
         source_state_json: string;
       };
       const parsed = JSON.parse(src.source_state_json) as { maxEventOrder: number };
-      expect(parsed.maxEventOrder).toBe(maxEvent);
-      // Marker is the max event on continue-turn success.
+      expect(parsed.maxEventOrder).toBeLessThan(maxEvent);
+      // Marker remains the max canonical event on continue-turn success.
       const marker = db
         .prepare(
           `SELECT event_order FROM event WHERE event_kind = 'compact_continuation_marker' ORDER BY event_order DESC LIMIT 1`,
@@ -1640,10 +1639,7 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     if (!batch.ok) throw new Error(batch.error.reason);
   }
 
-  function escalationFacts(
-    attemptId: string,
-    safeRunwayThresholdTokens: number,
-  ): CompactContinuationHostFacts {
+  function escalationFacts(attemptId: string, safeRunwayThresholdTokens: number): CompactContinuationHostFacts {
     return baseFacts({
       attemptId,
       providerUsage: {

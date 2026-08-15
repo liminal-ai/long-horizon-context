@@ -81,7 +81,7 @@ pub enum ErrorCode {
     CompactContinuationWriterConflict,
     /// caller_error — attemptId reused for a different operation
     CompactContinuationAttemptConflict,
-    /// caller_error — prepared compact source state no longer matches record
+    /// caller_error — visibility-boundary invariants prevent activation
     StalePreparedCompact,
 }
 

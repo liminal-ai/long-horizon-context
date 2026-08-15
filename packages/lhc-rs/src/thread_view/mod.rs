@@ -1630,8 +1630,6 @@ pub async fn install_prepared_compact(
                     .unwrap_or_else(SystemTime::now),
             )
         });
-        let marker_key = opts.allowed_marker_idempotency_key.clone();
-
         let placeholder_source = StoredViewSourceState {
             max_event_order: prepared.max_event_order,
             derivation_counts: prepared.derivation_counts.clone(),
@@ -1642,14 +1640,10 @@ pub async fn install_prepared_compact(
         let proposed_boundary = opts.visibility_boundary;
         let expected_previous_boundary = opts.expected_previous_boundary;
         let mut before = |db: &Db| -> Option<String> {
-            // Inside BEGIN IMMEDIATE — atomic with replace (TS install TOCTOU seam).
+            // Inside BEGIN IMMEDIATE — atomic with replace (TS install seam).
+            // Background derivation or re-derivation does not invalidate this
+            // coherent prepared snapshot. Later compacts can use newer material.
             fire_view_injection_with_db(ViewInjectionPoint::CompactInstallBeforeValidate, db);
-            if let Err(reason) =
-                validate_prepared_source_state(db, &prepared, marker_key.as_deref())
-            {
-                // Panic with a typed message so outer catch can map to stale_prepared_compact.
-                panic!("stale_prepared_compact:{reason}");
-            }
             // Boundary monotonicity / expected previous checks (atomic with install).
             let current_boundary = read_boundary_position(db);
             if let Some(expected) = expected_previous_boundary
@@ -1672,27 +1666,8 @@ pub async fn install_prepared_compact(
                     );
                 }
             }
-            let selected = if prepared.selected_source_turn_ids.is_empty() {
-                selected_source_turn_ids_from_selection(db, &prepared.selection)
-            } else {
-                prepared.selected_source_turn_ids.clone()
-            };
-            let validated =
-                read_prepared_source_state(db, prepared.selection.compact_point, &selected, None);
             let _ = turns::drop_unreadable_chunks(db, &prepared.empty_chunk_ids);
-            // Certified LIM-61 shape: validated pre-replace source snapshot
-            // (includes marker max event order when present; installedViewId
-            // and structureDigest are pre-replace / pre empty-chunk-drop).
-            Some(js_json_stringify(&json!({
-                "maxEventOrder": validated.max_event_order,
-                "derivationCounts": prepared.derivation_counts,
-                "derivationDigest": validated.derivation_digest,
-                "tailDigest": validated.tail_digest,
-                "structureDigest": validated.structure_digest,
-                "installedViewId": validated.installed_view_id,
-                "compactPoint": validated.compact_point,
-                "selectedSourceTurnIds": selected,
-            })))
+            None
         };
 
         let install_result = std::panic::catch_unwind(AssertUnwindSafe(|| {

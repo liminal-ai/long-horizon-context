@@ -132,9 +132,9 @@ When rendering ordinary user chat from an LHC thread, hosts **must** request
 marker-hidden projection via `messages.list({ forUserChat: true })` (or the
 equivalent host-facing filter). Typed compact-continuation markers remain in
 the canonical record and model/session views, but they are not normal user
-chat. Public `threadView.compact()` may return `stale_prepared_compact` when
-source state changes between prepare and install under concurrency — treat
-that as a caller-retryable refuse, not storage corruption.
+chat. Source changes between compact preparation and activation do not block
+compaction. Activation may still refuse an impossible or retrograde visibility
+boundary.
 
 ## pi (extension — no fork maintenance)
 

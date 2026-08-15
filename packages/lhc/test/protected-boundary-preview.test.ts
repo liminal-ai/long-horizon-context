@@ -4,7 +4,7 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput } from "../src/index.js";
-import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { createInferenceCallbacksDouble, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 function tokens(n: number): string {
   return Array<string>(n).fill("tok").join(" ");

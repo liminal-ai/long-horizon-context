@@ -37,10 +37,10 @@ import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads
 import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
 import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
-import { previewProtectedVisibilityBoundary, type ProtectedBoundaryPreview } from "./internal/protected-boundary.js";
 import { compactStopped, computeArrangement } from "./internal/compact-compute.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
+import { type ProtectedBoundaryPreview, previewProtectedVisibilityBoundary } from "./internal/protected-boundary.js";
 import { assembleBandText } from "./internal/render.js";
 import { fireViewInjection } from "./internal/seam.js";
 import type { ArrangementEntry, SelectionResult } from "./internal/select.js";
@@ -633,7 +633,7 @@ export function selectedSourceTurnIdsFromSelection(db: DatabaseSync, selection: 
 }
 
 /**
- * Build a source-state fingerprint for install validation.
+ * Build source-state metadata for the prepared view.
  *
  * `tailDigest` covers every durable message/block used to produce prepared
  * bands and the post-compact-point tail, derived from actual selection:
@@ -642,10 +642,10 @@ export function selectedSourceTurnIdsFromSelection(db: DatabaseSync, selection: 
  *   subjects: message_excerpt / stored_turn / chunk-member fallbacks, etc.)
  *
  * Optional `excludeMessageIds` recomputes the digest as if those message rows
- * (and their blocks) were absent — used for exact marker-delta validation.
+ * and blocks were absent.
  *
- * Note: structureDigest / installedViewId describe the validated pre-replace
- * source (before empty-chunk drop and before the view row is swapped).
+ * structureDigest / installedViewId describe the source used to prepare the
+ * view, before empty-chunk drop and before the view row is replaced.
  */
 export function readPreparedSourceState(
   db: DatabaseSync,
@@ -1060,9 +1060,12 @@ export async function prepareCompact(
 }
 
 /**
- * Atomically install a previously prepared compact snapshot. On failure the
- * prior serving view remains intact. Source-state validation runs inside the
- * same BEGIN IMMEDIATE as the view replace (no TOCTOU window).
+ * Atomically activate a previously prepared compact snapshot.
+ *
+ * Normal background derivation or re-derivation may finish after preparation.
+ * That does not invalidate the prepared view: it remains a coherent snapshot,
+ * and later compacts can use the improved material. Only boundary invariants
+ * and explicit cancellation can refuse activation.
  */
 export async function installPreparedCompact(
   ref: ThreadRef,
@@ -1087,7 +1090,6 @@ export async function installPreparedCompact(
     }
 
     const createdAt = opts.createdAt ?? new Date().toISOString();
-    const markerKey = opts.allowedMarkerIdempotencyKey;
 
     try {
       const proposedBoundary = opts.visibilityBoundary;
@@ -1125,14 +1127,6 @@ export async function installPreparedCompact(
         () => {
           // Inside BEGIN IMMEDIATE — atomic with replace.
           fireViewInjection("compact-install-before-validate", { db });
-          const sourceCheck = validatePreparedSourceState(
-            db,
-            prepared,
-            markerKey !== undefined ? { allowedMarkerIdempotencyKey: markerKey } : {},
-          );
-          if (!sourceCheck.ok) {
-            throw new StalePreparedCompactError(sourceCheck.reason);
-          }
           // Boundary monotonicity / expected previous checks (atomic with install).
           const currentBoundary = readBoundaryPosition(db);
           if (opts.expectedPreviousBoundary !== undefined && currentBoundary !== opts.expectedPreviousBoundary) {
@@ -1152,23 +1146,8 @@ export async function installPreparedCompact(
               );
             }
           }
-          // Validated pre-replace source (includes marker when present).
-          // installedViewId / structureDigest are pre-replace / pre empty-chunk-drop.
-          const selected = prepared.selectedSourceTurnIds ?? selectedSourceTurnIdsFromSelection(db, prepared.selection);
-          const validated = readPreparedSourceState(db, prepared.selection.compactPoint, {
-            selectedSourceTurnIds: selected,
-          });
           turnsDomain.dropUnreadableChunks(db, prepared.emptyChunkIds);
-          return JSON.stringify({
-            maxEventOrder: validated.maxEventOrder,
-            derivationCounts: prepared.derivationCounts,
-            derivationDigest: validated.derivationDigest,
-            tailDigest: validated.tailDigest,
-            structureDigest: validated.structureDigest,
-            installedViewId: validated.installedViewId,
-            compactPoint: validated.compactPoint,
-            selectedSourceTurnIds: selected,
-          });
+          return undefined;
         },
       );
     } catch (cause) {

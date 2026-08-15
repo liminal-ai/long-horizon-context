@@ -31,11 +31,11 @@
 export {
   type CompactContinuationHostFacts,
   type CompactContinuationRunResult,
-  type StoredOperationIdentity,
   computeAttemptIntent,
   computeOperationIdentity,
   computeRetryPosture,
   getCompactContinuationAttemptIntent,
+  getCompactContinuationHostValidation,
   getCompactContinuationReceipt,
   getCompactContinuationWriterClaim,
   getPendingCompactContinuationBoundary,
@@ -47,8 +47,8 @@ export {
   listCompactContinuationStages,
   parseStoredOperationIdentity,
   recordCompactContinuationHostValidation,
-  getCompactContinuationHostValidation,
   runCompactContinuation,
+  type StoredOperationIdentity,
 } from "./internal/run.js";
 
 export type {
@@ -62,9 +62,9 @@ export type {
 } from "./internal/store.js";
 
 export {
+  type ProtectedToolPairSetProof,
   provePendingToolPair,
   proveProtectedToolPairSet,
-  type ProtectedToolPairSetProof,
   type ToolPairProof,
 } from "./internal/tool-pair.js";
 export { validateHostFacts } from "./internal/validate-host.js";

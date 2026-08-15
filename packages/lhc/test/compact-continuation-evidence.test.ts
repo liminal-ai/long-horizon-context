@@ -654,7 +654,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     return { prepared: prep.value, continuationTurnId, viewBefore };
   }
 
-  it("marker-allowed install: marker-only delta succeeds; unrelated block mutation → stale_prepared_compact", async () => {
+  it("marker and source changes after prepare do not block activation", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
     const { prepared, continuationTurnId, viewBefore } = await prepareWithOpenContinuation(fixture.filePath);
@@ -726,18 +726,16 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
       db.close();
     }
 
-    const viewBeforeInstall = snapshotCanonical(fixture2.filePath).viewId;
-    const stale = await sdk.threadView.installPreparedCompact({ filePath: fixture2.filePath }, prep2.prepared, {
+    const activated = await sdk.threadView.installPreparedCompact({ filePath: fixture2.filePath }, prep2.prepared, {
       allowedMarkerIdempotencyKey: key2,
     });
-    expect(stale.ok).toBe(false);
-    if (stale.ok) return;
-    expect(stale.error.code).toBe("stale_prepared_compact");
-    expect(snapshotCanonical(fixture2.filePath).viewId).toBe(viewBeforeInstall);
+    expect(activated.ok).toBe(true);
+    if (!activated.ok) return;
+    expect(snapshotCanonical(fixture2.filePath).viewId).toBe(activated.value.viewId);
     void viewBefore;
   });
 
-  it("strict: same-count derivation content mutation always refuses", async () => {
+  it("derivation changes after prepare do not block activation", async () => {
     const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     // derivedThreadFixture drains work so ready derivation rows exist.
     const fixture = await derivedThreadFixture(store, { failures: false });
@@ -761,7 +759,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     );
     expect(prep.ok).toBe(true);
     if (!prep.ok) return;
-    const viewBefore = snapshotCanonical(fixture.filePath).viewId;
     const db = openRaw(fixture.filePath);
     try {
       const changed = db
@@ -771,13 +768,13 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     } finally {
       db.close();
     }
-    const refused = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prep.value);
-    expect(refused.ok).toBe(false);
-    if (!refused.ok) expect(refused.error.code).toBe("stale_prepared_compact");
-    expect(snapshotCanonical(fixture.filePath).viewId).toBe(viewBefore);
+    const activated = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prep.value);
+    expect(activated.ok).toBe(true);
+    if (!activated.ok) return;
+    expect(snapshotCanonical(fixture.filePath).viewId).toBe(activated.value.viewId);
   });
 
-  it("strict: messages.remove of non-initiating closed message refuses install", async () => {
+  it("message changes after prepare do not block activation", async () => {
     const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const fixture = await derivedThreadFixture(store, { failures: false });
     const listed = await messages.list({ filePath: fixture.filePath });
@@ -792,17 +789,16 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     );
     expect(prep.ok).toBe(true);
     if (!prep.ok) return;
-    const viewB = snapshotCanonical(fixture.filePath).viewId;
     const removed = await messages.remove({ filePath: fixture.filePath }, { messageId: removable!.messageId });
     expect(removed.ok).toBe(true);
     if (!removed.ok) return;
-    const refused = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prep.value);
-    expect(refused.ok).toBe(false);
-    if (!refused.ok) expect(refused.error.code).toBe("stale_prepared_compact");
-    expect(snapshotCanonical(fixture.filePath).viewId).toBe(viewB);
+    const activated = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prep.value);
+    expect(activated.ok).toBe(true);
+    if (!activated.ok) return;
+    expect(snapshotCanonical(fixture.filePath).viewId).toBe(activated.value.viewId);
   });
 
-  it("strict: concurrent view replacement — first install ok, second stale_prepared_compact", async () => {
+  it("a second coherent prepared view can replace the first", async () => {
     const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const fixtureV = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixtureV.filePath);
@@ -824,9 +820,9 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     const viewAfterA = snapshotCanonical(fixtureV.filePath).viewId;
     expect(viewAfterA).toBe(instA.value.viewId);
     const instB = await sdk.threadView.installPreparedCompact({ filePath: fixtureV.filePath }, prepB.value);
-    expect(instB.ok).toBe(false);
-    if (!instB.ok) expect(instB.error.code).toBe("stale_prepared_compact");
-    expect(snapshotCanonical(fixtureV.filePath).viewId).toBe(viewAfterA);
+    expect(instB.ok).toBe(true);
+    if (!instB.ok) return;
+    expect(snapshotCanonical(fixtureV.filePath).viewId).toBe(instB.value.viewId);
   });
 
   it("compact-install-before-validate runs inside a write transaction", async () => {
@@ -859,7 +855,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     }
   });
 
-  it("message_excerpt band source mutation refuses strict install (selection fingerprint)", async () => {
+  it("message excerpt source changes after prepare do not block activation", async () => {
     const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
@@ -902,7 +898,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     expect(prep2.ok).toBe(true);
     if (!prep2.ok) return;
     expect(prep2.value.bands.find((b) => b.band === "smooth")?.renderedText).toMatch(/unique-excerpt-marker-/);
-    const viewBefore = snapshotCanonical(filePath).viewId;
     const db = openRaw(filePath);
     try {
       const row = db
@@ -921,13 +916,13 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     } finally {
       db.close();
     }
-    const refused = await sdk.threadView.installPreparedCompact({ filePath }, prep2.value);
-    expect(refused.ok).toBe(false);
-    if (!refused.ok) expect(refused.error.code).toBe("stale_prepared_compact");
-    expect(snapshotCanonical(filePath).viewId).toBe(viewBefore);
+    const activated = await sdk.threadView.installPreparedCompact({ filePath }, prep2.value);
+    expect(activated.ok).toBe(true);
+    if (!activated.ok) return;
+    expect(snapshotCanonical(filePath).viewId).toBe(activated.value.viewId);
   });
 
-  it("source block mutation without event: strict install refuses stale_prepared_compact", async () => {
+  it("source block changes after prepare do not block activation", async () => {
     const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
@@ -937,7 +932,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     );
     expect(prep.ok).toBe(true);
     if (!prep.ok) return;
-    const viewBefore = snapshotCanonical(fixture.filePath).viewId;
     const db = openRaw(fixture.filePath);
     try {
       db.prepare(
@@ -950,10 +944,10 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     } finally {
       db.close();
     }
-    const refused = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prep.value);
-    expect(refused.ok).toBe(false);
-    if (!refused.ok) expect(refused.error.code).toBe("stale_prepared_compact");
-    expect(snapshotCanonical(fixture.filePath).viewId).toBe(viewBefore);
+    const activated = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prep.value);
+    expect(activated.ok).toBe(true);
+    if (!activated.ok) return;
+    expect(snapshotCanonical(fixture.filePath).viewId).toBe(activated.value.viewId);
   });
 });
 

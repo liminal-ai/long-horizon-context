@@ -172,23 +172,16 @@ Settled-seam health refusals (incomplete capture, invalid identity, broken open 
   candidate estimate pre-install and post-install band/token_estimate sum are
   both in that domain.
 
-## Install source validation
+## Prepared-view activation
 
-Marker-allowed install recomputes the source digest with exactly the marker
-event/message/block removed and compares to the prepared digest. Fingerprint
-covers derivation content/state/provenance, turn/chunk placement, boundary,
-installed view identity, post-compact-point tail, and **every turn referenced
-by prepared selection entries** (`message_excerpt`, stored_turn, chunk-member
-fallbacks, etc. — not only chunk members). Selected turn ids are persisted on
-`PreparedCompact.selectedSourceTurnIds`.
+A prepared view is a coherent snapshot. Normal capture, derivation, or
+re-derivation progress after preparation does not block activation. The view
+uses the material available when it was prepared; later compacts can use newer
+material.
 
-`source_state_json` stores the **validated pre-replace** source snapshot
-written from `beforeReplace` after validation: includes marker max event order
-when present; `installedViewId` and `structureDigest` are pre-replace /
-pre-empty-chunk-drop.
-
-Public `compact()` / `installPreparedCompact` may return `stale_prepared_compact`
-under concurrent source change.
+`source_state_json` records that prepared source snapshot. Activation still
+enforces explicit cancellation and visibility-boundary invariants, but it does
+not reject ordinary source progress.
 
 ## Oracle effects vs residual (LIM-62 parity)
 

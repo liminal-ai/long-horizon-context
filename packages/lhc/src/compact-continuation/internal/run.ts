@@ -48,8 +48,8 @@ import type { ThreadRef } from "../../threads/index.js";
 import { resolveThreadRef } from "../../threads/index.js";
 import { assembleCandidateFromPrepared } from "./candidate.js";
 import {
-  appendStageLog,
   type AttemptRow,
+  appendStageLog,
   type BoundaryRow,
   claimLhcWriter,
   findContinuationTurnFromForceKey,
@@ -77,7 +77,7 @@ import {
   upsertBoundary,
   type WriterClaimRow,
 } from "./store.js";
-import { provePendingToolPair, proveProtectedToolPairSet } from "./tool-pair.js";
+import { proveProtectedToolPairSet } from "./tool-pair.js";
 import { validateHostFacts } from "./validate-host.js";
 
 // ── Host input ──────────────────────────────────────────────────────────────
@@ -1150,7 +1150,6 @@ async function runCompactContinuationInner(
 
   // Durable protected-pair-set proof for pending-tool path (host correlation insufficient).
   let toolPairOk = true;
-  let protectedSetProof: Awaited<ReturnType<typeof proveProtectedToolPairSet>> | null = null;
   if (facts.continuation.kind === "pending_correlated_tool_result") {
     if (facts.continuation.correlationValid) {
       const proof = await createDbReadTransaction(ref, (tx) =>
@@ -1160,7 +1159,6 @@ async function runCompactContinuationInner(
         ),
       );
       if (!proof.ok) return proof;
-      protectedSetProof = proof.value;
       if (!proof.value.ok) {
         toolPairOk = false;
       }
@@ -1338,7 +1336,7 @@ async function runCompactContinuationInner(
     let pendingEscalated = false;
     let proposedVisibilityBoundary: number | null = null;
     let visibilityBoundaryBefore: number | null = null;
-    let protectedIds: string[] =
+    const protectedIds: string[] =
       facts.continuation.kind === "pending_correlated_tool_result"
         ? [...facts.continuation.protectedToolCallIds].sort()
         : [];

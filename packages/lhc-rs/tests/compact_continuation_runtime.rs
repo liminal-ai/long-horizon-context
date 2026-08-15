@@ -889,7 +889,7 @@ async fn b3_finalize_write_failure_not_success_with_allowed_request() {
 }
 
 #[tokio::test]
-async fn m4_stale_prepared_compact_install_refuses_prior_view_intact() {
+async fn m4_source_progress_after_prepare_does_not_block_activation() {
     let (_store, ref_, _) = fixture_thread().await;
     let prepared = thread_view::prepare_compact(ref_.clone(), compact_params())
         .await
@@ -915,10 +915,7 @@ async fn m4_stale_prepared_compact_install_refuses_prior_view_intact() {
         InstallPreparedOptions::default(),
     )
     .await;
-    match installed {
-        OpResult::Err { error } => assert_eq!(error.code, ErrorCode::StalePreparedCompact),
-        OpResult::Ok { .. } => panic!("expected stale"),
-    }
+    assert!(installed.is_ok(), "{installed:?}");
 
     let compact = thread_view::compact(ref_.clone(), compact_params())
         .await
@@ -1741,7 +1738,7 @@ async fn terminal_replay_repairs_stale_same_owner_claim() {
 }
 
 #[tokio::test]
-async fn m4_source_state_json_max_event_order_after_marker_install() {
+async fn m4_source_state_records_prepared_snapshot_before_marker() {
     let (_store, ref_, path) = fixture_thread().await;
     seed_open_agentic_turn(&ref_).await;
     let result = run_compact_continuation(
@@ -1768,9 +1765,11 @@ async fn m4_source_state_json_max_event_order_after_marker_install() {
             .unwrap(),
     )
     .unwrap();
-    assert_eq!(
-        parsed.get("maxEventOrder").and_then(|v| v.as_i64()),
-        Some(max_event)
+    assert!(
+        parsed
+            .get("maxEventOrder")
+            .and_then(|v| v.as_i64())
+            .is_some_and(|prepared_max| prepared_max < max_event)
     );
     let marker = db
         .prepare(
