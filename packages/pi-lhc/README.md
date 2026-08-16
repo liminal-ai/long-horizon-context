@@ -169,7 +169,7 @@ PI's compaction protocol requires a `firstKeptEntryId` — the PI session entry 
 
 If neither tier resolves, compact cancels with `mapping_failed`.
 
-A `compact_continuation_marker` is PI-mappable: it can be `firstKeptMessageId` and uses the same live/seed map. A true empty mappable tail after selector eviction (`firstKeptMessageId === null` and `compactPoint > 0`) is host-specific: the handler returns the band summary with `firstKeptEntryId = "pi-lhc:summary-only"`. That id is not on the Pi branch, so Pi's `buildContextEntries` keeps the compaction summary and no pre-compaction raw entries. Do not reuse Pi's `preparation.firstKeptEntryId` — that would retain the evicted oversized turn.
+A `compact_continuation_marker` is PI-mappable: it can be `firstKeptMessageId` and uses the same live/seed map. A true empty mappable tail after selector eviction (`firstKeptMessageId === null` and `compactPoint > 0`) is host-specific: the handler returns the band summary with `firstKeptEntryId = "pi-lhc:summary-only"`. That id is not on the Pi branch, so Pi's `buildContextEntries` keeps the compaction summary and no pre-compaction raw entries. Do not reuse Pi's `preparation.firstKeptEntryId` — that would retain the evicted oversized turn. Preview can cancel `mapping_failed` before the view write; the installed compact receipt is what decides summary-only vs live/seed mapping.
 
 ### Compact Profile
 

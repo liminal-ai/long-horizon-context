@@ -122,11 +122,14 @@ export async function handleSessionBeforeCompact(
     //   still produces a real firstKept and uses the live/seed map.
     // - a true empty mappable tail (compactPoint > 0, no mappable message)
     //   is a host splice: Pi gets the band summary and no raw kept tail.
+    //
+    // Preview is only a preflight so mapping_failed can cancel before the
+    // view write. The installed receipt is the source of truth: a preview
+    // empty tail must not keep a later-installed firstKept, and a preview
+    // firstKept must not survive if install evicted every mappable message.
     const preview = outcome.preview;
-    let mapping: FirstKeptMapping;
-    if (isSummaryOnlyTail(preview)) {
-      mapping = summaryOnlyFirstKeptMapping();
-    } else {
+    let previewMapping: FirstKeptMapping | null = null;
+    if (!isSummaryOnlyTail(preview)) {
       if (preview.firstKeptMessageId === null) {
         return await cancel("mapping_failed", "compact arrangement kept no messages (unexpected — report this)");
       }
@@ -146,7 +149,7 @@ export async function handleSessionBeforeCompact(
       if ("mappingFailed" in mapped) {
         return await cancel("mapping_failed", mapped.reason);
       }
-      mapping = mapped;
+      previewMapping = mapped;
     }
 
     const compactOutcome = await deps.instance.sdk.threadView.compact(deps.state.threadRef, {
@@ -160,6 +163,35 @@ export async function handleSessionBeforeCompact(
     const receipt = compactOutcome.value;
     if (!Array.isArray(receipt.renderedBands)) {
       return await cancel("invalid_compact_result", "compact receipt missing renderedBands");
+    }
+
+    const installed = {
+      compactPoint: receipt.compactPoint,
+      firstKeptMessageId: receipt.firstKeptMessageId,
+    };
+    let mapping: FirstKeptMapping;
+    if (isSummaryOnlyTail(installed)) {
+      mapping = summaryOnlyFirstKeptMapping();
+    } else if (receipt.firstKeptMessageId === null) {
+      return await cancel("mapping_failed", "compact arrangement kept no messages (unexpected — report this)");
+    } else if (previewMapping !== null && receipt.firstKeptMessageId === preview.firstKeptMessageId) {
+      mapping = previewMapping;
+    } else {
+      const sessionView = await deps.getSessionView();
+      if (!sessionView.ok) {
+        return await cancel("compact_error", sessionView.error.reason);
+      }
+      const mapped = mapFirstKeptToEntryId(
+        receipt.firstKeptMessageId,
+        sessionView.value,
+        deps.findSeedEntryMap(event.branchEntries, sessionView.value.threadId),
+        event.branchEntries,
+        deps.piSessionId ?? "",
+      );
+      if ("mappingFailed" in mapped) {
+        return await cancel("mapping_failed", mapped.reason);
+      }
+      mapping = mapped;
     }
 
     const compaction = assembleCompactionResult(receipt, mapping.firstKeptEntryId, event.preparation.tokensBefore);
