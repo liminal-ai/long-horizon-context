@@ -153,8 +153,8 @@ When PI fires `session_before_compact`, the handler runs 8 sequential checks:
 | 3 | `state.health.lastCaptureFailure` is clear | `capture_incomplete` |
 | 4 | `getLlmRequestContext` succeeds and serving tokens ≥ 50k floor | `no_op` or `compact_error` |
 | 5 | `previewCompact` succeeds (`wouldProduceBands` is informational only — an explicit compact always proceeds) | `compact_error` |
-| 6 | `firstKeptMessageId` is non-null | `mapping_failed` |
-| 7 | `mapFirstKeptToEntryId` resolves an LHC message id to a PI entry id | `mapping_failed` |
+| 6 | `firstKeptMessageId` is present, **or** compactPoint > 0 with a true empty mappable tail | `mapping_failed` |
+| 7 | Present firstKept maps via live/seed tiers. Empty mappable tail uses host sentinel `pi-lhc:summary-only` (Pi keeps summary only) | `mapping_failed` |
 | 8 | `compact` succeeds and `renderedBands` is present | `compact_error` or `invalid_compact_result` |
 
 Any failure at any step returns `{ cancel: true }` to PI. The cancel is logged to LHC's log table, buffered in `compactDiagnostics`, and notified via `ctx.ui.notify`.
@@ -168,6 +168,8 @@ PI's compaction protocol requires a `firstKeptEntryId` — the PI session entry 
 2. **Seed tier.** Check the `pi-lhc.seed-entry-map` custom entry (written when the session was seeded from an LHC view) for a direct `lhcMessageId → piEntryId` row. Verify the mapped id exists in PI's compact branch entries.
 
 If neither tier resolves, compact cancels with `mapping_failed`.
+
+A `compact_continuation_marker` is PI-mappable: it can be `firstKeptMessageId` and uses the same live/seed map. A true empty mappable tail after selector eviction (`firstKeptMessageId === null` and `compactPoint > 0`) is host-specific: the handler returns the band summary with `firstKeptEntryId = "pi-lhc:summary-only"`. That id is not on the Pi branch, so Pi's `buildContextEntries` keeps the compaction summary and no pre-compaction raw entries. Do not reuse Pi's `preparation.firstKeptEntryId` — that would retain the evicted oversized turn.
 
 ### Compact Profile
 

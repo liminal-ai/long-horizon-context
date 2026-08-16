@@ -1,7 +1,14 @@
 import type { SessionThreadView } from "lhc";
 import { describe, expect, it } from "vitest";
 import { eventKey } from "../../src/capture/idempotency.js";
-import { assembleCompactionResult, assembleSummaryFromRenderedBands, mapFirstKeptToEntryId } from "../../src/index.js";
+import {
+  assembleCompactionResult,
+  assembleSummaryFromRenderedBands,
+  isSummaryOnlyTail,
+  mapFirstKeptToEntryId,
+  SUMMARY_ONLY_FIRST_KEPT_ENTRY_ID,
+  summaryOnlyFirstKeptMapping,
+} from "../../src/index.js";
 import { liveIdempotencyKey, makeBranchEntries, makeCompactReceipt, makeSeedEntryMap } from "./fixtures.js";
 
 const PI_SESSION = "th_abc123def4567890";
@@ -203,6 +210,22 @@ describe("mapFirstKeptToEntryId", () => {
       "other_session",
     );
     expect(mapping).toEqual({ firstKeptEntryId: "pi_asst", origin: "seeded" });
+  });
+});
+
+describe("isSummaryOnlyTail", () => {
+  it("is the post-eviction empty mappable tail, not a compact-continuation marker", () => {
+    expect(isSummaryOnlyTail({ compactPoint: 6, firstKeptMessageId: null })).toBe(true);
+    expect(isSummaryOnlyTail({ compactPoint: 6, firstKeptMessageId: "m9" })).toBe(false);
+    expect(isSummaryOnlyTail({ compactPoint: 0, firstKeptMessageId: null })).toBe(false);
+  });
+
+  it("summary-only mapping uses a Pi-unmatched sentinel, not a synthetic session entry", () => {
+    expect(summaryOnlyFirstKeptMapping()).toEqual({
+      firstKeptEntryId: SUMMARY_ONLY_FIRST_KEPT_ENTRY_ID,
+      origin: "summary_only",
+    });
+    expect(SUMMARY_ONLY_FIRST_KEPT_ENTRY_ID.startsWith("pi-lhc:")).toBe(true);
   });
 });
 
