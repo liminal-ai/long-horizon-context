@@ -38,6 +38,7 @@ fn params() -> SelectionConfig {
             detailed: 4.0,
             brief: 70.0,
         },
+        compact_point_upper_bound: None,
     }
 }
 

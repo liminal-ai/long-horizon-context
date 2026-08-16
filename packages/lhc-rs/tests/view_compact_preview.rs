@@ -132,6 +132,7 @@ async fn preview_and_compact(
                 profile: None,
                 params: Some(params.clone()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -143,6 +144,7 @@ async fn preview_and_compact(
                 profile: None,
                 params: Some(params),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -365,6 +367,7 @@ async fn tc_5_6b_re_compact_may_move_compact_point_backward_preview_and_compact_
                 profile: None,
                 params: Some(target_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -383,6 +386,7 @@ async fn tc_5_6b_re_compact_may_move_compact_point_backward_preview_and_compact_
                 profile: None,
                 params: Some(all_fits_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -410,6 +414,7 @@ async fn tc_5_6b_re_compact_may_move_compact_point_backward_preview_and_compact_
                 profile: None,
                 params: Some(all_fits_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -446,6 +451,7 @@ async fn same_point_preview_reports_bands_when_recomputed_arrangement_repairs_th
                 profile: None,
                 params: Some(target_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -490,6 +496,7 @@ async fn same_point_preview_reports_bands_when_recomputed_arrangement_repairs_th
                 profile: None,
                 params: Some(target_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -515,6 +522,7 @@ async fn same_point_preview_reports_bands_when_recomputed_arrangement_repairs_th
                 profile: None,
                 params: Some(target_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -643,6 +651,7 @@ async fn near_no_op_with_one_small_brief_entry_still_reports_would_produce_bands
                 profile: None,
                 params: Some(near_no_op_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -665,6 +674,7 @@ async fn preview_never_writes_a_thread_view_row() {
                 profile: None,
                 params: Some(target_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -793,6 +803,7 @@ async fn latest_open_turn_with_a_dangling_tool_call_previews_ok_and_stays_after_
                 profile: None,
                 params: Some(target_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -849,6 +860,7 @@ async fn empty_open_turn_proceeds_to_ok_preview() {
                 profile: None,
                 params: Some(target_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -879,6 +891,7 @@ async fn compact_receipt_carries_rendered_bands_and_first_kept_message_id() {
                 profile: None,
                 params: Some(gradient_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -955,6 +968,7 @@ async fn background_mode_preview_does_not_schedule_drain_with_pending_work() {
                 profile: None,
                 params: Some(all_fits_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

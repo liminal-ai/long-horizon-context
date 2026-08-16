@@ -319,6 +319,7 @@ fn compact_opts(params: ViewCompactParams) -> CompactOpts {
         profile: None,
         params: Some(params),
         signal: None,
+        compact_point_upper_bound: None,
     }
 }
 
@@ -663,6 +664,7 @@ async fn rejects_percentages_summing_to_105_naming_the_sum_and_an_unknown_profil
                     }),
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -685,6 +687,7 @@ async fn rejects_percentages_summing_to_105_naming_the_sum_and_an_unknown_profil
                     percentages: None,
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -703,6 +706,7 @@ async fn rejects_percentages_summing_to_105_naming_the_sum_and_an_unknown_profil
                 profile: Some("nonesuch".into()),
                 params: None,
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -730,6 +734,7 @@ async fn compacts_with_a_built_in_profile_the_profiles_bound_and_mix_land_in_the
                 profile: Some("coding".into()),
                 params: None,
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -774,6 +779,7 @@ async fn explicit_params_override_profile_values_field_wise_and_report_profile_n
                     }),
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -1087,6 +1093,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
                 detailed: 40.0,
                 brief: 40.0,
             },
+            compact_point_upper_bound: None,
         },
     )
     .expect("select_arrangement");
@@ -1371,6 +1378,7 @@ async fn abort_immediately_before_snapshot_write_leaves_the_prior_view_unchanged
                 profile: None,
                 params: Some(edge_params()),
                 signal: Some(signal.clone()),
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -1427,6 +1435,7 @@ async fn completes_with_ladder_fallbacks_marked_gap_entries_for_unusable_spans_a
                     }),
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -1492,6 +1501,7 @@ async fn status_reports_the_view_health_fields_live_after_the_degraded_compact_t
                     }),
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -1584,6 +1594,7 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
                     }),
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -1643,6 +1654,7 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
                     }),
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

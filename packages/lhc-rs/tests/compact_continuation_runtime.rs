@@ -367,6 +367,7 @@ fn compact_params() -> CompactOpts {
             }),
         }),
         signal: None,
+        compact_point_upper_bound: None,
     }
 }
 
@@ -2955,6 +2956,7 @@ async fn stale_boundary_preview_is_clamped_to_prepared_compact_point() {
             profile: None,
             params: None,
             signal: None,
+            compact_point_upper_bound: None,
         },
     )
     .await
@@ -2977,12 +2979,16 @@ async fn stale_boundary_preview_is_clamped_to_prepared_compact_point() {
     // Same default-profile prepare as above (not the 100% full escalation bag).
     facts.compact = None;
     let result = run_compact_continuation(ref_, facts).await.expect_ok();
+    // Upper bound is the previewed visibility line: compact point cannot
+    // advance past it (no stale-behind install refuse; pair stays in tail).
+    let after = result
+        .receipt
+        .residual
+        .visibility_boundary_after
+        .unwrap_or(preview.proposed_boundary);
     assert!(
-        result
-            .receipt
-            .residual
-            .visibility_boundary_after
-            .unwrap_or(0)
-            >= prepared.selection.compact_point
+        after < prepared.selection.compact_point,
+        "boundary {after} must stay below unconstrained compact point {}",
+        prepared.selection.compact_point
     );
 }

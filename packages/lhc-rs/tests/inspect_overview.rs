@@ -417,6 +417,7 @@ async fn compacted_tool_heavy_fixture_exact_counts_in_every_section() {
                 profile: None,
                 params: None,
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

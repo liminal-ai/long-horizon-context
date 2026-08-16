@@ -197,6 +197,7 @@ async fn run_golden(fixture: &DerivedThreadFixture, golden: &Golden) -> StoredVi
                 profile: None,
                 params: Some(params_of(golden)),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

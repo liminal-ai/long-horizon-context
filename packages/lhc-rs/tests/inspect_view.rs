@@ -251,6 +251,7 @@ async fn degraded_compacted_thread(store: &TempStore) -> DerivedThreadFixture {
                 profile: None,
                 params: Some(degraded_compact_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -587,6 +588,7 @@ async fn tail_costs_short_forms_short_and_total_equals_an_independent_context_re
                     }),
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

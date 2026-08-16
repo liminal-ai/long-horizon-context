@@ -242,6 +242,8 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
 export interface SelectionConfig {
   lowerBound: number;
   percentages: { full: number; smooth: number; detailed: number; brief: number };
+  /** Compact point must stay at or behind this event order (protected-pair tail). */
+  compactPointUpperBound?: number;
 }
 
 // Message kinds that can anchor a host session rebuild past the compact point.
@@ -309,6 +311,15 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
     // Budget never reached ⇒ the whole record fits the full share:
     // everything is tail, no bands.
     compactPoint = crossing === null ? 0 : snapCompactPoint(crossing);
+  }
+  if (config.compactPointUpperBound !== undefined && compactPoint > config.compactPointUpperBound) {
+    // Snap backward to the greatest legal closed-turn boundary <= the upper
+    // bound. Compact points must land on a real turn.closedAt (or 0); a raw
+    // numeric clamp could split a turn and violate selector/view invariants.
+    const legalBoundaries = closedTurns
+      .filter((t) => t.closedAt !== null && t.closedAt <= config.compactPointUpperBound!)
+      .map((t) => t.closedAt as number);
+    compactPoint = legalBoundaries.length > 0 ? Math.max(...legalBoundaries) : 0;
   }
 
   function snapCompactPoint(oldestTaken: SelectionMessage): number {
