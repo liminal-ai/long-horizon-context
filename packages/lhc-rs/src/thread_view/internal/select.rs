@@ -26,9 +26,9 @@
 //! them; trailing ones are the ordinary window edge and stay quiet.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 
-use indexmap::{IndexMap, IndexSet};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -516,10 +516,6 @@ pub const PI_MAPPABLE_MESSAGE_KINDS: [&str; 8] = [
     "compact_continuation_marker",
 ];
 
-/// TS `PI_MAPPABLE_KIND_SET` — insertion-ordered [`IndexSet`] collected directly
-/// from [`PI_MAPPABLE_MESSAGE_KINDS`] (TS `Set` preserves declared order).
-pub(crate) static PI_MAPPABLE_KIND_SET: LazyLock<IndexSet<&'static str>> =
-    LazyLock::new(|| PI_MAPPABLE_MESSAGE_KINDS.into_iter().collect());
 
 /// TS `band: "detailed" | "brief"` accepted by `buildChunkEntry`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
