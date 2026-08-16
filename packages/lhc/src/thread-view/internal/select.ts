@@ -259,12 +259,7 @@ export const PI_MAPPABLE_MESSAGE_KINDS = [
   "compact_continuation_marker",
 ] as const;
 
-const PI_MAPPABLE_KIND_SET: ReadonlySet<string> = new Set(PI_MAPPABLE_MESSAGE_KINDS);
-
-function straddlingTurnStaysInFull(
-  fullSideTokens: number,
-  turnTokens: number,
-): boolean {
+function straddlingTurnStaysInFull(fullSideTokens: number, turnTokens: number): boolean {
   const smoothSideTokens = turnTokens - fullSideTokens;
   return fullSideTokens >= smoothSideTokens;
 }
