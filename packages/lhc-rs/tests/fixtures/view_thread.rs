@@ -483,6 +483,7 @@ pub async fn mutation_in_flight_variant(store: &TempStore) -> MutationInFlightFi
                 profile: None,
                 params: None,
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

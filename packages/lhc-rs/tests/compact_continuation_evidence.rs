@@ -380,6 +380,7 @@ fn compact_params() -> CompactOpts {
             }),
         }),
         signal: None,
+        compact_point_upper_bound: None,
     }
 }
 
@@ -1321,6 +1322,7 @@ async fn message_excerpt_source_change_after_prepare_activates() {
             }),
         }),
         signal: None,
+        compact_point_upper_bound: None,
     };
     let prep = thread_view::prepare_compact(ref_.clone(), params.clone())
         .await
@@ -1477,6 +1479,7 @@ async fn unresolved_tool_call_exact_compact_failed_failed_repairable() {
                 }),
             }),
             signal: None,
+            compact_point_upper_bound: None,
         },
     )
     .await;

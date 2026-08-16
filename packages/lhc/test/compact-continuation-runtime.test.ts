@@ -1804,8 +1804,38 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.receipt.residual.visibilityBoundaryAfter).toBeGreaterThanOrEqual(
-      prepared.value.selection.compactPoint,
+    // Upper bound is the previewed visibility line: compact point cannot
+    // advance past it (no stale-behind install refuse; pair stays in tail).
+    const compactPoint = result.value.receipt.effects.find((e) => e.type === "advance_visibility_boundary")
+      ?.compactPoint;
+    const after = result.value.receipt.residual.visibilityBoundaryAfter ?? preview.value.proposedBoundary;
+    expect(after).toBeLessThan(prepared.value.selection.compactPoint);
+    if (compactPoint !== undefined) {
+      expect(compactPoint).toBeLessThanOrEqual(after);
+    }
+  });
+
+  it("protected pair stays in the full tail when compactPointUpperBound is the visibility boundary", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedEscalationTurn(fixture.filePath);
+    const result = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      { ...escalationFacts("protected-tail-bound-1", 298000), compact: undefined },
     );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const listed = await messages.list({ filePath: fixture.filePath });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const protectedResult = listed.value.find(
+      (m) => m.kind === "tool_result" && m.blocks.some((b) => b.content["toolCallId"] === PROTECTED_ID),
+    );
+    expect(protectedResult).toBeDefined();
+    const compactPoint = result.value.receipt.effects.find((e) => e.type === "advance_visibility_boundary")
+      ?.compactPoint;
+    const after = result.value.receipt.residual.visibilityBoundaryAfter;
+    expect(compactPoint).toBeDefined();
+    expect(after).not.toBeNull();
+    expect(compactPoint!).toBeLessThanOrEqual(after!);
   });
 });

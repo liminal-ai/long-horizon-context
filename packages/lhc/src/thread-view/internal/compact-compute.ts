@@ -85,7 +85,11 @@ export function computeArrangement(
   db: DatabaseSync,
   transaction: DbReadTransaction,
   merged: ViewProfile,
-  opts: { signal?: { aborted: boolean } | undefined; includeChunkMaterials: boolean },
+  opts: {
+    signal?: { aborted: boolean } | undefined;
+    includeChunkMaterials: boolean;
+    compactPointUpperBound?: number;
+  },
 ): OpResult<ArrangementComputeResult> {
   if (compactStopped(opts.signal)) {
     return {
@@ -120,6 +124,9 @@ export function computeArrangement(
   const selection = selectArrangement(inputs, {
     lowerBound: merged.lowerBound,
     percentages: merged.percentages,
+    ...(opts.compactPointUpperBound !== undefined
+      ? { compactPointUpperBound: opts.compactPointUpperBound }
+      : {}),
   });
   const viewId = `v${inputs.maxEventOrder}`;
   // At compact point 0 this is the thread's first mappable message (rebuild

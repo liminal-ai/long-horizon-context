@@ -265,6 +265,7 @@ async fn compacts_not_ready_chunk_summaries_through_stored_member_concat_with_ze
                 profile: None,
                 params: Some(compact_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -356,6 +357,7 @@ async fn halts_compact_before_fallback_assembly_when_stop_is_requested() {
                     s.abort();
                     s
                 }),
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -402,6 +404,7 @@ async fn refuses_compact_when_canonical_member_source_is_corrupt() {
                 profile: None,
                 params: Some(compact_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
