@@ -97,7 +97,10 @@ export {
   assembleCompactionResult,
   assembleSummaryFromRenderedBands,
   type FirstKeptMapping,
+  isSummaryOnlyTail,
   mapFirstKeptToEntryId,
+  SUMMARY_ONLY_FIRST_KEPT_ENTRY_ID,
+  summaryOnlyFirstKeptMapping,
 } from "./compact/result-mapping.js";
 export {
   findSeedEntryMapInBranch,

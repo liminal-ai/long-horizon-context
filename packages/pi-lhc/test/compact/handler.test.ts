@@ -304,12 +304,37 @@ describe("handleSessionBeforeCompact", () => {
         diagnostics.push(d);
       },
     });
-    // wouldProduceBands=false must NOT cancel; this preview also has no
-    // mappable first-kept message, so the handler falls through to the next
-    // real check rather than a no_op.
+    // wouldProduceBands=false must NOT cancel. compactPoint 0 + null firstKept
+    // is a thread with no mappable messages at all — still a real mapping
+    // failure, not the post-eviction summary-only splice.
     expect(result).toEqual({ cancel: true });
     expect(diagnostics[0]?.code).toBe("mapping_failed");
     expect(diagnostics.some((d) => d.code === "no_op")).toBe(false);
+  });
+
+  it("summary-only splice: empty mappable tail after eviction still writes bands", async () => {
+    const mocks = mockInstance({
+      preview: {
+        kind: "ok",
+        preview: { compactPoint: 6, wouldProduceBands: true, tailTokens: 0, firstKeptMessageId: null },
+      },
+    });
+    const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
+      state: createSessionState({ threadId: "th_test" }),
+      instance: mocks.instance as never,
+      piSessionId: "th_test",
+      flushPendingCapture: mocks.flushSpy,
+      getSessionView: async () => mocks.sessionView() as never,
+      findSeedEntryMap: () => null,
+      recordCancel: (d) => {
+        diagnostics.push(d);
+      },
+    });
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction?.firstKeptEntryId).toBe("pi-lhc:summary-only");
+    expect(result.compaction?.summary).toContain("[context · brief]");
+    expect(mocks.compactSpy).toHaveBeenCalledOnce();
+    expect(diagnostics).toEqual([]);
   });
 
   it("cancels mapping_failed before compact writes", async () => {

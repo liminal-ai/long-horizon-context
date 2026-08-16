@@ -9,7 +9,13 @@ import type {
 } from "../pi/types.js";
 import type { LhcInstance } from "../shared/instance.js";
 import { COMPACT_FLOOR_TOKENS, DEFAULT_COMPACT_PROFILE } from "./profile.js";
-import { assembleCompactionResult, mapFirstKeptToEntryId } from "./result-mapping.js";
+import {
+  assembleCompactionResult,
+  type FirstKeptMapping,
+  isSummaryOnlyTail,
+  mapFirstKeptToEntryId,
+  summaryOnlyFirstKeptMapping,
+} from "./result-mapping.js";
 import type { LhcSeedEntryMap } from "./seed-entry-map.js";
 
 export type CompactCancelCode =
@@ -109,25 +115,38 @@ export async function handleSessionBeforeCompact(
     // second-guesses it against the stored snapshot (Lee's ruling, twice:
     // "blocking me from recompacting is dumb"). The only cancels are the
     // floor gate above and real failures below.
+    //
+    // firstKeptMessageId is nullable after selector eviction of an oversized
+    // final turn. Separate two cases:
+    // - compact_continuation_marker is now PI-mappable, so a live marker
+    //   still produces a real firstKept and uses the live/seed map.
+    // - a true empty mappable tail (compactPoint > 0, no mappable message)
+    //   is a host splice: Pi gets the band summary and no raw kept tail.
     const preview = outcome.preview;
-    if (preview.firstKeptMessageId === null) {
-      return await cancel("mapping_failed", "compact arrangement kept no messages (unexpected — report this)");
-    }
+    let mapping: FirstKeptMapping;
+    if (isSummaryOnlyTail(preview)) {
+      mapping = summaryOnlyFirstKeptMapping();
+    } else {
+      if (preview.firstKeptMessageId === null) {
+        return await cancel("mapping_failed", "compact arrangement kept no messages (unexpected — report this)");
+      }
 
-    const sessionView = await deps.getSessionView();
-    if (!sessionView.ok) {
-      return await cancel("compact_error", sessionView.error.reason);
-    }
+      const sessionView = await deps.getSessionView();
+      if (!sessionView.ok) {
+        return await cancel("compact_error", sessionView.error.reason);
+      }
 
-    const mapping = mapFirstKeptToEntryId(
-      preview.firstKeptMessageId,
-      sessionView.value,
-      deps.findSeedEntryMap(event.branchEntries, sessionView.value.threadId),
-      event.branchEntries,
-      deps.piSessionId ?? "",
-    );
-    if ("mappingFailed" in mapping) {
-      return await cancel("mapping_failed", mapping.reason);
+      const mapped = mapFirstKeptToEntryId(
+        preview.firstKeptMessageId,
+        sessionView.value,
+        deps.findSeedEntryMap(event.branchEntries, sessionView.value.threadId),
+        event.branchEntries,
+        deps.piSessionId ?? "",
+      );
+      if ("mappingFailed" in mapped) {
+        return await cancel("mapping_failed", mapped.reason);
+      }
+      mapping = mapped;
     }
 
     const compactOutcome = await deps.instance.sdk.threadView.compact(deps.state.threadRef, {

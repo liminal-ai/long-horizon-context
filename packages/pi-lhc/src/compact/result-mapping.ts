@@ -5,10 +5,31 @@ import type { LhcSeedEntryMap } from "./seed-entry-map.js";
 
 export interface FirstKeptMapping {
   firstKeptEntryId: string;
-  origin: "live" | "seeded";
+  origin: "live" | "seeded" | "summary_only";
 }
 
 export type FirstKeptMappingResult = { mappingFailed: true; reason: string } | FirstKeptMapping;
+
+/**
+ * Host-only splice when LHC evicted every PI-mappable tail message.
+ *
+ * Pi's CompactionResult.firstKeptEntryId is a required string. buildContextEntries
+ * (vendor/pi session-manager) keeps pre-compaction entries only after that id is
+ * found on the path; an unmatched id yields [compaction summary] + later entries.
+ * This sentinel cannot collide with Pi uuidv7/randomUUID entry ids, so it is the
+ * explicit "no kept raw tail" cut. Do not point at preparation.firstKeptEntryId:
+ * that would retain the oversized raw turn the selector just evicted.
+ */
+export const SUMMARY_ONLY_FIRST_KEPT_ENTRY_ID = "pi-lhc:summary-only" as const;
+
+/** True empty mappable tail: compact point advanced, but no PI-mappable message remains past it. */
+export function isSummaryOnlyTail(preview: { compactPoint: number; firstKeptMessageId: string | null }): boolean {
+  return preview.firstKeptMessageId === null && preview.compactPoint > 0;
+}
+
+export function summaryOnlyFirstKeptMapping(): FirstKeptMapping {
+  return { firstKeptEntryId: SUMMARY_ONLY_FIRST_KEPT_ENTRY_ID, origin: "summary_only" };
+}
 
 function branchEntryIds(branchEntries: readonly SessionEntry[]): Set<string> {
   const ids = new Set<string>();
