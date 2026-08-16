@@ -2671,7 +2671,10 @@ async fn seed_escalation_turn(ref_: &ThreadRef) {
             },
         ),
     ];
-    for i in 1..=3 {
+    // Selector eviction can raise the compact point into later closed fixture
+    // turns. Keep enough unprotected bulk in the open tail for a genuine
+    // escalation walk.
+    for i in 1..=10 {
         let id = format!("call-old-{i}");
         events.push(valid_event(
             kind::TOOL_CALL,
@@ -2693,7 +2696,7 @@ async fn seed_escalation_turn(ref_: &ThreadRef) {
             ToolResultOverrides {
                 payload: Some(ToolResultPayload {
                     tool_call_id: id,
-                    content: format!("old bulky data {i} ").repeat(1500),
+                    content: format!("old bulky data {i} ").repeat(2000),
                     is_error: Some(false),
                 }),
                 ..Default::default()
@@ -2753,11 +2756,27 @@ fn escalation_facts(attempt_id: &str, safe_runway_threshold: i64) -> CompactCont
     };
     facts.policy = CompactContinuationPolicy {
         upper_trigger_tokens: 100_000,
-        lower_target_tokens: 500_000,
+        // High enough that a successful prune is not classified degraded
+        // solely for missing the lower target after selector eviction.
+        lower_target_tokens: 5_000_000,
         host_capability: CompactContinuationHostCapability::FullStateMachine,
         safe_runway_threshold_tokens: Some(safe_runway_threshold),
         safe_runway_threshold_source: Some("host_safe_runway".into()),
     };
+    // Keep the fixture turns in the full tail so selector eviction cannot
+    // band later closed turns (those would report missing derivations).
+    facts.compact = Some(lhc::compact_continuation::HostCompactOpts {
+        profile: None,
+        params: Some(ViewCompactParams {
+            lower_bound: Some(1_000_000.0),
+            percentages: Some(PartialViewProfilePercentages {
+                full: Some(100.0),
+                smooth: Some(0.0),
+                detailed: Some(0.0),
+                brief: Some(0.0),
+            }),
+        }),
+    });
     facts
 }
 
@@ -2910,4 +2929,60 @@ async fn unsafe_runway_after_maximal_prune_refuses_truthfully() {
         .expect("pending boundary");
     assert_eq!(pending.status, BoundaryStatus::FailedRepairable);
     assert!(!pending.marker_persisted);
+}
+
+#[tokio::test]
+async fn stale_boundary_preview_is_clamped_to_prepared_compact_point() {
+    let store = temp_store();
+    let fixture = derived_thread_fixture(
+        &store,
+        DerivedThreadOptions {
+            failures: Some(false),
+        },
+    )
+    .await;
+    let path = fixture.file_path.clone();
+    let ref_ = ThreadRef::file_path(&path);
+    seed_escalation_turn(&ref_).await;
+    let stored_point = thread_view::describe(ref_.clone())
+        .await
+        .expect_ok()
+        .map(|v| v.compact_point)
+        .unwrap_or(0);
+    let prepared = thread_view::prepare_compact(
+        ref_.clone(),
+        CompactOpts {
+            profile: None,
+            params: None,
+            signal: None,
+        },
+    )
+    .await
+    .expect_ok();
+    // High target: first preview stays at the stored compact point (0).
+    let preview = thread_view::preview_protected_boundary(
+        ref_.clone(),
+        vec![PROTECTED_ID.to_string()],
+        lhc::thread_view::internal::protected_boundary::ProtectedBoundaryOpts {
+            target_zone_tokens: Some(10_000_000),
+            compact_point_override: None,
+        },
+    )
+    .await
+    .expect_ok();
+    assert!(prepared.selection.compact_point > stored_point);
+    assert!(preview.proposed_boundary < prepared.selection.compact_point);
+
+    let mut facts = escalation_facts("stale-boundary-clamp-1", 10_000_000);
+    // Same default-profile prepare as above (not the 100% full escalation bag).
+    facts.compact = None;
+    let result = run_compact_continuation(ref_, facts).await.expect_ok();
+    assert!(
+        result
+            .receipt
+            .residual
+            .visibility_boundary_after
+            .unwrap_or(0)
+            >= prepared.selection.compact_point
+    );
 }

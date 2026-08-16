@@ -1702,6 +1702,11 @@ async function runCompactContinuationInner(
         material = applyMaterialHooks(emptyMaterial(), hooks);
       } else {
         prepared = prep.value;
+        // Preview used the stored compact point; prepare may have snapped a
+        // newer one. A boundary behind that point fails install.
+        if (proposedVisibilityBoundary !== null && proposedVisibilityBoundary < prepared.selection.compactPoint) {
+          proposedVisibilityBoundary = prepared.selection.compactPoint;
+        }
         const candidate = await createDbReadTransaction(ref, (tx) =>
           assembleCandidateFromPrepared(tx.db, prepared!, facts.policy.lowerTargetTokens, {
             ...(proposedVisibilityBoundary !== null ? { boundaryPositionOverride: proposedVisibilityBoundary } : {}),
@@ -1736,6 +1741,7 @@ async function runCompactContinuationInner(
         ) {
           const maximalPreview = await threadView.previewProtectedBoundary(ref, {
             protectedToolCallIds: protectedIds,
+            compactPointOverride: prepared.selection.compactPoint,
           });
           if (!maximalPreview.ok) {
             const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
@@ -1753,6 +1759,12 @@ async function runCompactContinuationInner(
             });
             if (maxPrep.ok) {
               prepared = maxPrep.value;
+              if (
+                proposedVisibilityBoundary !== null &&
+                proposedVisibilityBoundary < prepared.selection.compactPoint
+              ) {
+                proposedVisibilityBoundary = prepared.selection.compactPoint;
+              }
               const maxCandidate = await createDbReadTransaction(ref, (tx) =>
                 assembleCandidateFromPrepared(tx.db, prepared!, facts.policy.lowerTargetTokens, {
                   boundaryPositionOverride: proposedVisibilityBoundary!,
