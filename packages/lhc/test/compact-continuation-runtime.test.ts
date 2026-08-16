@@ -1617,13 +1617,16 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
       validEvent("user_prompt", { payload: { text: "sustained tool work" } }),
       validEvent("assistant_text", { payload: { text: "running the long tool loop" } }),
     ];
-    for (let i = 1; i <= 3; i++) {
+    // Selector eviction can raise the compact point into later closed fixture
+    // turns. Preserve only bands behind that point, so the open tail still
+    // needs enough unprotected bulk for a genuine escalation walk.
+    for (let i = 1; i <= 10; i++) {
       events.push(
         validEvent("tool_call", {
           payload: { toolCallId: `call-old-${i}`, toolName: "read_file", arguments: { path: `old-${i}.txt` } },
         }),
         validEvent("tool_result", {
-          payload: { toolCallId: `call-old-${i}`, content: `old bulky data ${i} `.repeat(1500), isError: false },
+          payload: { toolCallId: `call-old-${i}`, content: `old bulky data ${i} `.repeat(2000), isError: false },
         }),
       );
     }
@@ -1653,7 +1656,9 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
       postMeasurementEstimate: { tokens: 2000, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
       policy: {
         upperTriggerTokens: 100000,
-        lowerTargetTokens: 500000,
+        // High enough that a successful prune is not classified degraded
+        // solely for missing the lower target after selector eviction.
+        lowerTargetTokens: 5_000_000,
         hostCapability: "full_state_machine",
         safeRunwayThresholdTokens,
         safeRunwayThresholdSource: "host_safe_runway",
@@ -1662,6 +1667,12 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
         kind: "pending_correlated_tool_result",
         protectedToolCallIds: [PROTECTED_ID],
         correlationValid: true,
+      },
+      // Keep the 12-turn fixture in the full tail so selector eviction cannot
+      // band later closed turns (those would report missing derivations).
+      // Escalation still has to prune the open-turn unprotected bulk.
+      compact: {
+        params: { lowerBound: 1_000_000, percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 } },
       },
     });
   }
@@ -1767,5 +1778,34 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     if (!pending.ok) return;
     expect(pending.value?.status).toBe("failed_repairable");
     expect(pending.value?.markerPersisted).toBe(false);
+  });
+
+  it("stale_boundary_preview_is_clamped_to_prepared_compact_point", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedEscalationTurn(fixture.filePath);
+    const storedPoint = (await fixture.sdk.threadView.describe({ filePath: fixture.filePath })).value
+      ?.compactPoint ?? 0;
+    const prepared = await fixture.sdk.threadView.prepareCompact({ filePath: fixture.filePath });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    // High target: first preview stays at the stored compact point (0).
+    const preview = await fixture.sdk.threadView.previewProtectedBoundary(
+      { filePath: fixture.filePath },
+      { protectedToolCallIds: [PROTECTED_ID], targetZoneTokens: 10_000_000 },
+    );
+    expect(preview.ok).toBe(true);
+    if (!preview.ok) return;
+    expect(prepared.value.selection.compactPoint).toBeGreaterThan(storedPoint);
+    expect(preview.value.proposedBoundary).toBeLessThan(prepared.value.selection.compactPoint);
+
+    const result = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      { ...escalationFacts("stale-boundary-clamp-1", 10_000_000), compact: undefined },
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.receipt.residual.visibilityBoundaryAfter).toBeGreaterThanOrEqual(
+      prepared.value.selection.compactPoint,
+    );
   });
 });
