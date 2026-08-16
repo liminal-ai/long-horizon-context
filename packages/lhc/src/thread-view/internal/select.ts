@@ -256,6 +256,7 @@ export const PI_MAPPABLE_MESSAGE_KINDS = [
   "tool_result",
   "model_change",
   "thinking_level_change",
+  "compact_continuation_marker",
 ] as const;
 
 const PI_MAPPABLE_KIND_SET: ReadonlySet<string> = new Set(PI_MAPPABLE_MESSAGE_KINDS);
@@ -263,9 +264,7 @@ const PI_MAPPABLE_KIND_SET: ReadonlySet<string> = new Set(PI_MAPPABLE_MESSAGE_KI
 function straddlingTurnStaysInFull(
   fullSideTokens: number,
   turnTokens: number,
-  evictionWouldEmptyFull: boolean,
 ): boolean {
-  if (evictionWouldEmptyFull) return true;
   const smoothSideTokens = turnTokens - fullSideTokens;
   return fullSideTokens >= smoothSideTokens;
 }
@@ -339,8 +338,7 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
       return previousClose(candidate);
     }
 
-    // A partially-covered closed turn straddles the full-budget line. Keep it
-    // whole in full when evicting it would leave no live tail; otherwise round
+    // A partially-covered closed turn straddles the full-budget line. Round
     // toward the side holding at least half of the turn's tokens (ties stay in
     // full). The split is at the exact budget line, even when that line falls
     // inside the crossing message's estimate.
@@ -350,13 +348,7 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
       .filter((message) => candidate.closedAt !== null && message.order > candidate.closedAt)
       .reduce((total, message) => total + message.tokenEstimate, 0);
     const fullSideTokens = Math.max(0, Math.min(turnTokens, fullBudget - newerTokens));
-    // Empty = no mappable live messages past the candidate — runtime_note alone
-    // does not count as a rebuildable tail.
-    const evictionWouldEmptyFull = !messages.some(
-      (message) =>
-        candidate.closedAt !== null && message.order > candidate.closedAt && PI_MAPPABLE_KIND_SET.has(message.kind),
-    );
-    if (straddlingTurnStaysInFull(fullSideTokens, turnTokens, evictionWouldEmptyFull)) {
+    if (straddlingTurnStaysInFull(fullSideTokens, turnTokens)) {
       return previousClose(candidate);
     }
     return candidate.closedAt ?? 0;
