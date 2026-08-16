@@ -23,8 +23,8 @@ export type FirstKeptMappingResult = { mappingFailed: true; reason: string } | F
 export const SUMMARY_ONLY_FIRST_KEPT_ENTRY_ID = "pi-lhc:summary-only" as const;
 
 /** True empty mappable tail: compact point advanced, but no PI-mappable message remains past it. */
-export function isSummaryOnlyTail(preview: { compactPoint: number; firstKeptMessageId: string | null }): boolean {
-  return preview.firstKeptMessageId === null && preview.compactPoint > 0;
+export function isSummaryOnlyTail(selection: { compactPoint: number; firstKeptMessageId: string | null }): boolean {
+  return selection.firstKeptMessageId === null && selection.compactPoint > 0;
 }
 
 export function summaryOnlyFirstKeptMapping(): FirstKeptMapping {

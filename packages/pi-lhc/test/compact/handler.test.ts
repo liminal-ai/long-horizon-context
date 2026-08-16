@@ -59,6 +59,7 @@ function mockInstance(
     previewOk?: boolean;
     compactOk?: boolean;
     compactError?: string;
+    compactReceipt?: ReturnType<typeof makeCompactReceipt>;
     sessionViewOk?: boolean;
     servingContext?: LlmRequestContext;
     servingContextOk?: boolean;
@@ -75,7 +76,7 @@ function mockInstance(
         },
       };
     }
-    return { ok: true as const, value: makeCompactReceipt() };
+    return { ok: true as const, value: overrides.compactReceipt ?? makeCompactReceipt() };
   });
   const previewSpy = vi.fn(async (_ref: unknown, _opts?: { signal?: { aborted: boolean } }) => {
     if (overrides.previewOk === false) {
@@ -318,6 +319,7 @@ describe("handleSessionBeforeCompact", () => {
         kind: "ok",
         preview: { compactPoint: 6, wouldProduceBands: true, tailTokens: 0, firstKeptMessageId: null },
       },
+      compactReceipt: makeCompactReceipt({ compactPoint: 6, tailTokens: 0, firstKeptMessageId: null }),
     });
     const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
       state: createSessionState({ threadId: "th_test" }),
@@ -334,6 +336,50 @@ describe("handleSessionBeforeCompact", () => {
     expect(result.compaction?.firstKeptEntryId).toBe("pi-lhc:summary-only");
     expect(result.compaction?.summary).toContain("[context · brief]");
     expect(mocks.compactSpy).toHaveBeenCalledOnce();
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("uses the installed receipt when preview was empty but compact kept a firstKept", async () => {
+    const mocks = mockInstance({
+      preview: {
+        kind: "ok",
+        preview: { compactPoint: 6, wouldProduceBands: true, tailTokens: 0, firstKeptMessageId: null },
+      },
+      compactReceipt: makeCompactReceipt({ compactPoint: 6, firstKeptMessageId: "m14" }),
+    });
+    const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
+      state: createSessionState({ threadId: "th_test" }),
+      instance: mocks.instance as never,
+      piSessionId: "th_test",
+      flushPendingCapture: mocks.flushSpy,
+      getSessionView: async () => mocks.sessionView() as never,
+      findSeedEntryMap: () => null,
+      recordCancel: (d) => {
+        diagnostics.push(d);
+      },
+    });
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction?.firstKeptEntryId).toBe("entry_3");
+    expect(diagnostics).toEqual([]);
+  });
+
+  it("uses the installed empty tail when preview still had a firstKept", async () => {
+    const mocks = mockInstance({
+      compactReceipt: makeCompactReceipt({ compactPoint: 6, tailTokens: 0, firstKeptMessageId: null }),
+    });
+    const result = await handleSessionBeforeCompact(makeBeforeCompactEvent(), ctx, {
+      state: createSessionState({ threadId: "th_test" }),
+      instance: mocks.instance as never,
+      piSessionId: "th_test",
+      flushPendingCapture: mocks.flushSpy,
+      getSessionView: async () => mocks.sessionView() as never,
+      findSeedEntryMap: () => null,
+      recordCancel: (d) => {
+        diagnostics.push(d);
+      },
+    });
+    expect(result.cancel).toBeUndefined();
+    expect(result.compaction?.firstKeptEntryId).toBe("pi-lhc:summary-only");
     expect(diagnostics).toEqual([]);
   });
 
