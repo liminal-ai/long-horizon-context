@@ -516,7 +516,6 @@ pub const PI_MAPPABLE_MESSAGE_KINDS: [&str; 8] = [
     "compact_continuation_marker",
 ];
 
-
 /// TS `band: "detailed" | "brief"` accepted by `buildChunkEntry`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChunkEntryBand {
