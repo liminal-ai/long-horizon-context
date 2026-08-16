@@ -5,9 +5,9 @@
 mod fixtures;
 
 use fixtures::{
-    AssistantTextOverrides, AssistantTextPayload, RuntimeNoteOverrides, RuntimeNotePayload,
-    TempStore, TurnEndOverrides, UserPromptOverrides, UserPromptPayload, kind, open_raw,
-    temp_store, valid_event,
+    AssistantTextOverrides, AssistantTextPayload, CompactContinuationMarkerOverrides,
+    RuntimeNoteOverrides, RuntimeNotePayload, TempStore, TurnEndOverrides, UserPromptOverrides,
+    UserPromptPayload, kind, open_raw, temp_store, valid_event,
 };
 use indexmap::IndexMap;
 use lhc::create_deterministic_inference_callbacks;
@@ -246,17 +246,20 @@ async fn oversized_final_turn(remove_open_turn: bool) -> PreviewCompactResult {
 }
 
 #[tokio::test]
-async fn keeps_an_oversized_newest_closed_turn_ahead_of_an_empty_open_turn() {
+async fn evicts_an_oversized_newest_closed_turn_ahead_of_an_empty_open_turn() {
     let preview = oversized_final_turn(false).await;
-    assert_eq!(preview.compact_point, 3);
-    assert_eq!(preview.first_kept_message_id.as_deref(), Some("m4"));
+    // Token split puts most of t2 on the smooth side. Empty open turn is not
+    // a reason to keep t2 in full; tail starts after t2 close with no
+    // mappable messages.
+    assert_eq!(preview.compact_point, 6);
+    assert!(preview.first_kept_message_id.is_none());
 }
 
 #[tokio::test]
-async fn keeps_an_oversized_newest_closed_turn_when_there_is_no_open_turn() {
+async fn evicts_an_oversized_newest_closed_turn_when_there_is_no_open_turn() {
     let preview = oversized_final_turn(true).await;
-    assert_eq!(preview.compact_point, 3);
-    assert_eq!(preview.first_kept_message_id.as_deref(), Some("m4"));
+    assert_eq!(preview.compact_point, 6);
+    assert!(preview.first_kept_message_id.is_none());
 }
 
 #[test]
@@ -330,10 +333,9 @@ fn starts_the_tail_at_an_open_turn_even_when_the_budget_crosses_inside_it() {
 }
 
 #[test]
-fn treats_a_runtime_note_only_post_eviction_tail_as_empty_and_keeps_the_straddling_turn() {
-    // Same mid-thread token layout as compact_point_at(60) (would evict t2 on
-    // token split alone), but the only newer message is a runtime_note — not
-    // mappable, so the emptiness override keeps t2 in full.
+fn evicts_a_straddling_turn_even_when_the_only_newer_message_is_a_runtime_note() {
+    // Same mid-thread token layout as compact_point_at(60). A runtime_note is
+    // not mappable, but emptiness no longer overrides the token split.
     let turns = vec![
         SelectionTurn {
             turn_id: "t1".into(),
@@ -379,15 +381,15 @@ fn treats_a_runtime_note_only_post_eviction_tail_as_empty_and_keeps_the_straddli
     )
     .expect("select_arrangement");
 
-    assert_eq!(selection.compact_point, 3);
+    assert_eq!(selection.compact_point, 7);
 }
 
 #[tokio::test]
-async fn runtime_note_only_tail_keeps_straddling_turn_preview_anchor_is_non_null() {
+async fn runtime_note_only_tail_leaves_first_kept_message_id_null_after_token_split_eviction() {
     let store = temp_store();
     let (sdk, file_path) = new_sdk(&store).await;
-    // t1 small, t2 oversized (token-split would want eviction), open turn holds
-    // only a runtime_note — not mappable, so emptiness override keeps t2 in full.
+    // t1 small, t2 oversized (token-split evicts). Open turn holds only a
+    // runtime_note — not mappable, so the preview tail has no PI anchor.
     let captured = sdk
         .intake_stream
         .message_events(
@@ -467,9 +469,88 @@ async fn runtime_note_only_tail_keeps_straddling_turn_preview_anchor_is_non_null
             .await,
     );
 
-    // Override keeps t2 in full (compact point at t1 close); anchor is t2's
-    // first mappable message — never null solely because of a runtime_note tail.
-    assert_eq!(preview.compact_point, 3);
-    assert_eq!(preview.first_kept_message_id.as_deref(), Some("m4"));
+    assert_eq!(preview.compact_point, 6);
+    assert!(preview.first_kept_message_id.is_none());
+}
+
+#[tokio::test]
+async fn compact_continuation_marker_is_mappable_and_anchors_first_kept_message_id() {
+    let store = temp_store();
+    let (sdk, file_path) = new_sdk(&store).await;
+    let captured = sdk
+        .intake_stream
+        .message_events(
+            ThreadRef::file_path(&file_path),
+            &[
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload {
+                            text: "small first turn".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_TEXT,
+                    AssistantTextOverrides {
+                        payload: Some(AssistantTextPayload::new("done")),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload {
+                            text: "large final turn".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_TEXT,
+                    AssistantTextOverrides {
+                        payload: Some(AssistantTextPayload::new("oversized ".repeat(1_000))),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(kind::TURN_END, TurnEndOverrides::default()),
+                valid_event(
+                    kind::COMPACT_CONTINUATION_MARKER,
+                    CompactContinuationMarkerOverrides::default(),
+                ),
+            ],
+        )
+        .await;
+    if !captured.is_ok() {
+        let OpResult::Err { error } = captured else {
+            unreachable!()
+        };
+        panic!("{}", error.reason);
+    }
+
+    let preview = ok_preview(
+        sdk.thread_view
+            .preview_compact(
+                ThreadRef::file_path(&file_path),
+                CompactOpts {
+                    profile: None,
+                    params: Some(ViewCompactParams {
+                        lower_bound: Some(120.0),
+                        percentages: Some(PartialViewProfilePercentages {
+                            full: Some(25.0),
+                            smooth: Some(25.0),
+                            detailed: Some(25.0),
+                            brief: Some(25.0),
+                        }),
+                    }),
+                    signal: None,
+                },
+            )
+            .await,
+    );
+
+    assert_eq!(preview.compact_point, 6);
     assert!(preview.first_kept_message_id.is_some());
 }

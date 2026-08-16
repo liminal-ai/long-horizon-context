@@ -505,7 +505,7 @@ pub struct SelectionConfig {
 /// Excludes runtime_note (and any future non-mappable kinds). Shared with the
 /// first-kept-message lookup in compact-compute so "empty tail" means the same
 /// thing in both places.
-pub const PI_MAPPABLE_MESSAGE_KINDS: [&str; 7] = [
+pub const PI_MAPPABLE_MESSAGE_KINDS: [&str; 8] = [
     "user_prompt",
     "assistant_text",
     "assistant_thinking",
@@ -513,6 +513,7 @@ pub const PI_MAPPABLE_MESSAGE_KINDS: [&str; 7] = [
     "tool_result",
     "model_change",
     "thinking_level_change",
+    "compact_continuation_marker",
 ];
 
 /// TS `PI_MAPPABLE_KIND_SET` — insertion-ordered [`IndexSet`] collected directly
@@ -601,14 +602,7 @@ pub(crate) const DIAG_COVERAGE_GAP_REASON_CLOSE: &str = ")";
 
 /// Amendment I — `fullSideTokens` is the float budget-line split (TS `number`);
 /// do not truncate before comparing to the smooth side.
-fn straddling_turn_stays_in_full(
-    full_side_tokens: f64,
-    turn_tokens: i64,
-    eviction_would_empty_full: bool,
-) -> bool {
-    if eviction_would_empty_full {
-        return true;
-    }
+fn straddling_turn_stays_in_full(full_side_tokens: f64, turn_tokens: i64) -> bool {
     let smooth_side_tokens = turn_tokens as f64 - full_side_tokens;
     full_side_tokens >= smooth_side_tokens
 }
@@ -714,15 +708,7 @@ fn snap_compact_point(
     let full_side_tokens = (full_budget - newer_tokens as f64)
         .min(turn_tokens as f64)
         .max(0.0);
-    // Empty = no mappable live messages past the candidate — runtime_note alone
-    // does not count as a rebuildable tail.
-    let eviction_would_empty_full = !messages.iter().any(|message| {
-        candidate
-            .closed_at
-            .is_some_and(|closed_at| message.order > closed_at)
-            && PI_MAPPABLE_KIND_SET.contains(message.kind.as_str())
-    });
-    if straddling_turn_stays_in_full(full_side_tokens, turn_tokens, eviction_would_empty_full) {
+    if straddling_turn_stays_in_full(full_side_tokens, turn_tokens) {
         return Ok(previous_close(closed_turns, candidate));
     }
     Ok(candidate.closed_at.unwrap_or(0))

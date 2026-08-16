@@ -206,4 +206,5 @@ impl Drop for ClosingDb {
     }
 }
 
+#[cfg(feature = "test-util")]
 pub use compact_continuation_seam::*;
