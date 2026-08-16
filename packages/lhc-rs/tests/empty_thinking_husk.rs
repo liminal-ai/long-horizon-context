@@ -525,6 +525,7 @@ async fn does_not_reintroduce_husks_through_compacted_smooth_band_rendering() {
                     }),
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

@@ -427,6 +427,7 @@ pub async fn run_lifecycle(store: &TempStore, opts: LifecycleOptions) -> Lifecyc
                 profile: Some(LIFECYCLE_PROFILE.name.to_string()),
                 params: None,
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -561,6 +562,7 @@ pub async fn run_lifecycle(store: &TempStore, opts: LifecycleOptions) -> Lifecyc
                 profile: Some(LIFECYCLE_PROFILE.name.to_string()),
                 params: None,
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

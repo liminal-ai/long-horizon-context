@@ -199,6 +199,7 @@ async fn atomic_install_advances_view_and_boundary_together_and_stale_refuses() 
             profile: None,
             params: None,
             signal: None,
+            compact_point_upper_bound: None,
         },
     )
     .await
@@ -257,6 +258,7 @@ async fn atomic_install_advances_view_and_boundary_together_and_stale_refuses() 
             profile: None,
             params: None,
             signal: None,
+            compact_point_upper_bound: None,
         },
     )
     .await

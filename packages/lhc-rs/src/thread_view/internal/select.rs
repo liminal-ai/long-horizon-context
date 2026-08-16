@@ -499,6 +499,10 @@ pub struct SelectionConfig {
     /// Amendment I: TS `number` (fractional-capable).
     pub lower_bound: f64,
     pub percentages: ViewProfilePercentages,
+    /// Compact point must stay at or behind this event order (protected-pair
+    /// tail preservation).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub compact_point_upper_bound: Option<i64>,
 }
 
 /// Message kinds that can anchor a host session rebuild past the compact point.
@@ -1050,6 +1054,18 @@ pub fn select_arrangement(
                 full_budget,
             )?,
         };
+    }
+    if let Some(upper) = config.compact_point_upper_bound {
+        if compact_point > upper {
+            // Snap backward to the greatest legal closed-turn boundary <=
+            // the upper bound. Compact points must land on a real
+            // turn.closed_at (or 0); a raw numeric clamp could split a turn.
+            compact_point = closed_turns
+                .iter()
+                .filter_map(|t| t.closed_at.filter(|&c| c <= upper))
+                .max()
+                .unwrap_or(0);
+        }
     }
 
     // Band candidates: closed turns wholly behind the compact point. Rule 5 is

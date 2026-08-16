@@ -1850,6 +1850,7 @@ async fn execute_compact_paths(
             profile: facts.compact.as_ref().and_then(|c| c.profile.clone()),
             params: facts.compact.as_ref().and_then(|c| c.params.clone()),
             signal: None,
+            compact_point_upper_bound: None,
         };
         let prep0 = prepare_compact(ref_.clone(), prep_opts).await;
         if let OpResult::Ok { value: prep0 } = prep0 {
@@ -2353,21 +2354,12 @@ async fn execute_compact_paths(
             profile: facts.compact.as_ref().and_then(|c| c.profile.clone()),
             params: facts.compact.as_ref().and_then(|c| c.params.clone()),
             signal: None,
+            compact_point_upper_bound: proposed_visibility_boundary,
         };
         let prep = prepare_compact(ref_.clone(), prep_opts).await;
         match prep {
             OpResult::Ok { value } => {
                 prepared = Some(value);
-                // Preview used the stored compact point; prepare may have
-                // snapped a newer one. A boundary behind that point fails
-                // install.
-                if let (Some(boundary), Some(prep)) =
-                    (proposed_visibility_boundary, prepared.as_ref())
-                {
-                    if boundary < prep.selection.compact_point {
-                        proposed_visibility_boundary = Some(prep.selection.compact_point);
-                    }
-                }
                 if hooks.is_some_and(|h| h.fail_candidate_assembly) {
                     let rel =
                         release_own_writer_if_held(ref_.clone(), &facts.attempt_id, clock.clone())
@@ -2471,18 +2463,11 @@ async fn execute_compact_paths(
                                     profile: facts.compact.as_ref().and_then(|c| c.profile.clone()),
                                     params: facts.compact.as_ref().and_then(|c| c.params.clone()),
                                     signal: None,
+                                    compact_point_upper_bound: proposed_visibility_boundary,
                                 };
                                 let max_prep = prepare_compact(ref_.clone(), max_prep_opts).await;
                                 if let OpResult::Ok { value: max_prep } = max_prep {
                                     prepared = Some(max_prep);
-                                    if let (Some(boundary), Some(prep)) =
-                                        (proposed_visibility_boundary, prepared.as_ref())
-                                    {
-                                        if boundary < prep.selection.compact_point {
-                                            proposed_visibility_boundary =
-                                                Some(prep.selection.compact_point);
-                                        }
-                                    }
                                     let boundary_override = proposed_visibility_boundary;
                                     let max_candidate = create_db_read_transaction(ref_.clone(), {
                                         let prepared = prepared.clone().expect("prepared just set");

@@ -813,6 +813,7 @@ async fn uninstalled_the_point_is_a_no_op() {
                         &SelectionConfig {
                             lower_bound,
                             percentages,
+                            compact_point_upper_bound: None,
                         },
                     )
                     .expect("fractional selection arrangement");
@@ -821,6 +822,7 @@ async fn uninstalled_the_point_is_a_no_op() {
                         &SelectionConfig {
                             lower_bound,
                             percentages: truncated_percentages,
+                            compact_point_upper_bound: None,
                         },
                     )
                     .expect("truncated selection arrangement");
@@ -844,6 +846,7 @@ async fn uninstalled_the_point_is_a_no_op() {
                         &SelectionConfig {
                             lower_bound,
                             percentages,
+                            compact_point_upper_bound: None,
                         },
                     )
                     .expect("selection arrangement");
@@ -1028,6 +1031,7 @@ async fn compact_with_profile(
                 }),
             }),
             signal: None,
+            compact_point_upper_bound: None,
         },
     )
     .await;

@@ -833,6 +833,8 @@ export type PrepareCompactOptions = {
    * install options or assembleCandidate override.
    */
   visibilityBoundaryOverride?: number;
+  /** Cap selection so compactPoint never advances past this event order. */
+  compactPointUpperBound?: number;
 };
 
 function buildPreparedFromArrangement(
@@ -1028,6 +1030,9 @@ export async function prepareCompact(
     const computed = computeArrangement(db, transaction, merged, {
       signal: opts.signal,
       includeChunkMaterials: true,
+      ...(opts.compactPointUpperBound !== undefined
+        ? { compactPointUpperBound: opts.compactPointUpperBound }
+        : {}),
     });
     if (!computed.ok) return computed;
 

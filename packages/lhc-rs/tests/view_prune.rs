@@ -278,6 +278,7 @@ async fn starts_from_the_compact_point_boundary_and_prunes_only_the_tail_zone() 
                     percentages: None,
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

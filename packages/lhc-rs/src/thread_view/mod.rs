@@ -182,6 +182,9 @@ pub struct CompactOpts {
     pub profile: Option<String>,
     pub params: Option<ViewCompactParams>,
     pub signal: Option<CompactAbortSignal>,
+    /// Compact point must stay at or behind this event order (protected-pair
+    /// tail preservation).
+    pub compact_point_upper_bound: Option<i64>,
 }
 
 /// TS `params?: { targetTokens?: number }` — JS number (may be fractional;
@@ -992,6 +995,7 @@ pub async fn preview_compact(
                 &ComputeArrangementOpts {
                     signal,
                     include_chunk_materials: false,
+                    compact_point_upper_bound: None,
                 },
             );
             match computed {
@@ -1540,6 +1544,7 @@ pub async fn prepare_compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<Pre
             &ComputeArrangementOpts {
                 signal: opts.signal.clone(),
                 include_chunk_materials: true,
+                compact_point_upper_bound: opts.compact_point_upper_bound,
             },
         );
         let OpResult::Ok { value: computed } = computed else {

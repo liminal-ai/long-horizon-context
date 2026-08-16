@@ -261,6 +261,7 @@ async fn bands_brief_detailed_smooth_with_labels_then_the_tail_repeated_contexts
                 profile: None,
                 params: Some(gradient_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -366,6 +367,7 @@ async fn every_model_context_message_appears_in_the_file_same_order_same_text_re
                 profile: None,
                 params: Some(gradient_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
@@ -619,6 +621,7 @@ async fn header_line_entry_shape_parentid_chain_message_encoding_all_validate() 
                 profile: None,
                 params: Some(gradient_params()),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;

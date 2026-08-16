@@ -137,6 +137,28 @@ describe("compact full-band boundary rounding", () => {
     expect(compactPointAt(60)).toBe(7);
   });
 
+  it("compactPointUpperBound keeps the compact point behind a later event order", () => {
+    // Token split at 60 would evict t2 (compactPoint=7). The bound keeps the
+    // point at t1 close so later events stay in the full tail.
+    const selection = selectArrangement(selectionInputs(MID_THREAD_TURNS, MID_THREAD_MESSAGES), {
+      lowerBound: 60,
+      percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
+      compactPointUpperBound: 3,
+    });
+    expect(selection.compactPoint).toBe(3);
+  });
+
+  it("compactPointUpperBound snaps to the greatest closed-turn boundary, not a raw clamp", () => {
+    // Upper bound 5 is inside t2 (closedAt=7). The greatest legal
+    // closed-turn boundary <= 5 is t1.closedAt=3, not 5 itself.
+    const selection = selectArrangement(selectionInputs(MID_THREAD_TURNS, MID_THREAD_MESSAGES), {
+      lowerBound: 60,
+      percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
+      compactPointUpperBound: 5,
+    });
+    expect(selection.compactPoint).toBe(3);
+  });
+
   it("keeps a mid-thread straddling turn on an exact 50/50 split", () => {
     expect(compactPointAt(70)).toBe(3);
   });

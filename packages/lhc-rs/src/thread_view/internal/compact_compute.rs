@@ -54,6 +54,8 @@ pub struct ArrangementComputeResult {
 pub struct ComputeArrangementOpts {
     pub signal: Option<CompactAbortSignal>,
     pub include_chunk_materials: bool,
+    /// Compact point must stay at or behind this event order.
+    pub compact_point_upper_bound: Option<i64>,
 }
 
 /// Re-read `.aborted` each call so a getter-based / atomic signal stays live
@@ -193,6 +195,7 @@ pub fn compute_arrangement(
         &SelectionConfig {
             lower_bound: merged.lower_bound,
             percentages: merged.percentages.clone(),
+            compact_point_upper_bound: opts.compact_point_upper_bound,
         },
     ) {
         Ok(selection) => selection,

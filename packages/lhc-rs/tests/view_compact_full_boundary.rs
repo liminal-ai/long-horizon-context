@@ -118,6 +118,7 @@ fn compact_point_at(full_budget: i64) -> i64 {
                 detailed: 0.0,
                 brief: 0.0,
             },
+            compact_point_upper_bound: None,
         },
     )
     .expect("select_arrangement");
@@ -239,6 +240,7 @@ async fn oversized_final_turn(remove_open_turn: bool) -> PreviewCompactResult {
                         }),
                     }),
                     signal: None,
+                    compact_point_upper_bound: None,
                 },
             )
             .await,
@@ -270,6 +272,46 @@ fn keeps_a_mid_thread_straddling_turn_when_most_of_its_tokens_are_on_the_full_si
 #[test]
 fn evicts_a_mid_thread_straddling_turn_when_most_of_its_tokens_are_on_the_smooth_side() {
     assert_eq!(compact_point_at(60), 7);
+}
+
+#[test]
+fn compact_point_upper_bound_keeps_compact_point_behind_a_later_event_order() {
+    let selection = select_arrangement(
+        &selection_inputs(mid_thread_turns(), mid_thread_messages()),
+        &SelectionConfig {
+            lower_bound: 60.0,
+            percentages: ViewProfilePercentages {
+                full: 100.0,
+                smooth: 0.0,
+                detailed: 0.0,
+                brief: 0.0,
+            },
+            compact_point_upper_bound: Some(3),
+        },
+    )
+    .unwrap();
+    assert_eq!(selection.compact_point, 3);
+}
+
+#[test]
+fn compact_point_upper_bound_snaps_to_greatest_closed_turn_boundary() {
+    // Upper bound 5 is inside t2 (closed_at=7). The greatest legal
+    // closed-turn boundary <= 5 is t1.closed_at=3.
+    let selection = select_arrangement(
+        &selection_inputs(mid_thread_turns(), mid_thread_messages()),
+        &SelectionConfig {
+            lower_bound: 60.0,
+            percentages: ViewProfilePercentages {
+                full: 100.0,
+                smooth: 0.0,
+                detailed: 0.0,
+                brief: 0.0,
+            },
+            compact_point_upper_bound: Some(5),
+        },
+    )
+    .unwrap();
+    assert_eq!(selection.compact_point, 3);
 }
 
 #[test]
@@ -325,6 +367,7 @@ fn starts_the_tail_at_an_open_turn_even_when_the_budget_crosses_inside_it() {
                 detailed: 0.0,
                 brief: 0.0,
             },
+            compact_point_upper_bound: None,
         },
     )
     .expect("select_arrangement");
@@ -377,6 +420,7 @@ fn evicts_a_straddling_turn_even_when_the_only_newer_message_is_a_runtime_note()
                 detailed: 0.0,
                 brief: 0.0,
             },
+            compact_point_upper_bound: None,
         },
     )
     .expect("select_arrangement");
@@ -464,6 +508,7 @@ async fn runtime_note_only_tail_leaves_first_kept_message_id_null_after_token_sp
                         }),
                     }),
                     signal: None,
+                    compact_point_upper_bound: None,
                 },
             )
             .await,
@@ -546,6 +591,7 @@ async fn compact_continuation_marker_is_mappable_and_anchors_first_kept_message_
                         }),
                     }),
                     signal: None,
+                    compact_point_upper_bound: None,
                 },
             )
             .await,

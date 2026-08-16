@@ -480,6 +480,7 @@ async fn resets_a_seeded_boundary_to_the_compact_point_with_a_full_fresh_tail() 
                     percentages: None,
                 }),
                 signal: None,
+                compact_point_upper_bound: None,
             },
         )
         .await;
