@@ -242,7 +242,7 @@ describe("planRecovery", () => {
     ).toBe("retry_observation");
   });
 
-  it("owned view_installed → reconcile installed view (no duplicate compact); absent view → refuse", () => {
+  it("owned view_installed → reconcile installed view (no duplicate compact); absent view re-observes (finding 11), never refuses", () => {
     const base = {
       receiptId: "r1",
       handoffOutcome: { kind: "scheduled" } as const,
@@ -252,10 +252,12 @@ describe("planRecovery", () => {
     expect(planRecovery({ ...base, observed: { self: SELF, viewInstalled: "present" } }).kind).toBe(
       "reconcile_installed_view",
     );
-    expect(planRecovery({ ...base, observed: { self: SELF, viewInstalled: "absent" } }).kind).toBe("terminal_refuse");
+    // Finding 11: a stage/view contradiction is a re-observe (bounded) state, never
+    // an automatic terminal refusal.
+    expect(planRecovery({ ...base, observed: { self: SELF, viewInstalled: "absent" } }).kind).toBe("retry_observation");
   });
 
-  it("view_installed uses exact current-view identity: matching fp reconciles; contradiction refuses; none refuses; unreadable retries", () => {
+  it("view_installed uses exact current-view identity: matching fp reconciles; contradiction/none re-observe (finding 11); unreadable retries", () => {
     const base = {
       receiptId: "r1",
       handoffOutcome: { kind: "scheduled" } as const,
@@ -267,16 +269,17 @@ describe("planRecovery", () => {
         observed: { self: SELF, currentView: { kind: "present", viewId: "v9", fingerprint: "fp-installed" } },
       }).kind,
     ).toBe("reconcile_installed_view");
-    // A view present but with a different fingerprint than recorded contradicts the stage.
+    // A view present but with a different fingerprint than recorded contradicts the
+    // stage — re-observe, never auto-terminal (finding 11).
     expect(
       planRecovery({
         ...base,
         observed: { self: SELF, currentView: { kind: "present", viewId: "v9", fingerprint: "fp-other" } },
       }).kind,
-    ).toBe("terminal_refuse");
-    // No stored view at all under view_installed is a contradiction.
+    ).toBe("retry_observation");
+    // No stored view at all under view_installed is a contradiction → re-observe.
     expect(planRecovery({ ...base, observed: { self: SELF, currentView: { kind: "none" } } }).kind).toBe(
-      "terminal_refuse",
+      "retry_observation",
     );
     // Transient read failure is a retry, not terminal.
     expect(
@@ -284,7 +287,7 @@ describe("planRecovery", () => {
     ).toBe("retry_observation");
   });
 
-  it("owned rollout_written → verify/reuse rollout; missing rollout is not terminal", () => {
+  it("owned rollout_written → verify/reuse rollout; missing rollout/session reconciles (finding 11), never terminal", () => {
     const base = {
       receiptId: "r1",
       handoffOutcome: { kind: "scheduled" } as const,
@@ -297,14 +300,15 @@ describe("planRecovery", () => {
     expect(planRecovery({ ...base, observed: { self: SELF, rolloutPresent: "absent" } }).kind).toBe(
       "reconcile_installed_view",
     );
-    // structural contradiction: stage says written but no session id recorded
+    // Finding 11: stage says written but no session id recorded — a storage
+    // inconsistency reconciled from the installed view, never an auto terminal_refuse.
     expect(
       planRecovery({
         ...base,
         attempt: attemptAt("rollout_written", { artifacts: {} }),
         observed: { self: SELF },
       }).kind,
-    ).toBe("terminal_refuse");
+    ).toBe("reconcile_installed_view");
   });
 
   it("owned old_child_exited → continue/reconcile (a live old child is repairable, never terminal-refuse)", () => {

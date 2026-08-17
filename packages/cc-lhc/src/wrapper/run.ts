@@ -1,3 +1,4 @@
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -37,10 +38,13 @@ import {
   type GovernorReceiptStore,
   type GovernorRuntimeState,
   isTerminalHandoffOutcome,
+  type JournalChainSegment,
+  journalChain,
   loadContextPolicy,
   noteGovernorInput,
   type ObservedFact,
   openGovernorReceiptStore,
+  pendingPreparedGenerations,
   planRecovery,
   policySourcesSummary,
   projectConfigPath,
@@ -49,7 +53,7 @@ import {
   type RecoveryAttempt,
   type RecoveryObservation,
   type RecoveryStage,
-  type ReplacementGeneration,
+  type ReplacementGenerationEvent,
   type ResolvedContextPolicy,
   recoveryStageIndex,
   setGovernorCaptureHealth,
@@ -102,6 +106,7 @@ import {
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { forceKillChildTree, requestPtyTermination, runTaskkillTree } from "./child-termination.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
+import { writeDurableArtifact } from "./durable-artifact.js";
 import {
   DEFAULT_CAPTURE_READY_TIMEOUT_MS,
   DEFAULT_CHILD_LIVENESS_TIMEOUT_MS,
@@ -114,11 +119,12 @@ import {
   type HandoffResult,
   type RecoveryArtifact,
 } from "./handoff.js";
-import { planJournalDisposition, planRestartTerminal } from "./handoff-restart.js";
+import { type ChainSegmentState, chainDisposition } from "./handoff-restart.js";
 import { createInputDebugLogger } from "./input-debug.js";
 import {
   createInputJournal,
   type InputJournal,
+  type InputJournalDeps,
   readInputJournal,
   removeInputJournal,
   reopenInputJournalForDelivery,
@@ -253,6 +259,13 @@ export type RunOptions = {
    */
   readProcessIdentity?: ProbeProcessIdentity;
   /**
+   * Test seam: fs primitives for the input-journal create/reopen/remove paths, so
+   * a test can inject write/fsync/unlink failures to exercise the exactly-once
+   * delivery + cleanup contracts (LIM-80 3B2 findings 2/6). Production leaves this
+   * undefined and the journal uses the native fs.
+   */
+  inputJournalDeps?: InputJournalDeps;
+  /**
    * Test hook: projects root the concrete recovery port uses to compute reserved
    * rollout paths (defaults to ~/.claude/projects). Must match the path the
    * rollout writer produces so the reserved/written paths agree.
@@ -290,6 +303,23 @@ function governorOutcomesEqual(a: GovernorHandoffOutcome, b: GovernorHandoffOutc
   if (ak.length !== Object.keys(b).length) return false;
   return ak.every((k) => (a as Record<string, unknown>)[k] === (b as Record<string, unknown>)[k]);
 }
+
+/**
+ * A restart controlled replacement proved the current PTY is no longer the exact
+ * old-session child it recorded (died / reused pid / a stranger took the terminal).
+ * Thrown from terminateOldChild to ABORT the handoff before any signal or spawn.
+ */
+class RestartOldChildIdentityChangedError extends Error {
+  constructor(pid: number, detail: string) {
+    super(`restart old-session child identity changed before kill (pid=${pid}: ${detail}); aborted`);
+    this.name = "RestartOldChildIdentityChangedError";
+  }
+}
+
+/** The exact preCommitGate cancel reason for "fresh user input arrived pre-commit".
+ * A restart cancel with THIS reason is stale-user-input (terminalizes handoff_cancelled);
+ * any other cancel reason (capture/modal/respawn-unavailable) stays open/retryable. */
+const PRECOMMIT_INPUT_ARRIVED_REASON = "input arrived before commit";
 
 /** Map a controlled-handoff result to its durable governor outcome. Pure. */
 function governorOutcomeFromHandoffResult(
@@ -374,6 +404,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let lastAttempt: { summary: string; atMs: number } | null = null;
   /** Exact self/owner identity probe (LIM-80 recovery). */
   const readProcessIdentity: ProbeProcessIdentity = options.readProcessIdentity ?? probeProcessIdentityNative;
+  // Test seam for the input-journal fs primitives (undefined in production).
+  const journalDeps: InputJournalDeps | undefined = options.inputJournalDeps;
   /** Receipts with a recovery pass currently running (single-flight coalescing). */
   const recoveryInFlight = new Set<string>();
   /** Bounded recovery retry counters per receipt (no busy-loop). */
@@ -1942,11 +1974,19 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     interface RestartReestablish {
       receiptId: string;
       attemptId: string;
+      /** Stable id shared by this generation's PREPARED + READY events. */
+      generationId: string;
       priorArtifacts: RecoveryArtifacts;
       currentStage: RecoveryStage;
+      /** The exact old-session child identity proven at continuation start. */
+      expectedOldChild: ProcessIdentity;
       /** True when `id` is kernel-proven absent (exact identity not_found). */
       probeAbsent: (id: ProcessIdentity) => boolean;
-      /** Play any pre-crash pending bytes into the child FIRST; returns the count. */
+      /**
+       * Play the pre-crash journal CHAIN into the child FIRST, in order, before this
+       * generation's fresh barrier; returns the total bytes delivered. Throws on the
+       * send ambiguity (never auto-replayed).
+       */
       deliverPriorPendingFirst: (child: HandoffChild) => number;
     }
 
@@ -1990,7 +2030,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           }
           if (exited) return "wrapper exiting";
           if (oldCaptureSnapshot === undefined) return "capture not available";
-          if (inputEpochChanged()) return "input arrived before commit";
+          if (inputEpochChanged()) return PRECOMMIT_INPUT_ARRIVED_REASON;
           if (oldCaptureSnapshot.isTurnOpen()) return "turn opened during rebuild";
           if (!oldCaptureSnapshot.isCaptureReady()) return "capture not ready";
           if (oldCaptureSnapshot.getCaptureGeneration() !== leaseGeneration) {
@@ -2038,11 +2078,31 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         },
         terminateOldChild: async (): Promise<{ exited: boolean; escalated: boolean }> => {
           const pty = currentPty;
+          // Finding 7: re-read the EXACT identity immediately before signalling. A
+          // restart controlled replacement must never SIGTERM/kill a process that is
+          // no longer the exact old-session child it proved (died, reused pid, or an
+          // unrelated same-thread session took the terminal). A mismatch/unavailable
+          // ABORTS the handoff — throw so executeHandoff returns `failed` (open) with
+          // the prepared journal retained; never signal a stranger, never spawn.
+          if (restart !== undefined) {
+            const now = readProcessIdentity(pty.pid);
+            if (!now.ok || !identitiesEqual(now.identity, restart.expectedOldChild)) {
+              throw new RestartOldChildIdentityChangedError(pty.pid, now.ok ? "identity changed" : now.code);
+            }
+          }
           expectedExitPty = pty;
           const initial = requestPtyTermination(pty, process.platform, "SIGTERM");
           wrapperLog.info(`cc-lhc handoff: requested child termination pid=${pty.pid} via ${initial.method}`);
           const graceful = await waitForExpectedExit(sigtermGraceMs);
           if (graceful) return { exited: true, escalated: false };
+          // Re-prove exact identity again before ESCALATING to a force kill.
+          if (restart !== undefined) {
+            const now = readProcessIdentity(pty.pid);
+            if (!now.ok || !identitiesEqual(now.identity, restart.expectedOldChild)) {
+              expectedExitPty = null;
+              throw new RestartOldChildIdentityChangedError(pty.pid, now.ok ? "identity changed" : now.code);
+            }
+          }
           const forced = await forceKillChildTree(pty.pid, {
             platform: process.platform,
             selfPid: process.pid,
@@ -2190,11 +2250,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const store = governorReceiptStore;
 
       // Case-B re-establishment stage port (LIM-80 3B2). Unlike the fresh port it
-      // NEVER rewrites the immutable original identities (oldChild / replacementChild
-      // / journal): it APPENDS one `respawn` recovery generation carrying this
-      // generation's exact identities, and it tolerates stage "regression" because a
-      // restart revisits earlier milestones on an attempt that is already at a late
-      // stage — the durable stage index is held at its recorded high-water mark.
+      // NEVER rewrites the immutable original identities: it APPENDS a two-phase
+      // recovery generation to the event log — a PREPARED event (exact old child +
+      // this generation's own journal) BEFORE the barrier, then a READY event (exact
+      // replacement) after proof. It tolerates stage "regression" because a restart
+      // revisits earlier milestones on an attempt already at a late stage — the
+      // durable stage index is held at its recorded high-water mark.
       const buildRestartStages = (): HandoffRecoveryStagePort | undefined => {
         if (restart === undefined || store === null) return undefined;
         const r = restart;
@@ -2212,25 +2273,38 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             stage: highWater(m),
             ...(artifacts === undefined ? {} : { artifacts }),
           });
-        const proveActiveAbsent = (): { ok: true } | { ok: false; reason: string } => {
+        // Finding 2/4: never spawn a duplicate while the prior active replacement OR
+        // any earlier prepared-but-unready old child may still live.
+        const provePriorsAbsent = (): { ok: true } | { ok: false; reason: string } => {
           const priorActive = activeReplacementIdentity(r.priorArtifacts);
           if (priorActive !== undefined && !r.probeAbsent(priorActive)) {
-            return {
-              ok: false,
-              reason: "prior active replacement is live/indeterminate; will not append a generation",
-            };
+            return { ok: false, reason: "prior active replacement is live/indeterminate; refuse to append" };
+          }
+          for (const pending of pendingPreparedGenerations(r.priorArtifacts)) {
+            if (!r.probeAbsent(pending.oldChild)) {
+              return {
+                ok: false,
+                reason: `earlier prepared old child ${pending.generationId} live/indeterminate; refuse to append`,
+              };
+            }
           }
           return { ok: true };
         };
         return {
           prepareBarrier: (): { ok: true } | { ok: false; reason: string } => {
-            // Never spawn a duplicate while the prior active replacement may live.
-            const active = proveActiveAbsent();
-            if (!active.ok) return active;
+            const priors = provePriorsAbsent();
+            if (!priors.ok) return priors;
             const probed = readProcessIdentity(currentPty.pid);
             if (!probed.ok)
               return { ok: false, reason: `old-session child identity ${probed.code}: ${probed.message}` };
+            if (!identitiesEqual(probed.identity, r.expectedOldChild)) {
+              return { ok: false, reason: "old-session child identity changed since continuation start" };
+            }
             restartOldChildIdentity = probed.identity;
+            // Safe ordering (finding 2): durable JOURNAL FILE -> durable PREPARED
+            // EVENT -> barrier. A DEFINITE store rejection did not reference the
+            // journal -> remove the unreferenced file. An INDETERMINATE thrown store
+            // write MAY reference it -> RETAIN the orphan and cancel; never proceed.
             let journal: InputJournal;
             try {
               journal = createInputJournal({
@@ -2241,9 +2315,40 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                   oldSessionId: request.oldSessionId,
                   rebuiltSessionId: request.rebuilt.sessionId,
                 },
+                ...(journalDeps === undefined ? {} : { deps: journalDeps }),
               });
             } catch (cause) {
               return { ok: false, reason: `generation journal create failed: ${stageDetail(cause)}` };
+            }
+            const preparedEvent: ReplacementGenerationEvent = {
+              kind: "respawn_prepared",
+              generationId: r.generationId,
+              originAttemptId: r.attemptId,
+              oldChild: probed.identity,
+              journalPath: journal.path,
+              journalId: journal.journalId,
+            };
+            const priorEvents = r.priorArtifacts.replacementGenerationEvents ?? [];
+            let adv: ReturnType<typeof store.advanceAttempt>;
+            try {
+              adv = advance("old_child_exited", {
+                replacementGenerationEvents: [...priorEvents, preparedEvent],
+              });
+            } catch (cause) {
+              journal.close();
+              wrapperLog.warn(
+                `cc-lhc handoff: restart PREPARED write INDETERMINATE; retaining orphan journal ${journal.path}: ${stageDetail(cause)}`,
+              );
+              return { ok: false, reason: `restart prepared write indeterminate: ${stageDetail(cause)}` };
+            }
+            if (adv.kind !== "advanced" && adv.kind !== "unchanged") {
+              journal.close();
+              try {
+                removeInputJournal(journal.path, journalDeps);
+              } catch {
+                // best effort — the file has no delivered bytes and is unreferenced
+              }
+              return { ok: false, reason: `restart prepared CAS ${adv.kind}` };
             }
             restartGenerationJournal = journal;
             handoffInputJournal = journal;
@@ -2259,20 +2364,31 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           recordReplacementReady: (): { ok: true } | { ok: false; reason: string } => {
             const probed = readProcessIdentity(currentPty.pid);
             if (!probed.ok) return { ok: false, reason: `replacement identity ${probed.code}: ${probed.message}` };
-            // Re-prove prior active absence at the final gate (finding 1/2): never
-            // append a new generation while a different recorded identity may live.
-            const active = proveActiveAbsent();
-            if (!active.ok) return active;
-            const prevGens = r.priorArtifacts.replacementGenerations ?? [];
-            const gen: ReplacementGeneration = {
+            // Re-prove prior absence at the final gate (finding 1/2): never append a
+            // READY while a different recorded identity may live.
+            const priors = provePriorsAbsent();
+            if (!priors.ok) return priors;
+            const readyEvent: ReplacementGenerationEvent = {
+              kind: "respawn_ready",
+              generationId: r.generationId,
+              originAttemptId: r.attemptId,
               replacement: probed.identity,
-              via: "respawn",
-              ...(restartOldChildIdentity === undefined ? {} : { oldChild: restartOldChildIdentity }),
-              ...(restartGenerationJournal === null
-                ? {}
-                : { journalPath: restartGenerationJournal.path, journalId: restartGenerationJournal.journalId }),
             };
-            const adv = advance("replacement_ready", { replacementGenerations: [...prevGens, gen] });
+            const priorEvents = r.priorArtifacts.replacementGenerationEvents ?? [];
+            // The PREPARED event was appended in prepareBarrier; append READY after it.
+            const withPrepared: ReplacementGenerationEvent[] = [
+              ...priorEvents,
+              {
+                kind: "respawn_prepared",
+                generationId: r.generationId,
+                originAttemptId: r.attemptId,
+                oldChild: restartOldChildIdentity!,
+                journalPath: restartGenerationJournal!.path,
+                journalId: restartGenerationJournal!.journalId,
+              },
+              readyEvent,
+            ];
+            const adv = advance("replacement_ready", { replacementGenerationEvents: withPrepared });
             if (adv.kind !== "advanced" && adv.kind !== "unchanged") {
               return { ok: false, reason: `restart replacement_ready advance ${adv.kind}` };
             }
@@ -2294,8 +2410,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       };
 
       if (restart !== undefined) {
-        // Deliver pre-crash pending bytes FIRST, then this generation's fresh
-        // barrier through its OWN journal: recovered input never lands after fresh.
+        // Deliver the pre-crash journal CHAIN FIRST (in order), then this
+        // generation's fresh barrier through its OWN journal: recovered input never
+        // lands after fresh input.
         const restartRef = restart;
         ports.flushInputBarrier = (child: HandoffChild): number => {
           const priorBytes = restartRef.deliverPriorPendingFirst(child);
@@ -2332,6 +2449,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                         oldSessionId: request.oldSessionId,
                         rebuiltSessionId: request.rebuilt.sessionId,
                       },
+                      ...(journalDeps === undefined ? {} : { deps: journalDeps }),
                     });
                   } catch (cause) {
                     return { ok: false, reason: `input journal create failed: ${stageDetail(cause)}` };
@@ -2352,6 +2470,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                         oldChild: probed.identity,
                         inputJournalPath: journal.path,
                         inputJournalId: journal.journalId,
+                        // Immutable origin: a reclaim mints a new attempt id, but every
+                        // later journal read must prove the header still names THIS one.
+                        inputJournalOriginAttemptId: recovery.attemptId,
                       },
                     });
                   } catch (cause) {
@@ -2364,7 +2485,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                   if (adv.kind !== "advanced" && adv.kind !== "unchanged") {
                     journal.close();
                     try {
-                      removeInputJournal(journal.path);
+                      removeInputJournal(journal.path, journalDeps);
                     } catch {
                       // best effort — the file has no delivered bytes and is unreferenced
                     }
@@ -2485,7 +2606,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             // Delete ONLY after the terminal attempt+receipt completion is durable;
             // the unlink also fsyncs the directory removal where supported.
             try {
-              removeInputJournal(journalToSettle.path);
+              removeInputJournal(journalToSettle.path, journalDeps);
             } catch (cause) {
               wrapperLog.warn(
                 `cc-lhc handoff: delivered journal cleanup failed (retained): ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -2886,61 +3007,199 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       );
     };
 
-    /** Read a journal by STABLE identity (receipt + sessions + journalId); attemptId
-     * is intentionally omitted because a reclaim mints a new one while the header
-     * keeps the original. Returns null for a legacy attempt with no journal. */
-    const readRestartJournal = (
+    // ── Ordered input-journal chain (LIM-80 3B2, findings 3/8/9) ──────────
+    // A restart must inspect EVERY journal segment — the original 3B1 journal AND
+    // each respawn-prepared generation journal — in chain order, proving exact
+    // binding + origin-attempt ancestry, never only `inputJournalPath`.
+    type SegmentRead =
+      | {
+          ok: true;
+          segment: JournalChainSegment;
+          state: "pending" | "delivering" | "delivered";
+          bytes: number;
+          headerAttemptId: string;
+        }
+      | { ok: false; segment: JournalChainSegment; reason: string };
+
+    const readChainSegment = (
+      seg: JournalChainSegment,
       a: RecoveryAttempt["artifacts"],
       receiptId: string,
-    ): ReturnType<typeof readInputJournal> | null => {
-      if (a.inputJournalPath === undefined) return null;
-      const read = readInputJournal(a.inputJournalPath);
-      if (!read.ok) return read;
-      if (
-        read.header.receiptId !== receiptId ||
-        read.header.oldSessionId !== a.oldSessionId ||
-        read.header.rebuiltSessionId !== a.rebuiltSessionId ||
-        (a.inputJournalId !== undefined && read.header.journalId !== a.inputJournalId)
-      ) {
-        return { ok: false, reason: "journal stable binding mismatch" };
+    ): SegmentRead => {
+      // Finding 9: a segment without a recorded origin attempt id is legacy — it can
+      // never be trusted across a reclaim; treat it as repairable, never accepted.
+      if (seg.originAttemptId === undefined) {
+        return { ok: false, segment: seg, reason: "legacy journal without origin attempt id" };
       }
-      return read;
+      const read = readInputJournal(seg.path);
+      if (!read.ok) return { ok: false, segment: seg, reason: read.reason };
+      const h = read.header;
+      if (
+        h.receiptId !== receiptId ||
+        h.oldSessionId !== (a.oldSessionId ?? "") ||
+        h.rebuiltSessionId !== a.rebuiltSessionId ||
+        (seg.journalId !== undefined && h.journalId !== seg.journalId) ||
+        h.attemptId !== seg.originAttemptId
+      ) {
+        return { ok: false, segment: seg, reason: "journal binding/ancestry mismatch" };
+      }
+      return { ok: true, segment: seg, state: read.state, bytes: read.chunks.length, headerAttemptId: h.attemptId };
     };
 
-    /** Concise, byte-free restart artifact for operator visibility. */
+    const readChainSegments = (a: RecoveryAttempt["artifacts"], receiptId: string): SegmentRead[] =>
+      journalChain(a).map((seg) => readChainSegment(seg, a, receiptId));
+
+    /** Reduce the I/O segment reads to the pure disposition inputs, then classify.
+     * The `label` is the segment's journal path so a blocked/repairable artifact
+     * names the ACTUAL failing/delivering segment (finding 5). */
+    const dispositionOf = (reads: SegmentRead[]): ReturnType<typeof chainDisposition> =>
+      chainDisposition(
+        reads.map(
+          (r): ChainSegmentState =>
+            r.ok
+              ? { ok: true, label: r.segment.path, state: r.state, bytes: r.bytes }
+              : { ok: false, label: r.segment.path, reason: r.reason },
+        ),
+      );
+
+    /**
+     * Deliver every PENDING chain segment to the current child, in chain order.
+     * Delivered segments are skipped (their bytes were already sent). On ANY throw
+     * during markDelivering/child.write/markDelivered, close and RE-READ that exact
+     * segment (finding 2): `delivered` means it landed — count it and continue;
+     * `pending` means no write began — safe to retry the whole chain (a previously
+     * delivered earlier segment is skipped next pass, so no duplicate send);
+     * `delivering`/unreadable is the indeterminate send ambiguity — never replay.
+     */
+    const deliverChainToCurrent = (
+      reads: SegmentRead[],
+      a: RecoveryAttempt["artifacts"],
+      receiptId: string,
+    ):
+      | { ok: true; newBytes: number }
+      | { ok: false; reason: string; ambiguous: boolean; retry: boolean; path: string } => {
+      let newBytes = 0;
+      for (const r of reads) {
+        if (!r.ok || r.state !== "pending" || r.bytes === 0) continue;
+        const reopened = reopenInputJournalForDelivery(
+          r.segment.path,
+          {
+            receiptId,
+            attemptId: r.headerAttemptId,
+            oldSessionId: a.oldSessionId ?? "",
+            rebuiltSessionId: a.rebuiltSessionId!,
+          },
+          journalDeps,
+        );
+        if (!reopened.ok) {
+          return {
+            ok: false,
+            reason: `journal reopen failed: ${reopened.reason}`,
+            ambiguous: false,
+            retry: true,
+            path: r.segment.path,
+          };
+        }
+        const handle = reopened.handle;
+        try {
+          handle.markDelivering(); // durable BEFORE any byte reaches the child
+          if (handle.chunks.length > 0) {
+            currentPty.write(handle.chunks.toString("latin1"));
+            inputState = noteUntrackedDeliveredInput(inputState, handle.chunks);
+          }
+          handle.markDelivered(); // durable AFTER the child write returns
+          newBytes += handle.chunks.length;
+          handle.close();
+        } catch (cause) {
+          handle.close();
+          const reread = readChainSegment(r.segment, a, receiptId);
+          if (reread.ok && reread.state === "delivered") {
+            newBytes += reread.bytes; // it actually completed before the throw
+            continue;
+          }
+          if (reread.ok && reread.state === "pending") {
+            return {
+              ok: false,
+              reason: `delivery threw, segment pending (retryable): ${recoveryDetailOf(cause)}`,
+              ambiguous: false,
+              retry: true,
+              path: r.segment.path,
+            };
+          }
+          return {
+            ok: false,
+            reason: `delivery ambiguous (segment ${reread.ok ? reread.state : "unreadable"}): ${recoveryDetailOf(cause)}`,
+            ambiguous: true,
+            retry: false,
+            path: r.segment.path,
+          };
+        }
+      }
+      return { ok: true, newBytes };
+    };
+
+    /** Dispose every chain journal segment after a durable terminal (findings 4/5). */
+    const disposeChain = (a: RecoveryAttempt["artifacts"], receiptId: string): void => {
+      for (const seg of journalChain(a)) {
+        try {
+          removeInputJournal(seg.path, journalDeps);
+        } catch (cause) {
+          wrapperLog.warn(
+            `cc-lhc governor: restart ${receiptId} journal segment cleanup failed (retained ${seg.path}): ${recoveryDetailOf(cause)}`,
+          );
+        }
+      }
+    };
+
+    /**
+     * Byte-free restart artifact (LIM-80 3B2, finding 10), deduplicated by a STABLE
+     * condition key that intentionally OMITS the per-process attempt id — a reclaim
+     * mints a new attempt id but must not fork a new artifact for the same condition.
+     * `segments` lists every unresolved journal segment (finding 4); `journal` points
+     * to the single failing/delivering segment (finding 5). The durable write itself
+     * lives in durable-artifact.ts (fsync + directory barrier + partial-failure
+     * cleanup). A write failure returns null (loud/open), never a silent success.
+     */
     const writeRestartArtifact = (
       receiptId: string,
       attempt: RecoveryAttempt,
       reason: string,
       journal?: { path: string; state: string; indeterminate: boolean },
+      segments?: readonly string[],
     ): string | null => {
+      const body = {
+        receiptId,
+        stage: attempt.stage,
+        rebuiltSessionId: attempt.artifacts.rebuiltSessionId,
+        oldSessionId: attempt.artifacts.oldSessionId,
+        reason,
+        ...(journal === undefined
+          ? {}
+          : {
+              inputJournalPath: journal.path,
+              inputJournalState: journal.state,
+              deliveryIndeterminate: journal.indeterminate,
+            }),
+        ...(segments === undefined ? {} : { unresolvedJournalSegments: [...segments] }),
+      };
+      // Full SHA-256 (no truncation): a legitimate hash collision at this
+      // content-addressed path is not a practical case, so a differing existing file
+      // is treated as crash-torn and recovered by the durable writer.
+      const key = createHash("sha256")
+        .update(
+          JSON.stringify({
+            receiptId,
+            stage: attempt.stage,
+            reason,
+            journal: journal?.path ?? null,
+            state: journal?.state ?? null,
+            segments: segments === undefined ? null : [...segments],
+          }),
+        )
+        .digest("hex");
+      const path = join(recoveryDirPath(), `restart-${receiptId}-${key}.json`);
       try {
-        const dir = recoveryDirPath();
-        mkdirSync(dir, { recursive: true });
-        const path = join(dir, `restart-${receiptId}-${Date.now()}-${process.pid}.json`);
-        writeFileSync(
-          path,
-          `${JSON.stringify(
-            {
-              receiptId,
-              attemptId: attempt.attemptId,
-              stage: attempt.stage,
-              rebuiltSessionId: attempt.artifacts.rebuiltSessionId,
-              oldSessionId: attempt.artifacts.oldSessionId,
-              reason,
-              ...(journal === undefined
-                ? {}
-                : {
-                    inputJournalPath: journal.path,
-                    inputJournalState: journal.state,
-                    deliveryIndeterminate: journal.indeterminate,
-                  }),
-            },
-            null,
-            2,
-          )}\n`,
-          { mode: 0o600 },
-        );
+        writeDurableArtifact(path, `${JSON.stringify(body, null, 2)}\n`);
         return path;
       } catch (cause) {
         wrapperLog.warn(`cc-lhc governor: restart artifact write failed: ${recoveryDetailOf(cause)}`);
@@ -2966,23 +3225,26 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       return !probed.ok && probed.code === "not_found";
     };
 
-    /** Every recorded replacement identity: the immutable original + each generation. */
+    /** Every recorded REPLACEMENT identity: the immutable original + each READY event. */
     const recordedReplacementIdentities = (a: RecoveryAttempt["artifacts"]): ProcessIdentity[] => {
       const out: ProcessIdentity[] = [];
       if (a.replacementChild !== undefined) out.push(a.replacementChild);
-      for (const gen of a.replacementGenerations ?? []) out.push(gen.replacement);
+      for (const ev of a.replacementGenerationEvents ?? []) {
+        if (ev.kind === "adopt_ready" || ev.kind === "respawn_ready") out.push(ev.replacement);
+      }
       return out;
     };
 
-    /** Byte-free journal artifact metadata for an operator restart artifact. */
+    /** Byte-free journal artifact metadata (origin segment) for operator visibility. */
     const journalMetaOf = (
       a: RecoveryAttempt["artifacts"],
       receiptId: string,
     ): { path: string; state: string; indeterminate: boolean } | undefined => {
-      const jr = readRestartJournal(a, receiptId);
-      return jr?.ok === true
-        ? { path: a.inputJournalPath!, state: jr.state, indeterminate: jr.state === "delivering" }
-        : undefined;
+      if (a.inputJournalPath === undefined) return undefined;
+      const seg = journalChain(a).find((s) => s.source === "origin");
+      if (seg === undefined) return undefined;
+      const read = readChainSegment(seg, a, receiptId);
+      return read.ok ? { path: seg.path, state: read.state, indeterminate: read.state === "delivering" } : undefined;
     };
 
     const leaveRestartOpen = (
@@ -2997,23 +3259,25 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     };
 
     /**
-     * Case-B controlled replacement (LIM-80 3B2, finding 3): the wrapper relaunched
-     * on the OLD session, so the recorded rebuilt replacement is lost. Re-establish
-     * it by reusing the whole controlled primitive against the EXISTING rebuilt
-     * session + already-verified rollout (never a second compact, never a new
-     * reservation): prove the current old-session child, barrier, terminate, spawn,
-     * attach capture from rollout facts, prove capture-ready + stable + exact
-     * identity, then APPEND a `respawn` recovery generation. Fresh input during the
-     * window lands in this generation's OWN journal; any pre-crash pending bytes are
-     * played FIRST so recovered input never lands after fresh. Only terminal SUCCESS
-     * completes the attempt; every other result leaves it open for a later pass.
+     * Case-B controlled replacement (LIM-80 3B2, findings 3/5/6/8): the wrapper
+     * relaunched exactly on the OLD session, so the recorded rebuilt replacement is
+     * lost. Re-establish it by reusing the whole controlled primitive against the
+     * EXISTING rebuilt session + already-verified rollout (never a second compact,
+     * never a new reservation): a two-phase recovery generation (PREPARED before the
+     * barrier, READY after proof) plays the whole pre-crash journal CHAIN into the
+     * new child FIRST, then this generation's fresh barrier. Terminal SUCCESS and
+     * terminal ROLLBACK both complete durably with the truthful total byte count and
+     * dispose the chain; a pre-commit cancel (fresh input) terminalizes as CANCELLED
+     * on the still-live old session and never retries the now-stale rollout.
      */
     const restartControlledReplacement = async (
       receiptId: string,
       receipt: GovernorDurableReceipt,
       attempt: RecoveryAttempt,
       runtime: LhcCommandRuntime,
-      disposition: ReturnType<typeof planJournalDisposition>,
+      chainReads: SegmentRead[],
+      alreadyDeliveredBytes: number,
+      expectedOldChild: ProcessIdentity,
       startEpoch: number,
     ): Promise<void> => {
       const a = attempt.artifacts;
@@ -3048,40 +3312,60 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         metrics: { origin: "auto" },
       };
 
-      // Play the pre-crash pending bytes into the new child EXACTLY ONCE, marking the
-      // journal delivering->delivered across the send ambiguity. A throw is the send
-      // ambiguity and fails the handoff (never auto-replayed). Nothing to play unless
-      // the disposition is `deliver`.
-      const jr = readRestartJournal(a, receiptId);
-      const journalHeaderAttemptId = jr?.ok === true ? jr.header.attemptId : attemptId;
+      // Play the WHOLE pre-crash journal chain into the new child FIRST, in order,
+      // exactly once per pending segment (delivering->delivered across the send
+      // ambiguity). On ANY throw, close and RE-READ that exact segment (finding 2):
+      // `delivered` means it landed — count it and continue; otherwise re-throw so the
+      // handoff fails and the attempt stays open. The segment's on-disk state then
+      // governs the NEXT restart (pending -> deliver, delivering -> blocked), and
+      // already-delivered earlier segments are skipped there — no duplicate send.
       const deliverPriorPendingFirst = (child: HandoffChild): number => {
-        if (disposition.kind !== "deliver") return 0;
-        const reopened = reopenInputJournalForDelivery(a.inputJournalPath!, {
-          receiptId,
-          attemptId: journalHeaderAttemptId,
-          oldSessionId: a.oldSessionId ?? "",
-          rebuiltSessionId,
-        });
-        if (!reopened.ok) throw new Error(`prior journal reopen failed: ${reopened.reason}`);
-        const handle = reopened.handle;
-        try {
-          handle.markDelivering();
-          if (handle.chunks.length > 0) {
-            child.write(handle.chunks.toString("latin1"));
-            inputState = noteUntrackedDeliveredInput(inputState, handle.chunks);
+        let newBytes = 0;
+        for (const r of chainReads) {
+          if (!r.ok || r.state !== "pending" || r.bytes === 0) continue;
+          const reopened = reopenInputJournalForDelivery(
+            r.segment.path,
+            {
+              receiptId,
+              attemptId: r.headerAttemptId,
+              oldSessionId: a.oldSessionId ?? "",
+              rebuiltSessionId,
+            },
+            journalDeps,
+          );
+          if (!reopened.ok) throw new Error(`prior journal reopen failed: ${reopened.reason}`);
+          const handle = reopened.handle;
+          try {
+            handle.markDelivering();
+            if (handle.chunks.length > 0) {
+              child.write(handle.chunks.toString("latin1"));
+              inputState = noteUntrackedDeliveredInput(inputState, handle.chunks);
+            }
+            handle.markDelivered();
+            newBytes += handle.chunks.length;
+            handle.close();
+          } catch (cause) {
+            handle.close();
+            const reread = readChainSegment(r.segment, a, receiptId);
+            if (reread.ok && reread.state === "delivered") {
+              newBytes += reread.bytes; // it actually completed before the throw
+              continue;
+            }
+            throw new Error(
+              `chain segment delivery threw (segment ${reread.ok ? reread.state : "unreadable"}): ${recoveryDetailOf(cause)}`,
+            );
           }
-          handle.markDelivered();
-          return handle.chunks.length;
-        } finally {
-          handle.close();
         }
+        return newBytes;
       };
 
       const restart: RestartReestablish = {
         receiptId,
         attemptId,
+        generationId: randomUUID(),
         priorArtifacts: a,
         currentStage: attempt.stage,
+        expectedOldChild,
         probeAbsent: identityKernelAbsent,
         deliverPriorPendingFirst,
       };
@@ -3090,33 +3374,73 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         request,
         epochChanged,
         (r) => {
-          if (r.kind !== "success") return false; // non-success: leave the attempt open
-          const durable = completeGovernorAttempt(receiptId, attemptId, {
-            kind: "handoff_success",
-            newSessionId: r.newSessionId,
-            flushedInputBytes: r.flushedInputBytes,
-          });
-          if (durable) {
-            resetRecoveryRetries(receiptId);
-            // Clean the DELIVERED pre-crash journal only after durable terminal success.
-            if (a.inputJournalPath !== undefined) {
-              try {
-                removeInputJournal(a.inputJournalPath);
-              } catch (cause) {
-                wrapperLog.warn(
-                  `cc-lhc governor: restart ${receiptId} prior journal cleanup failed (retained): ${recoveryDetailOf(cause)}`,
-                );
-              }
+          // Finding 5/6/8: SUCCESS and ROLLBACK are BOTH durable terminals with the
+          // truthful total byte count (already-delivered chain + newly delivered),
+          // and dispose the whole chain. A pre-commit CANCEL (fresh input / capture
+          // not ready) is a durable CANCELLED on the still-live old session — never a
+          // retry of the now-stale rollout. A FAILED handoff stays open for a later pass.
+          if (r.kind === "success") {
+            const total = alreadyDeliveredBytes + r.flushedInputBytes;
+            const durable = completeGovernorAttempt(receiptId, attemptId, {
+              kind: "handoff_success",
+              newSessionId: r.newSessionId,
+              flushedInputBytes: total,
+            });
+            if (durable) {
+              resetRecoveryRetries(receiptId);
+              disposeChain(a, receiptId);
             }
+            return durable;
           }
-          return durable;
+          if (r.kind === "rolled_back") {
+            const total = alreadyDeliveredBytes + r.flushedInputBytes;
+            const durable = completeGovernorAttempt(receiptId, attemptId, {
+              kind: "handoff_rolled_back",
+              detail: `${r.reason}; ${total} input byte(s) observed/delivered across the handoff chain`,
+              oldSessionId: r.oldSessionId,
+            });
+            if (durable) {
+              resetRecoveryRetries(receiptId);
+              disposeChain(a, receiptId);
+            }
+            return durable;
+          }
+          if (r.kind === "cancelled") {
+            // Finding 4: ONLY a stale-user-input cancel terminalizes. Any other
+            // cancel (capture not ready / modal owns input / respawn unavailable) is
+            // transient — leave the attempt OPEN, never a stale-rollout terminal.
+            if (r.reason !== PRECOMMIT_INPUT_ARRIVED_REASON) return false;
+            // Point the operator artifact at every unresolved segment BEFORE the
+            // terminal; if the artifact cannot be written, leave the attempt open.
+            const segs = journalChain(a).map((s) => s.path);
+            const art = writeRestartArtifact(
+              receiptId,
+              attempt,
+              "stale rollout: user input arrived during re-establishment; old session continues",
+              undefined,
+              segs,
+            );
+            if (art === null) return false;
+            const durable = completeGovernorAttempt(receiptId, attemptId, {
+              kind: "handoff_cancelled",
+              detail: `restart controlled replacement cancelled (stale rollout, old session continues): ${r.reason}`,
+            });
+            if (durable) resetRecoveryRetries(receiptId);
+            return durable;
+          }
+          return false; // failed: leave the attempt open for a later pass
         },
         { receiptId, attemptId },
         restart,
       );
-      if (result.kind !== "success") {
-        // A pre-commit cancel (fresh input before commit / capture not ready) or a
-        // rollback/failure left the attempt OPEN — reconcile on a later pass.
+      // A FAILED handoff (incl. the identity-changed pre-kill abort) and a non-stale
+      // CANCEL (capture/modal/respawn-unavailable) both leave the attempt OPEN for a
+      // later pass with the prepared journal retained. A stale-input cancel already
+      // terminalized inside recordOutcome.
+      if (
+        result.kind === "failed" ||
+        (result.kind === "cancelled" && result.reason !== PRECOMMIT_INPUT_ARRIVED_REASON)
+      ) {
         leaveRestartOpen(receiptId, attempt, `controlled replacement ${result.kind}: ${formatHandoffResult(result)}`);
       }
     };
@@ -3124,12 +3448,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     /**
      * Restart continuation for an interrupted late handoff stage (LIM-80 3B2).
      * Re-verifies the whole rollout FIRST (no child/bookkeeping mutation if it is
-     * corrupt/missing), proves the current wrapper child's EXACT identity, and
-     * re-establishes a LOST replacement without ever rewriting the immutable
-     * originals: case A adopts the live rebuilt child as a new recovery generation;
-     * case B (relaunched on the old session) runs a controlled replacement that
-     * appends a `respawn` generation. Terminalizes success only under full proof;
-     * a different recorded replacement that is live/indeterminate always blocks.
+     * corrupt/missing), captures the input epoch, and walks the ORDERED journal
+     * chain (origin + generation segments) with exact binding + ancestry. It then
+     * re-establishes the LOST replacement without ever rewriting an immutable fact:
+     * case A (relaunched on the rebuilt session) adopts the live child as an
+     * `adopt_ready` generation and delivers the whole chain to it; case B (relaunched
+     * EXACTLY on the old session) runs a two-phase controlled replacement. A nonzero
+     * input epoch means user input already landed, so the reserved rollout is stale —
+     * case B cancels on the live old session, and case A refuses to send old bytes
+     * after fresh input. A live/indeterminate foreign replacement always blocks.
      */
     const restartContinue = async (
       receiptId: string,
@@ -3139,11 +3466,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     ): Promise<void> => {
       const a = attempt.artifacts;
       const attemptId = attempt.attemptId;
-      // Finding 4: capture the input epoch at the START, before any async work.
+      // Finding 6: capture the input epoch at the START, before any async work.
       const startEpoch = governorState.currentInputEpoch;
 
-      // Finding 9: a missing rebuilt session is a reconciliation state, not a
-      // terminal refusal.
+      // Finding 9/11: a missing rebuilt session is a reconciliation state, not terminal.
       if (a.rebuiltSessionId === undefined) {
         leaveRestartOpen(receiptId, attempt, "no rebuiltSessionId yet; awaiting reconciliation");
         return;
@@ -3151,20 +3477,21 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const rebuiltSessionId = a.rebuiltSessionId;
 
       // Finding 5: re-verify the WHOLE rollout FIRST. A corrupt/rewritten/missing
-      // rollout stays open/repairable with NO child mutation and NO bookkeeping
-      // mutation.
+      // rollout stays open/repairable with NO child mutation and NO bookkeeping mutation.
       const rolloutVerified = await verifyReservedRolloutReadOnly(a);
       if (!rolloutVerified) {
         leaveRestartOpen(receiptId, attempt, "rebuilt rollout not re-verified now", journalMetaOf(a, receiptId));
         return;
       }
 
-      const journalRead = readRestartJournal(a, receiptId);
-      const disposition = planJournalDisposition(journalRead);
+      // Findings 3/8/9: read the ORDERED journal chain (origin + each generation
+      // segment), proving exact binding + origin-attempt ancestry on every segment.
+      const chainReads = readChainSegments(a, receiptId);
+      const chain = dispositionOf(chainReads);
 
-      // Finding 1: prove the current wrapper child's EXACT identity through the
-      // native provider (never synthesized), and never terminalize/re-establish
-      // while a DIFFERENT recorded replacement identity is live or indeterminate.
+      // Finding 1: prove the current child's EXACT identity (never synthesized), and
+      // never terminalize / re-establish while a DIFFERENT recorded replacement
+      // identity is live or indeterminate.
       const currentChildProbe = readProcessIdentity(currentPty.pid);
       const currentIdentity = currentChildProbe.ok ? currentChildProbe.identity : undefined;
       const foreignLive = recordedReplacementIdentities(a).some(
@@ -3173,12 +3500,27 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const activeIdentity = activeReplacementIdentity(a);
 
       const threadMatch = runtime.threadRef !== undefined && threadIdFromRef(runtime.threadRef) === receipt.threadId;
-      const sessionOwned =
+      const onRebuilt =
         runtime.sourceSessionId === rebuiltSessionId && captureSession?.isCaptureReady() === true && threadMatch;
+      // Finding 6/7: case-B is legal ONLY when we are exactly on the recorded old
+      // session, same thread — never an unrelated same-thread session.
+      const onExactOldSession =
+        a.oldSessionId !== undefined && runtime.sourceSessionId === a.oldSessionId && threadMatch;
 
-      // ── Case B: the wrapper relaunched on the OLD session (or elsewhere): the
-      // recorded rebuilt replacement is lost — re-establish it (finding 3). ──
-      if (!sessionOwned) {
+      // ── Case B: the wrapper relaunched EXACTLY on the old session. ──
+      if (!onRebuilt) {
+        if (!onExactOldSession) {
+          leaveRestartOpen(
+            receiptId,
+            attempt,
+            "wrapper is on neither the rebuilt nor the exact recorded old session",
+            journalMetaOf(a, receiptId),
+          );
+          return;
+        }
+        // Finding 1 (ordering): a live/indeterminate recorded replacement ALWAYS keeps
+        // the attempt open and operator-visible — checked BEFORE the stale-input cancel,
+        // so fresh input can never terminalize past a replacement that may still exist.
         if (foreignLive) {
           leaveRestartOpen(
             receiptId,
@@ -3188,23 +3530,75 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           );
           return;
         }
-        if (disposition.kind === "blocked_indeterminate") {
+        // Finding 6: any accepted user input (nonzero epoch) means the reserved
+        // rollout is STALE — terminalize CANCELLED and keep the live old session,
+        // never retry the rollout. Finding 4: FIRST write a durable byte-free
+        // artifact pointing at every unresolved journal segment; if that write fails,
+        // leave the attempt OPEN rather than terminalize without the operator record.
+        if (startEpoch !== 0) {
+          const segs = journalChain(a).map((s) => s.path);
+          const art = writeRestartArtifact(
+            receiptId,
+            attempt,
+            "stale rollout: user input accepted before re-establishment; old session continues",
+            undefined,
+            segs,
+          );
+          if (art === null) {
+            scheduleRecoveryRetry(receiptId, "startup", "stale-rollout cancel artifact unwritten; left open");
+            return;
+          }
+          if (
+            completeGovernorAttempt(receiptId, attemptId, {
+              kind: "handoff_cancelled",
+              detail: "user input accepted before re-establishment; reserved rollout stale, old session continues",
+            })
+          ) {
+            resetRecoveryRetries(receiptId);
+          }
+          return;
+        }
+        if (chain.kind === "repairable") {
+          leaveRestartOpen(receiptId, attempt, `input journal chain repairable: ${chain.reason}`, {
+            path: chain.segment,
+            state: "unreadable",
+            indeterminate: false,
+          });
+          return;
+        }
+        if (chain.kind === "blocked") {
+          // Finding 5: name the ACTUAL delivering segment, not always the origin.
           leaveRestartOpen(receiptId, attempt, "pre-crash input delivery indeterminate; never auto-replay", {
-            path: a.inputJournalPath!,
+            path: chain.segment,
             state: "delivering",
             indeterminate: true,
           });
           return;
         }
-        if (disposition.kind === "open_repairable") {
-          leaveRestartOpen(receiptId, attempt, `input journal repairable: ${disposition.reason}`);
-          return;
-        }
-        if (disposition.kind === "no_journal") {
+        if (chain.kind === "empty") {
           leaveRestartOpen(receiptId, attempt, "no input journal for a post-commit attempt; cannot infer bytes absent");
           return;
         }
-        await restartControlledReplacement(receiptId, receipt, attempt, runtime, disposition, startEpoch);
+        // Prove the exact old-session child identity NOW (finding 7 pre-kill anchor).
+        if (!currentChildProbe.ok) {
+          leaveRestartOpen(
+            receiptId,
+            attempt,
+            `old-session child identity unavailable (${currentChildProbe.code})`,
+            journalMetaOf(a, receiptId),
+          );
+          return;
+        }
+        await restartControlledReplacement(
+          receiptId,
+          receipt,
+          attempt,
+          runtime,
+          chainReads,
+          chain.deliveredBytes,
+          currentIdentity!,
+          startEpoch,
+        );
         return;
       }
 
@@ -3227,9 +3621,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         );
         return;
       }
-      // Adopt the live child as a new recovery generation when it is not already the
-      // active one — but only after the prior active identity is kernel-proven absent
-      // (finding 2). The immutable original identities are never rewritten.
+      // Adopt the live child as a new `adopt_ready` generation when it is not already
+      // active — only after the prior active identity AND every earlier prepared old
+      // child are kernel-proven absent (findings 2/4). No immutable fact is rewritten.
       const currentIsActive = activeIdentity !== undefined && identitiesEqual(activeIdentity, currentIdentity!);
       if (!currentIsActive) {
         if (activeIdentity !== undefined && !identityKernelAbsent(activeIdentity)) {
@@ -3241,9 +3635,25 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           );
           return;
         }
+        for (const pending of pendingPreparedGenerations(a)) {
+          if (!identityKernelAbsent(pending.oldChild)) {
+            leaveRestartOpen(
+              receiptId,
+              attempt,
+              `earlier prepared old child ${pending.generationId} live/indeterminate; cannot adopt`,
+              journalMetaOf(a, receiptId),
+            );
+            return;
+          }
+        }
         if (governorReceiptStore !== null) {
-          const prevGens = a.replacementGenerations ?? [];
-          const nextGens: ReplacementGeneration[] = [...prevGens, { replacement: currentIdentity!, via: "adopt" }];
+          const priorEvents = a.replacementGenerationEvents ?? [];
+          const adoptEvent: ReplacementGenerationEvent = {
+            kind: "adopt_ready",
+            generationId: randomUUID(),
+            originAttemptId: attemptId,
+            replacement: currentIdentity!,
+          };
           const stageForAdopt: Exclude<RecoveryStage, "terminal"> =
             attempt.stage !== "terminal" && recoveryStageIndex(attempt.stage) >= recoveryStageIndex("replacement_ready")
               ? (attempt.stage as Exclude<RecoveryStage, "terminal">)
@@ -3253,7 +3663,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
               receiptId,
               attemptId,
               stage: stageForAdopt,
-              artifacts: { replacementGenerations: nextGens },
+              artifacts: { replacementGenerationEvents: [...priorEvents, adoptEvent] },
             });
             if (adv.kind !== "advanced" && adv.kind !== "unchanged") {
               leaveRestartOpen(receiptId, attempt, `adopt generation advance ${adv.kind}`, journalMetaOf(a, receiptId));
@@ -3306,120 +3716,82 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       }
       if (runtimeDescriptorReadyFor(rebuiltSessionId)) tryAdvanceStage(receiptId, attemptId, "descriptor_published");
 
-      // Terminal gate (finding 8): the current child's exact identity is now the
-      // active replacement generation (already active, or just adopted above), the
-      // session is the rebuilt session on the same thread with capture ready, no
-      // foreign replacement is live, and the rollout re-verified NOW.
-      const decision = planRestartTerminal({
-        currentChildIsExactActive: true,
-        rebuiltSessionCurrent: sessionOwned,
-        foreignReplacementLiveOrIndeterminate: foreignLive,
-        rolloutVerified: true,
-        journal: disposition,
-      });
-
-      const terminalSuccess = (flushedInputBytes: number): void => {
+      // Terminal gate (finding 8): the current child is the exact active generation,
+      // the session is the rebuilt session on the same thread with capture ready, no
+      // foreign replacement is live, and the rollout re-verified NOW. Deliver the full
+      // chain (in order) to this child, then terminalize with the truthful total.
+      const terminalSuccessWithDispose = (totalBytes: number): void => {
         if (
           completeGovernorAttempt(receiptId, attemptId, {
             kind: "handoff_success",
             newSessionId: rebuiltSessionId,
-            flushedInputBytes,
+            flushedInputBytes: totalBytes,
           })
         ) {
           resetRecoveryRetries(receiptId);
-          // Delete the delivered journal ONLY after terminal completion is durable.
-          if (a.inputJournalPath !== undefined) {
-            try {
-              removeInputJournal(a.inputJournalPath);
-            } catch (cause) {
-              wrapperLog.warn(
-                `cc-lhc governor: restart ${receiptId} journal cleanup failed (retained): ${recoveryDetailOf(cause)}`,
-              );
-            }
-          }
+          disposeChain(a, receiptId); // findings 4/5: dispose every delivered segment
         }
       };
 
-      switch (decision.kind) {
-        case "success": {
-          // Finding 6: a delivered journal reports its actual byte count, not zero.
-          const flushed = disposition.kind === "delivered" && journalRead?.ok === true ? journalRead.chunks.length : 0;
-          terminalSuccess(flushed);
-          return;
-        }
-        case "deliver_then_success": {
-          // Input-epoch isolation: never interleave recovered bytes with fresh
-          // user input or an active barrier, and never send to the wrong generation.
-          if (inputBarrier !== null) {
-            scheduleRecoveryRetry(receiptId, "startup", "barrier active; defer restart delivery");
-            return;
-          }
-          if (governorState.currentInputEpoch !== startEpoch) {
-            scheduleRecoveryRetry(receiptId, "startup", "input epoch advanced; defer restart delivery");
-            return;
-          }
-          const reopened = reopenInputJournalForDelivery(a.inputJournalPath!, {
-            receiptId,
-            attemptId: journalRead?.ok === true ? journalRead.header.attemptId : attemptId,
-            oldSessionId: a.oldSessionId ?? "",
-            rebuiltSessionId,
+      switch (chain.kind) {
+        case "repairable":
+          leaveRestartOpen(receiptId, attempt, `input journal chain repairable: ${chain.reason}`, {
+            path: chain.segment,
+            state: "unreadable",
+            indeterminate: false,
           });
-          if (!reopened.ok) {
-            leaveRestartOpen(receiptId, attempt, `journal reopen failed: ${reopened.reason}`);
-            return;
-          }
-          const handle = reopened.handle;
-          try {
-            if (governorState.currentInputEpoch !== startEpoch) {
-              handle.close();
-              scheduleRecoveryRetry(receiptId, "startup", "input epoch advanced; defer restart delivery");
-              return;
-            }
-            handle.markDelivering(); // durable BEFORE any byte reaches the child
-            if (handle.chunks.length > 0) {
-              currentPty.write(handle.chunks.toString("latin1"));
-              inputState = noteUntrackedDeliveredInput(inputState, handle.chunks);
-            }
-            handle.markDelivered(); // durable AFTER the child write returns
-            handle.close();
-          } catch (cause) {
-            handle.close();
-            // Finding 6: re-read the exact journal to disambiguate the failure.
-            const reread = readRestartJournal(a, receiptId);
-            const state = reread?.ok === true ? reread.state : "delivering";
-            if (state === "pending") {
-              // No child write began: safe to retry the whole delivery.
-              scheduleRecoveryRetry(receiptId, "startup", "delivery pending after throw; retry");
-              return;
-            }
-            if (state === "delivered") {
-              // Child write + markDelivered completed before the throw: continue terminal.
-              terminalSuccess(reread?.ok === true ? reread.chunks.length : handle.chunks.length);
-              return;
-            }
-            // `delivering`: INDETERMINATE — NEVER auto-replay.
-            leaveRestartOpen(receiptId, attempt, `restart delivery ambiguous: ${recoveryDetailOf(cause)}`, {
-              path: a.inputJournalPath!,
-              state: "delivering",
-              indeterminate: true,
-            });
-            return;
-          }
-          terminalSuccess(handle.chunks.length);
           return;
-        }
-        case "blocked": {
-          // `delivering` on disk from a prior process: indeterminate, NEVER replay.
-          leaveRestartOpen(receiptId, attempt, decision.reason, {
-            path: a.inputJournalPath!,
+        case "blocked":
+          // Finding 5: name the ACTUAL delivering segment, not always the origin.
+          leaveRestartOpen(receiptId, attempt, "pre-crash input delivery indeterminate; never auto-replay", {
+            path: chain.segment,
             state: "delivering",
             indeterminate: true,
           });
           return;
-        }
-        default:
-          leaveRestartOpen(receiptId, attempt, decision.reason, journalMetaOf(a, receiptId));
+        case "empty":
+          leaveRestartOpen(receiptId, attempt, "no input journal for a post-commit attempt; cannot infer bytes absent");
           return;
+        case "settled":
+          // Nothing pending — every byte already delivered. Report the total.
+          terminalSuccessWithDispose(chain.deliveredBytes);
+          return;
+        case "deliver": {
+          if (inputBarrier !== null) {
+            scheduleRecoveryRetry(receiptId, "startup", "barrier active; defer restart delivery");
+            return;
+          }
+          // Finding 6: pending older bytes AND a nonzero epoch — the user has already
+          // typed into the rebuilt child, so recovered bytes can never be ordered
+          // before it. Never send old bytes after fresh input; leave operator-visible.
+          if (startEpoch !== 0 || governorState.currentInputEpoch !== 0) {
+            leaveRestartOpen(
+              receiptId,
+              attempt,
+              "pending older input but user input already advanced; not sending old bytes after fresh",
+              journalMetaOf(a, receiptId),
+            );
+            return;
+          }
+          const delivered = deliverChainToCurrent(chainReads, a, receiptId);
+          if (!delivered.ok) {
+            if (delivered.ambiguous) {
+              // Indeterminate send: never auto-replay; point the artifact at the segment.
+              leaveRestartOpen(receiptId, attempt, `restart delivery ambiguous: ${delivered.reason}`, {
+                path: delivered.path,
+                state: "delivering",
+                indeterminate: true,
+              });
+              return;
+            }
+            // Retryable (segment still pending / reopen failed): re-run a later pass.
+            // Already-delivered earlier segments are skipped, so no duplicate send.
+            scheduleRecoveryRetry(receiptId, "startup", `restart delivery retryable: ${delivered.reason}`);
+            return;
+          }
+          terminalSuccessWithDispose(chain.deliveredBytes + delivered.newBytes);
+          return;
+        }
       }
     };
 

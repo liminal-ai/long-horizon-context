@@ -12,7 +12,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import { applyGovernorLifecycleBatch, createGovernorRuntimeState } from "../../src/governor/observe-state.js";
 import { isTerminalHandoffOutcome, openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
-import { planRecovery } from "../../src/governor/recovery.js";
+import {
+  activeReplacementIdentity,
+  planRecovery,
+  type ReplacementGenerationEvent,
+} from "../../src/governor/recovery.js";
 import type { GovernorObserveRecord, ResolvedContextPolicy } from "../../src/governor/types.js";
 import type { ProcessIdentity, ProcessLivenessResult } from "../../src/runtime/process-identity.js";
 
@@ -252,6 +256,86 @@ describe("governor receipt attempts (LIM-80 Slice 1)", () => {
     ).toBe("advanced");
     expect(store.advanceAttempt({ receiptId, attemptId: id, stage: "descriptor_published" }).kind).toBe("advanced");
     store.close();
+  });
+
+  it("generation event log accumulates 3+ two-phase generations durably; exact-prefix rejects tampering; survives reopen", () => {
+    const dbPath = freshDb("cc-lhc-attempt-gens-");
+    const store = openGovernorReceiptStore(dbPath);
+    const receiptId = store.appendObserve({ observe: settledWouldCompact(), sessionId: "s", threadId: "th" }).receipt
+      .receiptId;
+    const claimed = store.claimAttempt({ receiptId, owner: A });
+    if (claimed.kind !== "claimed") throw new Error("expected claim");
+    const id = claimed.attempt.attemptId;
+    store.advanceAttempt({
+      receiptId,
+      attemptId: id,
+      stage: "descriptor_published",
+      artifacts: { rebuiltSessionId: "r1", rebuiltRolloutPath: "/tmp/r1.jsonl", replacementChild: B },
+    });
+
+    const idOf = (n: number): ProcessIdentity => ({ pid: 2000 + n, bootId: "boot", starttime: `${n}` });
+    const events: ReplacementGenerationEvent[] = [];
+    const append = (ev: ReplacementGenerationEvent): void => {
+      events.push(ev);
+      const adv = store.advanceAttempt({
+        receiptId,
+        attemptId: id,
+        stage: "descriptor_published",
+        artifacts: { replacementGenerationEvents: [...events] },
+      });
+      expect(adv.kind).toBe("advanced");
+    };
+    // Three re-establishment generations: two two-phase respawns + one adopt.
+    append({
+      kind: "respawn_prepared",
+      generationId: "g1",
+      originAttemptId: id,
+      oldChild: idOf(11),
+      journalPath: "/j/1",
+      journalId: "j1",
+    });
+    append({ kind: "respawn_ready", generationId: "g1", originAttemptId: id, replacement: idOf(1) });
+    append({
+      kind: "respawn_prepared",
+      generationId: "g2",
+      originAttemptId: id,
+      oldChild: idOf(12),
+      journalPath: "/j/2",
+      journalId: "j2",
+    });
+    append({ kind: "respawn_ready", generationId: "g2", originAttemptId: id, replacement: idOf(2) });
+    append({ kind: "adopt_ready", generationId: "g3", originAttemptId: id, replacement: idOf(3) });
+
+    const now = store.getAttempt(receiptId)!;
+    expect(now.artifacts.replacementGenerationEvents).toHaveLength(5);
+    expect(activeReplacementIdentity(now.artifacts)).toEqual(idOf(3));
+    // The immutable original identity was never rewritten.
+    expect(now.artifacts.replacementChild).toEqual(B);
+
+    // Tampering with an earlier event (non-exact-prefix) is rejected.
+    const tampered = [...events];
+    tampered[0] = {
+      kind: "respawn_prepared",
+      generationId: "g1",
+      originAttemptId: id,
+      oldChild: idOf(99),
+      journalPath: "/j/1",
+      journalId: "j1",
+    };
+    const conflict = store.advanceAttempt({
+      receiptId,
+      attemptId: id,
+      stage: "descriptor_published",
+      artifacts: { replacementGenerationEvents: tampered },
+    });
+    expect(conflict.kind).toBe("artifact_conflict");
+    if (conflict.kind === "artifact_conflict") expect(conflict.conflictKey).toBe("replacementGenerationEvents");
+    store.close();
+
+    // Survives reopen (the strict parser accepts the well-formed 5-event log).
+    const reopened = openGovernorReceiptStore(dbPath);
+    expect(reopened.getAttempt(receiptId)?.artifacts.replacementGenerationEvents).toHaveLength(5);
+    reopened.close();
   });
 
   it("completeAttempt terminalizes the attempt and attaches the receipt outcome atomically; survives reopen", () => {

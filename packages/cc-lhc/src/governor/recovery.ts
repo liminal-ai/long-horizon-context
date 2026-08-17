@@ -132,65 +132,222 @@ export interface RecoveryArtifacts {
    */
   oldChild?: ProcessIdentity;
   /**
-   * Durable post-commit input journal (LIM-80 Slice 3B1). Path + id only —
-   * append-only identity facts. The mutable delivery state (pending/delivering/
-   * delivered) lives IN the journal, never here, so these SQLite facts stay
-   * append-only. Input bytes never appear in SQLite.
+   * Durable post-commit input journal of the ORIGINAL live handoff (LIM-80 Slice
+   * 3B1). Path + id only — append-only identity facts. The mutable delivery state
+   * (pending/delivering/delivered) lives IN the journal, never here, so these
+   * SQLite facts stay append-only. Input bytes never appear in SQLite.
    */
   inputJournalPath?: string;
   inputJournalId?: string;
+  /**
+   * The attempt id that CREATED the original journal (LIM-80 Slice 3B2, finding 9).
+   * Immutable; a reclaim mints a new attempt id but the journal header keeps this
+   * origin. Every journal read across a reclaim must prove `header.attemptId` equals
+   * this value. A pre-3B2 row without it is legacy/repairable, never silently trusted.
+   */
+  inputJournalOriginAttemptId?: string;
   /** Replacement child identity from the original live handoff (immutable record). */
   replacementChild?: ProcessIdentity;
   /**
-   * Append-only recovery-generation history of re-established replacements
-   * (LIM-80 Slice 3B2). The ACTIVE replacement is the LAST entry's `replacement`.
-   * Each generation is one wrapper-owned re-establishment of a lost replacement:
+   * Append-only EVENT LOG of re-established replacement generations (LIM-80 Slice
+   * 3B2). A multi-generation crash re-establishment is a two-phase transaction, so
+   * a single record per generation cannot represent a crash BETWEEN preparing the
+   * barrier and proving the replacement. Instead each generation emits events:
    *
-   *  - `adopt`: a restart landed on the rebuilt session with a fresh wrapper child
-   *    already live; that exact child is adopted. No termination, no new journal.
-   *  - `respawn`: a restart landed on the OLD session; a controlled replacement
-   *    terminated that old child (`oldChild`) and spawned a rebuilt child, buffering
-   *    fresh input into this generation's OWN durable journal (`journalPath`/`Id`).
+   *  - `adopt_ready`      a restart landed on the rebuilt session with a fresh
+   *                       wrapper child already live; that exact child is adopted.
+   *                       One standalone ready event; no termination, no new journal.
+   *  - `respawn_prepared` a restart landed on the OLD session; the exact old-session
+   *                       child + this generation's OWN fresh-input journal are
+   *                       persisted BEFORE the barrier / any child mutation.
+   *  - `respawn_ready`    the respawn's replacement child was proven; adds its exact
+   *                       identity, referencing the same `generationId`.
    *
-   * A generation is appended ONLY after the prior active identity is kernel-proven
-   * absent and the new child is the exact rebuilt session + same thread + capture
-   * ready/live. Merge permits ONLY exact-prefix extension (append), so the immutable
-   * `replacementChild` and every earlier generation are never rewritten. Repeated
-   * crashes accumulate more generations.
+   * The ACTIVE replacement is the last READY event's `replacement`. Merge permits
+   * ONLY exact-prefix extension (append), so no prior fact — the immutable
+   * `replacementChild` or any earlier event — is ever rewritten. The whole log is
+   * re-validated on every merge (phase order, unique ids, prepared-before-ready).
+   * Repeated crashes accumulate more generations.
    */
-  replacementGenerations?: ReplacementGeneration[];
+  replacementGenerationEvents?: ReplacementGenerationEvent[];
 }
 
-/** One append-only re-establishment of a lost replacement (LIM-80 Slice 3B2). */
-export interface ReplacementGeneration {
-  /** Exact replacement child identity, proven through the native provider. */
-  replacement: ProcessIdentity;
-  /** How this generation re-established the replacement. */
-  via: "adopt" | "respawn";
-  /** `respawn` only: the terminated old-session child that made room for the spawn. */
-  oldChild?: ProcessIdentity;
-  /** `respawn` only: this generation's own durable fresh-input journal (path + id). */
-  journalPath?: string;
-  journalId?: string;
+/** One append-only event in the replacement re-establishment log (LIM-80 3B2). */
+export type ReplacementGenerationEvent =
+  | {
+      kind: "adopt_ready";
+      /** Stable id of this generation (adopt is a single event). */
+      generationId: string;
+      /** Attempt that emitted this event (ancestry across reclaims). */
+      originAttemptId: string;
+      /** Exact adopted replacement identity, proven through the native provider. */
+      replacement: ProcessIdentity;
+    }
+  | {
+      kind: "respawn_prepared";
+      generationId: string;
+      originAttemptId: string;
+      /** Exact old-session child terminated to make room, proven before the barrier. */
+      oldChild: ProcessIdentity;
+      /** This generation's own durable fresh-input journal (path + id). */
+      journalPath: string;
+      journalId: string;
+    }
+  | {
+      kind: "respawn_ready";
+      generationId: string;
+      originAttemptId: string;
+      /** Exact respawned replacement identity, proven through the native provider. */
+      replacement: ProcessIdentity;
+    };
+
+/** Structural equality of two generation events (for exact-prefix merge). */
+function generationEventsEqual(a: ReplacementGenerationEvent, b: ReplacementGenerationEvent): boolean {
+  if (a.kind !== b.kind || a.generationId !== b.generationId || a.originAttemptId !== b.originAttemptId) {
+    return false;
+  }
+  if (a.kind === "respawn_prepared" && b.kind === "respawn_prepared") {
+    return identitiesEqual(a.oldChild, b.oldChild) && a.journalPath === b.journalPath && a.journalId === b.journalId;
+  }
+  if (a.kind === "adopt_ready" && b.kind === "adopt_ready") return identitiesEqual(a.replacement, b.replacement);
+  if (a.kind === "respawn_ready" && b.kind === "respawn_ready") return identitiesEqual(a.replacement, b.replacement);
+  return false;
 }
 
-/** Structural equality of two re-establishment generations (identity + slots). */
-function generationsEqual(a: ReplacementGeneration, b: ReplacementGeneration): boolean {
-  if (!identitiesEqual(a.replacement, b.replacement) || a.via !== b.via) return false;
-  if ((a.oldChild === undefined) !== (b.oldChild === undefined)) return false;
-  if (a.oldChild !== undefined && b.oldChild !== undefined && !identitiesEqual(a.oldChild, b.oldChild)) return false;
-  return a.journalPath === b.journalPath && a.journalId === b.journalId;
+/** Stable string key for an exact process identity (dedup / equality in sets). */
+function identityKey(id: ProcessIdentity): string {
+  return `${id.pid}\0${id.bootId}\0${id.starttime}`;
 }
 
 /**
- * The currently-active replacement identity: the last recovery generation if any,
- * else the original live-handoff `replacementChild`. Undefined before any
- * replacement was established.
+ * Validate the WHOLE event log (pure): strict per-event shape (enforced by the
+ * parser), a fresh generation id per generation, one kind per generation, respawn
+ * prepared-before-ready with no duplicate prepared/ready, adopt standalone. Plus
+ * (finding 7): no READY replacement identity may repeat an earlier READY identity,
+ * and a respawn_ready may ONLY close the LATEST still-open prepared generation — it
+ * can never retroactively close an older prepared once a newer generation started.
+ */
+export function validateGenerationEvents(events: readonly ReplacementGenerationEvent[]): boolean {
+  const seenGen = new Map<string, "adopt" | "respawn">();
+  const preparedGids = new Set<string>();
+  const readyGids = new Set<string>();
+  const readyIdentities = new Set<string>();
+  // The gid of the most recent prepared generation still awaiting its ready, or
+  // null when there is none open (a newer generation start abandons an older one).
+  let openPrepared: string | null = null;
+  for (const ev of events) {
+    const gid = ev.generationId;
+    if (ev.kind === "adopt_ready") {
+      if (seenGen.has(gid)) return false; // adopt is a single standalone event
+      const key = identityKey(ev.replacement);
+      if (readyIdentities.has(key)) return false; // no duplicate ready identity
+      seenGen.set(gid, "adopt");
+      readyGids.add(gid);
+      readyIdentities.add(key);
+      openPrepared = null; // a newer generation started and completed
+      continue;
+    }
+    if (ev.kind === "respawn_prepared") {
+      if (seenGen.has(gid)) return false; // gid must be fresh
+      seenGen.set(gid, "respawn");
+      preparedGids.add(gid);
+      openPrepared = gid; // newest open prepared; any older open one is abandoned
+      continue;
+    }
+    // respawn_ready
+    if (seenGen.get(gid) !== "respawn") return false; // ready needs a prior prepared
+    if (!preparedGids.has(gid)) return false;
+    if (readyGids.has(gid)) return false; // no duplicate ready
+    if (openPrepared !== gid) return false; // only the LATEST open prepared may close
+    const key = identityKey(ev.replacement);
+    if (readyIdentities.has(key)) return false; // no duplicate ready identity
+    readyGids.add(gid);
+    readyIdentities.add(key);
+    openPrepared = null;
+  }
+  return true;
+}
+
+/**
+ * The currently-active replacement identity: the last READY event's replacement,
+ * else the original live-handoff `replacementChild`. A prepared-but-not-ready
+ * respawn is NOT active (its replacement is unproven). Undefined before any.
  */
 export function activeReplacementIdentity(a: RecoveryArtifacts): ProcessIdentity | undefined {
-  const gens = a.replacementGenerations;
-  if (gens !== undefined && gens.length > 0) return gens[gens.length - 1]!.replacement;
+  const events = a.replacementGenerationEvents;
+  if (events !== undefined) {
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const ev = events[i]!;
+      if (ev.kind === "adopt_ready" || ev.kind === "respawn_ready") return ev.replacement;
+    }
+  }
   return a.replacementChild;
+}
+
+/** A respawn generation still awaiting its ready proof (prepared, no ready). */
+export interface PendingPreparedGeneration {
+  generationId: string;
+  originAttemptId: string;
+  oldChild: ProcessIdentity;
+  journalPath: string;
+  journalId: string;
+}
+
+/** Respawn generations that were prepared but never proved ready (finding 4). */
+export function pendingPreparedGenerations(a: RecoveryArtifacts): PendingPreparedGeneration[] {
+  const events = a.replacementGenerationEvents ?? [];
+  const readied = new Set<string>();
+  for (const ev of events) if (ev.kind === "respawn_ready") readied.add(ev.generationId);
+  const out: PendingPreparedGeneration[] = [];
+  for (const ev of events) {
+    if (ev.kind === "respawn_prepared" && !readied.has(ev.generationId)) {
+      out.push({
+        generationId: ev.generationId,
+        originAttemptId: ev.originAttemptId,
+        oldChild: ev.oldChild,
+        journalPath: ev.journalPath,
+        journalId: ev.journalId,
+      });
+    }
+  }
+  return out;
+}
+
+/** One journal segment in the ordered input chain (LIM-80 3B2, finding 3). */
+export interface JournalChainSegment {
+  path: string;
+  journalId: string | undefined;
+  originAttemptId: string | undefined;
+  /** "origin" = the 3B1 live-handoff journal; "generation" = a respawn segment. */
+  source: "origin" | "generation";
+}
+
+/**
+ * The ordered input-journal chain: the original 3B1 journal FIRST, then every
+ * respawn-prepared generation journal in append order (finding 3/8). Delivery and
+ * byte accounting must walk this whole chain, never only `inputJournalPath`.
+ */
+export function journalChain(a: RecoveryArtifacts): JournalChainSegment[] {
+  const chain: JournalChainSegment[] = [];
+  if (a.inputJournalPath !== undefined) {
+    chain.push({
+      path: a.inputJournalPath,
+      journalId: a.inputJournalId,
+      originAttemptId: a.inputJournalOriginAttemptId,
+      source: "origin",
+    });
+  }
+  for (const ev of a.replacementGenerationEvents ?? []) {
+    if (ev.kind === "respawn_prepared") {
+      chain.push({
+        path: ev.journalPath,
+        journalId: ev.journalId,
+        originAttemptId: ev.originAttemptId,
+        source: "generation",
+      });
+    }
+  }
+  return chain;
 }
 
 /** Sentinel fingerprint for "the thread had no stored view". */
@@ -257,6 +414,7 @@ const ARTIFACT_STRING_KEYS = [
   "rolloutPrefixSha256",
   "inputJournalPath",
   "inputJournalId",
+  "inputJournalOriginAttemptId",
 ] as const;
 const ARTIFACT_IDENTITY_KEYS = ["oldChild", "replacementChild"] as const;
 const ARTIFACT_NUMBER_KEYS = [
@@ -300,41 +458,45 @@ export function mergeRecoveryArtifacts(
     }
     merged[key] = next;
   }
-  // Recovery generations: exact-prefix extension only. The stored list must be an
-  // exact structural prefix of the incoming list; the incoming may append.
-  if (incoming.replacementGenerations !== undefined) {
-    const prev = stored.replacementGenerations ?? [];
-    const next = incoming.replacementGenerations;
-    if (next.length < prev.length) return { ok: false, conflictKey: "replacementGenerations" };
+  // Generation event log: exact-prefix extension only, AND the whole merged log
+  // must stay well-formed (phase order, unique ids, prepared-before-ready). The
+  // stored events must be an exact structural prefix of the incoming events.
+  if (incoming.replacementGenerationEvents !== undefined) {
+    const prev = stored.replacementGenerationEvents ?? [];
+    const next = incoming.replacementGenerationEvents;
+    if (next.length < prev.length) return { ok: false, conflictKey: "replacementGenerationEvents" };
     for (let i = 0; i < prev.length; i += 1) {
-      if (!generationsEqual(prev[i]!, next[i]!)) return { ok: false, conflictKey: "replacementGenerations" };
+      if (!generationEventsEqual(prev[i]!, next[i]!)) return { ok: false, conflictKey: "replacementGenerationEvents" };
     }
-    merged.replacementGenerations = next;
+    if (!validateGenerationEvents(next)) return { ok: false, conflictKey: "replacementGenerationEvents" };
+    merged.replacementGenerationEvents = next;
   }
   return { ok: true, artifacts: merged };
 }
 
-function parseReplacementGeneration(raw: unknown): ReplacementGeneration | null {
+/** Strict per-event shape: exact keys per kind, no unknown keys, no partial pairs. */
+function parseReplacementGenerationEvent(raw: unknown): ReplacementGenerationEvent | null {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
   const o = raw as Record<string, unknown>;
-  const replacement = parseStoredProcessIdentity(o.replacement);
-  if (replacement === null) return null;
-  if (o.via !== "adopt" && o.via !== "respawn") return null;
-  const gen: ReplacementGeneration = { replacement, via: o.via };
-  if (o.oldChild !== undefined) {
+  const { kind, generationId, originAttemptId } = o;
+  if (typeof generationId !== "string" || generationId === "") return null;
+  if (typeof originAttemptId !== "string" || originAttemptId === "") return null;
+  const allowed = (keys: string[]): boolean => Object.keys(o).every((k) => keys.includes(k));
+  if (kind === "adopt_ready" || kind === "respawn_ready") {
+    if (!allowed(["kind", "generationId", "originAttemptId", "replacement"])) return null;
+    const replacement = parseStoredProcessIdentity(o.replacement);
+    if (replacement === null) return null;
+    return { kind, generationId, originAttemptId, replacement };
+  }
+  if (kind === "respawn_prepared") {
+    if (!allowed(["kind", "generationId", "originAttemptId", "oldChild", "journalPath", "journalId"])) return null;
     const oldChild = parseStoredProcessIdentity(o.oldChild);
     if (oldChild === null) return null;
-    gen.oldChild = oldChild;
-  }
-  if (o.journalPath !== undefined) {
     if (typeof o.journalPath !== "string" || o.journalPath === "") return null;
-    gen.journalPath = o.journalPath;
-  }
-  if (o.journalId !== undefined) {
     if (typeof o.journalId !== "string" || o.journalId === "") return null;
-    gen.journalId = o.journalId;
+    return { kind, generationId, originAttemptId, oldChild, journalPath: o.journalPath, journalId: o.journalId };
   }
-  return gen;
+  return null;
 }
 
 export function parseRecoveryArtifacts(raw: unknown): RecoveryArtifacts | null {
@@ -359,15 +521,16 @@ export function parseRecoveryArtifacts(raw: unknown): RecoveryArtifacts | null {
     if (id === null) return null;
     out[key] = id;
   }
-  if (o.replacementGenerations !== undefined) {
-    if (!Array.isArray(o.replacementGenerations)) return null;
-    const gens: ReplacementGeneration[] = [];
-    for (const entry of o.replacementGenerations) {
-      const gen = parseReplacementGeneration(entry);
-      if (gen === null) return null;
-      gens.push(gen);
+  if (o.replacementGenerationEvents !== undefined) {
+    if (!Array.isArray(o.replacementGenerationEvents)) return null;
+    const events: ReplacementGenerationEvent[] = [];
+    for (const entry of o.replacementGenerationEvents) {
+      const ev = parseReplacementGenerationEvent(entry);
+      if (ev === null) return null;
+      events.push(ev);
     }
-    out.replacementGenerations = gens;
+    if (!validateGenerationEvents(events)) return null;
+    out.replacementGenerationEvents = events;
   }
   return out;
 }
@@ -617,21 +780,27 @@ function planOwnedStage(attempt: RecoveryAttempt, observed: RecoveryObservation)
         }
         const expected = a.installedViewFingerprint;
         if (cur.kind === "none") {
+          // Finding 11: a stage/view contradiction is NOT auto-terminal. It is a
+          // storage/observation inconsistency — re-observe (bounded) and, if it
+          // persists, it stays OPEN for review; never a second compact, never refuse.
           return {
-            kind: "terminal_refuse",
-            reason: `stage view_installed but LHC has no stored view${a.viewId ? ` (expected ${a.viewId})` : ""}`,
+            kind: "retry_observation",
+            reason: `stage view_installed but LHC reports no stored view${a.viewId ? ` (expected ${a.viewId})` : ""}; re-observe, not terminal`,
+            observation: "current_view",
           };
         }
         if (expected !== undefined && cur.fingerprint !== expected) {
           return {
-            kind: "terminal_refuse",
-            reason: `stage view_installed but current stored view ${cur.viewId} contradicts the recorded installed identity`,
+            kind: "retry_observation",
+            reason: `stage view_installed but current stored view ${cur.viewId} contradicts the recorded installed identity; re-observe, not terminal`,
+            observation: "current_view",
           };
         }
       } else if (observed.viewInstalled === "absent") {
         return {
-          kind: "terminal_refuse",
-          reason: `stage view_installed but LHC reports no installed view${a.viewId ? ` (${a.viewId})` : ""}`,
+          kind: "retry_observation",
+          reason: `stage view_installed but LHC reports no installed view${a.viewId ? ` (${a.viewId})` : ""}; re-observe, not terminal`,
+          observation: "current_view",
         };
       }
       return {
@@ -641,7 +810,14 @@ function planOwnedStage(attempt: RecoveryAttempt, observed: RecoveryObservation)
     }
     case "rollout_written":
       if (a.rebuiltSessionId === undefined) {
-        return { kind: "terminal_refuse", reason: "stage rollout_written without rebuiltSessionId" };
+        // Finding 11: a missing rebuilt session at rollout_written is a storage
+        // inconsistency, not an irreducible impossibility. The installed view is
+        // authoritative — re-materialize a rollout from it (which re-reserves a
+        // session); never auto-terminal.
+        return {
+          kind: "reconcile_installed_view",
+          reason: "stage rollout_written without rebuiltSessionId; re-materialize from installed view",
+        };
       }
       if (observed.rolloutPresent === "absent") {
         // Optional artifact missing is not terminal: the installed view is authoritative.
