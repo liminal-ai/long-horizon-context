@@ -7,7 +7,16 @@
  * no mutation without a durable receipt.
  */
 
-import { existsSync, writeSync as fsWriteSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  writeSync as fsWriteSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -2654,12 +2663,15 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
       expect(prep.oldChild).toBeDefined();
       expect(prep.journalPath).toBeDefined();
     }
+    const currentJournalPath = prep.kind === "respawn_prepared" ? prep.journalPath : undefined;
     store.close();
     // The pre-crash bytes reached the NEWLY spawned rebuilt child (spawned[1]),
     // never the old-session child, and the pre-crash journal is cleaned.
     expect(spawned.length).toBeGreaterThanOrEqual(2);
     expect(spawned[1]!.writes.join("")).toContain(bytes.toString("latin1"));
     expect(existsSync(journalPath!)).toBe(false);
+    expect(currentJournalPath).toBeDefined();
+    expect(existsSync(currentJournalPath!)).toBe(false);
 
     spawned[spawned.length - 1]?.fireExit(0);
     await runPromise;
@@ -2927,9 +2939,15 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
     const outcome = store.getById(receiptId)?.handoffOutcome;
     expect(outcome?.kind).toBe("handoff_rolled_back");
     if (outcome?.kind === "handoff_rolled_back") expect(outcome.detail).toContain(`${bytes.length} input byte(s)`);
+    const prep = store
+      .getAttempt(receiptId)!
+      .artifacts.replacementGenerationEvents?.find((e) => e.kind === "respawn_prepared");
+    const currentJournalPath = prep?.kind === "respawn_prepared" ? prep.journalPath : undefined;
     store.close();
     // The whole chain was disposed after the durable terminal; no stale-rollout retry.
     expect(existsSync(journalPath!)).toBe(false);
+    expect(currentJournalPath).toBeDefined();
+    expect(existsSync(currentJournalPath!)).toBe(false);
 
     spawned[spawned.length - 1]?.fireExit(0);
     await runPromise;
@@ -3009,6 +3027,94 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
     spawned[0]?.fireExit(0);
     await runPromise;
   }, 15_000);
+
+  it("Fable blocker 1/2: fresh rebuilt-session input durably retires every pending generation and a second run never replays it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-retire-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-retire-proj-"));
+    dirs.push(projectsRoot);
+    const recoveryDir = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-retire-rec-"));
+    dirs.push(recoveryDir);
+    const { receiptId, attemptId, journalPath } = await seedInterrupted({
+      receiptDb,
+      projectsRoot,
+      recoveryDir,
+      journalState: "pending-bytes",
+      journalBytes: Buffer.from("ORIGIN"),
+    });
+
+    const store0 = openGovernorReceiptStore(receiptDb);
+    const generation = createInputJournal({
+      dir: recoveryDir,
+      binding: { receiptId, attemptId, oldSessionId: RESTART_OLD, rebuiltSessionId: RESTART_REBUILT },
+    });
+    generation.appendChunk(Buffer.from("GENERATION"));
+    generation.close();
+    expect(
+      store0.advanceAttempt({
+        receiptId,
+        attemptId,
+        stage: "descriptor_published",
+        artifacts: {
+          replacementGenerationEvents: [
+            {
+              kind: "respawn_prepared",
+              generationId: "gen-retired",
+              originAttemptId: attemptId,
+              oldChild: { pid: 866666, bootId: "dead", starttime: "6" },
+              journalPath: generation.path,
+              journalId: generation.journalId,
+            },
+          ],
+        },
+      }).kind,
+    ).toBe("advanced");
+    store0.close();
+
+    const spawned: FakePty[] = [];
+    const stdin = fakeStream();
+    const first = restartRun({ receiptDb, recoveryDir, spawned, boundSessionId: RESTART_REBUILT, stdin });
+    await waitFor(() => first.sink() !== undefined && spawned.length >= 1, "sink+rebuilt child");
+    stdin.write("FRESH\r");
+    await waitFor(() => spawned[0]!.writes.join("").includes("FRESH"), "fresh input reached rebuilt child");
+    first.sink()!(BOUND_SIGNALS);
+    await waitTerminal(receiptDb, receiptId);
+
+    const store1 = openGovernorReceiptStore(receiptDb);
+    expect(store1.getById(receiptId)?.handoffOutcome?.kind).toBe("handoff_cancelled");
+    store1.close();
+    const originRetired = readInputJournal(journalPath!);
+    const generationRetired = readInputJournal(generation.path);
+    expect(originRetired.ok && originRetired.state).toBe("pending");
+    expect(generationRetired.ok && generationRetired.state).toBe("pending");
+    const artifacts = readdirSync(recoveryDir)
+      .filter((name) => name.startsWith(`restart-${receiptId}-`) && name.endsWith(".json"))
+      .map(
+        (name) => JSON.parse(readFileSync(join(recoveryDir, name), "utf8")) as { unresolvedJournalSegments?: string[] },
+      );
+    expect(
+      artifacts.some(
+        (artifact) =>
+          artifact.unresolvedJournalSegments?.includes(journalPath!) === true &&
+          artifact.unresolvedJournalSegments.includes(generation.path),
+      ),
+    ).toBe(true);
+    spawned[0]?.fireExit(0);
+    await first.runPromise;
+
+    // Process-memory epoch resets on a new invocation. The terminal receipt remains
+    // the durable retirement fact, so neither retained segment can be replayed.
+    const spawned2: FakePty[] = [];
+    const second = restartRun({ receiptDb, recoveryDir, spawned: spawned2, boundSessionId: RESTART_REBUILT });
+    await waitFor(() => second.sink() !== undefined, "sink2");
+    second.sink()!(BOUND_SIGNALS);
+    await new Promise((resolve) => setTimeout(resolve, 500));
+    expect(spawned2[0]!.writes.join("")).not.toContain("ORIGIN");
+    expect(spawned2[0]!.writes.join("")).not.toContain("GENERATION");
+    spawned2[0]?.fireExit(0);
+    await second.runPromise;
+  }, 20_000);
 
   it("finding 1: old-child identity changes between prepareBarrier and terminateOldChild → ABORT (no kill, no spawn), attempt open, prepared journal retained", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-idchg-"));
@@ -3342,6 +3448,70 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
     expect(spawned2[0]!.writes.join("")).toBe(""); // nothing re-sent
     spawned2[0]?.fireExit(0);
     await r2.runPromise;
+  }, 20_000);
+
+  it("Fable blocker 2: controlled replacement terminal-store failure retains the freshly prepared generation journal in delivered state", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-current-store-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-current-store-proj-"));
+    dirs.push(projectsRoot);
+    const recoveryDir = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-current-store-rec-"));
+    dirs.push(recoveryDir);
+    const { receiptId, journalPath } = await seedInterrupted({
+      receiptDb,
+      projectsRoot,
+      recoveryDir,
+      journalState: "pending-bytes",
+      journalBytes: Buffer.from("OLD"),
+    });
+
+    const spawned: FakePty[] = [];
+    const r1 = restartRun({
+      receiptDb,
+      recoveryDir,
+      spawned,
+      boundSessionId: RESTART_OLD,
+      storeHook: (store) => ({
+        ...store,
+        completeAttempt: () => {
+          throw new Error("simulated controlled-replacement terminal store failure");
+        },
+      }),
+    });
+    await waitFor(() => r1.sink() !== undefined, "sink");
+    r1.sink()!(BOUND_SIGNALS);
+    await waitFor(() => {
+      const store = openGovernorReceiptStore(receiptDb);
+      try {
+        return (
+          store
+            .getAttempt(receiptId)
+            ?.artifacts.replacementGenerationEvents?.some((event) => event.kind === "respawn_ready") ?? false
+        );
+      } finally {
+        store.close();
+      }
+    }, "replacement ready");
+    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const store = openGovernorReceiptStore(receiptDb);
+    const attempt = store.getAttempt(receiptId)!;
+    expect(attempt.stage).not.toBe("terminal");
+    expect(store.getById(receiptId)?.handoffOutcome?.kind).toBe("scheduled");
+    const prep = attempt.artifacts.replacementGenerationEvents?.find((event) => event.kind === "respawn_prepared");
+    const currentJournalPath = prep?.kind === "respawn_prepared" ? prep.journalPath : undefined;
+    store.close();
+    expect(currentJournalPath).toBeDefined();
+    expect(existsSync(journalPath!)).toBe(true);
+    expect(existsSync(currentJournalPath!)).toBe(true);
+    const origin = readInputJournal(journalPath!);
+    const current = readInputJournal(currentJournalPath!);
+    expect(origin.ok && origin.state).toBe("delivered");
+    expect(current.ok && current.state).toBe("delivered");
+
+    spawned[spawned.length - 1]?.fireExit(0);
+    await r1.runPromise;
   }, 20_000);
 
   it("finding 2: markDelivering fails before its state record is durable → re-read PENDING, no child bytes, attempt open; a healthy rerun delivers exactly once", async () => {

@@ -284,7 +284,15 @@ export function createInputJournal(args: {
  */
 export function removeInputJournal(path: string, deps: InputJournalDeps = {}): void {
   const d = resolveDeps(deps);
-  d.unlinkSync(path);
+  try {
+    d.unlinkSync(path);
+  } catch (cause) {
+    // Best-effort missing-file contract: a journal already removed by generic
+    // handoff journal settlement (idempotent cleanup) is not an error. Anything
+    // other than ENOENT is a real failure and propagates to the caller.
+    if ((cause as NodeJS.ErrnoException).code !== "ENOENT") throw cause;
+    return; // already gone — its directory entry no longer needs a removal sync
+  }
   if (d.syncDir !== null) {
     try {
       d.syncDir(path.slice(0, path.lastIndexOf("/")) || "/");

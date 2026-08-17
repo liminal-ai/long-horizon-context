@@ -30,6 +30,7 @@ import {
   type InputJournalBinding,
   type InputJournalDeps,
   readInputJournal,
+  removeInputJournal,
 } from "../../src/wrapper/input-journal.js";
 
 const dirs: string[] = [];
@@ -295,6 +296,23 @@ describe("input journal (LIM-80 Slice 3B1)", () => {
     const j2 = createInputJournal({ dir, binding: BINDING });
     expect(() => j2.markDelivered()).toThrow(/markDelivered illegal in state pending/);
     j2.close();
+  });
+
+  it("cleanup is idempotent for an already-removed journal but propagates other unlink failures", () => {
+    const dir = freshDir();
+    const journal = createInputJournal({ dir, binding: BINDING });
+    journal.close();
+    removeInputJournal(journal.path);
+    expect(() => removeInputJournal(journal.path)).not.toThrow();
+    expect(() =>
+      removeInputJournal(join(dir, "forced-error.journal"), {
+        unlinkSync: () => {
+          const error = new Error("denied") as NodeJS.ErrnoException;
+          error.code = "EACCES";
+          throw error;
+        },
+      }),
+    ).toThrow(/denied/);
   });
 
   // ── strict reader grammar (finding 4) ────────────────────────────────

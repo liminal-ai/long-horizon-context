@@ -263,3 +263,118 @@ describe("journalChain + pendingPreparedGenerations (findings 3/4)", () => {
     expect(pending[0]!.oldChild).toEqual(OLD_B);
   });
 });
+
+// LIM-80 Slice 3B2 blocker 3: strict journal uniqueness (no duplicate/aliased
+// journalPath or journalId, no duplicate prepared oldChild, no origin alias, no
+// partial origin pair). Validation must use MERGED origin facts on exact-prefix
+// extension; distinct multi-generation logs still pass.
+describe("strict journal uniqueness (blocker 3)", () => {
+  const prep = (
+    gid: string,
+    oldChild: ProcessIdentity,
+    journalPath: string,
+    journalId: string,
+  ): ReplacementGenerationEvent => ({
+    kind: "respawn_prepared",
+    generationId: gid,
+    originAttemptId: "att-0",
+    oldChild,
+    journalPath,
+    journalId,
+  });
+
+  it("validateGenerationEvents rejects a duplicate journalPath across generations", () => {
+    expect(validateGenerationEvents([prep("g1", OLD_A, "/j/dup", "jid-1"), prep("g2", OLD_B, "/j/dup", "jid-2")])).toBe(
+      false,
+    );
+  });
+  it("validateGenerationEvents rejects a duplicate journalId across generations", () => {
+    expect(validateGenerationEvents([prep("g1", OLD_A, "/j/1", "jid-dup"), prep("g2", OLD_B, "/j/2", "jid-dup")])).toBe(
+      false,
+    );
+  });
+  it("validateGenerationEvents rejects a duplicate prepared oldChild identity", () => {
+    expect(validateGenerationEvents([prep("g1", OLD_A, "/j/1", "jid-1"), prep("g2", OLD_A, "/j/2", "jid-2")])).toBe(
+      false,
+    );
+  });
+  it("validateGenerationEvents rejects a generation journalPath/journalId that ALIASES the origin journal", () => {
+    const origin = { inputJournalPath: "/j/origin", inputJournalId: "jid-origin" };
+    expect(validateGenerationEvents([prep("g1", OLD_A, "/j/origin", "jid-1")], origin)).toBe(false); // aliases origin path
+    expect(validateGenerationEvents([prep("g1", OLD_A, "/j/1", "jid-origin")], origin)).toBe(false); // aliases origin id
+    expect(validateGenerationEvents([prep("g1", OLD_A, "/j/1", "jid-1")], origin)).toBe(true); // distinct → ok
+  });
+  it("validateGenerationEvents accepts a distinct multi-generation log (three respawns + one adopt)", () => {
+    expect(
+      validateGenerationEvents(
+        [
+          prep("g1", OLD_A, "/j/1", "jid-1"),
+          respawnReady("g1", REPL_A),
+          prep("g2", OLD_B, "/j/2", "jid-2"),
+          respawnReady("g2", REPL_B),
+          adoptReady("g3", pid(400, "4")),
+        ],
+        { inputJournalPath: "/j/origin", inputJournalId: "jid-origin" },
+      ),
+    ).toBe(true);
+  });
+
+  it("parseRecoveryArtifacts rejects a partial origin journal pair (path without id, or id without path)", () => {
+    expect(parseRecoveryArtifacts({ inputJournalPath: "/j/origin" })).toBeNull();
+    expect(parseRecoveryArtifacts({ inputJournalId: "jid-origin" })).toBeNull();
+    // both present → ok
+    const ok = parseRecoveryArtifacts({ inputJournalPath: "/j/origin", inputJournalId: "jid-origin" });
+    expect(ok).not.toBeNull();
+  });
+  it("parseRecoveryArtifacts rejects a persisted log whose generation aliases the origin journal", () => {
+    expect(
+      parseRecoveryArtifacts({
+        inputJournalPath: "/j/origin",
+        inputJournalId: "jid-origin",
+        replacementGenerationEvents: [prep("g1", OLD_A, "/j/origin", "jid-1")],
+      }),
+    ).toBeNull();
+    expect(
+      parseRecoveryArtifacts({
+        inputJournalPath: "/j/origin",
+        inputJournalId: "jid-origin",
+        replacementGenerationEvents: [prep("g1", OLD_A, "/j/g1", "jid-1")],
+      }),
+    ).not.toBeNull();
+  });
+
+  it("mergeRecoveryArtifacts uses MERGED origin facts: appending a generation that aliases the origin id is rejected", () => {
+    const stored: RecoveryArtifacts = { inputJournalPath: "/j/origin", inputJournalId: "jid-origin" };
+    const aliased = mergeRecoveryArtifacts(stored, {
+      replacementGenerationEvents: [prep("g1", OLD_A, "/j/g1", "jid-origin")],
+    });
+    expect(aliased.ok).toBe(false);
+    if (!aliased.ok) expect(aliased.conflictKey).toBe("replacementGenerationEvents");
+    // A distinct segment appends cleanly.
+    const distinct = mergeRecoveryArtifacts(stored, {
+      replacementGenerationEvents: [prep("g1", OLD_A, "/j/g1", "jid-g1")],
+    });
+    expect(distinct.ok).toBe(true);
+  });
+  it("mergeRecoveryArtifacts rejects origin facts added after stored events when they alias that event", () => {
+    const stored: RecoveryArtifacts = {
+      replacementGenerationEvents: [prep("g1", OLD_A, "/j/g1", "jid-g1")],
+    };
+    expect(mergeRecoveryArtifacts(stored, { inputJournalPath: "/j/g1", inputJournalId: "jid-origin" }).ok).toBe(false);
+    expect(mergeRecoveryArtifacts(stored, { inputJournalPath: "/j/origin", inputJournalId: "jid-g1" }).ok).toBe(false);
+  });
+  it("rejects a prepared generation that reuses the original old-child identity", () => {
+    const origin = { oldChild: OLD_A };
+    expect(validateGenerationEvents([prep("g1", OLD_A, "/j/g1", "jid-g1")], origin)).toBe(false);
+    expect(
+      parseRecoveryArtifacts({
+        oldChild: OLD_A,
+        replacementGenerationEvents: [prep("g1", OLD_A, "/j/g1", "jid-g1")],
+      }),
+    ).toBeNull();
+  });
+  it("mergeRecoveryArtifacts rejects a merged partial origin pair", () => {
+    const merged = mergeRecoveryArtifacts({}, { inputJournalPath: "/j/origin" });
+    expect(merged.ok).toBe(false);
+  });
+});

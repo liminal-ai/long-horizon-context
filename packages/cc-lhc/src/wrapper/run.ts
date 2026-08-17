@@ -3049,6 +3049,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const readChainSegments = (a: RecoveryAttempt["artifacts"], receiptId: string): SegmentRead[] =>
       journalChain(a).map((seg) => readChainSegment(seg, a, receiptId));
 
+    const unresolvedJournalPaths = (a: RecoveryAttempt["artifacts"], receiptId: string): string[] =>
+      readChainSegments(a, receiptId)
+        .filter((read) => !read.ok || read.state !== "delivered")
+        .map((read) => read.segment.path);
+
     /** Reduce the I/O segment reads to the pure disposition inputs, then classify.
      * The `label` is the segment's journal path so a blocked/repairable artifact
      * names the ACTUAL failing/delivering segment (finding 5). */
@@ -3276,7 +3281,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       attempt: RecoveryAttempt,
       runtime: LhcCommandRuntime,
       chainReads: SegmentRead[],
-      alreadyDeliveredBytes: number,
       expectedOldChild: ProcessIdentity,
       startEpoch: number,
     ): Promise<void> => {
@@ -3369,39 +3373,64 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         probeAbsent: identityKernelAbsent,
         deliverPriorPendingFirst,
       };
+      // Blocker 2: prepareBarrier may have APPENDED a respawn_prepared event + this
+      // generation's own journal to the durable attempt. Re-read the OWNED attempt and
+      // require the same attemptId before any terminal completion, chain byte
+      // accounting, cancellation artifact, or chain cleanup — and use the REFRESHED
+      // artifacts (which include the current generation journal) for the segment list
+      // and disposeChain. A missing/not-owner/failed read leaves the attempt OPEN and
+      // RETAINS all journals.
+      const refreshedArtifacts = (): RecoveryAttempt["artifacts"] | null => {
+        if (governorReceiptStore === null) return null;
+        let cur: RecoveryAttempt | null;
+        try {
+          cur = governorReceiptStore.getAttempt(receiptId);
+        } catch {
+          return null;
+        }
+        return cur !== null && cur.attemptId === attemptId ? cur.artifacts : null;
+      };
+      const refreshedDeliveredByteTotal = (fresh: RecoveryAttempt["artifacts"]): number | null => {
+        const disposition = dispositionOf(readChainSegments(fresh, receiptId));
+        return disposition.kind === "settled" ? disposition.deliveredBytes : null;
+      };
+
+      let terminalized = false;
       const epochChanged = (): boolean => governorState.currentInputEpoch !== startEpoch;
       const result = await performHandoff(
         request,
         epochChanged,
         (r) => {
-          // Finding 5/6/8: SUCCESS and ROLLBACK are BOTH durable terminals with the
-          // truthful total byte count (already-delivered chain + newly delivered),
-          // and dispose the whole chain. A pre-commit CANCEL (fresh input / capture
-          // not ready) is a durable CANCELLED on the still-live old session — never a
-          // retry of the now-stale rollout. A FAILED handoff stays open for a later pass.
+          // Confirm continuous ownership on refreshed artifacts before any terminal.
+          const fresh = refreshedArtifacts();
+          if (fresh === null) return false; // cannot confirm ownership → open, retain journals
           if (r.kind === "success") {
-            const total = alreadyDeliveredBytes + r.flushedInputBytes;
+            const total = refreshedDeliveredByteTotal(fresh);
+            if (total === null) return false;
             const durable = completeGovernorAttempt(receiptId, attemptId, {
               kind: "handoff_success",
               newSessionId: r.newSessionId,
               flushedInputBytes: total,
             });
             if (durable) {
+              terminalized = true;
               resetRecoveryRetries(receiptId);
-              disposeChain(a, receiptId);
+              disposeChain(fresh, receiptId); // refreshed → includes the current generation journal
             }
             return durable;
           }
           if (r.kind === "rolled_back") {
-            const total = alreadyDeliveredBytes + r.flushedInputBytes;
+            const total = refreshedDeliveredByteTotal(fresh);
+            if (total === null) return false;
             const durable = completeGovernorAttempt(receiptId, attemptId, {
               kind: "handoff_rolled_back",
               detail: `${r.reason}; ${total} input byte(s) observed/delivered across the handoff chain`,
               oldSessionId: r.oldSessionId,
             });
             if (durable) {
+              terminalized = true;
               resetRecoveryRetries(receiptId);
-              disposeChain(a, receiptId);
+              disposeChain(fresh, receiptId);
             }
             return durable;
           }
@@ -3410,9 +3439,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             // cancel (capture not ready / modal owns input / respawn unavailable) is
             // transient — leave the attempt OPEN, never a stale-rollout terminal.
             if (r.reason !== PRECOMMIT_INPUT_ARRIVED_REASON) return false;
-            // Point the operator artifact at every unresolved segment BEFORE the
-            // terminal; if the artifact cannot be written, leave the attempt open.
-            const segs = journalChain(a).map((s) => s.path);
+            // Point the operator artifact at every unresolved segment (refreshed, so it
+            // includes the current generation journal) BEFORE the terminal; if the
+            // artifact cannot be written, leave the attempt open and retain journals.
+            const segs = unresolvedJournalPaths(fresh, receiptId);
             const art = writeRestartArtifact(
               receiptId,
               attempt,
@@ -3425,7 +3455,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
               kind: "handoff_cancelled",
               detail: `restart controlled replacement cancelled (stale rollout, old session continues): ${r.reason}`,
             });
-            if (durable) resetRecoveryRetries(receiptId);
+            if (durable) {
+              terminalized = true;
+              resetRecoveryRetries(receiptId);
+            }
             return durable;
           }
           return false; // failed: leave the attempt open for a later pass
@@ -3433,14 +3466,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         { receiptId, attemptId },
         restart,
       );
-      // A FAILED handoff (incl. the identity-changed pre-kill abort) and a non-stale
-      // CANCEL (capture/modal/respawn-unavailable) both leave the attempt OPEN for a
-      // later pass with the prepared journal retained. A stale-input cancel already
-      // terminalized inside recordOutcome.
-      if (
-        result.kind === "failed" ||
-        (result.kind === "cancelled" && result.reason !== PRECOMMIT_INPUT_ARRIVED_REASON)
-      ) {
+      // Anything that did not durably terminalize — a FAILED handoff (incl. the
+      // identity-changed pre-kill abort), a non-stale CANCEL, or a reread that could
+      // not confirm ownership on an otherwise-terminal result — leaves the attempt
+      // OPEN for a later pass with all journals retained.
+      if (!terminalized) {
         leaveRestartOpen(receiptId, attempt, `controlled replacement ${result.kind}: ${formatHandoffResult(result)}`);
       }
     };
@@ -3536,7 +3566,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // artifact pointing at every unresolved journal segment; if that write fails,
         // leave the attempt OPEN rather than terminalize without the operator record.
         if (startEpoch !== 0) {
-          const segs = journalChain(a).map((s) => s.path);
+          const segs = unresolvedJournalPaths(a, receiptId);
           const art = writeRestartArtifact(
             receiptId,
             attempt,
@@ -3595,7 +3625,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           attempt,
           runtime,
           chainReads,
-          chain.deliveredBytes,
           currentIdentity!,
           startEpoch,
         );
@@ -3761,16 +3790,36 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             scheduleRecoveryRetry(receiptId, "startup", "barrier active; defer restart delivery");
             return;
           }
-          // Finding 6: pending older bytes AND a nonzero epoch — the user has already
-          // typed into the rebuilt child, so recovered bytes can never be ordered
-          // before it. Never send old bytes after fresh input; leave operator-visible.
+          // Blocker 1 (Case A durable stale-input retirement): pending older bytes AND a
+          // nonzero epoch — the user has already typed into the rebuilt child, so
+          // recovered bytes can never be ordered before it. FIRST write a durable
+          // byte-free artifact naming every unresolved journal segment; if that write
+          // fails, remain OPEN. Then atomically complete the owned attempt/receipt as
+          // handoff_cancelled (stale pending input RETIRED, not auto-replayable). The
+          // journals are RETAINED for operator evidence and are never delivered/disposed.
           if (startEpoch !== 0 || governorState.currentInputEpoch !== 0) {
-            leaveRestartOpen(
+            const segs = unresolvedJournalPaths(a, receiptId);
+            const art = writeRestartArtifact(
               receiptId,
               attempt,
-              "pending older input but user input already advanced; not sending old bytes after fresh",
-              journalMetaOf(a, receiptId),
+              "stale pending input retired: user input advanced on the rebuilt session before delivery; pending segments not auto-replayable",
+              undefined,
+              segs,
             );
+            if (art === null) {
+              scheduleRecoveryRetry(receiptId, "startup", "stale-input retirement artifact unwritten; left open");
+              return;
+            }
+            const retired = completeGovernorAttempt(receiptId, attemptId, {
+              kind: "handoff_cancelled",
+              detail:
+                "stale pending input retired: user input advanced on the rebuilt session before delivery; pending journal segments retained for operator, not auto-replayable",
+            });
+            if (retired) {
+              resetRecoveryRetries(receiptId);
+            } else {
+              scheduleRecoveryRetry(receiptId, "startup", "stale-input retirement completion not durable; left open");
+            }
             return;
           }
           const delivered = deliverChainToCurrent(chainReads, a, receiptId);

@@ -226,12 +226,27 @@ function identityKey(id: ProcessIdentity): string {
  * (finding 7): no READY replacement identity may repeat an earlier READY identity,
  * and a respawn_ready may ONLY close the LATEST still-open prepared generation — it
  * can never retroactively close an older prepared once a newer generation started.
+ *
+ * Strict journal uniqueness: every respawn_prepared `journalPath`/`journalId` and
+ * `oldChild` identity must be globally distinct across the chain AND must not alias
+ * the ORIGIN journal (`origin.inputJournalPath`/`inputJournalId`), so a generation's
+ * segment can never collide with the 3B1 origin journal or another generation.
  */
-export function validateGenerationEvents(events: readonly ReplacementGenerationEvent[]): boolean {
+export function validateGenerationEvents(
+  events: readonly ReplacementGenerationEvent[],
+  origin?: Pick<RecoveryArtifacts, "inputJournalPath" | "inputJournalId" | "oldChild">,
+): boolean {
   const seenGen = new Map<string, "adopt" | "respawn">();
   const preparedGids = new Set<string>();
   const readyGids = new Set<string>();
   const readyIdentities = new Set<string>();
+  // Seed uniqueness with the origin journal so a generation may never alias it.
+  const journalPaths = new Set<string>();
+  const journalIds = new Set<string>();
+  const preparedOldChildKeys = new Set<string>();
+  if (origin?.inputJournalPath !== undefined) journalPaths.add(origin.inputJournalPath);
+  if (origin?.inputJournalId !== undefined) journalIds.add(origin.inputJournalId);
+  if (origin?.oldChild !== undefined) preparedOldChildKeys.add(identityKey(origin.oldChild));
   // The gid of the most recent prepared generation still awaiting its ready, or
   // null when there is none open (a newer generation start abandons an older one).
   let openPrepared: string | null = null;
@@ -249,8 +264,15 @@ export function validateGenerationEvents(events: readonly ReplacementGenerationE
     }
     if (ev.kind === "respawn_prepared") {
       if (seenGen.has(gid)) return false; // gid must be fresh
+      if (journalPaths.has(ev.journalPath)) return false; // duplicate / origin-aliased path
+      if (journalIds.has(ev.journalId)) return false; // duplicate / origin-aliased id
+      const oldKey = identityKey(ev.oldChild);
+      if (preparedOldChildKeys.has(oldKey)) return false; // duplicate prepared old-child identity
       seenGen.set(gid, "respawn");
       preparedGids.add(gid);
+      journalPaths.add(ev.journalPath);
+      journalIds.add(ev.journalId);
+      preparedOldChildKeys.add(oldKey);
       openPrepared = gid; // newest open prepared; any older open one is abandoned
       continue;
     }
@@ -266,6 +288,12 @@ export function validateGenerationEvents(events: readonly ReplacementGenerationE
     openPrepared = null;
   }
   return true;
+}
+
+/** True when exactly one of the origin journal path/id is present (a partial pair).
+ * The 3B1 contract always records both together; a partial pair is corruption. */
+function originJournalPairIncomplete(a: Pick<RecoveryArtifacts, "inputJournalPath" | "inputJournalId">): boolean {
+  return (a.inputJournalPath === undefined) !== (a.inputJournalId === undefined);
 }
 
 /**
@@ -442,6 +470,10 @@ export function mergeRecoveryArtifacts(
     if (prev !== undefined && prev !== next) return { ok: false, conflictKey: key };
     merged[key] = next;
   }
+  // Strict journal uniqueness: the merged origin journal pair must be complete.
+  if (originJournalPairIncomplete(merged)) {
+    return { ok: false, conflictKey: merged.inputJournalPath === undefined ? "inputJournalPath" : "inputJournalId" };
+  }
   for (const key of ARTIFACT_NUMBER_KEYS) {
     const next = incoming[key];
     if (next === undefined) continue;
@@ -468,8 +500,15 @@ export function mergeRecoveryArtifacts(
     for (let i = 0; i < prev.length; i += 1) {
       if (!generationEventsEqual(prev[i]!, next[i]!)) return { ok: false, conflictKey: "replacementGenerationEvents" };
     }
-    if (!validateGenerationEvents(next)) return { ok: false, conflictKey: "replacementGenerationEvents" };
     merged.replacementGenerationEvents = next;
+  }
+  // Validate on EVERY merge, not only when events arrive. A later merge can add
+  // origin journal/child facts that alias an already-stored generation.
+  if (
+    merged.replacementGenerationEvents !== undefined &&
+    !validateGenerationEvents(merged.replacementGenerationEvents, merged)
+  ) {
+    return { ok: false, conflictKey: "replacementGenerationEvents" };
   }
   return { ok: true, artifacts: merged };
 }
@@ -509,6 +548,9 @@ export function parseRecoveryArtifacts(raw: unknown): RecoveryArtifacts | null {
     if (typeof v !== "string" || v === "") return null;
     out[key] = v;
   }
+  // Strict journal uniqueness: a materialized artifact must carry both or neither of
+  // the origin journal path/id (a partial pair is corruption).
+  if (originJournalPairIncomplete(out)) return null;
   for (const key of ARTIFACT_NUMBER_KEYS) {
     const v = o[key];
     if (v === undefined) continue;
@@ -529,7 +571,7 @@ export function parseRecoveryArtifacts(raw: unknown): RecoveryArtifacts | null {
       if (ev === null) return null;
       events.push(ev);
     }
-    if (!validateGenerationEvents(events)) return null;
+    if (!validateGenerationEvents(events, out)) return null;
     out.replacementGenerationEvents = events;
   }
   return out;
