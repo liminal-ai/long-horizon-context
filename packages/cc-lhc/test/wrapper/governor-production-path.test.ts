@@ -2,7 +2,8 @@
  * LIM-64 production-path wrapper/capture integration (not direct store-API-only proof).
  *
  * Drives run() + lifecycle through the real watcher/capture sink path and
- * asserts durable receipts, exact outcome binding, replay fail-closed, and
+ * asserts durable receipts, exact outcome binding, conservative replay (no
+ * second auto mutation; scheduled rows classify as recoverable, LIM-80), and
  * no mutation without a durable receipt.
  */
 
@@ -531,7 +532,7 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 15_000);
 
-  it("exact replay of scheduled receipt fails closed — no second auto mutation", async () => {
+  it("exact replay of scheduled receipt: no second auto mutation, and the row is unclaimed recoverable work (not a permanent latch)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-replay-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
@@ -551,8 +552,10 @@ describe("LIM-64 production wrapper path", () => {
     };
 
     // Crash simulation: pre-seed a scheduled would_mutate receipt with the same
-    // native facts the upcoming lifecycle will produce. Restart must fail closed
-    // rather than re-run automatic mutation.
+    // native facts the upcoming lifecycle will produce. Restart must not re-run
+    // automatic mutation on its own (Slice 1: conservative), but the durable
+    // record must classify the row as unclaimed recoverable work rather than a
+    // permanent fail-closed latch (LIM-80).
     {
       const { applyGovernorLifecycleBatch, createGovernorRuntimeState } = await import(
         "../../src/governor/observe-state.js"
@@ -620,8 +623,20 @@ describe("LIM-64 production wrapper path", () => {
     ).toBe(true);
 
     const store = openGovernorReceiptStore(receiptDb);
-    expect(store.listBySession("old-session").filter((r) => r.wouldMutate)).toHaveLength(1);
-    expect(store.listBySession("old-session").filter((r) => r.wouldMutate)[0]!.handoffOutcome?.kind).toBe("scheduled");
+    const scheduledRows = store.listBySession("old-session").filter((r) => r.wouldMutate);
+    expect(scheduledRows).toHaveLength(1);
+    const scheduledRow = scheduledRows[0]!;
+    expect(scheduledRow.handoffOutcome?.kind).toBe("scheduled");
+    // LIM-80: a scheduled row with no attempt is claimable recoverable work.
+    expect(store.getAttempt(scheduledRow.receiptId)).toBeNull();
+    const { planRecovery } = await import("../../src/governor/recovery.js");
+    const plan = planRecovery({
+      receiptId: scheduledRow.receiptId,
+      handoffOutcome: scheduledRow.handoffOutcome,
+      attempt: null,
+      observed: { self: { pid: process.pid, bootId: "test-boot", starttime: "1" } },
+    });
+    expect(plan.kind).toBe("claim_scheduled_work");
     store.close();
 
     spawned[0]!.fireExit(0);

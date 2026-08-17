@@ -32,7 +32,10 @@ export {
   providerContextFromUsage,
 } from "./provider-context.js";
 export {
+  type AdvanceAttemptResult,
   type AppendObserveResult,
+  type ClaimAttemptResult,
+  type CompleteAttemptResult,
   GOVERNOR_RECEIPT_BUSY_TIMEOUT_MS,
   type GovernorReceiptStore,
   type GovernorReceiptStoreDeps,
@@ -41,6 +44,25 @@ export {
   materializeGovernorReceipt,
   openGovernorReceiptStore,
 } from "./receipt-store.js";
+export {
+  GOVERNOR_HANDOFF_OUTCOME_KINDS,
+  isRecoveryStage,
+  isTerminalHandoffOutcomeKind,
+  mergeRecoveryArtifacts,
+  type ObservedFact,
+  parseRecoveryAttempt,
+  planRecovery,
+  RECOVERY_ATTEMPT_PAYLOAD_VERSION,
+  RECOVERY_STAGES,
+  type RecoveryAction,
+  type RecoveryArtifacts,
+  type RecoveryAttempt,
+  type RecoveryObservation,
+  type RecoveryPlanInput,
+  type RecoveryStage,
+  recoveryStageIndex,
+  type TerminalHandoffOutcomeKind,
+} from "./recovery.js";
 export type {
   CcLhcHostCapability,
   ContextPolicy,

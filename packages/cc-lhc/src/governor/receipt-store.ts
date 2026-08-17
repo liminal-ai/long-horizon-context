@@ -16,6 +16,16 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { defaultLineageDbPath } from "../intake/paths.js";
+import { identitiesEqual, type ProcessIdentity, type ProcessLivenessResult } from "../runtime/process-identity.js";
+import {
+  mergeRecoveryArtifacts,
+  parseRecoveryAttempt,
+  RECOVERY_ATTEMPT_PAYLOAD_VERSION,
+  type RecoveryArtifacts,
+  type RecoveryAttempt,
+  type RecoveryStage,
+  recoveryStageIndex,
+} from "./recovery.js";
 import type { GovernorDurableReceipt, GovernorHandoffOutcome, GovernorObserveRecord } from "./types.js";
 
 /** Cross-process lock wait (ms). Matches LHC open-database busy timeout spirit. */
@@ -92,6 +102,24 @@ function initSchema(db: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_cc_governor_receipts_settle
       ON cc_governor_receipts(session_id, settle_sequence)
   `);
+  // Additive (LIM-80 Slice 1): one durable attempt row per receipt. Old
+  // databases simply have no rows here, which reads as "unclaimed" work.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cc_governor_attempts (
+      receipt_id TEXT PRIMARY KEY,
+      attempt_id TEXT NOT NULL,
+      claim_epoch INTEGER NOT NULL,
+      stage TEXT NOT NULL,
+      payload_version INTEGER NOT NULL,
+      payload_json TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    )
+  `);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_cc_governor_attempts_stage
+      ON cc_governor_attempts(stage)
+  `);
 }
 
 /**
@@ -144,13 +172,46 @@ export function isTerminalHandoffOutcome(outcome: GovernorHandoffOutcome | null 
     case "not_applicable":
       return true;
     case "scheduled":
-      // Only non-terminal: operation owns the receipt, or crash between insert
-      // and claim (fail closed on exact replay — see wrapper run docs).
+      // Only non-terminal: an operation owns the receipt, or the wrapper died
+      // somewhere between insert and a terminal outcome. Which stage it died at
+      // is recorded in the attempt row (LIM-80); see recovery.ts planRecovery.
       return false;
     default:
       return false;
   }
 }
+
+/** Result of a compare-and-set claim/reclaim on a receipt's attempt row. */
+export type ClaimAttemptResult =
+  | { kind: "claimed"; attempt: RecoveryAttempt }
+  | { kind: "reclaimed"; attempt: RecoveryAttempt; previousAttemptId: string }
+  /** The caller already owns the current attempt (same identity); returned as-is. */
+  | { kind: "already_owned"; attempt: RecoveryAttempt }
+  /** A foreign owner holds it and no kernel-proven death was supplied: wait. */
+  | { kind: "held"; attempt: RecoveryAttempt; ownerLiveness: "ok" | "indeterminate" | "unprobed" }
+  /** Reclaim requested against a stale attemptId: someone else moved first. */
+  | { kind: "stale_expectation"; attempt: RecoveryAttempt }
+  | { kind: "terminal"; attempt: RecoveryAttempt }
+  | { kind: "receipt_missing" }
+  /** Receipt already carries a terminal outcome; nothing to claim. */
+  | { kind: "receipt_terminal"; outcome: GovernorHandoffOutcome };
+
+export type AdvanceAttemptResult =
+  | { kind: "advanced"; attempt: RecoveryAttempt }
+  /** Same stage written again: idempotent no-op. */
+  | { kind: "unchanged"; attempt: RecoveryAttempt }
+  | { kind: "not_owner"; attempt: RecoveryAttempt }
+  | { kind: "stage_regression"; attempt: RecoveryAttempt; requested: RecoveryStage }
+  | { kind: "artifact_conflict"; attempt: RecoveryAttempt; conflictKey: keyof RecoveryArtifacts }
+  | { kind: "terminal"; attempt: RecoveryAttempt }
+  | { kind: "attempt_missing" };
+
+export type CompleteAttemptResult =
+  | { kind: "completed"; attempt: RecoveryAttempt; receipt: GovernorDurableReceipt }
+  | { kind: "not_owner"; attempt: RecoveryAttempt }
+  | { kind: "already_terminal"; attempt: RecoveryAttempt }
+  | { kind: "attempt_missing" }
+  | { kind: "receipt_missing" };
 
 export interface GovernorReceiptStore {
   readonly path: string;
@@ -168,6 +229,43 @@ export interface GovernorReceiptStore {
   listBySession(sessionId: string): GovernorDurableReceipt[];
   listAll(): GovernorDurableReceipt[];
   getById(receiptId: string): GovernorDurableReceipt | null;
+  /** Durable attempt for a receipt, or null when never claimed (legacy/pre-claim). */
+  getAttempt(receiptId: string): RecoveryAttempt | null;
+  /** All attempts not yet terminal (restart inspection). */
+  listOpenAttempts(): RecoveryAttempt[];
+  /**
+   * Compare-and-set claim of a receipt's work. With no attempt row: inserts one
+   * at `operation_claimed` owned by `owner`. With an existing row owned by a
+   * different identity: returns `held` unless `reclaim` supplies the expected
+   * attemptId AND a kernel-proven `not_found` liveness for that owner, in
+   * which case ownership moves (new attemptId, claimEpoch+1) while stage and
+   * artifacts are preserved. Indeterminate/live owners are never stolen.
+   */
+  claimAttempt(args: {
+    receiptId: string;
+    owner: ProcessIdentity;
+    reclaim?: { expectedAttemptId: string; ownerLiveness: ProcessLivenessResult };
+  }): ClaimAttemptResult;
+  /**
+   * Advance the owned attempt to a later stage, merging artifact identities.
+   * Rejects a stage regression, an artifact value that contradicts a stored
+   * one, a non-owner attemptId, and writes to a terminal attempt.
+   */
+  advanceAttempt(args: {
+    receiptId: string;
+    attemptId: string;
+    stage: Exclude<RecoveryStage, "terminal">;
+    artifacts?: RecoveryArtifacts;
+  }): AdvanceAttemptResult;
+  /**
+   * Terminalize the owned attempt AND attach the receipt's handoff outcome in
+   * one transaction, so restart can never see one without the other.
+   */
+  completeAttempt(args: {
+    receiptId: string;
+    attemptId: string;
+    outcome: Exclude<GovernorHandoffOutcome, { kind: "scheduled" }>;
+  }): CompleteAttemptResult;
   /**
    * Close the underlying connection. Errors are not swallowed — evidence and
    * coexistence tests need truthful close failures.
@@ -271,6 +369,84 @@ export function openGovernorReceiptStore(
     ORDER BY created_at ASC, observe_sequence ASC
   `);
 
+  const attemptColumns = `
+    receipt_id, attempt_id, claim_epoch, stage, payload_version,
+    payload_json, created_at, updated_at
+  `;
+  const selectAttempt = db.prepare(`
+    SELECT ${attemptColumns} FROM cc_governor_attempts WHERE receipt_id = ?
+  `);
+  const selectAllAttempts = db.prepare(`
+    SELECT ${attemptColumns} FROM cc_governor_attempts
+    ORDER BY created_at ASC, receipt_id ASC
+  `);
+  const insertAttempt = db.prepare(`
+    INSERT INTO cc_governor_attempts (
+      receipt_id, attempt_id, claim_epoch, stage, payload_version, payload_json, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const updateAttempt = db.prepare(`
+    UPDATE cc_governor_attempts
+    SET attempt_id = ?, claim_epoch = ?, stage = ?, payload_json = ?, updated_at = ?
+    WHERE receipt_id = ? AND attempt_id = ?
+  `);
+
+  type AttemptRow = {
+    receipt_id: string;
+    attempt_id: string;
+    claim_epoch: number;
+    stage: string;
+    payload_version: number;
+    payload_json: string;
+    created_at: string;
+    updated_at: string;
+  };
+
+  const parseAttemptRow = (row: AttemptRow): RecoveryAttempt => {
+    if (row.payload_version !== RECOVERY_ATTEMPT_PAYLOAD_VERSION) {
+      throw new Error(
+        `cc-lhc governor attempt row for receipt ${row.receipt_id} has unsupported payload version ${row.payload_version}`,
+      );
+    }
+    const parsed = parseRecoveryAttempt(JSON.parse(row.payload_json));
+    const columnsMatch =
+      parsed !== null &&
+      parsed.receiptId === row.receipt_id &&
+      parsed.attemptId === row.attempt_id &&
+      parsed.claimEpoch === row.claim_epoch &&
+      parsed.stage === row.stage &&
+      parsed.createdAt === row.created_at &&
+      parsed.updatedAt === row.updated_at;
+    if (!columnsMatch) {
+      throw new Error(`cc-lhc governor attempt row for receipt ${row.receipt_id} is malformed`);
+    }
+    return parsed;
+  };
+
+  const readAttempt = (receiptId: string): RecoveryAttempt | null => {
+    const row = selectAttempt.get(receiptId) as AttemptRow | undefined;
+    if (row === undefined) return null;
+    return parseAttemptRow(row);
+  };
+
+  /** Write an attempt row with CAS on the attempt id currently stored. */
+  const writeAttempt = (next: RecoveryAttempt, expectedAttemptId: string): void => {
+    const result = updateAttempt.run(
+      next.attemptId,
+      next.claimEpoch,
+      next.stage,
+      JSON.stringify(next),
+      next.updatedAt,
+      next.receiptId,
+      expectedAttemptId,
+    );
+    if (result.changes !== 1) {
+      throw new Error(
+        `cc-lhc governor attempt CAS failed for receipt ${next.receiptId} (expected attempt ${expectedAttemptId})`,
+      );
+    }
+  };
+
   const begin = db.prepare("BEGIN IMMEDIATE");
   const commit = db.prepare("COMMIT");
   const rollback = db.prepare("ROLLBACK");
@@ -371,6 +547,130 @@ export function openGovernorReceiptStore(
       const row = selectById.get(receiptId) as { payload_json: string } | undefined;
       if (row === undefined) return null;
       return parsePayload(row.payload_json);
+    },
+    getAttempt(receiptId) {
+      return readAttempt(receiptId);
+    },
+    listOpenAttempts() {
+      // Parse every row before filtering. Trusting the duplicated SQL `stage`
+      // column in the WHERE clause could hide a malformed payload whose column
+      // falsely says terminal, defeating restart inspection.
+      const rows = selectAllAttempts.all() as AttemptRow[];
+      return rows.map(parseAttemptRow).filter((attempt) => attempt.stage !== "terminal");
+    },
+    claimAttempt({ receiptId, owner, reclaim }) {
+      return runInTx((): ClaimAttemptResult => {
+        const receiptRow = selectById.get(receiptId) as { payload_json: string } | undefined;
+        if (receiptRow === undefined) return { kind: "receipt_missing" };
+        const receipt = parsePayload(receiptRow.payload_json);
+        if (receipt.handoffOutcome !== null && receipt.handoffOutcome.kind !== "scheduled") {
+          return { kind: "receipt_terminal", outcome: receipt.handoffOutcome };
+        }
+        const now = merged.nowFn().toISOString();
+        const existing = readAttempt(receiptId);
+        if (existing === null) {
+          const attempt: RecoveryAttempt = {
+            receiptId,
+            attemptId: merged.uuidFn(),
+            claimEpoch: 1,
+            owner,
+            stage: "operation_claimed",
+            artifacts: {},
+            terminalOutcomeKind: null,
+            claimedAt: now,
+            stageUpdatedAt: now,
+            createdAt: now,
+            updatedAt: now,
+          };
+          // Inside BEGIN IMMEDIATE the read above is authoritative; a PK
+          // violation here would be a real defect and surfaces as a throw.
+          insertAttempt.run(
+            receiptId,
+            attempt.attemptId,
+            attempt.claimEpoch,
+            attempt.stage,
+            RECOVERY_ATTEMPT_PAYLOAD_VERSION,
+            JSON.stringify(attempt),
+            now,
+            now,
+          );
+          return { kind: "claimed", attempt };
+        }
+        if (existing.stage === "terminal") return { kind: "terminal", attempt: existing };
+        if (identitiesEqual(existing.owner, owner)) return { kind: "already_owned", attempt: existing };
+        if (reclaim === undefined) return { kind: "held", attempt: existing, ownerLiveness: "unprobed" };
+        if (reclaim.expectedAttemptId !== existing.attemptId) {
+          return { kind: "stale_expectation", attempt: existing };
+        }
+        const liveness = reclaim.ownerLiveness;
+        if (liveness.ok) return { kind: "held", attempt: existing, ownerLiveness: "ok" };
+        if (liveness.code !== "not_found") return { kind: "held", attempt: existing, ownerLiveness: "indeterminate" };
+        // Kernel-proven dead owner: move ownership, keep durable progress.
+        const reclaimed: RecoveryAttempt = {
+          ...existing,
+          attemptId: merged.uuidFn(),
+          claimEpoch: existing.claimEpoch + 1,
+          owner,
+          claimedAt: now,
+          updatedAt: now,
+        };
+        writeAttempt(reclaimed, existing.attemptId);
+        return { kind: "reclaimed", attempt: reclaimed, previousAttemptId: existing.attemptId };
+      });
+    },
+    advanceAttempt({ receiptId, attemptId, stage, artifacts }) {
+      return runInTx((): AdvanceAttemptResult => {
+        const existing = readAttempt(receiptId);
+        if (existing === null) return { kind: "attempt_missing" };
+        if (existing.attemptId !== attemptId) return { kind: "not_owner", attempt: existing };
+        if (existing.stage === "terminal") return { kind: "terminal", attempt: existing };
+        const currentIndex = recoveryStageIndex(existing.stage);
+        const requestedIndex = recoveryStageIndex(stage);
+        if (requestedIndex < currentIndex) {
+          return { kind: "stage_regression", attempt: existing, requested: stage };
+        }
+        const mergedArtifacts = mergeRecoveryArtifacts(existing.artifacts, artifacts ?? {});
+        if (!mergedArtifacts.ok) {
+          return { kind: "artifact_conflict", attempt: existing, conflictKey: mergedArtifacts.conflictKey };
+        }
+        const artifactsChanged = JSON.stringify(mergedArtifacts.artifacts) !== JSON.stringify(existing.artifacts);
+        if (requestedIndex === currentIndex && !artifactsChanged) {
+          return { kind: "unchanged", attempt: existing };
+        }
+        const now = merged.nowFn().toISOString();
+        const next: RecoveryAttempt = {
+          ...existing,
+          stage,
+          artifacts: mergedArtifacts.artifacts,
+          stageUpdatedAt: requestedIndex === currentIndex ? existing.stageUpdatedAt : now,
+          updatedAt: now,
+        };
+        writeAttempt(next, attemptId);
+        return { kind: "advanced", attempt: next };
+      });
+    },
+    completeAttempt({ receiptId, attemptId, outcome }) {
+      return runInTx((): CompleteAttemptResult => {
+        const existing = readAttempt(receiptId);
+        if (existing === null) return { kind: "attempt_missing" };
+        if (existing.attemptId !== attemptId) return { kind: "not_owner", attempt: existing };
+        if (existing.stage === "terminal") return { kind: "already_terminal", attempt: existing };
+        const receiptRow = selectById.get(receiptId) as { payload_json: string } | undefined;
+        if (receiptRow === undefined) return { kind: "receipt_missing" };
+        const now = merged.nowFn().toISOString();
+        const next: RecoveryAttempt = {
+          ...existing,
+          stage: "terminal",
+          terminalOutcomeKind: outcome.kind,
+          stageUpdatedAt: now,
+          updatedAt: now,
+        };
+        writeAttempt(next, attemptId);
+        const receipt = parsePayload(receiptRow.payload_json);
+        const updatedReceipt: GovernorDurableReceipt = { ...receipt, handoffOutcome: outcome, updatedAt: now };
+        updatePayload.run(JSON.stringify(updatedReceipt), now, receiptId);
+        return { kind: "completed", attempt: next, receipt: updatedReceipt };
+      });
     },
     close() {
       db.close();
