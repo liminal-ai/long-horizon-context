@@ -67,6 +67,7 @@ import {
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
 import { classifyExplicitAutocompact } from "../intake/argv.js";
 import {
+  classifyPrintPromptMode,
   LaunchGrammarError,
   resolveLaunchSession,
   respawnArgvSafety,
@@ -734,6 +735,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       resumeSessionIdForLineage = plan.resumeSessionIdForLineage;
       respawnRest = plan.rest;
       respawnPassthrough = plan.passthrough;
+      const printPromptMode = classifyPrintPromptMode(respawnRest, respawnPassthrough, stdin.isTTY === true);
+      if (printPromptMode === "stdin_only" || printPromptMode === "ambiguous") {
+        throw new LaunchGrammarError(
+          printPromptMode === "stdin_only"
+            ? "cc-lhc: stdin-only --print prompts are not supported by the PTY wrapper. Provide the prompt as a positional argument; no Claude process was started and no capture occurred."
+            : "cc-lhc: cannot distinguish an optional/unknown option value from a --print prompt. Use option=value syntax and provide the prompt as a positional argument; no Claude process was started and no capture occurred.",
+        );
+      }
       wrapperLog.info(`cc-lhc expected session ${expectedSession.sessionId} (source=${expectedSession.source})`);
       ensureSessionOwner(expectedSession.sessionId);
       const safety = respawnArgvSafety(respawnRest, respawnPassthrough);

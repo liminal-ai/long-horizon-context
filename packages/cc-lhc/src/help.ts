@@ -39,7 +39,12 @@ Control panel:
             auto on|off, bounds <lower> <upper>, help
 
 Reserved subcommands are handled by cc-lhc. Ordinary Claude arguments, including
---help, are forwarded after safe session-selector normalization.`;
+--help, are forwarded after safe session-selector normalization.
+
+One-shot prompts:
+  Because the wrapper owns a PTY, non-TTY stdin-only --print prompts are refused
+  before launch. Pass the prompt as a positional Claude argument. TTY deferred-tool
+  continuation remains unchanged.`;
 
 export function isLhcHelpArgv(argv: readonly string[]): boolean {
   return argv.length === 1 && argv[0] === "--lhc-help";

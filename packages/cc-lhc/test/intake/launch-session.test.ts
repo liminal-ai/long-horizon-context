@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { LaunchGrammarError, resolveLaunchSession, respawnArgvSafety } from "../../src/intake/launch-session.js";
+import {
+  classifyPrintPromptMode,
+  LaunchGrammarError,
+  resolveLaunchSession,
+  respawnArgvSafety,
+} from "../../src/intake/launch-session.js";
 
 const UUID_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const UUID_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -176,6 +181,24 @@ describe("resolveLaunchSession grammar", () => {
       }),
     ).rejects.toThrow(/--fork-session is not supported with capture enabled/);
     expect(lookup).toBe(0);
+  });
+});
+
+describe("classifyPrintPromptMode (b1x)", () => {
+  it("distinguishes stdin-only print from positional, ordinary resume, and TTY deferred-tool candidates", () => {
+    expect(classifyPrintPromptMode(["--print", "--permission-mode", "auto", "--effort", "high"], [], false)).toBe(
+      "stdin_only",
+    );
+    expect(
+      classifyPrintPromptMode(["--print", "--permission-mode", "auto", "--effort", "high", "do the work"], [], false),
+    ).toBe("argv_prompt");
+    expect(classifyPrintPromptMode(["--permission-mode", "auto"], [], false)).toBe("not_print");
+    expect(classifyPrintPromptMode(["--print"], [], true)).toBe("tty_deferred_candidate");
+  });
+
+  it("fails closed when an optional option value and positional prompt are ambiguous", () => {
+    expect(classifyPrintPromptMode(["--print", "--debug", "filter-or-prompt"], [], false)).toBe("ambiguous");
+    expect(classifyPrintPromptMode(["--print"], ["--", "literal prompt"], false)).toBe("argv_prompt");
   });
 });
 

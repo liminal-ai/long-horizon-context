@@ -1005,13 +1005,16 @@ describe("run: explicit --autocompact reconciliation (LIM-80 Slice 4)", () => {
 
   function launch(args: string[], opts: { noCapture?: boolean; upperBoundTokens?: number } = {}) {
     const spawned: FakePty[] = [];
+    let captureCalls = 0;
     const stderr = fakeStream();
     let stderrText = "";
     (stderr as unknown as NodeJS.ReadableStream).on("data", (c: Buffer) => {
       stderrText += c.toString("utf8");
     });
-    mocks.captureFactory = (o) =>
-      scriptedCaptureSession(o, sdkForCapture(), "old-session", "/tmp/old.jsonl", 1).session;
+    mocks.captureFactory = (o) => {
+      captureCalls += 1;
+      return scriptedCaptureSession(o, sdkForCapture(), "old-session", "/tmp/old.jsonl", 1).session;
+    };
     const runPromise = run(args, {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, a: string[]) => {
@@ -1031,7 +1034,7 @@ describe("run: explicit --autocompact reconciliation (LIM-80 Slice 4)", () => {
       readProcessIdentity: anyPidIdentity,
       ...(opts.noCapture === true ? { noCapture: true } : {}),
     }) as Promise<number>;
-    return { runPromise, spawned, stderr: () => stderrText };
+    return { runPromise, spawned, stderr: () => stderrText, captureCalls: () => captureCalls };
   }
 
   it("capture-enabled + armed: --autocompact auto is REFUSED (exit 2, guidance, no child spawned)", async () => {
@@ -1077,6 +1080,25 @@ describe("run: explicit --autocompact reconciliation (LIM-80 Slice 4)", () => {
     const joined = spawned[0]!.args.join(" ");
     expect(joined).toContain("--autocompact=500k");
     expect(joined).not.toContain("1000000");
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("b1x: resumed stdin-only --print is rejected before spawn with accurate guidance", async () => {
+    const sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const { runPromise, spawned, stderr, captureCalls } = launch(["--resume", sessionId, "--print"]);
+    expect(await runPromise).toBe(2);
+    expect(spawned).toHaveLength(0);
+    expect(captureCalls()).toBe(0);
+    expect(stderr()).toContain("stdin-only --print prompts are not supported");
+    expect(stderr()).toContain("no Claude process was started and no capture occurred");
+  });
+
+  it("b1x: the same resumed --print form with a positional prompt still launches", async () => {
+    const sessionId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+    const { runPromise, spawned } = launch(["--resume", sessionId, "--print", "continue the review"]);
+    await waitFor(() => spawned.length === 1, "child spawned");
+    expect(spawned[0]!.args).toEqual(expect.arrayContaining(["--resume", sessionId, "--print", "continue the review"]));
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 15_000);

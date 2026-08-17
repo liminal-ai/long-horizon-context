@@ -4,11 +4,7 @@ import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import {
-  isSessionUuid,
-  isUnsupportedSessionChangingFlag,
-  type UnsupportedSessionFlag,
-} from "./argv.js";
+import { isSessionUuid, isUnsupportedSessionChangingFlag, type UnsupportedSessionFlag } from "./argv.js";
 import {
   type ExpectedSession,
   createFreshExpectedSession,
@@ -452,15 +448,36 @@ export async function resolveLaunchSession(
  * `--resume <sessionId>`. Callers must check `respawnArgvSafety` first: a
  * positional initial prompt must never be replayed into a replacement child.
  */
-export function respawnChildArgv(
-  rest: readonly string[],
-  passthrough: readonly string[],
-  sessionId: string,
-): string[] {
+export function respawnChildArgv(rest: readonly string[], passthrough: readonly string[], sessionId: string): string[] {
   return assembleChildArgv(rest, ["--resume", sessionId], passthrough);
 }
 
 export type RespawnArgvSafety = { safe: true } | { safe: false; reason: string };
+
+export type PrintPromptMode = "not_print" | "argv_prompt" | "stdin_only" | "ambiguous" | "tty_deferred_candidate";
+
+/**
+ * Classify `--print` prompt ownership before the wrapper creates a PTY. Claude
+ * sees the wrapper's PTY as a terminal, so a prompt supplied only on the outer
+ * process stdin can be mistaken for deferred-tool continuation before bytes are
+ * forwarded. We fail early instead of moving potentially sensitive stdin into
+ * argv. TTY/no-prompt remains available for Claude's real deferred-tool mode.
+ */
+export function classifyPrintPromptMode(
+  rest: readonly string[],
+  passthrough: readonly string[],
+  stdinIsTty: boolean,
+): PrintPromptMode {
+  if (!rest.some((token) => token === "--print" || token === "-p")) return "not_print";
+  const safety = respawnArgvSafety(rest, passthrough);
+  if (!safety.safe) {
+    if (safety.reason.includes("positional prompt token") || safety.reason.includes("prompt tokens after --")) {
+      return "argv_prompt";
+    }
+    return "ambiguous";
+  }
+  return stdinIsTty ? "tty_deferred_candidate" : "stdin_only";
+}
 
 /**
  * Option table for the supported Claude binary. Revalidated against the installed
@@ -557,10 +574,7 @@ const CLAUDE_ZERO_ARITY_FLAGS = new Set([
  * value boundary cannot be established. Manual recovery stays available when
  * automatic handoff is disabled.
  */
-export function respawnArgvSafety(
-  rest: readonly string[],
-  passthrough: readonly string[],
-): RespawnArgvSafety {
+export function respawnArgvSafety(rest: readonly string[], passthrough: readonly string[]): RespawnArgvSafety {
   const afterDashDash = passthrough.filter((token) => token !== "--");
   if (afterDashDash.length > 0) {
     return {

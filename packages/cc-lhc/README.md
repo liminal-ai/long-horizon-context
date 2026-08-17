@@ -67,6 +67,11 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
 `CC_LHC_CLAUDE_BIN` overrides the child binary. State defaults to
 `~/.cc-lhc`; `CC_LHC_HOME` overrides it.
 
+For one-shot `--print` use, pass the prompt as a positional Claude argument.
+CC-LHC rejects non-TTY stdin-only prompts before launch because its child runs
+behind a PTY, where Claude can otherwise classify the prompt as deferred-tool
+continuation. Interactive TTY deferred-tool continuation is unchanged.
+
 ## What is integrated
 
 - **Canonical capture.** A versioned rollout parser maps recognized

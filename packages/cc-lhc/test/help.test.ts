@@ -32,5 +32,7 @@ describe("cc-lhc help surface", () => {
       expect(CC_LHC_HELP).toContain(required);
     }
     expect(CC_LHC_HELP).toContain("--help, are forwarded");
+    expect(CC_LHC_HELP).toContain("non-TTY stdin-only --print prompts are refused");
+    expect(CC_LHC_HELP).toContain("positional Claude argument");
   });
 });
