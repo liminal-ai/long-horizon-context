@@ -3116,6 +3116,74 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
     await second.runPromise;
   }, 20_000);
 
+  it("Fable blocker 1: a crash-window after retirement marking but before terminal completion cannot replay after epoch reset", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-retire-crash-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-retire-crash-proj-"));
+    dirs.push(projectsRoot);
+    const recoveryDir = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-retire-crash-rec-"));
+    dirs.push(recoveryDir);
+    const { receiptId, journalPath } = await seedInterrupted({
+      receiptDb,
+      projectsRoot,
+      recoveryDir,
+      journalState: "pending-bytes",
+      journalBytes: Buffer.from("NEVER-REPLAY"),
+    });
+
+    const spawned: FakePty[] = [];
+    const stdin = fakeStream();
+    const first = restartRun({
+      receiptDb,
+      recoveryDir,
+      spawned,
+      boundSessionId: RESTART_REBUILT,
+      stdin,
+      storeHook: (store) => ({
+        ...store,
+        completeAttempt: () => {
+          throw new Error("simulated crash-window before retirement terminal");
+        },
+      }),
+    });
+    await waitFor(() => first.sink() !== undefined && spawned.length >= 1, "sink+rebuilt child");
+    stdin.write("FRESH\r");
+    await waitFor(() => spawned[0]!.writes.join("").includes("FRESH"), "fresh input reached rebuilt child");
+    first.sink()!(BOUND_SIGNALS);
+    await waitFor(() => {
+      const store = openGovernorReceiptStore(receiptDb);
+      try {
+        const attempt = store.getAttempt(receiptId);
+        return (
+          attempt?.stage !== "terminal" &&
+          attempt?.artifacts.staleInputRetirementReason !== undefined &&
+          attempt.artifacts.staleInputRetirementArtifactPath !== undefined
+        );
+      } finally {
+        store.close();
+      }
+    }, "durable retirement marker without terminal");
+    expect(existsSync(journalPath!)).toBe(true);
+    spawned[0]?.fireExit(0);
+    await first.runPromise;
+
+    // A new process starts with epoch zero. The durable retirement marker, not
+    // process memory, forces cancellation and prevents journal delivery.
+    const spawned2: FakePty[] = [];
+    const second = restartRun({ receiptDb, recoveryDir, spawned: spawned2, boundSessionId: RESTART_REBUILT });
+    await waitFor(() => second.sink() !== undefined, "sink2");
+    second.sink()!(BOUND_SIGNALS);
+    await waitTerminal(receiptDb, receiptId);
+    const store2 = openGovernorReceiptStore(receiptDb);
+    expect(store2.getById(receiptId)?.handoffOutcome?.kind).toBe("handoff_cancelled");
+    store2.close();
+    expect(spawned2[0]!.writes.join("")).not.toContain("NEVER-REPLAY");
+    expect(existsSync(journalPath!)).toBe(true);
+    spawned2[0]?.fireExit(0);
+    await second.runPromise;
+  }, 20_000);
+
   it("finding 1: old-child identity changes between prepareBarrier and terminateOldChild → ABORT (no kill, no spawn), attempt open, prepared journal retained", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-idchg-"));
     dirs.push(dir);

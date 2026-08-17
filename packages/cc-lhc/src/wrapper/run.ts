@@ -3263,6 +3263,66 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       scheduleRecoveryRetry(receiptId, "startup", `restart open: ${reason}`);
     };
 
+    const STALE_INPUT_RETIREMENT_REASON =
+      "stale pending input retired: user input advanced on the rebuilt session before delivery; pending journal segments retained for operator, not auto-replayable";
+
+    /**
+     * Persist retirement BEFORE the byte-free artifact and terminal receipt. If the
+     * process dies between any two writes, the append-only marker makes the next
+     * invocation finish cancellation instead of replaying with a reset input epoch.
+     */
+    const finishStaleInputRetirement = (receiptId: string, original: RecoveryAttempt): boolean => {
+      if (governorReceiptStore === null) return false;
+      let current: RecoveryAttempt | null;
+      try {
+        current = governorReceiptStore.getAttempt(receiptId);
+      } catch {
+        return false;
+      }
+      if (current === null || current.attemptId !== original.attemptId || current.stage === "terminal") return false;
+
+      if (current.artifacts.staleInputRetirementReason === undefined) {
+        try {
+          const advanced = governorReceiptStore.advanceAttempt({
+            receiptId,
+            attemptId: current.attemptId,
+            stage: current.stage,
+            artifacts: { staleInputRetirementReason: STALE_INPUT_RETIREMENT_REASON },
+          });
+          if (advanced.kind !== "advanced" && advanced.kind !== "unchanged") return false;
+          current = governorReceiptStore.getAttempt(receiptId);
+        } catch {
+          return false;
+        }
+        if (current === null || current.attemptId !== original.attemptId || current.stage === "terminal") return false;
+      }
+      if (current.artifacts.staleInputRetirementReason !== STALE_INPUT_RETIREMENT_REASON) return false;
+
+      const segments = unresolvedJournalPaths(current.artifacts, receiptId);
+      const artifactPath = writeRestartArtifact(receiptId, current, STALE_INPUT_RETIREMENT_REASON, undefined, segments);
+      if (artifactPath === null) return false;
+      if (current.artifacts.staleInputRetirementArtifactPath === undefined) {
+        try {
+          const advanced = governorReceiptStore.advanceAttempt({
+            receiptId,
+            attemptId: current.attemptId,
+            stage: current.stage,
+            artifacts: { staleInputRetirementArtifactPath: artifactPath },
+          });
+          if (advanced.kind !== "advanced" && advanced.kind !== "unchanged") return false;
+        } catch {
+          return false;
+        }
+      } else if (current.artifacts.staleInputRetirementArtifactPath !== artifactPath) {
+        return false;
+      }
+
+      return completeGovernorAttempt(receiptId, current.attemptId, {
+        kind: "handoff_cancelled",
+        detail: STALE_INPUT_RETIREMENT_REASON,
+      });
+    };
+
     /**
      * Case-B controlled replacement (LIM-80 3B2, findings 3/5/6/8): the wrapper
      * relaunched exactly on the OLD session, so the recorded rebuilt replacement is
@@ -3650,6 +3710,17 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         );
         return;
       }
+      // A prior invocation durably retired stale pending input but may have died
+      // before writing its artifact or terminal receipt. Finish that transaction;
+      // never let a reset process-memory epoch make the bytes replayable again.
+      if (a.staleInputRetirementReason !== undefined) {
+        if (finishStaleInputRetirement(receiptId, attempt)) {
+          resetRecoveryRetries(receiptId);
+        } else {
+          scheduleRecoveryRetry(receiptId, "startup", "stale-input retirement reconciliation incomplete");
+        }
+        return;
+      }
       // Adopt the live child as a new `adopt_ready` generation when it is not already
       // active — only after the prior active identity AND every earlier prepared old
       // child are kernel-proven absent (findings 2/4). No immutable fact is rewritten.
@@ -3798,27 +3869,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           // handoff_cancelled (stale pending input RETIRED, not auto-replayable). The
           // journals are RETAINED for operator evidence and are never delivered/disposed.
           if (startEpoch !== 0 || governorState.currentInputEpoch !== 0) {
-            const segs = unresolvedJournalPaths(a, receiptId);
-            const art = writeRestartArtifact(
-              receiptId,
-              attempt,
-              "stale pending input retired: user input advanced on the rebuilt session before delivery; pending segments not auto-replayable",
-              undefined,
-              segs,
-            );
-            if (art === null) {
-              scheduleRecoveryRetry(receiptId, "startup", "stale-input retirement artifact unwritten; left open");
-              return;
-            }
-            const retired = completeGovernorAttempt(receiptId, attemptId, {
-              kind: "handoff_cancelled",
-              detail:
-                "stale pending input retired: user input advanced on the rebuilt session before delivery; pending journal segments retained for operator, not auto-replayable",
-            });
-            if (retired) {
+            if (finishStaleInputRetirement(receiptId, attempt)) {
               resetRecoveryRetries(receiptId);
             } else {
-              scheduleRecoveryRetry(receiptId, "startup", "stale-input retirement completion not durable; left open");
+              scheduleRecoveryRetry(receiptId, "startup", "stale-input retirement transaction incomplete; left open");
             }
             return;
           }

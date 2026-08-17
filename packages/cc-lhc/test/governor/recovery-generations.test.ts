@@ -377,4 +377,17 @@ describe("strict journal uniqueness (blocker 3)", () => {
     const merged = mergeRecoveryArtifacts({}, { inputJournalPath: "/j/origin" });
     expect(merged.ok).toBe(false);
   });
+  it("persists stale-input retirement facts append-only", () => {
+    const parsed = parseRecoveryArtifacts({
+      staleInputRetirementReason: "fresh input won",
+      staleInputRetirementArtifactPath: "/recovery/retired.json",
+    });
+    expect(parsed).toEqual({
+      staleInputRetirementReason: "fresh input won",
+      staleInputRetirementArtifactPath: "/recovery/retired.json",
+    });
+    expect(mergeRecoveryArtifacts(parsed!, { staleInputRetirementArtifactPath: "/recovery/different.json" }).ok).toBe(
+      false,
+    );
+  });
 });

@@ -146,6 +146,14 @@ export interface RecoveryArtifacts {
    * this value. A pre-3B2 row without it is legacy/repairable, never silently trusted.
    */
   inputJournalOriginAttemptId?: string;
+  /**
+   * Append-only proof that pending pre-crash input became stale after fresh input
+   * reached the rebuilt session. Once present, restart may finish the operator
+   * artifact and terminal cancellation, but must never auto-replay the journals.
+   */
+  staleInputRetirementReason?: string;
+  /** Durable byte-free operator artifact written for the retirement proof. */
+  staleInputRetirementArtifactPath?: string;
   /** Replacement child identity from the original live handoff (immutable record). */
   replacementChild?: ProcessIdentity;
   /**
@@ -443,6 +451,8 @@ const ARTIFACT_STRING_KEYS = [
   "inputJournalPath",
   "inputJournalId",
   "inputJournalOriginAttemptId",
+  "staleInputRetirementReason",
+  "staleInputRetirementArtifactPath",
 ] as const;
 const ARTIFACT_IDENTITY_KEYS = ["oldChild", "replacementChild"] as const;
 const ARTIFACT_NUMBER_KEYS = [
