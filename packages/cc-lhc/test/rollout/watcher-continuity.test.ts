@@ -2,7 +2,7 @@
  * Correction 8: exact consumed-region continuity + terminal initial failures.
  */
 
-import { appendFileSync, lstatSync, mkdtempSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdtempSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -85,10 +85,13 @@ describe("watcher continuity (exact consumed digest)", () => {
     const seamSwap = process.platform === "win32";
     let pathSwapped = false;
     const swappedIo: Partial<WatcherIo> = {
-      lstat: (p) => {
-        const st = lstatSync(p);
-        if (!pathSwapped) return { dev: st.dev, ino: st.ino };
-        return { dev: st.dev, ino: typeof st.ino === "bigint" ? st.ino + 1n : st.ino + 1 };
+      lstat: () => {
+        if (!pathSwapped) return { ...handle.identity };
+        const ino = handle.identity.ino;
+        // Windows may expose an inode beyond Number.MAX_SAFE_INTEGER, where +1
+        // is numerically unchanged. Negation (or 1 for zero) is guaranteed distinct.
+        const changedIno = typeof ino === "bigint" ? ino + 1n : ino === 0 ? 1 : -ino;
+        return { dev: handle.identity.dev, ino: changedIno };
       },
     };
 
