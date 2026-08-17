@@ -3197,10 +3197,16 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
     spawned[0]?.fireExit(0);
     await first.runPromise;
 
-    // A new process starts with epoch zero. The durable retirement marker, not
-    // process memory, forces cancellation and prevents journal delivery.
+    const markedStore = openGovernorReceiptStore(receiptDb);
+    const rebuiltRolloutPath = markedStore.getAttempt(receiptId)!.artifacts.rebuiltRolloutPath!;
+    markedStore.close();
+    writeFileSync(rebuiltRolloutPath, "corrupt after retirement\n");
+
+    // A new process starts with epoch zero and is attached to the exact OLD
+    // session. Even with an invalid rebuilt rollout, the durable retirement marker
+    // is checked before Case A/B selection and forces cancellation without delivery.
     const spawned2: FakePty[] = [];
-    const second = restartRun({ receiptDb, recoveryDir, spawned: spawned2, boundSessionId: RESTART_REBUILT });
+    const second = restartRun({ receiptDb, recoveryDir, spawned: spawned2, boundSessionId: RESTART_OLD });
     await waitFor(() => second.sink() !== undefined, "sink2");
     second.sink()!(BOUND_SIGNALS);
     await waitTerminal(receiptDb, receiptId);

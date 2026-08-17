@@ -3566,6 +3566,19 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       }
       const rebuiltSessionId = a.rebuiltSessionId;
 
+      // Retirement is authoritative before rollout verification and before choosing
+      // Case A or Case B. It never mutates a child; it only finishes the durable
+      // cancellation transaction. Therefore a missing/corrupt rollout or a restart
+      // attached to the old session cannot make retired bytes replayable.
+      if (a.staleInputRetirementReason !== undefined) {
+        if (finishStaleInputRetirement(receiptId, attempt)) {
+          resetRecoveryRetries(receiptId);
+        } else {
+          scheduleRecoveryRetry(receiptId, "startup", "stale-input retirement reconciliation incomplete");
+        }
+        return;
+      }
+
       // Finding 5: re-verify the WHOLE rollout FIRST. A corrupt/rewritten/missing
       // rollout stays open/repairable with NO child mutation and NO bookkeeping mutation.
       const rolloutVerified = await verifyReservedRolloutReadOnly(a);
@@ -3708,17 +3721,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           "a different recorded replacement identity is live/indeterminate",
           journalMetaOf(a, receiptId),
         );
-        return;
-      }
-      // A prior invocation durably retired stale pending input but may have died
-      // before writing its artifact or terminal receipt. Finish that transaction;
-      // never let a reset process-memory epoch make the bytes replayable again.
-      if (a.staleInputRetirementReason !== undefined) {
-        if (finishStaleInputRetirement(receiptId, attempt)) {
-          resetRecoveryRetries(receiptId);
-        } else {
-          scheduleRecoveryRetry(receiptId, "startup", "stale-input retirement reconciliation incomplete");
-        }
         return;
       }
       // Adopt the live child as a new `adopt_ready` generation when it is not already
