@@ -12,6 +12,7 @@ export {
 } from "./config.js";
 export { decideGovernor } from "./decide.js";
 export {
+  acknowledgeNativeSummaryAttention,
   applyGovernorLifecycleBatch,
   applyGovernorLifecycleSignal,
   createGovernorRuntimeState,
@@ -30,6 +31,7 @@ export {
   estimateTokensFromCapturedBytes,
   normalizePostMeasurementEstimate,
   providerContextFromUsage,
+  triggerPressureSource,
 } from "./provider-context.js";
 export {
   type AdvanceAttemptResult,

@@ -38,17 +38,41 @@ export const INPUT_ARRIVED_PARTIAL =
 export type ContextMutationOperation = "compact" | "prune" | "auto_compact";
 export type ContextMutationOrigin = "auto" | "manual";
 
-/** Metrics behind the durable receipt and the panel's last-action line. */
+/**
+ * Metric provenance labels (LIM-80 Slice 4). Each governor/receipt measure names its
+ * SOURCE so the three are never conflated or double-counted: the trigger's
+ * next-request pressure (provider-reported total + accepted host-canonical estimate),
+ * the SDK compact-receipt rendered-view total, and the SDK prune-zone measure. Only
+ * the trigger measure drives auto-compact; view/zone are execution/receipt-only and
+ * never feed the trigger nor infer post-compact provider pressure.
+ */
+export const SDK_VIEW_TOKENS_SOURCE = "sdk_compact_receipt_view_tokens";
+export const SDK_ZONE_TOKENS_SOURCE = "sdk_prune_zone_tokens";
+export type SdkViewTokensSource = typeof SDK_VIEW_TOKENS_SOURCE;
+export type SdkZoneTokensSource = typeof SDK_ZONE_TOKENS_SOURCE;
+
+/** Metrics behind the durable receipt and the panel's last-action line. Each measure
+ * is DISTINCT and carries a machine-readable `*Source` field naming its provenance —
+ * the trigger pressure (provider total + accepted LHC canonical-payload estimate), the
+ * SDK compact-receipt rendered view, and the SDK prune-zone. The receipt renders them
+ * as separate fields and never equates them; view/zone never feed the trigger. */
 export interface ContextMutationMetrics {
   origin: ContextMutationOrigin;
-  /** Provider context that triggered an automatic operation (host measure). */
+  /** Trigger next-request pressure (provider total + accepted LHC canonical-payload estimate). */
   triggerContextTokens?: number;
-  /** Rebuilt LHC served-view size from the compact receipt (SDK measure). */
+  /** Source of {@link ContextMutationMetrics.triggerContextTokens}; set whenever it is present. */
+  triggerPressureSource?: string;
+  /** Rebuilt LHC served-view size from the SDK compact receipt. */
   viewTokens?: number;
+  /** Source of {@link ContextMutationMetrics.viewTokens}; set whenever it is present. */
+  viewTokensSource?: SdkViewTokensSource;
   /** Configured SDK lower target. */
   targetTokens?: number;
+  /** SDK prune-zone (tool-result) tokens before/after. Never a trigger input. */
   zoneTokensBefore?: number;
   zoneTokensAfter?: number;
+  /** Source of the SDK prune-zone measures; set whenever the zone values are present. */
+  zoneTokensSource?: SdkZoneTokensSource;
 }
 
 export interface HandoffRequest {
@@ -63,8 +87,10 @@ export interface HandoffRequest {
   metrics: ContextMutationMetrics;
 }
 
-/** Compact token display for receipts: 247k / 8.2k / 941. One ontology — these
- * are the same token numbers the SDK and governor report, only shortened. */
+/** Compact token display for receipts: 247k / 8.2k / 941. A pure DISPLAY shortener
+ * only — it does not imply the values it formats are the same measure. Provider
+ * trigger pressure, the SDK rendered-view total, and the SDK prune-zone tokens are
+ * distinct sources (see the *_SOURCE labels) and are rendered as separate fields. */
 export function formatTokensShort(tokens: number): string {
   if (tokens >= 10_000) return `${Math.round(tokens / 1000)}k`;
   if (tokens >= 1_000) return `${(tokens / 1000).toFixed(1)}k`;
@@ -80,16 +106,19 @@ export function formatDurableReceipt(operation: ContextMutationOperation, metric
   const label = operation === "prune" ? "prune" : "compact";
   const parts: string[] = [];
   if (metrics.triggerContextTokens !== undefined) {
-    parts.push(`trigger context ${formatTokensShort(metrics.triggerContextTokens)}`);
+    const source = metrics.triggerPressureSource === undefined ? "" : ` [source=${metrics.triggerPressureSource}]`;
+    parts.push(`trigger context ${formatTokensShort(metrics.triggerContextTokens)}${source}`);
   }
   if (metrics.zoneTokensBefore !== undefined && metrics.zoneTokensAfter !== undefined) {
+    const source = metrics.zoneTokensSource === undefined ? "" : ` [source=${metrics.zoneTokensSource}]`;
     parts.push(
-      `tool-result zone ${formatTokensShort(metrics.zoneTokensBefore)} -> ${formatTokensShort(metrics.zoneTokensAfter)}`,
+      `tool-result zone ${formatTokensShort(metrics.zoneTokensBefore)} -> ${formatTokensShort(metrics.zoneTokensAfter)}${source}`,
     );
   }
   if (metrics.viewTokens !== undefined) {
     const target = metrics.targetTokens !== undefined ? ` (${formatTokensShort(metrics.targetTokens)} target)` : "";
-    parts.push(`rebuilt LHC view ${formatTokensShort(metrics.viewTokens)}${target}`);
+    const source = metrics.viewTokensSource === undefined ? "" : ` [source=${metrics.viewTokensSource}]`;
+    parts.push(`rebuilt LHC view ${formatTokensShort(metrics.viewTokens)}${target}${source}`);
   }
   return `[lhc ${label}:${metrics.origin}] ${parts.join("; ")}.`;
 }
@@ -109,6 +138,8 @@ export interface ContextMutationPlan {
   manualPruneTargetTokens?: number;
   /** Provider context that triggered an automatic operation (receipt detail). */
   triggerContextTokens?: number;
+  /** Exact source carried from the governor pressure receipt. */
+  triggerPressureSource?: string;
   /**
    * True when user input arrived since the operation started. Checked at every
    * fence; a pre-SDK trip refuses, a post-SDK trip reports partial (view
@@ -296,7 +327,12 @@ async function runContextMutationImpl(
   let viewMutated = false;
   const metrics: ContextMutationMetrics = {
     origin: plan.operation === "auto_compact" ? "auto" : "manual",
-    ...(plan.triggerContextTokens === undefined ? {} : { triggerContextTokens: plan.triggerContextTokens }),
+    ...(plan.triggerContextTokens === undefined
+      ? {}
+      : {
+          triggerContextTokens: plan.triggerContextTokens,
+          ...(plan.triggerPressureSource === undefined ? {} : { triggerPressureSource: plan.triggerPressureSource }),
+        }),
   };
 
   const partialOrRefused = (fenceMessage: string): ContextMutationOutcome => {
@@ -316,6 +352,7 @@ async function runContextMutationImpl(
     if (receipt.noOp) return { kind: "noop", messages: lines };
     metrics.zoneTokensBefore = receipt.zoneTokensBefore;
     metrics.zoneTokensAfter = receipt.zoneTokensAfter;
+    metrics.zoneTokensSource = SDK_ZONE_TOKENS_SOURCE;
     viewMutated = true;
     const afterPrune = fence();
     if (afterPrune !== null) return partialOrRefused(afterPrune);
@@ -347,6 +384,7 @@ async function runContextMutationImpl(
             viewMutated = true;
             metrics.zoneTokensBefore = pruneResult.value.zoneTokensBefore;
             metrics.zoneTokensAfter = pruneResult.value.zoneTokensAfter;
+            metrics.zoneTokensSource = SDK_ZONE_TOKENS_SOURCE;
           }
           lines.push(formatPruneReceipt(pruneResult.value));
         } else {
@@ -419,6 +457,7 @@ async function runContextMutationImpl(
     }
     viewMutated = true;
     metrics.viewTokens = compactResult.value.totalTokens;
+    metrics.viewTokensSource = SDK_VIEW_TOKENS_SOURCE;
     metrics.targetTokens = plan.lowerBoundTokens;
     lines.push(formatCompactReceipt(compactResult.value));
   }

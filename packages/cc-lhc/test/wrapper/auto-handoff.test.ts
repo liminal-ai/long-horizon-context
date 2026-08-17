@@ -980,3 +980,112 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     await runPromise;
   }, 15_000);
 });
+
+describe("run: explicit --autocompact reconciliation (LIM-80 Slice 4)", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  beforeEach(() => {
+    mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-ac-home-"));
+    receiptDirs.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const d of receiptDirs.splice(0)) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  function launch(args: string[], opts: { noCapture?: boolean; upperBoundTokens?: number } = {}) {
+    const spawned: FakePty[] = [];
+    const stderr = fakeStream();
+    let stderrText = "";
+    (stderr as unknown as NodeJS.ReadableStream).on("data", (c: Buffer) => {
+      stderrText += c.toString("utf8");
+    });
+    mocks.captureFactory = (o) =>
+      scriptedCaptureSession(o, sdkForCapture(), "old-session", "/tmp/old.jsonl", 1).session;
+    const runPromise = run(args, {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, a: string[]) => {
+        const fake = makeFakePty(7000 + spawned.length, `c${spawned.length}`, a, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin: fakeStream(),
+      stdout: fakeStream(),
+      stderr: stderr as never,
+      noInference: true,
+      resolvedContextPolicy:
+        opts.upperBoundTokens === undefined
+          ? (POLICY as never)
+          : ({ ...POLICY, policy: { ...POLICY.policy, upperBoundTokens: opts.upperBoundTokens } } as never),
+      governorReceiptDbPath: tempReceiptDbPath(),
+      readProcessIdentity: anyPidIdentity,
+      ...(opts.noCapture === true ? { noCapture: true } : {}),
+    }) as Promise<number>;
+    return { runPromise, spawned, stderr: () => stderrText };
+  }
+
+  it("capture-enabled + armed: --autocompact auto is REFUSED (exit 2, guidance, no child spawned)", async () => {
+    const { runPromise, spawned, stderr } = launch(["--autocompact", "auto"]);
+    const code = await runPromise;
+    expect(code).toBe(2);
+    expect(spawned).toHaveLength(0);
+    expect(stderr()).toContain("refusing capture-enabled launch");
+    expect(stderr()).toContain("--lhc-no-capture");
+  });
+
+  it("capture-enabled + armed: a value at/below the upper trigger is REFUSED", async () => {
+    const { runPromise, spawned, stderr } = launch(["--autocompact", "200k"], { upperBoundTokens: 360_000 });
+    expect(await runPromise).toBe(2);
+    expect(spawned).toHaveLength(0);
+    expect(stderr()).toContain("refusing capture-enabled launch");
+    expect(stderr()).toContain("at/below the LHC upper trigger 360000");
+  });
+
+  it("capture-enabled + armed: absent --autocompact injects the native backstop", async () => {
+    const { runPromise, spawned } = launch([]);
+    await waitFor(() => spawned.length === 1, "child spawned");
+    const args = spawned[0]!.args;
+    expect(args).toContain("--autocompact");
+    expect(args[args.indexOf("--autocompact") + 1]).toBe("1000000");
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("capture-enabled + armed: an accepted value (strictly above upper) is honored, backstop suppressed", async () => {
+    const { runPromise, spawned } = launch(["--autocompact", "500000"]);
+    await waitFor(() => spawned.length === 1, "child spawned");
+    const joined = spawned[0]!.args.join(" ");
+    expect(joined).toContain("--autocompact 500000");
+    expect(joined).not.toContain("1000000"); // the LHC backstop is suppressed
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("capture-enabled + armed: accepted equals-form value is honored, backstop suppressed", async () => {
+    const { runPromise, spawned } = launch(["--autocompact=500k"]);
+    await waitFor(() => spawned.length === 1, "child spawned");
+    const joined = spawned[0]!.args.join(" ");
+    expect(joined).toContain("--autocompact=500k");
+    expect(joined).not.toContain("1000000");
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("no-capture passthrough: a conflicting --autocompact is NOT refused and passes through verbatim", async () => {
+    const { runPromise, spawned } = launch(["--autocompact", "50000"], { noCapture: true });
+    await waitFor(() => spawned.length === 1, "child spawned");
+    expect(spawned[0]!.args).toEqual(["--autocompact", "50000"]); // verbatim, no backstop, no refusal
+    spawned[0]!.fireExit(0);
+    expect(await runPromise).toBe(0);
+  }, 15_000);
+});

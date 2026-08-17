@@ -3,13 +3,18 @@
  *
  * Predicted next-request growth after an authoritative provider measurement:
  * - Prefer provider-reported `output_tokens` for the completed response.
- * - Otherwise estimate from canonical captured payload UTF-8 bytes (~4 bytes/token).
- * - Subsequent tool results / assistant / user / runtime content add the same
- *   host-byte estimate. Sidechains, synthetic resume chrome, meta, and suppressed
- *   rebuilt prefixes never contribute.
+ * - Otherwise estimate from ACCEPTED canonical captured payload UTF-8 bytes
+ *   (~4 bytes/token). The host-byte estimate counts only intake the LHC ACCEPTED
+ *   into the canonical conversation — assistant text/thinking, user prompts,
+ *   runtime notes, tool calls, and **accepted tool results**. Intake that was
+ *   replay-dropped, skipped (sidechains, synthetic resume chrome, meta), or that
+ *   failed to map never becomes a canonical event and therefore never contributes
+ *   (LIM-80 Slice 4 — accepted-only accounting).
  *
  * Limitations of bytes/4: it is a host heuristic, not provider billing usage.
- * Labels keep that domain explicit (`source_labelled_estimate`).
+ * Labels keep that domain explicit (`source_labelled_estimate`); the
+ * host-byte label is `accepted_lhc_canonical_payload_byte_estimate` = ACCEPTED canonical
+ * payload only.
  */
 
 import type { MessageEventInput } from "lhc";
@@ -17,8 +22,10 @@ import { estimateTokensFromCapturedBytes } from "../governor/provider-context.js
 import type { PostMeasurementEstimate } from "../governor/types.js";
 
 export const PROVIDER_OUTPUT_ESTIMATE_SOURCE = "provider_reported_output_tokens";
-export const HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE = "host_canonical_payload_byte_estimate";
-export const MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE = "provider_output_plus_host_canonical_payload_byte_estimate";
+// Stored source strings say "accepted LHC canonical payload" explicitly (LIM-80
+// Slice 4): only intake the LHC accepted into the canonical conversation is counted.
+export const HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE = "accepted_lhc_canonical_payload_byte_estimate";
+export const MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE = "provider_output_plus_accepted_lhc_canonical_payload_byte_estimate";
 
 /** Fold state shared across observe lines for one capture generation. */
 export interface PostMeasurementEstimateFold {

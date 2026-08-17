@@ -6,6 +6,7 @@ import {
   estimateTokensFromCapturedBytes,
   normalizePostMeasurementEstimate,
   providerContextFromUsage,
+  triggerPressureSource,
 } from "../../src/governor/provider-context.js";
 
 describe("providerContextFromUsage", () => {
@@ -86,6 +87,20 @@ describe("providerContextFromUsage", () => {
 });
 
 describe("buildPressureReceipt / post-measurement estimate", () => {
+  it("derives trigger provenance from the actual estimate source and labels provider-only fallback", () => {
+    const pressure = buildPressureReceipt(
+      { inputTokens: 100, cacheCreationInputTokens: 20, cacheReadInputTokens: 30, total: 150 },
+      { tokens: 40, source: "provider_reported_output_tokens", domain: "source_labelled_estimate" },
+      180,
+    );
+    expect(triggerPressureSource(pressure)).toBe(
+      "provider_reported_input+source_labelled_estimate:provider_reported_output_tokens",
+    );
+    expect(triggerPressureSource({ ...pressure, nextRequestPressureTokens: null, atOrAboveTrigger: null })).toBe(
+      "provider_reported_input",
+    );
+    expect(triggerPressureSource(buildPressureReceipt(null, null, 180))).toBeNull();
+  });
   it("adds source-labelled estimate without double-counting into provider base", () => {
     const provider = providerContextFromUsage({
       input_tokens: 100,
@@ -143,7 +158,7 @@ describe("buildPressureReceipt / post-measurement estimate", () => {
   it("estimateTokensFromCapturedBytes is source-labelled and roughly 4 bytes/token", () => {
     const est = estimateTokensFromCapturedBytes(400);
     expect(est.tokens).toBe(100);
-    expect(est.source).toBe("host_canonical_payload_byte_estimate");
+    expect(est.source).toBe("accepted_lhc_canonical_payload_byte_estimate");
     expect(est.domain).toBe("source_labelled_estimate");
   });
 });

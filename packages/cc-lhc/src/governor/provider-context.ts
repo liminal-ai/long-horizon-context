@@ -153,16 +153,28 @@ export function buildPressureReceipt(
 }
 
 /**
+ * Exact provenance for a trigger token total. A full next-request pressure keeps
+ * provider input and the actual estimate source distinct. A recovery fallback to
+ * provider context alone is labelled provider-only rather than inventing an estimate.
+ */
+export function triggerPressureSource(receipt: GovernorPressureReceipt): string | null {
+  if (receipt.nextRequestPressureTokens !== null) {
+    return `${receipt.providerBaseDomain}+${receipt.estimateDomain}:${receipt.estimateSource}`;
+  }
+  return receipt.providerBaseTokens === null ? null : receipt.providerBaseDomain;
+}
+
+/**
  * Heuristic host estimate: ~4 bytes per token for UTF-8 captured text after
  * the provider request. Labelled so it is never confused with provider usage.
  *
  * Prefer measuring only canonical captured payload bytes and labelling the
- * source exactly (e.g. `host_canonical_payload_byte_estimate`). This is not
+ * source exactly (e.g. `accepted_lhc_canonical_payload_byte_estimate`). This is not
  * provider billing usage and can drift vs real tokenizer counts.
  */
 export function estimateTokensFromCapturedBytes(
   bytes: number,
-  source = "host_canonical_payload_byte_estimate",
+  source = "accepted_lhc_canonical_payload_byte_estimate",
 ): PostMeasurementEstimate {
   const safe = readNonNegInt(bytes) ?? 0;
   const tokens = Math.floor(safe / 4);

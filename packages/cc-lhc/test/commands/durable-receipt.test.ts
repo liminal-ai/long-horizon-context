@@ -5,9 +5,13 @@ import {
   formatDurableReceipt,
   formatTokensShort,
   runContextMutation,
+  SDK_VIEW_TOKENS_SOURCE,
+  SDK_ZONE_TOKENS_SOURCE,
 } from "../../src/commands/context-mutation.js";
 import type { LhcCommandRuntime } from "../../src/commands/dispatch.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
+
+const TRIGGER_PRESSURE_SOURCE = "provider_reported_input+source_labelled_estimate:provider_reported_output_tokens";
 
 const REBUILT = {
   sessionId: "abcdabcd-abcd-abcd-abcd-abcdabcdabcd",
@@ -100,15 +104,42 @@ describe("durable operation receipt", () => {
       formatDurableReceipt("auto_compact", {
         origin: "auto",
         triggerContextTokens: 508_000,
+        triggerPressureSource: TRIGGER_PRESSURE_SOURCE,
         viewTokens: 247_000,
+        viewTokensSource: SDK_VIEW_TOKENS_SOURCE,
         targetTokens: 240_000,
       }),
-    ).toBe("[lhc compact:auto] trigger context 508k; rebuilt LHC view 247k (240k target).");
-    expect(
-      formatDurableReceipt("prune", { origin: "manual", zoneTokensBefore: 82_000, zoneTokensAfter: 30_000 }),
-    ).toBe("[lhc prune:manual] tool-result zone 82k -> 30k.");
+    ).toBe(
+      "[lhc compact:auto] trigger context 508k [source=provider_reported_input+source_labelled_estimate:provider_reported_output_tokens]; rebuilt LHC view 247k (240k target) [source=sdk_compact_receipt_view_tokens].",
+    );
+    expect(formatDurableReceipt("prune", { origin: "manual", zoneTokensBefore: 82_000, zoneTokensAfter: 30_000 })).toBe(
+      "[lhc prune:manual] tool-result zone 82k -> 30k.",
+    );
     expect(formatTokensShort(1_426)).toBe("1.4k");
     expect(formatTokensShort(941)).toBe("941");
+  });
+
+  it("LIM-80 Slice 4: the three measures carry DISTINCT source labels and render as separate fields", () => {
+    // Distinct provenance — never conflated.
+    const sources = [TRIGGER_PRESSURE_SOURCE, SDK_VIEW_TOKENS_SOURCE, SDK_ZONE_TOKENS_SOURCE];
+    expect(new Set(sources).size).toBe(3);
+    expect(TRIGGER_PRESSURE_SOURCE).toContain("provider_reported_output_tokens");
+    expect(SDK_VIEW_TOKENS_SOURCE).toBe("sdk_compact_receipt_view_tokens");
+    expect(SDK_ZONE_TOKENS_SOURCE).toBe("sdk_prune_zone_tokens");
+    // A receipt carrying all three keeps them visibly distinct (trigger vs zone vs view).
+    const receipt = formatDurableReceipt("compact", {
+      origin: "manual",
+      triggerContextTokens: 508_000,
+      triggerPressureSource: TRIGGER_PRESSURE_SOURCE,
+      zoneTokensBefore: 82_000,
+      zoneTokensAfter: 30_000,
+      zoneTokensSource: SDK_ZONE_TOKENS_SOURCE,
+      viewTokens: 247_000,
+      viewTokensSource: SDK_VIEW_TOKENS_SOURCE,
+    });
+    expect(receipt).toBe(
+      "[lhc compact:manual] trigger context 508k [source=provider_reported_input+source_labelled_estimate:provider_reported_output_tokens]; tool-result zone 82k -> 30k [source=sdk_prune_zone_tokens]; rebuilt LHC view 247k [source=sdk_compact_receipt_view_tokens].",
+    );
   });
 
   it("automatic compact writes EXACTLY ONE labeled receipt and no legacy swap note", async () => {
@@ -120,6 +151,7 @@ describe("durable operation receipt", () => {
         profile: "continuation",
         lowerBoundTokens: 240_000,
         triggerContextTokens: 508_000,
+        triggerPressureSource: TRIGGER_PRESSURE_SOURCE,
       },
       rt,
     );
@@ -127,7 +159,7 @@ describe("durable operation receipt", () => {
     expect(writeSpy).toHaveBeenCalledOnce();
     const input = writeSpy.mock.calls[0]![0];
     expect(input.receipt?.text).toBe(
-      "[lhc compact:auto] trigger context 508k; rebuilt LHC view 247k (240k target).",
+      "[lhc compact:auto] trigger context 508k [source=provider_reported_input+source_labelled_estimate:provider_reported_output_tokens]; rebuilt LHC view 247k (240k target) [source=sdk_compact_receipt_view_tokens].",
     );
     expect(input.receipt?.text).not.toMatch(/preserved|resume|session /);
     if (outcome.kind === "rebuilt") {
@@ -151,7 +183,10 @@ describe("durable operation receipt", () => {
     );
     expect(outcome.kind).toBe("rebuilt");
     const input = writeSpy.mock.calls[0]![0];
-    expect(input.receipt?.text).toBe("[lhc prune:manual] tool-result zone 82k -> 30k.");
+    expect(input.receipt?.text).toBe("[lhc prune:manual] tool-result zone 82k -> 30k [source=sdk_prune_zone_tokens].");
+    if (outcome.kind === "rebuilt") {
+      expect(outcome.handoff.metrics.zoneTokensSource).toBe(SDK_ZONE_TOKENS_SOURCE);
+    }
     writeSpy.mockRestore();
   });
 
@@ -171,7 +206,7 @@ describe("durable operation receipt", () => {
     expect(writeSpy).toHaveBeenCalledOnce();
     const input = writeSpy.mock.calls[0]![0];
     expect(input.receipt?.text).toBe(
-      "[lhc compact:manual] tool-result zone 82k -> 30k; rebuilt LHC view 247k (240k target).",
+      "[lhc compact:manual] tool-result zone 82k -> 30k [source=sdk_prune_zone_tokens]; rebuilt LHC view 247k (240k target) [source=sdk_compact_receipt_view_tokens].",
     );
     writeSpy.mockRestore();
   });

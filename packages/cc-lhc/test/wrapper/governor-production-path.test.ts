@@ -337,7 +337,7 @@ const ESTIMATE_CROSS_SIGNALS: LifecycleSignal[] = [
   {
     kind: "post_measurement_estimate",
     tokens: 2_000,
-    source: "host_canonical_payload_byte_estimate",
+    source: "accepted_lhc_canonical_payload_byte_estimate",
     mode: "add",
   },
   { kind: "turn_settled", reason: "end_turn" },
@@ -891,6 +891,26 @@ describe("LIM-64 production wrapper path", () => {
     await new Promise((r) => setTimeout(r, 300));
     expect(mutationSentinel).toBe(false);
     expect(observes).toContain("native_summary_attention");
+    // A durable native_summary_attention receipt was persisted for the reconciling settle.
+    {
+      const store = openGovernorReceiptStore(receiptDb);
+      const rows = store.listBySession("old-session");
+      expect(rows.some((r) => r.decision === "native_summary_attention")).toBe(true);
+      store.close();
+    }
+    // LIM-80 Slice 4 re-arm: a SUBSEQUENT summary-free settle is no longer suppressed —
+    // the decision is a normal (non-attention) classification, proving governance resumed.
+    // Kept below the (5k) upper trigger so re-arm is proven without a real mutation.
+    observes.length = 0;
+    lifecycleSink!([
+      { kind: "turn_opened", reason: "user_prompt" },
+      { kind: "sampling_observed", samplingId: "req:nat2", providerUsage: { input_tokens: 500 } },
+      { kind: "turn_settled", reason: "end_turn" },
+    ]);
+    await new Promise((r) => setTimeout(r, 300));
+    expect(mutationSentinel).toBe(false);
+    expect(observes.length).toBeGreaterThan(0);
+    expect(observes).not.toContain("native_summary_attention"); // re-armed, not latched
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 15_000);
@@ -1132,7 +1152,7 @@ describe("LIM-64 production wrapper path", () => {
       {
         kind: "post_measurement_estimate",
         tokens: 50_000,
-        source: "host_canonical_payload_byte_estimate",
+        source: "accepted_lhc_canonical_payload_byte_estimate",
         mode: "add",
       },
       { kind: "turn_settled", reason: "end_turn" },
@@ -1429,7 +1449,7 @@ describe("LIM-64 production wrapper path", () => {
       {
         kind: "post_measurement_estimate",
         tokens: 2_000,
-        source: "host_canonical_payload_byte_estimate",
+        source: "accepted_lhc_canonical_payload_byte_estimate",
         mode: "add",
       },
       { kind: "turn_settled", reason: "end_turn" },

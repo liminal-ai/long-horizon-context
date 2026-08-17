@@ -463,10 +463,14 @@ export function respawnChildArgv(
 export type RespawnArgvSafety = { safe: true } | { safe: false; reason: string };
 
 /**
- * Option table for the supported Claude binary, taken from the installed
- * 2.1.226 `--help`. Only `<value>` options have a provable one-token space
- * form. `[value]` and `<values...>` space forms are ambiguous with a
- * positional prompt and fail closed (their `=` forms remain safe).
+ * Option table for the supported Claude binary. Revalidated against the installed
+ * Claude Code **2.1.233** `--help` (LIM-80 Slice 4): the one-value / optional-value /
+ * variadic / zero-arity inventories below are consistent with 2.1.233 (help option
+ * census sha256 in fixtures/claude-2.1.233-compat-evidence.md). Only `<value>` options
+ * have a provable one-token space form; `[value]` and `<values...>` space forms are
+ * ambiguous with a positional prompt and fail closed (their `=` forms remain safe).
+ * `--append-system-prompt-file` is retained for older-binary tolerance though 2.1.233
+ * `--help` no longer lists it (an absent flag never appears in a real launch).
  */
 const CLAUDE_ONE_VALUE_OPTIONS = new Set([
   "--agent",

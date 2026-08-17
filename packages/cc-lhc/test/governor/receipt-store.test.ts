@@ -189,7 +189,7 @@ describe("governor durable receipt store", () => {
       ...settled,
       postMeasurementEstimate: {
         tokens: 50_000,
-        source: "host_canonical_payload_byte_estimate",
+        source: "accepted_lhc_canonical_payload_byte_estimate",
         domain: "source_labelled_estimate" as const,
       },
       pressure: {

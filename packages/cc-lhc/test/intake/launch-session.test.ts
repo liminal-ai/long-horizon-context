@@ -116,6 +116,16 @@ describe("resolveLaunchSession grammar", () => {
     await expect(resolveLaunchSession(["--worktree", "feat"])).rejects.toThrow(/unsupported session/);
   });
 
+  it("refuses the 2.1.233 attribution/topology-breaking flags with capture (LIM-80 Slice 4)", async () => {
+    await expect(resolveLaunchSession(["--background"])).rejects.toThrow(/unsupported session/);
+    await expect(resolveLaunchSession(["--bg"])).rejects.toThrow(/unsupported session/);
+    await expect(resolveLaunchSession(["--environment", "ccpool_x"])).rejects.toThrow(/unsupported session/);
+    await expect(resolveLaunchSession(["--no-session-persistence"])).rejects.toThrow(/unsupported session/);
+    // --fork-session keeps its own dedicated refusal, not the generic unsupported-flag one.
+    await expect(resolveLaunchSession(["--fork-session"])).rejects.toThrow(/--fork-session/);
+    await expect(resolveLaunchSession(["--fork-session"])).rejects.not.toThrow(/unsupported session/);
+  });
+
   it("places normalized selectors before -- and preserves exact suffix order", async () => {
     const plan = await resolveLaunchSession(
       ["--model", "sonnet", "--", "--resume", "literal", "extra"],
@@ -169,8 +179,7 @@ describe("resolveLaunchSession grammar", () => {
   });
 });
 
-
-describe("respawnArgvSafety (fixture: claude 2.1.226 --help arity table)", () => {
+describe("respawnArgvSafety (fixture: claude 2.1.233 --help arity table)", () => {
   it("keeps the real supported launch form handoff-safe: --model --effort --name", () => {
     expect(respawnArgvSafety(["--model", "claude-fable-5", "--effort", "medium", "--name", "seat"], [])).toEqual({
       safe: true,

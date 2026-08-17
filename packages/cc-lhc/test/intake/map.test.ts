@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -503,5 +504,85 @@ describe("mapRolloutLine", () => {
     expect(keys[0]).not.toBe(keys[1]);
     expect(keys[0]).toContain("synthetic:sess-1:user:0:");
     expect(keys[1]).toContain("synthetic:sess-1:user:1:");
+  });
+});
+
+// LIM-80 Slice 4: bounded compatibility evidence for the installed Claude Code
+// 2.1.233. The fixture's record SHAPES were derived from a disposable real 2.1.233
+// local session (echo tool-call → result); volatile/sensitive fields were normalized
+// to deterministic, non-sensitive values. See fixtures/claude-2.1.233-compat-evidence.md.
+describe("Claude Code 2.1.233 rollout compatibility (bounded fixture)", () => {
+  const FIXTURE_2_1_233 = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "fixtures",
+    "claude-2.1.233-tool-call-sequence.jsonl",
+  );
+  const raw = readFileSync(FIXTURE_2_1_233, "utf8");
+  const items = raw
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .map((l) => JSON.parse(l) as RolloutLineItem);
+
+  it("matches the certified normalized-fixture digest", () => {
+    expect(createHash("sha256").update(raw).digest("hex")).toBe(
+      "22bc540269bcb6555e80565c662bed3f6c2bc263198b403e3dabfe42adf42b95",
+    );
+  });
+
+  it("parses the whole 2.1.233 rollout with ZERO unknown drift (all record types recognized)", () => {
+    const result = mapRolloutLines(items);
+    expect(result.stats.unknown).toBe(0);
+    // Housekeeping records (ai-title / queue-operation / attachment / last-prompt) are
+    // recognized meta, never unknown drift.
+    expect(result.stats.meta).toBeGreaterThan(0);
+  });
+
+  it("maps the ordinary assistant + tool call/result conversation to accepted events", () => {
+    const result = mapRolloutLines(items);
+    const kinds = result.events.map((e) => e.eventKind);
+    expect(kinds).toEqual(["user_prompt", "assistant_thinking", "tool_call", "tool_result", "assistant_text"]);
+  });
+
+  it("2.1.233 assistant usage exposes the triad without new diagnostic keys inflating provider totals", () => {
+    // The real 2.1.233 usage object adds inference_geo/iterations/service_tier/speed;
+    // provider-context must read only input + cache_creation + cache_read.
+    const asst = items.find(
+      (i) => i.type === "assistant" && (i.message as { usage?: Record<string, unknown> } | undefined)?.usage,
+    );
+    expect(asst).toBeDefined();
+    const usage = (asst!.message as { usage: Record<string, unknown> }).usage;
+    expect(Object.keys(usage)).toEqual(
+      expect.arrayContaining(["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"]),
+    );
+    expect(Array.isArray(usage.iterations)).toBe(true);
+    expect(usage.output_tokens_details).toEqual({ thinking_tokens: 9 });
+    expect(usage.server_tool_use).toEqual({ web_search_requests: 0, web_fetch_requests: 0 });
+  });
+
+  it("preserves the real split thinking/tool-use identity and message envelope shape", () => {
+    const assistants = items.filter((item) => item.type === "assistant");
+    const firstBlockType = (item: RolloutLineItem): string | undefined => {
+      const content = item.message?.content;
+      if (!Array.isArray(content) || typeof content[0] === "string") return undefined;
+      return content[0]?.type;
+    };
+    const thinking = assistants.find((item) => firstBlockType(item) === "thinking")!;
+    const tool = assistants.find((item) => firstBlockType(item) === "tool_use")!;
+    expect(thinking.requestId).toBe(tool.requestId);
+    expect(thinking.message?.id).toBe(tool.message?.id);
+    expect(thinking.entrypoint).toBe("sdk-cli");
+    expect(thinking.effort).toBe("high");
+    expect(thinking.message).toEqual(
+      expect.objectContaining({
+        type: "message",
+        role: "assistant",
+        stop_reason: "tool_use",
+        stop_details: null,
+        stop_sequence: null,
+        diagnostics: null,
+      }),
+    );
   });
 });

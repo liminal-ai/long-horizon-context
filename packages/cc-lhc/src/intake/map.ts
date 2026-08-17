@@ -307,8 +307,10 @@ export function isAssistantLine(item: RolloutLineItem): boolean {
 // injected by the runtime; ai-title/custom-title and last-prompt are session metadata.
 // Counted as meta so skipped_unknown stays a meaningful drift gauge.
 // Known housekeeping record types from the supported Claude Code corpus
-// (2.1.215–2.1.226 census). Counted as meta so skipped_unknown remains a
-// meaningful drift gauge for truly unrecognized shapes.
+// (2.1.215–2.1.226 census; revalidated against a real 2.1.233 session, LIM-80 Slice 4:
+// ai-title / queue-operation / attachment / last-prompt observed with zero unknown
+// drift — see test/fixtures/claude-2.1.233-tool-call-sequence.jsonl). Counted as meta
+// so skipped_unknown remains a meaningful drift gauge for truly unrecognized shapes.
 const META_LINE_TYPES = new Set([
   "summary",
   "file-history-snapshot",

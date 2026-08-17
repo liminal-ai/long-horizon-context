@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import {
+  acknowledgeNativeSummaryAttention,
   applyGovernorLifecycleBatch,
   createGovernorRuntimeState,
   noteGovernorInput,
@@ -224,13 +225,13 @@ describe("governor observe-state fold", () => {
         {
           kind: "post_measurement_estimate",
           tokens: 500,
-          source: "host_canonical_payload_byte_estimate",
+          source: "accepted_lhc_canonical_payload_byte_estimate",
           mode: "add",
         },
         {
           kind: "post_measurement_estimate",
           tokens: 250,
-          source: "host_canonical_payload_byte_estimate",
+          source: "accepted_lhc_canonical_payload_byte_estimate",
           mode: "add",
         },
       ],
@@ -238,7 +239,7 @@ describe("governor observe-state fold", () => {
     );
     expect(afterSampling.state.postMeasurementEstimate.tokens).toBe(1_750);
     expect(afterSampling.state.postMeasurementEstimate.source).toBe(
-      "provider_output_plus_host_canonical_payload_byte_estimate",
+      "provider_output_plus_accepted_lhc_canonical_payload_byte_estimate",
     );
 
     const afterSet = applyGovernorLifecycleBatch(
@@ -247,7 +248,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "post_measurement_estimate",
           tokens: 42,
-          source: "host_canonical_payload_byte_estimate",
+          source: "accepted_lhc_canonical_payload_byte_estimate",
           mode: "set",
         },
       ],
@@ -390,6 +391,92 @@ describe("governor observe-state fold", () => {
     );
     expect(r.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("native_summary_attention");
     expect(r.observes.every((o) => o.wouldMutate === false)).toBe(true);
+    // The fold keeps the latch until the wrapper acknowledges durable receipt storage.
+    expect(r.state.nativeSummaryAttention).toBe(true);
+  });
+
+  it("native summary re-arms after one settled seam: the next settle governs again (LIM-80 Slice 4)", () => {
+    const s0 = createGovernorRuntimeState({ captureHealthy: true, descriptorReady: true });
+    // Settle #1: native summary observed → one stand-down receipt, latch cleared.
+    const r1 = applyGovernorLifecycleBatch(
+      s0,
+      [
+        { kind: "native_compact_observed", summaryPreview: "..." },
+        { kind: "turn_opened", reason: "user_prompt" },
+        { kind: "sampling_observed", samplingId: "m1", providerUsage: { input_tokens: 600_000 } },
+        { kind: "turn_settled", reason: "end_turn" },
+      ],
+      armed(true),
+    );
+    expect(r1.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("native_summary_attention");
+    expect(r1.state.nativeSummaryAttention).toBe(true);
+    const acknowledged = acknowledgeNativeSummaryAttention(r1.state);
+    expect(acknowledged.nativeSummaryAttention).toBe(false);
+    // Settle #2: no new summary, high pressure → governance resumes (not suppressed).
+    const r2 = applyGovernorLifecycleBatch(
+      acknowledged,
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        { kind: "sampling_observed", samplingId: "m2", providerUsage: { input_tokens: 600_000 } },
+        { kind: "turn_settled", reason: "end_turn" },
+      ],
+      armed(true),
+    );
+    expect(r2.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("would_compact");
+  });
+
+  it("a native summary observed after a prior reconcile re-latches: stands down again once (LIM-80 Slice 4)", () => {
+    const s0 = createGovernorRuntimeState({ captureHealthy: true, descriptorReady: true });
+    const r1 = applyGovernorLifecycleBatch(
+      s0,
+      [
+        { kind: "native_compact_observed", summaryPreview: "a" },
+        { kind: "turn_opened", reason: "user_prompt" },
+        { kind: "sampling_observed", samplingId: "m1", providerUsage: { input_tokens: 600_000 } },
+        { kind: "turn_settled", reason: "end_turn" },
+      ],
+      armed(true),
+    );
+    const acknowledged = acknowledgeNativeSummaryAttention(r1.state);
+    expect(acknowledged.nativeSummaryAttention).toBe(false); // durable receipt acknowledged + re-armed
+    // A fresh native summary re-latches; the next settle stands down again, exactly once.
+    const r2 = applyGovernorLifecycleBatch(
+      acknowledged,
+      [
+        { kind: "native_compact_observed", summaryPreview: "b" },
+        { kind: "turn_opened", reason: "user_prompt" },
+        { kind: "sampling_observed", samplingId: "m2", providerUsage: { input_tokens: 600_000 } },
+        { kind: "turn_settled", reason: "end_turn" },
+      ],
+      armed(true),
+    );
+    expect(r2.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("native_summary_attention");
+    expect(r2.state.nativeSummaryAttention).toBe(true);
+  });
+
+  it("receipt persistence failure keeps native-summary attention latched", () => {
+    const r1 = applyGovernorLifecycleBatch(
+      createGovernorRuntimeState({ captureHealthy: true, descriptorReady: true }),
+      [
+        { kind: "native_compact_observed", summaryPreview: "..." },
+        { kind: "turn_opened", reason: "user_prompt" },
+        { kind: "sampling_observed", samplingId: "m1", providerUsage: { input_tokens: 600_000 } },
+        { kind: "turn_settled", reason: "end_turn" },
+      ],
+      armed(true),
+    );
+    // No acknowledgement models an unavailable durable receipt store.
+    const r2 = applyGovernorLifecycleBatch(
+      r1.state,
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        { kind: "sampling_observed", samplingId: "m2", providerUsage: { input_tokens: 600_000 } },
+        { kind: "turn_settled", reason: "end_turn" },
+      ],
+      armed(true),
+    );
+    expect(r2.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("native_summary_attention");
+    expect(r2.state.nativeSummaryAttention).toBe(true);
   });
 
   it("observe mode never sets wouldMutate", () => {

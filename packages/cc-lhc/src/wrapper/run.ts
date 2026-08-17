@@ -27,6 +27,7 @@ import {
 } from "../commands/recovery-ops.js";
 import { createStoreBackedRecoveryPort, RecoveryPortCasError } from "../commands/recovery-port.js";
 import {
+  acknowledgeNativeSummaryAttention,
   activeReplacementIdentity,
   applyGovernorLifecycleBatch,
   type ContextPolicyPartial,
@@ -59,10 +60,12 @@ import {
   setGovernorCaptureHealth,
   setGovernorDescriptorReady,
   setGovernorOperationInFlight,
+  triggerPressureSource,
   userConfigPath,
   validateContextPolicy,
 } from "../governor/index.js";
 import { killAllInferenceChildren } from "../inference/claude-cli.js";
+import { classifyExplicitAutocompact } from "../intake/argv.js";
 import {
   LaunchGrammarError,
   resolveLaunchSession,
@@ -704,6 +707,20 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let respawnPassthrough: string[] = [];
   /** Set when the launch form could replay a positional prompt: handoff fails closed. */
   let respawnUnsafeReason: string | null = null;
+  // LIM-80 Slice 4: classify an explicit user `--autocompact` before any launch side
+  // effect. A capture-enabled, armed launch is REFUSED (fail closed) unless the value
+  // is a numeric token count strictly above the LHC upper trigger — never silently
+  // raised/overridden. No-capture passthrough is unaffected.
+  const explicitAutocompact = classifyExplicitAutocompact(argv, resolvedContextPolicy.policy.upperBoundTokens);
+  if (!noCapture && resolvedContextPolicy.armed && explicitAutocompact.kind === "refuse") {
+    stderr.write(
+      `cc-lhc: refusing capture-enabled launch — ${explicitAutocompact.reason}. ` +
+        `An explicit --autocompact must be an integer strictly above the LHC upper trigger ` +
+        `(${resolvedContextPolicy.policy.upperBoundTokens} tokens; documented range 100k–1M). ` +
+        `Remove or raise --autocompact, or use --lhc-no-capture for passthrough.\n`,
+    );
+    return 2;
+  }
   if (!noCapture) {
     try {
       const plan = await resolveLaunchSession(argv, {
@@ -738,15 +755,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   }
 
   // Native Claude compact stays as the EMERGENCY BACKSTOP above the LHC upper
-  // trigger. An explicit user --autocompact choice is preserved verbatim;
-  // otherwise the child gets the configured backstop through the supported
-  // CLI surface. Applied to the initial spawn and every respawn.
-  const userChoseAutocompact = argv.some(
-    (arg, i) =>
-      argv.slice(0, i + 1).every((a) => a !== "--") && (arg === "--autocompact" || arg.startsWith("--autocompact=")),
-  );
+  // trigger. An ACCEPTED explicit user --autocompact (proven strictly above the
+  // upper trigger) is preserved verbatim and suppresses the backstop; only an
+  // ABSENT flag gets the configured backstop through the supported CLI surface.
+  // Applied to the initial spawn and every respawn.
   const nativeBackstopArgs: string[] =
-    !noCapture && !userChoseAutocompact && resolvedContextPolicy.armed && options.disableNativeBackstopArgs !== true
+    !noCapture &&
+    explicitAutocompact.kind === "absent" &&
+    resolvedContextPolicy.armed &&
+    options.disableNativeBackstopArgs !== true
       ? ["--autocompact", String(resolvedContextPolicy.policy.nativeBackstopTokens)]
       : [];
   if (nativeBackstopArgs.length > 0) {
@@ -876,8 +893,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let autoOperationScheduled = false;
   /** Cooldown after a non-success handoff; replayed rollback lifecycle must not re-trigger. */
   let autoBlockedUntilMs = 0;
+  type FrozenTriggerPressure = { tokens: number; source: string };
   /** Assigned inside the run promise where child/teardown machinery lives. */
-  let runAutoOperation: (args: { frozenTriggerTokens: number | null; receiptId: string }) => Promise<void> =
+  let runAutoOperation: (args: { frozenTrigger: FrozenTriggerPressure | null; receiptId: string }) => Promise<void> =
     async () => {};
   /** Single-flight recovery of one durable receipt (replay + startup scan). */
   let runRecovery: (receiptId: string, trigger: "replay" | "startup") => Promise<void> = async () => {};
@@ -1023,6 +1041,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     for (const record of observed.observes) {
       wrapperLog.info(formatGovernorObserveLogLine(record));
       const persisted = persistGovernorObserve(record);
+      if (
+        persisted !== null &&
+        record.observePhase === "settled_seam" &&
+        record.decision === "native_summary_attention"
+      ) {
+        governorState = acknowledgeNativeSummaryAttention(governorState);
+      }
       options.onGovernorObserve?.(record);
       // Use predicted next-request pressure for floor learning when available;
       // fall back to authoritative provider total only.
@@ -1135,9 +1160,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             // Claim ownership: keep `scheduled` only while this operation owns it.
             // Crash between here and runAutoOperation claim is the fail-closed window.
             autoOperationScheduled = true;
-            const frozenTriggerTokens = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
+            const frozenTokens = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
+            const frozenSource = triggerPressureSource(record.pressure);
+            const frozenTrigger =
+              frozenTokens === null || frozenSource === null ? null : { tokens: frozenTokens, source: frozenSource };
             setImmediate(() => {
-              void runAutoOperation({ frozenTriggerTokens, receiptId }).finally(() => {
+              void runAutoOperation({ frozenTrigger, receiptId }).finally(() => {
                 autoOperationScheduled = false;
               });
             });
@@ -2639,8 +2667,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
     const recoveryDetailOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
 
-    const frozenTriggerFromReceipt = (receipt: GovernorDurableReceipt): number | null =>
-      receipt.pressure.nextRequestPressureTokens ?? receipt.providerContextTotal;
+    const frozenTriggerFromReceipt = (receipt: GovernorDurableReceipt): FrozenTriggerPressure | null => {
+      const tokens = receipt.pressure.nextRequestPressureTokens ?? receipt.providerContextTotal;
+      const source = triggerPressureSource(receipt.pressure);
+      return tokens === null || source === null ? null : { tokens, source };
+    };
 
     /** Build a full recorded verification from durable artifacts, or undefined. */
     const recordedVerificationOf = (
@@ -2685,7 +2716,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       });
     };
 
-    const buildAutoPlan = (frozenTriggerTokens: number | null, epochChanged: () => boolean): ContextMutationPlan => {
+    const buildAutoPlan = (
+      frozenTrigger: FrozenTriggerPressure | null,
+      epochChanged: () => boolean,
+    ): ContextMutationPlan => {
       const policy = resolvedContextPolicy.policy;
       return {
         operation: "auto_compact",
@@ -2694,7 +2728,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         ...(policy.pruneEnabled && policy.pruneThresholdTokens !== null && policy.pruneTargetTokens !== null
           ? { pruneIfDue: { thresholdTokens: policy.pruneThresholdTokens, targetTokens: policy.pruneTargetTokens } }
           : {}),
-        ...(frozenTriggerTokens === null ? {} : { triggerContextTokens: frozenTriggerTokens }),
+        ...(frozenTrigger === null
+          ? {}
+          : { triggerContextTokens: frozenTrigger.tokens, triggerPressureSource: frozenTrigger.source }),
         inputEpochChanged: epochChanged,
       };
     };
@@ -2758,7 +2794,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const runMutationClaimed = async (
       receiptId: string,
       attemptId: string,
-      frozenTriggerTokens: number | null,
+      frozenTrigger: FrozenTriggerPressure | null,
     ): Promise<void> => {
       const stageBefore = attemptStageOf(receiptId);
       const completeTerminal = (outcome: Exclude<GovernorHandoffOutcome, { kind: "scheduled" }>): boolean => {
@@ -2781,7 +2817,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           return;
         }
         const port = makeRecoveryPort(receiptId, attemptId, runtime);
-        const plan = buildAutoPlan(frozenTriggerTokens, epochChanged);
+        const plan = buildAutoPlan(frozenTrigger, epochChanged);
         const outcome = await runContextMutation(plan, { ...runtime, inputEpochChanged: epochChanged }, port);
         wrapperLog.info(
           `cc-lhc auto-compact mutation ${outcome.kind}/${outcome.kind === "rebuilt" ? "handoff" : (outcome.disposition ?? "open")}: ${outcome.messages.join(" | ") || "(no receipt)"}`,
@@ -2917,12 +2953,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         }
       }
 
-      const triggerTokens = frozenTriggerFromReceipt(receipt);
+      const trigger = frozenTriggerFromReceipt(receipt);
       const durableReceipt =
         a.durableReceipt ??
         formatDurableReceipt("auto_compact", {
           origin: "auto",
-          ...(triggerTokens === null ? {} : { triggerContextTokens: triggerTokens }),
+          ...(trigger === null ? {} : { triggerContextTokens: trigger.tokens, triggerPressureSource: trigger.source }),
         });
       let reserved: { sessionId: string; rolloutPath: string };
       try {
@@ -2940,6 +2976,16 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         durableReceiptText: durableReceipt,
         expectedInstalledFingerprint: expectedFingerprint,
         operation: "auto_compact",
+        // Recovery-carried trigger value keeps its source (LIM-80 Slice 4).
+        ...(trigger === null
+          ? {}
+          : {
+              metrics: {
+                origin: "auto" as const,
+                triggerContextTokens: trigger.tokens,
+                triggerPressureSource: trigger.source,
+              },
+            }),
         ...(recorded === undefined ? {} : { recorded }),
         ...(options.recoveryProjectsRoot !== undefined ? { projectsRoot: options.recoveryProjectsRoot } : {}),
       });
@@ -4034,8 +4080,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // run BEFORE any claim and terminalize via attach (no attempt exists yet).
     // After the guard is held and self identity resolves, claim the receipt,
     // then run the shared claimed-mutation path.
-    runAutoOperation = async (args: { frozenTriggerTokens: number | null; receiptId: string }): Promise<void> => {
-      const { frozenTriggerTokens, receiptId } = args;
+    runAutoOperation = async (args: {
+      frozenTrigger: FrozenTriggerPressure | null;
+      receiptId: string;
+    }): Promise<void> => {
+      const { frozenTrigger, receiptId } = args;
       let forceExitedForAuto = false;
       options.onBeforeAutoOperation?.({
         markHandoffInProgress: () => {
@@ -4110,7 +4159,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // Claim the receipt BEFORE any SDK mutation.
         const claim = governorReceiptStore.claimAttempt({ receiptId, owner: self.identity });
         if (claim.kind === "claimed" || claim.kind === "already_owned") {
-          await runMutationClaimed(receiptId, claim.attempt.attemptId, frozenTriggerTokens);
+          await runMutationClaimed(receiptId, claim.attempt.attemptId, frozenTrigger);
           return;
         }
         if (claim.kind === "receipt_terminal") {

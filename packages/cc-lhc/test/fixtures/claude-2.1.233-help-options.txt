@@ -1,0 +1,62 @@
+--add-dir <directories...>
+--agent <agent>
+--agents <json>
+--allow-dangerously-skip-permissions
+--allowedTools, --allowed-tools <tools...>
+--append-system-prompt <prompt>
+--autocompact <auto|tokens>
+--ax-screen-reader
+--bare
+--betas <betas...>
+--bg, --background
+--brief
+--chrome
+--cloud [description|session_id|url]
+--dangerously-skip-permissions
+--debug-file <path>
+--disable-slash-commands
+--disallowedTools, --disallowed-tools <tools...>
+--effort <level>
+--environment <environment_id>
+--exclude-dynamic-system-prompt-sections
+--fallback-model <model>
+--file <specs...>
+--fork-session
+--forward-subagent-text
+--from-pr [value]
+--ide
+--include-hook-events
+--include-partial-messages
+--input-format <format>
+--json-schema <schema>
+--max-budget-usd <amount>
+--mcp-config <configs...>
+--model <model>
+--no-chrome
+--no-session-persistence
+--output-format <format>
+--permission-mode <mode>
+--plugin-dir <path>
+--plugin-url <url>
+--prompt-suggestions [value]
+--remote-control [name]
+--remote-control-session-name-prefix <prefix>
+--replay-user-messages
+--safe-mode
+--session-id <uuid>
+--setting-sources <sources>
+--settings <file-or-json>
+--strict-mcp-config
+--system-prompt <prompt>
+--teleport [session]
+--tmux
+--tools <tools...>
+--verbose
+-c, --continue
+-d, --debug [filter]
+-h, --help
+-n, --name <name>
+-p, --print
+-r, --resume [value]
+-v, --version
+-w, --worktree [name]

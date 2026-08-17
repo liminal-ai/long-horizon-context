@@ -225,7 +225,10 @@ export function applyGovernorLifecycleSignal(
       };
     }
     case "native_compact_observed": {
-      // Explicit attention latch: LHC will not race a native writer.
+      // Observation only: latch attention so the NEXT settled seam stands the
+      // governor down (LHC never races a native writer). observeOnSettle emits the
+      // native_summary_attention record; the wrapper clears this latch only after
+      // that settled record is durably stored (LIM-80 Slice 4).
       return {
         state: { ...state, nativeSummaryAttention: true },
         observe: null,
@@ -372,6 +375,15 @@ function observeOnSettle(state: GovernorRuntimeState, resolved: ResolvedContextP
   });
 
   return { state: next, observe };
+}
+
+/**
+ * Clear native-summary attention only after the wrapper durably records the
+ * settled-seam `native_summary_attention` receipt. Keeping this acknowledgement
+ * outside the pure fold prevents a receipt-store failure from re-arming LHC early.
+ */
+export function acknowledgeNativeSummaryAttention(state: GovernorRuntimeState): GovernorRuntimeState {
+  return state.nativeSummaryAttention ? { ...state, nativeSummaryAttention: false } : state;
 }
 
 function buildObserveRecord(args: {
