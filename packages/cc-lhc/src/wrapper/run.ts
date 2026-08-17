@@ -5,12 +5,24 @@ import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
 import {
   type ContextMutationPlan,
+  formatDurableReceipt,
   formatTokensShort,
   type HandoffRequest,
   runContextMutation,
 } from "../commands/context-mutation.js";
 import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from "../commands/dispatch.js";
-import { formatRebuildRelaunchGuidance, registerRebuiltSessionLineage } from "../commands/rebuild-receipt.js";
+import {
+  formatRebuildRelaunchGuidance,
+  registerRebuiltSessionLineage,
+  threadIdFromRef,
+} from "../commands/rebuild-receipt.js";
+import {
+  observeCurrentStoredView,
+  type RecoveryPort,
+  type RolloutVerificationArtifacts,
+  recoverReservedRollout,
+} from "../commands/recovery-ops.js";
+import { createStoreBackedRecoveryPort, RecoveryPortCasError } from "../commands/recovery-port.js";
 import {
   applyGovernorLifecycleBatch,
   type ContextPolicyPartial,
@@ -25,9 +37,15 @@ import {
   loadContextPolicy,
   noteGovernorInput,
   openGovernorReceiptStore,
+  planRecovery,
   policySourcesSummary,
   projectConfigPath,
+  type RecoveryAction,
+  type RecoveryAttempt,
+  type RecoveryObservation,
+  type RecoveryStage,
   type ResolvedContextPolicy,
+  recoveryStageIndex,
   setGovernorCaptureHealth,
   setGovernorDescriptorReady,
   setGovernorOperationInFlight,
@@ -61,7 +79,14 @@ import {
   revokeCapability,
   revokeDescriptor,
 } from "../runtime/descriptor.js";
-import { ProcessIdentityUnavailableError } from "../runtime/process-identity.js";
+import { probeProcessIdentityNative } from "../runtime/native-identity.js";
+import {
+  identitiesEqual,
+  type ProbeProcessIdentity,
+  type ProcessIdentity,
+  ProcessIdentityUnavailableError,
+  type ProcessLivenessResult,
+} from "../runtime/process-identity.js";
 import {
   acquireSessionOwner,
   type SessionOwnerLease,
@@ -206,6 +231,20 @@ export type RunOptions = {
   /** Test hook: recovery artifact directory (defaults to ~/.cc-lhc/recovery). */
   recoveryDir?: string;
   /**
+   * Exact self/owner process identity probe (LIM-80). Defaults to the native
+   * provider. Tests inject a deterministic probe to drive owner liveness
+   * (live / not_found / indeterminate) for recovery.
+   */
+  readProcessIdentity?: ProbeProcessIdentity;
+  /**
+   * Test hook: projects root the concrete recovery port uses to compute reserved
+   * rollout paths (defaults to ~/.claude/projects). Must match the path the
+   * rollout writer produces so the reserved/written paths agree.
+   */
+  recoveryProjectsRoot?: string;
+  /** Test hook: reserved rebuilt-session id mint (defaults to randomUUID). */
+  recoverySessionIdFn?: () => string;
+  /**
    * Test hook: suppress the `--autocompact <backstop>` child args (harnesses
    * spawn a generic fake child that rejects claude-only flags).
    */
@@ -227,6 +266,38 @@ export function onTerminalResize(
   stdout: Pick<NodeJS.WriteStream, "columns" | "rows">,
 ): void {
   resizePty(pty, stdout.columns ?? DEFAULT_COLS, stdout.rows ?? DEFAULT_ROWS);
+}
+
+/** Structural equality of two durable governor outcomes (small flat objects). */
+function governorOutcomesEqual(a: GovernorHandoffOutcome, b: GovernorHandoffOutcome): boolean {
+  const ak = Object.keys(a);
+  if (ak.length !== Object.keys(b).length) return false;
+  return ak.every((k) => (a as Record<string, unknown>)[k] === (b as Record<string, unknown>)[k]);
+}
+
+/** Map a controlled-handoff result to its durable governor outcome. Pure. */
+function governorOutcomeFromHandoffResult(
+  result: HandoffResult,
+): Exclude<GovernorHandoffOutcome, { kind: "scheduled" }> {
+  switch (result.kind) {
+    case "success":
+      return {
+        kind: "handoff_success",
+        newSessionId: result.newSessionId,
+        flushedInputBytes: result.flushedInputBytes,
+      };
+    case "cancelled":
+      return { kind: "handoff_cancelled", detail: result.reason };
+    case "rolled_back":
+      return { kind: "handoff_rolled_back", detail: result.reason, oldSessionId: result.oldSessionId };
+    default:
+      return {
+        kind: "handoff_failed",
+        detail: result.reason,
+        oldSessionId: result.oldSessionId,
+        rebuiltSessionId: result.rebuiltSessionId,
+      };
+  }
 }
 
 function restoreTerminal(stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream): void {
@@ -285,6 +356,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
   /** Most recent non-success outcome (health visibility; never claims success). */
   let lastAttempt: { summary: string; atMs: number } | null = null;
+  /** Exact self/owner identity probe (LIM-80 recovery). */
+  const readProcessIdentity: ProbeProcessIdentity = options.readProcessIdentity ?? probeProcessIdentityNative;
+  /** Receipts with a recovery pass currently running (single-flight coalescing). */
+  const recoveryInFlight = new Set<string>();
+  /** Bounded recovery retry counters per receipt (no busy-loop). */
+  const recoveryRetries = new Map<string, number>();
+  /** Startup current-session scan runs at most once. */
+  let startupRecoveryScanned = false;
   /** Durable LIM-64 observe/handoff receipts (SQLite; survives restart). */
   let governorReceiptStore: GovernorReceiptStore | null = null;
   try {
@@ -372,6 +451,153 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         `cc-lhc governor receipt outcome NOT durable: attach failed for ${receiptId}: ${detail}`,
       );
       return false;
+    }
+  };
+
+  /**
+   * Complete an owned attempt AND attach the receipt's outcome atomically
+   * (LIM-80). Replaces attachHandoffOutcome once an attempt exists: a restart
+   * can never see a terminal receipt with a non-terminal attempt, or vice versa.
+   * Loud on any non-completed store result (health + lastAttempt), so a stranded
+   * `scheduled` receipt whose completion did not land stays inspectable.
+   */
+  const completeGovernorAttempt = (
+    receiptId: string,
+    attemptId: string,
+    outcome: Exclude<GovernorHandoffOutcome, { kind: "scheduled" }>,
+  ): boolean => {
+    const markUndurable = (summary: string, logLine: string): void => {
+      wrapperLog.warn(logLine);
+      lastAttempt = { summary, atMs: Date.now() };
+    };
+    if (governorReceiptStore === null) {
+      markUndurable(
+        `attempt outcome undurable: store unavailable (${outcome.kind})`,
+        `cc-lhc governor receipt outcome NOT durable: store unavailable for ${receiptId} outcome ${outcome.kind}`,
+      );
+      return false;
+    }
+    try {
+      const result = governorReceiptStore.completeAttempt({ receiptId, attemptId, outcome });
+      if (result.kind === "completed") return true;
+      if (result.kind === "already_terminal") {
+        // Idempotent ONLY when the receipt's FULL current terminal outcome equals
+        // the requested one. A different stored outcome is a loud correlation
+        // failure, never a silent success.
+        const current = governorReceiptStore.getById(receiptId)?.handoffOutcome ?? null;
+        if (current !== null && current.kind !== "scheduled" && governorOutcomesEqual(current, outcome)) {
+          wrapperLog.info(`cc-lhc governor: attempt already terminal for ${receiptId} (${outcome.kind}); exact match`);
+          return true;
+        }
+        markUndurable(
+          `attempt outcome undurable: already-terminal mismatch (${outcome.kind})`,
+          `cc-lhc governor receipt outcome NOT durable: attempt already terminal for ${receiptId} but stored ${current?.kind ?? "unknown"} != requested ${outcome.kind}`,
+        );
+        return false;
+      }
+      markUndurable(
+        `attempt outcome undurable: ${result.kind} (${outcome.kind})`,
+        `cc-lhc governor receipt outcome NOT durable: completeAttempt ${result.kind} for ${receiptId} outcome ${outcome.kind}`,
+      );
+      return false;
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      markUndurable(
+        `attempt outcome undurable: complete failed (${outcome.kind})`,
+        `cc-lhc governor receipt outcome NOT durable: completeAttempt failed for ${receiptId}: ${detail}`,
+      );
+      return false;
+    }
+  };
+
+  /**
+   * Resolve the wrapper's own exact process identity through the native
+   * provider. Unavailable/indeterminate defers (never synthesizes an identity).
+   */
+  const resolveSelfIdentity = (): ProcessLivenessResult => readProcessIdentity(process.pid);
+
+  /**
+   * Probe a foreign owner by its EXACT identity: a reused pid (live process with
+   * a different bootId/starttime) reads as `not_found` (the original is gone), so
+   * only a kernel-proven absence can justify a reclaim. Live/indeterminate wait.
+   */
+  const probeOwnerLiveness = (owner: ProcessIdentity): ProcessLivenessResult => {
+    const probed = readProcessIdentity(owner.pid);
+    if (probed.ok && !identitiesEqual(probed.identity, owner)) {
+      return { ok: false, code: "not_found", message: `pid ${owner.pid} reused by a different process` };
+    }
+    return probed;
+  };
+
+  /**
+   * Startup current-session scan (LIM-80 Slice 3A). Once capture is bound/ready
+   * and this Claude session + LHC thread are known, drive OUR OWN unfinished work
+   * through recovery — BOTH scheduled receipts with no attempt (crash after insert
+   * before claim) AND receipts with an open attempt (crash after claim, or a
+   * terminal receipt whose attempt bookkeeping is stale). Never touches another
+   * wrapper/session's receipt. Coalesces with exact-replay through the same
+   * single-flight function.
+   *
+   * Latches only after a COMPLETE pass: a transient session-list failure logs and
+   * retries with cooldown (never latches); a malformed attempt row is loud and
+   * fail-closed for that one receipt but does not suppress the rest.
+   */
+  const STARTUP_SCAN_RETRY_DELAY_MS = 1_000;
+  const STARTUP_SCAN_MAX_RETRIES = 5;
+  let startupScanRetries = 0;
+  const scanCurrentSessionRecovery = (sessionId: string, threadId: string): void => {
+    if (startupRecoveryScanned) return;
+    if (governorReceiptStore === null || sessionId === "" || threadId === "") return;
+    let receipts: GovernorDurableReceipt[];
+    try {
+      receipts = governorReceiptStore.listBySession(sessionId);
+    } catch (cause) {
+      // Transient list failure: do NOT latch. Retry with a bounded cooldown so a
+      // corrupt row cannot busy-loop; the exact-replay path still recovers
+      // scheduled receipts in the meantime.
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      startupScanRetries += 1;
+      if (startupScanRetries > STARTUP_SCAN_MAX_RETRIES) {
+        wrapperLog.warn(
+          `cc-lhc governor: startup recovery scan session list unreadable after ${STARTUP_SCAN_MAX_RETRIES} retries; giving up this pass: ${detail}`,
+        );
+        return;
+      }
+      wrapperLog.warn(`cc-lhc governor: startup recovery scan deferred (session list unreadable): ${detail}`);
+      const timer = setTimeout(() => scanCurrentSessionRecovery(sessionId, threadId), STARTUP_SCAN_RETRY_DELAY_MS);
+      if (typeof timer.unref === "function") timer.unref();
+      return;
+    }
+    let scheduled = 0;
+    for (const receipt of receipts) {
+      // Exact current session (list) AND thread.
+      if (receipt.threadId !== threadId) continue;
+      let attempt: RecoveryAttempt | null;
+      try {
+        attempt = governorReceiptStore.getAttempt(receipt.receiptId);
+      } catch (cause) {
+        // Malformed attempt row: loud + fail-closed for THIS receipt only.
+        wrapperLog.warn(
+          `cc-lhc governor: startup scan — attempt row for ${receipt.receiptId} unreadable (skipped, fail-closed): ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+        continue;
+      }
+      const scheduledReceipt = receipt.handoffOutcome?.kind === "scheduled";
+      const openAttempt = attempt !== null && attempt.stage !== "terminal";
+      if (!scheduledReceipt && !openAttempt) continue;
+      const receiptId = receipt.receiptId;
+      wrapperLog.info(
+        `cc-lhc governor: startup recovery scan scheduling receipt ${receiptId} (scheduled=${scheduledReceipt} openAttempt=${openAttempt})`,
+      );
+      scheduled += 1;
+      setImmediate(() => {
+        void runRecovery(receiptId, "startup");
+      });
+    }
+    // Full pass completed (including zero matching work): latch once.
+    startupRecoveryScanned = true;
+    if (scheduled === 0) {
+      wrapperLog.info(`cc-lhc governor: startup recovery scan found no open work for session ${sessionId}`);
     }
   };
 
@@ -571,7 +797,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   /** Assigned inside the run promise where child/teardown machinery lives. */
   let runAutoOperation: (args: { frozenTriggerTokens: number | null; receiptId: string }) => Promise<void> =
     async () => {};
+  /** Single-flight recovery of one durable receipt (replay + startup scan). */
+  let runRecovery: (receiptId: string, trigger: "replay" | "startup") => Promise<void> = async () => {};
   const HANDOFF_FAILURE_COOLDOWN_MS = 120_000;
+  /** Bounded recovery retry policy (avoid busy-loop; leave receipt open). */
+  const RECOVERY_RETRY_DELAY_MS = 750;
+  const RECOVERY_MAX_RETRIES = 8;
 
   const triggerFatalRevocation = (reason: string): void => {
     if (fatalRevocationExit && exited) return;
@@ -679,6 +910,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       );
       wrapperLog.info(`cc-lhc runtime descriptor ready thread=${threadId} session=${rollout.sessionId}`);
       governorState = setGovernorDescriptorReady(governorState, true);
+      // Capture bound/ready and this session's exact identity known: scan for our
+      // own crash-interrupted receipts once and drive them through the same
+      // single-flight recovery function (coalesces with any exact-replay pass).
+      scanCurrentSessionRecovery(rollout.sessionId, threadId);
     } catch (cause) {
       wrapperLog.warn(
         `cc-lhc runtime descriptor update failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -741,13 +976,17 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         } else if (!persisted.inserted) {
           const existingOutcome = persisted.receipt.handoffOutcome;
           if (existingOutcome?.kind === "scheduled") {
-            wrapperLog.warn(
-              `cc-lhc governor: replay of scheduled receipt ${persisted.receipt.receiptId} — fail closed (no second auto mutation); inspect handoffOutcome`,
+            // Exact replay of a scheduled receipt is recoverable work, not a
+            // permanent latch (LIM-80 Slice 3A). Drive one single-flight recovery
+            // pass off the capture batch path: it plans from durable state and
+            // never runs a second native compact for a stage that already landed.
+            const receiptId = persisted.receipt.receiptId;
+            wrapperLog.info(
+              `cc-lhc governor: replay of scheduled receipt ${receiptId} — scheduling recovery (no second native compact)`,
             );
-            lastAttempt = {
-              summary: `auto compact refused: existing scheduled receipt ${persisted.receipt.receiptId} (restart/replay)`,
-              atMs: Date.now(),
-            };
+            setImmediate(() => {
+              void runRecovery(receiptId, "replay");
+            });
           } else if (isTerminalHandoffOutcome(existingOutcome)) {
             wrapperLog.info(
               `cc-lhc governor: exact replay of receipt ${persisted.receipt.receiptId} with terminal outcome ${existingOutcome?.kind}; no re-schedule`,
@@ -1607,13 +1846,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
     /** Execute the controlled handoff for a rebuilt session. Shared by manual
      * compact/prune and the automatic governor path.
-     * When `governorReceiptId` is set (automatic path), outcomes attach only to
-     * that exact receipt. Manual compact/prune leave governor receipts alone.
+     * `recordOutcome` is invoked with the final result just before any fatal
+     * teardown (automatic path passes a completeAttempt sink). Manual
+     * compact/prune pass none and leave governor receipts alone.
      */
     const performHandoff = async (
       request: HandoffRequest,
       inputEpochChanged: () => boolean,
-      governorReceiptId?: string | null,
+      recordOutcome?: (result: HandoffResult) => void,
     ): Promise<HandoffResult> => {
       handoffInProgress = true;
       childDiedDuringHandoff = false;
@@ -1848,32 +2088,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           // provider pressure. Cool down so a failed handoff cannot self-retrigger.
           autoBlockedUntilMs = Date.now() + HANDOFF_FAILURE_COOLDOWN_MS;
         }
-        const handoffOutcome: GovernorHandoffOutcome =
-          result.kind === "success"
-            ? {
-                kind: "handoff_success",
-                newSessionId: result.newSessionId,
-                flushedInputBytes: result.flushedInputBytes,
-              }
-            : result.kind === "cancelled"
-              ? { kind: "handoff_cancelled", detail: result.reason }
-              : result.kind === "rolled_back"
-                ? {
-                    kind: "handoff_rolled_back",
-                    detail: result.reason,
-                    oldSessionId: result.oldSessionId,
-                  }
-                : {
-                    kind: "handoff_failed",
-                    detail: result.reason,
-                    oldSessionId: result.oldSessionId,
-                    rebuiltSessionId: result.rebuiltSessionId,
-                  };
-        // Manual path (no governorReceiptId) must not attach to an unrelated
-        // automatic governor receipt. Auto path always has the frozen id.
-        if (governorReceiptId !== undefined && governorReceiptId !== null && governorReceiptId !== "") {
-          attachGovernorHandoffOutcome(governorReceiptId, handoffOutcome, { mutationBegan: true });
-        }
+        // Automatic path records the final outcome onto its owned attempt via
+        // completeAttempt (atomic attempt+receipt). Fires BEFORE any fatal
+        // teardown so a no-live-child failure is still durable. Manual path
+        // passes no sink and leaves governor receipts alone.
+        recordOutcome?.(result);
         options.onHandoffResult?.(result);
         if (result.kind === "failed" && !result.childAlive) {
           wrapperLog.warn(
@@ -1888,17 +2107,453 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       }
     };
 
-    // Automatic operation: shared mutation op + shared handoff, serialized with
-    // manual commands through the same single-flight guard. Outcomes attach only
-    // to the exact durable receipt that scheduled this operation.
-    //
-    // Early gates (exited / handoff / command-guard) MUST terminalize the
-    // receipt before returning — a stranded `scheduled` row fails closed forever
-    // on replay with no evidence whether mutation began.
+    // ── Automatic operation + recovery (LIM-80 Slice 3A) ────────────────
+    // Fresh auto operations and recovery of a crash-interrupted receipt share
+    // one mutation path, one concrete store-backed port, and the single-flight
+    // command guard. After a claim, EVERY terminal outcome uses completeAttempt
+    // (atomic attempt+receipt) — never attachHandoffOutcome.
+
+    const recoveryDetailOf = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
+
+    const frozenTriggerFromReceipt = (receipt: GovernorDurableReceipt): number | null =>
+      receipt.pressure.nextRequestPressureTokens ?? receipt.providerContextTotal;
+
+    /** Build a full recorded verification from durable artifacts, or undefined. */
+    const recordedVerificationOf = (
+      artifacts: RecoveryAttempt["artifacts"],
+    ): RolloutVerificationArtifacts | undefined => {
+      const a = artifacts;
+      if (
+        a.rebuiltSessionId === undefined ||
+        a.rebuiltRolloutPath === undefined ||
+        a.rolloutFullSha256 === undefined ||
+        a.rolloutPrefixSha256 === undefined ||
+        a.rolloutPrefixLineCount === undefined ||
+        a.rolloutPrefixByteLength === undefined ||
+        a.rolloutLineCount === undefined ||
+        a.rolloutByteLength === undefined
+      ) {
+        return undefined;
+      }
+      return {
+        rebuiltSessionId: a.rebuiltSessionId,
+        rebuiltRolloutPath: a.rebuiltRolloutPath,
+        rolloutFullSha256: a.rolloutFullSha256,
+        rolloutPrefixSha256: a.rolloutPrefixSha256,
+        rolloutPrefixLineCount: a.rolloutPrefixLineCount,
+        rolloutPrefixByteLength: a.rolloutPrefixByteLength,
+        rolloutLineCount: a.rolloutLineCount,
+        rolloutByteLength: a.rolloutByteLength,
+      };
+    };
+
+    const makeRecoveryPort = (receiptId: string, attemptId: string, runtime: LhcCommandRuntime): RecoveryPort => {
+      if (governorReceiptStore === null) throw new Error("recovery port requires a durable receipt store");
+      return createStoreBackedRecoveryPort({
+        store: governorReceiptStore,
+        receiptId,
+        attemptId,
+        cwd: runtime.cwd,
+        threadId: runtime.threadRef !== undefined ? threadIdFromRef(runtime.threadRef) : "",
+        oldSessionId: runtime.sourceSessionId ?? "unknown",
+        ...(options.recoveryProjectsRoot !== undefined ? { projectsRoot: options.recoveryProjectsRoot } : {}),
+        ...(options.recoverySessionIdFn !== undefined ? { newSessionId: options.recoverySessionIdFn } : {}),
+      });
+    };
+
+    const buildAutoPlan = (frozenTriggerTokens: number | null, epochChanged: () => boolean): ContextMutationPlan => {
+      const policy = resolvedContextPolicy.policy;
+      return {
+        operation: "auto_compact",
+        profile: policy.profile,
+        lowerBoundTokens: policy.lowerBoundTokens,
+        ...(policy.pruneEnabled && policy.pruneThresholdTokens !== null && policy.pruneTargetTokens !== null
+          ? { pruneIfDue: { thresholdTokens: policy.pruneThresholdTokens, targetTokens: policy.pruneTargetTokens } }
+          : {}),
+        ...(frozenTriggerTokens === null ? {} : { triggerContextTokens: frozenTriggerTokens }),
+        inputEpochChanged: epochChanged,
+      };
+    };
+
+    /**
+     * Run the fenced SDK mutation through the concrete port for a claimed
+     * attempt. Non-rebuilt outcomes complete the attempt with the truthful
+     * mutation result; a rebuilt outcome runs the shared handoff and completes
+     * with the final handoff result. Command guard / operationInFlight are owned
+     * by the caller.
+     */
+    /** Material durable progress / terminal completion clears the retry budget. */
+    const resetRecoveryRetries = (receiptId: string): void => {
+      recoveryRetries.delete(receiptId);
+    };
+
+    const scheduleRecoveryRetry = (receiptId: string, trigger: "replay" | "startup", why: string): void => {
+      if (exited) return;
+      const n = (recoveryRetries.get(receiptId) ?? 0) + 1;
+      recoveryRetries.set(receiptId, n);
+      if (n > RECOVERY_MAX_RETRIES) {
+        // Exhausted: the receipt stays visibly OPEN (scheduled/attempt intact).
+        // A later lifecycle trigger (fresh observe, restart scan) can resume once
+        // material progress resets the budget.
+        wrapperLog.warn(
+          `cc-lhc governor: recovery ${receiptId} retries exhausted (${why}); left open for a later pass`,
+        );
+        return;
+      }
+      const timer = setTimeout(() => {
+        void runRecovery(receiptId, trigger);
+      }, RECOVERY_RETRY_DELAY_MS);
+      if (typeof timer.unref === "function") timer.unref();
+    };
+
+    /** Current durable stage of an attempt (null if unclaimed/unreadable). */
+    const attemptStageOf = (receiptId: string): RecoveryStage | null => {
+      if (governorReceiptStore === null) return null;
+      try {
+        return governorReceiptStore.getAttempt(receiptId)?.stage ?? null;
+      } catch {
+        return null;
+      }
+    };
+
+    /** True when the durable stage strictly advanced between two observations. */
+    const stageAdvanced = (before: RecoveryStage | null, after: RecoveryStage | null): boolean =>
+      before !== null && after !== null && recoveryStageIndex(after) > recoveryStageIndex(before);
+
+    /**
+     * Run the fenced SDK mutation through the concrete port for a claimed
+     * attempt. Repairability (LIM-80 Slice 3A): ONLY proven-terminal results
+     * complete the attempt (final handoff result, terminal_noop, permanent
+     * capability refusal, structural port CAS conflict). A transient/recoverable
+     * outcome (retryable_pre_mutation / recoverable_post_mutation) or a transient
+     * store I/O throw leaves the attempt OPEN and schedules a bounded retry; the
+     * next recovery pass re-plans from durable facts and never re-compacts a
+     * view that already landed. Command guard / operationInFlight are the
+     * caller's. Manual behavior is unaffected (this path is auto-only).
+     */
+    const runMutationClaimed = async (
+      receiptId: string,
+      attemptId: string,
+      frozenTriggerTokens: number | null,
+    ): Promise<void> => {
+      const stageBefore = attemptStageOf(receiptId);
+      const completeTerminal = (outcome: Exclude<GovernorHandoffOutcome, { kind: "scheduled" }>): void => {
+        if (completeGovernorAttempt(receiptId, attemptId, outcome)) resetRecoveryRetries(receiptId);
+      };
+      const leaveOpen = (label: string): void => {
+        if (stageAdvanced(stageBefore, attemptStageOf(receiptId))) resetRecoveryRetries(receiptId);
+        wrapperLog.info(`cc-lhc governor: auto operation ${receiptId} left OPEN (${label}); will retry/re-plan`);
+        scheduleRecoveryRetry(receiptId, "replay", label);
+      };
+      try {
+        const epochAtStart = governorState.currentInputEpoch;
+        const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
+        const runtime = commandRuntime();
+        if (runtime.captureDisabled) {
+          // Permanent capability refusal for this launch: terminal.
+          completeTerminal({ kind: "mutation_refused", detail: "capture disabled" });
+          return;
+        }
+        const port = makeRecoveryPort(receiptId, attemptId, runtime);
+        const plan = buildAutoPlan(frozenTriggerTokens, epochChanged);
+        const outcome = await runContextMutation(plan, { ...runtime, inputEpochChanged: epochChanged }, port);
+        wrapperLog.info(
+          `cc-lhc auto-compact mutation ${outcome.kind}/${outcome.kind === "rebuilt" ? "handoff" : (outcome.disposition ?? "open")}: ${outcome.messages.join(" | ") || "(no receipt)"}`,
+        );
+        if (outcome.kind === "rebuilt") {
+          await performHandoff(outcome.handoff, epochChanged, (result) =>
+            completeTerminal(governorOutcomeFromHandoffResult(result)),
+          );
+          return;
+        }
+        lastAttempt = {
+          summary: `auto compact ${outcome.kind}: ${outcome.messages[outcome.messages.length - 1] ?? "(no detail)"}`,
+          atMs: Date.now(),
+        };
+        const detail = outcome.messages.join(" | ") || outcome.kind;
+        if (outcome.disposition === "terminal_noop") {
+          completeTerminal({ kind: "mutation_noop", detail });
+          return;
+        }
+        if (outcome.disposition === "terminal_refused") {
+          completeTerminal({ kind: "mutation_refused", detail });
+          return;
+        }
+        // retryable_pre_mutation / recoverable_post_mutation (or, defensively, an
+        // unclassified non-rebuilt outcome): OPEN, never terminalized here.
+        leaveOpen(`${outcome.kind}:${outcome.disposition ?? "open"}`);
+      } catch (cause) {
+        if (cause instanceof RecoveryPortCasError) {
+          // Structural correlation conflict on the owned attempt: terminal.
+          wrapperLog.warn(
+            `cc-lhc governor: auto operation ${receiptId} structural conflict (${cause.conflict}); refuse`,
+          );
+          completeTerminal({ kind: "mutation_refused", detail: `recovery port conflict: ${cause.conflict}` });
+          return;
+        }
+        // Transient store I/O or SDK throw: nothing proven terminal — leave open.
+        wrapperLog.warn(`cc-lhc governor: auto operation ${receiptId} threw (transient): ${recoveryDetailOf(cause)}`);
+        leaveOpen("operation threw");
+      }
+    };
+
+    const buildRecoveryObservation = async (
+      self: ProcessIdentity,
+      attempt: RecoveryAttempt | null,
+      runtime: LhcCommandRuntime,
+    ): Promise<RecoveryObservation> => {
+      const observed: RecoveryObservation = { self };
+      if (attempt !== null && !identitiesEqual(attempt.owner, self)) {
+        observed.ownerLiveness = probeOwnerLiveness(attempt.owner);
+      }
+      if (runtime.sdk !== undefined && runtime.threadRef !== undefined) {
+        observed.currentView = await observeCurrentStoredView(runtime.sdk, runtime.threadRef);
+      }
+      return observed;
+    };
+
+    /**
+     * Recover the rollout stage from durable artifacts and reach one verified
+     * HandoffRequest (requirement 5/6). No second native compact: the installed
+     * view is authoritative. Records view_installed / reservation / rollout_written
+     * as needed, then enters the existing performHandoff and completes the attempt
+     * with the final result. retry leaves the receipt open; invalid fails closed.
+     */
+    const recoverRolloutAndHandoff = async (
+      receiptId: string,
+      attempt: RecoveryAttempt,
+      receipt: GovernorDurableReceipt,
+      runtime: LhcCommandRuntime,
+      currentView: RecoveryObservation["currentView"],
+    ): Promise<void> => {
+      const a = attempt.artifacts;
+      const stageBefore = attempt.stage;
+      const completeTerminal = (outcome: Exclude<GovernorHandoffOutcome, { kind: "scheduled" }>): void => {
+        if (completeGovernorAttempt(receiptId, attempt.attemptId, outcome)) resetRecoveryRetries(receiptId);
+      };
+      const leaveOpen = (label: string): void => {
+        if (stageAdvanced(stageBefore, attemptStageOf(receiptId))) resetRecoveryRetries(receiptId);
+        scheduleRecoveryRetry(receiptId, "replay", label);
+      };
+      // A port write failure: a structural CAS conflict is terminal; any other
+      // (transient store I/O) leaves the attempt OPEN and retries.
+      const onPortFailure = (cause: unknown, label: string): void => {
+        if (cause instanceof RecoveryPortCasError) {
+          wrapperLog.warn(
+            `cc-lhc governor: recovery ${receiptId} ${label} structural conflict (${cause.conflict}); refuse`,
+          );
+          completeTerminal({ kind: "mutation_refused", detail: `recovery port conflict: ${cause.conflict}` });
+        } else {
+          wrapperLog.warn(
+            `cc-lhc governor: recovery ${receiptId} ${label} transient store failure; left open: ${recoveryDetailOf(cause)}`,
+          );
+          leaveOpen(`${label} transient`);
+        }
+      };
+
+      const port = makeRecoveryPort(receiptId, attempt.attemptId, runtime);
+
+      // Expected installed fingerprint: the recorded one at view_installed+, or
+      // the freshly observed install when reconciling from operation_claimed.
+      let expectedFingerprint = a.installedViewFingerprint;
+      if (expectedFingerprint === undefined) {
+        if (currentView === undefined || currentView.kind !== "present") {
+          wrapperLog.info(`cc-lhc governor: recovery ${receiptId} — installed view not observed present; retry`);
+          leaveOpen("view not present");
+          return;
+        }
+        expectedFingerprint = currentView.fingerprint;
+        try {
+          port.recordViewInstalled({ viewId: currentView.viewId, installedViewFingerprint: currentView.fingerprint });
+        } catch (cause) {
+          onPortFailure(cause, "view_installed record");
+          return;
+        }
+      }
+
+      const triggerTokens = frozenTriggerFromReceipt(receipt);
+      const durableReceipt =
+        a.durableReceipt ??
+        formatDurableReceipt("auto_compact", {
+          origin: "auto",
+          ...(triggerTokens === null ? {} : { triggerContextTokens: triggerTokens }),
+        });
+      let reserved: { sessionId: string; rolloutPath: string };
+      try {
+        reserved = port.reserveRebuiltSession(durableReceipt);
+      } catch (cause) {
+        onPortFailure(cause, "reservation");
+        return;
+      }
+
+      const recorded = recordedVerificationOf(a);
+      const result = await recoverReservedRollout({
+        runtime,
+        reservedSessionId: reserved.sessionId,
+        reservedRolloutPath: reserved.rolloutPath,
+        durableReceiptText: durableReceipt,
+        expectedInstalledFingerprint: expectedFingerprint,
+        operation: "auto_compact",
+        ...(recorded === undefined ? {} : { recorded }),
+        ...(options.recoveryProjectsRoot !== undefined ? { projectsRoot: options.recoveryProjectsRoot } : {}),
+      });
+
+      if (result.kind === "reused" || result.kind === "rematerialized") {
+        try {
+          port.recordRolloutWritten(result.verification);
+        } catch (cause) {
+          onPortFailure(cause, "rollout_written record");
+          return;
+        }
+        if (stageAdvanced(stageBefore, attemptStageOf(receiptId))) resetRecoveryRetries(receiptId);
+        const epochAtStart = governorState.currentInputEpoch;
+        const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
+        await performHandoff(result.handoff, epochChanged, (r) =>
+          completeTerminal(governorOutcomeFromHandoffResult(r)),
+        );
+        return;
+      }
+      if (result.kind === "retry") {
+        // Transient: unreadable reserved file / unreadable-or-drifted view / index
+        // not yet ensured. Never overwrite; leave open and re-plan.
+        wrapperLog.info(`cc-lhc governor: recovery ${receiptId} rollout retry: ${result.reason}`);
+        leaveOpen("rollout retry");
+        return;
+      }
+      // Structural correlation contradiction / recorded-verification mismatch:
+      // fail closed (terminal).
+      completeTerminal({ kind: "mutation_refused", detail: `recovery invalid: ${result.reason}` });
+    };
+
+    const dispatchRecoveryAction = async (
+      receiptId: string,
+      receipt: GovernorDurableReceipt,
+      attempt: RecoveryAttempt | null,
+      action: RecoveryAction,
+      observed: RecoveryObservation,
+      runtime: LhcCommandRuntime,
+      self: ProcessIdentity,
+    ): Promise<void> => {
+      if (governorReceiptStore === null) return;
+      switch (action.kind) {
+        case "claim_scheduled_work": {
+          const claim = governorReceiptStore.claimAttempt({ receiptId, owner: self });
+          if (claim.kind === "claimed" || claim.kind === "already_owned") {
+            await runMutationClaimed(receiptId, claim.attempt.attemptId, frozenTriggerFromReceipt(receipt));
+          } else if (claim.kind === "receipt_terminal") {
+            wrapperLog.info(
+              `cc-lhc governor: recovery ${receiptId} — receipt already terminal (${claim.outcome.kind})`,
+            );
+          } else if (claim.kind === "held") {
+            wrapperLog.info(`cc-lhc governor: recovery ${receiptId} — held by owner (${claim.ownerLiveness}); wait`);
+            scheduleRecoveryRetry(receiptId, "replay", "held after claim");
+          } else {
+            wrapperLog.warn(`cc-lhc governor: recovery ${receiptId} — claim result ${claim.kind}; left open`);
+          }
+          return;
+        }
+        case "reclaim_dead_owner": {
+          if (attempt === null || observed.ownerLiveness === undefined) {
+            wrapperLog.warn(`cc-lhc governor: recovery ${receiptId} — reclaim without attempt/liveness; left open`);
+            return;
+          }
+          const claim = governorReceiptStore.claimAttempt({
+            receiptId,
+            owner: self,
+            reclaim: { expectedAttemptId: attempt.attemptId, ownerLiveness: observed.ownerLiveness },
+          });
+          if (claim.kind === "reclaimed" || claim.kind === "claimed" || claim.kind === "already_owned") {
+            // Follow the resume plan with the now-owned attempt.
+            await dispatchRecoveryAction(receiptId, receipt, claim.attempt, action.resume, observed, runtime, self);
+          } else if (claim.kind === "held") {
+            wrapperLog.info(`cc-lhc governor: recovery ${receiptId} reclaim → held (${claim.ownerLiveness}); wait`);
+            scheduleRecoveryRetry(receiptId, "replay", "held on reclaim");
+          } else {
+            wrapperLog.warn(`cc-lhc governor: recovery ${receiptId} reclaim result ${claim.kind}; re-plan later`);
+            scheduleRecoveryRetry(receiptId, "replay", `reclaim ${claim.kind}`);
+          }
+          return;
+        }
+        case "reprepare_from_scratch": {
+          if (attempt === null) {
+            wrapperLog.warn(`cc-lhc governor: recovery ${receiptId} — reprepare without attempt; left open`);
+            return;
+          }
+          await runMutationClaimed(receiptId, attempt.attemptId, frozenTriggerFromReceipt(receipt));
+          return;
+        }
+        case "reconcile_installed_view":
+        case "verify_reuse_rollout": {
+          if (attempt === null) {
+            wrapperLog.warn(`cc-lhc governor: recovery ${receiptId} — ${action.kind} without attempt; left open`);
+            return;
+          }
+          await recoverRolloutAndHandoff(receiptId, attempt, receipt, runtime, observed.currentView);
+          return;
+        }
+        case "wait_for_owner":
+        case "retry_observation": {
+          scheduleRecoveryRetry(receiptId, "replay", action.kind);
+          return;
+        }
+        case "reconcile_attempt_terminal": {
+          if (attempt === null) return;
+          const terminal = receipt.handoffOutcome;
+          if (terminal === null || terminal.kind === "scheduled") {
+            wrapperLog.warn(
+              `cc-lhc governor: recovery ${receiptId} reconcile_attempt_terminal without terminal receipt`,
+            );
+            return;
+          }
+          // Align bookkeeping using the FULL existing receipt outcome, never a
+          // reconstruction from kind alone (requirement 8).
+          if (completeGovernorAttempt(receiptId, attempt.attemptId, terminal)) resetRecoveryRetries(receiptId);
+          return;
+        }
+        case "terminal_complete": {
+          wrapperLog.info(
+            `cc-lhc governor: recovery ${receiptId} terminal_complete (${action.outcomeKind}); nothing to do`,
+          );
+          resetRecoveryRetries(receiptId);
+          return;
+        }
+        case "terminal_refuse": {
+          // Only terminalize when we own an attempt; never fabricate a refusal
+          // for ordinary missing/unreadable optional state.
+          if (attempt !== null && identitiesEqual(attempt.owner, self)) {
+            if (
+              completeGovernorAttempt(receiptId, attempt.attemptId, {
+                kind: "mutation_refused",
+                detail: `recovery refused: ${action.reason}`,
+              })
+            ) {
+              resetRecoveryRetries(receiptId);
+            }
+          } else {
+            wrapperLog.warn(
+              `cc-lhc governor: recovery ${receiptId} terminal_refuse (${action.reason}); no owned attempt — left as-is`,
+            );
+          }
+          return;
+        }
+        default: {
+          // Slice 3B: child termination/spawn, replacement/lineage/descriptor
+          // advancement, and mid-handoff recovery are not implemented in 3A. The
+          // receipt is left open (durable blocked state) rather than faking a stage.
+          wrapperLog.warn(
+            `cc-lhc governor: recovery ${receiptId} needs Slice 3B (${action.kind}); left open for a later build`,
+          );
+          return;
+        }
+      }
+    };
+
+    // Fresh automatic operation. Early gates (exited / handoff / command-guard)
+    // run BEFORE any claim and terminalize via attach (no attempt exists yet).
+    // After the guard is held and self identity resolves, claim the receipt,
+    // then run the shared claimed-mutation path.
     runAutoOperation = async (args: { frozenTriggerTokens: number | null; receiptId: string }): Promise<void> => {
       const { frozenTriggerTokens, receiptId } = args;
-      // Test seam: allow race injection before early gates (handoff / exiting).
-      // forceExitedForAuto is local so we do not strand the real process-exit flag.
       let forceExitedForAuto = false;
       options.onBeforeAutoOperation?.({
         markHandoffInProgress: () => {
@@ -1933,8 +2588,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           },
           { mutationBegan: false },
         );
-        // Tests may leave the flag set; clear so child exit can tear down.
-        // Production path only sets handoffInProgress inside performHandoff.
         return;
       }
       if (!commandGuard.tryAcquire("auto-compact", Date.now())) {
@@ -1952,88 +2605,115 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         wrapperLog.info(
           `cc-lhc governor: auto-compact deferred — command guard busy (${busyLabel}) [receipt ${receiptId}]`,
         );
-        lastAttempt = {
-          summary: `auto compact deferred: command_guard_busy (${busyLabel})`,
-          atMs: Date.now(),
-        };
+        lastAttempt = { summary: `auto compact deferred: command_guard_busy (${busyLabel})`, atMs: Date.now() };
         return;
       }
-      // Mutation claim held: remaining outcomes use mutationBegan so attach
-      // failures are loud (receipt may remain scheduled for operator recovery).
       governorState = setGovernorOperationInFlight(governorState, true);
       try {
-        const epochAtStart = governorState.currentInputEpoch;
-        const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
-        const runtime = commandRuntime();
-        if (runtime.captureDisabled) {
-          attachGovernorHandoffOutcome(
-            receiptId,
-            { kind: "mutation_refused", detail: "capture disabled" },
-            { mutationBegan: true },
+        if (governorReceiptStore === null) {
+          wrapperLog.warn(`cc-lhc governor: auto-compact aborted — receipt store unavailable [receipt ${receiptId}]`);
+          return;
+        }
+        const self = resolveSelfIdentity();
+        if (!self.ok) {
+          // Self identity unavailable/indeterminate is RECOVERABLE, not a
+          // dismissal: leave the receipt scheduled with NO attempt and retry.
+          // Never synthesize an identity, never terminalize.
+          wrapperLog.info(
+            `cc-lhc governor: auto-compact deferred — self identity ${self.code}; left scheduled, will retry [receipt ${receiptId}]`,
+          );
+          scheduleRecoveryRetry(receiptId, "replay", "self identity unavailable");
+          return;
+        }
+        // Claim the receipt BEFORE any SDK mutation.
+        const claim = governorReceiptStore.claimAttempt({ receiptId, owner: self.identity });
+        if (claim.kind === "claimed" || claim.kind === "already_owned") {
+          await runMutationClaimed(receiptId, claim.attempt.attemptId, frozenTriggerTokens);
+          return;
+        }
+        if (claim.kind === "receipt_terminal") {
+          wrapperLog.info(
+            `cc-lhc governor: auto-compact skipped — receipt ${receiptId} already terminal (${claim.outcome.kind})`,
           );
           return;
         }
-        const policy = resolvedContextPolicy.policy;
-        const plan: ContextMutationPlan = {
-          operation: "auto_compact",
-          profile: policy.profile,
-          lowerBoundTokens: policy.lowerBoundTokens,
-          ...(policy.pruneEnabled && policy.pruneThresholdTokens !== null && policy.pruneTargetTokens !== null
-            ? {
-                pruneIfDue: {
-                  thresholdTokens: policy.pruneThresholdTokens,
-                  targetTokens: policy.pruneTargetTokens,
-                },
-              }
-            : {}),
-          ...(frozenTriggerTokens === null ? {} : { triggerContextTokens: frozenTriggerTokens }),
-          inputEpochChanged: epochChanged,
-        };
-        const outcome = await runContextMutation(plan, { ...runtime, inputEpochChanged: epochChanged });
-        wrapperLog.info(
-          `cc-lhc auto-compact mutation ${outcome.kind}: ${outcome.messages.join(" | ") || "(no receipt)"}`,
-        );
-        if (outcome.kind !== "rebuilt") {
-          // Never a successful action: a mutation that produced no handoff is
-          // health/last-attempt state only.
-          lastAttempt = {
-            summary: `auto compact ${outcome.kind}: ${outcome.messages[outcome.messages.length - 1] ?? "(no detail)"}`,
-            atMs: Date.now(),
-          };
-          const mutationOutcome: GovernorHandoffOutcome =
-            outcome.kind === "refused"
-              ? {
-                  kind: "mutation_refused",
-                  detail: outcome.messages.join(" | ") || "refused",
-                }
-              : outcome.kind === "partial"
-                ? {
-                    kind: "mutation_partial",
-                    detail: outcome.messages.join(" | ") || "partial",
-                  }
-                : {
-                    kind: "mutation_noop",
-                    detail: outcome.messages.join(" | ") || "noop",
-                  };
-          attachGovernorHandoffOutcome(receiptId, mutationOutcome, { mutationBegan: true });
-          return;
+        // A freshly scheduled receipt should claim cleanly. `held` means another
+        // owner raced us: leave visibly OPEN and retry (never steal, never mutate).
+        // Anything else (store race / gone / stale) is left as-is for a later pass.
+        if (claim.kind === "held") {
+          wrapperLog.info(
+            `cc-lhc governor: auto-compact not started — held by owner (${claim.ownerLiveness}); retry [receipt ${receiptId}]`,
+          );
+          scheduleRecoveryRetry(receiptId, "replay", "held on fresh claim");
+        } else {
+          wrapperLog.warn(
+            `cc-lhc governor: auto-compact not started — claim result ${claim.kind} [receipt ${receiptId}]`,
+          );
         }
-        await performHandoff(outcome.handoff, epochChanged, receiptId);
       } catch (cause) {
+        // A pre-claim receipt-store/native-provider failure is recoverable: no
+        // attempt owns the work and no SDK mutation started. Keep the receipt
+        // scheduled and retry through the shared recovery path.
         wrapperLog.warn(
-          `cc-lhc auto-compact operation threw: ${cause instanceof Error ? cause.message : String(cause)}`,
+          `cc-lhc governor: auto-compact claim failed transiently; left scheduled [receipt ${receiptId}]: ${recoveryDetailOf(cause)}`,
         );
-        attachGovernorHandoffOutcome(
-          receiptId,
-          {
-            kind: "mutation_refused",
-            detail: cause instanceof Error ? cause.message : String(cause),
-          },
-          { mutationBegan: true },
-        );
+        scheduleRecoveryRetry(receiptId, "replay", "fresh claim exception");
       } finally {
         governorState = setGovernorOperationInFlight(governorState, false);
         commandGuard.release();
+      }
+    };
+
+    // Single-flight recovery of one durable receipt (exact replay + startup
+    // scan coalesce here). Runs under the same command guard as auto ops.
+    runRecovery = async (receiptId: string, trigger: "replay" | "startup"): Promise<void> => {
+      if (governorReceiptStore === null || exited) return;
+      if (recoveryInFlight.has(receiptId)) return; // coalesce concurrent passes
+      if (autoOperationScheduled) {
+        scheduleRecoveryRetry(receiptId, trigger, "auto operation scheduled");
+        return;
+      }
+      recoveryInFlight.add(receiptId);
+      if (!commandGuard.tryAcquire("auto-recovery", Date.now())) {
+        recoveryInFlight.delete(receiptId);
+        scheduleRecoveryRetry(receiptId, trigger, "command guard busy");
+        return;
+      }
+      governorState = setGovernorOperationInFlight(governorState, true);
+      try {
+        const self = resolveSelfIdentity();
+        if (!self.ok) {
+          wrapperLog.info(`cc-lhc governor: recovery ${receiptId} deferred — self identity ${self.code}`);
+          scheduleRecoveryRetry(receiptId, trigger, "self identity");
+          return;
+        }
+        const receipt = governorReceiptStore.getById(receiptId);
+        if (receipt === null) {
+          wrapperLog.warn(`cc-lhc governor: recovery ${receiptId} — receipt missing`);
+          return;
+        }
+        let attempt: RecoveryAttempt | null;
+        try {
+          // Malformed attempt rows throw: fail loud/closed, do not mutate.
+          attempt = governorReceiptStore.getAttempt(receiptId);
+        } catch (cause) {
+          wrapperLog.warn(
+            `cc-lhc governor: recovery ${receiptId} — attempt row unreadable (fail closed): ${recoveryDetailOf(cause)}`,
+          );
+          return;
+        }
+        const runtime = commandRuntime();
+        const observed = await buildRecoveryObservation(self.identity, attempt, runtime);
+        const action = planRecovery({ receiptId, handoffOutcome: receipt.handoffOutcome, attempt, observed });
+        wrapperLog.info(`cc-lhc governor: recovery ${receiptId} (${trigger}) → ${action.kind}: ${action.reason}`);
+        await dispatchRecoveryAction(receiptId, receipt, attempt, action, observed, runtime, self.identity);
+      } catch (cause) {
+        wrapperLog.warn(`cc-lhc governor: recovery ${receiptId} error: ${recoveryDetailOf(cause)}; left open`);
+        scheduleRecoveryRetry(receiptId, trigger, "recovery exception");
+      } finally {
+        governorState = setGovernorOperationInFlight(governorState, false);
+        commandGuard.release();
+        recoveryInFlight.delete(receiptId);
       }
     };
 

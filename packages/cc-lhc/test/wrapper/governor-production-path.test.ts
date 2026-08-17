@@ -7,16 +7,24 @@
  * no mutation without a durable receipt.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
+import { type RecoveryArtifacts, type RecoveryStage, storedViewFingerprint } from "../../src/governor/recovery.js";
+import type { GovernorHandoffOutcome } from "../../src/governor/types.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
+import { rolloutPathForSession } from "../../src/rollout/sessions-index.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
+import type {
+  ProbeProcessIdentity,
+  ProcessIdentity,
+  ProcessLivenessResult,
+} from "../../src/runtime/process-identity.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { run } from "../../src/wrapper/run.js";
@@ -97,10 +105,75 @@ function makeFakePty(pid: number, label: string, args: string[], autoExitOnKill:
   return fake;
 }
 
+/** A StoredView `describe()` payload; fingerprint is stable per (viewId, createdAt). */
+function storedViewValue(viewId: string, createdAt = "2026-08-17T00:00:00.000Z") {
+  return {
+    viewId,
+    createdAt,
+    compactPoint: 1,
+    coveredFrom: 0,
+    profileName: "continuation",
+    config: { lowerBound: 1_000, percentages: {} },
+    arrangement: [],
+    gaps: [],
+    sourceState: { maxEventOrder: 9, derivationCounts: {} },
+    bands: [],
+  };
+}
+
+/**
+ * Write a structurally valid rebuilt rollout the recovery port + inspection
+ * accept: chained uuids, every sessionId === reserved id, trailing runtime-note
+ * exactly the durable receipt. Prefix = all-but-trailing.
+ */
+function writeValidRollout(path: string, sessionId: string, durableReceipt: string): { totalByteLength: number } {
+  const lines = [
+    { type: "user", uuid: "u1", parentUuid: null, sessionId, message: { role: "user", content: "hello" } },
+    { type: "assistant", uuid: "u2", parentUuid: "u1", sessionId, message: { role: "assistant", content: "hi" } },
+    {
+      type: "user",
+      uuid: "u3",
+      parentUuid: "u2",
+      sessionId,
+      message: { role: "user", content: `[runtime note] ${durableReceipt}` },
+    },
+  ];
+  const body = `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, body);
+  return { totalByteLength: Buffer.byteLength(body, "utf8") };
+}
+
+/**
+ * A writeRebuiltRollout spy that produces a valid rollout at the reserved path
+ * (projectsRoot + encoded cwd + `${newSessionId}.jsonl`), matching the port's
+ * reservation so runContextMutation reaches a verified `rebuilt`.
+ */
+function validWriteSpy(projectsRoot: string) {
+  return vi
+    .spyOn(writeRebuilt, "writeRebuiltRollout")
+    .mockImplementation(async (input: Parameters<typeof writeRebuilt.writeRebuiltRollout>[0]) => {
+      const sessionId = input.newSessionId ?? REBUILT_ID;
+      const durableReceipt = input.receipt?.text ?? "";
+      const path = rolloutPathForSession(projectsRoot, input.cwd, sessionId);
+      const { totalByteLength } = writeValidRollout(path, sessionId, durableReceipt);
+      return {
+        sessionId,
+        rolloutPath: path,
+        lineCount: 3,
+        expectedReintakeLines: 3,
+        replayedPrefixLines: 2,
+        prefixBoundary: { kind: "verified" as const, lineCount: 2, byteLength: 0, sha256: "unused-in-verify" },
+        totalByteLength,
+      };
+    });
+}
+
 function sdkForCapture(preview?: () => Promise<unknown>) {
   return {
     drainSettled: async () => {},
     threadView: {
+      describe: vi.fn(async () => ({ ok: true, value: storedViewValue("v1") })),
       status: vi.fn(async () => ({
         ok: true,
         value: {
@@ -291,26 +364,9 @@ describe("LIM-64 production wrapper path", () => {
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
     let liveSessionId = "old-session";
 
-    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-rollout-"));
-    dirs.push(rolloutDir);
-    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
-    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      writeFileSync(rebuiltPath, '{"line":1}\n');
-      return {
-        sessionId: REBUILT_ID,
-        rolloutPath: rebuiltPath,
-        lineCount: 1,
-        expectedReintakeLines: 1,
-        replayedPrefixLines: 0,
-        prefixBoundary: {
-          kind: "verified",
-          lineCount: 0,
-          byteLength: 0,
-          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        },
-        totalByteLength: 11,
-      };
-    });
+    const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-proj-"));
+    dirs.push(rolloutProjectsRoot);
+    const writeSpy = validWriteSpy(rolloutProjectsRoot);
 
     mocks.captureFactory = (opts) => {
       captureCalls.push(opts);
@@ -348,6 +404,8 @@ describe("LIM-64 production wrapper path", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: receiptDb,
+      recoveryProjectsRoot: rolloutProjectsRoot,
+      recoverySessionIdFn: () => REBUILT_ID,
       onGovernorObserve: (record) => {
         observes.push({
           decision: record.decision,
@@ -532,7 +590,7 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 15_000);
 
-  it("exact replay of scheduled receipt: no second auto mutation, and the row is unclaimed recoverable work (not a permanent latch)", async () => {
+  it("exact replay of a scheduled receipt drives recovery (claim + open attempt on transient failure), not a permanent latch", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-replay-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
@@ -608,42 +666,51 @@ describe("LIM-64 production wrapper path", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
-    // Re-tail the same classification after "crash": must not schedule mutation.
+    // Re-tail the same classification after "crash": exact replay of a scheduled
+    // receipt is no longer a permanent latch — it drives a recovery pass that
+    // claims the receipt and records a baseline. Here the SDK preview errors,
+    // which is a TRANSIENT pre-mutation failure: the attempt must stay OPEN at
+    // operation_claimed (never terminalized), and the receipt stays scheduled.
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
-    await new Promise((r) => setTimeout(r, 400));
-    expect(mutationCalls).toBe(0);
-    expect(
-      wrapperLogLines.some(
-        (l) =>
-          l.includes("fail closed") ||
-          l.includes("existing scheduled receipt") ||
-          l.includes("no second auto mutation") ||
-          l.includes("no re-schedule"),
-      ),
-    ).toBe(true);
+
+    await waitFor(
+      () => {
+        const s = openGovernorReceiptStore(receiptDb);
+        try {
+          const row = s.listBySession("old-session").find((r) => r.wouldMutate);
+          return row !== undefined && s.getAttempt(row.receiptId) !== null;
+        } finally {
+          s.close();
+        }
+      },
+      "scheduled receipt claimed by recovery (open attempt)",
+      8_000,
+    );
+
+    // Recovery ran the preview at least once (no LHC compact, no handoff), proving
+    // no fail-closed latch. The transient failure did NOT terminalize.
+    expect(mutationCalls).toBeGreaterThanOrEqual(1);
+    expect(sdk.threadView.compact).not.toHaveBeenCalled();
+    expect(wrapperLogLines.some((l) => l.includes("scheduling recovery") || l.includes("left OPEN"))).toBe(true);
 
     const store = openGovernorReceiptStore(receiptDb);
-    const scheduledRows = store.listBySession("old-session").filter((r) => r.wouldMutate);
-    expect(scheduledRows).toHaveLength(1);
-    const scheduledRow = scheduledRows[0]!;
-    expect(scheduledRow.handoffOutcome?.kind).toBe("scheduled");
-    // LIM-80: a scheduled row with no attempt is claimable recoverable work.
-    expect(store.getAttempt(scheduledRow.receiptId)).toBeNull();
-    const { planRecovery } = await import("../../src/governor/recovery.js");
-    const plan = planRecovery({
-      receiptId: scheduledRow.receiptId,
-      handoffOutcome: scheduledRow.handoffOutcome,
-      attempt: null,
-      observed: { self: { pid: process.pid, bootId: "test-boot", starttime: "1" } },
-    });
-    expect(plan.kind).toBe("claim_scheduled_work");
+    const recovered = store.listBySession("old-session").filter((r) => r.wouldMutate);
+    expect(recovered).toHaveLength(1);
+    const row = recovered[0]!;
+    // Receipt stays scheduled; attempt stays OPEN at the truthful durable stage.
+    expect(row.handoffOutcome?.kind).toBe("scheduled");
+    const attempt = store.getAttempt(row.receiptId);
+    expect(attempt).not.toBeNull();
+    expect(attempt?.stage).toBe("operation_claimed");
+    expect(attempt?.terminalOutcomeKind).toBeNull();
+    expect(attempt?.artifacts.preMutationViewFingerprint).toBeDefined();
     store.close();
 
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 15_000);
 
-  it("mutation refuse attaches to exact receipt; concurrent would-mutate rows stay independent", async () => {
+  it("transient preview failure leaves each receipt OPEN independently (own attempt, no cross-contamination)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-exact-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
@@ -700,7 +767,8 @@ describe("LIM-64 production wrapper path", () => {
     ]);
     await new Promise((r) => setTimeout(r, 400));
 
-    // Wait for both settled wouldMutate receipts to terminalize (preview refuse).
+    // A preview error is TRANSIENT: each settled receipt gets its OWN open attempt
+    // at operation_claimed and stays scheduled (never terminalized).
     await waitFor(
       () => {
         const s = openGovernorReceiptStore(receiptDb);
@@ -708,12 +776,15 @@ describe("LIM-64 production wrapper path", () => {
           const settled = s
             .listBySession("old-session")
             .filter((r) => r.wouldMutate && r.observePhase === "settled_seam");
-          return settled.length >= 2 && settled.every((r) => r.handoffOutcome?.kind === "mutation_refused");
+          return (
+            settled.length >= 2 &&
+            settled.every((r) => r.handoffOutcome?.kind === "scheduled" && s.getAttempt(r.receiptId) !== null)
+          );
         } finally {
           s.close();
         }
       },
-      "both settled receipts terminal",
+      "both settled receipts claimed with open attempts",
       12_000,
     );
 
@@ -725,9 +796,14 @@ describe("LIM-64 production wrapper path", () => {
     expect(first).toBeDefined();
     expect(second).toBeDefined();
     expect(first!.receiptId).not.toBe(second!.receiptId);
-    // Each row terminalizes independently — assert exact outcomes, not textual equality.
-    expect(first!.handoffOutcome?.kind).toBe("mutation_refused");
-    expect(second!.handoffOutcome?.kind).toBe("mutation_refused");
+    // Each receipt has its OWN independent open attempt; neither terminalized.
+    const firstAttempt = store.getAttempt(first!.receiptId);
+    const secondAttempt = store.getAttempt(second!.receiptId);
+    expect(firstAttempt?.stage).toBe("operation_claimed");
+    expect(secondAttempt?.stage).toBe("operation_claimed");
+    expect(firstAttempt?.attemptId).not.toBe(secondAttempt?.attemptId);
+    expect(first!.handoffOutcome?.kind).toBe("scheduled");
+    expect(second!.handoffOutcome?.kind).toBe("scheduled");
     store.close();
 
     spawned[0]!.fireExit(0);
@@ -927,26 +1003,9 @@ describe("LIM-64 production wrapper path", () => {
     }));
 
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
-    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-cool-roll-"));
-    dirs.push(rolloutDir);
-    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
-    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      writeFileSync(rebuiltPath, '{"line":1}\n');
-      return {
-        sessionId: REBUILT_ID,
-        rolloutPath: rebuiltPath,
-        lineCount: 1,
-        expectedReintakeLines: 1,
-        replayedPrefixLines: 0,
-        prefixBoundary: {
-          kind: "verified",
-          lineCount: 0,
-          byteLength: 0,
-          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        },
-        totalByteLength: 11,
-      };
-    });
+    const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-cool-proj-"));
+    dirs.push(rolloutProjectsRoot);
+    const writeSpy = validWriteSpy(rolloutProjectsRoot);
 
     mocks.captureFactory = (opts) => {
       const generation = 1;
@@ -1003,6 +1062,8 @@ describe("LIM-64 production wrapper path", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: receiptDb,
+      recoveryProjectsRoot: rolloutProjectsRoot,
+      recoverySessionIdFn: () => REBUILT_ID,
       onHandoffResult: (r) => results.push(r),
       handoffTimeouts: {
         sigtermGraceMs: 200,
@@ -1370,21 +1431,34 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 20_000);
 
-  it("outcome-attach failure after mutation starts: loud health; receipt remains scheduled", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-attachfail-"));
+  it("terminal completion that cannot be persisted stays scheduled, loudly (proven-terminal handoff success)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-completefail-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
+    const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-completefail-proj-"));
+    dirs.push(rolloutProjectsRoot);
     const spawned: FakePty[] = [];
-    let mutationStarted = false;
-    const sdk = sdkForCapture(async () => {
-      mutationStarted = true;
-      return { ok: true, value: { kind: "error", reason: "record damage" } };
-    });
+    const sdk = sdkForCapture();
+    const writeSpy = validWriteSpy(rolloutProjectsRoot);
+    let liveSessionId = "old-session";
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
     const wrapperLogLines: string[] = [];
+    const results: HandoffResult[] = [];
     mocks.captureFactory = (opts) => {
-      const session = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
-      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      if (isRebuilt) liveSessionId = REBUILT_ID;
+      const session = scriptedCaptureSession(
+        opts,
+        sdk,
+        liveSessionId,
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        isRebuilt ? 2 : 1,
+      );
+      (session as { getRolloutInfo: () => { path: string; sessionId: string } }).getRolloutInfo = () => ({
+        path: isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        sessionId: liveSessionId,
+      });
+      if (opts.onLifecycle !== undefined && !isRebuilt) lifecycleSink = opts.onLifecycle;
       return session;
     };
 
@@ -1401,39 +1475,52 @@ describe("LIM-64 production wrapper path", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: receiptDb,
+      recoveryProjectsRoot: rolloutProjectsRoot,
+      recoverySessionIdFn: () => REBUILT_ID,
       wrapperLog: {
         info: (m: string) => wrapperLogLines.push(m),
         warn: (m: string) => wrapperLogLines.push(m),
         warningCount: () => wrapperLogLines.filter((l) => /warn|undurable|failed/i.test(l)).length,
         path: "/tmp/fake.log",
       } as never,
+      // A PROVEN-terminal completion (final handoff result) whose completeAttempt
+      // cannot be persisted must be loud and leave the receipt scheduled.
       governorReceiptStoreHook: (store) => ({
         ...store,
-        attachHandoffOutcome: () => {
-          throw new Error("injected attach failure");
+        completeAttempt: () => {
+          throw new Error("injected completeAttempt failure");
         },
       }),
-      onHandoffResult: () => {
-        throw new Error("no handoff");
+      onHandoffResult: (r) => results.push(r),
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
       },
     });
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
-    await waitFor(() => mutationStarted, "mutation started");
-    await new Promise((r) => setTimeout(r, 400));
+    await waitFor(() => results.length === 1, "handoff completed", 12_000);
+    expect(results[0]!.kind).toBe("success");
+    await new Promise((r) => setTimeout(r, 200));
 
-    expect(wrapperLogLines.some((l) => l.includes("outcome NOT durable") || l.includes("attach failed"))).toBe(true);
+    // The handoff happened, but its terminal outcome could not be recorded.
+    expect(wrapperLogLines.some((l) => l.includes("outcome NOT durable"))).toBe(true);
 
-    // Re-open store without the failing hook: receipt still scheduled (unresolved).
+    // Re-open store without the failing hook: receipt still scheduled (unresolved),
+    // recoverable on a later pass — never a silent success.
     const store = openGovernorReceiptStore(receiptDb);
     const would = store.listBySession("old-session").filter((r) => r.wouldMutate);
     expect(would).toHaveLength(1);
     expect(would[0]!.handoffOutcome?.kind).toBe("scheduled");
     store.close();
+    writeSpy.mockRestore();
 
-    spawned[0]!.fireExit(0);
+    spawned[spawned.length - 1]!.fireExit(0);
     await runPromise;
   }, 15_000);
 
@@ -1499,4 +1586,572 @@ describe("LIM-64 production wrapper path", () => {
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 15_000);
+});
+
+// ── LIM-80 Slice 3A recovery (production run path) ───────────────────────
+const SELF_ID: ProcessIdentity = { pid: 314159, bootId: "self-boot", starttime: "100" };
+const FOREIGN: ProcessIdentity = { pid: 99999, bootId: "other-boot", starttime: "200" };
+
+function identityProbe(map: Record<number, ProcessLivenessResult>): ProbeProcessIdentity {
+  return (pid: number) => map[pid] ?? { ok: false, code: "not_found", message: `no pid ${pid}` };
+}
+
+async function settledWouldMutateObserve() {
+  const { applyGovernorLifecycleBatch, createGovernorRuntimeState } = await import(
+    "../../src/governor/observe-state.js"
+  );
+  const pre = applyGovernorLifecycleBatch(
+    createGovernorRuntimeState({ captureHealthy: true, captureGeneration: 1, descriptorReady: true }),
+    ESTIMATE_CROSS_SIGNALS,
+    POLICY as never,
+  );
+  return pre.observes.find((o) => o.wouldMutate === true)!;
+}
+
+/** Seed a scheduled receipt with one durable attempt at a chosen stage/owner. */
+async function seedReceiptWithAttempt(
+  receiptDb: string,
+  opts: {
+    sessionId: string;
+    threadId: string;
+    owner: ProcessIdentity;
+    stage?: RecoveryStage;
+    artifacts?: RecoveryArtifacts;
+    receiptTerminal?: GovernorHandoffOutcome;
+  },
+): Promise<string> {
+  const store = openGovernorReceiptStore(receiptDb);
+  try {
+    const observe = await settledWouldMutateObserve();
+    const { receipt } = store.appendObserve({ observe, sessionId: opts.sessionId, threadId: opts.threadId });
+    const receiptId = receipt.receiptId;
+    const claim = store.claimAttempt({ receiptId, owner: opts.owner });
+    if (claim.kind !== "claimed") throw new Error(`seed claim ${claim.kind}`);
+    const attemptId = claim.attempt.attemptId;
+    if (opts.stage !== undefined && opts.stage !== "operation_claimed" && opts.stage !== "terminal") {
+      const adv = store.advanceAttempt({ receiptId, attemptId, stage: opts.stage, artifacts: opts.artifacts ?? {} });
+      if (adv.kind !== "advanced" && adv.kind !== "unchanged") throw new Error(`seed advance ${adv.kind}`);
+    } else if (opts.artifacts !== undefined) {
+      store.advanceAttempt({ receiptId, attemptId, stage: "operation_claimed", artifacts: opts.artifacts });
+    }
+    if (opts.receiptTerminal !== undefined) store.attachHandoffOutcome(receiptId, opts.receiptTerminal);
+    return receiptId;
+  } finally {
+    store.close();
+  }
+}
+
+function baseRunOptions(receiptDb: string, spawned: FakePty[], basePid: number) {
+  return {
+    claudeBin: "fake-claude",
+    spawnPty: ((_file: string, args: string[]) => {
+      const fake = makeFakePty(basePid + spawned.length, `c${spawned.length}`, args, true);
+      spawned.push(fake);
+      return fake as never;
+    }) as never,
+    stdin: fakeStream(),
+    stdout: fakeStream() as never,
+    stderr: fakeStream() as never,
+    noInference: true,
+    resolvedContextPolicy: POLICY as never,
+    governorReceiptDbPath: receiptDb,
+  };
+}
+
+describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  beforeEach(() => {
+    mocks.registerLineage.mockClear();
+    mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-rec-home-"));
+    dirs.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const d of dirs.splice(0)) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  it("startup scan reclaims a kernel-proven-dead foreign owner and re-prepares (preview error → stays open under new owner)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rec-reclaim-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    // No baseline recorded → owned resume is reprepare_from_scratch.
+    const receiptId = await seedReceiptWithAttempt(receiptDb, {
+      sessionId: "old-session",
+      threadId: "th_auto",
+      owner: FOREIGN,
+      stage: "operation_claimed",
+    });
+
+    const spawned: FakePty[] = [];
+    let previewCalls = 0;
+    const sdk = sdkForCapture(async () => {
+      previewCalls += 1;
+      return { ok: true, value: { kind: "error", reason: "stop" } };
+    });
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    mocks.captureFactory = (opts) => {
+      const session = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return session;
+    };
+
+    const runPromise = run([], {
+      ...baseRunOptions(receiptDb, spawned, 9300),
+      readProcessIdentity: identityProbe({
+        [process.pid]: { ok: true, identity: SELF_ID },
+        [FOREIGN.pid]: { ok: false, code: "not_found", message: "gone" },
+      }),
+      onHandoffResult: () => {
+        throw new Error("no handoff (preview errors)");
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    // Reclaim moves ownership to self (epoch 2). The re-prepare then hits a
+    // TRANSIENT preview error, so the attempt stays OPEN under the new owner.
+    await waitFor(
+      () => {
+        const s = openGovernorReceiptStore(receiptDb);
+        try {
+          const a = s.getAttempt(receiptId);
+          return a?.owner.pid === SELF_ID.pid && a?.claimEpoch === 2 && previewCalls >= 1;
+        } finally {
+          s.close();
+        }
+      },
+      "receipt reclaimed (open under new owner)",
+      8_000,
+    );
+    expect(previewCalls).toBeGreaterThanOrEqual(1);
+    expect(sdk.threadView.compact).not.toHaveBeenCalled();
+
+    const store = openGovernorReceiptStore(receiptDb);
+    const attempt = store.getAttempt(receiptId);
+    // Reclaimed but NOT terminalized: transient failure stays open at the
+    // truthful durable stage for a later recovery pass.
+    expect(attempt?.stage).toBe("operation_claimed");
+    expect(attempt?.terminalOutcomeKind).toBeNull();
+    expect(attempt?.owner).toEqual(SELF_ID);
+    expect(attempt?.claimEpoch).toBe(2);
+    expect(store.getById(receiptId)?.handoffOutcome?.kind).toBe("scheduled");
+    store.close();
+
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("startup scan recovers a scheduled receipt with NO attempt (crash after insert, before claim) without any replay", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rec-preclaim-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    // Seed a scheduled receipt with NO durable attempt for the current session.
+    {
+      const seed = openGovernorReceiptStore(receiptDb);
+      const inserted = seed.appendObserve({
+        observe: await settledWouldMutateObserve(),
+        sessionId: "old-session",
+        threadId: "th_auto",
+      });
+      expect(inserted.inserted).toBe(true);
+      expect(inserted.receipt.handoffOutcome?.kind).toBe("scheduled");
+      expect(seed.getAttempt(inserted.receipt.receiptId)).toBeNull();
+      seed.close();
+    }
+
+    const spawned: FakePty[] = [];
+    let previewCalls = 0;
+    const sdk = sdkForCapture(async () => {
+      previewCalls += 1;
+      return { ok: true, value: { kind: "error", reason: "stop" } };
+    });
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    mocks.captureFactory = (opts) => {
+      const session = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return session;
+    };
+
+    const runPromise = run([], {
+      ...baseRunOptions(receiptDb, spawned, 9380),
+      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }),
+      onHandoffResult: () => {
+        throw new Error("no handoff (preview errors)");
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "sink");
+    // ONLY session_bound — no ESTIMATE re-tail. Startup scan alone must recover it.
+    lifecycleSink!(BOUND_SIGNALS);
+    await waitFor(
+      () => {
+        const s = openGovernorReceiptStore(receiptDb);
+        try {
+          const row = s.listBySession("old-session").find((r) => r.wouldMutate);
+          return row !== undefined && s.getAttempt(row.receiptId) !== null;
+        } finally {
+          s.close();
+        }
+      },
+      "startup scan claimed the pre-claim scheduled receipt",
+      8_000,
+    );
+    // Recovered by the startup scan (claim), not by replay. Transient preview error
+    // leaves the attempt OPEN.
+    expect(previewCalls).toBeGreaterThanOrEqual(1);
+    const store = openGovernorReceiptStore(receiptDb);
+    const row = store.listBySession("old-session").find((r) => r.wouldMutate)!;
+    const attempt = store.getAttempt(row.receiptId);
+    expect(attempt).not.toBeNull();
+    expect(attempt?.owner).toEqual(SELF_ID);
+    expect(attempt?.stage).toBe("operation_claimed");
+    expect(row.handoffOutcome?.kind).toBe("scheduled");
+    store.close();
+
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("startup scan waits for a live foreign owner: no reclaim, no mutation", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rec-wait-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    const receiptId = await seedReceiptWithAttempt(receiptDb, {
+      sessionId: "old-session",
+      threadId: "th_auto",
+      owner: FOREIGN,
+      stage: "operation_claimed",
+    });
+
+    const spawned: FakePty[] = [];
+    let previewCalls = 0;
+    const sdk = sdkForCapture(async () => {
+      previewCalls += 1;
+      return { ok: true, value: { kind: "ok" } };
+    });
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    mocks.captureFactory = (opts) => {
+      const session = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return session;
+    };
+
+    const runPromise = run([], {
+      ...baseRunOptions(receiptDb, spawned, 9350),
+      readProcessIdentity: identityProbe({
+        [process.pid]: { ok: true, identity: SELF_ID },
+        [FOREIGN.pid]: { ok: true, identity: FOREIGN },
+      }),
+      onHandoffResult: () => {
+        throw new Error("no handoff");
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(previewCalls).toBe(0);
+
+    const store = openGovernorReceiptStore(receiptDb);
+    const attempt = store.getAttempt(receiptId);
+    // Live owner is never stolen: unchanged owner + epoch, still scheduled.
+    expect(attempt?.owner).toEqual(FOREIGN);
+    expect(attempt?.claimEpoch).toBe(1);
+    expect(store.getById(receiptId)?.handoffOutcome?.kind).toBe("scheduled");
+    store.close();
+
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("startup scan never touches another session's open receipt", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rec-filter-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    // Owned by a dead process but belongs to a DIFFERENT session: must be ignored.
+    const foreignReceipt = await seedReceiptWithAttempt(receiptDb, {
+      sessionId: "some-other-session",
+      threadId: "th_other",
+      owner: FOREIGN,
+      stage: "operation_claimed",
+    });
+
+    const spawned: FakePty[] = [];
+    let previewCalls = 0;
+    const sdk = sdkForCapture(async () => {
+      previewCalls += 1;
+      return { ok: true, value: { kind: "ok" } };
+    });
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    mocks.captureFactory = (opts) => {
+      const session = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return session;
+    };
+
+    const runPromise = run([], {
+      ...baseRunOptions(receiptDb, spawned, 9400),
+      readProcessIdentity: identityProbe({
+        [process.pid]: { ok: true, identity: SELF_ID },
+        [FOREIGN.pid]: { ok: false, code: "not_found", message: "gone" },
+      }),
+      onHandoffResult: () => {
+        throw new Error("no handoff");
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    await new Promise((r) => setTimeout(r, 500));
+    expect(previewCalls).toBe(0);
+
+    const store = openGovernorReceiptStore(receiptDb);
+    const attempt = store.getAttempt(foreignReceipt);
+    expect(attempt?.owner).toEqual(FOREIGN);
+    expect(attempt?.stage).toBe("operation_claimed");
+    expect(store.getById(foreignReceipt)?.handoffOutcome?.kind).toBe("scheduled");
+    store.close();
+
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("terminal receipt with a stale open attempt: bookkeeping aligned, no mutation replay", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rec-terminal-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    const receiptId = await seedReceiptWithAttempt(receiptDb, {
+      sessionId: "old-session",
+      threadId: "th_auto",
+      owner: SELF_ID,
+      stage: "operation_claimed",
+      receiptTerminal: { kind: "mutation_refused", detail: "already refused before crash" },
+    });
+
+    const spawned: FakePty[] = [];
+    let previewCalls = 0;
+    const sdk = sdkForCapture(async () => {
+      previewCalls += 1;
+      return { ok: true, value: { kind: "ok" } };
+    });
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    mocks.captureFactory = (opts) => {
+      const session = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return session;
+    };
+
+    const runPromise = run([], {
+      ...baseRunOptions(receiptDb, spawned, 9450),
+      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }),
+      onHandoffResult: () => {
+        throw new Error("no handoff");
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    await waitFor(
+      () => {
+        const s = openGovernorReceiptStore(receiptDb);
+        try {
+          return s.getAttempt(receiptId)?.stage === "terminal";
+        } finally {
+          s.close();
+        }
+      },
+      "attempt bookkeeping aligned",
+      8_000,
+    );
+    // Terminal receipt is authoritative: no mutation replay.
+    expect(previewCalls).toBe(0);
+    expect(sdk.threadView.compact).not.toHaveBeenCalled();
+
+    const store = openGovernorReceiptStore(receiptDb);
+    const attempt = store.getAttempt(receiptId);
+    expect(attempt?.stage).toBe("terminal");
+    expect(attempt?.terminalOutcomeKind).toBe("mutation_refused");
+    expect(store.getById(receiptId)?.handoffOutcome?.kind).toBe("mutation_refused");
+    store.close();
+
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  }, 15_000);
+
+  it("installed-view recovery re-materializes the rollout and reaches handoff success — no second compact", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rec-reconcile-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-rec-proj-"));
+    dirs.push(rolloutProjectsRoot);
+    const reservedPath = rolloutPathForSession(rolloutProjectsRoot, process.cwd(), REBUILT_ID);
+    const installedFp = storedViewFingerprint(storedViewValue("v1") as never);
+
+    // Crash after compact landed + reservation, before the rollout write.
+    const receiptId = await seedReceiptWithAttempt(receiptDb, {
+      sessionId: "old-session",
+      threadId: "th_auto",
+      owner: SELF_ID,
+      stage: "view_installed",
+      artifacts: {
+        threadId: "th_auto",
+        oldSessionId: "old-session",
+        viewId: "v1",
+        installedViewFingerprint: installedFp,
+        rebuiltSessionId: REBUILT_ID,
+        rebuiltRolloutPath: reservedPath,
+        durableReceipt: "[lhc compact:auto] recovered.",
+      },
+    });
+
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    const writeSpy = validWriteSpy(rolloutProjectsRoot);
+    let liveSessionId = "old-session";
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    const results: HandoffResult[] = [];
+    mocks.captureFactory = (opts) => {
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      if (isRebuilt) liveSessionId = REBUILT_ID;
+      const session = scriptedCaptureSession(
+        opts,
+        sdk,
+        liveSessionId,
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        isRebuilt ? 2 : 1,
+      );
+      (session as { getRolloutInfo: () => { path: string; sessionId: string } }).getRolloutInfo = () => ({
+        path: isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        sessionId: liveSessionId,
+      });
+      if (opts.onLifecycle !== undefined && !isRebuilt) lifecycleSink = opts.onLifecycle;
+      return session;
+    };
+
+    const runPromise = run([], {
+      ...baseRunOptions(receiptDb, spawned, 9500),
+      recoveryProjectsRoot: rolloutProjectsRoot,
+      recoverySessionIdFn: () => REBUILT_ID,
+      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }),
+      onHandoffResult: (r) => results.push(r),
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    await waitFor(() => results.length === 1, "recovery handoff", 12_000);
+    expect(results[0]!.kind).toBe("success");
+    // The installed view is authoritative: recovery NEVER compacts again.
+    expect(sdk.threadView.compact).not.toHaveBeenCalled();
+    expect(sdk.threadView.previewCompact).not.toHaveBeenCalled();
+
+    const store = openGovernorReceiptStore(receiptDb);
+    expect(store.getById(receiptId)?.handoffOutcome).toEqual({
+      kind: "handoff_success",
+      newSessionId: REBUILT_ID,
+      flushedInputBytes: expect.any(Number),
+    });
+    expect(store.getAttempt(receiptId)?.stage).toBe("terminal");
+    store.close();
+
+    spawned[spawned.length - 1]!.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  }, 20_000);
+
+  it("exact replay and startup scan coalesce into a single recovery (one preview, one compact, one handoff)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rec-coalesce-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-coalesce-proj-"));
+    dirs.push(rolloutProjectsRoot);
+    // Seed an attempt at operation_claimed (no baseline → reprepare) owned by self,
+    // so BOTH the startup scan (open attempt) and an exact re-tail target it. A
+    // clean recovery reaches ONE handoff success; coalescing is proven by exactly
+    // one preview/compact/handoff despite two triggers.
+    const receiptId = await seedReceiptWithAttempt(receiptDb, {
+      sessionId: "old-session",
+      threadId: "th_auto",
+      owner: SELF_ID,
+      stage: "operation_claimed",
+    });
+
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    const writeSpy = validWriteSpy(rolloutProjectsRoot);
+    let liveSessionId = "old-session";
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    const results: HandoffResult[] = [];
+    mocks.captureFactory = (opts) => {
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      if (isRebuilt) liveSessionId = REBUILT_ID;
+      const session = scriptedCaptureSession(
+        opts,
+        sdk,
+        liveSessionId,
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        isRebuilt ? 2 : 1,
+      );
+      (session as { getRolloutInfo: () => { path: string; sessionId: string } }).getRolloutInfo = () => ({
+        path: isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        sessionId: liveSessionId,
+      });
+      if (opts.onLifecycle !== undefined && !isRebuilt) lifecycleSink = opts.onLifecycle;
+      return session;
+    };
+
+    const runPromise = run([], {
+      ...baseRunOptions(receiptDb, spawned, 9550),
+      recoveryProjectsRoot: rolloutProjectsRoot,
+      recoverySessionIdFn: () => REBUILT_ID,
+      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }),
+      onHandoffResult: (r) => results.push(r),
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "sink");
+    // session_bound → startup scan; the same batch re-tails the classification.
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
+    await waitFor(() => results.length === 1, "single coalesced recovery handoff", 12_000);
+    await new Promise((r) => setTimeout(r, 300));
+
+    // Coalesced: exactly ONE handoff, one preview, one compact despite two triggers.
+    expect(results).toHaveLength(1);
+    expect(results[0]!.kind).toBe("success");
+    expect(sdk.threadView.previewCompact).toHaveBeenCalledTimes(1);
+    expect(sdk.threadView.compact).toHaveBeenCalledTimes(1);
+
+    const store = openGovernorReceiptStore(receiptDb);
+    expect(store.getAttempt(receiptId)?.stage).toBe("terminal");
+    expect(store.getById(receiptId)?.handoffOutcome?.kind).toBe("handoff_success");
+    store.close();
+    writeSpy.mockRestore();
+
+    spawned[spawned.length - 1]!.fireExit(0);
+    await runPromise;
+  }, 20_000);
 });

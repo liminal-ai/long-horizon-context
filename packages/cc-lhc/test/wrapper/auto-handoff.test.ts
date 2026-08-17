@@ -1,16 +1,52 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
+import { rolloutPathForSession } from "../../src/rollout/sessions-index.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { run } from "../../src/wrapper/run.js";
+
+/** A StoredView `describe()` value; stable fingerprint per (viewId, createdAt). */
+function storedViewValue(viewId: string, createdAt = "2026-08-17T00:00:00.000Z") {
+  return {
+    viewId,
+    createdAt,
+    compactPoint: 1,
+    coveredFrom: 0,
+    profileName: "continuation",
+    config: { lowerBound: 1_000, percentages: {} },
+    arrangement: [],
+    gaps: [],
+    sourceState: { maxEventOrder: 9, derivationCounts: {} },
+    bands: [],
+  };
+}
+
+/** Write a structurally valid rebuilt rollout (2 prefix lines + trailing note). */
+function writeValidRollout(path: string, sessionId: string, durableReceipt: string): number {
+  const lines = [
+    { type: "user", uuid: "u1", parentUuid: null, sessionId, message: { role: "user", content: "hello" } },
+    { type: "assistant", uuid: "u2", parentUuid: "u1", sessionId, message: { role: "assistant", content: "hi" } },
+    {
+      type: "user",
+      uuid: "u3",
+      parentUuid: "u2",
+      sessionId,
+      message: { role: "user", content: `[runtime note] ${durableReceipt}` },
+    },
+  ];
+  const body = `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`;
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, body);
+  return Buffer.byteLength(body, "utf8");
+}
 
 /** Isolate durable governor receipts per test (shared ~/.cc-lhc would cross-talk). */
 function tempReceiptDbPath(): string {
@@ -103,6 +139,7 @@ function sdkForCapture() {
   return {
     drainSettled: async () => {},
     threadView: {
+      describe: vi.fn(async () => ({ ok: true, value: storedViewValue("v1") })),
       status: vi.fn(async () => ({
         ok: true,
         value: {
@@ -269,21 +306,24 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const captureCalls: CaptureSessionDeps[] = [];
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
 
-    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-handoff-"));
-    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
-    const rebuiltContent = '{"line":1}\n{"line":2}\n{"line":3}\n';
-    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      writeFileSync(rebuiltPath, rebuiltContent);
-      return {
-        sessionId: REBUILT_ID,
-        rolloutPath: rebuiltPath,
-        lineCount: 3,
-        expectedReintakeLines: 3,
-        replayedPrefixLines: 2,
-        prefixBoundary: { kind: "verified", lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
-        totalByteLength: Buffer.byteLength(rebuiltContent),
-      };
-    });
+    const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-auto-handoff-"));
+    const rebuiltPath = rolloutPathForSession(rolloutProjectsRoot, process.cwd(), REBUILT_ID);
+    const writeSpy = vi
+      .spyOn(writeRebuilt, "writeRebuiltRollout")
+      .mockImplementation(async (input: Parameters<typeof writeRebuilt.writeRebuiltRollout>[0]) => {
+        const sessionId = input.newSessionId ?? REBUILT_ID;
+        const path = rolloutPathForSession(rolloutProjectsRoot, input.cwd, sessionId);
+        const total = writeValidRollout(path, sessionId, input.receipt?.text ?? "");
+        return {
+          sessionId,
+          rolloutPath: path,
+          lineCount: 3,
+          expectedReintakeLines: 3,
+          replayedPrefixLines: 2,
+          prefixBoundary: { kind: "verified", lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
+          totalByteLength: total,
+        };
+      });
 
     mocks.captureFactory = (opts) => {
       captureCalls.push(opts);
@@ -325,6 +365,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      recoveryProjectsRoot: rolloutProjectsRoot,
+      recoverySessionIdFn: () => REBUILT_ID,
       onHandoffResult: (result) => {
         results.push(result);
       },
@@ -422,25 +464,27 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const stdin = fakeStream();
     const stdout = fakeStream();
 
-    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      // The user types while the rebuild is being written.
-      (stdin as unknown as PassThrough).write("x");
-      await new Promise((r) => setTimeout(r, 60));
-      return {
-        sessionId: REBUILT_ID,
-        rolloutPath: `/tmp/${REBUILT_ID}.jsonl`,
-        lineCount: 1,
-        expectedReintakeLines: 1,
-        replayedPrefixLines: 0,
-        prefixBoundary: {
-          kind: "verified",
-          lineCount: 0,
-          byteLength: 0,
-          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        },
-        totalByteLength: 0,
-      };
-    });
+    const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-cancel-"));
+    const writeSpy = vi
+      .spyOn(writeRebuilt, "writeRebuiltRollout")
+      .mockImplementation(async (input: Parameters<typeof writeRebuilt.writeRebuiltRollout>[0]) => {
+        // The user types while the rebuild is being written: the post-write fence
+        // must cancel the operation (partial), even though the rollout is valid.
+        (stdin as unknown as PassThrough).write("x");
+        await new Promise((r) => setTimeout(r, 60));
+        const sessionId = input.newSessionId ?? REBUILT_ID;
+        const path = rolloutPathForSession(rolloutProjectsRoot, input.cwd, sessionId);
+        const total = writeValidRollout(path, sessionId, input.receipt?.text ?? "");
+        return {
+          sessionId,
+          rolloutPath: path,
+          lineCount: 3,
+          expectedReintakeLines: 3,
+          replayedPrefixLines: 2,
+          prefixBoundary: { kind: "verified", lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
+          totalByteLength: total,
+        };
+      });
 
     const wrapperLogLines: string[] = [];
     mocks.captureFactory = (opts) => {
@@ -463,6 +507,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      recoveryProjectsRoot: rolloutProjectsRoot,
+      recoverySessionIdFn: () => REBUILT_ID,
       wrapperLog: {
         info: (m: string) => wrapperLogLines.push(m),
         warn: (m: string) => wrapperLogLines.push(m),
@@ -506,27 +552,24 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
-    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-nogrow-"));
-    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
-    const rebuiltContent = '{"line":1}\n';
+    const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-nogrow-"));
 
-    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      writeFileSync(rebuiltPath, rebuiltContent);
-      return {
-        sessionId: REBUILT_ID,
-        rolloutPath: rebuiltPath,
-        lineCount: 1,
-        expectedReintakeLines: 1,
-        replayedPrefixLines: 0,
-        prefixBoundary: {
-          kind: "verified",
-          lineCount: 0,
-          byteLength: 0,
-          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        },
-        totalByteLength: Buffer.byteLength(rebuiltContent),
-      };
-    });
+    const writeSpy = vi
+      .spyOn(writeRebuilt, "writeRebuiltRollout")
+      .mockImplementation(async (input: Parameters<typeof writeRebuilt.writeRebuiltRollout>[0]) => {
+        const sessionId = input.newSessionId ?? REBUILT_ID;
+        const path = rolloutPathForSession(rolloutProjectsRoot, input.cwd, sessionId);
+        const total = writeValidRollout(path, sessionId, input.receipt?.text ?? "");
+        return {
+          sessionId,
+          rolloutPath: path,
+          lineCount: 3,
+          expectedReintakeLines: 3,
+          replayedPrefixLines: 2,
+          prefixBoundary: { kind: "verified", lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
+          totalByteLength: total,
+        };
+      });
 
     mocks.captureFactory = (opts) => {
       const isRebuilt = opts.knownRolloutPath !== undefined;
@@ -565,6 +608,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      recoveryProjectsRoot: rolloutProjectsRoot,
+      recoverySessionIdFn: () => REBUILT_ID,
       onHandoffResult: (result) => {
         results.push(result);
       },
@@ -769,26 +814,23 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       return { ok: true, value: { kind: "ok" } };
     }) as never;
 
-    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-race-"));
-    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
-    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async (input) => {
-      writeFileSync(rebuiltPath, '{"line":1}\n');
-      void input;
-      return {
-        sessionId: REBUILT_ID,
-        rolloutPath: rebuiltPath,
-        lineCount: 1,
-        expectedReintakeLines: 1,
-        replayedPrefixLines: 0,
-        prefixBoundary: {
-          kind: "verified",
-          lineCount: 0,
-          byteLength: 0,
-          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-        },
-        totalByteLength: 11,
-      };
-    });
+    const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-race-"));
+    const writeSpy = vi
+      .spyOn(writeRebuilt, "writeRebuiltRollout")
+      .mockImplementation(async (input: Parameters<typeof writeRebuilt.writeRebuiltRollout>[0]) => {
+        const sessionId = input.newSessionId ?? REBUILT_ID;
+        const path = rolloutPathForSession(rolloutProjectsRoot, input.cwd, sessionId);
+        const total = writeValidRollout(path, sessionId, input.receipt?.text ?? "");
+        return {
+          sessionId,
+          rolloutPath: path,
+          lineCount: 3,
+          expectedReintakeLines: 3,
+          replayedPrefixLines: 2,
+          prefixBoundary: { kind: "verified", lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
+          totalByteLength: total,
+        };
+      });
 
     mocks.captureFactory = (opts) => {
       const isRebuilt = opts.knownRolloutPath !== undefined;
@@ -818,6 +860,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      recoveryProjectsRoot: rolloutProjectsRoot,
+      recoverySessionIdFn: () => REBUILT_ID,
       onHandoffResult: (result) => {
         results.push(result);
       },

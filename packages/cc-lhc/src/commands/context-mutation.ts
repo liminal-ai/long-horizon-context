@@ -117,11 +117,35 @@ export interface ContextMutationPlan {
   inputEpochChanged?: () => boolean;
 }
 
+/**
+ * Recovery disposition for the automatic (recovery-port) path (LIM-80 Slice 3A).
+ * Lets the wrapper decide terminal-vs-open WITHOUT parsing message text:
+ *
+ *  - `retryable_pre_mutation`     nothing durable changed (unreadable baseline,
+ *                                 pre-compact fence/input race, preview/compact
+ *                                 failure, a port write that threw before compact).
+ *                                 Safe to re-run the mutation; the attempt stays open.
+ *  - `recoverable_post_mutation`  the SDK view was installed and/or a rollout was
+ *                                 written but the operation did not finish. Must be
+ *                                 re-planned from durable facts, NEVER re-compacted.
+ *  - `terminal_noop`              a genuine no-op (nothing to do), permanent.
+ *  - `terminal_refused`           an explicit permanent capability refusal
+ *                                 (capture disabled). No retry.
+ *
+ * Absent on the manual path (no recoveryPort): manual behavior is byte-for-byte
+ * unchanged and never carries a disposition.
+ */
+export type MutationDisposition =
+  | "retryable_pre_mutation"
+  | "recoverable_post_mutation"
+  | "terminal_noop"
+  | "terminal_refused";
+
 export type ContextMutationOutcome =
-  | { kind: "refused"; messages: string[] }
-  | { kind: "noop"; messages: string[] }
+  | { kind: "refused"; messages: string[]; disposition?: MutationDisposition }
+  | { kind: "noop"; messages: string[]; disposition?: MutationDisposition }
   /** SDK view mutated but fence tripped afterwards: no rebuild handoff. */
-  | { kind: "partial"; messages: string[] }
+  | { kind: "partial"; messages: string[]; disposition?: MutationDisposition }
   | { kind: "rebuilt"; messages: string[]; handoff: HandoffRequest };
 
 function formatBandSummary(receipt: CompactReceipt): string {
@@ -219,15 +243,41 @@ async function verifyWrittenRollout(
   return inspected.kind === "ok" ? inspected.verification : null;
 }
 
+/**
+ * Classify a non-rebuilt outcome into a recovery disposition (typed, never from
+ * message text). The invariant `refused ⟺ nothing durable mutated` and
+ * `partial ⟺ the SDK view was mutated` makes the kind authoritative:
+ *   refused → retryable_pre_mutation (unless capture is permanently disabled),
+ *   partial → recoverable_post_mutation, noop → terminal_noop.
+ */
+function classifyDisposition(kind: "refused" | "noop" | "partial", runtime: LhcCommandRuntime): MutationDisposition {
+  if (kind === "noop") return "terminal_noop";
+  if (kind === "partial") return "recoverable_post_mutation";
+  return runtime.captureDisabled ? "terminal_refused" : "retryable_pre_mutation";
+}
+
 export async function runContextMutation(
   plan: ContextMutationPlan,
   runtime: LhcCommandRuntime,
   /**
    * Optional recovery boundary (LIM-80). When supplied (auto-compact path), the
    * durable attempt records baseline → view_installed → reservation →
-   * rollout_written around the compact. Absent for ordinary manual compact/prune
-   * — that path is byte-for-byte unchanged (no extra SDK calls, no port writes).
+   * rollout_written around the compact, and the returned non-rebuilt outcome
+   * carries a typed `disposition` so the wrapper can leave transient/recoverable
+   * failures OPEN (retry/re-plan) and complete only proven-terminal results.
+   * Absent for ordinary manual compact/prune — that path is byte-for-byte
+   * unchanged (no extra SDK calls, no port writes, no disposition).
    */
+  recoveryPort?: RecoveryPort,
+): Promise<ContextMutationOutcome> {
+  const outcome = await runContextMutationImpl(plan, runtime, recoveryPort);
+  if (recoveryPort === undefined || outcome.kind === "rebuilt") return outcome;
+  return { ...outcome, disposition: classifyDisposition(outcome.kind, runtime) };
+}
+
+async function runContextMutationImpl(
+  plan: ContextMutationPlan,
+  runtime: LhcCommandRuntime,
   recoveryPort?: RecoveryPort,
 ): Promise<ContextMutationOutcome> {
   const blocked = notReadyOutcome(runtime);
@@ -271,6 +321,19 @@ export async function runContextMutation(
     if (afterPrune !== null) return partialOrRefused(afterPrune);
   } else {
     // Compact path (manual or automatic): combined prune first when due.
+    if (recoveryPort !== undefined) {
+      // Record the baseline before ANY served-view mutation in this operation,
+      // including an optional due-prune. A failed observation or store write is
+      // therefore truthfully pre-mutation and safe to retry.
+      const baseline = await observeCurrentStoredView(sdk, threadRef);
+      if (baseline.kind === "unreadable") {
+        return {
+          kind: "refused",
+          messages: [`recovery baseline unreadable (${baseline.reason}); no mutation started`],
+        };
+      }
+      recoveryPort.recordBaseline(baseline.kind === "none" ? NO_STORED_VIEW_FINGERPRINT : baseline.fingerprint);
+    }
     if (plan.pruneIfDue !== undefined) {
       const status = await sdk.threadView.status(threadRef);
       const afterStatus = fence();
@@ -299,18 +362,6 @@ export async function runContextMutation(
       profile: plan.profile,
       params: { lowerBound: plan.lowerBoundTokens },
     };
-    if (recoveryPort !== undefined) {
-      // Baseline BEFORE compact: a restart compares it against the current
-      // stored view to tell "compact landed" from "nothing landed". If the
-      // baseline cannot be read we refuse BEFORE any mutation — never skip the
-      // baseline and continue (that would leave a compact with no way to tell
-      // it apart from "nothing landed" on restart). Nothing has changed here.
-      const baseline = await observeCurrentStoredView(sdk, threadRef);
-      if (baseline.kind === "unreadable") {
-        return { kind: "refused", messages: [`recovery baseline unreadable (${baseline.reason}); no compact started`] };
-      }
-      recoveryPort.recordBaseline(baseline.kind === "none" ? NO_STORED_VIEW_FINGERPRINT : baseline.fingerprint);
-    }
     const preview = await sdk.threadView.previewCompact(threadRef, compactOpts);
     const afterPreview = fence();
     if (afterPreview !== null) return partialOrRefused(afterPreview);
