@@ -9,8 +9,20 @@ import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/sessio
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import { rolloutPathForSession } from "../../src/rollout/sessions-index.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
+import type { ProbeProcessIdentity } from "../../src/runtime/process-identity.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
+
+/**
+ * LIM-80 3B1: the automatic handoff stage port proves exact child identities via
+ * the native provider. Tests spawn fake PTYs, so inject a deterministic probe
+ * that returns a stable identity for any pid (self-claim + old/replacement child).
+ */
+const anyPidIdentity: ProbeProcessIdentity = (pid) => ({
+  ok: true,
+  identity: { pid, bootId: "test-boot", starttime: "1" },
+});
+
 import { run } from "../../src/wrapper/run.js";
 
 /** A StoredView `describe()` value; stable fingerprint per (viewId, createdAt). */
@@ -365,6 +377,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      readProcessIdentity: anyPidIdentity,
       recoveryProjectsRoot: rolloutProjectsRoot,
       recoverySessionIdFn: () => REBUILT_ID,
       onHandoffResult: (result) => {
@@ -507,6 +520,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      readProcessIdentity: anyPidIdentity,
       recoveryProjectsRoot: rolloutProjectsRoot,
       recoverySessionIdFn: () => REBUILT_ID,
       wrapperLog: {
@@ -608,6 +622,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      readProcessIdentity: anyPidIdentity,
       recoveryProjectsRoot: rolloutProjectsRoot,
       recoverySessionIdFn: () => REBUILT_ID,
       onHandoffResult: (result) => {
@@ -685,6 +700,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      readProcessIdentity: anyPidIdentity,
       wrapperLog: {
         info: (m: string) => wrapperLogLines.push(m),
         warn: (m: string) => wrapperLogLines.push(m),
@@ -747,6 +763,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      readProcessIdentity: anyPidIdentity,
       onGovernorObserve: (record) => {
         observes.push({
           decision: record.decision,
@@ -860,6 +877,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      readProcessIdentity: anyPidIdentity,
       recoveryProjectsRoot: rolloutProjectsRoot,
       recoverySessionIdFn: () => REBUILT_ID,
       onHandoffResult: (result) => {
@@ -925,6 +943,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
+      readProcessIdentity: anyPidIdentity,
       onHandoffResult: () => {
         throw new Error("no handoff may run: the mutation refuses");
       },

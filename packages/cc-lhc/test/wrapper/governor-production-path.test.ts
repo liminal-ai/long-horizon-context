@@ -7,7 +7,7 @@
  * no mutation without a durable receipt.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -27,6 +27,7 @@ import type {
 } from "../../src/runtime/process-identity.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
+import { readInputJournal } from "../../src/wrapper/input-journal.js";
 import { run } from "../../src/wrapper/run.js";
 
 const mocks = vi.hoisted(() => ({
@@ -406,6 +407,7 @@ describe("LIM-64 production wrapper path", () => {
       governorReceiptDbPath: receiptDb,
       recoveryProjectsRoot: rolloutProjectsRoot,
       recoverySessionIdFn: () => REBUILT_ID,
+      readProcessIdentity: anyPidIdentity,
       onGovernorObserve: (record) => {
         observes.push({
           decision: record.decision,
@@ -451,6 +453,19 @@ describe("LIM-64 production wrapper path", () => {
     });
     // New session must not have stolen the outcome attachment.
     expect(store.listBySession(REBUILT_ID).filter((r) => r.wouldMutate)).toHaveLength(0);
+
+    // LIM-80 3B1: the automatic handoff proved exact child identities and journaled
+    // durable stages; the terminal attempt carries oldChild + replacementChild +
+    // the input-journal pointer, and NO input bytes leak into SQLite.
+    const doneAttempt = store.getAttempt(would[0]!.receiptId)!;
+    expect(doneAttempt.stage).toBe("terminal");
+    expect(doneAttempt.terminalOutcomeKind).toBe("handoff_success");
+    expect(doneAttempt.artifacts.oldChild).toBeDefined();
+    expect(doneAttempt.artifacts.replacementChild).toBeDefined();
+    expect(doneAttempt.artifacts.inputJournalPath).toBeDefined();
+    expect(doneAttempt.artifacts.inputJournalId).toBeDefined();
+    // A DELIVERED journal is cleaned once the terminal completion is durable.
+    expect(existsSync(doneAttempt.artifacts.inputJournalPath!)).toBe(false);
     store.close();
 
     spawned[spawned.length - 1]!.fireExit(0);
@@ -1064,6 +1079,7 @@ describe("LIM-64 production wrapper path", () => {
       governorReceiptDbPath: receiptDb,
       recoveryProjectsRoot: rolloutProjectsRoot,
       recoverySessionIdFn: () => REBUILT_ID,
+      readProcessIdentity: anyPidIdentity,
       onHandoffResult: (r) => results.push(r),
       handoffTimeouts: {
         sigtermGraceMs: 200,
@@ -1431,12 +1447,14 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 20_000);
 
-  it("terminal completion that cannot be persisted stays scheduled, loudly (proven-terminal handoff success)", async () => {
+  it("post-commit binary input is journaled, retained on completion failure, and never leaks into SQLite", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-completefail-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
     const rolloutProjectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-completefail-proj-"));
     dirs.push(rolloutProjectsRoot);
+    const recoveryDir = mkdtempSync(join(tmpdir(), "cc-lhc-completefail-rec-"));
+    dirs.push(recoveryDir);
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     const writeSpy = validWriteSpy(rolloutProjectsRoot);
@@ -1444,6 +1462,10 @@ describe("LIM-64 production wrapper path", () => {
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
     const wrapperLogLines: string[] = [];
     const results: HandoffResult[] = [];
+    // Post-commit stdin includes NUL / high bytes and a unique marker.
+    const MARKER = "SECRET-MARKER-9c3f";
+    const secretBytes = Buffer.concat([Buffer.from([0x00, 0xff, 0xfe, 0x01]), Buffer.from(MARKER, "utf8")]);
+    const stdin = fakeStream();
     mocks.captureFactory = (opts) => {
       const isRebuilt = opts.knownRolloutPath !== undefined;
       if (isRebuilt) liveSessionId = REBUILT_ID;
@@ -1469,7 +1491,7 @@ describe("LIM-64 production wrapper path", () => {
         spawned.push(fake);
         return fake as never;
       }) as never,
-      stdin: fakeStream(),
+      stdin,
       stdout: fakeStream() as never,
       stderr: fakeStream() as never,
       noInference: true,
@@ -1477,6 +1499,8 @@ describe("LIM-64 production wrapper path", () => {
       governorReceiptDbPath: receiptDb,
       recoveryProjectsRoot: rolloutProjectsRoot,
       recoverySessionIdFn: () => REBUILT_ID,
+      recoveryDir,
+      readProcessIdentity: anyPidIdentity,
       wrapperLog: {
         info: (m: string) => wrapperLogLines.push(m),
         warn: (m: string) => wrapperLogLines.push(m),
@@ -1484,7 +1508,8 @@ describe("LIM-64 production wrapper path", () => {
         path: "/tmp/fake.log",
       } as never,
       // A PROVEN-terminal completion (final handoff result) whose completeAttempt
-      // cannot be persisted must be loud and leave the receipt scheduled.
+      // cannot be persisted must be loud and leave the receipt scheduled — and
+      // retain the delivered journal.
       governorReceiptStoreHook: (store) => ({
         ...store,
         completeAttempt: () => {
@@ -1502,21 +1527,59 @@ describe("LIM-64 production wrapper path", () => {
     });
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
+    await waitFor(() => spawned.length >= 1, "first child");
+    // The operator types (binary) AFTER commit: hook the old child's SIGTERM
+    // (fired inside terminateOldChild, i.e. during the active barrier).
+    const origKill = spawned[0]!.kill.bind(spawned[0]);
+    spawned[0]!.kill = (sig?: string) => {
+      (stdin as unknown as PassThrough).write(secretBytes);
+      origKill(sig);
+    };
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
     await waitFor(() => results.length === 1, "handoff completed", 12_000);
     expect(results[0]!.kind).toBe("success");
     await new Promise((r) => setTimeout(r, 200));
 
-    // The handoff happened, but its terminal outcome could not be recorded.
+    // The handoff happened + delivered the buffered bytes to the new child, but
+    // the terminal completion could not be recorded → loud, receipt scheduled.
     expect(wrapperLogLines.some((l) => l.includes("outcome NOT durable"))).toBe(true);
+    expect(spawned[1]!.writes.join("")).toContain(secretBytes.toString("latin1"));
 
-    // Re-open store without the failing hook: receipt still scheduled (unresolved),
-    // recoverable on a later pass — never a silent success.
     const store = openGovernorReceiptStore(receiptDb);
     const would = store.listBySession("old-session").filter((r) => r.wouldMutate);
     expect(would).toHaveLength(1);
-    expect(would[0]!.handoffOutcome?.kind).toBe("scheduled");
+    const receipt = would[0]!;
+    expect(receipt.handoffOutcome?.kind).toBe("scheduled");
+
+    // The attempt advanced through the durable stages; its journal is RETAINED.
+    const attempt = store.getAttempt(receipt.receiptId)!;
+    expect(attempt.stage).toBe("descriptor_published");
+    const journalPath = attempt.artifacts.inputJournalPath!;
+    expect(existsSync(journalPath)).toBe(true);
+
+    // The journal holds the exact ordered bytes (binary-safe) in `delivered`.
+    const journal = readInputJournal(journalPath, {
+      receiptId: receipt.receiptId,
+      attemptId: attempt.attemptId,
+      oldSessionId: "old-session",
+      rebuiltSessionId: REBUILT_ID,
+    });
+    expect(journal.ok).toBe(true);
+    if (journal.ok) {
+      expect(journal.state).toBe("delivered");
+      expect(journal.chunks.equals(secretBytes)).toBe(true);
+    }
+
+    // No input bytes leak into SQLite: neither the attempt nor the receipt row
+    // contains the marker (nor its base64), only the journal pointer.
+    const markerB64 = secretBytes.toString("base64");
+    const attemptJson = JSON.stringify(attempt);
+    const receiptJson = JSON.stringify(store.getById(receipt.receiptId));
+    for (const blob of [attemptJson, receiptJson]) {
+      expect(blob).not.toContain(MARKER);
+      expect(blob).not.toContain(markerB64);
+    }
     store.close();
     writeSpy.mockRestore();
 
@@ -1592,8 +1655,25 @@ describe("LIM-64 production wrapper path", () => {
 const SELF_ID: ProcessIdentity = { pid: 314159, bootId: "self-boot", starttime: "100" };
 const FOREIGN: ProcessIdentity = { pid: 99999, bootId: "other-boot", starttime: "200" };
 
-function identityProbe(map: Record<number, ProcessLivenessResult>): ProbeProcessIdentity {
-  return (pid: number) => map[pid] ?? { ok: false, code: "not_found", message: `no pid ${pid}` };
+/** Deterministic identity for any pid (self-claim + fake old/replacement child). */
+const anyPidIdentity: ProbeProcessIdentity = (pid) => ({
+  ok: true,
+  identity: { pid, bootId: "test-boot", starttime: "1" },
+});
+
+function identityProbe(
+  map: Record<number, ProcessLivenessResult>,
+  opts: { defaultOk?: boolean } = {},
+): ProbeProcessIdentity {
+  // LIM-80 3B1: handoff paths probe the fake old/replacement child pids too;
+  // `defaultOk` returns a stable synthetic identity for any unlisted pid so the
+  // stage port can prove child identity. Owner-liveness tests keep the default
+  // (unlisted → not_found) so a dead foreign owner remains reclaimable.
+  return (pid: number) =>
+    map[pid] ??
+    (opts.defaultOk
+      ? { ok: true, identity: { pid, bootId: "child-boot", starttime: "1" } }
+      : { ok: false, code: "not_found", message: `no pid ${pid}` });
 }
 
 async function settledWouldMutateObserve() {
@@ -1785,7 +1865,7 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
 
     const runPromise = run([], {
       ...baseRunOptions(receiptDb, spawned, 9380),
-      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }),
+      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }, { defaultOk: true }),
       onHandoffResult: () => {
         throw new Error("no handoff (preview errors)");
       },
@@ -1954,7 +2034,7 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
 
     const runPromise = run([], {
       ...baseRunOptions(receiptDb, spawned, 9450),
-      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }),
+      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }, { defaultOk: true }),
       onHandoffResult: () => {
         throw new Error("no handoff");
       },
@@ -2043,7 +2123,7 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
       ...baseRunOptions(receiptDb, spawned, 9500),
       recoveryProjectsRoot: rolloutProjectsRoot,
       recoverySessionIdFn: () => REBUILT_ID,
-      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }),
+      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }, { defaultOk: true }),
       onHandoffResult: (r) => results.push(r),
       handoffTimeouts: {
         sigtermGraceMs: 500,
@@ -2121,7 +2201,7 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
       ...baseRunOptions(receiptDb, spawned, 9550),
       recoveryProjectsRoot: rolloutProjectsRoot,
       recoverySessionIdFn: () => REBUILT_ID,
-      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }),
+      readProcessIdentity: identityProbe({ [process.pid]: { ok: true, identity: SELF_ID } }, { defaultOk: true }),
       onHandoffResult: (r) => results.push(r),
       handoffTimeouts: {
         sigtermGraceMs: 500,

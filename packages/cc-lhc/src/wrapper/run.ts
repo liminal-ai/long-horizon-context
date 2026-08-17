@@ -103,10 +103,12 @@ import {
   formatHandoffResult,
   type HandoffChild,
   type HandoffPorts,
+  type HandoffRecoveryStagePort,
   type HandoffResult,
   type RecoveryArtifact,
 } from "./handoff.js";
 import { createInputDebugLogger } from "./input-debug.js";
+import { createInputJournal, type InputJournal, removeInputJournal } from "./input-journal.js";
 import {
   createInputState,
   finishExecuting,
@@ -766,6 +768,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // ---- Slice 4 controlled-handoff state ----
   /** Post-commit stdin bytes, in arrival order; null = normal forwarding. */
   let inputBarrier: Buffer[] | null = null;
+  /** Durable post-commit input journal (LIM-80 3B1); null for manual handoff. */
+  let handoffInputJournal: InputJournal | null = null;
+  /** False once a journal append failed mid-barrier: delivery must be withheld. */
+  let handoffJournalDurable = true;
   /** True from commit until the handoff settles; suppresses teardown-on-exit. */
   let handoffInProgress = false;
   /** The child whose exit the handoff expects (old child during termination). */
@@ -1698,8 +1704,22 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
     const forwardInput = (data: Buffer): void => {
       // Post-commit barrier: preserve every byte in arrival order, raw. No
-      // terminal semantics are inferred from buffered bytes.
+      // terminal semantics are inferred from buffered bytes. When journaling
+      // (automatic handoff), the chunk is durably appended+fsynced FIRST, before
+      // it is mirrored in memory; a synchronous append forbids any reorder. An
+      // append failure stops automatic delivery loudly (handled at flush) but
+      // still preserves the byte in memory.
       if (inputBarrier !== null) {
+        if (handoffInputJournal !== null && handoffJournalDurable) {
+          try {
+            handoffInputJournal.appendChunk(data);
+          } catch (cause) {
+            handoffJournalDurable = false;
+            wrapperLog.warn(
+              `cc-lhc handoff: input journal append failed; buffered delivery will be withheld: ${cause instanceof Error ? cause.message : String(cause)}`,
+            );
+          }
+        }
         inputBarrier.push(Buffer.from(data));
         return;
       }
@@ -1829,12 +1849,35 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       }
     };
 
+    const recoveryDirPath = (): string => options.recoveryDir ?? join(ccLhcHome(), "recovery");
+
     const writeRecoveryArtifactFile = (artifact: RecoveryArtifact): string | null => {
+      // When a durable journal owns the ordered bytes, reference it (path/id/state
+      // + delivery-ambiguity flag) instead of duplicating base64. A journal whose
+      // append failed mid-barrier keeps the memory base64 AND the (incomplete)
+      // journal pointer. No journal (manual/backward) keeps base64 as before.
+      let finalArtifact: RecoveryArtifact = artifact;
+      const journal = handoffInputJournal;
+      if (journal !== null) {
+        const state = journal.currentState();
+        const journalMeta = {
+          inputJournalPath: journal.path,
+          inputJournalId: journal.journalId,
+          inputJournalState: state,
+          deliveryIndeterminate: state === "delivering",
+        };
+        if (handoffJournalDurable) {
+          const { bufferedInputBase64: _dropDurableBytes, ...rest } = artifact;
+          finalArtifact = { ...rest, ...journalMeta };
+        } else {
+          finalArtifact = { ...artifact, ...journalMeta };
+        }
+      }
       try {
-        const dir = options.recoveryDir ?? join(ccLhcHome(), "recovery");
+        const dir = recoveryDirPath();
         mkdirSync(dir, { recursive: true });
         const path = join(dir, `handoff-${Date.now()}-${process.pid}.json`);
-        writeFileSync(path, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
+        writeFileSync(path, `${JSON.stringify(finalArtifact, null, 2)}\n`, { mode: 0o600 });
         return path;
       } catch (cause) {
         wrapperLog.warn(
@@ -1847,16 +1890,21 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     /** Execute the controlled handoff for a rebuilt session. Shared by manual
      * compact/prune and the automatic governor path.
      * `recordOutcome` is invoked with the final result just before any fatal
-     * teardown (automatic path passes a completeAttempt sink). Manual
-     * compact/prune pass none and leave governor receipts alone.
+     * teardown; it returns whether the terminal completion is DURABLE, which
+     * gates delivered-journal cleanup. `recovery` (automatic path only) supplies
+     * the owned receipt/attempt for durable stage instrumentation + journaling.
+     * Manual compact/prune pass neither: no stages, no journal, unchanged.
      */
     const performHandoff = async (
       request: HandoffRequest,
       inputEpochChanged: () => boolean,
-      recordOutcome?: (result: HandoffResult) => void,
+      recordOutcome?: (result: HandoffResult) => boolean,
+      recovery?: { receiptId: string; attemptId: string },
     ): Promise<HandoffResult> => {
       handoffInProgress = true;
       childDiedDuringHandoff = false;
+      handoffInputJournal = null;
+      handoffJournalDurable = true;
       const leaseGeneration = captureSession?.getCaptureGeneration() ?? 0;
       const oldCaptureSnapshot = captureSession;
       handoffRuntimeSettings = { ...observedRuntimeSettings };
@@ -1882,13 +1930,21 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         flushInputBarrier: (child: HandoffChild): number => {
           const bytes = inputBarrier === null ? Buffer.alloc(0) : Buffer.concat(inputBarrier);
           inputBarrier = null;
+          // Journal delivery is a fail-closed durable transition across the send
+          // ambiguity: `delivering` is fsynced BEFORE any byte reaches the child;
+          // a crash observed as `delivering` is INDETERMINATE and never replayed.
+          // `delivered` is fsynced only after child.write returns.
+          const journal = handoffInputJournal;
+          if (journal !== null) journal.markDelivering();
           if (bytes.length > 0) {
             child.write(bytes.toString("latin1"));
             // These bytes reached the child without passing the hazard shadow.
             inputState = noteUntrackedDeliveredInput(inputState, bytes);
           }
+          if (journal !== null) journal.markDelivered();
           return bytes.length;
         },
+        inputBarrierDurable: (): boolean => handoffJournalDurable,
         takeInputBarrierBuffer: (): Buffer => {
           const bytes = inputBarrier === null ? Buffer.alloc(0) : Buffer.concat(inputBarrier);
           inputBarrier = null;
@@ -2051,11 +2107,127 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         log: (message) => wrapperLog.info(message),
       };
 
+      // Concrete automatic-attempt stage port (LIM-80 3B1): proves exact child
+      // identities through the native provider and advances durable stages via
+      // advanceAttempt CAS. Only built for automatic attempts with a live store;
+      // manual compact/prune pass none (no stages, no journal, unchanged).
+      const stageDetail = (cause: unknown): string => (cause instanceof Error ? cause.message : String(cause));
+      const store = governorReceiptStore;
+      const recoveryStages: HandoffRecoveryStagePort | undefined =
+        recovery === undefined || store === null
+          ? undefined
+          : {
+              prepareBarrier: (): { ok: true } | { ok: false; reason: string } => {
+                // Prove exact old-child identity FIRST; never synthesize from PID.
+                const probed = readProcessIdentity(currentPty.pid);
+                if (!probed.ok) return { ok: false, reason: `old-child identity ${probed.code}: ${probed.message}` };
+                let journal: InputJournal;
+                try {
+                  journal = createInputJournal({
+                    dir: recoveryDirPath(),
+                    binding: {
+                      receiptId: recovery.receiptId,
+                      attemptId: recovery.attemptId,
+                      oldSessionId: request.oldSessionId,
+                      rebuiltSessionId: request.rebuilt.sessionId,
+                    },
+                  });
+                } catch (cause) {
+                  return { ok: false, reason: `input journal create failed: ${stageDetail(cause)}` };
+                }
+                // Safe order: durable FILE (above) -> durable STAGE (below). A
+                // DEFINITE non-advanced result did not write, so SQLite cannot
+                // reference the journal -> remove it. An INDETERMINATE thrown store
+                // write MAY have landed and SQLite MAY reference the journal ->
+                // RETAIN the orphan (bound header on disk), log its path, and cancel;
+                // never unlink a possibly-referenced journal, never proceed.
+                let adv: ReturnType<typeof store.advanceAttempt>;
+                try {
+                  adv = store.advanceAttempt({
+                    receiptId: recovery.receiptId,
+                    attemptId: recovery.attemptId,
+                    stage: "rollout_written",
+                    artifacts: {
+                      oldChild: probed.identity,
+                      inputJournalPath: journal.path,
+                      inputJournalId: journal.journalId,
+                    },
+                  });
+                } catch (cause) {
+                  journal.close();
+                  wrapperLog.warn(
+                    `cc-lhc handoff: barrier stage write INDETERMINATE; retaining orphan journal ${journal.path}: ${stageDetail(cause)}`,
+                  );
+                  return { ok: false, reason: `barrier stage write indeterminate: ${stageDetail(cause)}` };
+                }
+                if (adv.kind !== "advanced" && adv.kind !== "unchanged") {
+                  journal.close();
+                  try {
+                    removeInputJournal(journal.path);
+                  } catch {
+                    // best effort — the file has no delivered bytes and is unreferenced
+                  }
+                  return { ok: false, reason: `barrier stage CAS ${adv.kind}` };
+                }
+                handoffInputJournal = journal;
+                handoffJournalDurable = true;
+                return { ok: true };
+              },
+              recordOldChildExited: (): void => {
+                const adv = store.advanceAttempt({
+                  receiptId: recovery.receiptId,
+                  attemptId: recovery.attemptId,
+                  stage: "old_child_exited",
+                });
+                if (adv.kind !== "advanced" && adv.kind !== "unchanged") {
+                  throw new Error(`old_child_exited CAS ${adv.kind}`);
+                }
+              },
+              recordReplacementReady: (): { ok: true } | { ok: false; reason: string } => {
+                // currentPty is now the replacement child; prove its exact identity.
+                const probed = readProcessIdentity(currentPty.pid);
+                if (!probed.ok) {
+                  return { ok: false, reason: `replacement identity ${probed.code}: ${probed.message}` };
+                }
+                const adv = store.advanceAttempt({
+                  receiptId: recovery.receiptId,
+                  attemptId: recovery.attemptId,
+                  stage: "replacement_ready",
+                  artifacts: { replacementChild: probed.identity },
+                });
+                if (adv.kind !== "advanced" && adv.kind !== "unchanged") {
+                  return { ok: false, reason: `replacement_ready CAS ${adv.kind}` };
+                }
+                return { ok: true };
+              },
+              recordLineageRecorded: (): void => {
+                const adv = store.advanceAttempt({
+                  receiptId: recovery.receiptId,
+                  attemptId: recovery.attemptId,
+                  stage: "lineage_recorded",
+                });
+                if (adv.kind !== "advanced" && adv.kind !== "unchanged") {
+                  throw new Error(`lineage_recorded CAS ${adv.kind}`);
+                }
+              },
+              recordDescriptorPublished: (): void => {
+                const adv = store.advanceAttempt({
+                  receiptId: recovery.receiptId,
+                  attemptId: recovery.attemptId,
+                  stage: "descriptor_published",
+                });
+                if (adv.kind !== "advanced" && adv.kind !== "unchanged") {
+                  throw new Error(`descriptor_published CAS ${adv.kind}`);
+                }
+              },
+            };
+
       try {
         const result = await executeHandoff(request, ports, {
           captureReadyTimeoutMs,
           childLivenessTimeoutMs,
           childStableWindowMs,
+          ...(recoveryStages === undefined ? {} : { recoveryStages }),
         });
         // Last action records ONLY a confirmed handoff; anything else is a
         // last-attempt health note and never claims a successful compact.
@@ -2091,9 +2263,39 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // Automatic path records the final outcome onto its owned attempt via
         // completeAttempt (atomic attempt+receipt). Fires BEFORE any fatal
         // teardown so a no-live-child failure is still durable. Manual path
-        // passes no sink and leaves governor receipts alone.
-        recordOutcome?.(result);
+        // passes no sink and leaves governor receipts alone. The returned bool is
+        // whether that terminal completion is DURABLE — it gates journal cleanup.
+        const completionDurable = recordOutcome?.(result) ?? false;
         options.onHandoffResult?.(result);
+        // Delete a DELIVERED journal ONLY after the full terminal attempt+receipt
+        // completion is durable. A failed handoff, a withheld (non-durable) barrier,
+        // or a completion-persistence failure RETAINS it for recovery (the artifact
+        // references it). The recovery artifact was already written inside
+        // executeHandoff while the journal pointer was still live.
+        // Cast: the stage port sets handoffInputJournal via a closure the compiler
+        // cannot see, so its flow-narrowed `null` type must be widened back.
+        const journalToSettle = handoffInputJournal as InputJournal | null;
+        handoffInputJournal = null;
+        if (journalToSettle !== null) {
+          const deliveredCleanly =
+            handoffJournalDurable && (result.kind === "success" || result.kind === "rolled_back");
+          journalToSettle.close();
+          if (completionDurable && deliveredCleanly) {
+            // Delete ONLY after the terminal attempt+receipt completion is durable;
+            // the unlink also fsyncs the directory removal where supported.
+            try {
+              removeInputJournal(journalToSettle.path);
+            } catch (cause) {
+              wrapperLog.warn(
+                `cc-lhc handoff: delivered journal cleanup failed (retained): ${cause instanceof Error ? cause.message : String(cause)}`,
+              );
+            }
+          } else {
+            wrapperLog.info(
+              `cc-lhc handoff: input journal retained ${journalToSettle.path} (result=${result.kind}, completionDurable=${completionDurable})`,
+            );
+          }
+        }
         if (result.kind === "failed" && !result.childAlive) {
           wrapperLog.warn(
             `cc-lhc handoff failed with no live child; exiting. old=${result.oldSessionId} rebuilt=${result.rebuiltSessionId} recovery=${result.recoveryArtifactPath ?? "UNWRITTEN"}`,
@@ -2237,8 +2439,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       frozenTriggerTokens: number | null,
     ): Promise<void> => {
       const stageBefore = attemptStageOf(receiptId);
-      const completeTerminal = (outcome: Exclude<GovernorHandoffOutcome, { kind: "scheduled" }>): void => {
-        if (completeGovernorAttempt(receiptId, attemptId, outcome)) resetRecoveryRetries(receiptId);
+      const completeTerminal = (outcome: Exclude<GovernorHandoffOutcome, { kind: "scheduled" }>): boolean => {
+        const ok = completeGovernorAttempt(receiptId, attemptId, outcome);
+        if (ok) resetRecoveryRetries(receiptId);
+        return ok;
       };
       const leaveOpen = (label: string): void => {
         if (stageAdvanced(stageBefore, attemptStageOf(receiptId))) resetRecoveryRetries(receiptId);
@@ -2261,8 +2465,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           `cc-lhc auto-compact mutation ${outcome.kind}/${outcome.kind === "rebuilt" ? "handoff" : (outcome.disposition ?? "open")}: ${outcome.messages.join(" | ") || "(no receipt)"}`,
         );
         if (outcome.kind === "rebuilt") {
-          await performHandoff(outcome.handoff, epochChanged, (result) =>
-            completeTerminal(governorOutcomeFromHandoffResult(result)),
+          await performHandoff(
+            outcome.handoff,
+            epochChanged,
+            (result) => completeTerminal(governorOutcomeFromHandoffResult(result)),
+            { receiptId, attemptId },
           );
           return;
         }
@@ -2328,8 +2535,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     ): Promise<void> => {
       const a = attempt.artifacts;
       const stageBefore = attempt.stage;
-      const completeTerminal = (outcome: Exclude<GovernorHandoffOutcome, { kind: "scheduled" }>): void => {
-        if (completeGovernorAttempt(receiptId, attempt.attemptId, outcome)) resetRecoveryRetries(receiptId);
+      const completeTerminal = (outcome: Exclude<GovernorHandoffOutcome, { kind: "scheduled" }>): boolean => {
+        const ok = completeGovernorAttempt(receiptId, attempt.attemptId, outcome);
+        if (ok) resetRecoveryRetries(receiptId);
+        return ok;
       };
       const leaveOpen = (label: string): void => {
         if (stageAdvanced(stageBefore, attemptStageOf(receiptId))) resetRecoveryRetries(receiptId);
@@ -2408,8 +2617,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         if (stageAdvanced(stageBefore, attemptStageOf(receiptId))) resetRecoveryRetries(receiptId);
         const epochAtStart = governorState.currentInputEpoch;
         const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
-        await performHandoff(result.handoff, epochChanged, (r) =>
-          completeTerminal(governorOutcomeFromHandoffResult(r)),
+        await performHandoff(
+          result.handoff,
+          epochChanged,
+          (r) => completeTerminal(governorOutcomeFromHandoffResult(r)),
+          { receiptId, attemptId: attempt.attemptId },
         );
         return;
       }

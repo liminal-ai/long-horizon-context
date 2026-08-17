@@ -285,7 +285,7 @@ describe("executeHandoff", () => {
       expect(result.retainedInputBytes).toBe("do not lose me".length);
     }
     expect(h.artifacts).toHaveLength(1);
-    expect(Buffer.from(h.artifacts[0]!.bufferedInputBase64, "base64").toString()).toBe("do not lose me");
+    expect(Buffer.from(h.artifacts[0]!.bufferedInputBase64!, "base64").toString()).toBe("do not lose me");
     expect(h.artifacts[0]!.oldSessionId).toBe("old-1111");
     expect(h.artifacts[0]!.rebuiltSessionId).toBe("new-2222");
   });
@@ -400,7 +400,7 @@ describe("executeHandoff", () => {
     expect(h.calls).not.toContain("flushInputBarrier");
     expect(h.writesBySession["old-1111"]).toBeUndefined();
     expect(h.artifacts).toHaveLength(1);
-    expect(Buffer.from(h.artifacts[0]!.bufferedInputBase64, "base64").toString()).toBe("precious bytes");
+    expect(Buffer.from(h.artifacts[0]!.bufferedInputBase64!, "base64").toString()).toBe("precious bytes");
   });
 
   it("rollback child that exits during liveness reports failed with no live child", async () => {

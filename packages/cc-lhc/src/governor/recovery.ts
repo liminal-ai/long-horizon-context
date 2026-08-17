@@ -125,6 +125,20 @@ export interface RecoveryArtifacts {
   rolloutPrefixByteLength?: number;
   rolloutLineCount?: number;
   rolloutByteLength?: number;
+  /**
+   * Exact old-child ProcessIdentity, proven through the native provider BEFORE
+   * the input barrier / termination. A restart uses it to tell "old child truly
+   * exited" from "pid reused" (Slice 3B2). Never synthesized from a PID.
+   */
+  oldChild?: ProcessIdentity;
+  /**
+   * Durable post-commit input journal (LIM-80 Slice 3B1). Path + id only —
+   * append-only identity facts. The mutable delivery state (pending/delivering/
+   * delivered) lives IN the journal, never here, so these SQLite facts stay
+   * append-only. Input bytes never appear in SQLite.
+   */
+  inputJournalPath?: string;
+  inputJournalId?: string;
   /** Replacement child identity once spawned (liveness-verifiable). */
   replacementChild?: ProcessIdentity;
 }
@@ -191,7 +205,10 @@ const ARTIFACT_STRING_KEYS = [
   "durableReceipt",
   "rolloutFullSha256",
   "rolloutPrefixSha256",
+  "inputJournalPath",
+  "inputJournalId",
 ] as const;
+const ARTIFACT_IDENTITY_KEYS = ["oldChild", "replacementChild"] as const;
 const ARTIFACT_NUMBER_KEYS = [
   "rolloutPrefixLineCount",
   "rolloutPrefixByteLength",
@@ -224,12 +241,14 @@ export function mergeRecoveryArtifacts(
     if (prev !== undefined && prev !== next) return { ok: false, conflictKey: key };
     merged[key] = next;
   }
-  if (incoming.replacementChild !== undefined) {
-    const prev = stored.replacementChild;
-    if (prev !== undefined && !identitiesEqual(prev, incoming.replacementChild)) {
-      return { ok: false, conflictKey: "replacementChild" };
+  for (const key of ARTIFACT_IDENTITY_KEYS) {
+    const next = incoming[key];
+    if (next === undefined) continue;
+    const prev = stored[key];
+    if (prev !== undefined && !identitiesEqual(prev, next)) {
+      return { ok: false, conflictKey: key };
     }
-    merged.replacementChild = incoming.replacementChild;
+    merged[key] = next;
   }
   return { ok: true, artifacts: merged };
 }
@@ -250,10 +269,11 @@ export function parseRecoveryArtifacts(raw: unknown): RecoveryArtifacts | null {
     if (typeof v !== "number" || !Number.isInteger(v) || v < 0) return null;
     out[key] = v;
   }
-  if (o.replacementChild !== undefined) {
-    const id = parseStoredProcessIdentity(o.replacementChild);
+  for (const key of ARTIFACT_IDENTITY_KEYS) {
+    if (o[key] === undefined) continue;
+    const id = parseStoredProcessIdentity(o[key]);
     if (id === null) return null;
-    out.replacementChild = id;
+    out[key] = id;
   }
   return out;
 }
