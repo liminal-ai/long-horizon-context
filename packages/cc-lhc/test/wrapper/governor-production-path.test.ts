@@ -2514,13 +2514,15 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
     const { runPromise, sink } = restartRun({ receiptDb, recoveryDir, spawned, boundSessionId: RESTART_REBUILT });
     await waitFor(() => sink() !== undefined, "sink");
     sink()!(BOUND_SIGNALS);
-    await new Promise((r) => setTimeout(r, 500));
+    await waitFor(
+      () => readdirSync(recoveryDir).some((f) => f.startsWith("restart-")),
+      "indeterminate restart artifact",
+    );
 
     const store = openGovernorReceiptStore(receiptDb);
     expect(store.getAttempt(receiptId)?.stage).not.toBe("terminal");
     expect(store.getById(receiptId)?.handoffOutcome?.kind).toBe("scheduled");
     store.close();
-    const { readdirSync } = await import("node:fs");
     expect(readdirSync(recoveryDir).some((f) => f.startsWith("restart-"))).toBe(true);
 
     spawned[0]?.fireExit(0);

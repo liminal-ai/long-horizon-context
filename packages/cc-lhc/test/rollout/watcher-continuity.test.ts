@@ -20,6 +20,14 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitFor(condition: () => boolean, label: string, capMs = 5_000): Promise<void> {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > capMs) throw new Error(`timed out waiting for ${label}`);
+    await sleep(25);
+  }
+}
+
 describe("watcher continuity (exact consumed digest)", () => {
   let watcher: RolloutWatcher | undefined;
 
@@ -112,7 +120,7 @@ describe("watcher continuity (exact consumed digest)", () => {
       writeFileSync(alt, prefix + lure);
       renameSync(alt, path);
     }
-    await sleep(200);
+    await waitFor(() => cont.length >= 1, "path-replacement continuity failure");
     expect(cont.length).toBeGreaterThanOrEqual(1);
     expect(lines).not.toContain("LURE");
   });

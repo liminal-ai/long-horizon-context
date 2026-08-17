@@ -519,14 +519,15 @@ describe("Claude Code 2.1.233 rollout compatibility (bounded fixture)", () => {
     "claude-2.1.233-tool-call-sequence.jsonl",
   );
   const raw = readFileSync(FIXTURE_2_1_233, "utf8");
-  const items = raw
+  const normalizedRaw = raw.replace(/\r\n/g, "\n");
+  const items = normalizedRaw
     .split("\n")
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
     .map((l) => JSON.parse(l) as RolloutLineItem);
 
   it("matches the certified normalized-fixture digest", () => {
-    expect(createHash("sha256").update(raw).digest("hex")).toBe(
+    expect(createHash("sha256").update(normalizedRaw).digest("hex")).toBe(
       "22bc540269bcb6555e80565c662bed3f6c2bc263198b403e3dabfe42adf42b95",
     );
   });

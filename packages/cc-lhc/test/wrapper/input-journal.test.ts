@@ -62,7 +62,9 @@ describe("input journal (LIM-80 Slice 3B1)", () => {
     const dir = freshDir();
     const journal = createInputJournal({ dir, binding: BINDING, journalId: "jid-1" });
     expect(existsSync(journal.path)).toBe(true);
-    expect(statSync(journal.path).mode & 0o777).toBe(0o600);
+    // Windows protects this user-scoped file through ACLs and does not expose
+    // meaningful POSIX creation-mode bits through stat().
+    if (process.platform !== "win32") expect(statSync(journal.path).mode & 0o777).toBe(0o600);
     expect(journal.currentState()).toBe("pending");
     expect(journal.byteCount()).toBe(0);
     journal.close();

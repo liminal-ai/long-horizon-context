@@ -34,7 +34,7 @@ normalizes volatile/sensitive fields (uuids, session id, timestamps, cwd, git br
 ids, attachment bodies) to deterministic, non-sensitive values; the record SHAPES and the
 top-level/content/usage censuses below are the real 2.1.233 shapes.
 
-- `sha256(claude-2.1.233-tool-call-sequence.jsonl)` = `22bc540269bcb6555e80565c662bed3f6c2bc263198b403e3dabfe42adf42b95`
+- LF-normalized `sha256(claude-2.1.233-tool-call-sequence.jsonl)` = `22bc540269bcb6555e80565c662bed3f6c2bc263198b403e3dabfe42adf42b95`
 - Top-level `type` census: `ai-title, queue-operation, user, attachment, assistant, last-prompt`
   — all recognized (conversational or `META_LINE_TYPES`); **zero unknown drift**.
 - Assistant content-block census: `thinking, tool_use, text` (+ `tool_result` on the user turn).
