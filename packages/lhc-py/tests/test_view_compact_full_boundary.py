@@ -163,22 +163,25 @@ async def _oversized_final_turn(store: TempStore, remove_open_turn: bool) -> Pre
     )
 
 
-async def test_keeps_an_oversized_newest_closed_turn_ahead_of_an_empty_open_turn(
+async def test_evicts_an_oversized_newest_closed_turn_ahead_of_an_empty_open_turn(
     store: TempStore,
 ) -> None:
-    """keeps an oversized newest closed turn ahead of an empty open turn"""
+    """evicts an oversized newest closed turn ahead of an empty open turn"""
     preview = await _oversized_final_turn(store, False)
-    assert preview.compact_point == 3
-    assert preview.first_kept_message_id == "m4"
+    # Token split puts most of t2 on the smooth side. Empty open turn is not
+    # a reason to keep t2 in full; tail starts after t2 close with no
+    # mappable messages.
+    assert preview.compact_point == 6
+    assert preview.first_kept_message_id is None
 
 
-async def test_keeps_an_oversized_newest_closed_turn_when_there_is_no_open_turn(
+async def test_evicts_an_oversized_newest_closed_turn_when_there_is_no_open_turn(
     store: TempStore,
 ) -> None:
-    """keeps an oversized newest closed turn when there is no open turn"""
+    """evicts an oversized newest closed turn when there is no open turn"""
     preview = await _oversized_final_turn(store, True)
-    assert preview.compact_point == 3
-    assert preview.first_kept_message_id == "m4"
+    assert preview.compact_point == 6
+    assert preview.first_kept_message_id is None
 
 
 def test_keeps_a_mid_thread_straddling_turn_when_most_of_its_tokens_are_on_the_full_side() -> None:
@@ -225,11 +228,10 @@ def test_starts_the_tail_at_an_open_turn_even_when_the_budget_crosses_inside_it(
     assert selection.compact_point == 6
 
 
-def test_treats_a_runtime_note_only_post_eviction_tail_as_empty_and_keeps_the_straddling_turn() -> None:
-    """treats a runtime_note-only post-eviction tail as empty and keeps the straddling turn"""
-    # Same mid-thread token layout as compactPointAt(60) (would evict t2 on
-    # token split alone), but the only newer message is a runtime_note — not
-    # mappable, so the emptiness override keeps t2 in full.
+def test_evicts_a_straddling_turn_even_when_the_only_newer_message_is_a_runtime_note() -> None:
+    """evicts a straddling turn even when the only newer message is a runtime_note"""
+    # Same mid-thread token layout as compactPointAt(60). A runtime_note is
+    # not mappable, but emptiness no longer overrides the token split.
     turns = [
         SelectionTurn(turn_id="t1", turn_order=1, status="closed", opened_at=1, closed_at=3),
         SelectionTurn(turn_id="t2", turn_order=2, status="closed", opened_at=4, closed_at=7),
@@ -249,16 +251,16 @@ def test_treats_a_runtime_note_only_post_eviction_tail_as_empty_and_keeps_the_st
             percentages=ViewProfilePercentages(full=100, smooth=0, detailed=0, brief=0),
         ),
     )
-    assert selection.compact_point == 3
+    assert selection.compact_point == 7
 
 
-async def test_runtime_note_only_tail_keeps_straddling_turn_preview_anchor_is_non_null(
+async def test_runtime_note_only_tail_leaves_first_kept_message_id_null_after_token_split_eviction(
     store: TempStore,
 ) -> None:
-    """runtime_note-only tail keeps straddling turn; preview anchor is non-null"""
+    """runtime_note-only tail leaves no PI anchor after token-split eviction"""
     sdk, file_path = await _new_sdk(store)
-    # t1 small, t2 oversized (token-split would want eviction), open turn holds
-    # only a runtime_note — not mappable, so emptiness override keeps t2 in full.
+    # t1 small, t2 oversized (token-split evicts). Open turn holds only a
+    # runtime_note — not mappable, so the preview tail has no PI anchor.
     captured = await sdk.intake_stream.message_events(
         {"filePath": file_path},
         [
@@ -288,8 +290,5 @@ async def test_runtime_note_only_tail_keeps_straddling_turn_preview_anchor_is_no
         )
     )
 
-    # Override keeps t2 in full (compact point at t1 close); anchor is t2's
-    # first mappable message — never null solely because of a runtime_note tail.
-    assert preview.compact_point == 3
-    assert preview.first_kept_message_id == "m4"
-    assert preview.first_kept_message_id is not None
+    assert preview.compact_point == 6
+    assert preview.first_kept_message_id is None
