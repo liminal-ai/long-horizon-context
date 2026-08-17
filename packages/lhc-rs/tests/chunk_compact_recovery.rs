@@ -280,7 +280,7 @@ async fn compacts_not_ready_chunk_summaries_through_stored_member_concat_with_ze
         band: Band::Detailed,
         subject_id: "c1".into(),
         derivation_type: CompactWarningDerivationType::ChunkSummaryDetailed,
-        reason: "failed_floor".into(),
+        reason: "failed_floor: timeout: old summary failed".into(),
     }));
     let context_read = compact_sdk
         .thread_view
@@ -322,8 +322,91 @@ async fn compacts_not_ready_chunk_summaries_through_stored_member_concat_with_ze
         return;
     };
     assert_eq!(value[0].level, lhc::shared_tech::logging::LogLevel::Warning);
-    assert_eq!(value[0].reason.as_deref(), Some("failed_floor"));
+    assert_eq!(
+        value[0].reason.as_deref(),
+        Some("failed_floor: timeout: old summary failed")
+    );
     assert_eq!(value[0].floor_used.as_deref(), Some("stored_member_concat"));
+}
+
+#[tokio::test]
+async fn compacts_claim_expired_chunk_summary_detailed_through_degraded_fallback() {
+    let store = temp_store();
+    let sdk = sdk_for(
+        create_inference_callbacks_double().to_callbacks(),
+        SdkForOverrides,
+    );
+    let file_path = new_thread(&store).await;
+    seed_four_closed_turns(&sdk, &file_path).await;
+    set_chunk_summary_state(
+        &file_path,
+        "c1",
+        "chunk_summary_detailed",
+        DerivationState::Failed,
+        None,
+        Some("claim_expired"),
+    );
+    set_chunk_summary_state(
+        &file_path,
+        "c1",
+        "chunk_summary_brief",
+        DerivationState::Blocked,
+        None,
+        Some("source_damaged: chunk c1 chunk_summary_detailed is failed: claim_expired"),
+    );
+    delete_work_for(&file_path, "chunk_summary_detailed", "c1");
+    delete_work_for(&file_path, "chunk_summary_brief", "c1");
+
+    let compacted = sdk
+        .thread_view
+        .compact(
+            ThreadRef::file_path(&file_path),
+            CompactOpts {
+                profile: None,
+                params: Some(compact_params()),
+                signal: None,
+                compact_point_upper_bound: None,
+            },
+        )
+        .await;
+
+    assert!(compacted.is_ok());
+    let OpResult::Ok { value } = compacted else {
+        return;
+    };
+    let warnings = value.warnings.as_ref().expect("warnings");
+    assert!(warnings.contains(&CompactWarning {
+        band: Band::Detailed,
+        subject_id: "c1".into(),
+        derivation_type: CompactWarningDerivationType::ChunkSummaryDetailed,
+        reason: "failed_floor: claim_expired".into(),
+    }));
+    assert!(value.degraded.iter().any(|entry| {
+        entry.band == Band::Detailed
+            && entry.subject_id == "c1"
+            && entry.used_derivation == "stored_member_concat"
+    }));
+    let context_read = sdk
+        .thread_view
+        .get_llm_request_context(ThreadRef::file_path(&file_path))
+        .await;
+    assert!(context_read.is_ok());
+    let OpResult::Ok { value: context } = context_read else {
+        return;
+    };
+    let detailed = context
+        .messages
+        .iter()
+        .find(|message| {
+            message
+                .content
+                .iter()
+                .any(|part| part.text.starts_with("[context · detailed]"))
+        })
+        .expect("detailed context message present");
+    let detailed_text: String = detailed.content.iter().map(|p| p.text.as_str()).collect();
+    assert!(detailed_text.contains("[degraded: detailed-from-stored-members]"));
+    assert!(detailed_text.contains("prompt 1\nanswer 1"));
 }
 
 #[tokio::test]

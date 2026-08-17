@@ -262,7 +262,7 @@ async def test_compacts_not_ready_chunk_summaries_through_stored_member_concat_w
             band="detailed",
             subject_id="c1",
             derivation_type="chunk_summary_detailed",
-            reason="failed_floor",
+            reason="failed_floor: timeout: old summary failed",
         )
         in compacted.value.warnings
     )
@@ -294,8 +294,77 @@ async def test_compacts_not_ready_chunk_summaries_through_stored_member_concat_w
     if not logs.ok:
         return
     assert logs.value[0].level == "warning"
-    assert logs.value[0].reason == "failed_floor"
+    assert logs.value[0].reason == "failed_floor: timeout: old summary failed"
     assert logs.value[0].floor_used == "stored_member_concat"
+
+
+async def test_compacts_claim_expired_chunk_summary_detailed_through_degraded_fallback(
+    store: TempStore,
+) -> None:
+    sdk = _sdk_for(create_inference_callbacks_double())
+    file_path = await _new_thread(store)
+    await _seed_four_closed_turns(sdk, file_path)
+    _set_chunk_summary_state(
+        file_path,
+        "c1",
+        "chunk_summary_detailed",
+        "failed",
+        {"reason": "claim_expired"},
+    )
+    _set_chunk_summary_state(
+        file_path,
+        "c1",
+        "chunk_summary_brief",
+        "blocked",
+        {
+            "reason": "source_damaged: chunk c1 chunk_summary_detailed is failed: claim_expired"
+        },
+    )
+    _delete_work_for(file_path, "chunk_summary_detailed", "c1")
+    _delete_work_for(file_path, "chunk_summary_brief", "c1")
+
+    compacted = await sdk.thread_view.compact(
+        {"filePath": file_path},
+        CompactOpts(params=_compact_params()),
+    )
+
+    assert compacted.ok is True
+    if not compacted.ok:
+        return
+    assert compacted.value.warnings is not None
+    assert (
+        CompactWarning(
+            band="detailed",
+            subject_id="c1",
+            derivation_type="chunk_summary_detailed",
+            reason="failed_floor: claim_expired",
+        )
+        in compacted.value.warnings
+    )
+    assert any(
+        entry.band == "detailed"
+        and entry.subject_id == "c1"
+        and entry.used_derivation == "stored_member_concat"
+        for entry in compacted.value.degraded
+    )
+    context_read = await sdk.thread_view.get_llm_request_context({"filePath": file_path})
+    assert context_read.ok is True
+    if not context_read.ok:
+        return
+    detailed_msg = next(
+        (
+            message
+            for message in context_read.value.messages
+            if any(part.text.startswith("[context · detailed]") for part in message.content)
+        ),
+        None,
+    )
+    detailed_text = (
+        "".join(part.text for part in detailed_msg.content) if detailed_msg is not None else None
+    )
+    assert detailed_text is not None
+    assert "[degraded: detailed-from-stored-members]" in detailed_text
+    assert "prompt 1\nanswer 1" in detailed_text
 
 
 async def test_halts_compact_before_fallback_assembly_when_stop_is_requested(

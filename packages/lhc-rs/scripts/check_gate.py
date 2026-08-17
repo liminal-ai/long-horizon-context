@@ -924,11 +924,11 @@ def classify() -> int:
         # Explicit reconciled target — do not replace the transitional list
         # with a broad/prefix wildcard.
         # Prior Phase-2 close: 584. Compact-continuation stack through LIM-63
-        # (contract + live runtime + stored attempt-identity inspection) is
-        # 728 (584 + 140). Keep this exact-count ledger in lockstep with
-        # cargo --features test-util.
+        # plus LIM-76 selector/continuation work is 728. LIM-77 adds one
+        # claim_expired fallback compact test → 729. Keep this exact-count
+        # ledger in lockstep with cargo --features test-util.
         if (
-            len(buckets["passed"]) != 728
+            len(buckets["passed"]) != 729
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -936,7 +936,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=728 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=729 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")

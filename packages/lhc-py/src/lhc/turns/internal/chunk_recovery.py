@@ -158,22 +158,31 @@ def compact_chunk_material_from_stored_members(
     row = db.prepare(_SQL_CHUNK_DERIVATION).get(chunk_id, derivation_type)
     if row is not None and str(row["state"]) == "ready" and row["content"] is not None:
         return CompactChunkReady(content=str(row["content"]))
-    if row is not None and str(row["state"]) == "blocked":
-        reason = row["reason"]
-        return CompactChunkBlocked(
-            reason=(
-                str(reason)
-                if reason is not None
-                else f"{derivation_type} for chunk {chunk_id} is blocked"
-            )
-        )
+    # Optional summaries never fail closed from derivation state. Canonical
+    # member damage still returns Blocked from stored-member concat.
     fallback = _stored_member_concat(db, chunk_id)
     if not isinstance(fallback, CompactChunkConcat):
         return fallback
+    return CompactChunkConcat(
+        content=fallback.content,
+        reason=_compact_fallback_reason(row, derivation_type, chunk_id),
+    )
+
+
+def _compact_fallback_reason(row: object | None, derivation_type: str, chunk_id: str) -> str:
     if row is None:
-        reason = "missing_derivation"
-    elif str(row["state"]) == "failed":
-        reason = "failed_floor"
-    else:
-        reason = "not_ready"
-    return CompactChunkConcat(content=fallback.content, reason=reason)
+        return "missing_derivation"
+    mapping = row  # sqlite row mapping
+    state = str(mapping["state"])  # type: ignore[index]
+    original = mapping["reason"]  # type: ignore[index]
+    if state == "failed":
+        return f"failed_floor: {original}" if original is not None else "failed_floor"
+    if state == "blocked":
+        if original is None:
+            return f"{derivation_type} for chunk {chunk_id} is blocked"
+        text = str(original)
+        marker = "is failed: "
+        if marker in text:
+            return f"failed_floor: {text.rsplit(marker, 1)[1]}"
+        return text
+    return "not_ready"

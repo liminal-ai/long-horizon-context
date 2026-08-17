@@ -195,7 +195,7 @@ describe("Story 4: chunk derivation and compact recovery", () => {
       band: "detailed",
       subjectId: "c1",
       derivationType: "chunk_summary_detailed",
-      reason: "failed_floor",
+      reason: "failed_floor: timeout: old summary failed",
     });
     const contextRead = await compactSdk.threadView.getLlmRequestContext({ filePath });
     expect(contextRead.ok).toBe(true);
@@ -216,9 +216,57 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     if (!logs.ok) return;
     expect(logs.value[0]).toMatchObject({
       level: "warning",
-      reason: "failed_floor",
+      reason: "failed_floor: timeout: old summary failed",
       floorUsed: "stored_member_concat",
     });
+  });
+
+  it("compacts a claim_expired chunk_summary_detailed through degraded fallback, not source_damaged", async () => {
+    const sdk = sdkFor(createInferenceCallbacksDouble());
+    const filePath = await newThread();
+    await seedFourClosedTurns(sdk, filePath);
+    setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "failed", {
+      reason: "claim_expired",
+    });
+    setChunkSummaryState(filePath, "c1", "chunk_summary_brief", "blocked", {
+      reason: "source_damaged: chunk c1 chunk_summary_detailed is failed: claim_expired",
+    });
+    deleteWorkFor(filePath, "chunk_summary_detailed", "c1");
+    deleteWorkFor(filePath, "chunk_summary_brief", "c1");
+
+    const compacted = await sdk.threadView.compact(
+      { filePath },
+      {
+        params: {
+          lowerBound: 120,
+          percentages: { full: 10, smooth: 10, detailed: 70, brief: 10 },
+        },
+      },
+    );
+
+    expect(compacted.ok).toBe(true);
+    if (!compacted.ok) return;
+    expect(compacted.error).toBeUndefined();
+    expect(compacted.value.warnings).toContainEqual({
+      band: "detailed",
+      subjectId: "c1",
+      derivationType: "chunk_summary_detailed",
+      reason: "failed_floor: claim_expired",
+    });
+    expect(compacted.value.degraded).toContainEqual({
+      band: "detailed",
+      subjectId: "c1",
+      usedDerivation: "stored_member_concat",
+    });
+    const contextRead = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(contextRead.ok).toBe(true);
+    if (!contextRead.ok) return;
+    const detailed = contextRead.value.messages.find((message) =>
+      message.content.some((part) => part.text.startsWith("[context · detailed]")),
+    );
+    const detailedText = detailed?.content.map((part) => part.text).join("");
+    expect(detailedText).toContain("[degraded: detailed-from-stored-members]");
+    expect(detailedText).toContain("prompt 1\nanswer 1");
   });
 
   it("halts compact before fallback assembly when stop is requested", async () => {

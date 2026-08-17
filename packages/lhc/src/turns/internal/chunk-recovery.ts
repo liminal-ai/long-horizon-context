@@ -103,16 +103,30 @@ export function compactChunkMaterialFromStoredMembers(
   if (row?.state === "ready" && row.content !== null) {
     return { kind: "ready", content: row.content };
   }
-  if (row?.state === "blocked") {
-    return {
-      kind: "blocked",
-      reason: row.reason ?? `${derivationType} for chunk ${chunkId} is blocked`,
-    };
-  }
+  // Optional chunk summaries never fail closed. Unreadable canonical members
+  // still return blocked from storedMemberConcat and compact refuses.
   const fallback = storedMemberConcat(db, chunkId);
   if (fallback.kind !== "concat") return fallback;
   return {
     ...fallback,
-    reason: row === undefined ? "missing_derivation" : row.state === "failed" ? "failed_floor" : "not_ready",
+    reason: compactFallbackReason(row, derivationType, chunkId),
   };
+}
+
+/** Receipt warning.reason: failure class, plus original derivation reason when present. */
+export function compactFallbackReason(
+  row: { state: string; reason: string | null } | undefined,
+  derivationType: string,
+  chunkId: string,
+): string {
+  if (row === undefined) return "missing_derivation";
+  if (row.state === "failed") {
+    return row.reason ? `failed_floor: ${row.reason}` : "failed_floor";
+  }
+  if (row.state === "blocked") {
+    const wrapped = row.reason?.match(/is failed: (.+)$/);
+    if (wrapped?.[1]) return `failed_floor: ${wrapped[1]}`;
+    return row.reason ?? `${derivationType} for chunk ${chunkId} is blocked`;
+  }
+  return "not_ready";
 }
