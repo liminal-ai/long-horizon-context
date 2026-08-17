@@ -108,9 +108,7 @@ describe("buildRolloutLines", () => {
       thinkingRebuildArm: "signed_verbatim",
     });
     expect(lines).toHaveLength(2);
-    expect(lines[0]?.line.message?.content).toEqual([
-      { type: "thinking", thinking: "", signature: "OPAQUE_SIG" },
-    ]);
+    expect(lines[0]?.line.message?.content).toEqual([{ type: "thinking", thinking: "", signature: "OPAQUE_SIG" }]);
   });
 
   it("production omit projection: signed-empty and non-empty thinking omitted; text/tools/parent chain exact", () => {
@@ -442,9 +440,7 @@ describe("writeRebuiltRollout", () => {
     expect(receipt.parentUuid).toBe(lines[2]!.uuid);
     // Slice 5: exactly one concise labeled receipt — no session ids or recovery
     // detail in the durable note.
-    expect(receipt.message?.content).toBe(
-      "[runtime note] [lhc compact:manual] rebuilt LHC view 1.4k (240k target).",
-    );
+    expect(receipt.message?.content).toBe("[runtime note] [lhc compact:manual] rebuilt LHC view 1.4k (240k target).");
 
     // First prompt shown in the sessions index stays the conversation opener, not the receipt.
     const index = await readSessionsIndex(projectDir);
@@ -496,5 +492,58 @@ describe("appendSessionsIndexEntry", () => {
     const index = await readSessionsIndex(projectDir);
     expect(index.entries).toHaveLength(1);
     expect(index.entries[0]?.sessionId).toBe("new");
+  });
+
+  it("is idempotent by session id: a retry refreshes in place, never duplicates (LIM-80 s2)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-index-idem-"));
+    const projectDir = join(root, "proj");
+    mkdirSync(projectDir, { recursive: true });
+    const rolloutPath = join(projectDir, "sess.jsonl");
+    await writeFile(rolloutPath, "line\n");
+
+    const input = {
+      projectDir,
+      sessionId: "sess",
+      sessionFilePath: rolloutPath,
+      firstPrompt: "prompt",
+      messageCount: 1,
+      projectPath: "/work",
+    };
+    await appendSessionsIndexEntry(input);
+    const created = (await readSessionsIndex(projectDir)).entries[0]?.created;
+    await appendSessionsIndexEntry({ ...input, messageCount: 2 });
+    const index = await readSessionsIndex(projectDir);
+    expect(index.entries).toHaveLength(1);
+    expect(index.entries[0]?.messageCount).toBe(2);
+    // created timestamp is preserved across the idempotent refresh.
+    expect(index.entries[0]?.created).toBe(created);
+  });
+
+  it("refuses to repoint an existing session id to a different path (fail closed)", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-index-conflict-"));
+    const projectDir = join(root, "proj");
+    mkdirSync(projectDir, { recursive: true });
+    await writeFile(join(projectDir, "a.jsonl"), "line\n");
+    await writeFile(join(projectDir, "b.jsonl"), "line\n");
+
+    await appendSessionsIndexEntry({
+      projectDir,
+      sessionId: "sess",
+      sessionFilePath: join(projectDir, "a.jsonl"),
+      firstPrompt: "p",
+      messageCount: 1,
+      projectPath: "/work",
+    });
+    await expect(
+      appendSessionsIndexEntry({
+        projectDir,
+        sessionId: "sess",
+        sessionFilePath: join(projectDir, "b.jsonl"),
+        firstPrompt: "p",
+        messageCount: 1,
+        projectPath: "/work",
+      }),
+    ).rejects.toThrow(/refusing to repoint/);
+    expect((await readSessionsIndex(projectDir)).entries).toHaveLength(1);
   });
 });

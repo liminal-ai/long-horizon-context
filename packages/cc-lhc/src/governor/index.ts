@@ -45,10 +45,12 @@ export {
   openGovernorReceiptStore,
 } from "./receipt-store.js";
 export {
+  type CurrentStoredViewObservation,
   GOVERNOR_HANDOFF_OUTCOME_KINDS,
   isRecoveryStage,
   isTerminalHandoffOutcomeKind,
   mergeRecoveryArtifacts,
+  NO_STORED_VIEW_FINGERPRINT,
   type ObservedFact,
   parseRecoveryAttempt,
   planRecovery,
@@ -61,6 +63,7 @@ export {
   type RecoveryPlanInput,
   type RecoveryStage,
   recoveryStageIndex,
+  storedViewFingerprint,
   type TerminalHandoffOutcomeKind,
 } from "./recovery.js";
 export type {

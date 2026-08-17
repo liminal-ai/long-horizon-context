@@ -154,6 +154,17 @@ export async function appendSessionsIndexEntry(input: AppendIndexInput, deps: Ro
 
   const now = new Date().toISOString();
   const firstPrompt = input.firstPrompt.slice(0, 100);
+  // Idempotent by session id: a retry (crash after file fsync, before or
+  // after the index rename) must never append a duplicate or a conflicting
+  // entry. Same session id + same path → refresh in place; same id but a
+  // different path is a correlation error and fails closed.
+  const existingIndex = index.entries.findIndex((entry) => entry.sessionId === input.sessionId);
+  const existing = existingIndex >= 0 ? index.entries[existingIndex] : undefined;
+  if (existing !== undefined && existing.fullPath !== input.sessionFilePath) {
+    throw new Error(
+      `sessions-index.json already lists session ${input.sessionId} at ${existing.fullPath}; refusing to repoint it to ${input.sessionFilePath}`,
+    );
+  }
   const newEntry: SessionsIndexEntry = {
     sessionId: input.sessionId,
     fullPath: input.sessionFilePath,
@@ -161,12 +172,16 @@ export async function appendSessionsIndexEntry(input: AppendIndexInput, deps: Ro
     firstPrompt,
     summary: `LHC rebuild: ${firstPrompt.slice(0, 50)}${firstPrompt.length > 50 ? "..." : ""}`,
     messageCount: input.messageCount,
-    created: now,
+    created: existing?.created ?? now,
     modified: now,
     projectPath: input.projectPath,
     isSidechain: false,
   };
-  index.entries.push(newEntry);
+  if (existing === undefined) {
+    index.entries.push(newEntry);
+  } else {
+    index.entries[existingIndex] = newEntry;
+  }
 
   const serialized = JSON.stringify(index, null, 2);
   JSON.parse(serialized);

@@ -173,7 +173,7 @@ describe("planRecovery", () => {
     }
   });
 
-  it("owned operation_claimed (stale, non-durable preparation) → reprepare_from_scratch", () => {
+  it("owned operation_claimed with no baseline → reprepare_from_scratch", () => {
     const plan = planRecovery({
       receiptId: "r1",
       handoffOutcome: { kind: "scheduled" },
@@ -181,6 +181,65 @@ describe("planRecovery", () => {
       observed: { self: SELF },
     });
     expect(plan.kind).toBe("reprepare_from_scratch");
+  });
+
+  it("operation_claimed baseline vs current stored view: no view / unchanged / changed / same-id-changed / unreadable / unobserved", () => {
+    const withBaseline = (fp: string) =>
+      attemptAt("operation_claimed", { artifacts: { preMutationViewFingerprint: fp } });
+    // No previous view (baseline = sentinel), current still none → nothing landed.
+    expect(
+      planRecovery({
+        receiptId: "r1",
+        handoffOutcome: { kind: "scheduled" },
+        attempt: withBaseline("none"),
+        observed: { self: SELF, currentView: { kind: "none" } },
+      }).kind,
+    ).toBe("reprepare_from_scratch");
+    // No previous view, but a view is now present → compact landed.
+    expect(
+      planRecovery({
+        receiptId: "r1",
+        handoffOutcome: { kind: "scheduled" },
+        attempt: withBaseline("none"),
+        observed: { self: SELF, currentView: { kind: "present", viewId: "v10", fingerprint: "fp-new" } },
+      }).kind,
+    ).toBe("reconcile_installed_view");
+    // Previous view unchanged (same fingerprint) → nothing landed, reprepare legal.
+    expect(
+      planRecovery({
+        receiptId: "r1",
+        handoffOutcome: { kind: "scheduled" },
+        attempt: withBaseline("fp-old"),
+        observed: { self: SELF, currentView: { kind: "present", viewId: "v9", fingerprint: "fp-old" } },
+      }).kind,
+    ).toBe("reprepare_from_scratch");
+    // Changed view even though viewId is REUSED → installed progress, never compact again.
+    expect(
+      planRecovery({
+        receiptId: "r1",
+        handoffOutcome: { kind: "scheduled" },
+        attempt: withBaseline("fp-old"),
+        observed: { self: SELF, currentView: { kind: "present", viewId: "v9", fingerprint: "fp-changed" } },
+      }).kind,
+    ).toBe("reconcile_installed_view");
+    // Unreadable current view → retry, never terminal.
+    const unreadable = planRecovery({
+      receiptId: "r1",
+      handoffOutcome: { kind: "scheduled" },
+      attempt: withBaseline("fp-old"),
+      observed: { self: SELF, currentView: { kind: "unreadable", reason: "db busy" } },
+    });
+    expect(unreadable.kind).toBe("retry_observation");
+    if (unreadable.kind === "retry_observation") expect(unreadable.observation).toBe("current_view");
+    // Baseline recorded but current view not observed → retry (do not guess).
+    expect(
+      planRecovery({
+        receiptId: "r1",
+        handoffOutcome: { kind: "scheduled" },
+        attempt: withBaseline("fp-old"),
+        observed: { self: SELF },
+      }).kind,
+    ).toBe("retry_observation");
   });
 
   it("owned view_installed → reconcile installed view (no duplicate compact); absent view → refuse", () => {
@@ -194,6 +253,35 @@ describe("planRecovery", () => {
       "reconcile_installed_view",
     );
     expect(planRecovery({ ...base, observed: { self: SELF, viewInstalled: "absent" } }).kind).toBe("terminal_refuse");
+  });
+
+  it("view_installed uses exact current-view identity: matching fp reconciles; contradiction refuses; none refuses; unreadable retries", () => {
+    const base = {
+      receiptId: "r1",
+      handoffOutcome: { kind: "scheduled" } as const,
+      attempt: attemptAt("view_installed", { artifacts: { viewId: "v9", installedViewFingerprint: "fp-installed" } }),
+    };
+    expect(
+      planRecovery({
+        ...base,
+        observed: { self: SELF, currentView: { kind: "present", viewId: "v9", fingerprint: "fp-installed" } },
+      }).kind,
+    ).toBe("reconcile_installed_view");
+    // A view present but with a different fingerprint than recorded contradicts the stage.
+    expect(
+      planRecovery({
+        ...base,
+        observed: { self: SELF, currentView: { kind: "present", viewId: "v9", fingerprint: "fp-other" } },
+      }).kind,
+    ).toBe("terminal_refuse");
+    // No stored view at all under view_installed is a contradiction.
+    expect(planRecovery({ ...base, observed: { self: SELF, currentView: { kind: "none" } } }).kind).toBe(
+      "terminal_refuse",
+    );
+    // Transient read failure is a retry, not terminal.
+    expect(
+      planRecovery({ ...base, observed: { self: SELF, currentView: { kind: "unreadable", reason: "io" } } }).kind,
+    ).toBe("retry_observation");
   });
 
   it("owned rollout_written → verify/reuse rollout; missing rollout is not terminal", () => {

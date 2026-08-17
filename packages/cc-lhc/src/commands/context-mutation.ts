@@ -10,11 +10,13 @@
  * the replacement generation is proven ready-after-replay.
  */
 
-import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
+import { readFile } from "node:fs/promises";
 
+import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
+import { NO_STORED_VIEW_FINGERPRINT } from "../governor/recovery.js";
 import { CAPTURE_NOT_READY_REFUSAL } from "../intake/session.js";
 import { statRolloutFile } from "../rollout/stat-file.js";
-import { writeRebuiltRollout, type WriteRebuiltRolloutResult } from "../rollout/write-rebuilt.js";
+import { type WriteRebuiltRolloutResult, writeRebuiltRollout } from "../rollout/write-rebuilt.js";
 import {
   CAPTURE_DEGRADED_REFUSAL,
   CAPTURE_PARTIAL_VIEW_MUTATION,
@@ -22,6 +24,12 @@ import {
   TURN_OPEN_REFUSAL,
 } from "./dispatch.js";
 import { threadIdFromRef } from "./rebuild-receipt.js";
+import {
+  inspectRolloutBytes,
+  observeCurrentStoredView,
+  type RecoveryPort,
+  type RolloutVerificationArtifacts,
+} from "./recovery-ops.js";
 
 export const INPUT_ARRIVED_REFUSAL = "input arrived — context mutation cancelled before any change";
 export const INPUT_ARRIVED_PARTIAL =
@@ -68,10 +76,7 @@ export function formatTokensShort(tokens: number): string {
  * context" is Claude host context (includes system/tool overhead); "LHC view"
  * is the SDK-served size — the receipt never implies they are the same measure.
  */
-export function formatDurableReceipt(
-  operation: ContextMutationOperation,
-  metrics: ContextMutationMetrics,
-): string {
+export function formatDurableReceipt(operation: ContextMutationOperation, metrics: ContextMutationMetrics): string {
   const label = operation === "prune" ? "prune" : "compact";
   const parts: string[] = [];
   if (metrics.triggerContextTokens !== undefined) {
@@ -83,8 +88,7 @@ export function formatDurableReceipt(
     );
   }
   if (metrics.viewTokens !== undefined) {
-    const target =
-      metrics.targetTokens !== undefined ? ` (${formatTokensShort(metrics.targetTokens)} target)` : "";
+    const target = metrics.targetTokens !== undefined ? ` (${formatTokensShort(metrics.targetTokens)} target)` : "";
     parts.push(`rebuilt LHC view ${formatTokensShort(metrics.viewTokens)}${target}`);
   }
   return `[lhc ${label}:${metrics.origin}] ${parts.join("; ")}.`;
@@ -186,9 +190,45 @@ export function mutationFence(
  * caller (wrapper) owns the handoff; on partial the view mutated but no
  * rebuild/handoff happened; on refused nothing changed.
  */
+function recoveryDetail(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+/**
+ * Whole-file structural verification of a freshly written rebuilt rollout,
+ * used only on the recovery-port path. Returns the verification identities or
+ * null when the file could not be read/verified (recordRolloutWritten is then
+ * skipped and restart recovers via the reserved id).
+ */
+async function verifyWrittenRollout(
+  rebuilt: WriteRebuiltRolloutResult,
+  reservedSessionId: string,
+  durableReceipt: string,
+): Promise<RolloutVerificationArtifacts | null> {
+  let buf: Buffer;
+  try {
+    buf = await readFile(rebuilt.rolloutPath);
+  } catch {
+    return null;
+  }
+  const inspected = inspectRolloutBytes(buf, {
+    reservedSessionId,
+    rebuiltRolloutPath: rebuilt.rolloutPath,
+    durableReceipt,
+  });
+  return inspected.kind === "ok" ? inspected.verification : null;
+}
+
 export async function runContextMutation(
   plan: ContextMutationPlan,
   runtime: LhcCommandRuntime,
+  /**
+   * Optional recovery boundary (LIM-80). When supplied (auto-compact path), the
+   * durable attempt records baseline → view_installed → reservation →
+   * rollout_written around the compact. Absent for ordinary manual compact/prune
+   * — that path is byte-for-byte unchanged (no extra SDK calls, no port writes).
+   */
+  recoveryPort?: RecoveryPort,
 ): Promise<ContextMutationOutcome> {
   const blocked = notReadyOutcome(runtime);
   if (blocked !== null) return blocked;
@@ -211,8 +251,7 @@ export async function runContextMutation(
 
   const partialOrRefused = (fenceMessage: string): ContextMutationOutcome => {
     if (!viewMutated) return { kind: "refused", messages: [...lines, fenceMessage] };
-    const partialNote =
-      fenceMessage === INPUT_ARRIVED_REFUSAL ? INPUT_ARRIVED_PARTIAL : CAPTURE_PARTIAL_VIEW_MUTATION;
+    const partialNote = fenceMessage === INPUT_ARRIVED_REFUSAL ? INPUT_ARRIVED_PARTIAL : CAPTURE_PARTIAL_VIEW_MUTATION;
     return { kind: "partial", messages: [...lines, partialNote] };
   };
 
@@ -260,6 +299,18 @@ export async function runContextMutation(
       profile: plan.profile,
       params: { lowerBound: plan.lowerBoundTokens },
     };
+    if (recoveryPort !== undefined) {
+      // Baseline BEFORE compact: a restart compares it against the current
+      // stored view to tell "compact landed" from "nothing landed". If the
+      // baseline cannot be read we refuse BEFORE any mutation — never skip the
+      // baseline and continue (that would leave a compact with no way to tell
+      // it apart from "nothing landed" on restart). Nothing has changed here.
+      const baseline = await observeCurrentStoredView(sdk, threadRef);
+      if (baseline.kind === "unreadable") {
+        return { kind: "refused", messages: [`recovery baseline unreadable (${baseline.reason}); no compact started`] };
+      }
+      recoveryPort.recordBaseline(baseline.kind === "none" ? NO_STORED_VIEW_FINGERPRINT : baseline.fingerprint);
+    }
     const preview = await sdk.threadView.previewCompact(threadRef, compactOpts);
     const afterPreview = fence();
     if (afterPreview !== null) return partialOrRefused(afterPreview);
@@ -275,6 +326,36 @@ export async function runContextMutation(
     }
 
     const compactResult = await sdk.threadView.compact(threadRef, compactOpts);
+    if (recoveryPort !== undefined && compactResult.ok) {
+      // The SDK compact installed a view: it is mutated regardless of what
+      // follows. Record view_installed BEFORE the post-compact fence, requiring
+      // a fresh present observation whose viewId equals the compact receipt.
+      // Any unreadable/none/mismatch, or a recordViewInstalled failure, is a
+      // truthful partial with no rollout write/handoff — never a throw. The
+      // durable baseline lets a restart recover the install.
+      viewMutated = true;
+      const installed = await observeCurrentStoredView(sdk, threadRef);
+      if (installed.kind !== "present" || installed.viewId !== compactResult.value.viewId) {
+        return {
+          kind: "partial",
+          messages: [
+            ...lines,
+            "LHC view installed but view_installed not recorded (view unreadable/none/id mismatch) — restart recovers via baseline",
+          ],
+        };
+      }
+      try {
+        recoveryPort.recordViewInstalled({ viewId: installed.viewId, installedViewFingerprint: installed.fingerprint });
+      } catch (cause) {
+        return {
+          kind: "partial",
+          messages: [
+            ...lines,
+            `LHC view installed but view_installed record failed (${recoveryDetail(cause)}) — restart recovers via baseline`,
+          ],
+        };
+      }
+    }
     const afterCompact = fence();
     if (afterCompact !== null) {
       viewMutated = true;
@@ -305,12 +386,50 @@ export async function runContextMutation(
     if (afterStat !== null) return partialOrRefused(afterStat);
 
     const durableReceipt = formatDurableReceipt(plan.operation, metrics);
+    // Reserve + persist the rebuilt session id/path (with the receipt) BEFORE
+    // the write, so a crash during the write is discoverable by that id.
+    const reserved = recoveryPort?.reserveRebuiltSession(durableReceipt);
     const rebuilt = await writeRebuiltRollout({
       view: view.value,
       cwd: runtime.cwd,
+      ...(reserved === undefined ? {} : { newSessionId: reserved.sessionId }),
       ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
       receipt: { text: durableReceipt },
     });
+    if (recoveryPort !== undefined) {
+      // (3) The written path must equal the durable reservation.
+      if (reserved !== undefined && rebuilt.rolloutPath !== reserved.rolloutPath) {
+        return {
+          kind: "partial",
+          messages: [
+            ...lines,
+            `rebuilt rollout path ${rebuilt.rolloutPath} does not equal reserved ${reserved.rolloutPath} — no handoff`,
+          ],
+        };
+      }
+      // (4) rollout_written is mandatory on the recovery path: only a file that
+      // passes whole-file structural verification AND a successful record may
+      // reach kind=rebuilt. Anything else is a truthful partial with no handoff.
+      const verification = await verifyWrittenRollout(
+        rebuilt,
+        reserved?.sessionId ?? rebuilt.sessionId,
+        durableReceipt,
+      );
+      if (verification === null) {
+        return {
+          kind: "partial",
+          messages: [...lines, "rebuilt rollout could not be read/structurally verified — no handoff"],
+        };
+      }
+      try {
+        recoveryPort.recordRolloutWritten(verification);
+      } catch (cause) {
+        return {
+          kind: "partial",
+          messages: [...lines, `rollout_written record failed (${recoveryDetail(cause)}) — no handoff`],
+        };
+      }
+    }
     const afterRebuild = fence();
     if (afterRebuild !== null) {
       return {

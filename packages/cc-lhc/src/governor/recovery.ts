@@ -39,6 +39,10 @@
  *   terminal              a terminal handoffOutcome is attached
  */
 
+import { createHash } from "node:crypto";
+
+import type { StoredView } from "lhc";
+
 import type { ProcessIdentity, ProcessLivenessResult } from "../runtime/process-identity.js";
 import { identitiesEqual, parseStoredProcessIdentity } from "../runtime/process-identity.js";
 import type { GovernorHandoffOutcome } from "./types.js";
@@ -97,12 +101,58 @@ export function isRecoveryStage(value: unknown): value is RecoveryStage {
 export interface RecoveryArtifacts {
   threadId?: string;
   oldSessionId?: string;
+  /**
+   * Fingerprint of the LHC stored view as it was BEFORE this attempt mutated
+   * anything (`NO_STORED_VIEW_FINGERPRINT` when the thread had no view).
+   * Recorded at claim/baseline so a restart can tell "compact landed but the
+   * stage write did not" from "nothing landed" — even when viewId is reused.
+   */
+  preMutationViewFingerprint?: string;
   /** LHC view identity from the compact receipt (e.g. `v123`); absent for prune-only. */
   viewId?: string;
+  /** Fingerprint of the stored view this attempt installed (recorded with view_installed). */
+  installedViewFingerprint?: string;
   rebuiltSessionId?: string;
   rebuiltRolloutPath?: string;
+  /** Durable receipt persisted at reserve time; the rebuilt rollout's trailing runtime-note must equal it. */
+  durableReceipt?: string;
+  /** sha256 of the WHOLE rebuilt rollout file (prefix + trailing receipt). */
+  rolloutFullSha256?: string;
+  /** Verified prefix digest (sha256 hex) of the rebuilt rollout's served projection lines. */
+  rolloutPrefixSha256?: string;
+  /** Verified prefix line count / byte length, whole-file line count / byte length. */
+  rolloutPrefixLineCount?: number;
+  rolloutPrefixByteLength?: number;
+  rolloutLineCount?: number;
+  rolloutByteLength?: number;
   /** Replacement child identity once spawned (liveness-verifiable). */
   replacementChild?: ProcessIdentity;
+}
+
+/** Sentinel fingerprint for "the thread had no stored view". */
+export const NO_STORED_VIEW_FINGERPRINT = "none";
+
+/**
+ * Deterministic identity of an installed LHC view. viewId alone
+ * (`v<maxEventOrder>`) can repeat across compacts, so the fingerprint also
+ * covers createdAt, arrangement, bands, and source state as `describe()`
+ * returns them. Pure; no I/O.
+ */
+export function storedViewFingerprint(view: StoredView | null): string {
+  if (view === null) return NO_STORED_VIEW_FINGERPRINT;
+  const material = {
+    viewId: view.viewId,
+    createdAt: view.createdAt,
+    compactPoint: view.compactPoint,
+    coveredFrom: view.coveredFrom,
+    profileName: view.profileName,
+    config: view.config,
+    arrangement: view.arrangement,
+    gaps: view.gaps,
+    sourceState: view.sourceState,
+    bands: view.bands,
+  };
+  return createHash("sha256").update(JSON.stringify(material)).digest("hex");
 }
 
 /**
@@ -130,7 +180,24 @@ export interface RecoveryAttempt {
 /** Bump this if the persisted attempt payload shape changes incompatibly. */
 export const RECOVERY_ATTEMPT_PAYLOAD_VERSION = 1;
 
-const ARTIFACT_STRING_KEYS = ["threadId", "oldSessionId", "viewId", "rebuiltSessionId", "rebuiltRolloutPath"] as const;
+const ARTIFACT_STRING_KEYS = [
+  "threadId",
+  "oldSessionId",
+  "preMutationViewFingerprint",
+  "viewId",
+  "installedViewFingerprint",
+  "rebuiltSessionId",
+  "rebuiltRolloutPath",
+  "durableReceipt",
+  "rolloutFullSha256",
+  "rolloutPrefixSha256",
+] as const;
+const ARTIFACT_NUMBER_KEYS = [
+  "rolloutPrefixLineCount",
+  "rolloutPrefixByteLength",
+  "rolloutLineCount",
+  "rolloutByteLength",
+] as const;
 
 /**
  * Merge new artifact facts into stored ones. Facts are append-only identity:
@@ -144,6 +211,13 @@ export function mergeRecoveryArtifacts(
 ): { ok: true; artifacts: RecoveryArtifacts } | { ok: false; conflictKey: keyof RecoveryArtifacts } {
   const merged: RecoveryArtifacts = { ...stored };
   for (const key of ARTIFACT_STRING_KEYS) {
+    const next = incoming[key];
+    if (next === undefined) continue;
+    const prev = stored[key];
+    if (prev !== undefined && prev !== next) return { ok: false, conflictKey: key };
+    merged[key] = next;
+  }
+  for (const key of ARTIFACT_NUMBER_KEYS) {
     const next = incoming[key];
     if (next === undefined) continue;
     const prev = stored[key];
@@ -168,6 +242,12 @@ export function parseRecoveryArtifacts(raw: unknown): RecoveryArtifacts | null {
     const v = o[key];
     if (v === undefined) continue;
     if (typeof v !== "string" || v === "") return null;
+    out[key] = v;
+  }
+  for (const key of ARTIFACT_NUMBER_KEYS) {
+    const v = o[key];
+    if (v === undefined) continue;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0) return null;
     out[key] = v;
   }
   if (o.replacementChild !== undefined) {
@@ -225,6 +305,15 @@ export function parseRecoveryAttempt(raw: unknown): RecoveryAttempt | null {
 export type ObservedFact = "present" | "absent" | "unknown";
 
 /**
+ * Current LHC stored-view identity as read NOW via `threadView.describe`.
+ * `unreadable` is a transient read failure — never a contradiction.
+ */
+export type CurrentStoredViewObservation =
+  | { kind: "present"; viewId: string; fingerprint: string }
+  | { kind: "none" }
+  | { kind: "unreadable"; reason: string };
+
+/**
  * Caller-observed live facts. All optional: an unobserved fact is `unknown`.
  * The planner performs no I/O; whoever calls it probes and reports.
  */
@@ -233,7 +322,13 @@ export interface RecoveryObservation {
   self: ProcessIdentity;
   /** Liveness of `attempt.owner` as probed now (required to decide wait vs reclaim). */
   ownerLiveness?: ProcessLivenessResult;
-  /** LHC served view for `artifacts.viewId` (or any installed view when unset). */
+  /**
+   * Exact current stored view (preferred). Compared against
+   * `artifacts.preMutationViewFingerprint` at operation_claimed and against
+   * `artifacts.installedViewFingerprint` at view_installed.
+   */
+  currentView?: CurrentStoredViewObservation;
+  /** Coarse fallback when only presence was checked; ignored when `currentView` is set. */
   viewInstalled?: ObservedFact;
   /** Rebuilt rollout file for `artifacts.rebuiltSessionId` present and readable. */
   rolloutPresent?: ObservedFact;
@@ -271,6 +366,11 @@ export type RecoveryAction =
   | { kind: "wait_for_owner"; reason: string; ownerLiveness: "ok" | "indeterminate" | "unprobed" }
   /** Foreign owner is kernel-proven dead: reclaim (CAS on attemptId), then follow `resume`. */
   | { kind: "reclaim_dead_owner"; reason: string; resume: RecoveryAction }
+  /**
+   * A required current observation was not supplied or could not be read
+   * (transient): do nothing now, re-observe and re-plan. Never terminal.
+   */
+  | { kind: "retry_observation"; reason: string; observation: "current_view" }
   /** Owned, claimed, nothing durable landed: re-run preview+mutation from scratch. */
   | { kind: "reprepare_from_scratch"; reason: string }
   /** Owned, LHC view already installed: do NOT compact again; materialize a rollout from it. */
@@ -349,13 +449,72 @@ function planOwnedStage(attempt: RecoveryAttempt, observed: RecoveryObservation)
       // An attempt row never sits at receipt_scheduled (claim moves it to
       // operation_claimed). Treat as claimed-but-idle rather than corrupt.
       return { kind: "reprepare_from_scratch", reason: "attempt at receipt_scheduled: nothing durable landed" };
-    case "operation_claimed":
+    case "operation_claimed": {
+      // Cross-database gap: the SDK compact commits in the LHC thread file,
+      // the stage advance in cc-lhc.sqlite. If a baseline fingerprint was
+      // recorded, the CURRENT stored view decides whether compact landed.
+      const baseline = a.preMutationViewFingerprint;
+      if (baseline === undefined) {
+        return {
+          kind: "reprepare_from_scratch",
+          reason:
+            "claimed with no pre-mutation view baseline recorded; preview is in-memory only, so re-run prune/compact",
+        };
+      }
+      const cur = observed.currentView;
+      if (cur === undefined) {
+        return {
+          kind: "retry_observation",
+          reason:
+            "claimed with a pre-mutation view baseline; current stored view not observed — read it before deciding",
+          observation: "current_view",
+        };
+      }
+      if (cur.kind === "unreadable") {
+        return {
+          kind: "retry_observation",
+          reason: `current stored view unreadable (${cur.reason}); retry, not terminal`,
+          observation: "current_view",
+        };
+      }
+      const currentFingerprint = cur.kind === "none" ? NO_STORED_VIEW_FINGERPRINT : cur.fingerprint;
+      if (currentFingerprint === baseline) {
+        return {
+          kind: "reprepare_from_scratch",
+          reason: "current stored view equals the pre-mutation baseline; nothing landed — re-run prune/compact",
+        };
+      }
       return {
-        kind: "reprepare_from_scratch",
-        reason: "claimed before any durable change; preview is in-memory only, so re-run prune/compact",
+        kind: "reconcile_installed_view",
+        reason: `current stored view differs from the pre-mutation baseline${
+          cur.kind === "present" ? ` (${cur.viewId})` : ""
+        }: compact landed before the stage advance — never compact again`,
       };
-    case "view_installed":
-      if (observed.viewInstalled === "absent") {
+    }
+    case "view_installed": {
+      const cur = observed.currentView;
+      if (cur !== undefined) {
+        if (cur.kind === "unreadable") {
+          return {
+            kind: "retry_observation",
+            reason: `installed view unreadable (${cur.reason}); retry, not terminal`,
+            observation: "current_view",
+          };
+        }
+        const expected = a.installedViewFingerprint;
+        if (cur.kind === "none") {
+          return {
+            kind: "terminal_refuse",
+            reason: `stage view_installed but LHC has no stored view${a.viewId ? ` (expected ${a.viewId})` : ""}`,
+          };
+        }
+        if (expected !== undefined && cur.fingerprint !== expected) {
+          return {
+            kind: "terminal_refuse",
+            reason: `stage view_installed but current stored view ${cur.viewId} contradicts the recorded installed identity`,
+          };
+        }
+      } else if (observed.viewInstalled === "absent") {
         return {
           kind: "terminal_refuse",
           reason: `stage view_installed but LHC reports no installed view${a.viewId ? ` (${a.viewId})` : ""}`,
@@ -365,6 +524,7 @@ function planOwnedStage(attempt: RecoveryAttempt, observed: RecoveryObservation)
         kind: "reconcile_installed_view",
         reason: "LHC view installed; no second compact — write the rebuilt rollout from it",
       };
+    }
     case "rollout_written":
       if (a.rebuiltSessionId === undefined) {
         return { kind: "terminal_refuse", reason: "stage rollout_written without rebuiltSessionId" };
