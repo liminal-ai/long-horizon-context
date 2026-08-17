@@ -307,17 +307,21 @@ describe("planRecovery", () => {
     ).toBe("terminal_refuse");
   });
 
-  it("owned old_child_exited → continue replacement; a live old child contradicts and refuses", () => {
+  it("owned old_child_exited → continue/reconcile (a live old child is repairable, never terminal-refuse)", () => {
     const base = {
       receiptId: "r1",
       handoffOutcome: { kind: "scheduled" } as const,
       attempt: attemptAt("old_child_exited"),
     };
+    // LIM-80 3B2: every late-stage state routes to the restart executor, which
+    // re-observes and reconciles. A live old child is waited on, never refused.
     expect(planRecovery({ ...base, observed: { self: SELF } }).kind).toBe("continue_replacement");
     expect(planRecovery({ ...base, observed: { self: SELF, oldChildLiveness: DEAD } }).kind).toBe(
       "continue_replacement",
     );
-    expect(planRecovery({ ...base, observed: { self: SELF, oldChildLiveness: LIVE } }).kind).toBe("terminal_refuse");
+    expect(planRecovery({ ...base, observed: { self: SELF, oldChildLiveness: LIVE } }).kind).toBe(
+      "continue_replacement",
+    );
   });
 
   it("late stages require current proof: unprobed/indeterminate replacement → verify; dead → respawn; live → bookkeeping", () => {

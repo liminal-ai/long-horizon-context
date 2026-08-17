@@ -139,8 +139,58 @@ export interface RecoveryArtifacts {
    */
   inputJournalPath?: string;
   inputJournalId?: string;
-  /** Replacement child identity once spawned (liveness-verifiable). */
+  /** Replacement child identity from the original live handoff (immutable record). */
   replacementChild?: ProcessIdentity;
+  /**
+   * Append-only recovery-generation history of re-established replacements
+   * (LIM-80 Slice 3B2). The ACTIVE replacement is the LAST entry's `replacement`.
+   * Each generation is one wrapper-owned re-establishment of a lost replacement:
+   *
+   *  - `adopt`: a restart landed on the rebuilt session with a fresh wrapper child
+   *    already live; that exact child is adopted. No termination, no new journal.
+   *  - `respawn`: a restart landed on the OLD session; a controlled replacement
+   *    terminated that old child (`oldChild`) and spawned a rebuilt child, buffering
+   *    fresh input into this generation's OWN durable journal (`journalPath`/`Id`).
+   *
+   * A generation is appended ONLY after the prior active identity is kernel-proven
+   * absent and the new child is the exact rebuilt session + same thread + capture
+   * ready/live. Merge permits ONLY exact-prefix extension (append), so the immutable
+   * `replacementChild` and every earlier generation are never rewritten. Repeated
+   * crashes accumulate more generations.
+   */
+  replacementGenerations?: ReplacementGeneration[];
+}
+
+/** One append-only re-establishment of a lost replacement (LIM-80 Slice 3B2). */
+export interface ReplacementGeneration {
+  /** Exact replacement child identity, proven through the native provider. */
+  replacement: ProcessIdentity;
+  /** How this generation re-established the replacement. */
+  via: "adopt" | "respawn";
+  /** `respawn` only: the terminated old-session child that made room for the spawn. */
+  oldChild?: ProcessIdentity;
+  /** `respawn` only: this generation's own durable fresh-input journal (path + id). */
+  journalPath?: string;
+  journalId?: string;
+}
+
+/** Structural equality of two re-establishment generations (identity + slots). */
+function generationsEqual(a: ReplacementGeneration, b: ReplacementGeneration): boolean {
+  if (!identitiesEqual(a.replacement, b.replacement) || a.via !== b.via) return false;
+  if ((a.oldChild === undefined) !== (b.oldChild === undefined)) return false;
+  if (a.oldChild !== undefined && b.oldChild !== undefined && !identitiesEqual(a.oldChild, b.oldChild)) return false;
+  return a.journalPath === b.journalPath && a.journalId === b.journalId;
+}
+
+/**
+ * The currently-active replacement identity: the last recovery generation if any,
+ * else the original live-handoff `replacementChild`. Undefined before any
+ * replacement was established.
+ */
+export function activeReplacementIdentity(a: RecoveryArtifacts): ProcessIdentity | undefined {
+  const gens = a.replacementGenerations;
+  if (gens !== undefined && gens.length > 0) return gens[gens.length - 1]!.replacement;
+  return a.replacementChild;
 }
 
 /** Sentinel fingerprint for "the thread had no stored view". */
@@ -250,7 +300,41 @@ export function mergeRecoveryArtifacts(
     }
     merged[key] = next;
   }
+  // Recovery generations: exact-prefix extension only. The stored list must be an
+  // exact structural prefix of the incoming list; the incoming may append.
+  if (incoming.replacementGenerations !== undefined) {
+    const prev = stored.replacementGenerations ?? [];
+    const next = incoming.replacementGenerations;
+    if (next.length < prev.length) return { ok: false, conflictKey: "replacementGenerations" };
+    for (let i = 0; i < prev.length; i += 1) {
+      if (!generationsEqual(prev[i]!, next[i]!)) return { ok: false, conflictKey: "replacementGenerations" };
+    }
+    merged.replacementGenerations = next;
+  }
   return { ok: true, artifacts: merged };
+}
+
+function parseReplacementGeneration(raw: unknown): ReplacementGeneration | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const o = raw as Record<string, unknown>;
+  const replacement = parseStoredProcessIdentity(o.replacement);
+  if (replacement === null) return null;
+  if (o.via !== "adopt" && o.via !== "respawn") return null;
+  const gen: ReplacementGeneration = { replacement, via: o.via };
+  if (o.oldChild !== undefined) {
+    const oldChild = parseStoredProcessIdentity(o.oldChild);
+    if (oldChild === null) return null;
+    gen.oldChild = oldChild;
+  }
+  if (o.journalPath !== undefined) {
+    if (typeof o.journalPath !== "string" || o.journalPath === "") return null;
+    gen.journalPath = o.journalPath;
+  }
+  if (o.journalId !== undefined) {
+    if (typeof o.journalId !== "string" || o.journalId === "") return null;
+    gen.journalId = o.journalId;
+  }
+  return gen;
 }
 
 export function parseRecoveryArtifacts(raw: unknown): RecoveryArtifacts | null {
@@ -274,6 +358,16 @@ export function parseRecoveryArtifacts(raw: unknown): RecoveryArtifacts | null {
     const id = parseStoredProcessIdentity(o[key]);
     if (id === null) return null;
     out[key] = id;
+  }
+  if (o.replacementGenerations !== undefined) {
+    if (!Array.isArray(o.replacementGenerations)) return null;
+    const gens: ReplacementGeneration[] = [];
+    for (const entry of o.replacementGenerations) {
+      const gen = parseReplacementGeneration(entry);
+      if (gen === null) return null;
+      gens.push(gen);
+    }
+    out.replacementGenerations = gens;
   }
   return out;
 }
@@ -561,24 +655,18 @@ function planOwnedStage(attempt: RecoveryAttempt, observed: RecoveryObservation)
         reason: `rebuilt rollout ${a.rebuiltSessionId} recorded; verify and reuse`,
       };
     case "old_child_exited":
-      if (a.rebuiltSessionId === undefined) {
-        return { kind: "terminal_refuse", reason: "stage old_child_exited without rebuiltSessionId" };
-      }
-      if (observed.oldChildLiveness?.ok === true) {
-        return { kind: "terminal_refuse", reason: "stage old_child_exited but old child identity is live" };
-      }
-      if (observed.rolloutPresent === "absent") {
-        return {
-          kind: "reconcile_installed_view",
-          reason: `rebuilt rollout ${a.rebuiltSessionId} missing after old child exit; re-materialize from installed view`,
-        };
-      }
-      return { kind: "continue_replacement", reason: "old child exit proven; spawn/verify replacement" };
+      // LIM-80 3B2: every late-stage state is a restart RECONCILIATION, not a
+      // terminal refusal. A missing rebuiltSessionId, a live/indeterminate exact
+      // old child, or a missing rollout are all repairable — the restart executor
+      // re-observes and either continues safely or waits. Only irreducible facts
+      // terminalize, and those are decided there (never here).
+      return { kind: "continue_replacement", reason: "old_child_exited: reconcile/continue rebuilt replacement" };
     case "replacement_ready":
     case "lineage_recorded":
     case "descriptor_published": {
       if (a.rebuiltSessionId === undefined) {
-        return { kind: "terminal_refuse", reason: `stage ${attempt.stage} without rebuiltSessionId` };
+        // Repairable, not terminal: the restart executor re-observes durable facts.
+        return { kind: "continue_replacement", reason: `${attempt.stage}: rebuiltSessionId absent; reconcile` };
       }
       const late = planLateStage(observed, attempt.stage);
       if (late.kind !== "live") return late;

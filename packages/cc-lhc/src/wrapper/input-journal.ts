@@ -294,6 +294,86 @@ export function removeInputJournal(path: string, deps: InputJournalDeps = {}): v
   }
 }
 
+/** Restart delivery handle: the SAME strict pending -> delivering -> delivered protocol. */
+export interface DeliveryHandle {
+  /** Ordered bytes to deliver EXACTLY ONCE (never logged, never in SQLite). */
+  readonly chunks: Buffer;
+  /** Durable pending -> delivering, fsynced BEFORE any byte reaches the child. */
+  markDelivering(): void;
+  /** Durable delivering -> delivered, fsynced AFTER the child write returns. */
+  markDelivered(): void;
+  currentState(): JournalDeliveryState;
+  close(): void;
+}
+
+/**
+ * Reopen an EXISTING pending journal on restart to deliver its buffered bytes to
+ * a proven-live child, using the identical durable state machine (LIM-80 3B2). A
+ * non-pending, mismatched, or unreadable journal is refused — the caller keeps
+ * the attempt open. Never creates a new journal, never appends chunks.
+ */
+export function reopenInputJournalForDelivery(
+  path: string,
+  binding: InputJournalBinding,
+  deps: InputJournalDeps = {},
+): { ok: true; handle: DeliveryHandle } | { ok: false; reason: string } {
+  const read = readInputJournal(path, binding);
+  if (!read.ok) return { ok: false, reason: read.reason };
+  if (read.state !== "pending") {
+    return { ok: false, reason: `journal state is ${read.state}; delivery may only begin from pending` };
+  }
+  const d = resolveDeps(deps);
+  if (d.syncDir === null) return { ok: false, reason: `durability barrier unavailable on ${d.platform}` };
+  let fd: number;
+  try {
+    fd = d.openSync(path, "a"); // append; the journal keeps its append-only grammar
+  } catch (cause) {
+    return { ok: false, reason: `cannot reopen journal: ${cause instanceof Error ? cause.message : String(cause)}` };
+  }
+  let state: JournalDeliveryState = "pending";
+  let closed = false;
+  const writeState = (code: number): void => {
+    const rec = frame(REC_STATE, Buffer.from([code]));
+    let off = 0;
+    while (off < rec.length) {
+      const n = d.writeSync(fd, rec, off, rec.length - off);
+      if (typeof n !== "number" || n <= 0 || n > rec.length - off) {
+        throw new Error(`journal delivery write stalled: wrote ${String(n)} at ${off}/${rec.length}`);
+      }
+      off += n;
+    }
+    d.fsyncSync(fd);
+  };
+  return {
+    ok: true,
+    handle: {
+      chunks: read.chunks,
+      markDelivering(): void {
+        if (closed) throw new Error("delivery handle closed");
+        if (state !== "pending") throw new Error(`markDelivering illegal in state ${state}`);
+        writeState(STATE_DELIVERING);
+        state = "delivering";
+      },
+      markDelivered(): void {
+        if (closed) throw new Error("delivery handle closed");
+        if (state !== "delivering") throw new Error(`markDelivered illegal in state ${state}`);
+        writeState(STATE_DELIVERED);
+        state = "delivered";
+      },
+      currentState: () => state,
+      close(): void {
+        if (closed) return;
+        closed = true;
+        try {
+          d.closeSync(fd);
+        } catch {
+          // already closed
+        }
+      },
+    },
+  };
+}
+
 export type InputJournalReadResult =
   | {
       ok: true;
