@@ -204,28 +204,42 @@ pub fn compact_chunk_material_from_stored_members(
                 return CompactChunkMaterial::Ready { content };
             }
         }
-        if state == "blocked" {
-            return CompactChunkMaterial::Blocked {
-                reason: map_optional_str(row, "reason").unwrap_or_else(|| {
-                    format!("{derivation_type_str} for chunk {chunk_id} is blocked")
-                }),
-            };
-        }
+        // Optional summaries never fail closed from derivation state.
+        // Canonical member damage still returns Blocked from stored_member_concat
+        // and compact refuses.
     }
 
     let fallback = stored_member_concat(db, chunk_id);
     match fallback {
-        CompactChunkMaterial::Concat { content, .. } => {
-            let reason = match &row {
-                None => "missing_derivation",
-                Some(row) if map_required_str(row, "state") == "failed" => "failed_floor",
-                Some(_) => "not_ready",
-            };
-            CompactChunkMaterial::Concat {
-                content,
-                reason: reason.to_string(),
-            }
-        }
+        CompactChunkMaterial::Concat { content, .. } => CompactChunkMaterial::Concat {
+            content,
+            reason: compact_fallback_reason(&row, derivation_type_str, chunk_id),
+        },
         other => other,
+    }
+}
+
+/// Receipt warning.reason: failure class, plus original derivation reason when present.
+pub fn compact_fallback_reason(
+    row: &Option<Map<String, Value>>,
+    derivation_type: &str,
+    chunk_id: &str,
+) -> String {
+    let Some(row) = row else {
+        return "missing_derivation".to_string();
+    };
+    match map_required_str(row, "state").as_str() {
+        "failed" => match map_optional_str(row, "reason") {
+            Some(original) => format!("failed_floor: {original}"),
+            None => "failed_floor".to_string(),
+        },
+        "blocked" => match map_optional_str(row, "reason") {
+            Some(original) => original
+                .rsplit_once("is failed: ")
+                .map(|(_, failed)| format!("failed_floor: {failed}"))
+                .unwrap_or(original),
+            None => format!("{derivation_type} for chunk {chunk_id} is blocked"),
+        },
+        _ => "not_ready".to_string(),
     }
 }
