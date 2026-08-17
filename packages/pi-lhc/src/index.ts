@@ -938,7 +938,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // Mid-run growth stays covered by PI's native machinery: its own threshold
   // check (contextWindow − reserve) and overflow recovery are loop-integrated
   // and safe to fire between model turns.
-  const maybeTriggerAutoCompact = (ctx: ExtensionContext): void => {
+  const maybeTriggerAutoCompact = async (ctx: ExtensionContext): Promise<void> => {
     // A compaction (any initiator) landed since the last check — usage may be
     // stale pre-compact numbers. Skip once; the next settle re-evaluates.
     if (compactedSinceSettleCheck) {
@@ -946,7 +946,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       return;
     }
     if (state === null || instance === null) return;
-    if (ctx.compact === undefined) return;
+    const triggerCompact = ctx.compact;
+    if (triggerCompact === undefined) return;
     // Queued follow-ups start a new run immediately; compacting now would race
     // it. The next agent_settled re-checks.
     if (ctx.hasPendingMessages?.() === true) return;
@@ -971,15 +972,22 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         "info",
       );
     }
-    ctx.compact({
-      onComplete: () => {
-        autoCompactInFlight = false;
-        autoCompactLastAttemptTokens = null;
-      },
-      onError: () => {
-        // Cancelled or failed: stay armed but only retry after real growth.
-        autoCompactInFlight = false;
-      },
+    // ctx.compact() is callback-based and returns immediately. Await its
+    // terminal callback so print-mode one-shots cannot dispose the PI runtime
+    // (which aborts compaction) while this triggered compact is still active.
+    await new Promise<void>((resolve) => {
+      triggerCompact({
+        onComplete: () => {
+          autoCompactInFlight = false;
+          autoCompactLastAttemptTokens = null;
+          resolve();
+        },
+        onError: () => {
+          // Cancelled or failed: stay armed but only retry after real growth.
+          autoCompactInFlight = false;
+          resolve();
+        },
+      });
     });
   };
 
@@ -1060,8 +1068,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
 
   // agent_settled is the trigger boundary — see maybeTriggerAutoCompact for
   // why no earlier hook is safe.
-  const onAgentSettled: PiVoidHookHandler<"agent_settled"> = (_event, ctx) => {
-    maybeTriggerAutoCompact(ctx);
+  const onAgentSettled: PiVoidHookHandler<"agent_settled"> = async (_event, ctx) => {
+    await maybeTriggerAutoCompact(ctx);
   };
 
   // /tree navigation switches the PI session's active branch. The LHC record

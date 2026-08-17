@@ -89,6 +89,41 @@ describe("per-model auto-compact trigger", () => {
     expect(ctx.compactSpy).toHaveBeenCalledTimes(1);
   });
 
+  it("keeps agent_settled pending until the triggered compact completes", async () => {
+    const { connector } = await startedConnector();
+    const ctx = makeCtx({ tokens: 550_000, compactOutcome: "hang" });
+    let settled = false;
+    const pending = Promise.resolve(connector.settledHandler(makeAgentSettled(), ctx)).then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    expect(ctx.compactSpy).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+
+    const options = ctx.compactSpy.mock.calls[0]?.[0];
+    options?.onComplete?.({} as never);
+    await pending;
+    expect(settled).toBe(true);
+  });
+
+  it("keeps agent_settled pending until a triggered compact error is reported", async () => {
+    const { connector } = await startedConnector();
+    const ctx = makeCtx({ tokens: 550_000, compactOutcome: "hang" });
+    let settled = false;
+    const pending = Promise.resolve(connector.settledHandler(makeAgentSettled(), ctx)).then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    const options = ctx.compactSpy.mock.calls[0]?.[0];
+    options?.onError?.(new Error("cancelled"));
+    await pending;
+    expect(settled).toBe(true);
+  });
+
   it("stays quiet below threshold, with unknown usage, and for unmatched models", async () => {
     const { connector } = await startedConnector();
     for (const ctx of [
@@ -118,9 +153,15 @@ describe("per-model auto-compact trigger", () => {
   it("does not re-fire while a triggered compact is still in flight", async () => {
     const { connector } = await startedConnector();
     const ctx = makeCtx({ tokens: 550_000, compactOutcome: "hang" });
-    await connector.settledHandler(makeAgentSettled(), ctx);
+    const first = Promise.resolve(connector.settledHandler(makeAgentSettled(), ctx));
+    await Promise.resolve();
+
     await connector.settledHandler(makeAgentSettled(), ctx);
     expect(ctx.compactSpy).toHaveBeenCalledTimes(1);
+
+    const options = ctx.compactSpy.mock.calls[0]?.[0];
+    options?.onComplete?.({} as never);
+    await first;
   });
 
   it("skips exactly one settle after session_compact — a PI-native compact must not double-fire on stale usage", async () => {

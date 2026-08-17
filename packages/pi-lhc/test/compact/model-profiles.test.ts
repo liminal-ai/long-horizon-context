@@ -18,8 +18,8 @@ describe("resolveModelCompactSettings", () => {
       lowerBound: 200_000,
     });
     expect(resolveModelCompactSettings("claude-opus-4-6")).toMatchObject({
-      triggerTokens: 350_000,
-      lowerBound: 140_000,
+      triggerTokens: 400_000,
+      lowerBound: 180_000,
       percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 },
     });
     expect(resolveModelCompactSettings("GLM-5.2")).toMatchObject({ triggerTokens: 350_000, lowerBound: 140_000 });
