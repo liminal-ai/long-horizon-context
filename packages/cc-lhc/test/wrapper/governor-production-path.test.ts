@@ -3124,13 +3124,41 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
     dirs.push(projectsRoot);
     const recoveryDir = mkdtempSync(join(tmpdir(), "cc-lhc-3b2-retire-crash-rec-"));
     dirs.push(recoveryDir);
-    const { receiptId, journalPath } = await seedInterrupted({
+    const { receiptId, attemptId, journalPath } = await seedInterrupted({
       receiptDb,
       projectsRoot,
       recoveryDir,
       journalState: "pending-bytes",
       journalBytes: Buffer.from("NEVER-REPLAY"),
     });
+
+    const seedStore = openGovernorReceiptStore(receiptDb);
+    const generation = createInputJournal({
+      dir: recoveryDir,
+      binding: { receiptId, attemptId, oldSessionId: RESTART_OLD, rebuiltSessionId: RESTART_REBUILT },
+    });
+    generation.appendChunk(Buffer.from("GENERATION-NEVER-REPLAY"));
+    generation.close();
+    expect(
+      seedStore.advanceAttempt({
+        receiptId,
+        attemptId,
+        stage: "descriptor_published",
+        artifacts: {
+          replacementGenerationEvents: [
+            {
+              kind: "respawn_prepared",
+              generationId: "gen-retirement-crash",
+              originAttemptId: attemptId,
+              oldChild: { pid: 877777, bootId: "dead", starttime: "7" },
+              journalPath: generation.path,
+              journalId: generation.journalId,
+            },
+          ],
+        },
+      }).kind,
+    ).toBe("advanced");
+    seedStore.close();
 
     const spawned: FakePty[] = [];
     const stdin = fakeStream();
@@ -3165,6 +3193,7 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
       }
     }, "durable retirement marker without terminal");
     expect(existsSync(journalPath!)).toBe(true);
+    expect(existsSync(generation.path)).toBe(true);
     spawned[0]?.fireExit(0);
     await first.runPromise;
 
@@ -3179,7 +3208,9 @@ describe("LIM-80 Slice 3A recovery (production wrapper path)", () => {
     expect(store2.getById(receiptId)?.handoffOutcome?.kind).toBe("handoff_cancelled");
     store2.close();
     expect(spawned2[0]!.writes.join("")).not.toContain("NEVER-REPLAY");
+    expect(spawned2[0]!.writes.join("")).not.toContain("GENERATION-NEVER-REPLAY");
     expect(existsSync(journalPath!)).toBe(true);
+    expect(existsSync(generation.path)).toBe(true);
     spawned2[0]?.fireExit(0);
     await second.runPromise;
   }, 20_000);
