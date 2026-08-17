@@ -37,6 +37,17 @@ try {
   setTimeout(() => process.exit(0), 30_000).unref();
 } catch (cause) {
   const name = cause instanceof Error ? cause.name : "UnknownError";
+  const error = cause as NodeJS.ErrnoException;
+  const message = cause instanceof Error ? cause.message : String(cause);
+  process.stderr.write(
+    `RACE_LOSS ${JSON.stringify({
+      name,
+      code: error.code ?? null,
+      syscall: error.syscall ?? null,
+      path: error.path ?? null,
+      message,
+    })}\n`,
+  );
   process.stdout.write(`LOST ${name}\n`);
   process.exit(0);
 }
