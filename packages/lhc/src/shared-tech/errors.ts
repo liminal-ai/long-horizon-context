@@ -6,6 +6,11 @@ export type ErrorCode =
   | "ambiguous_thread_id" // caller_error — a partial thread id matched more than one thread (A-8 partial-id resolve)
   | "conflicting_lhc_launch_flags" // caller_error — mutually exclusive pi-lhc extension launch flags set together
   | "invalid_thread_ref" // empty/blank file path or otherwise unusable reference
+  // Registry alias map (R15): opaque host-qualified alias -> thread, plus one
+  // current-alias pointer per thread.
+  | "invalid_thread_alias" // caller_error — alias is blank or not host-qualified as <host>:<host-alias>
+  | "alias_not_found" // caller_error — no thread registered under this alias
+  | "alias_bound_to_other_thread" // caller_error — an alias never rebinds; it already names a different thread
   | "invalid_event"
   | "empty_batch"
   | "turn_state_corrupt"

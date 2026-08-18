@@ -279,7 +279,16 @@ export {
   DEFAULT_COMPACT_THRESHOLD,
   DEFAULT_VISIBILITY,
 } from "./thread-view/index.js";
-export type { ThreadFileInfo, ThreadRef } from "./threads/index.js";
+export type {
+  ThreadAliasBinding,
+  ThreadAliasLookup,
+  ThreadAliasRegistration,
+  ThreadAliasResolution,
+  ThreadCurrentAlias,
+  ThreadCurrentAliasLookup,
+  ThreadFileInfo,
+  ThreadRef,
+} from "./threads/index.js";
 export type { ChunkRecord, TurnRecord } from "./turns/index.js";
 
 // ── LHC initialization ────────────────────────────────────────────

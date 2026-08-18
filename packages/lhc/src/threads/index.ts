@@ -9,14 +9,20 @@ import { createThreadFile, deleteThreadFile, generateThreadId, openThreadDatabas
 export { openThreadDatabase };
 
 import {
+  insertAliasRowIfAbsent,
   insertThreadRow,
+  openExistingRegistry,
   openRegistryForRead,
   openRegistryForWrite,
   type RegistryRow,
   resolveRegistryPath,
+  selectAliasResolutionRow,
+  selectAliasRow,
   selectAllThreadRows,
+  selectCurrentAliasRow,
   selectThreadRow,
   selectThreadRowsByPrefix,
+  upsertCurrentAliasRow,
 } from "./internal/registry.js";
 
 export type ThreadRef = { threadId: string; registryPath?: string } | { filePath: string };
@@ -224,4 +230,240 @@ export async function resolveThreadRef(ref: ThreadRef): Promise<OpResult<{ fileP
     return invalidThreadRef("filePath must be a non-empty path; received a blank string");
   }
   return { ok: true, value: { filePath: ref.filePath } };
+}
+
+// The alias map: a host's own opaque session ids, qualified by host, pointing
+// at the LHC thread they belong to. One thread accumulates many aliases over
+// its life; exactly one of them is current — the latest the host accepted.
+// This is the layer consulted before any thread file opens.
+
+export interface ThreadAliasRegistration {
+  alias: string;
+  threadId: string;
+  registryPath?: string;
+}
+
+export interface ThreadAliasLookup {
+  alias: string;
+  registryPath?: string;
+}
+
+export interface ThreadCurrentAliasLookup {
+  threadId: string;
+  registryPath?: string;
+}
+
+export interface ThreadAliasBinding {
+  alias: string;
+  threadId: string;
+  registeredAt: string;
+}
+
+// currentAlias is null when the thread has aliases but has not accepted one
+// yet: absence is reported as a value, so a caller entering through an old
+// alias still learns its thread instead of being refused.
+export interface ThreadAliasResolution {
+  alias: string;
+  threadId: string;
+  currentAlias: string | null;
+}
+
+export interface ThreadCurrentAlias {
+  threadId: string;
+  currentAlias: string | null;
+}
+
+function invalidThreadAlias(reason: string): { ok: false; error: ErrorResult } {
+  return {
+    ok: false,
+    error: { errorClass: "caller_error", code: "invalid_thread_alias", reason },
+  };
+}
+
+function aliasNotFound(alias: string): { ok: false; error: ErrorResult } {
+  return {
+    ok: false,
+    error: {
+      errorClass: "caller_error",
+      code: "alias_not_found",
+      reason: `no thread registered under alias ${alias}`,
+    },
+  };
+}
+
+function aliasBoundToOtherThread(alias: string, boundThreadId: string): { ok: false; error: ErrorResult } {
+  return {
+    ok: false,
+    error: {
+      errorClass: "caller_error",
+      code: "alias_bound_to_other_thread",
+      reason: `alias ${alias} is already registered to thread ${boundThreadId} and never rebinds`,
+    },
+  };
+}
+
+// Aliases are opaque to core and host-qualified as "<host>:<host-alias>". Core
+// looks for the qualifier separator and nothing else — it never reads either
+// side, so no host's id structure is parsed here. The qualifier is what keeps
+// one shared registry from colliding two hosts' native session ids.
+const ALIAS_QUALIFIER_SEPARATOR = ":";
+
+function rejectInvalidAlias(alias: string): { ok: false; error: ErrorResult } | null {
+  if (alias.trim() === "") {
+    return invalidThreadAlias("alias must be a non-empty host-qualified key; received a blank string");
+  }
+  const separator = alias.indexOf(ALIAS_QUALIFIER_SEPARATOR);
+  if (separator <= 0 || separator === alias.length - 1) {
+    return invalidThreadAlias(
+      `alias "${alias}" must be host-qualified as <host>${ALIAS_QUALIFIER_SEPARATOR}<host-alias>, e.g. claude-code:<uuid>`,
+    );
+  }
+  return null;
+}
+
+function rejectInvalidThreadId(threadId: string): { ok: false; error: ErrorResult } | null {
+  return threadId.trim() === ""
+    ? invalidThreadRef("threadId must be a non-empty thread id; received a blank string")
+    : null;
+}
+
+function rejectInvalidRegistration(registration: ThreadAliasRegistration): { ok: false; error: ErrorResult } | null {
+  return rejectInvalidAlias(registration.alias) ?? rejectInvalidThreadId(registration.threadId);
+}
+
+// Registering and advancing share one transaction body so the pointer can never
+// be advanced in a separate commit from the registration it depends on.
+function bindAlias(
+  registry: DatabaseSync,
+  registration: ThreadAliasRegistration,
+  advanceCurrent: boolean,
+): OpResult<ThreadAliasBinding> {
+  registry.exec("BEGIN IMMEDIATE;");
+  try {
+    const now = new Date().toISOString();
+    insertAliasRowIfAbsent(registry, {
+      alias: registration.alias,
+      threadId: registration.threadId,
+      registeredAt: now,
+    });
+    const bound = selectAliasRow(registry, registration.alias);
+    if (bound === undefined) {
+      registry.exec("ROLLBACK;");
+      return storageFailure(`registry lost alias ${registration.alias} immediately after registering it`);
+    }
+    if (bound.threadId !== registration.threadId) {
+      registry.exec("ROLLBACK;");
+      return aliasBoundToOtherThread(registration.alias, bound.threadId);
+    }
+    if (advanceCurrent) {
+      upsertCurrentAliasRow(registry, {
+        threadId: registration.threadId,
+        alias: registration.alias,
+        advancedAt: now,
+      });
+    }
+    registry.exec("COMMIT;");
+    return { ok: true, value: bound };
+  } catch (cause) {
+    registry.exec("ROLLBACK;");
+    throw cause;
+  }
+}
+
+// Registers an alias against a thread without touching which alias is current.
+// Registering the same alias to the same thread again returns the existing
+// binding; registering it to a different thread is refused — an alias names one
+// thread for its whole life.
+export async function registerAlias(registration: ThreadAliasRegistration): Promise<OpResult<ThreadAliasBinding>> {
+  const invalid = rejectInvalidRegistration(registration);
+  if (invalid !== null) return invalid;
+
+  let registry: DatabaseSync | undefined;
+  try {
+    registry = openRegistryForWrite(resolveRegistryPath(registration.registryPath));
+    return bindAlias(registry, registration, false);
+  } catch (cause) {
+    return storageFailure(`registry alias registration failed: ${detail(cause)}`);
+  } finally {
+    registry?.close();
+  }
+}
+
+// Registers an alias and makes it the thread's current alias in one commit, so
+// no reader ever sees a current pointer whose alias is not yet registered.
+// Called with an alias the thread already holds, it advances the pointer alone.
+export async function registerCurrentAlias(
+  registration: ThreadAliasRegistration,
+): Promise<OpResult<ThreadAliasResolution>> {
+  const invalid = rejectInvalidRegistration(registration);
+  if (invalid !== null) return invalid;
+
+  let registry: DatabaseSync | undefined;
+  try {
+    registry = openRegistryForWrite(resolveRegistryPath(registration.registryPath));
+    const bound = bindAlias(registry, registration, true);
+    if (!bound.ok) return bound;
+    return {
+      ok: true,
+      value: {
+        alias: bound.value.alias,
+        threadId: bound.value.threadId,
+        currentAlias: bound.value.alias,
+      },
+    };
+  } catch (cause) {
+    return storageFailure(`registry alias advance failed: ${detail(cause)}`);
+  } finally {
+    registry?.close();
+  }
+}
+
+// The entry point for a host holding any alias of a thread: it answers which
+// thread that alias belongs to and which alias that thread currently accepts,
+// from one read. An alias no registry knows is a miss, not a failure of the
+// registry — the caller decides what to do with an unknown alias.
+export async function resolveAlias(lookup: ThreadAliasLookup): Promise<OpResult<ThreadAliasResolution>> {
+  const invalid = rejectInvalidAlias(lookup.alias);
+  if (invalid !== null) return invalid;
+
+  let registry: DatabaseSync | null | undefined;
+  try {
+    registry = openExistingRegistry(resolveRegistryPath(lookup.registryPath));
+    if (registry === null) return aliasNotFound(lookup.alias);
+    const resolution = selectAliasResolutionRow(registry, lookup.alias);
+    if (resolution === undefined) return aliasNotFound(lookup.alias);
+    return {
+      ok: true,
+      value: {
+        alias: lookup.alias,
+        threadId: resolution.threadId,
+        currentAlias: resolution.currentAlias,
+      },
+    };
+  } catch (cause) {
+    return storageFailure(`registry alias read failed: ${detail(cause)}`);
+  } finally {
+    registry?.close();
+  }
+}
+
+// The thread's current alias on its own, for a caller that already holds the
+// thread id. A thread with no accepted alias yet reports null.
+export async function currentAlias(lookup: ThreadCurrentAliasLookup): Promise<OpResult<ThreadCurrentAlias>> {
+  const invalid = rejectInvalidThreadId(lookup.threadId);
+  if (invalid !== null) return invalid;
+
+  let registry: DatabaseSync | null | undefined;
+  try {
+    registry = openExistingRegistry(resolveRegistryPath(lookup.registryPath));
+    if (registry === null) return { ok: true, value: { threadId: lookup.threadId, currentAlias: null } };
+    return {
+      ok: true,
+      value: { threadId: lookup.threadId, currentAlias: selectCurrentAliasRow(registry, lookup.threadId) },
+    };
+  } catch (cause) {
+    return storageFailure(`registry current-alias read failed: ${detail(cause)}`);
+  } finally {
+    registry?.close();
+  }
 }
