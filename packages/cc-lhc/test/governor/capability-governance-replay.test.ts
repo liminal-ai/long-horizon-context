@@ -220,12 +220,16 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
 
     // Input typed during the turn: settled history cannot be retroactively
     // invalidated by bytes that belong to the next turn.
-    let typedAhead = readyState();
-    typedAhead = applyGovernorLifecycleBatch(typedAhead, [{ kind: "turn_opened", reason: "user_prompt" }], armed())
-      .state;
+    let typedAhead = applyGovernorLifecycleBatch(
+      readyState(),
+      [{ kind: "turn_opened", reason: "user_prompt" }],
+      armed(),
+    ).state;
     typedAhead = noteGovernorInput(typedAhead);
     typedAhead = noteGovernorInput(typedAhead);
-    const afterInput = settledDecision(typedAhead);
+    const afterInput = applyGovernorLifecycleBatch(typedAhead, overPressure.slice(1), armed()).observes.filter(
+      (o) => o.observePhase === "settled_seam",
+    )[0];
     expect(afterInput?.decision).toBe("would_compact");
     expect(afterInput?.wouldMutate).toBe(true);
     // The epoch survives as a diagnostic on the receipt, without authority.

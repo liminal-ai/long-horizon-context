@@ -1565,8 +1565,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const result = processInputChunk(data, inputState);
       inputState = result.state;
       debugInput(data, inputState);
-      // User bytes reaching Claude bump input epoch so the governor can suppress
-      // would_compact when the operator typed during the open turn.
+      // User bytes reaching Claude bump the input epoch. This is a receipt
+      // diagnostic — what the operator typed and when — not a veto: bytes typed
+      // during a turn belong to the next one and cannot invalidate the history
+      // that already settled.
       if (result.toPty.length > 0) {
         governorState = noteGovernorInput(governorState);
         currentPty.write(result.toPty);

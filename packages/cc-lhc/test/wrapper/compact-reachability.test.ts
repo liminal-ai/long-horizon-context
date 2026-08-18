@@ -206,6 +206,7 @@ const dirs: string[] = [];
 interface Rig {
   runPromise: Promise<number>;
   pty: FakePty;
+  stdin: PassThrough;
   fire: (signals: LifecycleSignal[]) => void;
   compacts: () => number;
   logs: string[];
@@ -237,6 +238,7 @@ async function startRig(options: {
   const fileAsDir = join(dir, "not-a-dir");
   writeFileSync(fileAsDir, "x");
   const stderrChunks: string[] = [];
+  const stdin = fakeStream();
   const stderr = fakeStream();
   (stderr as unknown as PassThrough).on("data", (c: Buffer) => stderrChunks.push(c.toString()));
 
@@ -247,7 +249,7 @@ async function startRig(options: {
       ptys.push(fake);
       return fake as never;
     }) as never,
-    stdin: fakeStream(),
+    stdin,
     stdout: fakeStream(),
     stderr,
     noInference: true,
@@ -267,6 +269,7 @@ async function startRig(options: {
   return {
     runPromise,
     pty: ptys[0]!,
+    stdin: stdin as unknown as PassThrough,
     fire: (signals) => sink!(signals),
     compacts: () => compacts,
     logs,
@@ -312,7 +315,8 @@ describe("a session over the trigger reaches compact", () => {
     // Bytes reaching Claude during the open turn bump the input epoch. They
     // belong to the next turn; they cannot invalidate settled history.
     rig.fire([{ kind: "turn_opened", reason: "user_prompt" }]);
-    rig.pty.write("keystrokes");
+    rig.stdin.write("keystrokes typed mid-turn\r");
+    await new Promise((r) => setTimeout(r, 50));
     rig.fire([
       {
         kind: "sampling_observed",
