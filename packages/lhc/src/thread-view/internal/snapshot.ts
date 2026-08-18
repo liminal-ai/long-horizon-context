@@ -234,19 +234,15 @@ export interface ViewReplaceInput {
 // the writer of view rows and the boundary reset on compact.
 /**
  * Replace the serving view under one BEGIN IMMEDIATE.
- * `beforeReplace` may return a sourceStateJson override computed after
- * in-transaction validation (e.g. post-marker digests). When it returns a
- * string, that value is written; otherwise `input.sourceStateJson` is used.
+ * `resolveInput` runs inside that transaction and produces what gets written,
+ * so an installer that has to read durable state first — to see whether the
+ * snapshot it was handed still describes the thread — observes and writes
+ * under the same lock. There is no window between the two.
  */
-export function replaceViewSnapshot(
-  db: DatabaseSync,
-  input: ViewReplaceInput,
-  beforeReplace?: () => undefined | string,
-): void {
+export function replaceViewSnapshot(db: DatabaseSync, resolveInput: () => ViewReplaceInput): void {
   db.exec("BEGIN IMMEDIATE;");
   try {
-    const sourceOverride = beforeReplace?.();
-    const sourceStateJson = typeof sourceOverride === "string" ? sourceOverride : input.sourceStateJson;
+    const input = resolveInput();
     db.prepare(`DELETE FROM thread_view WHERE singleton = 1`).run();
     db.prepare(
       `INSERT INTO thread_view (singleton, view_id, created_at, compact_point, covered_from,
@@ -261,7 +257,7 @@ export function replaceViewSnapshot(
       input.configJson,
       input.arrangementJson,
       input.gapsJson,
-      sourceStateJson,
+      input.sourceStateJson,
     );
     const insertBand = db.prepare(
       `INSERT INTO thread_view_band (view_id, band, rendered_text, token_count)

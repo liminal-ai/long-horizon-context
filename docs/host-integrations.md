@@ -133,9 +133,12 @@ marker-hidden projection via `messages.list({ forUserChat: true })` (or the
 equivalent host-facing filter). Typed compact-continuation markers remain in
 the canonical record and model/session views, but they are not normal user
 chat. Source changes between compact preparation and activation do not block
-compaction. A boundary proposal that durable state has since overtaken is
-resolved forward rather than refused, and a pinned boundary that has moved
-makes activation recompute against fresh state and install that.
+compaction and are not installed stale either: activation reassembles the
+compact against durable state inside its own install transaction and writes
+that, so the receipt and the stored view always describe the state the view
+was built from. A boundary proposal that durable state has since overtaken is
+resolved forward rather than refused. Hosts never see a stale-prepared
+refusal; a genuine failure still leaves the prior view serving.
 
 ## pi (extension — no fork maintenance)
 

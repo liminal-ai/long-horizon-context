@@ -339,6 +339,8 @@ Compact is an explicit operation, invoked by the host or caller. It does not run
 
 Before assembly, compact reads record and derivation state as it stands. It does not call providers, schedule repair work, or re-queue failed derivations. It does not validate canonical coherence either: a record the walk cannot place — a message or a chunk member whose turn does not resolve — is skipped and named in the compact receipt's `skippedRecords`, and its raw row stays exactly as it is. Compact reads around the irregularity; it never repairs or removes it.
 
+Installing a prepared compact is one transaction that both looks and writes. If the thread moved between prepare and install — new events, changed turn/chunk structure, derivations that finished, edited source content, a moved visibility boundary — the compact is reassembled against durable state under the same lock that installs it, and that fresh assembly is what lands. Drift never refuses the install and never installs the stale snapshot.
+
 When a band entry depends on a derivation that is not ready, compact does not stop. It walks a fallback ladder: the smooth band tries `turn_rendering`, then `detailed_turn_compression` (marked degraded), then a deterministic excerpt of the turn's messages, then a gap. The detailed and brief bands try their primary chunk summary, then a concatenation of stored member material, then a gap. A gap is always the last resort, never the first response to a missing derivation. Chunk stored-member fallbacks are warning-logged; all degraded entries and gaps are recorded in the compact receipt and the stored view metadata.
 
 ```mermaid

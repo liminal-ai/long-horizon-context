@@ -1536,7 +1536,7 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(JSON.stringify(receiptAfter.value?.receipt)).toBe(receiptJson);
   });
 
-  it("M4: activated view records its prepared source while later marker remains canonical", async () => {
+  it("M4: activated view records the source it was assembled from; the marker remains canonical and live", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
     const result = await compactContinuation.runCompactContinuation(
@@ -1554,7 +1554,10 @@ describe("LIM-61 compact-continuation runtime", () => {
         source_state_json: string;
       };
       const parsed = JSON.parse(src.source_state_json) as { maxEventOrder: number };
-      expect(parsed.maxEventOrder).toBeLessThan(maxEvent);
+      // The marker landed between prepare and install, so install reassembled
+      // against durable state: the stored view describes what it was actually
+      // built from, not the pre-marker snapshot it was handed.
+      expect(parsed.maxEventOrder).toBe(maxEvent);
       // Marker remains the max canonical event on continue-turn success.
       const marker = db
         .prepare(
@@ -1563,6 +1566,12 @@ describe("LIM-61 compact-continuation runtime", () => {
         .get() as { event_order: number | bigint } | undefined;
       expect(marker).toBeDefined();
       expect(Number(marker!.event_order)).toBe(maxEvent);
+      // The protected compact-point bound survives the recompute: the marker is
+      // served live, never swallowed into the compacted span.
+      const view = db.prepare(`SELECT compact_point FROM thread_view WHERE singleton = 1`).get() as {
+        compact_point: number | bigint;
+      };
+      expect(Number(view.compact_point)).toBeLessThan(Number(marker!.event_order));
     } finally {
       db.close();
     }

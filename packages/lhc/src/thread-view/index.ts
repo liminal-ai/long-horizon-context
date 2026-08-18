@@ -900,14 +900,47 @@ function buildPreparedFromArrangement(
 }
 
 /**
- * Raised from beforeReplace when durable state moved since the caller prepared:
- * the transaction rolls back untouched and install recomputes against fresh
- * state and retries. Never reaches the caller.
+ * Does the prepared snapshot still describe the thread? Compares the prepared
+ * fingerprints — serving view identity, turn/chunk structure, derivation
+ * content, event order, and source message/block content — against durable
+ * state, plus the caller's pinned boundary when it supplied one.
+ *
+ * This is a router, not a gate: a reason string sends install through a fresh
+ * recompute, never back to the caller. Must be called inside the transaction
+ * that installs.
  */
-class InstalledViewDriftError extends Error {
-  constructor(reason: string) {
-    super(reason);
-    this.name = "InstalledViewDriftError";
+function preparedStateDrift(
+  db: DatabaseSync,
+  prepared: PreparedCompact,
+  pinnedBoundary: number | undefined,
+): string | null {
+  if (pinnedBoundary !== undefined) {
+    const currentBoundary = readBoundaryPosition(db);
+    if (currentBoundary !== pinnedBoundary) {
+      return `visibility boundary moved ${pinnedBoundary}→${currentBoundary} since prepare`;
+    }
+  }
+  const prev = prepared.sourceState;
+  const current = readPreparedSourceState(db, prev.compactPoint, {
+    selectedSourceTurnIds: prepared.selectedSourceTurnIds ?? selectedSourceTurnIdsFromSelection(db, prepared.selection),
+  });
+  if (current.installedViewId !== prev.installedViewId) return "serving view changed since prepare";
+  if (current.structureDigest !== prev.structureDigest) return "turn/chunk structure changed since prepare";
+  if (current.derivationDigest !== prev.derivationDigest) return "derivation content/state changed since prepare";
+  if (current.maxEventOrder !== prev.maxEventOrder) {
+    return `event order moved ${prev.maxEventOrder}→${current.maxEventOrder} since prepare`;
+  }
+  if (current.tailDigest !== prev.tailDigest) return "source message/block content changed since prepare";
+  return null;
+}
+
+/** Carries a failed in-transaction recompute out through replaceViewSnapshot's rollback. */
+class RecomputeFailedError extends Error {
+  readonly error: ErrorResult;
+  constructor(error: ErrorResult) {
+    super(error.reason);
+    this.name = "RecomputeFailedError";
+    this.error = error;
   }
 }
 
@@ -932,10 +965,12 @@ export async function prepareCompact(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    return prepareFromOpenDatabase(db, filePath, merged, profileName, {
+    const assembled = assemblePreparedCompact(db, filePath, merged, profileName, {
       ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
       ...(opts.compactPointUpperBound !== undefined ? { compactPointUpperBound: opts.compactPointUpperBound } : {}),
     });
+    if (assembled.ok) logPreparedDiagnostics(db, filePath, assembled.value);
+    return assembled;
   } catch (cause) {
     return storageFailure(`view prepareCompact failed: ${detail(cause)}`);
   } finally {
@@ -944,11 +979,11 @@ export async function prepareCompact(
 }
 
 /**
- * Assemble a compact against the database as it stands right now. Shared by
- * prepareCompact and by the install-time drift recompute, which needs a fresh
- * assembly without reopening the thread file.
+ * Assemble a compact against the database as it stands right now. Reads only —
+ * so the install path can run it inside its own write transaction — and writes
+ * no diagnostics; see logPreparedDiagnostics.
  */
-function prepareFromOpenDatabase(
+function assemblePreparedCompact(
   db: DatabaseSync,
   filePath: string,
   merged: ViewProfile,
@@ -975,6 +1010,16 @@ function prepareFromOpenDatabase(
     merged,
     opts.compactPointUpperBound,
   );
+  return { ok: true, value: prepared };
+}
+
+/**
+ * What the assembly degraded or passed over, for the thread log. Fail-soft and
+ * on its own connection, so it never runs inside the install transaction.
+ */
+function logPreparedDiagnostics(db: DatabaseSync, filePath: string, prepared: PreparedCompact): void {
+  const threadId = readThreadMetadata(db).threadId;
+  const transaction: DbReadTransaction = { db, filePath, threadId };
   for (const warning of prepared.warnings) {
     writeLog(transaction, {
       level: "warning",
@@ -993,21 +1038,18 @@ function prepareFromOpenDatabase(
       reason: skipped.reason,
     });
   }
-  return { ok: true, value: prepared };
 }
 
 /**
  * Atomically activate a previously prepared compact snapshot.
  *
- * Normal background derivation or re-derivation may finish after preparation.
- * That does not invalidate the prepared view: it remains a coherent snapshot,
- * and later compacts can use the improved material.
- *
- * When the caller pinned the durable boundary it prepared against and that
- * boundary has since moved, install recomputes the compact against fresh state
- * and installs that instead of handing the host a refusal. Only explicit
- * cancellation stops activation; a true install failure leaves the prior view
- * serving.
+ * Drift between prepare and install — a new serving view, appended events,
+ * changed turn/chunk structure, finished derivations, edited source content, a
+ * moved visibility boundary — never refuses the install and never installs the
+ * stale snapshot. It reassembles the compact against durable state inside the
+ * install transaction and writes that instead, so the observation and the write
+ * cannot be separated by a third party. Only explicit cancellation stops
+ * activation; a true install failure leaves the prior view serving.
  */
 export async function installPreparedCompact(
   ref: ThreadRef,
@@ -1034,23 +1076,40 @@ export async function installPreparedCompact(
     const createdAt = opts.createdAt ?? new Date().toISOString();
     const proposedBoundary = opts.visibilityBoundary;
 
-    // One BEGIN IMMEDIATE. Throws InstalledViewDriftError, having written
-    // nothing, when the caller pinned a durable boundary that has since moved.
-    const writeView = (view: PreparedCompact, pinnedBoundary: number | undefined): void => {
-      replaceViewSnapshot(
-        db,
-        {
-          viewId: view.viewId,
+    // One BEGIN IMMEDIATE that both looks and writes. If the prepared snapshot
+    // no longer describes durable state, it is reassembled here — under the
+    // same lock that installs it — so what lands is never a stale snapshot and
+    // never a refusal the host has to turn into "no compact".
+    let installed = prepared;
+    let recomputed = false;
+    try {
+      replaceViewSnapshot(db, () => {
+        fireViewInjection("compact-install-before-validate", { db });
+        const drift = preparedStateDrift(db, prepared, opts.expectedPreviousBoundary);
+        if (drift !== null) {
+          const fresh = assemblePreparedCompact(db, filePath, prepared.merged, prepared.profileName, {
+            ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+            ...(prepared.compactPointUpperBound !== undefined
+              ? { compactPointUpperBound: prepared.compactPointUpperBound }
+              : {}),
+          });
+          if (!fresh.ok) throw new RecomputeFailedError(fresh.error);
+          installed = fresh.value;
+          recomputed = true;
+        }
+        turnsDomain.dropUnreadableChunks(db, installed.emptyChunkIds);
+        return {
+          viewId: installed.viewId,
           createdAt,
-          compactPoint: view.selection.compactPoint,
-          coveredFrom: view.selection.coveredFrom,
-          profileName: view.profileName,
+          compactPoint: installed.selection.compactPoint,
+          coveredFrom: installed.selection.coveredFrom,
+          profileName: installed.profileName,
           configJson: JSON.stringify({
-            lowerBound: view.merged.lowerBound,
-            percentages: view.merged.percentages,
+            lowerBound: installed.merged.lowerBound,
+            percentages: installed.merged.percentages,
           }),
           arrangementJson: JSON.stringify(
-            view.selection.entries.map((entry) => ({
+            installed.selection.entries.map((entry) => ({
               band: entry.band,
               subjectKind: entry.subjectKind,
               subjectId: entry.subjectId,
@@ -1058,50 +1117,22 @@ export async function installPreparedCompact(
               degraded: entry.degraded,
             })),
           ),
-          gapsJson: JSON.stringify(view.gaps),
+          gapsJson: JSON.stringify(installed.gaps),
           sourceStateJson: JSON.stringify({
-            maxEventOrder: view.maxEventOrder,
-            derivationCounts: view.derivationCounts,
+            maxEventOrder: installed.maxEventOrder,
+            derivationCounts: installed.derivationCounts,
           }),
-          bands: view.bands,
+          bands: installed.bands,
           ...(proposedBoundary !== undefined ? { visibilityBoundary: proposedBoundary } : {}),
-        },
-        () => {
-          // Inside BEGIN IMMEDIATE — atomic with replace.
-          fireViewInjection("compact-install-before-validate", { db });
-          if (pinnedBoundary !== undefined) {
-            const currentBoundary = readBoundaryPosition(db);
-            if (currentBoundary !== pinnedBoundary) {
-              throw new InstalledViewDriftError(
-                `visibility boundary drifted ${pinnedBoundary}→${currentBoundary} since prepare`,
-              );
-            }
-          }
-          turnsDomain.dropUnreadableChunks(db, view.emptyChunkIds);
-          return undefined;
-        },
-      );
-    };
-
-    let installed = prepared;
-    try {
-      writeView(prepared, opts.expectedPreviousBoundary);
-    } catch (cause) {
-      if (!(cause instanceof InstalledViewDriftError)) throw cause;
-      // Drift is not a reason to leave the session uncompacted: assemble
-      // against the state that is actually there and install that. The fresh
-      // assembly is the expectation, so this install carries no pin and the
-      // recompute cannot repeat.
-      const fresh = prepareFromOpenDatabase(db, filePath, prepared.merged, prepared.profileName, {
-        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
-        ...(prepared.compactPointUpperBound !== undefined
-          ? { compactPointUpperBound: prepared.compactPointUpperBound }
-          : {}),
+        };
       });
-      if (!fresh.ok) return fresh;
-      installed = fresh.value;
-      writeView(installed, undefined);
+    } catch (cause) {
+      // A recompute that could not produce a view (an aborted compact, a read
+      // failure) surfaces as itself, with the prior view still serving.
+      if (cause instanceof RecomputeFailedError) return { ok: false, error: cause.error };
+      throw cause;
     }
+    if (recomputed) logPreparedDiagnostics(db, filePath, installed);
 
     const bandReport = {} as CompactReceipt["bands"];
     for (const band of BAND_ORDER) {

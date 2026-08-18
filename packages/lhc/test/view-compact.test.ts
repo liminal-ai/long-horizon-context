@@ -1007,3 +1007,316 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     expect(statusFinal.value.derivation.pending).toBeGreaterThan(0);
   });
 });
+
+// LIM-92: install observes durable state under the same lock that writes, so a
+// prepared snapshot that no longer describes the thread is reassembled rather
+// than installed stale — and never refused.
+describe("install-time drift recomputes against fresh state", () => {
+  async function driftStore(): Promise<{ store: TempStore; sdk: Lhc; filePath: string }> {
+    const localStore = tempStore();
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const filePath = localStore.threadPath();
+    const created = await sdk.threads.newThread({ filePath, registryPath: localStore.registryPath });
+    if (!created.ok) throw new Error(created.error.reason);
+    for (let turn = 1; turn <= 4; turn += 1) {
+      const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
+      if (!sent.ok) throw new Error(sent.error.reason);
+    }
+    const drained = await sdk.work.drain({ filePath });
+    if (!drained.ok) throw new Error(drained.error.reason);
+    return { store: localStore, sdk, filePath };
+  }
+
+  const DRIFT_PARAMS = { lowerBound: 80, percentages: { full: 50, smooth: 30, detailed: 10, brief: 10 } };
+
+  function storedSourceState(filePath: string): { maxEventOrder: number } {
+    const db = openRaw(filePath);
+    try {
+      const row = db.prepare(`SELECT source_state_json FROM thread_view WHERE singleton = 1`).get() as {
+        source_state_json: string;
+      };
+      return JSON.parse(row.source_state_json) as { maxEventOrder: number };
+    } finally {
+      db.close();
+    }
+  }
+
+  function maxEventOrder(filePath: string): number {
+    const db = openRaw(filePath);
+    try {
+      const row = db.prepare(`SELECT COALESCE(MAX(event_order), 0) AS m FROM event`).get() as { m: number | bigint };
+      return Number(row.m);
+    } finally {
+      db.close();
+    }
+  }
+
+  it("installs fresh output, not the stale snapshot, when the serving view and the record both moved on", async () => {
+    const { store: local, sdk, filePath } = await driftStore();
+    try {
+      const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(stale.ok).toBe(true);
+      if (!stale.ok) return;
+
+      // A whole compact cycle happens under the prepared snapshot: new turns
+      // land, and another compact installs its own view.
+      for (let turn = 5; turn <= 7; turn += 1) {
+        const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
+        expect(sent.ok).toBe(true);
+      }
+      const drained = await sdk.work.drain({ filePath });
+      expect(drained.ok).toBe(true);
+      const interim = await sdk.threadView.compact({ filePath }, { params: DRIFT_PARAMS });
+      expect(interim.ok).toBe(true);
+      if (!interim.ok) return;
+
+      // What a compact prepared right now would produce — the fresh answer.
+      const fresh = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(fresh.ok).toBe(true);
+      if (!fresh.ok) return;
+      expect(fresh.value.viewId).not.toBe(stale.value.viewId);
+      expect(fresh.value.selection.compactPoint).not.toBe(stale.value.selection.compactPoint);
+
+      const installed = await sdk.threadView.installPreparedCompact({ filePath }, stale.value);
+      expect(installed.ok).toBe(true);
+      if (!installed.ok) return;
+
+      // The receipt and the stored view describe current state, not the
+      // snapshot the caller handed in.
+      expect(installed.value.viewId).toBe(fresh.value.viewId);
+      expect(installed.value.compactPoint).toBe(fresh.value.selection.compactPoint);
+      expect(installed.value.compactPoint).not.toBe(stale.value.selection.compactPoint);
+      const described = await sdk.threadView.describe({ filePath });
+      expect(described.ok).toBe(true);
+      if (!described.ok) return;
+      expect(described.value?.viewId).toBe(fresh.value.viewId);
+      expect(described.value?.compactPoint).toBe(fresh.value.selection.compactPoint);
+      expect(storedSourceState(filePath).maxEventOrder).toBe(maxEventOrder(filePath));
+    } finally {
+      local.cleanup();
+    }
+  });
+
+  it("installs fresh output when only the serving view moved on", async () => {
+    const { store: local, sdk, filePath } = await driftStore();
+    try {
+      const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(stale.ok).toBe(true);
+      if (!stale.ok) return;
+
+      // Another compact installs a differently-arranged view; nothing else moves.
+      const interim = await sdk.threadView.compact(
+        { filePath },
+        { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
+      );
+      expect(interim.ok).toBe(true);
+      if (!interim.ok) return;
+
+      const installed = await sdk.threadView.installPreparedCompact({ filePath }, stale.value);
+      expect(installed.ok).toBe(true);
+      if (!installed.ok) return;
+      const described = await sdk.threadView.describe({ filePath });
+      expect(described.ok).toBe(true);
+      if (!described.ok) return;
+      expect(described.value?.viewId).toBe(installed.value.viewId);
+      // Recorded source state is the state the view was assembled from.
+      expect(storedSourceState(filePath).maxEventOrder).toBe(maxEventOrder(filePath));
+    } finally {
+      local.cleanup();
+    }
+  });
+
+  it("installs fresh output when structure and derivations moved on after prepare", async () => {
+    const { store: local, sdk, filePath } = await driftStore();
+    try {
+      const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(stale.ok).toBe(true);
+      if (!stale.ok) return;
+      const staleArrangement = JSON.stringify(
+        stale.value.selection.entries.map((entry) => [entry.band, entry.subjectId, entry.derivationUsed]),
+      );
+
+      // Turn/chunk structure and derivation content both advance.
+      for (let turn = 5; turn <= 8; turn += 1) {
+        const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
+        expect(sent.ok).toBe(true);
+      }
+      const drained = await sdk.work.drain({ filePath });
+      expect(drained.ok).toBe(true);
+
+      const installed = await sdk.threadView.installPreparedCompact({ filePath }, stale.value);
+      expect(installed.ok).toBe(true);
+      if (!installed.ok) return;
+
+      const fresh = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(fresh.ok).toBe(true);
+      if (!fresh.ok) return;
+      const installedArrangement = JSON.stringify(
+        fresh.value.selection.entries.map((entry) => [entry.band, entry.subjectId, entry.derivationUsed]),
+      );
+      expect(installedArrangement).not.toBe(staleArrangement);
+      expect(installed.value.viewId).toBe(fresh.value.viewId);
+      expect(storedSourceState(filePath).maxEventOrder).toBe(maxEventOrder(filePath));
+    } finally {
+      local.cleanup();
+    }
+  });
+
+  it("installs the derivations that finished after prepare, without new events", async () => {
+    const localStore = tempStore();
+    try {
+      const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+      const filePath = localStore.threadPath();
+      const created = await sdk.threads.newThread({ filePath, registryPath: localStore.registryPath });
+      expect(created.ok).toBe(true);
+      for (let turn = 1; turn <= 6; turn += 1) {
+        const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
+        expect(sent.ok).toBe(true);
+      }
+
+      // Prepared while the turn/chunk derivations are still queued: the bands
+      // stand on fallbacks.
+      const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(stale.ok).toBe(true);
+      if (!stale.ok) return;
+      expect(stale.value.selection.entries.some((entry) => entry.degraded || entry.gap)).toBe(true);
+      const eventsBefore = maxEventOrder(filePath);
+
+      // Draining writes derivations only — not one new event.
+      const drained = await sdk.work.drain({ filePath });
+      expect(drained.ok).toBe(true);
+      expect(maxEventOrder(filePath)).toBe(eventsBefore);
+
+      const installed = await sdk.threadView.installPreparedCompact({ filePath }, stale.value);
+      expect(installed.ok).toBe(true);
+      if (!installed.ok) return;
+
+      const fresh = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(fresh.ok).toBe(true);
+      if (!fresh.ok) return;
+      const usedByInstall = installed.value.renderedBands.map((band) => band.text).join("\n");
+      const usedByFresh = fresh.value.bands.map((band) => band.renderedText).join("\n");
+      const usedByStale = stale.value.bands.map((band) => band.renderedText).join("\n");
+      expect(usedByInstall).toBe(usedByFresh);
+      expect(usedByInstall).not.toBe(usedByStale);
+    } finally {
+      localStore.cleanup();
+    }
+  });
+
+  it("installs fresh output when only the tail gained an event after prepare", async () => {
+    const { store: local, sdk, filePath } = await driftStore();
+    try {
+      const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(stale.ok).toBe(true);
+      if (!stale.ok) return;
+      const staleTail = stale.value.sourceState.maxEventOrder;
+
+      // A runtime note appends one event and derives nothing.
+      const noted = await sdk.intakeStream.messageEvents({ filePath }, [
+        validEvent("runtime_note", { payload: { text: "note landed between prepare and install" } }),
+      ]);
+      expect(noted.ok).toBe(true);
+      expect(maxEventOrder(filePath)).toBe(staleTail + 1);
+
+      const installed = await sdk.threadView.installPreparedCompact({ filePath }, stale.value);
+      expect(installed.ok).toBe(true);
+      if (!installed.ok) return;
+      expect(storedSourceState(filePath).maxEventOrder).toBe(staleTail + 1);
+      expect(storedSourceState(filePath).maxEventOrder).not.toBe(staleTail);
+    } finally {
+      local.cleanup();
+    }
+  });
+
+  it("observes, reassembles, and writes in one transaction — no rollback-and-retry pass", async () => {
+    const { store: local, sdk, filePath } = await driftStore();
+    try {
+      const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(stale.ok).toBe(true);
+      if (!stale.ok) return;
+      for (let turn = 5; turn <= 6; turn += 1) {
+        const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
+        expect(sent.ok).toBe(true);
+      }
+      const drained = await sdk.work.drain({ filePath });
+      expect(drained.ok).toBe(true);
+
+      let transactionEntries = 0;
+      let nestedBeginError: string | null = null;
+      setViewInjectionHook("compact-install-before-validate", (ctx) => {
+        transactionEntries += 1;
+        // node:sqlite has no public in-transaction flag; a nested BEGIN fails
+        // only when one is already open.
+        try {
+          ctx?.db.exec("BEGIN IMMEDIATE");
+          nestedBeginError = "nested_begin_succeeded";
+        } catch (cause) {
+          nestedBeginError = cause instanceof Error ? cause.message : String(cause);
+        }
+      });
+      let installed: Awaited<ReturnType<typeof sdk.threadView.installPreparedCompact>>;
+      try {
+        installed = await sdk.threadView.installPreparedCompact({ filePath }, stale.value);
+      } finally {
+        setViewInjectionHook("compact-install-before-validate", null);
+      }
+      expect(installed.ok).toBe(true);
+      if (!installed.ok) return;
+      // Drift really happened...
+      expect(installed.value.viewId).not.toBe(stale.value.viewId);
+      // ...and the whole thing still took exactly one write transaction: the
+      // fresh observation cannot be separated from the install it feeds.
+      expect(transactionEntries).toBe(1);
+      expect(nestedBeginError).toMatch(/transaction within a transaction/i);
+    } finally {
+      local.cleanup();
+    }
+  });
+
+  it("leaves the prior view serving when the fresh recompute cannot produce one", async () => {
+    const { store: local, sdk, filePath } = await driftStore();
+    try {
+      const first = await sdk.threadView.compact({ filePath }, { params: DRIFT_PARAMS });
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      const priorView = await sdk.threadView.describe({ filePath });
+      expect(priorView.ok).toBe(true);
+      if (!priorView.ok) return;
+      const priorContext = await contextMessages(sdk, filePath);
+
+      const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
+      expect(stale.ok).toBe(true);
+      if (!stale.ok) return;
+      for (let turn = 5; turn <= 6; turn += 1) {
+        const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
+        expect(sent.ok).toBe(true);
+      }
+
+      // The compact is cancelled exactly when install opens its transaction, so
+      // the recompute the drift triggers cannot complete.
+      const signal = { aborted: false };
+      setViewInjectionHook("compact-install-before-validate", () => {
+        signal.aborted = true;
+      });
+      let failed: Awaited<ReturnType<typeof sdk.threadView.installPreparedCompact>>;
+      try {
+        failed = await sdk.threadView.installPreparedCompact({ filePath }, stale.value, { signal });
+      } finally {
+        setViewInjectionHook("compact-install-before-validate", null);
+      }
+      expect(failed.ok).toBe(false);
+      if (failed.ok) return;
+      // The genuine failure, never a stale-prepared refusal.
+      expect(failed.error.code).toBe("compact_stopped");
+
+      const afterView = await sdk.threadView.describe({ filePath });
+      expect(afterView.ok).toBe(true);
+      if (!afterView.ok) return;
+      expect(afterView.value?.viewId).toBe(priorView.value?.viewId);
+      expect(sha256(bandMessages(await contextMessages(sdk, filePath)))).toBe(sha256(bandMessages(priorContext)));
+    } finally {
+      local.cleanup();
+    }
+  });
+});
