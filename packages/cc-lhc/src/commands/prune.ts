@@ -20,6 +20,9 @@ export async function runPruneCommand(commandLine: string, runtime: LhcCommandRu
     profile: runtime.contextPolicy?.profile ?? BUILTIN_CONTEXT_POLICY.profile,
     lowerBoundTokens: runtime.contextPolicy?.lowerBoundTokens ?? BUILTIN_CONTEXT_POLICY.lowerBoundTokens,
     ...(targetTokens === undefined ? {} : { manualPruneTargetTokens: targetTokens }),
+    ...(runtime.hostNotices === undefined || runtime.hostNotices.length === 0
+      ? {}
+      : { hostNotices: runtime.hostNotices }),
     ...(runtime.inputEpochChanged === undefined ? {} : { inputEpochChanged: runtime.inputEpochChanged }),
   };
   const outcome = await runContextMutation(plan, runtime);

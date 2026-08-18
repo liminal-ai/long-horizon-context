@@ -97,7 +97,7 @@ describe("resolveLaunchSession grammar", () => {
           return UUID_A;
         },
       }),
-    ).rejects.toThrow(/--fork-session is not supported with capture enabled/);
+    ).rejects.toThrow(/--fork-session is not supported/);
     expect(lookup).toBe(0);
   });
 
@@ -162,7 +162,7 @@ describe("resolveLaunchSession grammar", () => {
           return [];
         },
       }),
-    ).rejects.toThrow(/--fork-session is not supported with capture enabled/);
+    ).rejects.toThrow(/--fork-session is not supported/);
     expect(lookup).toBe(0);
   });
 });

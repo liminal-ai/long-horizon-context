@@ -65,7 +65,6 @@ function runtime(zoneTokens = 0): { runtime: LhcCommandRuntime; sdk: Record<stri
   return {
     sdk,
     runtime: {
-      captureDisabled: false,
       stats: {
         linesSeen: 0,
         eventsSent: 0,

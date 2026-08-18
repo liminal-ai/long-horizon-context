@@ -2,7 +2,6 @@ import type { Lhc, OpResult, ThreadRef, ViewStatus } from "lhc";
 import { describe, expect, it, vi } from "vitest";
 
 import {
-  CAPTURE_DISABLED_MESSAGE,
   dispatchLhcCommand,
   formatCommandOutput,
   type LhcCommandRuntime,
@@ -13,7 +12,6 @@ import { emptyCaptureStats } from "../../src/stats.js";
 
 function fakeRuntime(overrides: Partial<LhcCommandRuntime> = {}): LhcCommandRuntime {
   return {
-    captureDisabled: false,
     stats: {
       ...emptyCaptureStats(),
       linesSeen: 3,
@@ -39,11 +37,6 @@ const sampleStatus: ViewStatus = {
 };
 
 describe("dispatchLhcCommand", () => {
-  it("returns capture disabled when capture is off", async () => {
-    const outcome = await dispatchLhcCommand("/lhc-status", fakeRuntime({ captureDisabled: true }));
-    expect(outcome.messages).toEqual([CAPTURE_DISABLED_MESSAGE]);
-  });
-
   it("prints status from threadView.status", async () => {
     const sdk = {
       threadView: {

@@ -15,15 +15,13 @@ function armed(autoCompact = true): ResolvedContextPolicy {
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "builtin"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, armed: true, errors: [] };
+  return { policy, sources, fallbacks: [] };
 }
 
 describe("governor observe-state fold", () => {
   it("emits one observe record per turn_settled; duplicate settle does not double-trigger", () => {
     const state = createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 1,
-      descriptorReady: true,
     });
     const resolved = armed(true);
     const signals: LifecycleSignal[] = [
@@ -49,16 +47,17 @@ describe("governor observe-state fold", () => {
     expect(settled[0]?.hostCapability).toBe("capability_limited");
     expect(settled[0]?.pressure.nextRequestPressureTokens).toBe(510_000);
 
+    // A second settled seam at the same pressure is still executable: a seam
+    // that never started a mutation costs the next one nothing.
     const second = applyGovernorLifecycleBatch(first.state, [{ kind: "turn_settled", reason: "end_turn" }], resolved);
     expect(second.observes).toHaveLength(1);
-    expect(second.observes[0]?.decision).toBe("retry_growth_guard");
+    expect(second.observes[0]?.decision).toBe("would_compact");
+    expect(second.observes[0]?.wouldMutate).toBe(true);
   });
 
-  it("multiple model turns: only latest completed sampling is authoritative", () => {
+  it("multiple model turns: the newest VALID sampling is authoritative", () => {
     const state = createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 1,
-      descriptorReady: true,
     });
     const resolved = armed(true);
 
@@ -77,8 +76,9 @@ describe("governor observe-state fold", () => {
       resolved,
     );
     const settledMissing = missing.observes.filter((o) => o.observePhase === "settled_seam");
-    expect(settledMissing[0]?.decision).toBe("no_provider_usage");
-    expect(settledMissing[0]?.providerContextTotal).toBeNull();
+    expect(settledMissing[0]?.decision).toBe("would_compact");
+    expect(settledMissing[0]?.providerContextTotal).toBe(600_000);
+    expect(settledMissing[0]?.pressure.providerBaseFreshness).toBe("last_known");
 
     const invalid = applyGovernorLifecycleBatch(
       state,
@@ -98,7 +98,10 @@ describe("governor observe-state fold", () => {
       ],
       resolved,
     );
-    expect(invalid.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("no_provider_usage");
+    const settledInvalid = invalid.observes.filter((o) => o.observePhase === "settled_seam")[0];
+    expect(settledInvalid?.decision).toBe("would_compact");
+    expect(settledInvalid?.providerContextTotal).toBe(600_000);
+    expect(settledInvalid?.pressure.providerBaseFreshness).toBe("last_known");
 
     const replaced = applyGovernorLifecycleBatch(
       state,
@@ -124,9 +127,7 @@ describe("governor observe-state fold", () => {
 
   it("threshold crossed while turn open: classify would_compact with wouldMutate=false and no second mutate on open", () => {
     const state = createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 1,
-      descriptorReady: true,
     });
     const resolved = armed(true);
     const r = applyGovernorLifecycleBatch(
@@ -156,9 +157,7 @@ describe("governor observe-state fold", () => {
 
   it("post-measurement estimate after provider request can cross threshold during open turn", () => {
     const state = createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 1,
-      descriptorReady: true,
     });
     const resolved = armed(true);
     // Provider total just below upper (360k).
@@ -204,9 +203,7 @@ describe("governor observe-state fold", () => {
     const resolved = armed(true);
     const afterSampling = applyGovernorLifecycleBatch(
       createGovernorRuntimeState({
-        captureHealthy: true,
         captureGeneration: 1,
-        descriptorReady: true,
       }),
       [
         { kind: "turn_opened", reason: "user_prompt" },
@@ -271,9 +268,7 @@ describe("governor observe-state fold", () => {
 
   it("settled seam after estimate: one would_compact with wouldMutate true", () => {
     const state = createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 1,
-      descriptorReady: true,
     });
     const resolved = armed(true);
     const r = applyGovernorLifecycleBatch(
@@ -303,11 +298,9 @@ describe("governor observe-state fold", () => {
     expect(settled[0]?.providerContextTotal).toBe(350_000);
   });
 
-  it("input epoch change during turn suppresses would_compact", () => {
+  it("input typed during the turn does not suppress the settled decision", () => {
     let state = createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 1,
-      descriptorReady: true,
     });
     const resolved = armed(true);
     state = applyGovernorLifecycleBatch(state, [{ kind: "turn_opened", reason: "user_prompt" }], resolved).state;
@@ -324,18 +317,22 @@ describe("governor observe-state fold", () => {
       ],
       resolved,
     );
-    expect(r.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("input_epoch_changed");
+    const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0];
+    expect(settled?.decision).toBe("would_compact");
+    expect(settled?.wouldMutate).toBe(true);
+    // Kept as a receipt diagnostic, stripped of authority.
+    expect(settled?.inputEpoch).toBe(1);
+    expect(settled?.inputEpochAtTurnOpen).toBe(0);
   });
 
-  it("degraded capture suppresses", () => {
+  it("a degraded capture generation does not suppress the settled decision", () => {
     const state = createGovernorRuntimeState({
-      captureHealthy: false,
       captureGeneration: 2,
-      descriptorReady: true,
     });
     const r = applyGovernorLifecycleBatch(
       state,
       [
+        { kind: "capture_degraded", reason: "file_shrink", generation: 3 },
         { kind: "turn_opened", reason: "user_prompt" },
         {
           kind: "sampling_observed",
@@ -346,36 +343,15 @@ describe("governor observe-state fold", () => {
       ],
       armed(true),
     );
-    expect(r.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("capture_degraded");
-  });
-
-  it("descriptor not ready suppresses", () => {
-    const state = createGovernorRuntimeState({
-      captureHealthy: true,
-      descriptorReady: false,
-    });
-    const r = applyGovernorLifecycleBatch(
-      state,
-      [
-        { kind: "turn_opened", reason: "user_prompt" },
-        {
-          kind: "sampling_observed",
-          samplingId: "m1",
-          providerUsage: { input_tokens: 600_000 },
-        },
-        { kind: "turn_settled", reason: "end_turn" },
-      ],
-      armed(true),
-    );
-    expect(r.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("descriptor_not_ready");
+    const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0];
+    expect(settled?.decision).toBe("would_compact");
+    expect(settled?.wouldMutate).toBe(true);
+    expect(settled?.captureGeneration).toBe(3);
   });
 
   it("native compact attention suppresses and does not race LHC writer", () => {
     const r = applyGovernorLifecycleBatch(
-      createGovernorRuntimeState({
-        captureHealthy: true,
-        descriptorReady: true,
-      }),
+      createGovernorRuntimeState({}),
       [
         { kind: "native_compact_observed", summaryPreview: "..." },
         { kind: "turn_opened", reason: "user_prompt" },
@@ -392,15 +368,9 @@ describe("governor observe-state fold", () => {
     expect(r.observes.every((o) => o.wouldMutate === false)).toBe(true);
   });
 
-  it("observe mode never sets wouldMutate", () => {
-    const observeOnlyPolicy = armed(true);
-    observeOnlyPolicy.policy = { ...observeOnlyPolicy.policy, observeOnly: true };
-    const state = createGovernorRuntimeState({
-      captureHealthy: true,
-      descriptorReady: true,
-    });
+  it("a default policy at pressure sets wouldMutate — there is no observe-only mode", () => {
     const r = applyGovernorLifecycleBatch(
-      state,
+      createGovernorRuntimeState({}),
       [
         { kind: "turn_opened", reason: "user_prompt" },
         {
@@ -410,21 +380,15 @@ describe("governor observe-state fold", () => {
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
-      observeOnlyPolicy,
+      armed(true),
     );
-    for (const o of r.observes) {
-      if (o.decision === "would_compact") {
-        expect(o.wouldMutate).toBe(false);
-        expect(o.observeOnly).toBe(true);
-      }
-    }
+    const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0];
+    expect(settled?.decision).toBe("would_compact");
+    expect(settled?.wouldMutate).toBe(true);
   });
 
   it("policy_disabled when autoCompact off still observes", () => {
-    const state = createGovernorRuntimeState({
-      captureHealthy: true,
-      descriptorReady: true,
-    });
+    const state = createGovernorRuntimeState({});
     const r = applyGovernorLifecycleBatch(
       state,
       [
@@ -454,9 +418,7 @@ describe("governor observe-state fold", () => {
 
   it("split sampling lines: only final usage drives pressure; one settle → one settled observe", () => {
     const state = createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 1,
-      descriptorReady: true,
     });
     const resolved = armed(true);
     const r = applyGovernorLifecycleBatch(

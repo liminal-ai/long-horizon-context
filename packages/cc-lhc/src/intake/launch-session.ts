@@ -300,9 +300,9 @@ export async function resolveLaunchSession(
   if (normalized.unsupported.length > 0) {
     const flags = [...new Set(normalized.unsupported)].join(", ");
     throw new LaunchGrammarError(
-      `cc-lhc: unsupported session/cwd-changing flag(s) with capture enabled: ${flags}. ` +
-        `Attribution is not modeled for these Claude 2.1.226 flags. Use --lhc-no-capture for passthrough, ` +
-        `or drop the flag.`,
+      `cc-lhc: unsupported session/cwd-changing flag(s): ${flags}. ` +
+        `Attribution is not modeled for these Claude 2.1.226 flags. Drop the flag, ` +
+        `or run plain \`claude\` for unmanaged passthrough.`,
     );
   }
 
@@ -368,15 +368,12 @@ export async function resolveLaunchSession(
     };
   }
 
-  // Slice 1: capture-enabled --fork-session is not certified. Reject before
-  // child spawn / candidate lookup / target lineage mutation. Operators who
-  // need Claude's fork path may use --lhc-no-capture passthrough.
+  // --fork-session is not certified: no fork-clone lineage/prefix contract.
+  // Reject before child spawn / candidate lookup / target lineage mutation.
   if (hasFork) {
     throw new LaunchGrammarError(
-      "cc-lhc: --fork-session is not supported with capture enabled in Slice 1 " +
-        "(no certified fork-clone lineage/prefix contract). " +
-        "Use --lhc-no-capture to pass --fork-session through to Claude, " +
-        "or resume an existing session without fork.",
+      "cc-lhc: --fork-session is not supported (no certified fork-clone lineage/prefix contract). " +
+        "Resume an existing session without fork, or run plain `claude` for unmanaged passthrough.",
     );
   }
 

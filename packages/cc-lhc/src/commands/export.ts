@@ -19,7 +19,6 @@ import type { DispatchOutcome, LhcCommandRuntime } from "./dispatch.js";
  * from the SAME moment checks capture/serving fidelity instead.
  */
 export async function runExportCommand(_commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
-  if (runtime.captureDisabled) return { messages: ["capture disabled"] };
   if (runtime.sdk === undefined || runtime.threadRef === undefined) return { messages: ["capture not ready"] };
 
   const sdk = runtime.sdk as Lhc;

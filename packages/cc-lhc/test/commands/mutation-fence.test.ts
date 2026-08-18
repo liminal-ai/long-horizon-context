@@ -16,7 +16,6 @@ function baseRuntime(overrides: Partial<LhcCommandRuntime> = {}): LhcCommandRunt
   let ready = true;
   let phase: "binding" | "ready" | "degraded" | "closed" = "ready";
   return {
-    captureDisabled: false,
     stats: {
       linesSeen: 0,
       eventsSent: 0,

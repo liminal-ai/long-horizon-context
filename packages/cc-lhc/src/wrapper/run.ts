@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -21,15 +22,16 @@ import {
   type GovernorMutationDeferReason,
   type GovernorReceiptStore,
   type GovernorRuntimeState,
+  formatConfigFallbackNotice,
   isTerminalHandoffOutcome,
   loadContextPolicy,
   noteGovernorInput,
   openGovernorReceiptStore,
   policySourcesSummary,
   projectConfigPath,
+  reobserveSettled,
   type ResolvedContextPolicy,
-  setGovernorCaptureHealth,
-  setGovernorDescriptorReady,
+  setGovernorCaptureGeneration,
   setGovernorOperationInFlight,
   userConfigPath,
   validateContextPolicy,
@@ -139,8 +141,14 @@ export type RunOptions = {
   stdin?: NodeJS.ReadStream;
   stdout?: NodeJS.WriteStream;
   stderr?: NodeJS.WriteStream;
-  noCapture?: boolean;
   noInference?: boolean;
+  /**
+   * Test seam: the child is not a bound Claude session, so no session is
+   * resolved and no capture starts. Never reachable from argv, env, or config
+   * — cc-lhc has no capture-disabled product mode; plain `claude` is the
+   * passthrough.
+   */
+  unboundTestChild?: boolean;
   /** Test hook: substitute the wrapper log (defaults to ~/.cc-lhc/wrapper.log). */
   wrapperLog?: WrapperLog;
   /** Test hook: cap held pty output while the modal is open (defaults to 4 MiB). */
@@ -157,7 +165,7 @@ export type RunOptions = {
   descriptorIo?: DescriptorIo;
   /**
    * Session-scoped context policy overrides (not persisted). Highest merge
-   * precedence after project config. Slice 3 remains observe-only regardless.
+   * precedence after project config.
    */
   contextPolicyOverrides?: ContextPolicyPartial;
   /** Test hook: substitute resolved policy (skips filesystem load). */
@@ -242,7 +250,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
-  const noCapture = options.noCapture === true;
+  const unboundTestChild = options.unboundTestChild === true;
   const noInference = options.noInference === true || process.env.CC_LHC_NO_INFERENCE === "1";
   const commandGuard = options.commandGuard ?? new CommandInFlightGuard();
   const forceWrapperExit: ForceWrapperExit =
@@ -260,26 +268,24 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // (surface (c)); `status` reports the warning count so nothing is lost.
   const wrapperLog = options.wrapperLog ?? createWrapperLog();
 
-  // Slice 3: load context policy (observe-only). Invalid policy does not arm
-  // automatic intent but leaves Claude/capture usable with a visible diagnostic.
+  // Configuration always yields a usable policy: bad fields fall back to
+  // built-in defaults and automatic compact stays armed. The fallback notice
+  // surfaces immediately — stderr while the wrapper still owns the terminal,
+  // the wrapper log always — and again in the panel and the compact message.
   let resolvedContextPolicy: ResolvedContextPolicy =
     options.resolvedContextPolicy ??
     loadContextPolicy({
       cwd: process.cwd(),
       ...(options.contextPolicyOverrides !== undefined ? { sessionOverrides: options.contextPolicyOverrides } : {}),
     });
-  if (!resolvedContextPolicy.armed) {
-    for (const err of resolvedContextPolicy.errors) {
-      wrapperLog.warn(`cc-lhc context policy: ${err}`);
-    }
-    wrapperLog.warn(
-      "cc-lhc context policy: automatic policy not armed; observe reports policy_invalid; Claude/capture continue",
-    );
-  } else {
-    wrapperLog.info(
-      `cc-lhc context policy armed observeOnly=${resolvedContextPolicy.policy.observeOnly} autoCompact=${resolvedContextPolicy.policy.autoCompact} lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
-    );
+  let configFallbackNotice = formatConfigFallbackNotice(resolvedContextPolicy.fallbacks);
+  for (const line of configFallbackNotice) {
+    wrapperLog.warn(`cc-lhc context policy: ${line.trim()}`);
+    stderr.write(`cc-lhc: ${line}\n`);
   }
+  wrapperLog.info(
+    `cc-lhc context policy autoCompact=${resolvedContextPolicy.policy.autoCompact} lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
+  );
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
   /** Most recent non-success outcome (health visibility; never claims success). */
   let lastAttempt: { summary: string; atMs: number } | null = null;
@@ -395,7 +401,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let respawnPassthrough: string[] = [];
   /** Set when the launch form could replay a positional prompt: handoff fails closed. */
   let respawnUnsafeReason: string | null = null;
-  if (!noCapture) {
+  if (!unboundTestChild) {
     try {
       const plan = await resolveLaunchSession(argv, {
         cwd: process.cwd(),
@@ -465,7 +471,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       argv.slice(0, i + 1).every((a) => a !== "--") && (arg === "--autocompact" || arg.startsWith("--autocompact=")),
   );
   const nativeBackstopArgs: string[] =
-    !noCapture && !userChoseAutocompact && resolvedContextPolicy.armed && options.disableNativeBackstopArgs !== true
+    expectedSession !== undefined && !userChoseAutocompact && options.disableNativeBackstopArgs !== true
       ? ["--autocompact", String(resolvedContextPolicy.policy.nativeBackstopTokens)]
       : [];
   if (nativeBackstopArgs.length > 0) {
@@ -480,7 +486,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // Undefined descriptorIo uses each API's defaultDescriptorIo (production path).
   let runtimeDescriptorPath: string | undefined;
   let runtimeDescriptor: RuntimeDescriptorV1 | undefined;
-  if (!noCapture) {
+  if (expectedSession !== undefined) {
     try {
       runtimeDescriptorPath = newDescriptorPath(undefined, descriptorIo);
       runtimeDescriptor = createOpeningDescriptor(runtimeDescriptorPath, descriptorIo);
@@ -589,12 +595,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let minObservedProviderTotal: number | null = null;
   /** One auto operation scheduled/coalesced at a time. */
   let autoOperationScheduled = false;
-  /** Cooldown after a non-success handoff; replayed rollback lifecycle must not re-trigger. */
-  let autoBlockedUntilMs = 0;
   /** Assigned inside the run promise where child/teardown machinery lives. */
   let runAutoOperation: (args: { frozenTriggerTokens: number | null; receiptId: string }) => Promise<void> =
     async () => {};
-  const HANDOFF_FAILURE_COOLDOWN_MS = 120_000;
 
   const triggerFatalRevocation = (reason: string): void => {
     if (fatalRevocationExit && exited) return;
@@ -701,151 +704,227 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         descriptorIo,
       );
       wrapperLog.info(`cc-lhc runtime descriptor ready thread=${threadId} session=${rollout.sessionId}`);
-      governorState = setGovernorDescriptorReady(governorState, true);
     } catch (cause) {
+      // The descriptor is the retrieval capability. It is not an input to
+      // compaction: a session that cannot serve `get-turns` still compacts.
       wrapperLog.warn(
         `cc-lhc runtime descriptor update failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
-      governorState = setGovernorDescriptorReady(governorState, false);
+    }
+  };
+
+  /**
+   * A settled seam wanted to compact while capture was still catching up.
+   * Cleared by the catch-up evaluation once capture reports ready.
+   */
+  let captureCatchUpPending = false;
+  /** Capture generation whose degradation already triggered one rebuild. */
+  let captureRebuildForGeneration: number | null = null;
+  let captureRebuildInFlight = false;
+
+  /**
+   * Degraded capture is a reason to reconcile, never a reason to let the
+   * session die oversized. The rollout file is the persisted transcript and
+   * every intake event carries a content-stable idempotency key, so re-reading
+   * it from the top is the same thing a fresh `--resume` does: already-recorded
+   * events are skipped and anything missed lands. One rebuild per degraded
+   * generation; a later settled seam paces the next one.
+   *
+   * Runs off the capture batch path — stopping capture inline would deadlock
+   * the queue this callback runs on.
+   */
+  const rebuildCaptureFromTranscript = (): void => {
+    if (captureRebuildInFlight || handoffInProgress || commandGuard.current() !== null) return;
+    const degraded = captureSession;
+    if (degraded === undefined) return;
+    const ctx = degraded.getCommandContext();
+    const rollout = degraded.getRolloutInfo();
+    const sessionId = rollout.sessionId;
+    if (ctx.sdk === undefined || ctx.threadRef === undefined || sessionId === undefined) return;
+    const generation = degraded.getCaptureGeneration();
+    if (captureRebuildForGeneration === generation) return;
+    captureRebuildForGeneration = generation;
+    captureRebuildInFlight = true;
+    const threadRef = ctx.threadRef;
+    const sdk = ctx.sdk;
+    wrapperLog.warn(
+      `cc-lhc capture rebuild: re-reading transcript for session ${sessionId} after degraded generation ${generation}`,
+    );
+    setImmediate(() => {
+      void (async () => {
+        try {
+          await degraded.stop().catch(() => {});
+          captureSession = startCaptureSession({
+            startedAt: new Date(),
+            noInference,
+            continueCapture: { threadRef, sdk, stats: degraded.stats, priorGeneration: generation },
+            expectedSession: { sessionId, source: "explicit_resume" },
+            resumeSessionId: sessionId,
+            lineageDbPath: defaultLineageDbPath(),
+            log: (message) => wrapperLog.info(message),
+            logError: (message) => wrapperLog.warn(message),
+            onLifecycle: onCaptureLifecycle,
+            onRuntimeSettings,
+          });
+        } catch (cause) {
+          wrapperLog.warn(
+            `cc-lhc capture rebuild failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
+        } finally {
+          captureRebuildInFlight = false;
+        }
+      })();
+    });
+  };
+
+  /**
+   * One governor observation: log it, receipt it, and — for an executable
+   * settled decision — start the automatic operation or route it to a recovery
+   * that comes back.
+   *
+   * Receipts are write-behind. When the store is unavailable the operation runs
+   * against an in-memory receipt id and says so; bookkeeping about the compact
+   * never decides whether the compact happens.
+   */
+  const handleGovernorObserve = (record: import("../governor/index.js").GovernorObserveRecord): void => {
+    wrapperLog.info(formatGovernorObserveLogLine(record));
+    const persisted = persistGovernorObserve(record);
+    options.onGovernorObserve?.(record);
+    // Learn the host overhead floor from predicted next-request pressure.
+    const pressureForFloor = record.pressure.nextRequestPressureTokens;
+    if (pressureForFloor > 0) {
+      minObservedProviderTotal =
+        minObservedProviderTotal === null ? pressureForFloor : Math.min(minObservedProviderTotal, pressureForFloor);
+    }
+    // Capability-limited: executable would_compact only at a settled seam
+    // (wouldMutate is false during open turns). Starts ONE automatic operation,
+    // scheduled off the capture batch path (the handoff stops capture; doing
+    // that inline would deadlock the batch queue it runs on).
+    if (record.wouldMutate !== true || record.observePhase !== "settled_seam") return;
+
+    if (persisted !== null && !persisted.inserted) {
+      // The classification matches one already recorded. What happened to that
+      // receipt decides whether this seam is new work.
+      const existingOutcome = persisted.receipt.handoffOutcome;
+      if (existingOutcome?.kind === "mutation_deferred") {
+        // A deferral means the mutation never started — the wrapper was busy,
+        // or capture was catching up. That must cost the next seam nothing, so
+        // this one runs and re-attaches its own outcome to the same receipt.
+        wrapperLog.info(
+          `cc-lhc governor: retrying receipt ${persisted.receipt.receiptId} after deferral (${existingOutcome.reason}); no mutation had started`,
+        );
+      } else if (existingOutcome?.kind === "scheduled") {
+        wrapperLog.warn(
+          `cc-lhc governor: replay of existing scheduled receipt ${persisted.receipt.receiptId} — an operation already owns it; no re-schedule; inspect handoffOutcome`,
+        );
+        lastAttempt = {
+          summary: `auto compact not re-scheduled: existing scheduled receipt ${persisted.receipt.receiptId} (restart/replay)`,
+          atMs: Date.now(),
+        };
+        return;
+      } else if (isTerminalHandoffOutcome(existingOutcome)) {
+        // An attempt actually ran against this classification.
+        wrapperLog.info(
+          `cc-lhc governor: exact replay of receipt ${persisted.receipt.receiptId} with terminal outcome ${existingOutcome?.kind}; no re-schedule`,
+        );
+        return;
+      } else {
+        wrapperLog.info(`cc-lhc governor: exact replay of receipt ${persisted.receipt.receiptId}; no re-schedule`);
+        return;
+      }
+    }
+
+    let receiptId: string;
+    if (persisted === null) {
+      receiptId = `mem-${randomUUID()}`;
+      wrapperLog.warn(
+        `cc-lhc governor: durable receipt unavailable; running auto compact against in-memory receipt ${receiptId} ` +
+          "(restart recovery degraded for this attempt; the session still compacts)",
+      );
+    } else {
+      receiptId = persisted.receipt.receiptId;
+    }
+
+    const deferAuto = (
+      reason: GovernorMutationDeferReason,
+      detail: string,
+      logLevel: "info" | "warn" = "info",
+    ): void => {
+      const outcome: GovernorHandoffOutcome = { kind: "mutation_deferred", detail, reason };
+      const attached = attachGovernorHandoffOutcome(receiptId, outcome, { mutationBegan: false });
+      const line = `cc-lhc governor: wouldMutate deferred (${reason}): ${detail} [receipt ${receiptId}]`;
+      if (logLevel === "warn") wrapperLog.warn(line);
+      else wrapperLog.info(line);
+      // attachGovernorHandoffOutcome already sets lastAttempt on failure.
+      if (attached) {
+        lastAttempt = { summary: `auto compact deferred: ${reason} (${detail})`, atMs: Date.now() };
+      }
+    };
+
+    if (exited) {
+      deferAuto("wrapper_exiting", "wrapper already exiting; mutation not started");
+    } else if (handoffInProgress) {
+      deferAuto("handoff_in_progress", "controlled handoff already in progress; mutation not started");
+    } else if (autoOperationScheduled) {
+      deferAuto(
+        "auto_operation_in_flight",
+        "another automatic operation already owns the flight; coalesced (no second mutation)",
+      );
+    } else if (respawnUnsafeReason !== null) {
+      // Respawn cannot safely replace the child: refuse, do not pretend scheduled.
+      attachGovernorHandoffOutcome(
+        receiptId,
+        { kind: "mutation_refused", detail: `respawn_unsafe: ${respawnUnsafeReason}` },
+        { mutationBegan: false },
+      );
+      wrapperLog.warn(
+        `cc-lhc governor: wouldMutate refused — respawn unsafe: ${respawnUnsafeReason} [receipt ${receiptId}]`,
+      );
+      lastAttempt = {
+        summary: `auto compact refused: respawn unsafe (${respawnUnsafeReason})`,
+        atMs: Date.now(),
+      };
+    } else if (captureSession?.isCaptureReady() !== true) {
+      // Compacting stale semantic state is not the answer: catch capture up
+      // from the transcript and take this seam again the moment it is ready.
+      const phase = captureSession?.getCaptureHealth().phase ?? "starting";
+      captureCatchUpPending = true;
+      if (phase === "degraded") rebuildCaptureFromTranscript();
+      deferAuto(
+        "capture_catching_up",
+        `capture is ${phase}; catching up from the transcript and re-evaluating when ready`,
+        "warn",
+      );
+    } else {
+      // Claim ownership: keep `scheduled` only while this operation owns it.
+      autoOperationScheduled = true;
+      const frozenTriggerTokens = record.pressure.nextRequestPressureTokens;
+      setImmediate(() => {
+        void runAutoOperation({ frozenTriggerTokens, receiptId }).finally(() => {
+          autoOperationScheduled = false;
+        });
+      });
     }
   };
 
   const onCaptureLifecycle = (signals: readonly LifecycleSignal[]): void => {
-    // Sync capture health / generation into governor before decide (no I/O).
+    // Generation is a diagnostic stamp for receipts, not a decision input.
     if (captureSession !== undefined) {
-      governorState = setGovernorCaptureHealth(
-        governorState,
-        captureSession.isCaptureHealthy(),
-        captureSession.getCaptureGeneration(),
-      );
-    }
-    if (runtimeDescriptor?.state === "ready" && !descriptorCapabilityRevoked) {
-      governorState = setGovernorDescriptorReady(governorState, true);
+      governorState = setGovernorCaptureGeneration(governorState, captureSession.getCaptureGeneration());
     }
 
-    // Pure decide + wrapper-log record. Mutation only after durable receipt.
     const observed = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy);
     governorState = observed.state;
-    for (const record of observed.observes) {
-      wrapperLog.info(formatGovernorObserveLogLine(record));
-      const persisted = persistGovernorObserve(record);
-      options.onGovernorObserve?.(record);
-      // Use predicted next-request pressure for floor learning when available;
-      // fall back to authoritative provider total only.
-      const pressureForFloor = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
-      if (pressureForFloor !== null && pressureForFloor > 0) {
-        minObservedProviderTotal =
-          minObservedProviderTotal === null ? pressureForFloor : Math.min(minObservedProviderTotal, pressureForFloor);
-      }
-      // Capability-limited: executable would_compact only at a settled seam
-      // (wouldMutate is false during open turns). Starts ONE automatic operation,
-      // scheduled off the capture batch path (the handoff stops capture; doing
-      // that inline would deadlock the batch queue it runs on).
-      //
-      // Durable-before-mutate: open-turn may remain log-only if receipt
-      // persistence is unavailable; a settled wouldMutate must not start
-      // context mutation without a durable receipt id. Exact replay
-      // (inserted=false) must not schedule a second automatic mutation —
-      // including an existing `scheduled` receipt after process crash (fail closed).
-      //
-      // After a NEW inserted wouldMutate receipt, every branch must either start
-      // the exact operation or attach a terminal/non-running outcome
-      // (mutation_deferred / mutation_refused). Leaving `scheduled` without an
-      // owner is reserved for the crash window after insert and before claim.
-      if (record.wouldMutate === true && record.observePhase === "settled_seam") {
-        if (persisted === null) {
-          wrapperLog.warn(
-            "cc-lhc governor: wouldMutate refused — durable receipt unavailable; Claude/LHC context left unchanged",
-          );
-          lastAttempt = {
-            summary: "auto compact refused: durable receipt unavailable",
-            atMs: Date.now(),
-          };
-        } else if (!persisted.inserted) {
-          const existingOutcome = persisted.receipt.handoffOutcome;
-          if (existingOutcome?.kind === "scheduled") {
-            wrapperLog.warn(
-              `cc-lhc governor: replay of scheduled receipt ${persisted.receipt.receiptId} — fail closed (no second auto mutation); inspect handoffOutcome`,
-            );
-            lastAttempt = {
-              summary: `auto compact refused: existing scheduled receipt ${persisted.receipt.receiptId} (restart/replay)`,
-              atMs: Date.now(),
-            };
-          } else if (isTerminalHandoffOutcome(existingOutcome)) {
-            wrapperLog.info(
-              `cc-lhc governor: exact replay of receipt ${persisted.receipt.receiptId} with terminal outcome ${existingOutcome?.kind}; no re-schedule`,
-            );
-          } else {
-            wrapperLog.info(`cc-lhc governor: exact replay of receipt ${persisted.receipt.receiptId}; no re-schedule`);
-          }
-        } else {
-          // Fresh insert: receipt is currently `scheduled`. Claim it or terminalize.
-          const receiptId = persisted.receipt.receiptId;
-          const deferAuto = (
-            reason: GovernorMutationDeferReason,
-            detail: string,
-            logLevel: "info" | "warn" = "info",
-          ): void => {
-            const outcome: GovernorHandoffOutcome = { kind: "mutation_deferred", detail, reason };
-            const attached = attachGovernorHandoffOutcome(receiptId, outcome, { mutationBegan: false });
-            const line = `cc-lhc governor: wouldMutate deferred (${reason}): ${detail} [receipt ${receiptId}]`;
-            if (logLevel === "warn") wrapperLog.warn(line);
-            else wrapperLog.info(line);
-            // attachGovernorHandoffOutcome already sets lastAttempt on failure.
-            // On success, record the deferred gate for panel status.
-            if (attached) {
-              lastAttempt = {
-                summary: `auto compact deferred: ${reason} (${detail})`,
-                atMs: Date.now(),
-              };
-            }
-          };
+    for (const record of observed.observes) handleGovernorObserve(record);
 
-          if (exited) {
-            deferAuto("wrapper_exiting", "wrapper already exiting; mutation not started");
-          } else if (handoffInProgress) {
-            deferAuto("handoff_in_progress", "controlled handoff already in progress; mutation not started");
-          } else if (autoOperationScheduled) {
-            deferAuto(
-              "auto_operation_in_flight",
-              "another automatic operation already owns the flight; coalesced (no second mutation)",
-            );
-          } else if (respawnUnsafeReason !== null) {
-            // Respawn cannot safely replace the child: refuse, do not pretend scheduled.
-            attachGovernorHandoffOutcome(
-              receiptId,
-              {
-                kind: "mutation_refused",
-                detail: `respawn_unsafe: ${respawnUnsafeReason}`,
-              },
-              { mutationBegan: false },
-            );
-            wrapperLog.warn(
-              `cc-lhc governor: wouldMutate refused — respawn unsafe: ${respawnUnsafeReason} [receipt ${receiptId}]`,
-            );
-            lastAttempt = {
-              summary: `auto compact refused: respawn unsafe (${respawnUnsafeReason})`,
-              atMs: Date.now(),
-            };
-          } else if (Date.now() < autoBlockedUntilMs) {
-            const remainMs = Math.max(0, autoBlockedUntilMs - Date.now());
-            deferAuto(
-              "cooldown",
-              `post-failure cooldown active (~${Math.ceil(remainMs / 1000)}s remaining); mutation not started`,
-            );
-          } else {
-            // Claim ownership: keep `scheduled` only while this operation owns it.
-            // Crash between here and runAutoOperation claim is the fail-closed window.
-            autoOperationScheduled = true;
-            const frozenTriggerTokens = record.pressure.nextRequestPressureTokens ?? record.providerContextTotal;
-            setImmediate(() => {
-              void runAutoOperation({ frozenTriggerTokens, receiptId }).finally(() => {
-                autoOperationScheduled = false;
-              });
-            });
-          }
-        }
-      }
+    // Capture is caught up: take the settled seam that was skipped while it
+    // was rebuilding. No timer, no latch — the pending flag exists only to
+    // aim one re-evaluation at the next ready moment.
+    if (captureCatchUpPending && captureSession?.isCaptureReady() === true && !governorState.turnOpen) {
+      captureCatchUpPending = false;
+      const caughtUp = reobserveSettled(governorState, resolvedContextPolicy);
+      governorState = caughtUp.state;
+      if (caughtUp.observe !== null) handleGovernorObserve(caughtUp.observe);
     }
 
     for (const signal of signals) {
@@ -856,8 +935,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // descriptor capability is already non-ready/absent, further reasons are
         // diagnostics only — never re-publish or treat as fatal re-transition.
         wrapperLog.warn(`cc-lhc capture degraded: ${signal.reason}`);
-        governorState = setGovernorCaptureHealth(governorState, false, signal.generation);
-        governorState = setGovernorDescriptorReady(governorState, false);
+        governorState = setGovernorCaptureGeneration(governorState, signal.generation);
         if (descriptorCapabilityRevoked || runtimeDescriptorPath === undefined) {
           continue;
         }
@@ -909,7 +987,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
   };
 
-  if (!noCapture && expectedSession !== undefined && launchThread !== undefined) {
+  if (expectedSession !== undefined && launchThread !== undefined) {
     captureSession = startCaptureSession({
       startedAt,
       noInference,
@@ -996,9 +1074,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
   const commandRuntime = (): LhcCommandRuntime => {
     const rollout = captureSession?.getRolloutInfo();
-    if (noCapture || captureSession === undefined) {
+    if (captureSession === undefined) {
       return {
-        captureDisabled: true,
         stats: emptyCaptureStats(),
         sdk: undefined,
         threadRef: undefined,
@@ -1014,6 +1091,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       cwd: process.cwd(),
       sourceRolloutPath: rollout?.path,
       sourceSessionId: rollout?.sessionId,
+      ...(configFallbackNotice.length === 0 ? {} : { hostNotices: configFallbackNotice }),
       contextPolicy: {
         profile: policy.profile,
         lowerBoundTokens: policy.lowerBoundTokens,
@@ -1215,7 +1293,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       }
       const sources = { ...resolvedContextPolicy.sources };
       for (const key of changedKeys) sources[key] = "session";
-      resolvedContextPolicy = { policy: candidate, sources, armed: true, errors: [] };
+      // A panel edit that validates replaces the whole policy; the load-time
+      // fallbacks it corrects are no longer in force.
+      resolvedContextPolicy = { policy: candidate, sources, fallbacks: [] };
+      configFallbackNotice = [];
       wrapperLog.info(
         `cc-lhc policy edit applied (${editLabel}) session scope: auto=${candidate.autoCompact} lower=${candidate.lowerBoundTokens} upper=${candidate.upperBoundTokens}`,
       );
@@ -1337,7 +1418,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const policy = resolvedContextPolicy.policy;
       const rows: string[] = ["LHC context management"];
 
-      const capturePhase = captureSession?.getCaptureHealth().phase ?? (noCapture ? "disabled" : "starting");
+      const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
       const retrievalState =
         runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
       rows.push(`capture ${capturePhase} · retrieval ${retrievalState}`);
@@ -1347,15 +1428,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         provider === null
           ? "provider context: none observed yet"
           : `provider context ${formatTokensShort(provider.total)}`;
-      if (!resolvedContextPolicy.armed) {
-        rows.push(`${providerText} · policy INVALID (auto disabled)`);
-        for (const err of resolvedContextPolicy.errors.slice(0, 3)) rows.push(`  config error: ${err}`);
-      } else {
-        rows.push(
-          `${providerText} · auto ${policy.autoCompact ? "on" : "off"}${policy.observeOnly ? " (observe-only)" : ""} · ` +
-            `trigger ${formatTokensShort(policy.upperBoundTokens)} · target ${formatTokensShort(policy.lowerBoundTokens)}`,
-        );
-      }
+      rows.push(
+        `${providerText} · auto ${policy.autoCompact ? "on" : "off"} · ` +
+          `trigger ${formatTokensShort(policy.upperBoundTokens)} · target ${formatTokensShort(policy.lowerBoundTokens)}`,
+      );
+      // Bad configuration never disables anything; it says so, here and in the
+      // compact message, until the operator fixes it.
+      for (const line of configFallbackNotice.slice(0, 4)) rows.push(line);
       rows.push(
         `native compact backstop ${formatTokensShort(policy.nativeBackstopTokens)} (--autocompact, next-launch value)`,
       );
@@ -1386,11 +1465,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         rows.push(`last attempt: ${lastAttempt.summary} (${formatAgo(lastAttempt.atMs)})`);
       }
 
-      if (
-        resolvedContextPolicy.armed &&
-        minObservedProviderTotal !== null &&
-        policy.upperBoundTokens <= minObservedProviderTotal
-      ) {
+      if (minObservedProviderTotal !== null && policy.upperBoundTokens <= minObservedProviderTotal) {
         rows.push(
           `WARNING: trigger ${formatTokensShort(policy.upperBoundTokens)} is at/below observed Claude host overhead ` +
             `(${formatTokensShort(minObservedProviderTotal)}) — every settled turn would compact`,
@@ -1892,11 +1967,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             atMs: Date.now(),
           };
         }
-        if (result.kind !== "success" && result.kind !== "cancelled") {
-          // Rollback replays the old rollout: its lifecycle re-derives the same
-          // provider pressure. Cool down so a failed handoff cannot self-retrigger.
-          autoBlockedUntilMs = Date.now() + HANDOFF_FAILURE_COOLDOWN_MS;
-        }
         const handoffOutcome: GovernorHandoffOutcome =
           result.kind === "success"
             ? {
@@ -2014,14 +2084,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         const epochAtStart = governorState.currentInputEpoch;
         const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
         const runtime = commandRuntime();
-        if (runtime.captureDisabled) {
-          attachGovernorHandoffOutcome(
-            receiptId,
-            { kind: "mutation_refused", detail: "capture disabled" },
-            { mutationBegan: true },
-          );
-          return;
-        }
         const policy = resolvedContextPolicy.policy;
         const plan: ContextMutationPlan = {
           operation: "auto_compact",
@@ -2036,6 +2098,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
               }
             : {}),
           ...(frozenTriggerTokens === null ? {} : { triggerContextTokens: frozenTriggerTokens }),
+          ...(configFallbackNotice.length === 0 ? {} : { hostNotices: configFallbackNotice }),
           inputEpochChanged: epochChanged,
         };
         const outcome = await runContextMutation(plan, { ...runtime, inputEpochChanged: epochChanged });

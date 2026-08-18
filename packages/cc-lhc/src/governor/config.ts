@@ -1,7 +1,13 @@
 /**
  * Context policy load/merge/validate.
  * Precedence: builtin < user (XDG) < project (.cc-lhc.json) < session.
- * Unknown fields and invalid bounds fail loudly — no silent normalize.
+ *
+ * Configuration can be wrong; it can never disarm the product. An unknown
+ * field, a malformed value, an unreadable file, or an incoherent pair of
+ * bounds falls back to the built-in default for the fields involved and
+ * records a notice. Automatic compact stays armed either way — a typo in
+ * `~/.config/cc-lhc/config.json` must not be a silent off switch for the one
+ * function that keeps long sessions alive.
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -9,6 +15,7 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
 import type {
+  ConfigFallback,
   ContextPolicy,
   ContextPolicyPartial,
   NativeCompactMode,
@@ -18,7 +25,7 @@ import type {
   ResolvedContextPolicy,
 } from "./types.js";
 
-/** Steward built-in defaults for the work-ready path (Slice 4: auto on). */
+/** Steward built-in defaults. Automatic compact is on. */
 export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
   autoCompact: true,
   lowerBoundTokens: 180_000,
@@ -29,28 +36,19 @@ export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
   pruneEnabled: false,
   pruneThresholdTokens: null,
   pruneTargetTokens: null,
-  observeOnly: false,
-  retryGrowthTokens: 10_000,
   minRunwayTokens: 50_000,
 };
+
+/** The operator-facing sentence every fallback surface repeats verbatim. */
+export const CONFIG_FALLBACK_NOTICE =
+  "Invalid compact configuration. Default configuration used. Please fix or update the configuration.";
 
 /** Canonical SDK profile names — no second percentage ontology. */
 export const CANONICAL_LHC_PROFILES = ["continuation", "conversation", "coding"] as const;
 
-const KNOWN_KEYS = new Set<string>([
-  "autoCompact",
-  "lowerBoundTokens",
-  "upperBoundTokens",
-  "profile",
-  "nativeCompactMode",
-  "nativeBackstopTokens",
-  "pruneEnabled",
-  "pruneThresholdTokens",
-  "pruneTargetTokens",
-  "retryGrowthTokens",
-  "minRunwayTokens",
-  "observeOnly",
-]);
+const POLICY_FIELD_KEYS = Object.keys(BUILTIN_CONTEXT_POLICY) as PolicyFieldKey[];
+
+const KNOWN_KEYS = new Set<string>(POLICY_FIELD_KEYS);
 
 export function userConfigPath(env: NodeJS.ProcessEnv = process.env): string {
   const xdg = env.XDG_CONFIG_HOME;
@@ -68,88 +66,82 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+export interface ParsedPolicyPartial {
+  value: ContextPolicyPartial;
+  /** Fields dropped as unknown or malformed; each already carries its origin. */
+  fallbacks: ConfigFallback[];
+}
+
 /**
- * Parse a partial policy object. Rejects unknown keys and wrong types.
- * Does not validate bounds (that is validateContextPolicy).
+ * Parse a partial policy object field by field. Unknown keys and wrong types
+ * are dropped with a notice rather than discarding the whole layer; bounds
+ * coherence is settled later against the merged policy.
  */
-export function parseContextPolicyPartial(
-  raw: unknown,
-  label: string,
-  options: { allowObserveOnly?: boolean } = {},
-): { ok: true; value: ContextPolicyPartial } | { ok: false; errors: string[] } {
+export function parseContextPolicyPartial(raw: unknown, origin: string): ParsedPolicyPartial {
+  const fallbacks: ConfigFallback[] = [];
   if (!isPlainObject(raw)) {
-    return { ok: false, errors: [`${label}: expected a JSON object`] };
+    fallbacks.push({ origin, field: null, detail: "expected a JSON object; whole layer ignored" });
+    return { value: {}, fallbacks };
   }
-  const errors: string[] = [];
-  for (const key of Object.keys(raw)) {
-    if (!KNOWN_KEYS.has(key)) {
-      errors.push(`${label}: unknown field "${key}"`);
-    }
-  }
-  if (errors.length > 0) return { ok: false, errors };
 
   const out: ContextPolicyPartial = {};
+  const drop = (field: PolicyFieldKey | null, detail: string): void => {
+    fallbacks.push({ origin, field, detail });
+  };
 
-  const takeBool = (key: "autoCompact" | "pruneEnabled" | "observeOnly"): void => {
+  for (const key of Object.keys(raw)) {
+    if (!KNOWN_KEYS.has(key)) drop(null, `unknown field "${key}" ignored`);
+  }
+
+  const takeBool = (key: "autoCompact" | "pruneEnabled"): void => {
     if (!Object.hasOwn(raw, key)) return;
     const v = raw[key];
     if (typeof v !== "boolean") {
-      errors.push(`${label}: ${key} must be a boolean`);
+      drop(key, `${key} must be a boolean`);
       return;
     }
-    if (key === "observeOnly") {
-      // Session-only: a persisted observe-only would silently disable automatic
-      // policy forever; the escape hatch must be explicit per launch.
-      if (options.allowObserveOnly !== true) {
-        errors.push(`${label}: observeOnly cannot be set in persisted config`);
-        return;
-      }
-      out.observeOnly = v;
-      return;
-    }
-    if (key === "autoCompact") out.autoCompact = v;
-    if (key === "pruneEnabled") out.pruneEnabled = v;
+    out[key] = v;
   };
 
   const takePosInt = (
-    key:
-      | "lowerBoundTokens"
-      | "upperBoundTokens"
-      | "nativeBackstopTokens"
-      | "retryGrowthTokens"
-      | "minRunwayTokens"
-      | "pruneThresholdTokens"
-      | "pruneTargetTokens",
+    key: "lowerBoundTokens" | "upperBoundTokens" | "nativeBackstopTokens" | "minRunwayTokens",
   ): void => {
     if (!Object.hasOwn(raw, key)) return;
     const v = raw[key];
-    if (v === null && (key === "pruneThresholdTokens" || key === "pruneTargetTokens")) {
-      if (key === "pruneThresholdTokens") out.pruneThresholdTokens = null;
-      else out.pruneTargetTokens = null;
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0) {
+      drop(key, `${key} must be a positive safe integer`);
       return;
     }
-    if (typeof v !== "number" || !Number.isFinite(v) || !Number.isSafeInteger(v) || v <= 0) {
-      errors.push(`${label}: ${key} must be a positive safe integer`);
+    out[key] = v;
+  };
+
+  const takeNullablePosInt = (key: "pruneThresholdTokens" | "pruneTargetTokens"): void => {
+    if (!Object.hasOwn(raw, key)) return;
+    const v = raw[key];
+    if (v === null) {
+      out[key] = null;
       return;
     }
-    (out as Record<string, number | null>)[key] = v;
+    if (typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0) {
+      drop(key, `${key} must be a positive safe integer or null`);
+      return;
+    }
+    out[key] = v;
   };
 
   takeBool("autoCompact");
   takeBool("pruneEnabled");
-  takeBool("observeOnly");
   takePosInt("lowerBoundTokens");
   takePosInt("upperBoundTokens");
   takePosInt("nativeBackstopTokens");
-  takePosInt("retryGrowthTokens");
   takePosInt("minRunwayTokens");
-  takePosInt("pruneThresholdTokens");
-  takePosInt("pruneTargetTokens");
+  takeNullablePosInt("pruneThresholdTokens");
+  takeNullablePosInt("pruneTargetTokens");
 
   if (Object.hasOwn(raw, "profile")) {
     const v = raw.profile;
-    if (typeof v !== "string" || v === "") {
-      errors.push(`${label}: profile must be a non-empty string`);
+    if (typeof v !== "string" || !(CANONICAL_LHC_PROFILES as readonly string[]).includes(v)) {
+      drop("profile", `profile must be one of ${CANONICAL_LHC_PROFILES.join(", ")}`);
     } else {
       out.profile = v;
     }
@@ -158,102 +150,114 @@ export function parseContextPolicyPartial(
   if (Object.hasOwn(raw, "nativeCompactMode")) {
     const v = raw.nativeCompactMode;
     if (v !== "emergency_backstop") {
-      errors.push(`${label}: nativeCompactMode must be "emergency_backstop"`);
+      drop("nativeCompactMode", 'nativeCompactMode must be "emergency_backstop"');
     } else {
       out.nativeCompactMode = v as NativeCompactMode;
     }
   }
 
-  if (errors.length > 0) return { ok: false, errors };
-  return { ok: true, value: out };
+  return { value: out, fallbacks };
 }
 
 export function readJsonFile(path: string): { ok: true; value: unknown } | { ok: false; error: string } {
   try {
     if (!existsSync(path)) return { ok: true, value: undefined };
     const text = readFileSync(path, "utf8");
-    if (text.trim() === "") return { ok: false, error: `${path}: empty file` };
+    if (text.trim() === "") return { ok: false, error: "empty file" };
     return { ok: true, value: JSON.parse(text) as unknown };
   } catch (cause) {
-    const msg = cause instanceof Error ? cause.message : String(cause);
-    return { ok: false, error: `${path}: ${msg}` };
+    return { ok: false, error: cause instanceof Error ? cause.message : String(cause) };
   }
 }
 
 function emptySources(): PolicyFieldSources {
-  const keys = Object.keys(BUILTIN_CONTEXT_POLICY) as PolicyFieldKey[];
   const sources = {} as PolicyFieldSources;
-  for (const k of keys) sources[k] = "builtin";
+  for (const k of POLICY_FIELD_KEYS) sources[k] = "builtin";
   return sources;
 }
+
+/** Which configuration layer supplied each non-builtin field, by label. */
+type FieldOrigins = Partial<Record<PolicyFieldKey, string>>;
 
 function applyPartial(
   base: ContextPolicy,
   sources: PolicyFieldSources,
+  origins: FieldOrigins,
   partial: ContextPolicyPartial,
   source: PolicyFieldSource,
+  origin: string,
 ): ContextPolicy {
-  const next: ContextPolicy = { ...base };
-  const assign = <K extends PolicyFieldKey>(key: K, value: ContextPolicy[K]): void => {
-    next[key] = value;
+  let next: ContextPolicy = base;
+  for (const key of POLICY_FIELD_KEYS) {
+    const value = partial[key];
+    if (value === undefined) continue;
+    next = { ...next, [key]: value };
     sources[key] = source;
-  };
-
-  if (partial.autoCompact !== undefined) assign("autoCompact", partial.autoCompact);
-  if (partial.lowerBoundTokens !== undefined) assign("lowerBoundTokens", partial.lowerBoundTokens);
-  if (partial.upperBoundTokens !== undefined) assign("upperBoundTokens", partial.upperBoundTokens);
-  if (partial.profile !== undefined) assign("profile", partial.profile);
-  if (partial.nativeCompactMode !== undefined) assign("nativeCompactMode", partial.nativeCompactMode);
-  if (partial.nativeBackstopTokens !== undefined) {
-    assign("nativeBackstopTokens", partial.nativeBackstopTokens);
+    origins[key] = origin;
   }
-  if (partial.pruneEnabled !== undefined) assign("pruneEnabled", partial.pruneEnabled);
-  if (partial.pruneThresholdTokens !== undefined) {
-    assign("pruneThresholdTokens", partial.pruneThresholdTokens);
-  }
-  if (partial.pruneTargetTokens !== undefined) assign("pruneTargetTokens", partial.pruneTargetTokens);
-  if (partial.retryGrowthTokens !== undefined) assign("retryGrowthTokens", partial.retryGrowthTokens);
-  if (partial.minRunwayTokens !== undefined) assign("minRunwayTokens", partial.minRunwayTokens);
-  if (partial.observeOnly !== undefined) assign("observeOnly", partial.observeOnly);
   return next;
 }
 
-/**
- * Validate bounds and coherence. Returns errors; does not normalize.
- */
-export function validateContextPolicy(policy: ContextPolicy): string[] {
+/** One coherence rule over the merged policy, plus the fields it constrains. */
+interface CoherenceRule {
+  fields: readonly PolicyFieldKey[];
+  check: (policy: ContextPolicy) => string | null;
+}
+
+const COHERENCE_RULES: readonly CoherenceRule[] = [
+  {
+    fields: ["lowerBoundTokens", "upperBoundTokens"],
+    check: (p) =>
+      p.upperBoundTokens <= p.lowerBoundTokens
+        ? `upperBoundTokens (${p.upperBoundTokens}) must be greater than lowerBoundTokens (${p.lowerBoundTokens})`
+        : null,
+  },
+  {
+    fields: ["lowerBoundTokens", "upperBoundTokens", "minRunwayTokens"],
+    check: (p) => {
+      const runway = p.upperBoundTokens - p.lowerBoundTokens;
+      return runway < p.minRunwayTokens
+        ? `upper−lower runway (${runway}) is below minRunwayTokens (${p.minRunwayTokens})`
+        : null;
+    },
+  },
+  {
+    fields: ["nativeBackstopTokens", "upperBoundTokens"],
+    check: (p) =>
+      p.nativeBackstopTokens <= p.upperBoundTokens
+        ? `nativeBackstopTokens (${p.nativeBackstopTokens}) must be greater than upperBoundTokens (${p.upperBoundTokens})`
+        : null,
+  },
+  {
+    fields: ["pruneEnabled", "pruneThresholdTokens", "pruneTargetTokens"],
+    check: (p) => {
+      if (!p.pruneEnabled) return null;
+      if (p.pruneThresholdTokens === null || p.pruneTargetTokens === null) {
+        return "pruneEnabled requires pruneThresholdTokens and pruneTargetTokens";
+      }
+      return p.pruneTargetTokens >= p.pruneThresholdTokens
+        ? `pruneTargetTokens (${p.pruneTargetTokens}) must be less than pruneThresholdTokens (${p.pruneThresholdTokens})`
+        : null;
+    },
+  },
+];
+
+/** Per-field shape check, shared by config parsing and panel edits. */
+function fieldErrors(policy: ContextPolicy): string[] {
   const errors: string[] = [];
-  if (!Number.isSafeInteger(policy.lowerBoundTokens) || policy.lowerBoundTokens <= 0) {
-    errors.push("lowerBoundTokens must be a positive safe integer");
-  }
-  if (!Number.isSafeInteger(policy.upperBoundTokens) || policy.upperBoundTokens <= 0) {
-    errors.push("upperBoundTokens must be a positive safe integer");
-  }
-  if (
-    Number.isSafeInteger(policy.lowerBoundTokens) &&
-    Number.isSafeInteger(policy.upperBoundTokens) &&
-    policy.upperBoundTokens <= policy.lowerBoundTokens
-  ) {
-    errors.push(
-      `upperBoundTokens (${policy.upperBoundTokens}) must be greater than lowerBoundTokens (${policy.lowerBoundTokens})`,
-    );
-  }
-  if (
-    Number.isSafeInteger(policy.lowerBoundTokens) &&
-    Number.isSafeInteger(policy.upperBoundTokens) &&
-    policy.upperBoundTokens > policy.lowerBoundTokens
-  ) {
-    const runway = policy.upperBoundTokens - policy.lowerBoundTokens;
-    if (runway < policy.minRunwayTokens) {
-      errors.push(`upper−lower runway (${runway}) is below minRunwayTokens (${policy.minRunwayTokens})`);
+  const posInt = (key: "lowerBoundTokens" | "upperBoundTokens" | "nativeBackstopTokens" | "minRunwayTokens"): void => {
+    const v = policy[key];
+    if (!Number.isSafeInteger(v) || v <= 0) errors.push(`${key} must be a positive safe integer`);
+  };
+  posInt("lowerBoundTokens");
+  posInt("upperBoundTokens");
+  posInt("nativeBackstopTokens");
+  posInt("minRunwayTokens");
+  for (const key of ["pruneThresholdTokens", "pruneTargetTokens"] as const) {
+    const v = policy[key];
+    if (v !== null && (!Number.isSafeInteger(v) || v <= 0)) {
+      errors.push(`${key} must be a positive safe integer or null`);
     }
-  }
-  if (!Number.isSafeInteger(policy.nativeBackstopTokens) || policy.nativeBackstopTokens <= 0) {
-    errors.push("nativeBackstopTokens must be a positive safe integer");
-  } else if (Number.isSafeInteger(policy.upperBoundTokens) && policy.nativeBackstopTokens <= policy.upperBoundTokens) {
-    errors.push(
-      `nativeBackstopTokens (${policy.nativeBackstopTokens}) must be greater than upperBoundTokens (${policy.upperBoundTokens})`,
-    );
   }
   if (!(CANONICAL_LHC_PROFILES as readonly string[]).includes(policy.profile)) {
     errors.push(`profile "${policy.profile}" is not a canonical LHC profile (${CANONICAL_LHC_PROFILES.join(", ")})`);
@@ -261,25 +265,61 @@ export function validateContextPolicy(policy: ContextPolicy): string[] {
   if (policy.nativeCompactMode !== "emergency_backstop") {
     errors.push('nativeCompactMode must be "emergency_backstop"');
   }
-  if (typeof policy.observeOnly !== "boolean") {
-    errors.push("observeOnly must be a boolean");
-  }
-  if (!Number.isSafeInteger(policy.retryGrowthTokens) || policy.retryGrowthTokens <= 0) {
-    errors.push("retryGrowthTokens must be a positive safe integer");
-  }
-  if (!Number.isSafeInteger(policy.minRunwayTokens) || policy.minRunwayTokens <= 0) {
-    errors.push("minRunwayTokens must be a positive safe integer");
-  }
-  if (policy.pruneEnabled) {
-    if (policy.pruneThresholdTokens === null || policy.pruneTargetTokens === null) {
-      errors.push("pruneEnabled requires pruneThresholdTokens and pruneTargetTokens");
-    } else if (policy.pruneTargetTokens >= policy.pruneThresholdTokens) {
-      errors.push(
-        `pruneTargetTokens (${policy.pruneTargetTokens}) must be less than pruneThresholdTokens (${policy.pruneThresholdTokens})`,
-      );
-    }
+  return errors;
+}
+
+/**
+ * Report shape and coherence problems in a candidate policy. Used by the
+ * panel's atomic edit, which rejects the edit and keeps the running policy.
+ */
+export function validateContextPolicy(policy: ContextPolicy): string[] {
+  const errors = fieldErrors(policy);
+  if (errors.length > 0) return errors;
+  for (const rule of COHERENCE_RULES) {
+    const error = rule.check(policy);
+    if (error !== null) errors.push(error);
   }
   return errors;
+}
+
+/**
+ * Settle coherence by reverting configured fields to their built-in defaults.
+ *
+ * Only fields a user actually set are reverted, so the offending value loses
+ * and the built-in wins. Reverting strictly reduces the configured set, so
+ * this terminates at (at worst) the wholly-coherent built-in policy.
+ */
+function settleCoherence(
+  policy: ContextPolicy,
+  sources: PolicyFieldSources,
+  origins: FieldOrigins,
+  fallbacks: ConfigFallback[],
+): ContextPolicy {
+  let current = policy;
+  for (let pass = 0; pass <= POLICY_FIELD_KEYS.length; pass += 1) {
+    let reverted = false;
+    for (const rule of COHERENCE_RULES) {
+      const error = rule.check(current);
+      if (error === null) continue;
+      const configured = rule.fields.filter((field) => sources[field] !== "builtin");
+      if (configured.length === 0) continue;
+      let next: ContextPolicy = current;
+      for (const field of configured) {
+        next = { ...next, [field]: BUILTIN_CONTEXT_POLICY[field] };
+        fallbacks.push({
+          origin: origins[field] ?? `${sources[field]} config`,
+          field,
+          detail: `${error}; ${field} reset to built-in default`,
+        });
+        sources[field] = "builtin";
+        delete origins[field];
+      }
+      current = next;
+      reverted = true;
+    }
+    if (!reverted) return current;
+  }
+  return current;
 }
 
 export interface LoadContextPolicyOptions {
@@ -296,8 +336,8 @@ export interface LoadContextPolicyOptions {
 }
 
 /**
- * Load and merge policy with explicit precedence.
- * Always returns a ResolvedContextPolicy; armed=false when errors prevent arming.
+ * Load and merge policy with explicit precedence. Always returns a usable
+ * policy; anything that could not be honoured is listed in `fallbacks`.
  */
 export function loadContextPolicy(options: LoadContextPolicyOptions = {}): ResolvedContextPolicy {
   const env = options.env ?? process.env;
@@ -306,46 +346,36 @@ export function loadContextPolicy(options: LoadContextPolicyOptions = {}): Resol
   const userPath = options.userConfigPath ?? userConfigPath(env);
   const projectPath = options.projectConfigPath ?? projectConfigPath(cwd);
 
-  const errors: string[] = [];
+  const fallbacks: ConfigFallback[] = [];
   const sources = emptySources();
+  const origins: FieldOrigins = {};
   let policy: ContextPolicy = { ...BUILTIN_CONTEXT_POLICY };
 
-  const userRaw = readJson(userPath);
-  if (!userRaw.ok) {
-    errors.push(userRaw.error);
-  } else if (userRaw.value !== undefined) {
-    const parsed = parseContextPolicyPartial(userRaw.value, `user config ${userPath}`);
-    if (!parsed.ok) errors.push(...parsed.errors);
-    else policy = applyPartial(policy, sources, parsed.value, "user");
-  }
-
-  const projectRaw = readJson(projectPath);
-  if (!projectRaw.ok) {
-    errors.push(projectRaw.error);
-  } else if (projectRaw.value !== undefined) {
-    const parsed = parseContextPolicyPartial(projectRaw.value, `project config ${projectPath}`);
-    if (!parsed.ok) errors.push(...parsed.errors);
-    else policy = applyPartial(policy, sources, parsed.value, "project");
-  }
-
-  if (options.sessionOverrides !== undefined) {
-    const parsed = parseContextPolicyPartial(options.sessionOverrides, "session overrides", {
-      allowObserveOnly: true,
-    });
-    if (!parsed.ok) errors.push(...parsed.errors);
-    else policy = applyPartial(policy, sources, parsed.value, "session");
-  }
-
-  const validationErrors = validateContextPolicy(policy);
-  errors.push(...validationErrors);
-
-  const armed = errors.length === 0;
-  return {
-    policy,
-    sources,
-    armed,
-    errors,
+  const mergeLayer = (raw: unknown, origin: string, source: PolicyFieldSource): void => {
+    const parsed = parseContextPolicyPartial(raw, origin);
+    fallbacks.push(...parsed.fallbacks);
+    policy = applyPartial(policy, sources, origins, parsed.value, source, origin);
   };
+
+  const mergeFile = (path: string, label: string, source: PolicyFieldSource): void => {
+    const raw = readJson(path);
+    if (!raw.ok) {
+      fallbacks.push({ origin: `${label} ${path}`, field: null, detail: `${raw.error}; whole layer ignored` });
+      return;
+    }
+    if (raw.value === undefined) return;
+    mergeLayer(raw.value, `${label} ${path}`, source);
+  };
+
+  mergeFile(userPath, "user config", "user");
+  mergeFile(projectPath, "project config", "project");
+  if (options.sessionOverrides !== undefined) {
+    mergeLayer(options.sessionOverrides, "session overrides", "session");
+  }
+
+  policy = settleCoherence(policy, sources, origins, fallbacks);
+
+  return { policy, sources, fallbacks };
 }
 
 /** Compact source summary for observe records. */
@@ -361,4 +391,14 @@ export function policySourcesSummary(sources: PolicyFieldSources): string {
     parts.push(`${key}=${sources[key]}`);
   }
   return parts.join(",");
+}
+
+/**
+ * Operator-facing lines for every fallback, headed by the required notice.
+ * Empty when configuration was fully usable. The same lines go to startup
+ * output, the wrapper log, the control panel, and the compact message.
+ */
+export function formatConfigFallbackNotice(fallbacks: readonly ConfigFallback[]): string[] {
+  if (fallbacks.length === 0) return [];
+  return [CONFIG_FALLBACK_NOTICE, ...fallbacks.map((f) => `  ${f.origin}: ${f.detail}`)];
 }

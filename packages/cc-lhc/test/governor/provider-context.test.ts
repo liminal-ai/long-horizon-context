@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  atOrAboveUpper,
   buildPressureReceipt,
   estimateTokensFromCapturedBytes,
   normalizePostMeasurementEstimate,
@@ -73,11 +72,6 @@ describe("providerContextFromUsage", () => {
     ).toBeNull();
   });
 
-  it("exact threshold and one-below", () => {
-    expect(atOrAboveUpper(500_000, 500_000)).toBe(true);
-    expect(atOrAboveUpper(499_999, 500_000)).toBe(false);
-  });
-
   it("accepts large safe integers", () => {
     const n = Number.MAX_SAFE_INTEGER - 10;
     const ctx = providerContextFromUsage({ input_tokens: n });
@@ -117,16 +111,31 @@ describe("buildPressureReceipt / post-measurement estimate", () => {
     expect(pressure.atOrAboveTrigger).toBe(true);
   });
 
-  it("missing provider clears pressure authority even when estimate is present", () => {
+  it("with no provider reading, pressure is the labelled estimate and says so", () => {
     const pressure = buildPressureReceipt(
       null,
       { tokens: 50_000, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
       360_000,
     );
     expect(pressure.providerBaseTokens).toBeNull();
-    expect(pressure.nextRequestPressureTokens).toBeNull();
-    expect(pressure.atOrAboveTrigger).toBeNull();
+    expect(pressure.providerBaseFreshness).toBe("none");
+    expect(pressure.nextRequestPressureTokens).toBe(50_000);
+    expect(pressure.atOrAboveTrigger).toBe(false);
     expect(pressure.estimateTokens).toBe(50_000);
+  });
+
+  it("a carried-forward reading keeps its provider domain and is labelled last_known", () => {
+    const pressure = buildPressureReceipt(
+      { inputTokens: 900_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, total: 900_000 },
+      { tokens: 4_000, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+      360_000,
+      "last_known",
+    );
+    expect(pressure.providerBaseTokens).toBe(900_000);
+    expect(pressure.providerBaseDomain).toBe("provider_reported_input");
+    expect(pressure.providerBaseFreshness).toBe("last_known");
+    expect(pressure.nextRequestPressureTokens).toBe(904_000);
+    expect(pressure.atOrAboveTrigger).toBe(true);
   });
 
   it("normalizePostMeasurementEstimate fails closed on invalid tokens", () => {

@@ -58,7 +58,7 @@ async function startModalRig(): Promise<{
 }> {
   const { stream: stdout, output } = fakeStdout();
   const stdin = fakeStdin();
-  const runPromise = run(["-c", TICK_CHILD], { claudeBin: "bash", stdin, stdout, noCapture: true });
+  const runPromise = run(["-c", TICK_CHILD], { claudeBin: "bash", stdin, stdout, unboundTestChild: true });
   await waitFor(() => output().includes("tick2"), "child ticks to flow");
   (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
   await waitFor(() => output().includes(ENTER_ALT_SCREEN), "modal to enter the alt screen");

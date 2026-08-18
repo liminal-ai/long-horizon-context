@@ -7,7 +7,6 @@ import { runExportCommand } from "./export.js";
 import { runPruneCommand } from "./prune.js";
 
 export interface CaptureCommandContext {
-  captureDisabled: boolean;
   stats: CaptureStats;
   sdk: Lhc | undefined;
   threadRef: ThreadRef | undefined;
@@ -27,6 +26,8 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
     lowerBoundTokens: number;
     pruneIfDue?: { thresholdTokens: number; targetTokens: number };
   };
+  /** Host notices to include in the compact message (config fallbacks). */
+  hostNotices?: readonly string[];
   /** True when user input arrived since the operation started (cancel fence). */
   inputEpochChanged?: () => boolean;
   /** Live turn state from the rollout tail; mutating commands refuse while a turn is open. */
@@ -75,7 +76,6 @@ export interface DispatchOutcome {
   handoff?: import("./context-mutation.js").HandoffRequest;
 }
 
-export const CAPTURE_DISABLED_MESSAGE = "capture disabled";
 export const UNKNOWN_COMMAND_MESSAGE = "unknown command; try help";
 export const TURN_OPEN_REFUSAL = "turn in progress — rerun when idle";
 export const CAPTURE_DEGRADED_REFUSAL = "capture degraded — mutation refused until reconciliation";
@@ -166,8 +166,6 @@ export function parseLhcCommandName(commandLine: string): string | null {
 
 export async function dispatchLhcCommand(commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   try {
-    if (runtime.captureDisabled) return { messages: [CAPTURE_DISABLED_MESSAGE] };
-
     const name = parseLhcCommandName(commandLine);
     if (name === null) return { messages: [UNKNOWN_COMMAND_MESSAGE] };
 

@@ -1,8 +1,11 @@
 export {
   BUILTIN_CONTEXT_POLICY,
   CANONICAL_LHC_PROFILES,
+  CONFIG_FALLBACK_NOTICE,
+  formatConfigFallbackNotice,
   type LoadContextPolicyOptions,
   loadContextPolicy,
+  type ParsedPolicyPartial,
   parseContextPolicyPartial,
   policySourcesSummary,
   projectConfigPath,
@@ -19,13 +22,12 @@ export {
   type GovernorLifecycleResult,
   type GovernorRuntimeState,
   noteGovernorInput,
-  setGovernorCaptureHealth,
-  setGovernorDescriptorReady,
+  reobserveSettled,
+  setGovernorCaptureGeneration,
   setGovernorOperationInFlight,
   setGovernorPostMeasurementEstimate,
 } from "./observe-state.js";
 export {
-  atOrAboveUpper,
   buildPressureReceipt,
   estimateTokensFromCapturedBytes,
   normalizePostMeasurementEstimate,
@@ -43,6 +45,7 @@ export {
 } from "./receipt-store.js";
 export type {
   CcLhcHostCapability,
+  ConfigFallback,
   ContextPolicy,
   ContextPolicyPartial,
   GovernorDecision,
@@ -58,6 +61,7 @@ export type {
   PolicyFieldSource,
   PolicyFieldSources,
   PostMeasurementEstimate,
+  ProviderBaseFreshness,
   ProviderContextTokens,
   ResolvedContextPolicy,
   SourceLabelledEstimateDomain,

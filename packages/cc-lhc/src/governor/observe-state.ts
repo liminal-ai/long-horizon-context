@@ -2,9 +2,11 @@
  * Stateful fold: lifecycle signals → observe decisions for open-turn and settled seams.
  * Pure of I/O except the caller persists/logs the returned record. Never mutates context.
  *
- * LIM-64:
- * - Latest completed sampling is authoritative; missing/invalid clears stale usage.
- * - Post-measurement estimate is source-labelled and never counted as provider usage.
+ * - The newest valid provider reading is authoritative and is carried forward.
+ *   A missing or malformed usage line downgrades its freshness to `last_known`;
+ *   it never erases the session's pressure.
+ * - Post-measurement estimate is source-labelled and never counted as provider
+ *   usage. It resets only when a new valid reading supersedes it.
  * - Open-turn threshold crossings are classified (wouldMutate=false) without mutation.
  * - Settled seam may arm wouldMutate for capability-limited compact + controlled handoff.
  */
@@ -22,6 +24,7 @@ import type {
   GovernorObserveRecord,
   PolicyFieldSources,
   PostMeasurementEstimate,
+  ProviderBaseFreshness,
   ProviderContextTokens,
   ResolvedContextPolicy,
 } from "./types.js";
@@ -29,31 +32,27 @@ import { CC_LHC_HOST_CAPABILITY, EMPTY_POST_MEASUREMENT_ESTIMATE } from "./types
 
 export interface GovernorRuntimeState {
   turnOpen: boolean;
-  /** Snapshot of input epoch when the current turn opened. */
+  /** Snapshot of input epoch when the current turn opened (diagnostic only). */
   inputEpochAtTurnOpen: number;
   currentInputEpoch: number;
+  /**
+   * Newest valid provider reading for this session. Never cleared by a turn
+   * boundary or a bad usage line — an older true reading beats no reading.
+   */
   latestProviderContext: ProviderContextTokens | null;
+  /** Whether latestProviderContext came from the current turn's sampling. */
+  providerContextFreshness: ProviderBaseFreshness;
   latestSamplingId: string | null;
   /**
    * Source-labelled estimate of content captured after the latest provider
-   * measurement. Reset when a new sampling becomes authoritative.
+   * measurement. Reset when a new valid reading becomes authoritative.
    */
   postMeasurementEstimate: PostMeasurementEstimate;
-  captureHealthy: boolean;
   captureGeneration: number;
-  descriptorReady: boolean;
   operationInFlight: boolean;
   nativeSummaryAttention: boolean;
-  /**
-   * Predicted next-request pressure at last would_compact for this generation
-   * (used for retry-growth hysteresis).
-   */
-  lastWouldCompactProviderTotal: number | null;
-  lastWouldCompactCaptureGeneration: number | null;
   /** Monotonic settle counter. */
   settleSequence: number;
-  /** Last settle sequence that already produced a settled observe record. */
-  lastObservedSettleSequence: number;
   /** Monotonic observe counter (open + settled). */
   observeSequence: number;
   /**
@@ -71,17 +70,13 @@ export function createGovernorRuntimeState(seed: Partial<GovernorRuntimeState> =
     inputEpochAtTurnOpen: 0,
     currentInputEpoch: 0,
     latestProviderContext: null,
+    providerContextFreshness: "none",
     latestSamplingId: null,
     postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
-    captureHealthy: true,
     captureGeneration: 0,
-    descriptorReady: false,
     operationInFlight: false,
     nativeSummaryAttention: false,
-    lastWouldCompactProviderTotal: null,
-    lastWouldCompactCaptureGeneration: null,
     settleSequence: 0,
-    lastObservedSettleSequence: -1,
     observeSequence: 0,
     lastOpenTurnObserveFingerprint: null,
     sawSamplingThisTurn: false,
@@ -89,25 +84,13 @@ export function createGovernorRuntimeState(seed: Partial<GovernorRuntimeState> =
   };
 }
 
-/** Bump input epoch (user typed / queued input). */
+/** Bump input epoch (user typed / queued input). Diagnostic; never a veto. */
 export function noteGovernorInput(state: GovernorRuntimeState): GovernorRuntimeState {
   return { ...state, currentInputEpoch: state.currentInputEpoch + 1 };
 }
 
-export function setGovernorDescriptorReady(state: GovernorRuntimeState, ready: boolean): GovernorRuntimeState {
-  return { ...state, descriptorReady: ready };
-}
-
-export function setGovernorCaptureHealth(
-  state: GovernorRuntimeState,
-  healthy: boolean,
-  generation: number,
-): GovernorRuntimeState {
-  return {
-    ...state,
-    captureHealthy: healthy,
-    captureGeneration: generation,
-  };
+export function setGovernorCaptureGeneration(state: GovernorRuntimeState, generation: number): GovernorRuntimeState {
+  return { ...state, captureGeneration: generation };
 }
 
 export function setGovernorOperationInFlight(state: GovernorRuntimeState, inFlight: boolean): GovernorRuntimeState {
@@ -144,14 +127,15 @@ export function applyGovernorLifecycleSignal(
 ): GovernorLifecycleResult {
   switch (signal.kind) {
     case "turn_opened": {
+      // The provider reading and the growth measured on top of it both survive
+      // the turn boundary: the reading is simply no longer this turn's own.
       return {
         state: {
           ...state,
           turnOpen: true,
           inputEpochAtTurnOpen: state.currentInputEpoch,
-          latestProviderContext: null,
+          providerContextFreshness: state.latestProviderContext === null ? "none" : "last_known",
           latestSamplingId: null,
-          postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
           sawSamplingThisTurn: false,
           lastOpenTurnObserveFingerprint: null,
         },
@@ -163,17 +147,25 @@ export function applyGovernorLifecycleSignal(
         signal.providerUsage !== undefined
           ? providerContextFromUsage(signal.providerUsage as Record<string, unknown>)
           : null;
-      // Latest completed sampling is authoritative. Missing or invalid provider
-      // usage must clear an older count rather than trigger from stale pressure.
-      // New measurement resets the post-measurement estimate (content after this
-      // request has not yet been captured).
-      const next: GovernorRuntimeState = {
-        ...state,
-        latestProviderContext: usage,
-        latestSamplingId: signal.samplingId,
-        sawSamplingThisTurn: true,
-        postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
-      };
+      // A valid reading supersedes and resets the growth measured on top of the
+      // previous one. A missing or malformed one leaves both in place, marked
+      // last_known — the session's real size does not disappear with a bad line.
+      const next: GovernorRuntimeState =
+        usage === null
+          ? {
+              ...state,
+              providerContextFreshness: state.latestProviderContext === null ? "none" : "last_known",
+              latestSamplingId: signal.samplingId,
+              sawSamplingThisTurn: true,
+            }
+          : {
+              ...state,
+              latestProviderContext: usage,
+              providerContextFreshness: "current_sampling",
+              latestSamplingId: signal.samplingId,
+              sawSamplingThisTurn: true,
+              postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
+            };
       // Classify during open turn so threshold-crossed-open is receipted.
       if (next.turnOpen) {
         return observeOpenTurn(next, resolved);
@@ -215,14 +207,8 @@ export function applyGovernorLifecycleSignal(
       return observeOnSettle(state, resolved);
     }
     case "capture_degraded": {
-      return {
-        state: {
-          ...state,
-          captureHealthy: false,
-          captureGeneration: signal.generation,
-        },
-        observe: null,
-      };
+      // Degradation is a repair trigger for the wrapper, not a decision input.
+      return { state: { ...state, captureGeneration: signal.generation }, observe: null };
     }
     case "native_compact_observed": {
       // Explicit attention latch: LHC will not race a native writer.
@@ -231,20 +217,32 @@ export function applyGovernorLifecycleSignal(
         observe: null,
       };
     }
-    case "session_bound": {
-      // Binding does not alone mark descriptor ready; wrapper does that.
-      return { state, observe: null };
-    }
+    case "session_bound":
     case "session_mismatch_observed": {
-      return {
-        state: { ...state, captureHealthy: false, descriptorReady: false },
-        observe: null,
-      };
+      // Binding and mismatch are capture/retrieval lifecycle; the wrapper acts
+      // on them. Neither changes what the governor decides.
+      return { state, observe: null };
     }
     default: {
       return { state, observe: null };
     }
   }
+}
+
+/**
+ * Re-run the settled decision after capture finished rebuilding/catching up.
+ *
+ * A seam skipped while capture was catching up is not consumed: this is the
+ * catch-up evaluation that replaces "the decision runs exactly once per settle,
+ * whatever state capture happened to be in". Returns no record while a turn is
+ * open — that turn's own settle will observe.
+ */
+export function reobserveSettled(
+  state: GovernorRuntimeState,
+  resolved: ResolvedContextPolicy,
+): GovernorLifecycleResult {
+  if (state.turnOpen) return { state, observe: null };
+  return observeOnSettle(state, resolved);
 }
 
 function openTurnFingerprint(
@@ -256,24 +254,20 @@ function openTurnFingerprint(
   return `${decision}|${pressureTokens ?? "null"}|${samplingId ?? ""}|${estimateTokens}`;
 }
 
-function observeOpenTurn(state: GovernorRuntimeState, resolved: ResolvedContextPolicy): GovernorLifecycleResult {
-  const decision = decideGovernor({
+function decisionInputFrom(state: GovernorRuntimeState, resolved: ResolvedContextPolicy, turnOpen: boolean) {
+  return {
     policy: resolved.policy,
-    policyArmed: resolved.armed,
-    turnOpen: true,
-    settleStale: false,
+    turnOpen,
     providerContext: state.latestProviderContext,
+    providerContextFreshness: state.providerContextFreshness,
     postMeasurementEstimate: state.postMeasurementEstimate,
-    captureHealthy: state.captureHealthy,
-    captureGeneration: state.captureGeneration,
-    descriptorReady: state.descriptorReady,
     operationInFlight: state.operationInFlight,
-    inputEpochAtTurnOpen: state.inputEpochAtTurnOpen,
-    currentInputEpoch: state.currentInputEpoch,
     nativeSummaryAttention: state.nativeSummaryAttention,
-    lastWouldCompactProviderTotal: state.lastWouldCompactProviderTotal,
-    lastWouldCompactCaptureGeneration: state.lastWouldCompactCaptureGeneration,
-  });
+  };
+}
+
+function observeOpenTurn(state: GovernorRuntimeState, resolved: ResolvedContextPolicy): GovernorLifecycleResult {
+  const decision = decideGovernor(decisionInputFrom(state, resolved, true));
 
   const fp = openTurnFingerprint(
     decision.kind,
@@ -286,9 +280,8 @@ function observeOpenTurn(state: GovernorRuntimeState, resolved: ResolvedContextP
     return { state, observe: null };
   }
 
-  // Skip pure turn_open "waiting" noise unless pressure crossed or a gate failed.
-  // Always emit would_compact (threshold), no_provider_usage, and all gate kinds.
-  if (decision.kind === "turn_open" && decision.pressure.atOrAboveTrigger !== true) {
+  // Skip pure turn_open "waiting" noise unless pressure crossed.
+  if (decision.kind === "turn_open" && !decision.pressure.atOrAboveTrigger) {
     // Still remember fingerprint so we don't thrash if estimate flickers at same kind.
     return {
       state: { ...state, lastOpenTurnObserveFingerprint: fp },
@@ -317,47 +310,13 @@ function observeOpenTurn(state: GovernorRuntimeState, resolved: ResolvedContextP
 
 function observeOnSettle(state: GovernorRuntimeState, resolved: ResolvedContextPolicy): GovernorLifecycleResult {
   const settleSequence = state.settleSequence + 1;
-  let next: GovernorRuntimeState = {
+  const decision = decideGovernor(decisionInputFrom({ ...state, turnOpen: false }, resolved, false));
+
+  const observeSequence = state.observeSequence + 1;
+  const next: GovernorRuntimeState = {
     ...state,
     turnOpen: false,
     settleSequence,
-  };
-
-  // Dedupe: never emit two observe records for the same settle sequence.
-  if (settleSequence === state.lastObservedSettleSequence) {
-    return { state: next, observe: null };
-  }
-
-  const decision = decideGovernor({
-    policy: resolved.policy,
-    policyArmed: resolved.armed,
-    turnOpen: false,
-    settleStale: false,
-    providerContext: next.latestProviderContext,
-    postMeasurementEstimate: next.postMeasurementEstimate,
-    captureHealthy: next.captureHealthy,
-    captureGeneration: next.captureGeneration,
-    descriptorReady: next.descriptorReady,
-    operationInFlight: next.operationInFlight,
-    inputEpochAtTurnOpen: next.inputEpochAtTurnOpen,
-    currentInputEpoch: next.currentInputEpoch,
-    nativeSummaryAttention: next.nativeSummaryAttention,
-    lastWouldCompactProviderTotal: next.lastWouldCompactProviderTotal,
-    lastWouldCompactCaptureGeneration: next.lastWouldCompactCaptureGeneration,
-  });
-
-  if (decision.kind === "would_compact" && decision.pressure.nextRequestPressureTokens !== null) {
-    next = {
-      ...next,
-      lastWouldCompactProviderTotal: decision.pressure.nextRequestPressureTokens,
-      lastWouldCompactCaptureGeneration: next.captureGeneration,
-    };
-  }
-
-  const observeSequence = next.observeSequence + 1;
-  next = {
-    ...next,
-    lastObservedSettleSequence: settleSequence,
     observeSequence,
     lastOpenTurnObserveFingerprint: null,
   };
@@ -398,14 +357,14 @@ function buildObserveRecord(args: {
         state.latestProviderContext,
         state.postMeasurementEstimate,
         resolved.policy.upperBoundTokens,
+        state.providerContextFreshness,
       ),
     upperBoundTokens: resolved.policy.upperBoundTokens,
     lowerBoundTokens: resolved.policy.lowerBoundTokens,
     profile: resolved.policy.profile,
     autoCompactIntent: resolved.policy.autoCompact,
-    observeOnly: resolved.policy.observeOnly,
     wouldMutate: decision.wouldMutate,
-    policyArmed: resolved.armed,
+    configFallbackCount: resolved.fallbacks.length,
     policySourcesSummary: policySourcesSummary(resolved.sources),
     captureGeneration: state.captureGeneration,
     inputEpoch: state.currentInputEpoch,

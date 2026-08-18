@@ -6,13 +6,11 @@ import { run } from "./wrapper/run.js";
 
 function stripCcLhcFlags(argv: string[]): {
   argv: string[];
-  noCapture: boolean;
   noInference: boolean;
   notifierDisabled: boolean;
   contextPolicyOverrides: ContextPolicyPartial;
 } {
   const out: string[] = [];
-  let noCapture = false;
   let noInference = process.env.CC_LHC_NO_INFERENCE === "1";
   let notifierDisabled = false;
   const contextPolicyOverrides: ContextPolicyPartial = {};
@@ -20,15 +18,11 @@ function stripCcLhcFlags(argv: string[]): {
     // Contract: every --lhc-* flag belongs to cc-lhc and is consumed here;
     // everything else passes through to claude verbatim.
     if (arg.startsWith("--lhc-")) {
-      if (arg === "--lhc-no-capture") {
-        noCapture = true;
-        continue;
-      }
       if (arg === "--lhc-no-inference") {
         noInference = true;
         continue;
       }
-      // Session overrides for context policy (Slice 3 observe-only).
+      // Session overrides for context policy, applied after project config.
       const upper = arg.match(/^--lhc-upper-bound-tokens=(\d+)$/);
       if (upper) {
         contextPolicyOverrides.upperBoundTokens = Number(upper[1]);
@@ -49,18 +43,9 @@ function stripCcLhcFlags(argv: string[]): {
         contextPolicyOverrides.profile = profile[1];
         continue;
       }
-      const growth = arg.match(/^--lhc-retry-growth-tokens=(\d+)$/);
-      if (growth) {
-        contextPolicyOverrides.retryGrowthTokens = Number(growth[1]);
-        continue;
-      }
       const runway = arg.match(/^--lhc-min-runway-tokens=(\d+)$/);
       if (runway) {
         contextPolicyOverrides.minRunwayTokens = Number(runway[1]);
-        continue;
-      }
-      if (arg === "--lhc-observe-only") {
-        contextPolicyOverrides.observeOnly = true;
         continue;
       }
       if (arg === "--lhc-no-notifier") {
@@ -72,7 +57,7 @@ function stripCcLhcFlags(argv: string[]): {
     }
     out.push(arg);
   }
-  return { argv: out, noCapture, noInference, notifierDisabled, contextPolicyOverrides };
+  return { argv: out, noInference, notifierDisabled, contextPolicyOverrides };
 }
 
 const rawArgv = process.argv.slice(2);
@@ -102,7 +87,6 @@ if (isLhcHelpArgv(rawArgv)) {
   const hasOverrides = Object.keys(parsed.contextPolicyOverrides).length > 0;
 
   const exitCode = await run(parsed.argv, {
-    noCapture: parsed.noCapture,
     noInference: parsed.noInference,
     ...(parsed.notifierDisabled ? { notifierDisabled: true } : {}),
     ...(hasOverrides ? { contextPolicyOverrides: parsed.contextPolicyOverrides } : {}),

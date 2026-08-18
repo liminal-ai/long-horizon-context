@@ -447,8 +447,7 @@ describe("observeRolloutLine", () => {
       sources: Object.fromEntries(
         Object.keys(BUILTIN_CONTEXT_POLICY).map((k) => [k, "session"]),
       ) as ResolvedContextPolicy["sources"],
-      armed: true,
-      errors: [],
+      fallbacks: [],
     };
     const lifecycle = [
       ...rAsst.lifecycle.filter((s) => s.kind === "sampling_observed" || s.kind === "post_measurement_estimate"),
@@ -457,7 +456,7 @@ describe("observeRolloutLine", () => {
     ];
     // turn_opened first so open-turn classification is honest
     const rGov = applyGovernorLifecycleBatch(
-      createGovernorRuntimeState({ captureHealthy: true, captureGeneration: 1, descriptorReady: true }),
+      createGovernorRuntimeState({ captureGeneration: 1 }),
       [{ kind: "turn_opened", reason: "user_prompt" }, ...lifecycle],
       resolved,
     );

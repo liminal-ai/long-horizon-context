@@ -16,7 +16,7 @@ function armed(): ResolvedContextPolicy {
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "builtin"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, armed: true, errors: [] };
+  return { policy, sources, fallbacks: [] };
 }
 
 const dirs: string[] = [];
@@ -34,9 +34,7 @@ afterEach(() => {
 function settledWouldCompact() {
   const { observes } = applyGovernorLifecycleBatch(
     createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 3,
-      descriptorReady: true,
     }),
     [
       { kind: "turn_opened", reason: "user_prompt" },
@@ -116,9 +114,7 @@ describe("governor durable receipt store", () => {
     const dbPath = join(dir, "cc-lhc.sqlite");
     const { observes } = applyGovernorLifecycleBatch(
       createGovernorRuntimeState({
-        captureHealthy: true,
         captureGeneration: 1,
-        descriptorReady: true,
       }),
       [
         { kind: "turn_opened", reason: "user_prompt" },

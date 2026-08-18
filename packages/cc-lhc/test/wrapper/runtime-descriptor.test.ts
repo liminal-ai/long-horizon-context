@@ -90,7 +90,6 @@ describe("wrapper descriptor lifecycle (unit seams)", () => {
     const runtimeDir = join(home, "runtime");
     await expect(
       run(["--session-id", "11111111-1111-1111-1111-111111111111", "-p", "x"], {
-        noCapture: false,
         noInference: true,
         claudeBin: "/bin/true",
         spawnPty: () => {
@@ -142,7 +141,6 @@ describe("wrapper descriptor lifecycle (unit seams)", () => {
     let spawned = 0;
     let stderrText = "";
     const code = await run(["--session-id", "22222222-2222-2222-2222-222222222222", "-p", "x"], {
-      noCapture: false,
       noInference: true,
       claudeBin: "/bin/true",
       descriptorIo: dIo,

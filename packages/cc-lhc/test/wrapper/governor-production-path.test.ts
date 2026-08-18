@@ -150,7 +150,6 @@ function scriptedCaptureSession(
   return {
     stats,
     getCommandContext: () => ({
-      captureDisabled: false,
       stats,
       sdk: sdk as Lhc,
       threadRef: { threadId: "th_auto", registryPath: "/tmp/reg.sqlite" },
@@ -201,8 +200,6 @@ const POLICY = {
     pruneEnabled: false,
     pruneThresholdTokens: null,
     pruneTargetTokens: null,
-    observeOnly: false,
-    retryGrowthTokens: 1_000,
     minRunwayTokens: 100,
   },
   sources: Object.fromEntries(
@@ -216,13 +213,10 @@ const POLICY = {
       pruneEnabled: 0,
       pruneThresholdTokens: 0,
       pruneTargetTokens: 0,
-      observeOnly: 0,
-      retryGrowthTokens: 0,
       minRunwayTokens: 0,
     }).map((k) => [k, "session"]),
   ) as never,
-  armed: true,
-  errors: [] as string[],
+  fallbacks: [],
 };
 
 const BOUND_SIGNALS: LifecycleSignal[] = [{ kind: "session_bound", sessionId: "old-session" }];
@@ -399,7 +393,7 @@ describe("LIM-64 production wrapper path", () => {
     writeSpy.mockRestore();
   }, 20_000);
 
-  it("receipt persistence unavailable → no mutation (append-failure sentinel)", async () => {
+  it("receipt persistence unavailable → compact still runs against an in-memory receipt", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-no-receipt-"));
     dirs.push(dir);
     // Path points at a directory so open/append fails closed.
@@ -444,24 +438,18 @@ describe("LIM-64 production wrapper path", () => {
         warningCount: () => wrapperLogLines.filter((l) => /warn|refused|failed/i.test(l)).length,
         path: "/tmp/fake.log",
       } as never,
-      onHandoffResult: () => {
-        throw new Error("handoff must not run without durable receipt");
-      },
     });
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
-    await new Promise((r) => setTimeout(r, 400));
+    await waitFor(() => mutationSentinel, "compact to start without a durable receipt");
 
-    expect(mutationSentinel).toBe(false);
-    expect(spawned).toHaveLength(1);
+    // Bookkeeping records the compact; it does not decide whether it happens.
+    expect(mutationSentinel).toBe(true);
     expect(
       wrapperLogLines.some(
-        (l) =>
-          l.includes("durable receipt unavailable") ||
-          l.includes("receipt store unavailable") ||
-          l.includes("receipt append failed"),
+        (l) => l.includes("durable receipt unavailable") && l.includes("in-memory receipt"),
       ),
     ).toBe(true);
 
@@ -469,7 +457,7 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 15_000);
 
-  it("open-failure of receipt store → wouldMutate does not schedule mutation", async () => {
+  it("open-failure of receipt store → wouldMutate still schedules the mutation", async () => {
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
@@ -514,19 +502,15 @@ describe("LIM-64 production wrapper path", () => {
         warningCount: () => 0,
         path: "/tmp/fake.log",
       } as never,
-      onHandoffResult: () => {
-        throw new Error("must not handoff");
-      },
     });
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
-    await new Promise((r) => setTimeout(r, 400));
-    expect(mutationSentinel).toBe(false);
-    expect(wrapperLogLines.some((l) => l.includes("receipt store unavailable") || l.includes("durable receipt"))).toBe(
-      true,
-    );
+    await waitFor(() => mutationSentinel, "compact to start with no receipt store");
+    expect(mutationSentinel).toBe(true);
+    expect(wrapperLogLines.some((l) => l.includes("receipt store unavailable"))).toBe(true);
+    expect(wrapperLogLines.some((l) => l.includes("in-memory receipt"))).toBe(true);
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 15_000);
@@ -559,9 +543,7 @@ describe("LIM-64 production wrapper path", () => {
       );
       const pre = applyGovernorLifecycleBatch(
         createGovernorRuntimeState({
-          captureHealthy: true,
           captureGeneration: 1,
-          descriptorReady: true,
         }),
         ESTIMATE_CROSS_SIGNALS,
         POLICY as never,
@@ -776,7 +758,7 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 15_000);
 
-  it("provider missing/invalid clears stale estimate and usage (no wouldMutate)", async () => {
+  it("provider missing/invalid falls back to the last known reading and still compacts", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-clear-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
@@ -787,7 +769,12 @@ describe("LIM-64 production wrapper path", () => {
       return { ok: true, value: { kind: "ok" } };
     });
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
-    const observes: Array<{ decision: string; wouldMutate: boolean }> = [];
+    const observes: Array<{
+      decision: string;
+      wouldMutate: boolean;
+      freshness: string;
+      base: number | null;
+    }> = [];
 
     mocks.captureFactory = (opts) => {
       const session = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
@@ -808,10 +795,13 @@ describe("LIM-64 production wrapper path", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: receiptDb,
-      onGovernorObserve: (r) => observes.push({ decision: r.decision, wouldMutate: r.wouldMutate }),
-      onHandoffResult: () => {
-        throw new Error("no handoff");
-      },
+      onGovernorObserve: (r) =>
+        observes.push({
+          decision: r.decision,
+          wouldMutate: r.wouldMutate,
+          freshness: r.pressure.providerBaseFreshness,
+          base: r.pressure.providerBaseTokens,
+        }),
     });
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
@@ -832,11 +822,12 @@ describe("LIM-64 production wrapper path", () => {
       { kind: "sampling_observed", samplingId: "new" },
       { kind: "turn_settled", reason: "end_turn" },
     ]);
-    await new Promise((r) => setTimeout(r, 300));
-    expect(mutationSentinel).toBe(false);
-    const settled = observes.filter((o) => o.decision === "no_provider_usage");
+    await waitFor(() => mutationSentinel, "compact to start from the last known reading");
+    const settled = observes.filter((o) => o.decision === "would_compact" && o.wouldMutate);
     expect(settled.length).toBeGreaterThanOrEqual(1);
-    expect(observes.every((o) => o.wouldMutate === false)).toBe(true);
+    // 900k is a real provider number carried forward, labelled as such.
+    expect(settled[0]?.base).toBe(900_000);
+    expect(settled[0]?.freshness).toBe("last_known");
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 15_000);
@@ -897,15 +888,17 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 15_000);
 
-  it("cooldown: no mutation; receipt terminal mutation_deferred cooldown", async () => {
+  it("no cooldown: a failed handoff does not time-block the next settled seam", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-cool-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
     const spawned: FakePty[] = [];
     let mutationCalls = 0;
-    // Arrangement: first settle rebuilds, handoff rolls back (rebuilt capture never-ready)
-    // → autoBlockedUntilMs cooldown. Second distinct settle (req:cool2) must terminalize
-    // mutation_deferred/cooldown with wouldMutate true — not a vacuous open-turn row.
+    // Arrangement: the first settle rebuilds and the handoff fails (rebuilt
+    // capture never becomes ready), so the wrapper falls back to the old
+    // session. The second distinct settle must be free to try again right
+    // away — a transient handoff failure used to cost two minutes at maximum
+    // pressure on top of a 10K growth toll.
     const sdk = sdkForCapture(async () => ({
       ok: true,
       value: { kind: "error", reason: "stop" },
@@ -1005,7 +998,7 @@ describe("LIM-64 production wrapper path", () => {
     expect(mutationCalls).toBeGreaterThanOrEqual(1);
 
     const mutationAfterFirst = mutationCalls;
-    // Second distinct pressure while cooldown active.
+    // Second distinct pressure immediately after the failure.
     lifecycleSink!([
       { kind: "turn_opened", reason: "user_prompt" },
       {
@@ -1032,33 +1025,18 @@ describe("LIM-64 production wrapper path", () => {
       },
       { kind: "turn_settled", reason: "end_turn" },
     ]);
-    await waitFor(
-      () => {
-        const s = openGovernorReceiptStore(receiptDb);
-        try {
-          return (
-            s
-              .listBySession("old-session")
-              .find(
-                (r) => r.samplingId === "req:cool2" && r.observePhase === "settled_seam" && r.wouldMutate === true,
-              ) !== undefined
-          );
-        } finally {
-          s.close();
-        }
-      },
-      "settled cool2 receipt",
-      8_000,
-    );
-    expect(mutationCalls).toBe(mutationAfterFirst);
+    // The seam is taken again immediately — no 120-second wait, no growth toll.
+    await waitFor(() => mutationCalls > mutationAfterFirst, "second compact attempt", 8_000);
 
     const store = openGovernorReceiptStore(receiptDb);
+    const all = store.listAll();
     const second = store
       .listBySession("old-session")
       .find((r) => r.samplingId === "req:cool2" && r.observePhase === "settled_seam" && r.wouldMutate === true);
     expect(second).toBeDefined();
-    expect(second!.handoffOutcome?.kind).toBe("mutation_deferred");
-    expect((second!.handoffOutcome as { reason?: string }).reason).toBe("cooldown");
+    // No timer anywhere in the outcome vocabulary: nothing was deferred for
+    // waiting out a clock.
+    expect(all.every((r) => (r.handoffOutcome as { reason?: string }).reason !== "cooldown")).toBe(true);
     store.close();
     writeSpy.mockRestore();
     spawned[spawned.length - 1]!.fireExit(0);
@@ -1422,7 +1400,7 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 15_000);
 
-  it("true append-failure-after-open: store open ok, append throws → no mutation", async () => {
+  it("true append-failure-after-open: store open ok, append throws → compact still runs", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-appendfail-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
@@ -1465,19 +1443,15 @@ describe("LIM-64 production wrapper path", () => {
           throw new Error("injected append failure after open");
         },
       }),
-      onHandoffResult: () => {
-        throw new Error("must not handoff");
-      },
     });
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
-    await new Promise((r) => setTimeout(r, 400));
-    expect(mutationSentinel).toBe(false);
-    expect(
-      wrapperLogLines.some((l) => l.includes("receipt append failed") || l.includes("durable receipt unavailable")),
-    ).toBe(true);
+    await waitFor(() => mutationSentinel, "compact to start after a failed receipt append");
+    expect(mutationSentinel).toBe(true);
+    expect(wrapperLogLines.some((l) => l.includes("receipt append failed"))).toBe(true);
+    expect(wrapperLogLines.some((l) => l.includes("in-memory receipt"))).toBe(true);
     // Store open succeeded — no "receipt store unavailable" required.
     expect(wrapperLogLines.some((l) => l.includes("receipt store unavailable"))).toBe(false);
 

@@ -149,7 +149,6 @@ function makeCaptureSession(stopImpl: () => Promise<void> = async () => {}): Cap
   return {
     stats,
     getCommandContext: () => ({
-      captureDisabled: false,
       stats,
       sdk: {
         drainSettled: async () => {},
@@ -230,7 +229,7 @@ describe("run", () => {
       stdin,
       stdout,
       disableNativeBackstopArgs: true,
-      noCapture: true,
+      unboundTestChild: true,
     });
 
     expect(output.join("")).toContain("hello");

@@ -7,8 +7,8 @@
  * 3 settled seam would_compact + wouldMutate
  * 4 input/cache/cache-read math + source-labelled estimate
  * 5 post-measurement estimate crosses threshold
- * 6 missing/invalid usage clears stale authority
- * 7 gate classifications (epoch/stale/degraded/descriptor/in-flight/native)
+ * 6 missing/invalid usage falls back to the last known reading
+ * 7 removed transient gates no longer suppress a settled compact
  * 8 native summary attention (no writer race)
  * 9 handoff outcome receipt attachments (success/refuse/partial/rollback/retry)
  * 10 restart/replay durability of receipts
@@ -39,7 +39,7 @@ function armed(over: Partial<ResolvedContextPolicy["policy"]> = {}): ResolvedCon
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "session"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, armed: true, errors: [] };
+  return { policy, sources, fallbacks: [] };
 }
 
 const dirs: string[] = [];
@@ -55,9 +55,7 @@ afterEach(() => {
 
 function readyState() {
   return createGovernorRuntimeState({
-    captureHealthy: true,
     captureGeneration: 1,
-    descriptorReady: true,
   });
 }
 
@@ -181,8 +179,8 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     expect(settled.postMeasurementEstimate.source).toBe("host_byte_estimate");
   });
 
-  it("6: missing/invalid latest usage clears older usage; no stale compact", () => {
-    const cleared = applyGovernorLifecycleBatch(
+  it("6: missing/invalid latest usage keeps the last known reading and still compacts", () => {
+    const carried = applyGovernorLifecycleBatch(
       readyState(),
       [
         { kind: "turn_opened", reason: "user_prompt" },
@@ -196,112 +194,66 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
       ],
       armed(),
     );
-    expect(cleared.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("no_provider_usage");
-    expect(cleared.observes.filter((o) => o.observePhase === "settled_seam")[0]?.wouldMutate).toBe(false);
+    const settled = carried.observes.filter((o) => o.observePhase === "settled_seam")[0];
+    expect(settled?.decision).toBe("would_compact");
+    expect(settled?.wouldMutate).toBe(true);
+    // Truthful provenance: still provider-reported, explicitly not this turn's.
+    expect(settled?.pressure.providerBaseTokens).toBe(900_000);
+    expect(settled?.pressure.providerBaseFreshness).toBe("last_known");
+    expect(settled?.pressure.providerBaseDomain).toBe("provider_reported_input");
   });
 
-  it("7: gate classifications — epoch, settle_stale, degraded, descriptor, in-flight", () => {
-    // input_epoch_changed
-    let state = readyState();
-    state = applyGovernorLifecycleBatch(state, [{ kind: "turn_opened", reason: "user_prompt" }], armed()).state;
-    state = noteGovernorInput(state);
-    expect(
-      applyGovernorLifecycleBatch(
-        state,
-        [
-          {
-            kind: "sampling_observed",
-            samplingId: "m",
-            providerUsage: { input_tokens: 500_000 },
-          },
-          { kind: "turn_settled", reason: "end_turn" },
-        ],
-        armed(),
-      ).observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision,
-    ).toBe("input_epoch_changed");
+  it("7: removed transient gates no longer suppress a settled compact", () => {
+    const overPressure: LifecycleSignal[] = [
+      { kind: "turn_opened", reason: "user_prompt" },
+      {
+        kind: "sampling_observed",
+        samplingId: "m",
+        providerUsage: { input_tokens: 500_000 },
+      },
+      { kind: "turn_settled", reason: "end_turn" },
+    ];
+    const settledDecision = (state: ReturnType<typeof readyState>) =>
+      applyGovernorLifecycleBatch(state, overPressure, armed()).observes.filter(
+        (o) => o.observePhase === "settled_seam",
+      )[0];
 
-    // settle_stale via pure decide
-    expect(
-      decideGovernor({
-        policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: true },
-        policyArmed: true,
-        turnOpen: false,
-        settleStale: true,
-        providerContext: {
-          inputTokens: 500_000,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-          total: 500_000,
-        },
-        postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
-        captureHealthy: true,
-        captureGeneration: 1,
-        descriptorReady: true,
-        operationInFlight: false,
-        inputEpochAtTurnOpen: 0,
-        currentInputEpoch: 0,
-        nativeSummaryAttention: false,
-        lastWouldCompactProviderTotal: null,
-        lastWouldCompactCaptureGeneration: null,
-      }).kind,
-    ).toBe("settle_stale");
+    // Input typed during the turn: settled history cannot be retroactively
+    // invalidated by bytes that belong to the next turn.
+    let typedAhead = readyState();
+    typedAhead = applyGovernorLifecycleBatch(typedAhead, [{ kind: "turn_opened", reason: "user_prompt" }], armed())
+      .state;
+    typedAhead = noteGovernorInput(typedAhead);
+    typedAhead = noteGovernorInput(typedAhead);
+    const afterInput = settledDecision(typedAhead);
+    expect(afterInput?.decision).toBe("would_compact");
+    expect(afterInput?.wouldMutate).toBe(true);
+    // The epoch survives as a diagnostic on the receipt, without authority.
+    expect(afterInput?.inputEpoch).toBe(2);
 
-    // capture_degraded
-    expect(
-      applyGovernorLifecycleBatch(
-        createGovernorRuntimeState({
-          captureHealthy: false,
-          captureGeneration: 2,
-          descriptorReady: true,
-        }),
-        [
-          { kind: "turn_opened", reason: "user_prompt" },
-          {
-            kind: "sampling_observed",
-            samplingId: "m",
-            providerUsage: { input_tokens: 500_000 },
-          },
-          { kind: "turn_settled", reason: "end_turn" },
-        ],
-        armed(),
-      ).observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision,
-    ).toBe("capture_degraded");
+    // A degraded capture generation is a repair trigger for the wrapper, not a
+    // decision input: the classification still says compact.
+    const afterDegrade = applyGovernorLifecycleBatch(
+      readyState(),
+      [{ kind: "capture_degraded", reason: "file_shrink", generation: 2 }, ...overPressure],
+      armed(),
+    ).observes.filter((o) => o.observePhase === "settled_seam")[0];
+    expect(afterDegrade?.decision).toBe("would_compact");
+    expect(afterDegrade?.wouldMutate).toBe(true);
+    expect(afterDegrade?.captureGeneration).toBe(2);
 
-    // descriptor_not_ready
-    expect(
-      applyGovernorLifecycleBatch(
-        createGovernorRuntimeState({ captureHealthy: true, descriptorReady: false }),
-        [
-          { kind: "turn_opened", reason: "user_prompt" },
-          {
-            kind: "sampling_observed",
-            samplingId: "m",
-            providerUsage: { input_tokens: 500_000 },
-          },
-          { kind: "turn_settled", reason: "end_turn" },
-        ],
-        armed(),
-      ).observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision,
-    ).toBe("descriptor_not_ready");
+    // A session mismatch revokes retrieval; it does not decide compaction.
+    const afterMismatch = applyGovernorLifecycleBatch(
+      readyState(),
+      [{ kind: "session_mismatch_observed", expected: "a", observed: "b" }, ...overPressure],
+      armed(),
+    ).observes.filter((o) => o.observePhase === "settled_seam")[0];
+    expect(afterMismatch?.decision).toBe("would_compact");
+    expect(afterMismatch?.wouldMutate).toBe(true);
 
-    // operation_in_flight
-    let inflight = readyState();
-    inflight = setGovernorOperationInFlight(inflight, true);
-    expect(
-      applyGovernorLifecycleBatch(
-        inflight,
-        [
-          { kind: "turn_opened", reason: "user_prompt" },
-          {
-            kind: "sampling_observed",
-            samplingId: "m",
-            providerUsage: { input_tokens: 500_000 },
-          },
-          { kind: "turn_settled", reason: "end_turn" },
-        ],
-        armed(),
-      ).observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision,
-    ).toBe("operation_in_flight");
+    // Sequencing survives: one operation at a time.
+    const inflight = setGovernorOperationInFlight(readyState(), true);
+    expect(settledDecision(inflight)?.decision).toBe("operation_in_flight");
   });
 
   it("8: native summary observed — attention path; no wouldMutate", () => {
@@ -364,7 +316,8 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
       expect(updated?.handoffOutcome).toEqual(outcome);
     }
 
-    // retry growth after a would_compact on same generation
+    // A second settled seam at barely higher pressure still classifies
+    // would_compact: there is no growth toll to pay for a retry.
     const after = applyGovernorLifecycleBatch(
       applyGovernorLifecycleBatch(
         readyState(),
@@ -377,7 +330,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
           },
           { kind: "turn_settled", reason: "end_turn" },
         ],
-        armed({ retryGrowthTokens: 10_000 }),
+        armed(),
       ).state,
       [
         { kind: "turn_opened", reason: "user_prompt" },
@@ -388,9 +341,11 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
-      armed({ retryGrowthTokens: 10_000 }),
+      armed(),
     );
-    expect(after.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("retry_growth_guard");
+    const second = after.observes.filter((o) => o.observePhase === "settled_seam")[0];
+    expect(second?.decision).toBe("would_compact");
+    expect(second?.wouldMutate).toBe(true);
     store.close();
   });
 

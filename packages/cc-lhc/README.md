@@ -86,16 +86,23 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   usage is authoritative and includes input + cache creation + cache read.
   Predicted next-request pressure adds a **source-labelled** estimate for
   content captured after that provider request (never double-counted as
-  provider usage). Missing or invalid latest usage clears stale authority.
-  Classification uses explicit named states and durable receipts. Threshold
+  provider usage). Missing or invalid latest usage falls back to the last known
+  provider reading plus that estimate, labelled `last_known` so an older
+  measurement is never read as fresh — a session at 900k does not become healthy
+  because one usage line went bad. Two things decide an automatic compact: the
+  user's `autoCompact` policy and measured pressure. Capture health, descriptor
+  readiness, receipt storage, and typed-ahead input are diagnostics and have no
+  say. Classification uses explicit named states and durable receipts. Threshold
   crossing during an open agentic turn is observed and receipted but **not**
   mutated mid-turn — Claude Code cannot replace the in-flight request the way
   Codex full continuation can. At the next Claude-safe settled seam, policy may
   run the existing fenced compact/rebuild and wrapper-owned controlled handoff.
   Native summary observation is an explicit attention path; LHC does not silently
-  race the native writer. Built-in policy targets 180k, triggers at 360k,
-  reserves 50k runway, keeps native compact as a 1M emergency backstop, and
-  leaves automatic prune off.
+  race the native writer. Capture that is degraded or still catching up does not
+  block the seam: the wrapper rebuilds capture state from the persisted
+  transcript and re-evaluates the moment it is ready. Built-in policy targets
+  180k, triggers at 360k, reserves 50k runway, keeps native compact as a 1M
+  emergency backstop, and leaves automatic prune off.
 - **Controlled handoff.** On a respawn-safe interactive launch, compact/prune
   rebuild a new rollout, terminate the
   old child, and spawn `claude --resume <new-id>`. Capture stays attached
@@ -173,13 +180,19 @@ builtin < user config < project config < launch flags / panel edits
 ```
 
 User config is `$XDG_CONFIG_HOME/cc-lhc/config.json` (or
-`~/.config/cc-lhc/config.json`); project config is `.cc-lhc.json`. Unknown
-fields and invalid bounds are reported and disarm automatic policy without
-preventing Claude or capture from running. Supported persisted fields are
-`autoCompact`, `lowerBoundTokens`, `upperBoundTokens`, `profile`,
-`nativeCompactMode`, `nativeBackstopTokens`, `pruneEnabled`,
-`pruneThresholdTokens`, `pruneTargetTokens`, `retryGrowthTokens`, and
-`minRunwayTokens`. `observeOnly` is launch-only.
+`~/.config/cc-lhc/config.json`); project config is `.cc-lhc.json`. Supported
+persisted fields are `autoCompact`, `lowerBoundTokens`, `upperBoundTokens`,
+`profile`, `nativeCompactMode`, `nativeBackstopTokens`, `pruneEnabled`,
+`pruneThresholdTokens`, `pruneTargetTokens`, and `minRunwayTokens`.
+
+Bad configuration never disarms the product. An unknown field, a malformed
+value, an unreadable file, or an incoherent pair of bounds falls back to the
+built-in default for the fields involved; automatic compact stays on. The
+fallback is announced at startup, in the wrapper log, in the control panel, and
+in the compact message written to the rebuilt session, and it says: *Invalid
+compact configuration. Default configuration used. Please fix or update the
+configuration.* Only an explicit `autoCompact: false` — in config or through a
+panel `auto off` — turns automatic compact off.
 
 Run `cc-lhc --lhc-help` for the wrapper's launch flags and operative
 environment surface.
@@ -221,12 +234,16 @@ v1 accepts this difference honestly. Shared LIM-60/61 strings and pressure
 accounting are reused where they remain truthful; cc-lhc does not claim effects
 Claude Code cannot perform.
 
-**Durable receipts (production):** settled `wouldMutate` decisions require a
-persisted receipt id before any compact/handoff starts. Exact native replay is
-idempotent (unique `replay_key`); an existing `scheduled` receipt after restart
-fails closed rather than re-running mutation. Outcomes attach only to that exact
-receipt id (never “latest wouldMutate”), so old-session → new-session handoff
-and manual compact cannot rewrite an unrelated automatic classification.
+**Durable receipts (production):** every classification is receipted, and
+receipts are write-behind — they record the compact, they never decide whether
+it runs. When the receipt store is unavailable the operation proceeds against an
+in-memory receipt id with a loud warning (restart recovery is degraded for that
+attempt; the session still compacts). Exact native replay is idempotent (unique
+`replay_key`); a replayed receipt whose outcome was a *deferral* is retried,
+because no mutation had started, while an existing `scheduled` receipt after
+restart is not re-run. Outcomes attach only to that exact receipt id (never
+“latest wouldMutate”), so old-session → new-session handoff and manual compact
+cannot rewrite an unrelated automatic classification.
 
 ## Operational boundaries
 

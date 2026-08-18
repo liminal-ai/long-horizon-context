@@ -1,5 +1,10 @@
 /**
- * Context policy and capability-limited governor types (LIM-64).
+ * Context policy and capability-limited governor types.
+ *
+ * Two things decide an automatic compact: the user's explicit `autoCompact`
+ * policy and measured pressure. Everything else the wrapper knows — capture
+ * health, descriptor state, receipts, input epochs — is diagnostics and has no
+ * blocking authority here.
  *
  * Decisions name what would happen and why. Claude Code has no in-place
  * mid-agentic-turn request replacement: open-turn classifications are recorded
@@ -42,11 +47,14 @@ export const EMPTY_POST_MEASUREMENT_ESTIMATE: PostMeasurementEstimate = {
 };
 
 /**
- * Validated effective context policy.
- * Slice 4: `observeOnly` is a real mode — true logs decisions without executing.
+ * Effective context policy. Always usable: invalid fields fall back to
+ * built-in defaults with a visible notice, never to a disabled product.
  */
 export interface ContextPolicy {
-  /** Execute automatic compact at would_compact decisions (Slice 4 active). */
+  /**
+   * Execute automatic compact at would_compact decisions. Defaults on; only an
+   * explicit user choice (config file or panel edit) turns it off.
+   */
   autoCompact: boolean;
   /** LHC compact construction target (tokens). */
   lowerBoundTokens: number;
@@ -65,13 +73,6 @@ export interface ContextPolicy {
   pruneEnabled: boolean;
   pruneThresholdTokens: number | null;
   pruneTargetTokens: number | null;
-  /** Log decisions without executing (session-only escape hatch). */
-  observeOnly: boolean;
-  /**
-   * After a would_compact observation, require this much additional provider
-   * context (or a new sampling generation) before another would_compact.
-   */
-  retryGrowthTokens: number;
   /** Minimum upper − lower runway required at validation. */
   minRunwayTokens: number;
 }
@@ -82,13 +83,29 @@ export type PolicyFieldSources = {
   [K in PolicyFieldKey]: PolicyFieldSource;
 };
 
+/**
+ * The loaded policy plus what had to be replaced to get there. There is no
+ * armed flag: bad configuration falls back per field and the product stays
+ * automatically compactable.
+ */
 export interface ResolvedContextPolicy {
   policy: ContextPolicy;
   sources: PolicyFieldSources;
-  /** False when load/validate failed; governor cannot arm automatic intent. */
-  armed: boolean;
-  /** Human-readable validation/load errors (empty when armed). */
-  errors: readonly string[];
+  /**
+   * Per-field fallbacks applied because a configured value was unknown,
+   * malformed, or incoherent. Empty when configuration was fully usable.
+   */
+  fallbacks: readonly ConfigFallback[];
+}
+
+/** One configured value replaced by its built-in default. */
+export interface ConfigFallback {
+  /** Where the bad value came from, e.g. `user config /path/config.json`. */
+  origin: string;
+  /** Field replaced, or null when a whole configuration layer was unreadable. */
+  field: PolicyFieldKey | null;
+  /** What was wrong, in the operator's terms. */
+  detail: string;
 }
 
 /** Raw partial from JSON / session overrides (unknown fields rejected). */
@@ -102,10 +119,7 @@ export type ContextPolicyPartial = {
   pruneEnabled?: boolean;
   pruneThresholdTokens?: number | null;
   pruneTargetTokens?: number | null;
-  retryGrowthTokens?: number;
   minRunwayTokens?: number;
-  /** Session-only; cannot be set in files. */
-  observeOnly?: boolean;
 };
 
 /** Provider context for one unique sampling attempt. */
@@ -123,37 +137,44 @@ export interface ProviderContextTokens {
  */
 export type GovernorDecisionKind =
   | "would_compact"
-  | "no_provider_usage"
   | "below_threshold"
   | "turn_open"
-  | "settle_stale"
-  | "input_epoch_changed"
-  | "capture_degraded"
-  | "descriptor_not_ready"
   | "operation_in_flight"
-  | "retry_growth_guard"
   | "policy_disabled"
-  | "policy_invalid"
   | "native_summary_attention";
 
 /** Observation phase: open agentic turn vs Claude-safe settled seam. */
 export type GovernorObservePhase = "open_turn" | "settled_seam";
 
 /**
+ * Where the provider base of a pressure reading came from.
+ *
+ * `current_sampling` is this turn's own provider-reported usage.
+ * `last_known` is the newest valid provider reading the session has seen,
+ * carried forward because the latest sampling was missing or malformed — still
+ * a provider-reported number, just an older one, and labelled so nobody reads
+ * it as fresh.
+ * `none` means no provider reading has ever arrived in this session.
+ */
+export type ProviderBaseFreshness = "current_sampling" | "last_known" | "none";
+
+/**
  * Predicted next-request pressure receipt fields.
  * providerBase + estimate; estimate is never counted as provider usage.
  */
 export interface GovernorPressureReceipt {
+  /** null only when no provider reading has ever arrived. */
   providerBaseTokens: number | null;
   providerBaseDomain: "provider_reported_input";
+  /** Whether the base is this turn's reading or a carried-forward one. */
+  providerBaseFreshness: ProviderBaseFreshness;
   estimateTokens: number;
   estimateSource: string;
   estimateDomain: SourceLabelledEstimateDomain;
-  /** null when provider usage is missing/invalid. */
-  nextRequestPressureTokens: number | null;
+  /** Provider base (0 when none has ever arrived) plus the labelled estimate. */
+  nextRequestPressureTokens: number;
   upperTriggerTokens: number;
-  /** null when provider usage is missing/invalid. */
-  atOrAboveTrigger: boolean | null;
+  atOrAboveTrigger: boolean;
 }
 
 /**
@@ -162,43 +183,21 @@ export interface GovernorPressureReceipt {
  */
 export interface GovernorInput {
   policy: ContextPolicy;
-  policyArmed: boolean;
   /** True when the agentic turn is still open (no mutation/handoff). */
   turnOpen: boolean;
-  /**
-   * When true, this settle observation is considered stale (e.g. already
-   * decided for this settle generation, or fold says open after settle).
-   */
-  settleStale: boolean;
-  /** Provider context for the latest completed sampling attempt of the turn. */
+  /** Newest valid provider reading; carried forward across turns. */
   providerContext: ProviderContextTokens | null;
+  /** Whether providerContext is this turn's own sampling. */
+  providerContextFreshness: ProviderBaseFreshness;
   /**
    * Source-labelled estimate of content captured after the last provider
    * measurement. Zero when nothing post-measurement has been captured.
    */
   postMeasurementEstimate: PostMeasurementEstimate;
-  /** Capture healthy and ready. */
-  captureHealthy: boolean;
-  captureGeneration: number;
-  /** Runtime descriptor ready for this session. */
-  descriptorReady: boolean;
   /** Compact/prune/handoff already in flight. */
   operationInFlight: boolean;
-  /**
-   * Input epoch when the current turn opened. If currentInputEpoch differs,
-   * user typed or queued input during the turn.
-   */
-  inputEpochAtTurnOpen: number;
-  currentInputEpoch: number;
   /** Native compact summary needs operator attention. */
   nativeSummaryAttention: boolean;
-  /**
-   * Predicted next-request pressure at the last would_compact for this capture
-   * generation (provider base used for hysteresis when estimate was zero).
-   * Null if never would_compact in this generation.
-   */
-  lastWouldCompactProviderTotal: number | null;
-  lastWouldCompactCaptureGeneration: number | null;
 }
 
 export interface GovernorDecision {
@@ -210,9 +209,9 @@ export interface GovernorDecision {
   upperBoundTokens: number;
   lowerBoundTokens: number;
   /**
-   * True only for would_compact under an armed, enabled, non-observe policy
-   * at a settled seam — the wrapper's cue to start the automatic operation.
-   * Always false while the turn is open (capability boundary).
+   * True only for would_compact under an enabled policy at a settled seam —
+   * the wrapper's cue to start the automatic operation. Always false while the
+   * turn is open (capability boundary).
    */
   wouldMutate: boolean;
 }
@@ -234,9 +233,9 @@ export interface GovernorObserveRecord {
   lowerBoundTokens: number;
   profile: string;
   autoCompactIntent: boolean;
-  observeOnly: boolean;
   wouldMutate: boolean;
-  policyArmed: boolean;
+  /** Count of configured values replaced by built-in defaults at load. */
+  configFallbackCount: number;
   policySourcesSummary: string;
   captureGeneration: number;
   inputEpoch: number;
@@ -303,9 +302,10 @@ export type GovernorHandoffOutcome =
 
 /** Stable reason codes for mutation_deferred (inspectable, not free-form only). */
 export type GovernorMutationDeferReason =
-  | "cooldown"
   | "auto_operation_in_flight"
   | "handoff_in_progress"
   | "wrapper_exiting"
   | "command_guard_busy"
-  | "respawn_unsafe";
+  | "respawn_unsafe"
+  /** Capture is rebuilding/catching up from the transcript; re-evaluated on ready. */
+  | "capture_catching_up";

@@ -181,7 +181,6 @@ function scriptedCaptureSession(
   const session: CaptureSession = {
     stats,
     getCommandContext: () => ({
-      captureDisabled: false,
       stats,
       sdk: sdk as Lhc,
       threadRef: { threadId: "th_auto", registryPath: "/tmp/reg.sqlite" },
@@ -233,8 +232,6 @@ const POLICY = {
     pruneEnabled: false,
     pruneThresholdTokens: null,
     pruneTargetTokens: null,
-    observeOnly: false,
-    retryGrowthTokens: 1_000,
     minRunwayTokens: 100,
   },
   sources: Object.fromEntries(
@@ -248,13 +245,10 @@ const POLICY = {
       pruneEnabled: 0,
       pruneThresholdTokens: 0,
       pruneTargetTokens: 0,
-      observeOnly: 0,
-      retryGrowthTokens: 0,
       minRunwayTokens: 0,
     }).map((k) => [k, "session"]),
   ) as never,
-  armed: true,
-  errors: [] as string[],
+  fallbacks: [],
 };
 
 const BOUND_SIGNALS: LifecycleSignal[] = [{ kind: "session_bound", sessionId: "old-session" }];

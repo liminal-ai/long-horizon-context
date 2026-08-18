@@ -146,7 +146,6 @@ describe("deterministic attribution + sticky degradation", () => {
       expect(degradeFacts).toHaveLength(1);
 
       const compact = await runCompactCommand("compact", {
-        captureDisabled: false,
         stats: session.stats,
         sdk: session.getCommandContext().sdk,
         threadRef: session.getCommandContext().threadRef,

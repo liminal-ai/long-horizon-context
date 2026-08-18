@@ -17,6 +17,9 @@ export async function runCompactCommand(_commandLine: string, runtime: LhcComman
     profile: policy?.profile ?? BUILTIN_CONTEXT_POLICY.profile,
     lowerBoundTokens: policy?.lowerBoundTokens ?? BUILTIN_CONTEXT_POLICY.lowerBoundTokens,
     ...(policy?.pruneIfDue === undefined ? {} : { pruneIfDue: policy.pruneIfDue }),
+    ...(runtime.hostNotices === undefined || runtime.hostNotices.length === 0
+      ? {}
+      : { hostNotices: runtime.hostNotices }),
     ...(runtime.inputEpochChanged === undefined ? {} : { inputEpochChanged: runtime.inputEpochChanged }),
   };
   const outcome = await runContextMutation(plan, runtime);

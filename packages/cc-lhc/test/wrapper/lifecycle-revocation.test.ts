@@ -109,7 +109,6 @@ function makeLifecycleCapture(opts: {
   return {
     stats,
     getCommandContext: () => ({
-      captureDisabled: false,
       stats,
       sdk: {
         drainSettled: async () => {},

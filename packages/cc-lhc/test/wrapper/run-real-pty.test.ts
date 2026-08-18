@@ -49,7 +49,7 @@ describe("run() over the real platform PTY (no spawnPty seam)", () => {
         stdin,
         stdout,
         disableNativeBackstopArgs: true,
-        noCapture: true,
+        unboundTestChild: true,
       },
     );
 

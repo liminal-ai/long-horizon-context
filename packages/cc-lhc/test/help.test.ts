@@ -15,11 +15,9 @@ describe("cc-lhc help surface", () => {
       "--from TOKENS",
       "get-messages",
       "backfill-labels",
-      "--lhc-no-capture",
       "--lhc-no-inference",
       "--lhc-no-notifier",
       "--lhc-auto-compact=on|off",
-      "--lhc-observe-only",
       "CC_LHC_HOME",
       "CC_LHC_CLAUDE_BIN",
       "CC_LHC_INPUT_DEBUG=FILE",
@@ -32,5 +30,14 @@ describe("cc-lhc help surface", () => {
       expect(CC_LHC_HELP).toContain(required);
     }
     expect(CC_LHC_HELP).toContain("--help, are forwarded");
+  });
+
+  it("advertises no capture-disabled or observe-only mode", () => {
+    // Plain `claude` is the passthrough; cc-lhc has no product mode with its
+    // core function switched off, and no live flag whose meaning is "do not
+    // compact".
+    expect(CC_LHC_HELP).not.toContain("--lhc-no-capture");
+    expect(CC_LHC_HELP).not.toContain("--lhc-observe-only");
+    expect(CC_LHC_HELP).not.toContain("--lhc-retry-growth-tokens");
   });
 });

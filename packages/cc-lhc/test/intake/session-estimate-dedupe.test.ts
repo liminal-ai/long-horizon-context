@@ -30,7 +30,7 @@ function armedPolicy(over: Partial<ResolvedContextPolicy["policy"]> = {}): Resol
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "builtin"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, armed: true, errors: [] };
+  return { policy, sources, fallbacks: [] };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -708,9 +708,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
     // line-ordered state (not a post-hoc batch of the full stream).
     const resolved = armedPolicy({ upperBoundTokens: 200_000, lowerBoundTokens: 50_000 });
     let gov = createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 1,
-      descriptorReady: true,
     });
     const settledObserves: Array<{
       samplingId: string | null;
@@ -912,9 +910,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
     const lifecycle2: LifecycleSignal[] = [];
     const resolved = armedPolicy({ upperBoundTokens: 200_000, lowerBoundTokens: 50_000 });
     let gov = createGovernorRuntimeState({
-      captureHealthy: true,
       captureGeneration: 1,
-      descriptorReady: true,
     });
     const settledObserves: Array<{
       samplingId: string | null;

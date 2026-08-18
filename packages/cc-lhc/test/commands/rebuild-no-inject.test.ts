@@ -14,7 +14,6 @@ import * as lineageDb from "../../src/intake/lineage-db.js";
 function makeRuntime(overrides: Partial<LhcCommandRuntime> = {}): LhcCommandRuntime {
   const threadRef = { threadId: "th_rebuild", registryPath: "/tmp/reg.sqlite" } as ThreadRef;
   return {
-    captureDisabled: false,
     stats: {
       linesSeen: 0,
       eventsSent: 0,

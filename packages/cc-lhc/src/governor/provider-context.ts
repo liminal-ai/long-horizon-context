@@ -1,15 +1,23 @@
 /**
  * Provider-context arithmetic for one unique sampling attempt, plus
- * source-labelled next-request pressure (LIM-64).
+ * source-labelled next-request pressure.
  *
  * Provider formula: input_tokens + cache_creation_input_tokens + cache_read_input_tokens
- * Uses only finite safe integers; invalid components fail closed (null).
+ * Invalid components yield no reading (null) rather than a guessed one.
  *
- * Predicted next-request pressure = provider total + post-measurement estimate.
- * The estimate is never relabelled as provider usage.
+ * Predicted next-request pressure = provider base + post-measurement estimate.
+ * The estimate is never relabelled as provider usage. When the latest sampling
+ * is missing or malformed the base is the last known provider reading, marked
+ * `last_known` in the receipt so an older measurement is never read as fresh —
+ * a session at 900K does not become healthy because one usage line went bad.
  */
 
-import type { GovernorPressureReceipt, PostMeasurementEstimate, ProviderContextTokens } from "./types.js";
+import type {
+  GovernorPressureReceipt,
+  PostMeasurementEstimate,
+  ProviderBaseFreshness,
+  ProviderContextTokens,
+} from "./types.js";
 import { EMPTY_POST_MEASUREMENT_ESTIMATE } from "./types.js";
 
 const USAGE_KEYS = {
@@ -79,11 +87,6 @@ export function providerContextFromUsage(
   };
 }
 
-/** True when total is at or above the upper trigger. */
-export function atOrAboveUpper(total: number, upperBoundTokens: number): boolean {
-  return total >= upperBoundTokens;
-}
-
 /**
  * Normalize a host-supplied estimate. Invalid numbers fail closed to zero
  * tokens with the empty estimate shape (never invent provider usage).
@@ -106,43 +109,27 @@ export function normalizePostMeasurementEstimate(
 }
 
 /**
- * Build a pressure receipt from authoritative provider usage + labelled estimate.
+ * Build a pressure receipt from a provider base + labelled estimate.
  * Does not double-count: estimate is a separate domain.
+ *
+ * `freshness` describes the base, not its validity: a carried-forward reading
+ * is still provider-reported. With no reading at all the base counts as zero
+ * and pressure is the estimate alone.
  */
 export function buildPressureReceipt(
   providerContext: ProviderContextTokens | null,
   estimate: PostMeasurementEstimate | null | undefined,
   upperTriggerTokens: number,
+  freshness: ProviderBaseFreshness = providerContext === null ? "none" : "current_sampling",
 ): GovernorPressureReceipt {
   const est = normalizePostMeasurementEstimate(estimate);
-  if (providerContext === null) {
-    return {
-      providerBaseTokens: null,
-      providerBaseDomain: "provider_reported_input",
-      estimateTokens: est.tokens,
-      estimateSource: est.source,
-      estimateDomain: "source_labelled_estimate",
-      nextRequestPressureTokens: null,
-      upperTriggerTokens,
-      atOrAboveTrigger: null,
-    };
-  }
-  const next = providerContext.total + est.tokens;
-  if (!Number.isSafeInteger(next)) {
-    return {
-      providerBaseTokens: providerContext.total,
-      providerBaseDomain: "provider_reported_input",
-      estimateTokens: est.tokens,
-      estimateSource: est.source,
-      estimateDomain: "source_labelled_estimate",
-      nextRequestPressureTokens: null,
-      upperTriggerTokens,
-      atOrAboveTrigger: null,
-    };
-  }
+  const base = providerContext?.total ?? 0;
+  const summed = base + est.tokens;
+  const next = Number.isSafeInteger(summed) ? summed : base;
   return {
-    providerBaseTokens: providerContext.total,
+    providerBaseTokens: providerContext === null ? null : base,
     providerBaseDomain: "provider_reported_input",
+    providerBaseFreshness: providerContext === null ? "none" : freshness,
     estimateTokens: est.tokens,
     estimateSource: est.source,
     estimateDomain: "source_labelled_estimate",

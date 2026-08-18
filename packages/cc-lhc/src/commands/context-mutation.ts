@@ -71,6 +71,7 @@ export function formatTokensShort(tokens: number): string {
 export function formatDurableReceipt(
   operation: ContextMutationOperation,
   metrics: ContextMutationMetrics,
+  hostNotices: readonly string[] = [],
 ): string {
   const label = operation === "prune" ? "prune" : "compact";
   const parts: string[] = [];
@@ -87,7 +88,8 @@ export function formatDurableReceipt(
       metrics.targetTokens !== undefined ? ` (${formatTokensShort(metrics.targetTokens)} target)` : "";
     parts.push(`rebuilt LHC view ${formatTokensShort(metrics.viewTokens)}${target}`);
   }
-  return `[lhc ${label}:${metrics.origin}] ${parts.join("; ")}.`;
+  const receipt = `[lhc ${label}:${metrics.origin}] ${parts.join("; ")}.`;
+  return hostNotices.length === 0 ? receipt : [receipt, ...hostNotices].join("\n");
 }
 
 export interface ContextMutationPlan {
@@ -105,6 +107,12 @@ export interface ContextMutationPlan {
   manualPruneTargetTokens?: number;
   /** Provider context that triggered an automatic operation (receipt detail). */
   triggerContextTokens?: number;
+  /**
+   * Host-level notices to carry into the compact message written to the
+   * rebuilt session — today, the configuration-fallback notice. Core LHC
+   * produces the compacted content; cc-lhc injects host anomalies here.
+   */
+  hostNotices?: readonly string[];
   /**
    * True when user input arrived since the operation started. Checked at every
    * fence; a pre-SDK trip refuses, a post-SDK trip reports partial (view
@@ -149,7 +157,6 @@ export function formatPruneReceipt(receipt: PruneReceipt): string {
 }
 
 export function notReadyOutcome(runtime: LhcCommandRuntime): ContextMutationOutcome | null {
-  if (runtime.captureDisabled) return { kind: "refused", messages: ["capture disabled"] };
   if (runtime.sdk === undefined || runtime.threadRef === undefined) {
     return { kind: "refused", messages: ["capture not ready"] };
   }
@@ -304,7 +311,7 @@ export async function runContextMutation(
     const afterStat = fence();
     if (afterStat !== null) return partialOrRefused(afterStat);
 
-    const durableReceipt = formatDurableReceipt(plan.operation, metrics);
+    const durableReceipt = formatDurableReceipt(plan.operation, metrics, plan.hostNotices ?? []);
     const rebuilt = await writeRebuiltRollout({
       view: view.value,
       cwd: runtime.cwd,

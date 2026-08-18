@@ -165,18 +165,22 @@ Every call passes `--no-session-persistence`, certified on Claude 2.1.226, so
 inference subprocesses cannot create project rollouts that capture might
 mistake for user sessions. Each child is tracked and terminated during wrapper
 shutdown. `--lhc-no-inference` or `CC_LHC_NO_INFERENCE=1` disables model-backed
-derivation while preserving capture.
+derivation while preserving capture. There is no capture-disabled or
+observe-only wrapper mode: unmanaged passthrough is plain `claude`.
 
 ## Context policy and governor (capability-limited)
 
 Policy precedence is builtin → user → project → launch/session. User config is
 `$XDG_CONFIG_HOME/cc-lhc/config.json` (falling back to
-`~/.config/cc-lhc/config.json`); project config is `.cc-lhc.json`. Unknown
-fields and invalid bounds fail visibly.
+`~/.config/cc-lhc/config.json`); project config is `.cc-lhc.json`.
 
-Invalid or unknown policy is reported and disarms automatic policy; Claude and
-canonical capture continue. Current code built-ins (see
-`packages/cc-lhc/src/governor/config.ts`) are:
+Bad configuration is reported, never obeyed as an off switch. Unknown fields,
+malformed values, unreadable files, and incoherent bounds fall back to the
+built-in default for the fields involved, and automatic compact stays armed.
+The notice — "Invalid compact configuration. Default configuration used. Please
+fix or update the configuration." — surfaces at startup, in the wrapper log, in
+the control panel, and in the compact message written to the rebuilt session.
+Current code built-ins (see `packages/cc-lhc/src/governor/config.ts`) are:
 
 | Setting | Default |
 | --- | ---: |
@@ -184,7 +188,6 @@ canonical capture continue. Current code built-ins (see
 | compact target (lower) | 180,000 tokens (LHC rendered-history domain) |
 | trigger (upper) | 360,000 tokens (provider-reported input domain) |
 | minimum runway | 50,000 tokens |
-| retry growth after failure | 10,000 tokens |
 | LHC profile | `continuation` |
 | automatic prune | off |
 | native compact | emergency backstop at 1,000,000 tokens |
@@ -193,25 +196,35 @@ canonical capture continue. Current code built-ins (see
 Provider-reported input usage is authoritative: **input + cache creation +
 cache read**. Predicted next-request pressure adds a **source-labelled**
 estimate for content captured after that provider request; the estimate is never
-relabelled as provider usage. Missing or invalid latest usage clears older
-authority and cannot trigger a stale compact.
+relabelled as provider usage. When the latest usage line is missing or
+malformed, the base is the last known provider reading — still a provider
+number, marked `last_known` in the receipt — plus the growth measured on top of
+it. The session's real size never disappears with a bad line.
 
-Observations are named decisions (not prose-only logs), folded with capture
-health, descriptor readiness, turn state, active mutation, input epoch,
-native-summary attention, and cooldown/hysteresis. Threshold crossing during an
-**open** agentic turn is classified and written as a durable receipt with
-`wouldMutate=false` — Claude Code has no mid-turn request-replacement seam.
-Automatic compact/handoff runs only at a confirmed **settled** boundary. The
-final pre-commit gate rechecks that no user input or lifecycle change
-invalidated the observation. Native summary observation latches
+Two inputs decide an automatic compact: the user's `autoCompact` policy and
+measured pressure. Everything else the wrapper knows — capture health,
+descriptor readiness, receipt storage, typed-ahead input — is diagnostics with
+no blocking authority. Threshold crossing during an **open** agentic turn is
+classified and written as a durable receipt with `wouldMutate=false` — Claude
+Code has no mid-turn request-replacement seam. Automatic compact/handoff runs
+only at a confirmed **settled** boundary. Native summary observation latches
 `native_summary_attention` so LHC does not race the native writer.
+
+Capture that is degraded or still catching up is reconciled, not obeyed: the
+wrapper rebuilds capture state from the persisted transcript (intake events
+carry content-stable idempotency keys, so re-reading it records only what was
+missed) and re-evaluates the skipped seam the moment capture reports ready. No
+timer, no latch.
 
 Durable governor receipts live in `cc-lhc.sqlite` (`cc_governor_receipts`),
 tied to settle/usage/capture generation and optional handoff outcome. They
 survive wrapper restart and are inspectable independently of `wrapper.log`.
+Receipts are write-behind: when the store is unavailable the compact runs
+against an in-memory receipt id with a loud warning rather than not running.
 
-`--lhc-observe-only` reports decisions without mutation. The control panel's
-`auto` and `bounds` edits apply only to the current wrapper lifetime.
+The control panel's `auto` and `bounds` edits apply only to the current wrapper
+lifetime. `auto off` and an explicit `autoCompact: false` in config are the only
+things that stop automatic compact.
 
 **What this host cannot do (v1, by design):** Codex-style in-place mid-agentic-
 turn continuation, synthetic tool-tail preservation, forced

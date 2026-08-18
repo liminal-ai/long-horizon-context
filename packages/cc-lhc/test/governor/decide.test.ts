@@ -12,42 +12,28 @@ function baseInput(over: Partial<GovernorInput> = {}): GovernorInput {
   };
   return {
     policy,
-    policyArmed: true,
     turnOpen: false,
-    settleStale: false,
     providerContext: {
       inputTokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens,
       cacheCreationInputTokens: 0,
       cacheReadInputTokens: 0,
       total: BUILTIN_CONTEXT_POLICY.upperBoundTokens,
     },
+    providerContextFreshness: "current_sampling",
     postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
-    captureHealthy: true,
-    captureGeneration: 1,
-    descriptorReady: true,
     operationInFlight: false,
-    inputEpochAtTurnOpen: 0,
-    currentInputEpoch: 0,
     nativeSummaryAttention: false,
-    lastWouldCompactProviderTotal: null,
-    lastWouldCompactCaptureGeneration: null,
     ...over,
   };
 }
 
 describe("decideGovernor", () => {
-  it("would_compact at exact upper with all gates clear", () => {
+  it("would_compact at exact upper on a default policy", () => {
     const d = decideGovernor(baseInput());
     expect(d.kind).toBe("would_compact");
     expect(d.wouldMutate).toBe(true);
     expect(d.pressure.nextRequestPressureTokens).toBe(BUILTIN_CONTEXT_POLICY.upperBoundTokens);
     expect(d.pressure.estimateDomain).toBe("source_labelled_estimate");
-  });
-
-  it("observeOnly keeps would_compact non-executable", () => {
-    const d = decideGovernor(baseInput({ policy: { ...BUILTIN_CONTEXT_POLICY, observeOnly: true } }));
-    expect(d.kind).toBe("would_compact");
-    expect(d.wouldMutate).toBe(false);
   });
 
   it("below_threshold one below upper", () => {
@@ -103,9 +89,59 @@ describe("decideGovernor", () => {
     expect(d.pressure.estimateDomain).toBe("source_labelled_estimate");
   });
 
-  it("no_provider_usage", () => {
-    expect(decideGovernor(baseInput({ providerContext: null })).kind).toBe("no_provider_usage");
-    expect(decideGovernor(baseInput({ providerContext: null })).pressure.nextRequestPressureTokens).toBeNull();
+  it("compacts on the last known provider reading when the current sampling is missing", () => {
+    const d = decideGovernor(
+      baseInput({
+        providerContext: {
+          inputTokens: 900_000,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          total: 900_000,
+        },
+        providerContextFreshness: "last_known",
+        postMeasurementEstimate: { tokens: 4_000, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+      }),
+    );
+    expect(d.kind).toBe("would_compact");
+    expect(d.wouldMutate).toBe(true);
+    expect(d.pressure.nextRequestPressureTokens).toBe(904_000);
+  });
+
+  it("labels a carried-forward reading as last_known rather than a fresh provider fact", () => {
+    const d = decideGovernor(baseInput({ providerContextFreshness: "last_known" }));
+    expect(d.pressure.providerBaseFreshness).toBe("last_known");
+    expect(d.pressure.providerBaseDomain).toBe("provider_reported_input");
+    expect(d.reason).toContain("last known provider");
+  });
+
+  it("with no provider reading at all, pressure is the labelled estimate alone", () => {
+    const d = decideGovernor(
+      baseInput({
+        providerContext: null,
+        providerContextFreshness: "none",
+        postMeasurementEstimate: { tokens: 12, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+      }),
+    );
+    expect(d.kind).toBe("below_threshold");
+    expect(d.pressure.providerBaseTokens).toBeNull();
+    expect(d.pressure.providerBaseFreshness).toBe("none");
+    expect(d.pressure.nextRequestPressureTokens).toBe(12);
+  });
+
+  it("an estimate alone can still reach the trigger", () => {
+    const d = decideGovernor(
+      baseInput({
+        providerContext: null,
+        providerContextFreshness: "none",
+        postMeasurementEstimate: {
+          tokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens,
+          source: "lhc_token_estimate",
+          domain: "source_labelled_estimate",
+        },
+      }),
+    );
+    expect(d.kind).toBe("would_compact");
+    expect(d.wouldMutate).toBe(true);
   });
 
   it("turn_open when pressure is below threshold during open turn", () => {
@@ -131,24 +167,6 @@ describe("decideGovernor", () => {
     expect(d.reason).toMatch(/open turn|mid-agentic-turn/i);
   });
 
-  it("settle_stale", () => {
-    expect(decideGovernor(baseInput({ settleStale: true })).kind).toBe("settle_stale");
-  });
-
-  it("input_epoch_changed", () => {
-    expect(decideGovernor(baseInput({ inputEpochAtTurnOpen: 1, currentInputEpoch: 2 })).kind).toBe(
-      "input_epoch_changed",
-    );
-  });
-
-  it("capture_degraded", () => {
-    expect(decideGovernor(baseInput({ captureHealthy: false })).kind).toBe("capture_degraded");
-  });
-
-  it("descriptor_not_ready", () => {
-    expect(decideGovernor(baseInput({ descriptorReady: false })).kind).toBe("descriptor_not_ready");
-  });
-
   it("operation_in_flight", () => {
     expect(decideGovernor(baseInput({ operationInFlight: true })).kind).toBe("operation_in_flight");
   });
@@ -157,52 +175,51 @@ describe("decideGovernor", () => {
     expect(decideGovernor(baseInput({ nativeSummaryAttention: true })).kind).toBe("native_summary_attention");
   });
 
-  it("policy_disabled when autoCompact false", () => {
+  it("policy_disabled only when the user turned autoCompact off", () => {
     const d = decideGovernor(
       baseInput({
         policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: false },
       }),
     );
     expect(d.kind).toBe("policy_disabled");
+    expect(d.wouldMutate).toBe(false);
   });
 
-  it("policy_invalid when not armed", () => {
-    expect(decideGovernor(baseInput({ policyArmed: false })).kind).toBe("policy_invalid");
-  });
-
-  it("retry_growth_guard after would_compact without enough growth", () => {
+  it("nothing but policy and pressure can suppress a settled compact", () => {
+    // Every non-pressure input the decision still accepts, set to its most
+    // pessimistic value at once. The gates this campaign removed — typed-ahead
+    // input, degraded capture, an unready descriptor, an unwritten receipt,
+    // insufficient retry growth — are no longer expressible here at all.
     const d = decideGovernor(
       baseInput({
-        lastWouldCompactProviderTotal: 500_000,
-        lastWouldCompactCaptureGeneration: 1,
-        captureGeneration: 1,
         providerContext: {
-          inputTokens: 505_000,
+          inputTokens: 950_000,
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: 0,
-          total: 505_000,
+          total: 950_000,
         },
-        policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: true, retryGrowthTokens: 10_000 },
-      }),
-    );
-    expect(d.kind).toBe("retry_growth_guard");
-  });
-
-  it("allows would_compact after sufficient growth", () => {
-    const d = decideGovernor(
-      baseInput({
-        lastWouldCompactProviderTotal: 500_000,
-        lastWouldCompactCaptureGeneration: 1,
-        captureGeneration: 1,
-        providerContext: {
-          inputTokens: 520_000,
-          cacheCreationInputTokens: 0,
-          cacheReadInputTokens: 0,
-          total: 520_000,
-        },
-        policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: true, retryGrowthTokens: 10_000 },
+        providerContextFreshness: "last_known",
       }),
     );
     expect(d.kind).toBe("would_compact");
+    expect(d.wouldMutate).toBe(true);
+  });
+
+  it("repeated settled seams at the same pressure keep producing an executable decision", () => {
+    // No retry-growth toll: a deferral that never started a mutation costs the
+    // next seam nothing.
+    const at = baseInput({
+      providerContext: {
+        inputTokens: 400_000,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        total: 400_000,
+      },
+    });
+    for (let seam = 0; seam < 3; seam += 1) {
+      const d = decideGovernor(at);
+      expect(d.kind).toBe("would_compact");
+      expect(d.wouldMutate).toBe(true);
+    }
   });
 });

@@ -43,7 +43,6 @@ function fakeCaptureSession(
   return {
     stats,
     getCommandContext: () => ({
-      captureDisabled: false,
       stats,
       sdk: { drainSettled: async () => {}, intakeStream: { messageEvents } },
       threadRef: { threadId: "th_same", registryPath: "/tmp/registry.sqlite" },

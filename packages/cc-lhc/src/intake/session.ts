@@ -1138,7 +1138,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     stats,
     getCommandContext(): CaptureCommandContextExtended {
       return {
-        captureDisabled: false,
         stats,
         sdk,
         threadRef,
