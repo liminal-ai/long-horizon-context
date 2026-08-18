@@ -281,16 +281,19 @@ export interface GovernorDurableReceipt {
  * Durable outcome attached to a governor receipt.
  *
  * `scheduled` means an automatic operation currently owns the receipt (or the
- * wrapper crashed after insert and before claim — the only fail-closed window).
- * If no operation starts, the wrapper must attach a terminal outcome instead
- * (mutation_deferred / mutation_refused) so replay is inspectable and a later
- * distinct eligible receipt can still run under retry-growth policy.
+ * wrapper crashed after insert and before claim). If no operation starts, the
+ * wrapper attaches a terminal outcome instead (mutation_deferred /
+ * mutation_refused) so replay is inspectable.
  */
 export type GovernorHandoffOutcome =
   | { kind: "not_applicable" }
   | { kind: "deferred_open_turn" }
   | { kind: "scheduled" }
-  /** Coalesced/in-flight/cooldown: mutation did not start; later distinct receipt may. */
+  /**
+   * The mutation never started — coalesced, the wrapper was busy, capture was
+   * catching up. A deferral costs the next seam nothing: the same receipt is
+   * retried on replay, and a later distinct receipt runs normally.
+   */
   | { kind: "mutation_deferred"; detail: string; reason: GovernorMutationDeferReason }
   | { kind: "mutation_refused"; detail: string }
   | { kind: "mutation_partial"; detail: string }
