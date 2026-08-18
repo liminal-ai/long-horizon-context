@@ -5,6 +5,7 @@
 // owners' report surfaces in index.ts.
 import type { DatabaseSync } from "node:sqlite";
 import type { Band, RenderingPartKind, StoredView } from "../../shared-tech/index.js";
+import { readBoundaryPosition } from "./boundary.js";
 
 // ── view snapshot (header + bands) ────────────────────────────────
 
@@ -217,8 +218,11 @@ export interface ViewReplaceInput {
   bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
   /**
    * Visibility boundary written in the same transaction as the view replace.
-   * Defaults to compactPoint (historical compact reset). Protected-escalation
-   * installs may advance to a higher proposed boundary atomically.
+   * Omitted: compactPoint (compact's boundary reset). A proposed advance is
+   * resolved forward against durable state inside this transaction — never
+   * behind the current boundary, never behind the compact point — so a
+   * proposal computed against state that has since moved lands on the nearest
+   * legal position instead of failing the install.
    */
   visibilityBoundary?: number;
 }
@@ -266,10 +270,10 @@ export function replaceViewSnapshot(
     for (const band of input.bands) {
       insertBand.run(input.viewId, band.band, band.renderedText, band.tokenCount);
     }
-    const boundaryPosition = input.visibilityBoundary !== undefined ? input.visibilityBoundary : input.compactPoint;
-    if (boundaryPosition < input.compactPoint) {
-      throw new Error(`visibility boundary ${boundaryPosition} would land behind compact point ${input.compactPoint}`);
-    }
+    const boundaryPosition =
+      input.visibilityBoundary === undefined
+        ? input.compactPoint
+        : Math.max(input.visibilityBoundary, readBoundaryPosition(db), input.compactPoint);
     db.prepare(`UPDATE view_boundary SET position = ?, updated_at = ? WHERE thread_singleton = 1`).run(
       boundaryPosition,
       input.createdAt,

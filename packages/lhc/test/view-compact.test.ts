@@ -86,6 +86,33 @@ function recordSnapshot(filePath: string): string {
   }
 }
 
+// A closed turn row left without its close boundary — turn structure that the
+// compact walk must read past rather than refuse.
+function stripCloseBoundary(filePath: string, turnId: string): void {
+  const db = openRaw(filePath);
+  try {
+    db.prepare(`UPDATE turns SET closed_at_event_order = NULL WHERE turn_id = ?`).run(turnId);
+  } finally {
+    db.close();
+  }
+}
+
+// Manufactured orphaning: drop only the turn row, so its messages point at a
+// turn that no longer exists. Returns the orphaned message ids.
+function orphanMessagesOfTurn(filePath: string, turnId: string): string[] {
+  const db = openRaw(filePath);
+  try {
+    db.exec("PRAGMA foreign_keys = OFF;");
+    const rows = db
+      .prepare(`SELECT message_id FROM message WHERE turn_id = ? AND deleted_at IS NULL ORDER BY source_event_order`)
+      .all(turnId) as unknown as Array<{ message_id: string }>;
+    db.prepare(`DELETE FROM turns WHERE turn_id = ?`).run(turnId);
+    return rows.map((row) => row.message_id);
+  } finally {
+    db.close();
+  }
+}
+
 // Full-file state including the view rows and boundary — for the
 // thread-unchanged-after-rejection assertions.
 function fullStateSnapshot(filePath: string): string {
@@ -393,6 +420,7 @@ describe("architecture-risk: coverage edge accounting", () => {
       ]),
       maxEventOrder: 60,
       derivationCounts: {},
+      skippedRecords: [],
     };
 
     const selection = selectArrangement(inputs, {
@@ -714,8 +742,8 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
   });
 });
 
-describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage degrades", () => {
-  it("refuses with state_corruption naming the damage; the prior view still serves; record unchanged", async () => {
+describe("TC-2.7 (AC-2.5): irregular turn records compact best-effort; derived-only damage degrades", () => {
+  it("compacts through a second open turn, leaves the record untouched, and installs a new view", async () => {
     const corruptStore = tempStore();
     try {
       const double = createInferenceCallbacksDouble();
@@ -733,22 +761,19 @@ describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage deg
       const drained = await sdk.work.drain({ filePath });
       expect(drained.ok).toBe(true);
 
-      // A prior view exists before the damage.
+      // A prior view exists before the irregularity.
       const first = await sdk.threadView.compact(
         { filePath },
         { params: { lowerBound: 80, percentages: { full: 50, smooth: 30, detailed: 10, brief: 10 } } },
       );
       expect(first.ok).toBe(true);
-      const priorContext = await sdk.threadView.getLlmRequestContext({ filePath });
-      expect(priorContext.ok).toBe(true);
-      if (!priorContext.ok) return;
       const priorView = await sdk.threadView.describe({ filePath });
       expect(priorView.ok).toBe(true);
       if (!priorView.ok) return;
 
-      // Manufactured canonical corruption, damaged below the SDK (the Epic 01
-      // two-open-turns pattern): open a turn through real intake, then add a
-      // second open row.
+      // Manufactured turn-record irregularity, written below the SDK (the
+      // Epic 01 two-open-turns pattern): open a turn through real intake, then
+      // add a second open row.
       const opened = await sdk.intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt", { payload: { text: "left open before the damage" } }),
       ]);
@@ -756,29 +781,115 @@ describe("TC-2.7 (AC-2.5): canonical corruption refuses; derived-only damage deg
       corruptTwoOpenTurns(filePath);
       const recordBefore = recordSnapshot(filePath);
 
-      const refused = await sdk.threadView.compact(
+      const compacted = await sdk.threadView.compact(
         { filePath },
         { params: { lowerBound: 80, percentages: { full: 50, smooth: 30, detailed: 10, brief: 10 } } },
       );
-      expect(refused.ok).toBe(false);
-      if (refused.ok) return;
-      expect(refused.error.errorClass).toBe("state_corruption");
-      expect(refused.error.code).toBe("turn_state_corrupt");
-      expect(refused.error.reason).toMatch(/open turns/);
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok) return;
 
-      // Pre-transaction refusal: prior view serves byte-identically, record
-      // untouched.
-      const afterContext = await sdk.threadView.getLlmRequestContext({ filePath });
-      expect(afterContext.ok).toBe(true);
-      if (!afterContext.ok) return;
-      expect(JSON.stringify(bandMessages(afterContext.value.messages))).toBe(
-        JSON.stringify(bandMessages(priorContext.value.messages)),
-      );
+      // A new view is serving, and the canonical record is byte-identical:
+      // compact read around the irregularity, it did not repair it.
       const afterView = await sdk.threadView.describe({ filePath });
       expect(afterView.ok).toBe(true);
       if (!afterView.ok) return;
-      expect(afterView.value?.viewId).toBe(priorView.value?.viewId);
+      expect(afterView.value?.viewId).toBe(compacted.value.viewId);
+      expect(afterView.value?.viewId).not.toBe(priorView.value?.viewId);
       expect(recordSnapshot(filePath)).toBe(recordBefore);
+
+      const afterContext = await sdk.threadView.getLlmRequestContext({ filePath });
+      expect(afterContext.ok).toBe(true);
+      if (!afterContext.ok) return;
+      expect(afterContext.value.messages.length).toBeGreaterThan(0);
+    } finally {
+      corruptStore.cleanup();
+    }
+  });
+
+  it("compacts a closed turn that carries no close boundary and leaves the record untouched", async () => {
+    const corruptStore = tempStore();
+    try {
+      const double = createInferenceCallbacksDouble();
+      const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+      const filePath = corruptStore.threadPath();
+      const created = await sdk.threads.newThread({
+        filePath,
+        registryPath: corruptStore.registryPath,
+      });
+      expect(created.ok).toBe(true);
+      for (let turn = 1; turn <= 4; turn += 1) {
+        const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
+        expect(sent.ok).toBe(true);
+      }
+      const drained = await sdk.work.drain({ filePath });
+      expect(drained.ok).toBe(true);
+
+      stripCloseBoundary(filePath, "t2");
+      const recordBefore = recordSnapshot(filePath);
+
+      const compacted = await sdk.threadView.compact(
+        { filePath },
+        { params: { lowerBound: 80, percentages: { full: 50, smooth: 30, detailed: 10, brief: 10 } } },
+      );
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok) return;
+
+      const afterView = await sdk.threadView.describe({ filePath });
+      expect(afterView.ok).toBe(true);
+      if (!afterView.ok) return;
+      expect(afterView.value?.viewId).toBe(compacted.value.viewId);
+      expect(recordSnapshot(filePath)).toBe(recordBefore);
+    } finally {
+      corruptStore.cleanup();
+    }
+  });
+
+  it("skips a message whose turn is gone, reports the skip, and leaves the message row on disk", async () => {
+    const corruptStore = tempStore();
+    try {
+      const double = createInferenceCallbacksDouble();
+      const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+      const filePath = corruptStore.threadPath();
+      const created = await sdk.threads.newThread({
+        filePath,
+        registryPath: corruptStore.registryPath,
+      });
+      expect(created.ok).toBe(true);
+      for (let turn = 1; turn <= 4; turn += 1) {
+        const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
+        expect(sent.ok).toBe(true);
+      }
+      const drained = await sdk.work.drain({ filePath });
+      expect(drained.ok).toBe(true);
+
+      // Orphan every message of t2 by removing only the turn row.
+      const orphaned = orphanMessagesOfTurn(filePath, "t2");
+      expect(orphaned.length).toBeGreaterThan(0);
+      const recordBefore = recordSnapshot(filePath);
+
+      const compacted = await sdk.threadView.compact(
+        { filePath },
+        { params: { lowerBound: 80, percentages: { full: 50, smooth: 30, detailed: 10, brief: 10 } } },
+      );
+      expect(compacted.ok).toBe(true);
+      if (!compacted.ok) return;
+
+      const skippedMessageIds = compacted.value.skippedRecords
+        .filter((skip) => skip.kind === "orphaned_message")
+        .map((skip) => skip.messageId)
+        .sort();
+      expect(skippedMessageIds).toEqual([...orphaned].sort());
+      for (const skip of compacted.value.skippedRecords) {
+        expect(skip.turnId).toBe("t2");
+        expect(skip.reason.length).toBeGreaterThan(0);
+      }
+
+      // Skipped means passed over, not deleted: every raw row is still there.
+      expect(recordSnapshot(filePath)).toBe(recordBefore);
+      for (const messageId of orphaned) {
+        const shown = await sdk.messages.show({ filePath }, messageId);
+        expect(shown.ok).toBe(true);
+      }
     } finally {
       corruptStore.cleanup();
     }

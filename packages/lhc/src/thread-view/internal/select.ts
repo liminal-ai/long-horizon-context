@@ -1,11 +1,10 @@
 // Band selection: compact point, smooth/detailed/brief fills, unchunked turns,
-// the coverage edge (covered_from), and
-// canonical-corruption detection. Two halves, deliberately split:
+// and the coverage edge (covered_from). Two halves, deliberately split:
 //
-//   - readSelectionInputs: the record/derivation reads, with the corruption check
-//     in the reads, before any transaction opens. A refusal here means nothing
-//     was written, so the prior view is trivially intact. Never moved inside
-//     the transaction.
+//   - readSelectionInputs: the record/derivation reads, before any transaction
+//     opens. A record the walk cannot place — a message or a chunk member whose
+//     turn does not resolve to a live turn — is skipped and reported, never
+//     refused. Its raw row is left exactly as it is.
 //   - selectArrangement: a pure function over those inputs. No DB handle, no
 //     clock, no inference: same inputs, same arrangement.
 //
@@ -22,7 +21,7 @@
 // oldest INCLUDED entry, so coverage extends past the hole.
 import type { DatabaseSync } from "node:sqlite";
 import * as messagesDomain from "../../messages/index.js";
-import type { Band } from "../../shared-tech/index.js";
+import type { Band, SkippedRecord } from "../../shared-tech/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import * as turnsDomain from "../../turns/index.js";
 import {
@@ -34,18 +33,6 @@ import {
   resolveDetailedRepresentation,
   resolveSmoothRepresentation,
 } from "./render.js";
-
-// Canonical source state needed to identify or read the compacted span is
-// damaged: compact refuses with state_corruption. Derived-material damage never
-// raises this; it degrades through the ladders instead.
-export class CanonicalCorruptionError extends Error {
-  readonly code: "turn_state_corrupt" | "source_damaged";
-  constructor(code: "turn_state_corrupt" | "source_damaged", reason: string) {
-    super(reason);
-    this.code = code;
-    this.name = "CanonicalCorruptionError";
-  }
-}
 
 export interface SelectionMessage {
   messageId: string;
@@ -82,6 +69,8 @@ export interface SelectionInputs {
   // Derived chunks whose stored members are all legitimate tombstoned turns.
   // Preview ignores them; compact removes them with the replacement view.
   emptyChunkIds?: string[];
+  // Records the walk passed over because their turn does not resolve.
+  skippedRecords: SkippedRecord[];
 }
 
 export interface ArrangementEntry {
@@ -122,13 +111,12 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
   // Message, turn, and chunk material comes from the owner domains, not direct
   // SQL against their tables (bad-code-log: domain-boundary leakage). The
   // owners return source-faithful structure — turns carry the deleted flag,
-  // chunks carry raw membership — so thread-view keeps ownership of the
-  // source-state corruption policy below. The derivation and event-aggregate
-  // reads stay here as thread-view's own selection inputs.
+  // chunks carry raw membership — so thread-view decides for itself what the
+  // walk can place. The derivation and event-aggregate reads stay here as
+  // thread-view's own selection inputs.
   const structure = turnsDomain.readTurnChunkStructure(db);
-  // Referential checks compare against every turn row (a tombstoned turn is
-  // a legitimate reference target, not damage); the selection walk itself
-  // sees live turns only.
+  // A tombstoned turn is a legitimate reference target, not damage; the
+  // selection walk itself sees live turns only.
   const turnIds = new Set(structure.turns.map((row) => row.turnId));
   const turns: SelectionTurn[] = structure.turns
     .filter((row) => !row.deleted)
@@ -140,58 +128,53 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
       closedAt: row.closedAtEventOrder,
     }));
 
-  // Canonical damage the walk cannot select across: the turn-state invariant
-  // (at most one open turn, open turns carry no close), and referential damage
-  // between chunk/message rows and their turns.
-  const openTurns = turns.filter((turn) => turn.status === "open");
-  if (openTurns.length > 1) {
-    throw new CanonicalCorruptionError(
-      "turn_state_corrupt",
-      `canonical turn state corrupt: ${openTurns.length} open turns (${openTurns
-        .map((turn) => turn.turnId)
-        .join(", ")}); the compacted span cannot be identified`,
-    );
-  }
-  for (const turn of turns) {
-    if (turn.status === "closed" && turn.closedAt === null) {
-      throw new CanonicalCorruptionError(
-        "source_damaged",
-        `canonical turn state corrupt: closed turn ${turn.turnId} carries no close boundary`,
-      );
-    }
-  }
+  const liveTurnIds = new Set(turns.map((turn) => turn.turnId));
+  const skippedRecords: SkippedRecord[] = [];
 
-  const messages: SelectionMessage[] = messagesDomain.readLiveMessages(db).map((record) => {
+  const messages: SelectionMessage[] = [];
+  for (const record of messagesDomain.readLiveMessages(db)) {
     const turnId = record.turnId;
-    if (!turnIds.has(turnId)) {
-      throw new CanonicalCorruptionError(
-        "source_damaged",
-        `canonical record corrupt: message ${record.messageId} references missing turn ${turnId}`,
-      );
+    if (!liveTurnIds.has(turnId)) {
+      skippedRecords.push({
+        kind: "orphaned_message",
+        messageId: record.messageId,
+        turnId,
+        reason: `message ${record.messageId} points at turn ${turnId}, which is not a live turn`,
+      });
+      continue;
     }
-    return {
+    messages.push({
       messageId: record.messageId,
       order: record.sourceEventOrder,
       kind: record.kind,
       tokenEstimate: record.tokenEstimate,
       turnId,
       text: excerptLine(record.kind, record.blocks),
-    };
-  });
+    });
+  }
 
-  const liveTurnIds = new Set(turns.map((turn) => turn.turnId));
   const emptyChunkIds: string[] = [];
   const chunks: SelectionChunk[] = structure.chunks.flatMap((row) => {
+    const memberTurnIds: string[] = [];
+    let dangling = false;
     for (const memberTurnId of row.memberTurnIds) {
       if (!turnIds.has(memberTurnId)) {
-        throw new CanonicalCorruptionError(
-          "source_damaged",
-          `canonical record corrupt: chunk ${row.chunkId} membership references missing turn ${memberTurnId}`,
-        );
+        dangling = true;
+        skippedRecords.push({
+          kind: "dangling_chunk_member",
+          chunkId: row.chunkId,
+          turnId: memberTurnId,
+          reason: `chunk ${row.chunkId} has a member pointing at turn ${memberTurnId}, which has no turn row`,
+        });
+        continue;
       }
+      memberTurnIds.push(memberTurnId);
     }
-    if (!row.memberTurnIds.some((turnId) => liveTurnIds.has(turnId))) {
-      emptyChunkIds.push(row.chunkId);
+    if (!memberTurnIds.some((turnId) => liveTurnIds.has(turnId))) {
+      // The empty-chunk drop is for chunks whose members are all legitimate
+      // tombstoned turns. A chunk carrying a dangling member is left on disk
+      // untouched — skipped from selection, never removed.
+      if (!dangling) emptyChunkIds.push(row.chunkId);
       return [];
     }
     return [
@@ -199,7 +182,7 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
         chunkId: row.chunkId,
         chunkOrder: row.chunkOrder,
         status: row.status,
-        memberTurnIds: row.memberTurnIds,
+        memberTurnIds,
       },
     ];
   });
@@ -234,7 +217,16 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
     m: number | bigint;
   };
 
-  return { messages, turns, chunks, derivations, maxEventOrder: Number(maxRow.m), derivationCounts, emptyChunkIds };
+  return {
+    messages,
+    turns,
+    chunks,
+    derivations,
+    maxEventOrder: Number(maxRow.m),
+    derivationCounts,
+    emptyChunkIds,
+    skippedRecords,
+  };
 }
 
 // ── the pure walk ─────────────────────────────────────────────────
@@ -328,12 +320,9 @@ export function selectArrangement(inputs: SelectionInputs, config: SelectionConf
       const previous = closedTurns.filter((t) => t.turnOrder < turn.turnOrder).at(-1);
       return previous?.closedAt ?? 0;
     };
-    if (candidate === undefined) {
-      throw new CanonicalCorruptionError(
-        "source_damaged",
-        `canonical record corrupt: message ${oldestTaken.messageId} references missing turn ${oldestTaken.turnId}`,
-      );
-    }
+    // Every selected message resolves to a live turn: readSelectionInputs
+    // skipped the ones that do not.
+    if (candidate === undefined) return 0;
     if (candidate.status === "open") {
       // Open-turn messages are tail regardless of budget; the tail begins at
       // the open turn's start.

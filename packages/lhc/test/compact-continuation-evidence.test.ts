@@ -680,9 +680,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
 
     // Positive: marker-only delta installs.
-    const okInstall = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prepared, {
-      allowedMarkerIdempotencyKey: markerKey,
-    });
+    const okInstall = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prepared);
     expect(okInstall.ok).toBe(true);
     if (!okInstall.ok) return;
 
@@ -726,9 +724,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
       db.close();
     }
 
-    const activated = await sdk.threadView.installPreparedCompact({ filePath: fixture2.filePath }, prep2.prepared, {
-      allowedMarkerIdempotencyKey: key2,
-    });
+    const activated = await sdk.threadView.installPreparedCompact({ filePath: fixture2.filePath }, prep2.prepared);
     expect(activated.ok).toBe(true);
     if (!activated.ok) return;
     expect(snapshotCanonical(fixture2.filePath).viewId).toBe(activated.value.viewId);

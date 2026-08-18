@@ -88,7 +88,16 @@ function incidentInputs(options: {
     compactChunkMaterials.set("c3/chunk_summary_brief", options.briefMaterial);
   }
 
-  return { messages, turns, chunks, derivations, compactChunkMaterials, maxEventOrder: 80, derivationCounts: {} };
+  return {
+    messages,
+    turns,
+    chunks,
+    derivations,
+    compactChunkMaterials,
+    maxEventOrder: 80,
+    derivationCounts: {},
+    skippedRecords: [],
+  };
 }
 
 function briefSubjects(selection: { entries: Array<{ band: string; subjectId: string }> }): string[] {

@@ -104,7 +104,8 @@ export function compactChunkMaterialFromStoredMembers(
     return { kind: "ready", content: row.content };
   }
   // Optional chunk summaries never fail closed. Unreadable canonical members
-  // still return blocked from storedMemberConcat and compact refuses.
+  // return blocked; the compact path treats that as absent material and gaps
+  // the entry rather than stopping.
   const fallback = storedMemberConcat(db, chunkId);
   if (fallback.kind !== "concat") return fallback;
   return {

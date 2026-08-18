@@ -16,6 +16,7 @@ import type {
   PruneReceipt,
   ResolvedViewConfig,
   SessionThreadView,
+  SkippedRecord,
   StoredView,
   ViewCompactParams,
   ViewProfile,
@@ -603,10 +604,14 @@ export type PreparedCompact = {
   firstKeptMessageId: string | null;
   profileName: string | null;
   merged: ViewProfile;
+  /** Selection constraint this compact was prepared under; reused when install-time drift forces a fresh recompute. */
+  compactPointUpperBound?: number;
   bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
   warnings: NonNullable<CompactReceipt["warnings"]>;
   degraded: CompactReceipt["degraded"];
   gaps: CompactReceipt["gaps"];
+  /** Canonical records the selection walk could not place; skipped, never refused. */
+  skippedRecords: SkippedRecord[];
 };
 
 function sha256Hex(payload: string): string {
@@ -803,19 +808,15 @@ export type InstallPreparedOptions = {
   signal?: { aborted: boolean };
   createdAt?: string;
   /**
-   * When set, allow exactly one additional event after prepare whose
-   * idempotency key matches (continue-turn marker). Any other drift refuses.
-   */
-  allowedMarkerIdempotencyKey?: string;
-  /**
    * Atomic visibility-boundary advance installed with the prepared view.
    * Must be >= compact point and >= current boundary (monotonic). When omitted,
    * compact reset writes boundary = compactPoint (historical behavior).
    */
   visibilityBoundary?: number;
   /**
-   * Expected current boundary at install time. When set, install refuses if
-   * durable boundary drifted since prepare/preview.
+   * The durable boundary the caller prepared against. When it no longer
+   * matches at install time, install recomputes the compact against fresh
+   * state and installs that; it never refuses on the drift.
    */
   expectedPreviousBoundary?: number;
 };
@@ -844,11 +845,13 @@ function buildPreparedFromArrangement(
     emptyChunkIds?: readonly string[];
     maxEventOrder: number;
     derivationCounts: Record<string, Record<string, number>>;
+    skippedRecords: SkippedRecord[];
   },
   viewId: string,
   firstKeptMessageId: string | null,
   profileName: string | null,
   merged: ViewProfile,
+  compactPointUpperBound: number | undefined,
 ): PreparedCompact {
   const warnings: NonNullable<CompactReceipt["warnings"]> = selection.entries
     .filter((entry) => entry.derivationUsed === "stored_member_concat")
@@ -881,8 +884,10 @@ function buildPreparedFromArrangement(
     firstKeptMessageId,
     profileName,
     merged,
+    ...(compactPointUpperBound !== undefined ? { compactPointUpperBound } : {}),
     bands,
     warnings,
+    skippedRecords: inputs.skippedRecords,
     degraded: selection.entries
       .filter((entry) => entry.degraded)
       .map((entry) => ({
@@ -895,112 +900,14 @@ function buildPreparedFromArrangement(
 }
 
 /**
- * Validate prepared source state against current durable state.
- * Public compact: no drift allowed.
- * Continue-turn: allow exactly the marker event identified by allowedMarkerIdempotencyKey.
- * Must be called inside the same BEGIN IMMEDIATE that installs (or before any mutation).
+ * Raised from beforeReplace when durable state moved since the caller prepared:
+ * the transaction rolls back untouched and install recomputes against fresh
+ * state and retries. Never reaches the caller.
  */
-export function validatePreparedSourceState(
-  db: DatabaseSync,
-  prepared: PreparedCompact,
-  opts: { allowedMarkerIdempotencyKey?: string } = {},
-): { ok: true } | { ok: false; reason: string } {
-  const selected = prepared.selectedSourceTurnIds ?? selectedSourceTurnIdsFromSelection(db, prepared.selection);
-  const fingerprintOpts = { selectedSourceTurnIds: selected };
-  const current = readPreparedSourceState(db, prepared.sourceState.compactPoint, fingerprintOpts);
-  const prev = prepared.sourceState;
-
-  if (current.installedViewId !== prev.installedViewId) {
-    return { ok: false, reason: "serving view changed since prepare" };
-  }
-  if (current.structureDigest !== prev.structureDigest) {
-    return { ok: false, reason: "turn/chunk structure changed since prepare" };
-  }
-  if (current.derivationDigest !== prev.derivationDigest) {
-    return { ok: false, reason: "derivation content/state changed since prepare" };
-  }
-
-  if (opts.allowedMarkerIdempotencyKey === undefined) {
-    if (current.maxEventOrder !== prev.maxEventOrder) {
-      return {
-        ok: false,
-        reason: `event order advanced ${prev.maxEventOrder}→${current.maxEventOrder} since prepare`,
-      };
-    }
-    if (current.tailDigest !== prev.tailDigest) {
-      return { ok: false, reason: "tail message/block content changed since prepare" };
-    }
-    return { ok: true };
-  }
-
-  // Marker-allowed path: exactly zero or one event advance, and the only
-  // source difference must be the expected marker event/message/block.
-  if (current.maxEventOrder < prev.maxEventOrder) {
-    return { ok: false, reason: "event order regressed since prepare" };
-  }
-  if (current.maxEventOrder === prev.maxEventOrder) {
-    if (current.tailDigest !== prev.tailDigest) {
-      return { ok: false, reason: "source message/block content changed since prepare without event advance" };
-    }
-    return { ok: true };
-  }
-  if (current.maxEventOrder !== prev.maxEventOrder + 1) {
-    return {
-      ok: false,
-      reason: `expected at most one event advance for marker, got ${prev.maxEventOrder}→${current.maxEventOrder}`,
-    };
-  }
-  const newEvent = db
-    .prepare(`SELECT event_order, event_kind, idempotency_key FROM event WHERE event_order = ?`)
-    .get(current.maxEventOrder) as
-    | { event_order: number | bigint; event_kind: string; idempotency_key: string }
-    | undefined;
-  if (newEvent === undefined) {
-    return { ok: false, reason: "new event row missing after order advance" };
-  }
-  if (newEvent.event_kind !== "compact_continuation_marker") {
-    return {
-      ok: false,
-      reason: `expected compact_continuation_marker, got ${newEvent.event_kind}`,
-    };
-  }
-  if (newEvent.idempotency_key !== opts.allowedMarkerIdempotencyKey) {
-    return {
-      ok: false,
-      reason: `marker idempotency key mismatch (expected ${opts.allowedMarkerIdempotencyKey})`,
-    };
-  }
-  // Identify the marker message row produced by that event.
-  const markerMessage = db
-    .prepare(
-      `SELECT message_id FROM message
-       WHERE source_event_order = ? AND kind = 'compact_continuation_marker'`,
-    )
-    .get(current.maxEventOrder) as { message_id: string } | undefined;
-  if (markerMessage === undefined) {
-    return { ok: false, reason: "marker message row missing for advanced event" };
-  }
-  // Recompute source digest with exactly that marker message/block removed and
-  // compare to the prepared digest — catch unrelated tail/block mutations.
-  const withoutMarker = readPreparedSourceState(db, prepared.sourceState.compactPoint, {
-    ...fingerprintOpts,
-    excludeMessageIds: new Set([markerMessage.message_id]),
-  });
-  if (withoutMarker.tailDigest !== prev.tailDigest) {
-    return {
-      ok: false,
-      reason: "source message/block content changed beyond the expected continuation marker",
-    };
-  }
-  return { ok: true };
-}
-
-/** Thrown from beforeReplace to refuse install without mutating the view. */
-export class StalePreparedCompactError extends Error {
-  readonly code = "stale_prepared_compact" as const;
+class InstalledViewDriftError extends Error {
   constructor(reason: string) {
     super(reason);
-    this.name = "StalePreparedCompactError";
+    this.name = "InstalledViewDriftError";
   }
 }
 
@@ -1025,38 +932,10 @@ export async function prepareCompact(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    const threadId = readThreadMetadata(db).threadId;
-    const transaction: DbReadTransaction = { db, filePath, threadId };
-    const computed = computeArrangement(db, transaction, merged, {
-      signal: opts.signal,
-      includeChunkMaterials: true,
-      ...(opts.compactPointUpperBound !== undefined
-        ? { compactPointUpperBound: opts.compactPointUpperBound }
-        : {}),
+    return prepareFromOpenDatabase(db, filePath, merged, profileName, {
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+      ...(opts.compactPointUpperBound !== undefined ? { compactPointUpperBound: opts.compactPointUpperBound } : {}),
     });
-    if (!computed.ok) return computed;
-
-    const { selection, inputs, viewId, firstKeptMessageId } = computed.value;
-    const prepared = buildPreparedFromArrangement(
-      db,
-      selection,
-      inputs,
-      viewId,
-      firstKeptMessageId,
-      profileName,
-      merged,
-    );
-    for (const warning of prepared.warnings) {
-      writeLog(transaction, {
-        level: "warning",
-        message: "compact chunk fallback used",
-        derivationType: warning.derivationType,
-        subjectId: warning.subjectId,
-        reason: warning.reason,
-        floorUsed: "stored_member_concat",
-      });
-    }
-    return { ok: true, value: prepared };
   } catch (cause) {
     return storageFailure(`view prepareCompact failed: ${detail(cause)}`);
   } finally {
@@ -1065,12 +944,70 @@ export async function prepareCompact(
 }
 
 /**
+ * Assemble a compact against the database as it stands right now. Shared by
+ * prepareCompact and by the install-time drift recompute, which needs a fresh
+ * assembly without reopening the thread file.
+ */
+function prepareFromOpenDatabase(
+  db: DatabaseSync,
+  filePath: string,
+  merged: ViewProfile,
+  profileName: string | null,
+  opts: { signal?: { aborted: boolean }; compactPointUpperBound?: number },
+): OpResult<PreparedCompact> {
+  const threadId = readThreadMetadata(db).threadId;
+  const transaction: DbReadTransaction = { db, filePath, threadId };
+  const computed = computeArrangement(db, transaction, merged, {
+    signal: opts.signal,
+    includeChunkMaterials: true,
+    ...(opts.compactPointUpperBound !== undefined ? { compactPointUpperBound: opts.compactPointUpperBound } : {}),
+  });
+  if (!computed.ok) return computed;
+
+  const { selection, inputs, viewId, firstKeptMessageId } = computed.value;
+  const prepared = buildPreparedFromArrangement(
+    db,
+    selection,
+    inputs,
+    viewId,
+    firstKeptMessageId,
+    profileName,
+    merged,
+    opts.compactPointUpperBound,
+  );
+  for (const warning of prepared.warnings) {
+    writeLog(transaction, {
+      level: "warning",
+      message: "compact chunk fallback used",
+      derivationType: warning.derivationType,
+      subjectId: warning.subjectId,
+      reason: warning.reason,
+      floorUsed: "stored_member_concat",
+    });
+  }
+  for (const skipped of prepared.skippedRecords) {
+    writeLog(transaction, {
+      level: "warning",
+      message: "compact skipped an unplaceable canonical record",
+      subjectId: skipped.kind === "orphaned_message" ? skipped.messageId : skipped.chunkId,
+      reason: skipped.reason,
+    });
+  }
+  return { ok: true, value: prepared };
+}
+
+/**
  * Atomically activate a previously prepared compact snapshot.
  *
  * Normal background derivation or re-derivation may finish after preparation.
  * That does not invalidate the prepared view: it remains a coherent snapshot,
- * and later compacts can use the improved material. Only boundary invariants
- * and explicit cancellation can refuse activation.
+ * and later compacts can use the improved material.
+ *
+ * When the caller pinned the durable boundary it prepared against and that
+ * boundary has since moved, install recomputes the compact against fresh state
+ * and installs that instead of handing the host a refusal. Only explicit
+ * cancellation stops activation; a true install failure leaves the prior view
+ * serving.
  */
 export async function installPreparedCompact(
   ref: ThreadRef,
@@ -1095,23 +1032,25 @@ export async function installPreparedCompact(
     }
 
     const createdAt = opts.createdAt ?? new Date().toISOString();
+    const proposedBoundary = opts.visibilityBoundary;
 
-    try {
-      const proposedBoundary = opts.visibilityBoundary;
+    // One BEGIN IMMEDIATE. Throws InstalledViewDriftError, having written
+    // nothing, when the caller pinned a durable boundary that has since moved.
+    const writeView = (view: PreparedCompact, pinnedBoundary: number | undefined): void => {
       replaceViewSnapshot(
         db,
         {
-          viewId: prepared.viewId,
+          viewId: view.viewId,
           createdAt,
-          compactPoint: prepared.selection.compactPoint,
-          coveredFrom: prepared.selection.coveredFrom,
-          profileName: prepared.profileName,
+          compactPoint: view.selection.compactPoint,
+          coveredFrom: view.selection.coveredFrom,
+          profileName: view.profileName,
           configJson: JSON.stringify({
-            lowerBound: prepared.merged.lowerBound,
-            percentages: prepared.merged.percentages,
+            lowerBound: view.merged.lowerBound,
+            percentages: view.merged.percentages,
           }),
           arrangementJson: JSON.stringify(
-            prepared.selection.entries.map((entry) => ({
+            view.selection.entries.map((entry) => ({
               band: entry.band,
               subjectKind: entry.subjectKind,
               subjectId: entry.subjectId,
@@ -1119,82 +1058,78 @@ export async function installPreparedCompact(
               degraded: entry.degraded,
             })),
           ),
-          gapsJson: JSON.stringify(prepared.gaps),
-          // Placeholder; beforeReplace returns the validated post-marker source
-          // state JSON so the written row describes what was actually installed.
+          gapsJson: JSON.stringify(view.gaps),
           sourceStateJson: JSON.stringify({
-            maxEventOrder: prepared.maxEventOrder,
-            derivationCounts: prepared.derivationCounts,
+            maxEventOrder: view.maxEventOrder,
+            derivationCounts: view.derivationCounts,
           }),
-          bands: prepared.bands,
+          bands: view.bands,
           ...(proposedBoundary !== undefined ? { visibilityBoundary: proposedBoundary } : {}),
         },
         () => {
           // Inside BEGIN IMMEDIATE — atomic with replace.
           fireViewInjection("compact-install-before-validate", { db });
-          // Boundary monotonicity / expected previous checks (atomic with install).
-          const currentBoundary = readBoundaryPosition(db);
-          if (opts.expectedPreviousBoundary !== undefined && currentBoundary !== opts.expectedPreviousBoundary) {
-            throw new StalePreparedCompactError(
-              `visibility boundary drifted ${opts.expectedPreviousBoundary}→${currentBoundary} since prepare`,
-            );
-          }
-          if (proposedBoundary !== undefined) {
-            if (proposedBoundary < prepared.selection.compactPoint) {
-              throw new StalePreparedCompactError(
-                `proposed visibility boundary ${proposedBoundary} is behind compact point ${prepared.selection.compactPoint}`,
-              );
-            }
-            if (proposedBoundary < currentBoundary) {
-              throw new StalePreparedCompactError(
-                `proposed visibility boundary ${proposedBoundary} would move backward from ${currentBoundary}`,
+          if (pinnedBoundary !== undefined) {
+            const currentBoundary = readBoundaryPosition(db);
+            if (currentBoundary !== pinnedBoundary) {
+              throw new InstalledViewDriftError(
+                `visibility boundary drifted ${pinnedBoundary}→${currentBoundary} since prepare`,
               );
             }
           }
-          turnsDomain.dropUnreadableChunks(db, prepared.emptyChunkIds);
+          turnsDomain.dropUnreadableChunks(db, view.emptyChunkIds);
           return undefined;
         },
       );
+    };
+
+    let installed = prepared;
+    try {
+      writeView(prepared, opts.expectedPreviousBoundary);
     } catch (cause) {
-      if (cause instanceof StalePreparedCompactError) {
-        return {
-          ok: false,
-          error: {
-            errorClass: "caller_error",
-            code: "stale_prepared_compact",
-            reason: `prepared compact is stale: ${cause.message}`,
-          },
-        };
-      }
-      throw cause;
+      if (!(cause instanceof InstalledViewDriftError)) throw cause;
+      // Drift is not a reason to leave the session uncompacted: assemble
+      // against the state that is actually there and install that. The fresh
+      // assembly is the expectation, so this install carries no pin and the
+      // recompute cannot repeat.
+      const fresh = prepareFromOpenDatabase(db, filePath, prepared.merged, prepared.profileName, {
+        ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+        ...(prepared.compactPointUpperBound !== undefined
+          ? { compactPointUpperBound: prepared.compactPointUpperBound }
+          : {}),
+      });
+      if (!fresh.ok) return fresh;
+      installed = fresh.value;
+      writeView(installed, undefined);
     }
 
     const bandReport = {} as CompactReceipt["bands"];
     for (const band of BAND_ORDER) {
-      const stored = prepared.bands.find((row) => row.band === band);
+      const stored = installed.bands.find((row) => row.band === band);
       bandReport[band] = {
-        entries: prepared.selection.entries.filter((entry) => entry.band === band).length,
+        entries: installed.selection.entries.filter((entry) => entry.band === band).length,
         tokens: stored?.tokenCount ?? 0,
       };
     }
-    const tailTokens = tailTokenSum(db, prepared.selection.compactPoint);
-    const renderedBands = buildRenderedBands(prepared.selection, prepared.bands);
+    const tailTokens = tailTokenSum(db, installed.selection.compactPoint);
+    const renderedBands = buildRenderedBands(installed.selection, installed.bands);
     return {
       ok: true,
       value: {
-        viewId: prepared.viewId,
-        profile: prepared.profileName,
-        config: { ...prepared.merged.percentages, lowerBound: prepared.merged.lowerBound },
+        viewId: installed.viewId,
+        profile: installed.profileName,
+        config: { ...installed.merged.percentages, lowerBound: installed.merged.lowerBound },
         bands: bandReport,
         tailTokens,
         totalTokens: bandReport.brief.tokens + bandReport.detailed.tokens + bandReport.smooth.tokens + tailTokens,
-        coveredFrom: prepared.selection.coveredFrom,
-        compactPoint: prepared.selection.compactPoint,
-        degraded: prepared.degraded,
-        gaps: prepared.gaps,
-        warnings: prepared.warnings,
+        coveredFrom: installed.selection.coveredFrom,
+        compactPoint: installed.selection.compactPoint,
+        degraded: installed.degraded,
+        gaps: installed.gaps,
+        warnings: installed.warnings,
+        skippedRecords: installed.skippedRecords,
         renderedBands,
-        firstKeptMessageId: prepared.firstKeptMessageId,
+        firstKeptMessageId: installed.firstKeptMessageId,
       },
     };
   } catch (cause) {

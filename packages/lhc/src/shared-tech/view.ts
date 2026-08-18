@@ -198,6 +198,13 @@ export interface PreviewCompactResult {
 export type PreviewCompactOutcome = { kind: "ok"; preview: PreviewCompactResult } | { kind: "error"; reason: string };
 
 // ── receipts ─────────────────────────────────────────────────────
+// A canonical record the compact walk could not place: a message or a chunk
+// member whose turn does not resolve to a live turn. Compact proceeds with the
+// reachable source and reports the skip; the raw row is left untouched.
+export type SkippedRecord =
+  | { kind: "orphaned_message"; messageId: string; turnId: string; reason: string }
+  | { kind: "dangling_chunk_member"; chunkId: string; turnId: string; reason: string };
+
 export interface CompactReceipt {
   viewId: string;
   profile: string | null;
@@ -218,6 +225,10 @@ export interface CompactReceipt {
     derivationType: "chunk_summary_detailed" | "chunk_summary_brief";
     reason: string;
   }>;
+  // Canonical records the compact walk could not place. The records were
+  // skipped, not repaired and not removed; hosts surface these so the anomaly
+  // stays visible.
+  skippedRecords: SkippedRecord[];
   renderedBands: Array<{ band: Band; text: string }>;
   firstKeptMessageId: string | null;
 }

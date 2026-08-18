@@ -41,6 +41,7 @@ function selectionInputs(
     derivations: new Map(),
     maxEventOrder: Math.max(0, ...turns.map((turn) => turn.closedAt ?? turn.openedAt)),
     derivationCounts: EMPTY_DERIVATION_COUNTS,
+    skippedRecords: [],
   };
 }
 

@@ -4,7 +4,13 @@
  */
 import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput } from "../src/index.js";
-import { createInferenceCallbacksDouble, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import {
+  createInferenceCallbacksDouble,
+  setViewInjectionHook,
+  type TempStore,
+  tempStore,
+  validEvent,
+} from "./fixtures/index.js";
 
 function tokens(n: number): string {
   return Array<string>(n).fill("tok").join(" ");
@@ -168,24 +174,131 @@ describe("LIM-67 protected boundary preview", () => {
       expect(body.includes(" · abridged]")).toBe(false);
     }
 
-    // Stale expected boundary refuses without mutation.
+    // A pinned boundary that has since moved recomputes against fresh state
+    // and installs, instead of handing the host a refusal.
     const prepared2 = await lhc.threadView.prepareCompact({ filePath });
     expect(prepared2.ok).toBe(true);
     if (!prepared2.ok) return;
-    const stale = await lhc.threadView.installPreparedCompact({ filePath }, prepared2.value, {
+    const drifted = await lhc.threadView.installPreparedCompact({ filePath }, prepared2.value, {
       visibilityBoundary: preview.value.proposedBoundary + 1,
-      expectedPreviousBoundary: prevBoundary, // stale
+      expectedPreviousBoundary: prevBoundary, // stale: the first install already advanced it
     });
-    expect(stale.ok).toBe(false);
-    if (stale.ok) return;
-    expect(stale.error.code).toBe("stale_prepared_compact");
+    expect(drifted.ok).toBe(true);
+    if (!drifted.ok) return;
+
+    const installedView = await lhc.threadView.describe({ filePath });
+    expect(installedView.ok).toBe(true);
+    if (!installedView.ok) return;
+    expect(installedView.value?.viewId).toBe(drifted.value.viewId);
 
     const status2 = await lhc.threadView.status({ filePath });
     expect(status2.ok).toBe(true);
     if (!status2.ok) return;
-    expect(status2.value.visibility.boundaryPosition).toBe(preview.value.proposedBoundary);
+    // Forward only: never behind the boundary already installed, never behind
+    // the compact point it was installed with.
+    expect(status2.value.visibility.boundaryPosition).toBeGreaterThanOrEqual(preview.value.proposedBoundary);
+    expect(status2.value.visibility.boundaryPosition).toBeGreaterThanOrEqual(drifted.value.compactPoint);
 
     void prevViewId;
     void abridgedCount;
+  });
+
+  it("a boundary proposal computed against older state is resolved forward, not refused", async () => {
+    const lhc = sdk();
+    const filePath = await newThread(lhc);
+    await intake(lhc, filePath, [
+      validEvent("user_prompt", { payload: { text: "t1" } }),
+      ...toolPair(50, "fwd-1"),
+      ...toolPair(50, "fwd-2"),
+      validEvent("turn_end"),
+      validEvent("user_prompt", { payload: { text: "t2" } }),
+      ...toolPair(20, "fwd-3"),
+      validEvent("turn_end"),
+      validEvent("user_prompt", { payload: { text: "t3" } }),
+      ...toolPair(20, "fwd-4"),
+    ]);
+
+    const params = { lowerBound: 100, percentages: { full: 20, smooth: 40, detailed: 20, brief: 20 } };
+    const first = await lhc.threadView.compact({ filePath }, { params });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const status1 = await lhc.threadView.status({ filePath });
+    expect(status1.ok).toBe(true);
+    if (!status1.ok) return;
+    const boundaryBefore = status1.value.visibility.boundaryPosition;
+    expect(boundaryBefore).toBeGreaterThan(0);
+
+    const prepared = await lhc.threadView.prepareCompact({ filePath }, { params });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    // Boundary 0 is behind both the durable boundary and the compact point —
+    // the shape a proposal takes when the state it was computed from has moved.
+    const installed = await lhc.threadView.installPreparedCompact({ filePath }, prepared.value, {
+      visibilityBoundary: 0,
+    });
+    expect(installed.ok).toBe(true);
+    if (!installed.ok) return;
+
+    const status2 = await lhc.threadView.status({ filePath });
+    expect(status2.ok).toBe(true);
+    if (!status2.ok) return;
+    expect(status2.value.visibility.boundaryPosition).toBe(Math.max(boundaryBefore, installed.value.compactPoint));
+  });
+
+  it("a failing install leaves the prior view and boundary exactly as they were", async () => {
+    const lhc = sdk();
+    const filePath = await newThread(lhc);
+    await intake(lhc, filePath, [
+      validEvent("user_prompt", { payload: { text: "t1" } }),
+      ...toolPair(50, "old-1"),
+      ...toolPair(50, "old-2"),
+      validEvent("turn_end"),
+      validEvent("user_prompt", { payload: { text: "t2" } }),
+      ...toolPair(20, "prot-1"),
+    ]);
+
+    const first = await lhc.threadView.compact({ filePath }, {});
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const priorView = await lhc.threadView.describe({ filePath });
+    expect(priorView.ok).toBe(true);
+    if (!priorView.ok) return;
+    const priorStatus = await lhc.threadView.status({ filePath });
+    expect(priorStatus.ok).toBe(true);
+    if (!priorStatus.ok) return;
+    const priorContext = await lhc.threadView.getLlmRequestContext({ filePath });
+    expect(priorContext.ok).toBe(true);
+    if (!priorContext.ok) return;
+
+    const prepared = await lhc.threadView.prepareCompact({ filePath });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    // A real storage failure inside the install transaction, not a policy stop.
+    setViewInjectionHook("compact-install-before-validate", () => {
+      throw new Error("injected storage failure inside the install transaction");
+    });
+    let failed: Awaited<ReturnType<typeof lhc.threadView.installPreparedCompact>>;
+    try {
+      failed = await lhc.threadView.installPreparedCompact({ filePath }, prepared.value);
+    } finally {
+      setViewInjectionHook("compact-install-before-validate", null);
+    }
+    expect(failed.ok).toBe(false);
+    if (failed.ok) return;
+    expect(failed.error.errorClass).toBe("system_error");
+
+    const afterView = await lhc.threadView.describe({ filePath });
+    expect(afterView.ok).toBe(true);
+    if (!afterView.ok) return;
+    expect(afterView.value?.viewId).toBe(priorView.value?.viewId);
+    const afterStatus = await lhc.threadView.status({ filePath });
+    expect(afterStatus.ok).toBe(true);
+    if (!afterStatus.ok) return;
+    expect(afterStatus.value.visibility.boundaryPosition).toBe(priorStatus.value.visibility.boundaryPosition);
+    const afterContext = await lhc.threadView.getLlmRequestContext({ filePath });
+    expect(afterContext.ok).toBe(true);
+    if (!afterContext.ok) return;
+    expect(JSON.stringify(afterContext.value.messages)).toBe(JSON.stringify(priorContext.value.messages));
   });
 });

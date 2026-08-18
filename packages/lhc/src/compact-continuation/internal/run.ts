@@ -2006,11 +2006,6 @@ async function runCompactContinuationInner(
         material = { ...material, installSucceeds: false };
       } else if (prepared !== null) {
         const installOpts: threadView.InstallPreparedOptions = {};
-        if (needsContinueTurn && forcedContinuationBoundary.applied) {
-          installOpts.allowedMarkerIdempotencyKey = compactContinuationMarkerIdempotencyKey(
-            forcedContinuationBoundary.continuationTurnId,
-          );
-        }
         if (proposedVisibilityBoundary !== null) {
           installOpts.visibilityBoundary = proposedVisibilityBoundary;
           if (visibilityBoundaryBefore !== null) {

@@ -6,7 +6,6 @@ import type { DatabaseSync } from "node:sqlite";
 import type { DbReadTransaction, OpResult, ViewProfile } from "../../shared-tech/index.js";
 import * as turnsDomain from "../../turns/index.js";
 import {
-  CanonicalCorruptionError,
   PI_MAPPABLE_MESSAGE_KINDS,
   readSelectionInputs,
   type SelectionInputs,
@@ -65,16 +64,10 @@ function resolveChunkMaterials(
         };
       }
       const material = turnsDomain.getChunkText(transaction, chunk.chunkId, derivationType);
-      if (material.kind === "blocked") {
-        return {
-          ok: false,
-          error: {
-            errorClass: "state_corruption",
-            code: "source_damaged",
-            reason: material.reason,
-          },
-        };
-      }
+      // Stored members that cannot be read are not a reason to stop: leaving
+      // the material out drops the entry to the band ladder's gap, which the
+      // receipt names.
+      if (material.kind === "blocked") continue;
       compactChunkMaterials.set(`${chunk.chunkId}/${derivationType}`, material);
     }
   }
@@ -102,18 +95,7 @@ export function computeArrangement(
     };
   }
 
-  let inputs: SelectionInputs;
-  try {
-    inputs = readSelectionInputs(db);
-  } catch (cause) {
-    if (cause instanceof CanonicalCorruptionError) {
-      return {
-        ok: false,
-        error: { errorClass: "state_corruption", code: cause.code, reason: cause.message },
-      };
-    }
-    throw cause;
-  }
+  let inputs: SelectionInputs = readSelectionInputs(db);
 
   if (opts.includeChunkMaterials) {
     const materials = resolveChunkMaterials(transaction, inputs, opts.signal);
@@ -124,9 +106,7 @@ export function computeArrangement(
   const selection = selectArrangement(inputs, {
     lowerBound: merged.lowerBound,
     percentages: merged.percentages,
-    ...(opts.compactPointUpperBound !== undefined
-      ? { compactPointUpperBound: opts.compactPointUpperBound }
-      : {}),
+    ...(opts.compactPointUpperBound !== undefined ? { compactPointUpperBound: opts.compactPointUpperBound } : {}),
   });
   const viewId = `v${inputs.maxEventOrder}`;
   // At compact point 0 this is the thread's first mappable message (rebuild

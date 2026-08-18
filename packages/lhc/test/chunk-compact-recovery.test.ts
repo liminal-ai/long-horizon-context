@@ -74,6 +74,21 @@ function execCorruptSql(filePath: string, sql: string, ...params: SQLInputValue[
   }
 }
 
+// Chunk placement plus the messages that hang off it — the raw rows compact
+// must leave exactly as it found them.
+function chunkAndMessageRows(filePath: string): unknown {
+  const db = openRaw(filePath);
+  try {
+    return {
+      chunks: db.prepare(`SELECT * FROM chunk ORDER BY chunk_order`).all(),
+      members: db.prepare(`SELECT * FROM chunk_member ORDER BY chunk_id, member_idx`).all(),
+      messages: db.prepare(`SELECT * FROM message ORDER BY source_event_order`).all(),
+    };
+  } finally {
+    db.close();
+  }
+}
+
 function formOf(filePath: string, subjectId: string, derivationType: string) {
   return readDerivedForms(filePath).find(
     (form) => form.subjectId === subjectId && form.derivationType === derivationType,
@@ -296,13 +311,14 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("pending");
   });
 
-  it("refuses compact when canonical member source is corrupt", async () => {
+  it("compacts past a chunk member pointing at a missing turn, reports the skip, and keeps the rows", async () => {
     const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "pending");
     deleteWorkFor(filePath, "chunk_summary_detailed", "c1");
     execCorruptSql(filePath, `DELETE FROM turns WHERE turn_id = 't1'`);
+    const rowsBefore = chunkAndMessageRows(filePath);
 
     const compacted = await sdk.threadView.compact(
       { filePath },
@@ -314,9 +330,47 @@ describe("Story 4: chunk derivation and compact recovery", () => {
       },
     );
 
-    expect(compacted.ok).toBe(false);
-    if (compacted.ok) return;
-    expect(compacted.error).toMatchObject({ errorClass: "state_corruption" });
+    expect(compacted.ok).toBe(true);
+    if (!compacted.ok) return;
+    expect(compacted.value.skippedRecords).toContainEqual({
+      kind: "dangling_chunk_member",
+      chunkId: "c1",
+      turnId: "t1",
+      reason: expect.stringContaining("t1"),
+    });
+    // The dangling member is passed over, never rewritten or dropped: chunk,
+    // membership, and message rows are exactly as they were.
+    expect(chunkAndMessageRows(filePath)).toEqual(rowsBefore);
+  });
+
+  it("compacts past a chunk whose member turn record is irregular, leaving the rows alone", async () => {
+    const sdk = sdkFor(createInferenceCallbacksDouble());
+    const filePath = await newThread();
+    await seedFourClosedTurns(sdk, filePath);
+    // No usable chunk summary, so the entry needs stored members...
+    setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "pending");
+    setChunkSummaryState(filePath, "c1", "chunk_summary_brief", "pending");
+    deleteWorkFor(filePath, "chunk_summary_detailed", "c1");
+    deleteWorkFor(filePath, "chunk_summary_brief", "c1");
+    // ...and its member turn is closed without a close boundary.
+    execCorruptSql(filePath, `UPDATE turns SET closed_at_event_order = NULL WHERE turn_id = 't1'`);
+    const rowsBefore = chunkAndMessageRows(filePath);
+
+    const compacted = await sdk.threadView.compact(
+      { filePath },
+      {
+        params: {
+          lowerBound: 120,
+          percentages: { full: 10, smooth: 10, detailed: 70, brief: 10 },
+        },
+      },
+    );
+
+    expect(compacted.ok).toBe(true);
+    if (!compacted.ok) return;
+    // Worst case is a coarser view, never a stopped compact: the irregular
+    // member simply yields no stored-member material.
+    expect(chunkAndMessageRows(filePath)).toEqual(rowsBefore);
   });
 
   it("background chunk summary work requeues on not-ready member projection", async () => {

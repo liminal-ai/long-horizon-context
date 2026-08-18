@@ -133,8 +133,9 @@ marker-hidden projection via `messages.list({ forUserChat: true })` (or the
 equivalent host-facing filter). Typed compact-continuation markers remain in
 the canonical record and model/session views, but they are not normal user
 chat. Source changes between compact preparation and activation do not block
-compaction. Activation may still refuse an impossible or retrograde visibility
-boundary.
+compaction. A boundary proposal that durable state has since overtaken is
+resolved forward rather than refused, and a pinned boundary that has moved
+makes activation recompute against fresh state and install that.
 
 ## pi (extension — no fork maintenance)
 
