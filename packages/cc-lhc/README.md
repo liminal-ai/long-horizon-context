@@ -122,7 +122,11 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   stops it. When an automatic compact comes due at a settled seam with an
   operator at the terminal and work still open, the panel names what the swap
   would kill and asks *before* anything durable is written. Only an explicit
-  **y** proceeds, into the ordinary receipt-and-swap path exactly once. Anything
+  **y** proceeds, into the ordinary receipt-and-swap path exactly once — and
+  only if the session still looks the way it did when the question was asked.
+  A turn that opened behind the panel, or background work that *started* there
+  and was never on the list, skips the seam; work that *finished* there does
+  not, because killing fewer than listed is what was agreed to. Anything
   else — n, Esc, a stray key, a closed terminal, a prompt that could not be
   drawn — skips that seam alone and records nothing at all, so the next eligible
   seam asks again while the work is still running. With an empty set, no

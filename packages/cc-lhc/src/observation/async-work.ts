@@ -144,6 +144,18 @@ export function openAsyncWork(fold: AsyncWorkFold): OpenAsyncWork[] {
   return [...fold.open.values()];
 }
 
+/**
+ * Stable identity for one open item: what it is, not how it currently looks.
+ *
+ * Description and latest-event text change as an item reports progress, so
+ * neither can say whether the thing in front of you is the same thing. The
+ * launching tool-use id is set once and never rewritten, which also tells a
+ * superseded wakeup apart from the one that replaced it under the same key.
+ */
+export function asyncWorkIdentity(work: OpenAsyncWork): string {
+  return `${work.family}:${work.key}:${work.toolUseId ?? ""}`;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }

@@ -125,7 +125,11 @@ function sdkForCapture(onCompactAttempt: () => void) {
   };
 }
 
-function scriptedCapture(sdk: unknown, liveWork: () => OpenAsyncWork[]): CaptureSession {
+function scriptedCapture(
+  sdk: unknown,
+  liveWork: () => OpenAsyncWork[],
+  turnOpen: () => boolean = () => false,
+): CaptureSession {
   const stats = { ...emptyCaptureStats(), threadId: "th_async" };
   return {
     stats,
@@ -138,7 +142,7 @@ function scriptedCapture(sdk: unknown, liveWork: () => OpenAsyncWork[]): Capture
       capturePhase: "ready" as const,
     }),
     getRolloutInfo: () => ({ path: "/tmp/old-session.jsonl", sessionId: "old-session" }),
-    isTurnOpen: () => false,
+    isTurnOpen: () => turnOpen(),
     isCaptureHealthy: () => true,
     isCaptureReady: () => true,
     getCaptureHealth: () => ({
@@ -227,6 +231,8 @@ interface Rig {
   terminal: () => string;
   logs: string[];
   setLiveWork: (work: OpenAsyncWork[]) => void;
+  /** Drive the capture session's own turn fold, independently of lifecycle. */
+  setCaptureTurnOpen: (open: boolean) => void;
   /** Every durable governor receipt, read straight out of the store's file. */
   receipts: () => GovernorDurableReceipt[];
   /**
@@ -249,13 +255,18 @@ async function startRig(
 ): Promise<Rig> {
   let compactAttempts = 0;
   let live = options.liveWork ?? [];
+  let captureTurnOpen = false;
   const logs: string[] = [];
   const sdk = sdkForCapture(() => {
     compactAttempts += 1;
   });
   let sink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
   mocks.captureFactory = (opts) => {
-    const session = scriptedCapture(sdk, () => live);
+    const session = scriptedCapture(
+      sdk,
+      () => live,
+      () => captureTurnOpen,
+    );
     if (opts.onLifecycle !== undefined && sink === undefined) sink = opts.onLifecycle;
     return session;
   };
@@ -323,6 +334,9 @@ async function startRig(
     logs,
     setLiveWork: (work) => {
       live = work;
+    },
+    setCaptureTurnOpen: (open) => {
+      captureTurnOpen = open;
     },
     receipts: readReceipts,
     settledReceipts: () => readReceipts().filter((receipt) => receipt.observePhase === "settled_seam"),
@@ -512,6 +526,111 @@ describe("an automatic swap asks before it kills live background work", () => {
     expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
     await rig.end();
   }, 15_000);
+
+  it("does not compact on a seam that went stale while the question was up", async () => {
+    const rig = await startRig({ liveWork: [monitorWork("A")] });
+    rig.fire(overTrigger("req:stale-turn"));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    // A notification lands and Claude starts working again behind the panel.
+    rig.fire([{ kind: "turn_opened", reason: "tool_result" }]);
+    await settle(60);
+    rig.stdin.write("y");
+    await settle(250);
+    expect(rig.compactAttempts()).toBe(0);
+    expect(rig.settledReceipts()).toEqual([]);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
+    expect(rig.logs.some((line) => line.includes("a new turn opened while the question was on screen"))).toBe(true);
+
+    // Nothing was deferred: when that turn settles over the trigger, the
+    // question is asked again rather than the swap running by itself.
+    const before = rig.terminal().length;
+    rig.fire([
+      {
+        kind: "sampling_observed",
+        samplingId: "req:stale-turn-2",
+        providerUsage: { input_tokens: 9_000, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+      },
+      { kind: "turn_settled", reason: "end_turn" },
+    ]);
+    await waitFor(() => rig.terminal().slice(before).includes("live background work"), "second confirmation");
+    await settle(100);
+    expect(rig.compactAttempts()).toBe(0);
+    rig.stdin.write("n");
+    await settle();
+    await rig.end();
+  }, 20_000);
+
+  it("does not compact when the capture session says a turn is open", async () => {
+    // The governor fold and the capture fold are separate readings of the same
+    // stream; either one saying "open" is enough to hold the swap.
+    const rig = await startRig({ liveWork: [monitorWork("A")] });
+    rig.fire(overTrigger("req:capture-turn"));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    rig.setCaptureTurnOpen(true);
+    rig.stdin.write("y");
+    await settle(250);
+    expect(rig.compactAttempts()).toBe(0);
+    expect(rig.settledReceipts()).toEqual([]);
+    await rig.end();
+  }, 15_000);
+
+  it("does not kill work that started after the question was asked", async () => {
+    const rig = await startRig({ liveWork: [monitorWork("A")] });
+    rig.fire(overTrigger("req:new-work"));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    expect(rig.terminal()).toContain("(A)");
+    expect(rig.terminal()).not.toContain("(B)");
+    // Claude launches something else while the operator reads the list.
+    rig.setLiveWork([monitorWork("A"), monitorWork("B")]);
+    rig.stdin.write("y");
+    await settle(250);
+    expect(rig.compactAttempts()).toBe(0);
+    expect(rig.settledReceipts()).toEqual([]);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
+    expect(rig.logs.some((line) => line.includes("another piece of background work started"))).toBe(true);
+
+    // The next eligible seam lists both, and yes there compacts.
+    const before = rig.terminal().length;
+    rig.fire(overTrigger("req:new-work-2"));
+    await waitFor(() => rig.terminal().slice(before).includes("live background work"), "second confirmation");
+    const screen = rig.terminal().slice(before);
+    expect(screen).toContain("will kill 2 pieces of live background work");
+    expect(screen).toContain("(A)");
+    expect(screen).toContain("(B)");
+    rig.stdin.write("y");
+    await waitFor(() => rig.compactAttempts() === 1, "compact after the second ask");
+    await rig.end();
+  }, 20_000);
+
+  it("still compacts when listed work finished while the question was up", async () => {
+    const rig = await startRig({ liveWork: [monitorWork("A"), monitorWork("B")] });
+    rig.fire(overTrigger("req:fewer"));
+    await waitFor(() => rig.terminal().includes("will kill 2 pieces"), "confirmation on screen");
+    // B completes behind the panel. Killing fewer than listed is what the
+    // operator agreed to, so consent still holds.
+    rig.setLiveWork([monitorWork("A")]);
+    rig.stdin.write("y");
+    await waitFor(() => rig.compactAttempts() === 1, "compact after yes");
+    await settle(200);
+    expect(rig.compactAttempts()).toBe(1);
+    expect(rig.settledReceipts()).toHaveLength(1);
+    await rig.end();
+  }, 15_000);
+
+  it("compacts once, not twice, when a fresh seam and the answer arrive together", async () => {
+    const rig = await startRig({ liveWork: [monitorWork("A")] });
+    rig.fire(overTrigger("req:race-1"));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    // A second settled seam over the trigger arrives while the question stands,
+    // then the operator answers immediately.
+    rig.fire(overTrigger("req:race-2"));
+    rig.stdin.write("y");
+    await waitFor(() => rig.compactAttempts() === 1, "compact after yes");
+    await settle(400);
+    expect(rig.compactAttempts()).toBe(1);
+    expect(rig.settledReceipts()).toHaveLength(1);
+    await rig.end();
+  }, 20_000);
 
   it("does not ask, and behaves exactly as before, without a terminal", async () => {
     // A one-shot launch has nobody to ask; the swap runs as it always has.

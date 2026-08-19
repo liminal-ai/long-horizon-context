@@ -46,7 +46,7 @@ import { defaultLineageDbPath } from "../intake/lineage-db.js";
 import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
 import { type CaptureSession, createCaptureThread, startCaptureSession } from "../intake/session.js";
 import { type LaunchThreadBinding, recordSwapAcceptance } from "../intake/thread-alias.js";
-import type { OpenAsyncWork } from "../observation/async-work.js";
+import { asyncWorkIdentity, type OpenAsyncWork } from "../observation/async-work.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
 import type { ExpectedSession } from "../rollout/expected-session.js";
@@ -930,13 +930,43 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       notNow(`the panel is busy (${inputState.mode})`);
       return;
     }
+
+    // What the operator is about to authorize, by stable identity. The session
+    // keeps running behind the panel — Claude answers a notification, another
+    // launcher starts — so consent is checked against the world at the moment
+    // of the keypress, not the one that raised the question.
+    const listed = new Set(liveWork.map((work) => asyncWorkIdentity(work)));
+    const consentStale = (): string | null => {
+      if (governorState.turnOpen || captureSession?.isTurnOpen() === true) {
+        return "a new turn opened while the question was on screen";
+      }
+      if (settledSeamBlocked()) return "the seam stopped being eligible while the question was on screen";
+      // Work that finished meanwhile is fine — killing fewer than listed is
+      // what the operator agreed to. Work that STARTED meanwhile was never on
+      // the list, so nobody has agreed to kill it.
+      const unlisted = (captureSession?.getLiveAsyncWork() ?? []).filter(
+        (work) => !listed.has(asyncWorkIdentity(work)),
+      );
+      if (unlisted.length === 0) return null;
+      const noun = unlisted.length === 1 ? "another piece" : `${unlisted.length} more pieces`;
+      return `${noun} of background work started while the question was on screen`;
+    };
+
     const raised = raiseCompactConfirm(liveWork, (disposition) => {
-      if (disposition.kind === "yes") {
-        wrapperLog.info(`cc-lhc governor: operator authorized compact over ${liveWork.length} live background item(s)`);
-        runSettledSeam(record);
+      if (disposition.kind !== "yes") {
+        notNow(describeDecline(disposition.reason));
         return;
       }
-      notNow(describeDecline(disposition.reason));
+      const stale = consentStale();
+      if (stale !== null) {
+        // Nothing is deferred and nothing waits for the turn to settle: the
+        // next otherwise-eligible seam raises a fresh question over whatever
+        // is open then.
+        notNow(stale);
+        return;
+      }
+      wrapperLog.info(`cc-lhc governor: operator authorized compact over ${liveWork.length} live background item(s)`);
+      runSettledSeam(record);
     });
     if (!raised) notNow(describeDecline("render_failed"));
   };

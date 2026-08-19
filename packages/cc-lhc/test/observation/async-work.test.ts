@@ -3,7 +3,12 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { createAsyncWorkFold, type OpenAsyncWork, openAsyncWork } from "../../src/observation/async-work.js";
+import {
+  asyncWorkIdentity,
+  createAsyncWorkFold,
+  type OpenAsyncWork,
+  openAsyncWork,
+} from "../../src/observation/async-work.js";
 import { observeRolloutLines } from "../../src/observation/observe.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 
@@ -339,6 +344,36 @@ describe("open async work: shapes beyond the captured session", () => {
       toolResult("s2", { status: "async_launched", taskType: "local_workflow", taskId: "w9", error: "syntax error" }),
     ];
     expect(replay([...sync, ...failedWorkflow])).toEqual([]);
+  });
+
+  it("keeps an item's identity stable while its progress text changes", () => {
+    // The confirmation compares what the operator saw against what is open
+    // now. A monitor reporting a new event is the same monitor.
+    const before = replay([...bashLaunch]);
+    const after = replay([
+      ...bashLaunch,
+      notification('<task-id>b111</task-id>\n<summary>Background command "long build" appears stalled</summary>'),
+    ]);
+    expect(after[0]?.latestEvent).not.toBe(before[0]?.latestEvent);
+    expect(after.map(asyncWorkIdentity)).toEqual(before.map(asyncWorkIdentity));
+  });
+
+  it("gives a superseding wakeup a different identity from the one it replaced", () => {
+    // Both live under the same singleton key, so the key alone would call them
+    // the same item; the launching tool-use id is what tells them apart.
+    const first = [
+      assistantToolUse("w1", "ScheduleWakeup", { delaySeconds: 600, reason: "first" }),
+      toolResult("w1", { scheduledFor: NOW + 600_000, clampedDelaySeconds: 600 }),
+    ];
+    const second = [
+      assistantToolUse("w2", "ScheduleWakeup", { delaySeconds: 300, reason: "second" }),
+      toolResult("w2", { scheduledFor: NOW + 300_000, clampedDelaySeconds: 300 }),
+    ];
+    const before = replay(first).map(asyncWorkIdentity);
+    const after = replay([...first, ...second]).map(asyncWorkIdentity);
+    expect(before).toHaveLength(1);
+    expect(after).toHaveLength(1);
+    expect(after).not.toEqual(before);
   });
 
   it("opens nothing when a same-shaped result comes from a different tool", () => {

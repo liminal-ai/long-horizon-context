@@ -282,7 +282,14 @@ work still open, the panel names what the swap would cost and asks. This is a
 present-user authority choice, not a gate, and the question comes before the
 record: nothing durable is written until the operator authorizes it. Only an
 explicit **y** proceeds, into the ordinary receipt-and-schedule path exactly
-once. Every other outcome — a decline, a dismissal, a stray key, a closed
+once — and only if the session still looks the way it did when the question
+was asked. The session keeps running behind the panel, so consent is checked
+against the world at the keypress: a turn that opened meanwhile, a seam that
+stopped being eligible, or work that *started* meanwhile and was never on the
+list all skip the seam as if the operator had declined. Work that *finished*
+meanwhile does not — killing fewer than listed is what was agreed to.
+Comparison is by stable item identity, never by the progress text an item
+happens to be showing. Every other outcome — a decline, a dismissal, a stray key, a closed
 terminal, a prompt that could not be drawn or was interrupted — skips that one
 seam, leaves no receipt, no outcome, and no preference behind, and the next
 eligible seam asks again while the work is still open. An empty set, a
