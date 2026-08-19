@@ -10,6 +10,7 @@ import type { LifecycleSignal } from "../../src/observation/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
+import { defaultLineageDbPath, readPendingCurrentSession } from "../../src/intake/lineage-db.js";
 import { defaultRegistryPath } from "../../src/intake/paths.js";
 import { claudeSessionAlias, currentSessionAlias } from "../../src/intake/thread-alias.js";
 import { run } from "../../src/wrapper/run.js";
@@ -25,7 +26,20 @@ const receiptDirs: string[] = [];
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
   registerLineage: vi.fn(async (..._args: unknown[]) => ({ ok: true as const })),
+  /** Set to a reason to make the registry current-pointer advance fail. */
+  acceptCurrentFailure: null as string | null,
 }));
+
+vi.mock("../../src/intake/thread-alias.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/intake/thread-alias.js")>();
+  return {
+    ...actual,
+    acceptCurrentSession: async (input: Parameters<typeof actual.acceptCurrentSession>[0]) =>
+      mocks.acceptCurrentFailure === null
+        ? actual.acceptCurrentSession(input)
+        : { ok: false as const, reason: mocks.acceptCurrentFailure },
+  };
+});
 
 vi.mock("../../src/intake/session.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/intake/session.js")>();
@@ -247,6 +261,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
   beforeEach(() => {
     mocks.registerLineage.mockClear();
     mocks.captureFactory = null;
+    mocks.acceptCurrentFailure = null;
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-auto-home-"));
     receiptDirs.push(home);
     process.env.CC_LHC_HOME = home;
@@ -254,6 +269,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     mocks.captureFactory = null;
+    mocks.acceptCurrentFailure = null;
     if (savedHome === undefined) delete process.env.CC_LHC_HOME;
     else process.env.CC_LHC_HOME = savedHome;
     for (const d of receiptDirs.splice(0)) {
@@ -415,6 +431,109 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
     // Wrapper stays alive on the new child; end the run by exiting it.
+    spawned[1]!.fireExit(0);
+    const code = await runPromise;
+    expect(code).toBe(0);
+    writeSpy.mockRestore();
+  });
+
+  it("keeps a live replacement when the registry pointer cannot advance, and records the acceptance", async () => {
+    mocks.acceptCurrentFailure = "registry alias advance failed: disk full";
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    const captureCalls: CaptureSessionDeps[] = [];
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-pending-"));
+    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+    const rebuiltContent = '{"line":1}\n{"line":2}\n{"line":3}\n';
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      writeFileSync(rebuiltPath, rebuiltContent);
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 3,
+        expectedReintakeLines: 3,
+        replayedPrefixLines: 2,
+        prefixBoundary: { kind: "verified", lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
+        totalByteLength: Buffer.byteLength(rebuiltContent),
+      };
+    });
+
+    mocks.captureFactory = (opts) => {
+      captureCalls.push(opts);
+      const generation = captureCalls.length;
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      const scripted = scriptedCaptureSession(
+        opts,
+        sdk,
+        isRebuilt ? REBUILT_ID : "old-session",
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        generation,
+      );
+      if (!isRebuilt) {
+        if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+        opts.onRuntimeSettings?.({ effort: "max", permissionMode: "auto" });
+      }
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    const stderr = fakeStream();
+    let terminalOutput = "";
+    (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      terminalOutput += chunk.toString("utf8");
+    });
+
+    const runPromise = run(["--effort", "medium", "--permission-mode", "manual"], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const fake = makeFakePty(1000 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: stderr as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    await waitFor(() => spawned.length === 1, "first child");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+
+    await waitFor(() => results.length === 1, "handoff result");
+    const result = results[0]!;
+    // The pointer write failed AFTER acceptance. Nothing rolls back: the
+    // replacement is live, captured, and reported as the successful outcome.
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") expect(result.newSessionId).toBe(REBUILT_ID);
+    expect(spawned).toHaveLength(2);
+    expect(spawned[1]!.args[spawned[1]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
+
+    // The registry pointer is genuinely still behind…
+    expect(await currentSessionAlias("th_auto", defaultRegistryPath())).toBeNull();
+    // …so the acceptance is recorded host-side for the next launch to reconcile.
+    expect(readPendingCurrentSession(defaultLineageDbPath(), "th_auto")).toMatchObject({
+      threadId: "th_auto",
+      sessionId: REBUILT_ID,
+    });
+
     spawned[1]!.fireExit(0);
     const code = await runPromise;
     expect(code).toBe(0);

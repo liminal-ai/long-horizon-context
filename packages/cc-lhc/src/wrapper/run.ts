@@ -42,7 +42,7 @@ import {
   respawnChildArgv,
 } from "../intake/launch-session.js";
 import { openLaunchThread } from "../intake/launch-thread.js";
-import { defaultLineageDbPath } from "../intake/lineage-db.js";
+import { defaultLineageDbPath, safeRecordPendingCurrentSession } from "../intake/lineage-db.js";
 import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
 import { type CaptureSession, createCaptureThread, startCaptureSession } from "../intake/session.js";
 import { acceptCurrentSession, type LaunchThreadBinding } from "../intake/thread-alias.js";
@@ -430,6 +430,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         expectedSession = opened.expectedSession;
         childArgv = respawnChildArgv(respawnRest, respawnPassthrough, expectedSession.sessionId);
       }
+      if (opened.pendingAcceptanceNote !== undefined) wrapperLog.warn(`cc-lhc: ${opened.pendingAcceptanceNote}`);
       for (const artifact of opened.discardedSwapArtifacts) {
         wrapperLog.warn(
           `cc-lhc: rebuilt session ${artifact.sessionId} (reserved ${artifact.updatedAt}) was never accepted; ` +
@@ -1831,9 +1832,25 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           });
           if (!advanced.ok) {
             // Never a veto: the replacement is live and captured either way.
-            // Until the pointer catches up, launches resolve to the previous
-            // session, which is still this thread's.
+            // Record the acceptance host-side so the next launch reconciles it
+            // into the registry under the thread lock — without it, the pointer
+            // would keep naming the superseded session and this live
+            // replacement would read as an unaccepted artifact and be dropped.
             wrapperLog.warn(`cc-lhc: current-session pointer not advanced: ${advanced.reason}`);
+            const pending = await safeRecordPendingCurrentSession(
+              defaultLineageDbPath(),
+              handoffRequest.threadId,
+              handoffRequest.rebuilt.sessionId,
+              (message) => wrapperLog.warn(message),
+            );
+            wrapperLog.warn(
+              pending.ok
+                ? `cc-lhc: recorded accepted session ${handoffRequest.rebuilt.sessionId} for thread ` +
+                    `${handoffRequest.threadId}; the next launch advances the registry pointer`
+                : `cc-lhc: accepted session ${handoffRequest.rebuilt.sessionId} is live but neither the ` +
+                    `registry pointer nor the recovery record could be written (${pending.reason}); ` +
+                    `resume it explicitly with cc-lhc --resume ${handoffRequest.rebuilt.sessionId}`,
+            );
           }
           if (!outcome.ok) return { ok: false as const, reason: outcome.reason };
           return advanced.ok ? { ok: true as const } : { ok: false as const, reason: advanced.reason };

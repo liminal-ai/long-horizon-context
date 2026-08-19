@@ -7,7 +7,13 @@
  *
  * The pre-lock resolve authorizes the lock key and nothing else. Between it
  * and the lock, the wrapper that held the thread can accept a swap and move
- * the current pointer, so the pointer is always read again under the lock.
+ * the current pointer, so the pointer is always read again under the lock —
+ * after any acceptance the previous owner recorded but could not write into
+ * the registry has been reconciled there.
+ *
+ * The lease is this wrapper's claim on the thread from the moment it is taken.
+ * Everything after that runs inside it, so any failure releases it rather than
+ * stranding the thread behind a dead owner's lock.
  */
 
 import { type ExpectedSession, expectedSessionFromExplicitId } from "../rollout/expected-session.js";
@@ -17,6 +23,7 @@ import {
   bindLaunchThread,
   claudeSessionIdFromAlias,
   currentSessionAlias,
+  reconcilePendingAcceptance,
   type UnacceptedSwapArtifact,
   unacceptedSwapArtifacts,
 } from "./thread-alias.js";
@@ -44,6 +51,8 @@ export interface OpenLaunchThread {
   correctedFrom?: string;
   /** Rebuilt sessions reserved by an interrupted swap and never accepted. */
   discardedSwapArtifacts: UnacceptedSwapArtifact[];
+  /** Truthful line when a recorded acceptance could not reach the registry. */
+  pendingAcceptanceNote?: string;
 }
 
 export async function openLaunchThread(input: OpenLaunchThreadInput): Promise<OpenLaunchThread> {
@@ -61,45 +70,69 @@ export async function openLaunchThread(input: OpenLaunchThreadInput): Promise<Op
   const lease = acquireThreadOwner(bound.threadId, input.home === undefined ? {} : { home: input.home });
   log(`cc-lhc owns thread ${bound.threadId} (lease ${lease.path})`);
 
-  const currentAlias = await currentSessionAlias(bound.threadId, input.registryPath);
-  const currentSessionId = currentAlias === null ? null : claudeSessionIdFromAlias(currentAlias);
+  try {
+    // A swap the previous owner observed accepted but could not write into the
+    // registry is reconciled here, before anything reads which session is
+    // current — otherwise the pointer would still name the superseded session
+    // and the live replacement would read as an unaccepted artifact.
+    const pending = await reconcilePendingAcceptance({
+      threadId: bound.threadId,
+      registryPath: input.registryPath,
+      lineageDbPath: input.lineageDbPath,
+      ...(input.lineageDeps === undefined ? {} : { lineageDeps: input.lineageDeps }),
+      log,
+    });
 
-  let expectedSession = input.expectedSession;
-  let correctedFrom: string | undefined;
-  if (currentSessionId !== null && currentSessionId !== input.expectedSession.sessionId) {
-    // An older alias of this thread. Not an error — it resolves forward.
-    correctedFrom = input.expectedSession.sessionId;
-    expectedSession = expectedSessionFromExplicitId(currentSessionId, "current_alias");
-    log(
-      `cc-lhc: ${correctedFrom} is an older alias of thread ${bound.threadId}; ` +
-        `landing on its current session ${currentSessionId}`,
-    );
-  } else if (currentAlias !== null && currentSessionId === null) {
-    log(
-      `cc-lhc: thread ${bound.threadId} currently belongs to another host (${currentAlias}); ` +
-        `continuing on ${input.expectedSession.sessionId}`,
-    );
+    const currentAlias = await currentSessionAlias(bound.threadId, input.registryPath);
+    const registryCurrentSessionId = currentAlias === null ? null : claudeSessionIdFromAlias(currentAlias);
+    // An acceptance this host recorded outranks a pointer that has not caught
+    // up to it; once reconciliation advanced the registry the two agree.
+    const currentSessionId = pending.acceptedSessionId ?? registryCurrentSessionId;
+
+    let expectedSession = input.expectedSession;
+    let correctedFrom: string | undefined;
+    if (currentSessionId !== null && currentSessionId !== input.expectedSession.sessionId) {
+      // An older alias of this thread. Not an error — it resolves forward.
+      correctedFrom = input.expectedSession.sessionId;
+      expectedSession = expectedSessionFromExplicitId(currentSessionId, "current_alias");
+      log(
+        `cc-lhc: ${correctedFrom} is an older alias of thread ${bound.threadId}; ` +
+          `landing on its current session ${currentSessionId}`,
+      );
+    } else if (currentAlias !== null && registryCurrentSessionId === null && pending.acceptedSessionId === null) {
+      log(
+        `cc-lhc: thread ${bound.threadId} currently belongs to another host (${currentAlias}); ` +
+          `continuing on ${input.expectedSession.sessionId}`,
+      );
+    }
+
+    const discardedSwapArtifacts = unacceptedSwapArtifacts({
+      threadId: bound.threadId,
+      currentSessionId,
+      lineageDbPath: input.lineageDbPath,
+      ...(input.lineageDeps === undefined ? {} : { lineageDeps: input.lineageDeps }),
+    });
+    for (const artifact of discardedSwapArtifacts) {
+      log(
+        `cc-lhc: rebuilt session ${artifact.sessionId} (reserved ${artifact.updatedAt}) was never accepted ` +
+          `for thread ${bound.threadId}; discarded from launch selection`,
+      );
+    }
+
+    return {
+      threadId: bound.threadId,
+      createdAtLaunch: bound.createdAtLaunch,
+      lease,
+      expectedSession,
+      ...(correctedFrom === undefined ? {} : { correctedFrom }),
+      discardedSwapArtifacts,
+      ...(pending.note === undefined ? {} : { pendingAcceptanceNote: pending.note }),
+    };
+  } catch (cause) {
+    // The lease is only ever handed to a caller that can release it. Anything
+    // that fails before the return gives it back here, so a thread is never
+    // left owned by a launch that never started.
+    lease.release();
+    throw cause;
   }
-
-  const discardedSwapArtifacts = unacceptedSwapArtifacts({
-    threadId: bound.threadId,
-    currentAlias,
-    lineageDbPath: input.lineageDbPath,
-    ...(input.lineageDeps === undefined ? {} : { lineageDeps: input.lineageDeps }),
-  });
-  for (const artifact of discardedSwapArtifacts) {
-    log(
-      `cc-lhc: rebuilt session ${artifact.sessionId} (reserved ${artifact.updatedAt}) was never accepted ` +
-        `for thread ${bound.threadId}; discarded from launch selection`,
-    );
-  }
-
-  return {
-    threadId: bound.threadId,
-    createdAtLaunch: bound.createdAtLaunch,
-    lease,
-    expectedSession,
-    ...(correctedFrom === undefined ? {} : { correctedFrom }),
-    discardedSwapArtifacts,
-  };
 }

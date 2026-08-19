@@ -113,7 +113,9 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   alias under the lease before choosing a session. Every alias of one thread
   contends for one lease, so two wrappers can never both drive it — including
   across PID reuse. A launch through an older alias resolves forward onto the
-  thread's current session.
+  thread's current session. An accepted swap whose registry pointer could not
+  be written is recorded host-side and reconciled into the registry at the next
+  launch, under the lease — never by rolling the live replacement back.
 
 ## Retrieval and migration commands
 
@@ -186,7 +188,7 @@ environment surface.
 | Path under `~/.cc-lhc` | Purpose |
 | --- | --- |
 | `registry.sqlite` | Thread registry and alias map (session alias → thread, one current alias per thread) |
-| `cc-lhc.sqlite` | Host-local session detail (rollout paths, prefix proof, replay signatures) and durable governor receipts (`cc_governor_receipts`) |
+| `cc-lhc.sqlite` | Host-local session detail (rollout paths, prefix proof, replay signatures, pending-acceptance recovery) and durable governor receipts (`cc_governor_receipts`) |
 | `threads/<uuid>.sqlite` | Per-thread LHC record, derivations, views, and impressions |
 | `owners/*.json` | Exclusive thread-ownership leases (keyed by thread hash) |
 | `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600 on POSIX; on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile, so these inherit the profile's default ACLs — no POSIX modes and no bespoke DACL there) |

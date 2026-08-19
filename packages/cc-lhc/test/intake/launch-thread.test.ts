@@ -25,9 +25,24 @@ vi.mock("../../src/runtime/thread-owner.js", async (importOriginal) => {
 });
 
 import { openLaunchThread } from "../../src/intake/launch-thread.js";
-import { recordSessionThread } from "../../src/intake/lineage-db.js";
-import { acceptCurrentSession, bindLaunchThread, claudeSessionAlias } from "../../src/intake/thread-alias.js";
-import { ThreadOwnershipConflictError, threadOwnerGuardPath, threadOwnerPath } from "../../src/runtime/thread-owner.js";
+import {
+  readPendingCurrentSession,
+  recordPendingCurrentSession,
+  recordSessionThread,
+} from "../../src/intake/lineage-db.js";
+import {
+  acceptCurrentSession,
+  bindLaunchThread,
+  claudeSessionAlias,
+  currentSessionAlias,
+  ThreadRegistryUnavailableError,
+} from "../../src/intake/thread-alias.js";
+import {
+  acquireThreadOwner,
+  ThreadOwnershipConflictError,
+  threadOwnerGuardPath,
+  threadOwnerPath,
+} from "../../src/runtime/thread-owner.js";
 import { tsxCommand } from "../helpers/tsx.js";
 
 interface Home {
@@ -232,6 +247,104 @@ describe("opening a launch thread", () => {
     } finally {
       opened.lease.release();
     }
+  });
+});
+
+describe("a swap accepted before its registry pointer advanced", () => {
+  it("reconciles the recorded acceptance under the lock and lands on the replacement", async () => {
+    const paths = tempHome("pending");
+    let tick = 0;
+    const clock = {
+      nowFn: () => {
+        tick += 1;
+        return new Date(Date.UTC(2026, 0, 1, 0, 0, tick));
+      },
+    };
+    // The thread as the crashed wrapper left it: current still names the old
+    // session, the accepted replacement is only a later lineage row.
+    await seedSwappedThread(paths, "th_pending", "s-first", "s-old");
+    recordSessionThread(paths.lineageDbPath, "s-old", "th_pending", clock, { prefix: { kind: "none" } });
+    recordSessionThread(paths.lineageDbPath, "s-accepted", "th_pending", clock, {
+      prefix: { kind: "verified", lineCount: 3, byteLength: 60, sha256: "ab".repeat(32) },
+    });
+    recordPendingCurrentSession(paths.lineageDbPath, "th_pending", "s-accepted", clock);
+
+    const opened = await openLaunchThread({
+      expectedSession: { sessionId: "s-old", source: "explicit_resume" },
+      registryPath: paths.registryPath,
+      lineageDbPath: paths.lineageDbPath,
+      home: paths.home,
+      createThread: mustNotCreate,
+    });
+
+    try {
+      expect(opened.expectedSession).toEqual({ sessionId: "s-accepted", source: "current_alias" });
+      expect(opened.correctedFrom).toBe("s-old");
+      // The live replacement is not an artifact to discard.
+      expect(opened.discardedSwapArtifacts).toEqual([]);
+      expect(opened.pendingAcceptanceNote).toBeUndefined();
+      // The registry is current again, and the recovery record is settled.
+      expect(await currentSessionAlias("th_pending", paths.registryPath)).toBe(claudeSessionAlias("s-accepted"));
+      expect(readPendingCurrentSession(paths.lineageDbPath, "th_pending")).toBeUndefined();
+    } finally {
+      opened.lease.release();
+    }
+  });
+
+  it("keeps the registry authoritative when it says that session is another thread's", async () => {
+    const paths = tempHome("pending-foreign");
+    await seedSwappedThread(paths, "th_own", "s-first", "s-old");
+    // Another thread already holds the session the record names.
+    await acceptCurrentSession({ sessionId: "s-elsewhere", threadId: "th_other", registryPath: paths.registryPath });
+    recordPendingCurrentSession(paths.lineageDbPath, "th_own", "s-elsewhere");
+
+    const opened = await openLaunchThread({
+      expectedSession: { sessionId: "s-first", source: "explicit_resume" },
+      registryPath: paths.registryPath,
+      lineageDbPath: paths.lineageDbPath,
+      home: paths.home,
+      createThread: mustNotCreate,
+    });
+
+    try {
+      expect(opened.expectedSession.sessionId).toBe("s-old");
+      expect(opened.pendingAcceptanceNote).toContain("discarded");
+      expect(await currentSessionAlias("th_own", paths.registryPath)).toBe(claudeSessionAlias("s-old"));
+      // Settled: a record the registry has refused is not retried forever.
+      expect(readPendingCurrentSession(paths.lineageDbPath, "th_own")).toBeUndefined();
+    } finally {
+      opened.lease.release();
+    }
+  });
+});
+
+describe("a failure after the thread lock is taken", () => {
+  it("releases the lease and reports the registry error truthfully", async () => {
+    const paths = tempHome("post-lock");
+    await seedSwappedThread(paths, "th_leak", "s-old", "s-current");
+
+    ownerMocks.whileAcquiring = () => {
+      // The registry becomes unreadable in the instant the lock is taken, so
+      // the current-alias read after it fails.
+      writeFileSync(paths.registryPath, "not a database at all");
+    };
+
+    await expect(
+      openLaunchThread({
+        expectedSession: { sessionId: "s-old", source: "explicit_resume" },
+        registryPath: paths.registryPath,
+        lineageDbPath: paths.lineageDbPath,
+        home: paths.home,
+        createThread: mustNotCreate,
+      }),
+    ).rejects.toBeInstanceOf(ThreadRegistryUnavailableError);
+
+    // The thread is not left owned by a launch that never started.
+    expect(existsSync(threadOwnerPath("th_leak", paths.home))).toBe(false);
+    expect(existsSync(threadOwnerGuardPath("th_leak", paths.home))).toBe(false);
+    const retry = acquireThreadOwner("th_leak", { home: paths.home });
+    expect(retry.path).toBe(threadOwnerPath("th_leak", paths.home));
+    retry.release();
   });
 });
 

@@ -269,7 +269,7 @@ describe("interrupted swap artifacts", () => {
 
     const discarded = unacceptedSwapArtifacts({
       threadId: "th_i",
-      currentAlias: claudeSessionAlias("s-accepted"),
+      currentSessionId: "s-accepted",
       lineageDbPath,
     });
 
@@ -285,7 +285,7 @@ describe("interrupted swap artifacts", () => {
     expect(
       unacceptedSwapArtifacts({
         threadId: "th_s",
-        currentAlias: claudeSessionAlias("s-accepted"),
+        currentSessionId: "s-accepted",
         lineageDbPath,
       }),
     ).toEqual([]);

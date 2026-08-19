@@ -152,6 +152,20 @@ function initLineageSchema(db: DatabaseSync): void {
            OR replayed_prefix_bytes IS NULL)
   `);
 
+  // One row per thread: a swap this wrapper observed accepted (capture
+  // ready-after-replay and a live child) whose registry current pointer did
+  // not advance. It records an acceptance that already happened; the next
+  // launch reconciles it into the registry under the thread lock. It never
+  // names a thread — the registry alone answers which thread an alias belongs
+  // to — and a newer acceptance replaces it.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cc_pending_current_session (
+      thread_id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL,
+      accepted_at TEXT NOT NULL
+    )
+  `);
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS cc_thread_signatures (
       thread_id TEXT NOT NULL,
@@ -234,6 +248,27 @@ export async function safeRecordSessionThread(
     const reason = lineageWriteFailureMessage(cause);
     logError(reason);
     return { ok: false, reason: `lineage_write:${detailCause(cause)}` };
+  }
+}
+
+/**
+ * Records the pending acceptance without ever propagating a failure: this runs
+ * after a replacement is already live, so nothing here may veto or roll it back.
+ */
+export async function safeRecordPendingCurrentSession(
+  dbPath: string,
+  threadId: string,
+  sessionId: string,
+  logError: (message: string) => void,
+  deps: LineageDbDeps = {},
+): Promise<LineageOutcome> {
+  try {
+    recordPendingCurrentSession(dbPath, threadId, sessionId, deps);
+    return { ok: true };
+  } catch (cause) {
+    const reason = lineageWriteFailureMessage(cause);
+    logError(reason);
+    return { ok: false, reason: `pending_current_write:${detailCause(cause)}` };
   }
 }
 
@@ -390,6 +425,63 @@ export function threadSessionRows(dbPath: string, threadId: string, deps: Lineag
     }
   });
   return rows;
+}
+
+/** A swap accepted by this host whose registry pointer has not caught up. */
+export interface PendingCurrentSession {
+  threadId: string;
+  sessionId: string;
+  acceptedAt: string;
+}
+
+export function recordPendingCurrentSession(
+  dbPath: string,
+  threadId: string,
+  sessionId: string,
+  deps: LineageDbDeps = {},
+): void {
+  const { nowFn } = { ...defaultDeps(), ...deps };
+  withLineageDb(dbPath, deps, (db) => {
+    db.prepare(
+      `INSERT INTO cc_pending_current_session (thread_id, session_id, accepted_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(thread_id) DO UPDATE SET
+         session_id = excluded.session_id,
+         accepted_at = excluded.accepted_at`,
+    ).run(threadId, sessionId, nowFn().toISOString());
+  });
+}
+
+export function readPendingCurrentSession(
+  dbPath: string,
+  threadId: string,
+  deps: LineageDbDeps = {},
+): PendingCurrentSession | undefined {
+  let pending: PendingCurrentSession | undefined;
+  withLineageDb(dbPath, deps, (db) => {
+    const row = db
+      .prepare("SELECT thread_id, session_id, accepted_at FROM cc_pending_current_session WHERE thread_id = ?")
+      .get(threadId) as { thread_id: string; session_id: string; accepted_at: string } | undefined;
+    if (row !== undefined) {
+      pending = { threadId: row.thread_id, sessionId: row.session_id, acceptedAt: row.accepted_at };
+    }
+  });
+  return pending;
+}
+
+/** Settles the exact pending acceptance; a newer one is left for its own pass. */
+export function clearPendingCurrentSession(
+  dbPath: string,
+  threadId: string,
+  sessionId: string,
+  deps: LineageDbDeps = {},
+): void {
+  withLineageDb(dbPath, deps, (db) => {
+    db.prepare("DELETE FROM cc_pending_current_session WHERE thread_id = ? AND session_id = ?").run(
+      threadId,
+      sessionId,
+    );
+  });
 }
 
 export function recordSessionThread(

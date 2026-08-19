@@ -86,6 +86,18 @@ never advanced the pointer, so a later launch discards it from session
 selection — the file is left untouched — and continues on the current
 session.
 
+A swap the wrapper observed accepted (capture ready-after-replay plus a live
+child) but whose registry pointer could not be written is recorded host-side
+instead. The next launch reconciles that record into the registry under the
+thread lock, before anything reads which session is current, so the accepted
+replacement is never mistaken for an unaccepted artifact. The registry stays
+the authority: a refusal saying that session belongs to another thread settles
+the record rather than overriding the pointer. If the registry still cannot be
+written, the launch says so and lands on the accepted replacement anyway — it
+is the live, captured session — and retries at the next launch. None of this
+can stop a launch, and a failure after the thread lease is taken releases it
+rather than stranding the thread.
+
 The rollout parser maps recognized user, assistant, thinking, tool, result,
 runtime, model-change, and turn-boundary records. Harmless top-level host
 metadata is skipped and counted as telemetry. Unknowns are not failures merely
@@ -293,7 +305,7 @@ Durable state lives under `~/.cc-lhc` (override `CC_LHC_HOME`):
 | Path | Purpose |
 | --- | --- |
 | `registry.sqlite` | LHC thread registry and the alias map (`claude-code:<uuid>` → thread, one current alias per thread) |
-| `cc-lhc.sqlite` | Host-local session detail: rollout paths, prefix proof, replay signatures |
+| `cc-lhc.sqlite` | Host-local session detail: rollout paths, prefix proof, replay signatures, pending-acceptance recovery |
 | `threads/<uuid>.sqlite` | Per-thread record, derivations, views, and impressions |
 | `owners/*.json` | Exclusive thread-owner leases (keyed by thread hash) |
 | `runtime/*.json` | Mode-0600 retrieval capability descriptors |

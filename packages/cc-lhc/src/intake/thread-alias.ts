@@ -16,7 +16,9 @@
 import { threads } from "lhc";
 
 import {
+  clearPendingCurrentSession,
   type LineageDbDeps,
+  readPendingCurrentSession,
   type ThreadSessionRow,
   threadForLegacySession,
   threadSessionRows,
@@ -192,6 +194,101 @@ export async function acceptCurrentSession(input: {
   return advanced.ok ? { ok: true } : { ok: false, reason: advanced.error.reason };
 }
 
+/**
+ * What a thread's pending acceptance meant for this launch.
+ * - `acceptedSessionId`: the session this host already accepted, once it is
+ *   known to be this thread's current one.
+ * - `registryAdvanced`: the registry pointer now names it too.
+ * - `note`: a truthful line when the registry could not be brought current.
+ */
+export interface PendingAcceptanceReconciliation {
+  acceptedSessionId: string | null;
+  registryAdvanced: boolean;
+  note?: string;
+}
+
+/**
+ * Reconcile a swap this host accepted whose registry pointer never advanced —
+ * the wrapper died, or the write failed, after the replacement was already live.
+ * Runs under the acquired thread lock, before the current pointer is read.
+ *
+ * The registry stays the authority: reconciliation asks it to advance through
+ * the ordinary API, and a refusal that says the session belongs to another
+ * thread settles the pending record instead of overriding the registry. When
+ * the registry merely cannot be written, the accepted replacement still wins
+ * the launch — it is live and captured — and the record is kept for the next
+ * attempt. Nothing here can stop a launch.
+ */
+export async function reconcilePendingAcceptance(input: {
+  threadId: string;
+  registryPath: string;
+  lineageDbPath: string;
+  lineageDeps?: LineageDbDeps;
+  log?: (message: string) => void;
+}): Promise<PendingAcceptanceReconciliation> {
+  const log = input.log ?? (() => {});
+  let pending: ReturnType<typeof readPendingCurrentSession>;
+  try {
+    pending = readPendingCurrentSession(input.lineageDbPath, input.threadId, input.lineageDeps);
+  } catch (cause) {
+    // Unreadable recovery detail is not a reason to refuse a launch; the
+    // registry answer below stands on its own.
+    const note = `pending acceptance record unreadable for thread ${input.threadId}: ${detail(cause)}`;
+    log(`cc-lhc: ${note}`);
+    return { acceptedSessionId: null, registryAdvanced: false, note };
+  }
+  if (pending === undefined) return { acceptedSessionId: null, registryAdvanced: false };
+
+  const advanced = await threads.registerCurrentAlias({
+    alias: claudeSessionAlias(pending.sessionId),
+    threadId: input.threadId,
+    registryPath: input.registryPath,
+  });
+  if (advanced.ok) {
+    log(
+      `cc-lhc: reconciled accepted session ${pending.sessionId} (accepted ${pending.acceptedAt}) ` +
+        `into thread ${input.threadId}'s current pointer`,
+    );
+    settlePending(input, pending.sessionId, log);
+    return { acceptedSessionId: pending.sessionId, registryAdvanced: true };
+  }
+
+  if (advanced.error.code === "alias_bound_to_other_thread") {
+    // The registry says that session is not this thread's. Registry wins.
+    const note =
+      `pending acceptance of ${pending.sessionId} discarded — ${advanced.error.reason}; ` +
+      `thread ${input.threadId} keeps its registered current session`;
+    log(`cc-lhc: ${note}`);
+    settlePending(input, pending.sessionId, log);
+    return { acceptedSessionId: null, registryAdvanced: false, note };
+  }
+
+  const note =
+    `thread ${input.threadId} accepted session ${pending.sessionId} at ${pending.acceptedAt} but the ` +
+    `registry pointer still cannot advance (${advanced.error.reason}); landing on the accepted session ` +
+    "and retrying at the next launch";
+  log(`cc-lhc: ${note}`);
+  return { acceptedSessionId: pending.sessionId, registryAdvanced: false, note };
+}
+
+function settlePending(
+  input: { threadId: string; lineageDbPath: string; lineageDeps?: LineageDbDeps },
+  sessionId: string,
+  log: (message: string) => void,
+): void {
+  try {
+    clearPendingCurrentSession(input.lineageDbPath, input.threadId, sessionId, input.lineageDeps);
+  } catch (cause) {
+    // A retained record simply reconciles again next launch: the advance is
+    // idempotent. Never worth failing a launch over.
+    log(`cc-lhc: pending acceptance record not cleared for thread ${input.threadId}: ${detail(cause)}`);
+  }
+}
+
+function detail(cause: unknown): string {
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
 export interface UnacceptedSwapArtifact {
   sessionId: string;
   updatedAt: string;
@@ -207,14 +304,14 @@ export interface UnacceptedSwapArtifact {
  */
 export function unacceptedSwapArtifacts(input: {
   threadId: string;
-  currentAlias: string | null;
+  /** The session this launch treats as current, pending acceptance included. */
+  currentSessionId: string | null;
   lineageDbPath: string;
   lineageDeps?: LineageDbDeps;
 }): UnacceptedSwapArtifact[] {
-  const currentSessionId = input.currentAlias === null ? null : claudeSessionIdFromAlias(input.currentAlias);
-  if (currentSessionId === null) return [];
+  if (input.currentSessionId === null) return [];
   const rows = threadSessionRows(input.lineageDbPath, input.threadId, input.lineageDeps);
-  const currentIndex = rows.findIndex((row: ThreadSessionRow) => row.sessionId === currentSessionId);
+  const currentIndex = rows.findIndex((row: ThreadSessionRow) => row.sessionId === input.currentSessionId);
   if (currentIndex === -1) return [];
   return rows
     .slice(currentIndex + 1)
