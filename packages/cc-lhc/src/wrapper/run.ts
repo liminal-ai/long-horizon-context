@@ -537,6 +537,27 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   /** Capture bound before Claude starts; it becomes the wrapper's capture session. */
   let preLaunchCapture: CaptureSession | undefined;
   /**
+   * Give back everything this launch acquired while there was still no child to
+   * own it.
+   *
+   * A one-shot binds capture before the child exists, so a startup failure past
+   * that point has a live watcher as well as a thread lease to settle — and in
+   * that order. The lease is what makes this wrapper the thread's only writer;
+   * handing it back with a capture generation still reading would leave two
+   * wrappers able to write one thread. Fail-soft, and safe to call twice.
+   */
+  const releasePreChildOwnership = async (): Promise<void> => {
+    const capture = preLaunchCapture;
+    preLaunchCapture = undefined;
+    if (capture !== undefined) {
+      await capture.stop().catch((cause: unknown) => {
+        wrapperLog.warn(`cc-lhc: pre-launch capture stop failed: ${detailOf(cause)}`);
+      });
+    }
+    releaseThreadOwner();
+  };
+
+  /**
    * A session rebuilt before launch, waiting for proof that Claude accepted the
    * prompt on it. Until that proof lands, the thread's current session is still
    * the one this invocation resumed.
@@ -863,7 +884,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           stderr.write(`cc-lhc: descriptor revoke failed: ${rev.reason}\n`);
         }
         stderr.write(`cc-lhc: ${guided.reason}\n`);
-        releaseThreadOwner();
+        await releasePreChildOwnership();
         return 2;
       }
       childArgv = guided.argv;
@@ -883,7 +904,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // platforms: without it, ownership and descriptor liveness cannot be
         // proven. Fail with the actionable message rather than degrading.
         stderr.write(`cc-lhc: ${message}\n`);
-        releaseThreadOwner();
+        await releasePreChildOwnership();
         return 2;
       }
       wrapperLog.warn(`cc-lhc runtime descriptor create failed: ${message}`);
@@ -919,7 +940,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       runtimeDescriptorPath = undefined;
       runtimeDescriptor = undefined;
     }
-    releaseThreadOwner();
+    await releasePreChildOwnership();
     throw cause;
   }
 

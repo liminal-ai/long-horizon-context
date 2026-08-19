@@ -9,7 +9,18 @@
  * current session advancing only once that prompt is observed landing.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -17,12 +28,14 @@ import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { defaultRegistryPath } from "../../src/intake/paths.js";
+import type { DescriptorIo } from "../../src/runtime/descriptor.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { currentSessionAlias } from "../../src/intake/thread-alias.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { run } from "../../src/wrapper/run.js";
+import { indeterminateResult, selfOnlyProbe } from "../helpers/identity.js";
 
 const RESUMED_ID = "aaaaaaaa-1111-2222-3333-444444444444";
 const REBUILT_ID = "bbbbbbbb-5555-6666-7777-888888888888";
@@ -37,6 +50,10 @@ const mocks = vi.hoisted(() => ({
   acceptanceCalls: 0,
   /** Owner-lease files present at the moment acceptance actually ran. */
   ownerLeasesDuringAcceptance: [] as string[][],
+  /** Owner-lease files present at the moment a capture generation stopped. */
+  ownerLeasesDuringCaptureStop: [] as string[][],
+  /** When set, spawning a child throws instead of producing one. */
+  spawnThrows: null as Error | null,
 }));
 
 vi.mock("../../src/rollout/discover.js", async (importOriginal) => {
@@ -200,7 +217,18 @@ function scriptedCaptureSession(
       ? opts.continueCapture.threadRef.threadId
       : "th_one_shot");
   const stats = { ...emptyCaptureStats(), threadId };
-  const stopSpy = vi.fn(async () => {});
+  const stopSpy = vi.fn(async () => {
+    // Ownership ordering: the lease must still be held while capture settles.
+    try {
+      const { readdirSync } = await import("node:fs");
+      const { join: joinPath } = await import("node:path");
+      mocks.ownerLeasesDuringCaptureStop.push(
+        readdirSync(joinPath(process.env.CC_LHC_HOME ?? "", "owners")).filter((n) => n.endsWith(".json")),
+      );
+    } catch {
+      mocks.ownerLeasesDuringCaptureStop.push([]);
+    }
+  });
   scriptedStops.set(opts, stopSpy);
   return {
     stats,
@@ -229,6 +257,28 @@ function scriptedCaptureSession(
     getCaptureGeneration: () => generation,
     stop: stopSpy,
   } as unknown as CaptureSession;
+}
+
+function descriptorIoForTests(): DescriptorIo {
+  return {
+    writeFile: (path, data, mode) => writeFileSync(path, data, { encoding: "utf8", mode }),
+    readFile: (path) => readFileSync(path, "utf8"),
+    rename: renameSync,
+    unlink: (path) => {
+      try {
+        unlinkSync(path);
+      } catch {
+        // ignore
+      }
+    },
+    exists: existsSync,
+    mkdir: (path) => mkdirSync(path, { recursive: true, mode: 0o700 }),
+    chmod: chmodSync,
+    readProcessIdentity: selfOnlyProbe(),
+    nowMs: () => Date.now(),
+    randomId: () => `w-${Math.random().toString(16).slice(2)}`,
+    pid: process.pid,
+  };
 }
 
 function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
@@ -305,6 +355,10 @@ interface OneShotHarness {
   launchedSink: () => ((signals: readonly LifecycleSignal[]) => void) | undefined;
   /** Children alive when the rebuilt session was written; -1 = never written. */
   spawnedWhenRebuilt: () => number;
+  /** Every argv the wrapper tried to spawn, whether or not a child resulted. */
+  spawnAttempts: string[][];
+  /** Whether the capture bound to the rebuilt session was stopped. */
+  rebuiltStopped: () => boolean;
   /** Whether the capture bound to the resumed session was stopped. */
   resumedStopped: () => boolean;
 }
@@ -320,6 +374,8 @@ describe("run: one-shot pre-launch compaction", () => {
     mocks.acceptanceGate = null;
     mocks.acceptanceCalls = 0;
     mocks.ownerLeasesDuringAcceptance = [];
+    mocks.ownerLeasesDuringCaptureStop = [];
+    mocks.spawnThrows = null;
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-one-shot-home-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
@@ -362,10 +418,14 @@ describe("run: one-shot pre-launch compaction", () => {
     rebuiltCaptureThrows?: boolean;
     /** Argv this invocation launches with (defaults to `-p <prompt> --resume`). */
     argv?: string[];
+    /** Descriptor IO seam (process-identity failure injection). */
+    descriptorIo?: import("../../src/runtime/descriptor.js").DescriptorIo;
     onSpawn?: (fake: FakePty, index: number) => void;
   }): { harness: OneShotHarness; runPromise: Promise<number>; rebuiltPath: string; writeSpy: ReturnType<typeof vi.spyOn> } {
     const sdk = sdkForCapture(input.compactFails === true ? { compactFails: true } : {});
     const spawned: FakePty[] = [];
+    /** Every argv the wrapper tried to spawn, whether or not a child resulted. */
+    const spawnAttempts: string[][] = [];
     /** Children alive when the rebuilt session was written; -1 = never written. */
     let spawnedWhenRebuilt = -1;
     const captureCalls: CaptureSessionDeps[] = [];
@@ -417,8 +477,13 @@ describe("run: one-shot pre-launch compaction", () => {
     const runPromise = run(input.argv ?? ["-p", input.prompt, "--resume", RESUMED_ID], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
+        if (mocks.spawnThrows !== null) {
+          spawnAttempts.push(args);
+          throw mocks.spawnThrows;
+        }
         const fake = makeFakePty(9100 + spawned.length, args);
         spawned.push(fake);
+        spawnAttempts.push(args);
         input.onSpawn?.(fake, spawned.length - 1);
         return fake as never;
       }) as never,
@@ -429,6 +494,7 @@ describe("run: one-shot pre-launch compaction", () => {
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: join(rolloutDir, "receipts.sqlite"),
       preLaunchCaptureTimeoutMs: 2_000,
+      ...(input.descriptorIo === undefined ? {} : { descriptorIo: input.descriptorIo }),
     });
 
     return {
@@ -437,6 +503,9 @@ describe("run: one-shot pre-launch compaction", () => {
         captureCalls,
         launchedSink: () => sinks.get(REBUILT_ID) ?? sinks.get(RESUMED_ID),
         spawnedWhenRebuilt: () => spawnedWhenRebuilt,
+        spawnAttempts,
+        rebuiltStopped: () =>
+          captureCalls[1] !== undefined && (scriptedStops.get(captureCalls[1])?.mock.calls.length ?? 0) > 0,
         resumedStopped: () =>
           captureCalls[0] !== undefined && (scriptedStops.get(captureCalls[0])?.mock.calls.length ?? 0) > 0,
       },
@@ -719,6 +788,119 @@ describe("run: one-shot pre-launch compaction", () => {
     await runPromise;
     expect(harness.spawned).toHaveLength(1);
   }, 20_000);
+
+  /**
+   * A one-shot binds capture before the child exists, so every startup failure
+   * past that point owes the thread two things back, in order: the capture
+   * generation, then the lease that makes this wrapper the thread's only
+   * writer. None of these is a launch that half happened — the invocation
+   * fails exactly as it always did, having left nothing running.
+   */
+  describe("startup failures after capture is bound", () => {
+    /** Owner-lease files still on disk under this test's CC_LHC_HOME. */
+    function leaseFiles(): string[] {
+      try {
+        return readdirSync(join(process.env.CC_LHC_HOME ?? "", "owners")).filter((n) => n.endsWith(".json"));
+      } catch {
+        return [];
+      }
+    }
+
+    it("a spawn that throws settles capture before the lease and rethrows", async () => {
+      const spawnFailure = new Error("posix_spawnp failed");
+      mocks.spawnThrows = spawnFailure;
+      const { harness, runPromise } = launchOneShot({ prompt: "do the thing", transcriptTokens: 6_000 });
+
+      await expect(runPromise).rejects.toThrow("posix_spawnp failed");
+
+      // The capture generation the launch was holding is stopped, and every
+      // stop happened while this wrapper still owned the thread.
+      expect(harness.rebuiltStopped()).toBe(true);
+      expect(mocks.ownerLeasesDuringCaptureStop.length).toBeGreaterThan(0);
+      for (const held of mocks.ownerLeasesDuringCaptureStop) expect(held).toHaveLength(1);
+      expect(leaseFiles()).toEqual([]);
+      // One spawn was attempted and no child exists; the prompt was not resent.
+      expect(harness.spawnAttempts).toHaveLength(1);
+      expect(harness.spawned).toHaveLength(0);
+      const threadId = harness.captureCalls[0]!.launchThread!.threadId;
+      expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${RESUMED_ID}`);
+    }, 20_000);
+
+    it("a refused retrieval-guidance injection settles capture before the lease and still returns 2", async () => {
+      // Duplicate --append-system-prompt: the injector refuses to normalize it.
+      const { harness, runPromise } = launchOneShot({
+        prompt: "do the thing",
+        transcriptTokens: 6_000,
+        argv: [
+          "-p",
+          "do the thing",
+          "--append-system-prompt",
+          "one",
+          "--append-system-prompt",
+          "two",
+          "--resume",
+          RESUMED_ID,
+        ],
+      });
+
+      await expect(runPromise).resolves.toBe(2);
+
+      expect(harness.rebuiltStopped()).toBe(true);
+      expect(mocks.ownerLeasesDuringCaptureStop.length).toBeGreaterThan(0);
+      for (const held of mocks.ownerLeasesDuringCaptureStop) expect(held).toHaveLength(1);
+      expect(leaseFiles()).toEqual([]);
+      expect(harness.spawnAttempts).toHaveLength(0);
+      const threadId = harness.captureCalls[0]!.launchThread!.threadId;
+      expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${RESUMED_ID}`);
+    }, 20_000);
+
+    it("a recoverable descriptor failure still launches, and capture is left alone", async () => {
+      const { harness, runPromise } = launchOneShot({
+        prompt: "do the thing",
+        transcriptTokens: 6_000,
+        descriptorIo: {
+          ...descriptorIoForTests(),
+          mkdir: () => {
+            throw new Error("runtime dir unavailable");
+          },
+        },
+      });
+
+      await waitFor(() => harness.spawned.length === 1, "launched child");
+      // Retrieval is unavailable this generation; the compact and the launch
+      // are not, so nothing was given back.
+      expect(harness.rebuiltStopped()).toBe(false);
+      expect(mocks.ownerLeasesDuringCaptureStop).toHaveLength(1); // the outgoing generation only
+      expect(leaseFiles()).toHaveLength(1);
+      const args = harness.spawned[0]!.args;
+      expect(args[args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
+      expect(args.filter((token) => token === "do the thing")).toHaveLength(1);
+
+      harness.spawned[0]!.fireExit(0);
+      await runPromise;
+    }, 20_000);
+
+    it("an unprovable process identity settles capture before the lease and still returns 2", async () => {
+      const { harness, runPromise } = launchOneShot({
+        prompt: "do the thing",
+        transcriptTokens: 6_000,
+        descriptorIo: {
+          ...descriptorIoForTests(),
+          readProcessIdentity: () => indeterminateResult("access_denied: kernel refused the query"),
+        },
+      });
+
+      await expect(runPromise).resolves.toBe(2);
+
+      expect(harness.rebuiltStopped()).toBe(true);
+      expect(mocks.ownerLeasesDuringCaptureStop.length).toBeGreaterThan(0);
+      for (const held of mocks.ownerLeasesDuringCaptureStop) expect(held).toHaveLength(1);
+      expect(leaseFiles()).toEqual([]);
+      expect(harness.spawnAttempts).toHaveLength(0);
+      const threadId = harness.captureCalls[0]!.launchThread!.threadId;
+      expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${RESUMED_ID}`);
+    }, 20_000);
+  });
 
   it("a one-shot on a session with no persisted transcript launches directly", async () => {
     mocks.transcriptPath = null;
