@@ -74,14 +74,7 @@ export function readMessageDerivationRows(
 ): Map<string, ComposeDerivationRow> {
   const rows = new Map<string, ComposeDerivationRow>();
   if (messageIds.length === 0) return rows;
-  const placeholders = messageIds.map(() => "?").join(", ");
-  const raw = db
-    .prepare(
-      `SELECT subject_id, derivation_type, state, content, reason, metadata, source_version
-       FROM derivation
-       WHERE subject_kind = 'message' AND subject_id IN (${placeholders})`,
-    )
-    .all(...messageIds) as unknown as Array<{
+  const raw: Array<{
     subject_id: string;
     derivation_type: string;
     state: string;
@@ -89,7 +82,19 @@ export function readMessageDerivationRows(
     reason: string | null;
     metadata: string | null;
     source_version: number | bigint;
-  }>;
+  }> = [];
+  for (let offset = 0; offset < messageIds.length; offset += 400) {
+    const batch = messageIds.slice(offset, offset + 400);
+    raw.push(
+      ...(db
+        .prepare(
+          `SELECT subject_id, derivation_type, state, content, reason, metadata, source_version
+           FROM derivation
+           WHERE subject_kind = 'message' AND subject_id IN (${batch.map(() => "?").join(", ")})`,
+        )
+        .all(...batch) as unknown as typeof raw),
+    );
+  }
   for (const row of raw) {
     const view: ComposeDerivationRow = {
       state: row.state as ComposeDerivationRow["state"],

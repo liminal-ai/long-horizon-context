@@ -65,15 +65,27 @@ interface RawDerivationRow {
 export function readMessageDerivations(db: DatabaseSync, messageIds?: readonly string[]): Map<string, Derivation[]> {
   const byMessage = new Map<string, Derivation[]>();
   if (messageIds !== undefined && messageIds.length === 0) return byMessage;
-  const idFilter = messageIds === undefined ? "" : ` AND subject_id IN (${messageIds.map(() => "?").join(", ")})`;
-  const rows = db
-    .prepare(
-      `SELECT subject_id, derivation_type, state, content, reason, metadata,
-              source_version, gaps, derived_at
-       FROM derivation WHERE subject_kind = 'message'${idFilter}
-       ORDER BY subject_id, derivation_type`,
-    )
-    .all(...(messageIds ?? [])) as unknown as RawDerivationRow[];
+  const rows: RawDerivationRow[] = [];
+  const scopedMessageIds = messageIds === undefined ? undefined : [...new Set(messageIds)].sort();
+  const batches: ReadonlyArray<readonly string[]> =
+    scopedMessageIds === undefined
+      ? [[]]
+      : Array.from({ length: Math.ceil(scopedMessageIds.length / 400) }, (_, index) =>
+          scopedMessageIds.slice(index * 400, (index + 1) * 400),
+        );
+  for (const batch of batches) {
+    const idFilter = messageIds === undefined ? "" : ` AND subject_id IN (${batch.map(() => "?").join(", ")})`;
+    rows.push(
+      ...(db
+        .prepare(
+          `SELECT subject_id, derivation_type, state, content, reason, metadata,
+                  source_version, gaps, derived_at
+           FROM derivation WHERE subject_kind = 'message'${idFilter}
+           ORDER BY subject_id, derivation_type`,
+        )
+        .all(...batch) as unknown as RawDerivationRow[]),
+    );
+  }
   for (const row of rows) {
     const record: Derivation = {
       subjectKind: "message",
