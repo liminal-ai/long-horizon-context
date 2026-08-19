@@ -32,6 +32,11 @@ const mocks = vi.hoisted(() => ({
   /** Persisted transcript path the resumed session resolves to, or null. */
   transcriptPath: null as string | null,
   registerLineage: vi.fn(async (..._args: unknown[]) => ({ ok: true as const })),
+  /** When set, prompt acceptance waits on this before touching the registry. */
+  acceptanceGate: null as Promise<void> | null,
+  acceptanceCalls: 0,
+  /** Owner-lease files present at the moment acceptance actually ran. */
+  ownerLeasesDuringAcceptance: [] as string[][],
 }));
 
 vi.mock("../../src/rollout/discover.js", async (importOriginal) => {
@@ -50,6 +55,27 @@ vi.mock("../../src/intake/session.js", async (importOriginal) => {
     startCaptureSession: (opts: CaptureSessionDeps = {}) => {
       if (mocks.captureFactory !== null) return mocks.captureFactory(opts);
       return actual.startCaptureSession(opts);
+    },
+  };
+});
+
+vi.mock("../../src/intake/thread-alias.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../src/intake/thread-alias.js")>();
+  return {
+    ...actual,
+    recordSwapAcceptance: async (input: Parameters<typeof actual.recordSwapAcceptance>[0]) => {
+      mocks.acceptanceCalls += 1;
+      if (mocks.acceptanceGate !== null) await mocks.acceptanceGate;
+      const { readdirSync } = await import("node:fs");
+      const { join: joinPath } = await import("node:path");
+      try {
+        mocks.ownerLeasesDuringAcceptance.push(
+          readdirSync(joinPath(process.env.CC_LHC_HOME ?? "", "owners")).filter((n) => n.endsWith(".json")),
+        );
+      } catch {
+        mocks.ownerLeasesDuringAcceptance.push([]);
+      }
+      return actual.recordSwapAcceptance(input);
     },
   };
 });
@@ -155,12 +181,18 @@ function sdkForCapture(options: CompactSdkOptions = {}) {
   };
 }
 
-/** A capture session the test drives directly: phase, thread binding, lifecycle. */
+type ScriptedPhase = "ready" | "degraded" | "binding";
+
+/** Each scripted session's stop(), keyed by the deps it was built from. */
+const scriptedStops = new WeakMap<CaptureSessionDeps, ReturnType<typeof vi.fn>>();
+
+/** A capture session the test drives directly: phase, turn state, lifecycle. */
 function scriptedCaptureSession(
   opts: CaptureSessionDeps,
   sdk: unknown,
-  phase: "ready" | "degraded",
+  phase: ScriptedPhase,
   generation: number,
+  turnOpen = false,
 ): CaptureSession {
   const threadId =
     opts.launchThread?.threadId ??
@@ -168,6 +200,8 @@ function scriptedCaptureSession(
       ? opts.continueCapture.threadRef.threadId
       : "th_one_shot");
   const stats = { ...emptyCaptureStats(), threadId };
+  const stopSpy = vi.fn(async () => {});
+  scriptedStops.set(opts, stopSpy);
   return {
     stats,
     getCommandContext: () => ({
@@ -182,7 +216,7 @@ function scriptedCaptureSession(
       path: opts.knownRolloutPath,
       sessionId: opts.expectedSession?.sessionId,
     }),
-    isTurnOpen: () => false,
+    isTurnOpen: () => turnOpen,
     isCaptureHealthy: () => phase === "ready",
     isCaptureReady: () => phase === "ready",
     getCaptureHealth: () => ({
@@ -193,7 +227,7 @@ function scriptedCaptureSession(
       durableLineOffset: 0,
     }),
     getCaptureGeneration: () => generation,
-    stop: vi.fn(async () => {}),
+    stop: stopSpy,
   } as unknown as CaptureSession;
 }
 
@@ -271,6 +305,8 @@ interface OneShotHarness {
   launchedSink: () => ((signals: readonly LifecycleSignal[]) => void) | undefined;
   /** Children alive when the rebuilt session was written; -1 = never written. */
   spawnedWhenRebuilt: () => number;
+  /** Whether the capture bound to the resumed session was stopped. */
+  resumedStopped: () => boolean;
 }
 
 describe("run: one-shot pre-launch compaction", () => {
@@ -281,6 +317,9 @@ describe("run: one-shot pre-launch compaction", () => {
   beforeEach(() => {
     mocks.captureFactory = null;
     mocks.registerLineage.mockClear();
+    mocks.acceptanceGate = null;
+    mocks.acceptanceCalls = 0;
+    mocks.ownerLeasesDuringAcceptance = [];
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-one-shot-home-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
@@ -314,9 +353,15 @@ describe("run: one-shot pre-launch compaction", () => {
   function launchOneShot(input: {
     prompt: string;
     transcriptTokens: number | null;
-    capturePhase?: "ready" | "degraded";
+    capturePhase?: ScriptedPhase;
+    /** The caught-up transcript ends inside an unfinished turn. */
+    transcriptTurnOpen?: boolean;
     compactFails?: boolean;
     writeFails?: boolean;
+    /** Capture on the rebuilt session refuses to start. */
+    rebuiltCaptureThrows?: boolean;
+    /** Argv this invocation launches with (defaults to `-p <prompt> --resume`). */
+    argv?: string[];
     onSpawn?: (fake: FakePty, index: number) => void;
   }): { harness: OneShotHarness; runPromise: Promise<number>; rebuiltPath: string; writeSpy: ReturnType<typeof vi.spyOn> } {
     const sdk = sdkForCapture(input.compactFails === true ? { compactFails: true } : {});
@@ -348,11 +393,15 @@ describe("run: one-shot pre-launch compaction", () => {
       captureCalls.push(opts);
       const sessionId = opts.expectedSession?.sessionId ?? "";
       const isRebuilt = sessionId === REBUILT_ID;
+      if (isRebuilt && input.rebuiltCaptureThrows === true) {
+        throw new Error("rebuilt capture would not start");
+      }
       const session = scriptedCaptureSession(
         opts,
         sdk,
         isRebuilt ? "ready" : (input.capturePhase ?? "ready"),
         captureCalls.length,
+        isRebuilt ? false : input.transcriptTurnOpen === true,
       );
       if (opts.onLifecycle !== undefined) {
         sinks.set(sessionId, opts.onLifecycle);
@@ -365,7 +414,7 @@ describe("run: one-shot pre-launch compaction", () => {
       return session;
     };
 
-    const runPromise = run(["-p", input.prompt, "--resume", RESUMED_ID], {
+    const runPromise = run(input.argv ?? ["-p", input.prompt, "--resume", RESUMED_ID], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
         const fake = makeFakePty(9100 + spawned.length, args);
@@ -388,6 +437,8 @@ describe("run: one-shot pre-launch compaction", () => {
         captureCalls,
         launchedSink: () => sinks.get(REBUILT_ID) ?? sinks.get(RESUMED_ID),
         spawnedWhenRebuilt: () => spawnedWhenRebuilt,
+        resumedStopped: () =>
+          captureCalls[0] !== undefined && (scriptedStops.get(captureCalls[0])?.mock.calls.length ?? 0) > 0,
       },
       runPromise,
       rebuiltPath,
@@ -442,6 +493,41 @@ describe("run: one-shot pre-launch compaction", () => {
 
     harness.spawned[0]!.fireExit(0);
     await runPromise;
+  }, 20_000);
+
+  it("teardown settles the prompt acceptance before it hands back the thread lease", async () => {
+    let releaseAcceptance: (() => void) | undefined;
+    mocks.acceptanceGate = new Promise<void>((r) => {
+      releaseAcceptance = r;
+    });
+    const { harness, runPromise } = launchOneShot({ prompt: "do the thing", transcriptTokens: 6_000 });
+
+    await waitFor(() => harness.spawned.length === 1, "launched child");
+    await waitFor(() => harness.launchedSink() !== undefined, "rebuilt lifecycle sink");
+    const threadId = harness.captureCalls[0]!.launchThread!.threadId;
+
+    // Claude takes the prompt and the one-shot child exits immediately after —
+    // the acceptance is still in flight when teardown begins. The duplicate
+    // signal must not produce a second attempt.
+    harness.launchedSink()!([{ kind: "turn_opened", reason: "user_prompt" }]);
+    harness.launchedSink()!([{ kind: "turn_opened", reason: "user_prompt" }]);
+    harness.spawned[0]!.fireExit(0);
+
+    await waitFor(() => mocks.acceptanceCalls === 1, "the single acceptance attempt");
+    const settledEarly = await Promise.race([
+      runPromise.then(() => "settled" as const),
+      new Promise<"pending">((r) => setTimeout(() => r("pending"), 400)),
+    ]);
+    expect(settledEarly).toBe("pending");
+    expect(mocks.acceptanceCalls).toBe(1);
+
+    releaseAcceptance?.();
+    await runPromise;
+    expect(mocks.acceptanceCalls).toBe(1);
+    // The wrapper still owned the thread when the acceptance ran.
+    expect(mocks.ownerLeasesDuringAcceptance).toHaveLength(1);
+    expect(mocks.ownerLeasesDuringAcceptance[0]!.length).toBe(1);
+    expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${REBUILT_ID}`);
   }, 20_000);
 
   it("launch that never takes the prompt keeps the old pointer and never resends", async () => {
@@ -501,7 +587,7 @@ describe("run: one-shot pre-launch compaction", () => {
     await runPromise;
   }, 20_000);
 
-  it("capture that came back degraded still compacts, and the compact message says so", async () => {
+  it("capture that came back degraded does not compact: the prompt runs once on the resumed session", async () => {
     const { harness, runPromise, writeSpy } = launchOneShot({
       prompt: "do the thing",
       transcriptTokens: 6_000,
@@ -509,12 +595,96 @@ describe("run: one-shot pre-launch compaction", () => {
     });
 
     await waitFor(() => harness.spawned.length === 1, "launched child");
-    expect(harness.spawned[0]!.args[harness.spawned[0]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
-    const receipt = (writeSpy.mock.calls[0]?.[0] as { receipt?: { text: string } } | undefined)?.receipt?.text ?? "";
-    expect(receipt).toMatch(/Capture was degraded when this session was compacted before launch/);
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(harness.spawned[0]!.args[harness.spawned[0]!.args.indexOf("--resume") + 1]).toBe(RESUMED_ID);
+    expect(harness.spawned[0]!.args).toContain("do the thing");
+    // The bound capture is left alive to keep catching up behind the prompt.
+    expect(harness.resumedStopped()).toBe(false);
+    expect(harness.captureCalls).toHaveLength(1);
 
     harness.spawned[0]!.fireExit(0);
     await runPromise;
+    expect(harness.spawned).toHaveLength(1);
+    const threadId = harness.captureCalls[0]!.launchThread!.threadId;
+    expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${RESUMED_ID}`);
+  }, 20_000);
+
+  it("catch-up that never reaches ready inside the bound does not compact; the launch still happens", async () => {
+    const { harness, runPromise, writeSpy } = launchOneShot({
+      prompt: "do the thing",
+      transcriptTokens: 6_000,
+      capturePhase: "binding",
+    });
+
+    await waitFor(() => harness.spawned.length === 1, "launched child", 12_000);
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(harness.spawned[0]!.args[harness.spawned[0]!.args.indexOf("--resume") + 1]).toBe(RESUMED_ID);
+    expect(harness.spawned[0]!.args).toContain("do the thing");
+    expect(harness.resumedStopped()).toBe(false);
+
+    harness.spawned[0]!.fireExit(0);
+    await runPromise;
+    expect(harness.spawned).toHaveLength(1);
+  }, 30_000);
+
+  it("a transcript ending in an unfinished turn is not a settled snapshot: no compact, one launch", async () => {
+    const { harness, runPromise, writeSpy } = launchOneShot({
+      prompt: "do the thing",
+      transcriptTokens: 6_000,
+      transcriptTurnOpen: true,
+    });
+
+    await waitFor(() => harness.spawned.length === 1, "launched child");
+    expect(writeSpy).not.toHaveBeenCalled();
+    expect(harness.spawned[0]!.args[harness.spawned[0]!.args.indexOf("--resume") + 1]).toBe(RESUMED_ID);
+    expect(harness.spawned[0]!.args).toContain("do the thing");
+    expect(harness.resumedStopped()).toBe(false);
+
+    harness.spawned[0]!.fireExit(0);
+    await runPromise;
+    const threadId = harness.captureCalls[0]!.launchThread!.threadId;
+    expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${RESUMED_ID}`);
+  }, 20_000);
+
+  it("capture that will not start on the rebuilt session falls back to the resumed session, still captured", async () => {
+    const { harness, runPromise } = launchOneShot({
+      prompt: "do the thing",
+      transcriptTokens: 6_000,
+      rebuiltCaptureThrows: true,
+    });
+
+    await waitFor(() => harness.spawned.length === 1, "launched child");
+    const args = harness.spawned[0]!.args;
+    expect(args[args.indexOf("--resume") + 1]).toBe(RESUMED_ID);
+    expect(args.filter((token) => token === "do the thing")).toHaveLength(1);
+    // The resumed session's capture was never stopped for a replacement that
+    // never existed.
+    expect(harness.resumedStopped()).toBe(false);
+
+    harness.spawned[0]!.fireExit(0);
+    await runPromise;
+    expect(harness.spawned).toHaveLength(1);
+    const threadId = harness.captureCalls[0]!.launchThread!.threadId;
+    expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${RESUMED_ID}`);
+  }, 20_000);
+
+  it("--print= is a one-shot too: it compacts before launch and the argv token is untouched", async () => {
+    const { harness, runPromise } = launchOneShot({
+      prompt: "unused",
+      transcriptTokens: 6_000,
+      argv: ["--print=1", "do the thing", "--resume", RESUMED_ID],
+    });
+
+    await waitFor(() => harness.spawned.length === 1, "launched child");
+    const args = harness.spawned[0]!.args;
+    expect(args[args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
+    // The launch argv is replayed byte for byte onto the rebuilt session.
+    expect(args).toContain("--print=1");
+    expect(args.filter((token) => token === "do the thing")).toHaveLength(1);
+
+    harness.spawned[0]!.fireExit(0);
+    await runPromise;
+    expect(harness.spawned).toHaveLength(1);
   }, 20_000);
 
   it("compact failure launches the prompt on the resumed session, once", async () => {

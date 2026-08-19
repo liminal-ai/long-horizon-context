@@ -516,8 +516,6 @@ const CLAUDE_ZERO_ARITY_FLAGS = new Set([
   "--include-partial-messages",
   "--no-chrome",
   "--no-session-persistence",
-  "-p",
-  "--print",
   "--replay-user-messages",
   "--safe-mode",
   "--strict-mcp-config",
@@ -526,8 +524,21 @@ const CLAUDE_ZERO_ARITY_FLAGS = new Set([
   "--version",
 ]);
 
-/** The Claude flags that make a launch a one-shot: one prompt, then exit. */
-const CLAUDE_PRINT_FLAGS = new Set(["-p", "--print"]);
+/**
+ * The Claude flags that make a launch a one-shot: print the response and exit.
+ *
+ * `-p, --print` is zero-arity in the installed binary (verified against the
+ * 2.1.235 `--help`, matching the 2.1.226 arity fixture above), so the prompt of
+ * a print launch is a positional token or stdin — never a value on the flag.
+ * The parser does accept an `=value` form on a declared boolean, though
+ * (`--print=1`, `-p=1` both parse), and that launch is just as much a one-shot.
+ * Recognising only the bare forms would arm the interactive child swap on a
+ * seat that is about to exit.
+ */
+function isPrintFlag(token: string): boolean {
+  const name = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
+  return name === "-p" || name === "--print";
+}
 
 /**
  * What kind of seat this launch is.
@@ -539,7 +550,7 @@ const CLAUDE_PRINT_FLAGS = new Set(["-p", "--print"]);
 export type LaunchForm = "interactive" | "one_shot";
 
 export function launchFormOf(rest: readonly string[]): LaunchForm {
-  return rest.some((token) => CLAUDE_PRINT_FLAGS.has(token)) ? "one_shot" : "interactive";
+  return rest.some(isPrintFlag) ? "one_shot" : "interactive";
 }
 
 /**
@@ -584,6 +595,12 @@ export function splitLaunchArgv(rest: readonly string[], passthrough: readonly s
     const token = rest[i]!;
     if (!token.startsWith("-")) {
       promptTokens.push(token);
+      i += 1;
+      continue;
+    }
+    if (isPrintFlag(token)) {
+      // A replacement continues the conversation; a print child would exit at
+      // once. The flag stays in this launch's own argv and goes no further.
       i += 1;
       continue;
     }

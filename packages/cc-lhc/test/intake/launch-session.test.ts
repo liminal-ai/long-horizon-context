@@ -191,10 +191,14 @@ describe("splitLaunchArgv (fixture: claude 2.1.226 --help arity table)", () => {
   });
 
   it("a positional prompt is the launch's own; a replacement never inherits it", () => {
-    const split = splitLaunchArgv(["-p", "do this thing"], []);
+    const split = splitLaunchArgv(["--verbose", "do this thing"], []);
     expect(split.promptTokens).toEqual(["do this thing"]);
-    expect(split.options).toEqual(["-p"]);
-    expect(replacementChildArgv(["-p", "do this thing"], [], "S")).toEqual(["-p", "--resume", "S"]);
+    expect(split.options).toEqual(["--verbose"]);
+    expect(replacementChildArgv(["--verbose", "do this thing"], [], "S")).toEqual([
+      "--verbose",
+      "--resume",
+      "S",
+    ]);
   });
 
   it("prompt tokens after -- are prompt, not options", () => {
@@ -236,6 +240,45 @@ describe("launchFormOf", () => {
     expect(launchFormOf(["--print"])).toBe("one_shot");
     expect(launchFormOf(["--model", "opus", "do this"])).toBe("interactive");
     expect(launchFormOf([])).toBe("interactive");
+  });
+
+  /**
+   * The installed parser accepts an `=value` form on a declared boolean
+   * (verified on 2.1.235: `claude --print=1 --version` and `claude -p=1
+   * --version` both parse). That launch prints and exits like any other
+   * one-shot, so classifying it as interactive would arm the child swap on a
+   * seat that is about to end.
+   */
+  it("the equals form of the print flag is a one-shot as well", () => {
+    expect(launchFormOf(["--print=1", "do this"])).toBe("one_shot");
+    expect(launchFormOf(["-p=1", "do this"])).toBe("one_shot");
+    expect(launchFormOf(["--printer", "x"])).toBe("interactive");
+  });
+});
+
+describe("the print flag and a replacement child", () => {
+  /**
+   * `-p, --print` is zero-arity in the installed binary (2.1.235 `--help`,
+   * matching the 2.1.226 arity fixture), so a print launch's prompt is the
+   * positional token — the `=value` is not prompt text and is not estimated as
+   * any. What the split owes is that no form of the flag reaches a replacement.
+   */
+  it("no form of the print flag is inherited, and the prompt stays positional", () => {
+    for (const flag of ["-p", "--print", "-p=1", "--print=1"]) {
+      const split = splitLaunchArgv([flag, "do this thing"], []);
+      expect(split.options).toEqual([]);
+      expect(split.promptTokens).toEqual(["do this thing"]);
+      expect(replacementChildArgv([flag, "do this thing"], [], "S")).toEqual(["--resume", "S"]);
+    }
+  });
+
+  it("the equals value is not counted as prompt text", () => {
+    expect(launchPromptText(["--print=1"], [])).toBe("");
+    expect(launchPromptText(["--print=1", "do this thing"], [])).toBe("do this thing");
+  });
+
+  it("this invocation's own argv keeps the flag exactly as written", () => {
+    expect(launchChildArgv(["--print=1", "do this"], [], "S")).toEqual(["--print=1", "do this", "--resume", "S"]);
   });
 });
 

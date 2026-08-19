@@ -542,6 +542,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
    * the one this invocation resumed.
    */
   let sessionAwaitingPromptIntake: { sessionId: string; threadId: string } | undefined;
+  /**
+   * The one acceptance this invocation can owe. Teardown settles it before the
+   * thread lease goes: this wrapper is the only authority that may advance the
+   * pointer or record the acceptance for recovery, and it must not hand that
+   * authority back with the write still in flight.
+   */
+  let promptAcceptanceSettled: Promise<void> | undefined;
 
   /**
    * The thread's current session advances to a session rebuilt before launch
@@ -553,30 +560,44 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
    * launch that fails before it leaves the old session current, so the next
    * invocation lands there and discards the rebuilt artifact; the prompt is
    * never resent.
+   *
+   * Clearing the pending acceptance before the write starts is what makes a
+   * repeated signal a no-op: one observed intake, one acceptance attempt.
    */
   const notePromptIntake = (signals: readonly LifecycleSignal[]): void => {
     const accepted = sessionAwaitingPromptIntake;
     if (accepted === undefined) return;
     if (!signals.some((signal) => signal.kind === "turn_opened" && signal.reason === "user_prompt")) return;
     sessionAwaitingPromptIntake = undefined;
-    void recordSwapAcceptance({
+    promptAcceptanceSettled = recordSwapAcceptance({
       sessionId: accepted.sessionId,
       threadId: accepted.threadId,
       registryPath: defaultRegistryPath(),
       lineageDbPath: defaultLineageDbPath(),
       log: (message) => wrapperLog.warn(message),
-    }).then((advance) => {
-      if (advance.registryAdvanced) {
-        wrapperLog.info(
-          `cc-lhc one-shot: prompt intake observed on ${accepted.sessionId}; thread ${accepted.threadId} now current there`,
+    })
+      .then((advance) => {
+        if (advance.registryAdvanced) {
+          wrapperLog.info(
+            `cc-lhc one-shot: prompt intake observed on ${accepted.sessionId}; thread ${accepted.threadId} now current there`,
+          );
+          return;
+        }
+        // LIM-96's pending-acceptance recovery is the forward path when the
+        // registry will not take the pointer — but only when the record landed.
+        wrapperLog.warn(
+          advance.recovery === "recorded"
+            ? `cc-lhc one-shot: prompt intake observed on ${accepted.sessionId} but the current-session pointer ` +
+                `did not advance (${advance.reason ?? "unknown reason"}); the acceptance is recorded for thread ` +
+                `${accepted.threadId} and the next launch reconciles it`
+            : `cc-lhc one-shot: prompt intake observed on ${accepted.sessionId} but neither the current-session ` +
+                `pointer nor the recovery record could be written (${advance.reason ?? "unknown reason"}); ` +
+                `resume it explicitly with cc-lhc --resume ${accepted.sessionId}`,
         );
-        return;
-      }
-      wrapperLog.warn(
-        `cc-lhc one-shot: prompt intake observed on ${accepted.sessionId} but the current-session pointer did not ` +
-          `advance (${advance.reason ?? "unknown reason"})`,
-      );
-    });
+      })
+      .catch((cause: unknown) => {
+        wrapperLog.warn(`cc-lhc one-shot: prompt acceptance threw: ${detailOf(cause)}`);
+      });
   };
 
   /**
@@ -642,22 +663,36 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // capture: every intake event carries a content-stable idempotency key, so
     // re-reading the file records only what a previous invocation missed. The
     // deadline bounds how long the operator waits for their prompt to start.
+    const catchUp = preLaunchCapture;
     const deadline = Date.now() + (options.preLaunchCaptureTimeoutMs ?? DEFAULT_PRE_LAUNCH_CAPTURE_TIMEOUT_MS);
-    while (preLaunchCapture.getCaptureHealth().phase === "binding" && Date.now() < deadline) {
+    while (!catchUp.isCaptureReady() && catchUp.getCaptureHealth().phase === "binding" && Date.now() < deadline) {
       await new Promise<void>((resolveTick) => {
         const tick = setTimeout(resolveTick, 25);
         tick.unref?.();
       });
     }
-    const capturePhase = preLaunchCapture.getCaptureHealth().phase;
-    const preLaunchNotices =
-      capturePhase === "ready"
-        ? []
-        : [
-            `Capture was ${capturePhase} when this session was compacted before launch; ` +
-              "the rebuilt view may be missing the most recent turns.",
-          ];
-    for (const notice of preLaunchNotices) wrapperLog.warn(`cc-lhc one-shot: ${notice}`);
+
+    // Compacting needs a snapshot of settled history that LHC actually holds.
+    // Capture that never caught up, or a transcript whose last turn was left
+    // open by a previous invocation, is not that snapshot — and no amount of
+    // "no child is running now" makes an unfinished historical turn settled.
+    // The invocation launches anyway, on the session it resumed, with capture
+    // left bound and still catching up behind the running prompt; the next
+    // invocation compacts once that history has settled.
+    const standDown = (why: string): void => {
+      wrapperLog.warn(
+        `cc-lhc one-shot: ${why}; launching on ${session.sessionId} without compacting — ` +
+          "capture stays bound and the next invocation compacts",
+      );
+    };
+    if (!catchUp.isCaptureReady()) {
+      standDown(`capture is ${catchUp.getCaptureHealth().phase} after catching up from the transcript`);
+      return;
+    }
+    if (catchUp.isTurnOpen()) {
+      standDown("the persisted transcript ends in an unfinished turn");
+      return;
+    }
 
     const promptText = launchPromptText(launchRest, launchPassthrough);
     const decision = decideGovernor({
@@ -672,13 +707,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       providerContextFreshness: governorState.latestProviderContext === null ? "none" : "last_known",
       postMeasurementEstimate: preLaunchEstimate(governorState.postMeasurementEstimate, promptText),
     });
-    wrapperLog.info(
-      `cc-lhc one-shot pre-launch seam (capture ${capturePhase}): ${decision.kind} — ${decision.reason}`,
-    );
+    wrapperLog.info(`cc-lhc one-shot pre-launch seam: ${decision.kind} — ${decision.reason}`);
     if (decision.kind !== "would_compact") return;
 
     const policy = resolvedContextPolicy.policy;
-    const hostNotices = [...configFallbackNotice, ...preLaunchNotices];
+    const hostNotices = configFallbackNotice;
     const outcome = await runContextMutation(
       {
         operation: "auto_compact",
@@ -691,18 +724,16 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         ...(hostNotices.length === 0 ? {} : { hostNotices }),
       },
       {
-        ...preLaunchCapture.getCommandContext(),
+        ...catchUp.getCommandContext(),
         cwd,
         sourceRolloutPath: transcriptPath,
         sourceSessionId: session.sessionId,
-        // Nothing is running: the settled-seam facts hold by construction. A
-        // transcript that ends mid-turn is history, not a turn in flight, and a
-        // catch-up that came back degraded is reported in the compact message
-        // rather than left to strand the seat oversized.
-        isTurnOpen: () => false,
-        isCaptureReady: () => true,
-        isCaptureHealthy: () => true,
-        captureDegraded: false,
+        // The seam reports what capture actually is. It already stood down for
+        // anything short of a caught-up, settled transcript, so these read true
+        // here rather than being asserted true.
+        isTurnOpen: () => catchUp.isTurnOpen(),
+        isCaptureReady: () => catchUp.isCaptureReady(),
+        isCaptureHealthy: () => catchUp.isCaptureHealthy(),
       },
     );
     wrapperLog.info(
@@ -728,9 +759,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
 
     // Capture moves to the rebuilt session before the child that will write to
-    // it exists. The outgoing generation's drain is fired and forgotten: its
-    // rollout is never deleted, so nothing it misses is lost.
-    const outgoing = preLaunchCapture;
+    // it exists. The outgoing generation stays authoritative and running until
+    // the replacement generation is actually constructed — a capture that
+    // cannot start must not leave the launch with a capture already stopping.
+    const outgoing = catchUp;
     const ctx = outgoing.getCommandContext();
     const threadRef = ctx.threadRef;
     const sdk = ctx.sdk;
@@ -739,27 +771,44 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       wrapperLog.warn("cc-lhc one-shot: compacted without a bound thread; launching on the resumed session");
       return;
     }
+    let rebuiltCapture: CaptureSession;
+    try {
+      rebuiltCapture = startCaptureSession({
+        startedAt,
+        noInference,
+        continueCapture: {
+          threadRef,
+          sdk,
+          stats: ctx.stats,
+          priorGeneration: outgoing.getCaptureGeneration(),
+        },
+        expectedSession: expectedSessionFromExplicitId(rebuilt.sessionId, "rebuilt_handoff"),
+        knownRolloutPath: rebuilt.rolloutPath,
+        prefixBoundary: rebuilt.prefixBoundary,
+        suppressBindLineageRecord: true,
+        lineageDbPath: defaultLineageDbPath(),
+        log: (message) => wrapperLog.info(message),
+        logError: (message) => wrapperLog.warn(message),
+        onLifecycle: publishCaptureLifecycle,
+        onRuntimeSettings,
+      });
+    } catch (cause) {
+      // No capture for the rebuilt session means nothing would record the turn
+      // that runs on it. The resumed session is still bound, still captured and
+      // still current; the prompt runs there and the rebuilt file is discarded
+      // as an unaccepted artifact at the next launch.
+      wrapperLog.warn(
+        `cc-lhc one-shot: capture would not start on rebuilt session ${rebuilt.sessionId} ` +
+          `(${detailOf(cause)}); launching on ${session.sessionId} with its capture unchanged`,
+      );
+      return;
+    }
+    preLaunchCapture = rebuiltCapture;
+    // Past the point of no return for this seam: the outgoing generation owns
+    // nothing now. Its drain is fired and forgotten — its rollout is never
+    // deleted, so nothing it misses is lost.
     void outgoing.stop().catch((cause: unknown) => {
       wrapperLog.warn(`cc-lhc one-shot: pre-compact capture drain failed: ${detailOf(cause)}`);
-    });
-    preLaunchCapture = startCaptureSession({
-      startedAt,
-      noInference,
-      continueCapture: {
-        threadRef,
-        sdk,
-        stats: ctx.stats,
-        priorGeneration: outgoing.getCaptureGeneration(),
-      },
-      expectedSession: expectedSessionFromExplicitId(rebuilt.sessionId, "rebuilt_handoff"),
-      knownRolloutPath: rebuilt.rolloutPath,
-      prefixBoundary: rebuilt.prefixBoundary,
-      suppressBindLineageRecord: true,
-      lineageDbPath: defaultLineageDbPath(),
-      log: (message) => wrapperLog.info(message),
-      logError: (message) => wrapperLog.warn(message),
-      onLifecycle: publishCaptureLifecycle,
-      onRuntimeSettings,
     });
 
     expectedSession = expectedSessionFromExplicitId(rebuilt.sessionId, "rebuilt_handoff");
@@ -1594,6 +1643,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         printExitStats();
         killAllInferenceChildren();
       }
+      // A prompt accepted during that final drain still has to reach the
+      // registry — or the recovery record — while this wrapper is still the
+      // thread's owner. `cleanup()` below hands that authority back.
+      if (promptAcceptanceSettled !== undefined) await promptAcceptanceSettled;
       if (governorReceiptStore !== null) {
         try {
           governorReceiptStore.close();

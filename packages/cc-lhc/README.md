@@ -129,11 +129,16 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   transcript — catching LHC up from that file first when capture is stale — adds
   a source-labelled estimate of the prompt it is about to send, and, over the
   trigger, compacts and writes the rebuilt session before launching Claude
-  **once** on it with the original prompt. The thread's current session advances
-  only once that session is observed accepting the prompt; a launch that fails
-  before then keeps the old pointer, and nothing is ever resent automatically. A
-  turn that grows past the trigger while it runs finishes and is compacted by
-  the next invocation.
+  **once** on it with the original prompt. Compacting needs a settled snapshot
+  LHC actually holds: capture that has not reached ready inside the catch-up
+  bound, and a transcript left mid-turn by a previous invocation, both stand the
+  seam down — the prompt launches on the resumed session with capture still
+  catching up behind it, and the next invocation compacts. The thread's current
+  session advances only once the rebuilt session is observed accepting the
+  prompt, and the wrapper settles that acceptance before handing the thread
+  lease back; a launch that fails before then keeps the old pointer, and nothing
+  is ever resent automatically. A turn that grows past the trigger while it runs
+  finishes and is compacted by the next invocation.
 - **When replacements repeatedly will not run.** Each nonviable swap costs the
   session nothing and is retried at the next settled seam. After a bounded
   number of them, two things happen instead of another quiet retry, and both
@@ -292,7 +297,10 @@ cannot rewrite an unrelated automatic classification.
   advisory warning appears first, and any resulting mismatch fails closed.
 - The initial prompt a launch carries belongs to that launch. A wrapper-owned
   replacement child inherits the launch's options and continues the
-  conversation, never the prompt, so a prompt is never re-executed. Options
+  conversation, never the prompt, so a prompt is never re-executed. `-p` and
+  `--print` are not inherited either, in any form the installed parser accepts
+  (`-p`, `--print`, `-p=<v>`, `--print=<v>` — all of which name a one-shot
+  seat), because a print child would exit at once. Options
   whose value boundary the argv does not establish — optional-value, variadic
   and unknown options in their space form — are left out of the replacement and
   named in the wrapper log; their `=value` form carries through. No launch form

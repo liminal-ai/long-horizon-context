@@ -311,7 +311,10 @@ continuing thread.
 ## One-shot seats compact before they launch
 
 A one-shot seat — `cc-lhc --resume <id> -p <prompt>`, the shape durable agents
-run turn by turn — is one prompt and an exit. It has no settled seam of its own
+run turn by turn — is one prompt and an exit. `-p` and `--print` name that seat
+in every form the installed parser takes, including `--print=<v>` and `-p=<v>`;
+the flag itself is zero-arity, so the prompt is the positional token, and no
+form of the flag is ever inherited by a replacement child. It has no settled seam of its own
 to compact at and no child worth swapping, so its compaction seam is the start
 of the next invocation, before any Claude process exists.
 
@@ -322,21 +325,35 @@ Catching LHC up from that transcript is how a stale capture recovers — intake
 events carry content-stable idempotency keys, so re-reading the file records
 only what a previous invocation missed. A missing or unreadable count falls back
 to the last known reading plus growth, exactly as the live path does. Catch-up
-is bounded so an operator's prompt still starts; reaching that bound costs the
-invocation its pre-launch compact, never the launch.
+is bounded so an operator's prompt still starts.
+
+Compacting needs a snapshot of settled history LHC actually holds, so the seam
+reports what capture is rather than asserting what it needs. Capture that has
+not reached ready inside the bound, and a transcript whose last turn a previous
+invocation left unfinished, are both unusable snapshots: the invocation launches
+anyway, on the session it resumed, with capture left bound and still catching up
+behind the running prompt. The next invocation compacts once that history has
+settled. Reaching the bound costs the invocation its pre-launch compact, never
+its launch.
 
 Over the trigger, the wrapper compacts and writes the rebuilt session first,
 then launches Claude **once**, resuming the rebuilt session with the original
-prompt. Nothing was running while any of that happened, so there is nothing to
-interrupt and no way for the prompt to execute twice. Under the trigger the
+prompt. The rebuilt session's capture generation is constructed before the
+outgoing one is stopped, so a capture that will not start leaves the resumed
+session bound, captured and current, and the prompt runs there instead. Nothing
+was running while any of that happened, so there is nothing to interrupt and no
+way for the prompt to execute twice. Under the trigger the
 invocation simply launches on the session it resumed.
 
 The thread's current-session pointer advances only once the rebuilt session is
 observed accepting the prompt — a user prompt in the rebuilt rollout's live
-suffix, which replayed prefix lines cannot produce. A launch that fails before
-that leaves the old session current, so the next invocation lands there and
-discards the rebuilt artifact. The prompt is never resent automatically; that
-call is the operator's.
+suffix, which replayed prefix lines cannot produce. One observed intake means
+one acceptance, and the wrapper settles it before handing the thread lease back:
+a prompt taken during the final drain still reaches the registry, or the
+host-side acceptance record the next launch reconciles, while this wrapper is
+still the thread's owner. A launch that fails before that leaves the old session
+current, so the next invocation lands there and discards the rebuilt artifact.
+The prompt is never resent automatically; that call is the operator's.
 
 A turn that grows past the trigger while it runs finishes and exits; the next
 invocation compacts it. The trigger sits far below the hard context window, and
