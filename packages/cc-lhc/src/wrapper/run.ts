@@ -760,7 +760,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             noInference,
             continueCapture: { threadRef, sdk, stats: degraded.stats, priorGeneration: generation },
             expectedSession: { sessionId, source: "explicit_resume" },
-            resumeSessionId: sessionId,
             lineageDbPath: defaultLineageDbPath(),
             log: (message) => wrapperLog.info(message),
             logError: (message) => wrapperLog.warn(message),
