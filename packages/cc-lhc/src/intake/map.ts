@@ -302,15 +302,36 @@ export function isAssistantLine(item: RolloutLineItem): boolean {
 }
 
 /**
- * The installed-binary native-summary discriminator recognized by cc-lhc:
- * a `type: "summary"` rollout record. This is the shape cc-lhc treats as
- * Claude having compacted a session itself — manually via `/compact` or under
- * a user-enabled `--autocompact`. The local rollout census carried no exemplar,
- * so it is a recognized discriminator, not a proven exhaustive one; S7
- * certification owns live confirmation.
+ * The summary text a native-compact record carries, or null when the record is
+ * not one. Two shapes are recognized, and nothing is inferred from adjacency:
+ *
+ * - **Installed** (certified against Claude Code 2.1.235): a `type: "user"`
+ *   record flagged `isCompactSummary: true` whose `message` is a user message
+ *   with string content. `isCompactSummary` is the record's own statement about
+ *   itself and is sufficient on its own. The adjacent
+ *   `system`/`subtype: "compact_boundary"` record stays harness metadata; it is
+ *   neither required, paired, nor waited for.
+ * - **Legacy** (`type: "summary"`): retained for compatibility with older
+ *   rollouts. LIM-99's corpus survey found zero instances on this box, so it is
+ *   kept as a compatibility path, not as the live shape.
+ *
+ * Anything that only resembles either shape — an ordinary user record, a
+ * boundary record alone, an assistant record, block-array content — returns
+ * null and is mapped as the ordinary record it is.
  */
+export function nativeCompactSummaryText(item: RolloutLineItem): string | null {
+  if (item.type === "summary") {
+    return typeof item.summary === "string" ? item.summary : "";
+  }
+  if (item.type !== "user" || item.isCompactSummary !== true) return null;
+  const message = item.message;
+  if (message === undefined || message.role !== "user") return null;
+  return typeof message.content === "string" ? message.content : null;
+}
+
+/** True when this record is a native compact summary in either recognized shape. */
 export function isNativeCompactSummaryLine(item: RolloutLineItem): boolean {
-  return item.type === "summary";
+  return nativeCompactSummaryText(item) !== null;
 }
 
 // R8: a native summary is ordinary bounded evidence, never an authority change.
@@ -345,9 +366,8 @@ function nativeCompactSummaryUuid(item: RolloutLineItem, lineIndex: number): str
  * turn state machine, then `turn_end` closes the summary's own turn. Nothing
  * pauses, latches, or waits on it.
  */
-function mapNativeCompactSummary(item: RolloutLineItem, lineIndex: number): MessageEventInput[] {
+function mapNativeCompactSummary(item: RolloutLineItem, lineIndex: number, summary: string): MessageEventInput[] {
   const uuid = nativeCompactSummaryUuid(item, lineIndex);
-  const summary = typeof item.summary === "string" ? item.summary : "";
   return [
     textEvent("user_prompt", nativeCompactSummaryContent(summary), "user", idempotencyKey(uuid, 0, "user_prompt")),
     {
@@ -398,8 +418,9 @@ export function mapRolloutLine(item: RolloutLineItem, lineIndex = 0): MapResult 
     return { events: [], stats };
   }
 
-  if (isNativeCompactSummaryLine(item)) {
-    return { events: mapNativeCompactSummary(item, lineIndex), stats };
+  const nativeSummary = nativeCompactSummaryText(item);
+  if (nativeSummary !== null) {
+    return { events: mapNativeCompactSummary(item, lineIndex, nativeSummary), stats };
   }
 
   if (isMetaLineType(item)) {

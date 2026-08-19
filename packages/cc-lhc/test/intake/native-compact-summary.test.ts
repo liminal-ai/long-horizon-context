@@ -5,9 +5,10 @@
  * surface so the SDK turn state machine — not a local expectation — decides
  * what "settle the open turn first" and "one complete turn" actually produce.
  */
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, type MessageEventInput, type ThreadRef } from "lhc";
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -21,6 +22,26 @@ const TRUNCATION_MARKER = "[... remainder of summary truncated]";
 function summaryLine(summary: string, leafUuid = "leaf-1"): RolloutLineItem {
   return { type: "summary", summary, leafUuid, sessionId: "s" };
 }
+
+/**
+ * Verbatim structural copy of the two records Claude Code 2.1.235 wrote for a
+ * native `/compact` during LIM-99 canary (d): session
+ * 77658af3-c016-4acf-886f-2bb27498886e, lines 21-22 of the retained exhibit
+ * rollout. Only absolute home paths inside strings were sanitized
+ * (/home/leemoore -> /home/operator, same length); every structural field is
+ * unchanged. See lim99-s7-certification-evidence.md for the original receipt.
+ */
+const FIXTURE_LINES: RolloutLineItem[] = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "../fixtures/native-compact-2.1.235.jsonl"),
+  "utf8",
+)
+  .trimEnd()
+  .split("\n")
+  .map((line) => JSON.parse(line) as RolloutLineItem);
+
+const BOUNDARY_RECORD = FIXTURE_LINES[0]!;
+const INSTALLED_SUMMARY = FIXTURE_LINES[1]!;
+const INSTALLED_SUMMARY_TEXT = INSTALLED_SUMMARY.message!.content as string;
 
 function textOf(blocks: Array<{ content: Record<string, unknown> }>): string {
   return blocks.map((block) => (typeof block.content.text === "string" ? block.content.text : "")).join("");
@@ -73,6 +94,94 @@ describe("native compact summary mapping", () => {
   });
 });
 
+describe("installed Claude Code 2.1.235 native compact shape", () => {
+  it("is the shape the retained canary (d) exhibit actually contains", () => {
+    // Guards the fixture itself: if this drifts, the discriminator below is
+    // being proven against something other than the live record.
+    expect(BOUNDARY_RECORD.type).toBe("system");
+    expect(BOUNDARY_RECORD.subtype).toBe("compact_boundary");
+    expect(INSTALLED_SUMMARY.type).toBe("user");
+    expect(INSTALLED_SUMMARY.isCompactSummary).toBe(true);
+    expect(INSTALLED_SUMMARY.message?.role).toBe("user");
+    expect(typeof INSTALLED_SUMMARY_TEXT).toBe("string");
+    expect(INSTALLED_SUMMARY_TEXT.length).toBeGreaterThan(2_000);
+    expect(INSTALLED_SUMMARY.version).toBe("2.1.235");
+  });
+
+  it("maps to exactly one tagged prompt plus one turn close — no ordinary user_prompt", () => {
+    const mapped = mapRolloutLine(INSTALLED_SUMMARY);
+    expect(mapped.events.map((e) => e.eventKind)).toEqual(["user_prompt", "turn_end"]);
+    const prompt = mapped.events[0] as Extract<MessageEventInput, { eventKind: "user_prompt" }>;
+    expect(prompt.payload.text.startsWith(TAG_OPEN)).toBe(true);
+    expect(prompt.payload.text).toContain(TRUNCATION_MARKER);
+    // The raw summary must not also appear as an untagged ordinary prompt.
+    expect(prompt.payload.text).not.toBe(INSTALLED_SUMMARY_TEXT);
+    expect(mapped.stats.meta).toBe(0);
+  });
+
+  it("leaves the adjacent compact_boundary record as harness metadata", () => {
+    // No pairing state, no adjacency inference: the boundary carries no
+    // conversation content and stays exactly what current mapping made it.
+    const mapped = mapRolloutLine(BOUNDARY_RECORD);
+    expect(mapped.events).toHaveLength(0);
+    expect(mapped.stats.meta).toBe(1);
+  });
+
+  it('keeps the legacy type:"summary" shape recognized for compatibility', () => {
+    const mapped = mapRolloutLine(summaryLine("legacy compacted"));
+    expect(mapped.events.map((e) => e.eventKind)).toEqual(["user_prompt", "turn_end"]);
+  });
+});
+
+describe("records that only resemble a native compact summary", () => {
+  const notSummaries: Array<[string, RolloutLineItem]> = [
+    ["ordinary user prompt", { type: "user", uuid: "u1", message: { role: "user", content: "hello" } }],
+    [
+      "ordinary user prompt that mentions the flag in its text",
+      { type: "user", uuid: "u2", message: { role: "user", content: "isCompactSummary:true" } },
+    ],
+    ["boundary record alone", BOUNDARY_RECORD],
+    [
+      "isCompactSummary on an assistant record",
+      {
+        type: "assistant",
+        uuid: "a1",
+        isCompactSummary: true,
+        message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "hi" }] },
+      },
+    ],
+    [
+      "isCompactSummary with block-array content",
+      {
+        type: "user",
+        uuid: "u3",
+        isCompactSummary: true,
+        message: { role: "user", content: [{ type: "text", text: "not a string" }] },
+      },
+    ],
+    [
+      "isCompactSummary with a non-user message role",
+      { type: "user", uuid: "u4", isCompactSummary: true, message: { role: "assistant", content: "x" } },
+    ],
+    [
+      "isCompactSummary that is not exactly true",
+      { type: "user", uuid: "u5", isCompactSummary: "true", message: { role: "user", content: "x" } },
+    ],
+    ["isCompactSummary with no message at all", { type: "user", uuid: "u6", isCompactSummary: true }],
+  ];
+
+  for (const [label, item] of notSummaries) {
+    it(`does not summary-map: ${label}`, () => {
+      const mapped = mapRolloutLine(item);
+      const texts = mapped.events
+        .filter((e) => e.eventKind === "user_prompt")
+        .map((e) => (e.payload as { text: string }).text);
+      expect(texts.some((t) => t.includes(TAG_OPEN))).toBe(false);
+      expect(mapped.events.some((e) => e.eventKind === "turn_end")).toBe(false);
+    });
+  }
+});
+
 describe("native compact summary intake", () => {
   let sdk: Lhc;
   let threadRef: ThreadRef;
@@ -90,8 +199,11 @@ describe("native compact summary intake", () => {
     threadRef = { filePath };
   });
 
-  async function intake(item: RolloutLineItem): Promise<void> {
-    const result = await sdk.intakeStream.messageEvents(threadRef, mapRolloutLine(item).events);
+  /** One batch per call, as capture submits a watcher emission (zero-event lines contribute nothing). */
+  async function intake(...items: RolloutLineItem[]): Promise<void> {
+    const events = items.flatMap((item, index) => mapRolloutLine(item, index).events);
+    if (events.length === 0) return;
+    const result = await sdk.intakeStream.messageEvents(threadRef, events);
     if (!result.ok) throw new Error(result.error.reason);
   }
 
@@ -140,6 +252,51 @@ describe("native compact summary intake", () => {
     const summaryMessage = messages.value.find((m) => textOf(m.blocks).includes(TAG_OPEN));
     expect(summaryMessage?.kind).toBe("user_prompt");
     expect(summaryMessage?.turnId).toBe(closed[1]!.turnId);
+  });
+
+  it("lands the installed 2.1.235 shape as one bounded tagged closed turn", async () => {
+    // Drives the exact retained canary (d) records, boundary first, in order,
+    // in one batch — the shape capture actually submits.
+    await intake(BOUNDARY_RECORD, INSTALLED_SUMMARY);
+
+    const closed = await closedTurns();
+    expect(closed).toHaveLength(1);
+    expect(closed[0]!.memberMessageIds).toHaveLength(1);
+    expect(closed[0]!.outcomeReason).toBe("claude_native_compact_summary");
+
+    const messages = await sdk.messages.list(threadRef);
+    if (!messages.ok) throw new Error(messages.error.reason);
+    // Exactly one message: the boundary contributed none, and the summary did
+    // not additionally land as an ordinary user prompt.
+    expect(messages.value).toHaveLength(1);
+    expect(messages.value[0]!.kind).toBe("user_prompt");
+
+    const stored = textOf(messages.value[0]!.blocks);
+    expect(stored.startsWith(TAG_OPEN)).toBe(true);
+    expect(stored.endsWith(TAG_CLOSE)).toBe(true);
+    expect(stored).toContain(TRUNCATION_MARKER);
+    expect(stored).toContain("This session is being continued");
+    // Unicode-safe 2,000 code points of summary, plus tag and marker lines.
+    const body = stored.slice(TAG_OPEN.length + 1, stored.indexOf(`\n${TRUNCATION_MARKER}`));
+    expect([...body]).toHaveLength(2_000);
+    expect(body).toBe([...INSTALLED_SUMMARY_TEXT].slice(0, 2_000).join(""));
+  });
+
+  it("bounds the installed shape on whole characters when the summary is astral", async () => {
+    const astral: RolloutLineItem = {
+      ...INSTALLED_SUMMARY,
+      uuid: "astral-summary",
+      message: { role: "user", content: "𝄞".repeat(3_000) },
+    };
+    await intake(astral);
+
+    const messages = await sdk.messages.list(threadRef);
+    if (!messages.ok) throw new Error(messages.error.reason);
+    const stored = textOf(messages.value[0]!.blocks);
+    const body = stored.slice(TAG_OPEN.length + 1, stored.indexOf(`\n${TRUNCATION_MARKER}`));
+    expect([...body]).toHaveLength(2_000);
+    expect(body).toBe("𝄞".repeat(2_000));
+    expect(Buffer.from(body, "utf8").toString("utf8")).toBe(body);
   });
 
   it("bounds an oversized summary in the record it stores", async () => {

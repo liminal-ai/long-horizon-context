@@ -6,19 +6,29 @@
  * no mutation without a durable receipt.
  */
 
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
+import { observeWatcherEmission } from "../../src/observation/observe.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
+import type { RolloutLineItem } from "../../src/rollout/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { run } from "../../src/wrapper/run.js";
+
+/** Retained Claude Code 2.1.235 native-compact summary record (LIM-99 canary (d) exhibit). */
+const INSTALLED_SUMMARY: RolloutLineItem = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../fixtures/native-compact-2.1.235.jsonl"), "utf8")
+    .trimEnd()
+    .split("\n")[1]!,
+) as RolloutLineItem;
 
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -61,13 +71,7 @@ interface FakePty {
   resize(): void;
 }
 
-function makeFakePty(
-  pid: number,
-  label: string,
-  args: string[],
-  autoExitOnKill: boolean,
-  emitOutput = true,
-): FakePty {
+function makeFakePty(pid: number, label: string, args: string[], autoExitOnKill: boolean, emitOutput = true): FakePty {
   const exitCbs: Array<(arg: { exitCode: number; signal?: number }) => void> = [];
   const dataCbs: Array<(data: string) => void> = [];
   const fake: FakePty = {
@@ -453,9 +457,7 @@ describe("LIM-64 production wrapper path", () => {
     // Bookkeeping records the compact; it does not decide whether it happens.
     expect(mutationSentinel).toBe(true);
     expect(
-      wrapperLogLines.some(
-        (l) => l.includes("durable receipt unavailable") && l.includes("in-memory receipt"),
-      ),
+      wrapperLogLines.some((l) => l.includes("durable receipt unavailable") && l.includes("in-memory receipt")),
     ).toBe(true);
 
     spawned[0]!.fireExit(0);
@@ -754,11 +756,21 @@ describe("LIM-64 production wrapper path", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
-    lifecycleSink!([{ kind: "native_compact_observed", summaryPreview: "compacted" }, ...ESTIMATE_CROSS_SIGNALS]);
+    // The signal is derived from the retained Claude Code 2.1.235 record, not
+    // hand-written, so the wrapper half is bound to the shape observation
+    // actually produces.
+    const nativeSignals = observeWatcherEmission(
+      { kind: "line", item: INSTALLED_SUMMARY, raw: JSON.stringify(INSTALLED_SUMMARY) },
+      0,
+      {},
+    ).lifecycle.filter((signal) => signal.kind === "native_compact_observed");
+    expect(nativeSignals).toHaveLength(1);
+    lifecycleSink!([...nativeSignals, ...ESTIMATE_CROSS_SIGNALS]);
 
     await waitFor(() => mutationStarted, "LHC compact still starts after a native summary");
     expect(observes).toContain("would_compact");
-    expect(wrapperLogLines.some((l) => l.includes("native compact ran on a managed session"))).toBe(true);
+    const notices = wrapperLogLines.filter((l) => l.includes("native compact ran on a managed session"));
+    expect(notices).toHaveLength(1);
 
     spawned[0]!.fireExit(0);
     await runPromise;

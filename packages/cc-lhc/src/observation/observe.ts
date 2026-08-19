@@ -14,10 +14,10 @@ import type { MessageEventInput } from "lhc";
 import {
   contentBlocks,
   isAssistantLine,
-  isNativeCompactSummaryLine,
   isUserLine,
   type MapStats,
   mapRolloutLine,
+  nativeCompactSummaryText,
 } from "../intake/map.js";
 import { classifyTurnSignal, isAssistantSamplingComplete } from "../intake/turn-signal.js";
 import { attributeLineSession } from "../rollout/expected-session.js";
@@ -268,12 +268,16 @@ export function observeRolloutLine(
     observeAsyncWorkLine(item, options.asyncWorkFold);
   }
 
-  if (!suppressRuntime && isNativeCompactSummaryLine(item)) {
-    const summary = typeof item.summary === "string" ? item.summary : undefined;
-    lifecycle.push({
-      kind: "native_compact_observed",
-      ...(summary !== undefined ? { summaryPreview: summary.slice(0, 120) } : {}),
-    });
+  if (!suppressRuntime) {
+    // Same discriminator intake maps on, so the loud notice and the bounded
+    // closed turn can never disagree about what a native summary is.
+    const nativeSummary = nativeCompactSummaryText(item);
+    if (nativeSummary !== null) {
+      lifecycle.push({
+        kind: "native_compact_observed",
+        ...(nativeSummary !== "" ? { summaryPreview: nativeSummary.slice(0, 120) } : {}),
+      });
+    }
   }
 
   const mapped = mapRolloutLine(item, lineIndex);
