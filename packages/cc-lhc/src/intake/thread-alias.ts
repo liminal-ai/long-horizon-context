@@ -401,9 +401,14 @@ export interface UnacceptedSwapArtifact {
  * Rebuilt sessions this thread reserved but never accepted — a swap that was
  * interrupted between writing the replacement rollout and the wrapper
  * observing the replacement live. The current pointer is the acceptance fact,
- * so anything bound after it was never accepted: the launch discards it from
- * session selection (the file stays on disk, untouched and unread) and lands
- * on the current session. Nothing here can stop a launch.
+ * so anything bound after it was never accepted.
+ *
+ * A stale reserved file is never activated. The launch discards it from session
+ * selection (the file stays on disk, untouched and unread) and lands on the
+ * current session, where capture continues and the next settled seam
+ * re-materializes a replacement from the latest captured state — including any
+ * turns that landed on the old session after the interrupted swap. Nothing here
+ * can stop a launch.
  */
 export function unacceptedSwapArtifacts(input: {
   threadId: string;
@@ -413,7 +418,15 @@ export function unacceptedSwapArtifacts(input: {
   lineageDeps?: LineageDbDeps;
 }): UnacceptedSwapArtifact[] {
   if (input.currentSessionId === null) return [];
-  const rows = threadSessionRows(input.lineageDbPath, input.threadId, input.lineageDeps);
+  let rows: ThreadSessionRow[];
+  try {
+    rows = threadSessionRows(input.lineageDbPath, input.threadId, input.lineageDeps);
+  } catch {
+    // Host-local detail that cannot be read names no artifact to discard. The
+    // launch lands on the current session either way; unreadable bookkeeping
+    // is unclaimed work, never a reason to stop.
+    return [];
+  }
   const currentIndex = rows.findIndex((row: ThreadSessionRow) => row.sessionId === input.currentSessionId);
   if (currentIndex === -1) return [];
   return rows

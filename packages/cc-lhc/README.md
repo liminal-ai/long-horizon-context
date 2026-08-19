@@ -96,20 +96,40 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   crossing during an open agentic turn is observed and receipted but **not**
   mutated mid-turn — Claude Code cannot replace the in-flight request the way
   Codex full continuation can. At the next Claude-safe settled seam, policy may
-  run the existing fenced compact/rebuild and wrapper-owned controlled handoff.
+  run the compact/rebuild and wrapper-owned spawn-first handoff below.
   A native compact summary is captured as one bounded closed turn and reported
   loudly; nothing latches and LHC compaction continues. Capture that is degraded or still catching up does not
   block the seam: the wrapper rebuilds capture state from the persisted
   transcript and re-evaluates the moment it is ready. Built-in policy targets
   180k, triggers at 360k, reserves 50k runway, and leaves automatic prune off.
-- **Controlled handoff.** On a respawn-safe interactive launch, compact/prune
-  rebuild a new rollout, terminate the
-  old child, and spawn `claude --resume <new-id>`. Capture stays attached
-  through old-child exit; lineage and the ready descriptor advance only after
-  replacement capture and child liveness are proven. User input is buffered
-  after the transaction's commit point and delivered exactly once, or retained
-  in a recovery artifact. This is **not** same-agentic-turn continuation: there
-  is no synthetic tool-tail preservation and no Codex parity claim.
+- **Forward-only construction.** The settled seam is read once, before any SDK
+  work, and never re-read: input arriving, a turn opening, or capture changing
+  generation appends to a thread whose settled history the snapshot already
+  holds, so none of them can cancel a compact that is under way. The rebuilt
+  rollout is written under bounded retries from the durable installed view. From
+  the moment compact owns the settled session, bytes bound for Claude are
+  dropped rather than delivered — never buffered, never replayed — and one line
+  says *input typed during compaction was not delivered — please resend*.
+- **Spawn-first handoff.** On a respawn-safe interactive launch, compact/prune
+  rebuild a new rollout, then spawn `claude --resume <new-id>` **off-route** — a
+  real child owning no terminal, no stdin, and no capture generation. Once it has
+  proven observable viability (it rendered and survived a stabilization window;
+  session-file growth is recorded when it appears and never required), input
+  routing, output routing, the retrieval descriptor, and the capture generation
+  switch in one step, and later old-child output is ignored. The old child is
+  killed last, best effort, and a survivor is left running and named loudly by
+  PID. A working session exists at every moment and nothing ever rolls back to
+  the oversized one. This is **not** same-agentic-turn continuation: there is no
+  synthetic tool-tail preservation and no Codex parity claim.
+- **One terminal state, stated as a guess.** After bounded repeated
+  nonviability the old session simply stays live and a standing alarm goes up:
+  *cc-lhc rebuilt sessions are not loading — likely a compatibility problem with
+  the installed Claude version.* That is cc-lhc's best guess from observable
+  viability, not proof Claude rejected the file; the terminal is never parsed to
+  find out. Automatic swaps stop instead of retrying forever, capture and manual
+  compact keep working, and the old session is relaunched then and there
+  **without** the injected `DISABLE_AUTO_COMPACT` so Claude's own compaction can
+  keep it alive in degraded form.
 - **Runtime continuity.** Wrapper-owned handoffs preserve the latest confirmed
   Claude effort and permission mode from the rollout. Unknown values are not
   inferred, and permissions are never broadened by guesswork.
@@ -205,7 +225,7 @@ environment surface.
 | `threads/<uuid>.sqlite` | Per-thread LHC record, derivations, views, and impressions |
 | `owners/*.json` | Exclusive thread-ownership leases (keyed by thread hash) |
 | `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600 on POSIX; on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile, so these inherit the profile's default ACLs — no POSIX modes and no bespoke DACL there) |
-| `recovery/*` | Ordered input retained after an unrecoverable handoff failure |
+| `recovery/*` | Only pre-rewrite artifacts, consumed and cleared at launch |
 | `wrapper.log` | Append-only wrapper diagnostics (no rotation yet) |
 
 Runtime descriptors live in a private runtime directory and are capabilities,

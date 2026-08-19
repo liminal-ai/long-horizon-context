@@ -1,13 +1,19 @@
 /**
  * Shared context mutation/materialization operation for manual compact, manual
- * prune, and automatic compact. One fenced pass: prune-if-due, preview,
- * compact, served view, ONE rebuilt rollout. Compact plus a due prune is one
- * materialization and (in the wrapper) one handoff, never two.
+ * prune, and automatic compact. ONE settled-seam snapshot, then one pass that
+ * runs to completion: prune-if-due, preview, compact, served view, ONE rebuilt
+ * rollout. Compact plus a due prune is one materialization and (in the
+ * wrapper) one handoff, never two.
+ *
+ * Forward-only construction: the snapshot is taken once, at the seam that
+ * authorized the operation, and never re-read. Settled history cannot be
+ * retroactively invalidated — input, capture generation changes, and turns
+ * that open while construction runs append to the thread; they cannot make the
+ * snapshot wrong, so nothing mid-construction may cancel the work.
  *
  * This module owns no processes: no child lifecycle, no descriptor writes, no
  * lineage persistence, no respawn. It returns a HandoffRequest for the wrapper
- * lifecycle manager. Success lineage is registered by the wrapper only after
- * the replacement generation is proven ready-after-replay.
+ * lifecycle manager.
  */
 
 import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
@@ -15,17 +21,16 @@ import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
 import { CAPTURE_NOT_READY_REFUSAL } from "../intake/session.js";
 import { statRolloutFile } from "../rollout/stat-file.js";
 import { writeRebuiltRollout, type WriteRebuiltRolloutResult } from "../rollout/write-rebuilt.js";
-import {
-  CAPTURE_DEGRADED_REFUSAL,
-  CAPTURE_PARTIAL_VIEW_MUTATION,
-  type LhcCommandRuntime,
-  TURN_OPEN_REFUSAL,
-} from "./dispatch.js";
+import { CAPTURE_DEGRADED_REFUSAL, type LhcCommandRuntime, TURN_OPEN_REFUSAL } from "./dispatch.js";
 import { threadIdFromRef } from "./rebuild-receipt.js";
 
-export const INPUT_ARRIVED_REFUSAL = "input arrived — context mutation cancelled before any change";
-export const INPUT_ARRIVED_PARTIAL =
-  "input arrived after LHC view mutation — no session handoff; live Claude session unchanged";
+/**
+ * How many times the rebuilt rollout is written before the operation gives up
+ * on this seam. The last attempt re-reads the installed view first: the view is
+ * durable, so rebuilding from it is always available and never needs the
+ * compact to run again.
+ */
+export const REBUILT_ROLLOUT_WRITE_ATTEMPTS = 3;
 
 export type ContextMutationOperation = "compact" | "prune" | "auto_compact";
 export type ContextMutationOrigin = "auto" | "manual";
@@ -113,18 +118,16 @@ export interface ContextMutationPlan {
    * produces the compacted content; cc-lhc injects host anomalies here.
    */
   hostNotices?: readonly string[];
-  /**
-   * True when user input arrived since the operation started. Checked at every
-   * fence; a pre-SDK trip refuses, a post-SDK trip reports partial (view
-   * mutated, no handoff).
-   */
-  inputEpochChanged?: () => boolean;
 }
 
 export type ContextMutationOutcome =
   | { kind: "refused"; messages: string[] }
   | { kind: "noop"; messages: string[] }
-  /** SDK view mutated but fence tripped afterwards: no rebuild handoff. */
+  /**
+   * The LHC view is installed and durable, but this seam produced no rebuilt
+   * artifact — the SDK or the filesystem failed. Nothing is rolled back and the
+   * next settled seam re-materializes from the installed view.
+   */
   | { kind: "partial"; messages: string[] }
   | { kind: "rebuilt"; messages: string[]; handoff: HandoffRequest };
 
@@ -156,55 +159,44 @@ export function formatPruneReceipt(receipt: PruneReceipt): string {
   ].join("\n");
 }
 
-export function notReadyOutcome(runtime: LhcCommandRuntime): ContextMutationOutcome | null {
-  if (runtime.sdk === undefined || runtime.threadRef === undefined) {
-    return { kind: "refused", messages: ["capture not ready"] };
-  }
-  return null;
-}
-
 /**
- * The shared mutation fence: turn closed, capture ready and healthy, capture
- * generation unchanged since the operation leased it, no input since start.
+ * The settled-seam snapshot. Read ONCE, before any SDK work, and never read
+ * again for the life of the operation.
+ *
+ * What it carries is what compact genuinely needs to exist before it starts:
+ * a bound thread to compact, a turn that is not mid-flight (Claude Code has no
+ * mid-agentic-turn replacement seam), and capture that has caught up so the
+ * view is built from current history. It is not a fence: nothing re-reads it,
+ * and no later change to any of these can cancel work already under way.
  */
-export function mutationFence(
-  runtime: LhcCommandRuntime,
-  leaseGeneration: number,
-  inputEpochChanged?: () => boolean,
-): string | null {
+export function settledSeamSnapshot(runtime: LhcCommandRuntime): string | null {
+  if (runtime.sdk === undefined || runtime.threadRef === undefined) return "capture not ready";
   if (runtime.isTurnOpen?.() === true) return TURN_OPEN_REFUSAL;
   if (runtime.isCaptureReady?.() === false) {
-    if (runtime.capturePhase === "binding") return CAPTURE_NOT_READY_REFUSAL;
-    return CAPTURE_DEGRADED_REFUSAL;
+    return runtime.capturePhase === "binding" ? CAPTURE_NOT_READY_REFUSAL : CAPTURE_DEGRADED_REFUSAL;
   }
   if (runtime.isCaptureHealthy?.() === false || runtime.captureDegraded === true) {
     return CAPTURE_DEGRADED_REFUSAL;
   }
-  const currentGen = runtime.getCaptureGeneration?.() ?? runtime.captureGeneration;
-  if (currentGen !== undefined && currentGen !== leaseGeneration) {
-    return CAPTURE_DEGRADED_REFUSAL;
-  }
-  if (inputEpochChanged?.() === true) return INPUT_ARRIVED_REFUSAL;
   return null;
 }
 
 /**
- * Run the fenced SDK mutation and single materialization. On success the
- * caller (wrapper) owns the handoff; on partial the view mutated but no
- * rebuild/handoff happened; on refused nothing changed.
+ * Run the settled-seam mutation and single materialization, to completion.
+ *
+ * After the snapshot there are no further state or input checks. The only
+ * outcomes left are what the SDK and the filesystem actually did: a compact
+ * that landed and produced a rebuilt artifact (`rebuilt`), a compact that
+ * landed with no artifact this seam (`partial` — the installed view is durable
+ * and the next seam re-materializes from it), a prune with nothing to do
+ * (`noop`), or an SDK refusal before anything changed (`refused`).
  */
 export async function runContextMutation(
   plan: ContextMutationPlan,
   runtime: LhcCommandRuntime,
 ): Promise<ContextMutationOutcome> {
-  const blocked = notReadyOutcome(runtime);
-  if (blocked !== null) return blocked;
-
-  const leaseGeneration = runtime.getCaptureGeneration?.() ?? runtime.captureGeneration ?? 0;
-  const fence = (): string | null => mutationFence(runtime, leaseGeneration, plan.inputEpochChanged);
-
-  const fenced = fence();
-  if (fenced !== null) return { kind: "refused", messages: [fenced] };
+  const snapshot = settledSeamSnapshot(runtime);
+  if (snapshot !== null) return { kind: "refused", messages: [snapshot] };
 
   const sdk = runtime.sdk as Lhc;
   const threadRef = runtime.threadRef as ThreadRef;
@@ -216,12 +208,9 @@ export async function runContextMutation(
     ...(plan.triggerContextTokens === undefined ? {} : { triggerContextTokens: plan.triggerContextTokens }),
   };
 
-  const partialOrRefused = (fenceMessage: string): ContextMutationOutcome => {
-    if (!viewMutated) return { kind: "refused", messages: [...lines, fenceMessage] };
-    const partialNote =
-      fenceMessage === INPUT_ARRIVED_REFUSAL ? INPUT_ARRIVED_PARTIAL : CAPTURE_PARTIAL_VIEW_MUTATION;
-    return { kind: "partial", messages: [...lines, partialNote] };
-  };
+  /** An SDK failure: `partial` once the view moved, `refused` while it has not. */
+  const sdkFailure = (message: string): ContextMutationOutcome =>
+    viewMutated ? { kind: "partial", messages: [...lines, message] } : { kind: "refused", messages: [message] };
 
   if (plan.operation === "prune") {
     const pruneResult = await sdk.threadView.prune(
@@ -235,14 +224,10 @@ export async function runContextMutation(
     metrics.zoneTokensBefore = receipt.zoneTokensBefore;
     metrics.zoneTokensAfter = receipt.zoneTokensAfter;
     viewMutated = true;
-    const afterPrune = fence();
-    if (afterPrune !== null) return partialOrRefused(afterPrune);
   } else {
     // Compact path (manual or automatic): combined prune first when due.
     if (plan.pruneIfDue !== undefined) {
       const status = await sdk.threadView.status(threadRef);
-      const afterStatus = fence();
-      if (afterStatus !== null) return partialOrRefused(afterStatus);
       if (status.ok && status.value.visibility.zoneTokens >= plan.pruneIfDue.thresholdTokens) {
         const pruneResult = await sdk.threadView.prune(threadRef, {
           targetTokens: plan.pruneIfDue.targetTokens,
@@ -258,8 +243,6 @@ export async function runContextMutation(
           // A failed due-prune does not abort the compact; it is reported.
           lines.push(`prune error: ${pruneResult.error.reason}`);
         }
-        const afterDuePrune = fence();
-        if (afterDuePrune !== null) return partialOrRefused(afterDuePrune);
       }
     }
 
@@ -268,86 +251,63 @@ export async function runContextMutation(
       params: { lowerBound: plan.lowerBoundTokens },
     };
     const preview = await sdk.threadView.previewCompact(threadRef, compactOpts);
-    const afterPreview = fence();
-    if (afterPreview !== null) return partialOrRefused(afterPreview);
-    if (!preview.ok) {
-      return viewMutated
-        ? { kind: "partial", messages: [...lines, `compact preview error: ${preview.error.reason}`] }
-        : { kind: "refused", messages: [`compact preview error: ${preview.error.reason}`] };
-    }
-    if (preview.value.kind === "error") {
-      return viewMutated
-        ? { kind: "partial", messages: [...lines, `compact blocked: ${preview.value.reason}`] }
-        : { kind: "refused", messages: [`compact blocked: ${preview.value.reason}`] };
-    }
+    if (!preview.ok) return sdkFailure(`compact preview error: ${preview.error.reason}`);
+    if (preview.value.kind === "error") return sdkFailure(`compact blocked: ${preview.value.reason}`);
 
     const compactResult = await sdk.threadView.compact(threadRef, compactOpts);
-    const afterCompact = fence();
-    if (afterCompact !== null) {
-      viewMutated = true;
-      return partialOrRefused(afterCompact);
-    }
-    if (!compactResult.ok) {
-      return viewMutated
-        ? { kind: "partial", messages: [...lines, `compact error: ${compactResult.error.reason}`] }
-        : { kind: "refused", messages: [`compact error: ${compactResult.error.reason}`] };
-    }
+    if (!compactResult.ok) return sdkFailure(`compact error: ${compactResult.error.reason}`);
     viewMutated = true;
     metrics.viewTokens = compactResult.value.totalTokens;
     metrics.targetTokens = plan.lowerBoundTokens;
     lines.push(formatCompactReceipt(compactResult.value));
   }
 
-  // ONE served-view read and ONE rebuilt rollout for the whole operation.
-  const view = await sdk.threadView.getSessionThreadView(threadRef);
-  const afterView = fence();
-  if (afterView !== null) return partialOrRefused(afterView);
-  if (!view.ok) return { kind: "partial", messages: [...lines, `view error: ${view.error.reason}`] };
+  const durableReceipt = formatDurableReceipt(plan.operation, metrics, plan.hostNotices ?? []);
 
-  try {
-    if (runtime.sourceRolloutPath !== undefined) {
-      await statRolloutFile(runtime.sourceRolloutPath);
+  // ONE rebuilt rollout for the whole operation, written from the installed
+  // view. Every attempt re-reads that view, so a write that fails against a
+  // stale read is retried against durable state rather than abandoned.
+  const failures: string[] = [];
+  for (let attempt = 1; attempt <= REBUILT_ROLLOUT_WRITE_ATTEMPTS; attempt += 1) {
+    const view = await sdk.threadView.getSessionThreadView(threadRef);
+    if (!view.ok) {
+      failures.push(`view read attempt ${attempt}: ${view.error.reason}`);
+      continue;
     }
-    const afterStat = fence();
-    if (afterStat !== null) return partialOrRefused(afterStat);
-
-    const durableReceipt = formatDurableReceipt(plan.operation, metrics, plan.hostNotices ?? []);
-    const rebuilt = await writeRebuiltRollout({
-      view: view.value,
-      cwd: runtime.cwd,
-      ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
-      receipt: { text: durableReceipt },
-    });
-    const afterRebuild = fence();
-    if (afterRebuild !== null) {
+    try {
+      if (runtime.sourceRolloutPath !== undefined) {
+        await statRolloutFile(runtime.sourceRolloutPath);
+      }
+      const rebuilt = await writeRebuiltRollout({
+        view: view.value,
+        cwd: runtime.cwd,
+        ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
+        receipt: { text: durableReceipt },
+      });
       return {
-        kind: "partial",
-        messages: [
-          ...lines,
-          afterRebuild === INPUT_ARRIVED_REFUSAL ? INPUT_ARRIVED_PARTIAL : CAPTURE_PARTIAL_VIEW_MUTATION,
-          "rebuild discarded from operator-ready state — live session unchanged",
-        ],
+        kind: "rebuilt",
+        messages: attempt === 1 ? lines : [...lines, `rebuilt rollout written on attempt ${attempt}`],
+        handoff: {
+          operation: plan.operation,
+          oldSessionId: runtime.sourceSessionId ?? "unknown",
+          threadId,
+          rebuilt,
+          receiptLines: [...lines],
+          durableReceipt,
+          metrics,
+        },
       };
+    } catch (cause) {
+      failures.push(`write attempt ${attempt}: ${cause instanceof Error ? cause.message : String(cause)}`);
     }
-
-    return {
-      kind: "rebuilt",
-      messages: lines,
-      handoff: {
-        operation: plan.operation,
-        oldSessionId: runtime.sourceSessionId ?? "unknown",
-        threadId,
-        rebuilt,
-        receiptLines: [...lines],
-        durableReceipt,
-        metrics,
-      },
-    };
-  } catch (cause) {
-    const message = cause instanceof Error ? cause.message : String(cause);
-    return {
-      kind: "partial",
-      messages: [...lines, `rebuild failed: ${message}`, "session left running unchanged"],
-    };
   }
+
+  return {
+    kind: "partial",
+    messages: [
+      ...lines,
+      `rebuilt rollout not written after ${REBUILT_ROLLOUT_WRITE_ATTEMPTS} attempts: ${failures.join("; ")}`,
+      "LHC view is installed and durable; the next settled seam re-materializes from it",
+    ],
+  };
 }

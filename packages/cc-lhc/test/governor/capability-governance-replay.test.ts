@@ -306,11 +306,16 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     expect(receipt.receipt.handoffOutcome?.kind).toBe("scheduled");
 
     const outcomes: GovernorHandoffOutcome[] = [
-      { kind: "handoff_success", newSessionId: "new", flushedInputBytes: 4 },
-      { kind: "mutation_refused", detail: "input arrived — context mutation cancelled before any change" },
-      { kind: "mutation_partial", detail: "view mutated; no handoff" },
-      { kind: "handoff_rolled_back", detail: "respawn failed", oldSessionId: "old" },
-      { kind: "handoff_failed", detail: "fatal", oldSessionId: "old", rebuiltSessionId: "new" },
+      { kind: "handoff_success", newSessionId: "new", droppedInputBytes: 4 },
+      { kind: "mutation_refused", detail: "compact preview error: stop" },
+      { kind: "mutation_partial", detail: "view installed; no rebuilt artifact this seam" },
+      {
+        kind: "handoff_replacement_nonviable",
+        detail: "attempt 1: candidate exited",
+        oldSessionId: "old",
+        rebuiltSessionId: "new",
+        attempts: 2,
+      },
     ];
     for (const outcome of outcomes) {
       const updated = store.attachHandoffOutcome(receipt.receipt.receiptId, outcome);

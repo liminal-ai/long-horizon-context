@@ -461,14 +461,17 @@ export function readPendingCurrentSession(
       .get(threadId) as
       | { thread_id: string; session_id: string; previous_session_id: string | null; accepted_at: string }
       | undefined;
-    if (row !== undefined) {
-      pending = {
-        threadId: row.thread_id,
-        sessionId: row.session_id,
-        previousSessionId: row.previous_session_id,
-        acceptedAt: row.accepted_at,
-      };
-    }
+    if (row === undefined) return;
+    // A row that does not carry an accepted session names nothing this launch
+    // can act on. Corrupt recovery bookkeeping is unclaimed work, not a wedge:
+    // the registry pointer and the files on disk are the durable facts.
+    if (typeof row.session_id !== "string" || row.session_id === "") return;
+    pending = {
+      threadId,
+      sessionId: row.session_id,
+      previousSessionId: typeof row.previous_session_id === "string" ? row.previous_session_id : null,
+      acceptedAt: typeof row.accepted_at === "string" ? row.accepted_at : "",
+    };
   });
   return pending;
 }

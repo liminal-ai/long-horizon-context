@@ -1,12 +1,22 @@
+/**
+ * The spawn-first handoff transaction.
+ *
+ * A working session exists at every moment: the replacement is spawned and
+ * proven while the old child is still live and routed, routing switches in one
+ * step, and the old child is killed last. There is no rollback, no pre-commit
+ * input recheck, and no bookkeeping outcome that can kill a live replacement —
+ * the suite this replaces asserted all three as intended behavior.
+ */
 import { describe, expect, it, vi } from "vitest";
 
 import type { HandoffRequest } from "../../src/commands/context-mutation.js";
 import {
+  type CandidateChild,
+  type CandidateViability,
   executeHandoff,
   formatHandoffResult,
-  type HandoffChild,
   type HandoffPorts,
-  type RecoveryArtifact,
+  type SwitchOutcome,
 } from "../../src/wrapper/handoff.js";
 
 function request(): HandoffRequest {
@@ -29,84 +39,59 @@ function request(): HandoffRequest {
   };
 }
 
+const VIABLE: CandidateViability = {
+  kind: "viable",
+  evidence: { processAlive: true, sessionFileWritten: true },
+};
+
 interface Harness {
   ports: HandoffPorts;
   calls: string[];
-  writesBySession: Record<string, string[]>;
-  artifacts: RecoveryArtifact[];
-  buffer: Buffer[];
-  setBuffer(bytes: string[]): void;
+  warnings: string[];
+  spawned: string[];
+  switchedTo: string[];
 }
 
 function makeHarness(overrides: Partial<HandoffPorts> = {}): Harness {
   const calls: string[] = [];
-  const writesBySession: Record<string, string[]> = {};
-  const artifacts: RecoveryArtifact[] = [];
-  let buffer: Buffer[] = [];
-  let barrierActive = false;
-
-  const childFor = (sessionId: string): HandoffChild => ({
-    write: (data: string) => {
-      (writesBySession[sessionId] ??= []).push(data);
-    },
-  });
+  const warnings: string[] = [];
+  const spawned: string[] = [];
+  const switchedTo: string[] = [];
+  let nextPid = 4000;
 
   const ports: HandoffPorts = {
-    preCommitGate: () => {
-      calls.push("preCommitGate");
+    preHandoffStop: () => {
+      calls.push("preHandoffStop");
       return null;
     },
-    beginInputBarrier: () => {
-      calls.push("beginInputBarrier");
-      barrierActive = true;
+    spawnCandidate: (sessionId: string): CandidateChild => {
+      calls.push(`spawnCandidate:${sessionId}`);
+      spawned.push(sessionId);
+      nextPid += 1;
+      return { sessionId, pid: nextPid, child: { write: () => {} } };
     },
-    flushInputBarrier: (child: HandoffChild) => {
-      calls.push("flushInputBarrier");
-      if (!barrierActive) throw new Error("flush without barrier");
-      barrierActive = false;
-      const bytes = Buffer.concat(buffer);
-      buffer = [];
-      if (bytes.length > 0) child.write(bytes.toString("latin1"));
-      return bytes.length;
+    awaitCandidateViable: async () => {
+      calls.push("awaitCandidateViable");
+      return VIABLE;
     },
-    takeInputBarrierBuffer: () => {
-      calls.push("takeInputBarrierBuffer");
-      barrierActive = false;
-      const bytes = Buffer.concat(buffer);
-      buffer = [];
-      return bytes;
+    discardCandidate: async (candidate) => {
+      calls.push(`discardCandidate:${candidate.pid}`);
     },
-    closeOldDescriptor: () => {
-      calls.push("closeOldDescriptor");
+    switchToCandidate: (candidate): SwitchOutcome => {
+      calls.push("switchToCandidate");
+      switchedTo.push(candidate.sessionId);
+      return { captureStarted: true };
     },
-    terminateOldChild: async () => {
-      calls.push("terminateOldChild");
-      return { exited: true, escalated: false };
+    killOldChild: async () => {
+      calls.push("killOldChild");
+      return { exited: true, pid: 999 };
     },
-    stopCurrentCapture: async () => {
-      calls.push("stopCurrentCapture");
-    },
-    spawnChild: (sessionId: string) => {
-      calls.push(`spawnChild:${sessionId}`);
-      return childFor(sessionId);
-    },
-    currentChild: () => childFor("current"),
-    killCurrentChild: async () => {
-      calls.push("killCurrentChild");
-    },
-    startRebuiltCapture: () => {
-      calls.push("startRebuiltCapture");
-    },
-    startRollbackCapture: (oldSessionId: string) => {
-      calls.push(`startRollbackCapture:${oldSessionId}`);
-    },
-    awaitCaptureReady: async () => {
-      calls.push("awaitCaptureReady");
+    awaitReplacementCaptureReady: async () => {
+      calls.push("awaitReplacementCaptureReady");
       return "ready";
     },
-    awaitChildStabilized: async () => {
-      calls.push("awaitChildStabilized");
-      return "stable";
+    reconcileCapture: (reason: string) => {
+      calls.push(`reconcileCapture:${reason}`);
     },
     registerSuccessLineage: async () => {
       calls.push("registerSuccessLineage");
@@ -116,393 +101,219 @@ function makeHarness(overrides: Partial<HandoffPorts> = {}): Harness {
       calls.push("publishReadyDescriptor");
       return true;
     },
-    writeRecoveryArtifact: (artifact) => {
-      calls.push("writeRecoveryArtifact");
-      artifacts.push(artifact);
-      return "/tmp/recovery.json";
-    },
     log: () => {},
+    warn: (message: string) => {
+      warnings.push(message);
+    },
     ...overrides,
   };
 
-  return {
-    ports,
-    calls,
-    writesBySession,
-    artifacts,
-    buffer,
-    setBuffer: (bytes: string[]) => {
-      buffer.length = 0;
-      for (const b of bytes) buffer.push(Buffer.from(b));
-      barrierActive = true;
-    },
-  };
+  return { ports, calls, warnings, spawned, switchedTo };
 }
 
 describe("executeHandoff", () => {
-  it("success path runs in the exact transaction order and flushes input once, in order, to the new child", async () => {
+  it("spawns off-route, proves viability, switches, then kills the old child last", async () => {
     const h = makeHarness();
-    // Buffer arrives after commit (simulated as pre-loaded ordered bytes).
     const result = await executeHandoff(request(), h.ports);
-    // Load bytes via a second run would reset; instead assert order + flush count here:
     expect(result.kind).toBe("success");
     expect(h.calls).toEqual([
-      "preCommitGate",
-      "beginInputBarrier",
-      "closeOldDescriptor",
-      "terminateOldChild",
-      "stopCurrentCapture",
-      "spawnChild:new-2222",
-      "startRebuiltCapture",
-      "awaitCaptureReady",
-      "awaitChildStabilized",
+      "preHandoffStop",
+      "spawnCandidate:new-2222",
+      "awaitCandidateViable",
+      "switchToCandidate",
       "registerSuccessLineage",
+      "killOldChild",
+      "awaitReplacementCaptureReady",
       "publishReadyDescriptor",
-      "flushInputBarrier",
     ]);
-    expect(h.calls.filter((c) => c === "flushInputBarrier")).toHaveLength(1);
+    expect(h.switchedTo).toEqual(["new-2222"]);
   });
 
-  it("delivers buffered bytes in arrival order to exactly the rebound child", async () => {
-    const h = makeHarness();
-    const origBegin = h.ports.beginInputBarrier;
-    h.ports.beginInputBarrier = () => {
-      origBegin();
-      h.setBuffer(["first ", "second ", "third"]);
-    };
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("success");
-    if (result.kind === "success") expect(result.flushedInputBytes).toBe("first second third".length);
-    expect(h.writesBySession["new-2222"]).toEqual(["first second third"]);
-    expect(h.writesBySession["old-1111"]).toBeUndefined();
-  });
-
-  it("pre-commit gate refusal changes nothing: no barrier, no descriptor close, no termination", async () => {
+  it("never touches the old child before the replacement is proven", async () => {
+    const order: string[] = [];
     const h = makeHarness({
-      preCommitGate: () => "input arrived before commit",
+      awaitCandidateViable: async () => {
+        order.push("viability");
+        return VIABLE;
+      },
+      killOldChild: async () => {
+        order.push("kill");
+        return { exited: true, pid: 12 };
+      },
+      switchToCandidate: () => {
+        order.push("switch");
+        return { captureStarted: true };
+      },
     });
-    const result = await executeHandoff(request(), h.ports);
-    expect(result).toEqual({ kind: "cancelled", reason: "input arrived before commit" });
-    expect(h.calls).not.toContain("beginInputBarrier");
-    expect(h.calls).not.toContain("closeOldDescriptor");
-    expect(h.calls).not.toContain("terminateOldChild");
-  });
-
-  it("SIGKILL escalation still succeeds when the child dies on escalation", async () => {
-    const h = makeHarness({
-      terminateOldChild: async () => ({ exited: true, escalated: true }),
-    });
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("success");
-  });
-
-  it("an unkillable old child returns its stdin and reports failed with the child alive", async () => {
-    const h = makeHarness({
-      terminateOldChild: async () => ({ exited: false, escalated: true }),
-    });
-    const origBegin = h.ports.beginInputBarrier;
-    h.ports.beginInputBarrier = () => {
-      origBegin();
-      h.setBuffer(["typed"]);
-    };
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("failed");
-    if (result.kind === "failed") {
-      expect(result.childAlive).toBe(true);
-      expect(result.retainedInputBytes).toBe(0);
-    }
-    // Bytes went back to the still-live current child; no replacement was spawned.
-    expect(h.writesBySession.current).toEqual(["typed"]);
-    expect(h.calls.some((c) => c.startsWith("spawnChild:"))).toBe(false);
-  });
-
-  it("replacement spawn failure rolls back to the old session and flushes input to it after capture is ready", async () => {
-    const h = makeHarness();
-    const origBegin = h.ports.beginInputBarrier;
-    h.ports.beginInputBarrier = () => {
-      origBegin();
-      h.setBuffer(["queued prompt\r"]);
-    };
-    h.ports.spawnChild = (sessionId: string) => {
-      h.calls.push(`spawnChild:${sessionId}`);
-      if (sessionId === "new-2222") throw new Error("ENOENT");
-      return {
-        write: (data: string) => {
-          (h.writesBySession[sessionId] ??= []).push(data);
-        },
-      };
-    };
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("rolled_back");
-    expect(h.calls).toContain("startRollbackCapture:old-1111");
-    expect(h.writesBySession["old-1111"]).toEqual(["queued prompt\r"]);
-    // Success-only lineage: a failed replacement must never register.
-    expect(h.calls).not.toContain("registerSuccessLineage");
-  });
-
-  it("replay failure (capture degraded) kills the replacement and rolls back", async () => {
-    const h = makeHarness();
-    let readyCall = 0;
-    h.ports.awaitCaptureReady = async () => {
-      h.calls.push("awaitCaptureReady");
-      readyCall += 1;
-      return readyCall === 1 ? "degraded" : "ready";
-    };
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("rolled_back");
-    expect(h.calls).toContain("killCurrentChild");
-    expect(h.calls).toContain("startRollbackCapture:old-1111");
-    expect(h.calls).not.toContain("registerSuccessLineage");
-  });
-
-  it("capture-ready timeout rolls back the same way", async () => {
-    const h = makeHarness();
-    let readyCall = 0;
-    h.ports.awaitCaptureReady = async () => {
-      readyCall += 1;
-      return readyCall === 1 ? "timeout" : "ready";
-    };
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("rolled_back");
-    if (result.kind === "rolled_back") expect(result.reason).toMatch(/timeout/);
-  });
-
-  it("rollback spawn failure retains the buffer in a recovery artifact and never claims success", async () => {
-    const h = makeHarness();
-    const origBegin = h.ports.beginInputBarrier;
-    h.ports.beginInputBarrier = () => {
-      origBegin();
-      h.setBuffer(["do not lose me"]);
-    };
-    h.ports.spawnChild = () => {
-      throw new Error("spawn broken");
-    };
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("failed");
-    if (result.kind === "failed") {
-      expect(result.childAlive).toBe(false);
-      expect(result.recoveryArtifactPath).toBe("/tmp/recovery.json");
-      expect(result.retainedInputBytes).toBe("do not lose me".length);
-    }
-    expect(h.artifacts).toHaveLength(1);
-    expect(Buffer.from(h.artifacts[0]!.bufferedInputBase64, "base64").toString()).toBe("do not lose me");
-    expect(h.artifacts[0]!.oldSessionId).toBe("old-1111");
-    expect(h.artifacts[0]!.rebuiltSessionId).toBe("new-2222");
-  });
-
-  it("rollback capture failure keeps the old child alive, retains the buffer, and does not flush", async () => {
-    const h = makeHarness();
-    const origBegin = h.ports.beginInputBarrier;
-    h.ports.beginInputBarrier = () => {
-      origBegin();
-      h.setBuffer(["held"]);
-    };
-    h.ports.spawnChild = (sessionId: string) => {
-      h.calls.push(`spawnChild:${sessionId}`);
-      if (sessionId === "new-2222") throw new Error("ENOENT");
-      return { write: () => {} };
-    };
-    h.ports.awaitCaptureReady = async () => "timeout";
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("failed");
-    if (result.kind === "failed") {
-      expect(result.childAlive).toBe(true);
-      expect(result.retainedInputBytes).toBe(4);
-    }
-    expect(h.calls).not.toContain("flushInputBarrier");
-    expect(h.artifacts).toHaveLength(1);
-  });
-
-  it("capture ready but child exited before liveness proof: rollback, no lineage, no descriptor, no flush", async () => {
-    const h = makeHarness();
-    const origBegin = h.ports.beginInputBarrier;
-    h.ports.beginInputBarrier = () => {
-      origBegin();
-      h.setBuffer(["held bytes"]);
-    };
-    let loadCall = 0;
-    h.ports.awaitChildStabilized = async () => {
-      h.calls.push("awaitChildStabilized");
-      loadCall += 1;
-      // Replacement fails liveness; the rollback child stabilizes normally.
-      return loadCall === 1 ? "exited" : "stable";
-    };
-    // Rollback capture becomes ready; the rollback child needs no growth gate.
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("rolled_back");
-    if (result.kind === "rolled_back") expect(result.reason).toMatch(/child liveness exited/);
-    // The failed replacement never advanced canonical state or received input.
-    expect(h.calls).not.toContain("registerSuccessLineage");
-    expect(h.writesBySession["new-2222"]).toBeUndefined();
-    expect(h.calls).toContain("killCurrentChild");
-    expect(h.calls).toContain("startRollbackCapture:old-1111");
-    // Buffered input went to the rolled-back old child only, after its capture proof.
-    expect(h.writesBySession["old-1111"]).toEqual(["held bytes"]);
-    expect(loadCall).toBe(2);
-  });
-
-  it("capture ready but the child never emits output (timeout): rollback, no lineage, no flush to the replacement", async () => {
-    const h = makeHarness();
-    let livenessCall = 0;
-    h.ports.awaitChildStabilized = async () => {
-      livenessCall += 1;
-      return livenessCall === 1 ? "timeout" : "stable";
-    };
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("rolled_back");
-    if (result.kind === "rolled_back") expect(result.reason).toMatch(/child liveness timeout/);
-    expect(h.calls).not.toContain("registerSuccessLineage");
-    expect(h.writesBySession["new-2222"]).toBeUndefined();
-  });
-
-  it("capture replay alone is not child evidence: success requires output + stability, which permit it", async () => {
-    // Default harness returns ready + stable → success (the positive arm).
-    const h = makeHarness();
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("success");
-    // Lineage/descriptor/flush all sit AFTER the child-load proof.
-    const loadIdx = h.calls.indexOf("awaitChildStabilized");
-    expect(loadIdx).toBeGreaterThan(h.calls.indexOf("awaitCaptureReady"));
-    expect(h.calls.indexOf("registerSuccessLineage")).toBeGreaterThan(loadIdx);
-    expect(h.calls.indexOf("publishReadyDescriptor")).toBeGreaterThan(loadIdx);
-    expect(h.calls.indexOf("flushInputBarrier")).toBeGreaterThan(loadIdx);
-  });
-
-  it("rollback child failing liveness (mute or delayed exit) retains the buffer and never flushes", async () => {
-    const h = makeHarness();
-    const origBegin = h.ports.beginInputBarrier;
-    h.ports.beginInputBarrier = () => {
-      origBegin();
-      h.setBuffer(["precious bytes"]);
-    };
-    // Replacement spawn fails → rollback; the rollback child never proves liveness.
-    h.ports.spawnChild = (sessionId: string) => {
-      h.calls.push(`spawnChild:${sessionId}`);
-      if (sessionId === "new-2222") throw new Error("ENOENT");
-      return {
-        write: (data: string) => {
-          (h.writesBySession[sessionId] ??= []).push(data);
-        },
-      };
-    };
-    h.ports.awaitChildStabilized = async () => {
-      h.calls.push("awaitChildStabilized");
-      return "timeout"; // mute rollback child
-    };
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("failed");
-    if (result.kind === "failed") {
-      expect(result.reason).toMatch(/rollback child liveness timeout/);
-      expect(result.childAlive).toBe(true);
-      expect(result.retainedInputBytes).toBe("precious bytes".length);
-    }
-    // Same input-loss invariant as the forward path: no flush to an unproven child.
-    expect(h.calls).not.toContain("flushInputBarrier");
-    expect(h.writesBySession["old-1111"]).toBeUndefined();
-    expect(h.artifacts).toHaveLength(1);
-    expect(Buffer.from(h.artifacts[0]!.bufferedInputBase64, "base64").toString()).toBe("precious bytes");
-  });
-
-  it("rollback child that exits during liveness reports failed with no live child", async () => {
-    const h = makeHarness();
-    h.ports.spawnChild = (sessionId: string) => {
-      h.calls.push(`spawnChild:${sessionId}`);
-      if (sessionId === "new-2222") throw new Error("ENOENT");
-      return { write: () => {} };
-    };
-    h.ports.awaitChildStabilized = async () => "exited";
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("failed");
-    if (result.kind === "failed") expect(result.childAlive).toBe(false);
-    expect(h.calls).not.toContain("flushInputBarrier");
-  });
-
-  it("a stable rollback child receives the buffer only after both capture and liveness proofs", async () => {
-    const h = makeHarness();
-    const origBegin = h.ports.beginInputBarrier;
-    h.ports.beginInputBarrier = () => {
-      origBegin();
-      h.setBuffer(["queued"]);
-    };
-    h.ports.spawnChild = (sessionId: string) => {
-      h.calls.push(`spawnChild:${sessionId}`);
-      if (sessionId === "new-2222") throw new Error("ENOENT");
-      return {
-        write: (data: string) => {
-          (h.writesBySession[sessionId] ??= []).push(data);
-        },
-      };
-    };
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("rolled_back");
-    expect(h.writesBySession["old-1111"]).toEqual(["queued"]);
-    const flushIdx = h.calls.indexOf("flushInputBarrier");
-    expect(flushIdx).toBeGreaterThan(h.calls.lastIndexOf("awaitCaptureReady"));
-    expect(flushIdx).toBeGreaterThan(h.calls.lastIndexOf("awaitChildStabilized"));
-  });
-
-  it("lineage registration failure is a warning, not a rollback: input still flushes to the live child", async () => {
-    const h = makeHarness({
-      registerSuccessLineage: async () => ({ ok: false, reason: "disk full" }),
-    });
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("success");
-    if (result.kind === "success") expect(result.lineageWarning).toMatch(/disk full/);
-    expect(h.calls).toContain("flushInputBarrier");
-  });
-
-  it("descriptor publish failure is a warning: retrieval stays fail-closed, session lives", async () => {
-    const h = makeHarness({
-      publishReadyDescriptor: () => false,
-    });
-    const result = await executeHandoff(request(), h.ports);
-    expect(result.kind).toBe("success");
-    if (result.kind === "success") expect(result.descriptorWarning).toMatch(/fail-closed/);
-  });
-
-  it("lineage and descriptor advance ONLY after ready-after-replay is proven", async () => {
-    const h = makeHarness();
-    let readyCall = 0;
-    h.ports.awaitCaptureReady = async () => {
-      readyCall += 1;
-      return readyCall === 1 ? "degraded" : "ready";
-    };
     await executeHandoff(request(), h.ports);
-    // The rebuilt generation never proved ready → lineage never registered for it.
+    expect(order).toEqual(["viability", "switch", "kill"]);
+  });
+
+  it("retries a spawn failure while the old session is still live, then succeeds", async () => {
+    let attempt = 0;
+    const h = makeHarness({
+      spawnCandidate: (sessionId: string) => {
+        attempt += 1;
+        if (attempt === 1) throw new Error("EAGAIN");
+        return { sessionId, pid: 7000, child: { write: () => {} } };
+      },
+    });
+    const result = await executeHandoff(request(), h.ports, { replacementAttempts: 2 });
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") expect(result.attempts).toBe(2);
+    expect(h.calls).not.toContain("killOldChild:never");
+  });
+
+  it("discards a candidate that dies and retries a fresh one", async () => {
+    let attempt = 0;
+    const h = makeHarness({
+      awaitCandidateViable: async () => {
+        attempt += 1;
+        return attempt === 1
+          ? { kind: "exited", evidence: { processAlive: false, sessionFileWritten: false } }
+          : VIABLE;
+      },
+    });
+    const result = await executeHandoff(request(), h.ports, { replacementAttempts: 2 });
+    expect(result.kind).toBe("success");
+    expect(h.spawned).toEqual(["new-2222", "new-2222"]);
+    expect(h.calls.filter((c) => c.startsWith("discardCandidate")).length).toBe(1);
+  });
+
+  it("keeps the old session live and untouched when the replacement never becomes viable", async () => {
+    const h = makeHarness({
+      awaitCandidateViable: async () => ({
+        kind: "no_output",
+        evidence: { processAlive: false, sessionFileWritten: false },
+      }),
+    });
+    const result = await executeHandoff(request(), h.ports, { replacementAttempts: 2 });
+    expect(result.kind).toBe("replacement_nonviable");
+    if (result.kind === "replacement_nonviable") {
+      expect(result.attempts).toBe(2);
+      expect(result.oldSessionId).toBe("old-1111");
+    }
+    // Nothing was switched, nothing was killed, nothing was undone.
+    expect(h.calls).not.toContain("switchToCandidate");
+    expect(h.calls).not.toContain("killOldChild");
     expect(h.calls).not.toContain("registerSuccessLineage");
-    // The rollback generation may publish a descriptor, but only after its own ready.
-    const publishIdx = h.calls.indexOf("publishReadyDescriptor");
-    const rollbackReadyIdx = h.calls.lastIndexOf("awaitCaptureReady");
-    if (publishIdx !== -1) expect(publishIdx).toBeGreaterThan(rollbackReadyIdx);
+  });
+
+  it("a pre-handoff stop changes nothing: no spawn, no switch, no termination", async () => {
+    const h = makeHarness();
+    h.ports.preHandoffStop = () => {
+      h.calls.push("preHandoffStop");
+      return "wrapper exiting";
+    };
+    const result = await executeHandoff(request(), h.ports);
+    expect(result).toEqual({ kind: "cancelled", reason: "wrapper exiting" });
+    expect(h.calls).toEqual(["preHandoffStop"]);
+  });
+
+  it("does not require session-file evidence: process viability alone completes the swap", async () => {
+    const h = makeHarness({
+      awaitCandidateViable: async () => ({
+        kind: "viable",
+        evidence: { processAlive: true, sessionFileWritten: false },
+      }),
+    });
+    const result = await executeHandoff(request(), h.ports);
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") expect(result.evidence.sessionFileWritten).toBe(false);
+  });
+
+  it("an unkillable old child is orphaned loudly by PID; the replacement stays live", async () => {
+    const h = makeHarness({ killOldChild: async () => ({ exited: false, pid: 31337 }) });
+    const result = await executeHandoff(request(), h.ports);
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") expect(result.orphanPid).toBe(31337);
+    expect(h.warnings.join("\n")).toContain("ORPHANED old Claude child pid=31337");
+  });
+
+  it("lineage failure is a warning, never a rollback", async () => {
+    const h = makeHarness({
+      registerSuccessLineage: async () => ({ ok: false, reason: "readonly database" }),
+    });
+    const result = await executeHandoff(request(), h.ports);
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") expect(result.lineageWarning).toContain("readonly database");
+    expect(h.calls).toContain("killOldChild");
+  });
+
+  it("descriptor publish failure is a warning: retrieval stays fail-closed, the session lives", async () => {
+    const h = makeHarness({ publishReadyDescriptor: () => false });
+    const result = await executeHandoff(request(), h.ports);
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") expect(result.descriptorWarning).toContain("fail-closed");
+  });
+
+  it("a capture generation that will not start does not kill the replacement — it reconciles", async () => {
+    const h = makeHarness({
+      switchToCandidate: () => ({ captureStarted: false, captureWarning: "replacement capture start failed: EIO" }),
+    });
+    const result = await executeHandoff(request(), h.ports);
+    expect(result.kind).toBe("success");
+    expect(h.calls).not.toContain("awaitReplacementCaptureReady");
+    expect(h.calls.some((c) => c.startsWith("reconcileCapture"))).toBe(true);
+  });
+
+  it("a capture-ready timeout does not kill the replacement — it reconciles", async () => {
+    const h = makeHarness({ awaitReplacementCaptureReady: async () => "timeout" });
+    const result = await executeHandoff(request(), h.ports);
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") expect(result.captureWarning).toContain("timeout");
+    expect(h.calls).toContain("reconcileCapture:replacement capture timeout");
+  });
+
+  it("publishes the retrieval descriptor only after capture has caught up", async () => {
+    const h = makeHarness();
+    await executeHandoff(request(), h.ports);
+    expect(h.calls.indexOf("publishReadyDescriptor")).toBeGreaterThan(
+      h.calls.indexOf("awaitReplacementCaptureReady"),
+    );
+  });
+
+  it("spawns exactly one candidate on the happy path", async () => {
+    const spawn = vi.fn((sessionId: string) => ({ sessionId, pid: 1, child: { write: () => {} } }));
+    const h = makeHarness({ spawnCandidate: spawn });
+    await executeHandoff(request(), h.ports);
+    expect(spawn).toHaveBeenCalledTimes(1);
   });
 });
 
 describe("formatHandoffResult", () => {
-  it("does not call an old-child-survived outcome a recovery write failure", () => {
+  it("names the live replacement", () => {
     expect(
       formatHandoffResult({
-        kind: "failed",
-        reason: "old child did not exit",
-        oldSessionId: "old",
-        rebuiltSessionId: "new",
-        childAlive: true,
-        recoveryArtifactPath: null,
-        retainedInputBytes: 0,
+        kind: "success",
+        newSessionId: "new-2222",
+        evidence: { processAlive: true, sessionFileWritten: true },
+        attempts: 1,
       }),
-    ).toBe("handoff FAILED: old child did not exit; old session old continues; no recovery artifact required");
+    ).toBe("handoff complete — session new-2222 live");
   });
 
-  it("names a real retained-input recovery write failure", () => {
+  it("names an orphaned old child on an otherwise successful swap", () => {
     expect(
       formatHandoffResult({
-        kind: "failed",
-        reason: "rollback failed",
-        oldSessionId: "old",
-        rebuiltSessionId: "new",
-        childAlive: false,
-        recoveryArtifactPath: null,
-        retainedInputBytes: 17,
+        kind: "success",
+        newSessionId: "new-2222",
+        evidence: { processAlive: true, sessionFileWritten: false },
+        attempts: 1,
+        orphanPid: 4242,
       }),
-    ).toContain("recovery artifact write FAILED; retained input 17 byte(s)");
+    ).toContain("old child pid 4242 ORPHANED");
+  });
+
+  it("says the old session continues, and never says rolled back", () => {
+    const text = formatHandoffResult({
+      kind: "replacement_nonviable",
+      reason: "attempt 1: candidate exited",
+      attempts: 2,
+      oldSessionId: "old-1111",
+      rebuiltSessionId: "new-2222",
+    });
+    expect(text).toContain("session old-1111 continues live and unchanged");
+    expect(text).not.toContain("rolled back");
   });
 });

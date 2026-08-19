@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 
@@ -50,8 +48,9 @@ import { type CaptureSession, createCaptureThread, startCaptureSession } from ".
 import { type LaunchThreadBinding, recordSwapAcceptance } from "../intake/thread-alias.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
-import { type ExpectedSession, expectedSessionFromExplicitId } from "../rollout/expected-session.js";
+import type { ExpectedSession } from "../rollout/expected-session.js";
 import { applyClaudeRuntimeSettings, type ClaudeRuntimeSettings } from "../rollout/runtime-settings.js";
+import { statRolloutFile } from "../rollout/stat-file.js";
 import {
   closeAndRemove,
   createOpeningDescriptor,
@@ -66,28 +65,30 @@ import {
   revokeDescriptor,
 } from "../runtime/descriptor.js";
 import { ProcessIdentityUnavailableError } from "../runtime/process-identity.js";
-import { acquireThreadOwner, type ThreadOwnerLease, ThreadOwnershipConflictError } from "../runtime/thread-owner.js";
+import { type ThreadOwnerLease, ThreadOwnershipConflictError } from "../runtime/thread-owner.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { forceKillChildTree, requestPtyTermination, runTaskkillTree } from "./child-termination.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
 import {
+  type CandidateChild,
+  type CandidateViability,
   DEFAULT_CAPTURE_READY_TIMEOUT_MS,
   DEFAULT_CHILD_LIVENESS_TIMEOUT_MS,
   DEFAULT_CHILD_STABLE_WINDOW_MS,
+  DEFAULT_REPLACEMENT_ATTEMPTS,
   executeHandoff,
   formatHandoffResult,
-  type HandoffChild,
   type HandoffPorts,
   type HandoffResult,
-  type RecoveryArtifact,
+  type SwitchOutcome,
 } from "./handoff.js";
 import { createInputDebugLogger } from "./input-debug.js";
+import { consumeLegacyHandoffState } from "./legacy-handoff-state.js";
 import {
   createInputState,
   finishExecuting,
   forceResetInput,
   type InputState,
-  noteUntrackedDeliveredInput,
   processInputChunk,
   resolveBareEsc,
   resolveLeaderByte,
@@ -101,6 +102,12 @@ import {
 } from "./native-auto-compact.js";
 import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
+import {
+  DEFAULT_NONVIABLE_SWAP_LIMIT,
+  formatReplacementWallAlarm,
+  formatSurvivalRelaunchNotice,
+} from "./replacement-wall.js";
+import { TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
 
 const DEFAULT_COLS = 80;
@@ -214,8 +221,10 @@ export type RunOptions = {
     childLivenessTimeoutMs?: number;
     childStableWindowMs?: number;
   };
-  /** Test hook: recovery artifact directory (defaults to ~/.cc-lhc/recovery). */
-  recoveryDir?: string;
+  /** Test hook: spawn/viability attempts per swap before the R6 wall counts one. */
+  replacementAttempts?: number;
+  /** Test hook: nonviable swaps allowed before the standing R6 alarm rises. */
+  nonviableSwapLimit?: number;
   /** Disable the hazardous-command notifier for this launch (--lhc-no-notifier). */
   notifierDisabled?: boolean;
 };
@@ -289,6 +298,20 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   wrapperLog.info(
     `cc-lhc context policy autoCompact=${resolvedContextPolicy.policy.autoCompact} lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
   );
+
+  // Durable handoff state from a pre-rewrite build is consumed here, once, on
+  // the way up: an input journal or an open attempt row means input may not
+  // have been delivered, so the operator is told to resend and the state is
+  // cleared. It is never inspected for delivery state and never wedges a launch.
+  const legacyHandoffState = consumeLegacyHandoffState({
+    home: ccLhcHome(),
+    lineageDbPath: defaultLineageDbPath(),
+  });
+  for (const notice of legacyHandoffState.notices) {
+    wrapperLog.warn(notice);
+    stderr.write(`${notice}\n`);
+    startupAnomalyNotices.push(notice);
+  }
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
   /** Most recent non-success outcome (health visibility; never claims success). */
   let lastAttempt: { summary: string; atMs: number } | null = null;
@@ -567,18 +590,24 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let descriptorCapabilityRevoked = false;
   let resolveRun: ((code: number) => void) | undefined;
 
-  // ---- Slice 4 controlled-handoff state ----
-  /** Post-commit stdin bytes, in arrival order; null = normal forwarding. */
-  let inputBarrier: Buffer[] | null = null;
-  /** True from commit until the handoff settles; suppresses teardown-on-exit. */
+  // ---- controlled-handoff state ----
+  /**
+   * True from the moment compact claims the settled session until the whole
+   * operation settles. While it holds, stdin is not forwarded and not buffered:
+   * typed-ahead bytes are dropped and the operator is told once to resend.
+   */
+  let compactOwnsInput = false;
+  /** Bytes typed while compact owned input. Counted only to raise the notice. */
+  let droppedInputBytes = 0;
+  /** True from claim until the operation settles; suppresses teardown-on-exit. */
   let handoffInProgress = false;
-  /** The child whose exit the handoff expects (old child during termination). */
+  /** The child whose exit a termination is waiting for. */
   let expectedExitPty: IPty | null = null;
   let expectedExitResolve: (() => void) | null = null;
-  /** Set when any child dies while a handoff is mid-flight (fast-fails ready wait). */
-  let childDiedDuringHandoff = false;
-  /** PTY output bytes from the current child (liveness signal, never parsed). */
-  let currentChildOutputBytes = 0;
+  /** Swaps whose replacement never became viable, this wrapper lifetime. */
+  let nonviableSwaps = 0;
+  /** The standing R6 alarm once the wall is declared. Never cleared. */
+  let standingWallAlarm: string[] = [];
   /** Recorded ONLY after a confirmed successful handoff. */
   let lastAction: {
     operation: string;
@@ -724,41 +753,57 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let captureRebuildInFlight = false;
 
   /**
-   * Degraded capture is a reason to reconcile, never a reason to let the
-   * session die oversized. The rollout file is the persisted transcript and
-   * every intake event carries a content-stable idempotency key, so re-reading
-   * it from the top is the same thing a fresh `--resume` does: already-recorded
-   * events are skipped and anything missed lands. One rebuild per degraded
-   * generation; a later settled seam paces the next one.
+   * Everything capture needs to be restarted on whichever session is routed,
+   * kept outside the live session object so a capture that failed to start —
+   * or one whose object is gone — can still be reconciled forward.
+   */
+  let captureContinuation:
+    | {
+        threadRef: import("lhc").ThreadRef;
+        sdk: import("lhc").Lhc;
+        stats: import("../stats.js").CaptureStats;
+        generation: number;
+        sessionId: string;
+      }
+    | undefined;
+
+  /**
+   * Degraded, missing, or never-started capture is a reason to reconcile, never
+   * a reason to let the session die oversized. The rollout file is the
+   * persisted transcript and every intake event carries a content-stable
+   * idempotency key, so re-reading it from the top is the same thing a fresh
+   * `--resume` does: already-recorded events are skipped and anything missed
+   * lands. One rebuild per generation; a later settled seam paces the next one.
    *
    * Runs off the capture batch path — stopping capture inline would deadlock
    * the queue this callback runs on.
    */
-  const rebuildCaptureFromTranscript = (): void => {
-    if (captureRebuildInFlight || handoffInProgress || commandGuard.current() !== null) return;
+  const rebuildCaptureFromTranscript = (force = false): void => {
+    if (captureRebuildInFlight) return;
+    if (!force && (handoffInProgress || commandGuard.current() !== null)) return;
     const degraded = captureSession;
-    if (degraded === undefined) return;
-    const ctx = degraded.getCommandContext();
-    const rollout = degraded.getRolloutInfo();
-    const sessionId = rollout.sessionId;
-    if (ctx.sdk === undefined || ctx.threadRef === undefined || sessionId === undefined) return;
-    const generation = degraded.getCaptureGeneration();
-    if (captureRebuildForGeneration === generation) return;
+    const ctx = degraded?.getCommandContext();
+    const rollout = degraded?.getRolloutInfo();
+    const threadRef = ctx?.threadRef ?? captureContinuation?.threadRef;
+    const sdk = ctx?.sdk ?? captureContinuation?.sdk;
+    const sessionId = rollout?.sessionId ?? captureContinuation?.sessionId;
+    const stats = degraded?.stats ?? captureContinuation?.stats;
+    if (sdk === undefined || threadRef === undefined || sessionId === undefined || stats === undefined) return;
+    const generation = degraded?.getCaptureGeneration() ?? captureContinuation?.generation ?? 0;
+    if (!force && captureRebuildForGeneration === generation) return;
     captureRebuildForGeneration = generation;
     captureRebuildInFlight = true;
-    const threadRef = ctx.threadRef;
-    const sdk = ctx.sdk;
     wrapperLog.warn(
-      `cc-lhc capture rebuild: re-reading transcript for session ${sessionId} after degraded generation ${generation}`,
+      `cc-lhc capture rebuild: re-reading transcript for session ${sessionId} after generation ${generation}`,
     );
     setImmediate(() => {
       void (async () => {
         try {
-          await degraded.stop().catch(() => {});
+          await degraded?.stop().catch(() => {});
           captureSession = startCaptureSession({
             startedAt: new Date(),
             noInference,
-            continueCapture: { threadRef, sdk, stats: degraded.stats, priorGeneration: generation },
+            continueCapture: { threadRef, sdk, stats, priorGeneration: generation },
             expectedSession: { sessionId, source: "explicit_resume" },
             lineageDbPath: defaultLineageDbPath(),
             log: (message) => wrapperLog.info(message),
@@ -766,6 +811,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             onLifecycle: onCaptureLifecycle,
             onRuntimeSettings,
           });
+          captureContinuation = {
+            threadRef,
+            sdk,
+            stats,
+            sessionId,
+            generation: captureSession.getCaptureGeneration(),
+          };
         } catch (cause) {
           wrapperLog.warn(
             `cc-lhc capture rebuild failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -870,6 +922,24 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         "auto_operation_in_flight",
         "another automatic operation already owns the flight; coalesced (no second mutation)",
       );
+    } else if (standingWallAlarm.length > 0) {
+      // The R6 wall is up: replacements repeatedly would not run, the old
+      // session was relaunched so native compaction keeps it alive, and the
+      // alarm stands until an operator acts. Retrying the swap on every seam
+      // from here is the quiet retry loop the ruling forbids. Capture and
+      // manual compact keep working.
+      attachGovernorHandoffOutcome(
+        receiptId,
+        {
+          kind: "mutation_refused",
+          detail: "replacement incompatibility alarm standing; automatic swaps suspended",
+        },
+        { mutationBegan: false },
+      );
+      wrapperLog.warn(
+        `cc-lhc governor: wouldMutate refused — ${standingWallAlarm[0] ?? "replacement wall"} [receipt ${receiptId}]`,
+      );
+      lastAttempt = { summary: "auto compact suspended: replacement incompatibility alarm", atMs: Date.now() };
     } else if (respawnUnsafeReason !== null) {
       // Respawn cannot safely replace the child: refuse, do not pretend scheduled.
       attachGovernorHandoffOutcome(
@@ -1333,21 +1403,19 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         return;
       }
       startExecutingTicker();
-      // Manual mutating commands share the automatic path's cancel fence: any
-      // pty-bound user byte from dispatch start cancels before commit.
-      const epochAtStart = governorState.currentInputEpoch;
-      const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
+      // A mutating manual command owns the settled session's input for the
+      // whole operation, exactly like the automatic path.
+      const mutating = label === "compact" || label.startsWith("prune");
+      if (mutating) takeInputOwnership();
       // A synchronous throw (runtime-snapshot construction, dispatch setup)
       // must not escape into the stdin data handler as an uncaught exception —
       // settle it exactly like an async failure.
       let dispatched: Promise<DispatchOutcome>;
       try {
-        dispatched = dispatchLhcCommand(commandLine, {
-          ...commandRuntime(),
-          inputEpochChanged: epochChanged,
-        });
+        dispatched = dispatchLhcCommand(commandLine, commandRuntime());
       } catch (cause) {
         const message = cause instanceof Error ? cause.message : String(cause);
+        if (mutating) releaseInputOwnership();
         settleCommand([`command error: ${message}`], label);
         commandGuard.release();
         return;
@@ -1364,7 +1432,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             altScreen.leave();
             outputHold.flush();
             try {
-              const result = await performHandoff(outcome.handoff, epochChanged);
+              const result = await performHandoff(outcome.handoff);
               const summary = formatHandoffResult(result);
               const extra: string[] = [];
               if (result.kind === "cancelled" && respawnUnsafeReason !== null) {
@@ -1411,6 +1479,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         })
         .finally(() => {
           stopExecutingTicker();
+          if (mutating) releaseInputOwnership();
           commandGuard.release();
         });
     };
@@ -1427,6 +1496,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const buildPanelStatusRows = (): string[] => {
       const policy = resolvedContextPolicy.policy;
       const rows: string[] = ["LHC context management"];
+      // The standing R6 alarm sits above everything: it is the one condition
+      // where cc-lhc has stopped swapping and the operator has to act.
+      for (const line of standingWallAlarm) rows.push(line);
 
       const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
       const retrievalState =
@@ -1521,9 +1593,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           outputHold.flush();
           if (action.enterBytes.length > 0) {
             // The user's own Enter, delivered exactly once — it is input
-            // reaching Claude, so it bumps the governor epoch like any byte.
-            governorState = noteGovernorInput(governorState);
-            currentPty.write(Buffer.from(action.enterBytes).toString("latin1"));
+            // reaching Claude, so it bumps the governor epoch like any byte and
+            // is dropped like any byte while compact owns the session.
+            if (compactOwnsInput) droppedInputBytes += action.enterBytes.length;
+            else {
+              governorState = noteGovernorInput(governorState);
+              currentPty.write(Buffer.from(action.enterBytes).toString("latin1"));
+            }
           }
         } else if (action.kind === "notifier_return") {
           altScreen.leave();
@@ -1570,59 +1646,125 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     };
 
     const forwardInput = (data: Buffer): void => {
-      // Post-commit barrier: preserve every byte in arrival order, raw. No
-      // terminal semantics are inferred from buffered bytes.
-      if (inputBarrier !== null) {
-        inputBarrier.push(Buffer.from(data));
-        return;
-      }
       const result = processInputChunk(data, inputState);
       inputState = result.state;
       debugInput(data, inputState);
-      // User bytes reaching Claude bump the input epoch. This is a receipt
-      // diagnostic — what the operator typed and when — not a veto: bytes typed
-      // during a turn belong to the next one and cannot invalidate the history
-      // that already settled.
       if (result.toPty.length > 0) {
-        governorState = noteGovernorInput(governorState);
-        currentPty.write(result.toPty);
+        // Bytes bound for Claude bump the input epoch. That is a receipt
+        // diagnostic — what the operator typed and when — never a veto: bytes
+        // typed during a turn belong to the next one and cannot invalidate the
+        // history that already settled.
+        //
+        // While compact owns the settled session they are dropped instead of
+        // delivered, and never held for replay into a replacement. The wrapper's
+        // own UI keeps working; only the path to Claude is closed.
+        if (compactOwnsInput) droppedInputBytes += result.toPty.length;
+        else {
+          governorState = noteGovernorInput(governorState);
+          currentPty.write(result.toPty);
+        }
       }
       applyActions(result.actions);
       renderModalPanel();
       armPendingEscTimer();
     };
 
-    /** Per-child exit routing: expected handoff exits resolve the waiter; a
-     * stale (replaced) child's exit is ignored; the live child's exit tears
-     * down — except mid-handoff, where the failure surfaces via ready-wait. */
-    const handleChildExit = (pty: IPty, exitCode: number, signal?: number): void => {
-      if (expectedExitPty === pty) {
+    /**
+     * One Claude child the wrapper spawned. Exactly one record is `routed` at
+     * any moment: it owns the terminal and stdin. A candidate is a real,
+     * running child that owns neither — its render is held until the switch
+     * promotes it, and the child it replaces keeps rendering into a void.
+     */
+    interface ChildRecord {
+      pty: IPty;
+      sessionId: string;
+      routed: boolean;
+      exited: boolean;
+      /** Non-semantic liveness signal: bytes counted, never parsed. */
+      outputBytes: number;
+      /** Render held while off-route, replayed to the terminal at the switch. */
+      held: string[];
+      heldBytes: number;
+    }
+
+    /** Cap on a candidate's held render before older bytes are dropped. */
+    const CANDIDATE_HOLD_CAP_BYTES = 1024 * 1024;
+
+    const childRecords = new Map<IPty, ChildRecord>();
+
+    /** Per-child exit routing: an awaited termination resolves its waiter; an
+     * unrouted child's exit changes nothing; the routed child's exit tears down
+     * — except mid-operation, where the swap decides what happens next. */
+    const handleChildExit = (record: ChildRecord, exitCode: number, signal?: number): void => {
+      record.exited = true;
+      if (expectedExitPty === record.pty) {
         expectedExitPty = null;
         const resolveWaiter = expectedExitResolve;
         expectedExitResolve = null;
         resolveWaiter?.();
         return;
       }
-      if (pty !== currentPty) return;
-      if (handoffInProgress) {
-        childDiedDuringHandoff = true;
-        return;
-      }
+      if (!record.routed) return;
+      // Mid-operation the swap decides what happens next: performHandoff checks
+      // for a live routed child when it settles, and exits only if there is none.
+      if (handoffInProgress) return;
       if (exited) return;
       void teardownAndExit(signal !== undefined && signal !== 0 ? 128 + signal : (exitCode ?? 1));
     };
 
-    const attachChild = (pty: IPty): void => {
-      currentPty = pty;
-      currentChildOutputBytes = 0;
+    const attachChild = (pty: IPty, sessionId: string, routed: boolean): ChildRecord => {
+      const record: ChildRecord = {
+        pty,
+        sessionId,
+        routed,
+        exited: false,
+        outputBytes: 0,
+        held: [],
+        heldBytes: 0,
+      };
+      childRecords.set(pty, record);
+      if (routed) currentPty = pty;
       pty.onData((data: string) => {
-        // Non-semantic liveness signal only: count bytes, never parse them.
-        if (pty === currentPty) currentChildOutputBytes += data.length;
-        forwardOutput(data);
+        record.outputBytes += data.length;
+        if (record.routed) {
+          forwardOutput(data);
+          return;
+        }
+        record.held.push(data);
+        record.heldBytes += data.length;
+        while (record.heldBytes > CANDIDATE_HOLD_CAP_BYTES && record.held.length > 1) {
+          record.heldBytes -= record.held.shift()!.length;
+        }
       });
       pty.onExit(({ exitCode, signal }) => {
-        handleChildExit(pty, exitCode, signal);
+        handleChildExit(record, exitCode, signal);
       });
+      return record;
+    };
+
+    /**
+     * THE SWITCH. Routing moves from the currently routed child to the
+     * candidate in one synchronous step: after it returns, stdin reaches only
+     * the candidate, only the candidate's output reaches the terminal, and
+     * every later byte from the old child is dropped on the floor.
+     *
+     * The panel cannot survive a child swap, so the wrapper closes its own UI
+     * here rather than letting an open panel veto the switch.
+     */
+    const switchRoutingTo = (record: ChildRecord): void => {
+      const previous = childRecords.get(currentPty);
+      if (previous !== undefined) previous.routed = false;
+      restoreIfModal();
+      currentPty = record.pty;
+      record.routed = true;
+      onTerminalResize(record.pty, stdout);
+      const held = record.held.join("");
+      record.held = [];
+      record.heldBytes = 0;
+      // The dead session's frame is still on screen; clear before the
+      // replacement's own render lands so the two never interleave.
+      forwardOutput("\x1b[2J\x1b[3J\x1b[H");
+      if (held.length > 0) forwardOutput(held);
     };
 
     // ---- Slice 4: controlled handoff machinery ----
@@ -1631,6 +1773,36 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const captureReadyTimeoutMs = options.handoffTimeouts?.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY_TIMEOUT_MS;
     const childLivenessTimeoutMs = options.handoffTimeouts?.childLivenessTimeoutMs ?? DEFAULT_CHILD_LIVENESS_TIMEOUT_MS;
     const childStableWindowMs = options.handoffTimeouts?.childStableWindowMs ?? DEFAULT_CHILD_STABLE_WINDOW_MS;
+    const replacementAttempts = options.replacementAttempts ?? DEFAULT_REPLACEMENT_ATTEMPTS;
+    const nonviableSwapLimit = options.nonviableSwapLimit ?? DEFAULT_NONVIABLE_SWAP_LIMIT;
+
+    /**
+     * One line the wrapper puts on the terminal over Claude's screen. Reserved
+     * for the two facts the operator cannot be allowed to miss: input typed
+     * during compaction was dropped, and the standing R6 alarm.
+     */
+    const writeWrapperLine = (text: string): void => {
+      stdout.write(`\r\n\x1b[2K[cc-lhc] ${text.replace(/\n/g, " ")}\r\n`);
+    };
+
+    /**
+     * Compact takes ownership of the settled session's input here. From this
+     * moment nothing the operator types reaches Claude: it is dropped, counted,
+     * and reported once when the operation settles.
+     */
+    const takeInputOwnership = (): void => {
+      compactOwnsInput = true;
+      droppedInputBytes = 0;
+    };
+
+    const releaseInputOwnership = (): void => {
+      compactOwnsInput = false;
+      if (droppedInputBytes === 0) return;
+      wrapperLog.warn(`cc-lhc: dropped ${droppedInputBytes} typed-ahead byte(s) during compaction`);
+      writeWrapperLine(TYPED_AHEAD_RESEND_NOTICE);
+      pendingPanelNotices = [...pendingPanelNotices, TYPED_AHEAD_RESEND_NOTICE];
+      droppedInputBytes = 0;
+    };
 
     const waitForExpectedExit = (timeoutMs: number): Promise<boolean> =>
       new Promise<boolean>((resolveWait) => {
@@ -1649,24 +1821,42 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         };
       });
 
-    /** Spawn a claude child for `--resume <sessionId>` with a fresh opening
-     * descriptor generation; attaches output/exit handlers. */
-    const spawnHandoffChild = (sessionId: string): HandoffChild => {
+    /**
+     * Spawn `claude --resume <sessionId>` OFF-ROUTE. The candidate is a real
+     * running child with its own opening descriptor, but it owns nothing: no
+     * terminal, no stdin, no capture generation. The wrapper's active
+     * descriptor is untouched — the old child is still serving retrieval and
+     * keeps its capability until the switch.
+     *
+     * `injectNativeDisable` is false only for R16's survival relaunch, where
+     * the whole point is to hand the session back to Claude's own compaction.
+     */
+    interface CandidateSpawn {
+      candidate: CandidateChild;
+      record: ChildRecord;
+      descriptorPath: string | undefined;
+      descriptor: RuntimeDescriptorV1 | undefined;
+      /** Rollout path + size at spawn: the baseline for session-file evidence. */
+      sessionFile: { path: string; baselineBytes: number } | undefined;
+    }
+
+    const spawnCandidateChild = (
+      sessionId: string,
+      injectNativeDisable: boolean,
+      sessionFile?: { path: string; baselineBytes: number },
+    ): CandidateSpawn => {
       let respawnArgv = respawnChildArgv(respawnRest, respawnPassthrough, sessionId);
       if (handoffRuntimeSettings !== undefined) {
         respawnArgv = applyClaudeRuntimeSettings(respawnArgv, handoffRuntimeSettings);
       }
-      // Fresh descriptor per child generation: the old one is closed at commit;
-      // ready→ready with a different binding is an illegal transition.
-      descriptorCapabilityRevoked = false;
-      runtimeDescriptorPath = undefined;
-      runtimeDescriptor = undefined;
+      let descriptorPath: string | undefined;
+      let descriptor: RuntimeDescriptorV1 | undefined;
       try {
-        runtimeDescriptorPath = newDescriptorPath(undefined, descriptorIo);
-        runtimeDescriptor = createOpeningDescriptor(runtimeDescriptorPath, descriptorIo);
+        descriptorPath = newDescriptorPath(undefined, descriptorIo);
+        descriptor = createOpeningDescriptor(descriptorPath, descriptorIo);
       } catch (cause) {
-        runtimeDescriptorPath = undefined;
-        runtimeDescriptor = undefined;
+        descriptorPath = undefined;
+        descriptor = undefined;
         wrapperLog.warn(
           `cc-lhc handoff descriptor create failed (retrieval stays unavailable): ${cause instanceof Error ? cause.message : String(cause)}`,
         );
@@ -1674,20 +1864,138 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const guided = injectRetrievalGuidance(respawnArgv);
       if (guided.ok) respawnArgv = guided.argv;
       else wrapperLog.warn(`cc-lhc handoff: retrieval guidance not injected: ${guided.reason}`);
-      const env: Record<string, string> = disableNativeAutoCompact
+      const env: Record<string, string> = injectNativeDisable
         ? nativeAutoCompactChildEnv(process.env as Record<string, string>, false)
         : { ...(process.env as Record<string, string>) };
-      if (runtimeDescriptorPath !== undefined) env[RUNTIME_DESCRIPTOR_ENV] = runtimeDescriptorPath;
+      if (descriptorPath !== undefined) env[RUNTIME_DESCRIPTOR_ENV] = descriptorPath;
       wrapperLog.info(`cc-lhc handoff spawn: ${claudeBin} ${respawnArgv.join(" ")}`);
-      const pty = spawnPty(claudeBin, respawnArgv, {
-        name: TERM_NAME,
-        cols: stdout.columns ?? DEFAULT_COLS,
-        rows: stdout.rows ?? DEFAULT_ROWS,
-        cwd: process.cwd(),
-        env,
+      let pty: IPty;
+      try {
+        pty = spawnPty(claudeBin, respawnArgv, {
+          name: TERM_NAME,
+          cols: stdout.columns ?? DEFAULT_COLS,
+          rows: stdout.rows ?? DEFAULT_ROWS,
+          cwd: process.cwd(),
+          env,
+        });
+      } catch (cause) {
+        if (descriptorPath !== undefined) {
+          const rev = closeAndRemove(descriptorPath, descriptor, descriptorIo);
+          if (!rev.ok) wrapperLog.warn(`cc-lhc handoff: candidate descriptor revoke unproven: ${rev.reason}`);
+        }
+        throw cause;
+      }
+      const record = attachChild(pty, sessionId, false);
+      return {
+        candidate: { sessionId, pid: pty.pid, child: { write: (data: string) => pty.write(data) } },
+        record,
+        descriptorPath,
+        descriptor,
+        sessionFile,
+      };
+    };
+
+    const tickWait = (): Promise<void> =>
+      new Promise((resolveTick) => {
+        const tick = setTimeout(resolveTick, 25);
+        tick.unref?.();
       });
-      attachChild(pty);
-      return { write: (data: string) => pty.write(data) };
+
+    /**
+     * Observable viability for a candidate, established while the old session
+     * is still live and untouched.
+     *
+     * The decisive evidence is the process: it rendered and then survived the
+     * stabilization window. Session-file growth is collected alongside it as
+     * corroborating evidence — a rebuilt rollout Claude accepted and appended
+     * to — and recorded either way, because a healthy resumed child may render
+     * its whole history without writing a byte until the next interaction.
+     * Requiring it would be a stop that can never clear. Prompt intake is never
+     * consulted here at all.
+     */
+    const awaitCandidateViable = async (
+      spawn: CandidateSpawn,
+      timeoutMs: number,
+      stableWindowMs: number,
+    ): Promise<CandidateViability> => {
+      const record = spawn.record;
+      let sessionFileWritten = false;
+      let lastFileCheckMs = 0;
+      const observeSessionFile = async (): Promise<void> => {
+        if (sessionFileWritten || spawn.sessionFile === undefined) return;
+        const nowMs = Date.now();
+        if (nowMs - lastFileCheckMs < 250) return;
+        lastFileCheckMs = nowMs;
+        const stat = await statRolloutFile(spawn.sessionFile.path);
+        if (stat !== null && stat.size > spawn.sessionFile.baselineBytes) sessionFileWritten = true;
+      };
+      const evidence = (processAlive: boolean): { processAlive: boolean; sessionFileWritten: boolean } => ({
+        processAlive,
+        sessionFileWritten,
+      });
+
+      const startMs = Date.now();
+      for (;;) {
+        await observeSessionFile();
+        if (record.exited) return { kind: "exited", evidence: evidence(false) };
+        if (record.outputBytes > 0) break;
+        if (Date.now() - startMs > timeoutMs) return { kind: "no_output", evidence: evidence(false) };
+        await tickWait();
+      }
+      const stableStartMs = Date.now();
+      for (;;) {
+        await observeSessionFile();
+        if (record.exited) return { kind: "exited", evidence: evidence(false) };
+        if (Date.now() - stableStartMs >= stableWindowMs) break;
+        await tickWait();
+      }
+      await observeSessionFile();
+      return { kind: "viable", evidence: evidence(true) };
+    };
+
+    /** Force-kill a child tree and wait, bounded, for it to actually go. */
+    const terminateChild = async (pty: IPty, graceful: boolean): Promise<boolean> => {
+      expectedExitPty = pty;
+      expectedExitResolve = null;
+      if (graceful) {
+        const initial = requestPtyTermination(pty, process.platform, "SIGTERM");
+        wrapperLog.info(`cc-lhc handoff: requested child termination pid=${pty.pid} via ${initial.method}`);
+        if (await waitForExpectedExit(sigtermGraceMs)) return true;
+        expectedExitPty = pty;
+        expectedExitResolve = null;
+      }
+      const forced = await forceKillChildTree(pty.pid, {
+        platform: process.platform,
+        selfPid: process.pid,
+        killGroup: (pid) => process.kill(-pid, "SIGKILL"),
+        closePty: () => {
+          if (process.platform === "win32") pty.kill();
+          else pty.kill("SIGKILL");
+        },
+        taskkill: (pid) => runTaskkillTree(pid),
+      });
+      wrapperLog.info(
+        `cc-lhc handoff: forced child termination pid=${pty.pid} via ${forced.method} ` +
+          `(${forced.attempted.join(",") || "none"})`,
+      );
+      const killed = await waitForExpectedExit(sigkillWaitMs);
+      if (!killed) expectedExitPty = null;
+      return killed;
+    };
+
+    /**
+     * Adopt a candidate's descriptor as the active retrieval capability and
+     * close the one the outgoing generation was using.
+     */
+    const adoptCandidateDescriptor = (spawn: CandidateSpawn): void => {
+      const outgoingPath = runtimeDescriptorPath;
+      const outgoing = runtimeDescriptor;
+      runtimeDescriptorPath = spawn.descriptorPath;
+      runtimeDescriptor = spawn.descriptor;
+      descriptorCapabilityRevoked = false;
+      if (outgoingPath === undefined) return;
+      const rev = revokeCapability(outgoingPath, outgoing, "closed", undefined, descriptorIo);
+      if (!rev.ok) wrapperLog.warn(`cc-lhc handoff: old descriptor revoke unproven: ${rev.reason}`);
     };
 
     const awaitCaptureReadyAfterReplay = async (timeoutMs: number): Promise<"ready" | "degraded" | "timeout"> => {
@@ -1695,216 +2003,144 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       for (;;) {
         if (captureSession?.isCaptureReady() === true) return "ready";
         if (captureSession?.getCaptureHealth().phase === "degraded") return "degraded";
-        if (childDiedDuringHandoff) return "degraded";
+        if (childRecords.get(currentPty)?.exited === true) return "degraded";
         if (Date.now() - startMs > timeoutMs) return "timeout";
-        await new Promise((resolveTick) => {
-          const tick = setTimeout(resolveTick, 25);
-          tick.unref?.();
+        await tickWait();
+      }
+    };
+
+    /**
+     * Move the capture generation onto the rebuilt session, as part of the
+     * switch. The outgoing generation's final flush is fired and forgotten: its
+     * rollout file is never deleted, so anything it misses stays recoverable,
+     * and a drain that hangs or throws must never reach the live replacement.
+     */
+    const switchCaptureToRebuilt = (request: HandoffRequest): SwitchOutcome => {
+      const dying = captureSession;
+      const ctx = dying?.getCommandContext();
+      const threadRef = ctx?.threadRef ?? captureContinuation?.threadRef;
+      const sdk = ctx?.sdk ?? captureContinuation?.sdk;
+      const stats = dying?.stats ?? captureContinuation?.stats;
+      const priorGeneration = dying?.getCaptureGeneration() ?? captureContinuation?.generation ?? 0;
+      if (dying !== undefined) {
+        void dying.stop().catch((cause: unknown) => {
+          wrapperLog.warn(
+            `cc-lhc handoff: old-generation capture drain failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
         });
       }
-    };
-
-    const writeRecoveryArtifactFile = (artifact: RecoveryArtifact): string | null => {
+      if (sdk === undefined || threadRef === undefined || stats === undefined) {
+        captureSession = undefined;
+        return { captureStarted: false, captureWarning: "no capture context to continue onto the replacement" };
+      }
       try {
-        const dir = options.recoveryDir ?? join(ccLhcHome(), "recovery");
-        mkdirSync(dir, { recursive: true });
-        const path = join(dir, `handoff-${Date.now()}-${process.pid}.json`);
-        writeFileSync(path, `${JSON.stringify(artifact, null, 2)}\n`, { mode: 0o600 });
-        return path;
+        captureSession = startCaptureSession({
+          startedAt: new Date(),
+          noInference,
+          continueCapture: { threadRef, sdk, stats, priorGeneration },
+          expectedSession: { sessionId: request.rebuilt.sessionId, source: "rebuilt_handoff" },
+          knownRolloutPath: request.rebuilt.rolloutPath,
+          prefixBoundary: request.rebuilt.prefixBoundary,
+          suppressBindLineageRecord: true,
+          lineageDbPath: defaultLineageDbPath(),
+          log: (message) => wrapperLog.info(message),
+          logError: (message) => wrapperLog.warn(message),
+          onLifecycle: onCaptureLifecycle,
+          onRuntimeSettings,
+        });
+        captureContinuation = {
+          threadRef,
+          sdk,
+          stats,
+          sessionId: request.rebuilt.sessionId,
+          generation: captureSession.getCaptureGeneration(),
+        };
+        return { captureStarted: true };
       } catch (cause) {
-        wrapperLog.warn(
-          `cc-lhc handoff recovery artifact write failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-        );
-        return null;
+        captureSession = undefined;
+        captureContinuation = {
+          threadRef,
+          sdk,
+          stats,
+          sessionId: request.rebuilt.sessionId,
+          generation: priorGeneration,
+        };
+        return {
+          captureStarted: false,
+          captureWarning: `replacement capture start failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        };
       }
     };
 
-    /** Execute the controlled handoff for a rebuilt session. Shared by manual
-     * compact/prune and the automatic governor path.
-     * When `governorReceiptId` is set (automatic path), outcomes attach only to
-     * that exact receipt. Manual compact/prune leave governor receipts alone.
+    /**
+     * Execute the controlled handoff for a rebuilt session. Shared by manual
+     * compact/prune and the automatic governor path. When `governorReceiptId`
+     * is set (automatic path), outcomes attach only to that exact receipt;
+     * manual compact/prune leave governor receipts alone.
      */
     const performHandoff = async (
       request: HandoffRequest,
-      inputEpochChanged: () => boolean,
       governorReceiptId?: string | null,
     ): Promise<HandoffResult> => {
       handoffInProgress = true;
-      childDiedDuringHandoff = false;
-      const leaseGeneration = captureSession?.getCaptureGeneration() ?? 0;
-      const oldCaptureSnapshot = captureSession;
       handoffRuntimeSettings = { ...observedRuntimeSettings };
+      const oldPty = currentPty;
+      const spawns = new Map<number, CandidateSpawn>();
       const ports: HandoffPorts = {
-        preCommitGate: (): string | null => {
+        preHandoffStop: (): string | null => {
           if (respawnUnsafeReason !== null) {
             return `respawn unavailable for this launch form: ${respawnUnsafeReason}`;
           }
           if (exited) return "wrapper exiting";
-          if (oldCaptureSnapshot === undefined) return "capture not available";
-          if (inputEpochChanged()) return "input arrived before commit";
-          if (oldCaptureSnapshot.isTurnOpen()) return "turn opened during rebuild";
-          if (!oldCaptureSnapshot.isCaptureReady()) return "capture not ready";
-          if (oldCaptureSnapshot.getCaptureGeneration() !== leaseGeneration) {
-            return "capture generation changed";
-          }
-          if (inputState.mode !== "passthrough") return "modal/UI owns the input line";
           return null;
         },
-        beginInputBarrier: (): void => {
-          inputBarrier = [];
-        },
-        flushInputBarrier: (child: HandoffChild): number => {
-          const bytes = inputBarrier === null ? Buffer.alloc(0) : Buffer.concat(inputBarrier);
-          inputBarrier = null;
-          if (bytes.length > 0) {
-            child.write(bytes.toString("latin1"));
-            // These bytes reached the child without passing the hazard shadow.
-            inputState = noteUntrackedDeliveredInput(inputState, bytes);
-          }
-          return bytes.length;
-        },
-        takeInputBarrierBuffer: (): Buffer => {
-          const bytes = inputBarrier === null ? Buffer.alloc(0) : Buffer.concat(inputBarrier);
-          inputBarrier = null;
-          return bytes;
-        },
-        closeOldDescriptor: (): void => {
-          if (runtimeDescriptorPath === undefined) return;
-          const path = runtimeDescriptorPath;
-          const current = runtimeDescriptor;
-          runtimeDescriptorPath = undefined;
-          runtimeDescriptor = undefined;
-          const rev = revokeCapability(path, current, "closed", undefined, descriptorIo);
-          if (!rev.ok) {
-            wrapperLog.warn(`cc-lhc handoff: old descriptor revoke unproven: ${rev.reason}`);
-          }
-        },
-        terminateOldChild: async (): Promise<{ exited: boolean; escalated: boolean }> => {
-          const pty = currentPty;
-          expectedExitPty = pty;
-          const initial = requestPtyTermination(pty, process.platform, "SIGTERM");
-          wrapperLog.info(`cc-lhc handoff: requested child termination pid=${pty.pid} via ${initial.method}`);
-          const graceful = await waitForExpectedExit(sigtermGraceMs);
-          if (graceful) return { exited: true, escalated: false };
-          const forced = await forceKillChildTree(pty.pid, {
-            platform: process.platform,
-            selfPid: process.pid,
-            killGroup: (pid) => process.kill(-pid, "SIGKILL"),
-            closePty: () => {
-              if (process.platform === "win32") pty.kill();
-              else pty.kill("SIGKILL");
-            },
-            taskkill: (pid) => runTaskkillTree(pid),
+        spawnCandidate: (sessionId: string): CandidateChild => {
+          const spawn = spawnCandidateChild(sessionId, disableNativeAutoCompact, {
+            path: request.rebuilt.rolloutPath,
+            baselineBytes: request.rebuilt.totalByteLength,
           });
-          wrapperLog.info(
-            `cc-lhc handoff: forced child termination pid=${pty.pid} via ${forced.method} ` +
-              `(${forced.attempted.join(",") || "none"})`,
-          );
-          const killed = await waitForExpectedExit(sigkillWaitMs);
-          if (!killed) expectedExitPty = null;
-          return { exited: killed, escalated: true };
+          spawns.set(spawn.candidate.pid, spawn);
+          return spawn.candidate;
         },
-        stopCurrentCapture: async (): Promise<void> => {
-          await captureSession?.stop();
-        },
-        spawnChild: spawnHandoffChild,
-        currentChild: (): HandoffChild => ({ write: (data: string) => currentPty.write(data) }),
-        killCurrentChild: async (): Promise<void> => {
-          const pty = currentPty;
-          expectedExitPty = pty;
-          expectedExitResolve = null;
-          const forced = await forceKillChildTree(pty.pid, {
-            platform: process.platform,
-            selfPid: process.pid,
-            killGroup: (pid) => process.kill(-pid, "SIGKILL"),
-            closePty: () => {
-              if (process.platform === "win32") pty.kill();
-              else pty.kill("SIGKILL");
-            },
-            taskkill: (pid) => runTaskkillTree(pid),
-          });
-          wrapperLog.info(
-            `cc-lhc handoff: cleanup child pid=${pty.pid} via ${forced.method} ` +
-              `(${forced.attempted.join(",") || "none"})`,
-          );
-        },
-        startRebuiltCapture: (handoffRequest: HandoffRequest): void => {
-          const ctx = oldCaptureSnapshot?.getCommandContext();
-          if (ctx?.sdk === undefined || ctx.threadRef === undefined || oldCaptureSnapshot === undefined) {
-            throw new Error("no capture context to continue");
+        awaitCandidateViable: async (candidate, timeoutMs, stableWindowMs) => {
+          const spawn = spawns.get(candidate.pid);
+          if (spawn === undefined) {
+            return { kind: "exited", evidence: { processAlive: false, sessionFileWritten: false } };
           }
-          childDiedDuringHandoff = false;
-          captureSession = startCaptureSession({
-            startedAt: new Date(),
-            noInference,
-            continueCapture: {
-              threadRef: ctx.threadRef,
-              sdk: ctx.sdk,
-              stats: oldCaptureSnapshot.stats,
-              priorGeneration: oldCaptureSnapshot.getCaptureGeneration(),
-            },
-            expectedSession: {
-              sessionId: handoffRequest.rebuilt.sessionId,
-              source: "rebuilt_handoff",
-            },
-            knownRolloutPath: handoffRequest.rebuilt.rolloutPath,
-            prefixBoundary: handoffRequest.rebuilt.prefixBoundary,
-            suppressBindLineageRecord: true,
-            lineageDbPath: defaultLineageDbPath(),
-            log: (message) => wrapperLog.info(message),
-            logError: (message) => wrapperLog.warn(message),
-            onLifecycle: onCaptureLifecycle,
-            onRuntimeSettings,
-          });
+          return awaitCandidateViable(spawn, timeoutMs, stableWindowMs);
         },
-        startRollbackCapture: (oldSessionId: string): void => {
-          const ctx = oldCaptureSnapshot?.getCommandContext();
-          if (ctx?.sdk === undefined || ctx.threadRef === undefined || oldCaptureSnapshot === undefined) {
-            throw new Error("no capture context to continue");
+        discardCandidate: async (candidate): Promise<void> => {
+          const spawn = spawns.get(candidate.pid);
+          if (spawn === undefined) return;
+          spawns.delete(candidate.pid);
+          childRecords.delete(spawn.record.pty);
+          if (spawn.descriptorPath !== undefined) {
+            const rev = closeAndRemove(spawn.descriptorPath, spawn.descriptor, descriptorIo);
+            if (!rev.ok) {
+              wrapperLog.warn(`cc-lhc handoff: candidate descriptor revoke unproven: ${rev.reason}`);
+            }
           }
-          childDiedDuringHandoff = false;
-          captureSession = startCaptureSession({
-            startedAt: new Date(),
-            noInference,
-            continueCapture: {
-              threadRef: ctx.threadRef,
-              sdk: ctx.sdk,
-              stats: oldCaptureSnapshot.stats,
-              priorGeneration: captureSession?.getCaptureGeneration() ?? leaseGeneration,
-            },
-            expectedSession: { sessionId: oldSessionId, source: "explicit_resume" },
-            lineageDbPath: defaultLineageDbPath(),
-            log: (message) => wrapperLog.info(message),
-            logError: (message) => wrapperLog.warn(message),
-            onLifecycle: onCaptureLifecycle,
-            onRuntimeSettings,
-          });
+          if (!spawn.record.exited) await terminateChild(spawn.record.pty, false);
         },
-        awaitCaptureReady: awaitCaptureReadyAfterReplay,
-        awaitChildStabilized: async (
-          timeoutMs: number,
-          stableWindowMs: number,
-        ): Promise<"stable" | "exited" | "timeout"> => {
-          const tickWait = (): Promise<void> =>
-            new Promise((resolveTick) => {
-              const tick = setTimeout(resolveTick, 25);
-              tick.unref?.();
-            });
-          const startMs = Date.now();
-          // Phase 1: first PTY output from the replacement child.
-          for (;;) {
-            if (childDiedDuringHandoff) return "exited";
-            if (currentChildOutputBytes > 0) break;
-            if (Date.now() - startMs > timeoutMs) return "timeout";
-            await tickWait();
+        switchToCandidate: (candidate): SwitchOutcome => {
+          const spawn = spawns.get(candidate.pid);
+          if (spawn === undefined) {
+            return { captureStarted: false, captureWarning: "candidate went missing before the switch" };
           }
-          // Phase 2: bounded stabilization — the child must survive the window.
-          const stableStartMs = Date.now();
-          for (;;) {
-            if (childDiedDuringHandoff) return "exited";
-            if (Date.now() - stableStartMs >= stableWindowMs) return "stable";
-            await tickWait();
-          }
+          switchRoutingTo(spawn.record);
+          adoptCandidateDescriptor(spawn);
+          return switchCaptureToRebuilt(request);
+        },
+        killOldChild: async (): Promise<{ exited: boolean; pid: number }> => {
+          const record = childRecords.get(oldPty);
+          if (record?.exited === true) return { exited: true, pid: oldPty.pid };
+          const gone = await terminateChild(oldPty, true);
+          return { exited: gone, pid: oldPty.pid };
+        },
+        awaitReplacementCaptureReady: awaitCaptureReadyAfterReplay,
+        reconcileCapture: (reason: string): void => {
+          wrapperLog.warn(`cc-lhc handoff: reconciling capture from the transcript after ${reason}`);
+          rebuildCaptureFromTranscript(true);
         },
         registerSuccessLineage: async (handoffRequest: HandoffRequest) => {
           const outcome = await registerRebuiltSessionLineage({
@@ -1914,13 +2150,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             lineageDbPath: defaultLineageDbPath(),
             logError: (message) => wrapperLog.warn(message),
           });
-          // The swap is accepted at this point (capture ready-after-replay and
-          // a live child), so the thread's current session becomes the
-          // replacement: every later launch through any older alias lands here.
-          // If the registry cannot take the pointer, the acceptance is kept
-          // host-side with the predecessor it observed, and the next launch
-          // reconciles it under the thread lock. Never a veto: the replacement
-          // is live and captured either way.
+          // The swap is accepted at this point — the replacement is live and
+          // routed — so the thread's current session becomes the replacement:
+          // every later launch through any older alias lands here. If the
+          // registry cannot take the pointer, the acceptance is kept host-side
+          // with the predecessor it observed and the next launch reconciles it
+          // under the thread lock. Never a veto: the replacement is live and
+          // captured either way.
           const advanced = await recordSwapAcceptance({
             sessionId: handoffRequest.rebuilt.sessionId,
             threadId: handoffRequest.threadId,
@@ -1948,8 +2184,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           publishDescriptorFromCapture();
           return runtimeDescriptor?.state === "ready";
         },
-        writeRecoveryArtifact: writeRecoveryArtifactFile,
         log: (message) => wrapperLog.info(message),
+        warn: (message) => wrapperLog.warn(message),
       };
 
       try {
@@ -1957,6 +2193,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           captureReadyTimeoutMs,
           childLivenessTimeoutMs,
           childStableWindowMs,
+          replacementAttempts,
         });
         // Last action records ONLY a confirmed handoff; anything else is a
         // last-attempt health note and never claims a successful compact.
@@ -1978,9 +2215,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             summary:
               result.kind === "cancelled"
                 ? `${request.operation} cancelled: ${result.reason}`
-                : result.kind === "rolled_back"
-                  ? `${request.operation} rolled back: ${result.reason}`
-                  : `${request.operation} FAILED: ${result.reason}`,
+                : `${request.operation} replacement not viable: ${result.reason}`,
             atMs: Date.now(),
           };
         }
@@ -1989,31 +2224,41 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             ? {
                 kind: "handoff_success",
                 newSessionId: result.newSessionId,
-                flushedInputBytes: result.flushedInputBytes,
+                droppedInputBytes,
+                ...(result.orphanPid === undefined ? {} : { orphanPid: result.orphanPid }),
               }
             : result.kind === "cancelled"
               ? { kind: "handoff_cancelled", detail: result.reason }
-              : result.kind === "rolled_back"
-                ? {
-                    kind: "handoff_rolled_back",
-                    detail: result.reason,
-                    oldSessionId: result.oldSessionId,
-                  }
-                : {
-                    kind: "handoff_failed",
-                    detail: result.reason,
-                    oldSessionId: result.oldSessionId,
-                    rebuiltSessionId: result.rebuiltSessionId,
-                  };
+              : {
+                  kind: "handoff_replacement_nonviable",
+                  detail: result.reason,
+                  oldSessionId: result.oldSessionId,
+                  rebuiltSessionId: result.rebuiltSessionId,
+                  attempts: result.attempts,
+                };
         // Manual path (no governorReceiptId) must not attach to an unrelated
         // automatic governor receipt. Auto path always has the frozen id.
         if (governorReceiptId !== undefined && governorReceiptId !== null && governorReceiptId !== "") {
           attachGovernorHandoffOutcome(governorReceiptId, handoffOutcome, { mutationBegan: true });
         }
         options.onHandoffResult?.(result);
-        if (result.kind === "failed" && !result.childAlive) {
+        if (result.kind === "success" && result.orphanPid !== undefined) {
+          pendingPanelNotices = [
+            ...pendingPanelNotices,
+            `ORPHANED old Claude child pid=${result.orphanPid} — kill it manually to reclaim its memory`,
+          ];
+        }
+        if (result.kind === "replacement_nonviable") {
+          await noteNonviableSwap(result.oldSessionId, result.rebuiltSessionId, result.reason);
+        }
+        // Nothing is routed to a live child any more — the replacement died
+        // after the switch, or it never became viable and the old child died
+        // on its own meanwhile. There is no session left to serve, so the
+        // wrapper exits rather than holding a terminal with nothing behind it.
+        if (childRecords.get(currentPty)?.exited === true && !exited) {
           wrapperLog.warn(
-            `cc-lhc handoff failed with no live child; exiting. old=${result.oldSessionId} rebuilt=${result.rebuiltSessionId} recovery=${result.recoveryArtifactPath ?? "UNWRITTEN"}`,
+            `cc-lhc: no live Claude child after ${request.operation} (old=${request.oldSessionId} ` +
+              `rebuilt=${request.rebuilt.sessionId}); exiting`,
           );
           await teardownAndExit(1);
         }
@@ -2021,7 +2266,84 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       } finally {
         handoffInProgress = false;
         handoffRuntimeSettings = undefined;
+        // Children that are gone and route nothing are just bookkeeping.
+        for (const [pty, record] of childRecords) {
+          if (record.exited && !record.routed) childRecords.delete(pty);
+        }
       }
+    };
+
+    /**
+     * R16 survival relaunch: replace the old child with a fresh one on the SAME
+     * session, launched WITHOUT cc-lhc's injected native-auto-compact disable,
+     * so Claude's own compaction can keep that session alive in degraded form.
+     *
+     * It has to happen here and now. The child that is running still carries
+     * the disable, and waiting for an incidental relaunch is waiting for the
+     * session to hit the provider's hard cutoff. Capture stays attached: it is
+     * the same session and the same rollout file, appended to by the new child.
+     */
+    const relaunchOldSessionForSurvival = async (oldSessionId: string): Promise<boolean> => {
+      const oldPty = currentPty;
+      let spawn: CandidateSpawn;
+      try {
+        spawn = spawnCandidateChild(oldSessionId, false);
+      } catch (cause) {
+        wrapperLog.warn(
+          `cc-lhc survival relaunch spawn failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+        return false;
+      }
+      const viability = await awaitCandidateViable(spawn, childLivenessTimeoutMs, childStableWindowMs);
+      if (viability.kind !== "viable") {
+        childRecords.delete(spawn.record.pty);
+        if (spawn.descriptorPath !== undefined) closeAndRemove(spawn.descriptorPath, spawn.descriptor, descriptorIo);
+        if (!spawn.record.exited) await terminateChild(spawn.record.pty, false);
+        wrapperLog.warn(`cc-lhc survival relaunch candidate ${viability.kind}; the old child keeps the terminal`);
+        return false;
+      }
+      switchRoutingTo(spawn.record);
+      adoptCandidateDescriptor(spawn);
+      publishDescriptorFromCapture();
+      const record = childRecords.get(oldPty);
+      if (record?.exited !== true) {
+        const gone = await terminateChild(oldPty, true);
+        if (!gone) {
+          wrapperLog.warn(
+            `cc-lhc survival relaunch: ORPHANED previous child pid=${oldPty.pid} — kill it manually`,
+          );
+        }
+      }
+      return true;
+    };
+
+    /**
+     * One swap whose replacement never became viable. Nothing was switched and
+     * nothing was undone, so the cheap answer is to try again at the next
+     * settled seam. Past the bound, retrying forever is the wrong answer: the
+     * wall goes up as a standing alarm and R16 hands the session to Claude's
+     * own compaction so it survives in degraded form.
+     */
+    const noteNonviableSwap = async (
+      oldSessionId: string,
+      rebuiltSessionId: string,
+      reason: string,
+    ): Promise<void> => {
+      nonviableSwaps += 1;
+      if (standingWallAlarm.length > 0 || nonviableSwaps < nonviableSwapLimit) return;
+      standingWallAlarm = formatReplacementWallAlarm({
+        rebuiltSessionId,
+        oldSessionId,
+        nonviableSwaps,
+        lastReason: reason,
+      });
+      const relaunched = await relaunchOldSessionForSurvival(oldSessionId);
+      standingWallAlarm = [...standingWallAlarm, formatSurvivalRelaunchNotice(oldSessionId, relaunched)];
+      for (const line of standingWallAlarm) {
+        wrapperLog.warn(`cc-lhc ${line}`);
+        writeWrapperLine(line);
+      }
+      pendingPanelNotices = [...pendingPanelNotices, ...standingWallAlarm];
     };
 
     // Automatic operation: shared mutation op + shared handoff, serialized with
@@ -2097,9 +2419,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // Mutation claim held: remaining outcomes use mutationBegan so attach
       // failures are loud (receipt may remain scheduled for operator recovery).
       governorState = setGovernorOperationInFlight(governorState, true);
+      // Compact owns the settled session from here: input stops being
+      // forwarded for the whole operation, construction through swap.
+      takeInputOwnership();
       try {
-        const epochAtStart = governorState.currentInputEpoch;
-        const epochChanged = (): boolean => governorState.currentInputEpoch !== epochAtStart;
         const runtime = commandRuntime();
         const policy = resolvedContextPolicy.policy;
         const plan: ContextMutationPlan = {
@@ -2116,9 +2439,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             : {}),
           ...(frozenTriggerTokens === null ? {} : { triggerContextTokens: frozenTriggerTokens }),
           ...(configFallbackNotice.length === 0 ? {} : { hostNotices: configFallbackNotice }),
-          inputEpochChanged: epochChanged,
         };
-        const outcome = await runContextMutation(plan, { ...runtime, inputEpochChanged: epochChanged });
+        const outcome = await runContextMutation(plan, runtime);
         wrapperLog.info(
           `cc-lhc auto-compact mutation ${outcome.kind}: ${outcome.messages.join(" | ") || "(no receipt)"}`,
         );
@@ -2147,7 +2469,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           attachGovernorHandoffOutcome(receiptId, mutationOutcome, { mutationBegan: true });
           return;
         }
-        await performHandoff(outcome.handoff, epochChanged, receiptId);
+        await performHandoff(outcome.handoff, receiptId);
       } catch (cause) {
         wrapperLog.warn(
           `cc-lhc auto-compact operation threw: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -2161,12 +2483,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           { mutationBegan: true },
         );
       } finally {
+        releaseInputOwnership();
         governorState = setGovernorOperationInFlight(governorState, false);
         commandGuard.release();
       }
     };
 
-    attachChild(currentPty);
+    attachChild(currentPty, expectedSession?.sessionId ?? "", true);
     stdin.on("data", forwardInput);
     // stdin ending/erroring has no wrapper lifecycle of its own (the child
     // and capture run on) — but with no input left there is no keypress to

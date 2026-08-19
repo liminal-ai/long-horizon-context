@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -82,6 +82,8 @@ interface FakePty {
   args: string[];
   killed: string[];
   writes: string[];
+  /** Push a frame from this child on demand (routing assertions). */
+  emitData(data: string): void;
   fireExit(code: number, signal?: number): void;
   onData(cb: (data: string) => void): { dispose(): void };
   onExit(cb: (arg: { exitCode: number; signal?: number }) => void): { dispose(): void };
@@ -99,6 +101,9 @@ function makeFakePty(pid: number, label: string, args: string[], autoExitOnKill:
     args,
     killed: [],
     writes: [],
+    emitData(data: string) {
+      for (const cb of dataCbs) cb(data);
+    },
     fireExit(code: number, signal?: number) {
       for (const cb of exitCbs) cb({ exitCode: code, ...(signal === undefined ? {} : { signal }) });
     },
@@ -287,6 +292,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
   it("triggers on provider pressure, respawns with external --resume, registers lineage after ready, and reports success", async () => {
     const spawned: FakePty[] = [];
     const spawnedEnvs: Array<Record<string, string>> = [];
+    const spawnOrder: string[] = [];
     const sdk = sdkForCapture();
     const captureCalls: CaptureSessionDeps[] = [];
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
@@ -337,7 +343,14 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const runPromise = run(["--effort", "medium", "--permission-mode", "manual"], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[], opts: { env: Record<string, string> }) => {
-        const fake = makeFakePty(1000 + spawned.length, `child${spawned.length}`, args, true);
+        const index = spawned.length;
+        const fake = makeFakePty(1000 + index, `child${index}`, args, true);
+        spawnOrder.push(`spawn:${index}`);
+        const origKillForOrder = fake.kill.bind(fake);
+        fake.kill = (sig?: string) => {
+          spawnOrder.push(`kill:${index}`);
+          origKillForOrder(sig);
+        };
         spawnedEnvs.push(opts.env);
         spawned.push(fake);
         return fake as never;
@@ -362,11 +375,12 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
     await waitFor(() => spawned.length === 1, "first child");
-    // Post-commit input: the user types while the old child is being terminated.
-    // The barrier must deliver these bytes to exactly the rebound child, in order.
+    // The operator types while compact owns the settled session. The bytes are
+    // dropped — never delivered to either child, never held for replay — and
+    // one line tells them to resend.
     const origKill = spawned[0]!.kill.bind(spawned[0]);
     spawned[0]!.kill = (sig?: string) => {
-      (stdin as unknown as PassThrough).write("post-commit bytes");
+      (stdin as unknown as PassThrough).write("typed during compaction");
       origKill(sig);
     };
     lifecycleSink!(BOUND_SIGNALS);
@@ -377,12 +391,18 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(result.kind).toBe("success");
     if (result.kind === "success") {
       expect(result.newSessionId).toBe(REBUILT_ID);
-      expect(result.flushedInputBytes).toBe("post-commit bytes".length);
+      expect(result.evidence.processAlive).toBe(true);
+      expect(result.orphanPid).toBeUndefined();
     }
-    // Invariant 1: post-commit bytes reached exactly the rebound child, never the old one.
-    expect(spawned[1]!.writes.join("")).toContain("post-commit bytes");
-    expect(spawned[0]!.writes.join("")).not.toContain("post-commit bytes");
+    expect(spawned[1]!.writes.join("")).not.toContain("typed during compaction");
+    expect(spawned[0]!.writes.join("")).not.toContain("typed during compaction");
+    await waitFor(
+      () => terminalOutput.includes("input typed during compaction was not delivered"),
+      "resend notice",
+    );
 
+    // Spawn-first: the replacement existed before the old child was signalled.
+    expect(spawnOrder.indexOf("spawn:1")).toBeLessThan(spawnOrder.indexOf("kill:0"));
     // Old child was terminated gracefully; a second child spawned with external --resume.
     expect(spawned).toHaveLength(2);
     expect(spawned[0]!.killed).toContain("SIGTERM");
@@ -552,7 +572,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     writeSpy.mockRestore();
   });
 
-  it("stdin bytes arriving during the rebuild cancel the operation with no respawn and no termination", async () => {
+  it("stdin bytes arriving during the rebuild are dropped with a resend notice; the swap still completes", async () => {
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
@@ -560,7 +580,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const stdout = fakeStream();
 
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      // The user types while the rebuild is being written.
+      // The user types while the rebuild is being written — compact already
+      // owns the settled session, so these bytes go nowhere.
       (stdin as unknown as PassThrough).write("x");
       await new Promise((r) => setTimeout(r, 60));
       return {
@@ -622,24 +643,25 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(TRIGGER_SIGNALS);
 
+    await waitFor(() => results.length === 1, "handoff result");
+    // Late input does not cancel a compact that succeeded.
+    expect(results[0]!.kind).toBe("success");
+    expect(spawned).toHaveLength(2);
+    expect(mocks.registerLineage).toHaveBeenCalledOnce();
+    // The typed byte reached neither child, and was never held for replay.
+    expect(spawned[0]!.writes.join("")).not.toContain("x");
+    expect(spawned[1]!.writes.join("")).not.toContain("x");
     await waitFor(
-      () => wrapperLogLines.some((line) => line.includes("auto-compact mutation partial")),
-      "cancelled mutation log",
+      () => wrapperLogLines.some((line) => line.includes("dropped 1 typed-ahead byte(s)")),
+      "typed-ahead drop logged",
     );
-    // No handoff: no second spawn, no SIGTERM to the live child, no lineage.
-    expect(results).toHaveLength(0);
-    expect(spawned).toHaveLength(1);
-    expect(spawned[0]!.killed).toHaveLength(0);
-    expect(mocks.registerLineage).not.toHaveBeenCalled();
-    // The typed byte reached the live child (never swallowed).
-    expect(spawned[0]!.writes.join("")).toContain("x");
 
-    spawned[0]!.fireExit(0);
+    spawned[1]!.fireExit(0);
     await runPromise;
     writeSpy.mockRestore();
   });
 
-  it("capture ready but a mute replacement child rolls back to the old session and never registers lineage", async () => {
+  it("a mute replacement never becomes viable: the old session stays live, unswapped and unkilled", async () => {
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
@@ -716,32 +738,37 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     await waitFor(() => results.length === 1, "handoff result");
     const result = results[0]!;
-    expect(result.kind).toBe("rolled_back");
-    if (result.kind === "rolled_back") {
-      expect(result.reason).toMatch(/child liveness timeout/);
+    expect(result.kind).toBe("replacement_nonviable");
+    if (result.kind === "replacement_nonviable") {
+      expect(result.reason).toMatch(/no_output/);
       expect(result.oldSessionId).toBe("old-session");
     }
-    // Replacement spawned then killed; rollback child resumed the OLD id.
+    // Every candidate resumed the REBUILT id: bounded retries forward, and no
+    // rollback child, because nothing was ever switched away from the old
+    // session.
     const resumeTargets = spawned
       .filter((f) => f.args.includes("--resume"))
       .map((f) => f.args[f.args.indexOf("--resume") + 1]);
-    expect(resumeTargets).toEqual([REBUILT_ID, "old-session"]);
+    expect(resumeTargets.length).toBeGreaterThanOrEqual(1);
+    expect(new Set(resumeTargets)).toEqual(new Set([REBUILT_ID]));
+    // The original child kept the terminal and was never signalled.
+    expect(spawned[0]!.killed).toHaveLength(0);
     // The unproven replacement never advanced canonical lineage.
     expect(mocks.registerLineage).not.toHaveBeenCalled();
 
-    // Slice 5: a rolled-back attempt must NOT claim a successful compact — it
-    // is visible only as last-attempt health state.
+    // A nonviable replacement must NOT claim a successful compact — it is
+    // visible only as last-attempt health state.
     let terminalOutput = "";
     (runStdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
       terminalOutput += chunk.toString("utf8");
     });
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    await waitFor(() => terminalOutput.includes("last action:"), "panel after rollback");
+    await waitFor(() => terminalOutput.includes("last action:"), "panel after nonviable swap");
     expect(terminalOutput).toContain("last action: none this wrapper session");
-    expect(terminalOutput).toMatch(/last attempt: auto_compact rolled back/);
+    expect(terminalOutput).toMatch(/last attempt: auto_compact replacement not viable/);
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
-    spawned[spawned.length - 1]!.fireExit(0);
+    spawned[0]!.fireExit(0);
     await runPromise;
     writeSpy.mockRestore();
   });
@@ -1049,4 +1076,300 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 15_000);
+
+  it("switches routing atomically: old-child output after the switch never reaches the terminal", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-routing-"));
+    receiptDirs.push(rolloutDir);
+    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      writeFileSync(rebuiltPath, '{"line":1}\n');
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        totalByteLength: 11,
+      };
+    });
+
+    const captureCalls: CaptureSessionDeps[] = [];
+    mocks.captureFactory = (opts) => {
+      captureCalls.push(opts);
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      const scripted = scriptedCaptureSession(
+        opts,
+        sdk,
+        isRebuilt ? REBUILT_ID : "old-session",
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        captureCalls.length,
+      );
+      if (!isRebuilt && opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    let terminalOutput = "";
+    (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      terminalOutput += chunk.toString("utf8");
+    });
+    // The old child renders one recognizable frame; the replacement renders
+    // another. Whichever child is routed is the only one on screen.
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const index = spawned.length;
+        const fake = makeFakePty(5100 + index, `child${index}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
+      onHandoffResult: (result) => results.push(result),
+      handoffTimeouts: {
+        sigtermGraceMs: 300,
+        sigkillWaitMs: 200,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 60,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    await waitFor(() => spawned.length === 1, "first child");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+    await waitFor(() => results.length === 1, "handoff result");
+    expect(results[0]!.kind).toBe("success");
+    expect(spawned).toHaveLength(2);
+
+    // Capture generation moved with the routing, in the same step.
+    expect(captureCalls.at(-1)?.expectedSession).toMatchObject({
+      sessionId: REBUILT_ID,
+      source: "rebuilt_handoff",
+    });
+
+    terminalOutput = "";
+    spawned[0]!.emitData("OLD-CHILD-CONTAMINATION");
+    spawned[1]!.emitData("REPLACEMENT-FRAME");
+    await waitFor(() => terminalOutput.includes("REPLACEMENT-FRAME"), "replacement output routed");
+    expect(terminalOutput).not.toContain("OLD-CHILD-CONTAMINATION");
+
+    // Input now reaches only the replacement.
+    (stdin as unknown as PassThrough).write("after the swap");
+    await waitFor(() => spawned[1]!.writes.join("").includes("after the swap"), "input routed to replacement");
+    expect(spawned[0]!.writes.join("")).not.toContain("after the swap");
+
+    spawned[1]!.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  });
+
+  it("repeated nonviability raises the standing alarm and actively relaunches the old session for survival", async () => {
+    const spawned: FakePty[] = [];
+    const spawnedEnvs: Array<Record<string, string>> = [];
+    const spawnOrder: string[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-wall-"));
+    receiptDirs.push(rolloutDir);
+    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      writeFileSync(rebuiltPath, '{"line":1}\n');
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        totalByteLength: 11,
+      };
+    });
+
+    let compactCalls = 0;
+    sdk.threadView.compact = vi.fn(async () => {
+      compactCalls += 1;
+      return {
+        ok: true,
+        value: {
+          viewId: "v1",
+          tailTokens: 5,
+          totalTokens: 9,
+          bands: {
+            smooth: { entries: 1, tokens: 4 },
+            detailed: { entries: 0, tokens: 0 },
+            brief: { entries: 0, tokens: 0 },
+          },
+        },
+      };
+    }) as never;
+
+    mocks.captureFactory = (opts) => {
+      const scripted = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined && lifecycleSink === undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    let terminalOutput = "";
+    (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      terminalOutput += chunk.toString("utf8");
+    });
+
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[], opts: { env: Record<string, string> }) => {
+        const index = spawned.length;
+        // Every rebuilt-session candidate is mute: Claude will not load the
+        // rebuilt rollout. Everything resuming the OLD session renders fine.
+        const mute = args.includes(REBUILT_ID);
+        const fake = makeFakePty(5200 + index, `child${index}`, args, true, !mute);
+        spawnOrder.push(`spawn:${index}:${args.join(" ")}`);
+        const origKill = fake.kill.bind(fake);
+        fake.kill = (sig?: string) => {
+          spawnOrder.push(`kill:${index}`);
+          origKill(sig);
+        };
+        spawnedEnvs.push(opts.env);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
+      onHandoffResult: (result) => results.push(result),
+      replacementAttempts: 1,
+      nonviableSwapLimit: 1,
+      handoffTimeouts: {
+        sigtermGraceMs: 300,
+        sigkillWaitMs: 200,
+        captureReadyTimeoutMs: 500,
+        childLivenessTimeoutMs: 400,
+        childStableWindowMs: 60,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    await waitFor(() => spawned.length === 1, "first child");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+
+    await waitFor(() => results.length === 1, "handoff result");
+    expect(results[0]!.kind).toBe("replacement_nonviable");
+
+    // R16: the old session is relaunched then and there, WITHOUT the injected
+    // native-auto-compact disable, so Claude's own compaction keeps it alive.
+    await waitFor(() => spawned.length === 3, "survival relaunch child");
+    const survival = spawned[2]!;
+    expect(survival.args[survival.args.indexOf("--resume") + 1]).toBe("old-session");
+    expect(spawnedEnvs[2]!.DISABLE_AUTO_COMPACT).toBeUndefined();
+    // The first child (which carries the disable) got it.
+    expect(spawnedEnvs[0]!.DISABLE_AUTO_COMPACT).toBe("1");
+    // The alarm is standing, unmissable, and states that it is a best guess.
+    await waitFor(
+      () => terminalOutput.includes("cc-lhc rebuilt sessions are not loading"),
+      "standing alarm on the terminal",
+    );
+    // Spawn-first here too: the old child was still serviceable when the
+    // survival child was created.
+    expect(spawnOrder.indexOf(`spawn:2:${survival.args.join(" ")}`)).toBeLessThan(spawnOrder.indexOf("kill:0"));
+    expect(spawnOrder.indexOf("kill:0")).toBeGreaterThan(-1);
+    expect(terminalOutput).toContain("best guess");
+    expect(terminalOutput).toContain("without the injected DISABLE_AUTO_COMPACT");
+
+    // A later settled seam does not quietly retry the swap.
+    const compactsAtAlarm = compactCalls;
+    lifecycleSink!([
+      { kind: "turn_opened", reason: "user_prompt" },
+      {
+        kind: "sampling_observed",
+        samplingId: "req:r2",
+        providerUsage: { input_tokens: 4, cache_creation_input_tokens: 6_000, cache_read_input_tokens: 6_000 },
+      },
+      { kind: "turn_settled", reason: "end_turn" },
+    ]);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(compactCalls).toBe(compactsAtAlarm);
+    expect(results).toHaveLength(1);
+
+    // The alarm also sits at the top of the panel.
+    terminalOutput = "";
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(() => terminalOutput.includes("LHC context management"), "panel");
+    expect(terminalOutput).toContain("cc-lhc rebuilt sessions are not loading");
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+
+    survival.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  });
+
+  it("surfaces pre-rewrite handoff state at startup as a resend notice", async () => {
+    const recoveryDir = join(process.env.CC_LHC_HOME!, "recovery");
+    mkdirSync(recoveryDir, { recursive: true });
+    writeFileSync(join(recoveryDir, "input-legacy.journal"), Buffer.from([0x01, 0x02]));
+
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    mocks.captureFactory = (opts) =>
+      scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1).session;
+
+    const stderr = fakeStream();
+    let stderrText = "";
+    (stderr as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      stderrText += chunk.toString("utf8");
+    });
+
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const fake = makeFakePty(5300 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin: fakeStream(),
+      stdout: fakeStream() as never,
+      stderr: stderr as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
+    });
+
+    await waitFor(() => spawned.length === 1, "child");
+    expect(stderrText).toContain("input typed during compaction was not delivered");
+    expect(stderrText).toContain("retained-input artifact(s) from an earlier build");
+    // Consumed, not carried: the launch continued and the state is gone.
+    expect(existsSync(join(recoveryDir, "input-legacy.journal"))).toBe(false);
+
+    spawned[0]!.fireExit(0);
+    await runPromise;
+  });
 });

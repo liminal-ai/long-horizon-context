@@ -93,12 +93,12 @@ describe("governor durable receipt store", () => {
     const attached = store2.attachHandoffOutcome(last.receiptId, {
       kind: "handoff_success",
       newSessionId: "sess-b",
-      flushedInputBytes: 12,
+      droppedInputBytes: 12,
     });
     expect(attached?.handoffOutcome).toEqual({
       kind: "handoff_success",
       newSessionId: "sess-b",
-      flushedInputBytes: 12,
+      droppedInputBytes: 12,
     });
     store2.close();
 
@@ -148,7 +148,7 @@ describe("governor durable receipt store", () => {
     store.attachHandoffOutcome(first.receipt.receiptId, {
       kind: "handoff_success",
       newSessionId: "new",
-      flushedInputBytes: 3,
+      droppedInputBytes: 3,
     });
 
     // Same native facts, different in-memory observeSequence (restart).

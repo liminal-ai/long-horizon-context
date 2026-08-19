@@ -425,3 +425,106 @@ describe("concurrent launches through different aliases of one thread", () => {
     }
   }, 40_000);
 });
+
+/**
+ * A restart in the middle of a swap completes forward. It keeps a replacement
+ * the wrapper accepted, it never activates a stale reserved file, and corrupt
+ * recovery bookkeeping is unclaimed work rather than a wedge.
+ */
+describe("restart in the middle of a swap", () => {
+  it("leaves a stale reserved rollout untouched on disk instead of activating it", async () => {
+    const paths = tempHome("stale-file");
+    await seedSwappedThread(paths, "th_stale", "s-old", "s-current");
+    recordSessionThread(paths.lineageDbPath, "s-current", "th_stale", {}, { prefix: { kind: "none" } });
+    recordSessionThread(paths.lineageDbPath, "s-reserved", "th_stale", {}, {
+      prefix: { kind: "verified", lineCount: 3, byteLength: 60, sha256: "ef".repeat(32) },
+    });
+    const reservedFile = join(paths.home, "s-reserved.jsonl");
+    writeFileSync(reservedFile, '{"reserved":true}\n');
+
+    const opened = await openLaunchThread({
+      expectedSession: { sessionId: "s-old", source: "explicit_resume" },
+      registryPath: paths.registryPath,
+      lineageDbPath: paths.lineageDbPath,
+      home: paths.home,
+      createThread: mustNotCreate,
+    });
+    try {
+      expect(opened.expectedSession.sessionId).toBe("s-current");
+      expect(opened.discardedSwapArtifacts.map((a) => a.sessionId)).toContain("s-reserved");
+      // Discarded from session selection, never rewritten, never removed: the
+      // next settled seam re-materializes from the latest captured state.
+      expect(existsSync(reservedFile)).toBe(true);
+      expect(readFileSync(reservedFile, "utf8")).toBe('{"reserved":true}\n');
+    } finally {
+      opened.lease.release();
+    }
+  });
+
+  it("keeps an accepted replacement even after the old session was resumed again", async () => {
+    const paths = tempHome("never-revert");
+    await seedSwappedThread(paths, "th_keep", "s-first", "s-old");
+    recordPendingCurrentSession(paths.lineageDbPath, "th_keep", "s-accepted", "s-old");
+    // A launch on the OLD session after the interrupted swap still lands on the
+    // replacement the wrapper accepted. Nothing reverts.
+    const opened = await openLaunchThread({
+      expectedSession: { sessionId: "s-old", source: "explicit_resume" },
+      registryPath: paths.registryPath,
+      lineageDbPath: paths.lineageDbPath,
+      home: paths.home,
+      createThread: mustNotCreate,
+    });
+    try {
+      expect(opened.expectedSession.sessionId).toBe("s-accepted");
+      expect(await currentSessionAlias("th_keep", paths.registryPath)).toBe(claudeSessionAlias("s-accepted"));
+    } finally {
+      opened.lease.release();
+    }
+  });
+
+  it("treats a corrupt recovery row as unclaimed and lands on the registry pointer", async () => {
+    const paths = tempHome("corrupt-row");
+    await seedSwappedThread(paths, "th_corrupt", "s-old", "s-current");
+    // A row that names no accepted session: it can repair nothing, so it must
+    // read as absent rather than stop or misdirect the launch.
+    recordPendingCurrentSession(paths.lineageDbPath, "th_corrupt", "", "s-current");
+    expect(readPendingCurrentSession(paths.lineageDbPath, "th_corrupt")).toBeUndefined();
+
+    const opened = await openLaunchThread({
+      expectedSession: { sessionId: "s-old", source: "explicit_resume" },
+      registryPath: paths.registryPath,
+      lineageDbPath: paths.lineageDbPath,
+      home: paths.home,
+      createThread: mustNotCreate,
+    });
+    try {
+      expect(opened.expectedSession.sessionId).toBe("s-current");
+      expect(opened.pendingAcceptanceNote).toBeUndefined();
+    } finally {
+      opened.lease.release();
+    }
+  });
+
+  it("lands on the current session when host-local lineage detail cannot be read", async () => {
+    const paths = tempHome("unreadable-lineage");
+    await seedSwappedThread(paths, "th_unreadable", "s-old", "s-current");
+    const opened = await openLaunchThread({
+      expectedSession: { sessionId: "s-old", source: "explicit_resume" },
+      registryPath: paths.registryPath,
+      lineageDbPath: paths.lineageDbPath,
+      home: paths.home,
+      createThread: mustNotCreate,
+      lineageDeps: {
+        openDbFn: () => {
+          throw new Error("cc-lhc.sqlite unreadable");
+        },
+      },
+    });
+    try {
+      expect(opened.expectedSession.sessionId).toBe("s-current");
+      expect(opened.discardedSwapArtifacts).toEqual([]);
+    } finally {
+      opened.lease.release();
+    }
+  });
+});

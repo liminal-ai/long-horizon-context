@@ -134,8 +134,7 @@ export function isTerminalHandoffOutcome(outcome: GovernorHandoffOutcome | null 
   switch (outcome.kind) {
     case "handoff_success":
     case "handoff_cancelled":
-    case "handoff_rolled_back":
-    case "handoff_failed":
+    case "handoff_replacement_nonviable":
     case "mutation_refused":
     case "mutation_deferred":
     case "mutation_partial":

@@ -287,10 +287,27 @@ export type GovernorHandoffOutcome =
   | { kind: "mutation_refused"; detail: string }
   | { kind: "mutation_partial"; detail: string }
   | { kind: "mutation_noop"; detail: string }
-  | { kind: "handoff_success"; newSessionId: string; flushedInputBytes: number }
+  | {
+      kind: "handoff_success";
+      newSessionId: string;
+      /** Typed-ahead bytes dropped while compact owned input (never replayed). */
+      droppedInputBytes: number;
+      /** Old child that survived termination and was left running. */
+      orphanPid?: number;
+    }
   | { kind: "handoff_cancelled"; detail: string }
-  | { kind: "handoff_rolled_back"; detail: string; oldSessionId: string }
-  | { kind: "handoff_failed"; detail: string; oldSessionId: string; rebuiltSessionId: string };
+  /**
+   * The replacement never became viable, so nothing was switched: the old
+   * session is still live and untouched. There is no rolled-back or failed
+   * outcome — a swap either happens or never starts.
+   */
+  | {
+      kind: "handoff_replacement_nonviable";
+      detail: string;
+      oldSessionId: string;
+      rebuiltSessionId: string;
+      attempts: number;
+    };
 
 /** Stable reason codes for mutation_deferred (inspectable, not free-form only). */
 export type GovernorMutationDeferReason =

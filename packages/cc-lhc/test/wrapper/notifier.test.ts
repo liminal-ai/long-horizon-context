@@ -5,7 +5,6 @@ import {
   type InputAction,
   type InputState,
   matchHazardousCommand,
-  noteUntrackedDeliveredInput,
   processInputChunk,
   resolveBareEsc,
 } from "../../src/wrapper/modal.js";
@@ -235,20 +234,6 @@ describe("hazard notifier: straight-line interception", () => {
     expect(stray.state.mode).toBe("notifier");
     const continued = feed(stray.state, "\r");
     expect(continued.actions).toEqual([{ kind: "notifier_continue", enterBytes: [0x0d] }]);
-  });
-
-  it("barrier-flushed bytes ending mid-line poison the shadow: no false claim on the mixed line", () => {
-    // Handoff barrier delivered "hello " raw; the shadow never saw it.
-    const flushed = noteUntrackedDeliveredInput(createInputState(), Buffer.from("hello ", "latin1"));
-    const result = feedAll(flushed, ["/clear", "\r"]);
-    expect(result.actions).toEqual([]); // real line is "hello /clear" — not straight
-    expect(result.toPty.toString("latin1")).toBe("/clear\r");
-  });
-
-  it("barrier-flushed bytes ending at a line boundary leave a fresh shadow", () => {
-    const flushed = noteUntrackedDeliveredInput(createInputState(), Buffer.from("hello\r", "latin1"));
-    const result = feedAll(flushed, ["/clear", "\r"]);
-    expect(result.actions).toEqual([{ kind: "notifier_open", command: "/clear" }]);
   });
 
   it("disabled notifier is pure passthrough", () => {

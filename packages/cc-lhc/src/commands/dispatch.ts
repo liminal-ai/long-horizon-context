@@ -28,11 +28,9 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   };
   /** Host notices to include in the compact message (config fallbacks). */
   hostNotices?: readonly string[];
-  /** True when user input arrived since the operation started (cancel fence). */
-  inputEpochChanged?: () => boolean;
-  /** Live turn state from the rollout tail; mutating commands refuse while a turn is open. */
+  /** Live turn state from the rollout tail; read once in the settled-seam snapshot. */
   isTurnOpen?: () => boolean;
-  /** Capture health gate for compact/prune (ready and not degraded). */
+  /** Capture health, read once in the settled-seam snapshot. */
   isCaptureHealthy?: () => boolean;
   /** False while binding or degraded. */
   isCaptureReady?: () => boolean;
@@ -79,13 +77,6 @@ export interface DispatchOutcome {
 export const UNKNOWN_COMMAND_MESSAGE = "unknown command; try help";
 export const TURN_OPEN_REFUSAL = "turn in progress — rerun when idle";
 export const CAPTURE_DEGRADED_REFUSAL = "capture degraded — mutation refused until reconciliation";
-/**
- * Post-SDK-mutation fence failure: LHC view may have committed; live Claude
- * session was not swapped. Operator must reconcile and re-run compact/prune.
- */
-export const CAPTURE_PARTIAL_VIEW_MUTATION =
-  "capture degraded after LHC view mutation — live Claude session unchanged; " +
-  "LHC view may already be compacted/pruned; restart capture and re-run compact/prune after reconciliation";
 
 type CommandHandler = (commandLine: string, runtime: LhcCommandRuntime) => Promise<DispatchOutcome>;
 

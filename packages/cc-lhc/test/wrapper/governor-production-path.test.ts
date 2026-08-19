@@ -61,7 +61,13 @@ interface FakePty {
   resize(): void;
 }
 
-function makeFakePty(pid: number, label: string, args: string[], autoExitOnKill: boolean): FakePty {
+function makeFakePty(
+  pid: number,
+  label: string,
+  args: string[],
+  autoExitOnKill: boolean,
+  emitOutput = true,
+): FakePty {
   const exitCbs: Array<(arg: { exitCode: number; signal?: number }) => void> = [];
   const dataCbs: Array<(data: string) => void> = [];
   const fake: FakePty = {
@@ -75,9 +81,11 @@ function makeFakePty(pid: number, label: string, args: string[], autoExitOnKill:
     },
     onData: (cb: (data: string) => void) => {
       dataCbs.push(cb);
-      setTimeout(() => {
-        for (const dataCb of dataCbs) dataCb("render\r\n");
-      }, 30);
+      if (emitOutput) {
+        setTimeout(() => {
+          for (const dataCb of dataCbs) dataCb("render\r\n");
+        }, 30);
+      }
       return { dispose() {} };
     },
     onExit: (cb) => {
@@ -378,7 +386,7 @@ describe("LIM-64 production wrapper path", () => {
     expect(would[0]!.handoffOutcome).toEqual({
       kind: "handoff_success",
       newSessionId: REBUILT_ID,
-      flushedInputBytes: expect.any(Number),
+      droppedInputBytes: 0,
     });
     // New session must not have stolen the outcome attachment.
     expect(store.listBySession(REBUILT_ID).filter((r) => r.wouldMutate)).toHaveLength(0);
@@ -891,11 +899,11 @@ describe("LIM-64 production wrapper path", () => {
     const receiptDb = join(dir, "cc-lhc.sqlite");
     const spawned: FakePty[] = [];
     let mutationCalls = 0;
-    // Arrangement: the first settle rebuilds and the handoff fails (rebuilt
-    // capture never becomes ready), so the wrapper falls back to the old
-    // session. The second distinct settle must be free to try again right
-    // away — a transient handoff failure used to cost two minutes at maximum
-    // pressure on top of a 10K growth toll.
+    // Arrangement: the first settle rebuilds and the replacement never becomes
+    // viable (a mute child), so the old session simply stays live — nothing
+    // switched, nothing undone. The second distinct settle must be free to try
+    // again right away: a transient swap failure used to cost two minutes at
+    // maximum pressure on top of a 10K growth toll.
     const sdk = sdkForCapture(async () => ({
       ok: true,
       value: { kind: "error", reason: "stop" },
@@ -933,29 +941,7 @@ describe("LIM-64 production wrapper path", () => {
         isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
         generation,
       );
-      // Keep capture never-ready after rebuild so handoff fails/rolls back → cooldown.
-      if (isRebuilt) {
-        (session as { isCaptureReady: () => boolean }).isCaptureReady = () => false;
-        (
-          session as {
-            getCaptureHealth: () => {
-              phase: string;
-              generation: number;
-              reasons: string[];
-              reasonCounts: Record<string, number>;
-              durableLineOffset: number;
-            };
-          }
-        ).getCaptureHealth = () => ({
-          generation: 2,
-          phase: "degraded",
-          reasons: ["test"],
-          reasonCounts: {},
-          durableLineOffset: 0,
-        });
-      } else if (opts.onLifecycle !== undefined) {
-        lifecycleSink = opts.onLifecycle;
-      }
+      if (!isRebuilt && opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
       return session;
     };
 
@@ -968,7 +954,9 @@ describe("LIM-64 production wrapper path", () => {
     const runPromise = run([], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
-        const fake = makeFakePty(8800 + spawned.length, `c${spawned.length}`, args, true);
+        // Every replacement candidate is mute, so no swap ever completes.
+        const mute = args.includes("--resume") && args.includes(REBUILT_ID);
+        const fake = makeFakePty(8800 + spawned.length, `c${spawned.length}`, args, true, !mute);
         spawned.push(fake);
         return fake as never;
       }) as never,
@@ -979,6 +967,7 @@ describe("LIM-64 production wrapper path", () => {
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: receiptDb,
       onHandoffResult: (r) => results.push(r),
+      replacementAttempts: 1,
       handoffTimeouts: {
         sigtermGraceMs: 200,
         sigkillWaitMs: 200,
@@ -992,6 +981,7 @@ describe("LIM-64 production wrapper path", () => {
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
     await waitFor(() => results.length >= 1, "first handoff result", 12_000);
+    expect(results[0]!.kind).toBe("replacement_nonviable");
     expect(mutationCalls).toBeGreaterThanOrEqual(1);
 
     const mutationAfterFirst = mutationCalls;
@@ -1036,7 +1026,8 @@ describe("LIM-64 production wrapper path", () => {
     expect(all.every((r) => (r.handoffOutcome as { reason?: string }).reason !== "cooldown")).toBe(true);
     store.close();
     writeSpy.mockRestore();
-    spawned[spawned.length - 1]!.fireExit(0);
+    // The old child never lost the terminal, so it is what ends the run.
+    spawned[0]!.fireExit(0);
     await runPromise;
   }, 25_000);
 

@@ -6,9 +6,9 @@ import {
 import type { DispatchOutcome, LhcCommandRuntime } from "./dispatch.js";
 
 /**
- * Manual compact: same fenced transaction and (in the wrapper) same handoff as
- * automatic compact — only the terminal receipt differs. A due combined prune
- * runs inside the one materialization.
+ * Manual compact: same settled-seam transaction and (in the wrapper) same
+ * handoff as automatic compact — only the terminal receipt differs. A due
+ * combined prune runs inside the one materialization.
  */
 export async function runCompactCommand(_commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   const policy = runtime.contextPolicy;
@@ -20,7 +20,6 @@ export async function runCompactCommand(_commandLine: string, runtime: LhcComman
     ...(runtime.hostNotices === undefined || runtime.hostNotices.length === 0
       ? {}
       : { hostNotices: runtime.hostNotices }),
-    ...(runtime.inputEpochChanged === undefined ? {} : { inputEpochChanged: runtime.inputEpochChanged }),
   };
   const outcome = await runContextMutation(plan, runtime);
   if (outcome.kind === "rebuilt") {

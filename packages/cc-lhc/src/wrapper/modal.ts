@@ -655,19 +655,6 @@ function hazardAppend(state: InputState, byte: number): InputState {
 }
 
 /**
- * Bytes delivered to the child without passing through the shadow (the handoff
- * input barrier flushes raw). If they ended at a line boundary the child's
- * input line is fresh; otherwise it holds content the shadow never saw and the
- * line is no longer provably straight.
- */
-export function noteUntrackedDeliveredInput(state: InputState, bytes: Buffer): InputState {
-  if (bytes.length === 0) return state;
-  const last = bytes[bytes.length - 1];
-  if (last === 0x0d || last === 0x0a || last === 0x03) return hazardBoundary(state);
-  return hazardPoison(state);
-}
-
-/**
  * Terminal→app protocol traffic on stdin (responses to queries, focus events)
  * does NOT edit Claude's input line and must not poison the straight-line
  * shadow — under tmux these arrive constantly and would otherwise disable the

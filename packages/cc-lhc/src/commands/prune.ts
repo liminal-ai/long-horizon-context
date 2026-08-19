@@ -10,8 +10,8 @@ function parseTargetTokens(commandLine: string): number | undefined {
 }
 
 /**
- * Manual prune: same fenced transaction and (in the wrapper) same handoff as
- * compact. A no-op prune mutates nothing and hands nothing off.
+ * Manual prune: same settled-seam transaction and (in the wrapper) same handoff
+ * as compact. A no-op prune mutates nothing and hands nothing off.
  */
 export async function runPruneCommand(commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   const targetTokens = parseTargetTokens(commandLine);
@@ -23,7 +23,6 @@ export async function runPruneCommand(commandLine: string, runtime: LhcCommandRu
     ...(runtime.hostNotices === undefined || runtime.hostNotices.length === 0
       ? {}
       : { hostNotices: runtime.hostNotices }),
-    ...(runtime.inputEpochChanged === undefined ? {} : { inputEpochChanged: runtime.inputEpochChanged }),
   };
   const outcome = await runContextMutation(plan, runtime);
   if (outcome.kind === "rebuilt") {

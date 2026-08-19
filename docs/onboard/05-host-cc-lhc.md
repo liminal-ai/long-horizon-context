@@ -56,8 +56,8 @@ The wrapper has four main lanes:
    (input + cache creation + cache read), a source-labelled post-measurement
    estimate for content captured after the last provider request, and rollout
    turn boundaries to classify pressure. Mutation runs only at a Claude-safe
-   settled seam: fenced compact/prune, rebuild a rollout, and replace the Claude
-   child via controlled handoff without changing the LHC thread. Open-turn
+   settled seam: compact/prune, rebuild a rollout, and replace the Claude child
+   via spawn-first controlled handoff without changing the LHC thread. Open-turn
    threshold crossings are classified and durably receipted but not mutated
    mid-turn. This host does not perform Codex-style in-place mid-agentic-turn
    request replacement, tool-tail preservation, or continuation markers.
@@ -86,8 +86,8 @@ never advanced the pointer, so a later launch discards it from session
 selection — the file is left untouched — and continues on the current
 session.
 
-A swap the wrapper observed accepted (capture ready-after-replay plus a live
-child) but whose registry pointer could not be written is recorded host-side
+A swap the wrapper observed accepted (a live replacement, routed) but whose
+registry pointer could not be written is recorded host-side
 instead, together with the registry current observed at that moment. The next
 launch reconciles that record into the registry under the thread lock, against
 the pointer read under that same lock and before any session is chosen, so the
@@ -124,8 +124,10 @@ request identity. The wrapper cannot observe Claude's prepared request, so the
 certified rebuild arm currently omits thinking blocks rather than guessing from
 mutable session state.
 
-Capture stays attached through child exit and performs a final rollout read.
-Replay-prefix lines in rebuilt sessions are excluded positionally from intake:
+Capture moves to the replacement at the routing switch; the outgoing
+generation's final read and drain are fired and forgotten, because the old
+rollout is never deleted and a hanging drain must never reach a live
+replacement. Replay-prefix lines in rebuilt sessions are excluded positionally from intake:
 they are a served projection of history already in the record, not new events.
 The first live pair after the prefix resumes canonical capture on the same
 thread.
@@ -233,8 +235,8 @@ parity with the full compact-continuation state machine.
 
 ## Compact/prune transaction
 
-Manual and automatic context changes share one mutation and handoff path when
-the launch argv is safe to replay into a replacement child.
+Manual and automatic context changes share one forward-only mutation and
+handoff path when the launch argv is safe to replay into a replacement child.
 
 Respawn safety fails closed for a positional initial prompt, prompt tokens after
 `--`, or an option/value boundary the wrapper cannot prove. Automatic handoff
@@ -242,30 +244,77 @@ is disabled for that launch form so a prompt can never execute twice. Manual
 compact/prune may still materialize and durably bind a rebuilt rollout; the
 operator continues it with external `cc-lhc --resume <rebuilt-session-id>`.
 
-1. Preview and apply the LHC compact/prune operation, then render the resulting
-   thread view.
-2. Build a fresh Claude rollout and sessions-index entry. The original rollout
-   is never rewritten.
-3. At the explicit commit point, begin an input barrier and revoke the old
-   retrieval descriptor.
-4. Gracefully terminate the old Claude process group, escalating after a
-   bounded wait. Keep capture attached through exit, then final-flush it.
-5. Spawn a new child as `claude --resume <rebuilt-session-id>` and start capture
-   through the in-process pending binding—not through global lineage lookup.
-6. Require both capture ready-after-replay and actual replacement-child PTY
-   output followed by a stabilization window.
-7. Only then record success lineage, publish the new ready descriptor, and
-   deliver buffered user bytes exactly once.
+**Construction: one snapshot, then run to completion.** The settled seam is read
+once — a bound thread, a closed turn, capture caught up — before any SDK work.
+Nothing re-reads it. Input arriving, a turn opening, capture changing
+generation: all of them append to a thread whose settled history the snapshot
+already captured, so none of them can cancel construction. The rebuilt rollout
+is written under bounded retries, each attempt re-reading the installed view; if
+every attempt fails, the installed view stays and the next settled seam
+re-materializes from it.
 
-Pre-commit cancellation leaves the old child untouched. Post-commit failure
-attempts rollback to the old session. If neither child can safely receive the
-buffer, the bytes are preserved in a recovery artifact. A failed replacement
-never claims success, advances lineage, or publishes a ready descriptor.
+**Input ownership.** From the moment compact claims the settled session until
+the whole operation settles, bytes bound for Claude are dropped rather than
+delivered — never buffered, never journalled, never replayed. One line says so:
+*input typed during compaction was not delivered — please resend.* Input that
+started before ownership is not typed-ahead at all; it opens a normal turn and
+compact re-evaluates at that turn's settle.
+
+**Swap: spawn first.** A working session exists at every moment.
+
+1. Spawn `claude --resume <rebuilt-session-id>` **off-route**: a real child that
+   owns no terminal, no stdin, and no capture generation. Its render is held.
+2. Establish observable viability while the old child is still live and
+   untouched: the candidate emitted PTY output and survived a stabilization
+   window. Session-file growth is recorded as corroborating evidence and is
+   never required — a healthy resumed child may render its history without
+   appending a byte. Prompt intake is not consulted; that is the one-shot
+   pointer rule, not an interactive viability rule.
+3. **Switch** input routing, output routing, the retrieval descriptor, and the
+   capture generation in one step. Every later byte from the old child is
+   dropped on the floor.
+4. Record what already happened: canonical lineage and the current-session
+   pointer, then a best-effort kill of the old child — a survivor is left
+   running and named loudly by PID — then capture health, then the ready
+   descriptor. None of these can undo the swap.
+
+Spawn failure or a candidate that dies or stays mute is discovered at zero cost
+and retried. There is no rollback anywhere: the oversized session is never
+restored, because a swap either happens or never starts.
+
+**The one terminal state.** After bounded repeated nonviability the old session
+simply stays live and a standing alarm goes up: *cc-lhc rebuilt sessions are not
+loading — likely a compatibility problem with the installed Claude version.*
+That is explicitly a best guess inferred from observable viability, not proof
+that Claude rejected the file; cc-lhc never parses the terminal to find out.
+Automatic swaps stop rather than retrying forever, capture and manual compact
+keep working, and R16's survival relaunch runs then and there: the old session
+is relaunched **without** the injected `DISABLE_AUTO_COMPACT`, so Claude's own
+compaction keeps it alive in degraded form.
 
 Receipts are durable runtime records and distinguish provider trigger context
-from rebuilt served-context size. Old-generation drain warnings after a
-successful handoff describe that generation's bounded shutdown; current
-derivation status is evaluated on the continuing thread.
+from rebuilt served-context size. They are write-behind throughout: no receipt,
+stage, lineage, pointer, or descriptor write can veto or undo a compact.
+Old-generation drain warnings after a successful handoff describe that
+generation's bounded shutdown; current derivation status is evaluated on the
+continuing thread.
+
+## Restart in the middle of a swap
+
+Restart completes forward. A replacement the wrapper accepted is kept — the
+registry pointer, or the host-side acceptance record reconciled under the thread
+lock, names it, and a later launch through any older alias lands on it. A
+rebuilt rollout reserved by a swap that never completed is never activated: it
+is discarded from session selection, left untouched on disk, and the launch
+lands on the current session where capture continues and the next settled seam
+re-materializes from the latest captured state, new turns included. Corrupt or
+unreadable recovery bookkeeping is unclaimed work, not a wedge.
+
+Durable handoff state written by a pre-rewrite build — an input journal, a
+retained-input artifact, an open attempt row — is consumed once on the way up.
+Whatever state it is in resolves to the same fact: input may not have been
+delivered, so the operator is asked to resend, the state is cleared, and the
+launch continues.
 
 ## Terminal and control panel
 
@@ -340,7 +389,7 @@ Durable state lives under `~/.cc-lhc` (override `CC_LHC_HOME`):
 | `threads/<uuid>.sqlite` | Per-thread record, derivations, views, and impressions |
 | `owners/*.json` | Exclusive thread-owner leases (keyed by thread hash) |
 | `runtime/*.json` | Mode-0600 retrieval capability descriptors |
-| `recovery/*` | Ordered input retained after unrecoverable handoff failure |
+| `recovery/*` | Only pre-rewrite artifacts, consumed and cleared at launch |
 | `wrapper.log` | Append-only wrapper lifecycle diagnostics (no rotation yet) |
 
 Per-wrapper runtime descriptors are private ephemeral capabilities. Rebuilt

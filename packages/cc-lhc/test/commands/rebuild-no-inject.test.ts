@@ -115,7 +115,7 @@ describe("manual compact/prune: wrapper-owned handoff, success-only lineage", ()
     lineageSpy.mockRestore();
   });
 
-  it("compact reports partial and returns no handoff when the rebuild throws", async () => {
+  it("retries the rebuild, then keeps the installed view with no handoff when every attempt throws", async () => {
     const writeSpy = vi
       .spyOn(writeRebuilt, "writeRebuiltRollout")
       .mockRejectedValue(new Error("disk full"));
@@ -124,8 +124,10 @@ describe("manual compact/prune: wrapper-owned handoff, success-only lineage", ()
     const outcome = await runCompactCommand("compact", makeRuntime());
     expect(outcome.restart).toBeUndefined();
     expect(outcome.handoff).toBeUndefined();
-    expect(outcome.messages.join("\n")).toMatch(/rebuild failed: disk full/);
-    expect(outcome.messages.join("\n")).toMatch(/session left running unchanged/);
+    expect(outcome.messages.join("\n")).toMatch(/rebuilt rollout not written after \d+ attempts/);
+    expect(outcome.messages.join("\n")).toMatch(/disk full/);
+    // Forward-only: the compact stays installed and the next seam re-materializes.
+    expect(outcome.messages.join("\n")).toMatch(/LHC view is installed and durable/);
     expect(lineageSpy).not.toHaveBeenCalled();
 
     writeSpy.mockRestore();
