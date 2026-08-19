@@ -99,9 +99,9 @@ export type SwitchOutcome =
 
 export interface HandoffPorts {
   /**
-   * The two things that can still stop a swap before it starts, neither of
-   * them about the compact: this launch form cannot respawn a child at all, and
-   * the wrapper process is already exiting. Returns a reason or null.
+   * The one thing that can still stop a swap before it starts, and it is not
+   * about the compact: the wrapper process is already exiting, so there is
+   * nobody left to route a replacement to. Returns a reason or null.
    */
   preHandoffStop(): string | null;
   /**

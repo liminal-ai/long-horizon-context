@@ -837,8 +837,8 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 15_000);
 
-  it("respawn-unsafe launch: no mutation; receipt terminal mutation_refused", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-respawn-"));
+  it("one-shot seat: the settled seam defers to the next invocation instead of swapping the running child", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim98-oneshot-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
     const spawned: FakePty[] = [];
@@ -855,8 +855,9 @@ describe("LIM-64 production wrapper path", () => {
       return session;
     };
 
-    // Positional prompt makes respawnArgvSafety fail closed.
-    const runPromise = run(["please do the thing"], {
+    // A one-shot seat: one prompt, then exit. Its compaction seam is the start
+    // of the next invocation, so nothing swaps the child running this prompt.
+    const runPromise = run(["-p", "please do the thing"], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
         const fake = makeFakePty(8700 + spawned.length, `c${spawned.length}`, args, true);
@@ -879,14 +880,17 @@ describe("LIM-64 production wrapper path", () => {
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
     await new Promise((r) => setTimeout(r, 400));
     expect(mutationSentinel).toBe(false);
+    // The prompt was launched exactly once, by the child that carried it.
+    expect(spawned).toHaveLength(1);
+    expect(spawned[0]!.args).toContain("please do the thing");
 
     const store = openGovernorReceiptStore(receiptDb);
     const would = store.listBySession("old-session").filter((r) => r.wouldMutate);
     expect(would).toHaveLength(1);
-    expect(would[0]!.handoffOutcome?.kind).toBe("mutation_refused");
-    expect(String((would[0]!.handoffOutcome as { detail?: string }).detail ?? "")).toMatch(
-      /respawn_unsafe|positional/i,
-    );
+    const outcome = would[0]!.handoffOutcome as { kind: string; reason?: string; detail?: string };
+    expect(outcome.kind).toBe("mutation_deferred");
+    expect(outcome.reason).toBe("one_shot_next_invocation");
+    expect(String(outcome.detail ?? "")).toMatch(/next invocation/i);
     store.close();
 
     spawned[0]!.fireExit(0);

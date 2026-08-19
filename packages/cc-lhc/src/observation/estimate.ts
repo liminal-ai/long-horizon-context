@@ -19,6 +19,7 @@ import type { PostMeasurementEstimate } from "../governor/types.js";
 export const PROVIDER_OUTPUT_ESTIMATE_SOURCE = "provider_reported_output_tokens";
 export const HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE = "host_canonical_payload_byte_estimate";
 export const MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE = "provider_output_plus_host_canonical_payload_byte_estimate";
+export const PENDING_PROMPT_BYTE_ESTIMATE_SOURCE = "pending_prompt_byte_estimate";
 
 /** Fold state shared across observe lines for one capture generation. */
 export interface PostMeasurementEstimateFold {
@@ -126,4 +127,34 @@ export function mergeEstimateSource(previousSource: string, nextSource: string, 
     return MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE;
   }
   return MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE;
+}
+
+/**
+ * Size of the prompt an invocation is about to send, before it is sent.
+ *
+ * A prompt that has not left the wrapper yet has no provider measurement, so it
+ * carries the same host byte heuristic as captured content — under its own
+ * source label, so it is never read as provider usage.
+ */
+export function pendingPromptEstimate(promptText: string): PostMeasurementEstimate {
+  return estimateTokensFromCapturedBytes(Buffer.byteLength(promptText, "utf8"), PENDING_PROMPT_BYTE_ESTIMATE_SOURCE);
+}
+
+/**
+ * Everything the next request carries that no provider measurement covers:
+ * content captured after the last reading, plus the prompt about to be sent.
+ * This is the estimate half of one-shot pre-launch pressure; the provider base
+ * is the last authoritative reading from the persisted transcript.
+ */
+export function preLaunchEstimate(
+  capturedGrowth: PostMeasurementEstimate,
+  promptText: string,
+): PostMeasurementEstimate {
+  const prompt = pendingPromptEstimate(promptText);
+  const parts = [capturedGrowth, prompt].filter((part) => part.tokens > 0);
+  return {
+    tokens: capturedGrowth.tokens + prompt.tokens,
+    source: parts.length === 0 ? PENDING_PROMPT_BYTE_ESTIMATE_SOURCE : parts.map((part) => part.source).join("+"),
+    domain: "source_labelled_estimate",
+  };
 }
