@@ -515,6 +515,21 @@ unpiped labeled retrieval and impressions; prune; clean exit/relaunch;
 explicit wrapper resume; deliberate in-app mismatch; raw-PTY behavior; legacy
 label migration; all derivations drained; and isolation from production state.
 
+The compact-gating campaign (S1–S7) has its own retained record,
+[`packages/cc-lhc/test/fixtures/lim99-s7-certification-evidence.md`](../../packages/cc-lhc/test/fixtures/lim99-s7-certification-evidence.md)
+and its adjacent manifest, covering the forward-only compact path on Claude
+2.1.235: the interactive spawn-first swap and typed-ahead drop, the one-shot
+pre-launch compact, restart mid-swap, manual/panel compact, `autoCompact:false`,
+the nonviability alarm with R16's survival relaunch, alias resolution with a
+single thread owner, and the legacy pre-rewrite upgrade. It records one open
+defect: on the installed binary a native `/compact` writes a
+`system`/`compact_boundary` record plus a `user` record carrying
+`isCompactSummary`, not the `type: "summary"` record this host's intake
+discriminates on, so the loud notice and the tagged bounded closed turn
+described above do not currently occur — the summary is captured as an
+ordinary user prompt and LHC continues. Read that record before relying on the
+native-summary paragraphs in this document.
+
 The TypeScript SDK remains the contract source. The new
 `turns.backfillRenderingLabels` operation creates port-parity follow-up
 `long-horizon-context-0su.1`; that follow-up does not weaken this host's

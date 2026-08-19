@@ -1,0 +1,288 @@
+{
+  "story": "LIM-99 / S7",
+  "campaign": "cc-lhc compact gating",
+  "date": "2026-08-19",
+  "result": {
+    "canariesPassed": 8,
+    "canariesTotal": 9,
+    "partialFail": [
+      "d"
+    ]
+  },
+  "source": {
+    "commit": "1b893993ae37b9ddaaaed0fcc9d1f45195d11c5c",
+    "branch": "campaign/cc-lhc-gating-lim-99",
+    "contains": {
+      "LIM-98": "56359437515fa7220bd06f597ec2897bd2746558",
+      "LIM-100": "340eaea05170479e9303eb06952e40ebfa1a3400"
+    },
+    "worktreeClean": true
+  },
+  "claude": {
+    "version": "2.1.235",
+    "path": "/home/leemoore/.local/share/claude/versions/2.1.235",
+    "sha256": "bfcf0ae2dbf94b2b6a106074aabf3938b9a10889c3b678e4cb5a00c03274d5d5"
+  },
+  "node": "v24.18.0",
+  "artifacts": {
+    "ccLhcDistManifest": {
+      "path": "/tmp/cc-lhc-lim99-1787144929/evidence/cc-lhc-dist-manifest.sha256",
+      "entries": 300,
+      "verifiedAfterExhibits": true
+    },
+    "lhcDistManifest": {
+      "path": "/tmp/cc-lhc-lim99-1787144929/evidence/lhc-dist-manifest.sha256",
+      "entries": 344,
+      "verifiedAfterExhibits": true
+    },
+    "ccLhcNativeManifest": {
+      "path": "/tmp/cc-lhc-lim99-1787144929/evidence/cc-lhc-native-manifest.sha256",
+      "entries": 7,
+      "verifiedAfterExhibits": true,
+      "compiledAddonMandatory": "CC_LHC_NATIVE_REQUIRE_ADDON=1"
+    }
+  },
+  "isolation": {
+    "ccLhcHome": "/tmp/cc-lhc-lim99-1787144929/home",
+    "exhibitRoot": "/tmp/cc-lhc-lim99-1787144929",
+    "productionHomeUsed": false,
+    "productionRegistryTables": [
+      "threads"
+    ],
+    "productionRegistryHasAliasMap": false,
+    "globalInstall": false,
+    "launcherSwitched": false,
+    "push": false,
+    "release": false
+  },
+  "canaries": {
+    "a": {
+      "result": "pass",
+      "arm": "production",
+      "thread": "th_3df180f18af54b63",
+      "sessions": [
+        "f93eb695",
+        "e710ace9",
+        "44f3e5cd",
+        "96520f66",
+        "77658af3",
+        "e693a146",
+        "233acf23"
+      ],
+      "triggerProviderContext": 115461,
+      "upperBoundTokens": 60000,
+      "droppedTypedAheadBytes": 107,
+      "operatorBytesInDrop": 84,
+      "spawnFirst": true,
+      "rollbacks": 0,
+      "codewordRecalled": "ALBATROSS-77"
+    },
+    "b": {
+      "result": "pass",
+      "arm": "production",
+      "thread": "th_57f3de94affdfd1c",
+      "preLaunchPressure": 71333,
+      "providerBefore": 71316,
+      "rebuiltViewTokens": 65,
+      "launches": 1,
+      "promptOccurrencesInRebuiltRollout": 1,
+      "pointerAdvancedTo": "claude-code:5134442f-ac80-4dd6-8a40-753ea0ba3ff7",
+      "codewordRecalled": "PELICAN-99"
+    },
+    "c": {
+      "result": "pass",
+      "arm": "production",
+      "killedMsAfterOffRouteSpawn": 12,
+      "reservedSession": "4ba2c100-423b-40a2-a406-327c78b5075c",
+      "reservedRolloutSha256BeforeAndAfter": "cec05e6d31e73b7bbd1c6c83f486b365a9e336a81448267c061947973bf541c4",
+      "landedOn": "77658af3-c016-4acf-886f-2bb27498886e",
+      "reverted": false,
+      "rematerializedSession": "e693a146-499d-4dde-a7a7-3b5c85109538"
+    },
+    "d": {
+      "result": "partial_fail",
+      "arm": "production",
+      "lhcContinues": true,
+      "retrievalAfterNativeCompact": true,
+      "impressionsWritten": 1,
+      "loudNoticeEmitted": false,
+      "summaryTagged": false,
+      "summaryBoundedTo2000Chars": false,
+      "summaryIsCompleteClosedTurn": false,
+      "capturedAs": {
+        "messageId": "m31",
+        "kind": "user_prompt",
+        "chars": 2927,
+        "turn": "t6",
+        "turnStatus": "open"
+      },
+      "discriminatorInCode": "item.type === 'summary'",
+      "installedShape": [
+        "system/subtype=compact_boundary+compactMetadata",
+        "user/isCompactSummary=true"
+      ],
+      "corpusSurvey": {
+        "projectDirs": 106,
+        "filesWithTypeSummary": 0,
+        "filesWithIsCompactSummary": 6,
+        "compactBoundaryOccurrences": 10
+      },
+      "repairedHere": false,
+      "reason": "S7 must not repair S1-S6 under a certification label"
+    },
+    "e": {
+      "result": "pass",
+      "arm": "production",
+      "handoffOperationLabel": "compact",
+      "runtimeNoteTag": "[lhc compact:manual]",
+      "newSession": "77658af3-c016-4acf-886f-2bb27498886e"
+    },
+    "f": {
+      "result": "pass",
+      "arm": "production",
+      "providerContextAtSeam": 121941,
+      "upperBoundTokens": 60000,
+      "decision": "policy_disabled",
+      "reason": "autoCompact is disabled",
+      "automaticHandoffs": 0,
+      "manualCompactSucceeded": true,
+      "manualNewSession": "233acf23-0e5b-4763-a18c-671518145e62"
+    },
+    "g": {
+      "result": "pass",
+      "arm": "stand-in child",
+      "nonviableSwaps": 3,
+      "nonviableSessions": [
+        "d7948efc",
+        "e2192193",
+        "803c19f8"
+      ],
+      "attemptsPerSwap": 2,
+      "alarmRaised": true,
+      "alarmIsBestGuess": true,
+      "survivalRelaunchSession": "d2255057-9d8c-4b00-89c7-2c0efadcb189",
+      "survivalRelaunchDisableAutoCompactInjected": false,
+      "manualCompactAfterAlarm": "56f751d8-622f-419c-88a7-a3db363a7ee6"
+    },
+    "h": {
+      "result": "pass",
+      "arm": "production",
+      "thread": "th_60e4c349a0b7b2c4",
+      "oldAlias": "d2255057-9d8c-4b00-89c7-2c0efadcb189",
+      "currentAlias": "56f751d8-622f-419c-88a7-a3db363a7ee6",
+      "concurrentWinners": 1,
+      "loserExitCode": 2,
+      "loserMessage": "cc-lhc refused duplicate thread owner: LHC thread th_60e4c349a0b7b2c4 already has a live cc-lhc owner (pid 2909094)"
+    },
+    "i": {
+      "result": "pass",
+      "arm": "production",
+      "artifactsConsumed": 2,
+      "attemptRowsSettled": 1,
+      "resendNoticeEmitted": true,
+      "launchExitCode": 0,
+      "foreignArtifactsUntouched": [
+        "input-foreign.journal",
+        "handoff-unreadable.json"
+      ],
+      "foreignAttemptRowsLeft": [
+        "att-foreign",
+        "att-nothread"
+      ]
+    }
+  },
+  "receipts": {
+    "total": 85,
+    "byDecision": {
+      "would_compact/open_turn/wouldMutate=false": 51,
+      "policy_disabled/open_turn": 15,
+      "would_compact/settled_seam/wouldMutate=true": 10,
+      "below_threshold/settled_seam": 8,
+      "policy_disabled/settled_seam": 1
+    },
+    "offRouteSpawns": 14,
+    "handoffSuccess": 7,
+    "nonviable": 3,
+    "rollbacks": 0
+  },
+  "sanctionedStops": [
+    "autoCompact:false (R3)",
+    "bounded replacement-nonviability wall (R6/R16)"
+  ],
+  "gates": {
+    "ccLhc": {
+      "typecheckSrcAndTest": "clean",
+      "vitestFiles": 91,
+      "vitestPassed": 940,
+      "vitestSkipped": 1,
+      "env": "CC_LHC_NATIVE_REQUIRE_ADDON=1"
+    },
+    "lhc": {
+      "typecheckSrc": "clean",
+      "typecheckTest": "4 pre-existing errors (reproduced at merge-base ff0a91c)",
+      "vitestFiles": 71,
+      "vitestPassed": 763,
+      "vitestSkipped": 31
+    },
+    "workspacePreCommitTypecheck": {
+      "status": "fails on the untouched base commit",
+      "causes": [
+        "lhc-convex example typecheck: package unbuilt in this worktree (out of scope)",
+        "lhc tsconfig.test.json: 4 pre-existing errors (reproduced at merge-base ff0a91c)"
+      ],
+      "verifiedOnPristineTree": true,
+      "commitUsed": "LHC_SKIP_TYPECHECK=1 (hook-documented escape hatch)"
+    }
+  },
+  "mutationProbes": [
+    {
+      "probe": "autoCompact:false stop removed",
+      "killed": true,
+      "failed": 1,
+      "passed": 13
+    },
+    {
+      "probe": "legacy attempt-row thread scoping widened",
+      "killed": true,
+      "failed": 2,
+      "passed": 9
+    },
+    {
+      "probe": "replacement viability check bypassed",
+      "killed": true,
+      "failed": 5,
+      "passed": 36
+    },
+    {
+      "probe": "typed-ahead resend notice silenced",
+      "killed": true,
+      "failed": 2,
+      "passed": 23
+    },
+    {
+      "probe": "duplicate thread owner allowed",
+      "killed": true,
+      "failed": 4,
+      "passed": 9
+    },
+    {
+      "probe": "NONVIABLE_SWAPS_BEFORE_ALARM 3 -> 99",
+      "killed": false,
+      "passed": 6,
+      "note": "survives by documented design; exercised only by live canary (g)"
+    }
+  ],
+  "evidencePaths": {
+    "wrapperLog": "/tmp/cc-lhc-lim99-1787144929/evidence/wrapper.log",
+    "evidenceDir": "/tmp/cc-lhc-lim99-1787144929/evidence",
+    "shimLog": "/tmp/cc-lhc-lim99-1787144929/evidence/g-shim.log"
+  },
+  "disposableTargets": [
+    "/tmp/cc-lhc-lim99-1787144929",
+    "/home/leemoore/.claude/projects/-tmp-cc-lhc-lim99-1787144929-cwd",
+    "/home/leemoore/.claude/projects/-tmp-cc-lhc-lim99-1787144929-cwd-a",
+    "/home/leemoore/.claude/projects/-tmp-cc-lhc-lim99-1787144929-cwd-b",
+    "/home/leemoore/.claude/projects/-tmp-cc-lhc-lim99-1787144929-cwd-b2",
+    "/home/leemoore/.claude/projects/-tmp-cc-lhc-lim99-1787144929-cwd-g"
+  ]
+}
