@@ -241,13 +241,22 @@ export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): M
   // an out-of-window block is never selected, so its content is never loaded
   // or parsed (the no-load-everything proof corrupts one to assert this).
   const ids = messageRows.map((row) => row.message_id);
-  const blockRows = db
-    .prepare(
-      `SELECT message_id, block_type, content FROM message_block
-       WHERE message_id IN (${ids.map(() => "?").join(", ")})
-       ORDER BY message_id, block_index`,
-    )
-    .all(...ids) as unknown as RawBlockRow[];
+  const blockRows: RawBlockRow[] = [];
+  // SQLite's parameter ceiling varies by build. A mature thread can contain
+  // tens of thousands of messages, so never bind the complete live set in one
+  // IN clause. Keep each read comfortably below the lowest common ceiling.
+  const blockReadBatchSize = 400;
+  for (let offset = 0; offset < ids.length; offset += blockReadBatchSize) {
+    const batch = ids.slice(offset, offset + blockReadBatchSize);
+    const rows = db
+      .prepare(
+        `SELECT message_id, block_type, content FROM message_block
+         WHERE message_id IN (${batch.map(() => "?").join(", ")})
+         ORDER BY message_id, block_index`,
+      )
+      .all(...batch) as unknown as RawBlockRow[];
+    blockRows.push(...rows);
+  }
   const blocksByMessage = new Map<string, Block[]>();
   for (const row of blockRows) {
     const blocks = blocksByMessage.get(row.message_id) ?? [];

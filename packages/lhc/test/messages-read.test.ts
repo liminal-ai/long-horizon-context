@@ -385,3 +385,45 @@ describe("architecture risk: bounded listing loads only its window (AC-3.1, SV-0
     expect(hitsForm.ok).toBe(false);
   });
 });
+
+describe("large unbounded message reads", () => {
+  it("lists and previews more messages than SQLite accepts as one bound-parameter list", async () => {
+    const { filePath, sdk } = await readFixture(store);
+    const db = openRaw(filePath);
+    try {
+      const insertEvent = db.prepare(
+        `INSERT INTO event
+           (event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at)
+         VALUES (?, 'assistant_text', ?, 'assistant', 'test', ?, '2026-01-01T00:00:00.000Z')`,
+      );
+      const insertMessage = db.prepare(
+        `INSERT INTO message
+           (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)
+         VALUES (?, ?, 'assistant_text', 1, 'assistant', 'test', 't2')`,
+      );
+      const insertBlock = db.prepare(
+        `INSERT INTO message_block (message_id, block_index, block_type, content)
+         VALUES (?, 0, 'text', ?)`,
+      );
+      for (let index = 0; index < 34_000; index += 1) {
+        const id = `large-${index}`;
+        const order = 10_000 + index;
+        const content = JSON.stringify({ text: `large read ${index}` });
+        insertEvent.run(order, id, content);
+        insertMessage.run(id, order);
+        insertBlock.run(id, content);
+      }
+    } finally {
+      db.close();
+    }
+
+    const listed = await sdk.messages.list({ filePath });
+    if (!listed.ok) throw new Error(`${listed.error.code}: ${listed.error.reason}`);
+    expect(listed.value).toHaveLength(34_006);
+    expect(listed.value.at(-1)?.blocks[0]?.content["text"]).toBe("large read 33999");
+
+    const preview = await sdk.threadView.previewCompact({ filePath }, {});
+    if (!preview.ok) throw new Error(`${preview.error.code}: ${preview.error.reason}`);
+    expect(preview.value.kind).toBe("ok");
+  }, 20_000);
+});
