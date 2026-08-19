@@ -18,6 +18,8 @@ export interface ExpectedSession {
    * - wrapper_picker: bare --resume resolved by cc-lhc picker
    * - rebuilt_handoff: compact/prune replacement id
    * - continue_resolved: --continue resolved to an explicit id before launch
+   * - current_alias: entered through an older alias of the thread and
+   *   corrected to the session the thread currently accepts
    * - fork_new: --fork-session with generated/explicit new target id
    */
   source:
@@ -27,6 +29,7 @@ export interface ExpectedSession {
     | "wrapper_picker"
     | "rebuilt_handoff"
     | "continue_resolved"
+    | "current_alias"
     | "fork_new";
 }
 

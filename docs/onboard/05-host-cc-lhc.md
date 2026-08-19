@@ -65,10 +65,26 @@ The wrapper has four main lanes:
 ## Capture and canonical attribution
 
 The wrapper binds capture to a known Claude session ID and exact rollout path;
-it does not select the newest file in the cwd. An exclusive owner lease, keyed
-by session and backed by OS-verifiable process identity, refuses a second live
-wrapper before it can tail or spawn. PID reuse does not make a stale owner look
-live.
+it does not select the newest file in the cwd. One LHC thread accumulates many
+native Claude session IDs over its life, so the exclusive owner lease is keyed
+by the **thread**, not by a session: every alias of one thread contends for one
+lease. The lease is backed by OS-verifiable process identity and refuses a
+second live wrapper before it can tail or spawn. PID reuse does not make a
+stale owner look live.
+
+At launch the wrapper resolves the host-qualified alias (`claude-code:<uuid>`)
+through the LHC registry's alias map to a thread ID, takes that thread's lease,
+then re-reads the thread's current alias **under the lease** and lands on that
+session. The pre-lease lookup authorizes the lock key only — the current
+pointer can advance in between. A launch through an older alias therefore
+self-corrects onto the thread's current session instead of failing. On the
+first registry miss, the pre-registry `cc-lhc.sqlite` lineage is imported
+one way; after that the registry is authoritative and cc-lhc storage keeps
+only host-local detail (rollout paths, prefix proof, prompt-intake evidence,
+recovery detail). A rebuilt session reserved by a swap that never completed
+never advanced the pointer, so a later launch discards it from session
+selection — the file is left untouched — and continues on the current
+session.
 
 The rollout parser maps recognized user, assistant, thinking, tool, result,
 runtime, model-change, and turn-boundary records. Harmless top-level host
@@ -276,10 +292,10 @@ Durable state lives under `~/.cc-lhc` (override `CC_LHC_HOME`):
 
 | Path | Purpose |
 | --- | --- |
-| `registry.sqlite` | LHC thread registry |
-| `cc-lhc.sqlite` | Claude-session lineage and capture metadata |
+| `registry.sqlite` | LHC thread registry and the alias map (`claude-code:<uuid>` → thread, one current alias per thread) |
+| `cc-lhc.sqlite` | Host-local session detail: rollout paths, prefix proof, replay signatures |
 | `threads/<uuid>.sqlite` | Per-thread record, derivations, views, and impressions |
-| `owners/*.json` | Exclusive live-session owner leases |
+| `owners/*.json` | Exclusive thread-owner leases (keyed by thread hash) |
 | `runtime/*.json` | Mode-0600 retrieval capability descriptors |
 | `recovery/*` | Ordered input retained after unrecoverable handoff failure |
 | `wrapper.log` | Append-only wrapper lifecycle diagnostics (no rotation yet) |

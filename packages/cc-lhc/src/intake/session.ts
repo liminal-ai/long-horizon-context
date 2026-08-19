@@ -51,8 +51,8 @@ import {
   type LaunchClass,
   type LineageDbDeps,
   type LineageOutcome,
+  bindCaptureThread,
   lookupSessionLineage,
-  resolveCaptureThread,
   safeAppendThreadSignatures,
   safeLoadThreadSignatures,
   safeRecordSessionThread,
@@ -126,6 +126,13 @@ export async function createCaptureThread(
   };
 }
 
+/** What the launch resolved and locked before capture was allowed to start. */
+export interface LaunchThreadBinding {
+  threadId: string;
+  /** True when this launch created the thread (fresh-provenance eligibility). */
+  createdAtLaunch: boolean;
+}
+
 export interface ContinueCapture {
   threadRef: ThreadRef;
   sdk: Lhc;
@@ -144,8 +151,12 @@ export interface CaptureSessionDeps {
   startedAt?: Date;
   noInference?: boolean;
   continueCapture?: ContinueCapture;
-  resumeSessionId?: string;
-  continueFlag?: boolean;
+  /**
+   * The thread this launch owns, resolved through the registry alias map and
+   * fenced by the thread-keyed owner lock before capture starts. Capture never
+   * looks a thread up for itself.
+   */
+  launchThread?: LaunchThreadBinding;
   expectedSession?: ExpectedSession;
   knownRolloutPath?: string;
   /**
@@ -175,7 +186,6 @@ export interface CaptureSessionDeps {
   ) => ReturnType<typeof flushBatch> | Promise<void> | Promise<boolean> | boolean;
   initSdkFn?: (config: SdkConfig) => Lhc;
   drainSettledCapMs?: number;
-  createThreadFn?: typeof createCaptureThread;
   onLifecycle?: (signals: readonly LifecycleSignal[]) => void;
   /** Latest runtime choices explicitly recorded by the bound Claude rollout. */
   onRuntimeSettings?: (settings: Readonly<ClaudeRuntimeSettings>) => void;
@@ -398,7 +408,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       console.error(message);
     });
   const flush = deps.flushBatchFn ?? flushBatch;
-  const createThread = deps.createThreadFn ?? createCaptureThread;
   const registryPath = deps.registryPath ?? defaultRegistryPath();
   const lineageDbPath = deps.lineageDbPath ?? defaultLineageDbPath();
   const stats = emptyCaptureStats();
@@ -422,9 +431,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       sessionId: basename(deps.knownRolloutPath, ".jsonl"),
       source: "rebuilt_handoff",
     };
-  }
-  if (expectedSession === undefined && deps.resumeSessionId !== undefined) {
-    expectedSession = { sessionId: deps.resumeSessionId, source: "explicit_resume" };
   }
 
   let sdk: Lhc | undefined;
@@ -925,20 +931,23 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       }
 
       if (threadRef === undefined || sdk === undefined) {
-        const resolution = await resolveCaptureThread({
+        const launchThread = deps.launchThread;
+        if (launchThread === undefined) {
+          degradeAndEmit("thread_binding:missing_launch_thread");
+          logError("cc-lhc: capture started without a launch thread binding — capture degraded");
+          return;
+        }
+        const resolution = await bindCaptureThread({
           sessionId: rolloutSessionId,
-          cwd,
+          threadId: launchThread.threadId,
+          threadCreatedAtLaunch: launchThread.createdAtLaunch,
           launchClass: launchClassOf(expectedSession.source),
-          ...(deps.resumeSessionId === undefined ? {} : { resumeSessionId: deps.resumeSessionId }),
-          ...(deps.continueFlag === undefined ? {} : { continueFlag: deps.continueFlag }),
           registryPath,
           lineageDbPath,
-          ...(deps.discoverDeps?.projectsRoot === undefined ? {} : { projectsRoot: deps.discoverDeps.projectsRoot }),
           log,
           logError,
-          onLineageFailure: (reason) => degradeAndEmit(reason),
+          onLineageFailure: (reason: string) => degradeAndEmit(reason),
           ...(deps.lineageDeps === undefined ? {} : { lineageDeps: deps.lineageDeps }),
-          createThreadFn: createThread,
         });
         if (stopped) return;
 

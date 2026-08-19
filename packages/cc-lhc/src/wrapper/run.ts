@@ -41,12 +41,14 @@ import {
   respawnArgvSafety,
   respawnChildArgv,
 } from "../intake/launch-session.js";
+import { openLaunchThread } from "../intake/launch-thread.js";
 import { defaultLineageDbPath } from "../intake/lineage-db.js";
 import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
-import { type CaptureSession, startCaptureSession } from "../intake/session.js";
+import { type CaptureSession, createCaptureThread, startCaptureSession } from "../intake/session.js";
+import { acceptCurrentSession, type LaunchThreadBinding } from "../intake/thread-alias.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
-import type { ExpectedSession } from "../rollout/expected-session.js";
+import { type ExpectedSession, expectedSessionFromExplicitId } from "../rollout/expected-session.js";
 import { applyClaudeRuntimeSettings, type ClaudeRuntimeSettings } from "../rollout/runtime-settings.js";
 import {
   closeAndRemove,
@@ -62,11 +64,7 @@ import {
   revokeDescriptor,
 } from "../runtime/descriptor.js";
 import { ProcessIdentityUnavailableError } from "../runtime/process-identity.js";
-import {
-  acquireSessionOwner,
-  type SessionOwnerLease,
-  SessionOwnershipConflictError,
-} from "../runtime/session-owner.js";
+import { acquireThreadOwner, type ThreadOwnerLease, ThreadOwnershipConflictError } from "../runtime/thread-owner.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { forceKillChildTree, requestPtyTermination, runTaskkillTree } from "./child-termination.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
@@ -384,16 +382,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
 
   let expectedSession: ExpectedSession | undefined;
-  const ownedSessionLeases = new Map<string, SessionOwnerLease>();
-  const releaseSessionOwners = (): void => {
-    for (const lease of ownedSessionLeases.values()) lease.release();
-    ownedSessionLeases.clear();
+  /** The one thread this wrapper owns; every alias of it contends for this lease. */
+  let launchThread: LaunchThreadBinding | undefined;
+  let threadOwnerLease: ThreadOwnerLease | undefined;
+  const releaseThreadOwner = (): void => {
+    threadOwnerLease?.release();
+    threadOwnerLease = undefined;
   };
-  const ensureSessionOwner = (sessionId: string): void => {
-    if (ownedSessionLeases.has(sessionId)) return;
-    ownedSessionLeases.set(sessionId, acquireSessionOwner(sessionId));
-  };
-  let resumeSessionIdForLineage: string | undefined;
   let childArgv = argv;
   /** Non-selector user argv retained for wrapper-owned respawn. */
   let respawnRest: string[] = [];
@@ -410,21 +405,48 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       });
       expectedSession = plan.expected;
       childArgv = plan.childArgv;
-      resumeSessionIdForLineage = plan.resumeSessionIdForLineage;
       respawnRest = plan.rest;
       respawnPassthrough = plan.passthrough;
-      wrapperLog.info(`cc-lhc expected session ${expectedSession.sessionId} (source=${expectedSession.source})`);
-      ensureSessionOwner(expectedSession.sessionId);
+      wrapperLog.info(`cc-lhc launch alias ${expectedSession.sessionId} (source=${expectedSession.source})`);
+
+      // R15 launch flow: the alias names the thread this launch owns; the
+      // session it lands on is the one that thread currently accepts, read
+      // under the acquired lock.
+      const registryPath = defaultRegistryPath();
+      const opened = await openLaunchThread({
+        expectedSession,
+        registryPath,
+        lineageDbPath: defaultLineageDbPath(),
+        log: (message) => wrapperLog.info(message),
+        createThread: async () => {
+          const created = await createCaptureThread(process.cwd(), registryPath);
+          if (!created.ok) throw new Error(`cc-lhc thread create failed: ${created.error.reason}`);
+          return "threadId" in created.value ? created.value.threadId : "";
+        },
+      });
+      threadOwnerLease = opened.lease;
+      launchThread = { threadId: opened.threadId, createdAtLaunch: opened.createdAtLaunch };
+      if (opened.correctedFrom !== undefined) {
+        expectedSession = opened.expectedSession;
+        childArgv = respawnChildArgv(respawnRest, respawnPassthrough, expectedSession.sessionId);
+      }
+      for (const artifact of opened.discardedSwapArtifacts) {
+        wrapperLog.warn(
+          `cc-lhc: rebuilt session ${artifact.sessionId} (reserved ${artifact.updatedAt}) was never accepted; ` +
+            "discarded from launch selection",
+        );
+      }
+
       const safety = respawnArgvSafety(respawnRest, respawnPassthrough);
       if (!safety.safe) {
         respawnUnsafeReason = safety.reason;
         wrapperLog.warn(`cc-lhc handoff disabled for this launch form: ${safety.reason}`);
       }
     } catch (cause) {
-      releaseSessionOwners();
+      releaseThreadOwner();
       const message =
-        cause instanceof SessionOwnershipConflictError
-          ? `cc-lhc refused duplicate session owner: ${cause.message}`
+        cause instanceof ThreadOwnershipConflictError
+          ? `cc-lhc refused duplicate thread owner: ${cause.message}`
           : cause instanceof LaunchGrammarError || cause instanceof Error
             ? cause.message
             : String(cause);
@@ -470,7 +492,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           stderr.write(`cc-lhc: descriptor revoke failed: ${rev.reason}\n`);
         }
         stderr.write(`cc-lhc: ${guided.reason}\n`);
-        releaseSessionOwners();
+        releaseThreadOwner();
         return 2;
       }
       childArgv = guided.argv;
@@ -490,7 +512,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // platforms: without it, ownership and descriptor liveness cannot be
         // proven. Fail with the actionable message rather than degrading.
         stderr.write(`cc-lhc: ${message}\n`);
-        releaseSessionOwners();
+        releaseThreadOwner();
         return 2;
       }
       wrapperLog.warn(`cc-lhc runtime descriptor create failed: ${message}`);
@@ -524,7 +546,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       runtimeDescriptorPath = undefined;
       runtimeDescriptor = undefined;
     }
-    releaseSessionOwners();
+    releaseThreadOwner();
     throw cause;
   }
 
@@ -886,12 +908,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
   };
 
-  if (!noCapture && expectedSession !== undefined) {
+  if (!noCapture && expectedSession !== undefined && launchThread !== undefined) {
     captureSession = startCaptureSession({
       startedAt,
       noInference,
       expectedSession,
-      ...(resumeSessionIdForLineage !== undefined ? { resumeSessionId: resumeSessionIdForLineage } : {}),
+      launchThread,
       lineageDbPath: defaultLineageDbPath(),
       log: (message) => wrapperLog.info(message),
       logError: (message) => wrapperLog.warn(message),
@@ -935,7 +957,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     restoreTerminal(stdin, stdout);
     process.removeListener("SIGUSR1", onSigusr1);
     cleanupDescriptor();
-    releaseSessionOwners();
+    releaseThreadOwner();
   };
 
   process.on("exit", cleanup);
@@ -1538,7 +1560,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     /** Spawn a claude child for `--resume <sessionId>` with a fresh opening
      * descriptor generation; attaches output/exit handlers. */
     const spawnHandoffChild = (sessionId: string): HandoffChild => {
-      ensureSessionOwner(sessionId);
       let respawnArgv = respawnChildArgv(respawnRest, respawnPassthrough, sessionId);
       if (handoffRuntimeSettings !== undefined) {
         respawnArgv = applyClaudeRuntimeSettings(respawnArgv, handoffRuntimeSettings);
@@ -1759,7 +1780,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
               priorGeneration: captureSession?.getCaptureGeneration() ?? leaseGeneration,
             },
             expectedSession: { sessionId: oldSessionId, source: "explicit_resume" },
-            resumeSessionId: oldSessionId,
             lineageDbPath: defaultLineageDbPath(),
             log: (message) => wrapperLog.info(message),
             logError: (message) => wrapperLog.warn(message),
@@ -1801,7 +1821,22 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             lineageDbPath: defaultLineageDbPath(),
             logError: (message) => wrapperLog.warn(message),
           });
-          return outcome.ok ? { ok: true as const } : { ok: false as const, reason: outcome.reason };
+          // The swap is accepted at this point (capture ready-after-replay and
+          // a live child), so the thread's current session becomes the
+          // replacement: every later launch through any older alias lands here.
+          const advanced = await acceptCurrentSession({
+            sessionId: handoffRequest.rebuilt.sessionId,
+            threadId: handoffRequest.threadId,
+            registryPath: defaultRegistryPath(),
+          });
+          if (!advanced.ok) {
+            // Never a veto: the replacement is live and captured either way.
+            // Until the pointer catches up, launches resolve to the previous
+            // session, which is still this thread's.
+            wrapperLog.warn(`cc-lhc: current-session pointer not advanced: ${advanced.reason}`);
+          }
+          if (!outcome.ok) return { ok: false as const, reason: outcome.reason };
+          return advanced.ok ? { ok: true as const } : { ok: false as const, reason: advanced.reason };
         },
         publishReadyDescriptor: (): boolean => {
           publishDescriptorFromCapture();

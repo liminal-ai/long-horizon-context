@@ -47,13 +47,7 @@ describe("deterministic attribution + sticky degradation", () => {
         registryPath: join(projectsRoot, `registry-${sid}.sqlite`),
         log: () => {},
         logError: () => {},
-        createThreadFn: async () => ({
-          ok: true,
-          value: {
-            threadId: `th_${sid.slice(0, 4)}`,
-            registryPath: join(projectsRoot, `registry-${sid}.sqlite`),
-          } as ThreadRef,
-        }),
+        launchThread: { threadId: `th_${sid.slice(0, 4)}`, createdAtLaunch: true },
         initSdkFn: () =>
           ({
             intakeStream: {
@@ -114,10 +108,7 @@ describe("deterministic attribution + sticky degradation", () => {
       log: () => {},
       logError: () => {},
       onLifecycle: (signals) => lifecycle.push(...signals),
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_d", registryPath: join(projectsRoot, "registry.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_d", createdAtLaunch: true },
       initSdkFn: () =>
         ({
           intakeStream: {
@@ -190,10 +181,7 @@ describe("deterministic attribution + sticky degradation", () => {
       generationSeed: 2,
       log: () => {},
       logError: () => {},
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_d", registryPath: join(projectsRoot, "registry.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_d", createdAtLaunch: true },
       initSdkFn: () =>
         ({
           intakeStream: {
@@ -252,10 +240,7 @@ describe("deterministic attribution + sticky degradation", () => {
         throws += 1;
         if (throws === 1) throw new Error("subscriber boom");
       },
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_s", registryPath: join(projectsRoot, "registry.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_s", createdAtLaunch: true },
       initSdkFn: () =>
         ({
           intakeStream: {
@@ -306,10 +291,7 @@ describe("deterministic attribution + sticky degradation", () => {
       registryPath: join(projectsRoot, "registry.sqlite"),
       log: () => {},
       logError: () => {},
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_p", registryPath: join(projectsRoot, "registry.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_p", createdAtLaunch: true },
       initSdkFn: () => ({}) as Lhc,
       flushBatchFn: async () => {},
     });
@@ -347,10 +329,7 @@ describe("deterministic attribution + sticky degradation", () => {
       registryPath: join(projectsRoot, "registry.sqlite"),
       log: () => {},
       logError: () => {},
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_h", registryPath: join(projectsRoot, "registry.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_h", createdAtLaunch: false },
       initSdkFn: () => ({}) as Lhc,
       flushBatchFn: async () => {},
     });

@@ -23,8 +23,6 @@ export interface LaunchSessionPlan {
   childArgv: string[];
   /** Source resume id when forking (attribution retained separately from target). */
   forkSourceSessionId?: string;
-  /** When true, lineage may look up resumeSessionId for thread continuity. */
-  resumeSessionIdForLineage?: string;
   /** Non-selector tokens before `--` (user options/positionals), for respawn. */
   rest: string[];
   /** `--` and everything after it, verbatim, for respawn. */
@@ -404,7 +402,6 @@ export async function resolveLaunchSession(
       return {
         expected: expectedSessionFromExplicitId(chosen, "wrapper_picker"),
         childArgv: child(["--resume", chosen]),
-        resumeSessionIdForLineage: chosen,
         rest: [...rest],
         passthrough: [...passthrough],
       };
@@ -414,7 +411,6 @@ export async function resolveLaunchSession(
     return {
       expected: expectedSessionFromExplicitId(id, "explicit_resume"),
       childArgv: child(["--resume", id]),
-      resumeSessionIdForLineage: id,
       rest: [...rest],
       passthrough: [...passthrough],
     };
@@ -430,7 +426,6 @@ export async function resolveLaunchSession(
     return {
       expected: expectedSessionFromExplicitId(continued, "continue_resolved"),
       childArgv: child(["--resume", continued]),
-      resumeSessionIdForLineage: continued,
       rest: [...rest],
       passthrough: [...passthrough],
     };

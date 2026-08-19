@@ -64,10 +64,7 @@ describe("session watcher runtime + stop ownership", () => {
       watcherIo: io,
       log: () => {},
       logError: () => {},
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_rt", registryPath } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_rt", createdAtLaunch: true },
       initSdkFn: () => ({}) as Lhc,
       flushBatchFn: async (_s, _t, _i, events) => {
         intake.push(...events);
@@ -137,10 +134,7 @@ describe("session watcher runtime + stop ownership", () => {
       onLifecycle: (s) => {
         for (const x of s) lifecycle.push(x.kind);
       },
-      createThreadFn: async () => {
-        created += 1;
-        return { ok: true, value: { threadId: "th_stop", registryPath } as ThreadRef };
-      },
+      launchThread: { threadId: "th_stop", createdAtLaunch: true },
       initSdkFn: () => {
         sdkInits += 1;
         return {} as Lhc;

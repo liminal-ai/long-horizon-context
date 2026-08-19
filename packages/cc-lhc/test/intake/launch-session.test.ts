@@ -20,7 +20,6 @@ describe("resolveLaunchSession grammar", () => {
     expect(plan.expected).toEqual({ sessionId: UUID_A, source: "explicit_resume" });
     expect(plan.childArgv).toContain("--resume");
     expect(plan.childArgv).toContain(UUID_A);
-    expect(plan.resumeSessionIdForLineage).toBe(UUID_A);
   });
 
   it("bare --resume uses wrapper picker before launch", async () => {
@@ -74,7 +73,6 @@ describe("resolveLaunchSession grammar", () => {
     });
     expect(plan.expected.source).toBe("explicit_new");
     expect(plan.expected.sessionId).toBe(UUID_B);
-    expect(plan.resumeSessionIdForLineage).toBeUndefined();
     expect(plan.childArgv).toEqual(["--session-id", UUID_B]);
   });
 

@@ -51,10 +51,7 @@ describe("initial replay barrier before ready", () => {
       log: () => {},
       logError: () => {},
       onLifecycle: (s) => lifecycle.push(...s),
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_init", registryPath: join(projectsRoot, "registry.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_init", createdAtLaunch: true },
       initSdkFn: () =>
         ({
           intakeStream: {
@@ -125,10 +122,7 @@ describe("initial replay barrier before ready", () => {
       log: () => {},
       logError: () => {},
       onLifecycle: (s) => lifecycle.push(...s),
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_f", registryPath: join(projectsRoot, "registry.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_f", createdAtLaunch: true },
       initSdkFn: () => ({}) as Lhc,
       flushBatchFn: async () => {},
     });

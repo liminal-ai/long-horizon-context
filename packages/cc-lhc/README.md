@@ -107,8 +107,13 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
 - **Runtime continuity.** Wrapper-owned handoffs preserve the latest confirmed
   Claude effort and permission mode from the rollout. Unknown values are not
   inferred, and permissions are never broadened by guesswork.
-- **Single ownership.** A process-identity lease prevents two wrappers from
-  owning the same Claude session, including across PID reuse.
+- **Single ownership per thread.** Launch resolves the host-qualified session
+  alias (`claude-code:<uuid>`) through the LHC registry to a thread, takes a
+  process-identity lease on that **thread**, and re-reads the thread's current
+  alias under the lease before choosing a session. Every alias of one thread
+  contends for one lease, so two wrappers can never both drive it — including
+  across PID reuse. A launch through an older alias resolves forward onto the
+  thread's current session.
 
 ## Retrieval and migration commands
 
@@ -180,10 +185,10 @@ environment surface.
 
 | Path under `~/.cc-lhc` | Purpose |
 | --- | --- |
-| `registry.sqlite` | Thread registry |
-| `cc-lhc.sqlite` | Claude-session lineage, capture metadata, and durable governor receipts (`cc_governor_receipts`) |
+| `registry.sqlite` | Thread registry and alias map (session alias → thread, one current alias per thread) |
+| `cc-lhc.sqlite` | Host-local session detail (rollout paths, prefix proof, replay signatures) and durable governor receipts (`cc_governor_receipts`) |
 | `threads/<uuid>.sqlite` | Per-thread LHC record, derivations, views, and impressions |
-| `owners/*.json` | Exclusive live-session ownership leases |
+| `owners/*.json` | Exclusive thread-ownership leases (keyed by thread hash) |
 | `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600 on POSIX; on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile, so these inherit the profile's default ACLs — no POSIX modes and no bespoke DACL there) |
 | `recovery/*` | Ordered input retained after an unrecoverable handoff failure |
 | `wrapper.log` | Append-only wrapper diagnostics (no rotation yet) |
@@ -227,6 +232,8 @@ and manual compact cannot rewrite an unrelated automatic classification.
   picker, and `--continue` is resolved before Claude is spawned. Ambiguous or
   conflicting capture selectors fail before spawn.
 - Launch-time resume and wrapper-controlled handoffs preserve the LHC thread.
+  Resuming any older session of a thread lands on the session that thread
+  currently accepts; the current pointer advances when a swap is accepted.
   User-issued in-app `/resume` is unsupported; the
   advisory warning appears first, and any resulting mismatch fails closed.
 - Automatic handoff requires respawn-safe launch argv. A positional initial

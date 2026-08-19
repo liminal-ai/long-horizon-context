@@ -49,10 +49,7 @@ describe("startCaptureSession stop()", () => {
       discoverDeps: { projectsRoot, pollMs: 20 },
       lineageDbPath: join(home, "cc-lhc.sqlite"),
       registryPath: join(home, "registry.sqlite"),
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_stop", registryPath: join(home, "registry.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_stop", createdAtLaunch: true },
       log: () => {},
       logError: () => {},
       flushBatchFn: async (_sdk, _threadRef, items: RolloutLineItem[]) => {
@@ -91,6 +88,7 @@ describe("startCaptureSession stop()", () => {
     let pollCount = 0;
     const session = startCaptureSession({
       expectedSession: { sessionId: "session", source: "fresh" },
+      launchThread: { threadId: "th_no_rollout", createdAtLaunch: true },
       cwd,
       startedAt: new Date(),
       noInference: true,
@@ -138,15 +136,12 @@ describe("startCaptureSession stop()", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-drain-"));
     const session = startCaptureSession({
       expectedSession: { sessionId: "session", source: "fresh" },
+      launchThread: { threadId: "th_drain", createdAtLaunch: true },
       cwd,
       startedAt,
       discoverDeps: { projectsRoot, pollMs: 20 },
       lineageDbPath: join(home, "cc-lhc.sqlite"),
       registryPath: join(home, "registry.sqlite"),
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_drain", registryPath: join(home, "registry.sqlite") } as ThreadRef,
-      }),
       log: () => {},
       logError: () => {},
       flushBatchFn: async () => {
@@ -187,6 +182,7 @@ describe("startCaptureSession stop()", () => {
     const errors: string[] = [];
     const session = startCaptureSession({
       expectedSession: { sessionId: "session", source: "fresh" },
+      launchThread: { threadId: "th_drain", createdAtLaunch: true },
       cwd,
       startedAt,
       discoverDeps: { projectsRoot, pollMs: 20 },
@@ -427,59 +423,6 @@ function appendLine(filePath: string, item: RolloutLineItem): void {
 }
 
 describe("lineage wiring", () => {
-  it("reuses a mapped thread instead of creating a new one", async () => {
-    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-lineage-"));
-    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-map-"));
-    const dbPath = join(home, "cc-lhc.sqlite");
-    const registryPath = join(home, "registry.sqlite");
-    const cwd = "/work/lineage-session";
-    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
-    mkdirSync(projectDir, { recursive: true });
-    const sessionId = "mapped-session";
-    const rolloutPath = join(projectDir, `${sessionId}.jsonl`);
-    const startedAt = new Date(Date.now() - 60_000);
-
-    writeFileSync(
-      rolloutPath,
-      `${JSON.stringify({
-        type: "user",
-        uuid: "line-1",
-        message: { role: "user", content: "hello" },
-      })}\n`,
-    );
-
-    const { recordSessionThread } = await import("../../src/intake/lineage-db.js");
-    recordSessionThread(dbPath, sessionId, "th_mapped", {}, { prefix: { kind: "none" } });
-
-    let created = 0;
-    const logs: string[] = [];
-    const session = startCaptureSession({
-      expectedSession: { sessionId: "mapped-session", source: "fresh" },
-      cwd,
-      startedAt,
-      noInference: true,
-      lineageDbPath: dbPath,
-      registryPath,
-      discoverDeps: { projectsRoot, pollMs: 20 },
-      log: (message) => logs.push(message),
-      logError: () => {},
-      createThreadFn: async () => {
-        created += 1;
-        return { ok: true, value: { threadId: "th_should_not_create", registryPath } };
-      },
-      flushBatchFn: async () => {},
-    });
-
-    for (let attempt = 0; attempt < 50 && session.stats.threadId === null; attempt += 1) {
-      await sleep(50);
-    }
-
-    expect(created).toBe(0);
-    expect(session.stats.threadId).toBe("th_mapped");
-    expect(logs.some((line) => line.includes("continuing thread th_mapped"))).toBe(true);
-    await session.stop();
-  });
-
   it("starts capture when lineage write fails", async () => {
     const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-lineage-write-"));
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-write-fail-"));
@@ -521,7 +464,7 @@ describe("lineage wiring", () => {
           return new DatabaseSync(path);
         },
       },
-      createThreadFn: async () => ({ ok: true, value: { threadId: "th_write_fail", registryPath } }),
+      launchThread: { threadId: "th_write_fail", createdAtLaunch: true },
       flushBatchFn: async () => {
         flushed = true;
       },
@@ -560,7 +503,6 @@ describe("lineage wiring", () => {
     );
 
     const errors: string[] = [];
-    let created = 0;
     let flushed = false;
     const session = startCaptureSession({
       expectedSession: { sessionId: "read-fail-session", source: "fresh" },
@@ -577,10 +519,7 @@ describe("lineage wiring", () => {
           throw new Error("lineage read fail");
         },
       },
-      createThreadFn: async () => {
-        created += 1;
-        return { ok: true, value: { threadId: "th_read_fail", registryPath } };
-      },
+      launchThread: { threadId: "th_read_fail", createdAtLaunch: true },
       flushBatchFn: async () => {
         flushed = true;
       },
@@ -590,7 +529,6 @@ describe("lineage wiring", () => {
       await sleep(50);
     }
 
-    expect(created).toBe(1);
     expect(session.stats.threadId).toBe("th_read_fail");
     expect(session.isCaptureReady()).toBe(false);
     expect(session.getCaptureHealth().phase).toBe("degraded");

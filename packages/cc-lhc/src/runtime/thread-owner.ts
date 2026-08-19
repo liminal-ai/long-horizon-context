@@ -1,5 +1,11 @@
 /**
- * Exclusive wrapper ownership for a Claude session.
+ * Exclusive wrapper ownership for one LHC thread.
+ *
+ * A thread accumulates many native Claude session ids over its life (original,
+ * rebuilt-per-compact, resumed). Keying ownership by session id let two
+ * launches on two aliases of the same thread take two different locks and both
+ * proceed against it (R15). The lock is therefore keyed by the thread, so every
+ * alias of one thread contends for the same lease.
  *
  * The lease is a filesystem create-if-absent record backed by exact OS
  * process identity (pid + bootId + starttime via cc-lhc-native), so PID reuse
@@ -9,10 +15,10 @@
  * Reclaim gate (fail closed): an existing lease may be removed only when the
  * probe proves staleness — live identity mismatch (PID reuse) or kernel
  * not_found. Indeterminate liveness (access denied, addon failure, …) throws
- * SessionOwnerLivenessError and leaves the lease untouched.
+ * ThreadOwnerLivenessError and leaves the lease untouched.
  *
  * Serialization: the whole inspect→delete→publish transaction (and release's
- * verify→delete) runs under a per-session mkdir(2) acquisition guard, so two
+ * verify→delete) runs under a per-thread mkdir(2) acquisition guard, so two
  * concurrent acquirers can never both act on the same stale observation —
  * without the guard, A and B could both read a stale lease, A reclaims and
  * publishes, then B deletes A's fresh lease based on its old read. mkdir is
@@ -39,28 +45,28 @@ import {
 
 interface StoredOwner {
   version: 1;
-  sessionId: string;
+  threadId: string;
   token: string;
   processIdentity: ProcessIdentity;
   acquiredAt: string;
 }
 
-export interface SessionOwnerLease {
-  sessionId: string;
+export interface ThreadOwnerLease {
+  threadId: string;
   path: string;
   token: string;
   release(): void;
 }
 
-export class SessionOwnershipConflictError extends Error {
+export class ThreadOwnershipConflictError extends Error {
   constructor(
-    readonly sessionId: string,
+    readonly threadId: string,
     readonly ownerPid: number | null,
   ) {
     super(
-      `Claude session ${sessionId} already has a live cc-lhc owner` + (ownerPid === null ? "" : ` (pid ${ownerPid})`),
+      `LHC thread ${threadId} already has a live cc-lhc owner` + (ownerPid === null ? "" : ` (pid ${ownerPid})`),
     );
-    this.name = "SessionOwnershipConflictError";
+    this.name = "ThreadOwnershipConflictError";
   }
 }
 
@@ -68,39 +74,39 @@ export class SessionOwnershipConflictError extends Error {
  * Liveness of an existing owner could not be established. The lease is left
  * in place — uncertainty is never grounds for reclaim.
  */
-export class SessionOwnerLivenessError extends Error {
+export class ThreadOwnerLivenessError extends Error {
   constructor(
-    readonly sessionId: string,
+    readonly threadId: string,
     readonly ownerPid: number,
     detail: string,
   ) {
     super(
-      `cannot verify liveness of existing cc-lhc owner for session ${sessionId} ` +
+      `cannot verify liveness of existing cc-lhc owner for thread ${threadId} ` +
         `(pid ${ownerPid}); refusing to reclaim: ${detail}`,
     );
-    this.name = "SessionOwnerLivenessError";
+    this.name = "ThreadOwnerLivenessError";
   }
 }
 
 /**
- * The per-session acquisition guard is held by another transaction (live
+ * The per-thread acquisition guard is held by another transaction (live
  * contention) or was left behind by an acquirer that crashed mid-acquisition.
  * cc-lhc never removes it automatically — an operator must confirm no wrapper
- * is running for the session and delete the directory.
+ * is running for the thread and delete the directory.
  */
-export class SessionOwnerGuardError extends Error {
+export class ThreadOwnerGuardError extends Error {
   constructor(
-    readonly sessionId: string,
+    readonly threadId: string,
     readonly guardDir: string,
   ) {
     super(
-      `cc-lhc session-owner acquisition guard is held for session ${sessionId}: ${guardDir}. ` +
-        "Another cc-lhc wrapper is acquiring or releasing this session right now, or a previous " +
+      `cc-lhc thread-owner acquisition guard is held for thread ${threadId}: ${guardDir}. ` +
+        "Another cc-lhc wrapper is acquiring or releasing this thread right now, or a previous " +
         "acquirer crashed mid-acquisition and left the guard behind. If you are certain no cc-lhc " +
-        "wrapper is running for this session, remove that directory and retry; cc-lhc never " +
+        "wrapper is running for this thread, remove that directory and retry; cc-lhc never " +
         "removes it automatically.",
     );
-    this.name = "SessionOwnerGuardError";
+    this.name = "ThreadOwnerGuardError";
   }
 }
 
@@ -108,29 +114,29 @@ function ownersDir(home: string): string {
   return join(home, "owners");
 }
 
-function sessionKey(sessionId: string): string {
-  return createHash("sha256").update(sessionId).digest("hex");
+function threadKey(threadId: string): string {
+  return createHash("sha256").update(threadId).digest("hex");
 }
 
-export function sessionOwnerPath(sessionId: string, home: string = ccLhcHome()): string {
-  return join(ownersDir(home), `${sessionKey(sessionId)}.json`);
+export function threadOwnerPath(threadId: string, home: string = ccLhcHome()): string {
+  return join(ownersDir(home), `${threadKey(threadId)}.json`);
 }
 
-/** Guard directory serializing every inspect→delete→publish for one session. */
-export function sessionOwnerGuardPath(sessionId: string, home: string = ccLhcHome()): string {
-  return join(ownersDir(home), `.${sessionKey(sessionId)}.acquire`);
+/** Guard directory serializing every inspect→delete→publish for one thread. */
+export function threadOwnerGuardPath(threadId: string, home: string = ccLhcHome()): string {
+  return join(ownersDir(home), `.${threadKey(threadId)}.acquire`);
 }
 
 /**
  * Atomically take the guard. EEXIST means contended or orphaned — fail closed
  * either way; auto-deleting would reintroduce the delete-anothers-lease race.
  */
-function takeGuard(sessionId: string, guardDir: string): void {
+function takeGuard(threadId: string, guardDir: string): void {
   try {
     mkdirSync(guardDir, { mode: 0o700 });
   } catch (cause) {
     if (isExists(cause)) {
-      throw new SessionOwnerGuardError(sessionId, guardDir);
+      throw new ThreadOwnerGuardError(threadId, guardDir);
     }
     throw cause;
   }
@@ -141,7 +147,7 @@ function dropGuard(guardDir: string): void {
     rmdirSync(guardDir);
   } catch {
     // Guard release is best-effort; a failure surfaces on the next acquire
-    // as a fail-closed SessionOwnerGuardError, never as silent corruption.
+    // as a fail-closed ThreadOwnerGuardError, never as silent corruption.
   }
 }
 
@@ -151,7 +157,7 @@ function parseOwner(raw: string): StoredOwner | null {
     const identity = parseStoredProcessIdentity(value.processIdentity);
     if (
       value.version !== 1 ||
-      typeof value.sessionId !== "string" ||
+      typeof value.threadId !== "string" ||
       typeof value.token !== "string" ||
       value.token === "" ||
       typeof value.acquiredAt !== "string" ||
@@ -161,7 +167,7 @@ function parseOwner(raw: string): StoredOwner | null {
     }
     return {
       version: 1,
-      sessionId: value.sessionId,
+      threadId: value.threadId,
       token: value.token,
       processIdentity: identity,
       acquiredAt: value.acquiredAt,
@@ -175,35 +181,35 @@ function isExists(cause: unknown): boolean {
   return typeof cause === "object" && cause !== null && (cause as NodeJS.ErrnoException).code === "EEXIST";
 }
 
-export function acquireSessionOwner(
-  sessionId: string,
+export function acquireThreadOwner(
+  threadId: string,
   options: {
     home?: string;
     pid?: number;
     readIdentity?: ProbeProcessIdentity;
     token?: string;
   } = {},
-): SessionOwnerLease {
+): ThreadOwnerLease {
   const home = options.home ?? ccLhcHome();
   const pid = options.pid ?? process.pid;
   const readIdentity = options.readIdentity ?? probeProcessIdentityNative;
   const probed = readIdentity(pid);
   if (!probed.ok) {
     throw new ProcessIdentityUnavailableError(
-      "cannot establish process identity for session ownership",
+      "cannot establish process identity for thread ownership",
       probed.message,
     );
   }
   const identity: ProcessIdentity = probed.identity;
   const token = options.token ?? randomUUID();
-  const path = sessionOwnerPath(sessionId, home);
-  const guardDir = sessionOwnerGuardPath(sessionId, home);
+  const path = threadOwnerPath(threadId, home);
+  const guardDir = threadOwnerGuardPath(threadId, home);
   mkdirSync(ownersDir(home), { recursive: true, mode: 0o700 });
-  const tempPath = join(ownersDir(home), `.${sessionKey(sessionId)}.${token}.tmp`);
+  const tempPath = join(ownersDir(home), `.${threadKey(threadId)}.${token}.tmp`);
 
   const body = `${JSON.stringify({
     version: 1,
-    sessionId,
+    threadId,
     token,
     processIdentity: processIdentityJson(identity),
     acquiredAt: new Date().toISOString(),
@@ -211,7 +217,7 @@ export function acquireSessionOwner(
 
   // Serialize the entire inspect→delete→publish transaction: no observation
   // made outside the guard can ever justify a delete inside it.
-  takeGuard(sessionId, guardDir);
+  takeGuard(threadId, guardDir);
   try {
     // Publish only a complete body. link(2) is an atomic no-clobber claim on
     // the same filesystem; unlike open(O_EXCL)+write, observers can never see
@@ -222,7 +228,7 @@ export function acquireSessionOwner(
         try {
           linkSync(tempPath, path);
           return {
-            sessionId,
+            threadId,
             path,
             token,
             release(): void {
@@ -242,7 +248,7 @@ export function acquireSessionOwner(
                 } catch {
                   return;
                 }
-                if (current?.token !== token || current.sessionId !== sessionId) return;
+                if (current?.token !== token || current.threadId !== threadId) return;
                 try {
                   unlinkSync(path);
                 } catch {
@@ -266,21 +272,21 @@ export function acquireSessionOwner(
           // A published record is always complete in this implementation.
           // Malformed content is therefore ambiguous/tampered, not proof of
           // staleness; never delete it and risk duplicate ownership.
-          if (existing === null || existing.sessionId !== sessionId) {
-            throw new SessionOwnershipConflictError(sessionId, null);
+          if (existing === null || existing.threadId !== threadId) {
+            throw new ThreadOwnershipConflictError(threadId, null);
           }
           const live = readIdentity(existing.processIdentity.pid);
           if (live.ok && identitiesEqual(existing.processIdentity, live.identity)) {
             // Exact live identity equals stored identity: the owner is alive.
-            throw new SessionOwnershipConflictError(sessionId, existing.processIdentity.pid);
+            throw new ThreadOwnershipConflictError(threadId, existing.processIdentity.pid);
           }
           if (!live.ok && live.code !== "not_found") {
             // Indeterminate (access denied, native/addon failure, …): fail closed.
-            throw new SessionOwnerLivenessError(sessionId, existing.processIdentity.pid, live.message);
+            throw new ThreadOwnerLivenessError(threadId, existing.processIdentity.pid, live.message);
           }
           // OS-proven stale: live identity mismatch (PID reuse) or kernel
           // not_found. The fresh guarded observation above is the only basis
-          // for this delete; remove only this exact session-key file.
+          // for this delete; remove only this exact thread-key file.
           try {
             unlinkSync(path);
           } catch {
@@ -288,7 +294,7 @@ export function acquireSessionOwner(
           }
         }
       }
-      throw new SessionOwnershipConflictError(sessionId, null);
+      throw new ThreadOwnershipConflictError(threadId, null);
     } finally {
       try {
         unlinkSync(tempPath);

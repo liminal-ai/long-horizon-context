@@ -10,6 +10,8 @@ import type { LifecycleSignal } from "../../src/observation/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
+import { defaultRegistryPath } from "../../src/intake/paths.js";
+import { claudeSessionAlias, currentSessionAlias } from "../../src/intake/thread-alias.js";
 import { run } from "../../src/wrapper/run.js";
 
 /** Isolate durable governor receipts per test (shared ~/.cc-lhc would cross-talk). */
@@ -397,6 +399,10 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       threadId: "th_auto",
     });
 
+    // Swap accepted → the thread's current session is the replacement, so a
+    // later launch through any older alias resolves forward to it.
+    expect(await currentSessionAlias("th_auto", defaultRegistryPath())).toBe(claudeSessionAlias(REBUILT_ID));
+
     // Slice 5: only a CONFIRMED handoff records last action. Open the panel
     // and read the status summary.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
@@ -530,11 +536,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     mocks.captureFactory = (opts) => {
       const isRebuilt = opts.knownRolloutPath !== undefined;
-      const sessionId = isRebuilt
-        ? REBUILT_ID
-        : opts.resumeSessionId !== undefined
-          ? opts.resumeSessionId
-          : "old-session";
+      const sessionId = isRebuilt ? REBUILT_ID : "old-session";
       const scripted = scriptedCaptureSession(
         opts,
         sdk,

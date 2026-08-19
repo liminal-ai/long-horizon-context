@@ -66,10 +66,7 @@ function hermeticSession(
     registryPath: join(tmp, "registry.sqlite"),
     log: () => {},
     logError: () => {},
-    createThreadFn: async () => ({
-      ok: true,
-      value: { threadId: "th_turn", registryPath: join(tmp, "registry.sqlite") } as ThreadRef,
-    }),
+    launchThread: { threadId: "th_turn", createdAtLaunch: true },
     initSdkFn: () => ({}) as Lhc,
     flushBatchFn: async () => {},
     ...(rolloutOptions.knownRolloutPath === undefined ? {} : { knownRolloutPath: rolloutOptions.knownRolloutPath }),

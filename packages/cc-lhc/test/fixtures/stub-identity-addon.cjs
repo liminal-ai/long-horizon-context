@@ -1,7 +1,7 @@
 /**
  * Deterministic, platform-neutral stand-in for the compiled cc_lhc_identity
  * addon, loaded through the documented CC_LHC_IDENTITY_ADDON test seam so
- * suites that run production-default code paths (wrapper run(), session-owner
+ * suites that run production-default code paths (wrapper run(), thread-owner
  * defaults, retrieval subprocesses) stay toolchain-free on native Linux,
  * macOS, and Windows.
  *

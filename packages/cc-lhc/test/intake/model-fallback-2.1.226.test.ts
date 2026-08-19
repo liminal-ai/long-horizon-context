@@ -115,13 +115,7 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
       log: () => {},
       logError: () => {},
       onLifecycle: (signals) => lifecycle.push(...signals),
-      createThreadFn: async () => ({
-        ok: true,
-        value: {
-          threadId: "th_fallback",
-          registryPath: join(projectsRoot, "registry.sqlite"),
-        } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_fallback", createdAtLaunch: true },
       initSdkFn: () =>
         ({
           intakeStream: {
@@ -220,13 +214,7 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
         log: () => {},
         logError: () => {},
         onLifecycle: (signals) => restartLifecycle.push(...signals),
-        createThreadFn: async () => ({
-          ok: true,
-          value: {
-            threadId: "th_fallback2",
-            registryPath: join(projectsRoot, "registry-2.sqlite"),
-          } as ThreadRef,
-        }),
+        launchThread: { threadId: "th_fallback2", createdAtLaunch: true },
         initSdkFn: () =>
           ({
             intakeStream: {

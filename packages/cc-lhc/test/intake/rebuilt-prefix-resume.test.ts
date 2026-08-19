@@ -64,10 +64,7 @@ function hermeticSession(
     onLifecycle: (signals) => {
       opts.lifecycle?.push(...signals);
     },
-    createThreadFn: async () => ({
-      ok: true,
-      value: { threadId: opts.threadId, registryPath: opts.registryPath } as ThreadRef,
-    }),
+    launchThread: { threadId: opts.threadId, createdAtLaunch: false },
     initSdkFn: () => ({}) as Lhc,
     flushBatchFn: async (_sdk, _ref, _items, events) => {
       opts.intake.push(...events);
@@ -406,10 +403,7 @@ describe("content-verifiable rebuilt prefix fence", () => {
       },
       log: () => {},
       logError: () => {},
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_lf", registryPath } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_lf", createdAtLaunch: false },
       initSdkFn: () => ({}) as Lhc,
       flushBatchFn: async (_s, _t, _i, events) => {
         intake.push(...events);
@@ -445,17 +439,13 @@ describe("content-verifiable rebuilt prefix fence", () => {
       cwd,
       expectedSession: { sessionId, source: "explicit_resume" },
       knownRolloutPath: path,
-      resumeSessionId: sessionId,
       noInference: true,
       discoverDeps: { projectsRoot, pollMs: 20 },
       lineageDbPath,
       registryPath,
       log: () => {},
       logError: () => {},
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_nr", registryPath } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_nr", createdAtLaunch: false },
       initSdkFn: () => ({}) as Lhc,
       flushBatchFn: async (_s, _t, _i, events) => {
         intake.push(...events);
@@ -495,10 +485,7 @@ describe("content-verifiable rebuilt prefix fence", () => {
       registryPath,
       log: () => {},
       logError: () => {},
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_fresh", registryPath } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_fresh", createdAtLaunch: true },
       initSdkFn: () => ({}) as Lhc,
       flushBatchFn: async (_s, _t, _i, events) => {
         intake.push(...events);

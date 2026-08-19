@@ -31,7 +31,7 @@ import {
 } from "../../src/runtime/descriptor.js";
 import { createNativeIdentityProbe, probeFromExactReader } from "../../src/runtime/native-identity.js";
 import { identitiesEqual, readProcessIdentityLinux } from "../../src/runtime/process-identity.js";
-import { acquireSessionOwner, SessionOwnershipConflictError } from "../../src/runtime/session-owner.js";
+import { acquireThreadOwner, ThreadOwnershipConflictError } from "../../src/runtime/thread-owner.js";
 import { STUB_BOOT_ID } from "../helpers/identity.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -212,14 +212,14 @@ describe.skipIf(!selfProbeResult.ok)("real compiled addon (production default, p
     expect(existsSync(path)).toBe(true);
   });
 
-  it("session-owner lease acquire/conflict/release through the native probe", () => {
+  it("thread-owner lease acquire/conflict/release through the native probe", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-native-owner-"));
-    const lease = acquireSessionOwner("native-session", { home, readIdentity: realProbe });
-    expect(() => acquireSessionOwner("native-session", { home, readIdentity: realProbe })).toThrow(
-      SessionOwnershipConflictError,
+    const lease = acquireThreadOwner("th_native", { home, readIdentity: realProbe });
+    expect(() => acquireThreadOwner("th_native", { home, readIdentity: realProbe })).toThrow(
+      ThreadOwnershipConflictError,
     );
     lease.release();
-    const again = acquireSessionOwner("native-session", { home, readIdentity: realProbe });
+    const again = acquireThreadOwner("th_native", { home, readIdentity: realProbe });
     again.release();
   });
 });

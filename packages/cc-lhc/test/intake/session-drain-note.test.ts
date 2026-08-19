@@ -68,10 +68,7 @@ describe("drain-not-settled at capture stop", () => {
       registryPath: join(tmp, "registry.sqlite"),
       log: () => {},
       logError: (message) => logged.push(message),
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_drain", registryPath: join(tmp, "registry.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_drain", createdAtLaunch: true },
       initSdkFn: () => {
         sdkBuilt = true;
         return fakeSdk;

@@ -205,10 +205,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       onLifecycle: (signals) => {
         lifecycle1.push(...signals);
       },
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId, registryPath } as ThreadRef,
-      }),
+      launchThread: { threadId: threadId, createdAtLaunch: true },
       initSdkFn: () => fakeSdk(intake1),
     });
 
@@ -252,7 +249,6 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       cwd,
       expectedSession: { sessionId: sid, source: "explicit_resume" },
       knownRolloutPath: path,
-      resumeSessionId: sid,
       prefixBoundary: { kind: "none" },
       noInference: true,
       discoverDeps: { projectsRoot, pollMs: 20 },
@@ -263,10 +259,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       onLifecycle: (signals) => {
         lifecycle2.push(...signals);
       },
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId, registryPath } as ThreadRef,
-      }),
+      launchThread: { threadId: threadId, createdAtLaunch: false },
       initSdkFn: () => fakeSdk(intake2),
     });
 
@@ -353,10 +346,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       onLifecycle: (signals) => {
         lifecycle.push(...signals);
       },
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_fail", registryPath: join(root, "reg.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_fail", createdAtLaunch: true },
       initSdkFn: () =>
         ({
           intakeStream: {
@@ -450,10 +440,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       onLifecycle: (signals) => {
         lifecycle.push(...signals);
       },
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_batch", registryPath: join(root, "reg.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_batch", createdAtLaunch: true },
       initSdkFn: () =>
         fakeSdk(intake, {
           onCall: () => {
@@ -501,10 +488,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       onLifecycle: (signals) => {
         lifecycle.push(...signals);
       },
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_mixed", registryPath: join(root, "reg.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_mixed", createdAtLaunch: true },
       initSdkFn: () =>
         fakeSdk([], {
           outcomeByKey: (_key, event) => {
@@ -590,10 +574,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
         onLifecycle: (signals) => {
           lifecycle.push(...signals);
         },
-        createThreadFn: async () => ({
-          ok: true,
-          value: { threadId: `th_mal_${malformed}`, registryPath: join(root, "reg.sqlite") } as ThreadRef,
-        }),
+        launchThread: { threadId: `th_mal_${malformed}`, createdAtLaunch: true },
         initSdkFn: () => fakeSdk([], { malformed }),
       });
 
@@ -643,10 +624,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       onLifecycle: (signals) => {
         lifecycle.push(...signals);
       },
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_ok", registryPath: join(root, "reg.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_ok", createdAtLaunch: true },
       initSdkFn: () => fakeSdk([]),
     });
 
@@ -775,10 +753,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
           }
         }
       },
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_multiturn", registryPath: join(root, "reg.sqlite") } as ThreadRef,
-      }),
+      launchThread: { threadId: "th_multiturn", createdAtLaunch: true },
       initSdkFn: () =>
         fakeSdk(intake, {
           onCall: () => {
@@ -913,10 +888,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
         onLifecycle: (signals) => {
           lifecycle1.push(...signals);
         },
-        createThreadFn: async () => ({
-          ok: true,
-          value: { threadId, registryPath } as ThreadRef,
-        }),
+        launchThread: { threadId: threadId, createdAtLaunch: true },
         initSdkFn: () => fakeSdk([]),
       });
       try {
@@ -955,7 +927,6 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       cwd,
       expectedSession: { sessionId: sid, source: "explicit_resume" },
       knownRolloutPath: path,
-      resumeSessionId: sid,
       prefixBoundary: { kind: "none" },
       noInference: true,
       discoverDeps: { projectsRoot, pollMs: 20 },
@@ -978,10 +949,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
           }
         }
       },
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId, registryPath } as ThreadRef,
-      }),
+      launchThread: { threadId: threadId, createdAtLaunch: false },
       initSdkFn: () =>
         fakeSdk([], {
           onCall: () => {

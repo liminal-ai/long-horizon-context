@@ -7,18 +7,16 @@ import { describe, expect, it } from "vitest";
 
 import {
   appendThreadSignatures,
+  bindCaptureThread,
   defaultLineageDbPath,
   loadThreadSignatures,
   lookupSessionLineage,
-  lookupThreadForSession,
-  newestSessionEntry,
   openLineageDatabase,
   recordSessionThread,
-  resolveCaptureThread,
-  tryContinueThreadFromNewestSession,
+  threadForLegacySession,
+  threadSessionRows,
 } from "../../src/intake/lineage-db.js";
 import { ccLhcHome } from "../../src/intake/paths.js";
-import { encodeProjectPath } from "../../src/rollout/discover.js";
 
 function tempHome(): string {
   return mkdtempSync(join(tmpdir(), "cc-lhc-home-"));
@@ -36,13 +34,13 @@ describe("lineage sqlite", () => {
     expect(defaultLineageDbPath()).toBe(join(home, "cc-lhc.sqlite"));
     expect(ccLhcHome()).toBe(home);
     recordSessionThread(defaultLineageDbPath(), "session-a", "th_1", {}, { prefix: { kind: "none" } });
-    expect(lookupThreadForSession(defaultLineageDbPath(), "session-a")).toBe("th_1");
+    expect(threadForLegacySession(defaultLineageDbPath(), "session-a")).toBe("th_1");
   });
 
   it("tolerates a missing database file", () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
-    expect(lookupThreadForSession(dbPath, "missing")).toBeUndefined();
+    expect(threadForLegacySession(dbPath, "missing")).toBeUndefined();
   });
 
   it("renames corrupt databases aside and starts fresh", () => {
@@ -50,90 +48,66 @@ describe("lineage sqlite", () => {
     const dbPath = dbPathInHome(home);
     mkdirSync(home, { recursive: true });
     writeFileSync(dbPath, "not sqlite");
-    expect(lookupThreadForSession(dbPath, "session-a")).toBeUndefined();
+    expect(threadForLegacySession(dbPath, "session-a")).toBeUndefined();
     expect(readdirSync(home).some((name) => name.includes(".corrupt-"))).toBe(true);
     recordSessionThread(dbPath, "session-a", "th_1", {}, { prefix: { kind: "none" } });
-    expect(lookupThreadForSession(dbPath, "session-a")).toBe("th_1");
+    expect(threadForLegacySession(dbPath, "session-a")).toBe("th_1");
   });
 
-  it("resolves resume-arg lookup through the old session id", async () => {
+  it("lists a thread's session bindings oldest first for the alias import", () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
-    recordSessionThread(dbPath, "old-session", "th_resume", {}, { prefix: { kind: "none" } });
-
-    let created = 0;
-    const resolution = await resolveCaptureThread({
-      sessionId: "new-session",
-      cwd: "/work/project",
-      resumeSessionId: "old-session",
-      lineageDbPath: dbPath,
-      createThreadFn: async () => {
-        created += 1;
-        return { ok: true, value: { threadId: "th_new", registryPath: join(home, "registry.sqlite") } };
+    let tick = 0;
+    const deps = {
+      nowFn: () => {
+        tick += 1;
+        return new Date(Date.UTC(2026, 0, 1, 0, 0, tick));
       },
-    });
+    };
+    const verified = { kind: "verified" as const, lineCount: 4, byteLength: 80, sha256: "ab".repeat(32) };
+    recordSessionThread(dbPath, "original", "th_lineage", deps, { prefix: { kind: "none" } });
+    recordSessionThread(dbPath, "rebuilt", "th_lineage", deps, { prefix: verified });
+    recordSessionThread(dbPath, "other-thread", "th_elsewhere", deps, { prefix: { kind: "none" } });
 
-    expect(created).toBe(0);
-    expect(resolution.threadRef).toEqual({ threadId: "th_resume", registryPath: join(home, "registry.sqlite") });
-    // Ordinary rebind does not invent a target row as known-none.
-    expect(lookupThreadForSession(dbPath, "new-session")).toBeUndefined();
-    expect(resolution.prefix.kind).toBe("unknown");
+    const rows = threadSessionRows(dbPath, "th_lineage");
+    expect(rows.map((row) => row.sessionId)).toEqual(["original", "rebuilt"]);
+    expect(rows[1]!.prefix).toEqual(verified);
   });
 
-  it("creates a thread on map miss and records the session", async () => {
+  it("records the session against the thread the launch created", async () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
-    let created = 0;
-    const resolution = await resolveCaptureThread({
+    const bound = await bindCaptureThread({
       sessionId: "fresh-session",
-      cwd: "/work/project",
+      threadId: "th_fresh",
+      threadCreatedAtLaunch: true,
+      launchClass: "fresh",
       lineageDbPath: dbPath,
-      createThreadFn: async () => {
-        created += 1;
-        return { ok: true, value: { threadId: "th_fresh", registryPath: join(home, "registry.sqlite") } };
-      },
+      registryPath: join(home, "registry.sqlite"),
     });
 
-    expect(created).toBe(1);
-    expect(resolution.isExistingThread).toBe(false);
-    expect(lookupThreadForSession(dbPath, "fresh-session")).toBe("th_fresh");
+    expect(bound.isExistingThread).toBe(false);
+    expect(bound.threadRef).toEqual({ threadId: "th_fresh", registryPath: join(home, "registry.sqlite") });
+    expect(threadForLegacySession(dbPath, "fresh-session")).toBe("th_fresh");
   });
 
-  it("reuses a mapped thread on hit without creating a new one", async () => {
+  it("binds a new session of an existing thread without inventing a row", async () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
     recordSessionThread(dbPath, "session-hit", "th_hit", {}, { prefix: { kind: "none" } });
-    let created = 0;
-    const resolution = await resolveCaptureThread({
-      sessionId: "session-hit",
-      cwd: "/work/project",
+    const bound = await bindCaptureThread({
+      sessionId: "session-later",
+      threadId: "th_hit",
+      threadCreatedAtLaunch: false,
       lineageDbPath: dbPath,
-      createThreadFn: async () => {
-        created += 1;
-        return { ok: true, value: { threadId: "th_other", registryPath: join(home, "registry.sqlite") } };
-      },
+      registryPath: join(home, "registry.sqlite"),
     });
-    expect(created).toBe(0);
-    expect(resolution.threadRef).toEqual({ threadId: "th_hit", registryPath: join(home, "registry.sqlite") });
-  });
 
-  it("continues via --continue when newest map entry matches newest jsonl", async () => {
-    const home = tempHome();
-    const dbPath = dbPathInHome(home);
-    const root = mkdtempSync(join(tmpdir(), "cc-lhc-lineage-continue-"));
-    const cwd = "/work/continue";
-    const projectDir = join(root, encodeProjectPath(cwd));
-    mkdirSync(projectDir, { recursive: true });
-    const sessionId = "continue-session";
-    const rolloutPath = join(projectDir, `${sessionId}.jsonl`);
-    writeFileSync(rolloutPath, '{"type":"user"}\n');
-    recordSessionThread(dbPath, sessionId, "th_continue", {}, { prefix: { kind: "none" } });
-
-    const continued = await tryContinueThreadFromNewestSession(dbPath, cwd, root, {
-      readdirFn: (async () => [`${sessionId}.jsonl`]) as unknown as typeof import("node:fs/promises").readdir,
-      statFn: async () => ({ mtimeMs: Date.now() }) as never,
-    });
-    expect(continued).toEqual({ sessionId, threadId: "th_continue" });
+    expect(bound.isExistingThread).toBe(true);
+    expect(bound.threadRef).toEqual({ threadId: "th_hit", registryPath: join(home, "registry.sqlite") });
+    // Ordinary rebind never invents a target row as known-none.
+    expect(threadForLegacySession(dbPath, "session-later")).toBeUndefined();
+    expect(bound.prefix.kind).toBe("unknown");
   });
 
   it("trims signature caches to the last 500 entries", () => {
@@ -150,21 +124,6 @@ describe("lineage sqlite", () => {
     expect(trimmed.at(-1)).toBe("overflow-9");
   });
 
-  it("picks the newest session entry by updatedAt", () => {
-    const home = tempHome();
-    const dbPath = dbPathInHome(home);
-    let tick = 0;
-    const deps = {
-      nowFn: () => {
-        tick += 1;
-        return new Date(Date.UTC(2026, 0, 1, 0, 0, tick));
-      },
-    };
-    recordSessionThread(dbPath, "a", "th_a", deps, { prefix: { kind: "none" } });
-    recordSessionThread(dbPath, "b", "th_b", deps, { prefix: { kind: "none" } });
-    expect(newestSessionEntry(dbPath)?.sessionId).toBe("b");
-  });
-
   it("keeps concurrent session lineage writes", async () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
@@ -172,34 +131,31 @@ describe("lineage sqlite", () => {
       Promise.resolve().then(() => recordSessionThread(dbPath, "session-one", "th_one", {}, { prefix: { kind: "none" } })),
       Promise.resolve().then(() => recordSessionThread(dbPath, "session-two", "th_two", {}, { prefix: { kind: "none" } })),
     ]);
-    expect(lookupThreadForSession(dbPath, "session-one")).toBe("th_one");
-    expect(lookupThreadForSession(dbPath, "session-two")).toBe("th_two");
+    expect(threadForLegacySession(dbPath, "session-one")).toBe("th_one");
+    expect(threadForLegacySession(dbPath, "session-two")).toBe("th_two");
   });
 
-  it("creates a new thread when lineage reads fail", async () => {
+  it("lineage read failure leaves provenance unknown on the launch thread", async () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
     recordSessionThread(dbPath, "mapped-session", "th_mapped", {}, { prefix: { kind: "none" } });
     const errors: string[] = [];
-    let created = 0;
-    const resolution = await resolveCaptureThread({
+    const bound = await bindCaptureThread({
       sessionId: "mapped-session",
-      cwd: "/work/project",
+      threadId: "th_mapped",
+      threadCreatedAtLaunch: false,
       lineageDbPath: dbPath,
+      registryPath: join(home, "registry.sqlite"),
       logError: (message) => errors.push(message),
       lineageDeps: {
         withDb: () => {
           throw new Error("disk read fail");
         },
       },
-      createThreadFn: async () => {
-        created += 1;
-        return { ok: true, value: { threadId: "th_fresh", registryPath: join(home, "registry.sqlite") } };
-      },
     });
 
-    expect(created).toBe(1);
-    expect(resolution.threadRef).toEqual({ threadId: "th_fresh", registryPath: join(home, "registry.sqlite") });
+    expect(bound.threadRef).toEqual({ threadId: "th_mapped", registryPath: join(home, "registry.sqlite") });
+    expect(bound.prefix.kind).toBe("unknown");
     expect(errors.some((line) => line.includes("lineage read failed (continuing)"))).toBe(true);
   });
 
@@ -234,7 +190,7 @@ describe("lineage sqlite", () => {
 
     recordSessionThread(dbPath, "after-recreate", "th_ok", deps, { prefix: { kind: "none" } });
     expect(closes).toBeGreaterThanOrEqual(1);
-    expect(lookupThreadForSession(dbPath, "after-recreate", deps)).toBe("th_ok");
+    expect(threadForLegacySession(dbPath, "after-recreate", deps)).toBe("th_ok");
     expect(readdirSync(home).some((name) => name.includes(".corrupt-"))).toBe(true);
   });
 
@@ -256,7 +212,7 @@ describe("lineage sqlite", () => {
       }),
     ).toThrow(/database is locked/);
     expect(renamed).toBe(false);
-    expect(lookupThreadForSession(dbPath, "existing")).toBe("th_existing");
+    expect(threadForLegacySession(dbPath, "existing")).toBe("th_existing");
   });
 
   it("persists verified prefix boundary and preserves it across ordinary re-bind", () => {
@@ -286,7 +242,7 @@ describe("lineage sqlite", () => {
     expect(lookupSessionLineage(dbPath, "count-only")?.prefix.kind).toBe("unknown");
   });
 
-  it("resolveCaptureThread returns durable verified prefix for the target session", async () => {
+  it("serves the target session's durable verified prefix", async () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
     const verified = {
@@ -296,17 +252,15 @@ describe("lineage sqlite", () => {
       sha256: "cd".repeat(32),
     };
     recordSessionThread(dbPath, "target-rebuilt", "th_t", {}, { prefix: verified });
-    const resolution = await resolveCaptureThread({
+    const bound = await bindCaptureThread({
       sessionId: "target-rebuilt",
-      cwd: "/work",
+      threadId: "th_t",
+      threadCreatedAtLaunch: false,
       lineageDbPath: dbPath,
-      createThreadFn: async () => {
-        throw new Error("must not create");
-      },
     });
-    expect(resolution.prefix).toEqual(verified);
-    expect(resolution.replayedPrefixLines).toBe(5);
-    expect(resolution.isExistingThread).toBe(true);
+    expect(bound.prefix).toEqual(verified);
+    expect(bound.replayedPrefixLines).toBe(5);
+    expect(bound.isExistingThread).toBe(true);
   });
 
   it("migrates pre-prefix schema; legacy rows are unknown not known-zero", () => {
@@ -345,15 +299,12 @@ describe("lineage sqlite", () => {
   it("fresh thread create records known-none prefix only with launchClass fresh", async () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
-    await resolveCaptureThread({
+    await bindCaptureThread({
       sessionId: "fresh-none",
-      cwd: "/work",
+      threadId: "th_none",
+      threadCreatedAtLaunch: true,
       launchClass: "fresh",
       lineageDbPath: dbPath,
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_none", registryPath: join(home, "reg.sqlite") },
-      }),
     });
     expect(lookupSessionLineage(dbPath, "fresh-none")?.prefix.kind).toBe("none");
   });
@@ -361,18 +312,14 @@ describe("lineage sqlite", () => {
   it("existing launch without target row does not establish known-none", async () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
-    const resolution = await resolveCaptureThread({
+    const bound = await bindCaptureThread({
       sessionId: "resume-no-row",
-      cwd: "/work",
+      threadId: "th_ambig",
+      threadCreatedAtLaunch: true,
       launchClass: "existing",
-      resumeSessionId: "missing-source",
       lineageDbPath: dbPath,
-      createThreadFn: async () => ({
-        ok: true,
-        value: { threadId: "th_ambig", registryPath: join(home, "reg.sqlite") },
-      }),
     });
-    expect(resolution.prefix.kind).toBe("unknown");
+    expect(bound.prefix.kind).toBe("unknown");
     expect(lookupSessionLineage(dbPath, "resume-no-row")?.prefix.kind).toBe("unknown");
   });
 });

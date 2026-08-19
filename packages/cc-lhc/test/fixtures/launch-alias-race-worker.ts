@@ -1,8 +1,8 @@
 /**
- * Concurrency worker: one session-owner acquisition attempt against a shared
- * home, using the production-default identity probe (the suite's stub addon
- * via CC_LHC_IDENTITY_ADDON, inherited through the environment).
- * Prints exactly one line: `WON <token>` or `LOST <ErrorName>`.
+ * Concurrency worker: one full launch-thread acquisition against a shared
+ * cc-lhc home, entering through whichever alias of the thread it was given.
+ * Prints exactly one line: `WON <threadId> <landedSessionId>` or
+ * `LOST <ErrorName>`.
  *
  * A winner keeps its lease and stays alive until the parent creates the
  * `race-stop` file (cooperative shutdown — tsx runs the worker as a
@@ -14,20 +14,28 @@
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
-import { acquireSessionOwner } from "../../src/runtime/session-owner.js";
+import { openLaunchThread } from "../../src/intake/launch-thread.js";
 
 const home = process.env.RACE_HOME;
 const sessionId = process.env.RACE_SESSION;
 if (home === undefined || sessionId === undefined) {
-  process.stderr.write("session-owner-race-worker: RACE_HOME and RACE_SESSION are required\n");
+  process.stderr.write("launch-alias-race-worker: RACE_HOME and RACE_SESSION are required\n");
   process.exit(2);
 }
 
 const stopFile = join(home, "race-stop");
 
 try {
-  const lease = acquireSessionOwner(sessionId, { home });
-  process.stdout.write(`WON ${lease.token}\n`);
+  const opened = await openLaunchThread({
+    expectedSession: { sessionId, source: "explicit_resume" },
+    registryPath: join(home, "registry.sqlite"),
+    lineageDbPath: join(home, "cc-lhc.sqlite"),
+    home,
+    createThread: async () => {
+      throw new Error("launch-alias-race-worker: the thread must already exist");
+    },
+  });
+  process.stdout.write(`WON ${opened.threadId} ${opened.expectedSession.sessionId}\n`);
   const poll = setInterval(() => {
     if (existsSync(stopFile)) {
       clearInterval(poll);

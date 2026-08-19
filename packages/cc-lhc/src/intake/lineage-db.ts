@@ -1,11 +1,9 @@
 import { existsSync, mkdirSync, renameSync } from "node:fs";
-import { access, readdir, stat } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
-import type { OpResult, ThreadRef } from "lhc";
+import type { ThreadRef } from "lhc";
 
-import { encodeProjectPath } from "../rollout/discover.js";
 import { captureThreadRef, defaultLineageDbPath, defaultRegistryPath } from "./paths.js";
 import {
   isCanonicalNoneRow,
@@ -31,6 +29,13 @@ export interface LineageSessionEntry {
   replayedPrefixLines: number;
 }
 
+/** One session binding of a thread, with its host-local prefix proof. */
+export interface ThreadSessionRow {
+  sessionId: string;
+  updatedAt: string;
+  prefix: PrefixBoundary;
+}
+
 export interface RecordSessionThreadOptions {
   /**
    * When set, persist (or overwrite) the prefix provenance/boundary.
@@ -47,9 +52,6 @@ export interface RecordSessionThreadOptions {
 
 export interface LineageDbDeps {
   nowFn?: () => Date;
-  readdirFn?: typeof readdir;
-  statFn?: typeof stat;
-  accessFn?: typeof access;
   mkdirFn?: (path: string) => void;
   renameFn?: (from: string, to: string) => void;
   existsFn?: (path: string) => boolean;
@@ -57,12 +59,8 @@ export interface LineageDbDeps {
   withDb?: (dbPath: string, run: (db: DatabaseSync) => void) => void;
 }
 
-const defaultDeps = (): Required<Pick<LineageDbDeps, "nowFn" | "readdirFn" | "statFn" | "accessFn">> &
-  LineageDbDeps => ({
+const defaultDeps = (): Required<Pick<LineageDbDeps, "nowFn">> & LineageDbDeps => ({
   nowFn: () => new Date(),
-  readdirFn: readdir,
-  statFn: stat,
-  accessFn: access,
   mkdirFn: (path: string) => {
     mkdirSync(path, { recursive: true });
   },
@@ -71,10 +69,6 @@ const defaultDeps = (): Required<Pick<LineageDbDeps, "nowFn" | "readdirFn" | "st
   },
   existsFn: (path: string) => existsSync(path),
 });
-
-function isENOENT(cause: unknown): boolean {
-  return typeof cause === "object" && cause !== null && (cause as NodeJS.ErrnoException).code === "ENOENT";
-}
 
 /** Only proven on-disk corruption authorizes quarantine. Busy/locked/schema
  * errors leave the original file untouched and propagate to the caller. */
@@ -354,7 +348,12 @@ export function lookupSessionLineage(
   return entry;
 }
 
-export function lookupThreadForSession(
+/**
+ * The thread a pre-registry lineage row bound this session to. Read ONLY by
+ * the alias map's one-way import on a first registry miss; after the import
+ * the registry answers thread identity and this column never overrides it.
+ */
+export function threadForLegacySession(
   dbPath: string,
   sessionId: string,
   deps: LineageDbDeps = {},
@@ -362,81 +361,35 @@ export function lookupThreadForSession(
   return lookupSessionLineage(dbPath, sessionId, deps)?.threadId;
 }
 
-export function newestSessionEntry(
-  dbPath: string,
-  deps: LineageDbDeps = {},
-): { sessionId: string; entry: LineageSessionEntry } | undefined {
-  let best: { sessionId: string; entry: LineageSessionEntry } | undefined;
+/**
+ * Every Claude session this thread has been bound to, oldest binding first.
+ * Host-local detail: the rows carry the prefix proof and the pre-registry
+ * lineage the alias map imports one way on its first miss.
+ */
+export function threadSessionRows(dbPath: string, threadId: string, deps: LineageDbDeps = {}): ThreadSessionRow[] {
+  const rows: ThreadSessionRow[] = [];
   withLineageDb(dbPath, deps, (db) => {
-    const row = db
+    const raw = db
       .prepare(
         `SELECT rollout_session_id, thread_id, updated_at, prefix_provenance,
                 replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256
-         FROM cc_session_lineage ORDER BY updated_at DESC LIMIT 1`,
+         FROM cc_session_lineage WHERE thread_id = ? ORDER BY updated_at, rowid`,
       )
-      .get() as
-      | {
-          rollout_session_id: string;
-          thread_id: string;
-          updated_at: string;
-          prefix_provenance: string;
-          replayed_prefix_lines: number | null;
-          replayed_prefix_bytes: number | null;
-          replayed_prefix_sha256: string | null;
-        }
-      | undefined;
-    if (row === undefined) return;
-    best = {
-      sessionId: row.rollout_session_id,
-      entry: rowToEntry(row),
-    };
-  });
-  return best;
-}
-
-export async function newestJsonlSessionId(
-  projectsRoot: string,
-  cwd: string,
-  deps: LineageDbDeps = {},
-): Promise<string | undefined> {
-  const { readdirFn, statFn } = { ...defaultDeps(), ...deps };
-  const projectDir = join(projectsRoot, encodeProjectPath(cwd));
-  let names: string[];
-  try {
-    names = await readdirFn(projectDir);
-  } catch (cause) {
-    if (isENOENT(cause)) return undefined;
-    throw cause;
-  }
-
-  let best: { sessionId: string; mtimeMs: number } | undefined;
-  for (const name of names) {
-    if (!name.endsWith(".jsonl")) continue;
-    const filePath = join(projectDir, name);
-    try {
-      const fileStat = await statFn(filePath);
-      const sessionId = basename(name, ".jsonl");
-      if (best === undefined || fileStat.mtimeMs > best.mtimeMs) {
-        best = { sessionId, mtimeMs: fileStat.mtimeMs };
-      }
-    } catch {
-      // skip unreadable
+      .all(threadId) as Array<{
+      rollout_session_id: string;
+      thread_id: string;
+      updated_at: string;
+      prefix_provenance: string;
+      replayed_prefix_lines: number | null;
+      replayed_prefix_bytes: number | null;
+      replayed_prefix_sha256: string | null;
+    }>;
+    for (const row of raw) {
+      const entry = rowToEntry(row);
+      rows.push({ sessionId: row.rollout_session_id, updatedAt: entry.updatedAt, prefix: entry.prefix });
     }
-  }
-  return best?.sessionId;
-}
-
-export async function tryContinueThreadFromNewestSession(
-  dbPath: string,
-  cwd: string,
-  projectsRoot: string,
-  deps: LineageDbDeps = {},
-): Promise<{ sessionId: string; threadId: string } | undefined> {
-  const newest = newestSessionEntry(dbPath, deps);
-  if (newest === undefined) return undefined;
-  const newestJsonl = await newestJsonlSessionId(projectsRoot, cwd, deps);
-  if (newestJsonl === undefined || newestJsonl !== newest.sessionId) return undefined;
-  return { sessionId: newest.sessionId, threadId: newest.entry.threadId };
+  });
+  return rows;
 }
 
 export function recordSessionThread(
@@ -587,28 +540,33 @@ export function safeLoadThreadSignatures(
  */
 export type LaunchClass = "fresh" | "existing";
 
-export interface ResolveCaptureThreadInput {
+export interface BindCaptureThreadInput {
   sessionId: string;
-  cwd: string;
+  /**
+   * The thread this session belongs to, resolved through the registry alias
+   * map at launch. cc-lhc storage never answers thread identity here.
+   */
+  threadId: string;
+  /**
+   * True when the launch created this thread. Only a wrapper-created fresh
+   * session on a brand-new thread may establish known-none provenance.
+   */
+  threadCreatedAtLaunch: boolean;
   /**
    * Whether this launch is allowed to establish known-none on a new thread.
    * Defaults to `existing` (fail closed) when omitted.
    */
   launchClass?: LaunchClass;
-  resumeSessionId?: string;
-  continueFlag?: boolean;
   registryPath?: string;
   lineageDbPath?: string;
-  projectsRoot?: string;
   log?: (message: string) => void;
   logError?: (message: string) => void;
   /** Structured lineage failure (not log substring). */
   onLineageFailure?: (reason: string) => void;
   lineageDeps?: LineageDbDeps;
-  createThreadFn: (cwd: string, registryPath: string) => Promise<OpResult<ThreadRef>>;
 }
 
-export interface ResolveCaptureThreadResult {
+export interface BindCaptureThreadResult {
   threadRef: ThreadRef;
   isExistingThread: boolean;
   /**
@@ -623,7 +581,13 @@ export interface ResolveCaptureThreadResult {
   persistSignatures: (signatures: string[]) => Promise<LineageOutcome>;
 }
 
-export async function resolveCaptureThread(input: ResolveCaptureThreadInput): Promise<ResolveCaptureThreadResult> {
+/**
+ * Bind one Claude session to the thread the registry already named, and load
+ * the host-local capture detail that binding needs: the session's own prefix
+ * proof and the thread's replay signatures. Thread identity is an input here,
+ * never a lookup.
+ */
+export async function bindCaptureThread(input: BindCaptureThreadInput): Promise<BindCaptureThreadResult> {
   const dbPath = input.lineageDbPath ?? defaultLineageDbPath();
   const registryPath = input.registryPath ?? defaultRegistryPath();
   const log = input.log ?? (() => {});
@@ -631,82 +595,33 @@ export async function resolveCaptureThread(input: ResolveCaptureThreadInput): Pr
   const onLineageFailure = input.onLineageFailure ?? (() => {});
   // Default existing: never establish known-none without an explicit fresh launch.
   const launchClass: LaunchClass = input.launchClass ?? "existing";
+  const threadId = input.threadId;
 
   let lineageReadFailed = false;
-  /** Target-session row found with positive stored provenance. */
-  let targetRowFound = false;
-  /** Prefix for the target session id only (never copied from resume source). */
-  let targetPrefix: PrefixBoundary = prefixBoundaryUnknown();
-  let threadId: string | undefined;
+  /** The session's own stored prefix proof, when it already has a row. */
+  let targetPrefix: PrefixBoundary | undefined;
   try {
-    const direct = lookupSessionLineage(dbPath, input.sessionId, input.lineageDeps);
-    if (direct !== undefined) {
-      threadId = direct.threadId;
-      targetPrefix = direct.prefix;
-      targetRowFound = true;
-    }
+    targetPrefix = lookupSessionLineage(dbPath, input.sessionId, input.lineageDeps)?.prefix;
   } catch (cause) {
     lineageReadFailed = true;
     logError(lineageReadFailureMessage(cause));
     onLineageFailure(`lineage_read:${detailCause(cause)}`);
   }
-  let isExistingThread = threadId !== undefined;
 
-  if (threadId === undefined && input.resumeSessionId !== undefined) {
-    try {
-      const fromResume = lookupSessionLineage(dbPath, input.resumeSessionId, input.lineageDeps);
-      if (fromResume !== undefined) {
-        threadId = fromResume.threadId;
-        isExistingThread = true;
-        // Target has no own row: provenance remains unknown (not source prefix,
-        // not known-none). Capture will refuse until reconciliation.
-      }
-    } catch (cause) {
-      lineageReadFailed = true;
-      logError(lineageReadFailureMessage(cause));
-      onLineageFailure(`lineage_read:${detailCause(cause)}`);
-    }
-  }
-
-  if (threadId === undefined && input.continueFlag === true && input.projectsRoot !== undefined) {
-    try {
-      const continued = await tryContinueThreadFromNewestSession(
-        dbPath,
-        input.cwd,
-        input.projectsRoot,
-        input.lineageDeps,
-      );
-      if (continued !== undefined) {
-        threadId = continued.threadId;
-        isExistingThread = true;
-      }
-    } catch (cause) {
-      lineageReadFailed = true;
-      logError(lineageReadFailureMessage(cause));
-      onLineageFailure(`lineage_read:${detailCause(cause)}`);
-    }
-  }
-
-  /**
-   * Provenance decision:
-   * - any lineage read failure → unknown
-   * - target row present → use stored prefix (may itself be unknown/verified/none)
-   * - no target row + fresh launch creating/using new binding → none only when
-   *   creating a brand-new thread below
-   * - no target row + existing launch → unknown
-   */
-  const prefixForExistingBinding = (): PrefixBoundary => {
-    if (lineageReadFailed) return prefixBoundaryUnknown();
-    if (targetRowFound) return targetPrefix;
-    // Existing/resumed/forked without a target row: ambiguous.
-    if (launchClass === "existing") return prefixBoundaryUnknown();
-    // Fresh launch that found a thread via unexpected path still needs a row;
-    // without target row treat as unknown.
-    return prefixBoundaryUnknown();
+  const persistSignatures = async (added: string[]): Promise<LineageOutcome> => {
+    const outcome = await safeAppendThreadSignatures(dbPath, threadId, added, logError, input.lineageDeps);
+    if (!outcome.ok) onLineageFailure(outcome.reason);
+    return outcome;
   };
 
-  if (threadId !== undefined) {
-    const prefix = prefixForExistingBinding();
+  if (!input.threadCreatedAtLaunch) {
+    /**
+     * Provenance for an existing binding:
+     * - any lineage read failure → unknown
+     * - the session has its own row → its stored prefix
+     * - no row yet (first launch of this session on a known thread) → unknown
+     */
+    const prefix = lineageReadFailed ? prefixBoundaryUnknown() : (targetPrefix ?? prefixBoundaryUnknown());
     const prefixNote =
       prefix.kind === "verified"
         ? ` (prefix=verified lines=${prefix.lineCount} bytes=${prefix.byteLength})`
@@ -719,57 +634,39 @@ export async function resolveCaptureThread(input: ResolveCaptureThreadInput): Pr
     if (!recorded.ok) onLineageFailure(recorded.reason);
     const loaded = safeLoadThreadSignatures(dbPath, threadId, logError, input.lineageDeps);
     if (!loaded.outcome.ok) onLineageFailure(loaded.outcome.reason);
-    const threadRef = captureThreadRef(threadId, registryPath);
     return {
-      threadRef,
-      isExistingThread,
+      threadRef: captureThreadRef(threadId, registryPath),
+      isExistingThread: true,
       prefix,
       replayedPrefixLines: prefix.kind === "verified" ? prefix.lineCount : 0,
-      dedupeState: createReplayDedupeState(isExistingThread, loaded.signatures),
-      persistSignatures: async (added) => {
-        const outcome = await safeAppendThreadSignatures(dbPath, threadId!, added, logError, input.lineageDeps);
-        if (!outcome.ok) onLineageFailure(outcome.reason);
-        return outcome;
-      },
+      dedupeState: createReplayDedupeState(true, loaded.signatures),
+      persistSignatures,
     };
-  }
-
-  const created = await input.createThreadFn(input.cwd, registryPath);
-  if (!created.ok) {
-    throw new Error(`cc-lhc thread create failed: ${created.error.reason}`);
-  }
-  const newThreadId = "threadId" in created.value ? created.value.threadId : "";
-  if (newThreadId === "") {
-    throw new Error("cc-lhc thread create failed: missing threadId");
   }
 
   // Known-none only for wrapper-created genuinely fresh launches with healthy
   // lineage I/O. Lineage read failure or existing-class launch → unknown.
   const establishNone = launchClass === "fresh" && !lineageReadFailed;
   const newPrefix = establishNone ? prefixBoundaryNone() : prefixBoundaryUnknown();
-  const recorded = await safeRecordSessionThread(dbPath, input.sessionId, newThreadId, logError, input.lineageDeps, {
+  const recorded = await safeRecordSessionThread(dbPath, input.sessionId, threadId, logError, input.lineageDeps, {
     prefix: newPrefix,
   });
   if (!recorded.ok) onLineageFailure(recorded.reason);
   if (establishNone) {
-    log(`cc-lhc: new thread ${newThreadId} for fresh session ${input.sessionId} (prefix=none)`);
+    log(`cc-lhc: new thread ${threadId} for fresh session ${input.sessionId} (prefix=none)`);
   } else {
     log(
-      `cc-lhc: new thread ${newThreadId} for session ${input.sessionId} (prefix=unknown; ` +
+      `cc-lhc: new thread ${threadId} for session ${input.sessionId} (prefix=unknown; ` +
         `launchClass=${launchClass}, lineageReadFailed=${lineageReadFailed})`,
     );
   }
   return {
-    threadRef: captureThreadRef(newThreadId, registryPath),
+    threadRef: captureThreadRef(threadId, registryPath),
     isExistingThread: false,
     prefix: newPrefix,
     replayedPrefixLines: 0,
     dedupeState: createReplayDedupeState(false, []),
-    persistSignatures: async (added) => {
-      const outcome = await safeAppendThreadSignatures(dbPath, newThreadId, added, logError, input.lineageDeps);
-      if (!outcome.ok) onLineageFailure(outcome.reason);
-      return outcome;
-    },
+    persistSignatures,
   };
 }
 
