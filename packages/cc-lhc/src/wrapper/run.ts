@@ -465,10 +465,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
   }
 
-  // R8: cc-lhc owns compaction for every managed Claude child. Disable only
-  // native automatic compact; manual `/compact` remains available.
-  // R12: an explicit user `--autocompact` passes through verbatim and cc-lhc
-  // omits its injected disable, with a visible anomaly notice.
+  // R8: cc-lhc owns compaction for a managed session, so every managed Claude
+  // child launches with Claude's own automatic compaction off through the
+  // per-child DISABLE_AUTO_COMPACT environment variable. Manual `/compact`
+  // stays available (DISABLE_COMPACT is never used).
+  // R12: an explicit user `--autocompact` passes through verbatim and the
+  // injected disable is omitted for that launch, with a visible anomaly notice.
+  // Omission is all cc-lhc can claim: inherited environment and Claude settings
+  // still govern whether native auto-compact actually runs.
   const userChoseAutocompact = argvSuppliesNativeAutocompact(argv);
   const disableNativeAutoCompact = !userChoseAutocompact;
   if (userChoseAutocompact) {
@@ -1445,7 +1449,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       rows.push(
         disableNativeAutoCompact
           ? "native auto-compact: disabled for this child (DISABLE_AUTO_COMPACT=1) · manual /compact still available"
-          : "native auto-compact: ENABLED by explicit --autocompact (cc-lhc omitted its disable)",
+          : "native auto-compact: explicit --autocompact passed through; cc-lhc did not inject DISABLE_AUTO_COMPACT " +
+              "· inherited env/settings govern",
       );
 
       const inFlight = commandGuard.current();

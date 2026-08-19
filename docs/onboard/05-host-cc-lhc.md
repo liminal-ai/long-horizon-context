@@ -306,7 +306,9 @@ change Claude lifecycle outside wrapper control. Claude's automatic compaction
 is off on every managed child (`DISABLE_AUTO_COMPACT=1`, verified in the
 installed 2.1.232/2.1.233/2.1.234 binaries; `DISABLE_COMPACT` is never used, so
 manual `/compact` still works). An explicit user `--autocompact` passes through
-and omits the injected disable for that launch, with an anomaly notice. When a
+and cc-lhc does not inject the disable for that launch, with an anomaly notice;
+that omission is not a claim that native auto-compact then runs, since inherited
+environment and Claude settings still govern it unobserved. When a
 native summary does appear, it becomes one tagged, ~2,000-character user message
 that is also one complete turn, and LHC compaction continues.
 

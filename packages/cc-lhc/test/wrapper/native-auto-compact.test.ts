@@ -64,6 +64,18 @@ describe("native auto-compact child environment", () => {
     expect(env[NATIVE_AUTO_COMPACT_DISABLE_ENV]).toBeUndefined();
     expect(env.DISABLE_COMPACT).toBeUndefined();
   });
+
+  it("carries inherited values through untouched on both paths", () => {
+    // Omission is not clearing: an inherited disable stays exactly as inherited,
+    // which is why the wrapper cannot claim native auto-compact then runs.
+    const inherited = { PATH: "/bin", DISABLE_AUTO_COMPACT: "1", DISABLE_COMPACT: "1" };
+    const passthrough = nativeAutoCompactChildEnv(inherited, true);
+    expect(passthrough).toEqual(inherited);
+
+    const injected = nativeAutoCompactChildEnv({ PATH: "/bin", DISABLE_COMPACT: "1" }, false);
+    expect(injected.DISABLE_COMPACT).toBe("1");
+    expect(injected[NATIVE_AUTO_COMPACT_DISABLE_ENV]).toBe("1");
+  });
 });
 
 interface FakePty {
@@ -200,12 +212,18 @@ describe("run: managed Claude child launch environment", () => {
     expect(spawned[0]!.args).not.toContain("--autocompact");
   });
 
-  it("omits the disable and records an anomaly when the user supplies --autocompact", async () => {
+  it("passes --autocompact through, injects no disable, and records an anomaly stating only that", async () => {
     const { spawned, logLines } = await launch(["--autocompact", "500000"]);
     expect(spawned[0]!.env[NATIVE_AUTO_COMPACT_DISABLE_ENV]).toBeUndefined();
     // The user's flag is preserved exactly — never stripped or rewritten.
     expect(spawned[0]!.args).toContain("--autocompact");
     expect(spawned[0]!.args[spawned[0]!.args.indexOf("--autocompact") + 1]).toBe("500000");
-    expect(logLines.some((l) => l.includes("ANOMALY") && l.includes("--autocompact"))).toBe(true);
+    const anomaly = logLines.find((l) => l.includes("ANOMALY") && l.includes("--autocompact"));
+    expect(anomaly).toBeDefined();
+    // The notice reports the wrapper's own action, never Claude's resulting
+    // behavior: inherited environment and settings are unobservable from here.
+    expect(anomaly).toContain("did not inject");
+    expect(anomaly).toMatch(/inherited environment and Claude settings still govern/i);
+    expect(anomaly).not.toMatch(/stays enabled|is enabled|will (auto-?)?compact/i);
   });
 });

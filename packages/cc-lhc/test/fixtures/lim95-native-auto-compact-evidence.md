@@ -62,7 +62,7 @@ manual /compact).
 R8 requires manual `/compact` to remain possible, so cc-lhc injects only
 `DISABLE_AUTO_COMPACT=1` and never `DISABLE_COMPACT`.
 
-## Why an explicit `--autocompact` omits the disable (R12)
+## Why cc-lhc does not inject the disable alongside an explicit `--autocompact` (R12)
 
 `claude --help` on the installed binary:
 
@@ -70,10 +70,17 @@ R8 requires manual `/compact` to remain possible, so cc-lhc injects only
   --autocompact <auto|tokens>           Auto-compact window size (auto, or ...
 ```
 
-The flag sets the auto-compact **window**, not enablement. With
-`DISABLE_AUTO_COMPACT=1` also injected the user's flag would be inert, so
+The flag sets the auto-compact **window**, not enablement. Injecting
+`DISABLE_AUTO_COMPACT=1` alongside it would make the user's flag inert, so
 cc-lhc omits the variable for that launch and records an anomaly notice
 instead of rejecting, stripping, or overriding the flag.
+
+Omission is the whole of the claim. cc-lhc does not clear or rewrite the
+inherited environment, and it cannot read Claude's settings, so it cannot
+observe — and therefore must not assert — that native auto-compact actually
+runs on such a launch. An inherited `DISABLE_AUTO_COMPACT` or `DISABLE_COMPACT`,
+or an `autoCompactEnabled: false` setting, would still turn it off. Every live
+log, panel row, and doc states only what the wrapper did.
 
 ## Not covered here
 

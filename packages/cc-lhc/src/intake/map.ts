@@ -302,9 +302,12 @@ export function isAssistantLine(item: RolloutLineItem): boolean {
 }
 
 /**
- * Native Claude compact record (`type: "summary"`), the only shape Claude Code
- * writes when it compacts a session itself — manually via `/compact` or under
- * a user-enabled `--autocompact`.
+ * The installed-binary native-summary discriminator recognized by cc-lhc:
+ * a `type: "summary"` rollout record. This is the shape cc-lhc treats as
+ * Claude having compacted a session itself — manually via `/compact` or under
+ * a user-enabled `--autocompact`. The local rollout census carried no exemplar,
+ * so it is a recognized discriminator, not a proven exhaustive one; S7
+ * certification owns live confirmation.
  */
 export function isNativeCompactSummaryLine(item: RolloutLineItem): boolean {
   return item.type === "summary";

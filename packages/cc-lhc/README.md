@@ -269,8 +269,10 @@ cannot rewrite an unrelated automatic classification.
 - Automatic prune remains off by default. Every managed Claude child launches
   with `DISABLE_AUTO_COMPACT=1`, so Claude's own automatic compaction never runs
   on a managed session; manual `/compact` stays available. An explicit user
-  `--autocompact` passes through unchanged and omits the injected disable for
-  that launch, with an anomaly notice.
+  `--autocompact` passes through unchanged and cc-lhc does not inject the
+  disable for that launch, with an anomaly notice. Omission is all the wrapper
+  claims: inherited environment and Claude's own settings still govern whether
+  native auto-compact then runs, and cc-lhc cannot observe them.
 
 ## Verification
 
