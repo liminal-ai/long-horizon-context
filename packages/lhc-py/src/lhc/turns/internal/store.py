@@ -22,6 +22,9 @@ _SQL_SELECT_OPEN_TURN_IDS = """SELECT turn_id FROM turns WHERE status = 'open' O
 
 _SQL_COUNT_TURN_MEMBERS = """SELECT COUNT(*) AS n FROM message WHERE turn_id = ? AND deleted_at IS NULL"""
 
+_SQL_TURN_HAS_USER_PROMPT_MEMBER = """SELECT 1 AS present FROM message
+    WHERE turn_id = ? AND kind = 'user_prompt' AND deleted_at IS NULL LIMIT 1"""
+
 _SQL_NEXT_TURN_ORDER = """SELECT MAX(turn_order) AS max_order FROM turns"""
 
 _SQL_INSERT_OPEN_TURN = (
@@ -62,6 +65,10 @@ def count_turn_members(db: Database, turn_id: str) -> int:
     row = db.prepare(_SQL_COUNT_TURN_MEMBERS).get(turn_id)
     value = row.get("n") if row is not None else None
     return int(value if value is not None else 0)
+
+
+def turn_has_user_prompt_member(db: Database, turn_id: str) -> bool:
+    return db.prepare(_SQL_TURN_HAS_USER_PROMPT_MEMBER).get(turn_id) is not None
 
 
 def next_turn_order(db: Database) -> int:

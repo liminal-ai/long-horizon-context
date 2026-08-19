@@ -58,9 +58,11 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 47 | `src/shared-tech/thread-migrate.ts` | `src/lhc/shared_tech/thread_migrate.py` | ☑ | Wave 2+3 — EnqueueDerivationTarget via TYPE_CHECKING only (breaks work_queue↔threads cycle); bodies NotImplementedError |
 | 48 | `src/shared-tech/token-counting/index.ts` | `src/lhc/shared_tech/token_counting/__init__.py` | ☑ |  |
 | 49 | `src/shared-tech/tool-result-rendering.ts` | `src/lhc/shared_tech/tool_result_rendering.py` | ☑ |  |
+| 49a | `src/shared-tech/user-steer.ts` | `src/lhc/shared_tech/user_steer.py` | ☑ | LIM-113 frozen typed steering contract |
 | 50 | `src/shared-tech/view.ts` | `src/lhc/shared_tech/view.py` | ☑ |  |
 | 51 | `src/shared-tech/work-queue/index.ts` | `src/lhc/shared_tech/work_queue/__init__.py` | ☑ | Wave 2 import seam complete — WorkSourceRef closed union + count_live_items/queue_detail/WorkKind; bodies remain NotImplementedError skeletons |
 | 52 | `src/thread-view/index.ts` | `src/lhc/thread_view/__init__.py` | ☑ | Wave 6 — full surface; fix-r1: PruneParams.target_tokens `int\|float`; MaterializeResult canonical from materialize |
+| 52a | `src/intake-stream/internal/steer-lookup.ts` | `src/lhc/intake_stream/internal/steer_lookup.py` | ☑ | LIM-113 bounded indexed reconciliation read |
 | 53 | `src/thread-view/internal/assemble.ts` | `src/lhc/thread_view/internal/assemble.py` | ☑ | Wave 6 |
 | 54 | `src/thread-view/internal/boundary.ts` | `src/lhc/thread_view/internal/boundary.py` | ☑ | Wave 6 |
 | 55 | `src/thread-view/internal/compact-compute.ts` | `src/lhc/thread_view/internal/compact_compute.py` | ☑ | Wave 6; fix-r1: `_AbortSignal` frozen slotted dataclass (not Protocol) |
@@ -139,6 +141,7 @@ Statuses: `skel` = Python counterpart written; `gate` = passed in a clean
 | 51 | `test/view-session-thread-view.test.ts` | `tests/test_view_session_thread_view.py` | ☑ | ☑ | Wave 6; fix-r1: full toEqual; toMatchObject named fields; asyncio.gather |
 | 52 | `test/work-execution.test.ts` | `tests/test_work_execution.py` | ☑ | ☑ |  |
 | 53 | `test/work-queue.test.ts` | `tests/test_work_queue.py` | ☑ | ☑ |  |
+| 54 | `test/user-steer.test.ts` | `tests/test_user_steer.py` | ☑ | ☑ | LIM-113 closed contract/parity fixture |
 
 ## Fixture helpers (port with the first wave that needs each)
 

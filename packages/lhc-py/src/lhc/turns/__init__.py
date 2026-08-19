@@ -62,6 +62,7 @@ from .internal.store import (
     insert_open_turn,
     next_turn_order,
     select_open_turn_ids,
+    turn_has_user_prompt_member,
 )
 
 if TYPE_CHECKING:
@@ -113,6 +114,12 @@ def _current_open_turn_id(transaction: DbWriteTransaction) -> str:
             f"thread has {len(open_turn_ids)} open turns ({joined}); the invariant is exactly one"
         )
     return open_turn_ids[0]
+
+
+def open_turn_has_active_user_prompt_in_transaction(
+    transaction: DbWriteTransaction,
+) -> bool:
+    return turn_has_user_prompt_member(transaction.db, _current_open_turn_id(transaction))
 
 
 # Closing a turn durably queues that turn's derivation work in the same

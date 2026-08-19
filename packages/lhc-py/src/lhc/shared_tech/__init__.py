@@ -150,6 +150,14 @@ from .tool_result_rendering import (
     truncate_for_fallback,
 )
 
+from .user_steer import (
+    USER_STEER_IDEMPOTENCY_PREFIX,
+    USER_STEER_PAYLOAD_VERSION,
+    USER_STEER_RENDERING_LABEL,
+    UserSteerPayload,
+    user_steer_idempotency_key,
+)
+
 from .view import (
     Band,
     CompactReceipt,
@@ -171,6 +179,8 @@ from .view import (
     SessionThreadViewMessage,
     SessionToolResultMessage,
     SessionUserMessage,
+    SessionUserSource,
+    SessionUserSteerSource,
     StoredView,
     ViewCompactParams,
     ViewProfile,
@@ -254,8 +264,14 @@ __all__ = [
     "SessionThreadViewMessage",
     "SessionToolResultMessage",
     "SessionUserMessage",
+    "SessionUserSource",
+    "SessionUserSteerSource",
     "StoredView",
     "SubjectKind",
+    "USER_STEER_IDEMPOTENCY_PREFIX",
+    "USER_STEER_PAYLOAD_VERSION",
+    "USER_STEER_RENDERING_LABEL",
+    "UserSteerPayload",
     "ThreadDbOpener",
     "ToolOutcome",
     "ToolResultClassification",
@@ -305,5 +321,6 @@ __all__ = [
     "storage_failure",
     "target_ratios_of",
     "truncate_for_fallback",
+    "user_steer_idempotency_key",
     "write_pending_derivations",
 ]

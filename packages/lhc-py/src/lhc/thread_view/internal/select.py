@@ -334,6 +334,7 @@ class SelectionConfig:
 
 PiMappableMessageKind = Literal[
     "user_prompt",
+    "user_steer",
     "assistant_text",
     "assistant_thinking",
     "tool_call",
@@ -348,6 +349,7 @@ PiMappableMessageKind = Literal[
 # thing in both places.
 PI_MAPPABLE_MESSAGE_KINDS: tuple[PiMappableMessageKind, ...] = (
     "user_prompt",
+    "user_steer",
     "assistant_text",
     "assistant_thinking",
     "tool_call",

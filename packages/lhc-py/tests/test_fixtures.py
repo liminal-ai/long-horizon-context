@@ -39,6 +39,7 @@ from fixtures import (
 
 ALL_KINDS: tuple[EventKind, ...] = (
     "user_prompt",
+    "user_steer",
     "assistant_text",
     "assistant_thinking",
     "runtime_note",
@@ -51,6 +52,7 @@ ALL_KINDS: tuple[EventKind, ...] = (
 
 GOLDEN_PAYLOAD_KEYS: dict[EventKind, list[str]] = {
     "user_prompt": ["text"],
+    "user_steer": ["version", "steerId", "text"],
     "assistant_text": ["text"],
     "assistant_thinking": ["text"],
     "runtime_note": ["text"],

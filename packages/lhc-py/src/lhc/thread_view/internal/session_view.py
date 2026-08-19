@@ -18,7 +18,9 @@ from ...shared_tech.view import (
     SessionThreadViewEntrySource,
     SessionToolResultMessage,
     SessionUserMessage,
+    SessionUserSteerSource,
 )
+from ...shared_tech.user_steer import USER_STEER_PAYLOAD_VERSION
 from .boundary import read_boundary_position
 from .render import (
     TailRenderContext,
@@ -32,6 +34,7 @@ from .snapshot import (
     read_thread_metadata,
     read_view_snapshot,
 )
+from .select import CanonicalCorruptionError
 
 
 def _block_content(message: TailMessageRow) -> dict[str, object]:
@@ -52,6 +55,19 @@ def _entry_source(message: TailMessageRow) -> SessionThreadViewEntrySource:
         message_id=message.message_id,
         idempotency_key=message.idempotency_key,
     )
+
+
+def _steer_source_of(message: TailMessageRow) -> SessionUserSteerSource:
+    content = _block_content(message)
+    version = content.get("version")
+    steer_id = content.get("steerId")
+    if version != USER_STEER_PAYLOAD_VERSION or not isinstance(steer_id, str) or steer_id == "":
+        raise CanonicalCorruptionError(
+            "source_damaged",
+            f"canonical record corrupt: user_steer message {message.message_id} stores version {version!r} "
+            f"and steerId {steer_id!r}; the session source descriptor requires version 1 and a non-empty steerId",
+        )
+    return SessionUserSteerSource(version=USER_STEER_PAYLOAD_VERSION, steer_id=steer_id)
 
 
 @dataclass(frozen=True, slots=True)
@@ -251,6 +267,15 @@ def _tail_entries_of(rows: Sequence[TailMessageRow], boundary_position: int) -> 
                 SessionUserMessage(
                     content=_text_of(row),
                     source_messages=[_entry_source(row)],
+                )
+            )
+        elif kind == "user_steer":
+            flush_assistant()
+            entries.append(
+                SessionUserMessage(
+                    content=_text_of(row),
+                    source_messages=[_entry_source(row)],
+                    source=_steer_source_of(row),
                 )
             )
         elif kind in ("assistant_thinking", "assistant_text", "tool_call"):

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, TypeVar, cast
 
+from lhc import USER_STEER_PAYLOAD_VERSION, user_steer_idempotency_key
 from lhc.intake_stream import EventKind, MessageEventInput
 from lhc.shared_tech.storage import Database, open_database
 
@@ -118,6 +119,11 @@ _key_counter = 0
 
 _DEFAULT_PAYLOADS: dict[EventKind, Callable[[], dict[str, Any]]] = {
     "user_prompt": lambda: {"text": "please read the file"},
+    "user_steer": lambda: {
+        "version": USER_STEER_PAYLOAD_VERSION,
+        "steerId": f"steer-{_key_counter}",
+        "text": "actually, check the tests first",
+    },
     "assistant_text": lambda: {"text": "here is what I found"},
     "assistant_thinking": lambda: {"text": "considering the file contents"},
     "runtime_note": lambda: {"text": "harness restarted mid-turn"},
@@ -156,6 +162,8 @@ def valid_event(kind: K, overrides: dict[str, Any] | None = None) -> MessageEven
         base = {**base, **overrides}
         # If overrides include payload, it replaces; if nested merge desired,
         # callers pass the full payload (matches TS spread behavior).
+    if kind == "user_steer" and (overrides is None or "idempotencyKey" not in overrides):
+        base["idempotencyKey"] = user_steer_idempotency_key(base["payload"]["steerId"])
     return cast(MessageEventInput, base)
 
 

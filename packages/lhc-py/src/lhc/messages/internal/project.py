@@ -46,6 +46,16 @@ def project_event(event: RecordedEvent) -> ProjectedMessage | None:
             blocks=[Block(block_type="text", content={"text": text})],
             token_estimate=estimate_tokens(text),
         )
+    if kind == "user_steer":
+        content = {
+            "version": payload["version"],
+            "steerId": payload["steerId"],
+            "text": payload["text"],
+        }
+        return ProjectedMessage(
+            blocks=[Block(block_type="user_steer", content=content)],
+            token_estimate=estimate_tokens(payload["text"]),
+        )
     if kind == "assistant_text":
         # providerUsage rides the event payload and is stored as a message
         # column (not a block) — projection leaves text + optional provenance.

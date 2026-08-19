@@ -14,7 +14,7 @@ from typing import Literal, Protocol, TypeVar, TypedDict
 from weakref import WeakKeyDictionary
 
 from . import inspect, intake_stream, messages, retrieval, thread_view, threads, turns
-from .intake_stream import BatchResult, EventKind, EventRecord, MessageEventInput
+from .intake_stream import BatchResult, EventKind, EventRecord, MessageEventInput, RecordedUserSteer
 from .messages import (
     Block,
     BlockType,
@@ -154,12 +154,21 @@ from .shared_tech.view import (
     SessionThreadViewMessage,
     SessionToolResultMessage,
     SessionUserMessage,
+    SessionUserSource,
+    SessionUserSteerSource,
     StoredView,
     ViewCompactParams,
     ViewProfile,
     ViewProfileOverride,
     ViewStatus,
     VisibilityBudgets,
+)
+from .shared_tech.user_steer import (
+    USER_STEER_IDEMPOTENCY_PREFIX,
+    USER_STEER_PAYLOAD_VERSION,
+    USER_STEER_RENDERING_LABEL,
+    UserSteerPayload,
+    user_steer_idempotency_key,
 )
 from .shared_tech.work_queue import (
     WORK_KIND_REGISTRY,
@@ -335,6 +344,10 @@ class LhcIntakeStream(Protocol):
     ) -> OpResult[BatchResult]: ...
 
     async def list_events(self, ref: ThreadRef) -> OpResult[list[EventRecord]]: ...
+
+    async def find_user_steer(
+        self, ref: ThreadRef, steer_id: str
+    ) -> OpResult[RecordedUserSteer | None]: ...
 
 
 # TS: typeof intakeStreamDomain & { initLhc(config): Lhc }
@@ -814,6 +827,7 @@ class _IntakeStreamSurface:
 
     message_events = staticmethod(intake_stream.message_events)
     list_events = staticmethod(intake_stream.list_events)
+    find_user_steer = staticmethod(intake_stream.find_user_steer)
     # Bound after init_lhc is defined (see bottom of this module).
     init_lhc: Callable[[SdkConfig], Lhc]
 
@@ -1227,6 +1241,7 @@ __all__ = [
     "PreviewCompactOutcome",
     "PreviewCompactResult",
     "ProviderProvenance",
+    "RecordedUserSteer",
     "PruneReceipt",
     "QueueDetailRow",
     "RenderingPart",
@@ -1246,9 +1261,15 @@ __all__ = [
     "SessionThreadViewMessage",
     "SessionToolResultMessage",
     "SessionUserMessage",
+    "SessionUserSource",
+    "SessionUserSteerSource",
     "StoredLogEntry",
     "StoredView",
     "SubjectKind",
+    "USER_STEER_IDEMPOTENCY_PREFIX",
+    "USER_STEER_PAYLOAD_VERSION",
+    "USER_STEER_RENDERING_LABEL",
+    "UserSteerPayload",
     "TOKEN_ESTIMATOR_ID",
     "ThreadFileInfo",
     "ThreadRef",
@@ -1301,5 +1322,6 @@ __all__ = [
     "thread_view",
     "threads",
     "turns",
+    "user_steer_idempotency_key",
     "write_log",
 ]

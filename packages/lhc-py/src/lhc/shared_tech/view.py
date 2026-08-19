@@ -145,9 +145,20 @@ class SessionThreadViewEntrySource:
 
 
 @dataclass(frozen=True, slots=True)
+class SessionUserSteerSource:
+    version: Literal[1]
+    steer_id: str
+    kind: Literal["user_steer"] = "user_steer"
+
+
+SessionUserSource = SessionUserSteerSource
+
+
+@dataclass(frozen=True, slots=True)
 class SessionUserMessage:
     content: str
     source_messages: list[SessionThreadViewEntrySource]
+    source: SessionUserSource | None = None
     role: Literal["user"] = "user"
 
 

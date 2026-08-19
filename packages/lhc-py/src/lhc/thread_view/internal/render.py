@@ -167,6 +167,8 @@ def render_tail_message(message: TailMessageRow, ctx: TailRenderContext) -> Asse
     kind = message.kind
     if kind == "user_prompt":
         return AssembledContextMessage(role="user", content=_text_of(message))
+    if kind == "user_steer":
+        return AssembledContextMessage(role="user", content=_text_of(message))
     if kind == "assistant_text":
         return AssembledContextMessage(role="assistant", content=_text_of(message))
     if kind == "assistant_thinking":

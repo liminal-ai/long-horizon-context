@@ -12,9 +12,15 @@ from dataclasses import dataclass
 from typing import Literal, NotRequired, TypedDict, Union
 
 from ...shared_tech.errors import ErrorResult
+from ...shared_tech.user_steer import (
+    USER_STEER_IDEMPOTENCY_PREFIX,
+    USER_STEER_PAYLOAD_VERSION,
+    user_steer_idempotency_key,
+)
 
 EVENT_KINDS: tuple[
     Literal["user_prompt"],
+    Literal["user_steer"],
     Literal["assistant_text"],
     Literal["assistant_thinking"],
     Literal["runtime_note"],
@@ -25,6 +31,7 @@ EVENT_KINDS: tuple[
     Literal["turn_end"],
 ] = (
     "user_prompt",
+    "user_steer",
     "assistant_text",
     "assistant_thinking",
     "runtime_note",
@@ -74,6 +81,7 @@ _ThreadRefSchema = Union[_ThreadRefByIdSchema, _ThreadRefByPathSchema]
 class _EventEnvelopeSchema(TypedDict):
     eventKind: Literal[
         "user_prompt",
+        "user_steer",
         "assistant_text",
         "assistant_thinking",
         "runtime_note",
@@ -99,6 +107,12 @@ class _EventEnvelopeSchema(TypedDict):
 
 
 class _TextPayloadSchema(TypedDict):
+    text: str
+
+
+class _UserSteerPayloadSchema(TypedDict):
+    version: Literal[1]
+    steerId: str
     text: str
 
 
@@ -193,6 +207,8 @@ def _type_label(kind: str) -> str:
         return "unknown"
     if kind == "event_kind":
         return '"user_prompt"'
+    if kind == "version1":
+        return "1"
     # Effect Schema.Literal("completed", "aborted") surface for turn_end.outcome.
     if kind == "outcome_literal":
         return '"completed" | "aborted"'
@@ -255,6 +271,9 @@ def _struct_issue(
                     (name,),
                     f'Expected "user_prompt", actual {_actual(item)}',
                 )
+        elif kind == "version1":
+            if type(item) is not int or item != USER_STEER_PAYLOAD_VERSION:
+                return _ParseError((name,), f"Expected 1, actual {_actual(item)}")
         elif kind == "outcome_literal":
             if not isinstance(item, str) or item not in ("completed", "aborted"):
                 return _ParseError(
@@ -273,6 +292,7 @@ def _decode_issue(
         | type[_ThreadRefByPathSchema]
         | type[_EventEnvelopeSchema]
         | type[_TextPayloadSchema]
+        | type[_UserSteerPayloadSchema]
         | type[_AssistantTextPayloadSchema]
         | type[_AssistantThinkingPayloadSchema]
         | type[_TurnEndPayloadSchema]
@@ -305,6 +325,15 @@ def _decode_issue(
         )
     elif schema is _TextPayloadSchema:
         issue = _struct_issue(value, (("text", "string", False),))
+    elif schema is _UserSteerPayloadSchema:
+        issue = _struct_issue(
+            value,
+            (
+                ("version", "version1", False),
+                ("steerId", "nonempty", False),
+                ("text", "nonempty", False),
+            ),
+        )
     elif schema is _AssistantTextPayloadSchema:
         issue = _struct_issue(
             value,
@@ -368,7 +397,7 @@ def _decode_issue(
     return _first_issue(issue) if issue is not None else None
 
 
-def _caller_error(reason: str, event_index: int | None = None) -> ErrorResult:
+def caller_error(reason: str, event_index: int | None = None) -> ErrorResult:
     return ErrorResult(
         error_class="caller_error",
         code="invalid_event",
@@ -387,14 +416,14 @@ def validate_thread_ref(ref: object) -> ErrorResult | None:
         return None
     if _decode_issue(_ThreadRefByPathSchema, ref) is None:
         return None
-    return _caller_error(f"envelope: invalid thread reference — {by_id}")
+    return caller_error(f"envelope: invalid thread reference — {by_id}")
 
 
 # Whole-batch validation: array order, first failure wins. Returns None
 # when every event is valid.
 def validate_events(events: object) -> ErrorResult | None:
     if not isinstance(events, (list, tuple)):
-        return _caller_error("envelope: events must be a JSON array")
+        return caller_error("envelope: events must be a JSON array")
     if len(events) == 0:
         return ErrorResult(
             error_class="caller_error",
@@ -410,30 +439,31 @@ def validate_events(events: object) -> ErrorResult | None:
 
 def _validate_one_event(event: object, index: int) -> ErrorResult | None:
     if not isinstance(event, dict):
-        return _caller_error("event: each event must be a JSON object", index)
+        return caller_error("event: each event must be a JSON object", index)
 
     for field in _SERVER_GENERATED_FIELDS:
         if field in event:
-            return _caller_error(
+            return caller_error(
                 f'event: server-generated field "{field}" must not be supplied by the caller',
                 index,
             )
 
     kind = event.get("eventKind")
     if isinstance(kind, str) and kind not in EVENT_KINDS:
-        return _caller_error(f'event: unknown event kind "{kind}"', index)
+        return caller_error(f'event: unknown event kind "{kind}"', index)
 
     issue = _decode_issue(_EventEnvelopeSchema, event)
     if issue is not None:
-        return _caller_error(f"event: {issue}", index)
+        return caller_error(f"event: {issue}", index)
 
     # Schema.Unknown tolerates a missing payload key; presence is layer 3.
     payload = event.get("payload")
     if not isinstance(payload, dict):
-        return _caller_error("event: payload must be a JSON object", index)
+        return caller_error("event: payload must be a JSON object", index)
 
     payload_schema: type[
         _TextPayloadSchema
+        | _UserSteerPayloadSchema
         | _AssistantTextPayloadSchema
         | _AssistantThinkingPayloadSchema
         | _TurnEndPayloadSchema
@@ -456,9 +486,26 @@ def _validate_one_event(event: object, index: int) -> ErrorResult | None:
         payload_schema = _ModelChangePayloadSchema
     elif kind == "thinking_level_change":
         payload_schema = _ThinkingLevelChangePayloadSchema
+    elif kind == "user_steer":
+        payload_schema = _UserSteerPayloadSchema
     else:
         payload_schema = _TextPayloadSchema
     issue = _decode_issue(payload_schema, payload)
     if issue is not None:
-        return _caller_error(f"payload: {issue}", index)
+        return caller_error(f"payload: {issue}", index)
+    idempotency_key = event["idempotencyKey"]
+    if kind == "user_steer":
+        steer_id = payload["steerId"]
+        canonical = user_steer_idempotency_key(steer_id)
+        if idempotency_key != canonical:
+            return caller_error(
+                f'event: user_steer idempotencyKey must be "{canonical}" for steerId "{steer_id}", got "{idempotency_key}"',
+                index,
+            )
+    elif idempotency_key.startswith(USER_STEER_IDEMPOTENCY_PREFIX):
+        return caller_error(
+            f'event: idempotencyKey namespace "{USER_STEER_IDEMPOTENCY_PREFIX}" is reserved for user_steer events; '
+            f'"{idempotency_key}" cannot name a "{kind}" event',
+            index,
+        )
     return None

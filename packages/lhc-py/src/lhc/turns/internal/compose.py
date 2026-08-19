@@ -35,6 +35,7 @@ from ...shared_tech.tool_result_rendering import (
     FALLBACK_TRUNCATION_LIMIT,
     truncate_for_fallback,
 )
+from ...shared_tech.user_steer import USER_STEER_RENDERING_LABEL
 
 # PART_PLANS derivation keys are the durable message-owned derivation names
 # composition reads; fallback callables are the private helpers (Phase 2 bodies).
@@ -192,6 +193,7 @@ def _tool_result_fallback_text(message: ComposeMessage) -> str:
 
 _PART_PLANS: dict[RenderingPartKind, _PartPlan] = {
     "user_prompt": _PartPlan(derivation="smoothed_prompt", fallback_text=_prompt_fallback_text),
+    "user_steer": _PartPlan(fallback_text=_text_of),
     "assistant_text": _PartPlan(fallback_text=_text_of),
     "assistant_thinking": _PartPlan(fallback_text=_text_of),
     "runtime_note": _PartPlan(fallback_text=_text_of),
@@ -210,14 +212,14 @@ _PART_PLANS: dict[RenderingPartKind, _PartPlan] = {
 class _ComposeAtom:
     part: RenderingPart
     is_tool: bool
-    is_break: bool  # user_prompt | assistant_text — ends a run
+    is_break: bool  # user_prompt | user_steer | assistant_text — ends a run
     tool_name: str | None = None  # tool_call only
     tool_call_id: str | None = None  # tool_call | tool_result
 
 
-_RUN_BREAK_KINDS: frozenset[RenderingPartKind] = frozenset({"user_prompt", "assistant_text"})
+_RUN_BREAK_KINDS: frozenset[RenderingPartKind] = frozenset({"user_prompt", "user_steer", "assistant_text"})
 _TOOL_KINDS: frozenset[RenderingPartKind] = frozenset({"tool_call", "tool_result"})
-_DIALOG_KINDS: frozenset[RenderingPartKind] = frozenset({"user_prompt", "assistant_text"})
+_DIALOG_KINDS: frozenset[RenderingPartKind] = frozenset({"user_prompt", "user_steer", "assistant_text"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,7 +457,11 @@ def compose_rendering_input(
 
 
 def _format_dialogue_section(part: RenderingPart) -> str:
-    return f"User:\n{part.text}" if part.kind == "user_prompt" else f"⏺ {part.text}"
+    if part.kind == "user_prompt":
+        return f"User:\n{part.text}"
+    if part.kind == "user_steer":
+        return f"{USER_STEER_RENDERING_LABEL}:\n{part.text}"
+    return f"⏺ {part.text}"
 
 
 def _compose_dialogue_text(parts: Sequence[RenderingPart]) -> str:
@@ -472,6 +478,7 @@ def _compose_dialogue_text(parts: Sequence[RenderingPart]) -> str:
 def _rendering_part_label(kind: RenderingPartKind) -> str:
     return {
         "user_prompt": "User prompt",
+        "user_steer": USER_STEER_RENDERING_LABEL,
         "assistant_text": "Assistant response",
         "assistant_thinking": "Assistant thinking",
         "runtime_note": "Runtime note",

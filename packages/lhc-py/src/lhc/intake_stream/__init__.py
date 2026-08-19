@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from typing import Literal, NotRequired, TypedDict, Union
 
 from ..shared_tech.errors import OpResult
+from ..shared_tech.user_steer import UserSteerPayload
 from ..shared_tech.work_queue import WorkKind, WorkOwner, WorkSourceRef
 from ..threads import ThreadRef
 
@@ -90,6 +91,14 @@ class UserPromptEvent(TypedDict):
     payload: TextPayload
 
 
+class UserSteerEvent(TypedDict):
+    eventKind: Literal["user_steer"]
+    idempotencyKey: str
+    actor: str
+    harness: str
+    payload: UserSteerPayload
+
+
 class AssistantTextEvent(TypedDict):
     eventKind: Literal["assistant_text"]
     idempotencyKey: str
@@ -156,6 +165,7 @@ class TurnEndEvent(TypedDict):
 
 MessageEventInput = Union[
     UserPromptEvent,
+    UserSteerEvent,
     AssistantTextEvent,
     AssistantThinkingEvent,
     RuntimeNoteEvent,
@@ -169,6 +179,7 @@ MessageEventInput = Union[
 # Derived, not parallel-maintained: the kind list cannot drift from the union.
 EventKind = Literal[
     "user_prompt",
+    "user_steer",
     "assistant_text",
     "assistant_thinking",
     "runtime_note",
@@ -230,6 +241,16 @@ class UserPromptEventRecord(TypedDict):
     actor: str
     harness: str
     payload: TextPayload
+    eventOrder: int
+    recordedAt: str
+
+
+class UserSteerEventRecord(TypedDict):
+    eventKind: Literal["user_steer"]
+    idempotencyKey: str
+    actor: str
+    harness: str
+    payload: UserSteerPayload
     eventOrder: int
     recordedAt: str
 
@@ -316,6 +337,7 @@ class TurnEndEventRecord(TypedDict):
 
 EventRecord = Union[
     UserPromptEventRecord,
+    UserSteerEventRecord,
     AssistantTextEventRecord,
     AssistantThinkingEventRecord,
     RuntimeNoteEventRecord,
@@ -340,3 +362,28 @@ async def list_events(thread_ref: ThreadRef) -> OpResult[list[EventRecord]]:
     from .internal.pipeline import run_list_events
 
     return await run_list_events(thread_ref)
+
+
+@dataclass(frozen=True, slots=True)
+class RecordedUserSteer:
+    steer_id: str
+    idempotency_key: str
+    event_order: int
+    recorded_at: str
+    actor: str
+    harness: str
+    payload: UserSteerPayload
+    message_id: str | None
+
+
+async def find_user_steer(
+    thread_ref: ThreadRef, steer_id: str
+) -> OpResult[RecordedUserSteer | None]:
+    from ..shared_tech.errors import OpErr
+    from .internal.steer_lookup import run_find_user_steer
+    from .internal.validate import validate_thread_ref
+
+    failure = validate_thread_ref(thread_ref)
+    if failure is not None:
+        return OpErr(error=failure)
+    return await run_find_user_steer(thread_ref, steer_id)

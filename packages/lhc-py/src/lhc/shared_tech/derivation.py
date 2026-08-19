@@ -282,6 +282,7 @@ class DerivationReportEntry:
 # rather than imported: shared-tech/ may not import the domains.
 RenderingPartKind = Literal[
     "user_prompt",
+    "user_steer",
     "assistant_text",
     "assistant_thinking",
     "runtime_note",

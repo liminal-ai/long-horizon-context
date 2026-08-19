@@ -200,6 +200,16 @@ async def get_session_thread_view(ref: ThreadRef) -> OpResult[SessionThreadView]
     except Exception as cause:
         if isinstance(cause, NotImplementedError):
             raise
+        from .internal.select import CanonicalCorruptionError
+
+        if isinstance(cause, CanonicalCorruptionError):
+            return OpErr(
+                error=ErrorResult(
+                    error_class="state_corruption",
+                    code=cause.code,
+                    reason=str(cause),
+                )
+            )
         return storage_failure(f"view getSessionThreadView failed: {_detail(cause)}")
 
 

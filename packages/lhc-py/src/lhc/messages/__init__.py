@@ -41,11 +41,12 @@ MessageListOptions = TypedDict(
     total=False,
 )
 
-BlockType = Literal["text", "tool_call", "tool_result", "model_change", "thinking_level_change"]
+BlockType = Literal["text", "user_steer", "tool_call", "tool_result", "model_change", "thinking_level_change"]
 
 # TS: Exclude<EventKind, "turn_end">
 MessageKind = Literal[
     "user_prompt",
+    "user_steer",
     "assistant_text",
     "assistant_thinking",
     "runtime_note",

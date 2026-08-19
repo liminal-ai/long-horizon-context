@@ -13,15 +13,21 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from ...shared_tech._jsstr import js_json_dumps
-from ...shared_tech.errors import OpErr, OpOk, OpResult, storage_failure
+from ...shared_tech.errors import ErrorResult, OpErr, OpOk, OpResult, storage_failure
 from ...shared_tech.persist import (
     DbWriteTransaction,
     create_db_read_transaction,
     create_db_write_transaction,
 )
 from ...shared_tech.storage import Database
+from ...shared_tech.user_steer import USER_STEER_IDEMPOTENCY_PREFIX
 from ...threads import ThreadRef
-from ...turns import RecordedTurnEvent, TurnStateCorruptionError, create as _create_turn
+from ...turns import (
+    RecordedTurnEvent,
+    TurnStateCorruptionError,
+    create as _create_turn,
+    open_turn_has_active_user_prompt_in_transaction,
+)
 from .. import (
     BatchEventOutcome,
     BatchResult,
@@ -31,7 +37,7 @@ from .. import (
     ThreadPosition,
     TurnTransition,
 )
-from .validate import validate_events, validate_thread_ref
+from .validate import caller_error, validate_events, validate_thread_ref
 
 if TYPE_CHECKING:
     # IMPORT-CYCLE SEAM: messages/__init__ imports ..intake_stream at runtime,
@@ -74,6 +80,75 @@ def set_intake_clock(clock: Callable[[], datetime] | None) -> None:
 
 def _detail(cause: object) -> str:
     return str(cause)
+
+
+class _BatchRejection(Exception):
+    def __init__(self, error: ErrorResult) -> None:
+        super().__init__(error.reason)
+        self.error = error
+
+
+@dataclass(frozen=True, slots=True)
+class _CanonicalIdentity:
+    event_kind: str
+    payload: str
+
+
+def _canonical_payload_form(payload: object) -> str:
+    return json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+
+
+def _identity_of(event: MessageEventInput) -> _CanonicalIdentity:
+    return _CanonicalIdentity(
+        event_kind=event["eventKind"],
+        payload=_canonical_payload_form(event["payload"]),
+    )
+
+
+def _canonical_key_of(event: MessageEventInput) -> str | None:
+    key = event["idempotencyKey"]
+    return key if key.startswith(USER_STEER_IDEMPOTENCY_PREFIX) else None
+
+
+def _recorded_canonical_identities(
+    db: Database, keys: Sequence[str]
+) -> dict[str, _CanonicalIdentity]:
+    canonical = [key for key in keys if key.startswith(USER_STEER_IDEMPOTENCY_PREFIX)]
+    found: dict[str, _CanonicalIdentity] = {}
+    for offset in range(0, len(canonical), 400):
+        chunk = canonical[offset : offset + 400]
+        placeholders = ", ".join("?" for _ in chunk)
+        rows = db.prepare(
+            f"SELECT idempotency_key, event_kind, payload FROM event WHERE idempotency_key IN ({placeholders})"
+        ).all(*chunk)
+        for row in rows:
+            found[str(row["idempotency_key"])] = _CanonicalIdentity(
+                event_kind=str(row["event_kind"]),
+                payload=_canonical_payload_form(json.loads(str(row["payload"]))),
+            )
+    return found
+
+
+def _canonical_conflict(
+    event: MessageEventInput,
+    recorded: _CanonicalIdentity | None,
+    index: int,
+) -> ErrorResult | None:
+    if recorded is None:
+        return None
+    incoming = _identity_of(event)
+    if recorded == incoming:
+        return None
+    what = (
+        f'event kind "{recorded.event_kind}"'
+        if recorded.event_kind != incoming.event_kind
+        else "a different payload"
+    )
+    return caller_error(
+        f'event: idempotency key "{event["idempotencyKey"]}" already names a canonical event with {what}; '
+        "a replay must be byte-identical in kind and payload, and a changed steer needs its own steerId",
+        index,
+    )
 
 
 def _recorded_keys(db: Database, keys: Sequence[str]) -> set[str]:
@@ -122,10 +197,9 @@ async def run_message_events(
     def _walk(transaction: DbWriteTransaction) -> OpResult[BatchResult]:
         from ... import messages as _messages
 
-        skip_set = _recorded_keys(
-            transaction.db,
-            [event["idempotencyKey"] for event in events],
-        )
+        keys = [event["idempotencyKey"] for event in events]
+        skip_set = _recorded_keys(transaction.db, keys)
+        canonical_identities = _recorded_canonical_identities(transaction.db, keys)
         last_order = _max_event_order(transaction.db)
         insert = transaction.db.prepare(
             """INSERT INTO event
@@ -138,6 +212,11 @@ async def run_message_events(
         queued_items: list[QueuedWorkItem] = []
         for index, event in enumerate(events):
             idempotency_key = event["idempotencyKey"]
+            canonical_key = _canonical_key_of(event)
+            if canonical_key is not None:
+                conflict = _canonical_conflict(event, canonical_identities.get(canonical_key), index)
+                if conflict is not None:
+                    raise _BatchRejection(conflict)
             if idempotency_key in skip_set:
                 event_results.append(
                     BatchEventOutcome(
@@ -147,6 +226,14 @@ async def run_message_events(
                     )
                 )
             else:
+                if event["eventKind"] == "user_steer" and not open_turn_has_active_user_prompt_in_transaction(transaction):
+                    raise _BatchRejection(
+                        caller_error(
+                            "event: user_steer requires an active user turn; the open turn holds no user_prompt member, "
+                            "so there is no model-visible turn to steer",
+                            index,
+                        )
+                    )
                 last_order += 1
                 recorded_at = _iso_string(effective_clock())
                 insert.run(
@@ -159,6 +246,8 @@ async def run_message_events(
                     recorded_at,
                 )
                 skip_set.add(idempotency_key)
+                if canonical_key is not None:
+                    canonical_identities[canonical_key] = _identity_of(event)
                 recorded_event: EventRecord = {
                     **event,
                     "eventOrder": last_order,
@@ -225,9 +314,9 @@ async def run_message_events(
             effective_clock,
         )
         return result.value if result.ok else result
+    except _BatchRejection as cause:
+        return OpErr(error=cause.error)
     except TurnStateCorruptionError as cause:
-        from ...shared_tech.errors import ErrorResult
-
         return OpErr(
             error=ErrorResult(
                 error_class=cause.error_class,

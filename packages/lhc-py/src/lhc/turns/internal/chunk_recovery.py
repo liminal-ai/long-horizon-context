@@ -62,6 +62,7 @@ def _block_text(kind: str, content: dict[str, object]) -> str:
 
     if kind in (
         "user_prompt",
+        "user_steer",
         "assistant_text",
         "assistant_thinking",
         "runtime_note",

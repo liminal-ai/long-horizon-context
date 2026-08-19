@@ -486,7 +486,7 @@ def _verbatim_text(blocks: Sequence[dict[str, object]]) -> str:
             content = raw
         else:
             content = {}
-        if block_type == "text":
+        if block_type in ("text", "user_steer"):
             text_val = content.get("text")
             parts.append(
                 text_val if isinstance(text_val, str) else js_json_dumps(content)
