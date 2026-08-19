@@ -12,6 +12,8 @@ import {
   loadThreadSignatures,
   lookupSessionLineage,
   openLineageDatabase,
+  readPendingCurrentSession,
+  recordPendingCurrentSession,
   recordSessionThread,
   threadForLegacySession,
   threadSessionRows,
@@ -261,6 +263,40 @@ describe("lineage sqlite", () => {
     expect(bound.prefix).toEqual(verified);
     expect(bound.replayedPrefixLines).toBe(5);
     expect(bound.isExistingThread).toBe(true);
+  });
+
+  it("migrates a pending-acceptance row written before it recorded a predecessor", () => {
+    const home = tempHome();
+    const dbPath = dbPathInHome(home);
+    mkdirSync(home, { recursive: true });
+    const db = new DatabaseSync(dbPath);
+    db.exec(`
+      CREATE TABLE cc_pending_current_session (
+        thread_id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        accepted_at TEXT NOT NULL
+      )
+    `);
+    db.prepare("INSERT INTO cc_pending_current_session (thread_id, session_id, accepted_at) VALUES (?, ?, ?)").run(
+      "th_legacy_pending",
+      "s-accepted",
+      new Date().toISOString(),
+    );
+    db.close();
+
+    // Opening through the production path adds the column; the pre-amendment
+    // row keeps a null predecessor, so it can repair no state at all.
+    expect(readPendingCurrentSession(dbPath, "th_legacy_pending")).toEqual({
+      threadId: "th_legacy_pending",
+      sessionId: "s-accepted",
+      previousSessionId: null,
+      acceptedAt: expect.any(String),
+    });
+    recordPendingCurrentSession(dbPath, "th_legacy_pending", "s-newer", "s-prior");
+    expect(readPendingCurrentSession(dbPath, "th_legacy_pending")).toMatchObject({
+      sessionId: "s-newer",
+      previousSessionId: "s-prior",
+    });
   });
 
   it("migrates pre-prefix schema; legacy rows are unknown not known-zero", () => {

@@ -114,8 +114,9 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   contends for one lease, so two wrappers can never both drive it — including
   across PID reuse. A launch through an older alias resolves forward onto the
   thread's current session. An accepted swap whose registry pointer could not
-  be written is recorded host-side and reconciled into the registry at the next
-  launch, under the lease — never by rolling the live replacement back.
+  be written is recorded host-side with the pointer it observed, and reconciled
+  into the registry at the next launch under the lease — repairing only that
+  exact predecessor, so a later successful acceptance is never rolled back.
 
 ## Retrieval and migration commands
 

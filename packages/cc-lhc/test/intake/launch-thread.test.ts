@@ -267,7 +267,7 @@ describe("a swap accepted before its registry pointer advanced", () => {
     recordSessionThread(paths.lineageDbPath, "s-accepted", "th_pending", clock, {
       prefix: { kind: "verified", lineCount: 3, byteLength: 60, sha256: "ab".repeat(32) },
     });
-    recordPendingCurrentSession(paths.lineageDbPath, "th_pending", "s-accepted", clock);
+    recordPendingCurrentSession(paths.lineageDbPath, "th_pending", "s-accepted", "s-old", clock);
 
     const opened = await openLaunchThread({
       expectedSession: { sessionId: "s-old", source: "explicit_resume" },
@@ -296,7 +296,7 @@ describe("a swap accepted before its registry pointer advanced", () => {
     await seedSwappedThread(paths, "th_own", "s-first", "s-old");
     // Another thread already holds the session the record names.
     await acceptCurrentSession({ sessionId: "s-elsewhere", threadId: "th_other", registryPath: paths.registryPath });
-    recordPendingCurrentSession(paths.lineageDbPath, "th_own", "s-elsewhere");
+    recordPendingCurrentSession(paths.lineageDbPath, "th_own", "s-elsewhere", "s-old");
 
     const opened = await openLaunchThread({
       expectedSession: { sessionId: "s-first", source: "explicit_resume" },

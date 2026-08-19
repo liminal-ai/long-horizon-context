@@ -12,7 +12,7 @@ import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { defaultLineageDbPath, readPendingCurrentSession } from "../../src/intake/lineage-db.js";
 import { defaultRegistryPath } from "../../src/intake/paths.js";
-import { claudeSessionAlias, currentSessionAlias } from "../../src/intake/thread-alias.js";
+import { acceptCurrentSession, claudeSessionAlias, currentSessionAlias } from "../../src/intake/thread-alias.js";
 import { run } from "../../src/wrapper/run.js";
 
 /** Isolate durable governor receipts per test (shared ~/.cc-lhc would cross-talk). */
@@ -26,18 +26,31 @@ const receiptDirs: string[] = [];
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
   registerLineage: vi.fn(async (..._args: unknown[]) => ({ ok: true as const })),
-  /** Set to a reason to make the registry current-pointer advance fail. */
-  acceptCurrentFailure: null as string | null,
+  /** Alias whose registry current-pointer advance cannot be written. */
+  unwritableAlias: null as string | null,
 }));
 
-vi.mock("../../src/intake/thread-alias.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../../src/intake/thread-alias.js")>();
+vi.mock("lhc", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("lhc")>();
   return {
     ...actual,
-    acceptCurrentSession: async (input: Parameters<typeof actual.acceptCurrentSession>[0]) =>
-      mocks.acceptCurrentFailure === null
-        ? actual.acceptCurrentSession(input)
-        : { ok: false as const, reason: mocks.acceptCurrentFailure },
+    // Only the pointer write for one alias fails. Everything the wrapper does
+    // around it — observing the predecessor, recording the acceptance — runs
+    // against the real registry.
+    threads: {
+      ...actual.threads,
+      registerCurrentAlias: async (registration: Parameters<typeof actual.threads.registerCurrentAlias>[0]) =>
+        registration.alias === mocks.unwritableAlias
+          ? {
+              ok: false as const,
+              error: {
+                errorClass: "system_error" as const,
+                code: "storage_failure" as const,
+                reason: "attempt to write a readonly database",
+              },
+            }
+          : actual.threads.registerCurrentAlias(registration),
+    },
   };
 });
 
@@ -261,7 +274,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
   beforeEach(() => {
     mocks.registerLineage.mockClear();
     mocks.captureFactory = null;
-    mocks.acceptCurrentFailure = null;
+    mocks.unwritableAlias = null;
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-auto-home-"));
     receiptDirs.push(home);
     process.env.CC_LHC_HOME = home;
@@ -269,7 +282,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     mocks.captureFactory = null;
-    mocks.acceptCurrentFailure = null;
+    mocks.unwritableAlias = null;
     if (savedHome === undefined) delete process.env.CC_LHC_HOME;
     else process.env.CC_LHC_HOME = savedHome;
     for (const d of receiptDirs.splice(0)) {
@@ -438,7 +451,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
   });
 
   it("keeps a live replacement when the registry pointer cannot advance, and records the acceptance", async () => {
-    mocks.acceptCurrentFailure = "registry alias advance failed: disk full";
+    mocks.unwritableAlias = claudeSessionAlias(REBUILT_ID);
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     const captureCalls: CaptureSessionDeps[] = [];
@@ -514,6 +527,9 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
     await waitFor(() => spawned.length === 1, "first child");
+    // The thread this capture reports is already current on its old session,
+    // so the failed advance observes a real predecessor to record.
+    await acceptCurrentSession({ sessionId: "old-session", threadId: "th_auto", registryPath: defaultRegistryPath() });
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(TRIGGER_SIGNALS);
 
@@ -527,11 +543,13 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
 
     // The registry pointer is genuinely still behind…
-    expect(await currentSessionAlias("th_auto", defaultRegistryPath())).toBeNull();
-    // …so the acceptance is recorded host-side for the next launch to reconcile.
+    expect(await currentSessionAlias("th_auto", defaultRegistryPath())).toBe(claudeSessionAlias("old-session"));
+    // …so the acceptance is recorded host-side, with the predecessor it saw,
+    // for the next launch to reconcile.
     expect(readPendingCurrentSession(defaultLineageDbPath(), "th_auto")).toMatchObject({
       threadId: "th_auto",
       sessionId: REBUILT_ID,
+      previousSessionId: "old-session",
     });
 
     spawned[1]!.fireExit(0);

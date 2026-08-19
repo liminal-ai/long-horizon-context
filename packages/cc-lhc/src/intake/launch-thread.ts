@@ -71,20 +71,23 @@ export async function openLaunchThread(input: OpenLaunchThreadInput): Promise<Op
   log(`cc-lhc owns thread ${bound.threadId} (lease ${lease.path})`);
 
   try {
-    // A swap the previous owner observed accepted but could not write into the
-    // registry is reconciled here, before anything reads which session is
-    // current — otherwise the pointer would still name the superseded session
-    // and the live replacement would read as an unaccepted artifact.
+    const currentAlias = await currentSessionAlias(bound.threadId, input.registryPath);
+    const registryCurrentSessionId = currentAlias === null ? null : claudeSessionIdFromAlias(currentAlias);
+
+    // A swap the previous lifetime observed accepted but could not write into
+    // the registry is reconciled here, against the pointer just read under this
+    // lock and before any session is chosen — otherwise the pointer would still
+    // name the superseded session and the live replacement would read as an
+    // unaccepted artifact. It repairs only the predecessor it observed, so a
+    // pointer that moved on since is never dragged backwards.
     const pending = await reconcilePendingAcceptance({
       threadId: bound.threadId,
+      registryCurrentSessionId,
       registryPath: input.registryPath,
       lineageDbPath: input.lineageDbPath,
       ...(input.lineageDeps === undefined ? {} : { lineageDeps: input.lineageDeps }),
       log,
     });
-
-    const currentAlias = await currentSessionAlias(bound.threadId, input.registryPath);
-    const registryCurrentSessionId = currentAlias === null ? null : claudeSessionIdFromAlias(currentAlias);
     // An acceptance this host recorded outranks a pointer that has not caught
     // up to it; once reconciliation advanced the registry the two agree.
     const currentSessionId = pending.acceptedSessionId ?? registryCurrentSessionId;

@@ -88,15 +88,26 @@ session.
 
 A swap the wrapper observed accepted (capture ready-after-replay plus a live
 child) but whose registry pointer could not be written is recorded host-side
-instead. The next launch reconciles that record into the registry under the
-thread lock, before anything reads which session is current, so the accepted
-replacement is never mistaken for an unaccepted artifact. The registry stays
-the authority: a refusal saying that session belongs to another thread settles
-the record rather than overriding the pointer. If the registry still cannot be
-written, the launch says so and lands on the accepted replacement anyway — it
-is the live, captured session — and retries at the next launch. None of this
-can stop a launch, and a failure after the thread lease is taken releases it
-rather than stranding the thread.
+instead, together with the registry current observed at that moment. The next
+launch reconciles that record into the registry under the thread lock, against
+the pointer read under that same lock and before any session is chosen, so the
+accepted replacement is never mistaken for an unaccepted artifact.
+
+A record may repair only the exact predecessor state it observed. One wrapper
+keeps its thread lease across every handoff it performs, so a later acceptance
+can succeed with no launch in between and leave the earlier record behind;
+matching the predecessor is what stops that stale record from dragging the
+pointer back off the newer session. A successful acceptance also supersedes
+older pending detail, but reconciliation stays correct without that cleanup.
+Anything the record cannot repair — a pointer that moved on, or a pre-amendment
+row with no observed predecessor — is settled without touching the pointer.
+
+The registry stays the authority: a refusal saying that session belongs to
+another thread settles the record rather than overriding the pointer. If the
+registry merely cannot be written, the launch says so and lands on the accepted
+replacement anyway — it is the live, captured session — and retries at the next
+launch. None of this can stop a launch, and a failure after the thread lease is
+taken releases it rather than stranding the thread.
 
 The rollout parser maps recognized user, assistant, thinking, tool, result,
 runtime, model-change, and turn-boundary records. Harmless top-level host

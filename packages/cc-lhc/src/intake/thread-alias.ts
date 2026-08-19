@@ -19,6 +19,8 @@ import {
   clearPendingCurrentSession,
   type LineageDbDeps,
   readPendingCurrentSession,
+  recordPendingCurrentSession,
+  supersedePendingCurrentSession,
   type ThreadSessionRow,
   threadForLegacySession,
   threadSessionRows,
@@ -194,12 +196,89 @@ export async function acceptCurrentSession(input: {
   return advanced.ok ? { ok: true } : { ok: false, reason: advanced.error.reason };
 }
 
+/** What became of a swap acceptance the wrapper observed. */
+export interface SwapAcceptance {
+  /** The registry current pointer now names the accepted session. */
+  registryAdvanced: boolean;
+  /**
+   * - `applied`: the registry took it; older pending detail is superseded.
+   * - `recorded`: the registry refused it; the next launch will reconcile.
+   * - `unrecorded`: neither the registry nor the recovery record could be
+   *   written, so nothing will reconcile it — the caller must say so.
+   */
+  recovery: "applied" | "recorded" | "unrecorded";
+  reason?: string;
+}
+
+/**
+ * Make an accepted replacement this thread's current session.
+ *
+ * Called once the swap is already accepted — capture ready-after-replay and a
+ * live child — so nothing here may veto or roll it back. If the registry
+ * cannot take the pointer, the acceptance is kept host-side together with the
+ * registry current observed at that moment: that predecessor is the only state
+ * the record is ever allowed to repair, which is what keeps a later successful
+ * acceptance from being rolled backwards by an older unapplied one.
+ *
+ * A successful advance supersedes any older pending detail for the thread.
+ * That cleanup is best effort; reconciliation stays correct without it.
+ */
+export async function recordSwapAcceptance(input: {
+  sessionId: string;
+  threadId: string;
+  registryPath: string;
+  lineageDbPath: string;
+  lineageDeps?: LineageDbDeps;
+  log?: (message: string) => void;
+}): Promise<SwapAcceptance> {
+  const log = input.log ?? (() => {});
+  const advanced = await acceptCurrentSession(input);
+  if (advanced.ok) {
+    try {
+      supersedePendingCurrentSession(input.lineageDbPath, input.threadId, input.lineageDeps);
+    } catch (cause) {
+      // A surviving older record cannot repair anything now: reconciliation
+      // only acts on the exact predecessor it observed, and the pointer has
+      // moved past it. Left for the next launch to settle.
+      log(`cc-lhc: superseded pending acceptance not cleared for thread ${input.threadId}: ${detail(cause)}`);
+    }
+    return { registryAdvanced: true, recovery: "applied" };
+  }
+
+  let observedPrevious: string | null = null;
+  try {
+    const current = await currentSessionAlias(input.threadId, input.registryPath);
+    observedPrevious = current === null ? null : claudeSessionIdFromAlias(current);
+  } catch (cause) {
+    // Without the predecessor the record can repair nothing, but recording it
+    // still keeps the acceptance visible instead of silently lost.
+    log(`cc-lhc: registry current unreadable while recording acceptance: ${detail(cause)}`);
+  }
+
+  try {
+    recordPendingCurrentSession(
+      input.lineageDbPath,
+      input.threadId,
+      input.sessionId,
+      observedPrevious,
+      input.lineageDeps,
+    );
+  } catch (cause) {
+    return {
+      registryAdvanced: false,
+      recovery: "unrecorded",
+      reason: `${advanced.reason}; recovery record also failed: ${detail(cause)}`,
+    };
+  }
+  return { registryAdvanced: false, recovery: "recorded", reason: advanced.reason };
+}
+
 /**
  * What a thread's pending acceptance meant for this launch.
  * - `acceptedSessionId`: the session this host already accepted, once it is
  *   known to be this thread's current one.
  * - `registryAdvanced`: the registry pointer now names it too.
- * - `note`: a truthful line when the registry could not be brought current.
+ * - `note`: a truthful line when the record could not be applied as-is.
  */
 export interface PendingAcceptanceReconciliation {
   acceptedSessionId: string | null;
@@ -209,18 +288,24 @@ export interface PendingAcceptanceReconciliation {
 
 /**
  * Reconcile a swap this host accepted whose registry pointer never advanced —
- * the wrapper died, or the write failed, after the replacement was already live.
- * Runs under the acquired thread lock, before the current pointer is read.
+ * the wrapper died, or the write failed, after the replacement was already
+ * live. Runs under the acquired thread lock, against the current pointer read
+ * under that same lock.
  *
- * The registry stays the authority: reconciliation asks it to advance through
- * the ordinary API, and a refusal that says the session belongs to another
- * thread settles the pending record instead of overriding the registry. When
- * the registry merely cannot be written, the accepted replacement still wins
- * the launch — it is live and captured — and the record is kept for the next
- * attempt. Nothing here can stop a launch.
+ * A record may repair only the exact predecessor state it observed. One
+ * wrapper keeps its lease across every handoff it performs, so a later
+ * acceptance can succeed without any launch in between and leave the older
+ * record behind; matching the predecessor is what stops that stale record
+ * from dragging the pointer back to a superseded session. Anything the record
+ * cannot repair is settled without touching the pointer.
+ *
+ * The registry stays the authority throughout, and nothing here can stop a
+ * launch.
  */
 export async function reconcilePendingAcceptance(input: {
   threadId: string;
+  /** Registry current for this thread, read under the acquired lock. */
+  registryCurrentSessionId: string | null;
   registryPath: string;
   lineageDbPath: string;
   lineageDeps?: LineageDbDeps;
@@ -232,12 +317,30 @@ export async function reconcilePendingAcceptance(input: {
     pending = readPendingCurrentSession(input.lineageDbPath, input.threadId, input.lineageDeps);
   } catch (cause) {
     // Unreadable recovery detail is not a reason to refuse a launch; the
-    // registry answer below stands on its own.
+    // registry answer stands on its own.
     const note = `pending acceptance record unreadable for thread ${input.threadId}: ${detail(cause)}`;
     log(`cc-lhc: ${note}`);
     return { acceptedSessionId: null, registryAdvanced: false, note };
   }
   if (pending === undefined) return { acceptedSessionId: null, registryAdvanced: false };
+
+  if (pending.sessionId === input.registryCurrentSessionId) {
+    // Already applied — by a later attempt, or by the write that appeared to fail.
+    settlePending(input, pending.sessionId, log);
+    return { acceptedSessionId: null, registryAdvanced: false };
+  }
+
+  if (pending.previousSessionId === null || pending.previousSessionId !== input.registryCurrentSessionId) {
+    const note =
+      pending.previousSessionId === null
+        ? `pending acceptance of ${pending.sessionId} settled unapplied — it recorded no predecessor state to repair`
+        : `pending acceptance of ${pending.sessionId} settled unapplied — thread ${input.threadId} moved to ` +
+          `${input.registryCurrentSessionId ?? "no current session"} after it was recorded ` +
+          `(it could only repair ${pending.previousSessionId})`;
+    log(`cc-lhc: ${note}`);
+    settlePending(input, pending.sessionId, log);
+    return { acceptedSessionId: null, registryAdvanced: false, note };
+  }
 
   const advanced = await threads.registerCurrentAlias({
     alias: claudeSessionAlias(pending.sessionId),

@@ -42,10 +42,10 @@ import {
   respawnChildArgv,
 } from "../intake/launch-session.js";
 import { openLaunchThread } from "../intake/launch-thread.js";
-import { defaultLineageDbPath, safeRecordPendingCurrentSession } from "../intake/lineage-db.js";
+import { defaultLineageDbPath } from "../intake/lineage-db.js";
 import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
 import { type CaptureSession, createCaptureThread, startCaptureSession } from "../intake/session.js";
-import { acceptCurrentSession, type LaunchThreadBinding } from "../intake/thread-alias.js";
+import { type LaunchThreadBinding, recordSwapAcceptance } from "../intake/thread-alias.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
 import { type ExpectedSession, expectedSessionFromExplicitId } from "../rollout/expected-session.js";
@@ -1825,35 +1825,32 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           // The swap is accepted at this point (capture ready-after-replay and
           // a live child), so the thread's current session becomes the
           // replacement: every later launch through any older alias lands here.
-          const advanced = await acceptCurrentSession({
+          // If the registry cannot take the pointer, the acceptance is kept
+          // host-side with the predecessor it observed, and the next launch
+          // reconciles it under the thread lock. Never a veto: the replacement
+          // is live and captured either way.
+          const advanced = await recordSwapAcceptance({
             sessionId: handoffRequest.rebuilt.sessionId,
             threadId: handoffRequest.threadId,
             registryPath: defaultRegistryPath(),
+            lineageDbPath: defaultLineageDbPath(),
+            log: (message) => wrapperLog.warn(message),
           });
-          if (!advanced.ok) {
-            // Never a veto: the replacement is live and captured either way.
-            // Record the acceptance host-side so the next launch reconciles it
-            // into the registry under the thread lock — without it, the pointer
-            // would keep naming the superseded session and this live
-            // replacement would read as an unaccepted artifact and be dropped.
-            wrapperLog.warn(`cc-lhc: current-session pointer not advanced: ${advanced.reason}`);
-            const pending = await safeRecordPendingCurrentSession(
-              defaultLineageDbPath(),
-              handoffRequest.threadId,
-              handoffRequest.rebuilt.sessionId,
-              (message) => wrapperLog.warn(message),
-            );
+          if (!advanced.registryAdvanced) {
+            wrapperLog.warn(`cc-lhc: current-session pointer not advanced: ${advanced.reason ?? "unknown reason"}`);
             wrapperLog.warn(
-              pending.ok
+              advanced.recovery === "recorded"
                 ? `cc-lhc: recorded accepted session ${handoffRequest.rebuilt.sessionId} for thread ` +
                     `${handoffRequest.threadId}; the next launch advances the registry pointer`
                 : `cc-lhc: accepted session ${handoffRequest.rebuilt.sessionId} is live but neither the ` +
-                    `registry pointer nor the recovery record could be written (${pending.reason}); ` +
+                    "registry pointer nor the recovery record could be written; " +
                     `resume it explicitly with cc-lhc --resume ${handoffRequest.rebuilt.sessionId}`,
             );
           }
           if (!outcome.ok) return { ok: false as const, reason: outcome.reason };
-          return advanced.ok ? { ok: true as const } : { ok: false as const, reason: advanced.reason };
+          return advanced.registryAdvanced
+            ? { ok: true as const }
+            : { ok: false as const, reason: advanced.reason ?? "current-session pointer not advanced" };
         },
         publishReadyDescriptor: (): boolean => {
           publishDescriptorFromCapture();
