@@ -32,7 +32,14 @@ completion. Each family is told apart by its own result fields:
 `ScheduleWakeup` returns no task id and produces no task notification at all,
 so it is correlated by its launching tool-use id. Each call supersedes every
 pending wakeup, so a session holds at most one; `stop: true` returns
-`stopped: true` and cancels it.
+`stopped: true` and cancels it. Those two are the only closing events it has:
+nothing in the record ever reports a wakeup as having fired, so a wakeup whose
+moment has passed stays open rather than being assumed done.
+
+None of the discriminators above is unique to its launcher — a `taskId` beside
+a `timeoutMs`, or a `scheduledFor`, can come out of any tool. A result is
+therefore only read as an acknowledgement for the launcher that was actually
+called; the tool-use id ties the two together.
 
 ### Notifications
 

@@ -66,6 +66,14 @@ describe("what the operator is shown before a swap kills live work", () => {
     expect(rows[1]).toBe("  - scheduled wakeup (fires in 42s)");
   });
 
+  it("says a past-due wakeup is overdue rather than counting backwards", () => {
+    for (const offset of [0, -1_000, -3_600_000]) {
+      const rows = compactConfirmRows([work({ family: "scheduled_wakeup", scheduledForMs: NOW + offset })], NOW);
+      expect(rows[1], String(offset)).toBe("  - scheduled wakeup (overdue)");
+      expect(rows[1]).not.toMatch(/-\d/);
+    }
+  });
+
   it("keeps every row plain ASCII and single-line", () => {
     const rows = compactConfirmRows(
       [

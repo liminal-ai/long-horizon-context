@@ -848,9 +848,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             generation: captureSession.getCaptureGeneration(),
           };
         } catch (cause) {
-          wrapperLog.warn(
-            `cc-lhc capture rebuild failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-          );
+          wrapperLog.warn(`cc-lhc capture rebuild failed: ${cause instanceof Error ? cause.message : String(cause)}`);
         } finally {
           captureRebuildInFlight = false;
         }
@@ -859,17 +857,25 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
 
   /**
-   * One governor observation: log it, receipt it, and — for an executable
-   * settled decision — start the automatic operation or route it to a recovery
-   * that comes back.
-   *
-   * Receipts are write-behind. When the store is unavailable the operation runs
-   * against an in-memory receipt id and says so; bookkeeping about the compact
-   * never decides whether the compact happens.
+   * The sequencing conditions that keep an executable settled seam from
+   * starting an operation right now. Named once so the seam's two readers —
+   * the pre-authorization check and the operation itself — cannot drift.
+   */
+  const settledSeamBlocked = (): boolean =>
+    exited ||
+    handoffInProgress ||
+    autoOperationScheduled ||
+    standingNonviabilityAlarm.length > 0 ||
+    respawnUnsafeReason !== null ||
+    captureSession?.isCaptureReady() !== true;
+
+  /**
+   * One governor observation: log it, and route an executable settled decision
+   * to the operation — through the operator first when a swap would kill live
+   * background work.
    */
   const handleGovernorObserve = (record: import("../governor/index.js").GovernorObserveRecord): void => {
     wrapperLog.info(formatGovernorObserveLogLine(record));
-    const persisted = persistGovernorObserve(record);
     options.onGovernorObserve?.(record);
     // Learn the host overhead floor from predicted next-request pressure.
     const pressureForFloor = record.pressure.nextRequestPressureTokens;
@@ -881,7 +887,70 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // (wouldMutate is false during open turns). Starts ONE automatic operation,
     // scheduled off the capture batch path (the handoff stops capture; doing
     // that inline would deadlock the batch queue it runs on).
-    if (record.wouldMutate !== true || record.observePhase !== "settled_seam") return;
+    if (record.wouldMutate !== true || record.observePhase !== "settled_seam") {
+      persistGovernorObserve(record);
+      return;
+    }
+
+    // A swap the operator has not authorized must leave nothing behind — not a
+    // receipt, not an outcome, not a preference. So the question comes before
+    // the record, and the ordinary persist/schedule path starts only on yes.
+    if (!settledSeamBlocked() && interactiveTerminal) {
+      const liveWork = captureSession?.getLiveAsyncWork() ?? [];
+      if (liveWork.length > 0) {
+        askBeforeSwap(record, liveWork);
+        return;
+      }
+    }
+
+    runSettledSeam(record);
+  };
+
+  /**
+   * Ask the operator before a swap kills live background work, and act on the
+   * answer. Only yes reaches the ordinary settled-seam path; every other
+   * outcome — including a prompt that could not be raised at all — reports in
+   * memory and returns, so the next seam asks again while the work is open.
+   */
+  const askBeforeSwap = (
+    record: import("../governor/index.js").GovernorObserveRecord,
+    liveWork: readonly OpenAsyncWork[],
+  ): void => {
+    const notNow = (why: string): void => {
+      wrapperLog.info(
+        `cc-lhc governor: compact not authorized — ${why}; ${liveWork.length} live background item(s) left running`,
+      );
+      lastAttempt = { summary: `auto compact not authorized: ${why}`, atMs: Date.now() };
+    };
+    if (pendingCompactConfirm !== null) {
+      notNow("the background-work confirmation is already on screen");
+      return;
+    }
+    if (inputState.mode !== "passthrough") {
+      notNow(`the panel is busy (${inputState.mode})`);
+      return;
+    }
+    const raised = raiseCompactConfirm(liveWork, (disposition) => {
+      if (disposition.kind === "yes") {
+        wrapperLog.info(`cc-lhc governor: operator authorized compact over ${liveWork.length} live background item(s)`);
+        runSettledSeam(record);
+        return;
+      }
+      notNow(describeDecline(disposition.reason));
+    });
+    if (!raised) notNow(describeDecline("render_failed"));
+  };
+
+  /**
+   * The ordinary executable settled seam: record the classification, then
+   * start the automatic operation or route it to a recovery that comes back.
+   *
+   * Receipts are write-behind. When the store is unavailable the operation runs
+   * against an in-memory receipt id and says so; bookkeeping about the compact
+   * never decides whether the compact happens.
+   */
+  const runSettledSeam = (record: import("../governor/index.js").GovernorObserveRecord): void => {
+    const persisted = persistGovernorObserve(record);
 
     if (persisted !== null && !persisted.inserted) {
       // The classification matches one already recorded. What happened to that
@@ -997,52 +1066,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     } else {
       // Claim ownership: keep `scheduled` only while this operation owns it.
       const frozenTriggerTokens = record.pressure.nextRequestPressureTokens;
-      const startAutoOperation = (): void => {
-        autoOperationScheduled = true;
-        setImmediate(() => {
-          void runAutoOperation({ frozenTriggerTokens, receiptId }).finally(() => {
-            autoOperationScheduled = false;
-          });
+      autoOperationScheduled = true;
+      setImmediate(() => {
+        void runAutoOperation({ frozenTriggerTokens, receiptId }).finally(() => {
+          autoOperationScheduled = false;
         });
-      };
-
-      // The swap replaces the Claude child, and everything that child was
-      // still running asynchronously dies with it. When the operator is at the
-      // terminal, that trade is theirs to make — so they are asked, at this
-      // seam, with the work named. Only an explicit yes proceeds; anything
-      // else skips this seam alone and the next one asks again.
-      const liveWork = interactiveTerminal ? (captureSession?.getLiveAsyncWork() ?? []) : [];
-      if (liveWork.length === 0) {
-        startAutoOperation();
-      } else if (pendingCompactConfirm !== null || inputState.mode !== "passthrough") {
-        deferAuto(
-          "async_confirm_open",
-          pendingCompactConfirm !== null
-            ? "the background-work confirmation is already on screen; asking again at the next seam"
-            : `the panel is busy (${inputState.mode}); asking about background work at the next seam`,
-        );
-      } else if (
-        !raiseCompactConfirm(liveWork, (disposition) => {
-          if (disposition.kind === "yes") {
-            wrapperLog.info(
-              `cc-lhc governor: operator authorized compact over ${liveWork.length} live background item(s) [receipt ${receiptId}]`,
-            );
-            startAutoOperation();
-            return;
-          }
-          deferAuto(
-            "async_work_unconfirmed",
-            `${describeDecline(disposition.reason)}; ${liveWork.length} live background item(s) left running`,
-          );
-        })
-      ) {
-        // The prompt could not be shown. Nothing was swapped and nothing was
-        // asked, so this seam is simply skipped like any other decline.
-        deferAuto(
-          "async_work_unconfirmed",
-          `${describeDecline("render_failed")}; ${liveWork.length} live background item(s) left running`,
-        );
-      }
+      });
     }
   };
 
@@ -2135,9 +2164,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
      * rollout file is never deleted, so anything it misses stays recoverable,
      * and a drain that hangs or throws must never reach the live replacement.
      */
-    const switchCaptureToRebuilt = (
-      request: HandoffRequest,
-    ): { captureStarted: boolean; captureWarning?: string } => {
+    const switchCaptureToRebuilt = (request: HandoffRequest): { captureStarted: boolean; captureWarning?: string } => {
       const dying = captureSession;
       const ctx = dying?.getCommandContext();
       const threadRef = ctx?.threadRef ?? captureContinuation?.threadRef;
@@ -2497,9 +2524,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       if (record?.exited !== true) {
         try {
           if (!(await terminateChild(oldPty, true))) {
-            wrapperLog.warn(
-              `cc-lhc survival relaunch: ORPHANED previous child pid=${oldPty.pid} — kill it manually`,
-            );
+            wrapperLog.warn(`cc-lhc survival relaunch: ORPHANED previous child pid=${oldPty.pid} — kill it manually`);
           }
         } catch (cause) {
           wrapperLog.warn(
@@ -2519,11 +2544,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
      * Claude's own compaction so it survives in degraded form. The session
      * itself keeps running throughout.
      */
-    const noteNonviableSwap = async (
-      oldSessionId: string,
-      rebuiltSessionId: string,
-      reason: string,
-    ): Promise<void> => {
+    const noteNonviableSwap = async (oldSessionId: string, rebuiltSessionId: string, reason: string): Promise<void> => {
       nonviableSwaps += 1;
       if (standingNonviabilityAlarm.length > 0 || nonviableSwaps < nonviableSwapLimit) return;
       standingNonviabilityAlarm = formatReplacementNonviabilityAlarm({

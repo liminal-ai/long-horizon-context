@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
-import { createAsyncWorkFold, liveAsyncWork, type OpenAsyncWork } from "../../src/observation/async-work.js";
+import { createAsyncWorkFold, type OpenAsyncWork, openAsyncWork } from "../../src/observation/async-work.js";
 import { observeRolloutLines } from "../../src/observation/observe.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 
@@ -33,14 +33,14 @@ const NOW = 1_787_135_000_000;
 /** Replay lines through the production observer and read the open set. */
 function replay(
   lines: readonly RolloutLineItem[],
-  options: { nowMs?: number; suppressRuntimeLifecycle?: boolean } = {},
+  options: { suppressRuntimeLifecycle?: boolean } = {},
 ): OpenAsyncWork[] {
   const asyncWorkFold = createAsyncWorkFold();
   observeRolloutLines(lines, {
     asyncWorkFold,
     ...(options.suppressRuntimeLifecycle === true ? { suppressRuntimeLifecycle: true } : {}),
   });
-  return liveAsyncWork(asyncWorkFold, options.nowMs ?? NOW);
+  return openAsyncWork(asyncWorkFold);
 }
 
 /** The launch/acknowledgement pairs, in fixture order. */
@@ -279,14 +279,26 @@ describe("open async work: shapes beyond the captured session", () => {
     expect(open[0]?.description).toBe("second");
   });
 
-  it("closes the wakeup on stop:true and once its moment has passed", () => {
+  it("keeps an overdue wakeup open, because elapsed time is not evidence", () => {
+    // The record shows the wakeup armed and never shows it running. A swap
+    // still kills it, and the clock cannot say otherwise — only a superseding
+    // call or an explicit stop closes it.
+    const longPast = [
+      assistantToolUse("w1", "ScheduleWakeup", { delaySeconds: 60, reason: "loop" }),
+      toolResult("w1", { scheduledFor: NOW - 3_600_000, clampedDelaySeconds: 60, wasClamped: false }),
+    ];
+    const open = replay(longPast);
+    expect(open).toHaveLength(1);
+    expect(open[0]?.family).toBe("scheduled_wakeup");
+    expect(open[0]?.scheduledForMs).toBe(NOW - 3_600_000);
+  });
+
+  it("closes the wakeup on an explicit stop", () => {
     const armed = [
       assistantToolUse("w1", "ScheduleWakeup", { delaySeconds: 600, reason: "loop" }),
       toolResult("w1", { scheduledFor: NOW + 600_000, clampedDelaySeconds: 600, wasClamped: false }),
     ];
     expect(replay(armed)).toHaveLength(1);
-    // Already fired: nothing left for a swap to kill.
-    expect(replay(armed, { nowMs: NOW + 700_000 })).toEqual([]);
     const stopped = [
       ...armed,
       assistantToolUse("w2", "ScheduleWakeup", { stop: true }),
@@ -301,6 +313,22 @@ describe("open async work: shapes beyond the captured session", () => {
     expect(replay(stopped)).toEqual([]);
   });
 
+  it("closes an overdue wakeup when a later call supersedes it", () => {
+    const overdue = [
+      assistantToolUse("w1", "ScheduleWakeup", { delaySeconds: 60, reason: "first" }),
+      toolResult("w1", { scheduledFor: NOW - 60_000, clampedDelaySeconds: 60, wasClamped: false }),
+    ];
+    const superseded = [
+      ...overdue,
+      assistantToolUse("w2", "ScheduleWakeup", { delaySeconds: 600, reason: "second" }),
+      toolResult("w2", { scheduledFor: NOW + 600_000, clampedDelaySeconds: 600, wasClamped: false }),
+    ];
+    const open = replay(superseded);
+    expect(open).toHaveLength(1);
+    expect(open[0]?.description).toBe("second");
+    expect(open[0]?.scheduledForMs).toBe(NOW + 600_000);
+  });
+
   it("opens nothing for a synchronous agent or a workflow that failed to launch", () => {
     const sync = [
       assistantToolUse("s1", "Agent", { description: "inline", run_in_background: false, prompt: "go" }),
@@ -311,6 +339,80 @@ describe("open async work: shapes beyond the captured session", () => {
       toolResult("s2", { status: "async_launched", taskType: "local_workflow", taskId: "w9", error: "syntax error" }),
     ];
     expect(replay([...sync, ...failedWorkflow])).toEqual([]);
+  });
+
+  it("opens nothing when a same-shaped result comes from a different tool", () => {
+    // Every discriminator below is real, and none of them is unique to its
+    // launcher. Read off shape alone, each of these would invent live work
+    // that nothing is actually running.
+    const nearMisses: Array<[string, Record<string, unknown>]> = [
+      ["Read", { taskId: "x1", timeoutMs: 300_000, persistent: false }],
+      ["Grep", { scheduledFor: NOW + 600_000, clampedDelaySeconds: 600, wasClamped: false }],
+      ["Write", { stdout: "", stderr: "", backgroundTaskId: "x2" }],
+      ["Skill", { status: "async_launched", agentId: "x3", description: "not an agent" }],
+      ["mcp__thing__run", { status: "async_launched", taskType: "local_workflow", taskId: "x4" }],
+    ];
+    for (const [toolName, result] of nearMisses) {
+      const open = replay([assistantToolUse("nm", toolName, {}), toolResult("nm", result)]);
+      expect(open, toolName).toEqual([]);
+    }
+  });
+
+  it("opens nothing when a launcher's result belongs to a different family", () => {
+    // Right tool, wrong acknowledgement: a Bash call cannot arm a wakeup, and
+    // a Monitor call cannot launch an agent.
+    const crossed: Array<[string, Record<string, unknown>]> = [
+      ["Bash", { scheduledFor: NOW + 600_000, clampedDelaySeconds: 600, wasClamped: false }],
+      ["Monitor", { status: "async_launched", agentId: "x5", description: "nope" }],
+      ["Agent", { taskId: "x6", timeoutMs: 300_000 }],
+      ["ScheduleWakeup", { stdout: "", stderr: "", backgroundTaskId: "x7" }],
+      ["Workflow", { status: "async_launched", agentId: "x8", description: "nope" }],
+    ];
+    for (const [toolName, result] of crossed) {
+      const open = replay([assistantToolUse("cx", toolName, {}), toolResult("cx", result)]);
+      expect(open, toolName).toEqual([]);
+    }
+  });
+
+  it("opens each retained family from its own launcher", () => {
+    const cases: Array<[string, Record<string, unknown>, string]> = [
+      ["Agent", { status: "async_launched", agentId: "a1", description: "reviewer" }, "agent"],
+      ["Workflow", { status: "async_launched", taskType: "local_workflow", taskId: "w1" }, "workflow"],
+      ["Bash", { stdout: "", stderr: "", backgroundTaskId: "b1" }, "background_shell"],
+      ["Monitor", { taskId: "m1", timeoutMs: 300_000, persistent: false }, "monitor"],
+      ["ScheduleWakeup", { scheduledFor: NOW + 600_000, clampedDelaySeconds: 600 }, "scheduled_wakeup"],
+    ];
+    for (const [toolName, result, family] of cases) {
+      const open = replay([assistantToolUse("ok", toolName, {}), toolResult("ok", result)]);
+      expect(
+        open.map((work) => work.family),
+        toolName,
+      ).toEqual([family]);
+    }
+  });
+
+  it("closes nothing when a stop-shaped result comes from a different tool", () => {
+    const open = replay([
+      ...bashLaunch,
+      assistantToolUse("s9", "Read", {}),
+      toolResult("s9", { message: "stopped", task_id: "b111", task_type: "local_bash" }),
+    ]);
+    expect(open.map((work) => work.key)).toEqual(["b111"]);
+  });
+
+  it("closes the named task when TaskStop reports it", () => {
+    const open = replay([
+      ...bashLaunch,
+      assistantToolUse("s9", "TaskStop", { task_id: "b111" }),
+      toolResult("s9", { message: "stopped", task_id: "b111", task_type: "local_bash" }),
+    ]);
+    expect(open).toEqual([]);
+  });
+
+  it("opens nothing from an acknowledgement whose call this reader never saw", () => {
+    // Capture attached mid-stream, or the call was on a line already behind
+    // the read offset. Without the call there is no proof of family.
+    expect(replay([toolResult("orphan-ack", { stdout: "", stderr: "", backgroundTaskId: "b999" })])).toEqual([]);
   });
 
   it("does not open work from a subagent's own transcript", () => {
@@ -326,7 +428,7 @@ describe("open async work: shapes beyond the captured session", () => {
     observeRolloutLines([...bashLaunch, notification("<task-id>b111</task-id>\n<status>bewildered</status>")], {
       asyncWorkFold: fold,
     });
-    expect(liveAsyncWork(fold, NOW)).toHaveLength(1);
+    expect(openAsyncWork(fold)).toHaveLength(1);
     expect(fold.diagnostics).toEqual(['task-notification with unrecognized status "bewildered"']);
   });
 });

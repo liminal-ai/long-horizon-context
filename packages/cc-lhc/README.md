@@ -114,13 +114,17 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   child, so anything that child was still running asynchronously dies with it:
   background agents, workflows, background shell commands, monitors, and a
   pending `ScheduleWakeup`. The wrapper derives that open set from the same
-  rollout it already reads — a launch acknowledgement opens one item, and only
-  matching terminal evidence (`completed`, `failed`, `killed`, `stopped`, or an
-  explicit `TaskStop`) closes it; monitor events are progress and close nothing.
-  When an automatic compact comes due at a settled seam with an operator at the
-  terminal and work still open, the panel names what the swap would kill and
-  asks. Only an explicit **y** proceeds. Anything else — n, Esc, a stray key, a
-  closed terminal — skips that seam alone, keeps nothing, and the next eligible
+  rollout it already reads. A launch acknowledgement opens one item, and only
+  for the launcher that was actually called; only matching terminal evidence
+  (`completed`, `failed`, `killed`, `stopped`, or an explicit `TaskStop`) closes
+  it. Monitor events are progress and close nothing, and neither does elapsed
+  time — a wakeup past its moment stays open until a later call supersedes it or
+  stops it. When an automatic compact comes due at a settled seam with an
+  operator at the terminal and work still open, the panel names what the swap
+  would kill and asks *before* anything durable is written. Only an explicit
+  **y** proceeds, into the ordinary receipt-and-swap path exactly once. Anything
+  else — n, Esc, a stray key, a closed terminal, a prompt that could not be
+  drawn — skips that seam alone and records nothing at all, so the next eligible
   seam asks again while the work is still running. With an empty set, no
   terminal (one-shot launches included), or a seam that is not otherwise
   eligible, the compact path is exactly what it was.

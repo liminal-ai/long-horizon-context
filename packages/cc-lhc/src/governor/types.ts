@@ -317,12 +317,4 @@ export type GovernorMutationDeferReason =
   | "command_guard_busy"
   | "respawn_unsafe"
   /** Capture is rebuilding/catching up from the transcript; re-evaluated on ready. */
-  | "capture_catching_up"
-  /**
-   * Live background work would be killed by the swap and the operator did not
-   * authorize it at this seam. Nothing is remembered: the next eligible seam
-   * asks again while the work is still open.
-   */
-  | "async_work_unconfirmed"
-  /** The confirmation for a previous seam is still on screen; one at a time. */
-  | "async_confirm_open";
+  | "capture_catching_up";

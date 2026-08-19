@@ -61,9 +61,14 @@ function plain(text: string, maxChars: number): string {
   return `${ascii.slice(0, maxChars - 3)}...`;
 }
 
-/** Whole minutes/seconds until a wakeup fires. */
-function fires(scheduledForMs: number, nowMs: number): string {
-  const seconds = Math.max(0, Math.round((scheduledForMs - nowMs) / 1000));
+/**
+ * When the wakeup is due, in words. Past its moment it reads `overdue` rather
+ * than counting backwards: the record shows it armed and never shows it
+ * running, so the wrapper says what it knows and nothing more.
+ */
+function due(scheduledForMs: number, nowMs: number): string {
+  const seconds = Math.round((scheduledForMs - nowMs) / 1000);
+  if (seconds <= 0) return "overdue";
   if (seconds < 60) return `fires in ${seconds}s`;
   return `fires in ${Math.round(seconds / 60)}m`;
 }
@@ -73,7 +78,7 @@ export function describeAsyncWork(work: OpenAsyncWork, nowMs: number): string {
   const parts = [FAMILY_NOUNS[work.family]];
   if (work.description !== undefined) parts.push(`"${plain(work.description, MAX_DESCRIPTION_CHARS)}"`);
   if (work.family === "scheduled_wakeup") {
-    if (work.scheduledForMs !== undefined) parts.push(`(${fires(work.scheduledForMs, nowMs)})`);
+    if (work.scheduledForMs !== undefined) parts.push(`(${due(work.scheduledForMs, nowMs)})`);
   } else if (work.taskId !== undefined) {
     parts.push(`(${plain(work.taskId, 32)})`);
   }

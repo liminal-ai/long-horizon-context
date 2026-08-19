@@ -265,21 +265,29 @@ Claude child, and everything that child was still running asynchronously dies
 with it: background agents, workflows, background shell commands, monitors, and
 a pending `ScheduleWakeup` (Claude reconstructs `CronCreate` tasks from the
 transcript on resume, but not wakeups). The wrapper derives that open set from
-the same ordered rollout capture already reads — a launch acknowledgement opens
-one item, and only matching terminal evidence closes it: a `completed`,
-`failed`, `killed`, or `stopped` task notification, or a `TaskStop` result
-naming that task. Monitor events and stall notices are progress; they refresh
-what is shown and close nothing. The set is derived wrapper state with no side
-store, rebuilt by re-reading the rollout on resume catch-up.
+the same ordered rollout capture already reads. A launch acknowledgement opens
+one item, and it is read as an acknowledgement only for the launcher that was
+actually called — a familiar-looking result from any other tool opens nothing.
+Only matching terminal evidence closes an item: a `completed`, `failed`,
+`killed`, or `stopped` task notification, or a `TaskStop` result naming that
+task. Monitor events and stall notices are progress; they refresh what is shown
+and close nothing. Nothing closes on elapsed time either — a wakeup past its
+moment stays open until a later `ScheduleWakeup` supersedes it or `stop: true`
+cancels it, because the clock is not evidence about whether it ran. The set is
+derived wrapper state with no side store, rebuilt by re-reading the rollout on
+resume catch-up.
 
 At an otherwise-eligible automatic seam with an operator at the terminal and
 work still open, the panel names what the swap would cost and asks. This is a
-present-user authority choice, not a gate: only an explicit **y** proceeds, and
-every other outcome — a decline, a dismissal, a stray key, a closed terminal, a
-prompt that could not be drawn — skips that one seam, receipts it as a
-deferral, keeps no state, and the next eligible seam asks again while the work
-is still open. An empty set, a noninteractive launch, and a one-shot launch all
-take the ordinary path unchanged.
+present-user authority choice, not a gate, and the question comes before the
+record: nothing durable is written until the operator authorizes it. Only an
+explicit **y** proceeds, into the ordinary receipt-and-schedule path exactly
+once. Every other outcome — a decline, a dismissal, a stray key, a closed
+terminal, a prompt that could not be drawn or was interrupted — skips that one
+seam, leaves no receipt, no outcome, and no preference behind, and the next
+eligible seam asks again while the work is still open. An empty set, a
+noninteractive launch, and a one-shot launch all take the ordinary path
+unchanged.
 
 **Swap: spawn first.** A working session exists at every moment.
 

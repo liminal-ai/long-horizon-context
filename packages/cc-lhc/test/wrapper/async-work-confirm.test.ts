@@ -15,6 +15,8 @@ import { PassThrough } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
+import type { GovernorDurableReceipt } from "../../src/governor/types.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import type { OpenAsyncWork } from "../../src/observation/async-work.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
@@ -40,6 +42,8 @@ interface FakePty {
   pid: number;
   args: string[];
   writes: string[];
+  /** Push a frame from this child on demand (output-hold pressure). */
+  emitData(data: string): void;
   fireExit(code: number): void;
   onData(cb: (data: string) => void): { dispose(): void };
   onExit(cb: (arg: { exitCode: number }) => void): { dispose(): void };
@@ -50,14 +54,19 @@ interface FakePty {
 
 function makeFakePty(pid: number, args: string[]): FakePty {
   const exitCbs: Array<(arg: { exitCode: number }) => void> = [];
+  const dataCbs: Array<(data: string) => void> = [];
   const fake: FakePty = {
     pid,
     args,
     writes: [],
+    emitData(data: string) {
+      for (const cb of dataCbs) cb(data);
+    },
     fireExit(code: number) {
       for (const cb of exitCbs) cb({ exitCode: code });
     },
     onData: (cb) => {
+      dataCbs.push(cb);
       setTimeout(() => cb("render\r\n"), 20);
       return { dispose() {} };
     },
@@ -218,10 +227,26 @@ interface Rig {
   terminal: () => string;
   logs: string[];
   setLiveWork: (work: OpenAsyncWork[]) => void;
+  /** Every durable governor receipt, read straight out of the store's file. */
+  receipts: () => GovernorDurableReceipt[];
+  /**
+   * Receipts for the executable settled seam. Open-turn classifications are
+   * ordinary observation and keep being written; what an unauthorized swap
+   * must never leave behind is one of these.
+   */
+  settledReceipts: () => GovernorDurableReceipt[];
   end: () => Promise<number>;
 }
 
-async function startRig(options: { interactive?: boolean; liveWork?: OpenAsyncWork[] } = {}): Promise<Rig> {
+async function startRig(
+  options: {
+    interactive?: boolean;
+    liveWork?: OpenAsyncWork[];
+    /** Terminal that cannot be drawn on: every alt-screen switch throws. */
+    breakTerminalWrites?: boolean;
+    outputHoldCapBytes?: number;
+  } = {},
+): Promise<Rig> {
   let compactAttempts = 0;
   let live = options.liveWork ?? [];
   const logs: string[] = [];
@@ -237,6 +262,7 @@ async function startRig(options: { interactive?: boolean; liveWork?: OpenAsyncWo
   const ptys: FakePty[] = [];
   const dir = mkdtempSync(join(tmpdir(), "cc-lhc-async-confirm-"));
   dirs.push(dir);
+  const receiptDbPath = join(dir, "r.sqlite");
 
   const interactive = options.interactive ?? true;
   const stdin = fakeStream(interactive);
@@ -245,6 +271,13 @@ async function startRig(options: { interactive?: boolean; liveWork?: OpenAsyncWo
   (stdout as unknown as PassThrough).on("data", (chunk: Buffer) => {
     terminal += chunk.toString("utf8");
   });
+  if (options.breakTerminalWrites === true) {
+    const realWrite = stdout.write.bind(stdout) as (chunk: string) => boolean;
+    (stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+      if (chunk.includes("\x1b[?1049h")) throw new Error("terminal write failed");
+      return realWrite(chunk);
+    };
+  }
 
   const runPromise = run([], {
     claudeBin: "fake-claude",
@@ -258,7 +291,8 @@ async function startRig(options: { interactive?: boolean; liveWork?: OpenAsyncWo
     stderr: fakeStream(false),
     noInference: true,
     resolvedContextPolicy: POLICY as never,
-    governorReceiptDbPath: join(dir, "r.sqlite"),
+    governorReceiptDbPath: receiptDbPath,
+    ...(options.outputHoldCapBytes === undefined ? {} : { outputHoldCapBytes: options.outputHoldCapBytes }),
     wrapperLog: {
       info: (m: string) => logs.push(m),
       warn: (m: string) => logs.push(m),
@@ -266,6 +300,15 @@ async function startRig(options: { interactive?: boolean; liveWork?: OpenAsyncWo
       path: "/tmp/fake.log",
     } as never,
   });
+
+  const readReceipts = (): GovernorDurableReceipt[] => {
+    const store = openGovernorReceiptStore(receiptDbPath);
+    try {
+      return store.listAll();
+    } finally {
+      store.close();
+    }
+  };
 
   await waitFor(() => sink !== undefined, "capture lifecycle sink");
   await waitFor(() => ptys.length === 1, "first child");
@@ -281,6 +324,8 @@ async function startRig(options: { interactive?: boolean; liveWork?: OpenAsyncWo
     setLiveWork: (work) => {
       live = work;
     },
+    receipts: readReceipts,
+    settledReceipts: () => readReceipts().filter((receipt) => receipt.observePhase === "settled_seam"),
     end: async () => {
       ptys[ptys.length - 1]!.fireExit(0);
       return runPromise;
@@ -324,9 +369,12 @@ describe("an automatic swap asks before it kills live background work", () => {
     await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
     expect(rig.terminal()).toContain("will kill 1 piece of live background work");
     expect(rig.terminal()).toContain('monitor "CI watch" (m1)');
-    // Nothing has been swapped while the question is unanswered.
+    // Nothing has been swapped while the question is unanswered, and nothing
+    // has been written down either.
     await settle();
     expect(rig.compactAttempts()).toBe(0);
+    expect(rig.settledReceipts()).toEqual([]);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
     rig.stdin.write("n");
     await settle();
     await rig.end();
@@ -336,6 +384,8 @@ describe("an automatic swap asks before it kills live background work", () => {
     const rig = await startRig({ liveWork: [monitorWork()] });
     rig.fire(overTrigger("req:yes"));
     await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    // Still nothing durable while the question stands.
+    expect(rig.settledReceipts()).toEqual([]);
     rig.stdin.write("y");
     await waitFor(() => rig.compactAttempts() === 1, "compact after yes");
     await settle(200);
@@ -343,6 +393,13 @@ describe("an automatic swap asks before it kills live background work", () => {
     expect(rig.logs.some((line) => line.includes("operator authorized compact over 1 live background item"))).toBe(
       true,
     );
+    // Yes enters the ordinary path: one receipt, one classification, and no
+    // trace of the confirmation itself.
+    const written = rig.settledReceipts();
+    expect(written).toHaveLength(1);
+    expect(written[0]?.wouldMutate).toBe(true);
+    expect(written[0]?.observePhase).toBe("settled_seam");
+    expect(written[0]?.handoffOutcome?.kind).not.toBe("mutation_deferred");
     // The answer was ours: no keystroke reached Claude.
     expect(rig.pty().writes.join("")).not.toContain("y");
     await rig.end();
@@ -355,7 +412,10 @@ describe("an automatic swap asks before it kills live background work", () => {
     rig.stdin.write("n");
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
-    expect(rig.logs.some((line) => line.includes("async_work_unconfirmed"))).toBe(true);
+    expect(rig.logs.some((line) => line.includes("compact not authorized"))).toBe(true);
+    // Nothing about an unauthorized seam is written down.
+    expect(rig.settledReceipts()).toEqual([]);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
 
     // The next settled seam over the trigger asks again — nothing was
     // remembered, and the work is still open.
@@ -376,6 +436,8 @@ describe("an automatic swap asks before it kills live background work", () => {
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
     expect(rig.logs.some((line) => line.includes("operator dismissed the prompt"))).toBe(true);
+    expect(rig.settledReceipts()).toEqual([]);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
     await rig.end();
   }, 15_000);
 
@@ -387,6 +449,8 @@ describe("an automatic swap asks before it kills live background work", () => {
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
     expect(rig.logs.some((line) => line.includes("terminal input closed before an answer"))).toBe(true);
+    expect(rig.settledReceipts()).toEqual([]);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
     await rig.end();
   }, 15_000);
 
@@ -420,6 +484,32 @@ describe("an automatic swap asks before it kills live background work", () => {
     expect(screen).toContain('monitor "CI watch" (m9)');
     rig.stdin.write("n");
     await settle();
+    await rig.end();
+  }, 15_000);
+
+  it("swaps nothing, and records nothing, when the prompt cannot be drawn", async () => {
+    const rig = await startRig({ liveWork: [monitorWork()], breakTerminalWrites: true });
+    rig.fire(overTrigger("req:render-fail"));
+    await waitFor(() => rig.logs.some((line) => line.includes("could not be shown")), "render failure reported");
+    await settle(200);
+    expect(rig.compactAttempts()).toBe(0);
+    expect(rig.settledReceipts()).toEqual([]);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
+    await rig.end();
+  }, 15_000);
+
+  it("swaps nothing, and records nothing, when the prompt is interrupted", async () => {
+    // Held child output overflowed its cap: the panel is torn down under the
+    // operator without an answer.
+    const rig = await startRig({ liveWork: [monitorWork()], outputHoldCapBytes: 64 });
+    rig.fire(overTrigger("req:interrupted"));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    rig.pty().emitData("x".repeat(4_096));
+    await waitFor(() => rig.logs.some((line) => line.includes("the prompt was interrupted")), "interruption reported");
+    await settle(200);
+    expect(rig.compactAttempts()).toBe(0);
+    expect(rig.settledReceipts()).toEqual([]);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
     await rig.end();
   }, 15_000);
 
@@ -479,7 +569,9 @@ describe("an automatic swap asks before it kills live background work", () => {
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
     expect(rig.terminal()).not.toContain("live background work");
-    expect(rig.logs.some((line) => line.includes("async_confirm_open"))).toBe(true);
+    expect(rig.logs.some((line) => line.includes("the panel is busy"))).toBe(true);
+    expect(rig.settledReceipts()).toEqual([]);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
     expect(rig.terminal()).toContain("long-horizon commands> stat");
     rig.stdin.write("\x03");
     await settle();

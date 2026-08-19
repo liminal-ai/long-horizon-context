@@ -13,18 +13,20 @@
  * rebuilt by re-reading the rollout on resume catch-up, with no side store.
  *
  * Shapes below were verified against the installed Claude Code 2.1.235 (see
- * `test/fixtures/async-work-2.1.235/`); the historical audit covered
- * 2.1.215-2.1.223 and agrees on every shape still present.
+ * `test/fixtures/async-work/`); the historical audit covered 2.1.215-2.1.223
+ * and agrees on every shape still present.
  *
- * Two rules carry the design:
+ * Three rules carry the design:
  *
- *  - A launch acknowledgement OPENS exactly one item. The immediate tool
- *    result of an async launcher is an acknowledgement, not a completion, so
- *    it never closes anything.
+ *  - A launch acknowledgement OPENS exactly one item, and only for the tool
+ *    that was actually called. The immediate tool result of an async launcher
+ *    is an acknowledgement, not a completion, so it never closes anything.
  *  - Only matching terminal evidence CLOSES one: a `completed`/`failed`/
  *    `killed`/`stopped` task notification, or a TaskStop result naming it.
  *    Monitor events and stall notices are progress; they update what the
  *    operator sees and leave the item open.
+ *  - Nothing closes on time passing. The wrapper reports what the record
+ *    shows; a moment arriving is not a record of anything happening.
  */
 
 import { runtimeNoteText } from "../intake/map.js";
@@ -73,10 +75,35 @@ export interface OpenAsyncWork {
  */
 export interface AsyncWorkFold {
   open: Map<string, OpenAsyncWork>;
-  /** Recent tool calls by tool-use id, so an acknowledgement can be labelled. */
-  pendingCalls: Map<string, { toolName: string; description?: string }>;
+  /**
+   * Retained launcher and stop calls awaiting their result, by tool-use id.
+   * A result is only ever read as an acknowledgement for the tool that was
+   * actually called, so a same-shaped result from an unrelated tool cannot
+   * invent work.
+   */
+  pendingCalls: Map<string, { toolName: AsyncWorkToolName; description?: string }>;
   /** Unrecognized notification shapes, deduped and capped. Diagnostics only. */
   diagnostics: string[];
+}
+
+/**
+ * The tool names whose results this fold reads. `TaskStop` is here because it
+ * is the explicit-stop evidence; everything else launches.
+ */
+export const ASYNC_WORK_TOOL_NAMES = ["Agent", "Workflow", "Bash", "Monitor", "ScheduleWakeup", "TaskStop"] as const;
+export type AsyncWorkToolName = (typeof ASYNC_WORK_TOOL_NAMES)[number];
+
+/** Which family a launcher tool opens. `TaskStop` opens nothing. */
+const LAUNCHER_FAMILY: Partial<Record<AsyncWorkToolName, AsyncWorkFamily>> = {
+  Agent: "agent",
+  Workflow: "workflow",
+  Bash: "background_shell",
+  Monitor: "monitor",
+  ScheduleWakeup: "scheduled_wakeup",
+};
+
+function asyncWorkToolName(name: string): AsyncWorkToolName | undefined {
+  return (ASYNC_WORK_TOOL_NAMES as readonly string[]).includes(name) ? (name as AsyncWorkToolName) : undefined;
 }
 
 /** The singleton key for the one pending wakeup a session can hold. */
@@ -105,20 +132,16 @@ export function createAsyncWorkFold(): AsyncWorkFold {
   return { open: new Map(), pendingCalls: new Map(), diagnostics: [] };
 }
 
-/** Current open work in launch order. */
+/**
+ * Current open work in launch order.
+ *
+ * Nothing leaves this set on elapsed time. A wakeup whose scheduled moment has
+ * passed is still open: the record shows it was armed and never shows it
+ * running, and the clock is not evidence either way. It closes when a later
+ * `ScheduleWakeup` supersedes it or `stop: true` cancels it.
+ */
 export function openAsyncWork(fold: AsyncWorkFold): OpenAsyncWork[] {
   return [...fold.open.values()];
-}
-
-/**
- * Open work that a swap would actually destroy, at `nowMs`.
- *
- * Everything is live except a wakeup whose scheduled moment has passed: it
- * has already fired (or been superseded) and there is nothing left to kill.
- * Reading the timestamp the acknowledgement stated is derivation, not a timer.
- */
-export function liveAsyncWork(fold: AsyncWorkFold, nowMs: number): OpenAsyncWork[] {
-  return openAsyncWork(fold).filter((work) => work.scheduledForMs === undefined || work.scheduledForMs > nowMs);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -139,7 +162,7 @@ function noteDiagnostic(fold: AsyncWorkFold, message: string): void {
   fold.diagnostics.push(message);
 }
 
-function rememberCall(fold: AsyncWorkFold, toolUseId: string, toolName: string, input: unknown): void {
+function rememberCall(fold: AsyncWorkFold, toolUseId: string, toolName: AsyncWorkToolName, input: unknown): void {
   if (fold.pendingCalls.size >= MAX_PENDING_CALLS) {
     const oldest = fold.pendingCalls.keys().next();
     if (!oldest.done) fold.pendingCalls.delete(oldest.value);
@@ -165,55 +188,65 @@ function contentBlocksOf(content: unknown): ContentBlock[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Classify one tool result's `toolUseResult` as a launch acknowledgement.
+ * Classify one tool result as a launch acknowledgement for the tool that was
+ * actually called.
  *
- * Discriminators are the launcher's own result fields, verified live on
- * 2.1.235 and unchanged since the 2.1.215-2.1.223 audit:
+ * Both halves have to agree. The result-field discriminators below were
+ * verified live on 2.1.235 and are unchanged since the 2.1.215-2.1.223 audit,
+ * but none of them is unique to its launcher — a `taskId` beside a
+ * `timeoutMs`, or a `scheduledFor`, can come out of any tool at all. So the
+ * family the caller opens is the family of the pending call, and the result
+ * only has to match it:
  *
- *   Agent      `{status:"async_launched", agentId, description, outputFile?}`
- *   Workflow   `{status:"async_launched", taskType:"local_workflow", taskId, ...}`
- *   Bash bg    `{stdout, stderr, ..., backgroundTaskId}`
- *   Monitor    `{taskId, timeoutMs, persistent?}`
- *   Wakeup     `{scheduledFor, clampedDelaySeconds, wasClamped, stopped?}`
+ *   Agent          `{status:"async_launched", agentId, description, outputFile?}`
+ *   Workflow       `{status:"async_launched", taskType:"local_workflow", taskId, ...}`
+ *   Bash           `{stdout, stderr, ..., backgroundTaskId}`
+ *   Monitor        `{taskId, timeoutMs, persistent?}`
+ *   ScheduleWakeup `{scheduledFor, clampedDelaySeconds, wasClamped, stopped?}`
  */
-function classifyLaunch(result: Record<string, unknown>): Omit<OpenAsyncWork, "key" | "toolUseId"> | null {
-  if (result.status === "async_launched") {
-    if (result.taskType === "local_workflow") {
+function classifyLaunch(
+  family: AsyncWorkFamily,
+  result: Record<string, unknown>,
+): Omit<OpenAsyncWork, "key" | "toolUseId"> | null {
+  switch (family) {
+    case "agent": {
+      if (result.status !== "async_launched") return null;
+      const agentId = nonEmptyString(result.agentId);
+      if (agentId === undefined || isOrphanSummaryMarker(agentId)) return null;
+      const description = nonEmptyString(result.description);
+      return { family, taskId: agentId, ...(description !== undefined ? { description } : {}) };
+    }
+    case "workflow": {
+      if (result.status !== "async_launched" || result.taskType !== "local_workflow") return null;
       // A workflow that failed to launch reports an error alongside the id.
       if (nonEmptyString(result.error) !== undefined) return null;
       const taskId = nonEmptyString(result.taskId);
       if (taskId === undefined || isOrphanSummaryMarker(taskId)) return null;
       const description = nonEmptyString(result.workflowName) ?? nonEmptyString(result.summary);
-      return { family: "workflow", taskId, ...(description !== undefined ? { description } : {}) };
+      return { family, taskId, ...(description !== undefined ? { description } : {}) };
     }
-    const agentId = nonEmptyString(result.agentId);
-    if (agentId === undefined || isOrphanSummaryMarker(agentId)) return null;
-    const description = nonEmptyString(result.description);
-    return { family: "agent", taskId: agentId, ...(description !== undefined ? { description } : {}) };
+    case "background_shell": {
+      if (typeof result.stdout !== "string") return null;
+      const taskId = nonEmptyString(result.backgroundTaskId);
+      if (taskId === undefined || isOrphanSummaryMarker(taskId)) return null;
+      return { family, taskId };
+    }
+    case "monitor": {
+      if (typeof result.timeoutMs !== "number") return null;
+      const taskId = nonEmptyString(result.taskId);
+      if (taskId === undefined || isOrphanSummaryMarker(taskId)) return null;
+      return { family, taskId };
+    }
+    case "scheduled_wakeup": {
+      if (typeof result.scheduledFor !== "number") return null;
+      // `stop: true` ends the loop and cancels every pending wakeup.
+      if (result.stopped === true || result.scheduledFor <= 0) return null;
+      return { family, scheduledForMs: result.scheduledFor };
+    }
   }
-
-  if (typeof result.backgroundTaskId === "string" && typeof result.stdout === "string") {
-    const taskId = nonEmptyString(result.backgroundTaskId);
-    if (taskId === undefined || isOrphanSummaryMarker(taskId)) return null;
-    return { family: "background_shell", taskId };
-  }
-
-  if (typeof result.taskId === "string" && typeof result.timeoutMs === "number") {
-    const taskId = nonEmptyString(result.taskId);
-    if (taskId === undefined || isOrphanSummaryMarker(taskId)) return null;
-    return { family: "monitor", taskId };
-  }
-
-  if (typeof result.scheduledFor === "number") {
-    // `stop: true` ends the loop and cancels every pending wakeup.
-    if (result.stopped === true || result.scheduledFor <= 0) return null;
-    return { family: "scheduled_wakeup", scheduledForMs: result.scheduledFor };
-  }
-
-  return null;
 }
 
-/** True when this result ends the one pending wakeup rather than arming one. */
+/** True when a ScheduleWakeup result ends the pending wakeup rather than arming one. */
 function isWakeupStop(result: Record<string, unknown>): boolean {
   return typeof result.scheduledFor === "number" && (result.stopped === true || result.scheduledFor <= 0);
 }
@@ -229,10 +262,13 @@ function taskStopTarget(result: Record<string, unknown>): string | undefined {
   return taskId;
 }
 
-function openLaunch(fold: AsyncWorkFold, toolUseId: string, launch: Omit<OpenAsyncWork, "key" | "toolUseId">): void {
-  const call = fold.pendingCalls.get(toolUseId);
-  fold.pendingCalls.delete(toolUseId);
-  const description = launch.description ?? call?.description;
+function openLaunch(
+  fold: AsyncWorkFold,
+  toolUseId: string,
+  launch: Omit<OpenAsyncWork, "key" | "toolUseId">,
+  calledDescription: string | undefined,
+): void {
+  const description = launch.description ?? calledDescription;
 
   if (launch.family === "scheduled_wakeup") {
     // At most one wakeup is ever pending: each ScheduleWakeup supersedes the
@@ -416,8 +452,12 @@ export function observeAsyncWorkLine(item: RolloutLineItem, fold: AsyncWorkFold)
       if (block.type !== "tool_use") continue;
       const toolBlock = block as ToolUseBlock;
       const toolUseId = nonEmptyString(toolBlock.id);
-      const toolName = nonEmptyString(toolBlock.name);
-      if (toolUseId === undefined || toolName === undefined) continue;
+      const rawName = nonEmptyString(toolBlock.name);
+      if (toolUseId === undefined || rawName === undefined) continue;
+      // Only the retained launchers and TaskStop are worth remembering; every
+      // other call's result is none of this fold's business.
+      const toolName = asyncWorkToolName(rawName);
+      if (toolName === undefined) continue;
       rememberCall(fold, toolUseId, toolName, toolBlock.input);
     }
     return;
@@ -442,25 +482,35 @@ export function observeAsyncWorkLine(item: RolloutLineItem, fold: AsyncWorkFold)
   const toolUseId = nonEmptyString(resultBlock.tool_use_id);
   if (toolUseId === undefined) return;
 
-  const stopped = taskStopTarget(result);
-  if (stopped !== undefined) {
+  // The call decides what this result can mean. Without one — an unretained
+  // tool, or a launch whose call this reader never saw — the result is read as
+  // nothing, however familiar its fields look.
+  const call = fold.pendingCalls.get(toolUseId);
+  if (call === undefined) return;
+  fold.pendingCalls.delete(toolUseId);
+
+  if (call.toolName === "TaskStop") {
+    const stopped = taskStopTarget(result);
+    if (stopped === undefined) return;
     for (const [key, work] of fold.open) {
       if (work.taskId === stopped || key === stopped) fold.open.delete(key);
     }
-    fold.pendingCalls.delete(toolUseId);
     return;
   }
 
-  if (isWakeupStop(result)) {
+  if (call.toolName === "ScheduleWakeup" && isWakeupStop(result)) {
     fold.open.delete(SCHEDULED_WAKEUP_KEY);
-    fold.pendingCalls.delete(toolUseId);
     return;
   }
 
-  const launch = classifyLaunch(result);
+  const family = LAUNCHER_FAMILY[call.toolName];
+  if (family === undefined) return;
+  const launch = classifyLaunch(family, result);
   if (launch === null) {
-    fold.pendingCalls.delete(toolUseId);
+    // The launcher was called and did not report a launch: a synchronous
+    // agent, a workflow that failed to start, a foreground shell. Nothing is
+    // open, and nothing about it needs reporting.
     return;
   }
-  openLaunch(fold, toolUseId, launch);
+  openLaunch(fold, toolUseId, launch, call.description);
 }

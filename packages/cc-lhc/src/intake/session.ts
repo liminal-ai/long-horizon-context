@@ -17,7 +17,7 @@ import { claudeCliModelCall } from "../inference/claude-cli.js";
 import {
   type AsyncWorkFold,
   createAsyncWorkFold,
-  liveAsyncWork,
+  openAsyncWork,
   type OpenAsyncWork,
 } from "../observation/async-work.js";
 import {
@@ -46,10 +46,7 @@ import {
 } from "../rollout/discover.js";
 import type { ExpectedSession } from "../rollout/expected-session.js";
 import type { RolloutLineItem, WatcherEmission } from "../rollout/types.js";
-import {
-  observeClaudeRuntimeSettings,
-  type ClaudeRuntimeSettings,
-} from "../rollout/runtime-settings.js";
+import { observeClaudeRuntimeSettings, type ClaudeRuntimeSettings } from "../rollout/runtime-settings.js";
 import { type RolloutWatcher, watchRolloutFile } from "../rollout/watcher.js";
 import { type CaptureStats, emptyCaptureStats } from "../stats.js";
 import {
@@ -235,7 +232,7 @@ export interface CaptureSession {
    * newest launch last. Derived from the same ordered rollout lines capture
    * already reads and rebuilt by re-reading them; nothing is persisted.
    */
-  getLiveAsyncWork(nowMs?: number): OpenAsyncWork[];
+  getLiveAsyncWork(): OpenAsyncWork[];
   stop(): Promise<void>;
 }
 
@@ -1184,14 +1181,14 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     getCaptureGeneration(): number {
       return captureHealth.generation;
     },
-    getLiveAsyncWork(nowMs: number = Date.now()): OpenAsyncWork[] {
+    getLiveAsyncWork(): OpenAsyncWork[] {
       // Unrecognized notification shapes are for review, not for control: they
       // never open work and never close it. Report each new one once.
       while (reportedAsyncDiagnostics < asyncWorkFold.diagnostics.length) {
         logError(`cc-lhc async work: ${asyncWorkFold.diagnostics[reportedAsyncDiagnostics]}`);
         reportedAsyncDiagnostics += 1;
       }
-      return liveAsyncWork(asyncWorkFold, nowMs);
+      return openAsyncWork(asyncWorkFold);
     },
     stop: async () => {
       stopped = true;
