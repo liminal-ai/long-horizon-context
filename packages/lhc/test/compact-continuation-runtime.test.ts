@@ -2060,6 +2060,61 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     expect(hv.value?.status).toBe("ok");
   });
 
+  it("successful escalation finalizes complete/install_succeeded; terminal, idempotent replay", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedEscalationTurn(fixture.filePath);
+
+    const result = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      escalationFacts("escalate-finalize-1", 298000),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.receipt.outcome).toBe("compact_preserve_tool_escalated");
+    expect(result.value.receipt.residual.markerPersisted).toBe(true);
+    expect(result.value.receipt.residual.markerServed).toBe(true);
+
+    // The installed escalation is a success: its boundary completes. It is
+    // not pending and never enters failed_repairable / compact_failed.
+    expect(result.value.pendingBoundary).toBeNull();
+    const db = openRaw(fixture.filePath);
+    let row: { status: string; last_stage: string };
+    try {
+      row = db
+        .prepare(`SELECT status, last_stage FROM compact_continuation_boundary ORDER BY forced_at DESC LIMIT 1`)
+        .get() as { status: string; last_stage: string };
+    } finally {
+      db.close();
+    }
+    expect(row.status).toBe("complete");
+    expect(row.last_stage).toBe("install_succeeded");
+
+    // Terminal receipt matching what actually happened.
+    const stored = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "escalate-finalize-1",
+    );
+    expect(stored.ok).toBe(true);
+    if (!stored.ok) return;
+    expect(stored.value?.terminal).toBe(true);
+    expect(stored.value?.receipt.outcome).toBe("compact_preserve_tool_escalated");
+
+    // Replay of the same attempt is terminal and idempotent: no re-mutation.
+    const before = snapshotCanonical(fixture.filePath);
+    const replay = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      escalationFacts("escalate-finalize-1", 298000),
+    );
+    expect(replay.ok).toBe(true);
+    if (!replay.ok) return;
+    expect(replay.value.replayedTerminalAttempt).toBe(true);
+    expect(replay.value.receipt.outcome).toBe("compact_preserve_tool_escalated");
+    const after = snapshotCanonical(fixture.filePath);
+    expect(after.turnCount).toBe(before.turnCount);
+    expect(after.markerCount).toBe(before.markerCount);
+    expect(after.viewId).toBe(before.viewId);
+  });
+
   it("stale_boundary_preview_is_clamped_to_prepared_compact_point", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedEscalationTurn(fixture.filePath);

@@ -2251,7 +2251,15 @@ async function runCompactContinuationInner(
     );
 
     // Boundary completion vs failed_repairable (nonterminal until repair succeeds).
-    const successOutcomes = new Set(["compact_continue_turn", "degraded_compact", "no_reduction"]);
+    // compact_preserve_tool_escalated is an installed success like the rest:
+    // omitting it finalized a successfully installed escalation as
+    // failed_repairable / compact_failed, contradicting its own receipt.
+    const successOutcomes = new Set([
+      "compact_continue_turn",
+      "degraded_compact",
+      "no_reduction",
+      "compact_preserve_tool_escalated",
+    ]);
     const finalizeOpts: {
       releaseWriter: boolean;
       terminal: boolean;
