@@ -386,8 +386,12 @@ describe("architecture risk: bounded listing loads only its window (AC-3.1, SV-0
   });
 });
 
+// One fixture proves all three id-scoped readers: list (block loading),
+// preview (message-derivation attachment), and — once t2's ready rendering is
+// withheld — retrieval's live-compose fallback, the production path that hands
+// a whole turn's member ids to readMessageDerivationRows.
 describe("large unbounded message reads", () => {
-  it("lists and previews more messages than SQLite accepts as one bound-parameter list", async () => {
+  it("lists, previews, and live-composes more messages than SQLite accepts as one bound-parameter list", async () => {
     const { filePath, sdk } = await readFixture(store);
     const db = openRaw(filePath);
     try {
@@ -425,5 +429,32 @@ describe("large unbounded message reads", () => {
     const preview = await sdk.threadView.previewCompact({ filePath }, {});
     if (!preview.ok) throw new Error(`${preview.error.code}: ${preview.error.reason}`);
     expect(preview.value.kind).toBe("ok");
-  }, 20_000);
+
+    // Withhold t2's ready turn_rendering: retrieval accepts a stored labeled
+    // rendering when it exists, so removing it is what forces the live-compose
+    // fallback to walk every one of the turn's 34,002 members.
+    const withhold = openRaw(filePath);
+    try {
+      withhold
+        .prepare(
+          `DELETE FROM derivation
+           WHERE subject_kind = 'turn' AND subject_id = 't2' AND derivation_type = 'turn_rendering'`,
+        )
+        .run();
+    } finally {
+      withhold.close();
+    }
+
+    const turns = await sdk.retrieval.getTurns({ filePath }, ["t2"]);
+    if (!turns.ok) throw new Error(`${turns.error.code}: ${turns.error.reason}`);
+    const turn = turns.value.served[0]!;
+    expect(turn.source).toBe("composed");
+    expect(turn.text.startsWith("<t2>")).toBe(true);
+    // The composition is far past the 8k serving budget, so the receipt is a
+    // slice whose total covers the whole live-composed turn — proof the
+    // fallback rendered every member rather than a truncated prefix.
+    expect(turn.slice).toBeDefined();
+    expect(turn.slice!.fromToken).toBe(0);
+    expect(turn.slice!.totalTokens).toBeGreaterThan(34_000);
+  }, 60_000);
 });
