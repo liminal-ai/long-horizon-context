@@ -661,7 +661,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     writeSpy.mockRestore();
   });
 
-  it("a mute replacement never becomes viable: the old session stays live, unswapped and unkilled", async () => {
+  it("a replacement that is never promoted leaves the old session routed: its output and input still flow", async () => {
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
@@ -767,6 +767,23 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(terminalOutput).toContain("last action: none this wrapper session");
     expect(terminalOutput).toMatch(/last attempt: auto_compact replacement not viable/);
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+
+    // Routing was never touched. The old child still owns the terminal in both
+    // directions: its frames reach the screen and the operator's keystrokes
+    // reach it — not the candidate that was built and discarded.
+    terminalOutput = "";
+    spawned[0]!.emitData("OLD-CHILD-STILL-ROUTED");
+    await waitFor(() => terminalOutput.includes("OLD-CHILD-STILL-ROUTED"), "old-child output still routed");
+    const candidate = spawned.find((f) => f.args.includes(REBUILT_ID));
+    expect(candidate).toBeDefined();
+    candidate!.emitData("DISCARDED-CANDIDATE-OUTPUT");
+    (stdin as unknown as PassThrough).write("typed after the failed swap");
+    await waitFor(
+      () => spawned[0]!.writes.join("").includes("typed after the failed swap"),
+      "input still routed to the old child",
+    );
+    expect(candidate!.writes.join("")).not.toContain("typed after the failed swap");
+    expect(terminalOutput).not.toContain("DISCARDED-CANDIDATE-OUTPUT");
 
     spawned[0]!.fireExit(0);
     await runPromise;
@@ -1313,6 +1330,115 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(terminalOutput).not.toContain("terminal state");
 
     survival.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  });
+
+  it("a terminal that throws while repainting the switch leaves the replacement routed and successful", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-repaint-"));
+    receiptDirs.push(rolloutDir);
+    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      writeFileSync(rebuiltPath, '{"line":1}\n');
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        totalByteLength: 11,
+      };
+    });
+
+    mocks.captureFactory = (opts) => {
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      const scripted = scriptedCaptureSession(
+        opts,
+        sdk,
+        isRebuilt ? REBUILT_ID : "old-session",
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        isRebuilt ? 2 : 1,
+      );
+      if (!isRebuilt && opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    let terminalOutput = "";
+    (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      terminalOutput += chunk.toString("utf8");
+    });
+
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const index = spawned.length;
+        const fake = makeFakePty(5500 + index, `child${index}`, args, true);
+        // The replacement's very first resize blows up: the terminal is the one
+        // thing here the wrapper does not own.
+        if (args.includes(REBUILT_ID)) {
+          fake.resize = () => {
+            throw new Error("ioctl TIOCSWINSZ failed");
+          };
+        }
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
+      onHandoffResult: (result) => results.push(result),
+      handoffTimeouts: {
+        sigtermGraceMs: 300,
+        sigkillWaitMs: 200,
+        captureReadyTimeoutMs: 1_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 60,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    await waitFor(() => spawned.length === 1, "first child");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+
+    await waitFor(() => results.length === 1, "handoff result");
+    // The repaint failed; the swap did not.
+    expect(results[0]!.kind).toBe("success");
+    if (results[0]!.kind === "success") {
+      expect(results[0]!.switchWarnings?.join("\n")).toContain("first repaint failed");
+    }
+    expect(mocks.registerLineage).toHaveBeenCalledOnce();
+    expect(spawned[0]!.killed.length).toBeGreaterThan(0);
+
+    // Routing is fully on the replacement, not half moved.
+    terminalOutput = "";
+    spawned[1]!.emitData("REPLACEMENT-ROUTED");
+    spawned[0]!.emitData("OLD-CHILD-CONTAMINATION");
+    await waitFor(() => terminalOutput.includes("REPLACEMENT-ROUTED"), "replacement output routed");
+    expect(terminalOutput).not.toContain("OLD-CHILD-CONTAMINATION");
+    (stdin as unknown as PassThrough).write("after the repaint failure");
+    await waitFor(
+      () => spawned[1]!.writes.join("").includes("after the repaint failure"),
+      "input routed to the replacement",
+    );
+
+    spawned[1]!.fireExit(0);
     await runPromise;
     writeSpy.mockRestore();
   });

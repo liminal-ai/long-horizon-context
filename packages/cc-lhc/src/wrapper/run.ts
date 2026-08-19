@@ -1744,27 +1744,35 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
     /**
      * THE SWITCH. Routing moves from the currently routed child to the
-     * candidate in one synchronous step: after it returns, stdin reaches only
-     * the candidate, only the candidate's output reaches the terminal, and
+     * candidate in one synchronous step: after those assignments, stdin reaches
+     * only the candidate, only the candidate's output reaches the terminal, and
      * every later byte from the old child is dropped on the floor.
      *
-     * The panel cannot survive a child swap, so the wrapper closes its own UI
-     * here rather than letting an open panel veto the switch.
+     * Which is why the assignments come first and touch nothing that can throw.
+     * What follows is what the operator sees — closing the wrapper's own panel
+     * (it cannot survive a child swap), resizing, and repainting — and a
+     * terminal that misbehaves during that must not leave routing half moved.
+     * A repaint failure is returned as a warning on a switch that happened.
      */
-    const switchRoutingTo = (record: ChildRecord): void => {
+    const switchRoutingTo = (record: ChildRecord): string | undefined => {
       const previous = childRecords.get(currentPty);
       if (previous !== undefined) previous.routed = false;
-      restoreIfModal();
       currentPty = record.pty;
       record.routed = true;
-      onTerminalResize(record.pty, stdout);
       const held = record.held.join("");
       record.held = [];
       record.heldBytes = 0;
-      // The dead session's frame is still on screen; clear before the
-      // replacement's own render lands so the two never interleave.
-      forwardOutput("\x1b[2J\x1b[3J\x1b[H");
-      if (held.length > 0) forwardOutput(held);
+      try {
+        restoreIfModal();
+        onTerminalResize(record.pty, stdout);
+        // The dead session's frame is still on screen; clear before the
+        // replacement's own render lands so the two never interleave.
+        forwardOutput("\x1b[2J\x1b[3J\x1b[H");
+        if (held.length > 0) forwardOutput(held);
+        return undefined;
+      } catch (cause) {
+        return `replacement is routed but its first repaint failed: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
     };
 
     // ---- Slice 4: controlled handoff machinery ----
@@ -2015,7 +2023,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
      * rollout file is never deleted, so anything it misses stays recoverable,
      * and a drain that hangs or throws must never reach the live replacement.
      */
-    const switchCaptureToRebuilt = (request: HandoffRequest): SwitchOutcome => {
+    const switchCaptureToRebuilt = (
+      request: HandoffRequest,
+    ): { captureStarted: boolean; captureWarning?: string } => {
       const dying = captureSession;
       const ctx = dying?.getCommandContext();
       const threadRef = ctx?.threadRef ?? captureContinuation?.threadRef;
@@ -2124,18 +2134,64 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         },
         switchToCandidate: (candidate): SwitchOutcome => {
           const spawn = spawns.get(candidate.pid);
-          if (spawn === undefined) {
-            return { captureStarted: false, captureWarning: "candidate went missing before the switch" };
+          // Last look at the process before anything moves. The candidate
+          // proved viable a moment ago; if it has died since, it cannot be
+          // routed to, and nothing here has changed yet — the old child keeps
+          // the terminal, its capture generation, and its descriptor.
+          if (spawn === undefined) return { switched: false, reason: "candidate went missing before the switch" };
+          if (spawn.record.exited) {
+            // Its capability outlived it by microseconds; take it back.
+            spawns.delete(candidate.pid);
+            childRecords.delete(spawn.record.pty);
+            if (spawn.descriptorPath !== undefined) {
+              const rev = closeAndRemove(spawn.descriptorPath, spawn.descriptor, descriptorIo);
+              if (!rev.ok) {
+                wrapperLog.warn(`cc-lhc handoff: dead candidate descriptor revoke unproven: ${rev.reason}`);
+              }
+            }
+            return { switched: false, reason: `candidate pid=${candidate.pid} exited before the switch` };
           }
-          switchRoutingTo(spawn.record);
-          adoptCandidateDescriptor(spawn);
-          return switchCaptureToRebuilt(request);
+
+          const switchWarnings: string[] = [];
+          const repaintWarning = switchRoutingTo(spawn.record);
+          // Routed. Nothing below may throw out of here: the switch happened.
+          if (repaintWarning !== undefined) switchWarnings.push(repaintWarning);
+          try {
+            adoptCandidateDescriptor(spawn);
+          } catch (cause) {
+            switchWarnings.push(
+              `retrieval descriptor did not move to the replacement: ${cause instanceof Error ? cause.message : String(cause)}`,
+            );
+          }
+          let capture: { captureStarted: boolean; captureWarning?: string };
+          try {
+            capture = switchCaptureToRebuilt(request);
+          } catch (cause) {
+            capture = {
+              captureStarted: false,
+              captureWarning: `replacement capture switch threw: ${cause instanceof Error ? cause.message : String(cause)}`,
+            };
+          }
+          return {
+            switched: true,
+            captureStarted: capture.captureStarted,
+            ...(capture.captureWarning === undefined ? {} : { captureWarning: capture.captureWarning }),
+            ...(switchWarnings.length === 0 ? {} : { switchWarnings }),
+          };
         },
         killOldChild: async (): Promise<{ exited: boolean; pid: number }> => {
           const record = childRecords.get(oldPty);
           if (record?.exited === true) return { exited: true, pid: oldPty.pid };
-          const gone = await terminateChild(oldPty, true);
-          return { exited: gone, pid: oldPty.pid };
+          try {
+            return { exited: await terminateChild(oldPty, true), pid: oldPty.pid };
+          } catch (cause) {
+            // Termination that cannot even be attempted leaves a process the
+            // operator has to deal with. Report it by PID and keep going.
+            wrapperLog.warn(
+              `cc-lhc handoff: terminating old child pid=${oldPty.pid} threw: ${cause instanceof Error ? cause.message : String(cause)}`,
+            );
+            return { exited: false, pid: oldPty.pid };
+          }
         },
         awaitReplacementCaptureReady: awaitCaptureReadyAfterReplay,
         reconcileCapture: (reason: string): void => {
@@ -2302,15 +2358,41 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         wrapperLog.warn(`cc-lhc survival relaunch candidate ${viability.kind}; the old child keeps the terminal`);
         return false;
       }
-      switchRoutingTo(spawn.record);
-      adoptCandidateDescriptor(spawn);
-      publishDescriptorFromCapture();
+      // Same last look as the compact swap: a candidate that died between
+      // proving viable and being promoted cannot be routed to, and nothing has
+      // moved, so the running child keeps the terminal.
+      if (spawn.record.exited) {
+        childRecords.delete(spawn.record.pty);
+        if (spawn.descriptorPath !== undefined) closeAndRemove(spawn.descriptorPath, spawn.descriptor, descriptorIo);
+        wrapperLog.warn(
+          `cc-lhc survival relaunch candidate pid=${spawn.record.pty.pid} exited before the switch; ` +
+            "the old child keeps the terminal",
+        );
+        return false;
+      }
+      const repaintWarning = switchRoutingTo(spawn.record);
+      // Routed. The relaunch has happened; nothing below may unmake it.
+      if (repaintWarning !== undefined) wrapperLog.warn(`cc-lhc survival relaunch: ${repaintWarning}`);
+      try {
+        adoptCandidateDescriptor(spawn);
+        publishDescriptorFromCapture();
+      } catch (cause) {
+        wrapperLog.warn(
+          `cc-lhc survival relaunch: retrieval descriptor did not move: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
+      }
       const record = childRecords.get(oldPty);
       if (record?.exited !== true) {
-        const gone = await terminateChild(oldPty, true);
-        if (!gone) {
+        try {
+          if (!(await terminateChild(oldPty, true))) {
+            wrapperLog.warn(
+              `cc-lhc survival relaunch: ORPHANED previous child pid=${oldPty.pid} — kill it manually`,
+            );
+          }
+        } catch (cause) {
           wrapperLog.warn(
-            `cc-lhc survival relaunch: ORPHANED previous child pid=${oldPty.pid} — kill it manually`,
+            `cc-lhc survival relaunch: terminating previous child pid=${oldPty.pid} threw ` +
+              `(${cause instanceof Error ? cause.message : String(cause)}); kill it manually`,
           );
         }
       }

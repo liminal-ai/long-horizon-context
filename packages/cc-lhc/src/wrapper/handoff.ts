@@ -77,13 +77,25 @@ export type CandidateViability =
   | { kind: "exited"; evidence: ReplacementEvidence }
   | { kind: "no_output"; evidence: ReplacementEvidence };
 
-/** What the atomic switch managed to carry across with the routing. */
-export interface SwitchOutcome {
-  /** A new capture generation is bound to the rebuilt session. */
-  captureStarted: boolean;
-  /** Non-fatal detail when capture or the descriptor did not come across. */
-  captureWarning?: string;
-}
+/**
+ * What the switch did. `switched: false` is not a refusal and not a gate — it
+ * is the physical state of the candidate process at the one instant promotion
+ * reads it. A candidate that proved viable and then died before routing could
+ * move to it cannot be routed to, and because nothing moved there is nothing to
+ * undo: the old child is still routed, still live, and still owns its capture
+ * generation and descriptor.
+ */
+export type SwitchOutcome =
+  | { switched: false; reason: string }
+  | {
+      switched: true;
+      /** A new capture generation is bound to the rebuilt session. */
+      captureStarted: boolean;
+      /** Non-fatal detail when capture did not come across with the routing. */
+      captureWarning?: string;
+      /** Non-fatal detail from the switch itself: repaint, descriptor adoption. */
+      switchWarnings?: readonly string[];
+    };
 
 export interface HandoffPorts {
   /**
@@ -112,10 +124,15 @@ export interface HandoffPorts {
   /** Kill a candidate that never became viable. It was never routed to. */
   discardCandidate(candidate: CandidateChild): Promise<void>;
   /**
-   * THE SWITCH. Input routing, output routing, the retrieval descriptor and
-   * the capture generation move to the candidate in one step, and all later
-   * old-child output is ignored. Must not throw: capture or descriptor trouble
-   * comes back as a warning on a completed switch.
+   * THE SWITCH. Confirms the candidate still exists and has not exited, then
+   * moves input routing, output routing, the retrieval descriptor and the
+   * capture generation to it in one step, after which all later old-child
+   * output is ignored.
+   *
+   * Must not throw. A candidate that died between proving viable and being
+   * promoted returns `switched: false` having moved nothing; once it reports
+   * `switched: true`, repaint, descriptor and capture trouble come back as
+   * warnings on a switch that already happened.
    */
   switchToCandidate(candidate: CandidateChild): SwitchOutcome;
   /** Best-effort termination of the now-unrouted old child. */
@@ -141,9 +158,13 @@ export type HandoffResult =
       attempts: number;
       /** PID of an old child that survived termination and was left running. */
       orphanPid?: number;
+      /** Old-child cleanup could not be carried out or could not be observed. */
+      oldChildWarning?: string;
       lineageWarning?: string;
       descriptorWarning?: string;
       captureWarning?: string;
+      /** Repaint or descriptor-adoption detail from the switch itself. */
+      switchWarnings?: readonly string[];
     }
   /**
    * The replacement never became viable, so nothing was ever switched. The old
@@ -186,6 +207,29 @@ export interface HandoffOptions {
 
 function reasonOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+/**
+ * Run one step of the after-the-switch settlement.
+ *
+ * Past the switch the replacement is live, routed, and talking to the operator.
+ * Everything left to do is recording what already happened — lineage, the old
+ * child's corpse, capture health, the retrieval descriptor — so a port that
+ * throws yields a warning and nothing else. None of it may unmake the swap, and
+ * none of it may report a live replacement as a failure.
+ */
+async function settleAfterSwitch<T>(
+  ports: HandoffPorts,
+  what: string,
+  step: () => T | Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; warning: string }> {
+  try {
+    return { ok: true, value: await step() };
+  } catch (cause) {
+    const warning = `${what} threw after the switch: ${reasonOf(cause)}`;
+    ports.warn(`cc-lhc handoff WARNING: ${warning}`);
+    return { ok: false, warning };
+  }
 }
 
 interface EstablishedReplacement {
@@ -270,48 +314,95 @@ export async function executeHandoff(
 
   // ---- THE SWITCH: routing and capture generation move together ----
   const switched = ports.switchToCandidate(established.candidate);
+  if (!switched.switched) {
+    // The candidate proved viable and then died before routing could reach it.
+    // That is a fact about a process, not a decision about a compact: nothing
+    // moved, so the old child is still routed, still live, and still owns its
+    // capture generation and descriptor. A later settled seam simply retries.
+    ports.warn(
+      `cc-lhc handoff: replacement ${rebuiltId} was not promoted — ${switched.reason}; ` +
+        `session ${request.oldSessionId} continues live, still routed and untouched`,
+    );
+    return {
+      kind: "replacement_nonviable",
+      reason: switched.reason,
+      attempts: established.attempts,
+      oldSessionId: request.oldSessionId,
+      rebuiltSessionId: rebuiltId,
+    };
+  }
+
   ports.log(
     `cc-lhc handoff switch (${request.operation}): ${request.oldSessionId} -> ${rebuiltId} ` +
       `(pid ${established.candidate.pid}, session file written: ${established.evidence.sessionFileWritten})`,
   );
+  const switchWarnings = switched.switchWarnings ?? [];
+  for (const warning of switchWarnings) ports.warn(`cc-lhc handoff WARNING: ${warning}`);
   if (switched.captureWarning !== undefined) ports.warn(`cc-lhc handoff WARNING: ${switched.captureWarning}`);
 
-  // ---- everything below records what already happened; none of it can undo it ----
+  // ---- The replacement is live and routed. Everything below records what
+  // already happened; none of it can undo it or call it a failure. ----
   let lineageWarning: string | undefined;
-  const lineage = await ports.registerSuccessLineage(request);
+  const lineage = await settleAfterSwitch(ports, "lineage registration", () =>
+    ports.registerSuccessLineage(request),
+  );
   if (!lineage.ok) {
-    lineageWarning = `success lineage registration failed: ${lineage.reason}`;
+    lineageWarning = lineage.warning;
+  } else if (!lineage.value.ok) {
+    lineageWarning = `success lineage registration failed: ${lineage.value.reason}`;
     ports.warn(`cc-lhc handoff WARNING: ${lineageWarning}`);
   }
 
   // The old child owns nothing now. Kill it for hygiene; if the kernel will not
   // take it, say so loudly by PID and carry on with the live replacement.
   let orphanPid: number | undefined;
-  const killed = await ports.killOldChild();
-  if (!killed.exited) {
-    orphanPid = killed.pid;
+  let oldChildWarning: string | undefined;
+  const killed = await settleAfterSwitch(ports, "old-child cleanup", () => ports.killOldChild());
+  if (!killed.ok) {
+    oldChildWarning =
+      `old Claude child (session ${request.oldSessionId}, pid unknown) may still be running: ${killed.warning}`;
+    ports.warn(`cc-lhc handoff: ${oldChildWarning}`);
+  } else if (!killed.value.exited) {
+    orphanPid = killed.value.pid;
+    oldChildWarning = `old Claude child pid=${killed.value.pid} survived termination`;
     ports.warn(
-      `cc-lhc handoff: ORPHANED old Claude child pid=${killed.pid} (session ${request.oldSessionId}) — ` +
+      `cc-lhc handoff: ORPHANED old Claude child pid=${killed.value.pid} (session ${request.oldSessionId}) — ` +
         "it survived termination and is no longer routed to anything; kill it manually to reclaim its memory",
     );
   }
 
   let captureWarning = switched.captureWarning;
+  const reconcile = async (why: string): Promise<void> => {
+    const reconciled = await settleAfterSwitch(ports, "capture reconciliation", () => {
+      ports.reconcileCapture(why);
+    });
+    if (!reconciled.ok) captureWarning = `${captureWarning ?? why}; ${reconciled.warning}`;
+  };
   if (switched.captureStarted) {
-    const ready = await ports.awaitReplacementCaptureReady(readyTimeoutMs);
-    if (ready !== "ready") {
-      captureWarning = `replacement capture ${ready} — reconciling from the transcript`;
+    const ready = await settleAfterSwitch(ports, "replacement capture readiness", () =>
+      ports.awaitReplacementCaptureReady(readyTimeoutMs),
+    );
+    if (!ready.ok) {
+      captureWarning = ready.warning;
+      await reconcile("replacement capture readiness could not be observed");
+    } else if (ready.value !== "ready") {
+      captureWarning = `replacement capture ${ready.value} — reconciling from the transcript`;
       ports.warn(`cc-lhc handoff WARNING: ${captureWarning}`);
-      ports.reconcileCapture(`replacement capture ${ready}`);
+      await reconcile(`replacement capture ${ready.value}`);
     }
   } else {
-    ports.reconcileCapture(switched.captureWarning ?? "replacement capture did not start");
+    await reconcile(switched.captureWarning ?? "replacement capture did not start");
   }
 
   // Retrieval is a capability over the captured archive, so it publishes after
   // capture has caught up — never before, and never as a condition of the swap.
   let descriptorWarning: string | undefined;
-  if (!ports.publishReadyDescriptor()) {
+  const published = await settleAfterSwitch(ports, "ready descriptor publication", () =>
+    ports.publishReadyDescriptor(),
+  );
+  if (!published.ok) {
+    descriptorWarning = published.warning;
+  } else if (!published.value) {
     descriptorWarning = "ready descriptor publish failed — retrieval stays fail-closed this generation";
     ports.warn(`cc-lhc handoff WARNING: ${descriptorWarning}`);
   }
@@ -323,8 +414,10 @@ export async function executeHandoff(
     evidence: established.evidence,
     attempts: established.attempts,
     ...(orphanPid === undefined ? {} : { orphanPid }),
+    ...(oldChildWarning === undefined ? {} : { oldChildWarning }),
     ...(lineageWarning === undefined ? {} : { lineageWarning }),
     ...(descriptorWarning === undefined ? {} : { descriptorWarning }),
     ...(captureWarning === undefined ? {} : { captureWarning }),
+    ...(switchWarnings.length === 0 ? {} : { switchWarnings }),
   };
 }

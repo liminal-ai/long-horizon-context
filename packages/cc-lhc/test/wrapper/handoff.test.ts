@@ -16,6 +16,7 @@ import {
   executeHandoff,
   formatHandoffResult,
   type HandoffPorts,
+  type HandoffResult,
   type SwitchOutcome,
 } from "../../src/wrapper/handoff.js";
 
@@ -80,7 +81,7 @@ function makeHarness(overrides: Partial<HandoffPorts> = {}): Harness {
     switchToCandidate: (candidate): SwitchOutcome => {
       calls.push("switchToCandidate");
       switchedTo.push(candidate.sessionId);
-      return { captureStarted: true };
+      return { switched: true, captureStarted: true };
     },
     killOldChild: async () => {
       calls.push("killOldChild");
@@ -142,7 +143,7 @@ describe("executeHandoff", () => {
       },
       switchToCandidate: () => {
         order.push("switch");
-        return { captureStarted: true };
+        return { switched: true, captureStarted: true };
       },
     });
     await executeHandoff(request(), h.ports);
@@ -249,7 +250,11 @@ describe("executeHandoff", () => {
 
   it("a capture generation that will not start does not kill the replacement — it reconciles", async () => {
     const h = makeHarness({
-      switchToCandidate: () => ({ captureStarted: false, captureWarning: "replacement capture start failed: EIO" }),
+      switchToCandidate: () => ({
+        switched: true,
+        captureStarted: false,
+        captureWarning: "replacement capture start failed: EIO",
+      }),
     });
     const result = await executeHandoff(request(), h.ports);
     expect(result.kind).toBe("success");
@@ -273,11 +278,153 @@ describe("executeHandoff", () => {
     );
   });
 
+  it("does not promote a candidate that died between proving viable and the switch", async () => {
+    // The exit race: viability was real when it was observed, and the process
+    // was gone by the time routing tried to move to it.
+    const h = makeHarness({
+      switchToCandidate: (candidate) => {
+        h.calls.push("switchToCandidate");
+        return { switched: false, reason: `candidate pid=${candidate.pid} exited before the switch` };
+      },
+    });
+    const result = await executeHandoff(request(), h.ports, { replacementAttempts: 1 });
+
+    expect(result.kind).toBe("replacement_nonviable");
+    if (result.kind === "replacement_nonviable") {
+      expect(result.reason).toContain("exited before the switch");
+      expect(result.oldSessionId).toBe("old-1111");
+    }
+    // Nothing downstream of the switch ran: the old child was never killed, no
+    // lineage advanced, no descriptor published, no capture generation moved.
+    expect(h.calls).not.toContain("killOldChild");
+    expect(h.calls).not.toContain("registerSuccessLineage");
+    expect(h.calls).not.toContain("publishReadyDescriptor");
+    expect(h.calls).not.toContain("awaitReplacementCaptureReady");
+    expect(h.calls.some((c) => c.startsWith("reconcileCapture"))).toBe(false);
+    expect(h.warnings.join("\n")).toContain("continues live, still routed and untouched");
+  });
+
+  it("does not promote a candidate that went missing before the switch", async () => {
+    const h = makeHarness({
+      switchToCandidate: () => {
+        h.calls.push("switchToCandidate");
+        return { switched: false, reason: "candidate went missing before the switch" };
+      },
+    });
+    const result = await executeHandoff(request(), h.ports, { replacementAttempts: 1 });
+    expect(result.kind).toBe("replacement_nonviable");
+    expect(h.calls).not.toContain("killOldChild");
+    expect(h.calls).not.toContain("registerSuccessLineage");
+  });
+
   it("spawns exactly one candidate on the happy path", async () => {
     const spawn = vi.fn((sessionId: string) => ({ sessionId, pid: 1, child: { write: () => {} } }));
     const h = makeHarness({ spawnCandidate: spawn });
     await executeHandoff(request(), h.ports);
     expect(spawn).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * Past the switch the replacement is live and talking to the operator. Every
+ * remaining port records what already happened, so one that throws produces a
+ * warning — never a failed handoff, never a dead replacement.
+ */
+describe("exceptions after the switch", () => {
+  const boom = (): never => {
+    throw new Error("EIO");
+  };
+
+  const cases: Array<{
+    name: string;
+    ports: Partial<HandoffPorts>;
+    detail: (result: Extract<HandoffResult, { kind: "success" }>) => string | undefined;
+  }> = [
+    {
+      name: "lineage registration",
+      ports: { registerSuccessLineage: async () => boom() },
+      detail: (result) => result.lineageWarning,
+    },
+    {
+      name: "old-child cleanup",
+      ports: { killOldChild: async () => boom() },
+      detail: (result) => result.oldChildWarning,
+    },
+    {
+      name: "capture readiness",
+      ports: { awaitReplacementCaptureReady: async () => boom() },
+      detail: (result) => result.captureWarning,
+    },
+    {
+      name: "capture reconciliation",
+      ports: { awaitReplacementCaptureReady: async () => "timeout", reconcileCapture: () => boom() },
+      detail: (result) => result.captureWarning,
+    },
+    {
+      name: "ready descriptor publication",
+      ports: { publishReadyDescriptor: () => boom() },
+      detail: (result) => result.descriptorWarning,
+    },
+  ];
+
+  for (const testCase of cases) {
+    it(`${testCase.name} throwing still yields a live replacement`, async () => {
+      const h = makeHarness(testCase.ports);
+      const result = await executeHandoff(request(), h.ports);
+
+      expect(result.kind).toBe("success");
+      if (result.kind !== "success") return;
+      expect(result.newSessionId).toBe("new-2222");
+      expect(testCase.detail(result)).toBeDefined();
+      expect(h.warnings.join("\n")).toContain("EIO");
+      // The switch stands and no discard was attempted on the live child.
+      expect(h.switchedTo).toEqual(["new-2222"]);
+      expect(h.calls.some((c) => c.startsWith("discardCandidate"))).toBe(false);
+    });
+  }
+
+  it("keeps going through the remaining steps after an early throw", async () => {
+    const h = makeHarness({ registerSuccessLineage: async () => boom() });
+    const result = await executeHandoff(request(), h.ports);
+    expect(result.kind).toBe("success");
+    // Lineage blew up first; the old child was still cleaned up and the
+    // descriptor still published.
+    expect(h.calls).toContain("killOldChild");
+    expect(h.calls).toContain("publishReadyDescriptor");
+  });
+
+  it("names the old child it could not clean up, and keeps the replacement", async () => {
+    const h = makeHarness({
+      killOldChild: async () => {
+        throw new Error("ESRCH");
+      },
+    });
+    const result = await executeHandoff(request(), h.ports);
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      expect(result.oldChildWarning).toContain("old-1111");
+      expect(result.oldChildWarning).toContain("may still be running");
+      expect(result.orphanPid).toBeUndefined();
+    }
+  });
+
+  it("reports a repaint that failed during the switch without failing the swap", async () => {
+    const h = makeHarness({
+      switchToCandidate: (candidate) => {
+        h.switchedTo.push(candidate.sessionId);
+        return {
+          switched: true,
+          captureStarted: true,
+          switchWarnings: ["replacement is routed but its first repaint failed: EIO"],
+        };
+      },
+    });
+    const result = await executeHandoff(request(), h.ports);
+    expect(result.kind).toBe("success");
+    if (result.kind === "success") {
+      expect(result.switchWarnings).toEqual(["replacement is routed but its first repaint failed: EIO"]);
+    }
+    expect(h.calls).toContain("killOldChild");
   });
 });
 
