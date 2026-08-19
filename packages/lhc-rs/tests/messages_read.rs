@@ -23,6 +23,7 @@ use lhc::intake_stream::EventRecord;
 use lhc::messages::{
     MessageKind, MessageListOptions, MessageRecord, MessageReportOpts, RemoveInput,
 };
+use lhc::retrieval::RetrievedTurnSource;
 use lhc::shared_tech::derivation::{Derivation, DerivationState, SdkConfig, SdkMode, ToolOutcome};
 use lhc::shared_tech::errors::{ErrorClass, ErrorCode, OpResult};
 use lhc::shared_tech::js_json::js_json_stringify;
@@ -844,8 +845,14 @@ async fn a_bounded_list_excluding_out_of_window_rows_never_loads_their_blocks_or
 // Large unbounded message reads: a mature thread holds more messages than
 // SQLite accepts as one bound-parameter list, so every id-scoped read must
 // batch. Pre-fix this fails at prepare/bind with "too many SQL variables".
+//
+// One fixture proves all three id-scoped readers: list (block loading),
+// preview (message-derivation attachment), and — once t2's ready rendering is
+// withheld — retrieval's live-compose fallback, the production path that hands
+// a whole turn's member ids to the turn-domain derivation-row reader.
 #[tokio::test]
-async fn lists_and_previews_more_messages_than_sqlite_accepts_as_one_bound_parameter_list() {
+async fn lists_previews_and_live_composes_more_messages_than_sqlite_accepts_as_one_bound_parameter_list()
+ {
     let store = temp_store();
     let fixture = read_fixture(&store).await;
     {
@@ -925,4 +932,44 @@ async fn lists_and_previews_more_messages_than_sqlite_accepts_as_one_bound_param
         panic!("{:?}: {}", error.code, error.reason);
     };
     assert!(matches!(value, PreviewCompactOutcome::Ok { .. }));
+
+    // Withhold t2's ready turn_rendering: retrieval accepts a stored labeled
+    // rendering when it exists, so removing it is what forces the live-compose
+    // fallback to walk every one of the turn's 34,002 members.
+    {
+        let handle = ClosingDb::open(&fixture.file_path);
+        handle
+            .db()
+            .prepare(
+                r#"DELETE FROM derivation
+                   WHERE subject_kind = 'turn' AND subject_id = 't2'
+                     AND derivation_type = 'turn_rendering'"#,
+            )
+            .run(&[]);
+    }
+
+    let turns = fixture
+        .sdk
+        .retrieval
+        .get_turns(
+            ThreadRef::file_path(&fixture.file_path),
+            &["t2".to_string()],
+            None,
+        )
+        .await;
+    let OpResult::Ok { value: receipt } = &turns else {
+        let OpResult::Err { error } = &turns else {
+            unreachable!()
+        };
+        panic!("{:?}: {}", error.code, error.reason);
+    };
+    let turn = receipt.served.first().expect("t2 served");
+    assert_eq!(turn.source, RetrievedTurnSource::Composed);
+    assert!(turn.text.starts_with("<t2>"));
+    // The composition is far past the 8k serving budget, so the receipt is a
+    // slice whose total covers the whole live-composed turn — proof the
+    // fallback rendered every member rather than a truncated prefix.
+    let slice = turn.slice.as_ref().expect("over-budget composition slices");
+    assert_eq!(slice.from_token, 0);
+    assert!(slice.total_tokens > 34_000, "{}", slice.total_tokens);
 }
