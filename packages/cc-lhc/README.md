@@ -227,7 +227,7 @@ environment surface.
 | `threads/<uuid>.sqlite` | Per-thread LHC record, derivations, views, and impressions |
 | `owners/*.json` | Exclusive thread-ownership leases (keyed by thread hash) |
 | `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600 on POSIX; on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile, so these inherit the profile's default ACLs — no POSIX modes and no bespoke DACL there) |
-| `recovery/*` | Only pre-rewrite artifacts, consumed and cleared at launch |
+| `recovery/*` | Only pre-rewrite artifacts, cleared at launch by the thread that owns them |
 | `wrapper.log` | Append-only wrapper diagnostics (no rotation yet) |
 
 Runtime descriptors live in a private runtime directory and are capabilities,

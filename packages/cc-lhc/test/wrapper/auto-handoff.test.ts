@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
@@ -28,7 +28,22 @@ const mocks = vi.hoisted(() => ({
   registerLineage: vi.fn(async (..._args: unknown[]) => ({ ok: true as const })),
   /** Alias whose registry current-pointer advance cannot be written. */
   unwritableAlias: null as string | null,
+  /** Alias the registry cannot resolve, so the launch never reaches a lease. */
+  unresolvableAlias: null as string | null,
 }));
+
+/** A pre-rewrite input journal: `[type:1][length:4 BE][JSON header]` + body. */
+function legacyJournalBytes(header: Record<string, unknown>): Buffer {
+  const payload = Buffer.from(JSON.stringify({ version: 1, journalId: "j", ...header }), "utf8");
+  const frame = Buffer.allocUnsafe(5);
+  frame.writeUInt8(0x01, 0);
+  frame.writeUInt32BE(payload.length, 1);
+  const chunk = Buffer.from("typed", "utf8");
+  const chunkFrame = Buffer.allocUnsafe(5);
+  chunkFrame.writeUInt8(0x02, 0);
+  chunkFrame.writeUInt32BE(chunk.length, 1);
+  return Buffer.concat([frame, payload, chunkFrame, chunk]);
+}
 
 vi.mock("lhc", async (importOriginal) => {
   const actual = await importOriginal<typeof import("lhc")>();
@@ -39,6 +54,17 @@ vi.mock("lhc", async (importOriginal) => {
     // against the real registry.
     threads: {
       ...actual.threads,
+      resolveAlias: async (lookup: Parameters<typeof actual.threads.resolveAlias>[0]) =>
+        lookup.alias === mocks.unresolvableAlias
+          ? {
+              ok: false as const,
+              error: {
+                errorClass: "system_error" as const,
+                code: "storage_failure" as const,
+                reason: "registry.sqlite is unreadable",
+              },
+            }
+          : actual.threads.resolveAlias(lookup),
       registerCurrentAlias: async (registration: Parameters<typeof actual.threads.registerCurrentAlias>[0]) =>
         registration.alias === mocks.unwritableAlias
           ? {
@@ -270,6 +296,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     mocks.registerLineage.mockClear();
     mocks.captureFactory = null;
     mocks.unwritableAlias = null;
+    mocks.unresolvableAlias = null;
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-auto-home-"));
     receiptDirs.push(home);
     process.env.CC_LHC_HOME = home;
@@ -278,6 +305,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     vi.restoreAllMocks();
     mocks.captureFactory = null;
     mocks.unwritableAlias = null;
+    mocks.unresolvableAlias = null;
     if (savedHome === undefined) delete process.env.CC_LHC_HOME;
     else process.env.CC_LHC_HOME = savedHome;
     for (const d of receiptDirs.splice(0)) {
@@ -1594,15 +1622,24 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     writeSpy.mockRestore();
   });
 
-  it("surfaces pre-rewrite handoff state at startup as a resend notice", async () => {
+  it("consumes only the owned thread's pre-rewrite state, under the lease, and leaves the rest", async () => {
+    const OWNED_SESSION = "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa";
+    const FOREIGN_SESSION = "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb";
     const recoveryDir = join(process.env.CC_LHC_HOME!, "recovery");
     mkdirSync(recoveryDir, { recursive: true });
-    writeFileSync(join(recoveryDir, "input-legacy.journal"), Buffer.from([0x01, 0x02]));
+    const ownedJournal = join(recoveryDir, "input-owned.journal");
+    const foreignJournal = join(recoveryDir, "input-foreign.journal");
+    const tornJournal = join(recoveryDir, "input-torn.journal");
+    writeFileSync(ownedJournal, legacyJournalBytes({ oldSessionId: OWNED_SESSION, rebuiltSessionId: "s-new" }));
+    writeFileSync(foreignJournal, legacyJournalBytes({ oldSessionId: FOREIGN_SESSION, rebuiltSessionId: "s-nb" }));
+    writeFileSync(tornJournal, Buffer.from([0x01, 0x02]));
+    const foreignBefore = readFileSync(foreignJournal);
+    const tornBefore = readFileSync(tornJournal);
 
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     mocks.captureFactory = (opts) =>
-      scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1).session;
+      scriptedCaptureSession(opts, sdk, OWNED_SESSION, "/tmp/owned.jsonl", 1).session;
 
     const stderr = fakeStream();
     let stderrText = "";
@@ -1610,10 +1647,12 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       stderrText += chunk.toString("utf8");
     });
 
-    const runPromise = run([], {
+    // An explicit resume names the session the lease will land on, which is
+    // what makes the owned journal attributable to this thread.
+    const runPromise = run(["--resume", OWNED_SESSION], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
-        const fake = makeFakePty(5300 + spawned.length, `child${spawned.length}`, args, true);
+        const fake = makeFakePty(5600 + spawned.length, `child${spawned.length}`, args, true);
         spawned.push(fake);
         return fake as never;
       }) as never,
@@ -1628,10 +1667,54 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     await waitFor(() => spawned.length === 1, "child");
     expect(stderrText).toContain("input typed during compaction was not delivered");
     expect(stderrText).toContain("retained-input artifact(s) from an earlier build");
-    // Consumed, not carried: the launch continued and the state is gone.
-    expect(existsSync(join(recoveryDir, "input-legacy.journal"))).toBe(false);
+    // Ours: consumed. Not ours, and unreadable: untouched, and unmentioned.
+    expect(existsSync(ownedJournal)).toBe(false);
+    expect(readFileSync(foreignJournal)).toEqual(foreignBefore);
+    expect(readFileSync(tornJournal)).toEqual(tornBefore);
 
     spawned[0]!.fireExit(0);
     await runPromise;
+  });
+
+  it("changes no legacy state when the launch fails before it owns a thread", async () => {
+    const SESSION = "cccccccc-3333-4333-8333-cccccccccccc";
+    const recoveryDir = join(process.env.CC_LHC_HOME!, "recovery");
+    mkdirSync(recoveryDir, { recursive: true });
+    const journal = join(recoveryDir, "input-preowner.journal");
+    writeFileSync(journal, legacyJournalBytes({ oldSessionId: SESSION, rebuiltSessionId: "s-new" }));
+    const before = readFileSync(journal);
+
+    // The registry cannot answer, so the launch never reaches a thread lease.
+    mocks.unresolvableAlias = claudeSessionAlias(SESSION);
+
+    const spawned: FakePty[] = [];
+    const stderr = fakeStream();
+    let stderrText = "";
+    (stderr as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      stderrText += chunk.toString("utf8");
+    });
+
+    const exitCode = await run(["--resume", SESSION], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const fake = makeFakePty(5700 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin: fakeStream(),
+      stdout: fakeStream() as never,
+      stderr: stderr as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
+    });
+
+    expect(exitCode).toBe(2);
+    expect(spawned).toHaveLength(0);
+    expect(stderrText).toContain("cannot read the LHC thread registry");
+    // Nothing was owned, so nothing was consumed — and the operator was told
+    // nothing about input that is not theirs to resend.
+    expect(readFileSync(journal)).toEqual(before);
+    expect(stderrText).not.toContain("input typed during compaction was not delivered");
   });
 });

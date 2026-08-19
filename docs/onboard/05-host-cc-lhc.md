@@ -316,10 +316,17 @@ re-materializes from the latest captured state, new turns included. Corrupt or
 unreadable recovery bookkeeping is unclaimed work, not a wedge.
 
 Durable handoff state written by a pre-rewrite build — an input journal, a
-retained-input artifact, an open attempt row — is consumed once on the way up.
-Whatever state it is in resolves to the same fact: input may not have been
-delivered, so the operator is asked to resend, the state is cleared, and the
-launch continues.
+retained-input artifact, an open attempt row — is consumed once on the way up,
+under the thread lease and never before it. The recovery directory and the
+attempt table are shared by every thread on the box and neither carries a
+thread column, so the lease decides what is ours to settle: an attempt row
+through the thread id in its payload, a journal or artifact through the session
+ids in its header matched against the sessions this thread has held. For state
+that is ours, whatever condition it is in resolves to the same fact — input may
+not have been delivered, so the operator is asked to resend, the state is
+cleared, and the launch continues. Another thread's state, and anything whose
+identity cannot be read, is left exactly as it is and says nothing to this
+operator. A journal is read no further than its header frame.
 
 ## Terminal and control panel
 
@@ -394,7 +401,7 @@ Durable state lives under `~/.cc-lhc` (override `CC_LHC_HOME`):
 | `threads/<uuid>.sqlite` | Per-thread record, derivations, views, and impressions |
 | `owners/*.json` | Exclusive thread-owner leases (keyed by thread hash) |
 | `runtime/*.json` | Mode-0600 retrieval capability descriptors |
-| `recovery/*` | Only pre-rewrite artifacts, consumed and cleared at launch |
+| `recovery/*` | Only pre-rewrite artifacts, cleared at launch by the thread that owns them |
 | `wrapper.log` | Append-only wrapper lifecycle diagnostics (no rotation yet) |
 
 Per-wrapper runtime descriptors are private ephemeral capabilities. Rebuilt

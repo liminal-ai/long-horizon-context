@@ -299,19 +299,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     `cc-lhc context policy autoCompact=${resolvedContextPolicy.policy.autoCompact} lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
   );
 
-  // Durable handoff state from a pre-rewrite build is consumed here, once, on
-  // the way up: an input journal or an open attempt row means input may not
-  // have been delivered, so the operator is told to resend and the state is
-  // cleared. It is never inspected for delivery state and never wedges a launch.
-  const legacyHandoffState = consumeLegacyHandoffState({
-    home: ccLhcHome(),
-    lineageDbPath: defaultLineageDbPath(),
-  });
-  for (const notice of legacyHandoffState.notices) {
-    wrapperLog.warn(notice);
-    stderr.write(`${notice}\n`);
-    startupAnomalyNotices.push(notice);
-  }
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
   /** Most recent non-success outcome (health visibility; never claims success). */
   let lastAttempt: { summary: string; atMs: number } | null = null;
@@ -468,6 +455,26 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           `cc-lhc: rebuilt session ${artifact.sessionId} (reserved ${artifact.updatedAt}) was never accepted; ` +
             "discarded from launch selection",
         );
+      }
+
+      // Durable handoff state from a pre-rewrite build is consumed once, here:
+      // under the thread lease, and never before it. The recovery directory and
+      // the attempt table are shared by every thread on the box, so the lease is
+      // what says which of it is ours to settle — a journal or an open attempt
+      // row belonging to this thread means input may not have been delivered, so
+      // the operator is told to resend and that state is cleared. Anything
+      // belonging to another thread, or whose identity cannot be read, is left
+      // untouched and says nothing to this operator.
+      const legacyHandoffState = consumeLegacyHandoffState({
+        home: ccLhcHome(),
+        lineageDbPath: defaultLineageDbPath(),
+        threadId: opened.threadId,
+        knownSessionIds: [expectedSession.sessionId, opened.expectedSession.sessionId],
+      });
+      for (const notice of legacyHandoffState.notices) {
+        wrapperLog.warn(notice);
+        stderr.write(`${notice}\n`);
+        startupAnomalyNotices.push(notice);
       }
 
       const safety = respawnArgvSafety(respawnRest, respawnPassthrough);
