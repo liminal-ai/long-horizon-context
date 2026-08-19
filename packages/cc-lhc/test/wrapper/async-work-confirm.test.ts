@@ -216,6 +216,24 @@ function overTrigger(samplingId: string): LifecycleSignal[] {
   ];
 }
 
+/** A settled turn whose provider reading is whatever the test needs. */
+function settledTurnAt(samplingId: string, inputTokens: number): LifecycleSignal[] {
+  return [
+    { kind: "turn_opened", reason: "user_prompt" },
+    {
+      kind: "sampling_observed",
+      samplingId,
+      providerUsage: {
+        input_tokens: inputTokens,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 10,
+      },
+    },
+    { kind: "turn_settled", reason: "end_turn" },
+  ];
+}
+
 function monitorWork(taskId = "m1"): OpenAsyncWork {
   return { key: taskId, family: "monitor", taskId, description: "CI watch" };
 }
@@ -629,6 +647,66 @@ describe("an automatic swap asks before it kills live background work", () => {
     await settle(400);
     expect(rig.compactAttempts()).toBe(1);
     expect(rig.settledReceipts()).toHaveLength(1);
+    await rig.end();
+  }, 20_000);
+
+  it("does not compact when the session fell under the trigger while the question was up", async () => {
+    const rig = await startRig({ liveWork: [monitorWork("A")] });
+    rig.fire(settledTurnAt("req:over", 9_000));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    // A turn settles behind the panel with a much smaller reading: the session
+    // is no longer over the trigger, so there is nothing to compact.
+    rig.fire(settledTurnAt("req:under", 100));
+    await settle(80);
+    rig.stdin.write("y");
+    await settle(250);
+
+    expect(rig.compactAttempts()).toBe(0);
+    expect(rig.logs.some((line) => line.includes("no longer authorizes a compact here (below_threshold)"))).toBe(true);
+    // Ordinary observation is still recorded — the open-turn classification
+    // and the under-threshold settle both land as they always did. What must
+    // not exist is anything executable, least of all the stale over-trigger
+    // classification the modal was raised from.
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
+    expect(rig.receipts().some((receipt) => receipt.handoffOutcome?.kind === "scheduled")).toBe(false);
+    expect(rig.settledReceipts().some((receipt) => receipt.samplingId === "req:over")).toBe(false);
+    // ...and the settled observation that did land describes the small reading.
+    expect(rig.settledReceipts().map((receipt) => receipt.samplingId)).toEqual(["req:under"]);
+
+    // The recomputation nobody acted on left no mark either. Three turns have
+    // settled and the authorizing keypress re-observes the third, so the
+    // receipt it lands is settle 4 — not 5, which is what a committed but
+    // discarded recomputation would have made it.
+    rig.fire(settledTurnAt("req:over-again", 9_000));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation at the next real seam");
+    rig.stdin.write("y");
+    await waitFor(() => rig.compactAttempts() === 1, "compact at the next real seam");
+    const executable = rig.settledReceipts().filter((receipt) => receipt.wouldMutate);
+    expect(executable).toHaveLength(1);
+    expect(executable[0]?.samplingId).toBe("req:over-again");
+    expect(executable[0]?.settleSequence).toBe(4);
+    await rig.end();
+  }, 25_000);
+
+  it("compacts against the current reading, not the one that raised the question", async () => {
+    const rig = await startRig({ liveWork: [monitorWork("A")] });
+    rig.fire(settledTurnAt("req:first", 9_000));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    // A newer, larger turn settles behind the panel — still over the trigger.
+    rig.fire(settledTurnAt("req:second", 12_000));
+    await settle(80);
+    expect(rig.compactAttempts()).toBe(0);
+    rig.stdin.write("y");
+    await waitFor(() => rig.compactAttempts() === 1, "compact after yes");
+    await settle(250);
+
+    expect(rig.compactAttempts()).toBe(1);
+    const executable = rig.settledReceipts().filter((receipt) => receipt.wouldMutate);
+    expect(executable).toHaveLength(1);
+    // The receipt describes the session now, not when the question was asked.
+    expect(executable[0]?.samplingId).toBe("req:second");
+    expect(executable[0]?.providerContextTotal).toBe(12_000);
+    expect(rig.receipts().some((receipt) => receipt.wouldMutate && receipt.samplingId === "req:first")).toBe(false);
     await rig.end();
   }, 20_000);
 

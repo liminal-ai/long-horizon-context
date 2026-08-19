@@ -869,12 +869,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     respawnUnsafeReason !== null ||
     captureSession?.isCaptureReady() !== true;
 
-  /**
-   * One governor observation: log it, and route an executable settled decision
-   * to the operation — through the operator first when a swap would kill live
-   * background work.
-   */
-  const handleGovernorObserve = (record: import("../governor/index.js").GovernorObserveRecord): void => {
+  /** Log an observation and let the host see it. In-memory only. */
+  const noteGovernorObservation = (record: import("../governor/index.js").GovernorObserveRecord): void => {
     wrapperLog.info(formatGovernorObserveLogLine(record));
     options.onGovernorObserve?.(record);
     // Learn the host overhead floor from predicted next-request pressure.
@@ -883,6 +879,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       minObservedProviderTotal =
         minObservedProviderTotal === null ? pressureForFloor : Math.min(minObservedProviderTotal, pressureForFloor);
     }
+  };
+
+  /**
+   * One governor observation: log it, and route an executable settled decision
+   * to the operation — through the operator first when a swap would kill live
+   * background work.
+   */
+  const handleGovernorObserve = (record: import("../governor/index.js").GovernorObserveRecord): void => {
+    noteGovernorObservation(record);
     // Capability-limited: executable would_compact only at a settled seam
     // (wouldMutate is false during open turns). Starts ONE automatic operation,
     // scheduled off the capture batch path (the handoff stops capture; doing
@@ -898,7 +903,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     if (!settledSeamBlocked() && interactiveTerminal) {
       const liveWork = captureSession?.getLiveAsyncWork() ?? [];
       if (liveWork.length > 0) {
-        askBeforeSwap(record, liveWork);
+        askBeforeSwap(liveWork);
         return;
       }
     }
@@ -912,10 +917,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
    * outcome — including a prompt that could not be raised at all — reports in
    * memory and returns, so the next seam asks again while the work is open.
    */
-  const askBeforeSwap = (
-    record: import("../governor/index.js").GovernorObserveRecord,
-    liveWork: readonly OpenAsyncWork[],
-  ): void => {
+  const askBeforeSwap = (liveWork: readonly OpenAsyncWork[]): void => {
     const notNow = (why: string): void => {
       wrapperLog.info(
         `cc-lhc governor: compact not authorized — ${why}; ${liveWork.length} live background item(s) left running`,
@@ -965,8 +967,29 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         notNow(stale);
         return;
       }
+      // The physical checks say a swap could happen; whether one is still
+      // WANTED is a fresh question. A turn may have settled behind the panel
+      // with a smaller provider reading, leaving the session under the
+      // trigger. Ask the governor again, and compact against what it says now.
+      const current = reobserveSettled(governorState, resolvedContextPolicy);
+      const observe = current.observe;
+      // The recomputed state is dropped along with the decision: an
+      // observation nobody acts on must not consume a settle sequence, and it
+      // certainly must not leave a record behind.
+      if (observe === null) {
+        notNow("the governor no longer reports a settled seam");
+        return;
+      }
+      if (observe.observePhase !== "settled_seam" || observe.wouldMutate !== true) {
+        notNow(`the governor no longer authorizes a compact here (${observe.decision})`);
+        return;
+      }
+      // Consumed: this observation is the one the operation runs against, so
+      // its pressure, sampling, and sequences describe the session now.
+      governorState = current.state;
+      noteGovernorObservation(observe);
       wrapperLog.info(`cc-lhc governor: operator authorized compact over ${liveWork.length} live background item(s)`);
-      runSettledSeam(record);
+      runSettledSeam(observe);
     });
     if (!raised) notNow(describeDecline("render_failed"));
   };

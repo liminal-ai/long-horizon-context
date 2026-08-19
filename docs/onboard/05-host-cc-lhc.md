@@ -289,7 +289,11 @@ stopped being eligible, or work that *started* meanwhile and was never on the
 list all skip the seam as if the operator had declined. Work that *finished*
 meanwhile does not — killing fewer than listed is what was agreed to.
 Comparison is by stable item identity, never by the progress text an item
-happens to be showing. Every other outcome — a decline, a dismissal, a stray key, a closed
+happens to be showing. The governor decision is recomputed too: a turn that
+settled behind the panel with a smaller provider reading can leave the session
+under the trigger, and then there is nothing to compact. When it still
+authorizes one, that fresh observation — not the one that raised the question
+— is what the receipt and the operation describe. Every other outcome — a decline, a dismissal, a stray key, a closed
 terminal, a prompt that could not be drawn or was interrupted — skips that one
 seam, leaves no receipt, no outcome, and no preference behind, and the next
 eligible seam asks again while the work is still open. An empty set, a
