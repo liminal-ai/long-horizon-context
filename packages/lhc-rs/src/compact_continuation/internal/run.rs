@@ -15,8 +15,8 @@ use crate::shared_tech::compact_continuation::{
     CompactContinuationSeam, CompactMaterialFacts, ForcedContinuationBoundary,
     ForcedContinuationBoundaryApplied, ForcedContinuationBoundaryNotApplied,
     HostValidationStatusFact, PostMeasurementEstimate, ProviderUsageAuthority, WorkContinuation,
-    WriterClaim, compact_continuation_marker_idempotency_key, decide_compact_continuation,
-    js_string_cmp,
+    WriterClaim, WriterOwnershipAuthority, compact_continuation_marker_idempotency_key,
+    decide_compact_continuation, js_string_cmp,
 };
 use crate::shared_tech::context::resolve_instance_config;
 use crate::shared_tech::derivation::Clock;
@@ -112,6 +112,9 @@ pub struct CompactContinuationRunResult {
     pub compact_receipt: Option<CompactReceipt>,
     pub next_provider_request_allowed: bool,
     pub refuse_receipt_fidelity_describes: &'static str,
+    /// True when this attempt reclaimed a stale `native`/`conflict` writer row
+    /// after host ownership authority confirmed no live owner held the thread.
+    pub reclaimed_stale_writer_row: bool,
     pub replayed_terminal_attempt: bool,
     pub pending_boundary: Option<BoundaryRow>,
 }
@@ -139,6 +142,71 @@ fn attempt_conflict(
         ErrorCode::CompactContinuationAttemptConflict,
         format!("{reason} (caller attemptId={attempt_id}, owner attemptId={owner_attempt_id})"),
     )
+}
+
+/// Question asked of the host's writer-ownership authority.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WriterOwnershipQuery {
+    /// Canonical LHC thread id the writer row belongs to.
+    pub thread_id: String,
+    /// Attempt asking for the row.
+    pub attempt_id: String,
+}
+
+/// Host ownership authority for a `native`/`conflict` writer row (R23-S8).
+///
+/// The registry lives **host-side** — a process-global map keyed by LHC
+/// `thread_id`, because two sessions or aliases can map to the same thread and
+/// would otherwise hold two independent per-session flags. The SDK never owns
+/// that registry; it only asks whether a live owner still holds the thread.
+///
+/// Return `Ok(true)` when a live owner holds it (this attempt is the loser and
+/// continues its current request), `Ok(false)` when the row is stale from a dead
+/// owner (reclaim proceeds), `Err(reason)` when the authority cannot answer — an
+/// authority that cannot answer is not authority to steal, so the SDK logs the
+/// failure and treats it as a live owner. Without a check the SDK never reclaims.
+pub type CompactContinuationWriterOwnershipCheck =
+    std::sync::Arc<dyn Fn(&WriterOwnershipQuery) -> Result<bool, String> + Send + Sync>;
+
+/// Canonical LHC thread id for host-side writer-ownership lookups.
+fn read_canonical_thread_id(db: &crate::shared_tech::storage::Db) -> Result<String, String> {
+    let row = db
+        .prepare("SELECT thread_id FROM thread_metadata WHERE id = 1")
+        .get();
+    match row.as_ref().and_then(|r| r.get("thread_id")) {
+        Some(Value::String(id)) if !id.is_empty() => Ok(id.clone()),
+        _ => Err("thread_metadata.thread_id is missing; cannot key host writer ownership".into()),
+    }
+}
+
+/// Oracle invariants for a mutating compact path. Health facts are carried
+/// through as-is so incomplete capture / unproven identity / an unverified
+/// open-turn invariant land on the receipt as warnings instead of vanishing.
+///
+/// A reclaimed stale writer row is reported as its original `native`/`conflict`
+/// posture plus the `no_live_owner` authority, so the receipt records the
+/// reclaim + warning ahead of this attempt's own `claim_writer`.
+fn compact_path_invariants(
+    facts: &CompactContinuationHostFacts,
+    single_open_turn: bool,
+    reclaimed_stale_writer_row: bool,
+) -> CompactContinuationInvariants {
+    if reclaimed_stale_writer_row {
+        return CompactContinuationInvariants {
+            capture_complete: facts.capture_complete,
+            provider_identity_valid: facts.provider_identity_valid,
+            single_open_turn,
+            writer_claim: facts.writer_claim.clone(),
+            writer_ownership_authority: Some(WriterOwnershipAuthority::NoLiveOwner),
+        };
+    }
+    CompactContinuationInvariants {
+        capture_complete: facts.capture_complete,
+        provider_identity_valid: facts.provider_identity_valid,
+        single_open_turn,
+        writer_claim: WriterClaim::Lhc,
+        writer_ownership_authority: None,
+    }
 }
 
 fn is_at_seam(seam: &CompactContinuationSeam) -> bool {
@@ -174,6 +242,7 @@ fn empty_material() -> CompactMaterialFacts {
         visibility_boundary_after: None,
         compact_point_at_install: None,
         maximal_prune_insufficient: false,
+        compact_attempt_index: None,
         host_validation_status: HostValidationStatusFact::NotRequired,
     }
 }
@@ -256,6 +325,7 @@ fn material_from_candidate(
         visibility_boundary_after: over.visibility_boundary_after,
         compact_point_at_install: over.compact_point_at_install,
         maximal_prune_insufficient: over.maximal_prune_insufficient,
+        compact_attempt_index: None,
         host_validation_status: over
             .host_validation_status
             .unwrap_or(HostValidationStatusFact::NotRequired),
@@ -308,6 +378,7 @@ fn build_oracle_input(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // mirrors the TS toRunResult extras record
 fn to_run_result(
     decision: CompactContinuationDecision,
     forced_boundary_this_attempt: bool,
@@ -315,6 +386,7 @@ fn to_run_result(
     compact_receipt: Option<CompactReceipt>,
     replayed_terminal_attempt: bool,
     pending_boundary: Option<BoundaryRow>,
+    reclaimed_stale_writer_row: bool,
 ) -> CompactContinuationRunResult {
     let marker_persisted = decision.receipt.residual.marker_persisted;
     let next_provider_request_allowed = decision.receipt.residual.next_provider_request_allowed;
@@ -330,6 +402,7 @@ fn to_run_result(
         compact_receipt,
         next_provider_request_allowed,
         refuse_receipt_fidelity_describes: "installed_view_only",
+        reclaimed_stale_writer_row,
         replayed_terminal_attempt,
         pending_boundary,
     }
@@ -677,6 +750,7 @@ pub fn parse_stored_operation_identity(
         host_capability,
         safe_runway_threshold_tokens: None,
         safe_runway_threshold_source: None,
+        compact_retry_budget: None,
     };
     if policy_obj.contains_key("safeRunwayThresholdTokens") {
         policy.safe_runway_threshold_tokens = Some(require_i64_field(
@@ -856,6 +930,8 @@ struct FinalizeOpts {
     forced_boundary_this_attempt: bool,
     continuation_turn_id: Option<String>,
     compact_receipt: Option<CompactReceipt>,
+    /// This attempt reclaimed a stale native/conflict writer row (R23-S8).
+    reclaimed_stale_writer_row: bool,
 }
 
 struct BoundaryUpdate {
@@ -1055,6 +1131,7 @@ async fn finalize_attempt(
             opts.compact_receipt,
             write_kind == "already_terminal",
             pending,
+            opts.reclaimed_stale_writer_row,
         ),
     }
 }
@@ -1102,7 +1179,17 @@ pub async fn run_compact_continuation(
     ref_: ThreadRef,
     facts: CompactContinuationHostFacts,
 ) -> OpResult<CompactContinuationRunResult> {
-    run_compact_continuation_inner(ref_, facts, default_clock(), None).await
+    run_compact_continuation_inner(ref_, facts, default_clock(), None, None).await
+}
+
+/// Public entry carrying the host's ownership authority for a stale
+/// `native`/`conflict` writer row. Without it the SDK never reclaims.
+pub async fn run_compact_continuation_with_ownership(
+    ref_: ThreadRef,
+    facts: CompactContinuationHostFacts,
+    writer_ownership_check: Option<CompactContinuationWriterOwnershipCheck>,
+) -> OpResult<CompactContinuationRunResult> {
+    run_compact_continuation_inner(ref_, facts, default_clock(), None, writer_ownership_check).await
 }
 
 /// Test-only entry with optional fault hooks.
@@ -1113,7 +1200,33 @@ pub async fn run_compact_continuation_for_tests(
     clock: Option<Clock>,
     hooks: Option<CompactContinuationTestHooks>,
 ) -> OpResult<CompactContinuationRunResult> {
-    run_compact_continuation_inner(ref_, facts, clock.unwrap_or_else(default_clock), hooks).await
+    run_compact_continuation_inner(
+        ref_,
+        facts,
+        clock.unwrap_or_else(default_clock),
+        hooks,
+        None,
+    )
+    .await
+}
+
+/// Test-only entry with fault hooks **and** the host ownership authority.
+#[cfg(any(test, feature = "test-util"))]
+pub async fn run_compact_continuation_for_tests_with_ownership(
+    ref_: ThreadRef,
+    facts: CompactContinuationHostFacts,
+    clock: Option<Clock>,
+    hooks: Option<CompactContinuationTestHooks>,
+    writer_ownership_check: Option<CompactContinuationWriterOwnershipCheck>,
+) -> OpResult<CompactContinuationRunResult> {
+    run_compact_continuation_inner(
+        ref_,
+        facts,
+        clock.unwrap_or_else(default_clock),
+        hooks,
+        writer_ownership_check,
+    )
+    .await
 }
 
 async fn run_compact_continuation_inner(
@@ -1121,6 +1234,7 @@ async fn run_compact_continuation_inner(
     facts: CompactContinuationHostFacts,
     clock: Clock,
     hooks: Option<CompactContinuationTestHooks>,
+    writer_ownership_check: Option<CompactContinuationWriterOwnershipCheck>,
 ) -> OpResult<CompactContinuationRunResult> {
     // Closed host-fact validation before any I/O.
     let facts_value = serde_json::to_value(&facts).unwrap_or(Value::Null);
@@ -1282,6 +1396,7 @@ async fn run_compact_continuation_inner(
                     None,
                     true,
                     pending,
+                    false,
                 ),
             };
         }
@@ -1358,7 +1473,6 @@ async fn run_compact_continuation_inner(
 
     // Seam eligibility
     let at_seam = is_at_seam(&facts.seam);
-    let epoch_ok = facts.seam.input_epoch_at_decision == facts.seam.input_epoch_at_apply;
     let transport_retry = facts.seam.inside_transport_retry;
     let owns_pending = pending_boundary
         .as_ref()
@@ -1444,11 +1558,13 @@ async fn run_compact_continuation_inner(
         }
     }
 
-    // Quiet skip paths (not at seam / transport / epoch) — no claim.
+    // Quiet skip paths (not at seam / transport) — no claim. Input-epoch drift
+    // is diagnostic only (CX-S5 / R1): settled history is not invalidated by
+    // input that arrived later in the turn.
     // Feed the oracle the durable forced boundary (TS parity) and release any
     // same-owner writer so claim-only wedges cannot survive a pre-seam skip.
     // Pending owned by this attempt stays nonterminal so settled repair can resume.
-    if !at_seam || transport_retry || !epoch_ok {
+    if !at_seam || transport_retry {
         let owns_writer = durable_writer.claim == WriterClaimKind::Lhc
             && durable_writer.attempt_id.as_deref() == Some(facts.attempt_id.as_str());
         let oracle_writer = if owns_writer {
@@ -1463,6 +1579,7 @@ async fn run_compact_continuation_inner(
                 provider_identity_valid: facts.provider_identity_valid,
                 single_open_turn,
                 writer_claim: oracle_writer,
+                writer_ownership_authority: None,
             },
             forced_from_pending.clone(),
             empty_material(),
@@ -1478,6 +1595,7 @@ async fn run_compact_continuation_inner(
                 forced_boundary_this_attempt: false,
                 continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
                 compact_receipt: None,
+                reclaimed_stale_writer_row: false,
             },
             clock,
             hooks.as_ref(),
@@ -1485,7 +1603,134 @@ async fn run_compact_continuation_inner(
         .await;
     }
 
-    // Health / protected tool-pair set (host correlation insufficient).
+    // ── Settled seam: stale native/conflict row under host authority ─────────
+    // A row claiming the thread for someone else is never a stop. The host's
+    // ownership registry (process-global, keyed by LHC thread id) decides:
+    // reclaim a stale row from a dead owner, otherwise this attempt is the loser
+    // and continues its current request.
+    let mut reclaimed_stale_writer_row = false;
+    if matches!(
+        facts.writer_claim,
+        WriterClaim::Native | WriterClaim::Conflict
+    ) {
+        let mut live_owner = true;
+        let mut authority_supplied = false;
+        if let Some(check) = writer_ownership_check.as_ref() {
+            authority_supplied = true;
+            // Canonical LHC thread id — the only key that stays stable across two
+            // sessions or aliases pointing at the same thread.
+            let thread_id_read = create_db_read_transaction(ref_.clone(), |tx| {
+                Box::pin(async move { read_canonical_thread_id(tx.db) })
+            })
+            .await;
+            let OpResult::Ok {
+                value: thread_id_result,
+            } = thread_id_read
+            else {
+                return match thread_id_read {
+                    OpResult::Err { error } => OpResult::Err { error },
+                    OpResult::Ok { .. } => unreachable!(),
+                };
+            };
+            let thread_id = match thread_id_result {
+                Ok(id) => id,
+                Err(reason) => return storage_failure(&reason),
+            };
+            match check(&WriterOwnershipQuery {
+                thread_id,
+                attempt_id: facts.attempt_id.clone(),
+            }) {
+                Ok(answer) => live_owner = answer,
+                Err(cause) => {
+                    // An authority that cannot answer is not authority to steal.
+                    live_owner = true;
+                    let auth_log = stage_log(
+                        ref_.clone(),
+                        &facts.attempt_id,
+                        StageName::RecoveryMaintenance,
+                        clock.clone(),
+                        Some({
+                            let mut m = Map::new();
+                            m.insert("action".into(), json!("writer_ownership_check_failed"));
+                            m.insert("detail".into(), json!(cause));
+                            m.insert("treatedAs".into(), json!("live_owner"));
+                            m
+                        }),
+                    )
+                    .await;
+                    if !matches!(auth_log, OpResult::Ok { .. }) {
+                        return match auth_log {
+                            OpResult::Err { error } => OpResult::Err { error },
+                            OpResult::Ok { .. } => unreachable!(),
+                        };
+                    }
+                }
+            }
+        }
+        if live_owner {
+            // Loser: release only a claim this attempt owns, mutate nothing else,
+            // and let the session continue its current request.
+            let owns_writer = durable_writer.claim == WriterClaimKind::Lhc
+                && durable_writer.attempt_id.as_deref() == Some(facts.attempt_id.as_str());
+            let decision = decide_compact_continuation(&build_oracle_input(
+                &facts,
+                CompactContinuationInvariants {
+                    capture_complete: facts.capture_complete,
+                    provider_identity_valid: facts.provider_identity_valid,
+                    single_open_turn,
+                    writer_claim: facts.writer_claim.clone(),
+                    writer_ownership_authority: if authority_supplied {
+                        Some(WriterOwnershipAuthority::LiveOwner)
+                    } else {
+                        None
+                    },
+                },
+                forced_from_pending.clone(),
+                empty_material(),
+            ));
+            return finalize_attempt(
+                ref_,
+                &facts,
+                decision.clone(),
+                FinalizeOpts {
+                    release_writer: owns_writer,
+                    terminal: !owns_pending,
+                    boundary_update: None,
+                    forced_boundary_this_attempt: false,
+                    continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
+                    compact_receipt: None,
+                    reclaimed_stale_writer_row: false,
+                },
+                clock,
+                hooks.as_ref(),
+            )
+            .await;
+        }
+        reclaimed_stale_writer_row = true;
+        let reclaim_log = stage_log(
+            ref_.clone(),
+            &facts.attempt_id,
+            StageName::RecoveryMaintenance,
+            clock.clone(),
+            Some({
+                let mut m = Map::new();
+                m.insert("action".into(), json!("reclaim_stale_writer_row"));
+                m.insert("priorClaim".into(), json!(facts.writer_claim.as_str()));
+                m.insert("hostAuthority".into(), json!("no_live_owner"));
+                m
+            }),
+        )
+        .await;
+        if !matches!(reclaim_log, OpResult::Ok { .. }) {
+            return match reclaim_log {
+                OpResult::Err { error } => OpResult::Err { error },
+                OpResult::Ok { .. } => unreachable!(),
+            };
+        }
+    }
+
+    // Durable protected-pair-set proof for pending-tool path (host correlation
+    // insufficient).
     let mut tool_pair_ok = true;
     if let WorkContinuation::PendingCorrelatedToolResult {
         protected_tool_call_ids,
@@ -1510,7 +1755,10 @@ async fn run_compact_continuation_inner(
         }
     }
 
-    // Illegal applied-boundary + wrong continuation kind (repair path only).
+    // Unusable applied-boundary + wrong continuation kind (repair path only).
+    // The oracle discards the boundary and starts the seam fresh (R23-S12). The
+    // durable boundary row is left inspectable and repairable — the decision is
+    // nonterminal — because the continuation turn it names really was opened.
     // v2: pending_correlated_tool_result is legal with applied boundary
     // (protected escalation).
     if matches!(forced_from_pending, ForcedContinuationBoundary::Applied(_))
@@ -1533,6 +1781,7 @@ async fn run_compact_continuation_inner(
                 provider_identity_valid: facts.provider_identity_valid,
                 single_open_turn,
                 writer_claim: oracle_writer,
+                writer_ownership_authority: None,
             },
             forced_from_pending.clone(),
             empty_material(),
@@ -1548,6 +1797,7 @@ async fn run_compact_continuation_inner(
                 forced_boundary_this_attempt: false,
                 continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
                 compact_receipt: None,
+                reclaimed_stale_writer_row: false,
             },
             clock,
             hooks.as_ref(),
@@ -1555,61 +1805,46 @@ async fn run_compact_continuation_inner(
         .await;
     }
 
-    let host_writer_conflict = matches!(
-        facts.writer_claim,
-        WriterClaim::Native | WriterClaim::Conflict
-    );
-    let health_bad = !facts.capture_complete
-        || !facts.provider_identity_valid
-        || !single_open_turn
-        || host_writer_conflict;
-
-    if health_bad || !tool_pair_ok {
+    // Capture / identity / open-turn health no longer gates the seam: those facts
+    // travel with the oracle input and surface as receipt warnings. Only an
+    // unprovable protected pair set changes the route — the pair cannot be
+    // protected through compact, so this seam declines into the host's ordinary
+    // settled-seam compact on canonical state and mutates nothing.
+    if !tool_pair_ok {
         let mut cont = facts.continuation.clone();
-        if !tool_pair_ok {
-            if let WorkContinuation::PendingCorrelatedToolResult {
-                protected_tool_call_ids,
-                ..
-            } = &facts.continuation
-            {
-                cont = WorkContinuation::PendingCorrelatedToolResult {
-                    protected_tool_call_ids: protected_tool_call_ids.clone(),
-                    correlation_valid: false,
-                };
-            }
+        if let WorkContinuation::PendingCorrelatedToolResult {
+            protected_tool_call_ids,
+            ..
+        } = &facts.continuation
+        {
+            cont = WorkContinuation::PendingCorrelatedToolResult {
+                protected_tool_call_ids: protected_tool_call_ids.clone(),
+                correlation_valid: false,
+            };
         }
-        let mut facts_health = facts.clone();
-        facts_health.continuation = cont;
+        let mut facts_decline = facts.clone();
+        facts_decline.continuation = cont;
+        // When a pending boundary is owned and repairable, keep the claim for
+        // resume. When this is a claim-only crash (no pending boundary), release
+        // so quiet/decline re-entry does not wedge the writer.
         let owns_writer = durable_writer.claim == WriterClaimKind::Lhc
             && durable_writer.attempt_id.as_deref() == Some(facts.attempt_id.as_str());
         let release_writer = owns_writer && !owns_pending;
-        // Native/conflict host claim is part of oracle input (refuse code path).
-        // Otherwise report durable own claim or none — never invent a claim.
-        let oracle_writer = if host_writer_conflict {
-            facts.writer_claim.clone()
-        } else if owns_writer {
+        let oracle_writer = if owns_writer {
             WriterClaim::Lhc
         } else {
             WriterClaim::None
         };
-        let forced = if matches!(forced_from_pending, ForcedContinuationBoundary::Applied(_))
-            && matches!(facts.continuation, WorkContinuation::ActiveNonTool)
-        {
-            forced_from_pending.clone()
-        } else {
-            ForcedContinuationBoundary::NotApplied(ForcedContinuationBoundaryNotApplied {
-                applied: false,
-            })
-        };
         let decision = decide_compact_continuation(&build_oracle_input(
-            &facts_health,
+            &facts_decline,
             CompactContinuationInvariants {
                 capture_complete: facts.capture_complete,
                 provider_identity_valid: facts.provider_identity_valid,
                 single_open_turn,
                 writer_claim: oracle_writer,
+                writer_ownership_authority: None,
             },
-            forced,
+            forced_from_pending.clone(),
             empty_material(),
         ));
         return finalize_attempt(
@@ -1618,11 +1853,13 @@ async fn run_compact_continuation_inner(
             decision.clone(),
             FinalizeOpts {
                 release_writer,
+                // Declining is terminal only when no pending boundary for this attempt.
                 terminal: !owns_pending,
                 boundary_update: None,
                 forced_boundary_this_attempt: false,
                 continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
                 compact_receipt: None,
+                reclaimed_stale_writer_row: false,
             },
             clock,
             hooks.as_ref(),
@@ -1674,6 +1911,7 @@ async fn run_compact_continuation_inner(
                 provider_identity_valid: facts.provider_identity_valid,
                 single_open_turn,
                 writer_claim: oracle_writer,
+                writer_ownership_authority: None,
             },
             ForcedContinuationBoundary::NotApplied(ForcedContinuationBoundaryNotApplied {
                 applied: false,
@@ -1691,6 +1929,7 @@ async fn run_compact_continuation_inner(
                 forced_boundary_this_attempt: false,
                 continuation_turn_id: None,
                 compact_receipt: None,
+                reclaimed_stale_writer_row: false,
             },
             clock,
             hooks.as_ref(),
@@ -1777,6 +2016,8 @@ async fn run_compact_continuation_inner(
         forced_from_pending,
         pending_boundary,
         force_intent,
+        single_open_turn,
+        reclaimed_stale_writer_row,
     )
     .await;
     run_result
@@ -1807,7 +2048,32 @@ async fn execute_compact_paths(
     mut forced_continuation_boundary: ForcedContinuationBoundary,
     pending_boundary: Option<BoundaryRow>,
     force_intent: Option<super::store::ForceIntentRow>,
+    single_open_turn: bool,
+    reclaimed_stale_writer_row: bool,
 ) -> OpResult<CompactContinuationRunResult> {
+    // Bounded retry index: 1 + the number of compact/install failures already
+    // recorded for this attempt identity. `policy.compactRetryBudget` bounds it;
+    // exhaustion continues on the current body rather than stopping.
+    let prior_stages = create_db_read_transaction(ref_.clone(), {
+        let attempt_id = facts.attempt_id.clone();
+        move |tx| Box::pin(async move { list_stage_log(tx.db, &attempt_id) })
+    })
+    .await;
+    let OpResult::Ok {
+        value: prior_stages,
+    } = prior_stages
+    else {
+        return match prior_stages {
+            OpResult::Err { error } => OpResult::Err { error },
+            OpResult::Ok { .. } => unreachable!(),
+        };
+    };
+    let prior_attempt_failures = prior_stages
+        .iter()
+        .filter(|row| row.stage == "compact_failed" || row.stage == "install_failed")
+        .count() as i64;
+    let compact_attempt_index = prior_attempt_failures + 1;
+
     let mut forced_boundary_this_attempt = false;
     let mut continuation_turn_id = pending_boundary
         .as_ref()
@@ -1928,6 +2194,7 @@ async fn execute_compact_paths(
                     provider_identity_valid: true,
                     single_open_turn: true,
                     writer_claim: WriterClaim::Lhc,
+                    writer_ownership_authority: None,
                 },
                 ForcedContinuationBoundary::NotApplied(ForcedContinuationBoundaryNotApplied {
                     applied: false,
@@ -1945,6 +2212,7 @@ async fn execute_compact_paths(
                     forced_boundary_this_attempt: false,
                     continuation_turn_id: None,
                     compact_receipt: None,
+                    reclaimed_stale_writer_row: false,
                 },
                 clock,
                 hooks,
@@ -2133,6 +2401,7 @@ async fn execute_compact_paths(
                         provider_identity_valid: true,
                         single_open_turn: true,
                         writer_claim: WriterClaim::Lhc,
+                        writer_ownership_authority: None,
                     },
                     ForcedContinuationBoundary::NotApplied(ForcedContinuationBoundaryNotApplied {
                         applied: false,
@@ -2155,6 +2424,7 @@ async fn execute_compact_paths(
                         forced_boundary_this_attempt: false,
                         continuation_turn_id: None,
                         compact_receipt: None,
+                        reclaimed_stale_writer_row: false,
                     },
                     clock,
                     hooks,
@@ -2268,6 +2538,7 @@ async fn execute_compact_paths(
                 provider_identity_valid: true,
                 single_open_turn: true,
                 writer_claim: WriterClaim::Lhc,
+                writer_ownership_authority: None,
             },
             forced_continuation_boundary.clone(),
             empty_material(),
@@ -2283,6 +2554,7 @@ async fn execute_compact_paths(
                 forced_boundary_this_attempt,
                 continuation_turn_id: continuation_turn_id.clone(),
                 compact_receipt: None,
+                reclaimed_stale_writer_row: false,
             },
             clock,
             hooks,
@@ -2537,19 +2809,19 @@ async fn execute_compact_paths(
                         {
                             material.maximal_prune_insufficient = false;
                         }
-                        // If escalated and, after maximal eligible pruning, projected
-                        // runway is still unsafe — refuse without install. Structural
-                        // facts stay as computed; maximalPruneInsufficient is now proven.
+                        // CX-S5 / R24: an unsafe projected runway after maximal
+                        // eligible pruning is a diagnostic, not a gate. The relief
+                        // still installs and the oracle records
+                        // `unsafe_runway_projection`. Oversized outgoing content is
+                        // ours to truncate as a ladder rung, and the host's exact
+                        // body check is downstream. maximalPruneInsufficient stays
+                        // proven for the receipt.
                         if escalated
                             && (material.projected_pressure_safe == Some(false)
                                 || (material.projected_pressure_safe.is_none()
                                     && material.maximal_prune_insufficient))
                         {
-                            material.install_succeeds = false;
-                            material.useful_reduction = false;
                             material.maximal_prune_insufficient = true;
-                            material.host_validation_status = HostValidationStatusFact::NotRequired;
-                            prepared = None; // do not install
                         }
                         let prep_log = stage_log(
                             ref_.clone(),
@@ -2639,10 +2911,11 @@ async fn execute_compact_paths(
     // Skipped when the attempt already resolved not to install (prepared cleared,
     // e.g. unsafe-runway refuse): a marker persisted on a certain refuse would
     // contradict the receipt residual. Repair reasserts by key.
+    // An unprovable provider request never blocks the marker or the install
+    // (R21): the best available body is sent and the provider decides.
     if needs_continue_turn
         && forced_applied
         && material.compact_structurally_valid
-        && material.can_produce_valid_provider_request
         && (prepared.is_some() || skip_real)
     {
         let c_turn = match &forced_continuation_boundary {
@@ -2735,6 +3008,7 @@ async fn execute_compact_paths(
                     provider_identity_valid: true,
                     single_open_turn: true,
                     writer_claim: WriterClaim::Lhc,
+                    writer_ownership_authority: None,
                 },
                 ForcedContinuationBoundary::Applied(
                     crate::shared_tech::compact_continuation::ForcedContinuationBoundaryApplied {
@@ -2765,6 +3039,7 @@ async fn execute_compact_paths(
                     None,
                     false,
                     pending,
+                    false,
                 ),
             };
         }
@@ -2888,6 +3163,7 @@ async fn execute_compact_paths(
                     provider_identity_valid: true,
                     single_open_turn: true,
                     writer_claim: WriterClaim::Lhc,
+                    writer_ownership_authority: None,
                 },
                 ForcedContinuationBoundary::Applied(
                     crate::shared_tech::compact_continuation::ForcedContinuationBoundaryApplied {
@@ -2945,15 +3221,15 @@ async fn execute_compact_paths(
                     None,
                     false,
                     pending,
+                    false,
                 ),
             };
         }
     }
 
     // ── Install (TS canAttemptInstall gate) ───────────────────────────────
-    let can_attempt_install = material.compact_structurally_valid
-        && material.can_produce_valid_provider_request
-        && (prepared.is_some() || skip_real);
+    let can_attempt_install =
+        material.compact_structurally_valid && (prepared.is_some() || skip_real);
 
     if can_attempt_install {
         let fail_before = hooks.is_some_and(|h| h.fail_install_before_write);
@@ -3091,11 +3367,7 @@ async fn execute_compact_paths(
             // Test-only skip path: install outcome is hook-driven.
             material.install_succeeds =
                 hooks.and_then(|h| h.force_install_succeeds).unwrap_or(true);
-            if needs_continue_turn
-                && forced_applied
-                && material.compact_structurally_valid
-                && material.can_produce_valid_provider_request
-            {
+            if needs_continue_turn && forced_applied && material.compact_structurally_valid {
                 let c_turn = match &forced_continuation_boundary {
                     ForcedContinuationBoundary::Applied(a) => a.continuation_turn_id.clone(),
                     ForcedContinuationBoundary::NotApplied(_) => String::new(),
@@ -3206,14 +3478,12 @@ async fn execute_compact_paths(
 
     let decision = decide_compact_continuation(&build_oracle_input(
         facts,
-        CompactContinuationInvariants {
-            capture_complete: true,
-            provider_identity_valid: true,
-            single_open_turn: true,
-            writer_claim: WriterClaim::Lhc,
-        },
+        compact_path_invariants(facts, single_open_turn, reclaimed_stale_writer_row),
         final_boundary.clone(),
-        material.clone(),
+        CompactMaterialFacts {
+            compact_attempt_index: Some(compact_attempt_index),
+            ..material.clone()
+        },
     ));
 
     // Boundary completion vs failed_repairable (nonterminal until repair succeeds).
@@ -3237,6 +3507,7 @@ async fn execute_compact_paths(
             ForcedContinuationBoundary::NotApplied(_) => continuation_turn_id.clone(),
         },
         compact_receipt: compact_receipt.clone(),
+        reclaimed_stale_writer_row,
     };
 
     if matches!(final_boundary, ForcedContinuationBoundary::Applied(_)) {
@@ -3255,17 +3526,10 @@ async fn execute_compact_paths(
                 completed_at: Some(clock_iso(&clock)),
             });
         } else {
-            // compact_failed: candidate structure invalid (never reached a valid install).
-            // install_failed: valid candidate reached install and install failed.
-            let reached_valid_candidate =
-                material.compact_structurally_valid && material.can_produce_valid_provider_request;
-            // unsafe_runway refuses before any install attempt — never log it as
-            // an install failure.
-            let unsafe_refuse = decision.receipt.refuse_code
-                == Some(crate::shared_tech::compact_continuation::CompactContinuationRefuseCode::UnsafeRunway);
-            let fail_stage = if unsafe_refuse {
-                "unsafe_runway_refused"
-            } else if reached_valid_candidate && !material.install_succeeds {
+            // A structurally valid candidate that reached install and failed is an
+            // install failure; anything earlier is a compact failure. Both are
+            // bounded retry, never a stop.
+            let fail_stage = if material.compact_structurally_valid && !material.install_succeeds {
                 "install_failed"
             } else {
                 "compact_failed"
@@ -3282,9 +3546,7 @@ async fn execute_compact_paths(
             let fail_log = stage_log(
                 ref_.clone(),
                 &facts.attempt_id,
-                if fail_stage == "unsafe_runway_refused" {
-                    StageName::UnsafeRunwayRefused
-                } else if fail_stage == "install_failed" {
+                if fail_stage == "install_failed" {
                     StageName::InstallFailed
                 } else {
                     StageName::CompactFailed

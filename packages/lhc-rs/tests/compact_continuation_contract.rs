@@ -18,15 +18,16 @@ use lhc::shared_tech::compact_continuation::{
     COMPACT_CONTINUATION_INPUT_CLOSED_SHAPE, COMPACT_CONTINUATION_INVARIANTS,
     COMPACT_CONTINUATION_MARKER_ACTION, COMPACT_CONTINUATION_MARKER_CAUSE,
     COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX, COMPACT_CONTINUATION_MARKER_KIND,
-    COMPACT_CONTINUATION_OUTCOME_KINDS, COMPACT_CONTINUATION_REFUSE_CODES,
-    COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE, COMPACT_CONTINUATION_SKIP_CODES,
-    COMPACT_CONTINUATION_STATES, COMPACT_CONTINUATION_TRANSITION_ORDER,
+    COMPACT_CONTINUATION_OUTCOME_KINDS, COMPACT_CONTINUATION_REACHABLE_REFUSE_CODES,
+    COMPACT_CONTINUATION_REFUSE_CODES, COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE,
+    COMPACT_CONTINUATION_SKIP_CODES, COMPACT_CONTINUATION_STATES,
+    COMPACT_CONTINUATION_TRANSITION_ORDER, COMPACT_CONTINUATION_WARNING_CODES,
     COMPACT_CONTINUATION_WRITER_CLAIMS, CONTEXT_COMPACT_CONTINUE_REASON,
     CompactContinuationDecision, CompactContinuationEffect, CompactContinuationHostCapability,
     CompactContinuationInput, CompactContinuationInvariants, CompactContinuationOutcomeKind,
     CompactContinuationPolicy, CompactContinuationRefuseCode, CompactContinuationSeam,
     CompactContinuationSkipCode, CompactContinuationState, CompactMaterialFacts,
-    ForcedContinuationBoundary, ForcedContinuationBoundaryApplied,
+    DEFAULT_COMPACT_RETRY_BUDGET, ForcedContinuationBoundary, ForcedContinuationBoundaryApplied,
     ForcedContinuationBoundaryNotApplied, HostValidationStatusFact, PostMeasurementEstimate,
     ProviderUsageAuthority, ProviderUsageAvailable, ProviderUsageUnavailable,
     ProviderUsageUnavailableReason, ValidationResult, WorkContinuation, WriterClaim,
@@ -249,6 +250,16 @@ fn effect_types(decision: &CompactContinuationDecision) -> Vec<&'static str> {
     decision.effects.iter().map(|e| e.type_str()).collect()
 }
 
+/// Ordered receipt warning codes — the CX-S5 read-out for a degraded seam.
+fn warning_codes(decision: &CompactContinuationDecision) -> Vec<&'static str> {
+    decision
+        .receipt
+        .warnings
+        .iter()
+        .map(|w| w.code.as_str())
+        .collect()
+}
+
 // ── Surface pins ─────────────────────────────────────────────────────────────
 
 #[test]
@@ -288,8 +299,25 @@ fn exports_closed_vocabularies() {
     assert!(!COMPACT_CONTINUATION_REFUSE_CODES.contains(&"transport_retry"));
     assert!(!COMPACT_CONTINUATION_REFUSE_CODES.contains(&"not_at_settled_seam"));
     assert!(COMPACT_CONTINUATION_SKIP_CODES.contains(&"transport_retry"));
-    assert!(COMPACT_CONTINUATION_SKIP_CODES.contains(&"input_epoch_changed"));
     assert!(COMPACT_CONTINUATION_SKIP_CODES.contains(&"not_at_settled_seam"));
+    // CX-S5 / R1: input epoch drift is diagnostic only — it is not a skip code.
+    assert!(!COMPACT_CONTINUATION_SKIP_CODES.contains(&"input_epoch_changed"));
+    assert!(!COMPACT_CONTINUATION_TRANSITION_ORDER.contains(&"input_epoch"));
+    // CX-S5: the refuse set is empty; the vocabulary stays only for old receipts.
+    assert_eq!(COMPACT_CONTINUATION_REACHABLE_REFUSE_CODES, &[] as &[&str]);
+    assert!(COMPACT_CONTINUATION_OUTCOME_KINDS.contains(&"decline_to_ordinary_compact"));
+    assert!(COMPACT_CONTINUATION_OUTCOME_KINDS.contains(&"retry_compact"));
+    assert!(COMPACT_CONTINUATION_OUTCOME_KINDS.contains(&"continue_current_body"));
+    assert!(COMPACT_CONTINUATION_STATES.contains(&"terminal_decline_ordinary"));
+    assert!(COMPACT_CONTINUATION_STATES.contains(&"terminal_retry"));
+    assert!(COMPACT_CONTINUATION_STATES.contains(&"terminal_continue_current_body"));
+    assert!(COMPACT_CONTINUATION_WARNING_CODES.contains(&"capture_incomplete"));
+    assert!(COMPACT_CONTINUATION_WARNING_CODES.contains(&"stale_writer_row_reclaimed"));
+    assert!(COMPACT_CONTINUATION_WARNING_CODES.contains(&"writer_owned_elsewhere"));
+    assert!(COMPACT_CONTINUATION_WARNING_CODES.contains(&"compact_retry_budget_exhausted"));
+    assert!(COMPACT_CONTINUATION_WARNING_CODES.contains(&"unsupported_contract_version_omitted"));
+    assert!(COMPACT_CONTINUATION_WARNING_CODES.contains(&"unsafe_runway_projection"));
+    const { assert!(DEFAULT_COMPACT_RETRY_BUDGET >= 1) };
     assert_eq!(COMPACT_CONTINUATION_TRANSITION_ORDER[0], "seam_eligibility");
     assert!(COMPACT_CONTINUATION_TRANSITION_ORDER.contains(&"forced_boundary_state_legality"));
     assert!(COMPACT_CONTINUATION_TRANSITION_ORDER.contains(&"force_boundary_if_continue_turn"));
@@ -305,10 +333,22 @@ fn exports_closed_vocabularies() {
         COMPACT_CONTINUATION_INVARIANTS
             .contains(&"marker_persisted_is_residual_state_not_attempt_scoped")
     );
-    assert!(
-        COMPACT_CONTINUATION_INVARIANTS
-            .contains(&"settled_seam_lhc_claim_early_refuse_records_claim_and_release")
-    );
+    for id in [
+        "refuse_set_is_empty_no_stop_in_the_compact_path",
+        "never_strand_a_session_every_condition_warns_and_continues",
+        "input_epoch_is_diagnostic_only_never_vetoes_a_settled_seam",
+        "compact_and_install_failure_are_bounded_retry_not_terminal",
+        "stale_writer_row_reclaim_requires_host_ownership_authority",
+        "writer_ownership_registry_lives_host_side_not_in_the_sdk",
+        "unknown_contract_version_omits_continuation_state_in_its_entirety",
+        "unsafe_runway_is_diagnostic_not_a_gate",
+        "best_available_body_is_sent_provider_is_final_authority",
+    ] {
+        assert!(
+            COMPACT_CONTINUATION_INVARIANTS.contains(&id),
+            "missing {id}"
+        );
+    }
     assert!(
         COMPACT_CONTINUATION_INVARIANTS
             .contains(&"preserve_tool_install_failure_includes_preserve_effect")
@@ -317,7 +357,7 @@ fn exports_closed_vocabularies() {
     assert_eq!(COMPACT_CONTINUATION_WRITER_CLAIMS.len(), 4);
 }
 
-// ── Manifest + 47-case fixture parity ────────────────────────────────────────
+// ── Manifest + 58-case fixture parity ────────────────────────────────────────
 
 #[test]
 fn manifest_version_and_required_coverage_are_complete() {
@@ -330,8 +370,8 @@ fn manifest_version_and_required_coverage_are_complete() {
     assert!(manifest.cases.len() >= 18);
     assert_eq!(
         manifest.cases.len(),
-        47,
-        "LIM-67 expects exactly 47 fixture cases"
+        58,
+        "CX-S5 expects exactly 58 fixture cases"
     );
 
     let covered: HashSet<&str> = manifest
@@ -385,9 +425,9 @@ fn every_cases_json_file_is_listed_in_manifest() {
 }
 
 #[test]
-fn all_47_fixture_cases_match_oracle_exactly() {
+fn all_58_fixture_cases_match_oracle_exactly() {
     let manifest = load_manifest();
-    assert_eq!(manifest.cases.len(), 47);
+    assert_eq!(manifest.cases.len(), 58);
 
     for entry in &manifest.cases {
         let fixture = load_case(&entry.file);
@@ -614,18 +654,23 @@ fn pending_tool_path_preserves_pair_no_marker() {
 }
 
 #[test]
-fn post_boundary_compact_failure_keeps_boundary_and_releases_writer() {
+fn post_boundary_compact_failure_retries_within_budget() {
     let fixture = load_case("cases/compact_failed_continue_turn.json");
     let input = as_compact_continuation_input(&fixture.input).unwrap();
     let actual = decide_compact_continuation(&input);
-    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
+    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::RetryCompact);
+    assert!(!actual.receipt.refused);
+    assert!(actual.receipt.retry.retry_authorized);
+    assert_eq!(warning_codes(&actual), vec!["compact_attempt_failed"]);
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::CompactFailed)
+        actual.receipt.turn_end_reason.as_deref(),
+        Some(CONTEXT_COMPACT_CONTINUE_REASON)
     );
     assert!(actual.receipt.residual.forced_continuation_boundary_applied);
     assert!(actual.receipt.residual.writer_released);
     assert!(!actual.receipt.residual.marker_persisted);
+    // The boundary stays repairable; the session is never held hostage to it.
+    assert!(actual.receipt.residual.next_provider_request_allowed);
     let types = effect_types(&actual);
     assert!(types.contains(&"claim_writer"));
     assert!(types.contains(&"force_turn_end"));
@@ -688,24 +733,70 @@ fn capability_limited_identical_decision_table() {
 }
 
 #[test]
-fn unsupported_contract_version_refuses() {
+fn unsupported_contract_version_omits_continuation_state_entirely() {
     let mut raw = base_input(json!({}));
     raw.as_object_mut()
         .unwrap()
         .insert("contractVersion".into(), json!("0.9.0"));
-    // as_* only checks non-empty version string; unsupported is an oracle refuse.
+    // as_* only checks non-empty version string; unsupported is an oracle decline.
     let input = as_compact_continuation_input(&raw).unwrap();
     let actual = decide_compact_continuation(&input);
-    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
+    // Degrade by feature omission: no partial parse, no guessing, no stop.
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::UnsupportedContractVersion)
+        actual.outcome,
+        CompactContinuationOutcomeKind::DeclineToOrdinaryCompact
+    );
+    assert!(!actual.receipt.refused);
+    assert_eq!(
+        warning_codes(&actual),
+        vec!["unsupported_contract_version_omitted"]
     );
     assert!(actual.receipt.reason_code.contains("0.9.0"));
     assert_eq!(
         actual.receipt.contract_version,
         COMPACT_CONTINUATION_CONTRACT_VERSION
     );
+    // The pending boundary is discarded without ever being interpreted.
+    assert!(actual.effects.iter().any(|e| matches!(
+        e,
+        CompactContinuationEffect::DiscardPendingBoundary {
+            continuation_turn_id: None,
+            ..
+        }
+    )));
+    let residual = &actual.receipt.residual;
+    assert!(residual.pending_boundary_discarded);
+    assert!(!residual.forced_continuation_boundary_applied);
+    assert!(!residual.continuation_turn_opened);
+    assert!(residual.continuation_turn_id.is_none());
+    assert!(residual.prior_serving_view_intact);
+    // The host's ordinary compact runs on canonical turns; nothing strands.
+    assert!(residual.next_provider_request_allowed);
+    assert!(!effect_types(&actual).contains(&"compact"));
+}
+
+#[test]
+fn unknown_version_input_never_has_its_continuation_state_parsed() {
+    let mut raw = base_input(json!({
+        "forcedContinuationBoundary": {
+            "applied": true,
+            "continuationTurnId": "t7",
+            "forcedThisSeam": false,
+            "markerAlreadyPersisted": true,
+        },
+    }));
+    raw.as_object_mut()
+        .unwrap()
+        .insert("contractVersion".into(), json!("9.9.9"));
+    let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
+    assert_eq!(
+        actual.outcome,
+        CompactContinuationOutcomeKind::DeclineToOrdinaryCompact
+    );
+    // Nothing from the unknown-version boundary leaks into the receipt.
+    assert!(!js_json_stringify_of(&actual).unwrap().contains("t7"));
+    assert!(!actual.receipt.residual.marker_persisted);
+    assert!(actual.receipt.protected_tool_call_ids.is_empty());
 }
 
 #[test]
@@ -839,17 +930,18 @@ fn install_failure_wins_over_no_reduction_continue_turn() {
         },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
-    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
-    assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InstallFailed)
-    );
+    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::RetryCompact);
+    assert_eq!(warning_codes(&actual), vec!["install_attempt_failed"]);
     let types = effect_types(&actual);
     assert!(!types.contains(&"install_serving_view"));
     assert!(types.contains(&"insert_continuation_marker"));
-    assert!(actual.receipt.residual.marker_persisted);
-    assert!(!actual.receipt.residual.marker_served);
-    assert!(!actual.receipt.residual.next_provider_request_allowed);
+    let residual = &actual.receipt.residual;
+    assert!(residual.prior_serving_view_intact);
+    assert!(residual.marker_persisted);
+    assert!(!residual.marker_served);
+    assert!(residual.next_provider_request_allowed);
+    assert!(residual.forced_continuation_boundary_applied);
+    assert!(residual.writer_released);
 }
 
 #[test]
@@ -870,12 +962,15 @@ fn install_failure_wins_over_no_reduction_preserve_tool() {
         },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
-    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
-    assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InstallFailed)
-    );
-    assert!(actual.receipt.residual.original_agentic_turn_still_open);
+    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::RetryCompact);
+    assert_eq!(warning_codes(&actual), vec!["install_attempt_failed"]);
+    assert!(!effect_types(&actual).contains(&"install_serving_view"));
+    let residual = &actual.receipt.residual;
+    assert!(residual.prior_serving_view_intact);
+    assert!(!residual.marker_persisted);
+    assert!(!residual.marker_served);
+    assert!(residual.original_agentic_turn_still_open);
+    assert!(residual.next_provider_request_allowed);
 }
 
 #[test]
@@ -941,7 +1036,7 @@ fn pending_boundary_resumes_despite_below_trigger() {
 }
 
 #[test]
-fn pending_boundary_kind_none_refuses() {
+fn pending_boundary_kind_none_is_discarded_and_seam_starts_fresh() {
     let raw = base_input(json!({
         "forcedContinuationBoundary": {
             "applied": true,
@@ -952,12 +1047,19 @@ fn pending_boundary_kind_none_refuses() {
         "continuation": { "kind": "none" },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
+    // Work is complete, so the fresh evaluation closes normally. The discard is
+    // recorded, the boundary is not treated as applied, and nothing stops.
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidPendingBoundaryContinuation)
+        actual.outcome,
+        CompactContinuationOutcomeKind::NormalComplete
     );
-    assert!(actual.receipt.residual.forced_continuation_boundary_applied);
-    assert!(!actual.receipt.residual.original_agentic_turn_still_open);
+    assert!(!actual.receipt.refused);
+    assert_eq!(warning_codes(&actual), vec!["pending_boundary_discarded"]);
+    assert!(effect_types(&actual).contains(&"discard_pending_boundary"));
+    let residual = &actual.receipt.residual;
+    assert!(residual.pending_boundary_discarded);
+    assert!(!residual.forced_continuation_boundary_applied);
+    assert!(residual.next_provider_request_allowed);
 }
 
 #[test]
@@ -1129,23 +1231,38 @@ fn install_failed_continue_turn_marker_persisted_not_served() {
 }
 
 #[test]
-fn active_non_tool_above_trigger_without_boundary_refuses() {
+fn active_non_tool_above_trigger_without_boundary_declines_to_ordinary() {
     let raw = base_input(json!({
         "continuation": { "kind": "active_non_tool" },
         "forcedContinuationBoundary": { "applied": false },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
-    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
+    // The oracle never invents a continuation turn id, and it never stops:
+    // the host's ordinary settled-seam compact takes the canonical turns.
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidPendingBoundaryContinuation)
+        actual.outcome,
+        CompactContinuationOutcomeKind::DeclineToOrdinaryCompact
     );
-    assert_eq!(effect_types(&actual), vec!["refuse", "record_receipt"]);
+    assert!(!actual.receipt.refused);
+    assert_eq!(
+        warning_codes(&actual),
+        vec!["continuation_boundary_unavailable"]
+    );
+    assert!(!actual.receipt.residual.forced_continuation_boundary_applied);
+    assert!(actual.receipt.residual.next_provider_request_allowed);
+    assert_eq!(effect_types(&actual), vec!["warn", "record_receipt"]);
 }
 
 #[test]
-fn single_open_turn_false_refuses() {
+fn single_open_turn_false_warns_and_the_seam_still_compacts() {
     let raw = base_input(json!({
+        "forcedContinuationBoundary": {
+            "applied": true,
+            "continuationTurnId": "t2",
+            "forcedThisSeam": true,
+            "markerAlreadyPersisted": false,
+        },
+        "continuation": { "kind": "active_non_tool" },
         "invariants": {
             "captureComplete": true,
             "providerIdentityValid": true,
@@ -1154,10 +1271,19 @@ fn single_open_turn_false_refuses() {
         },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
+    // Turn-record validation is core LHC's own job, not a compact precondition.
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::OpenTurnInvariantBroken)
+        actual.outcome,
+        CompactContinuationOutcomeKind::CompactContinueTurn
     );
+    assert!(!actual.receipt.refused);
+    assert_eq!(
+        warning_codes(&actual),
+        vec!["open_turn_invariant_unverified"]
+    );
+    assert!(effect_types(&actual).contains(&"install_serving_view"));
+    assert!(actual.receipt.residual.writer_released);
+    assert!(actual.receipt.residual.next_provider_request_allowed);
 }
 
 #[test]
@@ -1179,23 +1305,29 @@ fn repair_prior_marker_compact_fail_residual_truth() {
         },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
-    assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::CompactFailed)
-    );
+    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::RetryCompact);
+    assert_eq!(warning_codes(&actual), vec!["compact_attempt_failed"]);
     assert!(!effect_types(&actual).contains(&"force_turn_end"));
     assert!(!effect_types(&actual).contains(&"insert_continuation_marker"));
-    assert!(actual.receipt.residual.marker_persisted);
-    assert!(!actual.receipt.residual.marker_served);
-    assert_eq!(
-        actual.receipt.residual.continuation_turn_id.as_deref(),
-        Some("t4")
-    );
+    let residual = &actual.receipt.residual;
+    assert!(residual.marker_persisted);
+    assert!(!residual.marker_served);
+    assert_eq!(residual.continuation_turn_id.as_deref(), Some("t4"));
+    assert!(residual.writer_released);
+    assert!(residual.prior_serving_view_intact);
+    assert!(residual.next_provider_request_allowed);
 }
 
 #[test]
-fn writer_claim_lhc_incomplete_capture_records_claim_and_release() {
+fn writer_claim_lhc_incomplete_capture_warns_and_still_compacts() {
     let raw = base_input(json!({
+        "forcedContinuationBoundary": {
+            "applied": true,
+            "continuationTurnId": "t2",
+            "forcedThisSeam": true,
+            "markerAlreadyPersisted": false,
+        },
+        "continuation": { "kind": "active_non_tool" },
         "invariants": {
             "captureComplete": false,
             "providerIdentityValid": true,
@@ -1205,17 +1337,52 @@ fn writer_claim_lhc_incomplete_capture_records_claim_and_release() {
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::IncompleteCapture)
+        actual.outcome,
+        CompactContinuationOutcomeKind::CompactContinueTurn
     );
-    assert_eq!(
-        effect_types(&actual),
-        vec!["claim_writer", "refuse", "record_receipt", "release_writer"]
+    assert_eq!(warning_codes(&actual), vec!["capture_incomplete"]);
+    assert!(actual.receipt.residual.writer_released);
+    let types = effect_types(&actual);
+    // Detected first, done second: the warning leads, then the claim.
+    assert_eq!(types[0], "warn");
+    assert_eq!(types[1], "claim_writer");
+    assert!(
+        types.iter().position(|t| *t == "claim_writer")
+            < types.iter().position(|t| *t == "release_writer")
     );
 }
 
 #[test]
-fn install_failed_preserve_tool_includes_preserve_effect() {
+fn settled_seam_decline_with_writer_claim_lhc_records_claim_then_release() {
+    let raw = base_input(json!({
+        "continuation": {
+            "kind": "pending_correlated_tool_result",
+            "protectedToolCallIds": ["call-bad"],
+            "correlationValid": false,
+        },
+        "invariants": {
+            "captureComplete": true,
+            "providerIdentityValid": true,
+            "singleOpenTurn": true,
+            "writerClaim": "lhc",
+        },
+    }));
+    let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
+    assert_eq!(
+        actual.outcome,
+        CompactContinuationOutcomeKind::DeclineToOrdinaryCompact
+    );
+    assert_eq!(warning_codes(&actual), vec!["tool_correlation_unproven"]);
+    assert_eq!(
+        effect_types(&actual),
+        vec!["warn", "claim_writer", "record_receipt", "release_writer"]
+    );
+    assert!(actual.receipt.residual.writer_released);
+    assert!(actual.receipt.residual.next_provider_request_allowed);
+}
+
+#[test]
+fn preserve_tool_install_failure_records_preserve_effect_and_keeps_turn_open() {
     let raw = base_input(json!({
         "continuation": {
             "kind": "pending_correlated_tool_result",
@@ -1232,14 +1399,31 @@ fn install_failed_preserve_tool_includes_preserve_effect() {
         },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
-    assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InstallFailed)
-    );
+    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::RetryCompact);
+    assert_eq!(warning_codes(&actual), vec!["install_attempt_failed"]);
     let types = effect_types(&actual);
     assert!(types.contains(&"preserve_tool_pairs_verbatim"));
+    assert!(
+        types.iter().position(|t| *t == "compact")
+            < types
+                .iter()
+                .position(|t| *t == "preserve_tool_pairs_verbatim")
+    );
+    assert!(
+        types
+            .iter()
+            .position(|t| *t == "preserve_tool_pairs_verbatim")
+            < types.iter().position(|t| *t == "warn")
+    );
     assert!(!types.contains(&"insert_continuation_marker"));
-    assert!(actual.receipt.residual.original_agentic_turn_still_open);
+    assert!(!types.contains(&"install_serving_view"));
+    let residual = &actual.receipt.residual;
+    assert!(!residual.marker_persisted);
+    assert!(!residual.marker_served);
+    assert!(residual.original_agentic_turn_still_open);
+    assert!(residual.prior_serving_view_intact);
+    assert!(residual.writer_released);
+    assert!(residual.next_provider_request_allowed);
 }
 
 // ── Marker identity ──────────────────────────────────────────────────────────
@@ -1337,7 +1521,7 @@ fn same_boundary_repair_reasserts_marker_key() {
 }
 
 #[test]
-fn applied_boundary_legality_precedes_native_writer_conflict() {
+fn boundary_discard_is_recorded_before_the_writer_stage_runs() {
     let raw = base_input(json!({
         "continuation": { "kind": "none" },
         "forcedContinuationBoundary": {
@@ -1354,10 +1538,22 @@ fn applied_boundary_legality_precedes_native_writer_conflict() {
         },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
+    // forced_boundary_state_legality runs before writer_claim: the discard and
+    // its warning lead the effect list even though a native row is also present.
+    assert_eq!(effect_types(&actual)[0], "discard_pending_boundary");
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidPendingBoundaryContinuation)
+        warning_codes(&actual),
+        vec!["pending_boundary_discarded", "writer_owned_elsewhere"]
     );
+    assert!(actual.receipt.residual.pending_boundary_discarded);
+    // No host ownership authority was supplied, so the row is treated as live
+    // and this attempt continues its current request rather than stealing it.
+    assert_eq!(
+        actual.outcome,
+        CompactContinuationOutcomeKind::ContinueCurrentBody
+    );
+    assert!(actual.receipt.residual.next_provider_request_allowed);
+    assert!(!actual.receipt.refused);
 }
 
 #[test]
@@ -1403,34 +1599,40 @@ fn fresh_force_marker_already_persisted_illegal() {
                 .contains("forcedThisSeam true cannot pair with markerAlreadyPersisted true")
     }));
 
-    // Total evaluator refuses even for direct typed callers that skip as*.
+    // The total evaluator keeps the real boundary (discarding it would orphan an
+    // open continuation turn), refuses to trust the contradictory marker claim,
+    // and continues — even for direct typed callers that skip as*.
     let typed: lhc::shared_tech::compact_continuation::CompactContinuationInput =
         serde_json::from_value(raw).unwrap();
     let actual = decide_compact_continuation(&typed);
-    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidPendingBoundaryContinuation)
+        actual.outcome,
+        CompactContinuationOutcomeKind::ContinueCurrentBody
     );
-    assert_ne!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::NativeWriterConflict)
+    assert!(!actual.receipt.refused);
+    assert_eq!(
+        warning_codes(&actual),
+        vec!["boundary_marker_claim_untrusted", "writer_owned_elsewhere"]
     );
     assert_eq!(
         actual.transition_path,
         vec![
             CompactContinuationState::AtSeam,
             CompactContinuationState::CheckingInvariants,
-            CompactContinuationState::TerminalRefuse,
+            CompactContinuationState::TerminalContinueCurrentBody,
         ]
     );
-    assert!(actual.receipt.residual.forced_continuation_boundary_applied);
-    assert!(!actual.receipt.residual.marker_persisted);
-    assert!(!actual.receipt.residual.marker_served);
-    assert_eq!(
-        actual.receipt.residual.continuation_turn_id.as_deref(),
-        Some("t2")
-    );
+    let residual = &actual.receipt.residual;
+    assert!(residual.forced_continuation_boundary_applied);
+    assert!(residual.continuation_turn_opened);
+    assert_eq!(residual.continuation_turn_id.as_deref(), Some("t2"));
+    // The untrusted claim is never OR'd back into residual truth.
+    assert!(!residual.marker_persisted);
+    assert!(!residual.marker_served);
+    assert!(!residual.original_agentic_turn_still_open);
+    assert!(residual.next_provider_request_allowed);
+    assert!(residual.prior_serving_view_intact);
+    assert!(residual.writer_released);
     assert!(validate_compact_continuation_decision(&actual).ok);
 }
 
@@ -1700,6 +1902,7 @@ fn hand_built_base(continuation: WorkContinuation) -> CompactContinuationInput {
             upper_trigger_tokens: 100_000,
             lower_target_tokens: 40_000,
             host_capability: CompactContinuationHostCapability::FullStateMachine,
+            compact_retry_budget: None,
         },
         continuation,
         invariants: CompactContinuationInvariants {
@@ -1707,6 +1910,7 @@ fn hand_built_base(continuation: WorkContinuation) -> CompactContinuationInput {
             provider_identity_valid: true,
             single_open_turn: true,
             writer_claim: WriterClaim::None,
+            writer_ownership_authority: None,
         },
         forced_continuation_boundary: ForcedContinuationBoundary::not_applied(),
         compact_material: CompactMaterialFacts {
@@ -1729,6 +1933,7 @@ fn hand_built_base(continuation: WorkContinuation) -> CompactContinuationInput {
             compact_point_at_install: None,
             maximal_prune_insufficient: false,
             host_validation_status: HostValidationStatusFact::NotRequired,
+            compact_attempt_index: None,
         },
     }
 }
@@ -1949,9 +2154,21 @@ fn reject_fixture_still_deserializes_for_total_oracle() {
     assert_eq!(fixture.input_validation, "reject");
     let typed: CompactContinuationInput = serde_json::from_value(fixture.input.clone()).unwrap();
     let actual = decide_compact_continuation(&typed);
+    // The total oracle classifies it without stopping: the contradictory marker
+    // claim is warned and untrusted, the stale writer row is reclaimed under host
+    // authority, and the seam compacts.
+    assert!(!actual.receipt.refused);
+    assert_eq!(actual.receipt.refuse_code, None);
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidPendingBoundaryContinuation)
+        actual.outcome,
+        CompactContinuationOutcomeKind::CompactContinueTurn
+    );
+    assert_eq!(
+        warning_codes(&actual),
+        vec![
+            "boundary_marker_claim_untrusted",
+            "stale_writer_row_reclaimed"
+        ]
     );
 }
 
@@ -2064,7 +2281,7 @@ fn as_input_converts_integral_float_spellings_like_js() {
 }
 
 #[test]
-fn no_valid_provider_request_continue_turn_refuses() {
+fn no_valid_provider_request_continue_turn_sends_best_body() {
     let raw = base_input(json!({
         "forcedContinuationBoundary": {
             "applied": true,
@@ -2082,32 +2299,44 @@ fn no_valid_provider_request_continue_turn_refuses() {
         },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
-    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
+    // R21: the provider is the final authority on what it accepts. A provider
+    // rejection is recoverable where a stranded session is not.
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::NoValidProviderRequest)
+        actual.outcome,
+        CompactContinuationOutcomeKind::CompactContinueTurn
     );
+    assert!(!actual.receipt.refused);
+    assert_eq!(warning_codes(&actual), vec!["provider_request_unvalidated"]);
     let types = effect_types(&actual);
     assert!(types.contains(&"claim_writer"));
     assert!(types.contains(&"force_turn_end"));
     assert!(types.contains(&"compact"));
-    assert!(!types.contains(&"insert_continuation_marker"));
-    assert!(!types.contains(&"install_serving_view"));
+    assert!(types.contains(&"insert_continuation_marker"));
+    assert!(types.contains(&"install_serving_view"));
     assert!(types.contains(&"release_writer"));
+    // The diagnostic lands between the compact and the marker it never gated.
+    assert!(types.iter().position(|t| *t == "compact") < types.iter().position(|t| *t == "warn"));
+    assert!(
+        types.iter().position(|t| *t == "warn")
+            < types
+                .iter()
+                .position(|t| *t == "insert_continuation_marker")
+    );
     assert_eq!(
         actual.transition_path.last().copied(),
-        Some(CompactContinuationState::TerminalRefuse)
+        Some(CompactContinuationState::TerminalContinueTurn)
     );
-    assert!(actual.receipt.residual.forced_continuation_boundary_applied);
-    assert!(!actual.receipt.residual.marker_persisted);
-    assert!(!actual.receipt.residual.marker_served);
-    assert!(actual.receipt.residual.prior_serving_view_intact);
-    assert!(!actual.receipt.residual.next_provider_request_allowed);
+    let residual = &actual.receipt.residual;
+    assert!(residual.forced_continuation_boundary_applied);
+    assert!(residual.marker_persisted);
+    assert!(residual.marker_served);
+    assert!(!residual.prior_serving_view_intact);
+    assert!(residual.next_provider_request_allowed);
     assert!(validate_compact_continuation_decision(&actual).ok);
 }
 
 #[test]
-fn no_valid_provider_request_preserve_tool_refuses() {
+fn no_valid_provider_request_preserve_tool_sends_best_body() {
     let raw = base_input(json!({
         "continuation": {
             "kind": "pending_correlated_tool_result",
@@ -2124,20 +2353,22 @@ fn no_valid_provider_request_preserve_tool_refuses() {
         },
     }));
     let actual = decide_compact_continuation(&as_compact_continuation_input(&raw).unwrap());
-    assert_eq!(actual.outcome, CompactContinuationOutcomeKind::Refuse);
     assert_eq!(
-        actual.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::NoValidProviderRequest)
+        actual.outcome,
+        CompactContinuationOutcomeKind::CompactPreserveTool
     );
+    assert!(!actual.receipt.refused);
+    assert_eq!(warning_codes(&actual), vec!["provider_request_unvalidated"]);
     let types = effect_types(&actual);
     assert!(types.contains(&"claim_writer"));
     assert!(types.contains(&"compact"));
-    assert!(!types.contains(&"preserve_tool_pairs_verbatim")); // compact fails request before preserve install stage
-    assert!(!types.contains(&"install_serving_view"));
+    assert!(types.contains(&"preserve_tool_pairs_verbatim"));
+    assert!(types.contains(&"install_serving_view"));
     assert!(types.contains(&"release_writer"));
-    assert!(actual.receipt.residual.original_agentic_turn_still_open);
-    assert!(actual.receipt.residual.prior_serving_view_intact);
-    assert!(!actual.receipt.residual.next_provider_request_allowed);
+    let residual = &actual.receipt.residual;
+    assert!(residual.original_agentic_turn_still_open);
+    assert!(!residual.prior_serving_view_intact);
+    assert!(residual.next_provider_request_allowed);
     assert!(validate_compact_continuation_decision(&actual).ok);
 }
 
@@ -2156,4 +2387,6 @@ fn _type_pins() {
     let _: Option<PostMeasurementEstimate> = None;
     let _: Option<CompactMaterialFacts> = None;
     let _: Option<ValidationResult> = None;
+    // Historical vocabulary: retained so old receipts still validate (CX-S5).
+    let _: Option<CompactContinuationRefuseCode> = None;
 }

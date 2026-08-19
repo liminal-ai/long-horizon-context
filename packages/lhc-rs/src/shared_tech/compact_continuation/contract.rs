@@ -146,6 +146,16 @@ pub enum CompactContinuationState {
     TerminalDegraded,
     #[serde(rename = "terminal_no_reduction")]
     TerminalNoReduction,
+    /// Terminal: continuation machinery declined; the host's ordinary settled-seam
+    /// compact runs on canonical turns. No continuation mutation happened.
+    #[serde(rename = "terminal_decline_ordinary")]
+    TerminalDeclineOrdinary,
+    /// Terminal: compact/install attempt failed; bounded retry still authorized.
+    #[serde(rename = "terminal_retry")]
+    TerminalRetry,
+    /// Terminal: session continues on its current body; no relief this seam.
+    #[serde(rename = "terminal_continue_current_body")]
+    TerminalContinueCurrentBody,
     #[serde(rename = "terminal_skip")]
     TerminalSkip,
     #[serde(rename = "terminal_refuse")]
@@ -171,6 +181,9 @@ impl CompactContinuationState {
             Self::TerminalNormalComplete => "terminal_normal_complete",
             Self::TerminalDegraded => "terminal_degraded",
             Self::TerminalNoReduction => "terminal_no_reduction",
+            Self::TerminalDeclineOrdinary => "terminal_decline_ordinary",
+            Self::TerminalRetry => "terminal_retry",
+            Self::TerminalContinueCurrentBody => "terminal_continue_current_body",
             Self::TerminalSkip => "terminal_skip",
             Self::TerminalRefuse => "terminal_refuse",
         }
@@ -194,6 +207,9 @@ impl CompactContinuationState {
             "terminal_normal_complete" => Self::TerminalNormalComplete,
             "terminal_degraded" => Self::TerminalDegraded,
             "terminal_no_reduction" => Self::TerminalNoReduction,
+            "terminal_decline_ordinary" => Self::TerminalDeclineOrdinary,
+            "terminal_retry" => Self::TerminalRetry,
+            "terminal_continue_current_body" => Self::TerminalContinueCurrentBody,
             "terminal_skip" => Self::TerminalSkip,
             "terminal_refuse" => Self::TerminalRefuse,
             _ => return None,
@@ -218,6 +234,9 @@ pub const COMPACT_CONTINUATION_STATES: &[&str] = &[
     "terminal_normal_complete",
     "terminal_degraded",
     "terminal_no_reduction",
+    "terminal_decline_ordinary",
+    "terminal_retry",
+    "terminal_continue_current_body",
     "terminal_skip",
     "terminal_refuse",
 ];
@@ -240,6 +259,19 @@ pub enum CompactContinuationOutcomeKind {
     DegradedCompact,
     #[serde(rename = "no_reduction")]
     NoReduction,
+    /// Continuation machinery declined this seam and handed the work to the
+    /// host's ordinary settled-seam compact on canonical turns. No mutation by
+    /// the continuation machine; the next provider request is authorized.
+    #[serde(rename = "decline_to_ordinary_compact")]
+    DeclineToOrdinaryCompact,
+    /// A compact or install attempt failed and bounded retry is still authorized.
+    /// The session continues on its current body until the next eligible seam.
+    #[serde(rename = "retry_compact")]
+    RetryCompact,
+    /// The session continues on its current body with no relief this seam
+    /// (retry budget exhausted, or a live writer owner holds the thread).
+    #[serde(rename = "continue_current_body")]
+    ContinueCurrentBody,
     #[serde(rename = "skip_seam")]
     SkipSeam,
     #[serde(rename = "refuse")]
@@ -256,6 +288,9 @@ impl CompactContinuationOutcomeKind {
             Self::NormalComplete => "normal_complete",
             Self::DegradedCompact => "degraded_compact",
             Self::NoReduction => "no_reduction",
+            Self::DeclineToOrdinaryCompact => "decline_to_ordinary_compact",
+            Self::RetryCompact => "retry_compact",
+            Self::ContinueCurrentBody => "continue_current_body",
             Self::SkipSeam => "skip_seam",
             Self::Refuse => "refuse",
         }
@@ -270,6 +305,9 @@ impl CompactContinuationOutcomeKind {
             "normal_complete" => Self::NormalComplete,
             "degraded_compact" => Self::DegradedCompact,
             "no_reduction" => Self::NoReduction,
+            "decline_to_ordinary_compact" => Self::DeclineToOrdinaryCompact,
+            "retry_compact" => Self::RetryCompact,
+            "continue_current_body" => Self::ContinueCurrentBody,
             "skip_seam" => Self::SkipSeam,
             "refuse" => Self::Refuse,
             _ => return None,
@@ -285,6 +323,9 @@ pub const COMPACT_CONTINUATION_OUTCOME_KINDS: &[&str] = &[
     "normal_complete",
     "degraded_compact",
     "no_reduction",
+    "decline_to_ordinary_compact",
+    "retry_compact",
+    "continue_current_body",
     "skip_seam",
     "refuse",
 ];
@@ -297,8 +338,6 @@ pub enum CompactContinuationSkipCode {
     NotAtSettledSeam,
     #[serde(rename = "transport_retry")]
     TransportRetry,
-    #[serde(rename = "input_epoch_changed")]
-    InputEpochChanged,
 }
 
 impl CompactContinuationSkipCode {
@@ -306,7 +345,6 @@ impl CompactContinuationSkipCode {
         match self {
             Self::NotAtSettledSeam => "not_at_settled_seam",
             Self::TransportRetry => "transport_retry",
-            Self::InputEpochChanged => "input_epoch_changed",
         }
     }
 
@@ -314,17 +352,12 @@ impl CompactContinuationSkipCode {
         Some(match s {
             "not_at_settled_seam" => Self::NotAtSettledSeam,
             "transport_retry" => Self::TransportRetry,
-            "input_epoch_changed" => Self::InputEpochChanged,
             _ => return None,
         })
     }
 }
 
-pub const COMPACT_CONTINUATION_SKIP_CODES: &[&str] = &[
-    "not_at_settled_seam",
-    "transport_retry",
-    "input_epoch_changed",
-];
+pub const COMPACT_CONTINUATION_SKIP_CODES: &[&str] = &["not_at_settled_seam", "transport_retry"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum CompactContinuationRefuseCode {
@@ -410,6 +443,150 @@ pub const COMPACT_CONTINUATION_REFUSE_CODES: &[&str] = &[
     "unsafe_runway",
     "host_validation_failed",
 ];
+
+/// Refuse codes this contract version can still produce: none (List 2 is empty).
+pub const COMPACT_CONTINUATION_REACHABLE_REFUSE_CODES: &[&str] = &[];
+
+// ── Warning codes (detect + warn + continue) ─────────────────────────────────
+
+/// Closed set of degradation warnings. A warning records a condition that used
+/// to stop the compact path and now only degrades it. Warnings are loud
+/// diagnostics: they are inspectable on the durable receipt and emitted as
+/// ordered `warn` effects, but they never govern.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum CompactContinuationWarningCode {
+    /// Capture of the settled model turn is incomplete; compact ran on thread data anyway.
+    #[serde(rename = "capture_incomplete")]
+    CaptureIncomplete,
+    /// Provider/model identity is unproven; signed reasoning is omitted from the body.
+    #[serde(rename = "provider_identity_unproven")]
+    ProviderIdentityUnproven,
+    /// Exactly-one-open-turn could not be verified; core LHC owns turn-record health.
+    #[serde(rename = "open_turn_invariant_unverified")]
+    OpenTurnInvariantUnverified,
+    /// A stale native/conflict writer row was reclaimed after host authority confirmed no live owner.
+    #[serde(rename = "stale_writer_row_reclaimed")]
+    StaleWriterRowReclaimed,
+    /// A live owner holds this LHC thread; this attempt continues its current request instead.
+    #[serde(rename = "writer_owned_elsewhere")]
+    WriterOwnedElsewhere,
+    /// Pending tool-call/result correlation is unproven; declined into ordinary compact.
+    #[serde(rename = "tool_correlation_unproven")]
+    ToolCorrelationUnproven,
+    /// Protected pair set is structurally invalid; declined into ordinary compact.
+    #[serde(rename = "protected_tool_pairs_invalid")]
+    ProtectedToolPairsInvalid,
+    /// An illegal/unusable pending forced boundary was discarded; the seam starts fresh.
+    #[serde(rename = "pending_boundary_discarded")]
+    PendingBoundaryDiscarded,
+    /// A fresh force claimed a pre-existing boundary marker; the claim was not trusted.
+    #[serde(rename = "boundary_marker_claim_untrusted")]
+    BoundaryMarkerClaimUntrusted,
+    /// A continuation boundary is required but no continuation turn id is available.
+    #[serde(rename = "continuation_boundary_unavailable")]
+    ContinuationBoundaryUnavailable,
+    /// Input contract version is not this oracle version. Continuation state is
+    /// treated as absent in its entirety — no partial parse, no guessing.
+    #[serde(rename = "unsupported_contract_version_omitted")]
+    UnsupportedContractVersionOmitted,
+    /// Compact assembly could not produce a structurally valid view this attempt.
+    #[serde(rename = "compact_attempt_failed")]
+    CompactAttemptFailed,
+    /// Post-compact serving view could not be installed this attempt.
+    #[serde(rename = "install_attempt_failed")]
+    InstallAttemptFailed,
+    /// Bounded compact/install retry budget is spent; continuing on the current body.
+    #[serde(rename = "compact_retry_budget_exhausted")]
+    CompactRetryBudgetExhausted,
+    /// No structurally valid provider request could be proven; best available body is sent.
+    #[serde(rename = "provider_request_unvalidated")]
+    ProviderRequestUnvalidated,
+    /// Projected runway remains unsafe after relief; diagnostic only, never a gate.
+    #[serde(rename = "unsafe_runway_projection")]
+    UnsafeRunwayProjection,
+    /// Host full-body validation failed after core install; degraded body stands.
+    #[serde(rename = "host_validation_failed")]
+    HostValidationFailed,
+}
+
+impl CompactContinuationWarningCode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CaptureIncomplete => "capture_incomplete",
+            Self::ProviderIdentityUnproven => "provider_identity_unproven",
+            Self::OpenTurnInvariantUnverified => "open_turn_invariant_unverified",
+            Self::StaleWriterRowReclaimed => "stale_writer_row_reclaimed",
+            Self::WriterOwnedElsewhere => "writer_owned_elsewhere",
+            Self::ToolCorrelationUnproven => "tool_correlation_unproven",
+            Self::ProtectedToolPairsInvalid => "protected_tool_pairs_invalid",
+            Self::PendingBoundaryDiscarded => "pending_boundary_discarded",
+            Self::BoundaryMarkerClaimUntrusted => "boundary_marker_claim_untrusted",
+            Self::ContinuationBoundaryUnavailable => "continuation_boundary_unavailable",
+            Self::UnsupportedContractVersionOmitted => "unsupported_contract_version_omitted",
+            Self::CompactAttemptFailed => "compact_attempt_failed",
+            Self::InstallAttemptFailed => "install_attempt_failed",
+            Self::CompactRetryBudgetExhausted => "compact_retry_budget_exhausted",
+            Self::ProviderRequestUnvalidated => "provider_request_unvalidated",
+            Self::UnsafeRunwayProjection => "unsafe_runway_projection",
+            Self::HostValidationFailed => "host_validation_failed",
+        }
+    }
+
+    pub fn from_str_exact(s: &str) -> Option<Self> {
+        Some(match s {
+            "capture_incomplete" => Self::CaptureIncomplete,
+            "provider_identity_unproven" => Self::ProviderIdentityUnproven,
+            "open_turn_invariant_unverified" => Self::OpenTurnInvariantUnverified,
+            "stale_writer_row_reclaimed" => Self::StaleWriterRowReclaimed,
+            "writer_owned_elsewhere" => Self::WriterOwnedElsewhere,
+            "tool_correlation_unproven" => Self::ToolCorrelationUnproven,
+            "protected_tool_pairs_invalid" => Self::ProtectedToolPairsInvalid,
+            "pending_boundary_discarded" => Self::PendingBoundaryDiscarded,
+            "boundary_marker_claim_untrusted" => Self::BoundaryMarkerClaimUntrusted,
+            "continuation_boundary_unavailable" => Self::ContinuationBoundaryUnavailable,
+            "unsupported_contract_version_omitted" => Self::UnsupportedContractVersionOmitted,
+            "compact_attempt_failed" => Self::CompactAttemptFailed,
+            "install_attempt_failed" => Self::InstallAttemptFailed,
+            "compact_retry_budget_exhausted" => Self::CompactRetryBudgetExhausted,
+            "provider_request_unvalidated" => Self::ProviderRequestUnvalidated,
+            "unsafe_runway_projection" => Self::UnsafeRunwayProjection,
+            "host_validation_failed" => Self::HostValidationFailed,
+            _ => return None,
+        })
+    }
+}
+
+pub const COMPACT_CONTINUATION_WARNING_CODES: &[&str] = &[
+    "capture_incomplete",
+    "provider_identity_unproven",
+    "open_turn_invariant_unverified",
+    "stale_writer_row_reclaimed",
+    "writer_owned_elsewhere",
+    "tool_correlation_unproven",
+    "protected_tool_pairs_invalid",
+    "pending_boundary_discarded",
+    "boundary_marker_claim_untrusted",
+    "continuation_boundary_unavailable",
+    "unsupported_contract_version_omitted",
+    "compact_attempt_failed",
+    "install_attempt_failed",
+    "compact_retry_budget_exhausted",
+    "provider_request_unvalidated",
+    "unsafe_runway_projection",
+    "host_validation_failed",
+];
+
+/// One recorded degradation warning (aggregated onto `receipt.warnings`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CompactContinuationWarning {
+    pub code: CompactContinuationWarningCode,
+    /// Provider-neutral human-readable detail. Stable per condition for fixtures.
+    pub reason: String,
+}
+
+/// Default bounded compact/install retry budget (attempts at one seam identity).
+pub const DEFAULT_COMPACT_RETRY_BUDGET: i64 = 2;
 
 // ── Relief paths / host validation (contract 2.0.0) ──────────────────────────
 
@@ -540,6 +717,70 @@ impl ClaimWriterTarget {
     }
 }
 
+/// Prior writer row a `reclaim_writer` effect displaced.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReclaimPriorClaim {
+    #[serde(rename = "native")]
+    Native,
+    #[serde(rename = "conflict")]
+    Conflict,
+}
+
+impl ReclaimPriorClaim {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Conflict => "conflict",
+        }
+    }
+}
+
+/// Host ownership answer that authorized a reclaim. Only `no_live_owner` is legal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReclaimHostAuthority {
+    #[serde(rename = "no_live_owner")]
+    NoLiveOwner,
+}
+
+impl ReclaimHostAuthority {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoLiveOwner => "no_live_owner",
+        }
+    }
+}
+
+/// Host ownership authority for a `native`/`conflict` writer row, resolved
+/// host-side against a process-global registry keyed by LHC thread id. The
+/// registry itself never lives in the SDK; the SDK only consumes the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum WriterOwnershipAuthority {
+    /// Stale row from a dead owner — reclaim proceeds.
+    #[serde(rename = "no_live_owner")]
+    NoLiveOwner,
+    /// A live owner holds the thread — this attempt is the loser and continues
+    /// its current request. It never steals and never strands.
+    #[serde(rename = "live_owner")]
+    LiveOwner,
+}
+
+impl WriterOwnershipAuthority {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NoLiveOwner => "no_live_owner",
+            Self::LiveOwner => "live_owner",
+        }
+    }
+
+    pub fn from_str_exact(s: &str) -> Option<Self> {
+        Some(match s {
+            "no_live_owner" => Self::NoLiveOwner,
+            "live_owner" => Self::LiveOwner,
+            _ => return None,
+        })
+    }
+}
+
 /// Ordered effects the runtime applied (or attempted) on this seam.
 ///
 /// Field order matches TypeScript construction for byte-stable JSON.
@@ -628,6 +869,37 @@ pub enum CompactContinuationEffect {
         code: CompactContinuationSkipCode,
         reason: String,
     },
+    /// Loud diagnostic for a condition that degraded — never governed — this
+    /// seam. Ordered where the condition was detected; aggregated onto
+    /// `receipt.warnings`.
+    #[serde(rename = "warn")]
+    Warn {
+        code: CompactContinuationWarningCode,
+        reason: String,
+    },
+    /// Provider/model identity is unproven, so the one feature that needs it —
+    /// signed reasoning — is omitted from the body. The compact proceeds.
+    #[serde(rename = "omit_signed_reasoning")]
+    OmitSignedReasoning { reason: String },
+    /// Reclaim a stale native/conflict writer row. Only legal after host
+    /// ownership authority confirmed no live owner holds this LHC thread.
+    #[serde(rename = "reclaim_writer")]
+    ReclaimWriter {
+        #[serde(rename = "priorClaim")]
+        prior_claim: ReclaimPriorClaim,
+        #[serde(rename = "hostAuthority")]
+        host_authority: ReclaimHostAuthority,
+    },
+    /// Drop an unusable pending forced boundary and start the seam fresh.
+    /// `continuationTurnId` is null when the boundary was never interpreted
+    /// (unsupported contract version — no partial parse).
+    #[serde(rename = "discard_pending_boundary")]
+    DiscardPendingBoundary {
+        #[serde(rename = "continuationTurnId")]
+        continuation_turn_id: Option<String>,
+        reason: String,
+    },
+    /// Unreachable in this contract version — the refuse set is empty (CX-S5).
     #[serde(rename = "refuse")]
     Refuse {
         code: CompactContinuationRefuseCode,
@@ -659,6 +931,12 @@ impl CompactContinuationEffect {
             Self::RecordReceipt { .. } => CompactContinuationEffectType::RecordReceipt,
             Self::DegradeFidelity { .. } => CompactContinuationEffectType::DegradeFidelity,
             Self::SkipSeam { .. } => CompactContinuationEffectType::SkipSeam,
+            Self::Warn { .. } => CompactContinuationEffectType::Warn,
+            Self::OmitSignedReasoning { .. } => CompactContinuationEffectType::OmitSignedReasoning,
+            Self::ReclaimWriter { .. } => CompactContinuationEffectType::ReclaimWriter,
+            Self::DiscardPendingBoundary { .. } => {
+                CompactContinuationEffectType::DiscardPendingBoundary
+            }
             Self::Refuse { .. } => CompactContinuationEffectType::Refuse,
         }
     }
@@ -683,6 +961,10 @@ pub enum CompactContinuationEffectType {
     RecordReceipt,
     DegradeFidelity,
     SkipSeam,
+    Warn,
+    OmitSignedReasoning,
+    ReclaimWriter,
+    DiscardPendingBoundary,
     Refuse,
 }
 
@@ -702,6 +984,10 @@ impl CompactContinuationEffectType {
             Self::RecordReceipt => "record_receipt",
             Self::DegradeFidelity => "degrade_fidelity",
             Self::SkipSeam => "skip_seam",
+            Self::Warn => "warn",
+            Self::OmitSignedReasoning => "omit_signed_reasoning",
+            Self::ReclaimWriter => "reclaim_writer",
+            Self::DiscardPendingBoundary => "discard_pending_boundary",
             Self::Refuse => "refuse",
         }
     }
@@ -1054,7 +1340,12 @@ pub struct CompactContinuationInvariants {
     pub capture_complete: bool,
     pub provider_identity_valid: bool,
     pub single_open_turn: bool,
+    /// Writer row observed at seam entry.
     pub writer_claim: WriterClaim,
+    /// Host ownership authority for a `native`/`conflict` writer row.
+    /// Absent/null: no authority supplied — treated as `live_owner` (no reclaim).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_ownership_authority: Option<WriterOwnershipAuthority>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -1078,6 +1369,11 @@ pub struct CompactMaterialFacts {
     pub visibility_boundary_after: Option<i64>,
     pub compact_point_at_install: Option<i64>,
     pub maximal_prune_insufficient: bool,
+    /// 1-based index of this compact/install attempt at this seam identity.
+    /// Compared against `policy.compactRetryBudget` for bounded retry. Absent
+    /// means 1 (first attempt).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_attempt_index: Option<i64>,
     pub host_validation_status: HostValidationStatusFact,
 }
 
@@ -1091,6 +1387,12 @@ pub struct CompactContinuationPolicy {
     pub safe_runway_threshold_tokens: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub safe_runway_threshold_source: Option<String>,
+    /// Bounded compact/install retry budget: how many attempts at this seam
+    /// identity may run before the session stops retrying and continues on its
+    /// current body. Absent means `DEFAULT_COMPACT_RETRY_BUDGET`. Values below 1
+    /// are clamped to 1 — a failed attempt is never terminal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub compact_retry_budget: Option<i64>,
 }
 
 /// Pre-decision facts plus attempt results for the whole-seam oracle.
@@ -1139,8 +1441,20 @@ pub struct CompactContinuationLowerTargetReceipt {
     pub is_success_gate: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// Residual state after the seam.
+///
+/// ## Key order is load-bearing
+///
+/// TypeScript builds this record through a `residual()` helper that appends
+/// `pendingBoundaryDiscarded` **last** when the call-site literal omitted it
+/// (skip and compact/install-attempt-failure paths) and leaves it where the
+/// literal spelled it — right after `originalAgenticTurnStillOpen` — everywhere
+/// else. `JSON.stringify` insertion order is part of the persisted-bytes
+/// contract, so [`pending_boundary_discarded_trailing`] carries that spelling
+/// through serialization and round-trips it on parse.
+///
+/// [`pending_boundary_discarded_trailing`]: CompactContinuationResidualState::pending_boundary_discarded_trailing
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompactContinuationResidualState {
     pub writer_released: bool,
     pub prior_serving_view_intact: bool,
@@ -1150,6 +1464,10 @@ pub struct CompactContinuationResidualState {
     pub marker_persisted: bool,
     pub marker_served: bool,
     pub original_agentic_turn_still_open: bool,
+    /// An unusable pending forced boundary was discarded on this seam and the
+    /// seam started fresh (R23-S12), or continuation state was omitted in its
+    /// entirety for an unknown contract version (R22).
+    pub pending_boundary_discarded: bool,
     pub next_provider_request_allowed: bool,
     pub relief_path: CompactContinuationReliefPath,
     pub protected_tool_call_ids: Vec<String>,
@@ -1157,6 +1475,134 @@ pub struct CompactContinuationResidualState {
     pub visibility_boundary_after: Option<i64>,
     pub host_validation_status: HostValidationStatusFact,
     pub core_install_retained_pending_host_validation: bool,
+    /// JS key-order spelling only: `true` emits `pendingBoundaryDiscarded` after
+    /// `coreInstallRetainedPendingHostValidation` instead of after
+    /// `originalAgenticTurnStillOpen`. Never a fact about the seam.
+    pub pending_boundary_discarded_trailing: bool,
+}
+
+const RESIDUAL_KEYS: &[&str] = &[
+    "writerReleased",
+    "priorServingViewIntact",
+    "forcedContinuationBoundaryApplied",
+    "continuationTurnOpened",
+    "continuationTurnId",
+    "markerPersisted",
+    "markerServed",
+    "originalAgenticTurnStillOpen",
+    "pendingBoundaryDiscarded",
+    "nextProviderRequestAllowed",
+    "reliefPath",
+    "protectedToolCallIds",
+    "visibilityBoundaryBefore",
+    "visibilityBoundaryAfter",
+    "hostValidationStatus",
+    "coreInstallRetainedPendingHostValidation",
+];
+
+impl Serialize for CompactContinuationResidualState {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(RESIDUAL_KEYS.len()))?;
+        map.serialize_entry("writerReleased", &self.writer_released)?;
+        map.serialize_entry("priorServingViewIntact", &self.prior_serving_view_intact)?;
+        map.serialize_entry(
+            "forcedContinuationBoundaryApplied",
+            &self.forced_continuation_boundary_applied,
+        )?;
+        map.serialize_entry("continuationTurnOpened", &self.continuation_turn_opened)?;
+        map.serialize_entry("continuationTurnId", &self.continuation_turn_id)?;
+        map.serialize_entry("markerPersisted", &self.marker_persisted)?;
+        map.serialize_entry("markerServed", &self.marker_served)?;
+        map.serialize_entry(
+            "originalAgenticTurnStillOpen",
+            &self.original_agentic_turn_still_open,
+        )?;
+        if !self.pending_boundary_discarded_trailing {
+            map.serialize_entry("pendingBoundaryDiscarded", &self.pending_boundary_discarded)?;
+        }
+        map.serialize_entry(
+            "nextProviderRequestAllowed",
+            &self.next_provider_request_allowed,
+        )?;
+        map.serialize_entry("reliefPath", &self.relief_path)?;
+        map.serialize_entry("protectedToolCallIds", &self.protected_tool_call_ids)?;
+        map.serialize_entry("visibilityBoundaryBefore", &self.visibility_boundary_before)?;
+        map.serialize_entry("visibilityBoundaryAfter", &self.visibility_boundary_after)?;
+        map.serialize_entry("hostValidationStatus", &self.host_validation_status)?;
+        map.serialize_entry(
+            "coreInstallRetainedPendingHostValidation",
+            &self.core_install_retained_pending_host_validation,
+        )?;
+        if self.pending_boundary_discarded_trailing {
+            map.serialize_entry("pendingBoundaryDiscarded", &self.pending_boundary_discarded)?;
+        }
+        map.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for CompactContinuationResidualState {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        use serde::de::Error as _;
+        // `serde_json::Map` is insertion-ordered here (preserve_order), so the
+        // observed position of `pendingBoundaryDiscarded` survives the parse.
+        let map = serde_json::Map::<String, serde_json::Value>::deserialize(deserializer)?;
+        for key in map.keys() {
+            if !RESIDUAL_KEYS.contains(&key.as_str()) {
+                return Err(D::Error::custom(format!("residual: unknown field {key}")));
+            }
+        }
+        let trailing = map
+            .keys()
+            .position(|k| k == "pendingBoundaryDiscarded")
+            .is_some_and(|i| i + 1 == map.len());
+        fn take<T: serde::de::DeserializeOwned, E: serde::de::Error>(
+            map: &serde_json::Map<String, serde_json::Value>,
+            key: &str,
+        ) -> Result<T, E> {
+            let raw = map
+                .get(key)
+                .ok_or_else(|| E::custom(format!("residual: missing field {key}")))?;
+            serde_json::from_value(raw.clone())
+                .map_err(|e| E::custom(format!("residual.{key}: {e}")))
+        }
+        Ok(Self {
+            writer_released: take(&map, "writerReleased")?,
+            prior_serving_view_intact: take(&map, "priorServingViewIntact")?,
+            forced_continuation_boundary_applied: take(&map, "forcedContinuationBoundaryApplied")?,
+            continuation_turn_opened: take(&map, "continuationTurnOpened")?,
+            continuation_turn_id: take(&map, "continuationTurnId")?,
+            marker_persisted: take(&map, "markerPersisted")?,
+            marker_served: take(&map, "markerServed")?,
+            original_agentic_turn_still_open: take(&map, "originalAgenticTurnStillOpen")?,
+            pending_boundary_discarded: take(&map, "pendingBoundaryDiscarded")?,
+            next_provider_request_allowed: take(&map, "nextProviderRequestAllowed")?,
+            relief_path: take(&map, "reliefPath")?,
+            protected_tool_call_ids: take(&map, "protectedToolCallIds")?,
+            visibility_boundary_before: take(&map, "visibilityBoundaryBefore")?,
+            visibility_boundary_after: take(&map, "visibilityBoundaryAfter")?,
+            host_validation_status: take(&map, "hostValidationStatus")?,
+            core_install_retained_pending_host_validation: take(
+                &map,
+                "coreInstallRetainedPendingHostValidation",
+            )?,
+            pending_boundary_discarded_trailing: trailing,
+        })
+    }
+}
+
+/// Bounded compact/install retry accounting for this seam.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactContinuationRetryReceipt {
+    /// 1-based index of the compact/install attempt this receipt classifies.
+    pub attempt_index: i64,
+    /// Effective bounded retry budget (policy value, clamped to at least 1).
+    pub budget: i64,
+    /// True when a failed compact/install may be retried at the next eligible
+    /// seam. False when no attempt failed, or when the budget is spent and the
+    /// session continues on its current body.
+    pub retry_authorized: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1178,6 +1624,11 @@ pub struct CompactContinuationReceipt {
     pub lower_target: CompactContinuationLowerTargetReceipt,
     pub fidelity: String,
     pub degradation_reasons: Vec<String>,
+    /// Closed, ordered list of conditions that degraded this seam instead of
+    /// stopping it. Derived from the `warn` effects in `effects`, same order.
+    pub warnings: Vec<CompactContinuationWarning>,
+    /// Bounded compact/install retry accounting.
+    pub retry: CompactContinuationRetryReceipt,
     pub continuation: CompactContinuationReceiptContinuation,
     pub relief_path: CompactContinuationReliefPath,
     pub protected_tool_call_ids: Vec<String>,
@@ -1204,7 +1655,6 @@ pub struct CompactContinuationDecision {
 
 pub const COMPACT_CONTINUATION_TRANSITION_ORDER: &[&str] = &[
     "seam_eligibility",
-    "input_epoch",
     "forced_boundary_state_legality",
     "writer_claim",
     "capture_identity_correlation",
@@ -1214,6 +1664,7 @@ pub const COMPACT_CONTINUATION_TRANSITION_ORDER: &[&str] = &[
     "force_boundary_if_continue_turn",
     "compact_assembly",
     "install_or_preserve",
+    "bounded_retry_or_decline",
     "receipt_and_release",
 ];
 
@@ -1231,21 +1682,37 @@ pub const COMPACT_CONTINUATION_INVARIANTS: &[&str] = &[
     "normal_completion_creates_no_empty_continuation_turn",
     "missing_derivations_degrade_fidelity_not_block_valid_compact",
     "lower_target_is_not_a_success_gate",
-    "record_request_health_refuses_even_below_pressure_after_claimed_seam",
     "unsettled_seam_is_skip_not_corruption",
-    "refuse_only_when_no_valid_request_or_invariants_unproven",
-    "one_writer_at_seam_no_silent_native_mid_turn_fallback",
-    "post_claim_failures_release_writer_and_state_residual_truthfully",
+    // ── CX-S5: the compact path gates against not compacting, never against compacting
+    "refuse_set_is_empty_no_stop_in_the_compact_path",
+    "never_strand_a_session_every_condition_warns_and_continues",
+    "record_request_health_warns_and_continues_never_refuses",
+    "input_epoch_is_diagnostic_only_never_vetoes_a_settled_seam",
+    "unproven_provider_identity_omits_signed_reasoning_only",
+    "uncorrelatable_tool_pairs_decline_into_ordinary_compact",
+    "invalid_protected_pair_set_declines_into_ordinary_compact",
+    "unusable_pending_boundary_is_discarded_and_the_seam_starts_fresh",
+    "unknown_contract_version_omits_continuation_state_in_its_entirety",
+    "unknown_contract_version_is_never_partially_parsed",
+    "compact_and_install_failure_are_bounded_retry_not_terminal",
+    "retry_budget_exhaustion_continues_on_the_current_body",
+    "stale_writer_row_reclaim_requires_host_ownership_authority",
+    "writer_ownership_registry_lives_host_side_not_in_the_sdk",
+    "live_writer_loser_continues_current_request_never_steals_never_strands",
+    "unsafe_runway_is_diagnostic_not_a_gate",
+    "best_available_body_is_sent_provider_is_final_authority",
+    "host_validation_failure_degrades_and_never_blocks_next_request",
+    "warnings_are_loud_diagnostics_that_never_govern",
+    // ── carried forward
     "forced_boundary_repair_takes_precedence_over_fresh_pressure",
-    "applied_forced_boundary_requires_active_non_tool_continuation",
-    "applied_forced_boundary_residual_truthful_on_skip_and_refuse",
+    "applied_forced_boundary_residual_truthful_on_skip_and_decline",
     "install_failure_wins_over_no_reduction_classification",
     "marker_persisted_before_install_served_only_after_install",
     "marker_persisted_is_residual_state_not_attempt_scoped",
     "marker_idempotency_key_is_prefix_plus_continuation_turn_id",
     "skip_does_not_authorize_next_provider_request",
     "writer_claim_lhc_is_idempotent_reassert_not_second_lock",
-    "settled_seam_lhc_claim_early_refuse_records_claim_and_release",
+    "post_claim_failures_release_writer_and_state_residual_truthfully",
     "preserve_tool_install_failure_includes_preserve_effect",
     "input_is_closed_shape_unknown_fields_rejected",
     "receipts_are_not_user_chat",

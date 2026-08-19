@@ -12,31 +12,34 @@ use fixtures::{
 };
 use lhc::compact_continuation::{
     BoundaryStatus, CompactContinuationHostFacts, HostValidationStatus, WriterClaimKind,
-    compute_operation_identity, compute_retry_posture, get_compact_continuation_attempt_intent,
-    get_compact_continuation_host_validation, get_compact_continuation_receipt,
-    get_compact_continuation_writer_claim, get_pending_compact_continuation_boundary,
-    has_compact_continuation_marker, hash_attempt_intent, list_compact_continuation_stages,
-    prove_pending_tool_pair, record_compact_continuation_host_validation, run_compact_continuation,
-    validate_host_facts,
+    WriterOwnershipQuery, compute_operation_identity, compute_retry_posture,
+    get_compact_continuation_attempt_intent, get_compact_continuation_host_validation,
+    get_compact_continuation_receipt, get_compact_continuation_writer_claim,
+    get_pending_compact_continuation_boundary, has_compact_continuation_marker,
+    hash_attempt_intent, list_compact_continuation_stages, prove_pending_tool_pair,
+    record_compact_continuation_host_validation, run_compact_continuation,
+    run_compact_continuation_with_ownership, validate_host_facts,
 };
 use lhc::messages::{self, MessageKind, MessageListOptions};
 use lhc::shared_tech::compact_continuation::{
-    CONTEXT_COMPACT_CONTINUE_REASON, CompactContinuationEffectType,
+    CONTEXT_COMPACT_CONTINUE_REASON, CompactContinuationEffect, CompactContinuationEffectType,
     CompactContinuationHostCapability, CompactContinuationOutcomeKind, CompactContinuationPolicy,
-    CompactContinuationRefuseCode, CompactContinuationSeam, PostMeasurementEstimate,
+    CompactContinuationReliefPath, CompactContinuationSeam, PostMeasurementEstimate,
     ProviderUsageAuthority, ProviderUsageAvailable, ProviderUsageUnavailable,
-    ProviderUsageUnavailableReason, WorkContinuation, WriterClaim,
-    compact_continuation_marker_idempotency_key,
+    ProviderUsageUnavailableReason, ReclaimHostAuthority, ReclaimPriorClaim, WorkContinuation,
+    WriterClaim, compact_continuation_marker_idempotency_key,
 };
 use lhc::shared_tech::derivation::{SdkConfig, SdkMode};
 use lhc::shared_tech::errors::{ErrorCode, OpResult};
 use lhc::shared_tech::storage::{CURRENT_THREAD_SCHEMA_VERSION, SqlParam};
 use lhc::shared_tech::view::{PartialViewProfilePercentages, ViewCompactParams};
 use lhc::thread_view::{self, CompactOpts, InstallPreparedOptions};
-use lhc::threads::{NewThreadInput, ThreadRef, new_thread};
+use lhc::threads::{self, NewThreadInput, ThreadRef, new_thread};
 use lhc::turns;
 use lhc::{init_lhc, intake_stream};
 use serde_json::{Map, Value, json};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -90,6 +93,7 @@ fn base_facts(attempt_id: &str, cont: WorkContinuation) -> CompactContinuationHo
             upper_trigger_tokens: 100_000,
             lower_target_tokens: 400,
             host_capability: CompactContinuationHostCapability::FullStateMachine,
+            compact_retry_budget: None,
         },
         continuation: cont,
         writer_claim: WriterClaim::None,
@@ -336,6 +340,13 @@ fn has_effect(
     receipt.effects.iter().any(|e| e.effect_type() == ty)
 }
 
+/// Ordered receipt warning codes — the CX-S5 read-out for a degraded seam.
+fn warning_codes(
+    receipt: &lhc::shared_tech::compact_continuation::CompactContinuationReceipt,
+) -> Vec<&'static str> {
+    receipt.warnings.iter().map(|w| w.code.as_str()).collect()
+}
+
 fn success_outcomes(o: CompactContinuationOutcomeKind) -> bool {
     matches!(
         o,
@@ -426,7 +437,7 @@ async fn normal_completion_creates_no_continuation_turn() {
 }
 
 #[tokio::test]
-async fn b1_health_refusals_do_not_mutate() {
+async fn b1_health_facts_warn_and_still_compact() {
     let (_store, ref_, path) = fixture_thread().await;
     seed_open_agentic_turn(&ref_).await;
     let _ = thread_view::compact(ref_.clone(), compact_params())
@@ -434,34 +445,64 @@ async fn b1_health_refusals_do_not_mutate() {
         .expect_ok();
     let before = snapshot_canonical(&path);
 
+    // Incomplete capture: warn + continue. Capture feeds derivation quality,
+    // not compact capability, so the seam still forces, markers and installs.
     let mut capture = base_facts("health-capture", WorkContinuation::ActiveNonTool);
     capture.capture_complete = false;
     let cap = run_compact_continuation(ref_.clone(), capture)
         .await
         .expect_ok();
-    assert_eq!(
-        cap.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::IncompleteCapture)
-    );
-    assert!(cap.receipt.residual.prior_serving_view_intact);
-    assert!(!cap.receipt.residual.marker_persisted);
-    assert!(!has_effect(
+    assert!(!cap.receipt.refused);
+    assert_eq!(cap.receipt.refuse_code, None);
+    assert_eq!(warning_codes(&cap.receipt), vec!["capture_incomplete"]);
+    assert!(has_effect(
         &cap.receipt,
         CompactContinuationEffectType::ClaimWriter
     ));
-    assert_eq!(snapshot_canonical(&path), before);
+    assert!(has_effect(
+        &cap.receipt,
+        CompactContinuationEffectType::InstallServingView
+    ));
+    assert!(cap.receipt.residual.marker_persisted);
+    assert!(cap.receipt.residual.marker_served);
+    assert!(cap.receipt.residual.next_provider_request_allowed);
+    let after_capture = snapshot_canonical(&path);
+    assert_eq!(after_capture.turn_count, before.turn_count + 1);
+    assert_eq!(after_capture.marker_count, before.marker_count + 1);
+    assert_ne!(after_capture.view_id, before.view_id);
 
+    // Unproven provider identity: omit signed reasoning, compact anyway.
+    seed_open_agentic_turn(&ref_).await;
+    let before_identity = snapshot_canonical(&path);
     let mut identity = base_facts("health-identity", WorkContinuation::ActiveNonTool);
     identity.provider_identity_valid = false;
     let id = run_compact_continuation(ref_.clone(), identity)
         .await
         .expect_ok();
+    assert_eq!(id.receipt.refuse_code, None);
     assert_eq!(
-        id.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidProviderIdentity)
+        warning_codes(&id.receipt),
+        vec!["provider_identity_unproven"]
     );
-    assert_eq!(snapshot_canonical(&path), before);
+    assert!(has_effect(
+        &id.receipt,
+        CompactContinuationEffectType::OmitSignedReasoning
+    ));
+    assert!(has_effect(
+        &id.receipt,
+        CompactContinuationEffectType::InstallServingView
+    ));
+    let after_identity = snapshot_canonical(&path);
+    assert_eq!(
+        after_identity.marker_count,
+        before_identity.marker_count + 1
+    );
+    assert_ne!(after_identity.view_id, before_identity.view_id);
 
+    // Invalid tool correlation (host + durable) on preserve path: the pair
+    // cannot be protected through compact, so the continuation machinery
+    // declines into the host's ordinary settled-seam compact. No mutation here,
+    // but the next provider request is authorized — declining is not a stop.
     seed_pending_tool_turn(&ref_, "call-bad-corr").await;
     let before_tool = snapshot_canonical(&path);
     let corr = run_compact_continuation(
@@ -476,12 +517,22 @@ async fn b1_health_refusals_do_not_mutate() {
     )
     .await
     .expect_ok();
+    assert_eq!(corr.receipt.refuse_code, None);
     assert_eq!(
-        corr.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidToolCorrelation)
+        corr.receipt.outcome,
+        CompactContinuationOutcomeKind::DeclineToOrdinaryCompact
     );
+    assert_eq!(
+        warning_codes(&corr.receipt),
+        vec!["tool_correlation_unproven"]
+    );
+    assert!(corr.receipt.residual.prior_serving_view_intact);
+    assert!(corr.receipt.residual.original_agentic_turn_still_open);
+    assert!(corr.receipt.residual.next_provider_request_allowed);
+    assert!(corr.next_provider_request_allowed);
     assert_eq!(snapshot_canonical(&path), before_tool);
 
+    // Durable pair missing despite host correlationValid: same decline.
     let missing = run_compact_continuation(
         ref_.clone(),
         base_facts(
@@ -494,10 +545,16 @@ async fn b1_health_refusals_do_not_mutate() {
     )
     .await
     .expect_ok();
+    assert_eq!(missing.receipt.refuse_code, None);
     assert_eq!(
-        missing.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidToolCorrelation)
+        missing.receipt.outcome,
+        CompactContinuationOutcomeKind::DeclineToOrdinaryCompact
     );
+    assert_eq!(
+        warning_codes(&missing.receipt),
+        vec!["tool_correlation_unproven"]
+    );
+    assert!(missing.receipt.residual.next_provider_request_allowed);
     assert_eq!(snapshot_canonical(&path), before_tool);
 }
 
@@ -934,7 +991,7 @@ async fn m4_public_prepare_install_green_without_intervening_mutation() {
 }
 
 #[tokio::test]
-async fn install_failure_after_marker_keeps_prior_view() {
+async fn install_failure_after_marker_is_bounded_retry() {
     let (_store, ref_, _) = fixture_thread().await;
     let baseline = thread_view::compact(ref_.clone(), compact_params())
         .await
@@ -952,13 +1009,31 @@ async fn install_failure_after_marker_keeps_prior_view() {
     )
     .await
     .expect_ok();
+    // A failed install is bounded retry, not a stop (R23-S9/S10).
+    assert!(!result.receipt.refused);
+    assert_eq!(result.receipt.refuse_code, None);
     assert_eq!(
-        result.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InstallFailed)
+        result.receipt.outcome,
+        CompactContinuationOutcomeKind::RetryCompact
     );
+    assert_eq!(result.receipt.reason_code, "compact_retry_authorized");
+    assert_eq!(
+        warning_codes(&result.receipt),
+        vec!["install_attempt_failed"]
+    );
+    assert_eq!(result.receipt.retry.attempt_index, 1);
+    assert_eq!(result.receipt.retry.budget, 2);
+    assert!(result.receipt.retry.retry_authorized);
+    // Residual stays truthful about what actually happened.
     assert!(result.receipt.residual.marker_persisted);
     assert!(!result.receipt.residual.marker_served);
     assert!(result.receipt.residual.prior_serving_view_intact);
+    assert_eq!(
+        result.receipt.residual.relief_path,
+        CompactContinuationReliefPath::CoreInstallFailed
+    );
+    // The session keeps working on its current body while the retry is pending.
+    assert!(result.receipt.residual.next_provider_request_allowed);
     assert_eq!(
         result.pending_boundary.as_ref().map(|b| b.status),
         Some(BoundaryStatus::FailedRepairable)
@@ -972,6 +1047,43 @@ async fn install_failure_after_marker_keeps_prior_view() {
     let described = thread_view::describe(ref_.clone()).await.expect_ok();
     assert_eq!(
         described.as_ref().map(|v| v.view_id.as_str()),
+        Some(baseline.view_id.as_str())
+    );
+
+    // Budget spent: the second failure stops retrying and continues on the
+    // current body. Still no refuse, still a next request.
+    let exhausted = run_compact_continuation_for_tests(
+        ref_.clone(),
+        base_facts("install-fail-1", WorkContinuation::ActiveNonTool),
+        None,
+        Some(CompactContinuationTestHooks {
+            fail_install_before_write: true,
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect_ok();
+    assert_eq!(exhausted.receipt.refuse_code, None);
+    assert_eq!(
+        exhausted.receipt.outcome,
+        CompactContinuationOutcomeKind::ContinueCurrentBody
+    );
+    assert_eq!(
+        exhausted.receipt.reason_code,
+        "compact_retry_budget_exhausted"
+    );
+    assert_eq!(exhausted.receipt.retry.attempt_index, 2);
+    assert_eq!(exhausted.receipt.retry.budget, 2);
+    assert!(!exhausted.receipt.retry.retry_authorized);
+    assert_eq!(
+        warning_codes(&exhausted.receipt),
+        vec!["install_attempt_failed", "compact_retry_budget_exhausted"]
+    );
+    assert!(exhausted.receipt.residual.prior_serving_view_intact);
+    assert!(exhausted.receipt.residual.next_provider_request_allowed);
+    let still_baseline = thread_view::describe(ref_.clone()).await.expect_ok();
+    assert_eq!(
+        still_baseline.as_ref().map(|v| v.view_id.as_str()),
         Some(baseline.view_id.as_str())
     );
 }
@@ -992,10 +1104,19 @@ async fn p1_install_fail_failed_repairable_same_attempt_repair() {
     )
     .await
     .expect_ok();
+    // Bounded retry, not a refuse: the attempt stays repairable and the session
+    // keeps its current body in the meantime.
+    assert_eq!(failed.receipt.refuse_code, None);
     assert_eq!(
-        failed.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InstallFailed)
+        failed.receipt.outcome,
+        CompactContinuationOutcomeKind::RetryCompact
     );
+    assert!(failed.receipt.retry.retry_authorized);
+    assert_eq!(
+        warning_codes(&failed.receipt),
+        vec!["install_attempt_failed"]
+    );
+    assert!(failed.receipt.residual.next_provider_request_allowed);
     assert_eq!(
         failed.pending_boundary.as_ref().map(|b| b.status),
         Some(BoundaryStatus::FailedRepairable)
@@ -1027,6 +1148,8 @@ async fn p1_install_fail_failed_repairable_same_attempt_repair() {
     );
     assert!(!repaired.replayed_terminal_attempt);
     assert!(success_outcomes(repaired.receipt.outcome));
+    assert_eq!(repaired.receipt.refuse_code, None);
+    assert!(repaired.receipt.residual.marker_served);
     assert!(repaired.pending_boundary.is_none());
 
     let stored_ok = get_compact_continuation_receipt(ref_.clone(), "repair-install-1")
@@ -1281,6 +1404,7 @@ async fn input_validation_rejects_malformed() {
             upper_trigger_tokens: 100,
             lower_target_tokens: 50,
             host_capability: CompactContinuationHostCapability::FullStateMachine,
+            compact_retry_budget: None,
         },
         continuation: WorkContinuation::None,
         writer_claim: WriterClaim::None,
@@ -1300,23 +1424,242 @@ async fn input_validation_rejects_malformed() {
 }
 
 #[tokio::test]
-async fn native_writer_conflict_refuses_without_claim() {
+async fn native_writer_row_no_authority_continues_stale_row_reclaims() {
     let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
     let before = snapshot_canonical(&path);
+
+    // No host ownership authority supplied: the SDK never steals. This attempt
+    // is the loser, continues its current request, and mutates nothing.
     let mut facts = base_facts("native-1", WorkContinuation::ActiveNonTool);
     facts.writer_claim = WriterClaim::Native;
-    let result = run_compact_continuation(ref_.clone(), facts)
+    let no_authority = run_compact_continuation(ref_.clone(), facts)
         .await
         .expect_ok();
+    assert!(!no_authority.receipt.refused);
+    assert_eq!(no_authority.receipt.refuse_code, None);
     assert_eq!(
-        result.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::NativeWriterConflict)
+        no_authority.receipt.outcome,
+        CompactContinuationOutcomeKind::ContinueCurrentBody
+    );
+    assert_eq!(no_authority.receipt.reason_code, "writer_owned_elsewhere");
+    assert_eq!(
+        warning_codes(&no_authority.receipt),
+        vec!["writer_owned_elsewhere"]
     );
     assert!(!has_effect(
-        &result.receipt,
+        &no_authority.receipt,
         CompactContinuationEffectType::ClaimWriter
     ));
+    assert!(!has_effect(
+        &no_authority.receipt,
+        CompactContinuationEffectType::ReclaimWriter
+    ));
+    assert!(!no_authority.reclaimed_stale_writer_row);
+    // Never strands: the session keeps working on its current body.
+    assert!(no_authority.receipt.residual.next_provider_request_allowed);
+    assert!(no_authority.next_provider_request_allowed);
     assert_eq!(snapshot_canonical(&path), before);
+
+    // Host authority confirms no live owner: the stale row is reclaimed with a
+    // receipt and the compact proceeds through to install.
+    let seen: Arc<Mutex<Vec<WriterOwnershipQuery>>> = Arc::new(Mutex::new(Vec::new()));
+    let mut facts = base_facts("native-reclaim", WorkContinuation::ActiveNonTool);
+    facts.writer_claim = WriterClaim::Native;
+    let reclaimed = run_compact_continuation_with_ownership(ref_.clone(), facts, {
+        let seen = Arc::clone(&seen);
+        Some(Arc::new(move |q: &WriterOwnershipQuery| {
+            seen.lock().unwrap().push(q.clone());
+            Ok(false) // no live owner holds this LHC thread
+        }))
+    })
+    .await
+    .expect_ok();
+    let seen = seen.lock().unwrap().clone();
+    assert_eq!(seen.len(), 1);
+    // The authority is asked about the canonical LHC thread id, not a session id.
+    assert!(
+        seen[0].thread_id.starts_with("th_"),
+        "{}",
+        seen[0].thread_id
+    );
+    assert_eq!(seen[0].attempt_id, "native-reclaim");
+    assert_eq!(reclaimed.receipt.refuse_code, None);
+    assert!(reclaimed.reclaimed_stale_writer_row);
+    assert!(reclaimed.receipt.effects.iter().any(|e| matches!(
+        e,
+        CompactContinuationEffect::ReclaimWriter {
+            prior_claim: ReclaimPriorClaim::Native,
+            host_authority: ReclaimHostAuthority::NoLiveOwner,
+        }
+    )));
+    assert_eq!(
+        warning_codes(&reclaimed.receipt),
+        vec!["stale_writer_row_reclaimed"]
+    );
+    // Reclaim precedes this attempt's own claim, and the seam compacts.
+    let types: Vec<&str> = reclaimed
+        .receipt
+        .effects
+        .iter()
+        .map(|e| e.type_str())
+        .collect();
+    assert!(
+        types.iter().position(|t| *t == "reclaim_writer")
+            < types.iter().position(|t| *t == "claim_writer")
+    );
+    assert!(types.contains(&"install_serving_view"));
+    assert!(reclaimed.receipt.residual.next_provider_request_allowed);
+    let after = snapshot_canonical(&path);
+    assert_eq!(after.marker_count, before.marker_count + 1);
+    assert_ne!(after.view_id, before.view_id);
+    // The claim is released again at the end of the seam.
+    assert_eq!(writer_claim_of(&path), (WriterClaimKind::None, None));
+}
+
+/// R23-S8: the ownership registry is process-global and keyed by LHC thread id —
+/// a per-session slot flag is not sufficient, because two sessions/aliases can
+/// address the same thread and would hold two independent flags.
+#[derive(Clone)]
+struct HostSession {
+    session_id: &'static str,
+    registry: Arc<Mutex<HashMap<String, &'static str>>>,
+    owns_slot_locally: Arc<Mutex<bool>>,
+}
+
+impl HostSession {
+    fn new(session_id: &'static str, registry: &Arc<Mutex<HashMap<String, &'static str>>>) -> Self {
+        Self {
+            session_id,
+            registry: Arc::clone(registry),
+            owns_slot_locally: Arc::new(Mutex::new(false)),
+        }
+    }
+
+    fn claim_thread(&self, thread_id: &str) -> bool {
+        let mut reg = self.registry.lock().unwrap();
+        if reg.contains_key(thread_id) {
+            return false;
+        }
+        reg.insert(thread_id.to_string(), self.session_id);
+        *self.owns_slot_locally.lock().unwrap() = true;
+        true
+    }
+
+    fn release_thread(&self, thread_id: &str) {
+        let mut reg = self.registry.lock().unwrap();
+        if reg.get(thread_id) == Some(&self.session_id) {
+            reg.remove(thread_id);
+        }
+        *self.owns_slot_locally.lock().unwrap() = false;
+    }
+
+    fn owns_slot(&self) -> bool {
+        *self.owns_slot_locally.lock().unwrap()
+    }
+
+    /// Live owner iff some *other* session holds the thread in the registry.
+    fn ownership_check(
+        &self,
+    ) -> lhc::compact_continuation::CompactContinuationWriterOwnershipCheck {
+        let registry = Arc::clone(&self.registry);
+        let session_id = self.session_id;
+        Arc::new(move |q: &WriterOwnershipQuery| {
+            let reg = registry.lock().unwrap();
+            Ok(matches!(reg.get(&q.thread_id), Some(owner) if *owner != session_id))
+        })
+    }
+}
+
+#[tokio::test]
+async fn two_sessions_one_thread_loser_continues_without_stealing() {
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+    let before = snapshot_canonical(&path);
+
+    let registry: Arc<Mutex<HashMap<String, &'static str>>> = Arc::new(Mutex::new(HashMap::new()));
+    let session_a = HostSession::new("session-a", &registry);
+    let session_b = HostSession::new("session-b", &registry);
+
+    // Session A takes the thread first. Both sessions believe they have a slot
+    // locally; only the registry keyed by LHC thread id knows who owns it.
+    let lhc_thread_id = threads::info(ref_.clone()).await.expect_ok().thread_id;
+    assert!(session_a.claim_thread(&lhc_thread_id));
+    assert!(!session_b.claim_thread(&lhc_thread_id));
+    assert!(session_a.owns_slot());
+    assert!(!session_b.owns_slot());
+
+    // Session B is the loser: it sees a native row, asks the registry, and is
+    // told a live owner holds the thread. It continues its current request.
+    let mut facts = base_facts("session-b-attempt", WorkContinuation::ActiveNonTool);
+    facts.writer_claim = WriterClaim::Native;
+    let loser = run_compact_continuation_with_ownership(
+        ref_.clone(),
+        facts,
+        Some(session_b.ownership_check()),
+    )
+    .await
+    .expect_ok();
+    assert_eq!(loser.receipt.refuse_code, None);
+    assert_eq!(
+        loser.receipt.outcome,
+        CompactContinuationOutcomeKind::ContinueCurrentBody
+    );
+    assert_eq!(
+        warning_codes(&loser.receipt),
+        vec!["writer_owned_elsewhere"]
+    );
+    // Never steals.
+    assert!(!loser.reclaimed_stale_writer_row);
+    assert!(!has_effect(
+        &loser.receipt,
+        CompactContinuationEffectType::ReclaimWriter
+    ));
+    assert_eq!(
+        registry.lock().unwrap().get(&lhc_thread_id).copied(),
+        Some("session-a")
+    );
+    // Never strands.
+    assert!(loser.next_provider_request_allowed);
+    assert_eq!(snapshot_canonical(&path), before);
+
+    // Session A owns the thread, so its own attempt is not blocked by the row.
+    let mut facts = base_facts("session-a-attempt", WorkContinuation::ActiveNonTool);
+    facts.writer_claim = WriterClaim::Native;
+    let owner = run_compact_continuation_with_ownership(
+        ref_.clone(),
+        facts,
+        Some(session_a.ownership_check()),
+    )
+    .await
+    .expect_ok();
+    assert!(owner.reclaimed_stale_writer_row);
+    assert_eq!(
+        warning_codes(&owner.receipt),
+        vec!["stale_writer_row_reclaimed"]
+    );
+    assert!(has_effect(
+        &owner.receipt,
+        CompactContinuationEffectType::InstallServingView
+    ));
+    assert_ne!(snapshot_canonical(&path).view_id, before.view_id);
+
+    // Once A releases the thread, B retries at its next seam and now reclaims.
+    session_a.release_thread(&lhc_thread_id);
+    seed_open_agentic_turn(&ref_).await;
+    let before_retry = snapshot_canonical(&path);
+    let mut facts = base_facts("session-b-retry", WorkContinuation::ActiveNonTool);
+    facts.writer_claim = WriterClaim::Native;
+    let retried = run_compact_continuation_with_ownership(
+        ref_.clone(),
+        facts,
+        Some(session_b.ownership_check()),
+    )
+    .await
+    .expect_ok();
+    assert!(retried.reclaimed_stale_writer_row);
+    assert_eq!(retried.receipt.refuse_code, None);
+    assert_ne!(snapshot_canonical(&path).view_id, before_retry.view_id);
 }
 
 #[tokio::test]
@@ -1402,7 +1745,7 @@ async fn sdk_surface_exposes_compact_continuation_crate_api() {
 }
 
 #[tokio::test]
-async fn bl1_claim_only_quiet_health_release_fresh_can_claim() {
+async fn bl1_claim_only_quiet_degraded_release_fresh_can_claim() {
     let (_store, ref_, path) = fixture_thread().await;
     seed_open_agentic_turn(&ref_).await;
 
@@ -1437,6 +1780,8 @@ async fn bl1_claim_only_quiet_health_release_fresh_can_claim() {
     assert!(m.receipt.residual.writer_released);
     assert_eq!(writer_claim_of(&path), (WriterClaimKind::None, None));
 
+    // Degraded health on re-entry: warn + compact, then release. The reclaimed
+    // claim is not a reason to stop, and it is never left held.
     seed_held_writer(&path, "crashed-health");
     let mut health = base_facts("crashed-health", WorkContinuation::ActiveNonTool);
     health.writer_claim = WriterClaim::Lhc;
@@ -1444,11 +1789,37 @@ async fn bl1_claim_only_quiet_health_release_fresh_can_claim() {
     let h = run_compact_continuation(ref_.clone(), health)
         .await
         .expect_ok();
-    assert_eq!(
-        h.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::IncompleteCapture)
+    assert_eq!(h.receipt.refuse_code, None);
+    assert_eq!(warning_codes(&h.receipt), vec!["capture_incomplete"]);
+    assert!(
+        success_outcomes(h.receipt.outcome),
+        "{:?}",
+        h.receipt.outcome
     );
     assert!(h.receipt.residual.writer_released);
+    assert!(h.receipt.residual.next_provider_request_allowed);
+    assert_eq!(writer_claim_of(&path), (WriterClaimKind::None, None));
+
+    // A decline (unprovable protected pair) on a claim-only crash also releases.
+    seed_held_writer(&path, "crashed-decline");
+    let mut declined_facts = base_facts(
+        "crashed-decline",
+        WorkContinuation::PendingCorrelatedToolResult {
+            protected_tool_call_ids: vec!["call-not-in-record".into()],
+            correlation_valid: true,
+        },
+    );
+    declined_facts.writer_claim = WriterClaim::Lhc;
+    let declined = run_compact_continuation(ref_.clone(), declined_facts)
+        .await
+        .expect_ok();
+    assert_eq!(declined.receipt.refuse_code, None);
+    assert_eq!(
+        declined.receipt.outcome,
+        CompactContinuationOutcomeKind::DeclineToOrdinaryCompact
+    );
+    assert!(declined.receipt.residual.writer_released);
+    assert!(declined.receipt.residual.next_provider_request_allowed);
     assert_eq!(writer_claim_of(&path), (WriterClaimKind::None, None));
 
     seed_held_writer(&path, "crashed-owner");
@@ -2006,6 +2377,7 @@ async fn attempt_intent_inspect_returns_stored_identity_and_rejects_corrupt() {
         upper_trigger_tokens: 77_000,
         lower_target_tokens: 321,
         host_capability: CompactContinuationHostCapability::FullStateMachine,
+        compact_retry_budget: None,
     };
     facts.compact = Some(lhc::compact_continuation::HostCompactOpts {
         profile: Some("continuation".into()),
@@ -2156,6 +2528,7 @@ async fn claim_only_preserve_reentry_uses_stored_identity_despite_live_drift() {
         upper_trigger_tokens: 999_999,
         lower_target_tokens: 1,
         host_capability: CompactContinuationHostCapability::FullStateMachine,
+        compact_retry_budget: None,
     };
     live_drift.compact = Some(lhc::compact_continuation::HostCompactOpts {
         profile: None,
@@ -2763,6 +3136,7 @@ fn escalation_facts(attempt_id: &str, safe_runway_threshold: i64) -> CompactCont
         host_capability: CompactContinuationHostCapability::FullStateMachine,
         safe_runway_threshold_tokens: Some(safe_runway_threshold),
         safe_runway_threshold_source: Some("host_safe_runway".into()),
+        compact_retry_budget: None,
     };
     // Keep the fixture turns in the full tail so selector eviction cannot
     // band later closed turns (those would report missing derivations).
@@ -2881,7 +3255,7 @@ async fn escalates_ineffective_preserve_through_protected_boundary_and_installs(
 }
 
 #[tokio::test]
-async fn unsafe_runway_after_maximal_prune_refuses_truthfully() {
+async fn unsafe_runway_after_maximal_prune_installs_best_relief() {
     let store = temp_store();
     let fixture = derived_thread_fixture(
         &store,
@@ -2895,41 +3269,100 @@ async fn unsafe_runway_after_maximal_prune_refuses_truthfully() {
     seed_escalation_turn(&ref_).await;
     let before = snapshot_canonical(&path);
 
+    // Threshold so low that no amount of eligible pruning can reach it. R24:
+    // that is a diagnostic about the projection, not a gate — oversized
+    // outgoing content is ours to truncate as a ladder rung, and the host's
+    // exact body check is downstream.
     let result =
         run_compact_continuation(ref_.clone(), escalation_facts("escalate-unsafe-1", 1_000))
             .await
             .expect_ok();
     let receipt = &result.receipt;
-    assert_eq!(receipt.outcome, CompactContinuationOutcomeKind::Refuse);
+    assert!(!receipt.refused);
+    assert_eq!(receipt.refuse_code, None);
     assert_eq!(
-        receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::UnsafeRunway)
+        receipt.outcome,
+        CompactContinuationOutcomeKind::CompactPreserveToolEscalated
     );
     assert_eq!(
         receipt.relief_path,
-        lhc::shared_tech::compact_continuation::CompactContinuationReliefPath::ProtectedEscalation
+        CompactContinuationReliefPath::HostValidationAwaiting
     );
-    // Receipt stays truthful: no marker was persisted on the refused attempt.
-    assert!(!receipt.residual.marker_persisted);
-    assert!(!receipt.residual.marker_served);
-    assert!(receipt.residual.prior_serving_view_intact);
-    assert!(!receipt.residual.next_provider_request_allowed);
+    assert_eq!(
+        receipt.protected_tool_call_ids,
+        vec![PROTECTED_ID.to_string()]
+    );
+
+    // The unsafe projection is recorded as a loud warning and nothing else.
+    assert_eq!(warning_codes(receipt), vec!["unsafe_runway_projection"]);
+    assert_eq!(receipt.pressure.projected_pressure_safe, Some(false));
+    let projected = receipt
+        .pressure
+        .projected_pressure_tokens
+        .expect("projected");
+    let next_request = receipt
+        .pressure
+        .next_request_pressure_tokens
+        .expect("next request");
+    assert!(projected < next_request);
+
+    // The relief actually installed: marker, escalated boundary, new view.
     let types: Vec<&str> = receipt.effects.iter().map(|e| e.type_str()).collect();
-    assert!(!types.contains(&"insert_continuation_marker"));
-    assert!(!types.contains(&"install_serving_view"));
+    assert!(types.contains(&"insert_continuation_marker"));
+    assert!(types.contains(&"preserve_tool_pairs_verbatim"));
+    assert!(types.contains(&"advance_visibility_boundary"));
+    assert!(types.contains(&"install_serving_view"));
+    assert!(receipt.residual.marker_persisted);
+    assert!(receipt.residual.marker_served);
+    assert!(!receipt.residual.prior_serving_view_intact);
+    let boundary_after = receipt.residual.visibility_boundary_after.expect("after");
+    assert!(boundary_after > receipt.residual.visibility_boundary_before.unwrap_or(0));
 
     let after = snapshot_canonical(&path);
-    // Forced boundary is durable (repairable), but no marker and no new view.
     assert_eq!(after.turn_count, before.turn_count + 1);
-    assert_eq!(after.marker_count, 0);
-    assert_eq!(after.view_id, before.view_id);
+    assert_eq!(after.marker_count, 1);
+    assert_ne!(after.view_id, before.view_id);
 
-    let pending = get_pending_compact_continuation_boundary(ref_.clone())
+    // The protected pair still survives verbatim through the maximal prune.
+    let listed = messages::list(ref_.clone(), None).await.expect_ok();
+    let protected_result = listed
+        .iter()
+        .find(|m| {
+            m.kind == MessageKind::ToolResult
+                && m.blocks.iter().any(|b| {
+                    b.content.get("toolCallId").and_then(|v| v.as_str()) == Some(PROTECTED_ID)
+                })
+        })
+        .expect("protected tool_result survives");
+    assert_eq!(
+        protected_result.blocks[0]
+            .content
+            .get("content")
+            .and_then(|v| v.as_str()),
+        Some("protected verbatim payload")
+    );
+
+    // Next request waits on the host validation acknowledgment only — not on
+    // the runway projection. Acknowledging lets the session proceed.
+    assert_eq!(
+        receipt.residual.host_validation_status,
+        lhc::shared_tech::compact_continuation::HostValidationStatusFact::Awaiting
+    );
+    assert!(!receipt.residual.next_provider_request_allowed);
+    let ack = record_compact_continuation_host_validation(
+        ref_.clone(),
+        "escalate-unsafe-1",
+        HostValidationStatus::Ok,
+        None,
+        None,
+    )
+    .await;
+    assert!(matches!(ack, OpResult::Ok { .. }), "{ack:?}");
+    let hv = get_compact_continuation_host_validation(ref_.clone(), "escalate-unsafe-1")
         .await
         .expect_ok()
-        .expect("pending boundary");
-    assert_eq!(pending.status, BoundaryStatus::FailedRepairable);
-    assert!(!pending.marker_persisted);
+        .expect("row");
+    assert_eq!(hv.status, HostValidationStatus::Ok);
 }
 
 #[tokio::test]

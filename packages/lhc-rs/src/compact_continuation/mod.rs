@@ -10,8 +10,10 @@
 
 mod internal;
 
+pub use internal::run::WriterOwnershipQuery;
 pub use internal::run::{
-    CompactContinuationHostFacts, CompactContinuationRunResult, HostCompactOpts, HostValidationAck,
+    CompactContinuationHostFacts, CompactContinuationRunResult,
+    CompactContinuationWriterOwnershipCheck, HostCompactOpts, HostValidationAck,
     StoredOperationIdentity, compute_attempt_intent, compute_operation_identity,
     compute_retry_posture, get_compact_continuation_attempt_intent,
     get_compact_continuation_host_validation, get_compact_continuation_receipt,
@@ -20,6 +22,7 @@ pub use internal::run::{
     list_compact_continuation_boundaries, list_compact_continuation_receipts,
     list_compact_continuation_stages, parse_stored_operation_identity,
     record_compact_continuation_host_validation, run_compact_continuation,
+    run_compact_continuation_with_ownership,
 };
 pub use internal::store::{
     AttemptRow, BoundaryRow, BoundaryStatus, ForceIntentRow, HostValidationRow,
@@ -36,7 +39,10 @@ pub use internal::validate_host::validate_host_facts;
 /// `tests/fixtures/compact_continuation_seam.rs`, not from the public SDK.
 #[doc(hidden)]
 #[cfg(any(test, feature = "test-util"))]
-pub use internal::run::{CompactContinuationTestHooks, run_compact_continuation_for_tests};
+pub use internal::run::{
+    CompactContinuationTestHooks, run_compact_continuation_for_tests,
+    run_compact_continuation_for_tests_with_ownership,
+};
 #[doc(hidden)]
 #[cfg(any(test, feature = "test-util"))]
 pub use internal::store::{force_clear_writer, seed_writer_claim};
@@ -48,6 +54,7 @@ pub use internal::store::{force_clear_writer, seed_writer_claim};
 pub mod test_support {
     pub use super::internal::run::{
         CompactContinuationTestHooks, run_compact_continuation_for_tests,
+        run_compact_continuation_for_tests_with_ownership,
     };
     pub use super::internal::store::{
         force_clear_writer, read_pending_boundary, seed_writer_claim, upsert_boundary,

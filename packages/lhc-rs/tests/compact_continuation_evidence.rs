@@ -22,8 +22,8 @@ use lhc::compact_continuation::{
 use lhc::messages::{self, MessageKind, RemoveInput};
 use lhc::shared_tech::compact_continuation::{
     CompactContinuationHostCapability, CompactContinuationOutcomeKind, CompactContinuationPolicy,
-    CompactContinuationRefuseCode, CompactContinuationSeam, PostMeasurementEstimate,
-    ProviderUsageAuthority, ProviderUsageAvailable, WorkContinuation, WriterClaim,
+    CompactContinuationSeam, PostMeasurementEstimate, ProviderUsageAuthority,
+    ProviderUsageAvailable, WorkContinuation, WriterClaim,
     compact_continuation_marker_idempotency_key,
 };
 use lhc::shared_tech::derivation::{SdkConfig, SdkMode};
@@ -87,6 +87,7 @@ fn base_facts(attempt_id: &str, cont: WorkContinuation) -> CompactContinuationHo
             upper_trigger_tokens: 100_000,
             lower_target_tokens: 400,
             host_capability: CompactContinuationHostCapability::FullStateMachine,
+            compact_retry_budget: None,
         },
         continuation: cont,
         writer_claim: WriterClaim::None,
@@ -440,7 +441,7 @@ fn insert_dup_message(
     ]);
 }
 
-async fn assert_refuse_before_claim(
+async fn assert_declines_without_mutation(
     name: &str,
     tool_call_id: &str,
     seed_id: &str,
@@ -468,12 +469,31 @@ async fn assert_refuse_before_claim(
     )
     .await
     .expect_ok();
+    // The pair cannot be *protected* through compact, so the continuation
+    // machinery declines into the host's ordinary settled-seam compact on
+    // canonical state. It still mutates nothing and never claims the writer —
+    // and it never strands: the next provider request proceeds.
     assert_eq!(
-        result.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::InvalidToolCorrelation),
+        result.receipt.outcome,
+        CompactContinuationOutcomeKind::DeclineToOrdinaryCompact,
         "{name}"
     );
-    assert!(result.receipt.refused);
+    assert!(!result.receipt.refused, "{name}");
+    assert_eq!(result.receipt.refuse_code, None, "{name}");
+    assert_eq!(
+        result
+            .receipt
+            .warnings
+            .iter()
+            .map(|w| w.code.as_str())
+            .collect::<Vec<_>>(),
+        vec!["tool_correlation_unproven"],
+        "{name}"
+    );
+    assert!(
+        result.receipt.residual.next_provider_request_allowed,
+        "{name}"
+    );
     assert!(
         !result
             .receipt
@@ -507,13 +527,14 @@ fn success_outcomes(o: CompactContinuationOutcomeKind) -> bool {
 // ── tool-pair matrix ──────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn tool_pair_missing_refuse_before_claim() {
-    assert_refuse_before_claim("missing", "does-not-exist", "call-unrelated-other", |_| {}).await;
+async fn tool_pair_missing_declines_without_mutation() {
+    assert_declines_without_mutation("missing", "does-not-exist", "call-unrelated-other", |_| {})
+        .await;
 }
 
 #[tokio::test]
-async fn tool_pair_orphan_call_refuse_before_claim() {
-    assert_refuse_before_claim("orphan-call", "call-oc", "call-oc", |path| {
+async fn tool_pair_orphan_call_declines_without_mutation() {
+    assert_declines_without_mutation("orphan-call", "call-oc", "call-oc", |path| {
         let db = open_raw(path);
         db.prepare(
             r#"UPDATE message SET deleted_at = ? WHERE message_id IN (
@@ -529,8 +550,8 @@ async fn tool_pair_orphan_call_refuse_before_claim() {
 }
 
 #[tokio::test]
-async fn tool_pair_orphan_result_refuse_before_claim() {
-    assert_refuse_before_claim("orphan-result", "call-or", "call-or", |path| {
+async fn tool_pair_orphan_result_declines_without_mutation() {
+    assert_declines_without_mutation("orphan-result", "call-or", "call-or", |path| {
         let db = open_raw(path);
         db.prepare(
             r#"UPDATE message SET deleted_at = ? WHERE message_id IN (
@@ -546,8 +567,8 @@ async fn tool_pair_orphan_result_refuse_before_claim() {
 }
 
 #[tokio::test]
-async fn tool_pair_duplicate_call_refuse_before_claim() {
-    assert_refuse_before_claim("duplicate-call", "call-dc", "call-dc", |path| {
+async fn tool_pair_duplicate_call_declines_without_mutation() {
+    assert_declines_without_mutation("duplicate-call", "call-dc", "call-dc", |path| {
         let db = open_raw(path);
         let call = db
             .prepare(
@@ -576,8 +597,8 @@ async fn tool_pair_duplicate_call_refuse_before_claim() {
 }
 
 #[tokio::test]
-async fn tool_pair_duplicate_result_refuse_before_claim() {
-    assert_refuse_before_claim("duplicate-result", "call-dr", "call-dr", |path| {
+async fn tool_pair_duplicate_result_declines_without_mutation() {
+    assert_declines_without_mutation("duplicate-result", "call-dr", "call-dr", |path| {
         let db = open_raw(path);
         let row = db
             .prepare(
@@ -606,8 +627,8 @@ async fn tool_pair_duplicate_result_refuse_before_claim() {
 }
 
 #[tokio::test]
-async fn tool_pair_call_after_result_refuse_before_claim() {
-    assert_refuse_before_claim("call-after-result", "call-car", "call-car", |path| {
+async fn tool_pair_call_after_result_declines_without_mutation() {
+    assert_declines_without_mutation("call-after-result", "call-car", "call-car", |path| {
         let db = open_raw(path);
         let call = db
             .prepare(
@@ -659,8 +680,8 @@ async fn tool_pair_call_after_result_refuse_before_claim() {
 }
 
 #[tokio::test]
-async fn tool_pair_wrong_turn_refuse_before_claim() {
-    assert_refuse_before_claim("wrong-turn", "call-wt", "call-wt", |path| {
+async fn tool_pair_wrong_turn_declines_without_mutation() {
+    assert_declines_without_mutation("wrong-turn", "call-wt", "call-wt", |path| {
         let db = open_raw(path);
         let other = db
             .prepare("SELECT turn_id FROM turns WHERE status != 'open' ORDER BY turn_order LIMIT 1")
@@ -701,8 +722,8 @@ async fn tool_pair_wrong_turn_refuse_before_claim() {
 }
 
 #[tokio::test]
-async fn tool_pair_before_compact_point_refuse_before_claim() {
-    assert_refuse_before_claim("before-compact-point", "call-bcp", "call-bcp", |path| {
+async fn tool_pair_before_compact_point_declines_without_mutation() {
+    assert_declines_without_mutation("before-compact-point", "call-bcp", "call-bcp", |path| {
         let db = open_raw(path);
         let max_order = db
             .prepare("SELECT COALESCE(MAX(source_event_order), 0) AS m FROM message")
@@ -734,8 +755,8 @@ async fn tool_pair_before_compact_point_refuse_before_claim() {
 }
 
 #[tokio::test]
-async fn tool_pair_unreadable_payload_refuse_before_claim() {
-    assert_refuse_before_claim("unreadable", "call-ur", "call-ur", |path| {
+async fn tool_pair_unreadable_payload_declines_without_mutation() {
+    assert_declines_without_mutation("unreadable", "call-ur", "call-ur", |path| {
         let db = open_raw(path);
         db.prepare(
             r#"UPDATE message_block SET content = ?
@@ -784,7 +805,7 @@ async fn tool_pair_id_mismatch_unit_and_runtime() {
     }
     db.close();
 
-    assert_refuse_before_claim("id-mismatch", "call-mm2", "call-mm2", |path| {
+    assert_declines_without_mutation("id-mismatch", "call-mm2", "call-mm2", |path| {
         let d = open_raw(path);
         d.prepare(
             r#"UPDATE message_block SET content = ?
@@ -1496,14 +1517,22 @@ async fn unresolved_tool_call_exact_compact_failed_failed_repairable() {
     .expect_ok();
     assert_eq!(
         result.receipt.outcome,
-        CompactContinuationOutcomeKind::Refuse
+        CompactContinuationOutcomeKind::RetryCompact
     );
+    assert!(!result.receipt.refused);
     assert_eq!(
-        result.receipt.refuse_code,
-        Some(CompactContinuationRefuseCode::CompactFailed)
+        result
+            .receipt
+            .warnings
+            .iter()
+            .map(|w| w.code.as_str())
+            .collect::<Vec<_>>(),
+        vec!["compact_attempt_failed"]
     );
-    assert!(result.receipt.refused);
-    assert!(!result.next_provider_request_allowed);
+    assert_eq!(result.receipt.retry.attempt_index, 1);
+    assert!(result.receipt.retry.retry_authorized);
+    // The relief failed; the session keeps working on the body it already has.
+    assert!(result.next_provider_request_allowed);
     assert!(
         result
             .decision
