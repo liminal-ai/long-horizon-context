@@ -75,6 +75,9 @@ const SQL_READ_BLOCKS_FOR_IDS_PREFIX: &str = r#"SELECT message_id, block_type, c
 const SQL_READ_BLOCKS_FOR_IDS_SUFFIX: &str = r#")
        ORDER BY message_id, block_index"#;
 
+/// TS `blockReadBatchSize`: bound-parameter ceiling per windowed block read.
+const BLOCK_READ_BATCH_SIZE: usize = 400;
+
 #[allow(dead_code)]
 const SQL_READ_MESSAGE_BY_ID: &str = r#"SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
               m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
@@ -415,11 +418,18 @@ pub fn read_messages(db: &Db, opts: &MessageReadOptions) -> Vec<MessageRecord> {
         .iter()
         .map(|row| row.message_id.clone())
         .collect();
-    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-    let blocks_sql =
-        format!("{SQL_READ_BLOCKS_FOR_IDS_PREFIX}{placeholders}{SQL_READ_BLOCKS_FOR_IDS_SUFFIX}");
-    let id_params: Vec<SqlParam> = ids.iter().map(|id| SqlParam::from(id.as_str())).collect();
-    let block_maps = db.prepare(&blocks_sql).all(&id_params);
+    // SQLite's parameter ceiling varies by build. A mature thread can contain
+    // tens of thousands of messages, so never bind the complete live set in one
+    // IN clause. Keep each read comfortably below the lowest common ceiling.
+    let mut block_maps: Vec<Map<String, Value>> = Vec::new();
+    for batch in ids.chunks(BLOCK_READ_BATCH_SIZE) {
+        let placeholders = batch.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let blocks_sql = format!(
+            "{SQL_READ_BLOCKS_FOR_IDS_PREFIX}{placeholders}{SQL_READ_BLOCKS_FOR_IDS_SUFFIX}"
+        );
+        let id_params: Vec<SqlParam> = batch.iter().map(|id| SqlParam::from(id.as_str())).collect();
+        block_maps.extend(db.prepare(&blocks_sql).all(&id_params));
+    }
 
     let mut blocks_by_message: HashMap<String, Vec<Block>> = HashMap::new();
     for row in block_maps {

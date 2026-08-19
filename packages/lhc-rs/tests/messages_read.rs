@@ -13,7 +13,7 @@ mod fixtures;
 use std::time::Duration;
 
 use fixtures::{
-    AssistantTextOverrides, AssistantTextPayload, InferenceCallbacksDouble, TempStore,
+    AssistantTextOverrides, AssistantTextPayload, ClosingDb, InferenceCallbacksDouble, TempStore,
     ToolCallOverrides, ToolCallPayload, ToolResultOverrides, ToolResultPayload,
     UserPromptOverrides, UserPromptPayload, create_inference_callbacks_double, kind, open_raw,
     poison_message_block_json, poison_message_form_json, read_derived_forms, temp_store,
@@ -25,8 +25,12 @@ use lhc::messages::{
 };
 use lhc::shared_tech::derivation::{Derivation, DerivationState, SdkConfig, SdkMode, ToolOutcome};
 use lhc::shared_tech::errors::{ErrorClass, ErrorCode, OpResult};
+use lhc::shared_tech::js_json::js_json_stringify;
+use lhc::shared_tech::storage::SqlParam;
+use lhc::shared_tech::view::PreviewCompactOutcome;
 use lhc::shared_tech::view::ViewStatus;
 use lhc::shared_tech::work_queue::{WorkItemRecord, WorkOwner, list_items};
+use lhc::thread_view::CompactOpts;
 use lhc::threads::{NewThreadInput, ThreadRef};
 use lhc::{Lhc, init_lhc, intake_stream, messages, thread_view};
 use serde_json::{Map, Value};
@@ -835,4 +839,90 @@ async fn a_bounded_list_excluding_out_of_window_rows_never_loads_their_blocks_or
     )
     .await;
     assert!(!hits_form.is_ok());
+}
+
+// Large unbounded message reads: a mature thread holds more messages than
+// SQLite accepts as one bound-parameter list, so every id-scoped read must
+// batch. Pre-fix this fails at prepare/bind with "too many SQL variables".
+#[tokio::test]
+async fn lists_and_previews_more_messages_than_sqlite_accepts_as_one_bound_parameter_list() {
+    let store = temp_store();
+    let fixture = read_fixture(&store).await;
+    {
+        // ClosingDb is the Rust stand-in for the TS try/finally around
+        // db.close(); one transaction keeps 34k inserts bounded and atomic.
+        let handle = ClosingDb::open(&fixture.file_path);
+        let db = handle.db();
+        db.exec("BEGIN IMMEDIATE;");
+        for index in 0..34_000i64 {
+            let id = format!("large-{index}");
+            let order = 10_000 + index;
+            let content = js_json_stringify(&serde_json::json!({
+                "text": format!("large read {index}"),
+            }));
+            db.prepare(
+                r#"INSERT INTO event
+                     (event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at)
+                   VALUES (?, 'assistant_text', ?, 'assistant', 'test', ?, '2026-01-01T00:00:00.000Z')"#,
+            )
+            .run(&[
+                SqlParam::from(order),
+                SqlParam::from(id.as_str()),
+                SqlParam::from(content.as_str()),
+            ]);
+            db.prepare(
+                r#"INSERT INTO message
+                     (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id)
+                   VALUES (?, ?, 'assistant_text', 1, 'assistant', 'test', 't2')"#,
+            )
+            .run(&[SqlParam::from(id.as_str()), SqlParam::from(order)]);
+            db.prepare(
+                r#"INSERT INTO message_block (message_id, block_index, block_type, content)
+                   VALUES (?, 0, 'text', ?)"#,
+            )
+            .run(&[
+                SqlParam::from(id.as_str()),
+                SqlParam::from(content.as_str()),
+            ]);
+        }
+        db.exec("COMMIT;");
+    }
+
+    let listed = messages::list(ThreadRef::file_path(&fixture.file_path), None).await;
+    let OpResult::Ok { value } = &listed else {
+        let OpResult::Err { error } = &listed else {
+            unreachable!()
+        };
+        panic!("{:?}: {}", error.code, error.reason);
+    };
+    assert_eq!(value.len(), 34_006);
+    assert_eq!(
+        value
+            .last()
+            .and_then(|record| record.blocks.first())
+            .and_then(|block| block.content.get("text"))
+            .and_then(|text| text.as_str()),
+        Some("large read 33999")
+    );
+
+    let preview = fixture
+        .sdk
+        .thread_view
+        .preview_compact(
+            ThreadRef::file_path(&fixture.file_path),
+            CompactOpts {
+                profile: None,
+                params: None,
+                signal: None,
+                compact_point_upper_bound: None,
+            },
+        )
+        .await;
+    let OpResult::Ok { value } = &preview else {
+        let OpResult::Err { error } = &preview else {
+            unreachable!()
+        };
+        panic!("{:?}: {}", error.code, error.reason);
+    };
+    assert!(matches!(value, PreviewCompactOutcome::Ok { .. }));
 }

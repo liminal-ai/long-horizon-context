@@ -32,6 +32,9 @@ const SQL_READ_MESSAGE_DERIVATIONS_ID_FILTER_PREFIX: &str = r#" AND subject_id I
 /// TS trailing clause on readMessageDerivations.
 const SQL_READ_MESSAGE_DERIVATIONS_ORDER_BY: &str = r#" ORDER BY subject_id, derivation_type"#;
 
+/// TS batch width on readMessageDerivations: bound parameters per scoped read.
+const DERIVATION_READ_BATCH_SIZE: usize = 400;
+
 const SQL_READ_MESSAGE_DERIVATION_ROW: &str = r#"SELECT state, reason, source_version FROM derivation
        WHERE subject_kind = 'message' AND subject_id = ? AND derivation_type = ?"#;
 
@@ -161,18 +164,43 @@ pub fn read_message_derivations(
         }
     }
 
-    let mut sql = String::from(SQL_READ_MESSAGE_DERIVATIONS_BASE);
-    let mut params: Vec<SqlParam> = Vec::new();
-    if let Some(ids) = message_ids {
-        let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
-        sql.push_str(SQL_READ_MESSAGE_DERIVATIONS_ID_FILTER_PREFIX);
-        sql.push_str(&placeholders);
-        sql.push(')');
-        params.extend(ids.iter().map(|id| SqlParam::from(id.as_str())));
-    }
-    sql.push_str(SQL_READ_MESSAGE_DERIVATIONS_ORDER_BY);
+    // TS `[...new Set(messageIds)].sort()`: dedupe, then JS UTF-16 code-unit
+    // order so the per-batch `ORDER BY subject_id` reads concatenate into one
+    // globally subject_id-ordered stream, exactly as the single query did.
+    let scoped_message_ids: Option<Vec<String>> = message_ids.map(|ids| {
+        let mut unique: Vec<String> = ids
+            .iter()
+            .cloned()
+            .collect::<std::collections::HashSet<String>>()
+            .into_iter()
+            .collect();
+        unique.sort_by(|a, b| crate::shared_tech::compact_continuation::js_string_cmp(a, b));
+        unique
+    });
+    // SQLite's parameter ceiling varies by build; never bind a mature thread's
+    // whole message set in one IN clause.
+    const EMPTY_BATCH: &[String] = &[];
+    let batches: Vec<&[String]> = match &scoped_message_ids {
+        Some(ids) => ids.chunks(DERIVATION_READ_BATCH_SIZE).collect(),
+        None => vec![EMPTY_BATCH],
+    };
 
-    for row in db.prepare(&sql).all(&params) {
+    let mut rows: Vec<Map<String, Value>> = Vec::new();
+    for batch in batches {
+        let mut sql = String::from(SQL_READ_MESSAGE_DERIVATIONS_BASE);
+        let mut params: Vec<SqlParam> = Vec::new();
+        if message_ids.is_some() {
+            let placeholders = batch.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            sql.push_str(SQL_READ_MESSAGE_DERIVATIONS_ID_FILTER_PREFIX);
+            sql.push_str(&placeholders);
+            sql.push(')');
+            params.extend(batch.iter().map(|id| SqlParam::from(id.as_str())));
+        }
+        sql.push_str(SQL_READ_MESSAGE_DERIVATIONS_ORDER_BY);
+        rows.extend(db.prepare(&sql).all(&params));
+    }
+
+    for row in rows {
         let subject_id = map_required_str(&row, "subject_id");
         let mut record = Derivation {
             subject_kind: SubjectKind::Message,
