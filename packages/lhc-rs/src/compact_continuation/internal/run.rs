@@ -927,6 +927,9 @@ struct FinalizeOpts {
     release_writer: bool,
     terminal: bool,
     boundary_update: Option<BoundaryUpdate>,
+    /// Discard this attempt's boundary bookkeeping row (R23-S9/S10 budget
+    /// exhaustion). Mutually exclusive with `boundary_update`.
+    boundary_discard: Option<String>,
     forced_boundary_this_attempt: bool,
     continuation_turn_id: Option<String>,
     compact_receipt: Option<CompactReceipt>,
@@ -1001,6 +1004,7 @@ async fn finalize_attempt(
     let attempt_id = facts.attempt_id.clone();
     let release_writer = opts.release_writer;
     let boundary_update = opts.boundary_update;
+    let boundary_discard = opts.boundary_discard;
     let fail_after_receipt = hooks.is_some_and(|h| h.fail_finalize_after_receipt);
     let fail_at_release = hooks.is_some_and(|h| h.fail_finalize_at_release);
     let fail_after_release = hooks.is_some_and(|h| h.fail_finalize_after_release_before_commit);
@@ -1055,6 +1059,19 @@ async fn finalize_attempt(
                             &bu.last_stage,
                             &bu.forced_at,
                             bu.completed_at.as_deref(),
+                        );
+                    }
+                    if let Some(c_turn) = boundary_discard {
+                        super::store::delete_boundary(tx.db, &c_turn, &attempt_id);
+                        let mut detail = Map::new();
+                        detail.insert("continuationTurnId".into(), json!(c_turn));
+                        detail.insert("reason".into(), json!("compact_retry_budget_exhausted"));
+                        append_stage_log(
+                            tx.db,
+                            &attempt_id,
+                            StageName::BoundaryDiscarded,
+                            &recorded_at,
+                            Some(&detail),
                         );
                     }
                     if fail_after_receipt {
@@ -1592,6 +1609,7 @@ async fn run_compact_continuation_inner(
                 release_writer: owns_writer,
                 terminal: !owns_pending,
                 boundary_update: None,
+                boundary_discard: None,
                 forced_boundary_this_attempt: false,
                 continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
                 compact_receipt: None,
@@ -1696,6 +1714,7 @@ async fn run_compact_continuation_inner(
                     release_writer: owns_writer,
                     terminal: !owns_pending,
                     boundary_update: None,
+                    boundary_discard: None,
                     forced_boundary_this_attempt: false,
                     continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
                     compact_receipt: None,
@@ -1794,6 +1813,7 @@ async fn run_compact_continuation_inner(
                 release_writer: owns_writer,
                 terminal: !owns_pending,
                 boundary_update: None,
+                boundary_discard: None,
                 forced_boundary_this_attempt: false,
                 continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
                 compact_receipt: None,
@@ -1856,6 +1876,7 @@ async fn run_compact_continuation_inner(
                 // Declining is terminal only when no pending boundary for this attempt.
                 terminal: !owns_pending,
                 boundary_update: None,
+                boundary_discard: None,
                 forced_boundary_this_attempt: false,
                 continuation_turn_id: decision.receipt.residual.continuation_turn_id.clone(),
                 compact_receipt: None,
@@ -1926,6 +1947,7 @@ async fn run_compact_continuation_inner(
                 release_writer,
                 terminal: !owns_pending,
                 boundary_update: None,
+                boundary_discard: None,
                 forced_boundary_this_attempt: false,
                 continuation_turn_id: None,
                 compact_receipt: None,
@@ -2209,6 +2231,7 @@ async fn execute_compact_paths(
                     release_writer: true,
                     terminal: true,
                     boundary_update: None,
+                    boundary_discard: None,
                     forced_boundary_this_attempt: false,
                     continuation_turn_id: None,
                     compact_receipt: None,
@@ -2421,6 +2444,7 @@ async fn execute_compact_paths(
                         release_writer: false,
                         terminal: false,
                         boundary_update: None,
+                        boundary_discard: None,
                         forced_boundary_this_attempt: false,
                         continuation_turn_id: None,
                         compact_receipt: None,
@@ -2551,6 +2575,7 @@ async fn execute_compact_paths(
                 release_writer: false,
                 terminal: false,
                 boundary_update: None,
+                boundary_discard: None,
                 forced_boundary_this_attempt,
                 continuation_turn_id: continuation_turn_id.clone(),
                 compact_receipt: None,
@@ -3501,6 +3526,7 @@ async fn execute_compact_paths(
         release_writer: true,
         terminal: true,
         boundary_update: None,
+        boundary_discard: None,
         forced_boundary_this_attempt,
         continuation_turn_id: match &final_boundary {
             ForcedContinuationBoundary::Applied(a) => Some(a.continuation_turn_id.clone()),
@@ -3527,22 +3553,36 @@ async fn execute_compact_paths(
             });
         } else {
             // A structurally valid candidate that reached install and failed is an
-            // install failure; anything earlier is a compact failure. Both are
-            // bounded retry, never a stop.
+            // install failure; anything earlier is a compact failure.
+            //
+            // Bounded retry, never a stop — but bounded means bounded
+            // (R23-S9/S10): while the oracle still authorizes retry the
+            // boundary stays failed_repairable and the attempt is nonterminal;
+            // once the budget is exhausted (continue_current_body /
+            // compact_retry_budget_exhausted) the attempt terminalizes so the
+            // same attempt replays without mutating, and its speculative
+            // boundary bookkeeping is discarded so a fresh attempt starts
+            // clean. Canonical turn/marker bytes and the terminal receipt
+            // stay; next_provider_request_allowed remains true.
             let fail_stage = if material.compact_structurally_valid && !material.install_succeeds {
                 "install_failed"
             } else {
                 "compact_failed"
             };
-            finalize_opts.terminal = false;
-            finalize_opts.boundary_update = Some(BoundaryUpdate {
-                continuation_turn_id: c_turn.clone(),
-                status: super::store::BoundaryStatus::FailedRepairable,
-                marker_persisted: marker_persisted_durable,
-                last_stage: fail_stage.into(),
-                forced_at: boundary_forced_at.clone(),
-                completed_at: None,
-            });
+            if decision.receipt.retry.retry_authorized {
+                finalize_opts.terminal = false;
+                finalize_opts.boundary_update = Some(BoundaryUpdate {
+                    continuation_turn_id: c_turn.clone(),
+                    status: super::store::BoundaryStatus::FailedRepairable,
+                    marker_persisted: marker_persisted_durable,
+                    last_stage: fail_stage.into(),
+                    forced_at: boundary_forced_at.clone(),
+                    completed_at: None,
+                });
+            } else {
+                finalize_opts.terminal = true;
+                finalize_opts.boundary_discard = Some(c_turn.clone());
+            }
             let fail_log = stage_log(
                 ref_.clone(),
                 &facts.attempt_id,

@@ -992,7 +992,7 @@ async fn m4_public_prepare_install_green_without_intervening_mutation() {
 
 #[tokio::test]
 async fn install_failure_after_marker_is_bounded_retry() {
-    let (_store, ref_, _) = fixture_thread().await;
+    let (_store, ref_, path) = fixture_thread().await;
     let baseline = thread_view::compact(ref_.clone(), compact_params())
         .await
         .expect_ok();
@@ -1086,6 +1086,57 @@ async fn install_failure_after_marker_is_bounded_retry() {
         still_baseline.as_ref().map(|v| v.view_id.as_str()),
         Some(baseline.view_id.as_str())
     );
+
+    // Exhaustion TERMINALIZES (R23-S9/S10): bounded means bounded. The receipt
+    // is terminal and the attempt's speculative boundary bookkeeping is
+    // discarded — nothing remains to wedge a fresh attempt.
+    let stored_exhausted = get_compact_continuation_receipt(ref_.clone(), "install-fail-1")
+        .await
+        .expect_ok();
+    assert_eq!(stored_exhausted.as_ref().map(|s| s.terminal), Some(true));
+    assert!(exhausted.pending_boundary.is_none());
+
+    // Third same-attempt call is a terminal replay: zero added mutation.
+    let stage_count = |file_path: &str| -> i64 {
+        let db = open_raw(file_path);
+        db.prepare("SELECT COUNT(*) AS n FROM compact_continuation_stage_log")
+            .get()
+            .and_then(|r| r.get("n").and_then(|v| v.as_i64()))
+            .unwrap_or(0)
+    };
+    let stages_before = stage_count(&path);
+    let canonical_before = snapshot_canonical(&path);
+    let third = run_compact_continuation_for_tests(
+        ref_.clone(),
+        base_facts("install-fail-1", WorkContinuation::ActiveNonTool),
+        None,
+        Some(CompactContinuationTestHooks {
+            fail_install_before_write: true,
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect_ok();
+    assert!(third.replayed_terminal_attempt);
+    assert_eq!(
+        third.receipt.outcome,
+        CompactContinuationOutcomeKind::ContinueCurrentBody
+    );
+    assert!(third.pending_boundary.is_none());
+    assert_eq!(stage_count(&path), stages_before);
+    assert_eq!(snapshot_canonical(&path), canonical_before);
+
+    // A fresh later attempt proceeds normally — the dead attempt left no wedge.
+    let fresh = run_compact_continuation_for_tests(
+        ref_.clone(),
+        base_facts("install-fail-2", WorkContinuation::ActiveNonTool),
+        None,
+        None,
+    )
+    .await
+    .expect_ok();
+    assert_eq!(fresh.receipt.refuse_code, None);
+    assert_eq!(fresh.receipt.retry.attempt_index, 1);
 }
 
 #[tokio::test]

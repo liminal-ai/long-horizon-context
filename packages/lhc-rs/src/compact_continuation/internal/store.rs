@@ -92,6 +92,7 @@ pub enum StageName {
     RetryPosture,
     WriterClaimRepaired,
     RecoveryMaintenance,
+    BoundaryDiscarded,
 }
 
 impl StageName {
@@ -112,6 +113,7 @@ impl StageName {
             StageName::RetryPosture => "retry_posture",
             StageName::WriterClaimRepaired => "writer_claim_repaired",
             StageName::RecoveryMaintenance => "recovery_maintenance",
+            StageName::BoundaryDiscarded => "boundary_discarded",
         }
     }
 }
@@ -457,6 +459,25 @@ fn boundary_from_row(row: &Map<String, Value>) -> BoundaryRow {
 
 /// Insert or update a boundary owned by attemptId.
 /// Never changes ownership: if the row exists under a different attempt, panics.
+/// Discard a pending/failed compact-continuation boundary owned by this
+/// attempt. Used when the bounded retry budget is exhausted (R23-S9/S10): the
+/// attempt terminalizes on `continue_current_body` and its speculative
+/// boundary bookkeeping must not remain to wedge every fresh attempt. Only
+/// the bookkeeping row is removed — canonical turn/marker bytes and the
+/// terminal receipt stay untouched.
+pub fn delete_boundary(db: &Db, continuation_turn_id: &str, attempt_id: &str) {
+    let Some(existing) = read_boundary(db, continuation_turn_id) else {
+        return;
+    };
+    assert_eq!(
+        existing.attempt_id, attempt_id,
+        "boundary {continuation_turn_id} owned by {}, not {attempt_id}",
+        existing.attempt_id
+    );
+    db.prepare("DELETE FROM compact_continuation_boundary WHERE continuation_turn_id = ?")
+        .run(&[SqlParam::from(continuation_turn_id)]);
+}
+
 pub fn upsert_boundary(
     db: &Db,
     continuation_turn_id: &str,
