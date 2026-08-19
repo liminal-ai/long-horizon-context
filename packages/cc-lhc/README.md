@@ -121,15 +121,17 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   PID. A working session exists at every moment and nothing ever rolls back to
   the oversized one. This is **not** same-agentic-turn continuation: there is no
   synthetic tool-tail preservation and no Codex parity claim.
-- **One terminal state, stated as a guess.** After bounded repeated
-  nonviability the old session simply stays live and a standing alarm goes up:
-  *cc-lhc rebuilt sessions are not loading — likely a compatibility problem with
-  the installed Claude version.* That is cc-lhc's best guess from observable
-  viability, not proof Claude rejected the file; the terminal is never parsed to
-  find out. Automatic swaps stop instead of retrying forever, capture and manual
-  compact keep working, and the old session is relaunched then and there
-  **without** the injected `DISABLE_AUTO_COMPACT` so Claude's own compaction can
-  keep it alive in degraded form.
+- **When replacements repeatedly will not run.** Each nonviable swap costs the
+  session nothing and is retried at the next settled seam. After a bounded
+  number of them, two things happen instead of another quiet retry, and both
+  persist: a standing alarm — *cc-lhc rebuilt sessions are not loading — likely
+  a compatibility problem with the installed Claude version* — and a survival
+  relaunch of the old session **without** the injected `DISABLE_AUTO_COMPACT`,
+  so Claude's own compaction can keep it alive in degraded form. The alarm is
+  cc-lhc's best guess from observable viability, not proof Claude rejected the
+  file; the terminal is never parsed to find out. Nothing ends: the old session
+  stays live and captured, retrieval keeps working, and manual compact still
+  runs — only the automatic swap stops.
 - **Runtime continuity.** Wrapper-owned handoffs preserve the latest confirmed
   Claude effort and permission mode from the rollout. Unknown values are not
   inferred, and permissions are never broadened by guesswork.

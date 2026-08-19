@@ -103,10 +103,10 @@ import {
 import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
 import {
-  DEFAULT_NONVIABLE_SWAP_LIMIT,
-  formatReplacementWallAlarm,
+  formatReplacementNonviabilityAlarm,
   formatSurvivalRelaunchNotice,
-} from "./replacement-wall.js";
+  NONVIABLE_SWAPS_BEFORE_ALARM,
+} from "./replacement-nonviability.js";
 import { TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
 
@@ -221,9 +221,9 @@ export type RunOptions = {
     childLivenessTimeoutMs?: number;
     childStableWindowMs?: number;
   };
-  /** Test hook: spawn/viability attempts per swap before the R6 wall counts one. */
+  /** Test hook: spawn/viability attempts inside one swap before it counts as nonviable. */
   replacementAttempts?: number;
-  /** Test hook: nonviable swaps allowed before the standing R6 alarm rises. */
+  /** Test hook: nonviable swaps before the standing alarm and survival relaunch. */
   nonviableSwapLimit?: number;
   /** Disable the hazardous-command notifier for this launch (--lhc-no-notifier). */
   notifierDisabled?: boolean;
@@ -606,8 +606,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let expectedExitResolve: (() => void) | null = null;
   /** Swaps whose replacement never became viable, this wrapper lifetime. */
   let nonviableSwaps = 0;
-  /** The standing R6 alarm once the wall is declared. Never cleared. */
-  let standingWallAlarm: string[] = [];
+  /** The standing alarm once replacements repeatedly will not run. Never cleared. */
+  let standingNonviabilityAlarm: string[] = [];
   /** Recorded ONLY after a confirmed successful handoff. */
   let lastAction: {
     operation: string;
@@ -922,12 +922,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         "auto_operation_in_flight",
         "another automatic operation already owns the flight; coalesced (no second mutation)",
       );
-    } else if (standingWallAlarm.length > 0) {
-      // The R6 wall is up: replacements repeatedly would not run, the old
-      // session was relaunched so native compaction keeps it alive, and the
-      // alarm stands until an operator acts. Retrying the swap on every seam
-      // from here is the quiet retry loop the ruling forbids. Capture and
-      // manual compact keep working.
+    } else if (standingNonviabilityAlarm.length > 0) {
+      // Replacements repeatedly would not run: the old session was relaunched
+      // so native compaction keeps it alive, and the alarm stands until an
+      // operator acts. Retrying the swap on every seam from here is the quiet
+      // retry loop the ruling forbids. Nothing has ended — capture keeps
+      // running on the live old session and manual compact still works.
       attachGovernorHandoffOutcome(
         receiptId,
         {
@@ -937,7 +937,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         { mutationBegan: false },
       );
       wrapperLog.warn(
-        `cc-lhc governor: wouldMutate refused — ${standingWallAlarm[0] ?? "replacement wall"} [receipt ${receiptId}]`,
+        `cc-lhc governor: wouldMutate refused — ${standingNonviabilityAlarm[0] ?? "replacements are not becoming viable"} [receipt ${receiptId}]`,
       );
       lastAttempt = { summary: "auto compact suspended: replacement incompatibility alarm", atMs: Date.now() };
     } else if (respawnUnsafeReason !== null) {
@@ -1496,9 +1496,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const buildPanelStatusRows = (): string[] => {
       const policy = resolvedContextPolicy.policy;
       const rows: string[] = ["LHC context management"];
-      // The standing R6 alarm sits above everything: it is the one condition
-      // where cc-lhc has stopped swapping and the operator has to act.
-      for (const line of standingWallAlarm) rows.push(line);
+      // The standing nonviability alarm sits above everything: it is the one
+      // condition where cc-lhc has stopped swapping and the operator has to act.
+      for (const line of standingNonviabilityAlarm) rows.push(line);
 
       const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
       const retrievalState =
@@ -1774,12 +1774,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const childLivenessTimeoutMs = options.handoffTimeouts?.childLivenessTimeoutMs ?? DEFAULT_CHILD_LIVENESS_TIMEOUT_MS;
     const childStableWindowMs = options.handoffTimeouts?.childStableWindowMs ?? DEFAULT_CHILD_STABLE_WINDOW_MS;
     const replacementAttempts = options.replacementAttempts ?? DEFAULT_REPLACEMENT_ATTEMPTS;
-    const nonviableSwapLimit = options.nonviableSwapLimit ?? DEFAULT_NONVIABLE_SWAP_LIMIT;
+    const nonviableSwapLimit = options.nonviableSwapLimit ?? NONVIABLE_SWAPS_BEFORE_ALARM;
 
     /**
      * One line the wrapper puts on the terminal over Claude's screen. Reserved
      * for the two facts the operator cannot be allowed to miss: input typed
-     * during compaction was dropped, and the standing R6 alarm.
+     * during compaction was dropped, and the standing nonviability alarm.
      */
     const writeWrapperLine = (text: string): void => {
       stdout.write(`\r\n\x1b[2K[cc-lhc] ${text.replace(/\n/g, " ")}\r\n`);
@@ -2319,10 +2319,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
     /**
      * One swap whose replacement never became viable. Nothing was switched and
-     * nothing was undone, so the cheap answer is to try again at the next
-     * settled seam. Past the bound, retrying forever is the wrong answer: the
-     * wall goes up as a standing alarm and R16 hands the session to Claude's
-     * own compaction so it survives in degraded form.
+     * nothing was undone, so below the bound the answer is simply to try again
+     * at the next settled seam, for free. At the bound, retrying forever is the
+     * wrong answer: the standing alarm goes up and R16 hands the old session to
+     * Claude's own compaction so it survives in degraded form. The session
+     * itself keeps running throughout.
      */
     const noteNonviableSwap = async (
       oldSessionId: string,
@@ -2330,20 +2331,23 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       reason: string,
     ): Promise<void> => {
       nonviableSwaps += 1;
-      if (standingWallAlarm.length > 0 || nonviableSwaps < nonviableSwapLimit) return;
-      standingWallAlarm = formatReplacementWallAlarm({
+      if (standingNonviabilityAlarm.length > 0 || nonviableSwaps < nonviableSwapLimit) return;
+      standingNonviabilityAlarm = formatReplacementNonviabilityAlarm({
         rebuiltSessionId,
         oldSessionId,
         nonviableSwaps,
         lastReason: reason,
       });
       const relaunched = await relaunchOldSessionForSurvival(oldSessionId);
-      standingWallAlarm = [...standingWallAlarm, formatSurvivalRelaunchNotice(oldSessionId, relaunched)];
-      for (const line of standingWallAlarm) {
+      standingNonviabilityAlarm = [
+        ...standingNonviabilityAlarm,
+        formatSurvivalRelaunchNotice(oldSessionId, relaunched),
+      ];
+      for (const line of standingNonviabilityAlarm) {
         wrapperLog.warn(`cc-lhc ${line}`);
         writeWrapperLine(line);
       }
-      pendingPanelNotices = [...pendingPanelNotices, ...standingWallAlarm];
+      pendingPanelNotices = [...pendingPanelNotices, ...standingNonviabilityAlarm];
     };
 
     // Automatic operation: shared mutation op + shared handoff, serialized with

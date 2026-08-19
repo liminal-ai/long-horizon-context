@@ -282,15 +282,20 @@ Spawn failure or a candidate that dies or stays mute is discovered at zero cost
 and retried. There is no rollback anywhere: the oversized session is never
 restored, because a swap either happens or never starts.
 
-**The one terminal state.** After bounded repeated nonviability the old session
-simply stays live and a standing alarm goes up: *cc-lhc rebuilt sessions are not
-loading — likely a compatibility problem with the installed Claude version.*
-That is explicitly a best guess inferred from observable viability, not proof
-that Claude rejected the file; cc-lhc never parses the terminal to find out.
-Automatic swaps stop rather than retrying forever, capture and manual compact
-keep working, and R16's survival relaunch runs then and there: the old session
-is relaunched **without** the injected `DISABLE_AUTO_COMPACT`, so Claude's own
+**When replacements repeatedly will not run.** Each nonviable swap costs the
+session nothing and is retried at the next settled seam. After a bounded number
+of them the retrying stops being free to keep doing, so two things happen
+instead, and both persist. A standing alarm goes up: *cc-lhc rebuilt sessions
+are not loading — likely a compatibility problem with the installed Claude
+version.* That is explicitly a best guess inferred from observable viability,
+not proof that Claude rejected the file; cc-lhc never parses the terminal to
+find out. And R16's survival relaunch runs then and there: the old session is
+relaunched **without** the injected `DISABLE_AUTO_COMPACT`, so Claude's own
 compaction keeps it alive in degraded form.
+
+Nothing about this ends the session. The old session stays live and captured,
+retrieval keeps working, and manual compact still runs; what stops is the
+automatic child swap, which would otherwise fail the same way on every seam.
 
 Receipts are durable runtime records and distinguish provider trigger context
 from rebuilt served-context size. They are write-behind throughout: no receipt,

@@ -1181,6 +1181,142 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     writeSpy.mockRestore();
   });
 
+  it("stays below the bound: a nonviable swap is retried at the next seam, and only the bound alarms", async () => {
+    const spawned: FakePty[] = [];
+    const spawnedEnvs: Array<Record<string, string>> = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-bound-"));
+    receiptDirs.push(rolloutDir);
+    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      writeFileSync(rebuiltPath, '{"line":1}\n');
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        totalByteLength: 11,
+      };
+    });
+
+    let compactCalls = 0;
+    sdk.threadView.compact = vi.fn(async () => {
+      compactCalls += 1;
+      return {
+        ok: true,
+        value: {
+          viewId: "v1",
+          tailTokens: 5,
+          totalTokens: 9,
+          bands: {
+            smooth: { entries: 1, tokens: 4 },
+            detailed: { entries: 0, tokens: 0 },
+            brief: { entries: 0, tokens: 0 },
+          },
+        },
+      };
+    }) as never;
+
+    mocks.captureFactory = (opts) => {
+      const scripted = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined && lifecycleSink === undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    let terminalOutput = "";
+    (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
+      terminalOutput += chunk.toString("utf8");
+    });
+
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[], opts: { env: Record<string, string> }) => {
+        const index = spawned.length;
+        const mute = args.includes(REBUILT_ID);
+        const fake = makeFakePty(5400 + index, `child${index}`, args, true, !mute);
+        spawnedEnvs.push(opts.env);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
+      onHandoffResult: (result) => results.push(result),
+      replacementAttempts: 1,
+      // Two nonviable swaps before the alarm: one below the bound, one at it.
+      nonviableSwapLimit: 2,
+      handoffTimeouts: {
+        sigtermGraceMs: 300,
+        sigkillWaitMs: 200,
+        captureReadyTimeoutMs: 500,
+        childLivenessTimeoutMs: 400,
+        childStableWindowMs: 60,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    await waitFor(() => spawned.length === 1, "first child");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+
+    // --- below the bound: one nonviable swap costs the session nothing ---
+    await waitFor(() => results.length === 1, "first handoff result");
+    expect(results[0]!.kind).toBe("replacement_nonviable");
+    expect(compactCalls).toBe(1);
+    // No alarm, no survival relaunch: exactly the one mute candidate was spawned.
+    expect(terminalOutput).not.toContain("cc-lhc rebuilt sessions are not loading");
+    expect(spawned).toHaveLength(2);
+    // The old child kept the terminal and was never signalled.
+    expect(spawned[0]!.killed).toHaveLength(0);
+
+    // --- the next settled seam retries the swap, for free ---
+    lifecycleSink!([
+      { kind: "turn_opened", reason: "user_prompt" },
+      {
+        kind: "sampling_observed",
+        samplingId: "req:bound2",
+        providerUsage: { input_tokens: 4, cache_creation_input_tokens: 6_000, cache_read_input_tokens: 6_000 },
+      },
+      { kind: "turn_settled", reason: "end_turn" },
+    ]);
+    await waitFor(() => results.length === 2, "second handoff result");
+    expect(results[1]!.kind).toBe("replacement_nonviable");
+    // A retry really happened: a second compact and a second candidate.
+    expect(compactCalls).toBe(2);
+
+    // --- at the bound: alarm plus survival relaunch, both at once ---
+    await waitFor(
+      () => terminalOutput.includes("cc-lhc rebuilt sessions are not loading"),
+      "standing alarm at the bound",
+    );
+    await waitFor(() => spawned.length === 4, "survival relaunch child");
+    const survival = spawned[3]!;
+    expect(survival.args[survival.args.indexOf("--resume") + 1]).toBe("old-session");
+    expect(spawnedEnvs[3]!.DISABLE_AUTO_COMPACT).toBeUndefined();
+    // Nothing ended: the alarm says so in as many words.
+    expect(terminalOutput).toContain("stays live and capture keeps running");
+    expect(terminalOutput).not.toContain("terminal state");
+
+    survival.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  });
+
   it("repeated nonviability raises the standing alarm and actively relaunches the old session for survival", async () => {
     const spawned: FakePty[] = [];
     const spawnedEnvs: Array<Record<string, string>> = [];
@@ -1188,7 +1324,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const sdk = sdkForCapture();
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
 
-    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-wall-"));
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-nonviable-"));
     receiptDirs.push(rolloutDir);
     const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
