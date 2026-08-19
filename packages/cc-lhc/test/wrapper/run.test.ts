@@ -167,6 +167,7 @@ function makeCaptureSession(stopImpl: () => Promise<void> = async () => {}): Cap
     isCaptureReady: () => health.phase === "ready",
     getCaptureHealth: () => ({ ...health, reasons: [...health.reasons] }),
     getCaptureGeneration: () => health.generation,
+    getLiveAsyncWork: () => [],
     stop: vi.fn(stopImpl),
   } as unknown as CaptureSession;
 }

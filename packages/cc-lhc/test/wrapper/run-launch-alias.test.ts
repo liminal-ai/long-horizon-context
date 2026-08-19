@@ -43,6 +43,7 @@ vi.mock("../../src/intake/session.js", async (importOriginal) => {
         isCaptureReady: () => false,
         getCaptureHealth: () => ({ generation: 1, phase: "binding" as const, reasons: [] }),
         getCaptureGeneration: () => 1,
+        getLiveAsyncWork: () => [],
         stop: async () => {},
       } as unknown as CaptureSession;
     },

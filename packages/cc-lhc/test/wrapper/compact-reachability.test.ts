@@ -141,6 +141,7 @@ function scriptedCapture(sdk: unknown, health: () => Health): CaptureSession {
       durableLineOffset: 0,
     }),
     getCaptureGeneration: () => health().generation,
+    getLiveAsyncWork: () => [],
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
 }

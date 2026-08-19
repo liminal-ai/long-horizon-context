@@ -15,6 +15,12 @@ import type { CaptureCommandContext } from "../commands/dispatch.js";
 import { ccAssignments } from "../inference/assignments.js";
 import { claudeCliModelCall } from "../inference/claude-cli.js";
 import {
+  type AsyncWorkFold,
+  createAsyncWorkFold,
+  liveAsyncWork,
+  type OpenAsyncWork,
+} from "../observation/async-work.js";
+import {
   applyCaptureDegraded,
   type CaptureGenerationState,
   type CapturePhase,
@@ -224,6 +230,12 @@ export interface CaptureSession {
   isCaptureReady(): boolean;
   getCaptureHealth(): CaptureGenerationState;
   getCaptureGeneration(): number;
+  /**
+   * Asynchronous work this session started that a child swap would kill,
+   * newest launch last. Derived from the same ordered rollout lines capture
+   * already reads and rebuilt by re-reading them; nothing is persisted.
+   */
+  getLiveAsyncWork(nowMs?: number): OpenAsyncWork[];
   stop(): Promise<void>;
 }
 
@@ -415,6 +427,10 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   const samplingDedupe: SamplingDedupeState = createSamplingDedupeState();
   const turnFold = createTurnFoldState();
   const estimateFold: PostMeasurementEstimateFold = createPostMeasurementEstimateFold();
+  // One capture generation, one open-async set. A replacement child starts a
+  // new capture session, and by then everything this set held is dead.
+  const asyncWorkFold: AsyncWorkFold = createAsyncWorkFold();
+  let reportedAsyncDiagnostics = 0;
   const userOnLifecycle = deps.onLifecycle;
   /** Explicit boundary wins; otherwise lineage supplies provenance after resolve. */
   let resolvedPrefix: PrefixBoundary =
@@ -598,6 +614,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             generation: captureHealth.generation,
             turnFold,
             estimateFold,
+            asyncWorkFold,
             deferPressureLifecycle: true,
           };
           if (expectedSession !== undefined) {
@@ -1166,6 +1183,15 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     },
     getCaptureGeneration(): number {
       return captureHealth.generation;
+    },
+    getLiveAsyncWork(nowMs: number = Date.now()): OpenAsyncWork[] {
+      // Unrecognized notification shapes are for review, not for control: they
+      // never open work and never close it. Report each new one once.
+      while (reportedAsyncDiagnostics < asyncWorkFold.diagnostics.length) {
+        logError(`cc-lhc async work: ${asyncWorkFold.diagnostics[reportedAsyncDiagnostics]}`);
+        reportedAsyncDiagnostics += 1;
+      }
+      return liveAsyncWork(asyncWorkFold, nowMs);
     },
     stop: async () => {
       stopped = true;

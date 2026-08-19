@@ -133,6 +133,7 @@ function scriptedCaptureSession(sdk: unknown): CaptureSession {
       durableLineOffset: 0,
     }),
     getCaptureGeneration: () => 1,
+    getLiveAsyncWork: () => [],
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
 }

@@ -260,6 +260,27 @@ delivered — never buffered, never journalled, never replayed. One line says so
 started before ownership is not typed-ahead at all; it opens a normal turn and
 compact re-evaluates at that turn's settle.
 
+**Live asynchronous work is named before it is killed.** A swap replaces the
+Claude child, and everything that child was still running asynchronously dies
+with it: background agents, workflows, background shell commands, monitors, and
+a pending `ScheduleWakeup` (Claude reconstructs `CronCreate` tasks from the
+transcript on resume, but not wakeups). The wrapper derives that open set from
+the same ordered rollout capture already reads — a launch acknowledgement opens
+one item, and only matching terminal evidence closes it: a `completed`,
+`failed`, `killed`, or `stopped` task notification, or a `TaskStop` result
+naming that task. Monitor events and stall notices are progress; they refresh
+what is shown and close nothing. The set is derived wrapper state with no side
+store, rebuilt by re-reading the rollout on resume catch-up.
+
+At an otherwise-eligible automatic seam with an operator at the terminal and
+work still open, the panel names what the swap would cost and asks. This is a
+present-user authority choice, not a gate: only an explicit **y** proceeds, and
+every other outcome — a decline, a dismissal, a stray key, a closed terminal, a
+prompt that could not be drawn — skips that one seam, receipts it as a
+deferral, keeps no state, and the next eligible seam asks again while the work
+is still open. An empty set, a noninteractive launch, and a one-shot launch all
+take the ordinary path unchanged.
+
 **Swap: spawn first.** A working session exists at every moment.
 
 1. Spawn `claude --resume <rebuilt-session-id>` **off-route**: a real child that

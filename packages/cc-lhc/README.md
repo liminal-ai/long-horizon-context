@@ -110,6 +110,20 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   the moment compact owns the settled session, bytes bound for Claude are
   dropped rather than delivered — never buffered, never replayed — and one line
   says *input typed during compaction was not delivered — please resend*.
+- **Live background work is not killed silently.** A swap replaces the Claude
+  child, so anything that child was still running asynchronously dies with it:
+  background agents, workflows, background shell commands, monitors, and a
+  pending `ScheduleWakeup`. The wrapper derives that open set from the same
+  rollout it already reads — a launch acknowledgement opens one item, and only
+  matching terminal evidence (`completed`, `failed`, `killed`, `stopped`, or an
+  explicit `TaskStop`) closes it; monitor events are progress and close nothing.
+  When an automatic compact comes due at a settled seam with an operator at the
+  terminal and work still open, the panel names what the swap would kill and
+  asks. Only an explicit **y** proceeds. Anything else — n, Esc, a stray key, a
+  closed terminal — skips that seam alone, keeps nothing, and the next eligible
+  seam asks again while the work is still running. With an empty set, no
+  terminal (one-shot launches included), or a seam that is not otherwise
+  eligible, the compact path is exactly what it was.
 - **Spawn-first handoff.** On a respawn-safe interactive launch, compact/prune
   rebuild a new rollout, then spawn `claude --resume <new-id>` **off-route** — a
   real child owning no terminal, no stdin, and no capture generation. Once it has
