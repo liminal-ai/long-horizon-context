@@ -54,6 +54,13 @@ const mocks = vi.hoisted(() => ({
   ownerLeasesDuringCaptureStop: [] as string[][],
   /** When set, spawning a child throws instead of producing one. */
   spawnThrows: null as Error | null,
+  /**
+   * When set, the resumed generation's `stop()` holds here before settling —
+   * standing in for writes already queued behind an abandoned watcher.
+   */
+  outgoingStopGate: null as Promise<void> | null,
+  /** Capture generations whose `stop()` has fully settled, in order. */
+  captureStopsSettled: [] as string[],
 }));
 
 vi.mock("../../src/rollout/discover.js", async (importOriginal) => {
@@ -217,7 +224,12 @@ function scriptedCaptureSession(
       ? opts.continueCapture.threadRef.threadId
       : "th_one_shot");
   const stats = { ...emptyCaptureStats(), threadId };
+  const sessionLabel = opts.expectedSession?.sessionId ?? "unknown";
   const stopSpy = vi.fn(async () => {
+    // The outgoing generation's queued writes drain after its watcher is gone.
+    if (sessionLabel === RESUMED_ID && mocks.outgoingStopGate !== null) {
+      await mocks.outgoingStopGate;
+    }
     // Ownership ordering: the lease must still be held while capture settles.
     try {
       const { readdirSync } = await import("node:fs");
@@ -228,6 +240,7 @@ function scriptedCaptureSession(
     } catch {
       mocks.ownerLeasesDuringCaptureStop.push([]);
     }
+    mocks.captureStopsSettled.push(sessionLabel);
   });
   scriptedStops.set(opts, stopSpy);
   return {
@@ -376,6 +389,8 @@ describe("run: one-shot pre-launch compaction", () => {
     mocks.ownerLeasesDuringAcceptance = [];
     mocks.ownerLeasesDuringCaptureStop = [];
     mocks.spawnThrows = null;
+    mocks.outgoingStopGate = null;
+    mocks.captureStopsSettled = [];
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-one-shot-home-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
@@ -400,6 +415,15 @@ describe("run: one-shot pre-launch compaction", () => {
       }
     }
   });
+
+  /** Owner-lease files still on disk under this test's CC_LHC_HOME. */
+  function leaseFiles(): string[] {
+    try {
+      return readdirSync(join(process.env.CC_LHC_HOME ?? "", "owners")).filter((n) => n.endsWith(".json"));
+    } catch {
+      return [];
+    }
+  }
 
   /**
    * One one-shot invocation. `transcriptTokens` is the last authoritative
@@ -596,6 +620,40 @@ describe("run: one-shot pre-launch compaction", () => {
     // The wrapper still owned the thread when the acceptance ran.
     expect(mocks.ownerLeasesDuringAcceptance).toHaveLength(1);
     expect(mocks.ownerLeasesDuringAcceptance[0]!.length).toBe(1);
+    expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${REBUILT_ID}`);
+  }, 20_000);
+
+  it("ordinary teardown waits out the outgoing generation before the lease goes, once", async () => {
+    let releaseOutgoing: (() => void) | undefined;
+    mocks.outgoingStopGate = new Promise<void>((r) => {
+      releaseOutgoing = r;
+    });
+    const { harness, runPromise } = launchOneShot({ prompt: "do the thing", transcriptTokens: 6_000 });
+
+    await waitFor(() => harness.spawned.length === 1, "launched child");
+    await waitFor(() => harness.launchedSink() !== undefined, "rebuilt lifecycle sink");
+    const threadId = harness.captureCalls[0]!.launchThread!.threadId;
+
+    harness.launchedSink()!([{ kind: "turn_opened", reason: "user_prompt" }]);
+    harness.spawned[0]!.fireExit(0);
+
+    // The one-shot has run and exited; the generation the seam moved off is
+    // still draining, so the lease is not handed back yet.
+    await waitFor(() => mocks.captureStopsSettled.includes(REBUILT_ID), "rebuilt capture stop to settle");
+    const settledEarly = await Promise.race([
+      runPromise.then(() => "settled" as const),
+      new Promise<"pending">((r) => setTimeout(() => r("pending"), 400)),
+    ]);
+    expect(settledEarly).toBe("pending");
+    expect(leaseFiles()).toHaveLength(1);
+
+    releaseOutgoing?.();
+    await runPromise;
+    expect(leaseFiles()).toEqual([]);
+    // One stop per generation — the retained promise is awaited, never re-run.
+    expect(mocks.captureStopsSettled).toEqual([REBUILT_ID, RESUMED_ID]);
+    expect(scriptedStops.get(harness.captureCalls[0]!)?.mock.calls).toHaveLength(1);
+    expect(scriptedStops.get(harness.captureCalls[1]!)?.mock.calls).toHaveLength(1);
     expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${REBUILT_ID}`);
   }, 20_000);
 
@@ -797,15 +855,6 @@ describe("run: one-shot pre-launch compaction", () => {
    * fails exactly as it always did, having left nothing running.
    */
   describe("startup failures after capture is bound", () => {
-    /** Owner-lease files still on disk under this test's CC_LHC_HOME. */
-    function leaseFiles(): string[] {
-      try {
-        return readdirSync(join(process.env.CC_LHC_HOME ?? "", "owners")).filter((n) => n.endsWith(".json"));
-      } catch {
-        return [];
-      }
-    }
-
     it("a spawn that throws settles capture before the lease and rethrows", async () => {
       const spawnFailure = new Error("posix_spawnp failed");
       mocks.spawnThrows = spawnFailure;
@@ -820,6 +869,42 @@ describe("run: one-shot pre-launch compaction", () => {
       for (const held of mocks.ownerLeasesDuringCaptureStop) expect(held).toHaveLength(1);
       expect(leaseFiles()).toEqual([]);
       // One spawn was attempted and no child exists; the prompt was not resent.
+      expect(harness.spawnAttempts).toHaveLength(1);
+      expect(harness.spawned).toHaveLength(0);
+      const threadId = harness.captureCalls[0]!.launchThread!.threadId;
+      expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${RESUMED_ID}`);
+    }, 20_000);
+
+    it("the lease outlives the outgoing generation too, not just the one the launch holds", async () => {
+      // The generation the seam moved off still has queued writes draining
+      // behind its abandoned watcher.
+      let releaseOutgoing: (() => void) | undefined;
+      mocks.outgoingStopGate = new Promise<void>((r) => {
+        releaseOutgoing = r;
+      });
+      mocks.spawnThrows = new Error("posix_spawnp failed");
+      const { harness, runPromise } = launchOneShot({ prompt: "do the thing", transcriptTokens: 6_000 });
+      const rejection = runPromise.then(
+        () => "resolved" as const,
+        () => "rejected" as const,
+      );
+
+      // The generation the launch holds settles first — and that is not enough.
+      await waitFor(() => mocks.captureStopsSettled.includes(REBUILT_ID), "rebuilt capture stop to settle");
+      expect(harness.rebuiltStopped()).toBe(true);
+      expect(mocks.captureStopsSettled).not.toContain(RESUMED_ID);
+      expect(
+        await Promise.race([rejection, new Promise<"pending">((r) => setTimeout(() => r("pending"), 400))]),
+      ).toBe("pending");
+      expect(leaseFiles()).toHaveLength(1);
+
+      // The outgoing generation settles last, and only then does the lease go.
+      releaseOutgoing?.();
+      await expect(runPromise).rejects.toThrow("posix_spawnp failed");
+      expect(mocks.captureStopsSettled).toEqual([REBUILT_ID, RESUMED_ID]);
+      for (const held of mocks.ownerLeasesDuringCaptureStop) expect(held).toHaveLength(1);
+      expect(leaseFiles()).toEqual([]);
+      // Nothing about the wait changed the launch: no child, no resend.
       expect(harness.spawnAttempts).toHaveLength(1);
       expect(harness.spawned).toHaveLength(0);
       const threadId = harness.captureCalls[0]!.launchThread!.threadId;

@@ -537,14 +537,30 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   /** Capture bound before Claude starts; it becomes the wrapper's capture session. */
   let preLaunchCapture: CaptureSession | undefined;
   /**
+   * The generation the pre-launch seam moved off, still settling. `stop()`
+   * abandons the watcher at once but awaits the writes already queued behind
+   * it, and those writes belong to this wrapper's lease like any other.
+   */
+  let outgoingCaptureSettled: Promise<void> | undefined;
+
+  /** Wait out the generation the seam left behind. Consumed once. */
+  const settleOutgoingCapture = async (): Promise<void> => {
+    const settling = outgoingCaptureSettled;
+    outgoingCaptureSettled = undefined;
+    if (settling !== undefined) await settling;
+  };
+
+  /**
    * Give back everything this launch acquired while there was still no child to
    * own it.
    *
    * A one-shot binds capture before the child exists, so a startup failure past
-   * that point has a live watcher as well as a thread lease to settle — and in
+   * that point has live capture as well as a thread lease to settle — and in
    * that order. The lease is what makes this wrapper the thread's only writer;
-   * handing it back with a capture generation still reading would leave two
-   * wrappers able to write one thread. Fail-soft, and safe to call twice.
+   * handing it back while any generation still has writes in flight would leave
+   * two wrappers able to write one thread, so both the generation the launch
+   * holds and the one the seam moved off are waited out first. Fail-soft, and
+   * safe to call twice.
    */
   const releasePreChildOwnership = async (): Promise<void> => {
     const capture = preLaunchCapture;
@@ -554,6 +570,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         wrapperLog.warn(`cc-lhc: pre-launch capture stop failed: ${detailOf(cause)}`);
       });
     }
+    await settleOutgoingCapture();
     releaseThreadOwner();
   };
 
@@ -826,9 +843,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
     preLaunchCapture = rebuiltCapture;
     // Past the point of no return for this seam: the outgoing generation owns
-    // nothing now. Its drain is fired and forgotten — its rollout is never
-    // deleted, so nothing it misses is lost.
-    void outgoing.stop().catch((cause: unknown) => {
+    // nothing now, and nothing waits on its drain to get on with the launch —
+    // its rollout is never deleted, so nothing it misses is lost. The promise is
+    // kept all the same: whatever it still has queued must land before this
+    // wrapper stops being the thread's owner.
+    outgoingCaptureSettled = outgoing.stop().catch((cause: unknown) => {
       wrapperLog.warn(`cc-lhc one-shot: pre-compact capture drain failed: ${detailOf(cause)}`);
     });
 
@@ -1666,8 +1685,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       }
       // A prompt accepted during that final drain still has to reach the
       // registry — or the recovery record — while this wrapper is still the
-      // thread's owner. `cleanup()` below hands that authority back.
+      // thread's owner, and so do any writes the generation the pre-launch seam
+      // moved off still has queued. `cleanup()` below hands that authority back.
       if (promptAcceptanceSettled !== undefined) await promptAcceptanceSettled;
+      await settleOutgoingCapture();
       if (governorReceiptStore !== null) {
         try {
           governorReceiptStore.close();
