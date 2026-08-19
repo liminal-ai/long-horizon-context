@@ -87,6 +87,7 @@ import {
   releaseLhcWriter,
   type StageName,
   type StoredCompactContinuationReceipt,
+  deleteBoundary,
   upsertBoundary,
   type WriterClaimRow,
 } from "./store.js";
@@ -797,6 +798,11 @@ async function finalizeAttempt(
       forcedAt: string;
       completedAt?: string | null;
     };
+    /**
+     * Discard this attempt's boundary bookkeeping row (R23-S9/S10 budget
+     * exhaustion). Mutually exclusive with `boundaryUpdate`.
+     */
+    boundaryDiscard?: { continuationTurnId: string };
     forcedBoundaryThisAttempt: boolean;
     continuationTurnId: string | null;
     compactReceipt: CompactReceipt | null;
@@ -876,6 +882,13 @@ async function finalizeAttempt(
             lastStage: opts.boundaryUpdate.lastStage,
             forcedAt: opts.boundaryUpdate.forcedAt,
             completedAt: opts.boundaryUpdate.completedAt ?? null,
+          });
+        }
+        if (opts.boundaryDiscard !== undefined) {
+          deleteBoundary(tx.db, opts.boundaryDiscard.continuationTurnId, facts.attemptId);
+          appendStageLog(tx.db, facts.attemptId, "boundary_discarded", recordedAt, {
+            continuationTurnId: opts.boundaryDiscard.continuationTurnId,
+            reason: "compact_retry_budget_exhausted",
           });
         }
         if (hooks?.failFinalizeAfterReceipt === true) {
@@ -2271,6 +2284,7 @@ async function runCompactContinuationInner(
         forcedAt: string;
         completedAt?: string | null;
       };
+      boundaryDiscard?: { continuationTurnId: string };
       forcedBoundaryThisAttempt: boolean;
       continuationTurnId: string | null;
       compactReceipt: CompactReceipt | null;
@@ -2297,22 +2311,35 @@ async function runCompactContinuationInner(
           completedAt: clock().toISOString(),
         };
       } else {
-        // Install/compact fail after force — failed_repairable, nonterminal.
+        // Install/compact fail after force.
         // compact_failed: candidate structure invalid (never reached a valid install).
         // install_failed: valid candidate reached install and install failed.
         // A structurally valid candidate that reached install and failed is an
-        // install failure; anything earlier is a compact failure. Both are
-        // bounded retry, never a stop.
+        // install failure; anything earlier is a compact failure.
+        //
+        // Bounded retry, never a stop — but bounded means bounded (R23-S9/S10):
+        // while the oracle still authorizes retry the boundary stays
+        // failed_repairable and the attempt is nonterminal; once the budget is
+        // exhausted (continue_current_body / compact_retry_budget_exhausted)
+        // the attempt terminalizes so the same attempt replays without
+        // mutating, and its speculative boundary bookkeeping is discarded so a
+        // fresh attempt starts clean. Canonical turn/marker bytes and the
+        // terminal receipt stay; nextProviderRequestAllowed remains true.
         const failStage: StageName =
           material.compactStructurallyValid && material.installSucceeds === false ? "install_failed" : "compact_failed";
-        finalizeOpts.terminal = false;
-        finalizeOpts.boundaryUpdate = {
-          continuationTurnId: finalBoundary.continuationTurnId,
-          status: "failed_repairable",
-          markerPersisted: markerPersistedDurable,
-          lastStage: failStage,
-          forcedAt: boundaryForcedAt,
-        };
+        if (decision.receipt.retry.retryAuthorized) {
+          finalizeOpts.terminal = false;
+          finalizeOpts.boundaryUpdate = {
+            continuationTurnId: finalBoundary.continuationTurnId,
+            status: "failed_repairable",
+            markerPersisted: markerPersistedDurable,
+            lastStage: failStage,
+            forcedAt: boundaryForcedAt,
+          };
+        } else {
+          finalizeOpts.terminal = true;
+          finalizeOpts.boundaryDiscard = { continuationTurnId: finalBoundary.continuationTurnId };
+        }
         const failLog = await stageLog(ref, facts.attemptId, failStage, clock, {
           continuationTurnId: finalBoundary.continuationTurnId,
           outcome: decision.outcome,

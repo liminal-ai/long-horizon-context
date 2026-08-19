@@ -749,6 +749,52 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(stillBaseline.ok).toBe(true);
     if (!stillBaseline.ok) return;
     expect(stillBaseline.value?.viewId).toBe(baseline.value.viewId);
+
+    // Exhaustion TERMINALIZES (R23-S9/S10): bounded means bounded. The receipt
+    // is terminal and the attempt's speculative boundary bookkeeping is
+    // discarded — nothing remains to wedge a fresh attempt.
+    const storedExhausted = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "install-fail-1",
+    );
+    expect(storedExhausted.ok).toBe(true);
+    if (!storedExhausted.ok) return;
+    expect(storedExhausted.value?.terminal).toBe(true);
+    expect(exhausted.value.pendingBoundary).toBeNull();
+
+    // Third same-attempt call is a terminal replay: zero added mutation.
+    const countRows = (table: string): number => {
+      const db = openRaw(fixture.filePath);
+      try {
+        const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+        return Number(row.n);
+      } finally {
+        db.close();
+      }
+    };
+    const stagesBefore = countRows("compact_continuation_stage_log");
+    const messagesBefore = countRows("message");
+    const third = await runCCTest(fixture.filePath, baseFacts({ attemptId: "install-fail-1" }), {
+      failInstallBeforeWrite: true,
+    });
+    expect(third.ok).toBe(true);
+    if (!third.ok) return;
+    expect(third.value.replayedTerminalAttempt).toBe(true);
+    expect(third.value.receipt.outcome).toBe("continue_current_body");
+    expect(third.value.pendingBoundary).toBeNull();
+    expect(countRows("compact_continuation_stage_log")).toBe(stagesBefore);
+    expect(countRows("message")).toBe(messagesBefore);
+    const afterReplay = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
+    expect(afterReplay.ok).toBe(true);
+    if (!afterReplay.ok) return;
+    expect(afterReplay.value?.viewId).toBe(baseline.value.viewId);
+
+    // A fresh later attempt proceeds normally — the dead attempt left no wedge.
+    const fresh = await runCCTest(fixture.filePath, baseFacts({ attemptId: "install-fail-2" }));
+    expect(fresh.ok).toBe(true);
+    if (!fresh.ok) return;
+    expect(fresh.value.receipt.refuseCode).toBeNull();
+    expect(fresh.value.receipt.retry.attemptIndex).toBe(1);
   });
 
   it("P1: install fail → failed_repairable nonterminal → same attempt repair succeeds", async () => {
@@ -2118,8 +2164,8 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
   it("stale_boundary_preview_is_clamped_to_prepared_compact_point", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedEscalationTurn(fixture.filePath);
-    const storedPoint =
-      (await fixture.sdk.threadView.describe({ filePath: fixture.filePath })).value?.compactPoint ?? 0;
+    const describedBefore = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
+    const storedPoint = (describedBefore.ok ? describedBefore.value?.compactPoint : 0) ?? 0;
     const prepared = await fixture.sdk.threadView.prepareCompact({ filePath: fixture.filePath });
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
@@ -2135,7 +2181,10 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
 
     const result = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
-      { ...escalationFacts("stale-boundary-clamp-1", 10_000_000), compact: undefined },
+      (() => {
+        const { compact: _compact, ...rest } = escalationFacts("stale-boundary-clamp-1", 10_000_000);
+        return rest;
+      })(),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -2156,7 +2205,10 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     await seedEscalationTurn(fixture.filePath);
     const result = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
-      { ...escalationFacts("protected-tail-bound-1", 298000), compact: undefined },
+      (() => {
+        const { compact: _compact, ...rest } = escalationFacts("protected-tail-bound-1", 298000);
+        return rest;
+      })(),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
