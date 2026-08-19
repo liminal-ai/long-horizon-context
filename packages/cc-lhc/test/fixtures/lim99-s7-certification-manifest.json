@@ -284,5 +284,103 @@
     "/home/leemoore/.claude/projects/-tmp-cc-lhc-lim99-1787144929-cwd-b",
     "/home/leemoore/.claude/projects/-tmp-cc-lhc-lim99-1787144929-cwd-b2",
     "/home/leemoore/.claude/projects/-tmp-cc-lhc-lim99-1787144929-cwd-g"
-  ]
+  ],
+  "amendment": {
+    "date": "2026-08-19",
+    "note": "Appended after the original run. The canary (d) partial_fail receipt above is unchanged and remains the true outcome on base 86d41a1c4a0abd1a629a89b83b816c4dd856cd0b.",
+    "correctionCommit": "48ef4b1ef2a7eb9a5471fd2d9cc639512ccad808",
+    "claudeVersion": "2.1.235",
+    "canaries": {
+      "d_amended": {
+        "result": "pass",
+        "arm": "production",
+        "rerunFrom": "48ef4b1ef2a7eb9a5471fd2d9cc639512ccad808",
+        "claudeSessionId": "eea0cf54-4169-466f-8865-6b478be7646e",
+        "lhcThreadId": "th_115a6b388913dd47",
+        "loudNoticeEmitted": true,
+        "loudNoticeCount": 1,
+        "summaryTagged": true,
+        "summaryIsCompleteClosedTurn": true,
+        "untaggedDuplicates": 0,
+        "capturedAs": {
+          "messageId": "m9",
+          "kind": "user_prompt",
+          "codePoints": 1905,
+          "turn": "t4",
+          "turnStatus": "closed",
+          "outcomeReason": "claude_native_compact_summary"
+        },
+        "truncationMarkerPresent": false,
+        "truncationMarkerExpected": false,
+        "truncationNote": "1905 code points is under the 2000-code-point bound, so no marker is correct",
+        "lhcContinues": true,
+        "settledSeamAfterNotice": {
+          "at": "2026-08-19T14:12:09.306Z",
+          "decision": "below_threshold",
+          "nextRequestPressureTokens": 23057,
+          "pressureBeforeCompact": 25434
+        },
+        "rolloutShapeCounts": {
+          "isCompactSummaryTrue": 1,
+          "compactBoundary": 1,
+          "typeSummary": 0
+        },
+        "cleanExit": {
+          "wrapperExitCode": 0,
+          "ownerLeasesRemaining": 0,
+          "derivationsPending": 0
+        }
+      }
+    },
+    "deterministicGates": {
+      "focusedNativeSummarySuites": {
+        "passed": 109
+      },
+      "ccLhcFullSuite": {
+        "files": 92,
+        "passed": 952,
+        "skipped": 8
+      },
+      "ccLhcTypecheckSrc": "clean",
+      "ccLhcTypecheckTest": "clean",
+      "lhcSuite": {
+        "files": 70,
+        "passed": 759,
+        "skipped": 15
+      }
+    },
+    "mutation": {
+      "probe": "revert installed-shape recognition in nativeCompactSummaryText",
+      "result": "killed",
+      "failed": 6,
+      "suites": [
+        "intake/native-compact-summary",
+        "observation/native-compact-observation",
+        "wrapper/governor-production-path"
+      ],
+      "restoredByteExact": true,
+      "restoreVerification": "sha256sum -c"
+    },
+    "fixture": {
+      "path": "packages/cc-lhc/test/fixtures/native-compact-2.1.235.jsonl",
+      "provenance": "lines 21-22 of the canary (d) exhibit rollout, session 77658af3-c016-4acf-886f-2bb27498886e",
+      "sanitization": "absolute home paths inside strings only (/home/leemoore -> /home/operator); all structural fields unchanged"
+    },
+    "isolation": {
+      "ccLhcHome": "/tmp/cc-lhc-r8-canary-1787148295/home",
+      "cwd": "/tmp/cc-lhc-r8-canary-1787148295/cwd",
+      "productionHomeUnchanged": true,
+      "productionHomeVerification": "sha256 of ~/.cc-lhc/cc-lhc.sqlite and registry.sqlite identical before and after",
+      "pnpmLockUnchanged": true,
+      "rebuiltArtifacts": [
+        "packages/lhc dist",
+        "packages/cc-lhc dist",
+        "packages/cc-lhc-native addon (node-gyp rebuild)"
+      ]
+    },
+    "disposableTargets": [
+      "/tmp/cc-lhc-r8-canary-1787148295",
+      "/home/leemoore/.claude/projects/-tmp-cc-lhc-r8-canary-1787148295-cwd"
+    ]
+  }
 }

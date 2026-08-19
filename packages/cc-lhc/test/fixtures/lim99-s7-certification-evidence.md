@@ -377,3 +377,104 @@ nowhere else — which is exactly the gap live certification exists to close.
 Isolated threads created: `th_e3e68bff9a74f7aa`, `th_57f3de94affdfd1c`,
 `th_11faae96876d7feb`, `th_3df180f18af54b63`, `th_60e4c349a0b7b2c4` — all inside
 the exhibit root.
+
+---
+
+## Amendment — 2026-08-19, after the record above: canary (d) rerun and passing
+
+Everything above this line is the original certification run and stands
+unchanged, including the canary (d) **PARTIAL FAIL** receipt and the summary
+table. This section is appended chronologically after it; it does not relabel
+that result, which remains the true outcome on the base it ran against
+(`86d41a1c4a0abd1a629a89b83b816c4dd856cd0b`).
+
+**Correction commit:** `48ef4b1ef2a7eb9a5471fd2d9cc639512ccad808`
+(`fix(cc-lhc): recognize the installed native-compact summary shape`), the S6
+repair canary (d) identified and deliberately did not make.
+
+The discriminator now recognizes the installed Claude Code 2.1.235 shape —
+top-level `type: "user"`, `isCompactSummary: true`, `message.role: "user"`,
+string `message.content` — alongside the retained legacy `type: "summary"`
+shape, with observation and intake sharing one function. The adjacent
+`system`/`subtype: "compact_boundary"` record stays harness metadata exactly as
+before; no pairing state, adjacency inference, latch, or stop was added.
+
+Deterministic evidence added with the correction: fixture
+`test/fixtures/native-compact-2.1.235.jsonl`, a structural copy of lines 21–22
+of this record's own canary (d) exhibit rollout (session
+`77658af3-c016-4acf-886f-2bb27498886e`), sanitized only by replacing absolute
+home paths inside strings. Focused suites 109 passed; full `cc-lhc` package
+suite **92 files, 952 passed, 8 skipped**; both `cc-lhc` typechecks clean; core
+`lhc` suite 759 passed / 15 skipped. Mutation: reverting only installed-shape
+recognition fails 6 tests across the intake, observation, and wrapper suites;
+restored byte-exact (sha256 verified).
+
+### (d-amended) Native `/compact` on 2.1.235 — PASS
+
+Rerun from the correction commit against the same installed binary, in a fresh
+disposable sandbox. Command:
+
+```text
+tmux -f /dev/null new-session -d -s r8canary -x 200 -y 50 -c /tmp/cc-lhc-r8-canary-1787148295/cwd \
+  "CC_LHC_HOME=/tmp/cc-lhc-r8-canary-1787148295/home CC_LHC_CLAUDE_BIN=/home/leemoore/.local/bin/claude \
+   node <worktree>/packages/cc-lhc/dist/bin.js"
+```
+
+- Claude session: `eea0cf54-4169-466f-8865-6b478be7646e` · LHC thread `th_115a6b388913dd47`
+- Rollout: `~/.claude/projects/-tmp-cc-lhc-r8-canary-1787148295-cwd/eea0cf54-4169-466f-8865-6b478be7646e.jsonl`
+  — contains `"isCompactSummary":true` ×1 and `"subtype":"compact_boundary"` ×1,
+  and `"type":"summary"` ×0, i.e. exactly the shape that defeated the original run.
+
+Three seeded turns, then a user-typed native `/compact`.
+
+1. **Advisory notifier still warns and still does not block** — overlay
+   "Claude /compact can invalidate cc-lhc session capture/binding", Enter
+   continues. Unchanged from the original run.
+2. **Loud notice — now fires, exactly once.** `wrapper.log`:
+   ```text
+   2026-08-19T14:10:38.492Z [warn] cc-lhc ANOMALY: native compact ran on a managed session — This session is being continued from a previous conversation that ran out of context. …
+   ```
+   Original run: **0** occurrences.
+3. **Tagged, bounded, complete closed turn — now lands.** Thread SQLite:
+   turn `t4` `status=closed`, `outcome=completed`,
+   `outcome_reason=claude_native_compact_summary`, exactly one member `m9`
+   (`kind=user_prompt`), content opening `<claude-compact-summary>` and closing
+   `</claude-compact-summary>`, 1,905 code points — under the 2,000-code-point
+   bound, so no truncation marker, which is the correct behavior for a summary
+   this size. Original run: an **open** turn holding a 2,927-char ordinary
+   untagged prompt.
+4. **No duplicate.** Exactly one message in the thread carries the summary text,
+   and it is the tagged one; zero untagged copies. The `/compact` slash line
+   itself is captured separately and ordinarily as `m8` in `t3`.
+5. **LHC continues — unchanged and re-proven.** Capture stayed healthy
+   (`capture ready (gen 1)`, no degradation), and a settled-seam observation at
+   `14:12:09` — **after** the 14:10:38 anomaly — recorded
+   `decision=below_threshold` at next-request pressure **23,057**, correctly
+   reflecting the shrunk session (25,434 before the compact). A post-compact
+   turn answered from compacted context (`HALYARD-95` recalled correctly).
+   Nothing latched and nothing stood down.
+6. Clean `/exit`: wrapper exit 0, owner lease released (owners dir empty),
+   `derivations_pending=0`.
+
+With this, all nine S7 canaries pass on Claude Code 2.1.235: the eight from the
+original run, plus canary (d) at the correction commit. The `README` and
+`docs/onboard/05-host-cc-lhc.md` native-summary paragraphs are accurate again as
+of `48ef4b1`.
+
+### Amendment isolation
+
+- Isolated `CC_LHC_HOME` (`/tmp/cc-lhc-r8-canary-1787148295/home`) and disposable cwd (`/tmp/cc-lhc-r8-canary-1787148295/cwd`); no
+  operator session, no production `~/.cc-lhc`.
+- Production `~/.cc-lhc` fingerprinted before and after the rerun —
+  `cc-lhc.sqlite` and `registry.sqlite` sha256 **identical**.
+- Rebuilt only disposable worktree artifacts (`packages/lhc` dist,
+  `packages/cc-lhc` dist, and the `cc-lhc-native` addon via `node-gyp rebuild`).
+  `pnpm-lock.yaml` sha256 unchanged across the whole amendment.
+- No push, install, release, publication, gateway change, or service restart.
+
+Amendment disposable targets:
+
+```text
+/tmp/cc-lhc-r8-canary-1787148295
+~/.claude/projects/-tmp-cc-lhc-r8-canary-1787148295-cwd
+```

@@ -521,14 +521,17 @@ and its adjacent manifest, covering the forward-only compact path on Claude
 2.1.235: the interactive spawn-first swap and typed-ahead drop, the one-shot
 pre-launch compact, restart mid-swap, manual/panel compact, `autoCompact:false`,
 the nonviability alarm with R16's survival relaunch, alias resolution with a
-single thread owner, and the legacy pre-rewrite upgrade. It records one open
-defect: on the installed binary a native `/compact` writes a
+single thread owner, and the legacy pre-rewrite upgrade.
+
+That run found one defect, since corrected: the intake discriminator matched
+only `type: "summary"`, while the installed binary writes a
 `system`/`compact_boundary` record plus a `user` record carrying
-`isCompactSummary`, not the `type: "summary"` record this host's intake
-discriminates on, so the loud notice and the tagged bounded closed turn
-described above do not currently occur — the summary is captured as an
-ordinary user prompt and LHC continues. Read that record before relying on the
-native-summary paragraphs in this document.
+`isCompactSummary: true`, so the loud notice and the tagged bounded closed turn
+never fired — the summary was captured as an ordinary user prompt and LHC
+continued. Intake and observation now recognize that installed shape (and still
+recognize `type: "summary"` for older rollouts), and the record's appended
+amendment carries the passing canary (d) rerun on 2.1.235. The native-summary
+paragraphs above describe current behavior.
 
 The TypeScript SDK remains the contract source. The new
 `turns.backfillRenderingLabels` operation creates port-parity follow-up
