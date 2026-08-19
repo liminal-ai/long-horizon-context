@@ -1,7 +1,8 @@
 /**
- * Interim Slice 1 compact/prune completion: rebuild artifact + lineage, no
- * in-app /resume injection (Claude Code 2.1.226 cannot resume a session file
- * created after TUI startup). Operator relaunches via external wrapper resume.
+ * Host-local registration of a rebuilt Claude session: bind it to the same LHC
+ * thread and persist the content-verifiable prefix fence. Every rebuilt session
+ * — an interactive swap's replacement, a one-shot pre-launch rebuild — is
+ * registered here before it is resumed.
  */
 
 import type { ThreadRef } from "lhc";
@@ -18,25 +19,6 @@ export function threadIdFromRef(threadRef: ThreadRef | undefined): string {
   if (threadRef === undefined) return "";
   return "threadId" in threadRef ? threadRef.threadId : "";
 }
-
-/** Operator-facing guidance after a successful rebuild (live Claude unchanged). */
-export function formatRebuildRelaunchGuidance(input: {
-  operation: "compact" | "prune";
-  oldSessionId: string;
-  newSessionId: string;
-  threadId: string;
-}): string[] {
-  return [
-    `LHC ${input.operation}: rebuilt session ${input.newSessionId} written; live Claude session ${input.oldSessionId} is unchanged.`,
-    `Exit Claude, then relaunch with: cc-lhc --resume ${input.newSessionId}`,
-    `Or bare picker: cc-lhc --resume  (lists the rebuilt session among project rollouts)`,
-    `Durable LHC thread remains ${input.threadId || "(unknown)"} — do not start a fresh session for this work.`,
-  ];
-}
-
-export const LINEAGE_REGISTRATION_FAILED =
-  "lineage registration failed — rebuilt file may exist on disk but is NOT ready; " +
-  "do not resume it until the session→thread binding is persisted";
 
 /**
  * Bind rebuilt Claude session id to the same durable LHC thread and persist
@@ -69,8 +51,3 @@ export async function registerRebuiltSessionLineage(input: {
     { prefix: input.prefixBoundary },
   );
 }
-
-/** Truthful partial state when post-lineage fence fails. */
-export const REBUILD_PARTIAL_AFTER_LINEAGE =
-  "rebuilt artifact and lineage may exist; live Claude session unchanged; " +
-  "do not claim operator-ready relaunch — reconciliation required";

@@ -3,8 +3,9 @@
 `cc-lhc` is the production Claude Code host for Long Horizon Context. It wraps
 the closed `claude` CLI in a PTY, captures Claude's rollout JSONL into an LHC
 thread, runs derivation inference through isolated `claude -p` subprocesses,
-and, for respawn-safe interactive launches, rebuilds/respawns Claude when the
-served thread view changes.
+and rebuilds Claude's session when the served thread view changes — swapping the
+child mid-session for an interactive launch, and compacting before launch for a
+one-shot.
 
 The integration was certified on 2026-08-10 against Claude Code 2.1.226. See
 [`test/fixtures/slice7-certification-evidence.md`](test/fixtures/slice7-certification-evidence.md)
@@ -110,7 +111,7 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   the moment compact owns the settled session, bytes bound for Claude are
   dropped rather than delivered — never buffered, never replayed — and one line
   says *input typed during compaction was not delivered — please resend*.
-- **Spawn-first handoff.** On a respawn-safe interactive launch, compact/prune
+- **Spawn-first handoff.** On an interactive launch, compact/prune
   rebuild a new rollout, then spawn `claude --resume <new-id>` **off-route** — a
   real child owning no terminal, no stdin, and no capture generation. Once it has
   proven observable viability (it rendered and survived a stabilization window;
@@ -121,6 +122,23 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   PID. A working session exists at every moment and nothing ever rolls back to
   the oversized one. This is **not** same-agentic-turn continuation: there is no
   synthetic tool-tail preservation and no Codex parity claim.
+- **One-shot seats compact before they launch.** A one-shot seat
+  (`cc-lhc --resume <id> -p <prompt>`) is one prompt and an exit, so it compacts
+  at the start of the next invocation, before any Claude process exists. The
+  wrapper reads the last authoritative provider count from the persisted
+  transcript — catching LHC up from that file first when capture is stale — adds
+  a source-labelled estimate of the prompt it is about to send, and, over the
+  trigger, compacts and writes the rebuilt session before launching Claude
+  **once** on it with the original prompt. Compacting needs a settled snapshot
+  LHC actually holds: capture that has not reached ready inside the catch-up
+  bound, and a transcript left mid-turn by a previous invocation, both stand the
+  seam down — the prompt launches on the resumed session with capture still
+  catching up behind it, and the next invocation compacts. The thread's current
+  session advances only once the rebuilt session is observed accepting the
+  prompt, and the wrapper settles that acceptance before handing the thread
+  lease back; a launch that fails before then keeps the old pointer, and nothing
+  is ever resent automatically. A turn that grows past the trigger while it runs
+  finishes and is compacted by the next invocation.
 - **When replacements repeatedly will not run.** Each nonviable swap costs the
   session nothing and is retried at the next settled seam. After a bounded
   number of them, two things happen instead of another quiet retry, and both
@@ -277,11 +295,16 @@ cannot rewrite an unrelated automatic classification.
   currently accepts; the current pointer advances when a swap is accepted.
   User-issued in-app `/resume` is unsupported; the
   advisory warning appears first, and any resulting mismatch fails closed.
-- Automatic handoff requires respawn-safe launch argv. A positional initial
-  prompt, prompt tokens after `--`, or an option/value boundary the wrapper
-  cannot prove disables automatic respawn so a prompt is never re-executed.
-  Manual compact/prune still writes and binds the rebuilt artifact; continue it
-  with an external `cc-lhc --resume <rebuilt-session-id>`.
+- The initial prompt a launch carries belongs to that launch. A wrapper-owned
+  replacement child inherits the launch's options and continues the
+  conversation, never the prompt, so a prompt is never re-executed. `-p` and
+  `--print` are not inherited either, in any form the installed parser accepts
+  (`-p`, `--print`, `-p=<v>`, `--print=<v>` — all of which name a one-shot
+  seat), because a print child would exit at once. Options
+  whose value boundary the argv does not establish — optional-value, variadic
+  and unknown options in their space form — are left out of the replacement and
+  named in the wrapper log; their `=value` form carries through. No launch form
+  disables compaction.
 - Exact signed-thinking replay would require exact stored/live request identity.
   The wrapper cannot observe that closed request boundary, so rebuilt rollouts
   currently omit thinking blocks rather than guessing.

@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 
-import { LaunchGrammarError, resolveLaunchSession, respawnArgvSafety } from "../../src/intake/launch-session.js";
+import {
+  LaunchGrammarError,
+  launchChildArgv,
+  launchFormOf,
+  launchPromptText,
+  replacementChildArgv,
+  resolveLaunchSession,
+  splitLaunchArgv,
+} from "../../src/intake/launch-session.js";
 
 const UUID_A = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
 const UUID_B = "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb";
@@ -168,48 +176,121 @@ describe("resolveLaunchSession grammar", () => {
 });
 
 
-describe("respawnArgvSafety (fixture: claude 2.1.226 --help arity table)", () => {
-  it("keeps the real supported launch form handoff-safe: --model --effort --name", () => {
-    expect(respawnArgvSafety(["--model", "claude-fable-5", "--effort", "medium", "--name", "seat"], [])).toEqual({
-      safe: true,
-    });
+describe("splitLaunchArgv (fixture: claude 2.1.226 --help arity table)", () => {
+  it("the real supported launch form is inherited whole: --model --effort --name", () => {
+    const split = splitLaunchArgv(["--model", "claude-fable-5", "--effort", "medium", "--name", "seat"], []);
+    expect(split.options).toEqual(["--model", "claude-fable-5", "--effort", "medium", "--name", "seat"]);
+    expect(split.promptTokens).toEqual([]);
+    expect(split.droppedAmbiguousOptions).toEqual([]);
   });
 
-  it("equals forms and zero-arity flags are safe", () => {
-    expect(respawnArgvSafety(["--model=opus", "--verbose", "--add-dir=/x", "--debug=api"], [])).toEqual({
-      safe: true,
-    });
+  it("equals forms and zero-arity flags are inherited", () => {
+    const split = splitLaunchArgv(["--model=opus", "--verbose", "--add-dir=/x", "--debug=api"], []);
+    expect(split.options).toEqual(["--model=opus", "--verbose", "--add-dir=/x", "--debug=api"]);
+    expect(split.droppedAmbiguousOptions).toEqual([]);
   });
 
-  it("a positional prompt fails closed", () => {
-    const r = respawnArgvSafety(["do this thing"], []);
-    expect(r.safe).toBe(false);
-    if (!r.safe) expect(r.reason).toMatch(/positional prompt/);
+  it("a positional prompt is the launch's own; a replacement never inherits it", () => {
+    const split = splitLaunchArgv(["--verbose", "do this thing"], []);
+    expect(split.promptTokens).toEqual(["do this thing"]);
+    expect(split.options).toEqual(["--verbose"]);
+    expect(replacementChildArgv(["--verbose", "do this thing"], [], "S")).toEqual([
+      "--verbose",
+      "--resume",
+      "S",
+    ]);
   });
 
-  it("prompt tokens after -- fail closed", () => {
-    const r = respawnArgvSafety([], ["--", "do", "this"]);
-    expect(r.safe).toBe(false);
+  it("prompt tokens after -- are prompt, not options", () => {
+    const split = splitLaunchArgv([], ["--", "do", "this"]);
+    expect(split.promptTokens).toEqual(["do", "this"]);
+    expect(replacementChildArgv([], ["--", "do", "this"], "S")).toEqual(["--resume", "S"]);
   });
 
-  it("variadic space form with bare values fails closed (prompt boundary unprovable)", () => {
-    const r = respawnArgvSafety(["--add-dir", "/x"], []);
-    expect(r.safe).toBe(false);
-    if (!r.safe) expect(r.reason).toMatch(/optional\/variadic/);
+  it("a variadic space form is dropped from a replacement: its value boundary is unprovable", () => {
+    const split = splitLaunchArgv(["--add-dir", "/x"], []);
+    expect(split.options).toEqual([]);
+    expect(split.droppedAmbiguousOptions).toEqual(["--add-dir", "/x"]);
   });
 
-  it("prompt after a variadic list fails closed", () => {
-    const r = respawnArgvSafety(["--add-dir", "/x", "do this"], []);
-    expect(r.safe).toBe(false);
+  it("a prompt after a variadic list is dropped with the option it cannot be told from", () => {
+    const split = splitLaunchArgv(["--verbose", "--add-dir", "/x", "do this"], []);
+    expect(split.options).toEqual(["--verbose"]);
+    expect(split.droppedAmbiguousOptions).toEqual(["--add-dir", "/x", "do this"]);
+    expect(replacementChildArgv(["--verbose", "--add-dir", "/x", "do this"], [], "S")).toEqual([
+      "--verbose",
+      "--resume",
+      "S",
+    ]);
   });
 
-  it("optional-value space form with a bare token fails closed", () => {
-    const r = respawnArgvSafety(["--debug", "filter"], []);
-    expect(r.safe).toBe(false);
+  it("an optional-value space form is dropped with its bare token", () => {
+    expect(splitLaunchArgv(["--debug", "filter"], []).droppedAmbiguousOptions).toEqual(["--debug", "filter"]);
   });
 
-  it("unknown option followed by a bare token fails closed; alone it is safe", () => {
-    expect(respawnArgvSafety(["--future-opt", "val"], []).safe).toBe(false);
-    expect(respawnArgvSafety(["--future-flag", "--verbose"], []).safe).toBe(true);
+  it("an unknown option is dropped only when a bare token follows it", () => {
+    expect(splitLaunchArgv(["--future-opt", "val"], []).droppedAmbiguousOptions).toEqual(["--future-opt", "val"]);
+    expect(splitLaunchArgv(["--future-flag", "--verbose"], []).options).toEqual(["--future-flag", "--verbose"]);
+  });
+});
+
+describe("launchFormOf", () => {
+  it("-p and --print are one-shot seats; everything else is interactive", () => {
+    expect(launchFormOf(["-p", "do this"])).toBe("one_shot");
+    expect(launchFormOf(["--print"])).toBe("one_shot");
+    expect(launchFormOf(["--model", "opus", "do this"])).toBe("interactive");
+    expect(launchFormOf([])).toBe("interactive");
+  });
+
+  /**
+   * The installed parser accepts an `=value` form on a declared boolean
+   * (verified on 2.1.235: `claude --print=1 --version` and `claude -p=1
+   * --version` both parse). That launch prints and exits like any other
+   * one-shot, so classifying it as interactive would arm the child swap on a
+   * seat that is about to end.
+   */
+  it("the equals form of the print flag is a one-shot as well", () => {
+    expect(launchFormOf(["--print=1", "do this"])).toBe("one_shot");
+    expect(launchFormOf(["-p=1", "do this"])).toBe("one_shot");
+    expect(launchFormOf(["--printer", "x"])).toBe("interactive");
+  });
+});
+
+describe("the print flag and a replacement child", () => {
+  /**
+   * `-p, --print` is zero-arity in the installed binary (2.1.235 `--help`,
+   * matching the 2.1.226 arity fixture), so a print launch's prompt is the
+   * positional token — the `=value` is not prompt text and is not estimated as
+   * any. What the split owes is that no form of the flag reaches a replacement.
+   */
+  it("no form of the print flag is inherited, and the prompt stays positional", () => {
+    for (const flag of ["-p", "--print", "-p=1", "--print=1"]) {
+      const split = splitLaunchArgv([flag, "do this thing"], []);
+      expect(split.options).toEqual([]);
+      expect(split.promptTokens).toEqual(["do this thing"]);
+      expect(replacementChildArgv([flag, "do this thing"], [], "S")).toEqual(["--resume", "S"]);
+    }
+  });
+
+  it("the equals value is not counted as prompt text", () => {
+    expect(launchPromptText(["--print=1"], [])).toBe("");
+    expect(launchPromptText(["--print=1", "do this thing"], [])).toBe("do this thing");
+  });
+
+  it("this invocation's own argv keeps the flag exactly as written", () => {
+    expect(launchChildArgv(["--print=1", "do this"], [], "S")).toEqual(["--print=1", "do this", "--resume", "S"]);
+  });
+});
+
+describe("launchChildArgv", () => {
+  it("carries this invocation's own argv, prompt included, onto the resolved session", () => {
+    expect(launchChildArgv(["-p", "do this"], [], "S")).toEqual(["-p", "do this", "--resume", "S"]);
+  });
+});
+
+describe("launchPromptText", () => {
+  it("is the prompt as the child receives it", () => {
+    expect(launchPromptText(["-p", "do this thing"], [])).toBe("do this thing");
+    expect(launchPromptText(["--verbose"], [])).toBe("");
   });
 });

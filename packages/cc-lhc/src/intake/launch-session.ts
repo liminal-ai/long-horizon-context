@@ -23,9 +23,9 @@ export interface LaunchSessionPlan {
   childArgv: string[];
   /** Source resume id when forking (attribution retained separately from target). */
   forkSourceSessionId?: string;
-  /** Non-selector tokens before `--` (user options/positionals), for respawn. */
+  /** Non-selector tokens before `--`: user options and the initial prompt. */
   rest: string[];
-  /** `--` and everything after it, verbatim, for respawn. */
+  /** `--` and everything after it, verbatim. */
   passthrough: string[];
 }
 
@@ -439,12 +439,12 @@ export async function resolveLaunchSession(
 }
 
 /**
- * Child argv for a wrapper-owned respawn: the user's original non-selector
- * options and passthrough, with the session selector replaced by an external
- * `--resume <sessionId>`. Callers must check `respawnArgvSafety` first: a
- * positional initial prompt must never be replayed into a replacement child.
+ * Child argv for THIS invocation on `sessionId`: the user's own argv verbatim —
+ * options, initial prompt and passthrough — with the session selector replaced
+ * by an external `--resume <sessionId>`. The prompt belongs to this launch and
+ * runs here, exactly once.
  */
-export function respawnChildArgv(
+export function launchChildArgv(
   rest: readonly string[],
   passthrough: readonly string[],
   sessionId: string,
@@ -452,13 +452,25 @@ export function respawnChildArgv(
   return assembleChildArgv(rest, ["--resume", sessionId], passthrough);
 }
 
-export type RespawnArgvSafety = { safe: true } | { safe: false; reason: string };
+/**
+ * Child argv for a wrapper-owned replacement: the launch's inherited options
+ * with the session selector replaced by `--resume <sessionId>`. The initial
+ * prompt is left behind — a replacement continues a conversation, it never
+ * re-executes the prompt that started it.
+ */
+export function replacementChildArgv(
+  rest: readonly string[],
+  passthrough: readonly string[],
+  sessionId: string,
+): string[] {
+  return assembleChildArgv(splitLaunchArgv(rest, passthrough).options, ["--resume", sessionId], []);
+}
 
 /**
  * Option table for the supported Claude binary, taken from the installed
  * 2.1.226 `--help`. Only `<value>` options have a provable one-token space
- * form. `[value]` and `<values...>` space forms are ambiguous with a
- * positional prompt and fail closed (their `=` forms remain safe).
+ * form; `[value]` and `<values...>` space forms cannot be told from a
+ * positional prompt (their `=` forms can).
  */
 const CLAUDE_ONE_VALUE_OPTIONS = new Set([
   "--agent",
@@ -485,29 +497,6 @@ const CLAUDE_ONE_VALUE_OPTIONS = new Set([
   "--settings",
   "--system-prompt",
 ]);
-const CLAUDE_OPTIONAL_VALUE_OPTIONS = new Set([
-  "--cloud",
-  "-d",
-  "--debug",
-  "--from-pr",
-  "--prompt-suggestions",
-  "--remote-control",
-  "--teleport",
-  "--tmux",
-  "-w",
-  "--worktree",
-]);
-const CLAUDE_VARIADIC_OPTIONS = new Set([
-  "--add-dir",
-  "--allowedTools",
-  "--allowed-tools",
-  "--betas",
-  "--disallowedTools",
-  "--disallowed-tools",
-  "--file",
-  "--mcp-config",
-  "--tools",
-]);
 const CLAUDE_ZERO_ARITY_FLAGS = new Set([
   "--allow-dangerously-skip-permissions",
   "--ax-screen-reader",
@@ -527,8 +516,6 @@ const CLAUDE_ZERO_ARITY_FLAGS = new Set([
   "--include-partial-messages",
   "--no-chrome",
   "--no-session-persistence",
-  "-p",
-  "--print",
   "--replay-user-messages",
   "--safe-mode",
   "--strict-mcp-config",
@@ -538,80 +525,122 @@ const CLAUDE_ZERO_ARITY_FLAGS = new Set([
 ]);
 
 /**
- * Whether the launch argv can be replayed into a respawned child without
- * re-executing a positional initial prompt. Option values are recognized via
- * the fixed-arity table above and preserved. Fail closed only for an actual
- * positional prompt, prompt tokens after `--`, or an unknown option whose
- * value boundary cannot be established. Manual recovery stays available when
- * automatic handoff is disabled.
+ * The Claude flags that make a launch a one-shot: print the response and exit.
+ *
+ * `-p, --print` is zero-arity in the installed binary (verified against the
+ * 2.1.235 `--help`, matching the 2.1.226 arity fixture above), so the prompt of
+ * a print launch is a positional token or stdin — never a value on the flag.
+ * The parser does accept an `=value` form on a declared boolean, though
+ * (`--print=1`, `-p=1` both parse), and that launch is just as much a one-shot.
+ * Recognising only the bare forms would arm the interactive child swap on a
+ * seat that is about to exit.
  */
-export function respawnArgvSafety(
-  rest: readonly string[],
-  passthrough: readonly string[],
-): RespawnArgvSafety {
-  const afterDashDash = passthrough.filter((token) => token !== "--");
-  if (afterDashDash.length > 0) {
-    return {
-      safe: false,
-      reason:
-        "launch argv passes prompt tokens after --; a respawn must never re-send them, " +
-        "so automatic compact handoff is disabled for this launch form",
-    };
+function isPrintFlag(token: string): boolean {
+  const name = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
+  return name === "-p" || name === "--print";
+}
+
+/**
+ * What kind of seat this launch is.
+ *
+ * A one-shot runs the prompt it carries and exits, so its compaction seam is
+ * the start of the next invocation — before any Claude process exists (R9). An
+ * interactive launch stays live and compacts at settled seams with a child swap.
+ */
+export type LaunchForm = "interactive" | "one_shot";
+
+export function launchFormOf(rest: readonly string[]): LaunchForm {
+  return rest.some(isPrintFlag) ? "one_shot" : "interactive";
+}
+
+/**
+ * How a launch's argv divides between what a wrapper-owned replacement child
+ * inherits and the initial prompt, which belongs to the invocation that carried
+ * it. Both halves stay in this launch's own argv; the split only says what a
+ * replacement may take with it.
+ */
+export interface LaunchArgvSplit {
+  /** Options, with their provable values, a replacement child inherits. */
+  options: string[];
+  /** The initial prompt tokens. Executed once, by the launch that carried them. */
+  promptTokens: string[];
+  /**
+   * Options a replacement child does not inherit because the argv does not say
+   * where their values end. Kept as a fact to report, not a reason to refuse.
+   */
+  droppedAmbiguousOptions: string[];
+}
+
+/**
+ * Split launch argv into inherited options and the initial prompt.
+ *
+ * Option values are recognized through the fixed-arity table above. Optional,
+ * variadic and unknown options in their space form are indistinguishable from a
+ * prompt that follows them, so the option and its bare successors are left out
+ * of a replacement rather than risking a prompt that runs twice; the `=` form
+ * of the same option is provable and carries through. Everything after `--` is
+ * the child's own argument list, which for the supported launch forms is prompt.
+ */
+export function splitLaunchArgv(rest: readonly string[], passthrough: readonly string[]): LaunchArgvSplit {
+  const options: string[] = [];
+  const promptTokens: string[] = [];
+  const droppedAmbiguousOptions: string[] = [];
+
+  for (const token of passthrough) {
+    if (token !== "--") promptTokens.push(token);
   }
 
   let i = 0;
   while (i < rest.length) {
     const token = rest[i]!;
     if (!token.startsWith("-")) {
-      return {
-        safe: false,
-        reason:
-          `launch argv carries a positional prompt token (${JSON.stringify(token)}); ` +
-          "a respawn must never re-send it, so automatic compact handoff is disabled for this launch form",
-      };
+      promptTokens.push(token);
+      i += 1;
+      continue;
+    }
+    if (isPrintFlag(token)) {
+      // A replacement continues the conversation; a print child would exit at
+      // once. The flag stays in this launch's own argv and goes no further.
+      i += 1;
+      continue;
     }
     if (token.includes("=")) {
+      options.push(token);
       i += 1;
       continue;
     }
     if (CLAUDE_ONE_VALUE_OPTIONS.has(token)) {
+      options.push(token);
+      if (i + 1 < rest.length) options.push(rest[i + 1]!);
       i += 2;
       continue;
     }
-    if (CLAUDE_OPTIONAL_VALUE_OPTIONS.has(token) || CLAUDE_VARIADIC_OPTIONS.has(token)) {
-      // Optional-value and variadic space forms are inherently ambiguous with
-      // a following positional prompt — the wrapper cannot prove where the
-      // value list ends. Bare successors fail closed; `=` forms stay safe.
-      if (i + 1 < rest.length && !rest[i + 1]!.startsWith("-")) {
-        return {
-          safe: false,
-          reason:
-            `launch option ${JSON.stringify(token)} takes optional/variadic values and is followed by a bare token; ` +
-            "the value/prompt boundary cannot be established, so automatic compact handoff is disabled. " +
-            `Use ${token}=value form to enable it`,
-        };
-      }
-      i += 1;
-      continue;
-    }
     if (CLAUDE_ZERO_ARITY_FLAGS.has(token)) {
+      options.push(token);
       i += 1;
       continue;
     }
-    // Unknown option: safe on its own or before another option, but a bare
-    // successor is ambiguous (value vs prompt) — fail closed.
+    // Optional-value, variadic and unknown options all reach here: their value
+    // boundary is not provable from the argv alone.
     if (i + 1 < rest.length && !rest[i + 1]!.startsWith("-")) {
-      return {
-        safe: false,
-        reason:
-          `launch argv has an option unknown to cc-lhc (${JSON.stringify(token)}) followed by a bare token; ` +
-          "the value/prompt boundary cannot be established, so automatic compact handoff is disabled. " +
-          `Use ${token}=value form to enable it`,
-      };
+      droppedAmbiguousOptions.push(token);
+      i += 1;
+      while (i < rest.length && !rest[i]!.startsWith("-")) {
+        droppedAmbiguousOptions.push(rest[i]!);
+        i += 1;
+      }
+      continue;
     }
+    options.push(token);
     i += 1;
   }
-  return { safe: true };
+
+  return { options, promptTokens, droppedAmbiguousOptions };
+}
+
+/** The initial prompt text this launch carries, as the child receives it. */
+export function launchPromptText(rest: readonly string[], passthrough: readonly string[]): string {
+  return splitLaunchArgv(rest, passthrough).promptTokens.join(" ");
 }
 
 // Re-export legacy parse helpers used by tests that only need UUID resume extraction

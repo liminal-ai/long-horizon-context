@@ -8,6 +8,10 @@ import type { ResolvedContextPolicy } from "../../src/governor/types.js";
 import {
   createPostMeasurementEstimateFold,
   HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+  hostEstimateFromCanonicalBytes,
+  PENDING_PROMPT_BYTE_ESTIMATE_SOURCE,
+  pendingPromptEstimate,
+  preLaunchEstimate,
   PROVIDER_OUTPUT_ESTIMATE_SOURCE,
 } from "../../src/observation/estimate.js";
 import { createTurnFoldState, observeRolloutLine } from "../../src/observation/observe.js";
@@ -516,5 +520,35 @@ describe("observeRolloutLine", () => {
       mode: "set",
       tokens: 7,
     });
+  });
+});
+
+describe("pre-launch estimate: what the next request carries that no provider reading covers", () => {
+  it("a pending prompt is sized from its own bytes, under its own source label", () => {
+    expect(pendingPromptEstimate("x".repeat(400))).toEqual({
+      tokens: 100,
+      source: PENDING_PROMPT_BYTE_ESTIMATE_SOURCE,
+      domain: "source_labelled_estimate",
+    });
+    expect(pendingPromptEstimate("")).toMatchObject({ tokens: 0 });
+  });
+
+  it("multi-byte prompt text is measured in bytes, not code units", () => {
+    // Four bytes per character: the estimate must not read them as one token each.
+    expect(pendingPromptEstimate("𝄞".repeat(100)).tokens).toBe(100);
+  });
+
+  it("captured growth and the pending prompt add up, and the label names both", () => {
+    const growth = hostEstimateFromCanonicalBytes(800);
+    const estimate = preLaunchEstimate(growth, "y".repeat(400));
+    expect(estimate.tokens).toBe(300);
+    expect(estimate.source).toBe(
+      `${HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE}+${PENDING_PROMPT_BYTE_ESTIMATE_SOURCE}`,
+    );
+  });
+
+  it("with nothing captured since the last reading, the estimate is the prompt alone", () => {
+    const estimate = preLaunchEstimate(hostEstimateFromCanonicalBytes(0), "z".repeat(40));
+    expect(estimate).toMatchObject({ tokens: 10, source: PENDING_PROMPT_BYTE_ESTIMATE_SOURCE });
   });
 });

@@ -818,16 +818,39 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     writeSpy.mockRestore();
   });
 
-  it("a positional initial prompt disables handoff: trigger causes no mutation, no respawn, no termination", async () => {
+  it("an interactive positional prompt compacts and swaps; the replacement never inherits the prompt", async () => {
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
-    const wrapperLogLines: string[] = [];
-    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout");
+    const results: HandoffResult[] = [];
+
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-positional-"));
+    receiptDirs.push(rolloutDir);
+    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+    const rebuiltContent = '{"line":1}\n{"line":2}\n';
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      writeFileSync(rebuiltPath, rebuiltContent);
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 2,
+        expectedReintakeLines: 2,
+        replayedPrefixLines: 2,
+        prefixBoundary: { kind: "verified", lineCount: 2, byteLength: 24, sha256: "bb".repeat(32) },
+        totalByteLength: Buffer.byteLength(rebuiltContent),
+      };
+    });
 
     mocks.captureFactory = (opts) => {
-      const scripted = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
-      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      const scripted = scriptedCaptureSession(
+        opts,
+        sdk,
+        isRebuilt ? REBUILT_ID : "old-session",
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        isRebuilt ? 2 : 1,
+      );
+      if (!isRebuilt && opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
       return scripted.session;
     };
 
@@ -845,33 +868,35 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: tempReceiptDbPath(),
-      wrapperLog: {
-        info: (m: string) => wrapperLogLines.push(m),
-        warn: (m: string) => wrapperLogLines.push(m),
-        warningCount: () => 0,
-        path: "/tmp/fake.log",
-      } as never,
-      onHandoffResult: () => {
-        throw new Error("handoff must not run for a positional-prompt launch");
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
       },
     });
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
-    expect(wrapperLogLines.some((l) => l.includes("handoff disabled for this launch form"))).toBe(true);
+    // The launch carried the prompt: this child, and only this child, runs it.
+    expect(spawned[0]!.args).toContain("fix the login bug");
 
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(TRIGGER_SIGNALS);
-    await new Promise((r) => setTimeout(r, 300));
 
-    // The decision was logged but nothing mutated or respawned; the positional
-    // prompt was never re-sent to any replacement child.
-    expect(wrapperLogLines.some((l) => l.includes("would_compact"))).toBe(true);
-    expect(wrapperLogLines.some((l) => l.includes("auto-compact mutation"))).toBe(false);
-    expect(writeSpy).not.toHaveBeenCalled();
-    expect(spawned).toHaveLength(1);
-    expect(spawned[0]!.killed).toHaveLength(0);
+    await waitFor(() => results.length === 1, "handoff result");
+    expect(results[0]!.kind).toBe("success");
+    expect(writeSpy).toHaveBeenCalledOnce();
+    expect(spawned).toHaveLength(2);
+    // The replacement continues the conversation on the rebuilt session. The
+    // prompt that started it is not in its argv, so it cannot run twice.
+    expect(spawned[1]!.args).not.toContain("fix the login bug");
+    expect(spawned[1]!.args[spawned[1]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
 
-    spawned[0]!.fireExit(0);
+    spawned[1]!.fireExit(0);
     await runPromise;
     writeSpy.mockRestore();
   });

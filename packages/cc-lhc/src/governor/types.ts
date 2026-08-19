@@ -315,6 +315,11 @@ export type GovernorMutationDeferReason =
   | "handoff_in_progress"
   | "wrapper_exiting"
   | "command_guard_busy"
-  | "respawn_unsafe"
+  /**
+   * A one-shot seat compacts at the start of the next invocation, before any
+   * Claude process exists (R9) — never by swapping the child that is running
+   * the prompt this seat was launched for.
+   */
+  | "one_shot_next_invocation"
   /** Capture is rebuilding/catching up from the transcript; re-evaluated on ready. */
   | "capture_catching_up";
