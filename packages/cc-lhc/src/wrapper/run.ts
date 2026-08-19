@@ -94,6 +94,11 @@ import {
   showLateReceipts,
   showReceipts,
 } from "./modal.js";
+import {
+  argvSuppliesNativeAutocompact,
+  NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY,
+  nativeAutoCompactChildEnv,
+} from "./native-auto-compact.js";
 import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
@@ -211,11 +216,6 @@ export type RunOptions = {
   };
   /** Test hook: recovery artifact directory (defaults to ~/.cc-lhc/recovery). */
   recoveryDir?: string;
-  /**
-   * Test hook: suppress the `--autocompact <backstop>` child args (harnesses
-   * spawn a generic fake child that rejects claude-only flags).
-   */
-  disableNativeBackstopArgs?: boolean;
   /** Disable the hazardous-command notifier for this launch (--lhc-no-notifier). */
   notifierDisabled?: boolean;
 };
@@ -267,6 +267,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // While the child owns the terminal, diagnostics go to the wrapper log
   // (surface (c)); `status` reports the warning count so nothing is lost.
   const wrapperLog = options.wrapperLog ?? createWrapperLog();
+
+  /** Launch-time anomaly notices: recorded, never a refusal (R11 posture, R12). */
+  const startupAnomalyNotices: string[] = [];
 
   // Configuration always yields a usable policy: bad fields fall back to
   // built-in defaults and automatic compact stays armed. The fallback notice
@@ -462,23 +465,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
   }
 
-  // Native Claude compact stays as the EMERGENCY BACKSTOP above the LHC upper
-  // trigger. An explicit user --autocompact choice is preserved verbatim;
-  // otherwise the child gets the configured backstop through the supported
-  // CLI surface. Applied to the initial spawn and every respawn.
-  const userChoseAutocompact = argv.some(
-    (arg, i) =>
-      argv.slice(0, i + 1).every((a) => a !== "--") && (arg === "--autocompact" || arg.startsWith("--autocompact=")),
-  );
-  const nativeBackstopArgs: string[] =
-    expectedSession !== undefined && !userChoseAutocompact && options.disableNativeBackstopArgs !== true
-      ? ["--autocompact", String(resolvedContextPolicy.policy.nativeBackstopTokens)]
-      : [];
-  if (nativeBackstopArgs.length > 0) {
-    childArgv = [...nativeBackstopArgs, ...childArgv];
-    wrapperLog.info(
-      `cc-lhc native compact backstop: --autocompact ${resolvedContextPolicy.policy.nativeBackstopTokens}`,
-    );
+  // R8: cc-lhc owns compaction for every managed Claude child. Disable only
+  // native automatic compact; manual `/compact` remains available.
+  // R12: an explicit user `--autocompact` passes through verbatim and cc-lhc
+  // omits its injected disable, with a visible anomaly notice.
+  const userChoseAutocompact = argvSuppliesNativeAutocompact(argv);
+  const disableNativeAutoCompact = !userChoseAutocompact;
+  if (userChoseAutocompact) {
+    wrapperLog.warn(`cc-lhc ${NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY}`);
+    startupAnomalyNotices.push(NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY);
   }
 
   // Per-wrapper runtime descriptor: Bash inherits only the path. Thread/archive
@@ -529,7 +524,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const cols = stdout.columns ?? DEFAULT_COLS;
   const rows = stdout.rows ?? DEFAULT_ROWS;
 
-  const childEnv: Record<string, string> = { ...(process.env as Record<string, string>) };
+  const childEnv: Record<string, string> = disableNativeAutoCompact
+    ? nativeAutoCompactChildEnv(process.env as Record<string, string>, false)
+    : { ...(process.env as Record<string, string>) };
   if (runtimeDescriptorPath !== undefined) {
     childEnv[RUNTIME_DESCRIPTOR_ENV] = runtimeDescriptorPath;
   }
@@ -908,6 +905,16 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
 
   const onCaptureLifecycle = (signals: readonly LifecycleSignal[]): void => {
+    // R8 detection: loud notice only. Intake already captures the summary as
+    // one bounded closed turn; nothing pauses, latches, or stands down.
+    for (const signal of signals) {
+      if (signal.kind !== "native_compact_observed") continue;
+      const preview = signal.summaryPreview === undefined ? "" : ` — ${signal.summaryPreview}`;
+      const notice = `ANOMALY: native compact ran on a managed session${preview}`;
+      wrapperLog.warn(`cc-lhc ${notice}`);
+      pendingPanelNotices = [...pendingPanelNotices, notice, "captured as one bounded turn; LHC compaction continues"];
+    }
+
     // Generation is a diagnostic stamp for receipts, not a decision input.
     if (captureSession !== undefined) {
       governorState = setGovernorCaptureGeneration(governorState, captureSession.getCaptureGeneration());
@@ -1303,7 +1310,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       return [
         `${editLabel} — applied live to this wrapper`,
         "scope: session only — survives child handoffs, lost at wrapper exit",
-        "persist by editing user/project config; native --autocompact is a next-launch value",
+        "persist by editing user/project config",
       ];
     };
 
@@ -1436,7 +1443,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // compact message, until the operator fixes it.
       for (const line of configFallbackNotice.slice(0, 4)) rows.push(line);
       rows.push(
-        `native compact backstop ${formatTokensShort(policy.nativeBackstopTokens)} (--autocompact, next-launch value)`,
+        disableNativeAutoCompact
+          ? "native auto-compact: disabled for this child (DISABLE_AUTO_COMPACT=1) · manual /compact still available"
+          : "native auto-compact: ENABLED by explicit --autocompact (cc-lhc omitted its disable)",
       );
 
       const inFlight = commandGuard.current();
@@ -1479,6 +1488,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       rows.push(
         `precedence: builtin < user ${userConfigPath()} < project ${projectConfigPath(process.cwd())} < session`,
       );
+      for (const notice of startupAnomalyNotices) rows.push(notice);
       return rows;
     };
 
@@ -1642,7 +1652,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       if (handoffRuntimeSettings !== undefined) {
         respawnArgv = applyClaudeRuntimeSettings(respawnArgv, handoffRuntimeSettings);
       }
-      if (nativeBackstopArgs.length > 0) respawnArgv = [...nativeBackstopArgs, ...respawnArgv];
       // Fresh descriptor per child generation: the old one is closed at commit;
       // ready→ready with a different binding is an illegal transition.
       descriptorCapabilityRevoked = false;
@@ -1661,7 +1670,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const guided = injectRetrievalGuidance(respawnArgv);
       if (guided.ok) respawnArgv = guided.argv;
       else wrapperLog.warn(`cc-lhc handoff: retrieval guidance not injected: ${guided.reason}`);
-      const env: Record<string, string> = { ...(process.env as Record<string, string>) };
+      const env: Record<string, string> = disableNativeAutoCompact
+        ? nativeAutoCompactChildEnv(process.env as Record<string, string>, false)
+        : { ...(process.env as Record<string, string>) };
       if (runtimeDescriptorPath !== undefined) env[RUNTIME_DESCRIPTOR_ENV] = runtimeDescriptorPath;
       wrapperLog.info(`cc-lhc handoff spawn: ${claudeBin} ${respawnArgv.join(" ")}`);
       const pty = spawnPty(claudeBin, respawnArgv, {

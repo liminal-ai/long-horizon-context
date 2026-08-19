@@ -14,9 +14,6 @@
 /** Where each effective field came from (Slice 5 status/help). */
 export type PolicyFieldSource = "builtin" | "user" | "project" | "session";
 
-/** Native Claude compact posture. Strict DISABLE_COMPACT is optional later. */
-export type NativeCompactMode = "emergency_backstop";
-
 /**
  * cc-lhc host capability for compact governance.
  * Distinct from Codex `full_state_machine`: no same-agentic-turn continuation,
@@ -62,9 +59,6 @@ export interface ContextPolicy {
   upperBoundTokens: number;
   /** Canonical LHC band profile name (SDK built-in). */
   profile: string;
-  nativeCompactMode: NativeCompactMode;
-  /** Documented native backstop (1e6 for supported Claude context). */
-  nativeBackstopTokens: number;
   /**
    * Combined compact-time prune; off by default. When enabled with coherent
    * threshold/target, an automatic or manual compact prunes first and
@@ -114,8 +108,6 @@ export type ContextPolicyPartial = {
   lowerBoundTokens?: number;
   upperBoundTokens?: number;
   profile?: string;
-  nativeCompactMode?: NativeCompactMode;
-  nativeBackstopTokens?: number;
   pruneEnabled?: boolean;
   pruneThresholdTokens?: number | null;
   pruneTargetTokens?: number | null;
@@ -140,8 +132,7 @@ export type GovernorDecisionKind =
   | "below_threshold"
   | "turn_open"
   | "operation_in_flight"
-  | "policy_disabled"
-  | "native_summary_attention";
+  | "policy_disabled";
 
 /** Observation phase: open agentic turn vs Claude-safe settled seam. */
 export type GovernorObservePhase = "open_turn" | "settled_seam";
@@ -196,8 +187,6 @@ export interface GovernorInput {
   postMeasurementEstimate: PostMeasurementEstimate;
   /** Compact/prune/handoff already in flight. */
   operationInFlight: boolean;
-  /** Native compact summary needs operator attention. */
-  nativeSummaryAttention: boolean;
 }
 
 export interface GovernorDecision {

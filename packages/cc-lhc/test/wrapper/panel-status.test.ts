@@ -7,7 +7,7 @@ const STATUS_ROWS = [
   "LHC context management",
   "capture ready · retrieval ready",
   "provider context 31k · auto on · trigger 360k · target 180k",
-  "native compact backstop 1000k (--autocompact, next-launch value)",
+  "native auto-compact: disabled for this child (DISABLE_AUTO_COMPACT=1) · manual /compact still available",
   "active operation: none",
   "last action: compacted 3m ago (auto) · trigger 508k · view 247k",
   "WARNING: trigger 5.0k is at/below observed Claude host overhead (31k) — every settled turn would compact",

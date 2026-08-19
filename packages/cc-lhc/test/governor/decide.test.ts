@@ -22,7 +22,6 @@ function baseInput(over: Partial<GovernorInput> = {}): GovernorInput {
     providerContextFreshness: "current_sampling",
     postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
     operationInFlight: false,
-    nativeSummaryAttention: false,
     ...over,
   };
 }
@@ -169,10 +168,6 @@ describe("decideGovernor", () => {
 
   it("operation_in_flight", () => {
     expect(decideGovernor(baseInput({ operationInFlight: true })).kind).toBe("operation_in_flight");
-  });
-
-  it("native_summary_attention", () => {
-    expect(decideGovernor(baseInput({ nativeSummaryAttention: true })).kind).toBe("native_summary_attention");
   });
 
   it("policy_disabled only when the user turned autoCompact off", () => {

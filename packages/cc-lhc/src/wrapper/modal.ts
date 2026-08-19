@@ -30,8 +30,7 @@
 export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
 export const MODAL_HELP_LINE =
   "commands: status | stats | prune [targetTokens] | compact | export | auto on|off | bounds <lower> <upper> | help";
-export const MODAL_SCOPE_NOTE =
-  "auto/bounds edits are session-only (live now; survive handoffs; lost at wrapper exit) — native --autocompact is next-launch";
+export const MODAL_SCOPE_NOTE = "auto/bounds edits are session-only (live now; survive handoffs; lost at wrapper exit)";
 export const MODAL_ASCII_NOTE = "input is ASCII-only — non-ASCII bytes are ignored";
 export const MODAL_UNKNOWN_PREFIX = "unknown command: ";
 

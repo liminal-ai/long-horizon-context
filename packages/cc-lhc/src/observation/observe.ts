@@ -11,7 +11,14 @@
 
 import type { MessageEventInput } from "lhc";
 
-import { contentBlocks, isAssistantLine, isUserLine, type MapStats, mapRolloutLine } from "../intake/map.js";
+import {
+  contentBlocks,
+  isAssistantLine,
+  isNativeCompactSummaryLine,
+  isUserLine,
+  type MapStats,
+  mapRolloutLine,
+} from "../intake/map.js";
 import { classifyTurnSignal, isAssistantSamplingComplete } from "../intake/turn-signal.js";
 import { attributeLineSession } from "../rollout/expected-session.js";
 import type { RolloutLineItem, WatcherEmission } from "../rollout/types.js";
@@ -165,10 +172,6 @@ function turnSettleReason(item: RolloutLineItem): TurnSettleReason {
   return "other";
 }
 
-function isNativeSummary(item: RolloutLineItem): boolean {
-  return item.type === "summary";
-}
-
 function unknownConversationShapeKey(item: RolloutLineItem, lineIndex: number): string {
   const type = typeof item.type === "string" && item.type !== "" ? item.type : "none";
   // Bounded key for sticky health; line index is for logs only (not in key).
@@ -251,7 +254,7 @@ export function observeRolloutLine(
 
   const suppressRuntime = options.suppressRuntimeLifecycle === true;
 
-  if (!suppressRuntime && isNativeSummary(item)) {
+  if (!suppressRuntime && isNativeCompactSummaryLine(item)) {
     const summary = typeof item.summary === "string" ? item.summary : undefined;
     lifecycle.push({
       kind: "native_compact_observed",

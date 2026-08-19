@@ -48,7 +48,6 @@ describe("run() over the real platform PTY (no spawnPty seam)", () => {
         claudeBin: process.execPath,
         stdin,
         stdout,
-        disableNativeBackstopArgs: true,
         unboundTestChild: true,
       },
     );

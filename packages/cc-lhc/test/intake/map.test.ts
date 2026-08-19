@@ -131,12 +131,9 @@ describe("mapRolloutLine", () => {
     expect(result.stats.sidechain).toBe(1);
   });
 
-  it("counts summary and file-history-snapshot as meta", () => {
-    const summary = fixtures.find((item) => item.type === "summary");
+  it("counts file-history-snapshot as meta", () => {
     const snapshot = fixtures.find((item) => item.type === "file-history-snapshot");
-    expect(summary).toBeDefined();
     expect(snapshot).toBeDefined();
-    expect(mapRolloutLine(summary!).stats.meta).toBe(1);
     expect(mapRolloutLine(snapshot!).stats.meta).toBe(1);
   });
 

@@ -9,7 +9,7 @@
  * 5 post-measurement estimate crosses threshold
  * 6 missing/invalid usage falls back to the last known reading
  * 7 removed transient gates no longer suppress a settled compact
- * 8 native summary attention (no writer race)
+ * 8 native summary observation does not suppress later LHC compact
  * 9 handoff outcome receipt attachments (success/refuse/partial/rollback/retry)
  * 10 restart/replay durability of receipts
  * 11 capability boundary fields present on every receipt
@@ -21,7 +21,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
-import { decideGovernor } from "../../src/governor/decide.js";
 import {
   applyGovernorLifecycleBatch,
   createGovernorRuntimeState,
@@ -31,7 +30,6 @@ import {
 import { buildPressureReceipt, providerContextFromUsage } from "../../src/governor/provider-context.js";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { GovernorHandoffOutcome, ResolvedContextPolicy } from "../../src/governor/types.js";
-import { EMPTY_POST_MEASUREMENT_ESTIMATE } from "../../src/governor/types.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 
 function armed(over: Partial<ResolvedContextPolicy["policy"]> = {}): ResolvedContextPolicy {
@@ -260,7 +258,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     expect(settledDecision(inflight)?.decision).toBe("operation_in_flight");
   });
 
-  it("8: native summary observed — attention path; no wouldMutate", () => {
+  it("8: native summary observed — LHC still compacts at the next settled seam (R8)", () => {
     const r = applyGovernorLifecycleBatch(
       readyState(),
       [
@@ -276,9 +274,8 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
       armed(),
     );
     const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0]!;
-    expect(settled.decision).toBe("native_summary_attention");
-    expect(settled.wouldMutate).toBe(false);
-    expect(settled.reason).toMatch(/attention|race/i);
+    expect(settled.decision).toBe("would_compact");
+    expect(settled.wouldMutate).toBe(true);
   });
 
   it("9: handoff outcome attachments remain receipted (success/refuse/partial/rollback/retry)", () => {

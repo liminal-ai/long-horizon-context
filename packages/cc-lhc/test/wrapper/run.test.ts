@@ -228,7 +228,6 @@ describe("run", () => {
       spawnPty: pipePtySpawn(rig),
       stdin,
       stdout,
-      disableNativeBackstopArgs: true,
       unboundTestChild: true,
     });
 
@@ -278,7 +277,6 @@ describe("run", () => {
       }) as typeof spawn,
       stdin,
       stdout,
-      disableNativeBackstopArgs: true,
       wrapperLog,
       noInference: true,
     });
@@ -315,7 +313,6 @@ describe("run", () => {
       claudeBin: "node",
       stdin,
       stdout,
-      disableNativeBackstopArgs: true,
       noInference: true,
     });
     await sleep(80);
@@ -354,7 +351,6 @@ describe("run", () => {
       spawnPty: pipePtySpawn(rig),
       stdin,
       stdout,
-      disableNativeBackstopArgs: true,
       noInference: true,
     });
 
@@ -396,7 +392,6 @@ describe("run", () => {
       claudeBin: "node",
       stdin,
       stdout,
-      disableNativeBackstopArgs: true,
       noInference: true,
     });
 
@@ -522,7 +517,6 @@ describe("run", () => {
       claudeBin: "node",
       stdin,
       stdout,
-      disableNativeBackstopArgs: true,
       stderr,
       wrapperLog,
       noInference: true,

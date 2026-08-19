@@ -50,7 +50,6 @@ export interface GovernorRuntimeState {
   postMeasurementEstimate: PostMeasurementEstimate;
   captureGeneration: number;
   operationInFlight: boolean;
-  nativeSummaryAttention: boolean;
   /** Monotonic settle counter. */
   settleSequence: number;
   /** Monotonic observe counter (open + settled). */
@@ -75,7 +74,6 @@ export function createGovernorRuntimeState(seed: Partial<GovernorRuntimeState> =
     postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
     captureGeneration: 0,
     operationInFlight: false,
-    nativeSummaryAttention: false,
     settleSequence: 0,
     observeSequence: 0,
     lastOpenTurnObserveFingerprint: null,
@@ -211,11 +209,9 @@ export function applyGovernorLifecycleSignal(
       return { state: { ...state, captureGeneration: signal.generation }, observe: null };
     }
     case "native_compact_observed": {
-      // Explicit attention latch: LHC will not race a native writer.
-      return {
-        state: { ...state, nativeSummaryAttention: true },
-        observe: null,
-      };
+      // R8: loud notice only. Intake captures the summary as ordinary
+      // bounded history; nothing pauses, latches, or defers LHC compaction.
+      return { state, observe: null };
     }
     case "session_bound":
     case "session_mismatch_observed": {
@@ -262,7 +258,6 @@ function decisionInputFrom(state: GovernorRuntimeState, resolved: ResolvedContex
     providerContextFreshness: state.providerContextFreshness,
     postMeasurementEstimate: state.postMeasurementEstimate,
     operationInFlight: state.operationInFlight,
-    nativeSummaryAttention: state.nativeSummaryAttention,
   };
 }
 

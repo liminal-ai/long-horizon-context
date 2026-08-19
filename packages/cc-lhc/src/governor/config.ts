@@ -18,7 +18,6 @@ import type {
   ConfigFallback,
   ContextPolicy,
   ContextPolicyPartial,
-  NativeCompactMode,
   PolicyFieldKey,
   PolicyFieldSource,
   PolicyFieldSources,
@@ -31,8 +30,6 @@ export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
   lowerBoundTokens: 180_000,
   upperBoundTokens: 360_000,
   profile: "continuation",
-  nativeCompactMode: "emergency_backstop",
-  nativeBackstopTokens: 1_000_000,
   pruneEnabled: false,
   pruneThresholdTokens: null,
   pruneTargetTokens: null,
@@ -103,9 +100,7 @@ export function parseContextPolicyPartial(raw: unknown, origin: string): ParsedP
     out[key] = v;
   };
 
-  const takePosInt = (
-    key: "lowerBoundTokens" | "upperBoundTokens" | "nativeBackstopTokens" | "minRunwayTokens",
-  ): void => {
+  const takePosInt = (key: "lowerBoundTokens" | "upperBoundTokens" | "minRunwayTokens"): void => {
     if (!Object.hasOwn(raw, key)) return;
     const v = raw[key];
     if (typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0) {
@@ -133,7 +128,6 @@ export function parseContextPolicyPartial(raw: unknown, origin: string): ParsedP
   takeBool("pruneEnabled");
   takePosInt("lowerBoundTokens");
   takePosInt("upperBoundTokens");
-  takePosInt("nativeBackstopTokens");
   takePosInt("minRunwayTokens");
   takeNullablePosInt("pruneThresholdTokens");
   takeNullablePosInt("pruneTargetTokens");
@@ -144,15 +138,6 @@ export function parseContextPolicyPartial(raw: unknown, origin: string): ParsedP
       drop("profile", `profile must be one of ${CANONICAL_LHC_PROFILES.join(", ")}`);
     } else {
       out.profile = v;
-    }
-  }
-
-  if (Object.hasOwn(raw, "nativeCompactMode")) {
-    const v = raw.nativeCompactMode;
-    if (v !== "emergency_backstop") {
-      drop("nativeCompactMode", 'nativeCompactMode must be "emergency_backstop"');
-    } else {
-      out.nativeCompactMode = v as NativeCompactMode;
     }
   }
 
@@ -222,13 +207,6 @@ const COHERENCE_RULES: readonly CoherenceRule[] = [
     },
   },
   {
-    fields: ["nativeBackstopTokens", "upperBoundTokens"],
-    check: (p) =>
-      p.nativeBackstopTokens <= p.upperBoundTokens
-        ? `nativeBackstopTokens (${p.nativeBackstopTokens}) must be greater than upperBoundTokens (${p.upperBoundTokens})`
-        : null,
-  },
-  {
     fields: ["pruneEnabled", "pruneThresholdTokens", "pruneTargetTokens"],
     check: (p) => {
       if (!p.pruneEnabled) return null;
@@ -245,13 +223,12 @@ const COHERENCE_RULES: readonly CoherenceRule[] = [
 /** Per-field shape check, shared by config parsing and panel edits. */
 function fieldErrors(policy: ContextPolicy): string[] {
   const errors: string[] = [];
-  const posInt = (key: "lowerBoundTokens" | "upperBoundTokens" | "nativeBackstopTokens" | "minRunwayTokens"): void => {
+  const posInt = (key: "lowerBoundTokens" | "upperBoundTokens" | "minRunwayTokens"): void => {
     const v = policy[key];
     if (!Number.isSafeInteger(v) || v <= 0) errors.push(`${key} must be a positive safe integer`);
   };
   posInt("lowerBoundTokens");
   posInt("upperBoundTokens");
-  posInt("nativeBackstopTokens");
   posInt("minRunwayTokens");
   for (const key of ["pruneThresholdTokens", "pruneTargetTokens"] as const) {
     const v = policy[key];
@@ -261,9 +238,6 @@ function fieldErrors(policy: ContextPolicy): string[] {
   }
   if (!(CANONICAL_LHC_PROFILES as readonly string[]).includes(policy.profile)) {
     errors.push(`profile "${policy.profile}" is not a canonical LHC profile (${CANONICAL_LHC_PROFILES.join(", ")})`);
-  }
-  if (policy.nativeCompactMode !== "emergency_backstop") {
-    errors.push('nativeCompactMode must be "emergency_backstop"');
   }
   return errors;
 }
@@ -381,13 +355,7 @@ export function loadContextPolicy(options: LoadContextPolicyOptions = {}): Resol
 /** Compact source summary for observe records. */
 export function policySourcesSummary(sources: PolicyFieldSources): string {
   const parts: string[] = [];
-  for (const key of [
-    "autoCompact",
-    "lowerBoundTokens",
-    "upperBoundTokens",
-    "profile",
-    "nativeBackstopTokens",
-  ] as const) {
+  for (const key of ["autoCompact", "lowerBoundTokens", "upperBoundTokens", "profile"] as const) {
     parts.push(`${key}=${sources[key]}`);
   }
   return parts.join(",");

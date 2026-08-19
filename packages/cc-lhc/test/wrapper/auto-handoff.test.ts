@@ -227,8 +227,6 @@ const POLICY = {
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
     profile: "continuation",
-    nativeCompactMode: "emergency_backstop" as const,
-    nativeBackstopTokens: 1_000_000,
     pruneEnabled: false,
     pruneThresholdTokens: null,
     pruneTargetTokens: null,
@@ -240,8 +238,6 @@ const POLICY = {
       lowerBoundTokens: 0,
       upperBoundTokens: 0,
       profile: 0,
-      nativeCompactMode: 0,
-      nativeBackstopTokens: 0,
       pruneEnabled: 0,
       pruneThresholdTokens: 0,
       pruneTargetTokens: 0,
@@ -290,6 +286,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
   it("triggers on provider pressure, respawns with external --resume, registers lineage after ready, and reports success", async () => {
     const spawned: FakePty[] = [];
+    const spawnedEnvs: Array<Record<string, string>> = [];
     const sdk = sdkForCapture();
     const captureCalls: CaptureSessionDeps[] = [];
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
@@ -339,8 +336,9 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     const runPromise = run(["--effort", "medium", "--permission-mode", "manual"], {
       claudeBin: "fake-claude",
-      spawnPty: ((_file: string, args: string[]) => {
+      spawnPty: ((_file: string, args: string[], opts: { env: Record<string, string> }) => {
         const fake = makeFakePty(1000 + spawned.length, `child${spawned.length}`, args, true);
+        spawnedEnvs.push(opts.env);
         spawned.push(fake);
         return fake as never;
       }) as never,
@@ -390,9 +388,11 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(spawned[0]!.killed).toContain("SIGTERM");
     expect(spawned[1]!.args).toContain("--resume");
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
-    // The respawned child carries the native backstop through the supported surface.
-    expect(spawned[1]!.args).toContain("--autocompact");
-    expect(spawned[1]!.args[spawned[1]!.args.indexOf("--autocompact") + 1]).toBe("1000000");
+    // R8: the replacement child carries the same per-child native auto-compact
+    // disable as the original, and no --autocompact argv is synthesized.
+    expect(spawnedEnvs[1]!.DISABLE_AUTO_COMPACT).toBe("1");
+    expect(spawnedEnvs[1]!.DISABLE_COMPACT).toBeUndefined();
+    expect(spawned[1]!.args).not.toContain("--autocompact");
     // Wrapper-owned handoff preserves the latest confirmed Claude runtime choices.
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--effort") + 1]).toBe("max");
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--permission-mode") + 1]).toBe("auto");

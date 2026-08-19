@@ -195,8 +195,6 @@ const POLICY = {
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
     profile: "continuation",
-    nativeCompactMode: "emergency_backstop" as const,
-    nativeBackstopTokens: 1_000_000,
     pruneEnabled: false,
     pruneThresholdTokens: null,
     pruneTargetTokens: null,
@@ -208,8 +206,6 @@ const POLICY = {
       lowerBoundTokens: 0,
       upperBoundTokens: 0,
       profile: 0,
-      nativeCompactMode: 0,
-      nativeBackstopTokens: 0,
       pruneEnabled: 0,
       pruneThresholdTokens: 0,
       pruneTargetTokens: 0,
@@ -701,18 +697,20 @@ describe("LIM-64 production wrapper path", () => {
     await runPromise;
   }, 20_000);
 
-  it("native summary attention → no LHC operation", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-native-"));
+  it("native summary observed → loud notice; LHC compact still runs at the settled seam (R8)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim95-native-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
     const spawned: FakePty[] = [];
-    let mutationSentinel = false;
+    let mutationStarted = false;
     const sdk = sdkForCapture(async () => {
-      mutationSentinel = true;
-      return { ok: true, value: { kind: "ok" } };
+      mutationStarted = true;
+      // Stop before handoff: this test proves the seam is reached, not the swap.
+      return { ok: true, value: { kind: "error", reason: "test stops before handoff" } };
     });
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
     const observes: string[] = [];
+    const wrapperLogLines: string[] = [];
 
     mocks.captureFactory = (opts) => {
       const session = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
@@ -733,6 +731,12 @@ describe("LIM-64 production wrapper path", () => {
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: receiptDb,
+      wrapperLog: {
+        info: (m: string) => wrapperLogLines.push(m),
+        warn: (m: string) => wrapperLogLines.push(m),
+        warningCount: () => 0,
+        path: "/tmp/fake.log",
+      } as never,
       onGovernorObserve: (r) => observes.push(r.decision),
       onHandoffResult: () => {
         throw new Error("no handoff");
@@ -741,19 +745,12 @@ describe("LIM-64 production wrapper path", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
-    lifecycleSink!([
-      { kind: "native_compact_observed", summaryPreview: "compacted" },
-      { kind: "turn_opened", reason: "user_prompt" },
-      {
-        kind: "sampling_observed",
-        samplingId: "req:nat",
-        providerUsage: { input_tokens: 50_000 },
-      },
-      { kind: "turn_settled", reason: "end_turn" },
-    ]);
-    await new Promise((r) => setTimeout(r, 300));
-    expect(mutationSentinel).toBe(false);
-    expect(observes).toContain("native_summary_attention");
+    lifecycleSink!([{ kind: "native_compact_observed", summaryPreview: "compacted" }, ...ESTIMATE_CROSS_SIGNALS]);
+
+    await waitFor(() => mutationStarted, "LHC compact still starts after a native summary");
+    expect(observes).toContain("would_compact");
+    expect(wrapperLogLines.some((l) => l.includes("native compact ran on a managed session"))).toBe(true);
+
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 15_000);

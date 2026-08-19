@@ -349,7 +349,7 @@ describe("governor observe-state fold", () => {
     expect(settled?.captureGeneration).toBe(3);
   });
 
-  it("native compact attention suppresses and does not race LHC writer", () => {
+  it("native compact observed leaves no sticky state: the settled seam still arms compaction (R8)", () => {
     const r = applyGovernorLifecycleBatch(
       createGovernorRuntimeState({}),
       [
@@ -364,8 +364,9 @@ describe("governor observe-state fold", () => {
       ],
       armed(true),
     );
-    expect(r.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("native_summary_attention");
-    expect(r.observes.every((o) => o.wouldMutate === false)).toBe(true);
+    const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0]!;
+    expect(settled.decision).toBe("would_compact");
+    expect(settled.wouldMutate).toBe(true);
   });
 
   it("a default policy at pressure sets wouldMutate — there is no observe-only mode", () => {

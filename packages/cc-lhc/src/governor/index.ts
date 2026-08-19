@@ -57,7 +57,6 @@ export type {
   GovernorObservePhase,
   GovernorObserveRecord,
   GovernorPressureReceipt,
-  NativeCompactMode,
   PolicyFieldSource,
   PolicyFieldSources,
   PostMeasurementEstimate,

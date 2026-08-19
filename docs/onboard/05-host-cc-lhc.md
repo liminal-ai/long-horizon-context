@@ -190,7 +190,7 @@ Current code built-ins (see `packages/cc-lhc/src/governor/config.ts`) are:
 | minimum runway | 50,000 tokens |
 | LHC profile | `continuation` |
 | automatic prune | off |
-| native compact | emergency backstop at 1,000,000 tokens |
+| native auto-compact | disabled per managed child (`DISABLE_AUTO_COMPACT=1`) |
 | host capability | `capability_limited` (not Codex full state machine) |
 
 Provider-reported input usage is authoritative: **input + cache creation +
@@ -207,8 +207,8 @@ descriptor readiness, receipt storage, typed-ahead input — is diagnostics with
 no blocking authority. Threshold crossing during an **open** agentic turn is
 classified and written as a durable receipt with `wouldMutate=false` — Claude
 Code has no mid-turn request-replacement seam. Automatic compact/handoff runs
-only at a confirmed **settled** boundary. Native summary observation latches
-`native_summary_attention` so LHC does not race the native writer.
+only at a confirmed **settled** boundary. A native compact summary is reported loudly and
+captured as one bounded closed turn; nothing latches and nothing stands down.
 
 Capture that is degraded or still catching up is reconciled, not obeyed: the
 wrapper rebuilds capture state from the persisted transcript (intake events
@@ -302,8 +302,13 @@ resulting mismatch refuses retrieval without adding cross-session canonical
 events or impressions.
 
 `/clear` and native `/compact` are likewise advisory-notified because they can
-change Claude lifecycle outside wrapper control. Native compact remains only
-an emergency backstop; it is not the normal LHC path.
+change Claude lifecycle outside wrapper control. Claude's automatic compaction
+is off on every managed child (`DISABLE_AUTO_COMPACT=1`, verified in the
+installed 2.1.232/2.1.233/2.1.234 binaries; `DISABLE_COMPACT` is never used, so
+manual `/compact` still works). An explicit user `--autocompact` passes through
+and omits the injected disable for that launch, with an anomaly notice. When a
+native summary does appear, it becomes one tagged, ~2,000-character user message
+that is also one complete turn, and LHC compaction continues.
 
 ## Operator surfaces
 

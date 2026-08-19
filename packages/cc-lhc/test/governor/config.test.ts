@@ -17,7 +17,6 @@ describe("context policy config", () => {
   it("built-in defaults match steward work-ready path", () => {
     expect(BUILTIN_CONTEXT_POLICY.lowerBoundTokens).toBe(180_000);
     expect(BUILTIN_CONTEXT_POLICY.upperBoundTokens).toBe(360_000);
-    expect(BUILTIN_CONTEXT_POLICY.nativeBackstopTokens).toBe(1_000_000);
     expect(BUILTIN_CONTEXT_POLICY.autoCompact).toBe(true);
     expect(BUILTIN_CONTEXT_POLICY.profile).toBe("continuation");
     expect(BUILTIN_CONTEXT_POLICY.pruneEnabled).toBe(false);
@@ -36,7 +35,7 @@ describe("context policy config", () => {
     expect(r.fallbacks[0]?.field).toBe("lowerBoundTokens");
   });
 
-  it("validates upper > lower with runway and native > upper", () => {
+  it("validates upper > lower with runway", () => {
     expect(
       validateContextPolicy({
         ...BUILTIN_CONTEXT_POLICY,
@@ -45,14 +44,6 @@ describe("context policy config", () => {
         minRunwayTokens: 50_000,
       }),
     ).toEqual(expect.arrayContaining([expect.stringMatching(/runway/)]));
-
-    expect(
-      validateContextPolicy({
-        ...BUILTIN_CONTEXT_POLICY,
-        upperBoundTokens: 900_000,
-        nativeBackstopTokens: 800_000,
-      }),
-    ).toEqual(expect.arrayContaining([expect.stringMatching(/nativeBackstopTokens/)]));
 
     expect(
       validateContextPolicy({

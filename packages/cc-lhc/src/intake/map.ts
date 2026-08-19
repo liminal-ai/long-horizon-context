@@ -301,6 +301,62 @@ export function isAssistantLine(item: RolloutLineItem): boolean {
   return item.message?.role === "assistant";
 }
 
+/**
+ * Native Claude compact record (`type: "summary"`), the only shape Claude Code
+ * writes when it compacts a session itself — manually via `/compact` or under
+ * a user-enabled `--autocompact`.
+ */
+export function isNativeCompactSummaryLine(item: RolloutLineItem): boolean {
+  return item.type === "summary";
+}
+
+// R8: a native summary is ordinary bounded evidence, never an authority change.
+// It enters the record as ONE tagged user message with no response that is also
+// ONE complete turn. The tag makes it detectable if dedicated mechanisms are
+// built later; no new event kind is introduced.
+const NATIVE_COMPACT_SUMMARY_TAG = "claude-compact-summary";
+/** Deterministic bound in code points, so a multi-byte character never splits. */
+const NATIVE_COMPACT_SUMMARY_MAX_CHARS = 2_000;
+const NATIVE_COMPACT_SUMMARY_TRUNCATION_MARKER = "[... remainder of summary truncated]";
+
+/** Tagged, bounded body for one native compact summary. */
+export function nativeCompactSummaryContent(summary: string): string {
+  const points = Array.from(summary);
+  const truncated = points.length > NATIVE_COMPACT_SUMMARY_MAX_CHARS;
+  const body = truncated ? points.slice(0, NATIVE_COMPACT_SUMMARY_MAX_CHARS).join("") : summary;
+  const parts = [`<${NATIVE_COMPACT_SUMMARY_TAG}>`, body];
+  if (truncated) parts.push(NATIVE_COMPACT_SUMMARY_TRUNCATION_MARKER);
+  parts.push(`</${NATIVE_COMPACT_SUMMARY_TAG}>`);
+  return parts.join("\n");
+}
+
+/** Summary records carry `leafUuid`, not `uuid`; fall back to the shared shape. */
+function nativeCompactSummaryUuid(item: RolloutLineItem, lineIndex: number): string {
+  const leaf = item.leafUuid;
+  if (typeof leaf === "string" && leaf !== "") return `summary:${leaf}`;
+  return recordUuid(item, lineIndex);
+}
+
+/**
+ * One intake package: the tagged prompt settles any open turn through the SDK
+ * turn state machine, then `turn_end` closes the summary's own turn. Nothing
+ * pauses, latches, or waits on it.
+ */
+function mapNativeCompactSummary(item: RolloutLineItem, lineIndex: number): MessageEventInput[] {
+  const uuid = nativeCompactSummaryUuid(item, lineIndex);
+  const summary = typeof item.summary === "string" ? item.summary : "";
+  return [
+    textEvent("user_prompt", nativeCompactSummaryContent(summary), "user", idempotencyKey(uuid, 0, "user_prompt")),
+    {
+      eventKind: "turn_end",
+      idempotencyKey: idempotencyKey(uuid, 0, "turn_end"),
+      actor: "system",
+      harness: HARNESS,
+      payload: { outcome: "completed", outcomeReason: "claude_native_compact_summary" },
+    },
+  ];
+}
+
 // Housekeeping record types Claude Code writes into session files. None carry
 // conversation content: queue-operation duplicates the prompt already captured
 // via the user record; attachment records are tool/agent/skill listing deltas
@@ -310,7 +366,6 @@ export function isAssistantLine(item: RolloutLineItem): boolean {
 // (2.1.215–2.1.226 census). Counted as meta so skipped_unknown remains a
 // meaningful drift gauge for truly unrecognized shapes.
 const META_LINE_TYPES = new Set([
-  "summary",
   "file-history-snapshot",
   "queue-operation",
   "attachment",
@@ -338,6 +393,10 @@ export function mapRolloutLine(item: RolloutLineItem, lineIndex = 0): MapResult 
   if (item.isSidechain === true) {
     stats.sidechain += 1;
     return { events: [], stats };
+  }
+
+  if (isNativeCompactSummaryLine(item)) {
+    return { events: mapNativeCompactSummary(item, lineIndex), stats };
   }
 
   if (isMetaLineType(item)) {

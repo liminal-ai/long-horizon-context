@@ -80,14 +80,6 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
     return decide("operation_in_flight", "compact, prune, or handoff already in flight", inputWithEstimate);
   }
 
-  if (inputWithEstimate.nativeSummaryAttention) {
-    return decide(
-      "native_summary_attention",
-      "native compact summary requires operator attention; LHC will not race the writer",
-      inputWithEstimate,
-    );
-  }
-
   const pressure = buildPressureReceipt(
     inputWithEstimate.providerContext,
     estimate,
@@ -121,15 +113,6 @@ function decideOpenTurn(input: GovernorInput): GovernorDecision {
     return decide(
       "operation_in_flight",
       "compact, prune, or handoff already in flight; no concurrent open-turn action",
-      input,
-      { forceNoMutate: true },
-    );
-  }
-
-  if (input.nativeSummaryAttention) {
-    return decide(
-      "native_summary_attention",
-      "native compact summary requires operator attention; no LHC writer race during open turn",
       input,
       { forceNoMutate: true },
     );

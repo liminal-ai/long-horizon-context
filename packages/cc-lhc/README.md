@@ -97,12 +97,11 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   mutated mid-turn — Claude Code cannot replace the in-flight request the way
   Codex full continuation can. At the next Claude-safe settled seam, policy may
   run the existing fenced compact/rebuild and wrapper-owned controlled handoff.
-  Native summary observation is an explicit attention path; LHC does not silently
-  race the native writer. Capture that is degraded or still catching up does not
+  A native compact summary is captured as one bounded closed turn and reported
+  loudly; nothing latches and LHC compaction continues. Capture that is degraded or still catching up does not
   block the seam: the wrapper rebuilds capture state from the persisted
   transcript and re-evaluates the moment it is ready. Built-in policy targets
-  180k, triggers at 360k, reserves 50k runway, keeps native compact as a 1M
-  emergency backstop, and leaves automatic prune off.
+  180k, triggers at 360k, reserves 50k runway, and leaves automatic prune off.
 - **Controlled handoff.** On a respawn-safe interactive launch, compact/prune
   rebuild a new rollout, terminate the
   old child, and spawn `claude --resume <new-id>`. Capture stays attached
@@ -182,7 +181,7 @@ builtin < user config < project config < launch flags / panel edits
 User config is `$XDG_CONFIG_HOME/cc-lhc/config.json` (or
 `~/.config/cc-lhc/config.json`); project config is `.cc-lhc.json`. Supported
 persisted fields are `autoCompact`, `lowerBoundTokens`, `upperBoundTokens`,
-`profile`, `nativeCompactMode`, `nativeBackstopTokens`, `pruneEnabled`,
+`profile`, `pruneEnabled`,
 `pruneThresholdTokens`, `pruneTargetTokens`, and `minRunwayTokens`.
 
 Bad configuration never disarms the product. An unknown field, a malformed
@@ -226,7 +225,7 @@ gate commands):
 | Open-turn threshold | Classify + durable receipt; `wouldMutate=false` | May compact / preserve tool tail / force continuation |
 | Continuation marker / `context_compact_continue` | **Not fabricated** | Typed marker + forced boundary when applicable |
 | Handoff | Rebuild rollout + `claude --resume` (new session id) | Serve compacted view into the same agentic turn |
-| Native writer | Explicit `native_summary_attention`; no silent race | One-writer rules with native conflict refuse |
+| Native writer | Native auto-compact disabled per child; a summary is captured as one bounded turn | One-writer rules with native conflict refuse |
 | Receipts | Structured rows in `cc-lhc.sqlite` + rollout operation note | Compact-continuation receipt in thread DB |
 | Live post-measurement pressure | Real watcher lines: provider `output_tokens` when valid, else host canonical-payload bytes/4; cumulative until next sampling | Full runtime estimate path |
 
@@ -267,8 +266,11 @@ cannot rewrite an unrelated automatic classification.
 - Claude Code hooks are not required. The wrapper's lifecycle events come from
   the authoritative rollout stream; PTY handling is limited to terminal
   transport, the panel, child-liveness proof, and advisory notification.
-- Automatic prune remains off by default. Native Claude compact is retained
-  only as the configured emergency backstop.
+- Automatic prune remains off by default. Every managed Claude child launches
+  with `DISABLE_AUTO_COMPACT=1`, so Claude's own automatic compaction never runs
+  on a managed session; manual `/compact` stays available. An explicit user
+  `--autocompact` passes through unchanged and omits the injected disable for
+  that launch, with an anomaly notice.
 
 ## Verification
 
