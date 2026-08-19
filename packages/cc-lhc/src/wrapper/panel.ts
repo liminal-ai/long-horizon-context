@@ -7,6 +7,7 @@
 // modal is open, so the two buffers cannot fight. Held output flushes AFTER
 // the restore, so ordering on the main screen is intact.
 
+import { COMPACT_CONFIRM_HINT } from "./compact-confirm.js";
 import type { InputState } from "./modal.js";
 
 export const PANEL_PROMPT = "long-horizon commands> ";
@@ -112,7 +113,11 @@ export function renderPanel(state: InputState, cols: number, rows: number, elaps
   for (const row of panelRows) lines.push({ text: truncate(row) });
   if (panelRows.length > 0) lines.push({ text: "" });
 
-  if (state.mode === "notifier") {
+  if (state.mode === "compact_confirm") {
+    // The warning and its bullets are already in panelRows, with the usual
+    // separator blank after them; only the answer vocabulary belongs here.
+    lines.push({ text: truncate(COMPACT_CONFIRM_HINT), dim: true });
+  } else if (state.mode === "notifier") {
     lines.push({ text: truncate(`Claude ${state.notifierCommand} can invalidate cc-lhc session capture/binding`) });
     lines.push({ text: "" });
     lines.push({ text: truncate(NOTIFIER_HINT), dim: true });

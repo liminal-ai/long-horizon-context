@@ -22,6 +22,7 @@ import {
 import { classifyTurnSignal, isAssistantSamplingComplete } from "../intake/turn-signal.js";
 import { attributeLineSession } from "../rollout/expected-session.js";
 import type { RolloutLineItem, WatcherEmission } from "../rollout/types.js";
+import { type AsyncWorkFold, observeAsyncWorkLine } from "./async-work.js";
 import {
   createPostMeasurementEstimateFold,
   HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
@@ -69,6 +70,12 @@ export interface ObserveLineOptions {
    * folds. Capture-degraded / session-mismatch validation still flow.
    */
   suppressRuntimeLifecycle?: boolean;
+  /**
+   * Open asynchronous work derived from the same ordered lines. Shared across
+   * one capture generation, like the sampling and turn folds. Absent for
+   * callers that do not track it.
+   */
+  asyncWorkFold?: AsyncWorkFold;
   /**
    * When true (live capture session path): do not emit pressure-affecting
    * signals (`post_measurement_estimate`, `turn_settled`) into `lifecycle`.
@@ -253,6 +260,13 @@ export function observeRolloutLine(
   }
 
   const suppressRuntime = options.suppressRuntimeLifecycle === true;
+
+  // Rebuilt historical prefix lines are a served projection of work that is
+  // already over — the launches they replay were killed by the swap that
+  // wrote them. Only the live suffix opens work.
+  if (!suppressRuntime && options.asyncWorkFold !== undefined) {
+    observeAsyncWorkLine(item, options.asyncWorkFold);
+  }
 
   if (!suppressRuntime && isNativeCompactSummaryLine(item)) {
     const summary = typeof item.summary === "string" ? item.summary : undefined;

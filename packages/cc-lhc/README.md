@@ -111,6 +111,31 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   the moment compact owns the settled session, bytes bound for Claude are
   dropped rather than delivered — never buffered, never replayed — and one line
   says *input typed during compaction was not delivered — please resend*.
+- **Live background work is not killed silently.** A swap replaces the Claude
+  child, so anything that child was still running asynchronously dies with it:
+  background agents, workflows, background shell commands, monitors, and a
+  pending `ScheduleWakeup`. The wrapper derives that open set from the same
+  rollout it already reads. A launch acknowledgement opens one item, and only
+  for the launcher that was actually called; only matching terminal evidence
+  (`completed`, `failed`, `killed`, `stopped`, or an explicit `TaskStop`) closes
+  it. Monitor events are progress and close nothing, and neither does elapsed
+  time — a wakeup past its moment stays open until a later call supersedes it or
+  stops it. When an automatic compact comes due at a settled seam with an
+  operator at the terminal and work still open, the panel names what the swap
+  would kill and asks *before* anything durable is written. Only an explicit
+  **y** proceeds, into the ordinary receipt-and-swap path exactly once — and
+  only if the session still looks the way it did when the question was asked.
+  A turn that opened behind the panel, background work that *started* there and
+  was never on the list, or a settle there that put the session back under the
+  trigger all skip the seam; work that *finished* there does not, because
+  killing fewer than listed is what was agreed to. When the swap does run it
+  runs against the reading taken at the keypress, not the one that raised the
+  question. Anything
+  else — n, Esc, a stray key, a closed terminal, a prompt that could not be
+  drawn — skips that seam alone and records nothing at all, so the next eligible
+  seam asks again while the work is still running. With an empty set, no
+  terminal (one-shot launches included), or a seam that is not otherwise
+   eligible, the compact path is exactly what it was.
 - **Spawn-first handoff.** On an interactive launch, compact/prune
   rebuild a new rollout, then spawn `claude --resume <new-id>` **off-route** — a
   real child owning no terminal, no stdin, and no capture generation. Once it has
@@ -273,9 +298,10 @@ v1 accepts this difference honestly. Shared LIM-60/61 strings and pressure
 accounting are reused where they remain truthful; cc-lhc does not claim effects
 Claude Code cannot perform.
 
-**Durable receipts (production):** every classification is receipted, and
-receipts are write-behind — they record the compact, they never decide whether
-it runs. When the receipt store is unavailable the operation proceeds against an
+**Durable receipts (production):** ordinary classifications are receipted, but
+an interactive would-mutate seam that names live background work writes nothing
+until the operator explicitly authorizes the swap. Receipts are write-behind —
+they record the compact, they never decide whether it runs. When the receipt store is unavailable the operation proceeds against an
 in-memory receipt id with a loud warning (restart recovery is degraded for that
 attempt; the session still compacts). Exact native replay is idempotent (unique
 `replay_key`); a replayed receipt whose outcome was a *deferral* is retried,

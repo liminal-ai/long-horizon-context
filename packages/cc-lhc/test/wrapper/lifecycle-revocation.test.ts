@@ -132,6 +132,7 @@ function makeLifecycleCapture(opts: {
       reasonCounts: { ...opts.health.reasonCounts },
     }),
     getCaptureGeneration: () => opts.health.generation,
+    getLiveAsyncWork: () => [],
     stop: vi.fn(opts.stopImpl ?? (async () => {})),
   } as unknown as CaptureSession;
 }

@@ -231,6 +231,7 @@ function scriptedCaptureSession(
       durableLineOffset: 0,
     }),
     getCaptureGeneration: () => generation,
+    getLiveAsyncWork: () => [],
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
   return { session, deps };
