@@ -17,16 +17,19 @@ import {
   COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX,
   COMPACT_CONTINUATION_MARKER_KIND,
   COMPACT_CONTINUATION_OUTCOME_KINDS,
+  COMPACT_CONTINUATION_REACHABLE_REFUSE_CODES,
   COMPACT_CONTINUATION_REFUSE_CODES,
   COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE,
   COMPACT_CONTINUATION_SKIP_CODES,
   COMPACT_CONTINUATION_STATES,
   COMPACT_CONTINUATION_TRANSITION_ORDER,
+  COMPACT_CONTINUATION_WARNING_CODES,
   CONTEXT_COMPACT_CONTINUE_REASON,
   type CompactContinuationDecision,
   type CompactContinuationSeam,
   type CompactMaterialFacts,
   compactContinuationMarkerIdempotencyKey,
+  DEFAULT_COMPACT_RETRY_BUDGET,
   decideCompactContinuation,
   type ForcedContinuationBoundary,
   type ProviderUsageAuthority,
@@ -211,15 +214,42 @@ describe("compact-continuation contract surface", () => {
     expect(COMPACT_CONTINUATION_REFUSE_CODES).not.toContain("transport_retry");
     expect(COMPACT_CONTINUATION_REFUSE_CODES).not.toContain("not_at_settled_seam");
     expect(COMPACT_CONTINUATION_SKIP_CODES).toContain("transport_retry");
-    expect(COMPACT_CONTINUATION_SKIP_CODES).toContain("input_epoch_changed");
     expect(COMPACT_CONTINUATION_SKIP_CODES).toContain("not_at_settled_seam");
+    // CX-S5 / R1: input epoch drift is diagnostic only — it is not a skip code.
+    expect(COMPACT_CONTINUATION_SKIP_CODES).not.toContain("input_epoch_changed");
+    expect(COMPACT_CONTINUATION_TRANSITION_ORDER).not.toContain("input_epoch");
+    // CX-S5: the refuse set is empty; the vocabulary stays only for old receipts.
+    expect(COMPACT_CONTINUATION_REACHABLE_REFUSE_CODES).toEqual([]);
+    expect(COMPACT_CONTINUATION_OUTCOME_KINDS).toContain("decline_to_ordinary_compact");
+    expect(COMPACT_CONTINUATION_OUTCOME_KINDS).toContain("retry_compact");
+    expect(COMPACT_CONTINUATION_OUTCOME_KINDS).toContain("continue_current_body");
+    expect(COMPACT_CONTINUATION_STATES).toContain("terminal_decline_ordinary");
+    expect(COMPACT_CONTINUATION_STATES).toContain("terminal_retry");
+    expect(COMPACT_CONTINUATION_STATES).toContain("terminal_continue_current_body");
+    expect(COMPACT_CONTINUATION_WARNING_CODES).toContain("capture_incomplete");
+    expect(COMPACT_CONTINUATION_WARNING_CODES).toContain("stale_writer_row_reclaimed");
+    expect(COMPACT_CONTINUATION_WARNING_CODES).toContain("writer_owned_elsewhere");
+    expect(COMPACT_CONTINUATION_WARNING_CODES).toContain("compact_retry_budget_exhausted");
+    expect(COMPACT_CONTINUATION_WARNING_CODES).toContain("unsupported_contract_version_omitted");
+    expect(COMPACT_CONTINUATION_WARNING_CODES).toContain("unsafe_runway_projection");
+    expect(DEFAULT_COMPACT_RETRY_BUDGET).toBeGreaterThanOrEqual(1);
     expect(COMPACT_CONTINUATION_TRANSITION_ORDER[0]).toBe("seam_eligibility");
     expect(COMPACT_CONTINUATION_TRANSITION_ORDER).toContain("forced_boundary_state_legality");
     expect(COMPACT_CONTINUATION_TRANSITION_ORDER).toContain("force_boundary_if_continue_turn");
     expect(COMPACT_CONTINUATION_INVARIANTS).toContain("install_failure_wins_over_no_reduction_classification");
     expect(COMPACT_CONTINUATION_INVARIANTS).toContain("forced_boundary_repair_takes_precedence_over_fresh_pressure");
     expect(COMPACT_CONTINUATION_INVARIANTS).toContain("marker_persisted_is_residual_state_not_attempt_scoped");
-    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("settled_seam_lhc_claim_early_refuse_records_claim_and_release");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("refuse_set_is_empty_no_stop_in_the_compact_path");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("never_strand_a_session_every_condition_warns_and_continues");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("input_epoch_is_diagnostic_only_never_vetoes_a_settled_seam");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("compact_and_install_failure_are_bounded_retry_not_terminal");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("stale_writer_row_reclaim_requires_host_ownership_authority");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("writer_ownership_registry_lives_host_side_not_in_the_sdk");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain(
+      "unknown_contract_version_omits_continuation_state_in_its_entirety",
+    );
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("unsafe_runway_is_diagnostic_not_a_gate");
+    expect(COMPACT_CONTINUATION_INVARIANTS).toContain("best_available_body_is_sent_provider_is_final_authority");
     expect(COMPACT_CONTINUATION_INVARIANTS).toContain("preserve_tool_install_failure_includes_preserve_effect");
     expect(COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX).toBe("lhc.compact_continuation:");
     expect(compactContinuationMarkerIdempotencyKey("t3")).toBe("lhc.compact_continuation:t3");
@@ -381,11 +411,13 @@ describe("compact-continuation decision invariants", () => {
     );
   });
 
-  it("post-boundary compact failure keeps boundary durable and releases writer", () => {
+  it("post-boundary compact failure retries within budget and keeps the session working", () => {
     const fixture = loadCase("cases/compact_failed_continue_turn.json");
     const actual = decideCompactContinuation(asCompactContinuationInput(fixture.input));
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("compact_failed");
+    expect(actual.outcome).toBe("retry_compact");
+    expect(actual.receipt.refused).toBe(false);
+    expect(actual.receipt.retry.retryAuthorized).toBe(true);
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["compact_attempt_failed"]);
     expect(actual.receipt.turnEndReason).toBe(CONTEXT_COMPACT_CONTINUE_REASON);
     expect(actual.receipt.residual).toMatchObject({
       writerReleased: true,
@@ -395,7 +427,8 @@ describe("compact-continuation decision invariants", () => {
       markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: false,
-      nextProviderRequestAllowed: false,
+      // The boundary stays repairable; the session is never held hostage to it.
+      nextProviderRequestAllowed: true,
     });
     const types = actual.effects.map((e) => e.type);
     expect(types).toContain("claim_writer");
@@ -453,17 +486,50 @@ describe("compact-continuation decision invariants", () => {
     expect(limited.transitionPath).toEqual(full.transitionPath);
   });
 
-  it("unsupported contract version refuses without accepting the input as v1", () => {
+  it("unsupported contract version omits continuation state in its entirety", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput({
         ...baseInput(),
         contractVersion: "0.9.0",
       }),
     );
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("unsupported_contract_version");
+    // Degrade by feature omission: no partial parse, no guessing, no stop.
+    expect(actual.outcome).toBe("decline_to_ordinary_compact");
+    expect(actual.receipt.refused).toBe(false);
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["unsupported_contract_version_omitted"]);
     expect(actual.receipt.reasonCode).toContain("0.9.0");
     expect(actual.receipt.contractVersion).toBe(COMPACT_CONTINUATION_CONTRACT_VERSION);
+    // The pending boundary is discarded without ever being interpreted.
+    const discard = actual.effects.find((e) => e.type === "discard_pending_boundary");
+    expect(discard).toMatchObject({ continuationTurnId: null });
+    expect(actual.receipt.residual).toMatchObject({
+      pendingBoundaryDiscarded: true,
+      forcedContinuationBoundaryApplied: false,
+      continuationTurnOpened: false,
+      continuationTurnId: null,
+      priorServingViewIntact: true,
+      // The host's ordinary compact runs on canonical turns; nothing strands.
+      nextProviderRequestAllowed: true,
+    });
+    expect(actual.effects.map((e) => e.type)).not.toContain("compact");
+  });
+
+  it("an unknown-version input never has its continuation state parsed", () => {
+    const actual = decideCompactContinuation({
+      ...baseInput(),
+      contractVersion: "9.9.9",
+      forcedContinuationBoundary: {
+        applied: true,
+        continuationTurnId: "t7",
+        forcedThisSeam: false,
+        markerAlreadyPersisted: true,
+      },
+    } as never);
+    expect(actual.outcome).toBe("decline_to_ordinary_compact");
+    // Nothing from the unknown-version boundary leaks into the receipt.
+    expect(JSON.stringify(actual)).not.toContain("t7");
+    expect(actual.receipt.residual.markerPersisted).toBe(false);
+    expect(actual.receipt.protectedToolCallIds).toEqual([]);
   });
 
   it("not_at_settled_seam is a skip not a refuse and does not authorize next request", () => {
@@ -576,15 +642,15 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("install_failed");
+    expect(actual.outcome).toBe("retry_compact");
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["install_attempt_failed"]);
     expect(actual.effects.map((e) => e.type)).not.toContain("install_serving_view");
     expect(actual.effects.map((e) => e.type)).toContain("insert_continuation_marker");
     expect(actual.receipt.residual).toMatchObject({
       priorServingViewIntact: true,
       markerPersisted: true,
       markerServed: false,
-      nextProviderRequestAllowed: false,
+      nextProviderRequestAllowed: true,
       forcedContinuationBoundaryApplied: true,
       writerReleased: true,
     });
@@ -610,15 +676,15 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("install_failed");
+    expect(actual.outcome).toBe("retry_compact");
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["install_attempt_failed"]);
     expect(actual.effects.map((e) => e.type)).not.toContain("install_serving_view");
     expect(actual.receipt.residual).toMatchObject({
       priorServingViewIntact: true,
       markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: true,
-      nextProviderRequestAllowed: false,
+      nextProviderRequestAllowed: true,
     });
   });
 
@@ -678,7 +744,7 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.transitionPath).not.toContain("below_trigger");
   });
 
-  it("pending boundary with kind none refuses as invalid continuation state", () => {
+  it("pending boundary with kind none is discarded and the seam starts fresh", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
@@ -692,12 +758,15 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
-    expect(actual.receipt.residual.forcedContinuationBoundaryApplied).toBe(true);
-    expect(actual.receipt.residual.continuationTurnOpened).toBe(true);
-    expect(actual.receipt.residual.originalAgenticTurnStillOpen).toBe(false);
-    expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(false);
+    // Work is complete, so the fresh evaluation closes normally. The discard is
+    // recorded, the boundary is not treated as applied, and nothing stops.
+    expect(actual.outcome).toBe("normal_complete");
+    expect(actual.receipt.refused).toBe(false);
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["pending_boundary_discarded"]);
+    expect(actual.effects.map((e) => e.type)).toContain("discard_pending_boundary");
+    expect(actual.receipt.residual.pendingBoundaryDiscarded).toBe(true);
+    expect(actual.receipt.residual.forcedContinuationBoundaryApplied).toBe(false);
+    expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(true);
   });
 
   it("pending boundary with tool continuation is legal for protected escalation (v2)", () => {
@@ -862,7 +931,7 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.receipt.residual.markerServed).toBe(false);
   });
 
-  it("active_non_tool above trigger without applied boundary refuses invalid_pending", () => {
+  it("active_non_tool above trigger without applied boundary declines into ordinary compact", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
@@ -871,16 +940,27 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
+    // The oracle never invents a continuation turn id, and it never stops:
+    // the host's ordinary settled-seam compact takes the canonical turns.
+    expect(actual.outcome).toBe("decline_to_ordinary_compact");
+    expect(actual.receipt.refused).toBe(false);
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["continuation_boundary_unavailable"]);
     expect(actual.receipt.residual.forcedContinuationBoundaryApplied).toBe(false);
-    expect(actual.effects.map((e) => e.type)).toEqual(["refuse", "record_receipt"]);
+    expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(true);
+    expect(actual.effects.map((e) => e.type)).toEqual(["warn", "record_receipt"]);
   });
 
-  it("singleOpenTurn false refuses open_turn_invariant_broken", () => {
+  it("singleOpenTurn false warns and the seam still compacts", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
+          forcedContinuationBoundary: {
+            applied: true,
+            continuationTurnId: "t2",
+            forcedThisSeam: true,
+            markerAlreadyPersisted: false,
+          },
+          continuation: { kind: "active_non_tool" },
           invariants: {
             captureComplete: true,
             providerIdentityValid: true,
@@ -890,9 +970,13 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("open_turn_invariant_broken");
+    // Turn-record validation is core LHC's own job, not a compact precondition.
+    expect(actual.outcome).toBe("compact_continue_turn");
+    expect(actual.receipt.refused).toBe(false);
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["open_turn_invariant_unverified"]);
+    expect(actual.effects.map((e) => e.type)).toContain("install_serving_view");
     expect(actual.receipt.residual.writerReleased).toBe(true);
+    expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(true);
   });
 
   it("repair after prior marker + compact failure reports residual markerPersisted", () => {
@@ -916,8 +1000,8 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("compact_failed");
+    expect(actual.outcome).toBe("retry_compact");
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["compact_attempt_failed"]);
     expect(actual.effects.some((e) => e.type === "force_turn_end")).toBe(false);
     expect(actual.effects.some((e) => e.type === "insert_continuation_marker")).toBe(false);
     expect(actual.receipt.residual).toMatchObject({
@@ -927,14 +1011,21 @@ describe("compact-continuation decision invariants", () => {
       continuationTurnId: "t4",
       writerReleased: true,
       priorServingViewIntact: true,
-      nextProviderRequestAllowed: false,
+      nextProviderRequestAllowed: true,
     });
   });
 
-  it("writerClaim lhc + incomplete capture records claim then release", () => {
+  it("writerClaim lhc + incomplete capture warns and still compacts, claim then release", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
+          forcedContinuationBoundary: {
+            applied: true,
+            continuationTurnId: "t2",
+            forcedThisSeam: true,
+            markerAlreadyPersisted: false,
+          },
+          continuation: { kind: "active_non_tool" },
           invariants: {
             captureComplete: false,
             providerIdentityValid: true,
@@ -944,15 +1035,43 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("incomplete_capture");
+    expect(actual.outcome).toBe("compact_continue_turn");
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["capture_incomplete"]);
     expect(actual.receipt.residual.writerReleased).toBe(true);
     const types = actual.effects.map((e) => e.type);
-    expect(types).toEqual(["claim_writer", "refuse", "record_receipt", "release_writer"]);
+    // Detected first, done second: the warning leads, then the claim.
+    expect(types[0]).toBe("warn");
+    expect(types[1]).toBe("claim_writer");
     expect(types.indexOf("claim_writer")).toBeLessThan(types.indexOf("release_writer"));
   });
 
-  it("install_failed preserve-tool includes preserve_tool_pairs_verbatim and keeps turn open", () => {
+  it("a settled-seam decline with writerClaim lhc records claim then release", () => {
+    const actual = decideCompactContinuation(
+      asCompactContinuationInput(
+        baseInput({
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            protectedToolCallIds: ["call-bad"],
+            correlationValid: false,
+          },
+          invariants: {
+            captureComplete: true,
+            providerIdentityValid: true,
+            singleOpenTurn: true,
+            writerClaim: "lhc",
+          },
+        }),
+      ),
+    );
+    expect(actual.outcome).toBe("decline_to_ordinary_compact");
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["tool_correlation_unproven"]);
+    const types = actual.effects.map((e) => e.type);
+    expect(types).toEqual(["warn", "claim_writer", "record_receipt", "release_writer"]);
+    expect(actual.receipt.residual.writerReleased).toBe(true);
+    expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(true);
+  });
+
+  it("preserve-tool install failure records the preserve effect and keeps the turn open", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
@@ -972,12 +1091,12 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("install_failed");
+    expect(actual.outcome).toBe("retry_compact");
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["install_attempt_failed"]);
     const types = actual.effects.map((e) => e.type);
     expect(types).toContain("preserve_tool_pairs_verbatim");
     expect(types.indexOf("compact")).toBeLessThan(types.indexOf("preserve_tool_pairs_verbatim"));
-    expect(types.indexOf("preserve_tool_pairs_verbatim")).toBeLessThan(types.indexOf("refuse"));
+    expect(types.indexOf("preserve_tool_pairs_verbatim")).toBeLessThan(types.indexOf("warn"));
     expect(types).not.toContain("insert_continuation_marker");
     expect(types).not.toContain("install_serving_view");
     expect(actual.receipt.residual).toMatchObject({
@@ -986,6 +1105,7 @@ describe("compact-continuation decision invariants", () => {
       originalAgenticTurnStillOpen: true,
       priorServingViewIntact: true,
       writerReleased: true,
+      nextProviderRequestAllowed: true,
     });
     expect(actual.effects).toEqual(
       expect.arrayContaining([
@@ -1072,7 +1192,7 @@ describe("marker identity per forced boundary", () => {
     });
   });
 
-  it("applied boundary legality precedes native writer conflict", () => {
+  it("boundary discard is recorded before the writer stage runs", () => {
     const actual = decideCompactContinuation(
       asCompactContinuationInput(
         baseInput({
@@ -1092,8 +1212,20 @@ describe("marker identity per forced boundary", () => {
         }),
       ),
     );
-    expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
-    expect(actual.receipt.refuseCode).not.toBe("native_writer_conflict");
+    // forced_boundary_state_legality runs before writer_claim: the discard and
+    // its warning lead the effect list even though a native row is also present.
+    const types = actual.effects.map((e) => e.type);
+    expect(types[0]).toBe("discard_pending_boundary");
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual([
+      "pending_boundary_discarded",
+      "writer_owned_elsewhere",
+    ]);
+    expect(actual.receipt.residual.pendingBoundaryDiscarded).toBe(true);
+    // No host ownership authority was supplied, so the row is treated as live
+    // and this attempt continues its current request rather than stealing it.
+    expect(actual.outcome).toBe("continue_current_body");
+    expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(true);
+    expect(actual.receipt.refused).toBe(false);
   });
 
   it("rejects applied boundary missing markerAlreadyPersisted", () => {
@@ -1137,20 +1269,26 @@ describe("marker identity per forced boundary", () => {
       ),
     ).toBe(true);
 
-    // Total evaluator refuses even for direct typed callers that skip as*.
+    // The total evaluator keeps the real boundary (discarding it would orphan an
+    // open continuation turn), refuses to trust the contradictory marker claim,
+    // and continues — even for direct typed callers that skip as*.
     const actual = decideCompactContinuation(raw as ReturnType<typeof asCompactContinuationInput>);
-    expect(actual.outcome).toBe("refuse");
-    expect(actual.receipt.refuseCode).toBe("invalid_pending_boundary_continuation");
-    expect(actual.receipt.refuseCode).not.toBe("native_writer_conflict");
-    expect(actual.transitionPath).toEqual(["at_seam", "checking_invariants", "terminal_refuse"]);
+    expect(actual.outcome).toBe("continue_current_body");
+    expect(actual.receipt.refused).toBe(false);
+    expect(actual.receipt.warnings.map((w) => w.code)).toEqual([
+      "boundary_marker_claim_untrusted",
+      "writer_owned_elsewhere",
+    ]);
+    expect(actual.transitionPath).toEqual(["at_seam", "checking_invariants", "terminal_continue_current_body"]);
     expect(actual.receipt.residual).toMatchObject({
       forcedContinuationBoundaryApplied: true,
       continuationTurnOpened: true,
       continuationTurnId: "t2",
+      // The untrusted claim is never OR'd back into residual truth.
       markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: false,
-      nextProviderRequestAllowed: false,
+      nextProviderRequestAllowed: true,
       priorServingViewIntact: true,
       writerReleased: true,
     });

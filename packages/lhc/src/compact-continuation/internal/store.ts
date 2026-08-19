@@ -35,6 +35,12 @@ export type StageName =
   | "install_succeeded"
   | "install_failed"
   | "compact_failed"
+  /**
+   * Historical stage: the SDK once refused an unsafe projected runway before
+   * install. CX-S5 removed that gate (oversized content is ours to truncate and
+   * the host's exact body check is downstream), so no path writes it now. Kept
+   * so stage logs written by earlier versions still read back.
+   */
   | "unsafe_runway_refused"
   | "receipt_recorded"
   | "writer_released"

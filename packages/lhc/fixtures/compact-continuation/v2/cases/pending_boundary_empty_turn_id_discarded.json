@@ -1,12 +1,11 @@
 {
-  "name": "native_writer_conflict",
+  "name": "pending_boundary_empty_turn_id_discarded",
   "contractVersion": "2.0.0",
-  "description": "Conflict writer row with no host ownership authority supplied: treated as a live owner, so this attempt continues its current request rather than stealing the row.",
+  "description": "An applied boundary with an empty continuationTurnId is unusable: discard it (turn id reported as null), warn, and start the seam fresh.",
   "coverage": [
-    "native_writer_conflict",
-    "writer_ownership_authority"
+    "invalid_pending_boundary_continuation"
   ],
-  "inputValidation": "accept",
+  "inputValidation": "reject",
   "input": {
     "contractVersion": "2.0.0",
     "seam": {
@@ -45,10 +44,13 @@
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "conflict"
+      "writerClaim": "none"
     },
     "forcedContinuationBoundary": {
-      "applied": false
+      "applied": true,
+      "continuationTurnId": "",
+      "forcedThisSeam": false,
+      "markerAlreadyPersisted": false
     },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
@@ -73,18 +75,29 @@
     }
   },
   "expected": {
-    "outcome": "continue_current_body",
-    "terminalState": "terminal_continue_current_body",
+    "outcome": "decline_to_ordinary_compact",
+    "terminalState": "terminal_decline_ordinary",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_continue_current_body"
+      "evaluating_pressure",
+      "terminal_decline_ordinary"
     ],
     "effects": [
       {
+        "type": "discard_pending_boundary",
+        "continuationTurnId": null,
+        "reason": "forcedContinuationBoundary.continuationTurnId must be a non-empty turn id when applied — boundary discarded, seam starts fresh"
+      },
+      {
         "type": "warn",
-        "code": "writer_owned_elsewhere",
-        "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+        "code": "pending_boundary_discarded",
+        "reason": "forcedContinuationBoundary.continuationTurnId must be a non-empty turn id when applied — boundary discarded, seam starts fresh"
+      },
+      {
+        "type": "warn",
+        "code": "continuation_boundary_unavailable",
+        "reason": "active_non_tool above trigger requires forcedContinuationBoundary.applied with continuationTurnId (runtime forces turn_end first); declining into ordinary settled-seam compact"
       },
       {
         "type": "record_receipt",
@@ -94,8 +107,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "continue_current_body",
-      "reasonCode": "writer_owned_elsewhere",
+      "outcome": "decline_to_ordinary_compact",
+      "reasonCode": "continuation_boundary_unavailable",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
@@ -124,8 +137,12 @@
       "degradationReasons": [],
       "warnings": [
         {
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "pending_boundary_discarded",
+          "reason": "forcedContinuationBoundary.continuationTurnId must be a non-empty turn id when applied — boundary discarded, seam starts fresh"
+        },
+        {
+          "code": "continuation_boundary_unavailable",
+          "reason": "active_non_tool above trigger requires forcedContinuationBoundary.applied with continuationTurnId (runtime forces turn_end first); declining into ordinary settled-seam compact"
         }
       ],
       "retry": {
@@ -142,9 +159,19 @@
       "protectedToolCallIds": [],
       "effects": [
         {
+          "type": "discard_pending_boundary",
+          "continuationTurnId": null,
+          "reason": "forcedContinuationBoundary.continuationTurnId must be a non-empty turn id when applied — boundary discarded, seam starts fresh"
+        },
+        {
           "type": "warn",
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "pending_boundary_discarded",
+          "reason": "forcedContinuationBoundary.continuationTurnId must be a non-empty turn id when applied — boundary discarded, seam starts fresh"
+        },
+        {
+          "type": "warn",
+          "code": "continuation_boundary_unavailable",
+          "reason": "active_non_tool above trigger requires forcedContinuationBoundary.applied with continuationTurnId (runtime forces turn_end first); declining into ordinary settled-seam compact"
         },
         {
           "type": "record_receipt",
@@ -161,7 +188,7 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
-        "pendingBoundaryDiscarded": false,
+        "pendingBoundaryDiscarded": true,
         "nextProviderRequestAllowed": true,
         "reliefPath": "none",
         "protectedToolCallIds": [],
@@ -177,7 +204,8 @@
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_continue_current_body"
+        "evaluating_pressure",
+        "terminal_decline_ordinary"
       ]
     }
   }

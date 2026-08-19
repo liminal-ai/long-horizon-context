@@ -1,10 +1,11 @@
 {
-  "name": "native_writer_conflict",
+  "name": "unsafe_runway_installs_best_relief",
   "contractVersion": "2.0.0",
-  "description": "Conflict writer row with no host ownership authority supplied: treated as a live owner, so this attempt continues its current request rather than stealing the row.",
+  "description": "Maximal eligible pruning still leaves projected pressure unsafe: warn and install the best available relief. Oversized outgoing content is ours to truncate, and the host's exact body check is downstream.",
   "coverage": [
-    "native_writer_conflict",
-    "writer_ownership_authority"
+    "unsafe_runway",
+    "maximal_prune_unsafe",
+    "projected_pressure_formula"
   ],
   "inputValidation": "accept",
   "input": {
@@ -39,13 +40,17 @@
       "safeRunwayThresholdSource": "host_safe_runway"
     },
     "continuation": {
-      "kind": "active_non_tool"
+      "kind": "pending_correlated_tool_result",
+      "protectedToolCallIds": [
+        "call-42"
+      ],
+      "correlationValid": true
     },
     "invariants": {
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "conflict"
+      "writerClaim": "none"
     },
     "forcedContinuationBoundary": {
       "applied": false
@@ -57,45 +62,72 @@
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true,
-      "projectedPressureTokens": 107000,
-      "renderedSavingsTokens": 0,
+      "projectedPressureTokens": 150000,
+      "renderedSavingsTokens": 5000,
       "renderedSavingsSource": "lhc_rendered_history_estimate",
       "renderedSavingsDomain": "source_labelled_estimate",
-      "safeRunwayThresholdTokens": 120000,
+      "safeRunwayThresholdTokens": 100000,
       "safeRunwayThresholdSource": "host_safe_runway",
-      "projectedPressureSafe": true,
+      "projectedPressureSafe": false,
       "protectedEscalationApplied": false,
       "visibilityBoundaryBefore": null,
       "visibilityBoundaryAfter": null,
       "compactPointAtInstall": null,
-      "maximalPruneInsufficient": false,
+      "maximalPruneInsufficient": true,
       "hostValidationStatus": "not_required"
     }
   },
   "expected": {
-    "outcome": "continue_current_body",
-    "terminalState": "terminal_continue_current_body",
+    "outcome": "compact_preserve_tool",
+    "terminalState": "terminal_preserve_tool",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_continue_current_body"
+      "evaluating_pressure",
+      "path_preserve_tool",
+      "compacting",
+      "installing",
+      "terminal_preserve_tool"
     ],
     "effects": [
       {
+        "type": "claim_writer",
+        "writer": "lhc"
+      },
+      {
+        "type": "compact",
+        "lowerTargetDomain": "lhc_rendered_history",
+        "lowerTargetTokens": 40000,
+        "allowDegradedDerivations": true
+      },
+      {
         "type": "warn",
-        "code": "writer_owned_elsewhere",
-        "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+        "code": "unsafe_runway_projection",
+        "reason": "maximal eligible unprotected pruning cannot produce safe projected runway; installing best available relief"
+      },
+      {
+        "type": "preserve_tool_pairs_verbatim",
+        "protectedToolCallIds": [
+          "call-42"
+        ],
+        "location": "open_turn_tail"
+      },
+      {
+        "type": "install_serving_view"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "continue_current_body",
-      "reasonCode": "writer_owned_elsewhere",
+      "outcome": "compact_preserve_tool",
+      "reasonCode": "compact_preserve_tool",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
@@ -106,26 +138,26 @@
         "nextRequestPressureTokens": 105000,
         "upperTriggerTokens": 100000,
         "atOrAboveTrigger": true,
-        "projectedPressureTokens": 107000,
-        "renderedSavingsTokens": 0,
+        "projectedPressureTokens": 150000,
+        "renderedSavingsTokens": 5000,
         "renderedSavingsSource": "lhc_rendered_history_estimate",
         "renderedSavingsDomain": "source_labelled_estimate",
-        "safeRunwayThresholdTokens": 120000,
+        "safeRunwayThresholdTokens": 100000,
         "safeRunwayThresholdSource": "host_safe_runway",
-        "projectedPressureSafe": true
+        "projectedPressureSafe": false
       },
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": null,
+        "met": true,
         "isSuccessGate": false
       },
       "fidelity": "full",
       "degradationReasons": [],
       "warnings": [
         {
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "unsafe_runway_projection",
+          "reason": "maximal eligible unprotected pruning cannot produce safe projected runway; installing best available relief"
         }
       ],
       "retry": {
@@ -138,23 +170,48 @@
         "markerServed": false,
         "sameAgenticTurnPreserved": true
       },
-      "reliefPath": "none",
-      "protectedToolCallIds": [],
+      "reliefPath": "normal_preserve",
+      "protectedToolCallIds": [
+        "call-42"
+      ],
       "effects": [
         {
+          "type": "claim_writer",
+          "writer": "lhc"
+        },
+        {
+          "type": "compact",
+          "lowerTargetDomain": "lhc_rendered_history",
+          "lowerTargetTokens": 40000,
+          "allowDegradedDerivations": true
+        },
+        {
           "type": "warn",
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "unsafe_runway_projection",
+          "reason": "maximal eligible unprotected pruning cannot produce safe projected runway; installing best available relief"
+        },
+        {
+          "type": "preserve_tool_pairs_verbatim",
+          "protectedToolCallIds": [
+            "call-42"
+          ],
+          "location": "open_turn_tail"
+        },
+        {
+          "type": "install_serving_view"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
         }
       ],
       "residual": {
         "writerReleased": true,
-        "priorServingViewIntact": true,
+        "priorServingViewIntact": false,
         "forcedContinuationBoundaryApplied": false,
         "continuationTurnOpened": false,
         "continuationTurnId": null,
@@ -163,8 +220,10 @@
         "originalAgenticTurnStillOpen": true,
         "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": true,
-        "reliefPath": "none",
-        "protectedToolCallIds": [],
+        "reliefPath": "normal_preserve",
+        "protectedToolCallIds": [
+          "call-42"
+        ],
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
@@ -177,7 +236,11 @@
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_continue_current_body"
+        "evaluating_pressure",
+        "path_preserve_tool",
+        "compacting",
+        "installing",
+        "terminal_preserve_tool"
       ]
     }
   }

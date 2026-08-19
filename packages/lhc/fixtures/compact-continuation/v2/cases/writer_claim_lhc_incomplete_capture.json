@@ -1,10 +1,10 @@
 {
   "name": "writer_claim_lhc_incomplete_capture",
   "contractVersion": "2.0.0",
-  "description": "writerClaim lhc at settled seam with incomplete capture: claim_writer then refuse then release_writer; residual writerReleased true.",
+  "description": "writerClaim lhc at a settled seam with incomplete capture below trigger: warn, continue normally, and keep the claim/release pair truthful (residual writerReleased true).",
   "coverage": [
     "writer_claim_lhc_idempotent",
-    "settled_seam_lhc_claim_early_refuse"
+    "settled_seam_lhc_claim_decline"
   ],
   "inputValidation": "accept",
   "input": {
@@ -20,10 +20,10 @@
     },
     "providerUsage": {
       "available": true,
-      "inputTokens": 90000,
-      "cacheCreationTokens": 5000,
-      "cacheReadTokens": 10000,
-      "total": 105000,
+      "inputTokens": 70000,
+      "cacheCreationTokens": 0,
+      "cacheReadTokens": 5000,
+      "total": 75000,
       "domain": "provider_reported_input"
     },
     "postMeasurementEstimate": {
@@ -73,46 +73,41 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "continue_normal",
+    "terminalState": "terminal_continue_normal",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_refuse"
+      "evaluating_pressure",
+      "below_trigger",
+      "terminal_continue_normal"
     ],
     "effects": [
       {
-        "type": "claim_writer",
-        "writer": "lhc"
-      },
-      {
-        "type": "refuse",
-        "code": "incomplete_capture",
-        "reason": "capture of the settled model turn is incomplete; canonical record is not trustworthy"
+        "type": "warn",
+        "code": "capture_incomplete",
+        "reason": "capture of the settled model turn is incomplete; compacting on available thread data (capture feeds derivation quality, not compact capability)"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
-      },
-      {
-        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "incomplete_capture",
+      "outcome": "continue_normal",
+      "reasonCode": "below_trigger",
       "turnEndReason": null,
       "pressure": {
-        "providerBaseTokens": 105000,
+        "providerBaseTokens": 75000,
         "providerBaseDomain": "provider_reported_input",
         "estimateTokens": 0,
         "estimateSource": "lhc_token_estimate",
         "estimateDomain": "source_labelled_estimate",
-        "nextRequestPressureTokens": 105000,
+        "nextRequestPressureTokens": 75000,
         "upperTriggerTokens": 100000,
-        "atOrAboveTrigger": true,
+        "atOrAboveTrigger": false,
         "projectedPressureTokens": 107000,
         "renderedSavingsTokens": 0,
         "renderedSavingsSource": "lhc_rendered_history_estimate",
@@ -129,6 +124,17 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "capture_incomplete",
+          "reason": "capture of the settled model turn is incomplete; compacting on available thread data (capture feeds derivation quality, not compact capability)"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -138,21 +144,14 @@
       "protectedToolCallIds": [],
       "effects": [
         {
-          "type": "claim_writer",
-          "writer": "lhc"
-        },
-        {
-          "type": "refuse",
-          "code": "incomplete_capture",
-          "reason": "capture of the settled model turn is incomplete; canonical record is not trustworthy"
+          "type": "warn",
+          "code": "capture_incomplete",
+          "reason": "capture of the settled model turn is incomplete; compacting on available thread data (capture feeds derivation quality, not compact capability)"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
-        },
-        {
-          "type": "release_writer"
         }
       ],
       "residual": {
@@ -164,7 +163,8 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
-        "nextProviderRequestAllowed": false,
+        "pendingBoundaryDiscarded": false,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "none",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
@@ -172,14 +172,16 @@
         "hostValidationStatus": "not_required",
         "coreInstallRetainedPendingHostValidation": false
       },
-      "refused": true,
-      "refuseCode": "incomplete_capture",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_refuse"
+        "evaluating_pressure",
+        "below_trigger",
+        "terminal_continue_normal"
       ]
     }
   }

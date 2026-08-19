@@ -1,10 +1,11 @@
 {
-  "name": "native_writer_conflict",
+  "name": "settled_seam_lhc_claim_decline_to_ordinary",
   "contractVersion": "2.0.0",
-  "description": "Conflict writer row with no host ownership authority supplied: treated as a live owner, so this attempt continues its current request rather than stealing the row.",
+  "description": "writerClaim lhc at a settled seam declining into ordinary compact: claim_writer then warn then record_receipt then release_writer; residual writerReleased true and the next request is authorized.",
   "coverage": [
-    "native_writer_conflict",
-    "writer_ownership_authority"
+    "writer_claim_lhc_idempotent",
+    "settled_seam_lhc_claim_decline",
+    "invalid_tool_correlation"
   ],
   "inputValidation": "accept",
   "input": {
@@ -39,13 +40,17 @@
       "safeRunwayThresholdSource": "host_safe_runway"
     },
     "continuation": {
-      "kind": "active_non_tool"
+      "kind": "pending_correlated_tool_result",
+      "protectedToolCallIds": [
+        "call-bad"
+      ],
+      "correlationValid": false
     },
     "invariants": {
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "conflict"
+      "writerClaim": "lhc"
     },
     "forcedContinuationBoundary": {
       "applied": false
@@ -73,29 +78,37 @@
     }
   },
   "expected": {
-    "outcome": "continue_current_body",
-    "terminalState": "terminal_continue_current_body",
+    "outcome": "decline_to_ordinary_compact",
+    "terminalState": "terminal_decline_ordinary",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_continue_current_body"
+      "evaluating_pressure",
+      "terminal_decline_ordinary"
     ],
     "effects": [
       {
         "type": "warn",
-        "code": "writer_owned_elsewhere",
-        "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+        "code": "tool_correlation_unproven",
+        "reason": "pending tool-result continuation cannot prove call/result correlation; declining into ordinary settled-seam compact on canonical state"
+      },
+      {
+        "type": "claim_writer",
+        "writer": "lhc"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "continue_current_body",
-      "reasonCode": "writer_owned_elsewhere",
+      "outcome": "decline_to_ordinary_compact",
+      "reasonCode": "tool_correlation_unproven",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
@@ -124,8 +137,8 @@
       "degradationReasons": [],
       "warnings": [
         {
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "tool_correlation_unproven",
+          "reason": "pending tool-result continuation cannot prove call/result correlation; declining into ordinary settled-seam compact on canonical state"
         }
       ],
       "retry": {
@@ -139,17 +152,26 @@
         "sameAgenticTurnPreserved": true
       },
       "reliefPath": "none",
-      "protectedToolCallIds": [],
+      "protectedToolCallIds": [
+        "call-bad"
+      ],
       "effects": [
         {
           "type": "warn",
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "tool_correlation_unproven",
+          "reason": "pending tool-result continuation cannot prove call/result correlation; declining into ordinary settled-seam compact on canonical state"
+        },
+        {
+          "type": "claim_writer",
+          "writer": "lhc"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
         }
       ],
       "residual": {
@@ -164,7 +186,9 @@
         "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": true,
         "reliefPath": "none",
-        "protectedToolCallIds": [],
+        "protectedToolCallIds": [
+          "call-bad"
+        ],
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
@@ -177,7 +201,8 @@
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_continue_current_body"
+        "evaluating_pressure",
+        "terminal_decline_ordinary"
       ]
     }
   }

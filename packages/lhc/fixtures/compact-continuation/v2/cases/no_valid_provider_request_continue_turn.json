@@ -1,11 +1,10 @@
 {
-  "name": "compact_failed_continue_turn",
+  "name": "no_valid_provider_request_continue_turn",
   "contractVersion": "2.0.0",
-  "description": "Active non-tool compact failure after forced boundary: bounded retry authorized; boundary durable and repairable; no marker; prior view intact; the session keeps working.",
+  "description": "Unprovable provider request on the continue-turn path still forces the boundary, persists the marker and installs the best available body with a loud warning.",
   "coverage": [
-    "compact_install_failure",
-    "active_non_tool_continuation",
-    "post_boundary_failure"
+    "no_valid_provider_request",
+    "active_non_tool_continuation"
   ],
   "inputValidation": "accept",
   "input": {
@@ -57,10 +56,10 @@
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
-      "canProduceValidProviderRequest": true,
+      "canProduceValidProviderRequest": false,
       "projectedPressureTokens": 107000,
       "renderedSavingsTokens": 0,
       "renderedSavingsSource": "lhc_rendered_history_estimate",
@@ -77,15 +76,16 @@
     }
   },
   "expected": {
-    "outcome": "retry_compact",
-    "terminalState": "terminal_retry",
+    "outcome": "compact_continue_turn",
+    "terminalState": "terminal_continue_turn",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
       "path_continue_turn",
       "compacting",
-      "terminal_retry"
+      "installing",
+      "terminal_continue_turn"
     ],
     "effects": [
       {
@@ -108,8 +108,27 @@
       },
       {
         "type": "warn",
-        "code": "compact_attempt_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "code": "provider_request_unvalidated",
+        "reason": "no structurally valid provider request could be proven after the full reduction ladder; sending the best available body"
+      },
+      {
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "continuationTurnId": "t2",
+        "idempotencyKey": "lhc.compact_continuation:t2",
+        "semantics": {
+          "cause": "context_compacted_task_in_progress",
+          "action": "continue_existing_task",
+          "newUserRequest": false,
+          "waitForUser": false
+        },
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
+      },
+      {
+        "type": "install_serving_view"
       },
       {
         "type": "record_receipt",
@@ -122,8 +141,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "retry_compact",
-      "reasonCode": "compact_retry_authorized",
+      "outcome": "compact_continue_turn",
+      "reasonCode": "context_compact_continue",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -152,21 +171,21 @@
       "degradationReasons": [],
       "warnings": [
         {
-          "code": "compact_attempt_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "provider_request_unvalidated",
+          "reason": "no structurally valid provider request could be proven after the full reduction ladder; sending the best available body"
         }
       ],
       "retry": {
         "attemptIndex": 1,
         "budget": 2,
-        "retryAuthorized": true
+        "retryAuthorized": false
       },
       "continuation": {
         "opened": true,
-        "markerServed": false,
+        "markerServed": true,
         "sameAgenticTurnPreserved": false
       },
-      "reliefPath": "core_install_failed",
+      "reliefPath": "none",
       "protectedToolCallIds": [],
       "effects": [
         {
@@ -189,8 +208,27 @@
         },
         {
           "type": "warn",
-          "code": "compact_attempt_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "provider_request_unvalidated",
+          "reason": "no structurally valid provider request could be proven after the full reduction ladder; sending the best available body"
+        },
+        {
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "continuationTurnId": "t2",
+          "idempotencyKey": "lhc.compact_continuation:t2",
+          "semantics": {
+            "cause": "context_compacted_task_in_progress",
+            "action": "continue_existing_task",
+            "newUserRequest": false,
+            "waitForUser": false
+          },
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
+        },
+        {
+          "type": "install_serving_view"
         },
         {
           "type": "record_receipt",
@@ -203,21 +241,21 @@
       ],
       "residual": {
         "writerReleased": true,
-        "priorServingViewIntact": true,
+        "priorServingViewIntact": false,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
         "continuationTurnId": "t2",
-        "markerPersisted": false,
-        "markerServed": false,
+        "markerPersisted": true,
+        "markerServed": true,
         "originalAgenticTurnStillOpen": false,
+        "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": true,
-        "reliefPath": "core_install_failed",
+        "reliefPath": "none",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
-        "coreInstallRetainedPendingHostValidation": false,
-        "pendingBoundaryDiscarded": false
+        "coreInstallRetainedPendingHostValidation": false
       },
       "refused": false,
       "refuseCode": null,
@@ -229,7 +267,8 @@
         "evaluating_pressure",
         "path_continue_turn",
         "compacting",
-        "terminal_retry"
+        "installing",
+        "terminal_continue_turn"
       ]
     }
   }

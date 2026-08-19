@@ -152,6 +152,12 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -204,6 +210,7 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
+        "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": true,
         "reliefPath": "normal_preserve",
         "protectedToolCallIds": [

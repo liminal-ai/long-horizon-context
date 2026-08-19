@@ -204,7 +204,7 @@ function insertDupMessage(
 type FixtureKind = "normal_pipeline" | "corrupt_state_fixture";
 
 describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuation)", () => {
-  async function assertRefuseBeforeClaim(
+  async function assertDeclinesWithoutMutation(
     name: string,
     toolCallId: string,
     kind: FixtureKind,
@@ -236,22 +236,29 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     );
     expect(result.ok, `${name} (${kind})`).toBe(true);
     if (!result.ok) return;
-    expect(result.value.receipt.refuseCode).toBe("invalid_tool_correlation");
-    expect(result.value.receipt.refused).toBe(true);
+    // The pair cannot be *protected* through compact, so the continuation
+    // machinery declines into the host's ordinary settled-seam compact on
+    // canonical state. It still mutates nothing and never claims the writer —
+    // and it never strands: the next provider request proceeds.
+    expect(result.value.receipt.outcome).toBe("decline_to_ordinary_compact");
+    expect(result.value.receipt.refused).toBe(false);
+    expect(result.value.receipt.refuseCode).toBeNull();
+    expect(result.value.receipt.warnings.map((w) => w.code)).toEqual(["tool_correlation_unproven"]);
+    expect(result.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
     expect(result.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
     expect(snapshotCanonical(fixture.filePath)).toEqual(before);
   }
 
-  it("missing pair: refuse before claim, no mutation", async () => {
+  it("missing pair: declines into ordinary compact before claim, no mutation", async () => {
     // Seed an unrelated pair; request a toolCallId that does not exist.
-    await assertRefuseBeforeClaim("missing", "does-not-exist", "normal_pipeline", () => {}, {
+    await assertDeclinesWithoutMutation("missing", "does-not-exist", "normal_pipeline", () => {}, {
       seedToolCallId: "call-unrelated-other",
     });
   });
 
-  it("orphan call: tombstone result via SQL (corrupt_state_fixture) — refuse before claim", async () => {
-    await assertRefuseBeforeClaim("orphan-call", "call-oc", "corrupt_state_fixture", (filePath) => {
+  it("orphan call: tombstone result via SQL (corrupt_state_fixture) — declines into ordinary compact, no mutation", async () => {
+    await assertDeclinesWithoutMutation("orphan-call", "call-oc", "corrupt_state_fixture", (filePath) => {
       const db = openRaw(filePath);
       try {
         db.prepare(
@@ -267,8 +274,8 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     });
   });
 
-  it("orphan result: tombstone call via SQL (corrupt_state_fixture) — refuse before claim", async () => {
-    await assertRefuseBeforeClaim("orphan-result", "call-or", "corrupt_state_fixture", (filePath) => {
+  it("orphan result: tombstone call via SQL (corrupt_state_fixture) — declines into ordinary compact, no mutation", async () => {
+    await assertDeclinesWithoutMutation("orphan-result", "call-or", "corrupt_state_fixture", (filePath) => {
       const db = openRaw(filePath);
       try {
         db.prepare(
@@ -284,8 +291,8 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     });
   });
 
-  it("duplicate call: second tool_call row (corrupt_state_fixture) — refuse before claim", async () => {
-    await assertRefuseBeforeClaim("duplicate-call", "call-dc", "corrupt_state_fixture", (filePath) => {
+  it("duplicate call: second tool_call row (corrupt_state_fixture) — declines into ordinary compact, no mutation", async () => {
+    await assertDeclinesWithoutMutation("duplicate-call", "call-dc", "corrupt_state_fixture", (filePath) => {
       const db = openRaw(filePath);
       try {
         const call = db
@@ -323,8 +330,8 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     });
   });
 
-  it("duplicate result: second tool_result row (corrupt_state_fixture) — refuse before claim", async () => {
-    await assertRefuseBeforeClaim("duplicate-result", "call-dr", "corrupt_state_fixture", (filePath) => {
+  it("duplicate result: second tool_result row (corrupt_state_fixture) — declines into ordinary compact, no mutation", async () => {
+    await assertDeclinesWithoutMutation("duplicate-result", "call-dr", "corrupt_state_fixture", (filePath) => {
       const db = openRaw(filePath);
       try {
         const row = db
@@ -362,8 +369,8 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     });
   });
 
-  it("call after result: swap source_event_order (corrupt_state_fixture) — refuse before claim", async () => {
-    await assertRefuseBeforeClaim("call-after-result", "call-car", "corrupt_state_fixture", (filePath) => {
+  it("call after result: swap source_event_order (corrupt_state_fixture) — declines into ordinary compact, no mutation", async () => {
+    await assertDeclinesWithoutMutation("call-after-result", "call-car", "corrupt_state_fixture", (filePath) => {
       const db = openRaw(filePath);
       try {
         const call = db
@@ -397,8 +404,8 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     });
   });
 
-  it("wrong turn: move call to closed turn (corrupt_state_fixture) — refuse before claim", async () => {
-    await assertRefuseBeforeClaim("wrong-turn", "call-wt", "corrupt_state_fixture", (filePath) => {
+  it("wrong turn: move call to closed turn (corrupt_state_fixture) — declines into ordinary compact, no mutation", async () => {
+    await assertDeclinesWithoutMutation("wrong-turn", "call-wt", "corrupt_state_fixture", (filePath) => {
       const db = openRaw(filePath);
       try {
         const other = db
@@ -434,12 +441,12 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     });
   });
 
-  it("at-or-before compact point: advance compact_point past pair (corrupt_state_fixture) — refuse before claim", async () => {
+  it("at-or-before compact point: advance compact_point past pair (corrupt_state_fixture) — declines into ordinary compact, no mutation", async () => {
     // not_in_open_tail is reachable only when compact_point advances past an
     // already-captured pair (view install / manual compact_point). Normal
     // intake never places a live open-turn pair at/before compact point without
     // a compact install; this corrupt_state_fixture models post-compact residual.
-    await assertRefuseBeforeClaim("before-compact-point", "call-bcp", "corrupt_state_fixture", (filePath) => {
+    await assertDeclinesWithoutMutation("before-compact-point", "call-bcp", "corrupt_state_fixture", (filePath) => {
       const db = openRaw(filePath);
       try {
         const maxOrder = Number(
@@ -465,8 +472,8 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     });
   });
 
-  it("unreadable payload: non-string tool_result content (corrupt_state_fixture) — refuse before claim", async () => {
-    await assertRefuseBeforeClaim("unreadable", "call-ur", "corrupt_state_fixture", (filePath) => {
+  it("unreadable payload: non-string tool_result content (corrupt_state_fixture) — declines into ordinary compact, no mutation", async () => {
+    await assertDeclinesWithoutMutation("unreadable", "call-ur", "corrupt_state_fixture", (filePath) => {
       const db = openRaw(filePath);
       try {
         db.prepare(
@@ -508,7 +515,7 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
       db.close();
     }
 
-    await assertRefuseBeforeClaim("id-mismatch", "call-mm2", "corrupt_state_fixture", (filePath) => {
+    await assertDeclinesWithoutMutation("id-mismatch", "call-mm2", "corrupt_state_fixture", (filePath) => {
       const d = openRaw(filePath);
       try {
         d.prepare(
@@ -952,7 +959,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
 });
 
 describe("LIM-61 evidence: invalid candidate without material hooks", () => {
-  it("unresolved tool_call at settled active_non_tool: exact compact_failed / failed_repairable", async () => {
+  it("unresolved tool_call at settled active_non_tool: bounded retry / failed_repairable", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     // Normal pipeline: open turn with tool_call and NO result (unresolved).
     const batch = await intakeStream.messageEvents({ filePath: fixture.filePath }, [
@@ -975,10 +982,12 @@ describe("LIM-61 evidence: invalid candidate without material hooks", () => {
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.receipt.outcome).toBe("refuse");
-    expect(result.value.receipt.refuseCode).toBe("compact_failed");
-    expect(result.value.receipt.refused).toBe(true);
-    expect(result.value.nextProviderRequestAllowed).toBe(false);
+    expect(result.value.receipt.outcome).toBe("retry_compact");
+    expect(result.value.receipt.refused).toBe(false);
+    expect(result.value.receipt.warnings.map((w) => w.code)).toEqual(["compact_attempt_failed"]);
+    expect(result.value.receipt.retry).toMatchObject({ attemptIndex: 1, retryAuthorized: true });
+    // The relief failed; the session keeps working on the body it already has.
+    expect(result.value.nextProviderRequestAllowed).toBe(true);
     expect(result.value.decision.transitionPath.some((s) => String(s).includes("compact"))).toBe(true);
     expect(result.value.pendingBoundary?.status).toBe("failed_repairable");
     expect(result.value.pendingBoundary?.lastStage).toBe("compact_failed");

@@ -64,6 +64,7 @@ const POLICY_KEYS = [
   "hostCapability",
   "safeRunwayThresholdTokens",
   "safeRunwayThresholdSource",
+  "compactRetryBudget",
 ] as const;
 const ESTIMATE_KEYS = ["tokens", "source", "domain"] as const;
 const COMPACT_KEYS = ["profile", "params"] as const;
@@ -141,6 +142,12 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
       policy.obj["safeRunwayThresholdSource"].length === 0)
   ) {
     return reject("policy.safeRunwayThresholdSource must be a non-empty string when present");
+  }
+  if (policy.obj["compactRetryBudget"] !== undefined) {
+    const budget = policy.obj["compactRetryBudget"];
+    if (typeof budget !== "number" || !Number.isSafeInteger(budget) || budget < 1) {
+      return reject("policy.compactRetryBudget must be an integer >= 1 when present");
+    }
   }
 
   const usage = closedObject(facts["providerUsage"], "providerUsage", [

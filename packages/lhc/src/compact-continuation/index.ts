@@ -26,11 +26,19 @@
  *
  * Public `runCompactContinuation` does **not** accept `testHooks`. Fault
  * injection is test-only via fixtures/`runCompactContinuationForTests`.
+ *
+ * 7. A `native`/`conflict` writer row is resolved by the host's ownership
+ *    authority (`opts.writerOwnershipCheck`), never by refusing. The registry
+ *    behind that callback is process-global and keyed by LHC `thread_id`, and it
+ *    lives host-side: two sessions or aliases can address one thread, so a
+ *    per-session flag is not sufficient. Without a check the SDK assumes a live
+ *    owner and this attempt continues its current request.
  */
 
 export {
   type CompactContinuationHostFacts,
   type CompactContinuationRunResult,
+  type CompactContinuationWriterOwnershipCheck,
   computeAttemptIntent,
   computeOperationIdentity,
   computeRetryPosture,

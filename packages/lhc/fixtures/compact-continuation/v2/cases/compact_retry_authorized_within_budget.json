@@ -1,10 +1,10 @@
 {
-  "name": "native_writer_conflict",
+  "name": "compact_retry_authorized_within_budget",
   "contractVersion": "2.0.0",
-  "description": "Conflict writer row with no host ownership authority supplied: treated as a live owner, so this attempt continues its current request rather than stealing the row.",
+  "description": "Second install attempt fails with a budget of four: retry is still authorized for the next eligible seam while the session continues on its current body.",
   "coverage": [
-    "native_writer_conflict",
-    "writer_ownership_authority"
+    "bounded_retry",
+    "compact_install_failure"
   ],
   "inputValidation": "accept",
   "input": {
@@ -36,16 +36,21 @@
       "lowerTargetTokens": 40000,
       "hostCapability": "full_state_machine",
       "safeRunwayThresholdTokens": 120000,
-      "safeRunwayThresholdSource": "host_safe_runway"
+      "safeRunwayThresholdSource": "host_safe_runway",
+      "compactRetryBudget": 4
     },
     "continuation": {
-      "kind": "active_non_tool"
+      "kind": "pending_correlated_tool_result",
+      "protectedToolCallIds": [
+        "call-42"
+      ],
+      "correlationValid": true
     },
     "invariants": {
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "conflict"
+      "writerClaim": "none"
     },
     "forcedContinuationBoundary": {
       "applied": false
@@ -54,7 +59,7 @@
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
       "compactStructurallyValid": true,
-      "installSucceeds": true,
+      "installSucceeds": false,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true,
       "projectedPressureTokens": 107000,
@@ -69,33 +74,58 @@
       "visibilityBoundaryAfter": null,
       "compactPointAtInstall": null,
       "maximalPruneInsufficient": false,
-      "hostValidationStatus": "not_required"
+      "hostValidationStatus": "not_required",
+      "compactAttemptIndex": 2
     }
   },
   "expected": {
-    "outcome": "continue_current_body",
-    "terminalState": "terminal_continue_current_body",
+    "outcome": "retry_compact",
+    "terminalState": "terminal_retry",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_continue_current_body"
+      "evaluating_pressure",
+      "path_preserve_tool",
+      "compacting",
+      "installing",
+      "terminal_retry"
     ],
     "effects": [
       {
+        "type": "claim_writer",
+        "writer": "lhc"
+      },
+      {
+        "type": "compact",
+        "lowerTargetDomain": "lhc_rendered_history",
+        "lowerTargetTokens": 40000,
+        "allowDegradedDerivations": true
+      },
+      {
+        "type": "preserve_tool_pairs_verbatim",
+        "protectedToolCallIds": [
+          "call-42"
+        ],
+        "location": "open_turn_tail"
+      },
+      {
         "type": "warn",
-        "code": "writer_owned_elsewhere",
-        "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+        "code": "install_attempt_failed",
+        "reason": "post-compact serving view could not be installed"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "continue_current_body",
-      "reasonCode": "writer_owned_elsewhere",
+      "outcome": "retry_compact",
+      "reasonCode": "compact_retry_authorized",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
@@ -117,39 +147,61 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": null,
+        "met": true,
         "isSuccessGate": false
       },
       "fidelity": "full",
       "degradationReasons": [],
       "warnings": [
         {
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "install_attempt_failed",
+          "reason": "post-compact serving view could not be installed"
         }
       ],
       "retry": {
-        "attemptIndex": 1,
-        "budget": 2,
-        "retryAuthorized": false
+        "attemptIndex": 2,
+        "budget": 4,
+        "retryAuthorized": true
       },
       "continuation": {
         "opened": false,
         "markerServed": false,
         "sameAgenticTurnPreserved": true
       },
-      "reliefPath": "none",
-      "protectedToolCallIds": [],
+      "reliefPath": "core_install_failed",
+      "protectedToolCallIds": [
+        "call-42"
+      ],
       "effects": [
         {
+          "type": "claim_writer",
+          "writer": "lhc"
+        },
+        {
+          "type": "compact",
+          "lowerTargetDomain": "lhc_rendered_history",
+          "lowerTargetTokens": 40000,
+          "allowDegradedDerivations": true
+        },
+        {
+          "type": "preserve_tool_pairs_verbatim",
+          "protectedToolCallIds": [
+            "call-42"
+          ],
+          "location": "open_turn_tail"
+        },
+        {
           "type": "warn",
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "install_attempt_failed",
+          "reason": "post-compact serving view could not be installed"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
         }
       ],
       "residual": {
@@ -161,14 +213,16 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
-        "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": true,
-        "reliefPath": "none",
-        "protectedToolCallIds": [],
+        "reliefPath": "core_install_failed",
+        "protectedToolCallIds": [
+          "call-42"
+        ],
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
-        "coreInstallRetainedPendingHostValidation": false
+        "coreInstallRetainedPendingHostValidation": false,
+        "pendingBoundaryDiscarded": false
       },
       "refused": false,
       "refuseCode": null,
@@ -177,7 +231,11 @@
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_continue_current_body"
+        "evaluating_pressure",
+        "path_preserve_tool",
+        "compacting",
+        "installing",
+        "terminal_retry"
       ]
     }
   }

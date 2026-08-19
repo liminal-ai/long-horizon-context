@@ -1,7 +1,7 @@
 {
-  "name": "native_writer_conflict",
+  "name": "writer_owned_by_live_owner",
   "contractVersion": "2.0.0",
-  "description": "Conflict writer row with no host ownership authority supplied: treated as a live owner, so this attempt continues its current request rather than stealing the row.",
+  "description": "Host ownership authority reports a live owner for this LHC thread: the loser continues its current request, never steals the row and never strands.",
   "coverage": [
     "native_writer_conflict",
     "writer_ownership_authority"
@@ -45,7 +45,8 @@
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "conflict"
+      "writerClaim": "native",
+      "writerOwnershipAuthority": "live_owner"
     },
     "forcedContinuationBoundary": {
       "applied": false
@@ -84,7 +85,7 @@
       {
         "type": "warn",
         "code": "writer_owned_elsewhere",
-        "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+        "reason": "a live owner holds this LHC thread (native writer row); continuing this attempt's current request and re-competing at the next seam"
       },
       {
         "type": "record_receipt",
@@ -125,7 +126,7 @@
       "warnings": [
         {
           "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "reason": "a live owner holds this LHC thread (native writer row); continuing this attempt's current request and re-competing at the next seam"
         }
       ],
       "retry": {
@@ -144,7 +145,7 @@
         {
           "type": "warn",
           "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "reason": "a live owner holds this LHC thread (native writer row); continuing this attempt's current request and re-competing at the next seam"
         },
         {
           "type": "record_receipt",

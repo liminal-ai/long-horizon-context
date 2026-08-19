@@ -177,6 +177,12 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": true,
         "markerServed": true,
@@ -251,6 +257,7 @@
         "markerPersisted": true,
         "markerServed": true,
         "originalAgenticTurnStillOpen": false,
+        "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": false,
         "reliefPath": "host_validation_awaiting",
         "protectedToolCallIds": [

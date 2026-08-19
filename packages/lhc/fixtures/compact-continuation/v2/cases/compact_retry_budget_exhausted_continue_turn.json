@@ -1,10 +1,11 @@
 {
-  "name": "native_writer_conflict",
+  "name": "compact_retry_budget_exhausted_continue_turn",
   "contractVersion": "2.0.0",
-  "description": "Conflict writer row with no host ownership authority supplied: treated as a live owner, so this attempt continues its current request rather than stealing the row.",
+  "description": "Second compact attempt fails with a budget of two: retry is no longer authorized, so the session continues on its current body. The boundary stays durable and nothing strands.",
   "coverage": [
-    "native_writer_conflict",
-    "writer_ownership_authority"
+    "bounded_retry",
+    "compact_install_failure",
+    "post_boundary_failure"
   ],
   "inputValidation": "accept",
   "input": {
@@ -36,7 +37,8 @@
       "lowerTargetTokens": 40000,
       "hostCapability": "full_state_machine",
       "safeRunwayThresholdTokens": 120000,
-      "safeRunwayThresholdSource": "host_safe_runway"
+      "safeRunwayThresholdSource": "host_safe_runway",
+      "compactRetryBudget": 2
     },
     "continuation": {
       "kind": "active_non_tool"
@@ -45,15 +47,18 @@
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "conflict"
+      "writerClaim": "none"
     },
     "forcedContinuationBoundary": {
-      "applied": false
+      "applied": true,
+      "continuationTurnId": "t2",
+      "forcedThisSeam": true,
+      "markerAlreadyPersisted": false
     },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": true,
+      "compactStructurallyValid": false,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true,
@@ -69,7 +74,8 @@
       "visibilityBoundaryAfter": null,
       "compactPointAtInstall": null,
       "maximalPruneInsufficient": false,
-      "hostValidationStatus": "not_required"
+      "hostValidationStatus": "not_required",
+      "compactAttemptIndex": 2
     }
   },
   "expected": {
@@ -78,25 +84,54 @@
     "transitionPath": [
       "at_seam",
       "checking_invariants",
+      "evaluating_pressure",
+      "path_continue_turn",
+      "compacting",
       "terminal_continue_current_body"
     ],
     "effects": [
       {
+        "type": "claim_writer",
+        "writer": "lhc"
+      },
+      {
+        "type": "force_turn_end",
+        "reason": "context_compact_continue",
+        "outcome": "completed",
+        "opensContinuationTurn": true,
+        "continuationTurnCount": 1,
+        "continuationTurnId": "t2"
+      },
+      {
+        "type": "compact",
+        "lowerTargetDomain": "lhc_rendered_history",
+        "lowerTargetTokens": 40000,
+        "allowDegradedDerivations": true
+      },
+      {
         "type": "warn",
-        "code": "writer_owned_elsewhere",
-        "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+        "code": "compact_attempt_failed",
+        "reason": "compact assembly could not produce a structurally valid view"
+      },
+      {
+        "type": "warn",
+        "code": "compact_retry_budget_exhausted",
+        "reason": "bounded compact retry budget spent (attempt 2 of 2); continuing on the current body"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "2.0.0",
       "outcome": "continue_current_body",
-      "reasonCode": "writer_owned_elsewhere",
-      "turnEndReason": null,
+      "reasonCode": "compact_retry_budget_exhausted",
+      "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -117,58 +152,88 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": null,
+        "met": true,
         "isSuccessGate": false
       },
       "fidelity": "full",
       "degradationReasons": [],
       "warnings": [
         {
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "compact_attempt_failed",
+          "reason": "compact assembly could not produce a structurally valid view"
+        },
+        {
+          "code": "compact_retry_budget_exhausted",
+          "reason": "bounded compact retry budget spent (attempt 2 of 2); continuing on the current body"
         }
       ],
       "retry": {
-        "attemptIndex": 1,
+        "attemptIndex": 2,
         "budget": 2,
         "retryAuthorized": false
       },
       "continuation": {
-        "opened": false,
+        "opened": true,
         "markerServed": false,
-        "sameAgenticTurnPreserved": true
+        "sameAgenticTurnPreserved": false
       },
-      "reliefPath": "none",
+      "reliefPath": "core_install_failed",
       "protectedToolCallIds": [],
       "effects": [
         {
+          "type": "claim_writer",
+          "writer": "lhc"
+        },
+        {
+          "type": "force_turn_end",
+          "reason": "context_compact_continue",
+          "outcome": "completed",
+          "opensContinuationTurn": true,
+          "continuationTurnCount": 1,
+          "continuationTurnId": "t2"
+        },
+        {
+          "type": "compact",
+          "lowerTargetDomain": "lhc_rendered_history",
+          "lowerTargetTokens": 40000,
+          "allowDegradedDerivations": true
+        },
+        {
           "type": "warn",
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "compact_attempt_failed",
+          "reason": "compact assembly could not produce a structurally valid view"
+        },
+        {
+          "type": "warn",
+          "code": "compact_retry_budget_exhausted",
+          "reason": "bounded compact retry budget spent (attempt 2 of 2); continuing on the current body"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
         }
       ],
       "residual": {
         "writerReleased": true,
         "priorServingViewIntact": true,
-        "forcedContinuationBoundaryApplied": false,
-        "continuationTurnOpened": false,
-        "continuationTurnId": null,
+        "forcedContinuationBoundaryApplied": true,
+        "continuationTurnOpened": true,
+        "continuationTurnId": "t2",
         "markerPersisted": false,
         "markerServed": false,
-        "originalAgenticTurnStillOpen": true,
-        "pendingBoundaryDiscarded": false,
+        "originalAgenticTurnStillOpen": false,
         "nextProviderRequestAllowed": true,
-        "reliefPath": "none",
+        "reliefPath": "core_install_failed",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
-        "coreInstallRetainedPendingHostValidation": false
+        "coreInstallRetainedPendingHostValidation": false,
+        "pendingBoundaryDiscarded": false
       },
       "refused": false,
       "refuseCode": null,
@@ -177,6 +242,9 @@
       "transitionPath": [
         "at_seam",
         "checking_invariants",
+        "evaluating_pressure",
+        "path_continue_turn",
+        "compacting",
         "terminal_continue_current_body"
       ]
     }

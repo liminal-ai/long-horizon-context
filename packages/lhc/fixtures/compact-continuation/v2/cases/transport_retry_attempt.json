@@ -120,6 +120,12 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -154,7 +160,8 @@
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
-        "coreInstallRetainedPendingHostValidation": false
+        "coreInstallRetainedPendingHostValidation": false,
+        "pendingBoundaryDiscarded": false
       },
       "refused": false,
       "refuseCode": null,

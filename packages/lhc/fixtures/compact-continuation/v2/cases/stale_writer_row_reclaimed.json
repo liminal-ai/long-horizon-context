@@ -1,11 +1,11 @@
 {
-  "name": "compact_failed_continue_turn",
+  "name": "stale_writer_row_reclaimed",
   "contractVersion": "2.0.0",
-  "description": "Active non-tool compact failure after forced boundary: bounded retry authorized; boundary durable and repairable; no marker; prior view intact; the session keeps working.",
+  "description": "Host ownership authority confirms no live owner holds this LHC thread: the stale writer row is reclaimed and the compact proceeds to a normal installed continuation.",
   "coverage": [
-    "compact_install_failure",
-    "active_non_tool_continuation",
-    "post_boundary_failure"
+    "native_writer_conflict",
+    "writer_ownership_authority",
+    "active_non_tool_continuation"
   ],
   "inputValidation": "accept",
   "input": {
@@ -46,7 +46,8 @@
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "none"
+      "writerClaim": "native",
+      "writerOwnershipAuthority": "no_live_owner"
     },
     "forcedContinuationBoundary": {
       "applied": true,
@@ -57,7 +58,7 @@
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true,
@@ -77,17 +78,28 @@
     }
   },
   "expected": {
-    "outcome": "retry_compact",
-    "terminalState": "terminal_retry",
+    "outcome": "compact_continue_turn",
+    "terminalState": "terminal_continue_turn",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
       "path_continue_turn",
       "compacting",
-      "terminal_retry"
+      "installing",
+      "terminal_continue_turn"
     ],
     "effects": [
+      {
+        "type": "reclaim_writer",
+        "priorClaim": "native",
+        "hostAuthority": "no_live_owner"
+      },
+      {
+        "type": "warn",
+        "code": "stale_writer_row_reclaimed",
+        "reason": "stale native writer row reclaimed after host ownership authority confirmed no live owner holds this LHC thread"
+      },
       {
         "type": "claim_writer",
         "writer": "lhc"
@@ -107,9 +119,23 @@
         "allowDegradedDerivations": true
       },
       {
-        "type": "warn",
-        "code": "compact_attempt_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "continuationTurnId": "t2",
+        "idempotencyKey": "lhc.compact_continuation:t2",
+        "semantics": {
+          "cause": "context_compacted_task_in_progress",
+          "action": "continue_existing_task",
+          "newUserRequest": false,
+          "waitForUser": false
+        },
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
+      },
+      {
+        "type": "install_serving_view"
       },
       {
         "type": "record_receipt",
@@ -122,8 +148,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "retry_compact",
-      "reasonCode": "compact_retry_authorized",
+      "outcome": "compact_continue_turn",
+      "reasonCode": "context_compact_continue",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -152,23 +178,33 @@
       "degradationReasons": [],
       "warnings": [
         {
-          "code": "compact_attempt_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "stale_writer_row_reclaimed",
+          "reason": "stale native writer row reclaimed after host ownership authority confirmed no live owner holds this LHC thread"
         }
       ],
       "retry": {
         "attemptIndex": 1,
         "budget": 2,
-        "retryAuthorized": true
+        "retryAuthorized": false
       },
       "continuation": {
         "opened": true,
-        "markerServed": false,
+        "markerServed": true,
         "sameAgenticTurnPreserved": false
       },
-      "reliefPath": "core_install_failed",
+      "reliefPath": "none",
       "protectedToolCallIds": [],
       "effects": [
+        {
+          "type": "reclaim_writer",
+          "priorClaim": "native",
+          "hostAuthority": "no_live_owner"
+        },
+        {
+          "type": "warn",
+          "code": "stale_writer_row_reclaimed",
+          "reason": "stale native writer row reclaimed after host ownership authority confirmed no live owner holds this LHC thread"
+        },
         {
           "type": "claim_writer",
           "writer": "lhc"
@@ -188,9 +224,23 @@
           "allowDegradedDerivations": true
         },
         {
-          "type": "warn",
-          "code": "compact_attempt_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "continuationTurnId": "t2",
+          "idempotencyKey": "lhc.compact_continuation:t2",
+          "semantics": {
+            "cause": "context_compacted_task_in_progress",
+            "action": "continue_existing_task",
+            "newUserRequest": false,
+            "waitForUser": false
+          },
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
+        },
+        {
+          "type": "install_serving_view"
         },
         {
           "type": "record_receipt",
@@ -203,21 +253,21 @@
       ],
       "residual": {
         "writerReleased": true,
-        "priorServingViewIntact": true,
+        "priorServingViewIntact": false,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
         "continuationTurnId": "t2",
-        "markerPersisted": false,
-        "markerServed": false,
+        "markerPersisted": true,
+        "markerServed": true,
         "originalAgenticTurnStillOpen": false,
+        "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": true,
-        "reliefPath": "core_install_failed",
+        "reliefPath": "none",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
-        "coreInstallRetainedPendingHostValidation": false,
-        "pendingBoundaryDiscarded": false
+        "coreInstallRetainedPendingHostValidation": false
       },
       "refused": false,
       "refuseCode": null,
@@ -229,7 +279,8 @@
         "evaluating_pressure",
         "path_continue_turn",
         "compacting",
-        "terminal_retry"
+        "installing",
+        "terminal_continue_turn"
       ]
     }
   }

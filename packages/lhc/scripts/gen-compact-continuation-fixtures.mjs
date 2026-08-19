@@ -204,7 +204,7 @@ const cases = [
   {
     name: "incomplete_capture",
     coverage: ["incomplete_capture"],
-    description: "Incomplete capture refuses even below pressure; claimed seam is untrustworthy.",
+    description: "Incomplete capture warns and continues; capture feeds derivation quality, not compact capability.",
     input: makeInput({
       providerUsage: providerBelow,
       invariants: { ...goodInvariants, captureComplete: false },
@@ -213,7 +213,8 @@ const cases = [
   {
     name: "invalid_tool_correlation",
     coverage: ["invalid_tool_correlation"],
-    description: "Pending tool path with unproven correlation refuses.",
+    description:
+      "Pending tool path with unproven correlation declines into the ordinary settled-seam compact; never strands.",
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
@@ -224,9 +225,12 @@ const cases = [
   },
   {
     name: "invalid_provider_identity",
-    coverage: ["invalid_provider_identity"],
-    description: "Unproven provider identity refuses.",
+    coverage: ["invalid_provider_identity", "active_non_tool_continuation"],
+    description:
+      "Unproven provider identity warns and omits signed reasoning — the one feature that needs identity — and the continuation compact still installs.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
+      continuation: { kind: "active_non_tool" },
       invariants: { ...goodInvariants, providerIdentityValid: false },
     }),
   },
@@ -234,7 +238,7 @@ const cases = [
     name: "compact_failed_preserve_tool",
     coverage: ["compact_install_failure", "pending_tool_result_continuation"],
     description:
-      "Tool-preserve compact failure: claim+compact attempted; original turn open; prior view intact; writer released.",
+      "Tool-preserve compact failure: bounded retry authorized; original turn open; prior view intact; writer released; next request proceeds on the current body.",
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
@@ -248,7 +252,7 @@ const cases = [
     name: "compact_failed_continue_turn",
     coverage: ["compact_install_failure", "active_non_tool_continuation", "post_boundary_failure"],
     description:
-      "Active non-tool compact failure after forced boundary: boundary durable; no marker; prior view intact; writer released.",
+      "Active non-tool compact failure after forced boundary: bounded retry authorized; boundary durable and repairable; no marker; prior view intact; the session keeps working.",
     input: makeInput({
       forcedContinuationBoundary: appliedBoundary("t2", true),
       continuation: { kind: "active_non_tool" },
@@ -259,7 +263,7 @@ const cases = [
     name: "install_failed_continue_turn",
     coverage: ["compact_install_failure", "active_non_tool_continuation", "post_boundary_failure"],
     description:
-      "Install failure after forced boundary: no partial install; boundary durable; canonical marker persisted but not served; writer released.",
+      "Install failure after forced boundary: bounded retry authorized; no partial install; boundary durable; marker persisted but not served; next request proceeds on the current body.",
     input: makeInput({
       forcedContinuationBoundary: appliedBoundary("t2", true),
       continuation: { kind: "active_non_tool" },
@@ -270,7 +274,7 @@ const cases = [
     name: "install_failed_preserve_tool",
     coverage: ["compact_install_failure", "pending_tool_result_continuation", "preserve_tool_on_install_failure"],
     description:
-      "Tool-preserve install failure: preserve pair before refuse; no marker; original turn open; prior view intact; writer released.",
+      "Tool-preserve install failure: preserve pair recorded before the failure warning; bounded retry authorized; original turn open; prior view intact.",
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
@@ -282,18 +286,44 @@ const cases = [
   },
   {
     name: "native_writer_conflict",
-    coverage: ["native_writer_conflict"],
-    description: "Native/conflict writer claim refuses silent mid-turn fallback.",
+    coverage: ["native_writer_conflict", "writer_ownership_authority"],
+    description:
+      "Conflict writer row with no host ownership authority supplied: treated as a live owner, so this attempt continues its current request rather than stealing the row.",
     input: makeInput({
       invariants: { ...goodInvariants, writerClaim: "conflict" },
     }),
   },
   {
+    name: "writer_owned_by_live_owner",
+    coverage: ["native_writer_conflict", "writer_ownership_authority"],
+    description:
+      "Host ownership authority reports a live owner for this LHC thread: the loser continues its current request, never steals the row and never strands.",
+    input: makeInput({
+      forcedContinuationBoundary: { applied: false },
+      continuation: { kind: "active_non_tool" },
+      invariants: { ...goodInvariants, writerClaim: "native", writerOwnershipAuthority: "live_owner" },
+    }),
+  },
+  {
+    name: "stale_writer_row_reclaimed",
+    coverage: ["native_writer_conflict", "writer_ownership_authority", "active_non_tool_continuation"],
+    description:
+      "Host ownership authority confirms no live owner holds this LHC thread: the stale writer row is reclaimed and the compact proceeds to a normal installed continuation.",
+    input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
+      continuation: { kind: "active_non_tool" },
+      invariants: { ...goodInvariants, writerClaim: "native", writerOwnershipAuthority: "no_live_owner" },
+    }),
+  },
+  {
     name: "input_epoch_changed",
-    coverage: ["stale_epoch_or_transport_retry"],
-    description: "Input epoch change between decision and apply skips the seam safely.",
+    coverage: ["input_epoch_is_diagnostic_only", "active_non_tool_continuation"],
+    description:
+      "Input epoch drift between decision and apply is diagnostic only: settled history is not invalidated by input that arrived later in the turn, so the compact installs normally.",
     input: makeInput({
       seam: { ...goodSeam, inputEpochAtDecision: 1, inputEpochAtApply: 2 },
+      forcedContinuationBoundary: appliedBoundary("t2", true),
+      continuation: { kind: "active_non_tool" },
     }),
   },
   {
@@ -435,7 +465,7 @@ const cases = [
     name: "pending_boundary_illegal_kind_vs_native",
     coverage: ["invalid_pending_boundary_continuation", "forced_boundary_legality_precedence"],
     description:
-      "forced_boundary_state_legality precedes writer_claim: applied+kind none refuses invalid_pending even when native conflict also present.",
+      "forced_boundary_state_legality precedes writer_claim: applied+kind none discards the boundary and starts fresh, even when a native writer row is also present (the discard is recorded before the writer stage runs).",
     input: makeInput({
       continuation: { kind: "none" },
       forcedContinuationBoundary: appliedBoundary("t2", false),
@@ -445,7 +475,8 @@ const cases = [
   {
     name: "pending_boundary_illegal_kind_none",
     coverage: ["invalid_pending_boundary_continuation"],
-    description: "forcedContinuationBoundary with kind none is invalid continuation state.",
+    description:
+      "forcedContinuationBoundary with continuation kind none is unusable: discard the boundary, warn, and start the seam fresh.",
     input: makeInput({
       continuation: { kind: "none" },
       forcedContinuationBoundary: appliedBoundary("t2", false),
@@ -485,14 +516,15 @@ const cases = [
       "forced_boundary_legality_precedence",
     ],
     description:
-      "forcedThisSeam true + markerAlreadyPersisted true is illegal v1: forced_boundary_state_legality refuses invalid_pending without trusting the marker claim (residual markerPersisted/markerServed false; applied boundary/turn facts preserved). Input validation also rejects; fixture pins total-evaluator residual for direct callers.",
-    // Intentionally input-invalid (validateForcedBoundary rejects). decide still
-    // refuses at forced_boundary_state_legality for typed/direct callers.
+      "forcedThisSeam true + markerAlreadyPersisted true is contradictory: the real boundary is kept (discarding it would orphan an open continuation turn), the marker claim is not trusted, and the seam proceeds with a warning. Input validation still rejects the pair; the fixture pins total-evaluator behavior for direct callers.",
+    // Intentionally input-invalid (validateForcedBoundary rejects). decide keeps
+    // the boundary and warns instead of stopping.
     input: makeInput({
       continuation: { kind: "active_non_tool" },
       forcedContinuationBoundary: appliedBoundary("t2", true, true),
-      // Native conflict also present: legality must still win (same stage precedence).
-      invariants: { ...goodInvariants, writerClaim: "native" },
+      // Native row also present with host authority confirming no live owner:
+      // the stale row is reclaimed and the seam still compacts.
+      invariants: { ...goodInvariants, writerClaim: "native", writerOwnershipAuthority: "no_live_owner" },
     }),
   },
   {
@@ -517,9 +549,9 @@ const cases = [
   },
   {
     name: "active_non_tool_missing_forced_boundary",
-    coverage: ["invalid_pending_boundary_continuation", "missing_forced_boundary_above_trigger"],
+    coverage: ["continuation_boundary_unavailable", "missing_forced_boundary_above_trigger"],
     description:
-      "active_non_tool above trigger with forcedContinuationBoundary.applied false refuses invalid_pending_boundary_continuation (runtime must force first).",
+      "active_non_tool above trigger with forcedContinuationBoundary.applied false: the oracle never invents a continuation turn id, so it declines into the ordinary settled-seam compact instead of stopping.",
     input: makeInput({
       continuation: { kind: "active_non_tool" },
       forcedContinuationBoundary: { applied: false },
@@ -527,10 +559,29 @@ const cases = [
   },
   {
     name: "open_turn_invariant_broken",
-    coverage: ["open_turn_invariant_broken", "record_request_health_refuse"],
-    description: "singleOpenTurn false at a settled seam refuses open_turn_invariant_broken.",
+    coverage: ["open_turn_invariant_broken", "record_request_health_warns"],
+    description:
+      "singleOpenTurn false at a settled seam warns and the continuation compact still installs; turn-record validation is core LHC's own job, not a compact precondition.",
     input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
+      continuation: { kind: "active_non_tool" },
       invariants: { ...goodInvariants, singleOpenTurn: false },
+    }),
+  },
+  {
+    name: "record_health_warnings_still_compact",
+    coverage: ["record_request_health_warns", "active_non_tool_continuation", "incomplete_capture"],
+    description:
+      "Incomplete capture, unproven provider identity and an unverified open-turn invariant together: three warnings, signed reasoning omitted, and the continuation compact still installs.",
+    input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
+      continuation: { kind: "active_non_tool" },
+      invariants: {
+        captureComplete: false,
+        providerIdentityValid: false,
+        singleOpenTurn: false,
+        writerClaim: "none",
+      },
     }),
   },
   {
@@ -546,11 +597,26 @@ const cases = [
   },
   {
     name: "writer_claim_lhc_incomplete_capture",
-    coverage: ["writer_claim_lhc_idempotent", "settled_seam_lhc_claim_early_refuse"],
+    coverage: ["writer_claim_lhc_idempotent", "settled_seam_lhc_claim_decline"],
     description:
-      "writerClaim lhc at settled seam with incomplete capture: claim_writer then refuse then release_writer; residual writerReleased true.",
+      "writerClaim lhc at a settled seam with incomplete capture below trigger: warn, continue normally, and keep the claim/release pair truthful (residual writerReleased true).",
     input: makeInput({
+      providerUsage: providerBelow,
       invariants: { ...goodInvariants, writerClaim: "lhc", captureComplete: false },
+    }),
+  },
+  {
+    name: "settled_seam_lhc_claim_decline_to_ordinary",
+    coverage: ["writer_claim_lhc_idempotent", "settled_seam_lhc_claim_decline", "invalid_tool_correlation"],
+    description:
+      "writerClaim lhc at a settled seam declining into ordinary compact: claim_writer then warn then record_receipt then release_writer; residual writerReleased true and the next request is authorized.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-bad"],
+        correlationValid: false,
+      },
+      invariants: { ...goodInvariants, writerClaim: "lhc" },
     }),
   },
   // ── LIM-67 v2.0.0 ────────────────────────────────────────────────────────
@@ -610,9 +676,10 @@ const cases = [
     }),
   },
   {
-    name: "unsafe_runway_refuse",
+    name: "unsafe_runway_installs_best_relief",
     coverage: ["unsafe_runway", "maximal_prune_unsafe", "projected_pressure_formula"],
-    description: "Maximal eligible pruning still leaves projected pressure unsafe — refuse without install.",
+    description:
+      "Maximal eligible pruning still leaves projected pressure unsafe: warn and install the best available relief. Oversized outgoing content is ours to truncate, and the host's exact body check is downstream.",
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
@@ -622,8 +689,8 @@ const cases = [
       compactMaterial: {
         compactStructurallyValid: true,
         canProduceValidProviderRequest: true,
-        installSucceeds: false,
-        usefulReduction: false,
+        installSucceeds: true,
+        usefulReduction: true,
         projectedPressureTokens: 150_000,
         renderedSavingsTokens: 5_000,
         renderedSavingsSource: "lhc_rendered_history_estimate",
@@ -661,7 +728,8 @@ const cases = [
   {
     name: "protected_ids_empty_reject",
     coverage: ["invalid_protected_pairs"],
-    description: "Empty protectedToolCallIds is input-invalid / fails closed.",
+    description:
+      "Empty protectedToolCallIds is input-invalid; the closed-shape contract rejects it before the oracle runs.",
     inputValidation: "reject",
     input: makeInput({
       continuation: {
@@ -695,16 +763,28 @@ const cases = [
   {
     name: "unsupported_contract_version_1",
     coverage: ["unsupported_contract_version"],
-    description: "Contract 1.0.0 inputs fail closed under 2.0.0 oracle.",
+    description:
+      "Contract 1.0.0 input under the 2.0.0 oracle degrades by feature omission: continuation state is treated as absent in its entirety (pending boundary discarded, no partial parse, no guessing) and the host's ordinary compact runs on canonical turns.",
     input: makeInput({
       contractVersion: "1.0.0",
       continuation: { kind: "active_non_tool" },
     }),
   },
   {
+    name: "unsupported_contract_version_ignores_pending_boundary",
+    coverage: ["unsupported_contract_version"],
+    description:
+      "An unknown-version input carrying an applied pending boundary is never partially parsed: the boundary is discarded without being interpreted (continuationTurnId null on the discard effect) and the receipt reports no continuation state at all.",
+    input: makeInput({
+      contractVersion: "3.7.1",
+      continuation: { kind: "active_non_tool" },
+      forcedContinuationBoundary: appliedBoundary("t9", false, true),
+    }),
+  },
+  {
     name: "lower_target_miss_safe_runway",
     coverage: ["lower_target_missed", "safe_runway_not_lower_target"],
-    description: "Lower target miss is not a refuse when projected pressure is under safe runway.",
+    description: "Lower target miss is not a failure when projected pressure is under safe runway.",
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
@@ -727,7 +807,8 @@ const cases = [
   {
     name: "host_validation_failed_after_core_install",
     coverage: ["host_validation_failed", "protected_escalation"],
-    description: "Host validation failure after successful core install refuses without rolling back core install.",
+    description:
+      "Host validation failure after successful core install degrades: the core install stands, the warning is loud, and the next provider request proceeds on the best available body.",
     input: makeInput({
       continuation: {
         kind: "pending_correlated_tool_result",
@@ -750,6 +831,90 @@ const cases = [
         visibilityBoundaryAfter: 50,
         compactPointAtInstall: 8,
         hostValidationStatus: "failed",
+      },
+    }),
+  },
+  // ── CX-S5: bounded retry, best-available body, decline into ordinary ─────
+  {
+    name: "compact_retry_budget_exhausted_continue_turn",
+    coverage: ["bounded_retry", "compact_install_failure", "post_boundary_failure"],
+    description:
+      "Second compact attempt fails with a budget of two: retry is no longer authorized, so the session continues on its current body. The boundary stays durable and nothing strands.",
+    input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
+      continuation: { kind: "active_non_tool" },
+      policy: { ...basePolicy, compactRetryBudget: 2 },
+      compactMaterial: { ...goodMaterial, compactStructurallyValid: false, compactAttemptIndex: 2 },
+    }),
+  },
+  {
+    name: "install_retry_budget_exhausted_preserve_tool",
+    coverage: ["bounded_retry", "compact_install_failure", "preserve_tool_on_install_failure"],
+    description:
+      "Third install attempt fails with a budget of three on the preserve-tool path: retry budget spent, original turn open, prior view intact, next request proceeds on the current body.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-42"],
+        correlationValid: true,
+      },
+      policy: { ...basePolicy, compactRetryBudget: 3 },
+      compactMaterial: { ...goodMaterial, installSucceeds: false, compactAttemptIndex: 3 },
+    }),
+  },
+  {
+    name: "compact_retry_authorized_within_budget",
+    coverage: ["bounded_retry", "compact_install_failure"],
+    description:
+      "Second install attempt fails with a budget of four: retry is still authorized for the next eligible seam while the session continues on its current body.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-42"],
+        correlationValid: true,
+      },
+      policy: { ...basePolicy, compactRetryBudget: 4 },
+      compactMaterial: { ...goodMaterial, installSucceeds: false, compactAttemptIndex: 2 },
+    }),
+  },
+  {
+    name: "no_valid_provider_request_sends_best_body",
+    coverage: ["no_valid_provider_request", "pending_tool_result_continuation"],
+    description:
+      "No structurally valid provider request can be proven after the full ladder: warn and install the best available body. The provider is the final authority on what it accepts; a provider rejection is recoverable where a stranded session is not.",
+    input: makeInput({
+      continuation: {
+        kind: "pending_correlated_tool_result",
+        protectedToolCallIds: ["call-42"],
+        correlationValid: true,
+      },
+      compactMaterial: { ...goodMaterial, canProduceValidProviderRequest: false },
+    }),
+  },
+  {
+    name: "no_valid_provider_request_continue_turn",
+    coverage: ["no_valid_provider_request", "active_non_tool_continuation"],
+    description:
+      "Unprovable provider request on the continue-turn path still forces the boundary, persists the marker and installs the best available body with a loud warning.",
+    input: makeInput({
+      forcedContinuationBoundary: appliedBoundary("t2", true),
+      continuation: { kind: "active_non_tool" },
+      compactMaterial: { ...goodMaterial, canProduceValidProviderRequest: false },
+    }),
+  },
+  {
+    name: "pending_boundary_empty_turn_id_discarded",
+    coverage: ["invalid_pending_boundary_continuation"],
+    description:
+      "An applied boundary with an empty continuationTurnId is unusable: discard it (turn id reported as null), warn, and start the seam fresh.",
+    inputValidation: "reject",
+    input: makeInput({
+      continuation: { kind: "active_non_tool" },
+      forcedContinuationBoundary: {
+        applied: true,
+        continuationTurnId: "",
+        forcedThisSeam: false,
+        markerAlreadyPersisted: false,
       },
     }),
   },
@@ -804,6 +969,8 @@ for (const c of cases) {
         lowerTarget: { domain: "lhc_rendered_history", tokens: 0, met: null, isSuccessGate: false },
         fidelity: "full",
         degradationReasons: [],
+        warnings: [],
+        retry: { attemptIndex: 1, budget: 2, retryAuthorized: false },
         continuation: { opened: false, markerServed: false, sameAgenticTurnPreserved: true },
         reliefPath: "none",
         protectedToolCallIds: [],
@@ -817,6 +984,7 @@ for (const c of cases) {
           markerPersisted: false,
           markerServed: false,
           originalAgenticTurnStillOpen: true,
+          pendingBoundaryDiscarded: false,
           nextProviderRequestAllowed: false,
           reliefPath: "none",
           protectedToolCallIds: [],
@@ -856,6 +1024,14 @@ for (const c of cases) {
 }
 
 const requiredCoverage = [
+  // CX-S5: every former refusal proves continuation instead
+  "input_epoch_is_diagnostic_only",
+  "record_request_health_warns",
+  "writer_ownership_authority",
+  "continuation_boundary_unavailable",
+  "bounded_retry",
+  "no_valid_provider_request",
+  "settled_seam_lhc_claim_decline",
   "no_authoritative_provider_usage",
   "below_trigger",
   "normal_completion",
@@ -881,9 +1057,7 @@ const requiredCoverage = [
   "pending_boundary_residual_on_skip",
   "missing_forced_boundary_above_trigger",
   "open_turn_invariant_broken",
-  "record_request_health_refuse",
   "marker_residual_state",
-  "settled_seam_lhc_claim_early_refuse",
   "preserve_tool_on_install_failure",
   "preserve_sufficient",
   "no_reduction_escalation",

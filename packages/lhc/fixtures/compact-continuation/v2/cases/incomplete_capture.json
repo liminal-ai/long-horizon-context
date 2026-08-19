@@ -1,7 +1,7 @@
 {
   "name": "incomplete_capture",
   "contractVersion": "2.0.0",
-  "description": "Incomplete capture refuses even below pressure; claimed seam is untrustworthy.",
+  "description": "Incomplete capture warns and continues; capture feeds derivation quality, not compact capability.",
   "coverage": [
     "incomplete_capture"
   ],
@@ -72,18 +72,20 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "continue_normal",
+    "terminalState": "terminal_continue_normal",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_refuse"
+      "evaluating_pressure",
+      "below_trigger",
+      "terminal_continue_normal"
     ],
     "effects": [
       {
-        "type": "refuse",
-        "code": "incomplete_capture",
-        "reason": "capture of the settled model turn is incomplete; canonical record is not trustworthy"
+        "type": "warn",
+        "code": "capture_incomplete",
+        "reason": "capture of the settled model turn is incomplete; compacting on available thread data (capture feeds derivation quality, not compact capability)"
       },
       {
         "type": "record_receipt",
@@ -93,8 +95,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "incomplete_capture",
+      "outcome": "continue_normal",
+      "reasonCode": "below_trigger",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 75000,
@@ -121,6 +123,17 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "capture_incomplete",
+          "reason": "capture of the settled model turn is incomplete; compacting on available thread data (capture feeds derivation quality, not compact capability)"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -130,9 +143,9 @@
       "protectedToolCallIds": [],
       "effects": [
         {
-          "type": "refuse",
-          "code": "incomplete_capture",
-          "reason": "capture of the settled model turn is incomplete; canonical record is not trustworthy"
+          "type": "warn",
+          "code": "capture_incomplete",
+          "reason": "capture of the settled model turn is incomplete; compacting on available thread data (capture feeds derivation quality, not compact capability)"
         },
         {
           "type": "record_receipt",
@@ -149,7 +162,8 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
-        "nextProviderRequestAllowed": false,
+        "pendingBoundaryDiscarded": false,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "none",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
@@ -157,14 +171,16 @@
         "hostValidationStatus": "not_required",
         "coreInstallRetainedPendingHostValidation": false
       },
-      "refused": true,
-      "refuseCode": "incomplete_capture",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_refuse"
+        "evaluating_pressure",
+        "below_trigger",
+        "terminal_continue_normal"
       ]
     }
   }

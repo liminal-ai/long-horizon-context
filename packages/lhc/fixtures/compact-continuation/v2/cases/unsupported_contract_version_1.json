@@ -1,7 +1,7 @@
 {
   "name": "unsupported_contract_version_1",
   "contractVersion": "2.0.0",
-  "description": "Contract 1.0.0 inputs fail closed under 2.0.0 oracle.",
+  "description": "Contract 1.0.0 input under the 2.0.0 oracle degrades by feature omission: continuation state is treated as absent in its entirety (pending boundary discarded, no partial parse, no guessing) and the host's ordinary compact runs on canonical turns.",
   "coverage": [
     "unsupported_contract_version"
   ],
@@ -72,17 +72,22 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "decline_to_ordinary_compact",
+    "terminalState": "terminal_decline_ordinary",
     "transitionPath": [
       "idle",
-      "terminal_refuse"
+      "terminal_decline_ordinary"
     ],
     "effects": [
       {
-        "type": "refuse",
-        "code": "unsupported_contract_version",
-        "reason": "unsupported compact-continuation contract version 1.0.0; oracle is 2.0.0"
+        "type": "discard_pending_boundary",
+        "continuationTurnId": null,
+        "reason": "unsupported compact-continuation contract version 1.0.0; oracle is 2.0.0 — continuation state omitted in its entirety, ordinary compact runs on canonical turns"
+      },
+      {
+        "type": "warn",
+        "code": "unsupported_contract_version_omitted",
+        "reason": "unsupported compact-continuation contract version 1.0.0; oracle is 2.0.0 — continuation state omitted in its entirety, ordinary compact runs on canonical turns"
       },
       {
         "type": "record_receipt",
@@ -92,8 +97,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "unsupported_contract_version:1.0.0",
+      "outcome": "decline_to_ordinary_compact",
+      "reasonCode": "unsupported_contract_version_omitted:1.0.0",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": null,
@@ -120,6 +125,17 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "unsupported_contract_version_omitted",
+          "reason": "unsupported compact-continuation contract version 1.0.0; oracle is 2.0.0 — continuation state omitted in its entirety, ordinary compact runs on canonical turns"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -129,9 +145,14 @@
       "protectedToolCallIds": [],
       "effects": [
         {
-          "type": "refuse",
-          "code": "unsupported_contract_version",
-          "reason": "unsupported compact-continuation contract version 1.0.0; oracle is 2.0.0"
+          "type": "discard_pending_boundary",
+          "continuationTurnId": null,
+          "reason": "unsupported compact-continuation contract version 1.0.0; oracle is 2.0.0 — continuation state omitted in its entirety, ordinary compact runs on canonical turns"
+        },
+        {
+          "type": "warn",
+          "code": "unsupported_contract_version_omitted",
+          "reason": "unsupported compact-continuation contract version 1.0.0; oracle is 2.0.0 — continuation state omitted in its entirety, ordinary compact runs on canonical turns"
         },
         {
           "type": "record_receipt",
@@ -148,7 +169,8 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
-        "nextProviderRequestAllowed": false,
+        "pendingBoundaryDiscarded": true,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "none",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
@@ -156,13 +178,13 @@
         "hostValidationStatus": "not_required",
         "coreInstallRetainedPendingHostValidation": false
       },
-      "refused": true,
-      "refuseCode": "unsupported_contract_version",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "idle",
-        "terminal_refuse"
+        "terminal_decline_ordinary"
       ]
     }
   }

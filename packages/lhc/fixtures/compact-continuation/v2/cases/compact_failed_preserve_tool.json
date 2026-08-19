@@ -1,7 +1,7 @@
 {
   "name": "compact_failed_preserve_tool",
   "contractVersion": "2.0.0",
-  "description": "Tool-preserve compact failure: claim+compact attempted; original turn open; prior view intact; writer released.",
+  "description": "Tool-preserve compact failure: bounded retry authorized; original turn open; prior view intact; writer released; next request proceeds on the current body.",
   "coverage": [
     "compact_install_failure",
     "pending_tool_result_continuation"
@@ -77,15 +77,15 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "retry_compact",
+    "terminalState": "terminal_retry",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
       "path_preserve_tool",
       "compacting",
-      "terminal_refuse"
+      "terminal_retry"
     ],
     "effects": [
       {
@@ -99,8 +99,8 @@
         "allowDegradedDerivations": true
       },
       {
-        "type": "refuse",
-        "code": "compact_failed",
+        "type": "warn",
+        "code": "compact_attempt_failed",
         "reason": "compact assembly could not produce a structurally valid view"
       },
       {
@@ -114,8 +114,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "compact_failed",
+      "outcome": "retry_compact",
+      "reasonCode": "compact_retry_authorized",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
@@ -142,6 +142,17 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "compact_attempt_failed",
+          "reason": "compact assembly could not produce a structurally valid view"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": true
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -163,8 +174,8 @@
           "allowDegradedDerivations": true
         },
         {
-          "type": "refuse",
-          "code": "compact_failed",
+          "type": "warn",
+          "code": "compact_attempt_failed",
           "reason": "compact assembly could not produce a structurally valid view"
         },
         {
@@ -185,7 +196,7 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
-        "nextProviderRequestAllowed": false,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "core_install_failed",
         "protectedToolCallIds": [
           "call-42"
@@ -193,10 +204,11 @@
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
-        "coreInstallRetainedPendingHostValidation": false
+        "coreInstallRetainedPendingHostValidation": false,
+        "pendingBoundaryDiscarded": false
       },
-      "refused": true,
-      "refuseCode": "compact_failed",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
@@ -205,7 +217,7 @@
         "evaluating_pressure",
         "path_preserve_tool",
         "compacting",
-        "terminal_refuse"
+        "terminal_retry"
       ]
     }
   }

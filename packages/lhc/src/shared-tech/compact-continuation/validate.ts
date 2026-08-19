@@ -15,6 +15,7 @@ import {
   COMPACT_CONTINUATION_RELIEF_PATHS,
   COMPACT_CONTINUATION_SKIP_CODES,
   COMPACT_CONTINUATION_STATES,
+  COMPACT_CONTINUATION_WARNING_CODES,
   COMPACT_CONTINUATION_WRITER_CLAIMS,
   CONTEXT_COMPACT_CONTINUE_REASON,
   type CompactContinuationDecision,
@@ -89,9 +90,16 @@ const EFFECT_TYPES = new Set([
   "record_receipt",
   "degrade_fidelity",
   "skip_seam",
+  "warn",
+  "omit_signed_reasoning",
+  "reclaim_writer",
+  "discard_pending_boundary",
+  // Historical only — the refuse set is empty in this contract version (CX-S5).
   "refuse",
 ]);
 const RELIEF_SET = new Set<string>(COMPACT_CONTINUATION_RELIEF_PATHS);
+const WARNING_SET = new Set<string>(COMPACT_CONTINUATION_WARNING_CODES);
+const OWNERSHIP_AUTHORITY_SET = new Set(["no_live_owner", "live_owner"]);
 const HOST_VALIDATION_SET = new Set(["not_required", "awaiting", "ok", "failed"]);
 
 function requireBool(obj: Record<string, unknown>, key: string, path: string, issues: ValidationIssue[]): void {
@@ -216,6 +224,7 @@ function validatePolicy(raw: unknown, issues: ValidationIssue[]): void {
       "hostCapability",
       "safeRunwayThresholdTokens",
       "safeRunwayThresholdSource",
+      "compactRetryBudget",
     ],
     "policy",
     issues,
@@ -235,6 +244,12 @@ function validatePolicy(raw: unknown, issues: ValidationIssue[]): void {
   if (raw["safeRunwayThresholdSource"] !== undefined) {
     if (typeof raw["safeRunwayThresholdSource"] !== "string" || raw["safeRunwayThresholdSource"].length === 0) {
       issues.push(issue("policy.safeRunwayThresholdSource", "must be a non-empty string when present"));
+    }
+  }
+  if (raw["compactRetryBudget"] !== undefined) {
+    const b = raw["compactRetryBudget"];
+    if (typeof b !== "number" || !Number.isSafeInteger(b) || b < 1) {
+      issues.push(issue("policy.compactRetryBudget", "must be a safe integer >= 1 when present"));
     }
   }
 }
@@ -298,7 +313,7 @@ function validateInvariants(raw: unknown, issues: ValidationIssue[]): void {
   }
   rejectUnknownKeys(
     raw,
-    ["captureComplete", "providerIdentityValid", "singleOpenTurn", "writerClaim"],
+    ["captureComplete", "providerIdentityValid", "singleOpenTurn", "writerClaim", "writerOwnershipAuthority"],
     "invariants",
     issues,
   );
@@ -307,6 +322,12 @@ function validateInvariants(raw: unknown, issues: ValidationIssue[]): void {
   }
   if (typeof raw["writerClaim"] !== "string" || !WRITER_SET.has(raw["writerClaim"])) {
     issues.push(issue("invariants.writerClaim", "must be none | lhc | native | conflict"));
+  }
+  const authority = raw["writerOwnershipAuthority"];
+  if (authority !== undefined && authority !== null) {
+    if (typeof authority !== "string" || !OWNERSHIP_AUTHORITY_SET.has(authority)) {
+      issues.push(issue("invariants.writerOwnershipAuthority", "must be no_live_owner | live_owner | null"));
+    }
   }
 }
 
@@ -379,6 +400,7 @@ function validateMaterial(raw: unknown, issues: ValidationIssue[]): void {
       "visibilityBoundaryAfter",
       "compactPointAtInstall",
       "maximalPruneInsufficient",
+      "compactAttemptIndex",
       "hostValidationStatus",
     ],
     "compactMaterial",
@@ -429,6 +451,12 @@ function validateMaterial(raw: unknown, issues: ValidationIssue[]): void {
   }
   if (typeof raw["hostValidationStatus"] !== "string" || !HOST_VALIDATION_SET.has(raw["hostValidationStatus"])) {
     issues.push(issue("compactMaterial.hostValidationStatus", "must be not_required|awaiting|ok|failed"));
+  }
+  if (raw["compactAttemptIndex"] !== undefined) {
+    const idx = raw["compactAttemptIndex"];
+    if (typeof idx !== "number" || !Number.isSafeInteger(idx) || idx < 1) {
+      issues.push(issue("compactMaterial.compactAttemptIndex", "must be a safe integer >= 1 when present"));
+    }
   }
 }
 
@@ -608,6 +636,35 @@ function validateEffect(effect: unknown, path: string, issues: ValidationIssue[]
       issues.push(issue(`${path}.code`, `unknown skip code ${String(effect["code"])}`));
     }
   }
+  if (type === "warn") {
+    if (typeof effect["code"] !== "string" || !WARNING_SET.has(effect["code"])) {
+      issues.push(issue(`${path}.code`, `unknown warning code ${String(effect["code"])}`));
+    }
+    if (typeof effect["reason"] !== "string" || effect["reason"].length === 0) {
+      issues.push(issue(`${path}.reason`, "warn requires a non-empty reason"));
+    }
+  }
+  if (type === "omit_signed_reasoning") {
+    if (typeof effect["reason"] !== "string" || effect["reason"].length === 0) {
+      issues.push(issue(`${path}.reason`, "omit_signed_reasoning requires a non-empty reason"));
+    }
+  }
+  if (type === "reclaim_writer") {
+    if (effect["priorClaim"] !== "native" && effect["priorClaim"] !== "conflict") {
+      issues.push(issue(`${path}.priorClaim`, 'must be "native" or "conflict"'));
+    }
+    if (effect["hostAuthority"] !== "no_live_owner") {
+      issues.push(issue(`${path}.hostAuthority`, "reclaim is legal only when host authority confirmed no_live_owner"));
+    }
+  }
+  if (type === "discard_pending_boundary") {
+    if (effect["continuationTurnId"] !== null && typeof effect["continuationTurnId"] !== "string") {
+      issues.push(issue(`${path}.continuationTurnId`, "must be a string or null"));
+    }
+    if (typeof effect["reason"] !== "string" || effect["reason"].length === 0) {
+      issues.push(issue(`${path}.reason`, "discard_pending_boundary requires a non-empty reason"));
+    }
+  }
   if (type === "refuse") {
     if (typeof effect["code"] !== "string" || !REFUSE_SET.has(effect["code"])) {
       issues.push(issue(`${path}.code`, `unknown refuse code ${String(effect["code"])}`));
@@ -629,6 +686,7 @@ function validateResidual(raw: unknown, issues: ValidationIssue[]): void {
     "markerServed",
     "originalAgenticTurnStillOpen",
     "nextProviderRequestAllowed",
+    "pendingBoundaryDiscarded",
     "coreInstallRetainedPendingHostValidation",
   ] as const) {
     requireBool(raw, k, "residual", issues);
@@ -732,6 +790,82 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
 
   validateResidual(raw["residual"], issues);
 
+  // Warnings mirror the ordered `warn` effects exactly (same codes, same order).
+  if (!Array.isArray(raw["warnings"])) {
+    issues.push(issue("warnings", "must be an array"));
+  } else {
+    for (const [i, w] of raw["warnings"].entries()) {
+      if (!isObject(w)) {
+        issues.push(issue(`warnings[${i}]`, "must be an object"));
+        continue;
+      }
+      if (typeof w["code"] !== "string" || !WARNING_SET.has(w["code"])) {
+        issues.push(issue(`warnings[${i}].code`, `unknown warning code ${String(w["code"])}`));
+      }
+      if (typeof w["reason"] !== "string" || w["reason"].length === 0) {
+        issues.push(issue(`warnings[${i}].reason`, "required non-empty string"));
+      }
+    }
+    if (Array.isArray(raw["effects"])) {
+      const warnEffects = raw["effects"].filter((e) => isObject(e) && e["type"] === "warn");
+      if (warnEffects.length !== raw["warnings"].length) {
+        issues.push(issue("warnings", "must mirror the warn effects one-for-one"));
+      } else {
+        for (const [i, e] of warnEffects.entries()) {
+          const w = raw["warnings"][i];
+          if (isObject(e) && isObject(w) && (e["code"] !== w["code"] || e["reason"] !== w["reason"])) {
+            issues.push(issue(`warnings[${i}]`, "must match the corresponding warn effect"));
+          }
+        }
+      }
+    }
+  }
+
+  if (!isObject(raw["retry"])) {
+    issues.push(issue("retry", "required object"));
+  } else {
+    const r = raw["retry"];
+    if (typeof r["attemptIndex"] !== "number" || !Number.isSafeInteger(r["attemptIndex"]) || r["attemptIndex"] < 1) {
+      issues.push(issue("retry.attemptIndex", "must be a safe integer >= 1"));
+    }
+    if (typeof r["budget"] !== "number" || !Number.isSafeInteger(r["budget"]) || r["budget"] < 1) {
+      issues.push(issue("retry.budget", "must be a safe integer >= 1"));
+    }
+    if (!isBool(r["retryAuthorized"])) {
+      issues.push(issue("retry.retryAuthorized", "must be a boolean"));
+    }
+    if (
+      r["retryAuthorized"] === true &&
+      typeof r["attemptIndex"] === "number" &&
+      typeof r["budget"] === "number" &&
+      r["attemptIndex"] >= r["budget"]
+    ) {
+      issues.push(issue("retry.retryAuthorized", "cannot authorize retry beyond the bounded budget"));
+    }
+    if (r["retryAuthorized"] === true && raw["outcome"] !== "retry_compact") {
+      issues.push(issue("retry.retryAuthorized", "authorized retry requires outcome retry_compact"));
+    }
+    if (raw["outcome"] === "retry_compact" && r["retryAuthorized"] !== true) {
+      issues.push(issue("retry.retryAuthorized", "retry_compact requires an authorized retry"));
+    }
+  }
+
+  // Never-strand rule: no non-skip outcome may withhold the next provider
+  // request except while a host validation acknowledgment is still awaited.
+  if (isObject(raw["residual"]) && raw["skipped"] !== true) {
+    if (
+      raw["residual"]["nextProviderRequestAllowed"] === false &&
+      raw["residual"]["hostValidationStatus"] !== "awaiting"
+    ) {
+      issues.push(
+        issue(
+          "residual.nextProviderRequestAllowed",
+          "the compact path never strands: only an awaited host validation may withhold the next provider request",
+        ),
+      );
+    }
+  }
+
   if (!isBool(raw["refused"])) {
     issues.push(issue("refused", "must be a boolean"));
   }
@@ -799,7 +933,14 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
     }
 
     // Outcomes that imply a forced boundary (including degraded + post-boundary refuse).
-    const boundaryOutcomes = new Set(["compact_continue_turn", "degraded_compact", "no_reduction", "refuse"]);
+    const boundaryOutcomes = new Set([
+      "compact_continue_turn",
+      "degraded_compact",
+      "no_reduction",
+      "retry_compact",
+      "continue_current_body",
+      "refuse",
+    ]);
     if (isObject(raw["residual"]) && raw["residual"]["forcedContinuationBoundaryApplied"] === true) {
       if (raw["turnEndReason"] !== CONTEXT_COMPACT_CONTINUE_REASON) {
         issues.push(
@@ -873,25 +1014,30 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
         ),
       );
     }
+    const attemptFailedOutcome =
+      raw["outcome"] === "refuse" || raw["outcome"] === "retry_compact" || raw["outcome"] === "continue_current_body";
     if (
       !hasInstall &&
       isObject(raw["residual"]) &&
       raw["residual"]["priorServingViewIntact"] === false &&
-      raw["outcome"] === "refuse"
+      attemptFailedOutcome
     ) {
       issues.push(
         issue("residual.priorServingViewIntact", "install failure must not imply a partially installed view"),
       );
     }
-    if (raw["refuseCode"] === "install_failed") {
+    // A failed install never claims a served marker or a successful install,
+    // whatever the outcome vocabulary of the receipt that recorded it.
+    const installFailed =
+      raw["refuseCode"] === "install_failed" ||
+      (Array.isArray(raw["warnings"]) &&
+        raw["warnings"].some((w) => isObject(w) && w["code"] === "install_attempt_failed"));
+    if (installFailed) {
       if (hasInstall) {
-        issues.push(issue("effects", "install_failed must not include successful install_serving_view"));
-      }
-      if (isObject(raw["residual"]) && raw["residual"]["nextProviderRequestAllowed"] !== false) {
-        issues.push(issue("residual.nextProviderRequestAllowed", "install_failed forbids next request"));
+        issues.push(issue("effects", "a failed install must not include successful install_serving_view"));
       }
       if (isObject(raw["residual"]) && raw["residual"]["markerServed"] === true) {
-        issues.push(issue("residual.markerServed", "install_failed means marker was not served"));
+        issues.push(issue("residual.markerServed", "a failed install means the marker was not served"));
       }
     }
     if (hasMarker && isObject(raw["residual"]) && raw["residual"]["markerPersisted"] !== true) {

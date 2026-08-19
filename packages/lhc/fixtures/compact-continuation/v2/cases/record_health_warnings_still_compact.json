@@ -1,11 +1,11 @@
 {
-  "name": "compact_failed_continue_turn",
+  "name": "record_health_warnings_still_compact",
   "contractVersion": "2.0.0",
-  "description": "Active non-tool compact failure after forced boundary: bounded retry authorized; boundary durable and repairable; no marker; prior view intact; the session keeps working.",
+  "description": "Incomplete capture, unproven provider identity and an unverified open-turn invariant together: three warnings, signed reasoning omitted, and the continuation compact still installs.",
   "coverage": [
-    "compact_install_failure",
+    "record_request_health_warns",
     "active_non_tool_continuation",
-    "post_boundary_failure"
+    "incomplete_capture"
   ],
   "inputValidation": "accept",
   "input": {
@@ -43,9 +43,9 @@
       "kind": "active_non_tool"
     },
     "invariants": {
-      "captureComplete": true,
-      "providerIdentityValid": true,
-      "singleOpenTurn": true,
+      "captureComplete": false,
+      "providerIdentityValid": false,
+      "singleOpenTurn": false,
       "writerClaim": "none"
     },
     "forcedContinuationBoundary": {
@@ -57,7 +57,7 @@
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
       "lowerTargetMet": true,
-      "compactStructurallyValid": false,
+      "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
       "canProduceValidProviderRequest": true,
@@ -77,17 +77,37 @@
     }
   },
   "expected": {
-    "outcome": "retry_compact",
-    "terminalState": "terminal_retry",
+    "outcome": "compact_continue_turn",
+    "terminalState": "terminal_continue_turn",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
       "evaluating_pressure",
       "path_continue_turn",
       "compacting",
-      "terminal_retry"
+      "installing",
+      "terminal_continue_turn"
     ],
     "effects": [
+      {
+        "type": "warn",
+        "code": "capture_incomplete",
+        "reason": "capture of the settled model turn is incomplete; compacting on available thread data (capture feeds derivation quality, not compact capability)"
+      },
+      {
+        "type": "warn",
+        "code": "provider_identity_unproven",
+        "reason": "required provider/model identity cannot be proven; omitting signed reasoning and proceeding with the compact"
+      },
+      {
+        "type": "omit_signed_reasoning",
+        "reason": "required provider/model identity cannot be proven; omitting signed reasoning and proceeding with the compact"
+      },
+      {
+        "type": "warn",
+        "code": "open_turn_invariant_unverified",
+        "reason": "exactly-one-open-turn invariant does not hold; turn-record health is core LHC's own job, not a compact precondition"
+      },
       {
         "type": "claim_writer",
         "writer": "lhc"
@@ -107,9 +127,23 @@
         "allowDegradedDerivations": true
       },
       {
-        "type": "warn",
-        "code": "compact_attempt_failed",
-        "reason": "compact assembly could not produce a structurally valid view"
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "continuationTurnId": "t2",
+        "idempotencyKey": "lhc.compact_continuation:t2",
+        "semantics": {
+          "cause": "context_compacted_task_in_progress",
+          "action": "continue_existing_task",
+          "newUserRequest": false,
+          "waitForUser": false
+        },
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
+      },
+      {
+        "type": "install_serving_view"
       },
       {
         "type": "record_receipt",
@@ -122,8 +156,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "retry_compact",
-      "reasonCode": "compact_retry_authorized",
+      "outcome": "compact_continue_turn",
+      "reasonCode": "context_compact_continue",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -152,23 +186,50 @@
       "degradationReasons": [],
       "warnings": [
         {
-          "code": "compact_attempt_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "code": "capture_incomplete",
+          "reason": "capture of the settled model turn is incomplete; compacting on available thread data (capture feeds derivation quality, not compact capability)"
+        },
+        {
+          "code": "provider_identity_unproven",
+          "reason": "required provider/model identity cannot be proven; omitting signed reasoning and proceeding with the compact"
+        },
+        {
+          "code": "open_turn_invariant_unverified",
+          "reason": "exactly-one-open-turn invariant does not hold; turn-record health is core LHC's own job, not a compact precondition"
         }
       ],
       "retry": {
         "attemptIndex": 1,
         "budget": 2,
-        "retryAuthorized": true
+        "retryAuthorized": false
       },
       "continuation": {
         "opened": true,
-        "markerServed": false,
+        "markerServed": true,
         "sameAgenticTurnPreserved": false
       },
-      "reliefPath": "core_install_failed",
+      "reliefPath": "none",
       "protectedToolCallIds": [],
       "effects": [
+        {
+          "type": "warn",
+          "code": "capture_incomplete",
+          "reason": "capture of the settled model turn is incomplete; compacting on available thread data (capture feeds derivation quality, not compact capability)"
+        },
+        {
+          "type": "warn",
+          "code": "provider_identity_unproven",
+          "reason": "required provider/model identity cannot be proven; omitting signed reasoning and proceeding with the compact"
+        },
+        {
+          "type": "omit_signed_reasoning",
+          "reason": "required provider/model identity cannot be proven; omitting signed reasoning and proceeding with the compact"
+        },
+        {
+          "type": "warn",
+          "code": "open_turn_invariant_unverified",
+          "reason": "exactly-one-open-turn invariant does not hold; turn-record health is core LHC's own job, not a compact precondition"
+        },
         {
           "type": "claim_writer",
           "writer": "lhc"
@@ -188,9 +249,23 @@
           "allowDegradedDerivations": true
         },
         {
-          "type": "warn",
-          "code": "compact_attempt_failed",
-          "reason": "compact assembly could not produce a structurally valid view"
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "continuationTurnId": "t2",
+          "idempotencyKey": "lhc.compact_continuation:t2",
+          "semantics": {
+            "cause": "context_compacted_task_in_progress",
+            "action": "continue_existing_task",
+            "newUserRequest": false,
+            "waitForUser": false
+          },
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
+        },
+        {
+          "type": "install_serving_view"
         },
         {
           "type": "record_receipt",
@@ -203,21 +278,21 @@
       ],
       "residual": {
         "writerReleased": true,
-        "priorServingViewIntact": true,
+        "priorServingViewIntact": false,
         "forcedContinuationBoundaryApplied": true,
         "continuationTurnOpened": true,
         "continuationTurnId": "t2",
-        "markerPersisted": false,
-        "markerServed": false,
+        "markerPersisted": true,
+        "markerServed": true,
         "originalAgenticTurnStillOpen": false,
+        "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": true,
-        "reliefPath": "core_install_failed",
+        "reliefPath": "none",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
-        "coreInstallRetainedPendingHostValidation": false,
-        "pendingBoundaryDiscarded": false
+        "coreInstallRetainedPendingHostValidation": false
       },
       "refused": false,
       "refuseCode": null,
@@ -229,7 +304,8 @@
         "evaluating_pressure",
         "path_continue_turn",
         "compacting",
-        "terminal_retry"
+        "installing",
+        "terminal_continue_turn"
       ]
     }
   }

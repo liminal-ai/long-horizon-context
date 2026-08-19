@@ -1,7 +1,7 @@
 {
   "name": "pending_boundary_illegal_kind_none",
   "contractVersion": "2.0.0",
-  "description": "forcedContinuationBoundary with kind none is invalid continuation state.",
+  "description": "forcedContinuationBoundary with continuation kind none is unusable: discard the boundary, warn, and start the seam fresh.",
   "coverage": [
     "invalid_pending_boundary_continuation"
   ],
@@ -75,18 +75,25 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "normal_complete",
+    "terminalState": "terminal_normal_complete",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_refuse"
+      "evaluating_pressure",
+      "path_normal_complete",
+      "terminal_normal_complete"
     ],
     "effects": [
       {
-        "type": "refuse",
-        "code": "invalid_pending_boundary_continuation",
-        "reason": "forcedContinuationBoundary.applied requires active_non_tool or pending_correlated_tool_result; got none"
+        "type": "discard_pending_boundary",
+        "continuationTurnId": "t2",
+        "reason": "forcedContinuationBoundary.applied requires active_non_tool or pending_correlated_tool_result; got none — boundary discarded, seam starts fresh"
+      },
+      {
+        "type": "warn",
+        "code": "pending_boundary_discarded",
+        "reason": "forcedContinuationBoundary.applied requires active_non_tool or pending_correlated_tool_result; got none — boundary discarded, seam starts fresh"
       },
       {
         "type": "record_receipt",
@@ -96,9 +103,9 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "invalid_pending_boundary_continuation",
-      "turnEndReason": "context_compact_continue",
+      "outcome": "normal_complete",
+      "reasonCode": "normal_complete_above_pressure",
+      "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -124,8 +131,19 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "pending_boundary_discarded",
+          "reason": "forcedContinuationBoundary.applied requires active_non_tool or pending_correlated_tool_result; got none — boundary discarded, seam starts fresh"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
-        "opened": true,
+        "opened": false,
         "markerServed": false,
         "sameAgenticTurnPreserved": false
       },
@@ -133,9 +151,14 @@
       "protectedToolCallIds": [],
       "effects": [
         {
-          "type": "refuse",
-          "code": "invalid_pending_boundary_continuation",
-          "reason": "forcedContinuationBoundary.applied requires active_non_tool or pending_correlated_tool_result; got none"
+          "type": "discard_pending_boundary",
+          "continuationTurnId": "t2",
+          "reason": "forcedContinuationBoundary.applied requires active_non_tool or pending_correlated_tool_result; got none — boundary discarded, seam starts fresh"
+        },
+        {
+          "type": "warn",
+          "code": "pending_boundary_discarded",
+          "reason": "forcedContinuationBoundary.applied requires active_non_tool or pending_correlated_tool_result; got none — boundary discarded, seam starts fresh"
         },
         {
           "type": "record_receipt",
@@ -146,13 +169,14 @@
       "residual": {
         "writerReleased": true,
         "priorServingViewIntact": true,
-        "forcedContinuationBoundaryApplied": true,
-        "continuationTurnOpened": true,
-        "continuationTurnId": "t2",
+        "forcedContinuationBoundaryApplied": false,
+        "continuationTurnOpened": false,
+        "continuationTurnId": null,
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": false,
-        "nextProviderRequestAllowed": false,
+        "pendingBoundaryDiscarded": true,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "none",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
@@ -160,14 +184,16 @@
         "hostValidationStatus": "not_required",
         "coreInstallRetainedPendingHostValidation": false
       },
-      "refused": true,
-      "refuseCode": "invalid_pending_boundary_continuation",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_refuse"
+        "evaluating_pressure",
+        "path_normal_complete",
+        "terminal_normal_complete"
       ]
     }
   }

@@ -1,10 +1,10 @@
 {
-  "name": "native_writer_conflict",
+  "name": "no_valid_provider_request_sends_best_body",
   "contractVersion": "2.0.0",
-  "description": "Conflict writer row with no host ownership authority supplied: treated as a live owner, so this attempt continues its current request rather than stealing the row.",
+  "description": "No structurally valid provider request can be proven after the full ladder: warn and install the best available body. The provider is the final authority on what it accepts; a provider rejection is recoverable where a stranded session is not.",
   "coverage": [
-    "native_writer_conflict",
-    "writer_ownership_authority"
+    "no_valid_provider_request",
+    "pending_tool_result_continuation"
   ],
   "inputValidation": "accept",
   "input": {
@@ -39,13 +39,17 @@
       "safeRunwayThresholdSource": "host_safe_runway"
     },
     "continuation": {
-      "kind": "active_non_tool"
+      "kind": "pending_correlated_tool_result",
+      "protectedToolCallIds": [
+        "call-42"
+      ],
+      "correlationValid": true
     },
     "invariants": {
       "captureComplete": true,
       "providerIdentityValid": true,
       "singleOpenTurn": true,
-      "writerClaim": "conflict"
+      "writerClaim": "none"
     },
     "forcedContinuationBoundary": {
       "applied": false
@@ -56,7 +60,7 @@
       "compactStructurallyValid": true,
       "installSucceeds": true,
       "usefulReduction": true,
-      "canProduceValidProviderRequest": true,
+      "canProduceValidProviderRequest": false,
       "projectedPressureTokens": 107000,
       "renderedSavingsTokens": 0,
       "renderedSavingsSource": "lhc_rendered_history_estimate",
@@ -73,29 +77,56 @@
     }
   },
   "expected": {
-    "outcome": "continue_current_body",
-    "terminalState": "terminal_continue_current_body",
+    "outcome": "compact_preserve_tool",
+    "terminalState": "terminal_preserve_tool",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_continue_current_body"
+      "evaluating_pressure",
+      "path_preserve_tool",
+      "compacting",
+      "installing",
+      "terminal_preserve_tool"
     ],
     "effects": [
       {
+        "type": "claim_writer",
+        "writer": "lhc"
+      },
+      {
+        "type": "compact",
+        "lowerTargetDomain": "lhc_rendered_history",
+        "lowerTargetTokens": 40000,
+        "allowDegradedDerivations": true
+      },
+      {
         "type": "warn",
-        "code": "writer_owned_elsewhere",
-        "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+        "code": "provider_request_unvalidated",
+        "reason": "no structurally valid provider request could be proven after the full reduction ladder; sending the best available body"
+      },
+      {
+        "type": "preserve_tool_pairs_verbatim",
+        "protectedToolCallIds": [
+          "call-42"
+        ],
+        "location": "open_turn_tail"
+      },
+      {
+        "type": "install_serving_view"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "continue_current_body",
-      "reasonCode": "writer_owned_elsewhere",
+      "outcome": "compact_preserve_tool",
+      "reasonCode": "compact_preserve_tool",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
@@ -117,15 +148,15 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": null,
+        "met": true,
         "isSuccessGate": false
       },
       "fidelity": "full",
       "degradationReasons": [],
       "warnings": [
         {
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "provider_request_unvalidated",
+          "reason": "no structurally valid provider request could be proven after the full reduction ladder; sending the best available body"
         }
       ],
       "retry": {
@@ -138,23 +169,48 @@
         "markerServed": false,
         "sameAgenticTurnPreserved": true
       },
-      "reliefPath": "none",
-      "protectedToolCallIds": [],
+      "reliefPath": "normal_preserve",
+      "protectedToolCallIds": [
+        "call-42"
+      ],
       "effects": [
         {
+          "type": "claim_writer",
+          "writer": "lhc"
+        },
+        {
+          "type": "compact",
+          "lowerTargetDomain": "lhc_rendered_history",
+          "lowerTargetTokens": 40000,
+          "allowDegradedDerivations": true
+        },
+        {
           "type": "warn",
-          "code": "writer_owned_elsewhere",
-          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+          "code": "provider_request_unvalidated",
+          "reason": "no structurally valid provider request could be proven after the full reduction ladder; sending the best available body"
+        },
+        {
+          "type": "preserve_tool_pairs_verbatim",
+          "protectedToolCallIds": [
+            "call-42"
+          ],
+          "location": "open_turn_tail"
+        },
+        {
+          "type": "install_serving_view"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
         }
       ],
       "residual": {
         "writerReleased": true,
-        "priorServingViewIntact": true,
+        "priorServingViewIntact": false,
         "forcedContinuationBoundaryApplied": false,
         "continuationTurnOpened": false,
         "continuationTurnId": null,
@@ -163,8 +219,10 @@
         "originalAgenticTurnStillOpen": true,
         "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": true,
-        "reliefPath": "none",
-        "protectedToolCallIds": [],
+        "reliefPath": "normal_preserve",
+        "protectedToolCallIds": [
+          "call-42"
+        ],
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
@@ -177,7 +235,11 @@
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_continue_current_body"
+        "evaluating_pressure",
+        "path_preserve_tool",
+        "compacting",
+        "installing",
+        "terminal_preserve_tool"
       ]
     }
   }

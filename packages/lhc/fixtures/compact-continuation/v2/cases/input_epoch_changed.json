@@ -1,9 +1,10 @@
 {
   "name": "input_epoch_changed",
   "contractVersion": "2.0.0",
-  "description": "Input epoch change between decision and apply skips the seam safely.",
+  "description": "Input epoch drift between decision and apply is diagnostic only: settled history is not invalidated by input that arrived later in the turn, so the compact installs normally.",
   "coverage": [
-    "stale_epoch_or_transport_retry"
+    "input_epoch_is_diagnostic_only",
+    "active_non_tool_continuation"
   ],
   "inputValidation": "accept",
   "input": {
@@ -47,7 +48,10 @@
       "writerClaim": "none"
     },
     "forcedContinuationBoundary": {
-      "applied": false
+      "applied": true,
+      "continuationTurnId": "t2",
+      "forcedThisSeam": true,
+      "markerAlreadyPersisted": false
     },
     "compactMaterial": {
       "derivationsMissingOrFailed": false,
@@ -72,30 +76,69 @@
     }
   },
   "expected": {
-    "outcome": "skip_seam",
-    "terminalState": "terminal_skip",
+    "outcome": "compact_continue_turn",
+    "terminalState": "terminal_continue_turn",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_skip"
+      "evaluating_pressure",
+      "path_continue_turn",
+      "compacting",
+      "installing",
+      "terminal_continue_turn"
     ],
     "effects": [
       {
-        "type": "skip_seam",
-        "code": "input_epoch_changed",
-        "reason": "input epoch changed (1→2); skip seam"
+        "type": "claim_writer",
+        "writer": "lhc"
+      },
+      {
+        "type": "force_turn_end",
+        "reason": "context_compact_continue",
+        "outcome": "completed",
+        "opensContinuationTurn": true,
+        "continuationTurnCount": 1,
+        "continuationTurnId": "t2"
+      },
+      {
+        "type": "compact",
+        "lowerTargetDomain": "lhc_rendered_history",
+        "lowerTargetTokens": 40000,
+        "allowDegradedDerivations": true
+      },
+      {
+        "type": "insert_continuation_marker",
+        "kind": "lhc.compact_continuation",
+        "continuationTurnId": "t2",
+        "idempotencyKey": "lhc.compact_continuation:t2",
+        "semantics": {
+          "cause": "context_compacted_task_in_progress",
+          "action": "continue_existing_task",
+          "newUserRequest": false,
+          "waitForUser": false
+        },
+        "modelVisible": true,
+        "lhcInspectVisible": true,
+        "userChatVisible": false,
+        "hostMayInjectTransiently": true
+      },
+      {
+        "type": "install_serving_view"
       },
       {
         "type": "record_receipt",
         "durable": true,
         "userChatVisible": false
+      },
+      {
+        "type": "release_writer"
       }
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "skip_seam",
-      "reasonCode": "input_epoch_changed",
-      "turnEndReason": null,
+      "outcome": "compact_continue_turn",
+      "reasonCode": "context_compact_continue",
+      "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
         "providerBaseDomain": "provider_reported_input",
@@ -116,40 +159,82 @@
       "lowerTarget": {
         "domain": "lhc_rendered_history",
         "tokens": 40000,
-        "met": null,
+        "met": true,
         "isSuccessGate": false
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
-        "opened": false,
-        "markerServed": false,
-        "sameAgenticTurnPreserved": true
+        "opened": true,
+        "markerServed": true,
+        "sameAgenticTurnPreserved": false
       },
       "reliefPath": "none",
       "protectedToolCallIds": [],
       "effects": [
         {
-          "type": "skip_seam",
-          "code": "input_epoch_changed",
-          "reason": "input epoch changed (1→2); skip seam"
+          "type": "claim_writer",
+          "writer": "lhc"
+        },
+        {
+          "type": "force_turn_end",
+          "reason": "context_compact_continue",
+          "outcome": "completed",
+          "opensContinuationTurn": true,
+          "continuationTurnCount": 1,
+          "continuationTurnId": "t2"
+        },
+        {
+          "type": "compact",
+          "lowerTargetDomain": "lhc_rendered_history",
+          "lowerTargetTokens": 40000,
+          "allowDegradedDerivations": true
+        },
+        {
+          "type": "insert_continuation_marker",
+          "kind": "lhc.compact_continuation",
+          "continuationTurnId": "t2",
+          "idempotencyKey": "lhc.compact_continuation:t2",
+          "semantics": {
+            "cause": "context_compacted_task_in_progress",
+            "action": "continue_existing_task",
+            "newUserRequest": false,
+            "waitForUser": false
+          },
+          "modelVisible": true,
+          "lhcInspectVisible": true,
+          "userChatVisible": false,
+          "hostMayInjectTransiently": true
+        },
+        {
+          "type": "install_serving_view"
         },
         {
           "type": "record_receipt",
           "durable": true,
           "userChatVisible": false
+        },
+        {
+          "type": "release_writer"
         }
       ],
       "residual": {
         "writerReleased": true,
-        "priorServingViewIntact": true,
-        "forcedContinuationBoundaryApplied": false,
-        "continuationTurnOpened": false,
-        "continuationTurnId": null,
-        "markerPersisted": false,
-        "markerServed": false,
-        "originalAgenticTurnStillOpen": true,
-        "nextProviderRequestAllowed": false,
+        "priorServingViewIntact": false,
+        "forcedContinuationBoundaryApplied": true,
+        "continuationTurnOpened": true,
+        "continuationTurnId": "t2",
+        "markerPersisted": true,
+        "markerServed": true,
+        "originalAgenticTurnStillOpen": false,
+        "pendingBoundaryDiscarded": false,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "none",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
@@ -159,12 +244,16 @@
       },
       "refused": false,
       "refuseCode": null,
-      "skipped": true,
-      "skipCode": "input_epoch_changed",
+      "skipped": false,
+      "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_skip"
+        "evaluating_pressure",
+        "path_continue_turn",
+        "compacting",
+        "installing",
+        "terminal_continue_turn"
       ]
     }
   }
