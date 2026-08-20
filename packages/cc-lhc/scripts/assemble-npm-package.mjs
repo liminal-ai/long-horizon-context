@@ -44,7 +44,7 @@ if (unknown.length > 0) fail(`unknown arguments: ${unknown.join(", ")}`);
 
 const outputRoot = resolve(argValue("--out") ?? join(repoRoot, "build", "cc-lhc-npm"));
 const packageName = argValue("--name") ?? "cc-lhc";
-const version = argValue("--version") ?? "0.1.0";
+const version = argValue("--version") ?? "0.2.0";
 const targetMode = argValue("--targets") ?? "all";
 const nativeBundleRoot = resolve(argValue("--native-bundle") ?? nativeRoot);
 if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName)) {

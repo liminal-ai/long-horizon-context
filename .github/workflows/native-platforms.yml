@@ -134,7 +134,7 @@ jobs:
       - name: Check standalone runtime bundle
         run: >-
           node packages/cc-lhc/scripts/check-standalone-bundle.mjs
-          build/cc-lhc-standalone/cc-lhc-v0.1.0-${{ matrix.target }}
+          build/cc-lhc-standalone/cc-lhc-v0.2.0-${{ matrix.target }}
 
       - name: Package standalone runtime bundle (Unix)
         if: runner.os != 'Windows'
@@ -142,7 +142,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          bundle="cc-lhc-v0.1.0-${TARGET}"
+          bundle="cc-lhc-v0.2.0-${TARGET}"
           asset="${bundle}.tar.gz"
           mkdir -p build/standalone-assets
           tar -C build/cc-lhc-standalone -czf "build/standalone-assets/${asset}" "$bundle"
@@ -158,7 +158,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          $bundle = "cc-lhc-v0.1.0-$env:TARGET"
+          $bundle = "cc-lhc-v0.2.0-$env:TARGET"
           $asset = "$bundle.zip"
           New-Item -ItemType Directory -Path build/standalone-assets -Force | Out-Null
           Push-Location build/cc-lhc-standalone
@@ -182,7 +182,7 @@ jobs:
           HOME="$scratch/home" \
           CC_LHC_PREFIX="$scratch/prefix" \
           CC_LHC_INSTALL_ROOT="$scratch/store" \
-          ./install.sh --version 0.1.0 --asset-dir build/standalone-assets
+          ./install.sh --version 0.2.0 --asset-dir build/standalone-assets
           CC_LHC_NATIVE_REQUIRE_ADDON=1 "$scratch/prefix/bin/cc-lhc" --lhc-help >/dev/null
           HOME="$scratch/home" \
           CC_LHC_PREFIX="$scratch/prefix" \
@@ -199,7 +199,7 @@ jobs:
           $prefix = Join-Path $scratch prefix
           $store = Join-Path $scratch store
           try {
-            & ./install.ps1 -Version 0.1.0 -Prefix $prefix -InstallRoot $store -AssetDir build/standalone-assets
+            & ./install.ps1 -Version 0.2.0 -Prefix $prefix -InstallRoot $store -AssetDir build/standalone-assets
             if ($LASTEXITCODE -ne 0) { throw "installer failed" }
             $env:CC_LHC_NATIVE_REQUIRE_ADDON = "1"
             & (Join-Path $prefix "bin/cc-lhc.cmd") --lhc-help | Out-Null
@@ -318,12 +318,12 @@ jobs:
           set -euo pipefail
           cd build/standalone-release
           expected=(
-            cc-lhc-v0.1.0-linux-x64.tar.gz
-            cc-lhc-v0.1.0-linux-arm64.tar.gz
-            cc-lhc-v0.1.0-darwin-x64.tar.gz
-            cc-lhc-v0.1.0-darwin-arm64.tar.gz
-            cc-lhc-v0.1.0-win32-x64.zip
-            cc-lhc-v0.1.0-win32-arm64.zip
+            cc-lhc-v0.2.0-linux-x64.tar.gz
+            cc-lhc-v0.2.0-linux-arm64.tar.gz
+            cc-lhc-v0.2.0-darwin-x64.tar.gz
+            cc-lhc-v0.2.0-darwin-arm64.tar.gz
+            cc-lhc-v0.2.0-win32-x64.zip
+            cc-lhc-v0.2.0-win32-arm64.zip
           )
           for asset in "${expected[@]}"; do test -f "$asset"; done
           test "$(find . -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) -type f | wc -l)" -eq 6
@@ -340,7 +340,7 @@ jobs:
           writeFileSync("release-manifest.json", `${JSON.stringify({
             schemaVersion: 1,
             product: "cc-lhc",
-            version: "0.1.0",
+            version: "0.2.0",
             sourceCommit: process.env.SOURCE_COMMIT,
             assets: hashes,
           }, null, 2)}\n`);

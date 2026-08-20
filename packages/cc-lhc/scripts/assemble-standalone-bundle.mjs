@@ -41,8 +41,8 @@ if (target !== currentTarget) fail(`target ${target} must be assembled on ${curr
 if (!existsSync(join(packageRoot, "package.json"))) fail(`package root is missing package.json: ${packageRoot}`);
 
 const packageManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-if (packageManifest.name !== "cc-lhc" || packageManifest.version !== "0.1.0") {
-  fail("package root does not contain the approved cc-lhc@0.1.0 candidate");
+if (packageManifest.name !== "cc-lhc" || packageManifest.version !== "0.2.0") {
+  fail("package root does not contain the approved cc-lhc@0.2.0 candidate");
 }
 if (JSON.stringify(packageManifest.ccLhcPackage?.targets) !== JSON.stringify([target])) {
   fail(`package candidate must contain only target ${target}`);

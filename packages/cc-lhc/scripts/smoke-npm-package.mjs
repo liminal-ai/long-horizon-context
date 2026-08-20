@@ -54,7 +54,7 @@ function runInstalledCli(executable, args) {
 const manifest = JSON.parse(readFileSync(join(candidateRoot, "package.json"), "utf8"));
 if (
   manifest.name !== "cc-lhc" ||
-  manifest.version !== "0.1.0" ||
+  manifest.version !== "0.2.0" ||
   manifest.private === true ||
   manifest.license !== "MIT" ||
   manifest.publishConfig?.access !== "public"

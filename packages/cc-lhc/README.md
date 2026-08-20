@@ -30,13 +30,13 @@ Code CLI.
 Install on Linux or macOS from the checksum-verified GitHub release:
 
 ```sh
-curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.1.0/install.sh | sh
+curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.2.0/install.sh | sh
 ```
 
 Install on Windows from PowerShell:
 
 ```powershell
-irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.1.0/install.ps1 | iex
+irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.2.0/install.ps1 | iex
 ```
 
 The installers detect x64 or ARM64, download the matching complete runtime
