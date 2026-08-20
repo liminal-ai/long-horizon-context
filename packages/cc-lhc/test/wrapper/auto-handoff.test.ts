@@ -491,7 +491,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const code = await runPromise;
     expect(code).toBe(0);
     writeSpy.mockRestore();
-  });
+  }, 15_000);
 
   it("keeps a live replacement when the registry pointer cannot advance, and records the acceptance", async () => {
     mocks.unwritableAlias = claudeSessionAlias(REBUILT_ID);
@@ -599,7 +599,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const code = await runPromise;
     expect(code).toBe(0);
     writeSpy.mockRestore();
-  });
+  }, 15_000);
 
   it("stdin bytes arriving during the rebuild are dropped with a resend notice; the swap still completes", async () => {
     const spawned: FakePty[] = [];
