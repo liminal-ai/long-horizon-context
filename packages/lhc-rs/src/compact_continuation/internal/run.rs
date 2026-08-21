@@ -24,6 +24,7 @@ use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult, s
 use crate::shared_tech::js_json::js_json_stringify;
 use crate::shared_tech::persist::{create_db_read_transaction, create_db_write_transaction};
 use crate::shared_tech::sha256::sha256_hex;
+use crate::shared_tech::time::system_time_to_iso;
 use crate::shared_tech::view::{CompactReceipt, ViewCompactParams};
 use crate::thread_view::internal::protected_boundary::ProtectedBoundaryOpts;
 use crate::thread_view::{
@@ -847,39 +848,6 @@ pub fn hash_record(value: &Map<String, Value>) -> (String, String) {
     (hash, json)
 }
 
-fn crate_time_iso(time: SystemTime) -> String {
-    // Reuse pattern from thread_view::system_time_to_iso (private) — approximate:
-    use std::time::UNIX_EPOCH;
-    let dur = time.duration_since(UNIX_EPOCH).unwrap_or_default();
-    let secs = dur.as_secs() as i64;
-    let millis = dur.subsec_millis();
-    // Format as UTC ISO-8601 with millis — simplified using chrono-less math:
-    // For parity with tests that inject fixed clocks via resolve_instance_config,
-    // we use the same algorithm as thread_view if possible by calling through
-    // a small local implementation.
-    // Fall back to chrono-free UTC formatting:
-    format_utc_iso(secs, millis)
-}
-
-fn format_utc_iso(secs: i64, millis: u32) -> String {
-    // Algorithm from civil time conversion (Howard Hinnant).
-    let z = secs + 719468;
-    let era = if z >= 0 { z } else { z - 146096 } / 146097;
-    let doe = (z - era * 146097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = if m <= 2 { y + 1 } else { y };
-    let time_of_day = secs.rem_euclid(86400) as u32;
-    let hour = time_of_day / 3600;
-    let min = (time_of_day % 3600) / 60;
-    let sec = time_of_day % 60;
-    format!("{y:04}-{m:02}-{d:02}T{hour:02}:{min:02}:{sec:02}.{millis:03}Z")
-}
-
 fn default_clock() -> Clock {
     std::sync::Arc::new(|| {
         resolve_instance_config()
@@ -889,7 +857,7 @@ fn default_clock() -> Clock {
 }
 
 fn clock_iso(clock: &Clock) -> String {
-    crate_time_iso(clock())
+    system_time_to_iso(clock())
 }
 
 async fn stage_log(

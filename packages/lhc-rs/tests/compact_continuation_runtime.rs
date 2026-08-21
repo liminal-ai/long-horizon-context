@@ -29,7 +29,7 @@ use lhc::shared_tech::compact_continuation::{
     ProviderUsageUnavailableReason, ReclaimHostAuthority, ReclaimPriorClaim, WorkContinuation,
     WriterClaim, compact_continuation_marker_idempotency_key,
 };
-use lhc::shared_tech::derivation::{SdkConfig, SdkMode};
+use lhc::shared_tech::derivation::{Clock, SdkConfig, SdkMode};
 use lhc::shared_tech::errors::{ErrorCode, OpResult};
 use lhc::shared_tech::storage::{CURRENT_THREAD_SCHEMA_VERSION, SqlParam};
 use lhc::shared_tech::view::{PartialViewProfilePercentages, ViewCompactParams};
@@ -40,6 +40,7 @@ use lhc::{init_lhc, intake_stream};
 use serde_json::{Map, Value, json};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, UNIX_EPOCH};
 
 // ── helpers ───────────────────────────────────────────────────────────────
 
@@ -383,6 +384,71 @@ fn compact_params() -> CompactOpts {
 }
 
 // ── tests ─────────────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn compact_continuation_persists_canonical_fixed_clock_timestamps() {
+    let (_store, ref_, path) = fixture_thread().await;
+    seed_open_agentic_turn(&ref_).await;
+    let fixed_time = UNIX_EPOCH
+        + Duration::from_secs(1_709_251_199)
+        + Duration::from_millis(123);
+    let clock: Clock = Arc::new(move || fixed_time);
+    let expected = "2024-02-29T23:59:59.123Z";
+
+    run_compact_continuation_for_tests(
+        ref_.clone(),
+        base_facts("timestamp-1", WorkContinuation::ActiveNonTool),
+        Some(clock.clone()),
+        /*hooks*/ None,
+    )
+    .await
+    .expect_ok();
+    record_compact_continuation_host_validation(
+        ref_,
+        "timestamp-1",
+        HostValidationStatus::Ok,
+        /*reason*/ None,
+        Some(clock),
+    )
+    .await
+    .expect_ok();
+
+    let db = open_raw(&path);
+    let summary = db
+        .prepare(
+            "SELECT a.created_at, r.recorded_at, b.forced_at, b.completed_at, \
+                    h.recorded_at AS host_recorded_at, h.updated_at AS host_updated_at \
+             FROM compact_continuation_attempt a \
+             JOIN compact_continuation_receipt r USING (attempt_id) \
+             JOIN compact_continuation_boundary b USING (attempt_id) \
+             JOIN compact_continuation_host_validation h USING (attempt_id) \
+             WHERE a.attempt_id = ?",
+        )
+        .get_params(&[SqlParam::from("timestamp-1")])
+        .expect("timestamp persistence rows");
+    assert_eq!(summary.get("created_at").and_then(Value::as_str), Some(expected));
+    assert_eq!(summary.get("recorded_at").and_then(Value::as_str), Some(expected));
+    assert_eq!(summary.get("forced_at").and_then(Value::as_str), Some(expected));
+    assert_eq!(summary.get("completed_at").and_then(Value::as_str), Some(expected));
+    assert_eq!(
+        summary.get("host_recorded_at").and_then(Value::as_str),
+        Some(expected)
+    );
+    assert_eq!(
+        summary.get("host_updated_at").and_then(Value::as_str),
+        Some(expected)
+    );
+    let stages = db
+        .prepare(
+            "SELECT recorded_at FROM compact_continuation_stage_log WHERE attempt_id = ?",
+        )
+        .all(&[SqlParam::from("timestamp-1")]);
+    assert!(!stages.is_empty(), "stage log must be durable");
+    assert!(stages.iter().all(|row| {
+        row.get("recorded_at").and_then(Value::as_str) == Some(expected)
+    }));
+    db.close();
+}
 
 #[tokio::test]
 async fn below_trigger_and_missing_usage_no_mutation() {
