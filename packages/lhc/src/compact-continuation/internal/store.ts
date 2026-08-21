@@ -35,13 +35,20 @@ export type StageName =
   | "install_succeeded"
   | "install_failed"
   | "compact_failed"
+  /**
+   * Historical stage: the SDK once refused an unsafe projected runway before
+   * install. CX-S5 removed that gate (oversized content is ours to truncate and
+   * the host's exact body check is downstream), so no path writes it now. Kept
+   * so stage logs written by earlier versions still read back.
+   */
   | "unsafe_runway_refused"
   | "receipt_recorded"
   | "writer_released"
   | "interrupted"
   | "retry_posture"
   | "writer_claim_repaired"
-  | "recovery_maintenance";
+  | "recovery_maintenance"
+  | "boundary_discarded";
 
 export type ForceIntentRow = {
   attemptId: string;
@@ -349,6 +356,21 @@ export function upsertBoundary(
       `boundary ${row.continuationTurnId} upsert changed 0 rows (owner mismatch or missing row for attempt ${row.attemptId})`,
     );
   }
+}
+
+/// Discard a pending/failed compact-continuation boundary owned by this
+/// attempt. Used when the bounded retry budget is exhausted (R23-S9/S10): the
+/// attempt terminalizes on `continue_current_body` and its speculative
+/// boundary bookkeeping must not remain to wedge every fresh attempt. Only
+/// the bookkeeping row is removed — canonical turn/marker bytes and the
+/// terminal receipt stay untouched.
+export function deleteBoundary(db: DatabaseSync, continuationTurnId: string, attemptId: string): void {
+  const existing = readBoundary(db, continuationTurnId);
+  if (existing === null) return;
+  if (existing.attemptId !== attemptId) {
+    throw new Error(`boundary ${continuationTurnId} owned by ${existing.attemptId}, not ${attemptId}`);
+  }
+  db.prepare(`DELETE FROM compact_continuation_boundary WHERE continuation_turn_id = ?`).run(continuationTurnId);
 }
 
 export function insertAttemptIntent(

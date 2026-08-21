@@ -1,7 +1,7 @@
 {
   "name": "install_failed_preserve_tool",
   "contractVersion": "2.0.0",
-  "description": "Tool-preserve install failure: preserve pair before refuse; no marker; original turn open; prior view intact; writer released.",
+  "description": "Tool-preserve install failure: preserve pair recorded before the failure warning; bounded retry authorized; original turn open; prior view intact.",
   "coverage": [
     "compact_install_failure",
     "pending_tool_result_continuation",
@@ -78,8 +78,8 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "retry_compact",
+    "terminalState": "terminal_retry",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
@@ -87,7 +87,7 @@
       "path_preserve_tool",
       "compacting",
       "installing",
-      "terminal_refuse"
+      "terminal_retry"
     ],
     "effects": [
       {
@@ -108,8 +108,8 @@
         "location": "open_turn_tail"
       },
       {
-        "type": "refuse",
-        "code": "install_failed",
+        "type": "warn",
+        "code": "install_attempt_failed",
         "reason": "post-compact serving view could not be installed"
       },
       {
@@ -123,8 +123,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "install_failed",
+      "outcome": "retry_compact",
+      "reasonCode": "compact_retry_authorized",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
@@ -151,6 +151,17 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "install_attempt_failed",
+          "reason": "post-compact serving view could not be installed"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": true
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -179,8 +190,8 @@
           "location": "open_turn_tail"
         },
         {
-          "type": "refuse",
-          "code": "install_failed",
+          "type": "warn",
+          "code": "install_attempt_failed",
           "reason": "post-compact serving view could not be installed"
         },
         {
@@ -201,7 +212,7 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
-        "nextProviderRequestAllowed": false,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "core_install_failed",
         "protectedToolCallIds": [
           "call-42"
@@ -209,10 +220,11 @@
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
-        "coreInstallRetainedPendingHostValidation": false
+        "coreInstallRetainedPendingHostValidation": false,
+        "pendingBoundaryDiscarded": false
       },
-      "refused": true,
-      "refuseCode": "install_failed",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
@@ -222,7 +234,7 @@
         "path_preserve_tool",
         "compacting",
         "installing",
-        "terminal_refuse"
+        "terminal_retry"
       ]
     }
   }

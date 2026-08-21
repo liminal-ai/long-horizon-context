@@ -1,7 +1,7 @@
 {
   "name": "host_validation_failed_after_core_install",
   "contractVersion": "2.0.0",
-  "description": "Host validation failure after successful core install refuses without rolling back core install.",
+  "description": "Host validation failure after successful core install degrades: the core install stands, the warning is loud, and the next provider request proceeds on the best available body.",
   "coverage": [
     "host_validation_failed",
     "protected_escalation"
@@ -81,8 +81,8 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "compact_preserve_tool_escalated",
+    "terminalState": "terminal_continue_turn",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
@@ -90,7 +90,7 @@
       "path_continue_turn",
       "compacting",
       "installing",
-      "terminal_refuse"
+      "terminal_continue_turn"
     ],
     "effects": [
       {
@@ -154,9 +154,9 @@
         "reason": "host_reported_provider_body_unsafe"
       },
       {
-        "type": "refuse",
+        "type": "warn",
         "code": "host_validation_failed",
-        "reason": "host full-body validation failed after core install"
+        "reason": "host full-body validation failed after core install; degraded body stands and the next provider request proceeds"
       },
       {
         "type": "record_receipt",
@@ -169,8 +169,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "host_validation_failed",
+      "outcome": "compact_preserve_tool_escalated",
+      "reasonCode": "protected_escalation",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -197,6 +197,17 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "host_validation_failed",
+          "reason": "host full-body validation failed after core install; degraded body stands and the next provider request proceeds"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": true,
         "markerServed": true,
@@ -269,9 +280,9 @@
           "reason": "host_reported_provider_body_unsafe"
         },
         {
-          "type": "refuse",
+          "type": "warn",
           "code": "host_validation_failed",
-          "reason": "host full-body validation failed after core install"
+          "reason": "host full-body validation failed after core install; degraded body stands and the next provider request proceeds"
         },
         {
           "type": "record_receipt",
@@ -291,7 +302,8 @@
         "markerPersisted": true,
         "markerServed": true,
         "originalAgenticTurnStillOpen": false,
-        "nextProviderRequestAllowed": false,
+        "pendingBoundaryDiscarded": false,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "host_validation_failed",
         "protectedToolCallIds": [
           "call-a",
@@ -300,10 +312,10 @@
         "visibilityBoundaryBefore": 10,
         "visibilityBoundaryAfter": 50,
         "hostValidationStatus": "failed",
-        "coreInstallRetainedPendingHostValidation": true
+        "coreInstallRetainedPendingHostValidation": false
       },
-      "refused": true,
-      "refuseCode": "host_validation_failed",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
@@ -313,7 +325,7 @@
         "path_continue_turn",
         "compacting",
         "installing",
-        "terminal_refuse"
+        "terminal_continue_turn"
       ]
     }
   }

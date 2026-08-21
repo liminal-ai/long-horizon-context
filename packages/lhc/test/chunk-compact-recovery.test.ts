@@ -261,7 +261,6 @@ describe("Story 4: chunk derivation and compact recovery", () => {
 
     expect(compacted.ok).toBe(true);
     if (!compacted.ok) return;
-    expect(compacted.error).toBeUndefined();
     expect(compacted.value.warnings).toContainEqual({
       band: "detailed",
       subjectId: "c1",

@@ -27,6 +27,7 @@ pub mod report;
 pub mod scheduler;
 pub mod sha256;
 pub mod storage;
+pub(crate) mod time;
 pub mod thread_migrate;
 pub mod token_counting;
 pub mod tool_result_rendering;

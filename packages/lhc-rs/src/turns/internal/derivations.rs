@@ -38,6 +38,9 @@ const SQL_READ_MESSAGE_DERIVATION_ROWS_PREFIX: &str = r#"SELECT subject_id, deri
 #[allow(dead_code)]
 const SQL_READ_MESSAGE_DERIVATION_ROWS_SUFFIX: &str = r#")"#;
 
+/// TS batch width on readMessageDerivationRows: bound parameters per read.
+const DERIVATION_ROW_READ_BATCH_SIZE: usize = 400;
+
 #[allow(dead_code)]
 const SQL_READ_MEMBER_PROJECTIONS: &str = r#"SELECT cm.turn_id, t.turn_id AS existing_turn_id, t.deleted_at,
               df.state, df.content,
@@ -279,19 +282,19 @@ pub fn read_message_derivation_rows(
     if message_ids.is_empty() {
         return rows;
     }
-    let placeholders = message_ids
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(", ");
-    let sql = format!(
-        "{SQL_READ_MESSAGE_DERIVATION_ROWS_PREFIX}{placeholders}{SQL_READ_MESSAGE_DERIVATION_ROWS_SUFFIX}"
-    );
-    let params: Vec<SqlParam> = message_ids
-        .iter()
-        .map(|id| SqlParam::from(id.as_str()))
-        .collect();
-    for row in db.prepare(&sql).all(&params) {
+    // SQLite's parameter ceiling varies by build, and a mature thread's turn can
+    // carry tens of thousands of members — read in bounded batches, never one
+    // IN clause over the whole input.
+    let mut raw: Vec<Map<String, Value>> = Vec::new();
+    for batch in message_ids.chunks(DERIVATION_ROW_READ_BATCH_SIZE) {
+        let placeholders = batch.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+        let sql = format!(
+            "{SQL_READ_MESSAGE_DERIVATION_ROWS_PREFIX}{placeholders}{SQL_READ_MESSAGE_DERIVATION_ROWS_SUFFIX}"
+        );
+        let params: Vec<SqlParam> = batch.iter().map(|id| SqlParam::from(id.as_str())).collect();
+        raw.extend(db.prepare(&sql).all(&params));
+    }
+    for row in raw {
         let subject_id = map_required_str(&row, "subject_id");
         let derivation_type = map_required_str(&row, "derivation_type");
         let mut view = ComposeDerivationRow {

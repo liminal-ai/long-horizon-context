@@ -227,7 +227,7 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(snapshotCanonical(fixture.filePath).turnCount).toBe(before.turnCount);
   });
 
-  it("B1: above-trigger health refusals do not mutate record or view", async () => {
+  it("B1: above-trigger health facts warn and still compact (no refuse)", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
     const baseline = await fixture.sdk.threadView.compact(
@@ -238,28 +238,48 @@ describe("LIM-61 compact-continuation runtime", () => {
     if (!baseline.ok) return;
     const before = snapshotCanonical(fixture.filePath);
 
+    // Incomplete capture: warn + continue. Capture feeds derivation quality,
+    // not compact capability, so the seam still forces, markers and installs.
     const capture = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({ attemptId: "health-capture", captureComplete: false }),
     );
     expect(capture.ok).toBe(true);
     if (!capture.ok) return;
-    expect(capture.value.receipt.refuseCode).toBe("incomplete_capture");
-    expect(capture.value.receipt.residual.priorServingViewIntact).toBe(true);
-    expect(capture.value.receipt.residual.markerPersisted).toBe(false);
-    expect(capture.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
-    expect(snapshotCanonical(fixture.filePath)).toEqual(before);
+    expect(capture.value.receipt.refused).toBe(false);
+    expect(capture.value.receipt.refuseCode).toBeNull();
+    expect(capture.value.receipt.warnings.map((w) => w.code)).toEqual(["capture_incomplete"]);
+    expect(capture.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(true);
+    expect(capture.value.receipt.effects.some((e) => e.type === "install_serving_view")).toBe(true);
+    expect(capture.value.receipt.residual.markerPersisted).toBe(true);
+    expect(capture.value.receipt.residual.markerServed).toBe(true);
+    expect(capture.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
+    const afterCapture = snapshotCanonical(fixture.filePath);
+    expect(afterCapture.turnCount).toBe(before.turnCount + 1);
+    expect(afterCapture.markerCount).toBe(before.markerCount + 1);
+    expect(afterCapture.viewId).not.toBe(before.viewId);
 
+    // Unproven provider identity: omit signed reasoning, compact anyway.
+    await seedOpenAgenticTurn(fixture.filePath);
+    const beforeIdentity = snapshotCanonical(fixture.filePath);
     const identity = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({ attemptId: "health-identity", providerIdentityValid: false }),
     );
     expect(identity.ok).toBe(true);
     if (!identity.ok) return;
-    expect(identity.value.receipt.refuseCode).toBe("invalid_provider_identity");
-    expect(snapshotCanonical(fixture.filePath)).toEqual(before);
+    expect(identity.value.receipt.refuseCode).toBeNull();
+    expect(identity.value.receipt.warnings.map((w) => w.code)).toEqual(["provider_identity_unproven"]);
+    expect(identity.value.receipt.effects.some((e) => e.type === "omit_signed_reasoning")).toBe(true);
+    expect(identity.value.receipt.effects.some((e) => e.type === "install_serving_view")).toBe(true);
+    const afterIdentity = snapshotCanonical(fixture.filePath);
+    expect(afterIdentity.markerCount).toBe(beforeIdentity.markerCount + 1);
+    expect(afterIdentity.viewId).not.toBe(beforeIdentity.viewId);
 
-    // Invalid tool correlation (host + durable) on preserve path.
+    // Invalid tool correlation (host + durable) on preserve path: the pair
+    // cannot be protected through compact, so the continuation machinery
+    // declines into the host's ordinary settled-seam compact. No mutation here,
+    // but the next provider request is authorized — declining is not a stop.
     await seedPendingToolTurn(fixture.filePath, "call-bad-corr");
     const beforeTool = snapshotCanonical(fixture.filePath);
     const corr = await compactContinuation.runCompactContinuation(
@@ -275,10 +295,16 @@ describe("LIM-61 compact-continuation runtime", () => {
     );
     expect(corr.ok).toBe(true);
     if (!corr.ok) return;
-    expect(corr.value.receipt.refuseCode).toBe("invalid_tool_correlation");
+    expect(corr.value.receipt.refuseCode).toBeNull();
+    expect(corr.value.receipt.outcome).toBe("decline_to_ordinary_compact");
+    expect(corr.value.receipt.warnings.map((w) => w.code)).toEqual(["tool_correlation_unproven"]);
+    expect(corr.value.receipt.residual.priorServingViewIntact).toBe(true);
+    expect(corr.value.receipt.residual.originalAgenticTurnStillOpen).toBe(true);
+    expect(corr.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
+    expect(corr.value.nextProviderRequestAllowed).toBe(true);
     expect(snapshotCanonical(fixture.filePath)).toEqual(beforeTool);
 
-    // Durable pair missing despite host correlationValid.
+    // Durable pair missing despite host correlationValid: same decline.
     const missing = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({
@@ -292,7 +318,10 @@ describe("LIM-61 compact-continuation runtime", () => {
     );
     expect(missing.ok).toBe(true);
     if (!missing.ok) return;
-    expect(missing.value.receipt.refuseCode).toBe("invalid_tool_correlation");
+    expect(missing.value.receipt.refuseCode).toBeNull();
+    expect(missing.value.receipt.outcome).toBe("decline_to_ordinary_compact");
+    expect(missing.value.receipt.warnings.map((w) => w.code)).toEqual(["tool_correlation_unproven"]);
+    expect(missing.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
     expect(snapshotCanonical(fixture.filePath)).toEqual(beforeTool);
   });
 
@@ -655,7 +684,7 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(compact.value.compactPoint).toBeGreaterThan(0);
   });
 
-  it("install failure after marker keeps prior view; boundary/marker residual truthful", async () => {
+  it("install failure after marker is bounded retry; prior view kept, residual truthful", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     const baseline = await fixture.sdk.threadView.compact(
       { filePath: fixture.filePath },
@@ -670,10 +699,20 @@ describe("LIM-61 compact-continuation runtime", () => {
     });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.value.receipt.refuseCode).toBe("install_failed");
+    // A failed install is bounded retry, not a stop (R23-S9/S10).
+    expect(result.value.receipt.refused).toBe(false);
+    expect(result.value.receipt.refuseCode).toBeNull();
+    expect(result.value.receipt.outcome).toBe("retry_compact");
+    expect(result.value.receipt.reasonCode).toBe("compact_retry_authorized");
+    expect(result.value.receipt.warnings.map((w) => w.code)).toEqual(["install_attempt_failed"]);
+    expect(result.value.receipt.retry).toEqual({ attemptIndex: 1, budget: 2, retryAuthorized: true });
+    // Residual stays truthful about what actually happened.
     expect(result.value.receipt.residual.markerPersisted).toBe(true);
     expect(result.value.receipt.residual.markerServed).toBe(false);
     expect(result.value.receipt.residual.priorServingViewIntact).toBe(true);
+    expect(result.value.receipt.residual.reliefPath).toBe("core_install_failed");
+    // The session keeps working on its current body while the retry is pending.
+    expect(result.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
     expect(result.value.pendingBoundary?.status).toBe("failed_repairable");
 
     const stored = await compactContinuation.getCompactContinuationReceipt(
@@ -688,6 +727,74 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(described.ok).toBe(true);
     if (!described.ok) return;
     expect(described.value?.viewId).toBe(baseline.value.viewId);
+
+    // Budget spent: the second failure stops retrying and continues on the
+    // current body. Still no refuse, still a next request.
+    const exhausted = await runCCTest(fixture.filePath, baseFacts({ attemptId: "install-fail-1" }), {
+      failInstallBeforeWrite: true,
+    });
+    expect(exhausted.ok).toBe(true);
+    if (!exhausted.ok) return;
+    expect(exhausted.value.receipt.refuseCode).toBeNull();
+    expect(exhausted.value.receipt.outcome).toBe("continue_current_body");
+    expect(exhausted.value.receipt.reasonCode).toBe("compact_retry_budget_exhausted");
+    expect(exhausted.value.receipt.retry).toEqual({ attemptIndex: 2, budget: 2, retryAuthorized: false });
+    expect(exhausted.value.receipt.warnings.map((w) => w.code)).toEqual([
+      "install_attempt_failed",
+      "compact_retry_budget_exhausted",
+    ]);
+    expect(exhausted.value.receipt.residual.priorServingViewIntact).toBe(true);
+    expect(exhausted.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
+    const stillBaseline = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
+    expect(stillBaseline.ok).toBe(true);
+    if (!stillBaseline.ok) return;
+    expect(stillBaseline.value?.viewId).toBe(baseline.value.viewId);
+
+    // Exhaustion TERMINALIZES (R23-S9/S10): bounded means bounded. The receipt
+    // is terminal and the attempt's speculative boundary bookkeeping is
+    // discarded — nothing remains to wedge a fresh attempt.
+    const storedExhausted = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "install-fail-1",
+    );
+    expect(storedExhausted.ok).toBe(true);
+    if (!storedExhausted.ok) return;
+    expect(storedExhausted.value?.terminal).toBe(true);
+    expect(exhausted.value.pendingBoundary).toBeNull();
+
+    // Third same-attempt call is a terminal replay: zero added mutation.
+    const countRows = (table: string): number => {
+      const db = openRaw(fixture.filePath);
+      try {
+        const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+        return Number(row.n);
+      } finally {
+        db.close();
+      }
+    };
+    const stagesBefore = countRows("compact_continuation_stage_log");
+    const messagesBefore = countRows("message");
+    const third = await runCCTest(fixture.filePath, baseFacts({ attemptId: "install-fail-1" }), {
+      failInstallBeforeWrite: true,
+    });
+    expect(third.ok).toBe(true);
+    if (!third.ok) return;
+    expect(third.value.replayedTerminalAttempt).toBe(true);
+    expect(third.value.receipt.outcome).toBe("continue_current_body");
+    expect(third.value.pendingBoundary).toBeNull();
+    expect(countRows("compact_continuation_stage_log")).toBe(stagesBefore);
+    expect(countRows("message")).toBe(messagesBefore);
+    const afterReplay = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
+    expect(afterReplay.ok).toBe(true);
+    if (!afterReplay.ok) return;
+    expect(afterReplay.value?.viewId).toBe(baseline.value.viewId);
+
+    // A fresh later attempt proceeds normally — the dead attempt left no wedge.
+    const fresh = await runCCTest(fixture.filePath, baseFacts({ attemptId: "install-fail-2" }));
+    expect(fresh.ok).toBe(true);
+    if (!fresh.ok) return;
+    expect(fresh.value.receipt.refuseCode).toBeNull();
+    expect(fresh.value.receipt.retry.attemptIndex).toBe(1);
   });
 
   it("P1: install fail → failed_repairable nonterminal → same attempt repair succeeds", async () => {
@@ -699,7 +806,13 @@ describe("LIM-61 compact-continuation runtime", () => {
     });
     expect(failed.ok).toBe(true);
     if (!failed.ok) return;
-    expect(failed.value.receipt.refuseCode).toBe("install_failed");
+    // Bounded retry, not a refuse: the attempt stays repairable and the session
+    // keeps its current body in the meantime.
+    expect(failed.value.receipt.refuseCode).toBeNull();
+    expect(failed.value.receipt.outcome).toBe("retry_compact");
+    expect(failed.value.receipt.retry.retryAuthorized).toBe(true);
+    expect(failed.value.receipt.warnings.map((w) => w.code)).toEqual(["install_attempt_failed"]);
+    expect(failed.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
     expect(failed.value.pendingBoundary?.status).toBe("failed_repairable");
     expect(failed.value.pendingBoundary?.attemptId).toBe("repair-install-1");
     const cTurnId = failed.value.continuationTurnId!;
@@ -726,6 +839,8 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(repaired.value.continuationTurnId).toBe(cTurnId);
     expect(repaired.value.replayedTerminalAttempt).toBe(false);
     expect(["compact_continue_turn", "degraded_compact", "no_reduction"]).toContain(repaired.value.receipt.outcome);
+    expect(repaired.value.receipt.refuseCode).toBeNull();
+    expect(repaired.value.receipt.residual.markerServed).toBe(true);
     expect(repaired.value.pendingBoundary).toBeNull();
 
     const storedOk = await compactContinuation.getCompactContinuationReceipt(
@@ -913,18 +1028,169 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(result.error.code).toBe("invalid_compact_continuation_input");
   });
 
-  it("native writer conflict refuses without claim", async () => {
+  it("native writer row: no authority means continue; stale row reclaims and compacts", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
     const before = snapshotCanonical(fixture.filePath);
-    const result = await compactContinuation.runCompactContinuation(
+
+    // No host ownership authority supplied: the SDK never steals. This attempt
+    // is the loser, continues its current request, and mutates nothing.
+    const noAuthority = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       baseFacts({ attemptId: "native-1", writerClaim: "native" }),
     );
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-    expect(result.value.receipt.refuseCode).toBe("native_writer_conflict");
-    expect(result.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
+    expect(noAuthority.ok).toBe(true);
+    if (!noAuthority.ok) return;
+    expect(noAuthority.value.receipt.refused).toBe(false);
+    expect(noAuthority.value.receipt.refuseCode).toBeNull();
+    expect(noAuthority.value.receipt.outcome).toBe("continue_current_body");
+    expect(noAuthority.value.receipt.reasonCode).toBe("writer_owned_elsewhere");
+    expect(noAuthority.value.receipt.warnings.map((w) => w.code)).toEqual(["writer_owned_elsewhere"]);
+    expect(noAuthority.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
+    expect(noAuthority.value.receipt.effects.some((e) => e.type === "reclaim_writer")).toBe(false);
+    expect(noAuthority.value.reclaimedStaleWriterRow).toBe(false);
+    // Never strands: the session keeps working on its current body.
+    expect(noAuthority.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
+    expect(noAuthority.value.nextProviderRequestAllowed).toBe(true);
     expect(snapshotCanonical(fixture.filePath)).toEqual(before);
+
+    // Host authority confirms no live owner: the stale row is reclaimed with a
+    // receipt and the compact proceeds through to install.
+    const seenByCheck: { threadId: string; attemptId: string }[] = [];
+    const reclaimed = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "native-reclaim", writerClaim: "native" }),
+      () => new Date(),
+      {
+        writerOwnershipCheck: (args) => {
+          seenByCheck.push(args);
+          return false; // no live owner holds this LHC thread
+        },
+      },
+    );
+    expect(reclaimed.ok).toBe(true);
+    if (!reclaimed.ok) return;
+    expect(seenByCheck).toHaveLength(1);
+    // The authority is asked about the canonical LHC thread id, not a session id.
+    expect(seenByCheck[0]?.threadId).toMatch(/^th_/);
+    expect(seenByCheck[0]?.attemptId).toBe("native-reclaim");
+    expect(reclaimed.value.receipt.refuseCode).toBeNull();
+    expect(reclaimed.value.reclaimedStaleWriterRow).toBe(true);
+    const reclaimEffect = reclaimed.value.receipt.effects.find((e) => e.type === "reclaim_writer");
+    expect(reclaimEffect).toEqual({ type: "reclaim_writer", priorClaim: "native", hostAuthority: "no_live_owner" });
+    expect(reclaimed.value.receipt.warnings.map((w) => w.code)).toEqual(["stale_writer_row_reclaimed"]);
+    // Reclaim precedes this attempt's own claim, and the seam compacts.
+    const effectTypes = reclaimed.value.receipt.effects.map((e) => e.type);
+    expect(effectTypes.indexOf("reclaim_writer")).toBeLessThan(effectTypes.indexOf("claim_writer"));
+    expect(effectTypes).toContain("install_serving_view");
+    expect(reclaimed.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
+    const after = snapshotCanonical(fixture.filePath);
+    expect(after.markerCount).toBe(before.markerCount + 1);
+    expect(after.viewId).not.toBe(before.viewId);
+    // The claim is released again at the end of the seam.
+    expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
+  });
+
+  it("two sessions on one LHC thread: one owner, loser continues without stealing", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedOpenAgenticTurn(fixture.filePath);
+    const before = snapshotCanonical(fixture.filePath);
+
+    // The ownership registry is process-global and keyed by LHC thread id — a
+    // per-session slot flag is not sufficient, because two sessions/aliases can
+    // address the same thread and would hold two independent flags.
+    const ownershipRegistry = new Map<string, string>();
+    /** One host session with its own private slot flag, sharing the registry. */
+    function session(sessionId: string) {
+      let ownsSlotLocally = false;
+      return {
+        sessionId,
+        claimThread(threadId: string): boolean {
+          if (ownershipRegistry.has(threadId)) return false;
+          ownershipRegistry.set(threadId, sessionId);
+          ownsSlotLocally = true;
+          return true;
+        },
+        releaseThread(threadId: string): void {
+          if (ownershipRegistry.get(threadId) === sessionId) ownershipRegistry.delete(threadId);
+          ownsSlotLocally = false;
+        },
+        ownsSlot(): boolean {
+          return ownsSlotLocally;
+        },
+        /** Live owner iff some *other* session holds the thread in the registry. */
+        writerOwnershipCheck({ threadId }: { threadId: string; attemptId: string }): boolean {
+          const owner = ownershipRegistry.get(threadId);
+          return owner !== undefined && owner !== sessionId;
+        },
+      };
+    }
+
+    const sessionA = session("session-a");
+    const sessionB = session("session-b");
+
+    // Session A takes the thread first. Both sessions believe they have a slot
+    // locally; only the registry keyed by LHC thread id knows who owns it.
+    const described = await threads.info({ filePath: fixture.filePath });
+    expect(described.ok).toBe(true);
+    if (!described.ok) return;
+    const lhcThreadId = described.value.threadId;
+    expect(sessionA.claimThread(lhcThreadId)).toBe(true);
+    expect(sessionB.claimThread(lhcThreadId)).toBe(false);
+    expect(sessionA.ownsSlot()).toBe(true);
+    expect(sessionB.ownsSlot()).toBe(false);
+
+    // Session B is the loser: it sees a native row, asks the registry, and is
+    // told a live owner holds the thread. It continues its current request.
+    const loser = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "session-b-attempt", writerClaim: "native" }),
+      () => new Date(),
+      { writerOwnershipCheck: (args) => sessionB.writerOwnershipCheck(args) },
+    );
+    expect(loser.ok).toBe(true);
+    if (!loser.ok) return;
+    expect(loser.value.receipt.refuseCode).toBeNull();
+    expect(loser.value.receipt.outcome).toBe("continue_current_body");
+    expect(loser.value.receipt.warnings.map((w) => w.code)).toEqual(["writer_owned_elsewhere"]);
+    // Never steals.
+    expect(loser.value.reclaimedStaleWriterRow).toBe(false);
+    expect(loser.value.receipt.effects.some((e) => e.type === "reclaim_writer")).toBe(false);
+    expect(ownershipRegistry.get(lhcThreadId)).toBe("session-a");
+    // Never strands.
+    expect(loser.value.nextProviderRequestAllowed).toBe(true);
+    expect(snapshotCanonical(fixture.filePath)).toEqual(before);
+
+    // Session A owns the thread, so its own attempt is not blocked by the row.
+    const owner = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "session-a-attempt", writerClaim: "native" }),
+      () => new Date(),
+      { writerOwnershipCheck: (args) => sessionA.writerOwnershipCheck(args) },
+    );
+    expect(owner.ok).toBe(true);
+    if (!owner.ok) return;
+    expect(owner.value.reclaimedStaleWriterRow).toBe(true);
+    expect(owner.value.receipt.warnings.map((w) => w.code)).toEqual(["stale_writer_row_reclaimed"]);
+    expect(owner.value.receipt.effects.some((e) => e.type === "install_serving_view")).toBe(true);
+    const afterOwner = snapshotCanonical(fixture.filePath);
+    expect(afterOwner.viewId).not.toBe(before.viewId);
+
+    // Once A releases the thread, B retries at its next seam and now reclaims.
+    sessionA.releaseThread(lhcThreadId);
+    await seedOpenAgenticTurn(fixture.filePath);
+    const beforeRetry = snapshotCanonical(fixture.filePath);
+    const retried = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({ attemptId: "session-b-retry", writerClaim: "native" }),
+      () => new Date(),
+      { writerOwnershipCheck: (args) => sessionB.writerOwnershipCheck(args) },
+    );
+    expect(retried.ok).toBe(true);
+    if (!retried.ok) return;
+    expect(retried.value.reclaimedStaleWriterRow).toBe(true);
+    expect(retried.value.receipt.refuseCode).toBeNull();
+    expect(snapshotCanonical(fixture.filePath).viewId).not.toBe(beforeRetry.viewId);
   });
 
   it("durable receipt and stage log are inspectable", async () => {
@@ -1206,7 +1472,7 @@ describe("LIM-61 compact-continuation runtime", () => {
 
   // ── Fable review-2: claim wedge, finalize OpResult, identity, hooks ─────
 
-  it("BL1: claim-only crash re-entry on quiet/health releases owned claim; fresh can claim", async () => {
+  it("BL1: claim-only crash re-entry on quiet/degraded seams releases owned claim; fresh can claim", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
 
@@ -1250,7 +1516,8 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(missing.value.receipt.residual.writerReleased).toBe(true);
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
 
-    // Health refusal.
+    // Degraded health on re-entry: warn + compact, then release. The reclaimed
+    // claim is not a reason to stop, and it is never left held.
     seedHeldWriter(fixture.filePath, "crashed-health");
     const health = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
@@ -1262,8 +1529,33 @@ describe("LIM-61 compact-continuation runtime", () => {
     );
     expect(health.ok).toBe(true);
     if (!health.ok) return;
-    expect(health.value.receipt.refuseCode).toBe("incomplete_capture");
+    expect(health.value.receipt.refuseCode).toBeNull();
+    expect(health.value.receipt.warnings.map((w) => w.code)).toEqual(["capture_incomplete"]);
+    expect(["compact_continue_turn", "degraded_compact", "no_reduction"]).toContain(health.value.receipt.outcome);
     expect(health.value.receipt.residual.writerReleased).toBe(true);
+    expect(health.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
+    expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
+
+    // A decline (unprovable protected pair) on a claim-only crash also releases.
+    seedHeldWriter(fixture.filePath, "crashed-decline");
+    const declined = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      baseFacts({
+        attemptId: "crashed-decline",
+        writerClaim: "lhc",
+        continuation: {
+          kind: "pending_correlated_tool_result",
+          protectedToolCallIds: ["call-not-in-record"],
+          correlationValid: true,
+        },
+      }),
+    );
+    expect(declined.ok).toBe(true);
+    if (!declined.ok) return;
+    expect(declined.value.receipt.refuseCode).toBeNull();
+    expect(declined.value.receipt.outcome).toBe("decline_to_ordinary_compact");
+    expect(declined.value.receipt.residual.writerReleased).toBe(true);
+    expect(declined.value.receipt.residual.nextProviderRequestAllowed).toBe(true);
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
 
     // Foreign attempt must not release another owner's claim.
@@ -1751,11 +2043,15 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     expect(hv2.value?.status).toBe("ok");
   });
 
-  it("unsafe runway after maximal prune refuses truthfully: no install, no marker", async () => {
+  it("unsafe runway after maximal prune installs the best relief; no refuse", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedEscalationTurn(fixture.filePath);
     const before = snapshotCanonical(fixture.filePath);
 
+    // Threshold so low that no amount of eligible pruning can reach it. R24:
+    // that is a diagnostic about the projection, not a gate — oversized
+    // outgoing content is ours to truncate as a ladder rung, and the host's
+    // exact body check is downstream.
     const result = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
       escalationFacts("escalate-unsafe-1", 1000),
@@ -1763,37 +2059,122 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const receipt = result.value.receipt;
-    expect(receipt.outcome).toBe("refuse");
-    expect(receipt.refuseCode).toBe("unsafe_runway");
-    expect(receipt.reliefPath).toBe("protected_escalation");
-    // Receipt stays truthful: no marker was persisted on the refused attempt.
-    expect(receipt.residual.markerPersisted).toBe(false);
-    expect(receipt.residual.markerServed).toBe(false);
-    expect(receipt.residual.priorServingViewIntact).toBe(true);
-    expect(receipt.residual.nextProviderRequestAllowed).toBe(false);
-    expect(receipt.effects.some((e) => e.type === "insert_continuation_marker")).toBe(false);
-    expect(receipt.effects.some((e) => e.type === "install_serving_view")).toBe(false);
+    expect(receipt.refused).toBe(false);
+    expect(receipt.refuseCode).toBeNull();
+    expect(receipt.outcome).toBe("compact_preserve_tool_escalated");
+    expect(receipt.reliefPath).toBe("host_validation_awaiting");
+    expect(receipt.protectedToolCallIds).toEqual([PROTECTED_ID]);
+
+    // The unsafe projection is recorded as a loud warning and nothing else.
+    expect(receipt.warnings.map((w) => w.code)).toEqual(["unsafe_runway_projection"]);
+    expect(receipt.pressure.projectedPressureSafe).toBe(false);
+    expect(receipt.pressure.projectedPressureTokens).not.toBeNull();
+    expect(receipt.pressure.projectedPressureTokens!).toBeLessThan(receipt.pressure.nextRequestPressureTokens!);
+
+    // The relief actually installed: marker, escalated boundary, new view.
+    expect(receipt.effects.some((e) => e.type === "insert_continuation_marker")).toBe(true);
+    expect(receipt.effects.some((e) => e.type === "preserve_tool_pairs_verbatim")).toBe(true);
+    expect(receipt.effects.some((e) => e.type === "advance_visibility_boundary")).toBe(true);
+    expect(receipt.effects.some((e) => e.type === "install_serving_view")).toBe(true);
+    expect(receipt.residual.markerPersisted).toBe(true);
+    expect(receipt.residual.markerServed).toBe(true);
+    expect(receipt.residual.priorServingViewIntact).toBe(false);
+    expect(receipt.residual.visibilityBoundaryAfter).not.toBeNull();
+    expect(receipt.residual.visibilityBoundaryAfter!).toBeGreaterThan(receipt.residual.visibilityBoundaryBefore ?? 0);
 
     const after = snapshotCanonical(fixture.filePath);
-    // Forced boundary is durable (repairable), but no marker and no new view.
     expect(after.turnCount).toBe(before.turnCount + 1);
-    expect(after.markerCount).toBe(0);
-    expect(after.viewId).toBe(before.viewId);
+    expect(after.markerCount).toBe(1);
+    expect(after.viewId).not.toBe(before.viewId);
 
-    const pending = await compactContinuation.getPendingCompactContinuationBoundary({
-      filePath: fixture.filePath,
-    });
-    expect(pending.ok).toBe(true);
-    if (!pending.ok) return;
-    expect(pending.value?.status).toBe("failed_repairable");
-    expect(pending.value?.markerPersisted).toBe(false);
+    // The protected pair still survives verbatim through the maximal prune.
+    const listed = await messages.list({ filePath: fixture.filePath });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) return;
+    const protectedResult = listed.value.find(
+      (m) => m.kind === "tool_result" && m.blocks.some((b) => b.content["toolCallId"] === PROTECTED_ID),
+    );
+    expect(protectedResult?.blocks[0]?.content["content"]).toBe("protected verbatim payload");
+
+    // Next request waits on the host validation acknowledgment only — not on
+    // the runway projection. Acknowledging lets the session proceed.
+    expect(receipt.residual.hostValidationStatus).toBe("awaiting");
+    expect(receipt.residual.nextProviderRequestAllowed).toBe(false);
+    const ack = await compactContinuation.recordCompactContinuationHostValidation(
+      { filePath: fixture.filePath },
+      "escalate-unsafe-1",
+      "ok",
+    );
+    expect(ack.ok).toBe(true);
+    const hv = await compactContinuation.getCompactContinuationHostValidation(
+      { filePath: fixture.filePath },
+      "escalate-unsafe-1",
+    );
+    expect(hv.ok).toBe(true);
+    if (!hv.ok) return;
+    expect(hv.value?.status).toBe("ok");
+  });
+
+  it("successful escalation finalizes complete/install_succeeded; terminal, idempotent replay", async () => {
+    const fixture = await derivedThreadFixture(store, { failures: false });
+    await seedEscalationTurn(fixture.filePath);
+
+    const result = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      escalationFacts("escalate-finalize-1", 298000),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.receipt.outcome).toBe("compact_preserve_tool_escalated");
+    expect(result.value.receipt.residual.markerPersisted).toBe(true);
+    expect(result.value.receipt.residual.markerServed).toBe(true);
+
+    // The installed escalation is a success: its boundary completes. It is
+    // not pending and never enters failed_repairable / compact_failed.
+    expect(result.value.pendingBoundary).toBeNull();
+    const db = openRaw(fixture.filePath);
+    let row: { status: string; last_stage: string };
+    try {
+      row = db
+        .prepare(`SELECT status, last_stage FROM compact_continuation_boundary ORDER BY forced_at DESC LIMIT 1`)
+        .get() as { status: string; last_stage: string };
+    } finally {
+      db.close();
+    }
+    expect(row.status).toBe("complete");
+    expect(row.last_stage).toBe("install_succeeded");
+
+    // Terminal receipt matching what actually happened.
+    const stored = await compactContinuation.getCompactContinuationReceipt(
+      { filePath: fixture.filePath },
+      "escalate-finalize-1",
+    );
+    expect(stored.ok).toBe(true);
+    if (!stored.ok) return;
+    expect(stored.value?.terminal).toBe(true);
+    expect(stored.value?.receipt.outcome).toBe("compact_preserve_tool_escalated");
+
+    // Replay of the same attempt is terminal and idempotent: no re-mutation.
+    const before = snapshotCanonical(fixture.filePath);
+    const replay = await compactContinuation.runCompactContinuation(
+      { filePath: fixture.filePath },
+      escalationFacts("escalate-finalize-1", 298000),
+    );
+    expect(replay.ok).toBe(true);
+    if (!replay.ok) return;
+    expect(replay.value.replayedTerminalAttempt).toBe(true);
+    expect(replay.value.receipt.outcome).toBe("compact_preserve_tool_escalated");
+    const after = snapshotCanonical(fixture.filePath);
+    expect(after.turnCount).toBe(before.turnCount);
+    expect(after.markerCount).toBe(before.markerCount);
+    expect(after.viewId).toBe(before.viewId);
   });
 
   it("stale_boundary_preview_is_clamped_to_prepared_compact_point", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedEscalationTurn(fixture.filePath);
-    const storedPoint = (await fixture.sdk.threadView.describe({ filePath: fixture.filePath })).value
-      ?.compactPoint ?? 0;
+    const describedBefore = await fixture.sdk.threadView.describe({ filePath: fixture.filePath });
+    const storedPoint = (describedBefore.ok ? describedBefore.value?.compactPoint : 0) ?? 0;
     const prepared = await fixture.sdk.threadView.prepareCompact({ filePath: fixture.filePath });
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
@@ -1809,14 +2190,18 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
 
     const result = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
-      { ...escalationFacts("stale-boundary-clamp-1", 10_000_000), compact: undefined },
+      (() => {
+        const { compact: _compact, ...rest } = escalationFacts("stale-boundary-clamp-1", 10_000_000);
+        return rest;
+      })(),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // Upper bound is the previewed visibility line: compact point cannot
     // advance past it (no stale-behind install refuse; pair stays in tail).
-    const compactPoint = result.value.receipt.effects.find((e) => e.type === "advance_visibility_boundary")
-      ?.compactPoint;
+    const compactPoint = result.value.receipt.effects.find(
+      (e) => e.type === "advance_visibility_boundary",
+    )?.compactPoint;
     const after = result.value.receipt.residual.visibilityBoundaryAfter ?? preview.value.proposedBoundary;
     expect(after).toBeLessThan(prepared.value.selection.compactPoint);
     if (compactPoint !== undefined) {
@@ -1829,7 +2214,10 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     await seedEscalationTurn(fixture.filePath);
     const result = await compactContinuation.runCompactContinuation(
       { filePath: fixture.filePath },
-      { ...escalationFacts("protected-tail-bound-1", 298000), compact: undefined },
+      (() => {
+        const { compact: _compact, ...rest } = escalationFacts("protected-tail-bound-1", 298000);
+        return rest;
+      })(),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1840,8 +2228,9 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
       (m) => m.kind === "tool_result" && m.blocks.some((b) => b.content["toolCallId"] === PROTECTED_ID),
     );
     expect(protectedResult).toBeDefined();
-    const compactPoint = result.value.receipt.effects.find((e) => e.type === "advance_visibility_boundary")
-      ?.compactPoint;
+    const compactPoint = result.value.receipt.effects.find(
+      (e) => e.type === "advance_visibility_boundary",
+    )?.compactPoint;
     const after = result.value.receipt.residual.visibilityBoundaryAfter;
     expect(compactPoint).toBeDefined();
     expect(after).not.toBeNull();

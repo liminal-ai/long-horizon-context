@@ -1,9 +1,10 @@
 {
   "name": "native_writer_conflict",
   "contractVersion": "2.0.0",
-  "description": "Native/conflict writer claim refuses silent mid-turn fallback.",
+  "description": "Conflict writer row with no host ownership authority supplied: treated as a live owner, so this attempt continues its current request rather than stealing the row.",
   "coverage": [
-    "native_writer_conflict"
+    "native_writer_conflict",
+    "writer_ownership_authority"
   ],
   "inputValidation": "accept",
   "input": {
@@ -72,18 +73,18 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "continue_current_body",
+    "terminalState": "terminal_continue_current_body",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_refuse"
+      "terminal_continue_current_body"
     ],
     "effects": [
       {
-        "type": "refuse",
-        "code": "native_writer_conflict",
-        "reason": "LHC and host-native compact must be one writer at a seam; native/conflict claim refuses silent mid-turn fallback"
+        "type": "warn",
+        "code": "writer_owned_elsewhere",
+        "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
       },
       {
         "type": "record_receipt",
@@ -93,8 +94,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "native_writer_conflict",
+      "outcome": "continue_current_body",
+      "reasonCode": "writer_owned_elsewhere",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
@@ -121,6 +122,17 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "writer_owned_elsewhere",
+          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -130,9 +142,9 @@
       "protectedToolCallIds": [],
       "effects": [
         {
-          "type": "refuse",
-          "code": "native_writer_conflict",
-          "reason": "LHC and host-native compact must be one writer at a seam; native/conflict claim refuses silent mid-turn fallback"
+          "type": "warn",
+          "code": "writer_owned_elsewhere",
+          "reason": "no host ownership authority was supplied for a conflict writer row; treating it as a live owner and continuing this attempt's current request"
         },
         {
           "type": "record_receipt",
@@ -149,7 +161,8 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
-        "nextProviderRequestAllowed": false,
+        "pendingBoundaryDiscarded": false,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "none",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
@@ -157,14 +170,14 @@
         "hostValidationStatus": "not_required",
         "coreInstallRetainedPendingHostValidation": false
       },
-      "refused": true,
-      "refuseCode": "native_writer_conflict",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_refuse"
+        "terminal_continue_current_body"
       ]
     }
   }

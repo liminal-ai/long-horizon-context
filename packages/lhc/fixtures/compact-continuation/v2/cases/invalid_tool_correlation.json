@@ -1,7 +1,7 @@
 {
   "name": "invalid_tool_correlation",
   "contractVersion": "2.0.0",
-  "description": "Pending tool path with unproven correlation refuses.",
+  "description": "Pending tool path with unproven correlation declines into the ordinary settled-seam compact; never strands.",
   "coverage": [
     "invalid_tool_correlation"
   ],
@@ -76,18 +76,19 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "decline_to_ordinary_compact",
+    "terminalState": "terminal_decline_ordinary",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
-      "terminal_refuse"
+      "evaluating_pressure",
+      "terminal_decline_ordinary"
     ],
     "effects": [
       {
-        "type": "refuse",
-        "code": "invalid_tool_correlation",
-        "reason": "pending tool-result continuation requires proven call/result correlation"
+        "type": "warn",
+        "code": "tool_correlation_unproven",
+        "reason": "pending tool-result continuation cannot prove call/result correlation; declining into ordinary settled-seam compact on canonical state"
       },
       {
         "type": "record_receipt",
@@ -97,8 +98,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "invalid_tool_correlation",
+      "outcome": "decline_to_ordinary_compact",
+      "reasonCode": "tool_correlation_unproven",
       "turnEndReason": null,
       "pressure": {
         "providerBaseTokens": 105000,
@@ -125,6 +126,17 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "tool_correlation_unproven",
+          "reason": "pending tool-result continuation cannot prove call/result correlation; declining into ordinary settled-seam compact on canonical state"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -136,9 +148,9 @@
       ],
       "effects": [
         {
-          "type": "refuse",
-          "code": "invalid_tool_correlation",
-          "reason": "pending tool-result continuation requires proven call/result correlation"
+          "type": "warn",
+          "code": "tool_correlation_unproven",
+          "reason": "pending tool-result continuation cannot prove call/result correlation; declining into ordinary settled-seam compact on canonical state"
         },
         {
           "type": "record_receipt",
@@ -155,7 +167,8 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
-        "nextProviderRequestAllowed": false,
+        "pendingBoundaryDiscarded": false,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "none",
         "protectedToolCallIds": [
           "call-bad"
@@ -165,14 +178,15 @@
         "hostValidationStatus": "not_required",
         "coreInstallRetainedPendingHostValidation": false
       },
-      "refused": true,
-      "refuseCode": "invalid_tool_correlation",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
         "at_seam",
         "checking_invariants",
-        "terminal_refuse"
+        "evaluating_pressure",
+        "terminal_decline_ordinary"
       ]
     }
   }

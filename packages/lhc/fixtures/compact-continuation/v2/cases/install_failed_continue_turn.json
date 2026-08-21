@@ -1,7 +1,7 @@
 {
   "name": "install_failed_continue_turn",
   "contractVersion": "2.0.0",
-  "description": "Install failure after forced boundary: no partial install; boundary durable; canonical marker persisted but not served; writer released.",
+  "description": "Install failure after forced boundary: bounded retry authorized; no partial install; boundary durable; marker persisted but not served; next request proceeds on the current body.",
   "coverage": [
     "compact_install_failure",
     "active_non_tool_continuation",
@@ -77,8 +77,8 @@
     }
   },
   "expected": {
-    "outcome": "refuse",
-    "terminalState": "terminal_refuse",
+    "outcome": "retry_compact",
+    "terminalState": "terminal_retry",
     "transitionPath": [
       "at_seam",
       "checking_invariants",
@@ -86,7 +86,7 @@
       "path_continue_turn",
       "compacting",
       "installing",
-      "terminal_refuse"
+      "terminal_retry"
     ],
     "effects": [
       {
@@ -124,8 +124,8 @@
         "hostMayInjectTransiently": true
       },
       {
-        "type": "refuse",
-        "code": "install_failed",
+        "type": "warn",
+        "code": "install_attempt_failed",
         "reason": "post-compact serving view could not be installed"
       },
       {
@@ -139,8 +139,8 @@
     ],
     "receipt": {
       "contractVersion": "2.0.0",
-      "outcome": "refuse",
-      "reasonCode": "install_failed",
+      "outcome": "retry_compact",
+      "reasonCode": "compact_retry_authorized",
       "turnEndReason": "context_compact_continue",
       "pressure": {
         "providerBaseTokens": 105000,
@@ -167,6 +167,17 @@
       },
       "fidelity": "full",
       "degradationReasons": [],
+      "warnings": [
+        {
+          "code": "install_attempt_failed",
+          "reason": "post-compact serving view could not be installed"
+        }
+      ],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": true
+      },
       "continuation": {
         "opened": true,
         "markerServed": false,
@@ -210,8 +221,8 @@
           "hostMayInjectTransiently": true
         },
         {
-          "type": "refuse",
-          "code": "install_failed",
+          "type": "warn",
+          "code": "install_attempt_failed",
           "reason": "post-compact serving view could not be installed"
         },
         {
@@ -232,16 +243,17 @@
         "markerPersisted": true,
         "markerServed": false,
         "originalAgenticTurnStillOpen": false,
-        "nextProviderRequestAllowed": false,
+        "nextProviderRequestAllowed": true,
         "reliefPath": "core_install_failed",
         "protectedToolCallIds": [],
         "visibilityBoundaryBefore": null,
         "visibilityBoundaryAfter": null,
         "hostValidationStatus": "not_required",
-        "coreInstallRetainedPendingHostValidation": false
+        "coreInstallRetainedPendingHostValidation": false,
+        "pendingBoundaryDiscarded": false
       },
-      "refused": true,
-      "refuseCode": "install_failed",
+      "refused": false,
+      "refuseCode": null,
       "skipped": false,
       "skipCode": null,
       "transitionPath": [
@@ -251,7 +263,7 @@
         "path_continue_turn",
         "compacting",
         "installing",
-        "terminal_refuse"
+        "terminal_retry"
       ]
     }
   }

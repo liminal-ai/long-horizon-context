@@ -1,7 +1,7 @@
 {
   "name": "lower_target_miss_safe_runway",
   "contractVersion": "2.0.0",
-  "description": "Lower target miss is not a refuse when projected pressure is under safe runway.",
+  "description": "Lower target miss is not a failure when projected pressure is under safe runway.",
   "coverage": [
     "lower_target_missed",
     "safe_runway_not_lower_target"
@@ -156,6 +156,12 @@
       "degradationReasons": [
         "lower_target_missed"
       ],
+      "warnings": [],
+      "retry": {
+        "attemptIndex": 1,
+        "budget": 2,
+        "retryAuthorized": false
+      },
       "continuation": {
         "opened": false,
         "markerServed": false,
@@ -210,6 +216,7 @@
         "markerPersisted": false,
         "markerServed": false,
         "originalAgenticTurnStillOpen": true,
+        "pendingBoundaryDiscarded": false,
         "nextProviderRequestAllowed": true,
         "reliefPath": "normal_preserve",
         "protectedToolCallIds": [

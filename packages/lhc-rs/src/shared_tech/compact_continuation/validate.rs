@@ -13,8 +13,9 @@ use super::contract::{
     COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX, COMPACT_CONTINUATION_MARKER_KIND,
     COMPACT_CONTINUATION_OUTCOME_KINDS, COMPACT_CONTINUATION_REFUSE_CODES,
     COMPACT_CONTINUATION_RELIEF_PATHS, COMPACT_CONTINUATION_SKIP_CODES,
-    COMPACT_CONTINUATION_STATES, COMPACT_CONTINUATION_WRITER_CLAIMS,
-    CONTEXT_COMPACT_CONTINUE_REASON, CompactContinuationDecision, CompactContinuationInput,
+    COMPACT_CONTINUATION_STATES, COMPACT_CONTINUATION_WARNING_CODES,
+    COMPACT_CONTINUATION_WRITER_CLAIMS, CONTEXT_COMPACT_CONTINUE_REASON,
+    CompactContinuationDecision, CompactContinuationInput,
     compact_continuation_marker_idempotency_key, js_string_cmp,
 };
 use crate::shared_tech::js_json::js_json_stringify_of;
@@ -287,6 +288,7 @@ fn validate_policy(raw: &Value, issues: &mut Vec<ValidationIssue>) {
             "hostCapability",
             "safeRunwayThresholdTokens",
             "safeRunwayThresholdSource",
+            "compactRetryBudget",
         ],
         "policy",
         issues,
@@ -324,6 +326,14 @@ fn validate_policy(raw: &Value, issues: &mut Vec<ValidationIssue>) {
         issues.push(issue(
             "policy.safeRunwayThresholdSource",
             "must be a non-empty string when present",
+        ));
+    }
+    if let Some(budget) = obj.get("compactRetryBudget")
+        && !as_safe_non_neg_int(budget).is_some_and(|b| b >= 1)
+    {
+        issues.push(issue(
+            "policy.compactRetryBudget",
+            "must be a safe integer >= 1 when present",
         ));
     }
 }
@@ -424,6 +434,7 @@ fn validate_invariants(raw: &Value, issues: &mut Vec<ValidationIssue>) {
             "providerIdentityValid",
             "singleOpenTurn",
             "writerClaim",
+            "writerOwnershipAuthority",
         ],
         "invariants",
         issues,
@@ -436,6 +447,14 @@ fn validate_invariants(raw: &Value, issues: &mut Vec<ValidationIssue>) {
         _ => issues.push(issue(
             "invariants.writerClaim",
             "must be none | lhc | native | conflict",
+        )),
+    }
+    match obj.get("writerOwnershipAuthority") {
+        None | Some(Value::Null) => {}
+        Some(Value::String(s)) if s == "no_live_owner" || s == "live_owner" => {}
+        _ => issues.push(issue(
+            "invariants.writerOwnershipAuthority",
+            "must be no_live_owner | live_owner | null",
         )),
     }
 }
@@ -536,6 +555,7 @@ fn validate_material(raw: &Value, issues: &mut Vec<ValidationIssue>) {
             "visibilityBoundaryAfter",
             "compactPointAtInstall",
             "maximalPruneInsufficient",
+            "compactAttemptIndex",
             "hostValidationStatus",
         ],
         "compactMaterial",
@@ -627,6 +647,14 @@ fn validate_material(raw: &Value, issues: &mut Vec<ValidationIssue>) {
             "compactMaterial.hostValidationStatus",
             "must be not_required|awaiting|ok|failed",
         )),
+    }
+    if let Some(idx) = obj.get("compactAttemptIndex")
+        && !as_safe_non_neg_int(idx).is_some_and(|i| i >= 1)
+    {
+        issues.push(issue(
+            "compactMaterial.compactAttemptIndex",
+            "must be a safe integer >= 1 when present",
+        ));
     }
 }
 
@@ -721,6 +749,11 @@ const EFFECT_TYPES: &[&str] = &[
     "record_receipt",
     "degrade_fidelity",
     "skip_seam",
+    "warn",
+    "omit_signed_reasoning",
+    "reclaim_writer",
+    "discard_pending_boundary",
+    // Historical only — the refuse set is empty in this contract version (CX-S5).
     "refuse",
 ];
 
@@ -916,6 +949,70 @@ fn validate_effect(effect: &Value, path: &str, issues: &mut Vec<ValidationIssue>
             )),
         }
     }
+    if type_str == "warn" {
+        match obj.get("code").and_then(|v| v.as_str()) {
+            Some(c) if COMPACT_CONTINUATION_WARNING_CODES.contains(&c) => {}
+            other => issues.push(issue(
+                format!("{path}.code"),
+                format!("unknown warning code {}", other.unwrap_or("null")),
+            )),
+        }
+        if !obj
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .is_some_and(|r| !r.is_empty())
+        {
+            issues.push(issue(
+                format!("{path}.reason"),
+                "warn requires a non-empty reason",
+            ));
+        }
+    }
+    if type_str == "omit_signed_reasoning"
+        && !obj
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .is_some_and(|r| !r.is_empty())
+    {
+        issues.push(issue(
+            format!("{path}.reason"),
+            "omit_signed_reasoning requires a non-empty reason",
+        ));
+    }
+    if type_str == "reclaim_writer" {
+        match obj.get("priorClaim").and_then(|v| v.as_str()) {
+            Some("native") | Some("conflict") => {}
+            _ => issues.push(issue(
+                format!("{path}.priorClaim"),
+                "must be \"native\" or \"conflict\"",
+            )),
+        }
+        if obj.get("hostAuthority").and_then(|v| v.as_str()) != Some("no_live_owner") {
+            issues.push(issue(
+                format!("{path}.hostAuthority"),
+                "reclaim is legal only when host authority confirmed no_live_owner",
+            ));
+        }
+    }
+    if type_str == "discard_pending_boundary" {
+        match obj.get("continuationTurnId") {
+            Some(Value::Null) | Some(Value::String(_)) => {}
+            _ => issues.push(issue(
+                format!("{path}.continuationTurnId"),
+                "must be a string or null",
+            )),
+        }
+        if !obj
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .is_some_and(|r| !r.is_empty())
+        {
+            issues.push(issue(
+                format!("{path}.reason"),
+                "discard_pending_boundary requires a non-empty reason",
+            ));
+        }
+    }
     if type_str == "refuse" {
         match obj.get("code").and_then(|v| v.as_str()) {
             Some(c) if COMPACT_CONTINUATION_REFUSE_CODES.contains(&c) => {}
@@ -941,6 +1038,7 @@ fn validate_residual(raw: &Value, issues: &mut Vec<ValidationIssue>) {
         "markerServed",
         "originalAgenticTurnStillOpen",
         "nextProviderRequestAllowed",
+        "pendingBoundaryDiscarded",
         "coreInstallRetainedPendingHostValidation",
     ] {
         require_bool(obj, k, "residual", issues);
@@ -1123,6 +1221,129 @@ pub fn validate_compact_continuation_receipt(raw: &Value) -> ValidationResult {
     }
 
     validate_residual(obj.get("residual").unwrap_or(&Value::Null), &mut issues);
+
+    // Warnings mirror the ordered `warn` effects exactly (same codes, same order).
+    match obj.get("warnings") {
+        Some(Value::Array(warnings)) => {
+            for (i, w) in warnings.iter().enumerate() {
+                let Some(w) = w.as_object() else {
+                    issues.push(issue(format!("warnings[{i}]"), "must be an object"));
+                    continue;
+                };
+                match w.get("code").and_then(|v| v.as_str()) {
+                    Some(c) if COMPACT_CONTINUATION_WARNING_CODES.contains(&c) => {}
+                    other => issues.push(issue(
+                        format!("warnings[{i}].code"),
+                        format!("unknown warning code {}", other.unwrap_or("null")),
+                    )),
+                }
+                if !w
+                    .get("reason")
+                    .and_then(|v| v.as_str())
+                    .is_some_and(|r| !r.is_empty())
+                {
+                    issues.push(issue(
+                        format!("warnings[{i}].reason"),
+                        "required non-empty string",
+                    ));
+                }
+            }
+            if let Some(Value::Array(effects)) = obj.get("effects") {
+                let warn_effects: Vec<&Value> = effects
+                    .iter()
+                    .filter(|e| {
+                        e.as_object()
+                            .and_then(|o| o.get("type"))
+                            .and_then(|v| v.as_str())
+                            == Some("warn")
+                    })
+                    .collect();
+                if warn_effects.len() != warnings.len() {
+                    issues.push(issue(
+                        "warnings",
+                        "must mirror the warn effects one-for-one",
+                    ));
+                } else {
+                    for (i, e) in warn_effects.iter().enumerate() {
+                        let (Some(e), Some(w)) = (e.as_object(), warnings[i].as_object()) else {
+                            continue;
+                        };
+                        if e.get("code") != w.get("code") || e.get("reason") != w.get("reason") {
+                            issues.push(issue(
+                                format!("warnings[{i}]"),
+                                "must match the corresponding warn effect",
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        _ => issues.push(issue("warnings", "must be an array")),
+    }
+
+    match obj.get("retry").and_then(|v| v.as_object()) {
+        Some(r) => {
+            let attempt_index = as_safe_non_neg_int(r.get("attemptIndex").unwrap_or(&Value::Null))
+                .filter(|i| *i >= 1);
+            let budget =
+                as_safe_non_neg_int(r.get("budget").unwrap_or(&Value::Null)).filter(|b| *b >= 1);
+            if attempt_index.is_none() {
+                issues.push(issue("retry.attemptIndex", "must be a safe integer >= 1"));
+            }
+            if budget.is_none() {
+                issues.push(issue("retry.budget", "must be a safe integer >= 1"));
+            }
+            let authorized = r.get("retryAuthorized").and_then(|v| v.as_bool());
+            if !r.get("retryAuthorized").map(is_bool).unwrap_or(false) {
+                issues.push(issue("retry.retryAuthorized", "must be a boolean"));
+            }
+            if authorized == Some(true)
+                && let (Some(idx), Some(bud)) = (attempt_index, budget)
+                && idx >= bud
+            {
+                issues.push(issue(
+                    "retry.retryAuthorized",
+                    "cannot authorize retry beyond the bounded budget",
+                ));
+            }
+            if authorized == Some(true)
+                && obj.get("outcome").and_then(|v| v.as_str()) != Some("retry_compact")
+            {
+                issues.push(issue(
+                    "retry.retryAuthorized",
+                    "authorized retry requires outcome retry_compact",
+                ));
+            }
+            if obj.get("outcome").and_then(|v| v.as_str()) == Some("retry_compact")
+                && authorized != Some(true)
+            {
+                issues.push(issue(
+                    "retry.retryAuthorized",
+                    "retry_compact requires an authorized retry",
+                ));
+            }
+        }
+        None => issues.push(issue("retry", "required object")),
+    }
+
+    // Never-strand rule: no non-skip outcome may withhold the next provider
+    // request except while a host validation acknowledgment is still awaited.
+    if let Some(residual) = obj.get("residual").and_then(|v| v.as_object())
+        && obj.get("skipped").and_then(|v| v.as_bool()) != Some(true)
+        && residual
+            .get("nextProviderRequestAllowed")
+            .and_then(|v| v.as_bool())
+            == Some(false)
+        && residual
+            .get("hostValidationStatus")
+            .and_then(|v| v.as_str())
+            != Some("awaiting")
+    {
+        issues.push(issue(
+            "residual.nextProviderRequestAllowed",
+            "the compact path never strands: only an awaited host validation may withhold the next provider request",
+        ));
+    }
 
     if !obj.get("refused").map(is_bool).unwrap_or(false) {
         issues.push(issue("refused", "must be a boolean"));
@@ -1350,37 +1571,40 @@ pub fn validate_compact_continuation_receipt(raw: &Value) -> ValidationResult {
                 .get("priorServingViewIntact")
                 .and_then(|v| v.as_bool())
                 == Some(false)
-            && obj.get("outcome").and_then(|v| v.as_str()) == Some("refuse")
+            && matches!(
+                obj.get("outcome").and_then(|v| v.as_str()),
+                Some("refuse") | Some("retry_compact") | Some("continue_current_body")
+            )
         {
             issues.push(issue(
                 "residual.priorServingViewIntact",
                 "install failure must not imply a partially installed view",
             ));
         }
-        if obj.get("refuseCode").and_then(|v| v.as_str()) == Some("install_failed") {
+        // A failed install never claims a served marker or a successful install,
+        // whatever the outcome vocabulary of the receipt that recorded it.
+        let install_failed = obj.get("refuseCode").and_then(|v| v.as_str())
+            == Some("install_failed")
+            || matches!(obj.get("warnings"), Some(Value::Array(ws)) if ws.iter().any(|w| {
+                w.as_object()
+                    .and_then(|o| o.get("code"))
+                    .and_then(|v| v.as_str())
+                    == Some("install_attempt_failed")
+            }));
+        if install_failed {
             if has_install {
                 issues.push(issue(
                     "effects",
-                    "install_failed must not include successful install_serving_view",
+                    "a failed install must not include successful install_serving_view",
                 ));
             }
-            if let Some(residual) = obj.get("residual").and_then(|v| v.as_object()) {
-                if residual
-                    .get("nextProviderRequestAllowed")
-                    .and_then(|v| v.as_bool())
-                    != Some(false)
-                {
-                    issues.push(issue(
-                        "residual.nextProviderRequestAllowed",
-                        "install_failed forbids next request",
-                    ));
-                }
-                if residual.get("markerServed").and_then(|v| v.as_bool()) == Some(true) {
-                    issues.push(issue(
-                        "residual.markerServed",
-                        "install_failed means marker was not served",
-                    ));
-                }
+            if let Some(residual) = obj.get("residual").and_then(|v| v.as_object())
+                && residual.get("markerServed").and_then(|v| v.as_bool()) == Some(true)
+            {
+                issues.push(issue(
+                    "residual.markerServed",
+                    "a failed install means the marker was not served",
+                ));
             }
         }
         if has_marker

@@ -162,11 +162,23 @@ export type CompactContinuationState =
   /** Terminal: no useful reduction; structurally ok; continue without claiming success. */
   | "terminal_no_reduction"
   /**
-   * Terminal: seam skipped without hard refuse — transport retry, input-epoch
-   * change, or not-yet-settled seam (wait). Not record corruption.
+   * Terminal: continuation machinery declined; the host's ordinary settled-seam
+   * compact runs on canonical turns. No continuation mutation happened.
+   */
+  | "terminal_decline_ordinary"
+  /** Terminal: compact/install attempt failed; bounded retry still authorized. */
+  | "terminal_retry"
+  /** Terminal: session continues on its current body; no relief this seam. */
+  | "terminal_continue_current_body"
+  /**
+   * Terminal: seam skipped without mutation — transport retry or a not-yet-settled
+   * seam (wait). Not record corruption.
    */
   | "terminal_skip"
-  /** Terminal: hard refuse — untrustworthy record/request or structural failure. */
+  /**
+   * Terminal: hard refuse. **Unreachable in this contract version** — the refuse
+   * set is empty (CX-S5). Retained so historical receipts still validate.
+   */
   | "terminal_refuse";
 
 export const COMPACT_CONTINUATION_STATES: readonly CompactContinuationState[] = [
@@ -186,6 +198,9 @@ export const COMPACT_CONTINUATION_STATES: readonly CompactContinuationState[] = 
   "terminal_normal_complete",
   "terminal_degraded",
   "terminal_no_reduction",
+  "terminal_decline_ordinary",
+  "terminal_retry",
+  "terminal_continue_current_body",
   "terminal_skip",
   "terminal_refuse",
 ] as const;
@@ -200,7 +215,27 @@ export type CompactContinuationOutcomeKind =
   | "normal_complete"
   | "degraded_compact"
   | "no_reduction"
+  /**
+   * Continuation machinery declined this seam and handed the work to the
+   * host's ordinary settled-seam compact on canonical turns. No mutation by
+   * the continuation machine; the next provider request is authorized.
+   */
+  | "decline_to_ordinary_compact"
+  /**
+   * A compact or install attempt failed and bounded retry is still authorized.
+   * The session continues on its current body until the next eligible seam.
+   */
+  | "retry_compact"
+  /**
+   * The session continues on its current body with no relief this seam
+   * (retry budget exhausted, or a live writer owner holds the thread).
+   */
+  | "continue_current_body"
   | "skip_seam"
+  /**
+   * Unreachable in this contract version — the refuse set is empty (CX-S5).
+   * Retained so historical receipts still validate.
+   */
   | "refuse";
 
 export const COMPACT_CONTINUATION_OUTCOME_KINDS: readonly CompactContinuationOutcomeKind[] = [
@@ -211,6 +246,9 @@ export const COMPACT_CONTINUATION_OUTCOME_KINDS: readonly CompactContinuationOut
   "normal_complete",
   "degraded_compact",
   "no_reduction",
+  "decline_to_ordinary_compact",
+  "retry_compact",
+  "continue_current_body",
   "skip_seam",
   "refuse",
 ] as const;
@@ -247,39 +285,64 @@ export const COMPACT_CONTINUATION_RELIEF_PATHS: readonly CompactContinuationReli
 // ── Skip codes (closed; distinct from refuse) ────────────────────────────────
 
 /**
- * Soft skip: do not mutate; re-evaluate later. Not a hard refuse.
+ * Soft skip: do not mutate; re-evaluate later. Never a stop.
  * - `not_at_settled_seam` — seam simply has not settled yet (wait), not record corruption.
  * - `transport_retry` — never mutate inside a transport retry.
- * - `input_epoch_changed` — steering race; skip this seam safely.
+ *
+ * **Removed (CX-S5 / R1):** `input_epoch_changed`. Input arriving during a turn
+ * does not invalidate settled history; new input belongs to the next turn. The
+ * seam still carries `inputEpochAtDecision`/`inputEpochAtApply` as diagnostics,
+ * but epoch drift never vetoes a settled seam.
  */
-export type CompactContinuationSkipCode = "not_at_settled_seam" | "transport_retry" | "input_epoch_changed";
+export type CompactContinuationSkipCode = "not_at_settled_seam" | "transport_retry";
 
 export const COMPACT_CONTINUATION_SKIP_CODES: readonly CompactContinuationSkipCode[] = [
   "not_at_settled_seam",
   "transport_retry",
-  "input_epoch_changed",
 ] as const;
 
-// ── Refuse codes ─────────────────────────────────────────────────────────────
+// ── Refuse codes (empty set — retained for historical receipts) ─────────────
 
 /**
- * Hard refuse codes. Missing/failed derivations are NOT refuse codes.
+ * Hard refuse codes.
  *
- * ## Why record/request-health proofs refuse even below pressure
+ * ## The refuse set is empty (CX-S5, rulings R21–R24)
  *
- * After a host claims it reached a settled seam, the following mean the
- * **canonical record or next provider request is not trustworthy**, whether or
- * not pressure would have triggered compact:
- * - incomplete capture of the settled model turn
- * - invalid/unproven provider identity
- * - broken single-open-turn invariant
- * - invalid pending tool-call/result correlation
+ * Compact is the recovery mechanism, not the thing you recover from. A session
+ * that does not compact dies against the context wall; a session that compacts
+ * imperfectly keeps working. This contract therefore gates against **not**
+ * compacting, never against compacting: no condition in the compact path
+ * returns a stop. Every former refuse became detect + warn + continue, bounded
+ * retry, or an explicit decline into the host's ordinary settled-seam compact.
  *
- * This is an explicit ruling for this contract: those proofs are seam-health
- * checks on the record/request, not compact preconditions that only apply when
- * above trigger. Ordinary missing/failed **derivations** remain degraded and
- * non-blocking. A seam that has simply **not settled yet** is a **skip/wait**
- * (`not_at_settled_seam`), not record corruption.
+ * The code union and the code list are retained so durable receipts written by
+ * earlier versions still validate and can be read back. `decideCompactContinuation`
+ * never produces any of them.
+ *
+ * Former codes and their current disposition:
+ * - `incomplete_capture` → warn `capture_incomplete`, continue (capture feeds
+ *   derivation quality, not compact capability).
+ * - `invalid_tool_correlation` → decline into ordinary settled-seam compact.
+ * - `invalid_provider_identity` → warn + omit signed reasoning, continue.
+ * - `open_turn_invariant_broken` → warn, continue (turn-record validation is
+ *   core LHC's own job, not a compact precondition).
+ * - `native_writer_conflict` → stale-row reclaim under host ownership authority;
+ *   a live loser continues its current request.
+ * - `compact_failed` / `install_failed` → bounded retry, then continue on the
+ *   current body.
+ * - `no_valid_provider_request` → warn and send the best available body; the
+ *   provider is the final authority on what it accepts.
+ * - `invalid_pending_boundary_continuation` → discard the boundary, start fresh.
+ * - `unsupported_contract_version` → degrade by feature omission (see
+ *   `CompactContinuationWarningCode`).
+ * - `invalid_protected_tool_pairs` → decline into ordinary compact.
+ * - `unsafe_runway` → diagnostic only; oversized outgoing content is ours to
+ *   truncate as a ladder rung, and the host's exact check is downstream.
+ * - `host_validation_failed` → degrade to the best available body, continue.
+ *
+ * Genuinely unreadable or referentially damaged canonical source still fails
+ * closed, but it does so as a storage/caller error outside this oracle — not as
+ * a refuse outcome.
  */
 export type CompactContinuationRefuseCode =
   | "incomplete_capture"
@@ -290,25 +353,16 @@ export type CompactContinuationRefuseCode =
   | "compact_failed"
   | "install_failed"
   | "no_valid_provider_request"
-  /**
-   * Invalid forced-boundary / continuation-state combination. Covers:
-   * - `forcedContinuationBoundary.applied` is true but `continuation.kind` is
-   *   not `active_non_tool` (illegal v2 pairing);
-   * - `active_non_tool` above trigger with
-   *   `forcedContinuationBoundary: { applied: false }` (runtime must force the
-   *   boundary first and re-enter with the continuation turn id);
-   * - applied boundary with empty/missing `continuationTurnId`.
-   */
   | "invalid_pending_boundary_continuation"
-  /** Input contractVersion is not this oracle version; not an accepted v2 seam. */
   | "unsupported_contract_version"
-  /** Protected pairs invalid: missing/duplicate/wrong-turn/not-in-tail/order. */
   | "invalid_protected_tool_pairs"
-  /** Maximal eligible unprotected pruning cannot produce safe projected runway. */
   | "unsafe_runway"
-  /** Host recorded full-body validation failure after successful core install. */
   | "host_validation_failed";
 
+/**
+ * Historical refuse codes accepted by receipt validation. **No decision path
+ * produces a refuse** — see `COMPACT_CONTINUATION_REACHABLE_REFUSE_CODES`.
+ */
 export const COMPACT_CONTINUATION_REFUSE_CODES: readonly CompactContinuationRefuseCode[] = [
   "incomplete_capture",
   "invalid_tool_correlation",
@@ -324,6 +378,87 @@ export const COMPACT_CONTINUATION_REFUSE_CODES: readonly CompactContinuationRefu
   "unsafe_runway",
   "host_validation_failed",
 ] as const;
+
+/** Refuse codes this contract version can still produce: none (List 2 is empty). */
+export const COMPACT_CONTINUATION_REACHABLE_REFUSE_CODES: readonly CompactContinuationRefuseCode[] = [] as const;
+
+// ── Warning codes (detect + warn + continue) ─────────────────────────────────
+
+/**
+ * Closed set of degradation warnings. A warning records a condition that used
+ * to stop the compact path and now only degrades it. Warnings are loud
+ * diagnostics: they are inspectable on the durable receipt and emitted as
+ * ordered `warn` effects, but they never govern.
+ */
+export type CompactContinuationWarningCode =
+  /** Capture of the settled model turn is incomplete; compact ran on thread data anyway. */
+  | "capture_incomplete"
+  /** Provider/model identity is unproven; signed reasoning is omitted from the body. */
+  | "provider_identity_unproven"
+  /** Exactly-one-open-turn could not be verified; core LHC owns turn-record health. */
+  | "open_turn_invariant_unverified"
+  /** A stale native/conflict writer row was reclaimed after host authority confirmed no live owner. */
+  | "stale_writer_row_reclaimed"
+  /** A live owner holds this LHC thread; this attempt continues its current request instead. */
+  | "writer_owned_elsewhere"
+  /** Pending tool-call/result correlation is unproven; declined into ordinary compact. */
+  | "tool_correlation_unproven"
+  /** Protected pair set is structurally invalid; declined into ordinary compact. */
+  | "protected_tool_pairs_invalid"
+  /** An illegal/unusable pending forced boundary was discarded; the seam starts fresh. */
+  | "pending_boundary_discarded"
+  /** A fresh force claimed a pre-existing boundary marker; the claim was not trusted. */
+  | "boundary_marker_claim_untrusted"
+  /** A continuation boundary is required but no continuation turn id is available. */
+  | "continuation_boundary_unavailable"
+  /**
+   * Input contract version is not this oracle version. Continuation state is
+   * treated as absent in its entirety — no partial parse, no guessing: the
+   * pending boundary is discarded, continuation machinery is skipped, and the
+   * host's ordinary compact runs on canonical (schema-stable) turns.
+   */
+  | "unsupported_contract_version_omitted"
+  /** Compact assembly could not produce a structurally valid view this attempt. */
+  | "compact_attempt_failed"
+  /** Post-compact serving view could not be installed this attempt. */
+  | "install_attempt_failed"
+  /** Bounded compact/install retry budget is spent; continuing on the current body. */
+  | "compact_retry_budget_exhausted"
+  /** No structurally valid provider request could be proven; best available body is sent. */
+  | "provider_request_unvalidated"
+  /** Projected runway remains unsafe after relief; diagnostic only, never a gate. */
+  | "unsafe_runway_projection"
+  /** Host full-body validation failed after core install; degraded body stands. */
+  | "host_validation_failed";
+
+export const COMPACT_CONTINUATION_WARNING_CODES: readonly CompactContinuationWarningCode[] = [
+  "capture_incomplete",
+  "provider_identity_unproven",
+  "open_turn_invariant_unverified",
+  "stale_writer_row_reclaimed",
+  "writer_owned_elsewhere",
+  "tool_correlation_unproven",
+  "protected_tool_pairs_invalid",
+  "pending_boundary_discarded",
+  "boundary_marker_claim_untrusted",
+  "continuation_boundary_unavailable",
+  "unsupported_contract_version_omitted",
+  "compact_attempt_failed",
+  "install_attempt_failed",
+  "compact_retry_budget_exhausted",
+  "provider_request_unvalidated",
+  "unsafe_runway_projection",
+  "host_validation_failed",
+] as const;
+
+export type CompactContinuationWarning = {
+  code: CompactContinuationWarningCode;
+  /** Provider-neutral human-readable detail. Stable per condition for fixtures. */
+  reason: string;
+};
+
+/** Default bounded compact/install retry budget (attempts at one seam identity). */
+export const DEFAULT_COMPACT_RETRY_BUDGET = 2 as const;
 
 // ── Effects (ordered, applied by runtime in later stories) ───────────────────
 
@@ -446,6 +581,45 @@ export type CompactContinuationEffect =
       code: CompactContinuationSkipCode;
       reason: string;
     }
+  | {
+      /**
+       * Loud diagnostic for a condition that degraded — never governed — this
+       * seam. Ordered where the condition was detected; aggregated onto
+       * `receipt.warnings`.
+       */
+      type: "warn";
+      code: CompactContinuationWarningCode;
+      reason: string;
+    }
+  | {
+      /**
+       * Provider/model identity is unproven, so the one feature that needs it —
+       * signed reasoning — is omitted from the body. The compact proceeds.
+       */
+      type: "omit_signed_reasoning";
+      reason: string;
+    }
+  | {
+      /**
+       * Reclaim a stale native/conflict writer row. Only legal after host
+       * ownership authority confirmed no live owner holds this LHC thread.
+       * The ownership registry lives host-side, keyed by LHC thread id.
+       */
+      type: "reclaim_writer";
+      priorClaim: "native" | "conflict";
+      hostAuthority: "no_live_owner";
+    }
+  | {
+      /**
+       * Drop an unusable pending forced boundary and start the seam fresh.
+       * `continuationTurnId` is null when the boundary was never interpreted
+       * (unsupported contract version — no partial parse).
+       */
+      type: "discard_pending_boundary";
+      continuationTurnId: string | null;
+      reason: string;
+    }
+  /** Unreachable in this contract version — the refuse set is empty (CX-S5). */
   | { type: "refuse"; code: CompactContinuationRefuseCode; reason: string };
 
 export type CompactContinuationEffectType = CompactContinuationEffect["type"];
@@ -498,9 +672,16 @@ export type CompactContinuationSeam = {
    * Mutation is forbidden; must skip the seam.
    */
   insideTransportRetry: boolean;
-  /** Input epoch at decision time. */
+  /**
+   * Input epoch at decision time. **Diagnostic only** (CX-S5 / R1): settled
+   * history is not invalidated by input that arrived later in the turn.
+   */
   inputEpochAtDecision: number;
-  /** Input epoch re-checked at apply time; must match decision. */
+  /**
+   * Input epoch re-checked at apply time. **Diagnostic only** — drift from
+   * `inputEpochAtDecision` never vetoes a settled seam; new input belongs to
+   * the next turn.
+   */
   inputEpochAtApply: number;
 };
 
@@ -587,7 +768,8 @@ export type ForcedContinuationBoundary =
  *   repair after crash mid-seam). The whole-seam receipt still records a
  *   `claim_writer` effect as the claim of record — idempotent re-assert, not a
  *   second lock acquisition.
- * - `native` / `conflict`: hard refuse (no silent native mid-turn fallback).
+ * - `native` / `conflict`: a row claims the thread for someone else. Resolved by
+ *   `writerOwnershipAuthority`, never by refusing (CX-S5 / R23-S8).
  */
 export type WriterClaim = "none" | "lhc" | "native" | "conflict";
 
@@ -599,17 +781,34 @@ export const COMPACT_CONTINUATION_WRITER_CLAIMS: readonly WriterClaim[] = [
 ] as const;
 
 export type CompactContinuationInvariants = {
-  /** Capture of the settled model turn is complete and proven. */
-  captureComplete: boolean;
-  /** Provider/model identity required for a valid request is proven. */
-  providerIdentityValid: boolean;
-  /** Exactly one open agentic turn (RECORD-12). */
-  singleOpenTurn: boolean;
   /**
-   * LHC and host-native compact are one writer at a seam.
-   * `conflict` or unexpected `native` claim refuses silent mid-turn fallback.
+   * Capture of the settled model turn is complete and proven. False warns
+   * (`capture_incomplete`) and continues — capture feeds derivation quality,
+   * not compact capability.
    */
+  captureComplete: boolean;
+  /**
+   * Provider/model identity required for a valid request is proven. False warns
+   * and omits signed reasoning; it never blocks the compact.
+   */
+  providerIdentityValid: boolean;
+  /**
+   * Exactly one open agentic turn (RECORD-12). False warns and continues —
+   * turn-record validation is core LHC's own job, not a compact precondition.
+   */
+  singleOpenTurn: boolean;
+  /** Writer row observed at seam entry. */
   writerClaim: WriterClaim;
+  /**
+   * Host ownership authority for a `native`/`conflict` writer row, resolved
+   * host-side against a process-global registry keyed by LHC thread id. The
+   * registry itself never lives in the SDK; the SDK only consumes the answer.
+   * - `no_live_owner`: stale row from a dead owner — reclaim proceeds.
+   * - `live_owner`: a live owner holds the thread — this attempt is the loser
+   *   and continues its current request. It never steals and never strands.
+   * - absent/null: no authority supplied — treated as `live_owner` (no reclaim).
+   */
+  writerOwnershipAuthority?: "no_live_owner" | "live_owner" | null;
 };
 
 /**
@@ -632,8 +831,11 @@ export type CompactMaterialFacts = {
    */
   usefulReduction: boolean;
   /**
-   * When false, no structurally valid provider request can be produced even
-   * after best-effort compact — hard refuse.
+   * When false, no structurally valid provider request could be **proven** even
+   * after best-effort compact. Warns (`provider_request_unvalidated`) and the
+   * best available body is sent anyway: the provider is the final authority on
+   * what it accepts, and a provider rejection is recoverable where a stranded
+   * session is not.
    */
   canProduceValidProviderRequest: boolean;
   /**
@@ -666,13 +868,23 @@ export type CompactMaterialFacts = {
   compactPointAtInstall: number | null;
   /**
    * Maximal eligible unprotected prune still leaves projected pressure unsafe.
-   * Distinct from structural compact failure.
+   * Diagnostic only: warns (`unsafe_runway_projection`) and the relief still
+   * installs. Oversized outgoing content is ours to truncate as a ladder rung,
+   * and the host's exact body check is downstream.
    */
   maximalPruneInsufficient: boolean;
+  /**
+   * 1-based index of this compact/install attempt at this seam identity.
+   * Compared against `policy.compactRetryBudget` for bounded retry. Absent
+   * means 1 (first attempt).
+   */
+  compactAttemptIndex?: number;
   /**
    * Host full-body validation status for this attempt.
    * `not_required` for paths that do not need post-install host validation.
    * LHC never claims the provider body was validated inside the core.
+   * `failed` degrades (warn + keep the installed body); it never rolls back the
+   * core install and never blocks the next provider request.
    */
   hostValidationStatus: "not_required" | "awaiting" | "ok" | "failed";
 };
@@ -691,6 +903,13 @@ export type CompactContinuationPolicy = {
   safeRunwayThresholdTokens?: number;
   /** Source label for the safe-runway threshold (e.g. host_auto_compact_scope). */
   safeRunwayThresholdSource?: string;
+  /**
+   * Bounded compact/install retry budget: how many attempts at this seam
+   * identity may run before the session stops retrying and continues on its
+   * current body. Absent means `DEFAULT_COMPACT_RETRY_BUDGET`. Values below 1
+   * are clamped to 1 — a failed attempt is never terminal.
+   */
+  compactRetryBudget?: number;
 };
 
 /**
@@ -826,18 +1045,25 @@ export type CompactContinuationResidualState = {
    */
   originalAgenticTurnStillOpen: boolean;
   /**
+   * An unusable pending forced boundary was discarded on this seam and the seam
+   * started fresh (R23-S12), or continuation state was omitted in its entirety
+   * for an unknown contract version (R22).
+   */
+  pendingBoundaryDiscarded: boolean;
+  /**
    * This state-machine receipt has authorized a fresh next provider request.
-   * False on refuse, skip (wait and re-evaluate), post-boundary failures, and
-   * while host validation is still awaiting / failed.
+   * False on skip (wait and re-evaluate) and while host validation is still
+   * awaiting. **Never false merely because a condition degraded** — a stranded
+   * session is the one outcome this contract does not permit.
    *
    * **Does not cancel an already in-flight transport retry.** For
    * `transport_retry` skips, this means the compact-continuation machine has
    * not authorized a *new* governed request; the in-flight retry proceeds under
    * transport rules alone.
    *
-   * **Does not claim the host provider body was validated inside LHC.** When
-   * residual requires host validation, this stays false until the host records
-   * an explicit ok acknowledgment.
+   * **Does not claim the host provider body was validated inside LHC.** While
+   * host validation is `awaiting`, this stays false until the host records an
+   * acknowledgment. A `failed` acknowledgment degrades rather than blocks.
    */
   nextProviderRequestAllowed: boolean;
   /** Durable relief path classification for this attempt. */
@@ -859,10 +1085,24 @@ export type CompactContinuationResidualState = {
    */
   hostValidationStatus: "not_required" | "awaiting" | "ok" | "failed";
   /**
-   * True when a successful core install remains installed but next request is
-   * blocked pending host validation (or after host-validation failure).
+   * True when a successful core install remains installed but the next request
+   * is still waiting on a host validation acknowledgment.
    */
   coreInstallRetainedPendingHostValidation: boolean;
+};
+
+/** Bounded compact/install retry accounting for this seam. */
+export type CompactContinuationRetryReceipt = {
+  /** 1-based index of the compact/install attempt this receipt classifies. */
+  attemptIndex: number;
+  /** Effective bounded retry budget (policy value, clamped to at least 1). */
+  budget: number;
+  /**
+   * True when a failed compact/install may be retried at the next eligible
+   * seam. False when no attempt failed, or when the budget is spent and the
+   * session continues on its current body.
+   */
+  retryAuthorized: boolean;
 };
 
 export type CompactContinuationReceipt = {
@@ -881,6 +1121,14 @@ export type CompactContinuationReceipt = {
   lowerTarget: CompactContinuationLowerTargetReceipt;
   fidelity: "full" | "degraded";
   degradationReasons: string[];
+  /**
+   * Closed, ordered list of conditions that degraded this seam instead of
+   * stopping it. Derived from the `warn` effects in `effects`, same order.
+   * Empty on a clean seam.
+   */
+  warnings: CompactContinuationWarning[];
+  /** Bounded compact/install retry accounting. */
+  retry: CompactContinuationRetryReceipt;
   continuation: {
     /**
      * Exactly one continuation turn opened (via atomic force_turn_end), or
@@ -900,7 +1148,9 @@ export type CompactContinuationReceipt = {
    */
   effects: CompactContinuationEffect[];
   residual: CompactContinuationResidualState;
+  /** Always false in this contract version — the refuse set is empty (CX-S5). */
   refused: boolean;
+  /** Always null in this contract version — the refuse set is empty (CX-S5). */
   refuseCode: CompactContinuationRefuseCode | null;
   skipped: boolean;
   skipCode: CompactContinuationSkipCode | null;
@@ -928,11 +1178,14 @@ export type CompactContinuationDecision = {
  * order; the pure oracle classifies the completed seam for parity/receipts.
  *
  * 1. Seam eligibility — settled seam only; never inside transport retry (skips).
- * 2. Input-epoch stability — decision epoch must match apply epoch (skip).
- * 3. Writer exclusivity — one writer; native conflict refuses.
- * 4. Capture / identity / open-turn / tool-correlation proofs (hard refuse when
- *    the host claims a settled seam but record/request health fails — even
- *    below pressure; see refuse-code docs).
+ * 2. Forced-boundary state legality — an unusable applied boundary is discarded
+ *    (warn) and the seam starts fresh; it is never a stop.
+ * 3. Writer exclusivity — a `native`/`conflict` row is resolved by host
+ *    ownership authority: reclaim the stale row when no live owner holds the
+ *    thread, otherwise continue this attempt's current request.
+ * 4. Capture / identity / open-turn proofs — each failure warns and continues.
+ *    Unprovable tool correlation or an invalid protected pair set declines into
+ *    the host's ordinary settled-seam compact on canonical state.
  * 5. Authoritative provider usage — missing/invalid ⇒ continue_normal without
  *    inventing pressure (no upper trigger fire).
  * 6. Pressure = provider base + source-labelled estimate (estimate not relabelled).
@@ -944,31 +1197,36 @@ export type CompactContinuationDecision = {
  *    markerAlreadyPersisted }` and skips re-forcing.
  * 9. Compact (closed history) with degraded-derivation tolerance; lower target
  *    is not a success gate. Fidelity degradation is classified at assembly.
- * 10. Preserve tool pair / insert marker / install serving view.
- * 11. Record durable receipt (not user chat); release writer.
+ * 10. Preserve tool pair / insert marker / install serving view. An unsafe
+ *     projected runway and an unproven provider request both warn and install.
+ * 11. Bounded retry or decline — a failed compact/install retries within budget,
+ *     then continues on the current body. Neither strands.
+ * 12. Record durable receipt (not user chat); release writer.
  *
  * ### Residual state after post-claim failure / skip with pending boundary
  * - **tool-preserve** compact/install failure: original agentic turn remains
- *   open; prior serving view intact; no marker; writer released.
+ *   open; prior serving view intact; no marker; writer released; the next
+ *   provider request proceeds on the current body.
  * - **active non-tool** compact failure **after** forced boundary (before
  *   this attempt's marker): boundary durable; `markerPersisted` reflects
  *   residual state (`markerAlreadyPersisted` or false when none yet);
- *   markerServed=false; prior view intact; no next request; writer released.
+ *   markerServed=false; prior view intact; writer released; boundary repairable
+ *   at the next seam while the session continues.
  * - **active non-tool** install failure **after** successful compact: marker
  *   is persisted (`markerPersisted=true`, `markerServed=false`); no
  *   `install_serving_view`; prior view intact; boundary durable; repair
  *   recoverable; writer released.
  * - **preserve-tool** install failure (install attempt reached): effects
- *   include `preserve_tool_pair_verbatim` before refuse; no marker; original
- *   turn open; prior view intact; writer released.
- * - **install_failed** always wins over `no_reduction` classification.
+ *   include `preserve_tool_pair_verbatim` before the failure warning; no
+ *   marker; original turn open; prior view intact; writer released.
+ * - **install failure** always wins over `no_reduction` classification.
  *   `usefulReduction` is evaluated only after successful install.
- * - **Settled-seam early health/invariant refuse** with `writerClaim: "lhc"`:
- *   effects record idempotent `claim_writer` and final `release_writer` when
- *   residual `writerReleased` is true. Never claim/release native/conflict.
+ * - **Settled-seam decline** with `writerClaim: "lhc"`: effects record
+ *   idempotent `claim_writer` and final `release_writer` when residual
+ *   `writerReleased` is true. Never claim/release native/conflict.
  * - **Skip**: `nextProviderRequestAllowed=false` (wait and re-evaluate). Does
  *   not cancel an in-flight transport retry. Pending-boundary residual fields
- *   remain truthful on skip/health-refuse.
+ *   remain truthful on skip.
  * - **Repair/retry**: `forcedContinuationBoundary` with
  *   `{ applied: true, forcedThisSeam: false, markerAlreadyPersisted }` takes
  *   precedence over fresh pressure; do not duplicate the boundary; reassert
@@ -977,15 +1235,17 @@ export type CompactContinuationDecision = {
  */
 export const COMPACT_CONTINUATION_TRANSITION_ORDER = [
   "seam_eligibility",
-  "input_epoch",
   /**
-   * Forced-boundary state + continuation-kind legality. Runs after epoch and
-   * **before** writer/capture proofs so invalid applied pairs refuse as
-   * `invalid_pending_boundary_continuation` even when a native writer conflict
-   * is also present (pinned by fixture/test). Covers wrong kind, empty turn id,
-   * and fresh force (`forcedThisSeam: true`) with `markerAlreadyPersisted: true`.
+   * Forced-boundary state + continuation-kind legality. Runs **before**
+   * writer/capture proofs. An applied boundary with the wrong continuation
+   * kind, an empty turn id, or a contradictory fresh-force marker claim is
+   * discarded (warn) rather than refused; the seam then starts fresh.
    */
   "forced_boundary_state_legality",
+  /**
+   * Writer claim, including stale-row reclaim gated on host ownership
+   * authority. A live owner means this attempt continues its current request.
+   */
   "writer_claim",
   "capture_identity_correlation",
   "provider_usage_authority",
@@ -994,6 +1254,8 @@ export const COMPACT_CONTINUATION_TRANSITION_ORDER = [
   "force_boundary_if_continue_turn",
   "compact_assembly",
   "install_or_preserve",
+  /** Bounded compact/install retry, or decline into the ordinary compact path. */
+  "bounded_retry_or_decline",
   "receipt_and_release",
 ] as const;
 
@@ -1013,21 +1275,37 @@ export const COMPACT_CONTINUATION_INVARIANTS = [
   "normal_completion_creates_no_empty_continuation_turn",
   "missing_derivations_degrade_fidelity_not_block_valid_compact",
   "lower_target_is_not_a_success_gate",
-  "record_request_health_refuses_even_below_pressure_after_claimed_seam",
   "unsettled_seam_is_skip_not_corruption",
-  "refuse_only_when_no_valid_request_or_invariants_unproven",
-  "one_writer_at_seam_no_silent_native_mid_turn_fallback",
-  "post_claim_failures_release_writer_and_state_residual_truthfully",
+  // ── CX-S5: the compact path gates against not compacting, never against compacting
+  "refuse_set_is_empty_no_stop_in_the_compact_path",
+  "never_strand_a_session_every_condition_warns_and_continues",
+  "record_request_health_warns_and_continues_never_refuses",
+  "input_epoch_is_diagnostic_only_never_vetoes_a_settled_seam",
+  "unproven_provider_identity_omits_signed_reasoning_only",
+  "uncorrelatable_tool_pairs_decline_into_ordinary_compact",
+  "invalid_protected_pair_set_declines_into_ordinary_compact",
+  "unusable_pending_boundary_is_discarded_and_the_seam_starts_fresh",
+  "unknown_contract_version_omits_continuation_state_in_its_entirety",
+  "unknown_contract_version_is_never_partially_parsed",
+  "compact_and_install_failure_are_bounded_retry_not_terminal",
+  "retry_budget_exhaustion_continues_on_the_current_body",
+  "stale_writer_row_reclaim_requires_host_ownership_authority",
+  "writer_ownership_registry_lives_host_side_not_in_the_sdk",
+  "live_writer_loser_continues_current_request_never_steals_never_strands",
+  "unsafe_runway_is_diagnostic_not_a_gate",
+  "best_available_body_is_sent_provider_is_final_authority",
+  "host_validation_failure_degrades_and_never_blocks_next_request",
+  "warnings_are_loud_diagnostics_that_never_govern",
+  // ── carried forward
   "forced_boundary_repair_takes_precedence_over_fresh_pressure",
-  "applied_forced_boundary_requires_active_non_tool_continuation",
-  "applied_forced_boundary_residual_truthful_on_skip_and_refuse",
+  "applied_forced_boundary_residual_truthful_on_skip_and_decline",
   "install_failure_wins_over_no_reduction_classification",
   "marker_persisted_before_install_served_only_after_install",
   "marker_persisted_is_residual_state_not_attempt_scoped",
   "marker_idempotency_key_is_prefix_plus_continuation_turn_id",
   "skip_does_not_authorize_next_provider_request",
   "writer_claim_lhc_is_idempotent_reassert_not_second_lock",
-  "settled_seam_lhc_claim_early_refuse_records_claim_and_release",
+  "post_claim_failures_release_writer_and_state_residual_truthfully",
   "preserve_tool_install_failure_includes_preserve_effect",
   "input_is_closed_shape_unknown_fields_rejected",
   "receipts_are_not_user_chat",
