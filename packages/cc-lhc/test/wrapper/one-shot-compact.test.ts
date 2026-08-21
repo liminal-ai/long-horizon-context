@@ -22,9 +22,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
-import type { Lhc } from "lhc";
+import { estimateTokens, type Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { defaultRegistryPath } from "../../src/intake/paths.js";
@@ -36,6 +37,7 @@ import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { applySessionAllocation } from "../../src/governor/band-allocation.js";
 import { loadContextPolicy } from "../../src/governor/config.js";
+import { pendingPromptEstimate, preLaunchEstimate } from "../../src/observation/estimate.js";
 import { run } from "../../src/wrapper/run.js";
 import { indeterminateResult, selfOnlyProbe } from "../helpers/identity.js";
 
@@ -745,7 +747,9 @@ describe("run: one-shot pre-launch compaction", () => {
   }, 30_000);
 
   it("no provider reading in the transcript: pressure falls back to the estimate and still compacts", async () => {
-    const { harness, runPromise } = launchOneShot({ prompt: "x".repeat(24_000), transcriptTokens: null });
+    const prompt = "word ".repeat(8_000);
+    expect(pendingPromptEstimate(prompt).tokens).toBeGreaterThan(POLICY.policy.upperBoundTokens);
+    const { harness, runPromise } = launchOneShot({ prompt, transcriptTokens: null });
 
     await waitFor(() => harness.spawned.length === 1, "launched child");
     expect(harness.spawned[0]!.args[harness.spawned[0]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
@@ -1026,6 +1030,47 @@ describe("run: one-shot pre-launch compaction", () => {
       expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${RESUMED_ID}`);
     }, 20_000);
   });
+
+  it("exact 164208 + 104263-byte prompt estimates 66025 and compacts before launch", async () => {
+    const prompt = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "burnin-defect-001-prompt.txt"),
+      "utf8",
+    );
+    expect(Buffer.byteLength(prompt, "utf8")).toBe(104_263);
+    expect(estimateTokens(prompt)).toBe(66_025);
+    expect(pendingPromptEstimate(prompt).tokens).toBe(66_025);
+    expect(pendingPromptEstimate(prompt).tokens).not.toBe(26_065);
+    const captured = { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" as const };
+    expect(preLaunchEstimate(captured, prompt).tokens).toBe(66_025);
+
+    const selected = applySessionAllocation(loadContextPolicy(), "balanced");
+    const resolved = {
+      ...selected,
+      policy: {
+        ...selected.policy,
+        autoCompact: true,
+        lowerBoundTokens: 100_000,
+        upperBoundTokens: 200_000,
+        minRunwayTokens: 50_000,
+      },
+    };
+    const { harness, runPromise, sdk } = launchOneShot({
+      prompt,
+      transcriptTokens: 164_208,
+      resolvedContextPolicy: resolved as typeof POLICY,
+    });
+
+    await waitFor(() => harness.spawned.length === 1, "the single launched child");
+    expect(harness.spawnedWhenRebuilt()).toBe(0);
+    const args = harness.spawned[0]!.args;
+    expect(args[args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
+    expect(args.filter((token) => token === prompt)).toHaveLength(1);
+    expect(sdk.threadView.compact).toHaveBeenCalled();
+
+    harness.spawned[0]!.fireExit(0);
+    await runPromise;
+    expect(harness.spawned).toHaveLength(1);
+  }, 30_000);
 
   it("a one-shot on a session with no persisted transcript launches directly", async () => {
     mocks.transcriptPath = null;

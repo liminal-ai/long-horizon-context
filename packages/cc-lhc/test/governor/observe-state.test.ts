@@ -439,4 +439,64 @@ describe("governor observe-state fold", () => {
     expect(settled).toHaveLength(1);
     expect(settled[0]?.decision).toBe("below_threshold");
   });
+
+  it("all-zero sampling retains provider and growth; failed mode=set 0 cannot reset", () => {
+    const resolved = armed(true);
+    resolved.policy = {
+      ...resolved.policy,
+      autoCompact: true,
+      lowerBoundTokens: 100_000,
+      upperBoundTokens: 200_000,
+      minRunwayTokens: 50_000,
+    };
+    const afterValid = applyGovernorLifecycleBatch(
+      createGovernorRuntimeState({ captureGeneration: 1 }),
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "req:prior",
+          providerUsage: { input_tokens: 164_208, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        },
+        {
+          kind: "post_measurement_estimate",
+          tokens: 66_025,
+          source: "user_prompt:js-tiktoken:o200k_base",
+          mode: "add",
+        },
+      ],
+      resolved,
+    );
+    expect(afterValid.state.latestProviderContext?.total).toBe(164_208);
+    expect(afterValid.state.postMeasurementEstimate.tokens).toBe(66_025);
+
+    const afterZero = applyGovernorLifecycleBatch(
+      afterValid.state,
+      [
+        {
+          kind: "sampling_observed",
+          samplingId: "req:fail",
+          providerUsage: {
+            input_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+            output_tokens: 0,
+          },
+        },
+        {
+          kind: "post_measurement_estimate",
+          tokens: 0,
+          source: "provider_reported_output_tokens",
+          mode: "set",
+        },
+        { kind: "turn_settled", reason: "other" },
+      ],
+      resolved,
+    );
+    expect(afterZero.state.latestProviderContext?.total).toBe(164_208);
+    expect(afterZero.state.postMeasurementEstimate.tokens).toBe(66_025);
+    const settled = afterZero.observes.filter((o) => o.observePhase === "settled_seam").at(-1);
+    expect(settled?.pressure.nextRequestPressureTokens).toBe(230_233);
+    expect(settled?.decision).toBe("would_compact");
+  });
 });

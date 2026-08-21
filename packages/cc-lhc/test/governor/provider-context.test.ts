@@ -58,6 +58,17 @@ describe("providerContextFromUsage", () => {
     expect(providerContextFromUsage(undefined)).toBeNull();
   });
 
+  it("all-zero provider input triad is never authoritative", () => {
+    expect(
+      providerContextFromUsage({
+        input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 0,
+      }),
+    ).toBeNull();
+  });
+
   it("rejects invalid numbers (NaN, Infinity, non-integer, negative, unsafe)", () => {
     expect(providerContextFromUsage({ input_tokens: Number.NaN })).toBeNull();
     expect(providerContextFromUsage({ input_tokens: Number.POSITIVE_INFINITY })).toBeNull();

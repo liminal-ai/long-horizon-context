@@ -4,13 +4,15 @@
  * drives real startCaptureSession with replay signatures and a lifecycle sink.
  */
 
-import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
-import type { Lhc, MessageEventInput, ThreadRef } from "lhc";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { estimateTokens, type Lhc, type MessageEventInput, TOKEN_ESTIMATOR_ID, type ThreadRef } from "lhc";
 import { describe, expect, it } from "vitest";
 
 import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
+import { decideGovernor } from "../../src/governor/decide.js";
 import { applyGovernorLifecycleBatch, createGovernorRuntimeState } from "../../src/governor/observe-state.js";
 import type { ResolvedContextPolicy } from "../../src/governor/types.js";
 import { loadThreadSignatures, openLineageDatabase, recordSessionThread } from "../../src/intake/lineage-db.js";
@@ -18,8 +20,10 @@ import { signaturesForRolloutLine } from "../../src/intake/replay-dedupe.js";
 import { startCaptureSession } from "../../src/intake/session.js";
 import {
   HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
-  hostEstimateFromCanonicalBytes,
+  pendingPromptEstimate,
+  preLaunchEstimate,
   PROVIDER_OUTPUT_ESTIMATE_SOURCE,
+  USER_PROMPT_ESTIMATE_SOURCE,
 } from "../../src/observation/estimate.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
@@ -536,12 +540,14 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       await sleep(200);
 
       const adds = lifecycle.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add");
-      // Only the recorded user line (~1000+ tokens from 4k+ bytes), not the skipped 8k tool.
+      // Only the recorded user line (LHC estimateTokens), not the skipped 8k tool.
       expect(adds).toHaveLength(1);
       const add0 = adds[0]!;
       expect(add0.kind).toBe("post_measurement_estimate");
       if (add0.kind === "post_measurement_estimate") {
-        expect(add0.tokens).toBe(hostEstimateFromCanonicalBytes(Buffer.byteLength(recordBody, "utf8")).tokens);
+        expect(add0.tokens).toBe(estimateTokens(recordBody));
+        expect(add0.source).toBe(USER_PROMPT_ESTIMATE_SOURCE);
+        expect(add0.source).toContain(TOKEN_ESTIMATOR_ID);
       }
       expect(skippedBodies.size).toBeGreaterThan(0);
     } finally {
@@ -1011,4 +1017,193 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       await session2.stop();
     }
   });
+
+  it("live intake: 164208 + exact user 66025 + API-error zeros preserve pressure for next prelaunch", async () => {
+    const prompt = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "burnin-defect-001-prompt.txt"),
+      "utf8",
+    );
+    expect(Buffer.byteLength(prompt, "utf8")).toBe(104_263);
+    expect(estimateTokens(prompt)).toBe(66_025);
+
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-est-burnin-"));
+    const projectsRoot = join(root, "projects");
+    const cwd = "/work/est-burnin";
+    mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
+    const sid = "22222222-3333-4444-5555-666666666666";
+    const path = join(projectsRoot, encodeProjectPath(cwd), `${sid}.jsonl`);
+    writeFileSync(path, "");
+    const lineageDbPath = join(root, "lineage.sqlite");
+    const registryPath = join(root, "reg.sqlite");
+    const threadId = "th_burnin_defect001";
+    openLineageDatabase(lineageDbPath);
+    recordSessionThread(lineageDbPath, sid, threadId, {}, { prefix: { kind: "none" } });
+
+    const resolved = armedPolicy({
+      autoCompact: true,
+      lowerBoundTokens: 100_000,
+      upperBoundTokens: 200_000,
+      minRunwayTokens: 50_000,
+      profile: "balanced",
+    });
+    let gov = createGovernorRuntimeState({ captureGeneration: 1 });
+    const lifecycle: LifecycleSignal[] = [];
+    const observes: Array<{
+      observePhase: string;
+      decision: string;
+      providerContextTotal: number | null;
+      pressure: number;
+    }> = [];
+
+    const session = startCaptureSession({
+      cwd,
+      expectedSession: { sessionId: sid, source: "fresh" },
+      knownRolloutPath: path,
+      prefixBoundary: { kind: "none" },
+      noInference: true,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath,
+      registryPath,
+      log: () => {},
+      logError: () => {},
+      onLifecycle: (signals) => {
+        lifecycle.push(...signals);
+        const applied = applyGovernorLifecycleBatch(gov, signals, resolved);
+        gov = applied.state;
+        for (const o of applied.observes) {
+          observes.push({
+            observePhase: o.observePhase,
+            decision: o.decision,
+            providerContextTotal: o.providerContextTotal,
+            pressure: o.pressure.nextRequestPressureTokens,
+          });
+        }
+      },
+      launchThread: { threadId, createdAtLaunch: true },
+      initSdkFn: () => fakeSdk([]),
+    });
+
+    try {
+      await waitFor(() => session.isCaptureReady(), "ready");
+      appendJsonl(
+        path,
+        completeAssistant(sid, "a-prior", "req_prior", "ok", {
+          input_tokens: 164_208,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          output_tokens: 0,
+        }),
+      );
+      await waitFor(
+        () =>
+          lifecycle.some((s) => s.kind === "sampling_observed" && s.samplingId === "req:req_prior") &&
+          lifecycle.some(
+            (s) => s.kind === "post_measurement_estimate" && s.mode === "set" && s.source === PROVIDER_OUTPUT_ESTIMATE_SOURCE,
+          ),
+        "prior sampling applied",
+      );
+      appendJsonl(path, userLine(sid, "u-burnin", prompt));
+      await waitFor(
+        () =>
+          lifecycle.some(
+            (s) =>
+              s.kind === "post_measurement_estimate" &&
+              s.mode === "add" &&
+              s.tokens === 66_025 &&
+              s.source === USER_PROMPT_ESTIMATE_SOURCE,
+          ),
+        "accepted user growth",
+        15_000,
+      );
+      appendJsonl(path, {
+        type: "assistant",
+        uuid: "api-err",
+        sessionId: sid,
+        error: "invalid_request",
+        isApiErrorMessage: true,
+        message: {
+          role: "assistant",
+          id: "msg_api_err",
+          model: "<synthetic>",
+          stop_reason: "stop_sequence",
+          content: [{ type: "text", text: "Prompt is too long" }],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      });
+      await waitFor(() => lifecycle.some((s) => s.kind === "turn_settled"), "api-error settle", 15_000);
+
+      expect(gov.latestProviderContext?.total).toBe(164_208);
+      expect(gov.postMeasurementEstimate.tokens).toBe(66_025);
+      expect(gov.postMeasurementEstimate.source).toBe(USER_PROMPT_ESTIMATE_SOURCE);
+      const iFail = lifecycle.findIndex(
+        (s) => s.kind === "sampling_observed" && s.samplingId !== "req:req_prior",
+      );
+      expect(iFail).toBeGreaterThan(0);
+      expect(
+        lifecycle.slice(iFail).some((s) => s.kind === "post_measurement_estimate" && s.mode === "set"),
+      ).toBe(false);
+      expect(lifecycle.some((s) => s.kind === "sampling_observed" && s.samplingId === "req:req_prior")).toBe(true);
+      expect(
+        lifecycle.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add" && s.tokens === 66_025),
+      ).toHaveLength(1);
+
+      const settled = observes.filter((o) => o.observePhase === "settled_seam");
+      expect(settled.length).toBeGreaterThanOrEqual(1);
+      const lastSettled = settled.at(-1)!;
+      expect(lastSettled.providerContextTotal).toBe(164_208);
+      expect(lastSettled.pressure).toBe(230_233);
+      expect(lastSettled.decision).toBe("would_compact");
+      expect(observes.every((o) => o.providerContextTotal !== 0 && o.pressure !== 0)).toBe(true);
+
+      const nextPrelaunch = decideGovernor({
+        policy: resolved.policy,
+        turnOpen: false,
+        operationInFlight: false,
+        providerContext: gov.latestProviderContext,
+        providerContextFreshness: "last_known",
+        postMeasurementEstimate: preLaunchEstimate(gov.postMeasurementEstimate, "hi"),
+      });
+      expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBeGreaterThanOrEqual(200_000);
+      expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBe(
+        164_208 + 66_025 + pendingPromptEstimate("hi").tokens,
+      );
+      expect(nextPrelaunch.kind).toBe("would_compact");
+    } finally {
+      await session.stop();
+    }
+
+    const lifecycle2: LifecycleSignal[] = [];
+    const session2 = startCaptureSession({
+      cwd,
+      expectedSession: { sessionId: sid, source: "explicit_resume" },
+      knownRolloutPath: path,
+      prefixBoundary: { kind: "none" },
+      noInference: true,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath,
+      registryPath,
+      log: () => {},
+      logError: () => {},
+      onLifecycle: (signals) => {
+        lifecycle2.push(...signals);
+      },
+      launchThread: { threadId, createdAtLaunch: false },
+      initSdkFn: () => fakeSdk([]),
+    });
+    try {
+      await waitFor(() => session2.isCaptureReady(), "replay ready");
+      expect(session2.stats.skippedReplay).toBeGreaterThan(0);
+      expect(
+        lifecycle2.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add" && s.tokens === 66_025),
+      ).toHaveLength(0);
+      expect(lifecycle2.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add")).toHaveLength(0);
+    } finally {
+      await session2.stop();
+    }
+  }, 30_000);
 });

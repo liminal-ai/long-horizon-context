@@ -78,6 +78,8 @@ export function providerContextFromUsage(
 
   const total = inputTokens + cacheCreationInputTokens + cacheReadInputTokens;
   if (!Number.isSafeInteger(total)) return null;
+  // All-zero input triad is a blocked/error placeholder, never a measurement.
+  if (total === 0) return null;
 
   return {
     inputTokens,

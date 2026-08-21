@@ -189,6 +189,14 @@ export function applyGovernorLifecycleSignal(
           source: mergeEstimateSource(prev.source, delta.source, prev.tokens),
           domain: "source_labelled_estimate",
         };
+      } else if (
+        delta.tokens === 0 &&
+        state.providerContextFreshness !== "current_sampling" &&
+        normalizePostMeasurementEstimate(state.postMeasurementEstimate).tokens > 0
+      ) {
+        // Failed/blocked sampling is last_known: a following mode=set of 0
+        // must not erase accumulated post-measurement growth.
+        estimate = normalizePostMeasurementEstimate(state.postMeasurementEstimate);
       } else {
         estimate = delta;
       }

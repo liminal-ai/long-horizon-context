@@ -11,6 +11,7 @@
 
 import type { MessageEventInput } from "lhc";
 
+import { providerContextFromUsage } from "../governor/provider-context.js";
 import {
   contentBlocks,
   isAssistantLine,
@@ -28,6 +29,7 @@ import {
   HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
   hostEstimateFromCanonicalBytes,
   type PostMeasurementEstimateFold,
+  postMeasurementEstimateFromEvents,
   PROVIDER_OUTPUT_ESTIMATE_SOURCE,
   readProviderOutputTokens,
   totalCanonicalPayloadBytes,
@@ -312,26 +314,31 @@ export function observeRolloutLine(
           ...(claim.model !== undefined ? { model: claim.model } : {}),
           ...(claim.providerUsage !== undefined ? { providerUsage: claim.providerUsage } : {}),
         });
-        // New authoritative measurement: estimate resets to this response's
-        // contribution to next-request growth (provider output_tokens preferred).
-        const outputTokens = readProviderOutputTokens(claim.providerUsage);
-        if (outputTokens !== null) {
-          pushEstimate({
-            kind: "post_measurement_estimate",
-            tokens: outputTokens,
-            source: PROVIDER_OUTPUT_ESTIMATE_SOURCE,
-            mode: "set",
-          });
-        } else {
-          const est = hostEstimateFromCanonicalBytes(estimateFold.pendingAssistantPayloadBytes);
-          pushEstimate({
-            kind: "post_measurement_estimate",
-            tokens: est.tokens,
-            source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
-            mode: "set",
-          });
+        const blocked =
+          item.isApiErrorMessage === true || (typeof item.error === "string" && item.error !== "");
+        const provider = blocked ? null : providerContextFromUsage(claim.providerUsage);
+        // API-error, blocked, all-zero, malformed, or missing usage is not a
+        // new measurement: do not emit mode=set that would erase growth.
+        if (provider !== null) {
+          const outputTokens = readProviderOutputTokens(claim.providerUsage);
+          if (outputTokens !== null) {
+            pushEstimate({
+              kind: "post_measurement_estimate",
+              tokens: outputTokens,
+              source: PROVIDER_OUTPUT_ESTIMATE_SOURCE,
+              mode: "set",
+            });
+          } else {
+            const est = hostEstimateFromCanonicalBytes(estimateFold.pendingAssistantPayloadBytes);
+            pushEstimate({
+              kind: "post_measurement_estimate",
+              tokens: est.tokens,
+              source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+              mode: "set",
+            });
+          }
+          estimateFold.hasAuthoritativeSampling = true;
         }
-        estimateFold.hasAuthoritativeSampling = true;
         estimateFold.pendingAssistantPayloadBytes = 0;
       } else {
         // Duplicate complete (replay/dedupe): do not re-seed estimate or count
@@ -354,12 +361,12 @@ export function observeRolloutLine(
     // above accumulate into pending and emit on complete).
     wouldPostMeasurementAdd = true;
     if (!deferPressure) {
-      const est = hostEstimateFromCanonicalBytes(linePayloadBytes);
+      const est = postMeasurementEstimateFromEvents(events);
       if (est.tokens > 0 || linePayloadBytes > 0) {
         lifecycle.push({
           kind: "post_measurement_estimate",
           tokens: est.tokens,
-          source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+          source: est.source,
           mode: "add",
         });
       }
@@ -474,21 +481,20 @@ export function observeRolloutLines(
 }
 
 /**
- * Host-byte post-measurement add for events that survived replay dedupe and
- * successful intake. Zero tokens when empty. Callers must not invoke this for
- * sampling-complete assistant lines whose contribution was already published
- * as mode:set.
+ * Post-measurement add for events that survived replay dedupe and successful
+ * intake. Same estimator as immediate observe mode:add. Zero tokens when empty.
+ * Callers must not invoke this for sampling-complete assistant lines whose
+ * contribution was already published as mode:set.
  */
 export function postMeasurementAddFromAcceptedEvents(
   events: readonly MessageEventInput[],
 ): Extract<LifecycleSignal, { kind: "post_measurement_estimate" }> | null {
-  const bytes = totalCanonicalPayloadBytes(events);
-  if (bytes <= 0) return null;
-  const est = hostEstimateFromCanonicalBytes(bytes);
+  const est = postMeasurementEstimateFromEvents(events);
+  if (est.tokens <= 0) return null;
   return {
     kind: "post_measurement_estimate",
     tokens: est.tokens,
-    source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+    source: est.source,
     mode: "add",
   };
 }
