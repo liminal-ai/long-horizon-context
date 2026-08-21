@@ -559,6 +559,10 @@ describe("run", () => {
 
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => modalOpen, "modal for overflow");
+    await waitFor(
+      async () => (await readFile(logPath, "utf8")).includes(OUTPUT_HOLD_OVERFLOW_MESSAGE),
+      "overflow warning in wrapper log",
+    );
     await waitFor(() => !modalOpen, "overflow restore", 10_000);
     expect(wrapperPassthroughWrites()).toEqual([]);
 

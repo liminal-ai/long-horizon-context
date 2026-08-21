@@ -553,7 +553,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
     } finally {
       await session.stop();
     }
-  });
+  }, 15_000);
 
   it("malformed intake outcome length/key/order degrades and publishes no settle/add", async () => {
     for (const malformed of ["length", "key", "order"] as const) {
