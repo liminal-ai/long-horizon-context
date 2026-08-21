@@ -1,4 +1,20 @@
 export {
+  ACCEPTED_BOUNDED_CORE_SOURCE_COMMIT,
+  ADAPTATION_BASE_COMMIT,
+  applySessionAllocation,
+  allocationById,
+  BAND_ALLOCATIONS,
+  type BandAllocation,
+  type BandAllocationId,
+  CAPTURE_VIEW_CONFIG,
+  compactConstruction,
+  HOST_VIEW_PROFILES,
+  type InternalCoreProfile,
+  isBandAllocationId,
+  mutationCoreProfile,
+  PRODUCT_PRESET_IDS,
+} from "./band-allocation.js";
+export {
   BUILTIN_CONTEXT_POLICY,
   CANONICAL_LHC_PROFILES,
   CONFIG_FALLBACK_NOTICE,

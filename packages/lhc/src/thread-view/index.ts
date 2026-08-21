@@ -44,7 +44,7 @@ import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import { type ProtectedBoundaryPreview, previewProtectedVisibilityBoundary } from "./internal/protected-boundary.js";
 import { assembleBandText } from "./internal/render.js";
 import { fireViewInjection } from "./internal/seam.js";
-import type { ArrangementEntry, SelectionResult } from "./internal/select.js";
+import type { ArrangementEntry, ArrangementSourceState, SelectionResult } from "./internal/select.js";
 import { buildSessionThreadView } from "./internal/session-view.js";
 import {
   readStoredView,
@@ -841,12 +841,7 @@ export type PrepareCompactOptions = {
 function buildPreparedFromArrangement(
   db: DatabaseSync,
   selection: SelectionResult,
-  inputs: {
-    emptyChunkIds?: readonly string[];
-    maxEventOrder: number;
-    derivationCounts: Record<string, Record<string, number>>;
-    skippedRecords: SkippedRecord[];
-  },
+  selectionState: ArrangementSourceState,
   viewId: string,
   firstKeptMessageId: string | null,
   profileName: string | null,
@@ -875,9 +870,9 @@ function buildPreparedFromArrangement(
 
   return {
     selection,
-    emptyChunkIds: inputs.emptyChunkIds ?? [],
-    maxEventOrder: inputs.maxEventOrder,
-    derivationCounts: inputs.derivationCounts,
+    emptyChunkIds: selectionState.emptyChunkIds ?? [],
+    maxEventOrder: selectionState.maxEventOrder,
+    derivationCounts: selectionState.derivationCounts,
     sourceState,
     selectedSourceTurnIds,
     viewId,
@@ -887,7 +882,7 @@ function buildPreparedFromArrangement(
     ...(compactPointUpperBound !== undefined ? { compactPointUpperBound } : {}),
     bands,
     warnings,
-    skippedRecords: inputs.skippedRecords,
+    skippedRecords: selectionState.skippedRecords,
     degraded: selection.entries
       .filter((entry) => entry.degraded)
       .map((entry) => ({
@@ -999,11 +994,11 @@ function assemblePreparedCompact(
   });
   if (!computed.ok) return computed;
 
-  const { selection, inputs, viewId, firstKeptMessageId } = computed.value;
+  const { selection, sourceState, viewId, firstKeptMessageId } = computed.value;
   const prepared = buildPreparedFromArrangement(
     db,
     selection,
-    inputs,
+    sourceState,
     viewId,
     firstKeptMessageId,
     profileName,

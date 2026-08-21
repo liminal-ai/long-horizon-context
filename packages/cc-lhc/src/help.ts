@@ -14,7 +14,7 @@ Wrapper flags:
   --lhc-lower-bound-tokens=N       Override Smart Compact target for this launch
   --lhc-upper-bound-tokens=N       Override automatic Smart Compact trigger
   --lhc-min-runway-tokens=N        Override minimum trigger/target runway
-  --lhc-profile=NAME               Override the LHC serving profile
+  --lhc-profile=default|balanced|historical  Override Band % allocation
 
 Environment:
   CC_LHC_HOME                      State root (default: ~/.cc-lhc; on Windows it

@@ -18,7 +18,7 @@ describe("context policy config", () => {
     expect(BUILTIN_CONTEXT_POLICY.lowerBoundTokens).toBe(180_000);
     expect(BUILTIN_CONTEXT_POLICY.upperBoundTokens).toBe(360_000);
     expect(BUILTIN_CONTEXT_POLICY.autoCompact).toBe(true);
-    expect(BUILTIN_CONTEXT_POLICY.profile).toBe("continuation");
+    expect(BUILTIN_CONTEXT_POLICY.profile).toBe("default");
     expect(BUILTIN_CONTEXT_POLICY.pruneEnabled).toBe(false);
   });
 
@@ -56,7 +56,7 @@ describe("context policy config", () => {
 
   it("rejects unknown profile and non-integer bounds in a panel edit", () => {
     expect(validateContextPolicy({ ...BUILTIN_CONTEXT_POLICY, profile: "invented" })).toEqual(
-      expect.arrayContaining([expect.stringMatching(/canonical LHC profile/)]),
+      expect.arrayContaining([expect.stringMatching(/profile must be one of default, balanced, historical/)]),
     );
     expect(validateContextPolicy({ ...BUILTIN_CONTEXT_POLICY, upperBoundTokens: Number.NaN })).toEqual(
       expect.arrayContaining([expect.stringMatching(/upperBoundTokens/)]),
@@ -88,7 +88,7 @@ describe("context policy config", () => {
     expect(resolved.sources.lowerBoundTokens).toBe("user");
     expect(resolved.policy.autoCompact).toBe(true);
     expect(resolved.sources.autoCompact).toBe("project");
-    expect(resolved.policy.profile).toBe("continuation");
+    expect(resolved.policy.profile).toBe("default");
     expect(resolved.sources.profile).toBe("builtin");
   });
 

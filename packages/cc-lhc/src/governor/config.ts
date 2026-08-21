@@ -14,6 +14,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { PRODUCT_PRESET_IDS } from "./band-allocation.js";
 import type {
   ConfigFallback,
   ContextPolicy,
@@ -29,7 +30,7 @@ export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
   autoCompact: true,
   lowerBoundTokens: 180_000,
   upperBoundTokens: 360_000,
-  profile: "continuation",
+  profile: "default",
   pruneEnabled: false,
   pruneThresholdTokens: null,
   pruneTargetTokens: null,
@@ -40,8 +41,8 @@ export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
 export const CONFIG_FALLBACK_NOTICE =
   "Invalid compact configuration. Default configuration used. Please fix or update the configuration.";
 
-/** Canonical SDK profile names — no second percentage ontology. */
-export const CANONICAL_LHC_PROFILES = ["continuation", "conversation", "coding"] as const;
+/** Accepted user/CLI `profile` values — product preset IDs, not core names. */
+export const CANONICAL_LHC_PROFILES = PRODUCT_PRESET_IDS;
 
 const POLICY_FIELD_KEYS = Object.keys(BUILTIN_CONTEXT_POLICY) as PolicyFieldKey[];
 
@@ -135,7 +136,7 @@ export function parseContextPolicyPartial(raw: unknown, origin: string): ParsedP
   if (Object.hasOwn(raw, "profile")) {
     const v = raw.profile;
     if (typeof v !== "string" || !(CANONICAL_LHC_PROFILES as readonly string[]).includes(v)) {
-      drop("profile", `profile must be one of ${CANONICAL_LHC_PROFILES.join(", ")}`);
+      drop("profile", `profile must be one of ${PRODUCT_PRESET_IDS.join(", ")}`);
     } else {
       out.profile = v;
     }
@@ -237,7 +238,7 @@ function fieldErrors(policy: ContextPolicy): string[] {
     }
   }
   if (!(CANONICAL_LHC_PROFILES as readonly string[]).includes(policy.profile)) {
-    errors.push(`profile "${policy.profile}" is not a canonical LHC profile (${CANONICAL_LHC_PROFILES.join(", ")})`);
+    errors.push(`profile must be one of ${PRODUCT_PRESET_IDS.join(", ")}`);
   }
   return errors;
 }

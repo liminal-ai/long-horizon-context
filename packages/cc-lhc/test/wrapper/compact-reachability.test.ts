@@ -167,7 +167,7 @@ function policy(over: Record<string, unknown> = {}) {
     autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
-    profile: "continuation",
+    profile: "default",
     nativeCompactMode: "emergency_backstop" as const,
     nativeBackstopTokens: 1_000_000,
     pruneEnabled: false,

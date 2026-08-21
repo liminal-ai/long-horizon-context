@@ -205,7 +205,7 @@ describe("TC-5.3d resume and replay do not duplicate the note", () => {
       totalByteLength: 20,
     });
     const outcome = await runContextMutation(
-      { operation: "compact", profile: "continuation", lowerBoundTokens: 100 },
+      { operation: "compact", profile: "default", lowerBoundTokens: 100 },
       { ...runtimeWith(sdk, () => live), cwd: "/work/int" },
     );
     expect(outcome.kind).toBe("rebuilt");
@@ -302,7 +302,7 @@ describe("TC-5.3e failed handoff has no success outcome", () => {
       totalByteLength: 20,
     });
     const outcome = await runContextMutation(
-      { operation: "auto_compact", profile: "continuation", lowerBoundTokens: 100, liveAsyncWork: live },
+      { operation: "auto_compact", profile: "default", lowerBoundTokens: 100, liveAsyncWork: live },
       runtimeWith(sdk, () => live),
     );
     expect(outcome.kind).toBe("rebuilt");
@@ -354,8 +354,8 @@ describe("AR-5 interactive manual snapshot", () => {
       );
       const plan: ContextMutationPlan =
         operation === "compact"
-          ? { operation, profile: "continuation", lowerBoundTokens: 100 }
-          : { operation, profile: "continuation", lowerBoundTokens: 100, manualPruneTargetTokens: 50 };
+          ? { operation, profile: "default", lowerBoundTokens: 100 }
+          : { operation, profile: "default", lowerBoundTokens: 100, manualPruneTargetTokens: 50 };
       const outcome = await runContextMutation(plan, runtimeWith(sdk, () => live));
       expect(outcome.kind, operation).toBe("rebuilt");
       if (outcome.kind !== "rebuilt") continue;
@@ -398,7 +398,7 @@ describe("AR-8 one trailing runtime note and no injection/rewrite/second replace
       };
     });
     const outcome = await runContextMutation(
-      { operation: "compact", profile: "continuation", lowerBoundTokens: 100 },
+      { operation: "compact", profile: "default", lowerBoundTokens: 100 },
       { ...runtimeWith(sdk, () => live), sourceRolloutPath: sourcePath },
     );
     expect(outcome.kind).toBe("rebuilt");
@@ -439,7 +439,7 @@ describe("automatic Smart Compact exposes cleanup once on a user-visible surface
       autoCompact: true,
       lowerBoundTokens: 1_000,
       upperBoundTokens: 5_000,
-      profile: "continuation",
+      profile: "default",
       pruneEnabled: false,
       pruneThresholdTokens: null,
       pruneTargetTokens: null,

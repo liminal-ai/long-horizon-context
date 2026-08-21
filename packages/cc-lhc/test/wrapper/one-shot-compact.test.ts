@@ -34,6 +34,8 @@ import { currentSessionAlias } from "../../src/intake/thread-alias.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
+import { applySessionAllocation } from "../../src/governor/band-allocation.js";
+import { loadContextPolicy } from "../../src/governor/config.js";
 import { run } from "../../src/wrapper/run.js";
 import { indeterminateResult, selfOnlyProbe } from "../helpers/identity.js";
 
@@ -323,7 +325,7 @@ const POLICY = {
     autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
-    profile: "continuation",
+    profile: "default",
     pruneEnabled: false,
     pruneThresholdTokens: null,
     pruneTargetTokens: null,
@@ -445,7 +447,14 @@ describe("run: one-shot pre-launch compaction", () => {
     /** Descriptor IO seam (process-identity failure injection). */
     descriptorIo?: import("../../src/runtime/descriptor.js").DescriptorIo;
     onSpawn?: (fake: FakePty, index: number) => void;
-  }): { harness: OneShotHarness; runPromise: Promise<number>; rebuiltPath: string; writeSpy: ReturnType<typeof vi.spyOn> } {
+    resolvedContextPolicy?: typeof POLICY;
+  }): {
+    harness: OneShotHarness;
+    runPromise: Promise<number>;
+    rebuiltPath: string;
+    writeSpy: ReturnType<typeof vi.spyOn>;
+    sdk: ReturnType<typeof sdkForCapture>;
+  } {
     const sdk = sdkForCapture(input.compactFails === true ? { compactFails: true } : {});
     const spawned: FakePty[] = [];
     /** Every argv the wrapper tried to spawn, whether or not a child resulted. */
@@ -515,7 +524,7 @@ describe("run: one-shot pre-launch compaction", () => {
       stdout: fakeStream() as never,
       stderr: fakeStream() as never,
       noInference: true,
-      resolvedContextPolicy: POLICY as never,
+      resolvedContextPolicy: (input.resolvedContextPolicy ?? POLICY) as never,
       governorReceiptDbPath: join(rolloutDir, "receipts.sqlite"),
       preLaunchCaptureTimeoutMs: 2_000,
       ...(input.descriptorIo === undefined ? {} : { descriptorIo: input.descriptorIo }),
@@ -536,6 +545,7 @@ describe("run: one-shot pre-launch compaction", () => {
       runPromise,
       rebuiltPath,
       writeSpy,
+      sdk,
     };
   }
 
@@ -564,6 +574,36 @@ describe("run: one-shot pre-launch compaction", () => {
     harness.spawned[0]!.fireExit(0);
     await runPromise;
     expect(harness.spawned).toHaveLength(1);
+  }, 20_000);
+
+  it("TC-4.2b one-shot Smart Compact passes mapped Balanced profile and explicit lowerBound", async () => {
+    const selected = applySessionAllocation(loadContextPolicy(), "balanced");
+    const resolved = {
+      ...selected,
+      policy: {
+        ...selected.policy,
+        autoCompact: true,
+        lowerBoundTokens: 2_500,
+        upperBoundTokens: 5_000,
+        minRunwayTokens: 100,
+      },
+    };
+    const { harness, runPromise, sdk } = launchOneShot({
+      prompt: "do the thing",
+      transcriptTokens: 6_000,
+      resolvedContextPolicy: resolved as typeof POLICY,
+    });
+    await waitFor(() => harness.spawned.length === 1, "the single launched child");
+    expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), {
+      profile: "cc-lhc-balanced",
+      params: { lowerBound: 2_500 },
+    });
+    expect(sdk.threadView.previewCompact).toHaveBeenCalledWith(expect.anything(), {
+      profile: "cc-lhc-balanced",
+      params: { lowerBound: 2_500 },
+    });
+    harness.spawned[0]!.fireExit(0);
+    await runPromise;
   }, 20_000);
 
   it("the current-session pointer advances only when the rebuilt session is observed taking the prompt", async () => {

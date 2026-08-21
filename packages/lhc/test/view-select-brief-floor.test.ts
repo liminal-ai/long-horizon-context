@@ -158,11 +158,11 @@ describe("brief failure floor", () => {
   const lookup = (_subjectId: string, derivationType: string): DerivationSnapshot | undefined =>
     derivationType === "chunk_summary_brief" ? failedBrief : undefined;
   const fallback = (bandBudget: number) =>
-    resolveBriefRepresentation("c3", lookup, bandBudget, {
+    resolveBriefRepresentation("c3", lookup, bandBudget, () => ({
       kind: "concat",
       content: OVERSIZED_BODY,
       reason: "failed_floor",
-    });
+    }));
 
   it("caps at 5% of the brief band budget above the floor", () => {
     expect(briefFallbackCapTokens(8000)).toBe(400);

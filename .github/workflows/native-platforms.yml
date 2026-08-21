@@ -117,6 +117,9 @@ jobs:
       - name: Assemble current-target npm package
         run: node packages/cc-lhc/scripts/assemble-npm-package.mjs --targets current
 
+      - name: Test assembled npm package
+        run: pnpm --filter cc-lhc run test:package
+
       - name: Check current-target npm package
         run: node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm
 

@@ -292,7 +292,7 @@ describe("durable continuity labels redact command bodies and latestEvent", () =
       totalByteLength: 20,
     });
     const outcome = await runContextMutation(
-      { operation: "compact", profile: "continuation", lowerBoundTokens: 100 },
+      { operation: "compact", profile: "default", lowerBoundTokens: 100 },
       runtime,
     );
     expect(outcome.kind).toBe("rebuilt");
@@ -416,7 +416,7 @@ describe("manual mutation freezes live work at the settled seam", () => {
       prefixBoundary: { kind: "verified", lineCount: 1, byteLength: 10, sha256: "ab".repeat(32) },
       totalByteLength: 20,
     });
-    const plan: ContextMutationPlan = { operation: "compact", profile: "continuation", lowerBoundTokens: 100 };
+    const plan: ContextMutationPlan = { operation: "compact", profile: "default", lowerBoundTokens: 100 };
     const outcome = await runContextMutation(plan, runtime);
     expect(outcome.kind).toBe("rebuilt");
     if (outcome.kind === "rebuilt") {

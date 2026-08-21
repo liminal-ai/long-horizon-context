@@ -184,7 +184,7 @@ const POLICY = (() => {
     autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
-    profile: "continuation",
+    profile: "default",
     pruneEnabled: false,
     pruneThresholdTokens: null,
     pruneTargetTokens: null,

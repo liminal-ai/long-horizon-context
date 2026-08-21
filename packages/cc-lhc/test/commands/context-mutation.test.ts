@@ -94,7 +94,7 @@ function runtimeWith(sdk: ReturnType<typeof sdkMock>): LhcCommandRuntime {
 
 const COMPACT_PLAN: ContextMutationPlan = {
   operation: "auto_compact",
-  profile: "continuation",
+  profile: "default",
   lowerBoundTokens: 240_000,
 };
 
@@ -103,11 +103,11 @@ describe("runContextMutation", () => {
     const sdk = sdkMock(0);
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
     const outcome = await runContextMutation(
-      { ...COMPACT_PLAN, profile: "coding", lowerBoundTokens: 111_000 },
+      { ...COMPACT_PLAN, profile: "balanced", lowerBoundTokens: 111_000 },
       runtimeWith(sdk),
     );
     expect(outcome.kind).toBe("rebuilt");
-    const expected = { profile: "coding", params: { lowerBound: 111_000 } };
+    const expected = { profile: "cc-lhc-balanced", params: { lowerBound: 111_000 } };
     expect(sdk.threadView.previewCompact).toHaveBeenCalledWith(expect.anything(), expected);
     expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), expected);
     writeSpy.mockRestore();

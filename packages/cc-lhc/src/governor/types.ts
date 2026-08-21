@@ -57,7 +57,7 @@ export interface ContextPolicy {
   lowerBoundTokens: number;
   /** Provider-context pressure trigger (tokens). */
   upperBoundTokens: number;
-  /** Canonical LHC band profile name (SDK built-in). */
+  /** Product Band % preset id: default, balanced, or historical. */
   profile: string;
   /**
    * Combined compact-time prune; off by default. When enabled with coherent

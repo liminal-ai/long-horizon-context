@@ -18,6 +18,7 @@
 
 import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
 
+import { compactConstruction } from "../governor/band-allocation.js";
 import { CAPTURE_NOT_READY_REFUSAL } from "../intake/session.js";
 import {
   formatCompactBlocked,
@@ -112,7 +113,7 @@ export function formatDurableReceipt(
 
 export interface ContextMutationPlan {
   operation: ContextMutationOperation;
-  /** Canonical SDK profile for compact construction (compact operations). */
+  /** Product Band % preset id; mapped to an internal core profile at preparation. */
   profile: string;
   /** Configured SDK lower target, passed as params.lowerBound. */
   lowerBoundTokens: number;
@@ -274,10 +275,10 @@ export async function runContextMutation(
       }
     }
 
-    const compactOpts = {
+    const compactOpts = compactConstruction({
       profile: plan.profile,
-      params: { lowerBound: plan.lowerBoundTokens },
-    };
+      lowerBoundTokens: plan.lowerBoundTokens,
+    });
     const preview = await sdk.threadView.previewCompact(threadRef, compactOpts);
     if (!preview.ok) return sdkFailure(formatCompactPreviewError(preview.error.reason));
     if (preview.value.kind === "error") return sdkFailure(formatCompactBlocked(preview.value.reason));

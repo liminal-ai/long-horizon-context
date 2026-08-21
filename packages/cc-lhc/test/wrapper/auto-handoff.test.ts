@@ -13,6 +13,10 @@ import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { defaultLineageDbPath, readPendingCurrentSession } from "../../src/intake/lineage-db.js";
 import { defaultRegistryPath } from "../../src/intake/paths.js";
 import { acceptCurrentSession, claudeSessionAlias, currentSessionAlias } from "../../src/intake/thread-alias.js";
+import { applySessionAllocation, type BandAllocationId } from "../../src/governor/band-allocation.js";
+import * as governor from "../../src/governor/index.js";
+import { loadContextPolicy } from "../../src/governor/config.js";
+import { presentAllocation } from "../../src/wrapper/preset-presentation.js";
 import { run } from "../../src/wrapper/run.js";
 
 /** Isolate durable governor receipts per test (shared ~/.cc-lhc would cross-talk). */
@@ -258,7 +262,7 @@ const POLICY = {
     autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
-    profile: "continuation",
+    profile: "default",
     pruneEnabled: false,
     pruneThresholdTokens: null,
     pruneTargetTokens: null,
@@ -492,6 +496,125 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(code).toBe(0);
     writeSpy.mockRestore();
   }, 15_000);
+
+  it("TC-4.2a session Historical survives a real child handoff and a later automatic mutation", async () => {
+    const sessionPolicy = applySessionAllocation(loadContextPolicy(), "historical");
+    const loadSpy = vi.spyOn(governor, "loadContextPolicy");
+    const resolved = {
+      ...sessionPolicy,
+      policy: {
+        ...sessionPolicy.policy,
+        autoCompact: true,
+        lowerBoundTokens: 4_400,
+        upperBoundTokens: 5_000,
+        minRunwayTokens: 100,
+      },
+    };
+    expect(presentAllocation(resolved.policy.profile as BandAllocationId).label).toBe("Historical");
+
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-hist-handoff-"));
+    let rebuilds = 0;
+    vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      rebuilds += 1;
+      const sessionId = rebuilds === 1 ? REBUILT_ID : "22345678-1234-1234-1234-123456789abc";
+      const rebuiltPath = join(rolloutDir, `${sessionId}.jsonl`);
+      writeFileSync(rebuiltPath, '{"line":1}\n');
+      return {
+        sessionId,
+        rolloutPath: rebuiltPath,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: { kind: "verified", lineCount: 0, byteLength: 0, sha256: "aa".repeat(32) },
+        totalByteLength: 10,
+      };
+    });
+    mocks.captureFactory = (opts) => {
+      const generation = 1;
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      const scripted = scriptedCaptureSession(
+        opts,
+        sdk,
+        isRebuilt ? (opts.expectedSession?.sessionId ?? REBUILT_ID) : "old-session",
+        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+        generation,
+      );
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    const runPromise = run(["--effort", "medium", "--permission-mode", "manual"], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const fake = makeFakePty(2100 + spawned.length, `hist${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: resolved,
+      governorReceiptDbPath: tempReceiptDbPath(),
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    await waitFor(() => spawned.length === 1, "first child");
+    lifecycleSink!([{ kind: "session_bound", sessionId: "old-session" }]);
+    lifecycleSink!(TRIGGER_SIGNALS);
+    await waitFor(() => sdk.threadView.compact.mock.calls.length >= 1, "first compact");
+    await waitFor(() => results.length === 1, "first handoff");
+    expect(results[0]?.kind).toBe("success");
+    expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), {
+      profile: "cc-lhc-historical",
+      params: { lowerBound: 4_400 },
+    });
+    expect(loadSpy, "wrapper reloaded policy at handoff").not.toHaveBeenCalled();
+    expect(presentAllocation(resolved.policy.profile as BandAllocationId).label).toBe("Historical");
+
+    await waitFor(() => spawned.length === 2, "replacement child");
+    await new Promise((r) => setTimeout(r, 250));
+    lifecycleSink!([
+      { kind: "turn_opened", reason: "user_prompt" },
+      {
+        kind: "sampling_observed",
+        samplingId: "req:r2",
+        providerUsage: { input_tokens: 2, cache_creation_input_tokens: 3_000, cache_read_input_tokens: 3_000 },
+      },
+      { kind: "turn_settled", reason: "end_turn" },
+    ]);
+    await waitFor(() => sdk.threadView.compact.mock.calls.length === 2, "post-handoff mutation");
+    expect(sdk.threadView.compact).toHaveBeenNthCalledWith(2, expect.anything(), {
+      profile: "cc-lhc-historical",
+      params: { lowerBound: 4_400 },
+    });
+    await waitFor(() => results.length === 2, "second handoff");
+    expect(results[1]?.kind).toBe("success");
+    expect(loadSpy, "wrapper reloaded policy after handoff").not.toHaveBeenCalled();
+
+    const fresh = loadContextPolicy();
+    expect(fresh.policy.profile).toBe("default");
+    expect(presentAllocation(fresh.policy.profile as BandAllocationId).label).toBe("Default");
+
+    spawned[spawned.length - 1]!.fireExit(0);
+    await runPromise;
+  }, 20_000);
 
   it("keeps a live replacement when the registry pointer cannot advance, and records the acceptance", async () => {
     mocks.unwritableAlias = claudeSessionAlias(REBUILT_ID);

@@ -246,7 +246,7 @@ builtin < user config < project config < launch flags / panel edits
 User config is `$XDG_CONFIG_HOME/cc-lhc/config.json` (or
 `~/.config/cc-lhc/config.json`); project config is `.cc-lhc.json`. Supported
 persisted fields are `autoCompact`, `lowerBoundTokens`, `upperBoundTokens`,
-`profile`, `pruneEnabled`,
+`profile` (`default`, `balanced`, or `historical`), `pruneEnabled`,
 `pruneThresholdTokens`, `pruneTargetTokens`, and `minRunwayTokens`.
 
 Bad configuration never disarms the product. An unknown field, a malformed

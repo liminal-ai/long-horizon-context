@@ -11,6 +11,7 @@ import {
   type ThreadRef,
   threads,
 } from "lhc";
+import { CAPTURE_VIEW_CONFIG } from "../governor/band-allocation.js";
 import type { CaptureCommandContext } from "../commands/dispatch.js";
 import { ccAssignments } from "../inference/assignments.js";
 import { claudeCliModelCall } from "../inference/claude-cli.js";
@@ -94,6 +95,7 @@ export function captureSdkConfig(options: { noInference?: boolean } = {}): SdkCo
     return {
       mode: "manual",
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
+      view: CAPTURE_VIEW_CONFIG,
     };
   }
   return {
@@ -103,6 +105,7 @@ export function captureSdkConfig(options: { noInference?: boolean } = {}): SdkCo
       assignments: ccAssignments(),
       timeoutMs: DEFAULT_INFERENCE_TIMEOUT_MS,
     },
+    view: CAPTURE_VIEW_CONFIG,
   };
 }
 
