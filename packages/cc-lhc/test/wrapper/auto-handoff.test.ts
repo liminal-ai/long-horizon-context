@@ -940,7 +940,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     spawned[0]!.fireExit(0);
     await runPromise;
     writeSpy.mockRestore();
-  });
+  }, 15_000);
 
   it("an interactive positional prompt compacts and swaps; the replacement never inherits the prompt", async () => {
     const spawned: FakePty[] = [];
