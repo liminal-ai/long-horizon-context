@@ -7,9 +7,6 @@ import {
   forceResetInput,
   type InputAction,
   type InputState,
-  MODAL_ASCII_NOTE,
-  MODAL_HELP_LINE,
-  MODAL_SCOPE_NOTE,
   MODAL_UNKNOWN_PREFIX,
   mapModalCommand,
   processInputChunk,
@@ -382,25 +379,26 @@ describe("modal line editor", () => {
   });
 
   it("passes the prune target through", () => {
-    const result = feed(openModal(), "prune 50000\r");
+    const result = feed(openModal(), "smart-prune 50000\r");
     expect(executed(result.actions)).toEqual(["/lhc-prune 50000"]);
   });
 
-  it("treats a malformed prune argument as unknown and stays modal", () => {
-    const result = feed(openModal(), "prune lots\r");
+  it("treats a malformed smart-prune argument as invalid and stays modal", () => {
+    const result = feed(openModal(), "smart-prune lots\r");
     expect(executed(result.actions)).toEqual([]);
-    expect(result.state.panelRows).toEqual([`${MODAL_UNKNOWN_PREFIX}prune lots`, MODAL_HELP_LINE]);
+    expect(result.state.panelRows[0]).toContain("invalid smart-prune target");
     expect(result.state.mode).toBe("modal");
   });
 
-  it("shows help (with the ASCII-only note) as panel rows on help/? and stays modal", () => {
-    const result = feed(openModal(), "?\r");
-    expect(result.state.panelRows).toEqual([MODAL_HELP_LINE, MODAL_SCOPE_NOTE, MODAL_ASCII_NOTE]);
+  it("opens the Help route on help and stays modal", () => {
+    const result = feed(openModal(), "help\r");
+    expect(result.state.route).toBe("help");
     expect(result.state.mode).toBe("modal");
-    const then = feed(result.state, "stats\r");
+    expect(executed(result.actions)).toEqual([]);
+    const home = feed(result.state, "\r");
+    expect(home.state.route).toBe("home");
+    const then = feed(home.state, "stats\r");
     expect(executed(then.actions)).toEqual(["/lhc-stats"]);
-    // stale help rows are cleared when a command starts
-    expect(then.state.panelRows).toEqual([]);
   });
 
   it("shows help for an unknown command, stays modal, and still executes next", () => {
@@ -752,13 +750,15 @@ describe("mapModalCommand", () => {
   it("maps the surface", () => {
     expect(mapModalCommand("status")).toBe("/lhc-status");
     expect(mapModalCommand("stats")).toBe("/lhc-stats");
-    expect(mapModalCommand("compact")).toBe("/lhc-compact");
+    expect(mapModalCommand("smart-compact")).toBe("/lhc-compact");
+    expect(mapModalCommand("compact")).toBeNull();
     expect(mapModalCommand("export")).toBe("/lhc-export");
     expect(mapModalCommand("export extra")).toBeNull();
-    expect(mapModalCommand("prune")).toBe("/lhc-prune");
-    expect(mapModalCommand("prune 1234")).toBe("/lhc-prune 1234");
+    expect(mapModalCommand("smart-prune")).toBe("/lhc-prune");
+    expect(mapModalCommand("smart-prune 1234")).toBe("/lhc-prune 1234");
+    expect(mapModalCommand("prune")).toBeNull();
     expect(mapModalCommand("status extra")).toBeNull();
-    expect(mapModalCommand("prune 12 34")).toBeNull();
+    expect(mapModalCommand("smart-prune 12 34")).toBeNull();
     expect(mapModalCommand("lhc-status")).toBeNull();
     expect(mapModalCommand("")).toBeNull();
   });

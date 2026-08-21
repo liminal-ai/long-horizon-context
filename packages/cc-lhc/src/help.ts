@@ -32,8 +32,8 @@ Environment:
 
 Control panel:
   Press ctrl-] (or CC_LHC_LEADER) while Claude is running.
-  Commands: status, stats, compact, prune [targetTokens], export,
-            auto on|off, bounds <lower> <upper>, help
+  Commands: status, stats, smart-compact, smart-prune [targetTokens], export,
+            auto on|off, bounds <lower> <upper>, help, introduction
 
 Reserved subcommands are handled by cc-lhc. Ordinary Claude arguments, including
 --help, are forwarded after safe session-selector normalization.`;

@@ -12,6 +12,7 @@ import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from
 import { registerRebuiltSessionLineage } from "../commands/rebuild-receipt.js";
 import {
   applyGovernorLifecycleBatch,
+  applySessionAllocation,
   type ContextPolicyPartial,
   createGovernorRuntimeState,
   decideGovernor,
@@ -126,6 +127,7 @@ import {
 import { createInputDebugLogger } from "./input-debug.js";
 import { consumeLegacyHandoffState } from "./legacy-handoff-state.js";
 import {
+  clampPanelViewport,
   createInputState,
   finishExecuting,
   forceResetInput,
@@ -137,6 +139,7 @@ import {
   showLateReceipts,
   showReceipts,
 } from "./modal.js";
+import { buildPanelViewSnapshot } from "./panel-commands.js";
 import {
   argvSuppliesNativeAutocompact,
   NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY,
@@ -1804,14 +1807,82 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     };
   };
 
+  const formatAgo = (atMs: number): string => {
+    const seconds = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+    return `${Math.round(seconds / 3600)}h ago`;
+  };
+
+  const snapshotPanelView = () => {
+    const policy = resolvedContextPolicy.policy;
+    const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
+    const retrievalState =
+      runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
+    const inFlight = commandGuard.current();
+    const extraStatusRows: string[] = [];
+    extraStatusRows.push(`retrieval ${retrievalState}`);
+    extraStatusRows.push(disableNativeAutoCompact ? nativeCompactDisabledStatusLine() : nativeCompactPassthroughStatusLine());
+    extraStatusRows.push(
+      handoffInProgress
+        ? "active operation: handoff in progress"
+        : inFlight !== null
+          ? `active operation: ${inFlight.label}`
+          : "active operation: none",
+    );
+    if (lastAction === null) {
+      extraStatusRows.push("last action: none this wrapper session");
+    } else {
+      const parts = [
+        `${lastAction.operation === "prune" ? "pruned" : SMART_COMPACT} ${formatAgo(lastAction.atMs)} (${lastAction.origin})`,
+      ];
+      if (lastAction.triggerTokens !== undefined)
+        parts.push(`trigger ${formatTokensShort(lastAction.triggerTokens)}`);
+      if (lastAction.zoneBefore !== undefined && lastAction.zoneAfter !== undefined)
+        parts.push(`zone ${formatTokensShort(lastAction.zoneBefore)} -> ${formatTokensShort(lastAction.zoneAfter)}`);
+      if (lastAction.viewTokens !== undefined) parts.push(`view ${formatTokensShort(lastAction.viewTokens)}`);
+      extraStatusRows.push(`last action: ${parts.join(" · ")}`);
+    }
+    if (lastAttempt !== null && (lastAction === null || lastAttempt.atMs > lastAction.atMs)) {
+      extraStatusRows.push(`last attempt: ${lastAttempt.summary} (${formatAgo(lastAttempt.atMs)})`);
+    }
+    if (minObservedProviderTotal !== null && policy.upperBoundTokens <= minObservedProviderTotal) {
+      extraStatusRows.push(
+        `WARNING: trigger ${formatTokensShort(policy.upperBoundTokens)} is at/below observed Claude host overhead ` +
+          `(${formatTokensShort(minObservedProviderTotal)}) — every settled turn would compact`,
+      );
+    }
+    extraStatusRows.push("edits (auto/bounds) are session-scoped: live now, survive handoffs, lost at wrapper exit");
+    extraStatusRows.push(
+      `precedence: builtin < user ${userConfigPath()} < project ${projectConfigPath(process.cwd())} < session`,
+    );
+    extraStatusRows.push(...startupAnomalyNotices);
+    return buildPanelViewSnapshot({
+      providerContextTokens: governorState.latestProviderContext?.total ?? null,
+      targetTokens: policy.lowerBoundTokens,
+      triggerTokens: policy.upperBoundTokens,
+      autoCompact: policy.autoCompact,
+      captureHealth: capturePhase,
+      profile: policy.profile,
+      degradedNotices: [...standingNonviabilityAlarm, ...configFallbackNotice],
+      fallbacks: resolvedContextPolicy.fallbacks,
+      extraStatusRows,
+    });
+  };
+
   const renderModalPanel = (): void => {
     if (inputState.mode === "passthrough") return;
+    const cols = stdout.columns ?? DEFAULT_COLS;
+    const rows = stdout.rows ?? DEFAULT_ROWS;
+    if (inputState.mode === "modal" || inputState.mode === "executing") {
+      inputState = clampPanelViewport({ ...inputState, panelView: snapshotPanelView() }, cols, rows);
+    }
     const inFlight = commandGuard.current();
     const elapsedSeconds =
       inputState.mode === "executing" && inFlight !== null
         ? Math.floor((Date.now() - inFlight.startedAtMs) / 1000)
         : undefined;
-    stdout.write(renderPanel(inputState, stdout.columns ?? DEFAULT_COLS, stdout.rows ?? DEFAULT_ROWS, elapsedSeconds));
+    stdout.write(renderPanel(inputState, cols, rows, elapsedSeconds));
   };
 
   // Once-a-second repaint while a command executes: the progress line's
@@ -1965,7 +2036,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // reopened: the child owns the live screen, so the receipt goes to the
       // wrapper log (doctrine — never write into CC's UI).
       for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): [${label}] ${message}`);
-      if (retainForNextPanel && messages.length > 0) {
+      if (messages.length > 0) {
         pendingPanelNotices = [`${label} finished:`, ...messages.flatMap((message) => message.split("\n"))];
       }
     };
@@ -2011,7 +2082,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     };
 
     const runModalCommand = (commandLine: string): void => {
-      const label = commandLine.replace(/^\/lhc-/, "");
+      const dispatchLabel = commandLine.replace(/^\/lhc-/, "");
+      const label = inputState.line.trim() === "" ? dispatchLabel : inputState.line.trim();
       if (commandLine.startsWith("/lhc-auto ") || commandLine.startsWith("/lhc-bounds ")) {
         // Synchronous session-policy edit: no SDK, no processes, no guard needed.
         settleCommand(applyPolicyEdit(commandLine), label);
@@ -2028,7 +2100,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       startExecutingTicker();
       // A mutating manual command owns the settled session's input for the
       // whole operation, exactly like the automatic path.
-      const mutating = label === "compact" || label.startsWith("prune");
+      const mutating = dispatchLabel === "compact" || dispatchLabel.startsWith("prune");
       if (mutating) takeInputOwnership();
       // A synchronous throw (runtime-snapshot construction, dispatch setup)
       // must not escape into the stdin data handler as an uncaught exception —
@@ -2062,7 +2134,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             }
             return;
           }
-          if (label === "compact" || label.startsWith("prune")) {
+          if (mutating) {
             lastAttempt = {
               summary: `manual ${label} did not hand off: ${outcome.messages[outcome.messages.length - 1] ?? "(no detail)"}`,
               atMs: Date.now(),
@@ -2081,82 +2153,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         });
     };
 
-    const formatAgo = (atMs: number): string => {
-      const seconds = Math.max(0, Math.round((Date.now() - atMs) / 1000));
-      if (seconds < 60) return `${seconds}s ago`;
-      if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
-      return `${Math.round(seconds / 3600)}h ago`;
-    };
-
-    /** Compact status summary shown above the prompt whenever the panel opens.
-     * "Trigger context" is Claude host context; "LHC view" is SDK-served size. */
-    const buildPanelStatusRows = (): string[] => {
-      const policy = resolvedContextPolicy.policy;
-      const rows: string[] = ["LHC context management"];
-      // The standing nonviability alarm sits above everything: it is the one
-      // condition where cc-lhc has stopped swapping and the operator has to act.
-      for (const line of standingNonviabilityAlarm) rows.push(line);
-
-      const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
-      const retrievalState =
-        runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
-      rows.push(`capture ${capturePhase} · retrieval ${retrievalState}`);
-
-      const provider = governorState.latestProviderContext;
-      const providerText =
-        provider === null
-          ? "provider context: none observed yet"
-          : `provider context ${formatTokensShort(provider.total)}`;
-      rows.push(
-        `${providerText} · auto ${policy.autoCompact ? "on" : "off"} · ` +
-          `trigger ${formatTokensShort(policy.upperBoundTokens)} · target ${formatTokensShort(policy.lowerBoundTokens)}`,
-      );
-      // Bad configuration never disables anything; it says so, here and in the
-      // compact message, until the operator fixes it.
-      for (const line of configFallbackNotice.slice(0, 4)) rows.push(line);
-      rows.push(disableNativeAutoCompact ? nativeCompactDisabledStatusLine() : nativeCompactPassthroughStatusLine());
-
-      const inFlight = commandGuard.current();
-      rows.push(
-        handoffInProgress
-          ? "active operation: handoff in progress"
-          : inFlight !== null
-            ? `active operation: ${inFlight.label}`
-            : "active operation: none",
-      );
-
-      if (lastAction === null) {
-        rows.push("last action: none this wrapper session");
-      } else {
-        const parts = [
-          `${lastAction.operation === "prune" ? "pruned" : SMART_COMPACT} ${formatAgo(lastAction.atMs)} (${lastAction.origin})`,
-        ];
-        if (lastAction.triggerTokens !== undefined)
-          parts.push(`trigger ${formatTokensShort(lastAction.triggerTokens)}`);
-        if (lastAction.zoneBefore !== undefined && lastAction.zoneAfter !== undefined)
-          parts.push(`zone ${formatTokensShort(lastAction.zoneBefore)} -> ${formatTokensShort(lastAction.zoneAfter)}`);
-        if (lastAction.viewTokens !== undefined) parts.push(`view ${formatTokensShort(lastAction.viewTokens)}`);
-        rows.push(`last action: ${parts.join(" · ")}`);
-      }
-      if (lastAttempt !== null && (lastAction === null || lastAttempt.atMs > lastAction.atMs)) {
-        rows.push(`last attempt: ${lastAttempt.summary} (${formatAgo(lastAttempt.atMs)})`);
-      }
-
-      if (minObservedProviderTotal !== null && policy.upperBoundTokens <= minObservedProviderTotal) {
-        rows.push(
-          `WARNING: trigger ${formatTokensShort(policy.upperBoundTokens)} is at/below observed Claude host overhead ` +
-            `(${formatTokensShort(minObservedProviderTotal)}) — every settled turn would compact`,
-        );
-      }
-
-      rows.push("edits (auto/bounds) are session-scoped: live now, survive handoffs, lost at wrapper exit");
-      rows.push(
-        `precedence: builtin < user ${userConfigPath()} < project ${projectConfigPath(process.cwd())} < session`,
-      );
-      for (const notice of startupAnomalyNotices) rows.push(notice);
-      return rows;
-    };
-
     const applyActions = (actions: ReturnType<typeof processInputChunk>["actions"]): void => {
       for (const action of actions) {
         if (action.kind === "enter_modal") {
@@ -2165,9 +2161,20 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           altScreen.enter();
           inputState = {
             ...inputState,
-            panelRows: [...buildPanelStatusRows(), ...pendingPanelNotices],
+            panelView: snapshotPanelView(),
+            panelRows: [...pendingPanelNotices],
+            route: "home",
+            viewport: { scrollOffset: 0, selectedIndex: -1 },
           };
           pendingPanelNotices = [];
+        } else if (action.kind === "select_allocation") {
+          resolvedContextPolicy = applySessionAllocation(resolvedContextPolicy, action.id);
+          inputState = {
+            ...inputState,
+            panelView: snapshotPanelView(),
+            route: "home",
+            viewport: { scrollOffset: 0, selectedIndex: -1 },
+          };
         } else if (action.kind === "exit_modal") {
           // Leave BEFORE flushing: the terminal restores CC's main screen,
           // then the held bytes land on it in order.

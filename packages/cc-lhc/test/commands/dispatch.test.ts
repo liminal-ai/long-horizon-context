@@ -57,10 +57,10 @@ describe("dispatchLhcCommand", () => {
     expect(outcome.messages[0]).toContain("thread=th_test");
   });
 
-  it("lists help including compact and prune (modal command names)", async () => {
+  it("lists help including smart-compact and smart-prune (modal command names)", async () => {
     const outcome = await dispatchLhcCommand("/lhc-help", fakeRuntime());
-    expect(outcome.messages[0]).toContain("compact");
-    expect(outcome.messages[0]).toContain("prune [targetTokens]");
+    expect(outcome.messages[0]).toContain("smart-compact");
+    expect(outcome.messages[0]).toContain("smart-prune [targetTokens]");
   });
 
   it("reports unknown /lhc-* commands", async () => {

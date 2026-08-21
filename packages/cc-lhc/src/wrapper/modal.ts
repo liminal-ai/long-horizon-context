@@ -27,14 +27,38 @@
 // precedent. Ctrl-G was rejected: BEL (0x07) TERMINATES OSC sequences, so a
 // BEL on stdin inside an OSC response is protocol, not a keypress.
 
+import type { BandAllocationId } from "../governor/band-allocation.js";
+import { PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
 import type { CompactConfirmDisposition } from "./compact-confirm.js";
+import {
+  allocationIndex,
+  helpLines,
+  HOME_ACTIONS,
+  homeCursorLength,
+  homeSelectedActionIndex,
+  introductionLines,
+  mapModalCommand,
+  MODAL_ASCII_NOTE,
+  MODAL_HELP_LINE,
+  MODAL_SCOPE_NOTE,
+  MODAL_UNKNOWN_PREFIX,
+  type PanelRoute,
+  type PanelViewSnapshot,
+  type PanelViewport,
+  parsePanelCommand,
+} from "./panel-commands.js";
 
 export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
-export const MODAL_HELP_LINE =
-  "commands: status | stats | prune [targetTokens] | compact | export | auto on|off | bounds <lower> <upper> | help";
-export const MODAL_SCOPE_NOTE = "auto/bounds edits are session-only (live now; survive handoffs; lost at wrapper exit)";
-export const MODAL_ASCII_NOTE = "input is ASCII-only — non-ASCII bytes are ignored";
-export const MODAL_UNKNOWN_PREFIX = "unknown command: ";
+export {
+  mapModalCommand,
+  MODAL_ASCII_NOTE,
+  MODAL_HELP_LINE,
+  MODAL_SCOPE_NOTE,
+  MODAL_UNKNOWN_PREFIX,
+  type PanelRoute,
+  type PanelViewSnapshot,
+  type PanelViewport,
+};
 
 /**
  * Bytes that cannot serve as the leader: NUL, BEL (terminates OSC — a BEL on
@@ -126,6 +150,11 @@ export interface InputState {
   heldEnter: number[];
   /** The recognized command shown in the overlay. */
   notifierCommand: string;
+  /** Control Panel route. Ignored while passthrough/notifier/compact_confirm. */
+  route: PanelRoute;
+  viewport: PanelViewport;
+  /** Live Home/Help/Introduction snapshot supplied by run.ts. */
+  panelView: PanelViewSnapshot | null;
 }
 
 export type InputAction =
@@ -138,7 +167,9 @@ export type InputAction =
   /** Forward nothing; Claude's typed input line is untouched. */
   | { kind: "notifier_return" }
   /** The operator answered the pre-swap confirmation. Only `yes` compacts. */
-  | { kind: "compact_confirm_answered"; disposition: CompactConfirmDisposition };
+  | { kind: "compact_confirm_answered"; disposition: CompactConfirmDisposition }
+  /** Allocation selector applied a product preset; run.ts maps it at session scope. */
+  | { kind: "select_allocation"; id: BandAllocationId };
 
 export interface InputResult {
   state: InputState;
@@ -163,35 +194,10 @@ export function createInputState(
     notifierEnabled: options.notifierEnabled ?? true,
     heldEnter: [],
     notifierCommand: "",
+    route: "home",
+    viewport: { scrollOffset: 0, selectedIndex: -1 },
+    panelView: null,
   };
-}
-
-/** Map a modal command line to the dispatch table's /lhc-* form; null if unknown. */
-export function mapModalCommand(line: string): string | null {
-  const parts = line.trim().split(/\s+/);
-  const name = parts[0] ?? "";
-  const args = parts.slice(1);
-  switch (name) {
-    case "status":
-    case "stats":
-    case "compact":
-    case "export":
-      return args.length === 0 ? `/lhc-${name}` : null;
-    case "prune":
-      if (args.length === 0) return "/lhc-prune";
-      if (args.length === 1 && /^\d+$/.test(args[0]!)) return `/lhc-prune ${args[0]}`;
-      return null;
-    case "auto":
-      if (args.length === 1 && (args[0] === "on" || args[0] === "off")) return `/lhc-auto ${args[0]}`;
-      return null;
-    case "bounds":
-      if (args.length === 2 && /^\d+$/.test(args[0]!) && /^\d+$/.test(args[1]!)) {
-        return `/lhc-bounds ${args[0]} ${args[1]}`;
-      }
-      return null;
-    default:
-      return null;
-  }
 }
 
 /**
@@ -216,11 +222,36 @@ export function showReceipts(state: InputState, lines: string[]): InputState {
   return {
     ...state,
     mode: "modal",
+    route: "home",
     line: "",
     heldSeq: [],
     escape: null,
     panelRows: lines.flatMap((line) => line.split("\n")),
   };
+}
+
+/** Resize clamps scroll/selection; it never resets route or starts a command. */
+export function clampPanelViewport(state: InputState, _cols: number, rows: number): InputState {
+  if (state.mode === "passthrough" || state.mode === "notifier" || state.mode === "compact_confirm") {
+    return state;
+  }
+  const safeRows = Math.max(5, rows);
+  if (state.route === "allocation") {
+    const max = PRODUCT_PRESET_IDS.length - 1;
+    const selectedIndex = Math.max(0, Math.min(max, state.viewport.selectedIndex));
+    return { ...state, viewport: { scrollOffset: 0, selectedIndex } };
+  }
+  if (state.route === "home") {
+    const max = Math.max(0, homeCursorLength() - 1);
+    const scrollOffset = Math.max(0, Math.min(max, state.viewport.scrollOffset));
+    return { ...state, viewport: { scrollOffset, selectedIndex: homeSelectedActionIndex(scrollOffset) } };
+  }
+  const body =
+    state.route === "help" ? helpLines(state.panelView).length : introductionLines(state.panelView).length;
+  const visible = Math.max(1, safeRows - 4);
+  const maxScroll = Math.max(0, body - visible);
+  const scrollOffset = Math.max(0, Math.min(maxScroll, state.viewport.scrollOffset));
+  return { ...state, viewport: { ...state.viewport, scrollOffset } };
 }
 
 /**
@@ -377,6 +408,8 @@ type ModalKey =
   | { kind: "backspace" }
   | { kind: "clear" }
   | { kind: "text"; value: string }
+  | { kind: "up" }
+  | { kind: "down" }
   | { kind: "none" };
 
 interface StepOutcome {
@@ -431,7 +464,16 @@ function trackForwardedEscapeByte(byte: number, state: InputState): InputState {
 
 function enterModal(state: InputState): StepOutcome {
   return {
-    state: { ...state, mode: "modal", escape: null, line: "", heldSeq: [], panelRows: [] },
+    state: {
+      ...state,
+      mode: "modal",
+      escape: null,
+      line: "",
+      heldSeq: [],
+      panelRows: [],
+      route: "home",
+      viewport: { scrollOffset: 0, selectedIndex: -1 },
+    },
     actions: [{ kind: "enter_modal" }],
   };
 }
@@ -735,25 +777,65 @@ function maybeOpenNotifier(state: InputState, enterBytes: number[]): StepOutcome
 }
 
 function reprompt(state: InputState, noticeLines: string[]): StepOutcome {
-  return { state: { ...state, line: "", panelRows: noticeLines } };
+  return { state: { ...state, line: "", panelRows: noticeLines, route: "home" } };
+}
+
+function openRoute(state: InputState, route: PanelRoute): StepOutcome {
+  const selectedIndex =
+    route === "allocation" ? allocationIndex(state.panelView?.allocationId ?? "default") : route === "home" ? -1 : 0;
+  return {
+    state: {
+      ...state,
+      route,
+      line: "",
+      viewport: { scrollOffset: 0, selectedIndex },
+      panelRows: route === "home" ? state.panelRows : [],
+    },
+  };
+}
+
+function applyAllocation(state: InputState): StepOutcome {
+  const id = PRODUCT_PRESET_IDS[Math.max(0, Math.min(PRODUCT_PRESET_IDS.length - 1, state.viewport.selectedIndex))] ?? "default";
+  return {
+    state: {
+      ...state,
+      route: "home",
+      line: "",
+      viewport: { scrollOffset: 0, selectedIndex: -1 },
+    },
+    actions: [{ kind: "select_allocation", id }],
+  };
+}
+
+function activateHomeAction(state: InputState): StepOutcome {
+  const action = HOME_ACTIONS[state.viewport.selectedIndex];
+  if (action === undefined) return cancelModal(state);
+  if (action.kind === "route") return openRoute(state, action.route);
+  return submitCommandText(state, action.command);
+}
+
+function submitCommandText(state: InputState, text: string): StepOutcome {
+  const parsed = parsePanelCommand(text);
+  if (parsed.kind === "route") return openRoute(state, parsed.route);
+  if (parsed.kind === "invalid") return reprompt(state, [parsed.message]);
+  if (parsed.kind === "unknown") {
+    return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${text}`, MODAL_HELP_LINE]);
+  }
+  return {
+    state: { ...state, mode: "executing", route: "home", line: parsed.surface, panelRows: [] },
+    actions: [{ kind: "execute", commandLine: parsed.commandLine }],
+  };
 }
 
 function submitModalLine(state: InputState): StepOutcome {
+  if (state.route === "help" || state.route === "introduction") return openRoute(state, "home");
+  if (state.route === "allocation") return applyAllocation(state);
   const trimmed = state.line.trim();
-  if (trimmed === "") return cancelModal(state);
-  if (trimmed === "help" || trimmed === "?") {
-    return reprompt(state, [MODAL_HELP_LINE, MODAL_SCOPE_NOTE, MODAL_ASCII_NOTE]);
+  if (trimmed === "") {
+    if (state.viewport.selectedIndex >= 0) return activateHomeAction(state);
+    return cancelModal(state);
   }
-  const commandLine = mapModalCommand(trimmed);
-  if (commandLine === null) {
-    return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${trimmed}`, MODAL_HELP_LINE]);
-  }
-  // The submitted text stays in `line` so the panel shows what is running;
-  // editing is disabled while executing, and settle/detach resets it.
-  return {
-    state: { ...state, mode: "executing", line: trimmed, panelRows: [] },
-    actions: [{ kind: "execute", commandLine }],
-  };
+  return submitCommandText(state, trimmed);
 }
 
 /**
@@ -778,6 +860,8 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
         return { key: { kind: "backspace" }, forward: false };
       }
       if (event.unicodeChar === 0x15) return { key: { kind: "clear" }, forward: false };
+      if (event.virtualKey === 0x26) return { key: { kind: "up" }, forward: false };
+      if (event.virtualKey === 0x28) return { key: { kind: "down" }, forward: false };
       if (event.unicodeChar >= 0x20 && event.unicodeChar <= 0x7e) {
         return { key: { kind: "text", value: String.fromCharCode(event.unicodeChar) }, forward: false };
       }
@@ -811,6 +895,10 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
   }
   if (params === "200" && finalByte === 0x7e) return { key: { kind: "none" }, forward: false };
   if (params === "201" && finalByte === 0x7e) return { key: { kind: "none" }, forward: false };
+  if (finalByte === 0x41) return { key: { kind: "up" }, forward: false };
+  if (finalByte === 0x42) return { key: { kind: "down" }, forward: false };
+  if (finalByte === 0x7e && (params === "5" || params === "5;1")) return { key: { kind: "up" }, forward: false };
+  if (finalByte === 0x7e && (params === "6" || params === "6;1")) return { key: { kind: "down" }, forward: false };
   if (isMouseCsi(params, finalByte)) return { key: { kind: "none" }, forward: false };
   if (isNavigationCsi(finalByte)) return { key: { kind: "none" }, forward: false };
   return { key: { kind: "none" }, forward: true };
@@ -845,6 +933,26 @@ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
     if (key.kind === "cancel") return cancelModal(state);
     return { state };
   }
+  if (state.route === "help" || state.route === "introduction") {
+    if (key.kind === "enter") return openRoute(state, "home");
+    if (key.kind === "cancel") return cancelModal(state);
+    if (key.kind === "up" || key.kind === "down") {
+      const delta = key.kind === "up" ? -1 : 1;
+      const next = Math.max(0, state.viewport.scrollOffset + delta);
+      return { state: { ...state, viewport: { ...state.viewport, scrollOffset: next } } };
+    }
+    return { state };
+  }
+  if (state.route === "allocation") {
+    if (key.kind === "enter") return applyAllocation(state);
+    if (key.kind === "cancel") return cancelModal(state);
+    if (key.kind === "up" || key.kind === "down") {
+      const delta = key.kind === "up" ? -1 : 1;
+      const selectedIndex = Math.max(0, Math.min(PRODUCT_PRESET_IDS.length - 1, state.viewport.selectedIndex + delta));
+      return { state: { ...state, viewport: { ...state.viewport, selectedIndex } } };
+    }
+    return { state };
+  }
   switch (key.kind) {
     case "enter":
       return submitModalLine(state);
@@ -857,6 +965,15 @@ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
       return { state: { ...state, line: "" } };
     case "text":
       return { state: { ...state, line: state.line + key.value } };
+    case "up":
+    case "down": {
+      const delta = key.kind === "up" ? -1 : 1;
+      const max = Math.max(0, homeCursorLength() - 1);
+      const scrollOffset = Math.max(0, Math.min(max, state.viewport.scrollOffset + delta));
+      return {
+        state: { ...state, viewport: { scrollOffset, selectedIndex: homeSelectedActionIndex(scrollOffset) } },
+      };
+    }
     case "none":
       return { state };
   }
@@ -968,7 +1085,7 @@ function modalByte(byte: number, state: InputState): StepOutcome {
     // treated as a submit; control bytes (including the leader) are ignored —
     // except ctrl-C, kept as the escape hatch if a paste never closes.
     if (byte === 0x03) return cancelModal(state);
-    if (state.mode === "modal" && byte >= 0x20 && byte <= 0x7e) {
+    if (state.mode === "modal" && state.route === "home" && byte >= 0x20 && byte <= 0x7e) {
       return { state: { ...state, line: state.line + String.fromCharCode(byte) } };
     }
     return { state };
@@ -1005,6 +1122,11 @@ function modalByte(byte: number, state: InputState): StepOutcome {
   }
 
   if (state.mode === "executing") return { state };
+
+  if (state.route !== "home") {
+    if (byte === 0x0d || byte === 0x0a) return applyModalKey({ kind: "enter" }, state);
+    return { state };
+  }
 
   if (byte === 0x0d || byte === 0x0a) return submitModalLine(state);
   if (byte === 0x7f || byte === 0x08) return applyModalKey({ kind: "backspace" }, state);

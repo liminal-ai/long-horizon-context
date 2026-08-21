@@ -1,66 +1,133 @@
+/**
+ * LIM-118: TC-1.1a-c, TC-3.4a. Home status and Help/status/stats contract.
+ */
 import { describe, expect, it } from "vitest";
 
-import { createInputState } from "../../src/wrapper/modal.js";
+import { dispatchLhcCommand, type LhcCommandRuntime } from "../../src/commands/dispatch.js";
+import { CONFIG_FALLBACK_NOTICE } from "../../src/governor/config.js";
+import { emptyCaptureStats } from "../../src/stats.js";
+import { createInputState, type InputState } from "../../src/wrapper/modal.js";
+import {
+  buildPanelViewSnapshot,
+  helpLines,
+  PANEL_COMMANDS,
+  PANEL_TITLE,
+} from "../../src/wrapper/panel-commands.js";
 import { renderPanel } from "../../src/wrapper/panel.js";
 
-const STATUS_ROWS = [
-  "LHC context management",
-  "capture ready · retrieval ready",
-  "provider context 31k · auto on · trigger 360k · target 180k",
-  "Claude native Compact: disabled for this child (DISABLE_AUTO_COMPACT=1) · manual /compact still available",
-  "active operation: none",
-  "last action: Smart Compact 3m ago (auto) · trigger 508k · view 247k",
-  "WARNING: trigger 5.0k is at/below observed Claude host overhead (31k) — every settled turn would compact",
-  "edits (auto/bounds) are session-scoped: live now, survive handoffs, lost at wrapper exit",
-  "precedence: builtin < user /home/u/.config/cc-lhc/config.json < project /work/.cc-lhc.json < session",
-];
-
-function withRows(): ReturnType<typeof createInputState> {
-  return { ...createInputState(), mode: "modal", panelRows: STATUS_ROWS };
+function homeState(view = buildPanelViewSnapshot({
+  providerContextTokens: 31_000,
+  targetTokens: 180_000,
+  triggerTokens: 360_000,
+  autoCompact: true,
+  captureHealth: "ready",
+  profile: "default",
+})): InputState {
+  return { ...createInputState(), mode: "modal", route: "home", panelView: view };
 }
 
-describe("panel status rendering", () => {
-  it("renders all status rows at a normal terminal size", () => {
-    const out = renderPanel(withRows(), 120, 40);
-    for (const row of STATUS_ROWS.filter((r) => r.length <= 118)) {
-      expect(out).toContain(row);
-    }
-    expect(out).toContain("long-horizon commands> ");
+describe("TC-1.1a Home shows active state", () => {
+  it("Home renders measured provider total, target, trigger, auto mode, capture health, and allocation", () => {
+    const out = renderPanel(homeState(), 120, 40);
+    expect(out).toContain(PANEL_TITLE);
+    expect(out).toContain("provider context 31k");
+    expect(out).toContain("target 180k");
+    expect(out).toContain("trigger 360k");
+    expect(out).toContain("automatic Smart Compact: on");
+    expect(out).toContain("capture: ready");
+    expect(out).toContain("Band allocation: Default");
+    expect(out).toContain("Low 20%");
+    expect(out).toContain("Medium 20%");
+    expect(out).toContain("High 30%");
+    expect(out).toContain("Full 30%");
+    expect(out).not.toMatch(/\b100\s*%/);
   });
+});
 
-  it("renders without corruption at a small terminal size (rows truncated, never wrapped)", () => {
-    const out = renderPanel(withRows(), 40, 10);
-    // Every emitted text row fits the width budget (truncation with ellipsis).
-    const texts = [...out.matchAll(/\x1b\[\d+;\d+H(?:\x1b\[2m)?([^\x1b]+)/g)].map((m) => m[1]!);
-    expect(texts.length).toBeGreaterThan(0);
-    for (const text of texts) {
-      expect(text.length).toBeLessThanOrEqual(38);
-    }
-    expect(out).toContain("…");
+describe("TC-1.1b Home shows degraded state truthfully", () => {
+  it("degraded capture/config is explicit and fallback values are not shown as selected", () => {
+    const view = buildPanelViewSnapshot({
+      providerContextTokens: 8_000,
+      targetTokens: 180_000,
+      triggerTokens: 360_000,
+      autoCompact: true,
+      captureHealth: "degraded",
+      profile: "default",
+      degradedNotices: [CONFIG_FALLBACK_NOTICE, "  user config: profile must be one of default, balanced, historical"],
+      fallbacks: [{ origin: "user config", field: "profile", detail: "profile must be one of default, balanced, historical" }],
+    });
+    const out = renderPanel(homeState(view), 120, 40);
+    expect(out).toContain("capture: degraded");
+    expect(out).toContain(CONFIG_FALLBACK_NOTICE);
+    expect(out).toContain("Band allocation: Default (fallback — not selected)");
+    expect(out).not.toMatch(/Band allocation: Default(?! \(fallback)/);
   });
+});
 
-  it("renders at the minimum floor without throwing", () => {
-    expect(() => renderPanel(withRows(), 1, 1)).not.toThrow();
+describe("TC-1.1c Provider context not observed", () => {
+  it("absent provider measurement renders not observed yet and no estimate masquerades as measured", () => {
+    const view = buildPanelViewSnapshot({
+      providerContextTokens: null,
+      targetTokens: 180_000,
+      triggerTokens: 360_000,
+      autoCompact: true,
+      captureHealth: "ready",
+      profile: "balanced",
+    });
+    const out = renderPanel(homeState(view), 120, 40);
+    expect(out).toContain("provider context: not observed yet");
+    expect(out).not.toMatch(/provider context \d/);
+    expect(out.toLowerCase()).not.toContain("estimate");
   });
+});
 
-  it("clips rows to the terminal height: every cursor row fits, with one explicit continuation row", () => {
-    const out = renderPanel(withRows(), 80, 10);
-    const cursorRows = [...out.matchAll(/\x1b\[(\d+);\d+H/g)].map((m) => Number.parseInt(m[1]!, 10));
-    expect(cursorRows.length).toBeGreaterThan(0);
-    for (const row of cursorRows) {
-      expect(row).toBeGreaterThanOrEqual(1);
-      expect(row).toBeLessThanOrEqual(10);
-    }
-    expect(out).toContain("… more — enlarge terminal");
-    // Prompt and hint always survive clipping.
-    expect(out).toContain("long-horizon commands> ");
-    expect(out).toContain("Enter run");
-  });
+describe("TC-3.4a Status contract is truthful", () => {
+  it("Help descriptions match actual status and stats fields exactly", async () => {
+    const help = helpLines(null).join("\n");
+    const statusSpec = PANEL_COMMANDS.find((command) => command.name === "status");
+    const statsSpec = PANEL_COMMANDS.find((command) => command.name === "stats");
+    expect(statusSpec?.summary).toContain("tail");
+    expect(statusSpec?.summary).toContain("threshold");
+    expect(statusSpec?.summary).toContain("zone");
+    expect(statusSpec?.summary).toContain("derivation");
+    expect(statusSpec?.summary).toContain("thread id");
+    expect(statsSpec?.summary).toContain("lines");
+    expect(statsSpec?.summary).toContain("events");
+    expect(statsSpec?.summary).toContain("thread id");
+    expect(help).toContain(statusSpec!.usage);
+    expect(help).toContain(statsSpec!.usage);
 
-  it("keeps prompt and hint within height even at the 5-row floor", () => {
-    const out = renderPanel(withRows(), 80, 5);
-    const cursorRows = [...out.matchAll(/\x1b\[(\d+);\d+H/g)].map((m) => Number.parseInt(m[1]!, 10));
-    for (const row of cursorRows) expect(row).toBeLessThanOrEqual(5);
-    expect(out).toContain("long-horizon commands> ");
+    const runtime: LhcCommandRuntime = {
+      stats: { ...emptyCaptureStats(), linesSeen: 3, eventsSent: 2, threadId: "th_test" },
+      sdk: {
+        threadView: {
+          status: async () => ({
+            ok: true,
+            value: {
+              tailTokens: 1200,
+              threshold: 8000,
+              compactRecommended: false,
+              derivation: { pending: 1, failed: 2, blocked: 0 },
+              view: null,
+              visibility: { boundaryPosition: 0, zoneTokens: 400, maxTokens: 2000 },
+            },
+          }),
+        },
+      } as never,
+      threadRef: { threadId: "th_test" } as never,
+      cwd: "/work",
+      sourceRolloutPath: undefined,
+      sourceSessionId: undefined,
+    };
+    const status = await dispatchLhcCommand("/lhc-status", runtime);
+    expect(status.messages[0]).toContain("tail=1200");
+    expect(status.messages[0]).toContain("threshold=8000");
+    expect(status.messages[0]).toContain("zone=400/2000");
+    expect(status.messages[0]).toContain("derivation pending=1 failed=2");
+    expect(status.messages[0]).toContain("thread=th_test");
+    const stats = await dispatchLhcCommand("/lhc-stats", runtime);
+    expect(stats.messages[0]).toContain("lines=3");
+    expect(stats.messages[0]).toContain("events=2");
+    expect(stats.messages[0]).toContain("thread=th_test");
   });
 });

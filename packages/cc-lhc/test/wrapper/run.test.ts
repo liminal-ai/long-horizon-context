@@ -285,7 +285,7 @@ describe("run", () => {
     await sleep(100);
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
-    (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
 
     await waitFor(() => output.join("").includes("cc-lhc --resume new-id"), "guidance visible");
     // Panel stays open (no auto-dismiss swap)
@@ -358,7 +358,7 @@ describe("run", () => {
     await sleep(100);
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
-    (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
 
     await waitFor(() => output.join("").includes("turn opened during rebuild"), "turn-open refusal receipt");
     const joined = output.join("");
@@ -537,7 +537,7 @@ describe("run", () => {
 
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => modalOpen, "modal for detach");
-    (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
     await sleep(50);
     (stdin as unknown as PassThrough).write(Buffer.from([0x03]));
     await waitFor(() => !modalOpen, "detach restore");
@@ -547,7 +547,7 @@ describe("run", () => {
 
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => modalOpen, "modal for compact guidance");
-    (stdin as unknown as PassThrough).write(Buffer.from("compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
     // Panel stays open with relaunch guidance (no inject auto-dismiss).
     await waitFor(async () => {
       const text = await readFile(logPath, "utf8");

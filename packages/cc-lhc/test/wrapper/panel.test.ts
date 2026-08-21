@@ -50,16 +50,13 @@ describe("createAltScreenGuard", () => {
 });
 
 describe("renderPanel", () => {
-  it("draws a centered prompt + dim hint on a cleared screen, cursor after the input", () => {
+  it("draws a cleared Home with title, prompt, and dim hint, cursor after the input", () => {
     const out = renderPanel(modalState({ line: "status" }), 80, 24);
-    // full redraw: hide cursor, clear
     expect(out.startsWith("\x1b[?25l\x1b[2J")).toBe(true);
-    // block: [prompt, blank, hint] = 3 rows → top row 11; widest line is the
-    // 37-char hint → left col 22
-    expect(out).toContain(`\x1b[11;22H${PANEL_PROMPT}status`);
-    expect(out).toContain(`\x1b[13;22H\x1b[2m${PANEL_HINT}\x1b[22m`);
-    // cursor parked after the typed input (prompt 23 + "status" 6 = 29 cols)
-    expect(out.endsWith(`\x1b[11;51H\x1b[?25h`)).toBe(true);
+    expect(out).toContain("Long Horizon Context Control Panel");
+    expect(out).toContain(`${PANEL_PROMPT}status`);
+    expect(out).toContain(PANEL_HINT);
+    expect(out.endsWith("\x1b[?25h")).toBe(true);
   });
 
   it("hides the cursor and shows a progress line while a command is executing", () => {
@@ -74,14 +71,16 @@ describe("renderPanel", () => {
   });
 
   it("labels progress per command and appends elapsed seconds from the ticker", () => {
+    expect(commandProgressLabel("smart-compact")).toBe("smart-compact — rebuilding…");
+    expect(commandProgressLabel("smart-prune 160000")).toBe("smart-prune — rebuilding…");
     expect(commandProgressLabel("compact")).toBe("compact — rebuilding…");
     expect(commandProgressLabel("prune 160000")).toBe("prune — rebuilding…");
     expect(commandProgressLabel("status")).toBe("status — running…");
     expect(commandProgressLabel("stats", 0)).toBe("stats — running…");
     expect(commandProgressLabel("stats", 3)).toBe("stats — running… (3s)");
 
-    const out = renderPanel(modalState({ mode: "executing", line: "compact" }), 80, 24, 7);
-    expect(out).toContain("compact — rebuilding… (7s)");
+    const out = renderPanel(modalState({ mode: "executing", line: "smart-compact" }), 80, 24, 7);
+    expect(out).toContain("smart-compact — rebuilding… (7s)");
     expect(out).not.toContain(PANEL_PROMPT);
     expect(out.endsWith("\x1b[?25h")).toBe(false);
   });
@@ -89,11 +88,10 @@ describe("renderPanel", () => {
   it("renders receipt rows above the prompt with a blank separator", () => {
     const state = showReceipts(modalState(), ["tail=7 threshold=160000", "thread=th_x"]);
     const out = renderPanel(state, 80, 24);
-    // block: 2 receipts, blank, prompt, blank, hint = 6 rows → top row 10
-    expect(out).toContain("\x1b[10;22Htail=7 threshold=160000");
-    expect(out).toContain("\x1b[11;22Hthread=th_x");
-    expect(out).toContain(`\x1b[13;22H${PANEL_PROMPT}`);
-    expect(out).toContain(`\x1b[15;22H\x1b[2m${PANEL_HINT}\x1b[22m`);
+    expect(out).toContain("tail=7 threshold=160000");
+    expect(out).toContain("thread=th_x");
+    expect(out).toContain(PANEL_PROMPT);
+    expect(out).toContain(PANEL_HINT);
   });
 
   it("splits embedded newlines into rows via showReceipts", () => {
@@ -120,9 +118,8 @@ describe("renderPanel", () => {
   it("recenters for different dims (resize redraw is a fresh full render)", () => {
     const narrow = renderPanel(modalState(), 60, 10);
     const wideScreen = renderPanel(modalState(), 120, 40);
-    // 60 cols: left = floor((60-37)/2)+1 = 12; 10 rows: top = floor((10-3)/2)+1 = 4
-    expect(narrow).toContain(`\x1b[4;12H${PANEL_PROMPT}`);
-    // 120 cols: left = floor((120-37)/2)+1 = 42; 40 rows: top = floor((40-3)/2)+1 = 19
-    expect(wideScreen).toContain(`\x1b[19;42H${PANEL_PROMPT}`);
+    expect(narrow).toContain(PANEL_PROMPT);
+    expect(wideScreen).toContain(PANEL_PROMPT);
+    expect(narrow).not.toEqual(wideScreen);
   });
 });

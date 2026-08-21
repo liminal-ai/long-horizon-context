@@ -3,6 +3,7 @@ import type { Lhc, OpResult, ThreadRef, ViewStatus } from "lhc";
 import type { OpenAsyncWork } from "../observation/async-work.js";
 import type { CaptureStats } from "../stats.js";
 import { formatCaptureStatsLine } from "../stats.js";
+import { helpLines } from "../wrapper/panel-commands.js";
 import { runCompactCommand } from "./compact.js";
 import { runExportCommand } from "./export.js";
 import { runPruneCommand } from "./prune.js";
@@ -131,18 +132,7 @@ function handleStats(runtime: LhcCommandRuntime): DispatchOutcome {
 }
 
 function handleHelp(_runtime: LhcCommandRuntime): DispatchOutcome {
-  return {
-    messages: [
-      [
-        "status — thread-view status + capture stats",
-        "stats — capture stats line",
-        "compact — Smart Compact the LHC view and write a rebuilt session (refused mid-turn)",
-        "prune [targetTokens] — prune the tool-result zone and write a rebuilt session (refused mid-turn)",
-        "export — write canonical transcript dumps (rollout + thread view) to cwd",
-        "help — this list",
-      ].join("\n"),
-    ],
-  };
+  return { messages: [helpLines(null).join("\n")] };
 }
 
 const HANDLERS: Record<string, CommandHandler> = {

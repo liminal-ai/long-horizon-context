@@ -775,3 +775,136 @@ describe("an automatic swap asks before it kills live background work", () => {
     await rig.end();
   }, 15_000);
 });
+
+describe("TC-3.5a Explicit yes proceeds", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  beforeEach(() => {
+    mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-async-home-"));
+    dirs.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const d of dirs.splice(0)) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  it("explicit y plus keypress-time revalidation enters existing mutation once", async () => {
+    const rig = await startRig({ liveWork: [monitorWork("A"), monitorWork("B")] });
+    rig.fire(overTrigger("req:tc35a"));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    rig.setLiveWork([monitorWork("A")]);
+    rig.stdin.write("y");
+    await waitFor(() => rig.compactAttempts() === 1, "compact after yes");
+    await settle(200);
+    expect(rig.compactAttempts()).toBe(1);
+    expect(rig.settledReceipts()).toHaveLength(1);
+    await rig.end();
+  }, 15_000);
+});
+
+describe("TC-3.5b Every non-yes path stands down", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  beforeEach(() => {
+    mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-async-home-"));
+    dirs.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const d of dirs.splice(0)) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  it("non-yes/dismiss/EOF/interruption/render failure causes zero mutation and no remembered preference", async () => {
+    const decline = await startRig({ liveWork: [monitorWork()] });
+    decline.fire(overTrigger("req:tc35b-n"));
+    await waitFor(() => decline.terminal().includes("live background work"), "decline prompt");
+    decline.stdin.write("n");
+    await settle(200);
+    expect(decline.compactAttempts()).toBe(0);
+    expect(decline.settledReceipts()).toEqual([]);
+    await decline.end();
+
+    const dismiss = await startRig({ liveWork: [monitorWork()] });
+    dismiss.fire(overTrigger("req:tc35b-esc"));
+    await waitFor(() => dismiss.terminal().includes("live background work"), "dismiss prompt");
+    dismiss.stdin.write("\x03");
+    await settle(200);
+    expect(dismiss.compactAttempts()).toBe(0);
+    await dismiss.end();
+
+    const eof = await startRig({ liveWork: [monitorWork()] });
+    eof.fire(overTrigger("req:tc35b-eof"));
+    await waitFor(() => eof.terminal().includes("live background work"), "eof prompt");
+    eof.stdin.end();
+    await settle(200);
+    expect(eof.compactAttempts()).toBe(0);
+    await eof.end();
+
+    const renderFail = await startRig({ liveWork: [monitorWork()], breakTerminalWrites: true });
+    renderFail.fire(overTrigger("req:tc35b-render"));
+    await waitFor(() => renderFail.logs.some((line) => line.includes("could not be shown")), "render failure");
+    expect(renderFail.compactAttempts()).toBe(0);
+    await renderFail.end();
+  }, 30_000);
+});
+
+describe("TC-3.5c New work makes consent stale", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  beforeEach(() => {
+    mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-async-home-"));
+    dirs.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const d of dirs.splice(0)) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  it("newly opened unlisted work invalidates consent and requires a later fresh prompt", async () => {
+    const rig = await startRig({ liveWork: [monitorWork("A")] });
+    rig.fire(overTrigger("req:tc35c"));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    rig.setLiveWork([monitorWork("A"), monitorWork("B")]);
+    rig.stdin.write("y");
+    await settle(250);
+    expect(rig.compactAttempts()).toBe(0);
+    expect(rig.settledReceipts()).toEqual([]);
+    const before = rig.terminal().length;
+    rig.fire(overTrigger("req:tc35c-2"));
+    await waitFor(() => rig.terminal().slice(before).includes("live background work"), "fresh prompt");
+    expect(rig.terminal().slice(before)).toContain("(B)");
+    rig.stdin.write("y");
+    await waitFor(() => rig.compactAttempts() === 1, "compact after fresh yes");
+    await rig.end();
+  }, 20_000);
+});

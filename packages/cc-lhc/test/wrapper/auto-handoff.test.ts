@@ -483,7 +483,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     // and read the status summary.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => terminalOutput.includes("last action:"), "panel status rows");
-    expect(terminalOutput).toContain("LHC context management");
+    expect(terminalOutput).toContain("Long Horizon Context Control Panel");
     expect(terminalOutput).toMatch(/last action: Smart Compact .*\(auto\)/);
     expect(terminalOutput).toContain("trigger 6.0k");
     expect(terminalOutput).toContain("view 9");
@@ -1073,9 +1073,9 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     // Open the panel: the status summary appears before the prompt.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    await waitFor(() => terminalOutput.includes("LHC context management"), "panel summary");
+    await waitFor(() => terminalOutput.includes("Long Horizon Context Control Panel"), "panel summary");
     expect(terminalOutput).toContain("last action: none this wrapper session");
-    expect(terminalOutput).toContain("auto on");
+    expect(terminalOutput).toContain("automatic Smart Compact: on");
     expect(terminalOutput).toContain("session-scoped");
     expect(terminalOutput).toContain("precedence: builtin < user");
 
@@ -1762,7 +1762,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     // The alarm also sits at the top of the panel.
     terminalOutput = "";
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    await waitFor(() => terminalOutput.includes("LHC context management"), "panel");
+    await waitFor(() => terminalOutput.includes("Long Horizon Context Control Panel"), "panel");
     expect(terminalOutput).toContain("cc-lhc rebuilt sessions are not loading");
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
