@@ -37,6 +37,7 @@ function request(): HandoffRequest {
     receiptLines: ["compact view=v1"],
     durableReceipt: "[lhc compact:auto] trigger context 508k; rebuilt LHC view 247k (240k target).",
     metrics: { origin: "auto", triggerContextTokens: 508_000, viewTokens: 247_000, targetTokens: 240_000 },
+    liveAsyncWork: [],
   };
 }
 
@@ -85,7 +86,7 @@ function makeHarness(overrides: Partial<HandoffPorts> = {}): Harness {
     },
     killOldChild: async () => {
       calls.push("killOldChild");
-      return { exited: true, pid: 999 };
+      return { kind: "terminated", pid: 999 };
     },
     awaitReplacementCaptureReady: async () => {
       calls.push("awaitReplacementCaptureReady");
@@ -139,7 +140,7 @@ describe("executeHandoff", () => {
       },
       killOldChild: async () => {
         order.push("kill");
-        return { exited: true, pid: 12 };
+        return { kind: "terminated" as const, pid: 12 };
       },
       switchToCandidate: () => {
         order.push("switch");
@@ -224,11 +225,13 @@ describe("executeHandoff", () => {
   });
 
   it("an unkillable old child is orphaned loudly by PID; the replacement stays live", async () => {
-    const h = makeHarness({ killOldChild: async () => ({ exited: false, pid: 31337 }) });
+    const h = makeHarness({ killOldChild: async () => ({ kind: "surviving_orphan", pid: 31337 }) });
     const result = await executeHandoff(request(), h.ports);
     expect(result.kind).toBe("success");
-    if (result.kind === "success") expect(result.orphanPid).toBe(31337);
-    expect(h.warnings.join("\n")).toContain("ORPHANED old Claude child pid=31337");
+    if (result.kind === "success") {
+      expect(result.oldChildCleanup).toEqual({ kind: "surviving_orphan", pid: 31337 });
+    }
+    expect(h.warnings.join("\n")).toContain("no longer routed");
   });
 
   it("lineage failure is a warning, never a rollback", async () => {
@@ -404,7 +407,7 @@ describe("exceptions after the switch", () => {
     if (result.kind === "success") {
       expect(result.oldChildWarning).toContain("old-1111");
       expect(result.oldChildWarning).toContain("may still be running");
-      expect(result.orphanPid).toBeUndefined();
+      expect(result.oldChildCleanup.kind).toBe("unknown");
     }
   });
 
@@ -436,8 +439,10 @@ describe("formatHandoffResult", () => {
         newSessionId: "new-2222",
         evidence: { processAlive: true, sessionFileWritten: true },
         attempts: 1,
+        oldChildCleanup: { kind: "terminated", pid: 999 },
+        handoffId: "h1",
       }),
-    ).toBe("handoff complete — session new-2222 live");
+    ).toBe("handoff complete — session new-2222 live; old child pid 999 terminated");
   });
 
   it("names an orphaned old child on an otherwise successful swap", () => {
@@ -447,9 +452,10 @@ describe("formatHandoffResult", () => {
         newSessionId: "new-2222",
         evidence: { processAlive: true, sessionFileWritten: false },
         attempts: 1,
-        orphanPid: 4242,
+        oldChildCleanup: { kind: "surviving_orphan", pid: 4242 },
+        handoffId: "h1",
       }),
-    ).toContain("old child pid 4242 ORPHANED");
+    ).toContain("old child pid 4242 is a surviving orphan and may still be running");
   });
 
   it("says the old session continues, and never says rolled back", () => {

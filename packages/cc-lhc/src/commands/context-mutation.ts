@@ -19,8 +19,16 @@
 import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
 
 import { CAPTURE_NOT_READY_REFUSAL } from "../intake/session.js";
+import {
+  formatCompactBlocked,
+  formatCompactPreviewError,
+  formatCompactSdkError,
+  formatCompactViewLine,
+} from "../wrapper/terminology.js";
+import type { OpenAsyncWork } from "../observation/async-work.js";
 import { statRolloutFile } from "../rollout/stat-file.js";
 import { writeRebuiltRollout, type WriteRebuiltRolloutResult } from "../rollout/write-rebuilt.js";
+import { formatContinuityNote, freezeLiveAsyncWork } from "./continuity-note.js";
 import { CAPTURE_DEGRADED_REFUSAL, type LhcCommandRuntime, TURN_OPEN_REFUSAL } from "./dispatch.js";
 import { threadIdFromRef } from "./rebuild-receipt.js";
 
@@ -58,6 +66,8 @@ export interface HandoffRequest {
   /** The ONE durable runtime note appended to the rebuilt rollout. */
   durableReceipt: string;
   metrics: ContextMutationMetrics;
+  /** Frozen prelaunch live-work snapshot consumed by the continuity note. */
+  liveAsyncWork: readonly OpenAsyncWork[];
 }
 
 /** Compact token display for receipts: 247k / 8.2k / 941. One ontology — these
@@ -77,6 +87,7 @@ export function formatDurableReceipt(
   operation: ContextMutationOperation,
   metrics: ContextMutationMetrics,
   hostNotices: readonly string[] = [],
+  continuityNote?: string,
 ): string {
   const label = operation === "prune" ? "prune" : "compact";
   const parts: string[] = [];
@@ -94,7 +105,9 @@ export function formatDurableReceipt(
     parts.push(`rebuilt LHC view ${formatTokensShort(metrics.viewTokens)}${target}`);
   }
   const receipt = `[lhc ${label}:${metrics.origin}] ${parts.join("; ")}.`;
-  return hostNotices.length === 0 ? receipt : [receipt, ...hostNotices].join("\n");
+  const withNotices = hostNotices.length === 0 ? receipt : [receipt, ...hostNotices].join("\n");
+  if (continuityNote === undefined || continuityNote === "") return withNotices;
+  return `${withNotices}\n\n${continuityNote}`;
 }
 
 export interface ContextMutationPlan {
@@ -118,6 +131,14 @@ export interface ContextMutationPlan {
    * produces the compacted content; cc-lhc injects host anomalies here.
    */
   hostNotices?: readonly string[];
+  /**
+   * Frozen live-work snapshot for automatic mutation (revalidated consent).
+   * Interactive manual compact/prune omit this so the settled-seam freeze
+   * reads `runtime.getLiveAsyncWork()`.
+   */
+  liveAsyncWork?: readonly OpenAsyncWork[];
+  /** One-shot prelaunch has no old child and must not add a live-work note. */
+  omitContinuityNote?: boolean;
 }
 
 export type ContextMutationOutcome =
@@ -145,7 +166,7 @@ function formatBandSummary(receipt: CompactReceipt): string {
 
 export function formatCompactReceipt(receipt: CompactReceipt): string {
   return [
-    `compact view=${receipt.viewId} tail=${receipt.tailTokens} total=${receipt.totalTokens}`,
+    formatCompactViewLine(receipt.viewId, receipt.tailTokens, receipt.totalTokens),
     formatBandSummary(receipt),
   ].join("\n");
 }
@@ -181,6 +202,12 @@ export function settledSeamSnapshot(runtime: LhcCommandRuntime): string | null {
   return null;
 }
 
+function freezeContinuitySnapshot(plan: ContextMutationPlan, runtime: LhcCommandRuntime): readonly OpenAsyncWork[] {
+  if (plan.omitContinuityNote === true) return freezeLiveAsyncWork([]);
+  if (plan.liveAsyncWork !== undefined) return freezeLiveAsyncWork(plan.liveAsyncWork);
+  return freezeLiveAsyncWork(runtime.getLiveAsyncWork?.() ?? []);
+}
+
 /**
  * Run the settled-seam mutation and single materialization, to completion.
  *
@@ -197,6 +224,7 @@ export async function runContextMutation(
 ): Promise<ContextMutationOutcome> {
   const snapshot = settledSeamSnapshot(runtime);
   if (snapshot !== null) return { kind: "refused", messages: [snapshot] };
+  const liveAsyncWork = freezeContinuitySnapshot(plan, runtime);
 
   const sdk = runtime.sdk as Lhc;
   const threadRef = runtime.threadRef as ThreadRef;
@@ -251,18 +279,23 @@ export async function runContextMutation(
       params: { lowerBound: plan.lowerBoundTokens },
     };
     const preview = await sdk.threadView.previewCompact(threadRef, compactOpts);
-    if (!preview.ok) return sdkFailure(`compact preview error: ${preview.error.reason}`);
-    if (preview.value.kind === "error") return sdkFailure(`compact blocked: ${preview.value.reason}`);
+    if (!preview.ok) return sdkFailure(formatCompactPreviewError(preview.error.reason));
+    if (preview.value.kind === "error") return sdkFailure(formatCompactBlocked(preview.value.reason));
 
     const compactResult = await sdk.threadView.compact(threadRef, compactOpts);
-    if (!compactResult.ok) return sdkFailure(`compact error: ${compactResult.error.reason}`);
+    if (!compactResult.ok) return sdkFailure(formatCompactSdkError(compactResult.error.reason));
     viewMutated = true;
     metrics.viewTokens = compactResult.value.totalTokens;
     metrics.targetTokens = plan.lowerBoundTokens;
     lines.push(formatCompactReceipt(compactResult.value));
   }
 
-  const durableReceipt = formatDurableReceipt(plan.operation, metrics, plan.hostNotices ?? []);
+  const durableReceipt = formatDurableReceipt(
+    plan.operation,
+    metrics,
+    plan.hostNotices ?? [],
+    plan.omitContinuityNote === true ? undefined : formatContinuityNote(liveAsyncWork),
+  );
 
   // ONE rebuilt rollout for the whole operation, written from the installed
   // view. Every attempt re-reads that view, so a write that fails against a
@@ -295,6 +328,7 @@ export async function runContextMutation(
           receiptLines: [...lines],
           durableReceipt,
           metrics,
+          liveAsyncWork,
         },
       };
     } catch (cause) {

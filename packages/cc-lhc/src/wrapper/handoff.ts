@@ -27,7 +27,18 @@
  *  - Candidate and active child references stay distinct until the switch.
  */
 
+import { randomUUID } from "node:crypto";
+
 import type { HandoffRequest } from "../commands/context-mutation.js";
+import {
+  type DurableHandoffReceipt,
+  type HandoffReceiptPort,
+  cleanupFields,
+} from "./handoff-receipt-store.js";
+import { formatOldChildCleanup, type OldChildCleanup } from "./old-child-cleanup.js";
+
+export type { OldChildCleanup } from "./old-child-cleanup.js";
+export { formatOldChildCleanup } from "./old-child-cleanup.js";
 
 export const DEFAULT_CAPTURE_READY_TIMEOUT_MS = 20_000;
 /**
@@ -136,7 +147,7 @@ export interface HandoffPorts {
    */
   switchToCandidate(candidate: CandidateChild): SwitchOutcome;
   /** Best-effort termination of the now-unrouted old child. */
-  killOldChild(): Promise<{ exited: boolean; pid: number }>;
+  killOldChild(): Promise<OldChildCleanup>;
   /** Ready-after-replay for the replacement generation (health, not a gate). */
   awaitReplacementCaptureReady(timeoutMs: number): Promise<"ready" | "degraded" | "timeout">;
   /** Rebuild capture state from the persisted transcript after a bad reading. */
@@ -156,8 +167,10 @@ export type HandoffResult =
       newSessionId: string;
       evidence: ReplacementEvidence;
       attempts: number;
-      /** PID of an old child that survived termination and was left running. */
-      orphanPid?: number;
+      /** In-memory proven cleanup classification; user/log/receipt share this value. */
+      oldChildCleanup: OldChildCleanup;
+      /** Durable evidence row id; present even when SQLite writes fail soft. */
+      handoffId: string;
       /** Old-child cleanup could not be carried out or could not be observed. */
       oldChildWarning?: string;
       lineageWarning?: string;
@@ -183,11 +196,8 @@ export type HandoffResult =
 /** User-facing handoff result. */
 export function formatHandoffResult(result: HandoffResult): string {
   switch (result.kind) {
-    case "success": {
-      const orphan =
-        result.orphanPid === undefined ? "" : `; old child pid ${result.orphanPid} ORPHANED (kill failed)`;
-      return `handoff complete — session ${result.newSessionId} live${orphan}`;
-    }
+    case "success":
+      return `handoff complete — session ${result.newSessionId} live; ${formatOldChildCleanup(result.oldChildCleanup)}`;
     case "cancelled":
       return `handoff cancelled: ${result.reason}`;
     case "replacement_nonviable":
@@ -203,10 +213,91 @@ export interface HandoffOptions {
   childLivenessTimeoutMs?: number;
   childStableWindowMs?: number;
   replacementAttempts?: number;
+  /** Evidence-only durable handoff receipt. Failures are loud and never gate routing. */
+  handoffReceipts?: HandoffReceiptPort;
+  uuidFn?: () => string;
+  nowFn?: () => Date;
 }
 
 function reasonOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
+}
+
+function failSoftReceipt(
+  ports: HandoffPorts,
+  phase: string,
+  handoffId: string,
+  step: () => void,
+): void {
+  try {
+    step();
+  } catch (cause) {
+    ports.warn(`cc-lhc handoff receipt ${phase} failed for ${handoffId}: ${reasonOf(cause)}`);
+  }
+}
+
+function persistPreparedReceipt(
+  ports: HandoffPorts,
+  receipts: HandoffReceiptPort | undefined,
+  row: DurableHandoffReceipt,
+): void {
+  if (receipts === undefined) return;
+  failSoftReceipt(ports, "insert", row.handoffId, () => {
+    receipts.insertPrepared(row);
+  });
+  failSoftReceipt(ports, "insert readback", row.handoffId, () => {
+    const read = receipts.readBack(row.handoffId);
+    if (read === null) {
+      throw new Error("prepared row missing after insert");
+    }
+  });
+}
+
+function persistFailedBeforeSwitch(
+  ports: HandoffPorts,
+  receipts: HandoffReceiptPort | undefined,
+  prepared: DurableHandoffReceipt,
+  nowIso: string,
+): void {
+  if (receipts === undefined) return;
+  const failed: DurableHandoffReceipt = {
+    ...prepared,
+    terminalDisposition: "failed_before_switch",
+    cleanupKind: null,
+    cleanupPid: null,
+    detail: null,
+    completedAt: nowIso,
+  };
+  failSoftReceipt(ports, "update", prepared.handoffId, () => {
+    receipts.update(failed);
+  });
+  failSoftReceipt(ports, "update readback", prepared.handoffId, () => {
+    const read = receipts.readBack(prepared.handoffId);
+    if (read === null) throw new Error("failed-before-switch row missing after update");
+  });
+}
+
+function persistSuccessCleanup(
+  ports: HandoffPorts,
+  receipts: HandoffReceiptPort | undefined,
+  prepared: DurableHandoffReceipt,
+  cleanup: OldChildCleanup,
+  nowIso: string,
+): void {
+  if (receipts === undefined) return;
+  const success: DurableHandoffReceipt = {
+    ...prepared,
+    terminalDisposition: "success",
+    ...cleanupFields(cleanup),
+    completedAt: nowIso,
+  };
+  failSoftReceipt(ports, "update", prepared.handoffId, () => {
+    receipts.update(success);
+  });
+  failSoftReceipt(ports, "update readback", prepared.handoffId, () => {
+    const read = receipts.readBack(prepared.handoffId);
+    if (read === null) throw new Error("success row missing after update");
+  });
 }
 
 /**
@@ -283,12 +374,29 @@ export async function executeHandoff(
   const childStableWindowMs = options.childStableWindowMs ?? DEFAULT_CHILD_STABLE_WINDOW_MS;
   const attemptsAllowed = options.replacementAttempts ?? DEFAULT_REPLACEMENT_ATTEMPTS;
   const rebuiltId = request.rebuilt.sessionId;
+  const receipts = options.handoffReceipts;
+  const nowIso = () => (options.nowFn?.() ?? new Date()).toISOString();
 
   const stop = ports.preHandoffStop();
   if (stop !== null) {
     ports.log(`cc-lhc handoff cancelled (${request.operation}): ${stop}`);
     return { kind: "cancelled", reason: stop };
   }
+
+  const handoffId = options.uuidFn?.() ?? randomUUID();
+  const prepared: DurableHandoffReceipt = {
+    handoffId,
+    operation: request.operation,
+    oldSessionId: request.oldSessionId,
+    newSessionId: rebuiltId,
+    preparedAt: nowIso(),
+    terminalDisposition: null,
+    cleanupKind: null,
+    cleanupPid: null,
+    detail: null,
+    completedAt: null,
+  };
+  persistPreparedReceipt(ports, receipts, prepared);
 
   const established = await establishReplacement(
     rebuiltId,
@@ -303,6 +411,7 @@ export async function executeHandoff(
       `cc-lhc handoff: replacement ${rebuiltId} never became viable (${reason}); ` +
         `session ${request.oldSessionId} continues live — nothing was switched and nothing was undone`,
     );
+    persistFailedBeforeSwitch(ports, receipts, prepared, nowIso());
     return {
       kind: "replacement_nonviable",
       reason,
@@ -323,6 +432,7 @@ export async function executeHandoff(
       `cc-lhc handoff: replacement ${rebuiltId} was not promoted — ${switched.reason}; ` +
         `session ${request.oldSessionId} continues live, still routed and untouched`,
     );
+    persistFailedBeforeSwitch(ports, receipts, prepared, nowIso());
     return {
       kind: "replacement_nonviable",
       reason: switched.reason,
@@ -353,23 +463,29 @@ export async function executeHandoff(
     ports.warn(`cc-lhc handoff WARNING: ${lineageWarning}`);
   }
 
-  // The old child owns nothing now. Kill it for hygiene; if the kernel will not
-  // take it, say so loudly by PID and carry on with the live replacement.
-  let orphanPid: number | undefined;
+  // The old child owns nothing now. Classify cleanup from identity evidence;
+  // the in-memory value is what user output, the wrapper log, and the durable
+  // receipt all report. Receipt write failure cannot change it.
   let oldChildWarning: string | undefined;
   const killed = await settleAfterSwitch(ports, "old-child cleanup", () => ports.killOldChild());
-  if (!killed.ok) {
-    oldChildWarning =
-      `old Claude child (session ${request.oldSessionId}, pid unknown) may still be running: ${killed.warning}`;
-    ports.warn(`cc-lhc handoff: ${oldChildWarning}`);
-  } else if (!killed.value.exited) {
-    orphanPid = killed.value.pid;
-    oldChildWarning = `old Claude child pid=${killed.value.pid} survived termination`;
+  const oldChildCleanup: OldChildCleanup = killed.ok
+    ? killed.value
+    : {
+        kind: "unknown",
+        detail: `old Claude child (session ${request.oldSessionId}) may still be running: ${killed.warning}`,
+      };
+  const cleanupText = formatOldChildCleanup(oldChildCleanup);
+  if (!killed.ok || oldChildCleanup.kind === "surviving_orphan" || oldChildCleanup.kind === "unknown") {
+    oldChildWarning = cleanupText;
+  }
+  if (oldChildCleanup.kind === "surviving_orphan") {
     ports.warn(
-      `cc-lhc handoff: ORPHANED old Claude child pid=${killed.value.pid} (session ${request.oldSessionId}) — ` +
-        "it survived termination and is no longer routed to anything; kill it manually to reclaim its memory",
+      `cc-lhc handoff: the old child (session ${request.oldSessionId}) is no longer routed to anything; ` +
+        "kill it manually to reclaim its memory",
     );
   }
+  ports.log(`cc-lhc handoff old-child cleanup: ${cleanupText}`);
+  persistSuccessCleanup(ports, receipts, prepared, oldChildCleanup, nowIso());
 
   let captureWarning = switched.captureWarning;
   const reconcile = async (why: string): Promise<void> => {
@@ -413,7 +529,8 @@ export async function executeHandoff(
     newSessionId: rebuiltId,
     evidence: established.evidence,
     attempts: established.attempts,
-    ...(orphanPid === undefined ? {} : { orphanPid }),
+    oldChildCleanup,
+    handoffId,
     ...(oldChildWarning === undefined ? {} : { oldChildWarning }),
     ...(lineageWarning === undefined ? {} : { lineageWarning }),
     ...(descriptorWarning === undefined ? {} : { descriptorWarning }),

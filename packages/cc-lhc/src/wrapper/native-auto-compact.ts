@@ -36,7 +36,7 @@ const NATIVE_AUTO_COMPACT_DISABLE_VALUE = "1";
 export const NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY =
   "ANOMALY: launch carries an explicit --autocompact; cc-lhc passed it through and did not inject " +
   "DISABLE_AUTO_COMPACT for this Claude child. Inherited environment and Claude settings still govern " +
-  "whether native auto-compact runs. LHC compaction continues normally.";
+  "whether Claude native Compact runs. LHC compaction continues normally.";
 
 /**
  * True when the launch argv itself supplies native `--autocompact` before the

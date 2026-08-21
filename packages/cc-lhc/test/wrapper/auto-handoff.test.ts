@@ -421,7 +421,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     if (result.kind === "success") {
       expect(result.newSessionId).toBe(REBUILT_ID);
       expect(result.evidence.processAlive).toBe(true);
-      expect(result.orphanPid).toBeUndefined();
+      expect(result.oldChildCleanup.kind).toBe("terminated");
     }
     expect(spawned[1]!.writes.join("")).not.toContain("typed during compaction");
     expect(spawned[0]!.writes.join("")).not.toContain("typed during compaction");
@@ -480,7 +480,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => terminalOutput.includes("last action:"), "panel status rows");
     expect(terminalOutput).toContain("LHC context management");
-    expect(terminalOutput).toMatch(/last action: compacted .*\(auto\)/);
+    expect(terminalOutput).toMatch(/last action: Smart Compact .*\(auto\)/);
     expect(terminalOutput).toContain("trigger 6.0k");
     expect(terminalOutput).toContain("view 9");
     // Close the modal again (leader-again cancels).
@@ -1140,7 +1140,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(terminalOutput).toContain("at/below observed Claude host overhead (6.0k)");
     // Refused mutation is last-attempt health state, never a success claim.
     expect(terminalOutput).toContain("last action: none this wrapper session");
-    expect(terminalOutput).toMatch(/last attempt: auto compact refused/);
+    expect(terminalOutput).toMatch(/last attempt: Smart Compact refused/);
     expect(spawned).toHaveLength(1);
 
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));

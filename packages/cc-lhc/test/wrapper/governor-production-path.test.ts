@@ -388,11 +388,14 @@ describe("LIM-64 production wrapper path", () => {
     const rows = store.listBySession("old-session");
     const would = rows.filter((r) => r.wouldMutate);
     expect(would).toHaveLength(1);
-    expect(would[0]!.handoffOutcome).toEqual({
+    expect(would[0]!.handoffOutcome).toMatchObject({
       kind: "handoff_success",
       newSessionId: REBUILT_ID,
       droppedInputBytes: 0,
     });
+    expect(would[0]!.handoffOutcome).toHaveProperty("handoffId");
+    expect(would[0]!.handoffOutcome).not.toHaveProperty("orphanPid");
+    expect(JSON.stringify(would[0]!.handoffOutcome)).not.toMatch(/cleanupKind|surviving_orphan/);
     // New session must not have stolen the outcome attachment.
     expect(store.listBySession(REBUILT_ID).filter((r) => r.wouldMutate)).toHaveLength(0);
     store.close();
@@ -769,7 +772,7 @@ describe("LIM-64 production wrapper path", () => {
 
     await waitFor(() => mutationStarted, "LHC compact still starts after a native summary");
     expect(observes).toContain("would_compact");
-    const notices = wrapperLogLines.filter((l) => l.includes("native compact ran on a managed session"));
+    const notices = wrapperLogLines.filter((l) => l.includes("Claude native Compact ran on a managed session"));
     expect(notices).toHaveLength(1);
 
     spawned[0]!.fireExit(0);

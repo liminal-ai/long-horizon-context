@@ -1,5 +1,6 @@
 import type { Lhc, OpResult, ThreadRef, ViewStatus } from "lhc";
 
+import type { OpenAsyncWork } from "../observation/async-work.js";
 import type { CaptureStats } from "../stats.js";
 import { formatCaptureStatsLine } from "../stats.js";
 import { runCompactCommand } from "./compact.js";
@@ -41,6 +42,11 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   logLineageError?: (message: string) => void;
   /** Wrapper-log warnings since launch — surfaced by `status` so nothing logged is silently lost. */
   warnings?: { count: number; logPath: string };
+  /**
+   * Interactive manual compact/prune freeze this at the settled seam. Automatic
+   * mutation supplies its snapshot on the plan instead.
+   */
+  getLiveAsyncWork?: () => OpenAsyncWork[];
 }
 
 /**
@@ -130,8 +136,8 @@ function handleHelp(_runtime: LhcCommandRuntime): DispatchOutcome {
       [
         "status — thread-view status + capture stats",
         "stats — capture stats line",
-        "compact — compact LHC view + write rebuilt session (relaunch via cc-lhc --resume; refused mid-turn)",
-        "prune [targetTokens] — prune zone + write rebuilt session (relaunch via cc-lhc --resume; refused mid-turn)",
+        "compact — Smart Compact the LHC view and write a rebuilt session (refused mid-turn)",
+        "prune [targetTokens] — prune the tool-result zone and write a rebuilt session (refused mid-turn)",
         "export — write canonical transcript dumps (rollout + thread view) to cwd",
         "help — this list",
       ].join("\n"),

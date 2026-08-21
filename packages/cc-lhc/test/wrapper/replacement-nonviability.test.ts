@@ -47,7 +47,7 @@ describe("the standing alarm", () => {
 
   it("says what is still working, and never claims anything ended", () => {
     expect(ALARM).toContain("Session old-1111 stays live and capture keeps running");
-    expect(ALARM).toContain("Manual compact still runs");
+    expect(ALARM).toContain("Manual Smart Compact still runs");
     expect(ALARM).toContain("only the automatic child swap stops");
     // "the terminal" is the screen cc-lhc refuses to parse, not a state claim.
     for (const ended of ["terminal state", "dead", "unrecoverable", "gave up", "wall"]) {
@@ -67,6 +67,6 @@ describe("the survival relaunch notice", () => {
     const notice = formatSurvivalRelaunchNotice("old-1111", false);
     expect(notice).toContain("could not relaunch session old-1111");
     expect(notice).toContain("running child still carries it");
-    expect(notice).toContain("native auto-compact will not rescue this session");
+    expect(notice).toContain("Claude native Compact will not rescue this session");
   });
 });

@@ -10,9 +10,9 @@ Usage:
 Wrapper flags:
   --lhc-no-inference               Disable derivation model calls
   --lhc-no-notifier                Disable lifecycle-command warnings
-  --lhc-auto-compact=on|off        Override automatic compact for this launch
-  --lhc-lower-bound-tokens=N       Override compact target for this launch
-  --lhc-upper-bound-tokens=N       Override automatic compact trigger
+  --lhc-auto-compact=on|off        Override automatic Smart Compact for this launch
+  --lhc-lower-bound-tokens=N       Override Smart Compact target for this launch
+  --lhc-upper-bound-tokens=N       Override automatic Smart Compact trigger
   --lhc-min-runway-tokens=N        Override minimum trigger/target runway
   --lhc-profile=NAME               Override the LHC serving profile
 

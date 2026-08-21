@@ -127,7 +127,7 @@ describe("runContextMutation", () => {
     expect(writeSpy).toHaveBeenCalledOnce();
     if (outcome.kind === "rebuilt") {
       expect(outcome.messages.join("\n")).toMatch(/prune boundary/);
-      expect(outcome.messages.join("\n")).toMatch(/compact view=/);
+      expect(outcome.messages.join("\n")).toMatch(/Smart Compact view=/);
     }
     writeSpy.mockRestore();
   });

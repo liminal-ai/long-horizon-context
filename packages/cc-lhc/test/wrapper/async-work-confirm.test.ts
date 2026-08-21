@@ -422,7 +422,7 @@ describe("an automatic swap asks before it kills live background work", () => {
     await waitFor(() => rig.compactAttempts() === 1, "compact after yes");
     await settle(200);
     expect(rig.compactAttempts()).toBe(1);
-    expect(rig.logs.some((line) => line.includes("operator authorized compact over 1 live background item"))).toBe(
+    expect(rig.logs.some((line) => line.includes("operator authorized Smart Compact over 1 live background item"))).toBe(
       true,
     );
     // Yes enters the ordinary path: one receipt, one classification, and no
@@ -444,7 +444,7 @@ describe("an automatic swap asks before it kills live background work", () => {
     rig.stdin.write("n");
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
-    expect(rig.logs.some((line) => line.includes("compact not authorized"))).toBe(true);
+    expect(rig.logs.some((line) => line.includes("Smart Compact not authorized"))).toBe(true);
     // Nothing about an unauthorized seam is written down.
     expect(rig.settledReceipts()).toEqual([]);
     expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);

@@ -292,8 +292,13 @@ export type GovernorHandoffOutcome =
       newSessionId: string;
       /** Typed-ahead bytes dropped while compact owned input (never replayed). */
       droppedInputBytes: number;
-      /** Old child that survived termination and was left running. */
+      /**
+       * Historical rows only. New writes reference `handoffId` and never copy
+       * cleanup classification, pid, or detail.
+       */
       orphanPid?: number;
+      /** Evidence-only reference to `cc_handoff_receipts.handoff_id`. */
+      handoffId?: string;
     }
   | { kind: "handoff_cancelled"; detail: string }
   /**

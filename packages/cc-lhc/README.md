@@ -4,7 +4,7 @@
 the closed `claude` CLI in a PTY, captures Claude's rollout JSONL into an LHC
 thread, runs derivation inference through isolated `claude -p` subprocesses,
 and rebuilds Claude's session when the served thread view changes — swapping the
-child mid-session for an interactive launch, and compacting before launch for a
+child mid-session for an interactive launch, and running Smart Compact before launch for a
 one-shot.
 
 The integration was certified on 2026-08-10 against Claude Code 2.1.226. See
@@ -90,15 +90,15 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   provider usage). Missing or invalid latest usage falls back to the last known
   provider reading plus that estimate, labelled `last_known` so an older
   measurement is never read as fresh — a session at 900k does not become healthy
-  because one usage line went bad. Two things decide an automatic compact: the
+  because one usage line went bad. Two things decide an automatic Smart Compact: the
   user's `autoCompact` policy and measured pressure. Capture health, descriptor
   readiness, receipt storage, and typed-ahead input are diagnostics and have no
   say. Classification uses explicit named states and durable receipts. Threshold
   crossing during an open agentic turn is observed and receipted but **not**
   mutated mid-turn — Claude Code cannot replace the in-flight request the way
   Codex full continuation can. At the next Claude-safe settled seam, policy may
-  run the compact/rebuild and wrapper-owned spawn-first handoff below.
-  A native compact summary is captured as one bounded closed turn and reported
+  run Smart Compact and the wrapper-owned spawn-first handoff below.
+  A Claude native Compact summary is captured as one bounded closed turn and reported
   loudly; nothing latches and LHC compaction continues. Capture that is degraded or still catching up does not
   block the seam: the wrapper rebuilds capture state from the persisted
   transcript and re-evaluates the moment it is ready. Built-in policy targets
@@ -106,9 +106,9 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
 - **Forward-only construction.** The settled seam is read once, before any SDK
   work, and never re-read: input arriving, a turn opening, or capture changing
   generation appends to a thread whose settled history the snapshot already
-  holds, so none of them can cancel a compact that is under way. The rebuilt
+  holds, so none of them can cancel a Smart Compact that is under way. The rebuilt
   rollout is written under bounded retries from the durable installed view. From
-  the moment compact owns the settled session, bytes bound for Claude are
+  the moment Smart Compact owns the settled session, bytes bound for Claude are
   dropped rather than delivered — never buffered, never replayed — and one line
   says *input typed during compaction was not delivered — please resend*.
 - **Live background work is not killed silently.** A swap replaces the Claude
@@ -120,7 +120,7 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   (`completed`, `failed`, `killed`, `stopped`, or an explicit `TaskStop`) closes
   it. Monitor events are progress and close nothing, and neither does elapsed
   time — a wakeup past its moment stays open until a later call supersedes it or
-  stops it. When an automatic compact comes due at a settled seam with an
+  stops it. When automatic Smart Compact comes due at a settled seam with an
   operator at the terminal and work still open, the panel names what the swap
   would kill and asks *before* anything durable is written. Only an explicit
   **y** proceeds, into the ordinary receipt-and-swap path exactly once — and
@@ -135,8 +135,8 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   drawn — skips that seam alone and records nothing at all, so the next eligible
   seam asks again while the work is still running. With an empty set, no
   terminal (one-shot launches included), or a seam that is not otherwise
-   eligible, the compact path is exactly what it was.
-- **Spawn-first handoff.** On an interactive launch, compact/prune
+   eligible, the Smart Compact path is exactly what it was.
+- **Spawn-first handoff.** On an interactive launch, Smart Compact/prune
   rebuild a new rollout, then spawn `claude --resume <new-id>` **off-route** — a
   real child owning no terminal, no stdin, and no capture generation. Once it has
   proven observable viability (it rendered and survived a stabilization window;
@@ -147,33 +147,33 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   PID. A working session exists at every moment and nothing ever rolls back to
   the oversized one. This is **not** same-agentic-turn continuation: there is no
   synthetic tool-tail preservation and no Codex parity claim.
-- **One-shot seats compact before they launch.** A one-shot seat
-  (`cc-lhc --resume <id> -p <prompt>`) is one prompt and an exit, so it compacts
-  at the start of the next invocation, before any Claude process exists. The
+- **One-shot seats run Smart Compact before they launch.** A one-shot seat
+  (`cc-lhc --resume <id> -p <prompt>`) is one prompt and an exit, so it runs
+  Smart Compact at the start of the next invocation, before any Claude process exists. The
   wrapper reads the last authoritative provider count from the persisted
   transcript — catching LHC up from that file first when capture is stale — adds
   a source-labelled estimate of the prompt it is about to send, and, over the
-  trigger, compacts and writes the rebuilt session before launching Claude
-  **once** on it with the original prompt. Compacting needs a settled snapshot
+  trigger, runs Smart Compact and writes the rebuilt session before launching Claude
+  **once** on it with the original prompt. Smart Compact needs a settled snapshot
   LHC actually holds: capture that has not reached ready inside the catch-up
   bound, and a transcript left mid-turn by a previous invocation, both stand the
   seam down — the prompt launches on the resumed session with capture still
-  catching up behind it, and the next invocation compacts. The thread's current
+  catching up behind it, and the next invocation runs Smart Compact. The thread's current
   session advances only once the rebuilt session is observed accepting the
   prompt, and the wrapper settles that acceptance before handing the thread
   lease back; a launch that fails before then keeps the old pointer, and nothing
   is ever resent automatically. A turn that grows past the trigger while it runs
-  finishes and is compacted by the next invocation.
+  finishes and the next invocation runs Smart Compact.
 - **When replacements repeatedly will not run.** Each nonviable swap costs the
   session nothing and is retried at the next settled seam. After a bounded
   number of them, two things happen instead of another quiet retry, and both
   persist: a standing alarm — *cc-lhc rebuilt sessions are not loading — likely
   a compatibility problem with the installed Claude version* — and a survival
   relaunch of the old session **without** the injected `DISABLE_AUTO_COMPACT`,
-  so Claude's own compaction can keep it alive in degraded form. The alarm is
+  so Claude native Compact can keep it alive in degraded form. The alarm is
   cc-lhc's best guess from observable viability, not proof Claude rejected the
   file; the terminal is never parsed to find out. Nothing ends: the old session
-  stays live and captured, retrieval keeps working, and manual compact still
+  stays live and captured, retrieval keeps working, and manual Smart Compact still
   runs — only the automatic swap stops.
 - **Runtime continuity.** Wrapper-owned handoffs preserve the latest confirmed
   Claude effort and permission mode from the rollout. Unknown values are not
@@ -220,11 +220,11 @@ modifyOtherKeys, and Windows Terminal win32 input events.
 | --- | --- |
 | `status` | Capture, descriptor, derivation, context-policy, and last-action status |
 | `stats` | Current capture counters |
-| `compact` | Smart compact and controlled child handoff |
+| `compact` | Smart Compact and controlled child handoff |
 | `prune [targetTokens]` | Advance the visibility boundary and hand off if changed |
 | `export` | Write rollout and served-view transcript dumps |
-| `auto on|off` | Change automatic compact for this wrapper lifetime |
-| `bounds <lower> <upper>` | Change compact target/trigger for this wrapper lifetime |
+| `auto on|off` | Change automatic Smart Compact for this wrapper lifetime |
+| `bounds <lower> <upper>` | Change Smart Compact target/trigger for this wrapper lifetime |
 | `help` / `?` | List panel commands |
 
 Panel edits are session-scoped. Persistent policy is configured below.
@@ -251,12 +251,12 @@ persisted fields are `autoCompact`, `lowerBoundTokens`, `upperBoundTokens`,
 
 Bad configuration never disarms the product. An unknown field, a malformed
 value, an unreadable file, or an incoherent pair of bounds falls back to the
-built-in default for the fields involved; automatic compact stays on. The
+built-in default for the fields involved; automatic Smart Compact stays on. The
 fallback is announced at startup, in the wrapper log, in the control panel, and
-in the compact message written to the rebuilt session, and it says: *Invalid
+in the Smart Compact message written to the rebuilt session, and it says: *Invalid
 compact configuration. Default configuration used. Please fix or update the
 configuration.* Only an explicit `autoCompact: false` — in config or through a
-panel `auto off` — turns automatic compact off.
+panel `auto off` — turns automatic Smart Compact off.
 
 Run `cc-lhc --lhc-help` for the wrapper's launch flags and operative
 environment surface.
@@ -286,12 +286,12 @@ gate commands):
 | | **cc-lhc (capability-limited)** | **Codex (full state machine)** |
 | --- | --- | --- |
 | Mid-agentic-turn request replacement | **No** — closed CLI, no injection seam | Yes — in-place next-request install |
-| When compact may run | Claude-safe **settled** seam only | Settled model-turn seam inside an open agentic turn |
+| When Smart Compact may run | Claude-safe **settled** seam only | Settled model-turn seam inside an open agentic turn |
 | Open-turn threshold | Classify + durable receipt; `wouldMutate=false` | May compact / preserve tool tail / force continuation |
 | Continuation marker / `context_compact_continue` | **Not fabricated** | Typed marker + forced boundary when applicable |
 | Handoff | Rebuild rollout + `claude --resume` (new session id) | Serve compacted view into the same agentic turn |
-| Native writer | Native auto-compact disabled per child; a summary is captured as one bounded turn | One-writer rules with native conflict refuse |
-| Receipts | Structured rows in `cc-lhc.sqlite` + rollout operation note | Compact-continuation receipt in thread DB |
+| Native writer | Claude native Compact disabled per child; a summary is captured as one bounded turn | One-writer rules with native conflict refuse |
+| Receipts | Structured rows in `cc-lhc.sqlite` + rollout operation note | compact-continuation receipt in thread DB |
 | Live post-measurement pressure | Real watcher lines: provider `output_tokens` when valid, else host canonical-payload bytes/4; cumulative until next sampling | Full runtime estimate path |
 
 v1 accepts this difference honestly. Shared LIM-60/61 strings and pressure
@@ -301,13 +301,13 @@ Claude Code cannot perform.
 **Durable receipts (production):** ordinary classifications are receipted, but
 an interactive would-mutate seam that names live background work writes nothing
 until the operator explicitly authorizes the swap. Receipts are write-behind —
-they record the compact, they never decide whether it runs. When the receipt store is unavailable the operation proceeds against an
+they record the Smart Compact, they never decide whether it runs. When the receipt store is unavailable the operation proceeds against an
 in-memory receipt id with a loud warning (restart recovery is degraded for that
-attempt; the session still compacts). Exact native replay is idempotent (unique
+attempt; the session still runs Smart Compact). Exact native replay is idempotent (unique
 `replay_key`); a replayed receipt whose outcome was a *deferral* is retried,
 because no mutation had started, while an existing `scheduled` receipt after
 restart is not re-run. Outcomes attach only to that exact receipt id (never
-“latest wouldMutate”), so old-session → new-session handoff and manual compact
+“latest wouldMutate”), so old-session → new-session handoff and manual Smart Compact
 cannot rewrite an unrelated automatic classification.
 
 ## Operational boundaries
@@ -338,12 +338,12 @@ cannot rewrite an unrelated automatic classification.
   the authoritative rollout stream; PTY handling is limited to terminal
   transport, the panel, child-liveness proof, and advisory notification.
 - Automatic prune remains off by default. Every managed Claude child launches
-  with `DISABLE_AUTO_COMPACT=1`, so Claude's own automatic compaction never runs
+  with `DISABLE_AUTO_COMPACT=1`, so Claude native Compact never runs
   on a managed session; manual `/compact` stays available. An explicit user
   `--autocompact` passes through unchanged and cc-lhc does not inject the
   disable for that launch, with an anomaly notice. Omission is all the wrapper
   claims: inherited environment and Claude's own settings still govern whether
-  native auto-compact then runs, and cc-lhc cannot observe them.
+  Claude native Compact then runs, and cc-lhc cannot observe them.
 
 ## Verification
 
@@ -355,6 +355,6 @@ pnpm --config.verify-deps-before-run=false --filter cc-lhc run test   # CC_LHC_N
 ```
 
 Certification includes the real installed artifact in SSH → tmux → PTY,
-automatic compact twice, unpiped labeled retrieval and impression recording,
+automatic Smart Compact twice, unpiped labeled retrieval and impression recording,
 prune, clean exit/relaunch, explicit resume, deliberate in-app mismatch,
 legacy label backfill, and production-state isolation.
