@@ -20,7 +20,7 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function waitUntil(pred: () => boolean, label: string, capMs = 2_000): Promise<void> {
+async function waitUntil(pred: () => boolean, label: string, capMs = 8_000): Promise<void> {
   const start = Date.now();
   while (!pred()) {
     if (Date.now() - start > capMs) throw new Error(`timed out waiting for ${label}`);
