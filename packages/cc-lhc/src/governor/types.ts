@@ -187,6 +187,11 @@ export interface GovernorInput {
   postMeasurementEstimate: PostMeasurementEstimate;
   /** Compact/prune/handoff already in flight. */
   operationInFlight: boolean;
+  /**
+   * Exact Claude `Prompt is too long` rejection observed this turn. Settled
+   * seam may compact even when pressure is below upperBoundTokens.
+   */
+  contextLimitRejected: boolean;
 }
 
 export interface GovernorDecision {

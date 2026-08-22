@@ -61,6 +61,12 @@ export interface GovernorRuntimeState {
   lastOpenTurnObserveFingerprint: string | null;
   /** Whether we have seen any sampling for the open/current turn. */
   sawSamplingThisTurn: boolean;
+  /**
+   * Exact Claude context-limit rejection. Cleared on a new turn or a valid
+   * provider sampling; kept through settle so live-work yes reobserve still
+   * authorizes compact below the configured trigger.
+   */
+  contextLimitRejected: boolean;
 }
 
 export function createGovernorRuntimeState(seed: Partial<GovernorRuntimeState> = {}): GovernorRuntimeState {
@@ -78,6 +84,7 @@ export function createGovernorRuntimeState(seed: Partial<GovernorRuntimeState> =
     observeSequence: 0,
     lastOpenTurnObserveFingerprint: null,
     sawSamplingThisTurn: false,
+    contextLimitRejected: false,
     ...seed,
   };
 }
@@ -136,6 +143,7 @@ export function applyGovernorLifecycleSignal(
           latestSamplingId: null,
           sawSamplingThisTurn: false,
           lastOpenTurnObserveFingerprint: null,
+          contextLimitRejected: false,
         },
         observe: null,
       };
@@ -148,6 +156,7 @@ export function applyGovernorLifecycleSignal(
       // A valid reading supersedes and resets the growth measured on top of the
       // previous one. A missing or malformed one leaves both in place, marked
       // last_known — the session's real size does not disappear with a bad line.
+      const rejected = signal.contextLimitRejected === true;
       const next: GovernorRuntimeState =
         usage === null
           ? {
@@ -155,6 +164,7 @@ export function applyGovernorLifecycleSignal(
               providerContextFreshness: state.latestProviderContext === null ? "none" : "last_known",
               latestSamplingId: signal.samplingId,
               sawSamplingThisTurn: true,
+              contextLimitRejected: rejected || state.contextLimitRejected,
             }
           : {
               ...state,
@@ -163,6 +173,7 @@ export function applyGovernorLifecycleSignal(
               latestSamplingId: signal.samplingId,
               sawSamplingThisTurn: true,
               postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
+              contextLimitRejected: false,
             };
       // Classify during open turn so threshold-crossed-open is receipted.
       if (next.turnOpen) {
@@ -266,6 +277,7 @@ function decisionInputFrom(state: GovernorRuntimeState, resolved: ResolvedContex
     providerContextFreshness: state.providerContextFreshness,
     postMeasurementEstimate: state.postMeasurementEstimate,
     operationInFlight: state.operationInFlight,
+    contextLimitRejected: state.contextLimitRejected,
   };
 }
 

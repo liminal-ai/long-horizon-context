@@ -216,6 +216,35 @@ function overTrigger(samplingId: string): LifecycleSignal[] {
   ];
 }
 
+/** Below POLICY.upperBoundTokens (5000) with the exact context-limit latch. */
+function belowTriggerPromptTooLong(samplingId: string): LifecycleSignal[] {
+  return [
+    { kind: "turn_opened", reason: "user_prompt" },
+    {
+      kind: "sampling_observed",
+      samplingId: `${samplingId}:base`,
+      providerUsage: {
+        input_tokens: 1_000,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+        output_tokens: 0,
+      },
+    },
+    {
+      kind: "sampling_observed",
+      samplingId,
+      contextLimitRejected: true,
+      providerUsage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    },
+    { kind: "turn_settled", reason: "stop_sequence" },
+  ];
+}
+
 /** A settled turn whose provider reading is whatever the test needs. */
 function settledTurnAt(samplingId: string, inputTokens: number): LifecycleSignal[] {
   return [
@@ -457,6 +486,28 @@ describe("an automatic swap asks before it kills live background work", () => {
     expect(rig.compactAttempts()).toBe(0);
     rig.stdin.write("y");
     await waitFor(() => rig.compactAttempts() === 1, "compact after the second ask");
+    await rig.end();
+  }, 20_000);
+
+  it("Prompt is too long below trigger: n then fresh y compacts once and does not resend", async () => {
+    const rig = await startRig({ liveWork: [monitorWork()] });
+    rig.fire(belowTriggerPromptTooLong("req:ptl-1"));
+    await waitFor(() => rig.terminal().includes("live background work"), "confirmation after rejection");
+    rig.stdin.write("n");
+    await settle(200);
+    expect(rig.compactAttempts()).toBe(0);
+    expect(rig.settledReceipts()).toEqual([]);
+
+    const before = rig.terminal().length;
+    rig.fire(belowTriggerPromptTooLong("req:ptl-2"));
+    await waitFor(() => rig.terminal().slice(before).includes("live background work"), "fresh confirmation");
+    expect(rig.compactAttempts()).toBe(0);
+    rig.stdin.write("y");
+    await waitFor(() => rig.compactAttempts() === 1, "compact after fresh yes");
+    expect(rig.compactAttempts()).toBe(1);
+    expect(rig.pty().writes.join("")).not.toContain("y");
+    expect(rig.pty().writes.join("")).not.toContain("Prompt is too long");
+    expect(rig.pty().args.join(" ")).not.toContain("Prompt is too long");
     await rig.end();
   }, 20_000);
 

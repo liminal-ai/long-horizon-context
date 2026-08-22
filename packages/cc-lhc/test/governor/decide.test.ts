@@ -22,6 +22,7 @@ function baseInput(over: Partial<GovernorInput> = {}): GovernorInput {
     providerContextFreshness: "current_sampling",
     postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
     operationInFlight: false,
+    contextLimitRejected: false,
     ...over,
   };
 }
@@ -216,5 +217,77 @@ describe("decideGovernor", () => {
       expect(d.kind).toBe("would_compact");
       expect(d.wouldMutate).toBe(true);
     }
+  });
+
+  it("Prompt is too long below trigger becomes settled would_compact without changing tokens or policy", () => {
+    const d = decideGovernor(
+      baseInput({
+        providerContext: {
+          inputTokens: 178_458,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          total: 178_458,
+        },
+        providerContextFreshness: "last_known",
+        postMeasurementEstimate: {
+          tokens: 50,
+          source: "user_prompt:js-tiktoken:o200k_base",
+          domain: "source_labelled_estimate",
+        },
+        contextLimitRejected: true,
+        policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: true, upperBoundTokens: 200_000, lowerBoundTokens: 100_000 },
+      }),
+    );
+    expect(d.kind).toBe("would_compact");
+    expect(d.wouldMutate).toBe(true);
+    expect(d.pressure.nextRequestPressureTokens).toBe(178_508);
+    expect(d.pressure.providerBaseTokens).toBe(178_458);
+    expect(d.pressure.estimateTokens).toBe(50);
+    expect(d.pressure.atOrAboveTrigger).toBe(false);
+    expect(d.upperBoundTokens).toBe(200_000);
+    expect(d.reason).toContain("Prompt is too long");
+    expect(d.reason).toContain("below upperBoundTokens 200000");
+  });
+
+  it("at-or-above-trigger reason is unchanged even when the rejection latch is set", () => {
+    const over = baseInput({
+      policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: true, upperBoundTokens: 200_000, lowerBoundTokens: 100_000 },
+      providerContext: {
+        inputTokens: 164_208,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        total: 164_208,
+      },
+      postMeasurementEstimate: {
+        tokens: 66_025,
+        source: "user_prompt:js-tiktoken:o200k_base",
+        domain: "source_labelled_estimate",
+      },
+    });
+    const plain = decideGovernor(over);
+    const latched = decideGovernor({ ...over, contextLimitRejected: true });
+    expect(plain.kind).toBe("would_compact");
+    expect(latched.kind).toBe("would_compact");
+    expect(latched.reason).toBe(plain.reason);
+    expect(latched.reason).toContain(">= upperBoundTokens 200000");
+    expect(latched.reason).not.toContain("Prompt is too long");
+    expect(latched.pressure.nextRequestPressureTokens).toBe(230_233);
+  });
+
+  it("open-turn rejection below trigger still does not mutate", () => {
+    const d = decideGovernor(
+      baseInput({
+        turnOpen: true,
+        contextLimitRejected: true,
+        providerContext: {
+          inputTokens: 1_000,
+          cacheCreationInputTokens: 0,
+          cacheReadInputTokens: 0,
+          total: 1_000,
+        },
+      }),
+    );
+    expect(d.kind).toBe("turn_open");
+    expect(d.wouldMutate).toBe(false);
   });
 });

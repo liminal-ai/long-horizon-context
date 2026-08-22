@@ -5,6 +5,7 @@ import {
   applyGovernorLifecycleBatch,
   createGovernorRuntimeState,
   noteGovernorInput,
+  reobserveSettled,
   setGovernorPostMeasurementEstimate,
 } from "../../src/governor/observe-state.js";
 import type { ResolvedContextPolicy } from "../../src/governor/types.js";
@@ -498,5 +499,84 @@ describe("governor observe-state fold", () => {
     const settled = afterZero.observes.filter((o) => o.observePhase === "settled_seam").at(-1);
     expect(settled?.pressure.nextRequestPressureTokens).toBe(230_233);
     expect(settled?.decision).toBe("would_compact");
+  });
+
+  it("exact Prompt is too long below 200k settles would_compact; generic zeros do not", () => {
+    const resolved = armed(true);
+    resolved.policy = {
+      ...resolved.policy,
+      autoCompact: true,
+      lowerBoundTokens: 100_000,
+      upperBoundTokens: 200_000,
+      minRunwayTokens: 50_000,
+    };
+    const rejected = applyGovernorLifecycleBatch(
+      createGovernorRuntimeState({ captureGeneration: 1 }),
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "req:prior",
+          providerUsage: { input_tokens: 178_458, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        },
+        {
+          kind: "post_measurement_estimate",
+          tokens: 50,
+          source: "user_prompt:js-tiktoken:o200k_base",
+          mode: "add",
+        },
+        {
+          kind: "sampling_observed",
+          samplingId: "req:ptl",
+          contextLimitRejected: true,
+          providerUsage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+        { kind: "turn_settled", reason: "stop_sequence" },
+      ],
+      resolved,
+    );
+    expect(rejected.state.latestProviderContext?.total).toBe(178_458);
+    expect(rejected.state.postMeasurementEstimate.tokens).toBe(50);
+    expect(rejected.state.contextLimitRejected).toBe(true);
+    const settled = rejected.observes.filter((o) => o.observePhase === "settled_seam").at(-1);
+    expect(settled?.decision).toBe("would_compact");
+    expect(settled?.wouldMutate).toBe(true);
+    expect(settled?.pressure.nextRequestPressureTokens).toBe(178_508);
+    expect(settled?.pressure.atOrAboveTrigger).toBe(false);
+    expect(settled?.upperBoundTokens).toBe(200_000);
+    expect(settled?.reason).toContain("Prompt is too long");
+    const reobserve = reobserveSettled(rejected.state, resolved);
+    expect(reobserve.observe?.decision).toBe("would_compact");
+    expect(reobserve.observe?.wouldMutate).toBe(true);
+
+    const generic = applyGovernorLifecycleBatch(
+      createGovernorRuntimeState({ captureGeneration: 1 }),
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "req:prior",
+          providerUsage: { input_tokens: 178_458, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        },
+        {
+          kind: "sampling_observed",
+          samplingId: "req:auth",
+          providerUsage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+        { kind: "turn_settled", reason: "stop_sequence" },
+      ],
+      resolved,
+    );
+    expect(generic.observes.filter((o) => o.observePhase === "settled_seam").at(-1)?.decision).toBe("below_threshold");
   });
 });

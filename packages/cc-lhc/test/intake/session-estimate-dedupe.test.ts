@@ -1167,6 +1167,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
         providerContext: gov.latestProviderContext,
         providerContextFreshness: "last_known",
         postMeasurementEstimate: preLaunchEstimate(gov.postMeasurementEstimate, "hi"),
+        contextLimitRejected: gov.contextLimitRejected,
       });
       expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBeGreaterThanOrEqual(200_000);
       expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBe(
@@ -1204,6 +1205,247 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       expect(lifecycle2.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add")).toHaveLength(0);
     } finally {
       await session2.stop();
+    }
+  }, 30_000);
+
+  it("live intake: Prompt is too long below 200k settles would_compact; generic/auth errors do not", async () => {
+    const userText = "next two reads";
+    const userTokens = estimateTokens(userText);
+    expect(178_458 + userTokens).toBeLessThan(200_000);
+
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-est-ptl-"));
+    const projectsRoot = join(root, "projects");
+    const cwd = "/work/est-ptl";
+    mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
+    const sid = "33333333-4444-5555-6666-777777777777";
+    const path = join(projectsRoot, encodeProjectPath(cwd), `${sid}.jsonl`);
+    writeFileSync(path, "");
+    const lineageDbPath = join(root, "lineage.sqlite");
+    const registryPath = join(root, "reg.sqlite");
+    const threadId = "th_prompt_too_long";
+    openLineageDatabase(lineageDbPath);
+    recordSessionThread(lineageDbPath, sid, threadId, {}, { prefix: { kind: "none" } });
+
+    const resolved = armedPolicy({
+      autoCompact: true,
+      lowerBoundTokens: 100_000,
+      upperBoundTokens: 200_000,
+      minRunwayTokens: 50_000,
+      profile: "balanced",
+    });
+    let gov = createGovernorRuntimeState({ captureGeneration: 1 });
+    const lifecycle: LifecycleSignal[] = [];
+    const observes: Array<{
+      observePhase: string;
+      decision: string;
+      wouldMutate: boolean;
+      providerContextTotal: number | null;
+      pressure: number;
+      reason: string;
+    }> = [];
+
+    const promptTooLong = (uuid: string): RolloutLineItem => ({
+      type: "assistant",
+      uuid,
+      sessionId: sid,
+      error: "invalid_request",
+      isApiErrorMessage: true,
+      message: {
+        role: "assistant",
+        id: `msg_${uuid}`,
+        model: "<synthetic>",
+        stop_reason: "stop_sequence",
+        content: [{ type: "text", text: "Prompt is too long" }],
+        usage: {
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+        },
+      },
+    });
+
+    const session = startCaptureSession({
+      cwd,
+      expectedSession: { sessionId: sid, source: "fresh" },
+      knownRolloutPath: path,
+      prefixBoundary: { kind: "none" },
+      noInference: true,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath,
+      registryPath,
+      log: () => {},
+      logError: () => {},
+      onLifecycle: (signals) => {
+        lifecycle.push(...signals);
+        const applied = applyGovernorLifecycleBatch(gov, signals, resolved);
+        gov = applied.state;
+        for (const o of applied.observes) {
+          observes.push({
+            observePhase: o.observePhase,
+            decision: o.decision,
+            wouldMutate: o.wouldMutate,
+            providerContextTotal: o.providerContextTotal,
+            pressure: o.pressure.nextRequestPressureTokens,
+            reason: o.reason,
+          });
+        }
+      },
+      launchThread: { threadId, createdAtLaunch: true },
+      initSdkFn: () => fakeSdk([]),
+    });
+
+    try {
+      await waitFor(() => session.isCaptureReady(), "ready");
+      appendJsonl(
+        path,
+        completeAssistant(sid, "a-prior", "req_prior", "ok", {
+          input_tokens: 178_458,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          output_tokens: 0,
+        }),
+      );
+      await waitFor(
+        () =>
+          lifecycle.some((s) => s.kind === "sampling_observed" && s.samplingId === "req:req_prior") &&
+          lifecycle.some((s) => s.kind === "post_measurement_estimate" && s.mode === "set"),
+        "prior sampling applied",
+      );
+      appendJsonl(path, userLine(sid, "u-next", userText));
+      await waitFor(
+        () => lifecycle.some((s) => s.kind === "post_measurement_estimate" && s.mode === "add"),
+        "accepted user growth",
+      );
+      const settledBeforeRejection = observes.filter((o) => o.observePhase === "settled_seam").length;
+      const turnSettledBeforeRejection = lifecycle.filter((s) => s.kind === "turn_settled").length;
+      appendJsonl(path, promptTooLong("api-err"));
+      await waitFor(
+        () =>
+          observes.filter((o) => o.observePhase === "settled_seam").length > settledBeforeRejection &&
+          lifecycle.filter((s) => s.kind === "turn_settled").length > turnSettledBeforeRejection,
+        "rejection settle",
+      );
+
+      const ptl = lifecycle.find((s) => s.kind === "sampling_observed" && s.samplingId !== "req:req_prior");
+      expect(ptl).toMatchObject({ kind: "sampling_observed", contextLimitRejected: true });
+      expect(gov.latestProviderContext?.total).toBe(178_458);
+      expect(gov.postMeasurementEstimate.tokens).toBe(userTokens);
+      expect(gov.contextLimitRejected).toBe(true);
+      const settled = observes.filter((o) => o.observePhase === "settled_seam").at(-1);
+      expect(settled?.decision).toBe("would_compact");
+      expect(settled?.wouldMutate).toBe(true);
+      expect(settled?.providerContextTotal).toBe(178_458);
+      expect(settled?.pressure).toBe(178_458 + userTokens);
+      expect(settled?.reason).toContain("Prompt is too long");
+      expect(settled?.reason).toContain("below upperBoundTokens 200000");
+    } finally {
+      await session.stop();
+    }
+
+    const lifecycle2: LifecycleSignal[] = [];
+    const session2 = startCaptureSession({
+      cwd,
+      expectedSession: { sessionId: sid, source: "explicit_resume" },
+      knownRolloutPath: path,
+      prefixBoundary: { kind: "none" },
+      noInference: true,
+      discoverDeps: { projectsRoot, pollMs: 20 },
+      lineageDbPath,
+      registryPath,
+      log: () => {},
+      logError: () => {},
+      onLifecycle: (signals) => {
+        lifecycle2.push(...signals);
+      },
+      launchThread: { threadId, createdAtLaunch: false },
+      initSdkFn: () => fakeSdk([]),
+    });
+    try {
+      await waitFor(() => session2.isCaptureReady(), "replay ready");
+      expect(session2.stats.skippedReplay).toBeGreaterThan(0);
+      expect(lifecycle2.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add")).toHaveLength(0);
+    } finally {
+      await session2.stop();
+    }
+
+    const genRoot = mkdtempSync(join(tmpdir(), "cc-lhc-est-auth-"));
+    const genProjects = join(genRoot, "projects");
+    const genCwd = "/work/est-auth";
+    mkdirSync(join(genProjects, encodeProjectPath(genCwd)), { recursive: true });
+    const genSid = "44444444-5555-6666-7777-888888888888";
+    const genPath = join(genProjects, encodeProjectPath(genCwd), `${genSid}.jsonl`);
+    writeFileSync(genPath, "");
+    const genLineage = join(genRoot, "lineage.sqlite");
+    openLineageDatabase(genLineage);
+    recordSessionThread(genLineage, genSid, "th_auth", {}, { prefix: { kind: "none" } });
+    let genGov = createGovernorRuntimeState({ captureGeneration: 1 });
+    const genObserves: string[] = [];
+    const genSession = startCaptureSession({
+      cwd: genCwd,
+      expectedSession: { sessionId: genSid, source: "fresh" },
+      knownRolloutPath: genPath,
+      prefixBoundary: { kind: "none" },
+      noInference: true,
+      discoverDeps: { projectsRoot: genProjects, pollMs: 20 },
+      lineageDbPath: genLineage,
+      registryPath: join(genRoot, "reg.sqlite"),
+      log: () => {},
+      logError: () => {},
+      onLifecycle: (signals) => {
+        const applied = applyGovernorLifecycleBatch(genGov, signals, resolved);
+        genGov = applied.state;
+        for (const o of applied.observes) {
+          if (o.observePhase === "settled_seam") genObserves.push(o.decision);
+        }
+      },
+      launchThread: { threadId: "th_auth", createdAtLaunch: true },
+      initSdkFn: () => fakeSdk([]),
+    });
+    try {
+      await waitFor(() => genSession.isCaptureReady(), "auth ready");
+      appendJsonl(
+        genPath,
+        completeAssistant(genSid, "a-auth-prior", "req_auth_prior", "ok", {
+          input_tokens: 178_458,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          output_tokens: 0,
+        }),
+      );
+      await waitFor(
+        () => genGov.latestProviderContext?.total === 178_458,
+        "auth prior sampling",
+      );
+      appendJsonl(genPath, userLine(genSid, "u-auth", "tiny"));
+      await waitFor(() => genGov.postMeasurementEstimate.tokens > 0, "auth user growth");
+      const genSettledBeforeAuth = genObserves.length;
+      appendJsonl(genPath, {
+        type: "assistant",
+        uuid: "auth-err",
+        sessionId: genSid,
+        error: "authentication_error",
+        isApiErrorMessage: true,
+        message: {
+          role: "assistant",
+          id: "msg_auth_err",
+          model: "<synthetic>",
+          stop_reason: "stop_sequence",
+          content: [{ type: "text", text: "authentication_error" }],
+          usage: {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_creation_input_tokens: 0,
+            cache_read_input_tokens: 0,
+          },
+        },
+      });
+      await waitFor(() => genObserves.length > genSettledBeforeAuth, "auth settle");
+      expect(genObserves.at(-1)).toBe("below_threshold");
+      expect(genGov.contextLimitRejected).toBe(false);
+      expect(genGov.latestProviderContext?.total).toBe(178_458);
+    } finally {
+      await genSession.stop();
     }
   }, 30_000);
 });

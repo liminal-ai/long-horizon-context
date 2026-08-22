@@ -142,6 +142,26 @@ function requestIdOf(item: RolloutLineItem): string | undefined {
   return undefined;
 }
 
+const CLAUDE_PROMPT_TOO_LONG = "Prompt is too long";
+
+function assistantPlainText(item: RolloutLineItem): string {
+  const content = item.message?.content;
+  if (typeof content === "string") return content;
+  return contentBlocks(content)
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => (typeof block.text === "string" ? block.text : ""))
+    .join("");
+}
+
+/** Exact Claude context-limit rejection. Generic/auth/rate-limit errors are not this. */
+export function isClaudePromptTooLongRejection(item: RolloutLineItem): boolean {
+  if (item.isSidechain === true) return false;
+  if (!isAssistantLine(item)) return false;
+  if (item.isApiErrorMessage !== true) return false;
+  if (item.error !== "invalid_request") return false;
+  return assistantPlainText(item) === CLAUDE_PROMPT_TOO_LONG;
+}
+
 function lineUuid(item: RolloutLineItem, lineIndex: number): string {
   if (typeof item.uuid === "string" && item.uuid !== "") return item.uuid;
   return `synthetic:${lineIndex}`;
@@ -313,6 +333,7 @@ export function observeRolloutLine(
           samplingId: claim.samplingId,
           ...(claim.model !== undefined ? { model: claim.model } : {}),
           ...(claim.providerUsage !== undefined ? { providerUsage: claim.providerUsage } : {}),
+          ...(isClaudePromptTooLongRejection(item) ? { contextLimitRejected: true as const } : {}),
         });
         const blocked =
           item.isApiErrorMessage === true || (typeof item.error === "string" && item.error !== "");

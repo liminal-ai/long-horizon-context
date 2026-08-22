@@ -88,17 +88,25 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
   );
   const pressureTokens = pressure.nextRequestPressureTokens;
 
-  if (!pressure.atOrAboveTrigger) {
+  if (pressure.atOrAboveTrigger) {
     return decide(
-      "below_threshold",
-      `${pressurePhrase(inputWithEstimate, pressureTokens)} is below upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}`,
+      "would_compact",
+      `${pressurePhrase(inputWithEstimate, pressureTokens)} >= upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}; capability-limited compact eligible at settled seam`,
+      inputWithEstimate,
+    );
+  }
+
+  if (inputWithEstimate.contextLimitRejected) {
+    return decide(
+      "would_compact",
+      `Claude rejected the request (Prompt is too long); capability-limited compact eligible at settled seam while ${pressurePhrase(inputWithEstimate, pressureTokens)} is below upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}`,
       inputWithEstimate,
     );
   }
 
   return decide(
-    "would_compact",
-    `${pressurePhrase(inputWithEstimate, pressureTokens)} >= upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}; capability-limited compact eligible at settled seam`,
+    "below_threshold",
+    `${pressurePhrase(inputWithEstimate, pressureTokens)} is below upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}`,
     inputWithEstimate,
   );
 }

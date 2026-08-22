@@ -797,6 +797,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // invocation's sampling; it is provider-reported, never fresh.
       providerContextFreshness: governorState.latestProviderContext === null ? "none" : "last_known",
       postMeasurementEstimate: preLaunchEstimate(governorState.postMeasurementEstimate, promptText),
+      contextLimitRejected: governorState.contextLimitRejected,
     });
     wrapperLog.info(`cc-lhc one-shot pre-launch seam: ${decision.kind} — ${decision.reason}`);
     if (decision.kind !== "would_compact") return;

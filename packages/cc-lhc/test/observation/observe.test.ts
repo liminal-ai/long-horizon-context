@@ -25,6 +25,7 @@ import {
 } from "../../src/observation/estimate.js";
 import {
   createTurnFoldState,
+  isClaudePromptTooLongRejection,
   observeRolloutLine,
   postMeasurementAddFromAcceptedEvents,
 } from "../../src/observation/observe.js";
@@ -820,6 +821,7 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
       providerContext: folded.state.latestProviderContext,
       providerContextFreshness: "last_known",
       postMeasurementEstimate: preLaunchEstimate(folded.state.postMeasurementEstimate, "hi"),
+      contextLimitRejected: folded.state.contextLimitRejected,
     });
     expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBeGreaterThanOrEqual(200_000);
     expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBe(
@@ -977,5 +979,61 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
     );
     expect(folded.state.latestProviderContext?.total).toBe(170_000);
     expect(folded.state.postMeasurementEstimate.tokens).toBe(9);
+  });
+});
+
+describe("exact Claude Prompt is too long classification", () => {
+  it("emits contextLimitRejected only for the exact assistant API-error shape", () => {
+    const exact = observeRolloutLine(promptTooLongApiError(), 0);
+    const sample = exact.lifecycle.find((s) => s.kind === "sampling_observed");
+    expect(isClaudePromptTooLongRejection(promptTooLongApiError())).toBe(true);
+    expect(sample).toMatchObject({ kind: "sampling_observed", contextLimitRejected: true });
+
+    const variants: RolloutLineItem[] = [
+      {
+        ...promptTooLongApiError(),
+        isApiErrorMessage: false,
+      },
+      {
+        ...promptTooLongApiError(),
+        error: "authentication_error",
+      },
+      {
+        type: "assistant",
+        uuid: "rate",
+        error: "invalid_request",
+        isApiErrorMessage: true,
+        message: {
+          role: "assistant",
+          id: "msg_rate",
+          model: "<synthetic>",
+          stop_reason: "stop_sequence",
+          content: [{ type: "text", text: "Rate limited" }],
+          usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "auth",
+        error: "invalid_request",
+        isApiErrorMessage: true,
+        message: {
+          role: "assistant",
+          id: "msg_auth",
+          model: "<synthetic>",
+          stop_reason: "stop_sequence",
+          content: [{ type: "text", text: "authentication_error" }],
+          usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        },
+      },
+    ];
+    for (const item of variants) {
+      expect(isClaudePromptTooLongRejection(item), JSON.stringify(item.error)).toBe(false);
+      const observed = observeRolloutLine(item, 0);
+      const s = observed.lifecycle.find((sig) => sig.kind === "sampling_observed");
+      if (s !== undefined && s.kind === "sampling_observed") {
+        expect(s.contextLimitRejected).toBeUndefined();
+      }
+    }
   });
 });
