@@ -14,10 +14,26 @@ export interface PresetPresentation {
   id: BandAllocationId;
   label: BandAllocation["label"];
   description: string;
+  /**
+   * Home's one-line phrase for the same allocation. Home shows the label and
+   * the shares; it has one row for the explanation, so the selector's fuller
+   * wording (which keeps context like "initial selection") is trimmed to the
+   * part that describes the allocation itself.
+   */
+  homeDescription: string;
   low: number;
   medium: number;
   high: number;
   full: number;
+}
+
+/**
+ * The trailing clause of the selector description — the part that says what
+ * the allocation DOES. Derived, not restated, so the two can never drift.
+ */
+export function homeAllocationPhrase(description: string): string {
+  const parts = description.split(" — ");
+  return (parts[parts.length - 1] ?? description).trim();
 }
 
 export function presentAllocation(id: BandAllocationId): PresetPresentation {
@@ -26,6 +42,7 @@ export function presentAllocation(id: BandAllocationId): PresetPresentation {
     id: allocation.id,
     label: allocation.label,
     description: allocation.description,
+    homeDescription: homeAllocationPhrase(allocation.description),
     low: allocation.low,
     medium: allocation.medium,
     high: allocation.high,

@@ -536,13 +536,42 @@ function promptBody(line: string, geometry: Geometry): { line: Line; cursorOffse
 /** Indent for a value whose label was too long for the gutter. */
 const STACKED_INDENT = "  ";
 
+/**
+ * Put a row's marker on the same visual line as the words it qualifies. If the
+ * description already fills the line, the last word comes down with the marker
+ * rather than leaving `◦s` stranded on a row of its own.
+ */
+function attachMarker(wrapped: readonly string[], marker: string, width: number): string[] {
+  if (marker === "") return [...wrapped];
+  const lines = [...wrapped];
+  const lastIndex = Math.max(0, lines.length - 1);
+  const last = lines[lastIndex] ?? "";
+  const suffix = ` ${marker}`;
+  if (last.length + suffix.length <= width) {
+    lines[lastIndex] = `${last}${suffix}`;
+    return lines;
+  }
+  const words = last.split(" ");
+  if (words.length > 1) {
+    const tail = words.pop() ?? "";
+    lines[lastIndex] = words.join(" ");
+    lines.push(`${tail}${suffix}`);
+    return lines;
+  }
+  lines[lastIndex] = truncate(`${last}${suffix}`, width);
+  return lines;
+}
+
 function rowsBody(rows: readonly PanelRow[], geometry: Geometry): Line[] {
   const { contentWidth, gutter } = geometry;
-  const labels = rows.flatMap((row) => (row.kind === "pair" ? [(row.label ?? "").length] : []));
-  // The label column never eats the value column: an outlier label stacks
-  // above its value instead of squeezing every other row.
-  const pairGutter =
-    labels.length === 0 ? gutter : Math.min(Math.max(...labels) + 2, Math.max(10, Math.floor(contentWidth * 0.42)));
+  const labels = rows.flatMap((row) =>
+    row.kind === "pair" && row.ownGutter !== true ? [(row.label ?? "").length] : [],
+  );
+  // The label column is shared so the screen scans as a table, but it never
+  // eats more than half the card: an outlier label stacks above its value
+  // instead of squeezing every other row into a paragraph.
+  const sharedGutter =
+    labels.length === 0 ? gutter : Math.min(Math.max(...labels) + 2, Math.max(10, Math.floor(contentWidth * 0.5)));
   const lines: Line[] = [];
   for (const row of rows) {
     if (row.kind === "blank") {
@@ -551,17 +580,16 @@ function rowsBody(rows: readonly PanelRow[], geometry: Geometry): Line[] {
     }
     if (row.kind === "pair") {
       const label = row.label ?? "";
-      const marker = row.marker === undefined ? "" : ` ${row.marker}`;
+      const marker = row.marker ?? "";
       const valueInk: Ink = row.dimValue === true ? "dim" : "normal";
+      const pairGutter = row.ownGutter === true ? Math.min(label.length + 2, sharedGutter) : sharedGutter;
       const stacked = label.length > pairGutter - 2;
-      const width = Math.max(8, contentWidth - (stacked ? STACKED_INDENT.length : pairGutter) - marker.length);
-      const wrapped = wrapPlain(row.value ?? "", width);
+      const width = Math.max(8, contentWidth - (stacked ? STACKED_INDENT.length : pairGutter));
+      const wrapped = attachMarker(wrapPlain(row.value ?? "", width), marker, width);
       if (stacked) lines.push(ln(span(label, "dim")));
       wrapped.forEach((text, position) => {
         const head = stacked ? STACKED_INDENT : padTo(position === 0 ? label : "", pairGutter);
-        const gap = " ".repeat(Math.max(0, width - text.length));
-        const trailing = position === 0 && marker !== "" ? `${gap}${marker}` : "";
-        lines.push(ln(span(head, "dim"), span(text, valueInk), span(trailing, "dim")));
+        lines.push(ln(span(head, "dim"), span(text, valueInk)));
       });
       continue;
     }

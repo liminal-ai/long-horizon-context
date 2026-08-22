@@ -18,6 +18,7 @@ import {
   renderPanel,
 } from "../../src/wrapper/panel.js";
 import { buildPanelViewSnapshot, PANEL_TITLE, PANEL_TITLE_SHORT } from "../../src/wrapper/panel-commands.js";
+import { allocationSelectorChoices } from "../../src/wrapper/preset-presentation.js";
 import { cardBodyRows, containsSgr, drawnRows, panelGrid, panelText } from "../helpers/panel-text.js";
 
 const VIEW = buildPanelViewSnapshot({
@@ -204,6 +205,32 @@ describe("the card", () => {
     expect(home).not.toContain("DISABLE_AUTO_COMPACT");
     expect(home).not.toMatch(/: none/);
     expect(home).not.toMatch(/\/[a-z]+\/[a-z]/);
+  });
+
+  it("spends one row on the allocation phrase, then the shares", () => {
+    // The normal capture size: a 64-column card inside 100x29.
+    const rows = cardBodyRows(renderPanel(modalState(), 100, 29), 100, 29);
+    const index = rows.findIndex((line) => line.includes("Allocation"));
+    expect(index).toBeGreaterThanOrEqual(0);
+    const allocationRow = rows[index]!;
+    expect(allocationRow).toContain("Default");
+    expect(allocationRow).toContain("emphasizes recent history");
+    expect(allocationRow.length).toBeLessThanOrEqual(100);
+    // The shares follow immediately: no prose rows in between.
+    expect(rows[index + 1]).toContain("Low 20% · Medium 20% · High 30% · Full 30%");
+    // Home does not carry the selector's longer wording — the selector does,
+    // from the unreduced preset copy.
+    const home = panelText(renderPanel(modalState(), 100, 29));
+    expect(home).not.toContain("initial selection");
+    const selector = panelText(renderPanel(modalState({ route: "allocation" }), 100, 29));
+    expect(selector).toContain("initial selection");
+    expect(selector).toContain("equal fidelity distribution");
+    expect(selector).toContain("broader low-fidelity history");
+    expect(allocationSelectorChoices("default").map((choice) => choice.description)).toEqual([
+      "initial selection — emphasizes recent history",
+      "equal fidelity distribution",
+      "broader low-fidelity history",
+    ]);
   });
 
   it("marks exactly one selected row, and the selection moves with the arrows", () => {

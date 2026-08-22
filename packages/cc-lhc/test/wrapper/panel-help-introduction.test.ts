@@ -25,7 +25,7 @@ import {
 } from "../../src/wrapper/panel-commands.js";
 import { ENTER_ALT_SCREEN, PANEL_PROMPT, renderPanel } from "../../src/wrapper/panel.js";
 import { run } from "../../src/wrapper/run.js";
-import { panelText } from "../helpers/panel-text.js";
+import { cardBodyRows, panelText } from "../helpers/panel-text.js";
 
 const LEADER = Buffer.from([DEFAULT_LEADER_BYTE]);
 
@@ -46,6 +46,106 @@ function openHome(): InputState {
     }),
   };
 }
+
+/** The normal capture size Fable screenshots: a 64-column card inside 100x29. */
+const NORMAL: readonly [number, number] = [100, 29];
+
+function helpRowsAt(cols: number, rows: number): string[] {
+  return cardBodyRows(renderPanel(feed(openHome(), "help\r"), cols, rows), cols, rows);
+}
+
+/** The single drawn row a command owns, or every row it spilled onto. */
+function rowsForUsage(rows: readonly string[], usage: string): string[] {
+  return rows.filter((row) => row.trimStart().startsWith(usage));
+}
+
+describe("Help scans as a command table", () => {
+  it("gives every command one row at normal size, with the descriptions in one column", () => {
+    const [cols, rows] = NORMAL;
+    const drawn = helpRowsAt(cols, rows);
+    const descriptionColumns = new Set<number>();
+    for (const command of PANEL_COMMANDS) {
+      const owned = rowsForUsage(drawn, command.usage);
+      // One row: the usage and its description scan together, not as a
+      // stacked label or a wrapped paragraph.
+      expect(owned, `${command.usage} did not occupy exactly one row`).toHaveLength(1);
+      const row = owned[0]!;
+      expect(row, command.usage).toContain(command.helpSummary);
+      expect(row.length, `${command.usage} overflowed the card`).toBeLessThanOrEqual(cols);
+      descriptionColumns.add(row.indexOf(command.helpSummary));
+    }
+    // A table, not ragged text: every description starts at the same column.
+    expect(descriptionColumns.size, `description column varied: ${[...descriptionColumns].join(", ")}`).toBe(1);
+    // The whole vocabulary is on screen at this size — nothing is clipped away.
+    expect(drawn.some((row) => row.includes("… more"))).toBe(false);
+  });
+
+  it("keeps Help short without losing the parser vocabulary or the full descriptions", () => {
+    for (const command of PANEL_COMMANDS) {
+      // Short enough to sit beside its usage in the card's description column.
+      expect(command.helpSummary.length, `${command.name} help wording is too long`).toBeLessThanOrEqual(30);
+      expect(command.helpSummary).not.toBe("");
+      // The canonical description is untouched and still richer.
+      expect(command.summary.length).toBeGreaterThanOrEqual(command.helpSummary.length);
+      // Every command still parses, and Help still lists it.
+      const probe =
+        command.name === "auto" ? "auto on" : command.name === "bounds" ? "bounds 1000 2000" : command.name;
+      expect(parsePanelCommand(probe).kind, command.name).not.toBe("unknown");
+      expect(helpLines(openHome().panelView).join("\n")).toContain(command.usage);
+    }
+    expect(PANEL_COMMANDS).toHaveLength(11);
+  });
+
+  it("keeps each session-only marker attached to its own description at every width", () => {
+    const sessionCommands = PANEL_COMMANDS.filter((command) => command.scope === "session");
+    expect(sessionCommands.length).toBeGreaterThan(0);
+
+    const [cols, rows] = NORMAL;
+    for (const command of sessionCommands) {
+      const row = rowsForUsage(helpRowsAt(cols, rows), command.usage)[0] ?? "";
+      // Attached to the description, one space away — never parked at the
+      // card's right edge.
+      expect(row, command.usage).toContain(`${command.helpSummary} ${SESSION_SCOPE_MARKER}`);
+      expect(row.trimEnd().endsWith(SESSION_SCOPE_MARKER), command.usage).toBe(true);
+    }
+
+    for (const [width, height] of [
+      [100, 29],
+      [80, 24],
+      [64, 20],
+      [44, 20],
+      [36, 16],
+    ] as const) {
+      for (const row of helpRowsAt(width, height)) {
+        const text = row.trim();
+        if (!text.includes(SESSION_SCOPE_MARKER)) continue;
+        // The explanatory note owns the marker as its subject; skip it.
+        if (text.startsWith(`${SESSION_SCOPE_MARKER} session only`)) continue;
+        expect(text, `${width}x${height}: marker floated alone`).not.toBe(SESSION_SCOPE_MARKER);
+        expect(text, `${width}x${height}: marker detached from its words`).toMatch(
+          new RegExp(`\\S ${SESSION_SCOPE_MARKER}$`),
+        );
+      }
+    }
+
+    // The explanation itself survives, whatever the width.
+    expect(helpLines(openHome().panelView).join("\n")).toContain(
+      `${SESSION_SCOPE_MARKER} session only — live now, survives handoffs, lost at wrapper exit`,
+    );
+  });
+
+  it("still scrolls and stays reachable when the card cannot hold the table", () => {
+    const short = helpRowsAt(64, 12);
+    expect(short.some((row) => row.includes("… more"))).toBe(true);
+    const scrolled = cardBodyRows(
+      renderPanel(feed(feed(openHome(), "help\r"), "\x1b[B".repeat(12)), 64, 12),
+      64,
+      12,
+    );
+    expect(scrolled.join("\n")).toContain("introduction");
+    expect(scrolled.join("\n")).not.toEqual(short.join("\n"));
+  });
+});
 
 describe("TC-2.1a Help matches parser behavior", () => {
   it("Help and parser vocabularies are bijective and removed spellings are absent", () => {

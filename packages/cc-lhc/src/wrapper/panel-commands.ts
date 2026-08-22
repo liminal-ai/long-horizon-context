@@ -54,6 +54,8 @@ export interface PanelViewSnapshot {
   allocationId: BandAllocationId;
   allocationLabel: string;
   allocationDescription: string;
+  /** Home's shorter phrase for the same allocation (one row, not two). */
+  allocationHomeDescription: string;
   low: number;
   medium: number;
   high: number;
@@ -80,7 +82,15 @@ export interface PanelHomeAction {
 export interface PanelCommandSpec {
   name: string;
   usage: string;
+  /** Canonical description of what the command reports or does. */
   summary: string;
+  /**
+   * Help-screen wording. Help is a scannable table inside a 64-column card,
+   * so the row has ~30 columns for its description: one short phrase per
+   * command, never a paragraph. The canonical `summary` stays as-is for
+   * surfaces with room for it.
+   */
+  helpSummary: string;
   scope: PanelCommandScope;
   parse: (args: readonly string[], surface: string) => PanelParseResult;
   homeAction?: PanelHomeAction;
@@ -140,6 +150,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "status",
     usage: "status",
     summary: "thread-view tail, threshold, zone, derivation counts, and thread id",
+    helpSummary: "thread tail, threshold, zone",
     scope: "none",
     parse: executeNoArgs("/lhc-status"),
   },
@@ -147,6 +158,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "stats",
     usage: "stats",
     summary: "capture lines, events, skip counts, replayed prefix, parse failures, derivations pending, and thread id",
+    helpSummary: "capture counters, thread id",
     scope: "none",
     parse: executeNoArgs("/lhc-stats"),
   },
@@ -154,6 +166,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "smart-compact",
     usage: "smart-compact",
     summary: `run ${SMART_COMPACT} once and rebuild working context from durable history`,
+    helpSummary: "rebuild working context once",
     scope: "none",
     parse: executeNoArgs("/lhc-compact"),
     homeAction: { label: SMART_COMPACT, order: 0, description: "rebuild from durable history" },
@@ -162,6 +175,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "smart-prune",
     usage: "smart-prune [targetTokens]",
     summary: "run Smart Prune with the configured target or one positive safe-integer target",
+    helpSummary: "trim toward target",
     scope: "none",
     parse: parseSmartPrune,
     homeAction: { label: "Smart Prune", order: 1, description: "trim working context to target" },
@@ -170,6 +184,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "export",
     usage: "export",
     summary: "write canonical transcript dumps (rollout + thread view) to cwd",
+    helpSummary: "write transcript dumps to cwd",
     scope: "none",
     parse: executeNoArgs("/lhc-export"),
   },
@@ -177,6 +192,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "auto",
     usage: "auto on|off",
     summary: `turn automatic ${SMART_COMPACT} on or off`,
+    helpSummary: `automatic ${SMART_COMPACT}`,
     scope: "session",
     parse: parseAuto,
   },
@@ -184,6 +200,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "bounds",
     usage: "bounds <lower> <upper>",
     summary: `set ${SMART_COMPACT} target (lower) and trigger (upper)`,
+    helpSummary: "set target and trigger",
     scope: "session",
     parse: parseBounds,
   },
@@ -191,6 +208,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "allocation",
     usage: "allocation",
     summary: "open the Band allocation selector",
+    helpSummary: "open the allocation selector",
     scope: "none",
     parse: routeNoArgs("allocation"),
     homeAction: { label: "Band allocation", order: 2, description: "Default · Balanced · Historical" },
@@ -199,6 +217,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "details",
     usage: "details",
     summary: "retrieval, scope, precedence, and last action",
+    helpSummary: "scope, precedence, history",
     scope: "none",
     parse: routeNoArgs("details"),
   },
@@ -206,6 +225,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "help",
     usage: "help",
     summary: "open the Help screen",
+    helpSummary: "open the Help screen",
     scope: "none",
     parse: routeNoArgs("help"),
     homeAction: { label: "Help", order: 3, description: "commands and keys" },
@@ -214,6 +234,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "introduction",
     usage: "introduction",
     summary: "open the Introduction screen",
+    helpSummary: "open the Introduction screen",
     scope: "none",
     parse: routeNoArgs("introduction"),
     homeAction: { label: "Introduction", order: 4, description: "how context is managed" },
@@ -369,7 +390,7 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
     navigable: true,
     separator: " — ",
     dimFrom: 1,
-    segments: (view) => [fallbackField(view, "profile", view.allocationLabel), view.allocationDescription],
+    segments: (view) => [fallbackField(view, "profile", view.allocationLabel), view.allocationHomeDescription],
     compactSegments: (view) => [fallbackField(view, "profile", view.allocationLabel)],
     tiny: (view) => `alloc ${view.allocationLabel}`,
   },
@@ -477,8 +498,18 @@ export interface PanelRow {
   value?: string;
   /** Draw the value dim (Help summaries read as metadata, not values). */
   dimValue?: boolean;
-  /** Right-hand marker on the first line of a pair (session-scope flag). */
+  /**
+   * Marker that belongs TO the description (session-scope flag). It is drawn
+   * attached to the end of the description text, never parked at the card
+   * edge or alone on a row of its own.
+   */
   marker?: string;
+  /**
+   * Size this row's label column to its own label instead of the screen's
+   * shared gutter — a one-off header should not inherit a command table's
+   * column and wrap because of it.
+   */
+  ownGutter?: boolean;
 }
 
 function pair(label: string, value: string, extra: Omit<PanelRow, "kind" | "label" | "value"> = {}): PanelRow {
@@ -500,7 +531,7 @@ function blank(): PanelRow {
 export function panelRowText(row: PanelRow): string {
   if (row.kind === "blank") return "";
   if (row.kind === "pair") {
-    const marker = row.marker === undefined ? "" : `  ${row.marker}`;
+    const marker = row.marker === undefined ? "" : ` ${row.marker}`;
     return `${row.label ?? ""}  ${row.value ?? ""}${marker}`.trim();
   }
   return row.value ?? "";
@@ -518,11 +549,14 @@ export function helpRows(view: PanelViewSnapshot | null): PanelRow[] {
               `trigger ${formatTokensShort(view.triggerTokens)}`,
               view.allocationLabel,
             ].join(" · "),
+            { ownGutter: true },
           ),
           blank(),
         ];
+  // One row per command: usage in the label column, one short phrase in the
+  // description column. The full `summary` belongs to surfaces with room.
   const commands = PANEL_COMMANDS.map((command) =>
-    pair(command.usage, command.summary, {
+    pair(command.usage, command.helpSummary, {
       dimValue: true,
       ...(command.scope === "session" ? { marker: SESSION_SCOPE_MARKER } : {}),
     }),
@@ -680,6 +714,7 @@ export function buildPanelViewSnapshot(input: {
     allocationId,
     allocationLabel: shown.label,
     allocationDescription: shown.description,
+    allocationHomeDescription: shown.homeDescription,
     low: shown.low,
     medium: shown.medium,
     high: shown.high,
