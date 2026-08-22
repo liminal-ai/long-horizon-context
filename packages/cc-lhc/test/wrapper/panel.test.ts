@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 
 import { createInputState, type InputState, processInputChunk, showReceipts } from "../../src/wrapper/modal.js";
-import { buildPanelViewSnapshot, PANEL_TITLE, PANEL_TITLE_SHORT } from "../../src/wrapper/panel-commands.js";
 import {
   ACTION_CARET,
   commandProgressLabel,
@@ -18,7 +17,8 @@ import {
   panelTier,
   renderPanel,
 } from "../../src/wrapper/panel.js";
-import { cardBodyRows, drawnRows, panelGrid, panelText } from "../helpers/panel-text.js";
+import { buildPanelViewSnapshot, PANEL_TITLE, PANEL_TITLE_SHORT } from "../../src/wrapper/panel-commands.js";
+import { cardBodyRows, containsSgr, drawnRows, panelGrid, panelText } from "../helpers/panel-text.js";
 
 const VIEW = buildPanelViewSnapshot({
   providerContextTokens: 38_000,
@@ -36,6 +36,13 @@ function modalState(overrides: Partial<InputState> = {}): InputState {
 function feed(state: InputState, text: string): InputState {
   return processInputChunk(Buffer.from(text, "latin1"), state).state;
 }
+
+/**
+ * Assertions about the STYLED output must ask for style: the default honours
+ * the caller's NO_COLOR/TERM, so a bare render says nothing about SGR. The
+ * fallback behaviour has its own owners in "truthful degradation" below.
+ */
+const STYLED = { color: true, attributes: true } as const;
 
 describe("alt-screen constants", () => {
   it("enter switches to the alternate screen; leave restores it and re-shows the cursor", () => {
@@ -81,7 +88,7 @@ describe("renderPanel", () => {
   });
 
   it("hides the cursor and shows a progress line while a command is executing", () => {
-    const out = renderPanel(modalState({ mode: "executing", line: "status" }), 80, 24);
+    const out = renderPanel(modalState({ mode: "executing", line: "status" }), 80, 24, undefined, STYLED);
     // every executing command gets a progress line — a frozen prompt line is
     // indistinguishable from a hang
     expect(panelText(out)).toContain("status — running…");
@@ -200,7 +207,7 @@ describe("the card", () => {
   });
 
   it("marks exactly one selected row, and the selection moves with the arrows", () => {
-    const first = renderPanel(modalState(), 100, 30);
+    const first = renderPanel(modalState(), 100, 30, undefined, STYLED);
     const firstRows = cardBodyRows(first, 100, 30);
     const carets = firstRows.filter((line) => {
       const text = line.trimStart();
@@ -211,13 +218,13 @@ describe("the card", () => {
     expect(carets[0]).toContain("Context");
     expect(first).toContain("\x1b[1;34m38k in window\x1b[22;39m");
 
-    const down = renderPanel(feed(modalState(), "\x1b[B"), 100, 30);
+    const down = renderPanel(feed(modalState(), "\x1b[B"), 100, 30, undefined, STYLED);
     expect(down).toContain("\x1b[1;34mtarget 180k\x1b[22;39m");
     expect(down).not.toContain("\x1b[1;34m38k in window\x1b[22;39m");
 
     let action = modalState();
     for (let step = 0; step < 10; step += 1) action = feed(action, "\x1b[B");
-    const actionRows = cardBodyRows(renderPanel(action, 100, 30), 100, 30);
+    const actionRows = cardBodyRows(renderPanel(action, 100, 30, undefined, STYLED), 100, 30);
     const selected = actionRows.filter((line) => line.trimStart().startsWith(ACTION_CARET));
     expect(selected.some((line) => line.includes("Smart Compact"))).toBe(true);
     // one action caret and the prompt caret
@@ -230,7 +237,7 @@ describe("truthful degradation", () => {
   it("keeps border, gutter alignment, and caret selection with no colour and no attributes", () => {
     const plain = renderPanel(modalState(), 100, 30, undefined, { color: false, attributes: false });
     // No SGR at all: only cursor positioning, hide-cursor, and the clear.
-    expect(plain).not.toMatch(/\x1b\[\d*(;\d+)*m/);
+    expect(containsSgr(plain)).toBe(false);
     expect(drawnRows(plain, 100, 30)[0]).toContain("╭─");
     const rows = cardBodyRows(plain, 100, 30);
     expect(rows.some((line) => line.includes(FOCUS_CARET))).toBe(true);

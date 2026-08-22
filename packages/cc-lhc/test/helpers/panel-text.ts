@@ -10,12 +10,25 @@
  * terminal box).
  */
 
-const FRAME_START = "\x1b[?25l\x1b[2J";
-const ANSI = /\x1b\[[0-9;?]*[a-zA-Z]/g;
-const CURSOR_MOVE = /^\x1b\[(\d+);(\d+)H$/;
+/**
+ * ESC is built rather than written into a regex literal: a literal control
+ * character in a pattern is exactly what `noControlCharactersInRegex` exists
+ * to catch, and the constructed form says what the byte is.
+ */
+const ESC = String.fromCharCode(0x1b);
+const FRAME_START = `${ESC}[?25l${ESC}[2J`;
+const ANSI = new RegExp(`${ESC}\\[[0-9;?]*[a-zA-Z]`, "g");
+const CURSOR_MOVE = new RegExp(`^${ESC}\\[(\\d+);(\\d+)H$`);
+/** A colour/attribute run: CSI <params> m. */
+const SGR = new RegExp(`${ESC}\\[\\d*(;\\d+)*m`);
 
 export function stripAnsi(text: string): string {
   return text.replace(ANSI, "");
+}
+
+/** True when the output carries any styling at all (colour or attribute). */
+export function containsSgr(text: string): boolean {
+  return SGR.test(text);
 }
 
 /** Every full redraw in the stream, oldest first. */
