@@ -139,7 +139,7 @@ import {
   showLateReceipts,
   showReceipts,
 } from "./modal.js";
-import { buildPanelViewSnapshot } from "./panel-commands.js";
+import { buildPanelViewSnapshot, MODAL_SCOPE_NOTE } from "./panel-commands.js";
 import {
   argvSuppliesNativeAutocompact,
   NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY,
@@ -1821,43 +1821,60 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const retrievalState =
       runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
     const inFlight = commandGuard.current();
-    const extraStatusRows: string[] = [];
-    extraStatusRows.push(`retrieval ${retrievalState}`);
-    extraStatusRows.push(disableNativeAutoCompact ? nativeCompactDisabledStatusLine() : nativeCompactPassthroughStatusLine());
-    extraStatusRows.push(
-      handoffInProgress
-        ? "active operation: handoff in progress"
-        : inFlight !== null
-          ? `active operation: ${inFlight.label}`
-          : "active operation: none",
-    );
-    if (lastAction === null) {
-      extraStatusRows.push("last action: none this wrapper session");
-    } else {
+    const activeOperation = handoffInProgress
+      ? "handoff in progress"
+      : inFlight !== null
+        ? inFlight.label
+        : null;
+    const lastActionText = ((): string => {
+      if (lastAction === null) return "none this wrapper session";
       const parts = [
         `${lastAction.operation === "prune" ? "pruned" : SMART_COMPACT} ${formatAgo(lastAction.atMs)} (${lastAction.origin})`,
       ];
-      if (lastAction.triggerTokens !== undefined)
-        parts.push(`trigger ${formatTokensShort(lastAction.triggerTokens)}`);
+      if (lastAction.triggerTokens !== undefined) parts.push(`trigger ${formatTokensShort(lastAction.triggerTokens)}`);
       if (lastAction.zoneBefore !== undefined && lastAction.zoneAfter !== undefined)
         parts.push(`zone ${formatTokensShort(lastAction.zoneBefore)} -> ${formatTokensShort(lastAction.zoneAfter)}`);
       if (lastAction.viewTokens !== undefined) parts.push(`view ${formatTokensShort(lastAction.viewTokens)}`);
-      extraStatusRows.push(`last action: ${parts.join(" · ")}`);
-    }
+      return parts.join(" · ");
+    })();
+
+    // Home carries only non-default operational state: an in-flight
+    // operation, a failed attempt, and startup anomalies. "none" states and
+    // the wrapper's own configuration chain live one typed word away, on
+    // `details` — absence is the design.
+    const extraStatusRows: string[] = [];
+    if (activeOperation !== null) extraStatusRows.push(`active operation: ${activeOperation}`);
     if (lastAttempt !== null && (lastAction === null || lastAttempt.atMs > lastAction.atMs)) {
       extraStatusRows.push(`last attempt: ${lastAttempt.summary} (${formatAgo(lastAttempt.atMs)})`);
     }
+    if (retrievalState !== "ready") extraStatusRows.push(`retrieval ${retrievalState}`);
+    extraStatusRows.push(...startupAnomalyNotices);
+
+    const alarms: string[] = [...standingNonviabilityAlarm];
     if (minObservedProviderTotal !== null && policy.upperBoundTokens <= minObservedProviderTotal) {
-      extraStatusRows.push(
+      alarms.push(
         `WARNING: trigger ${formatTokensShort(policy.upperBoundTokens)} is at/below observed Claude host overhead ` +
           `(${formatTokensShort(minObservedProviderTotal)}) — every settled turn would compact`,
       );
     }
-    extraStatusRows.push("edits (auto/bounds) are session-scoped: live now, survive handoffs, lost at wrapper exit");
-    extraStatusRows.push(
-      `precedence: builtin < user ${userConfigPath()} < project ${projectConfigPath(process.cwd())} < session`,
-    );
-    extraStatusRows.push(...startupAnomalyNotices);
+
+    const details = [
+      { label: "Retrieval", value: retrievalState },
+      {
+        label: "",
+        value: disableNativeAutoCompact
+          ? nativeCompactDisabledStatusLine()
+          : nativeCompactPassthroughStatusLine(),
+      },
+      { label: "Operation", value: activeOperation ?? "none" },
+      { label: "Last action", value: lastActionText },
+      { label: "Scope", value: MODAL_SCOPE_NOTE },
+      {
+        label: "Precedence",
+        value: `builtin < user ${userConfigPath()} < project ${projectConfigPath(process.cwd())} < session`,
+      },
+    ];
+
     return buildPanelViewSnapshot({
       providerContextTokens: governorState.latestProviderContext?.total ?? null,
       targetTokens: policy.lowerBoundTokens,
@@ -1865,9 +1882,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       autoCompact: policy.autoCompact,
       captureHealth: capturePhase,
       profile: policy.profile,
-      degradedNotices: [...standingNonviabilityAlarm, ...configFallbackNotice],
+      alarms,
+      degradedNotices: configFallbackNotice,
       fallbacks: resolvedContextPolicy.fallbacks,
       extraStatusRows,
+      details,
     });
   };
 

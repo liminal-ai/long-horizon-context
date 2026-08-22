@@ -14,6 +14,7 @@ import {
   PANEL_TITLE,
 } from "../../src/wrapper/panel-commands.js";
 import { renderPanel } from "../../src/wrapper/panel.js";
+import { panelText } from "../helpers/panel-text.js";
 
 function homeState(view = buildPanelViewSnapshot({
   providerContextTokens: 31_000,
@@ -28,19 +29,48 @@ function homeState(view = buildPanelViewSnapshot({
 
 describe("TC-1.1a Home shows active state", () => {
   it("Home renders measured provider total, target, trigger, auto mode, capture health, and allocation", () => {
-    const out = renderPanel(homeState(), 120, 40);
+    const out = panelText(renderPanel(homeState(), 120, 40));
     expect(out).toContain(PANEL_TITLE);
-    expect(out).toContain("provider context 31k");
+    expect(out).toContain("Context 31k in window");
     expect(out).toContain("target 180k");
     expect(out).toContain("trigger 360k");
-    expect(out).toContain("automatic Smart Compact: on");
-    expect(out).toContain("capture: ready");
-    expect(out).toContain("Band allocation: Default");
+    expect(out).toContain("automatic Smart Compact on");
+    expect(out).toContain("Capture ready");
+    expect(out).toContain("Allocation Default");
     expect(out).toContain("Low 20%");
     expect(out).toContain("Medium 20%");
     expect(out).toContain("High 30%");
     expect(out).toContain("Full 30%");
     expect(out).not.toMatch(/\b100\s*%/);
+  });
+
+  it("Home carries no wrapper internals: they live on the typed details screen", () => {
+    const view = buildPanelViewSnapshot({
+      providerContextTokens: 31_000,
+      targetTokens: 180_000,
+      triggerTokens: 360_000,
+      autoCompact: true,
+      captureHealth: "ready",
+      profile: "default",
+      details: [
+        { label: "Retrieval", value: "ready" },
+        { label: "Last action", value: "none this wrapper session" },
+        { label: "Precedence", value: "builtin < user /home/u/.config/cc-lhc/config.json < session" },
+      ],
+    });
+    const home = panelText(renderPanel(homeState(view), 120, 40));
+    expect(home).not.toContain("precedence");
+    expect(home).not.toContain("Precedence");
+    expect(home).not.toContain("last action");
+    expect(home).not.toContain("Last action");
+    expect(home).not.toContain("retrieval");
+    expect(home).not.toMatch(/: none/);
+
+    const details = panelText(renderPanel({ ...homeState(view), route: "details" }, 120, 40));
+    expect(details).toContain("Details");
+    expect(details).toContain("Retrieval ready");
+    expect(details).toContain("Last action none this wrapper session");
+    expect(details).toContain("builtin < user /home/u/.config/cc-lhc/config.json < session");
   });
 });
 
@@ -56,11 +86,11 @@ describe("TC-1.1b Home shows degraded state truthfully", () => {
       degradedNotices: [CONFIG_FALLBACK_NOTICE, "  user config: profile must be one of default, balanced, historical"],
       fallbacks: [{ origin: "user config", field: "profile", detail: "profile must be one of default, balanced, historical" }],
     });
-    const out = renderPanel(homeState(view), 120, 40);
-    expect(out).toContain("capture: degraded");
+    const out = panelText(renderPanel(homeState(view), 120, 40));
+    expect(out).toContain("Capture degraded");
     expect(out).toContain(CONFIG_FALLBACK_NOTICE);
-    expect(out).toContain("Band allocation: Default (fallback — not selected)");
-    expect(out).not.toMatch(/Band allocation: Default(?! \(fallback)/);
+    expect(out).toContain("Allocation Default (fallback — not selected)");
+    expect(out).not.toMatch(/Allocation Default(?! \(fallback)/);
   });
 });
 
@@ -74,9 +104,10 @@ describe("TC-1.1c Provider context not observed", () => {
       captureHealth: "ready",
       profile: "balanced",
     });
-    const out = renderPanel(homeState(view), 120, 40);
-    expect(out).toContain("provider context: not observed yet");
-    expect(out).not.toMatch(/provider context \d/);
+    const out = panelText(renderPanel(homeState(view), 120, 40));
+    expect(out).toContain("Context not observed yet");
+    expect(out).not.toMatch(/Context \d/);
+    expect(out).not.toMatch(/in window/);
     expect(out.toLowerCase()).not.toContain("estimate");
   });
 });

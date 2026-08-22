@@ -22,6 +22,8 @@ import type { OpenAsyncWork } from "../../src/observation/async-work.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { run } from "../../src/wrapper/run.js";
+import { PANEL_PROMPT } from "../../src/wrapper/panel.js";
+import { panelText } from "../helpers/panel-text.js";
 
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -275,7 +277,8 @@ interface Rig {
   pty: () => FakePty;
   fire: (signals: LifecycleSignal[]) => void;
   compactAttempts: () => number;
-  terminal: () => string;
+  /** The drawn panel as the operator would read it (card frame and wrapping resolved). */
+  panel: () => string;
   logs: string[];
   setLiveWork: (work: OpenAsyncWork[]) => void;
   /** Drive the capture session's own turn fold, independently of lifecycle. */
@@ -377,7 +380,7 @@ async function startRig(
     pty: () => ptys[ptys.length - 1]!,
     fire: (signals) => sink!(signals),
     compactAttempts: () => compactAttempts,
-    terminal: () => terminal,
+    panel: () => panelText(terminal),
     logs,
     setLiveWork: (work) => {
       live = work;
@@ -420,16 +423,16 @@ describe("an automatic swap asks before it kills live background work", () => {
     const rig = await startRig({ liveWork: [] });
     rig.fire(overTrigger("req:empty"));
     await waitFor(() => rig.compactAttempts() === 1, "compact with an empty set");
-    expect(rig.terminal()).not.toContain("live background work");
+    expect(rig.panel()).not.toContain("live background work");
     await rig.end();
   }, 15_000);
 
   it("shows the work and waits, instead of swapping, when something is open", async () => {
     const rig = await startRig({ liveWork: [monitorWork()] });
     rig.fire(overTrigger("req:ask"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
-    expect(rig.terminal()).toContain("will kill 1 piece of live background work");
-    expect(rig.terminal()).toContain('monitor "CI watch" (m1)');
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
+    expect(rig.panel()).toContain("will kill 1 piece of live background work");
+    expect(rig.panel()).toContain('monitor "CI watch" (m1)');
     // Nothing has been swapped while the question is unanswered, and nothing
     // has been written down either.
     await settle();
@@ -444,7 +447,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("compacts exactly once on an explicit yes", async () => {
     const rig = await startRig({ liveWork: [monitorWork()] });
     rig.fire(overTrigger("req:yes"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     // Still nothing durable while the question stands.
     expect(rig.settledReceipts()).toEqual([]);
     rig.stdin.write("y");
@@ -469,7 +472,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("swaps nothing on a decline, and asks again at the next seam", async () => {
     const rig = await startRig({ liveWork: [monitorWork()] });
     rig.fire(overTrigger("req:no"));
-    await waitFor(() => rig.terminal().includes("live background work"), "first confirmation");
+    await waitFor(() => rig.panel().includes("live background work"), "first confirmation");
     rig.stdin.write("n");
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
@@ -480,9 +483,9 @@ describe("an automatic swap asks before it kills live background work", () => {
 
     // The next settled seam over the trigger asks again — nothing was
     // remembered, and the work is still open.
-    const before = rig.terminal().length;
+    const before = rig.panel().length;
     rig.fire(overTrigger("req:no-again"));
-    await waitFor(() => rig.terminal().slice(before).includes("live background work"), "second confirmation");
+    await waitFor(() => rig.panel().slice(before).includes("live background work"), "second confirmation");
     expect(rig.compactAttempts()).toBe(0);
     rig.stdin.write("y");
     await waitFor(() => rig.compactAttempts() === 1, "compact after the second ask");
@@ -492,15 +495,15 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("Prompt is too long below trigger: n then fresh y compacts once and does not resend", async () => {
     const rig = await startRig({ liveWork: [monitorWork()] });
     rig.fire(belowTriggerPromptTooLong("req:ptl-1"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation after rejection");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation after rejection");
     rig.stdin.write("n");
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
     expect(rig.settledReceipts()).toEqual([]);
 
-    const before = rig.terminal().length;
+    const before = rig.panel().length;
     rig.fire(belowTriggerPromptTooLong("req:ptl-2"));
-    await waitFor(() => rig.terminal().slice(before).includes("live background work"), "fresh confirmation");
+    await waitFor(() => rig.panel().slice(before).includes("live background work"), "fresh confirmation");
     expect(rig.compactAttempts()).toBe(0);
     rig.stdin.write("y");
     await waitFor(() => rig.compactAttempts() === 1, "compact after fresh yes");
@@ -514,7 +517,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("swaps nothing when the prompt is dismissed", async () => {
     const rig = await startRig({ liveWork: [monitorWork()] });
     rig.fire(overTrigger("req:dismiss"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     rig.stdin.write("\x03");
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
@@ -527,7 +530,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("swaps nothing when terminal input goes away with the prompt up", async () => {
     const rig = await startRig({ liveWork: [monitorWork()] });
     rig.fire(overTrigger("req:eof"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     rig.stdin.end();
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
@@ -540,7 +543,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("stops asking once the work has closed", async () => {
     const rig = await startRig({ liveWork: [monitorWork()] });
     rig.fire(overTrigger("req:closes"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     rig.stdin.write("n");
     await settle(200);
     // The monitor finished while the operator was deciding.
@@ -559,8 +562,8 @@ describe("an automatic swap asks before it kills live background work", () => {
       ],
     });
     rig.fire(overTrigger("req:many"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
-    const screen = rig.terminal();
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
+    const screen = rig.panel();
     expect(screen).toContain("will kill 3 pieces of live background work");
     expect(screen).toContain('background agent "reviewer" (a1)');
     expect(screen).toContain('workflow "story-build" (w1)');
@@ -586,7 +589,7 @@ describe("an automatic swap asks before it kills live background work", () => {
     // operator without an answer.
     const rig = await startRig({ liveWork: [monitorWork()], outputHoldCapBytes: 64 });
     rig.fire(overTrigger("req:interrupted"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     rig.pty().emitData("x".repeat(4_096));
     await waitFor(() => rig.logs.some((line) => line.includes("the prompt was interrupted")), "interruption reported");
     await settle(200);
@@ -599,7 +602,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("does not compact on a seam that went stale while the question was up", async () => {
     const rig = await startRig({ liveWork: [monitorWork("A")] });
     rig.fire(overTrigger("req:stale-turn"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     // A notification lands and Claude starts working again behind the panel.
     rig.fire([{ kind: "turn_opened", reason: "tool_result" }]);
     await settle(60);
@@ -612,7 +615,7 @@ describe("an automatic swap asks before it kills live background work", () => {
 
     // Nothing was deferred: when that turn settles over the trigger, the
     // question is asked again rather than the swap running by itself.
-    const before = rig.terminal().length;
+    const before = rig.panel().length;
     rig.fire([
       {
         kind: "sampling_observed",
@@ -621,7 +624,7 @@ describe("an automatic swap asks before it kills live background work", () => {
       },
       { kind: "turn_settled", reason: "end_turn" },
     ]);
-    await waitFor(() => rig.terminal().slice(before).includes("live background work"), "second confirmation");
+    await waitFor(() => rig.panel().slice(before).includes("live background work"), "second confirmation");
     await settle(100);
     expect(rig.compactAttempts()).toBe(0);
     rig.stdin.write("n");
@@ -634,7 +637,7 @@ describe("an automatic swap asks before it kills live background work", () => {
     // stream; either one saying "open" is enough to hold the swap.
     const rig = await startRig({ liveWork: [monitorWork("A")] });
     rig.fire(overTrigger("req:capture-turn"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     rig.setCaptureTurnOpen(true);
     rig.stdin.write("y");
     await settle(250);
@@ -646,9 +649,9 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("does not kill work that started after the question was asked", async () => {
     const rig = await startRig({ liveWork: [monitorWork("A")] });
     rig.fire(overTrigger("req:new-work"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
-    expect(rig.terminal()).toContain("(A)");
-    expect(rig.terminal()).not.toContain("(B)");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
+    expect(rig.panel()).toContain("(A)");
+    expect(rig.panel()).not.toContain("(B)");
     // Claude launches something else while the operator reads the list.
     rig.setLiveWork([monitorWork("A"), monitorWork("B")]);
     rig.stdin.write("y");
@@ -659,10 +662,10 @@ describe("an automatic swap asks before it kills live background work", () => {
     expect(rig.logs.some((line) => line.includes("another piece of background work started"))).toBe(true);
 
     // The next eligible seam lists both, and yes there compacts.
-    const before = rig.terminal().length;
+    const before = rig.panel().length;
     rig.fire(overTrigger("req:new-work-2"));
-    await waitFor(() => rig.terminal().slice(before).includes("live background work"), "second confirmation");
-    const screen = rig.terminal().slice(before);
+    await waitFor(() => rig.panel().slice(before).includes("live background work"), "second confirmation");
+    const screen = rig.panel().slice(before);
     expect(screen).toContain("will kill 2 pieces of live background work");
     expect(screen).toContain("(A)");
     expect(screen).toContain("(B)");
@@ -674,7 +677,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("still compacts when listed work finished while the question was up", async () => {
     const rig = await startRig({ liveWork: [monitorWork("A"), monitorWork("B")] });
     rig.fire(overTrigger("req:fewer"));
-    await waitFor(() => rig.terminal().includes("will kill 2 pieces"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("will kill 2 pieces"), "confirmation on screen");
     // B completes behind the panel. Killing fewer than listed is what the
     // operator agreed to, so consent still holds.
     rig.setLiveWork([monitorWork("A")]);
@@ -689,7 +692,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("compacts once, not twice, when a fresh seam and the answer arrive together", async () => {
     const rig = await startRig({ liveWork: [monitorWork("A")] });
     rig.fire(overTrigger("req:race-1"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     // A second settled seam over the trigger arrives while the question stands,
     // then the operator answers immediately.
     rig.fire(overTrigger("req:race-2"));
@@ -704,7 +707,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("does not compact when the session fell under the trigger while the question was up", async () => {
     const rig = await startRig({ liveWork: [monitorWork("A")] });
     rig.fire(settledTurnAt("req:over", 9_000));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     // A turn settles behind the panel with a much smaller reading: the session
     // is no longer over the trigger, so there is nothing to compact.
     rig.fire(settledTurnAt("req:under", 100));
@@ -729,7 +732,7 @@ describe("an automatic swap asks before it kills live background work", () => {
     // receipt it lands is settle 4 — not 5, which is what a committed but
     // discarded recomputation would have made it.
     rig.fire(settledTurnAt("req:over-again", 9_000));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation at the next real seam");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation at the next real seam");
     rig.stdin.write("y");
     await waitFor(() => rig.compactAttempts() === 1, "compact at the next real seam");
     const executable = rig.settledReceipts().filter((receipt) => receipt.wouldMutate);
@@ -742,7 +745,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("compacts against the current reading, not the one that raised the question", async () => {
     const rig = await startRig({ liveWork: [monitorWork("A")] });
     rig.fire(settledTurnAt("req:first", 9_000));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     // A newer, larger turn settles behind the panel — still over the trigger.
     rig.fire(settledTurnAt("req:second", 12_000));
     await settle(80);
@@ -766,7 +769,7 @@ describe("an automatic swap asks before it kills live background work", () => {
     const rig = await startRig({ interactive: false, liveWork: [monitorWork()] });
     rig.fire(overTrigger("req:headless"));
     await waitFor(() => rig.compactAttempts() === 1, "compact with no terminal");
-    expect(rig.terminal()).not.toContain("live background work");
+    expect(rig.panel()).not.toContain("live background work");
     await rig.end();
   }, 15_000);
 
@@ -782,7 +785,7 @@ describe("an automatic swap asks before it kills live background work", () => {
       { kind: "turn_settled", reason: "end_turn" },
     ]);
     await settle(200);
-    expect(rig.terminal()).not.toContain("live background work");
+    expect(rig.panel()).not.toContain("live background work");
     expect(rig.compactAttempts()).toBe(0);
     await rig.end();
   }, 15_000);
@@ -798,11 +801,11 @@ describe("an automatic swap asks before it kills live background work", () => {
       },
     ]);
     await settle(200);
-    expect(rig.terminal()).not.toContain("live background work");
+    expect(rig.panel()).not.toContain("live background work");
     expect(rig.compactAttempts()).toBe(0);
     // The same turn settling does ask.
     rig.fire([{ kind: "turn_settled", reason: "end_turn" }]);
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation at the settled seam");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation at the settled seam");
     rig.stdin.write("n");
     await settle();
     await rig.end();
@@ -816,11 +819,11 @@ describe("an automatic swap asks before it kills live background work", () => {
     rig.fire(overTrigger("req:panel-busy"));
     await settle(200);
     expect(rig.compactAttempts()).toBe(0);
-    expect(rig.terminal()).not.toContain("live background work");
+    expect(rig.panel()).not.toContain("live background work");
     expect(rig.logs.some((line) => line.includes("the panel is busy"))).toBe(true);
     expect(rig.settledReceipts()).toEqual([]);
     expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
-    expect(rig.terminal()).toContain("long-horizon commands> stat");
+    expect(rig.panel()).toContain(`${PANEL_PROMPT}stat`);
     rig.stdin.write("\x03");
     await settle();
     await rig.end();
@@ -852,7 +855,7 @@ describe("TC-3.5a Explicit yes proceeds", () => {
   it("explicit y plus keypress-time revalidation enters existing mutation once", async () => {
     const rig = await startRig({ liveWork: [monitorWork("A"), monitorWork("B")] });
     rig.fire(overTrigger("req:tc35a"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     rig.setLiveWork([monitorWork("A")]);
     rig.stdin.write("y");
     await waitFor(() => rig.compactAttempts() === 1, "compact after yes");
@@ -888,7 +891,7 @@ describe("TC-3.5b Every non-yes path stands down", () => {
   it("non-yes/dismiss/EOF/interruption/render failure causes zero mutation and no remembered preference", async () => {
     const decline = await startRig({ liveWork: [monitorWork()] });
     decline.fire(overTrigger("req:tc35b-n"));
-    await waitFor(() => decline.terminal().includes("live background work"), "decline prompt");
+    await waitFor(() => decline.panel().includes("live background work"), "decline prompt");
     decline.stdin.write("n");
     await settle(200);
     expect(decline.compactAttempts()).toBe(0);
@@ -897,7 +900,7 @@ describe("TC-3.5b Every non-yes path stands down", () => {
 
     const dismiss = await startRig({ liveWork: [monitorWork()] });
     dismiss.fire(overTrigger("req:tc35b-esc"));
-    await waitFor(() => dismiss.terminal().includes("live background work"), "dismiss prompt");
+    await waitFor(() => dismiss.panel().includes("live background work"), "dismiss prompt");
     dismiss.stdin.write("\x03");
     await settle(200);
     expect(dismiss.compactAttempts()).toBe(0);
@@ -905,7 +908,7 @@ describe("TC-3.5b Every non-yes path stands down", () => {
 
     const eof = await startRig({ liveWork: [monitorWork()] });
     eof.fire(overTrigger("req:tc35b-eof"));
-    await waitFor(() => eof.terminal().includes("live background work"), "eof prompt");
+    await waitFor(() => eof.panel().includes("live background work"), "eof prompt");
     eof.stdin.end();
     await settle(200);
     expect(eof.compactAttempts()).toBe(0);
@@ -944,16 +947,16 @@ describe("TC-3.5c New work makes consent stale", () => {
   it("newly opened unlisted work invalidates consent and requires a later fresh prompt", async () => {
     const rig = await startRig({ liveWork: [monitorWork("A")] });
     rig.fire(overTrigger("req:tc35c"));
-    await waitFor(() => rig.terminal().includes("live background work"), "confirmation on screen");
+    await waitFor(() => rig.panel().includes("live background work"), "confirmation on screen");
     rig.setLiveWork([monitorWork("A"), monitorWork("B")]);
     rig.stdin.write("y");
     await settle(250);
     expect(rig.compactAttempts()).toBe(0);
     expect(rig.settledReceipts()).toEqual([]);
-    const before = rig.terminal().length;
+    const before = rig.panel().length;
     rig.fire(overTrigger("req:tc35c-2"));
-    await waitFor(() => rig.terminal().slice(before).includes("live background work"), "fresh prompt");
-    expect(rig.terminal().slice(before)).toContain("(B)");
+    await waitFor(() => rig.panel().slice(before).includes("live background work"), "fresh prompt");
+    expect(rig.panel().slice(before)).toContain("(B)");
     rig.stdin.write("y");
     await waitFor(() => rig.compactAttempts() === 1, "compact after fresh yes");
     await rig.end();

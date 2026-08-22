@@ -19,7 +19,26 @@ import {
   processInputChunk,
 } from "../../src/wrapper/modal.js";
 import { CommandInFlightGuard } from "../../src/wrapper/command-guard.js";
+import {
+  buildPanelViewSnapshot,
+  HOME_ACTIONS,
+  parsePanelCommand,
+} from "../../src/wrapper/panel-commands.js";
+import { renderPanel } from "../../src/wrapper/panel.js";
 import { run } from "../../src/wrapper/run.js";
+import { panelText } from "../helpers/panel-text.js";
+
+function renderPanelForTest(state: InputState): string {
+  const panelView = buildPanelViewSnapshot({
+    providerContextTokens: 31_000,
+    targetTokens: 180_000,
+    triggerTokens: 360_000,
+    autoCompact: true,
+    captureHealth: "ready",
+    profile: "default",
+  });
+  return renderPanel({ ...state, panelView }, 100, 30);
+}
 
 const LEADER = Buffer.from([DEFAULT_LEADER_BYTE]);
 const mocks = vi.hoisted(() => ({
@@ -134,6 +153,59 @@ async function waitFor(condition: () => boolean, label: string, capMs = 8_000): 
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
 }
+
+describe("command names are case-insensitive", () => {
+  it("accepts every casing of every command and of every label the panel prints", () => {
+    const cases: Array<[string, string]> = [
+      ["status", "/lhc-status"],
+      ["STATUS", "/lhc-status"],
+      ["Stats", "/lhc-stats"],
+      ["Smart-Compact", "/lhc-compact"],
+      ["SMART-PRUNE 2500", "/lhc-prune 2500"],
+      ["Auto ON", "/lhc-auto on"],
+      ["AUTO Off", "/lhc-auto off"],
+      ["Bounds 100 200", "/lhc-bounds 100 200"],
+      ["Smart Compact", "/lhc-compact"],
+      ["smart prune", "/lhc-prune"],
+    ];
+    for (const [typed, commandLine] of cases) {
+      const parsed = parsePanelCommand(typed);
+      expect(parsed.kind, typed).toBe("execute");
+      if (parsed.kind === "execute") expect(parsed.commandLine, typed).toBe(commandLine);
+    }
+    for (const [typed, route] of [
+      ["Introduction", "introduction"],
+      ["INTRODUCTION", "introduction"],
+      ["Help", "help"],
+      ["Details", "details"],
+      ["Band allocation", "allocation"],
+      ["BAND ALLOCATION", "allocation"],
+      ["allocation", "allocation"],
+    ] as const) {
+      const parsed = parsePanelCommand(typed);
+      expect(parsed.kind, typed).toBe("route");
+      if (parsed.kind === "route") expect(parsed.route, typed).toBe(route);
+    }
+    // Every action label the panel displays round-trips through the parser.
+    for (const action of HOME_ACTIONS) {
+      expect(parsePanelCommand(action.label).kind, action.label).not.toBe("unknown");
+    }
+    // Removed spellings stay removed in every casing.
+    for (const removed of ["Compact", "PRUNE", "prune 500", "secret"]) {
+      expect(parsePanelCommand(removed).kind, removed).toBe("unknown");
+    }
+  });
+
+  it("answers an unknown command with two short rows, not the vocabulary", () => {
+    const opened = feed(openHome(), "Introduc\r");
+    expect(opened.state.panelRows).toEqual(["unknown command: Introduc", "type help to list commands"]);
+    const drawn = panelText(renderPanelForTest(opened.state));
+    expect(drawn).toContain("unknown command: Introduc");
+    expect(drawn).toContain("type help to list commands");
+    expect(drawn).not.toContain("smart-prune [targetTokens]");
+    expect(drawn).not.toContain("bounds <lower> <upper>");
+  });
+});
 
 describe("TC-3.1a Run Smart Compact", () => {
   const savedHome = process.env.CC_LHC_HOME;
@@ -514,11 +586,12 @@ describe("manual mutation last attempt", () => {
     (stdin as unknown as PassThrough).write(LEADER);
     await new Promise((resolve) => setTimeout(resolve, 40));
     (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
+    // A failed attempt is non-default state: it stays on Home, as a notice.
     await waitFor(
-      () => out.includes("last attempt: manual smart-compact did not hand off:"),
+      () => panelText(out).includes("last attempt: manual smart-compact did not hand off:"),
       "home last attempt",
     );
-    expect(out).toMatch(/last attempt: manual smart-compact did not hand off: turn in progress/);
+    expect(panelText(out)).toMatch(/! last attempt: manual smart-compact did not hand off: turn in progress/);
     expect(compact).not.toHaveBeenCalled();
     expect(previewCompact).not.toHaveBeenCalled();
     pty.fireExit(0);

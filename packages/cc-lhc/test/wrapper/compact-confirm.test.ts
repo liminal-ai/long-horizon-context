@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import type { OpenAsyncWork } from "../../src/observation/async-work.js";
 import { COMPACT_CONFIRM_HINT, compactConfirmRows, describeDecline } from "../../src/wrapper/compact-confirm.js";
 import { createInputState, openCompactConfirm, processInputChunk } from "../../src/wrapper/modal.js";
-import { renderPanel } from "../../src/wrapper/panel.js";
+import { PANEL_PROMPT, renderPanel } from "../../src/wrapper/panel.js";
+import { drawnRows, panelText } from "../helpers/panel-text.js";
 
 const NOW = 1_787_135_000_000;
 
@@ -110,12 +111,16 @@ describe("the confirmation on the panel", () => {
 
   it("draws the warning, the bullets, and the answer vocabulary", () => {
     const state = openCompactConfirm(createInputState(), rows);
-    const drawn = renderPanel(state, 100, 24);
+    const raw = renderPanel(state, 100, 24);
+    const drawn = panelText(raw);
     expect(drawn).toContain("will kill 1 piece of live background work");
     expect(drawn).toContain('monitor "CI watch" (m1)');
-    expect(drawn).toContain(COMPACT_CONFIRM_HINT);
+    expect(raw).toContain(COMPACT_CONFIRM_HINT);
+    // One card, and the hint outside it.
+    expect(drawnRows(raw, 100, 24)[0]).toContain("╭─");
+    expect(drawnRows(raw, 100, 24).at(-1)).toBe(COMPACT_CONFIRM_HINT);
     // No editable prompt line: this is a question, not the command panel.
-    expect(drawn).not.toContain("long-horizon commands>");
+    expect(drawn).not.toContain(PANEL_PROMPT);
   });
 
   it("takes y as the only yes", () => {

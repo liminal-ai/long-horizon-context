@@ -32,28 +32,29 @@ import { PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
 import type { CompactConfirmDisposition } from "./compact-confirm.js";
 import {
   allocationIndex,
-  helpLines,
   HOME_ACTIONS,
   homeCursorLength,
   homeSelectedActionIndex,
-  introductionLines,
+  isReadonlyRoute,
   mapModalCommand,
   MODAL_ASCII_NOTE,
-  MODAL_HELP_LINE,
   MODAL_SCOPE_NOTE,
+  MODAL_UNKNOWN_HINT,
   MODAL_UNKNOWN_PREFIX,
   type PanelRoute,
   type PanelViewSnapshot,
   type PanelViewport,
   parsePanelCommand,
 } from "./panel-commands.js";
+import { readonlyBodyLineCount } from "./panel.js";
 
 export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
 export {
+  isReadonlyRoute,
   mapModalCommand,
   MODAL_ASCII_NOTE,
-  MODAL_HELP_LINE,
   MODAL_SCOPE_NOTE,
+  MODAL_UNKNOWN_HINT,
   MODAL_UNKNOWN_PREFIX,
   type PanelRoute,
   type PanelViewSnapshot,
@@ -246,8 +247,9 @@ export function clampPanelViewport(state: InputState, _cols: number, rows: numbe
     const scrollOffset = Math.max(0, Math.min(max, state.viewport.scrollOffset));
     return { ...state, viewport: { scrollOffset, selectedIndex: homeSelectedActionIndex(scrollOffset) } };
   }
-  const body =
-    state.route === "help" ? helpLines(state.panelView).length : introductionLines(state.panelView).length;
+  // Read-only routes clamp against the WRAPPED line count for this size, not
+  // the row count: a resize that wraps Help must not strand its last lines.
+  const body = readonlyBodyLineCount(state, _cols, safeRows);
   const visible = Math.max(1, safeRows - 4);
   const maxScroll = Math.max(0, body - visible);
   const scrollOffset = Math.max(0, Math.min(maxScroll, state.viewport.scrollOffset));
@@ -819,7 +821,9 @@ function submitCommandText(state: InputState, text: string): StepOutcome {
   if (parsed.kind === "route") return openRoute(state, parsed.route);
   if (parsed.kind === "invalid") return reprompt(state, [parsed.message]);
   if (parsed.kind === "unknown") {
-    return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${text}`, MODAL_HELP_LINE]);
+    // Two short rows, never the whole vocabulary: the dump used to truncate
+    // off the screen edge. The full list lives in Help.
+    return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${text}`, MODAL_UNKNOWN_HINT]);
   }
   return {
     state: { ...state, mode: "executing", route: "home", line: parsed.surface, panelRows: [] },
@@ -828,7 +832,7 @@ function submitCommandText(state: InputState, text: string): StepOutcome {
 }
 
 function submitModalLine(state: InputState): StepOutcome {
-  if (state.route === "help" || state.route === "introduction") return openRoute(state, "home");
+  if (isReadonlyRoute(state.route)) return openRoute(state, "home");
   if (state.route === "allocation") return applyAllocation(state);
   const trimmed = state.line.trim();
   if (trimmed === "") {
@@ -933,7 +937,7 @@ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
     if (key.kind === "cancel") return cancelModal(state);
     return { state };
   }
-  if (state.route === "help" || state.route === "introduction") {
+  if (isReadonlyRoute(state.route)) {
     if (key.kind === "enter") return openRoute(state, "home");
     if (key.kind === "cancel") return cancelModal(state);
     if (key.kind === "up" || key.kind === "down") {

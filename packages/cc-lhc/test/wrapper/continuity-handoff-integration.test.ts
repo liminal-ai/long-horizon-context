@@ -33,6 +33,8 @@ import {
   type SwitchOutcome,
 } from "../../src/wrapper/handoff.js";
 import { openHandoffReceiptStore } from "../../src/wrapper/handoff-receipt-store.js";
+import { PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
+import { lastPanelText } from "../helpers/panel-text.js";
 import { formatOldChildCleanup, type OldChildCleanup } from "../../src/wrapper/old-child-cleanup.js";
 import { run } from "../../src/wrapper/run.js";
 
@@ -677,7 +679,7 @@ describe("automatic Smart Compact exposes cleanup once on a user-visible surface
     await waitFor(() => results.length === 1, "handoff result", runPromise, diagnostics);
     const result = results[0]!;
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    await waitFor(() => terminalOutput.includes("last action:"), "panel", runPromise, diagnostics);
+    await waitFor(() => lastPanelText(terminalOutput).includes(PANEL_TITLE), "panel", runPromise, diagnostics);
     return {
       result,
       terminalOutput,
@@ -701,7 +703,8 @@ describe("automatic Smart Compact exposes cleanup once on a user-visible surface
         if (result.kind !== "success") return;
         expect(result.oldChildCleanup.kind).toBe(kind);
         const needle = formatOldChildCleanup(result.oldChildCleanup);
-        expect(terminalOutput.split(needle).length - 1).toBe(1);
+        // Once on the panel the operator is looking at — not once per repaint.
+        expect(lastPanelText(terminalOutput).split(needle).length - 1).toBe(1);
         expect(logLines.join("\n").split(needle).length - 1).toBe(1);
         expect(childWrites).not.toContain(needle);
         expect(terminalOutput.match(/\[runtime note\]/g) ?? []).toHaveLength(0);

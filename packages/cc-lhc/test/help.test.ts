@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { CC_LHC_HELP, isLhcHelpArgv } from "../src/help.js";
+import { PANEL_COMMANDS } from "../src/wrapper/panel-commands.js";
 
 describe("cc-lhc help surface", () => {
   it("claims only the wrapper-specific help flag", () => {
@@ -26,10 +27,20 @@ describe("cc-lhc help surface", () => {
       "XDG_CONFIG_HOME",
       "ctrl-]",
       "bounds <lower> <upper>",
+      "details",
+      "allocation",
+      "case-insensitive",
     ]) {
       expect(CC_LHC_HELP).toContain(required);
     }
     expect(CC_LHC_HELP).toContain("--help, are forwarded");
+  });
+
+  it("lists exactly the control-panel vocabulary the parser accepts", () => {
+    const panelSection = CC_LHC_HELP.slice(CC_LHC_HELP.indexOf("Control panel:"));
+    for (const command of PANEL_COMMANDS) {
+      expect(panelSection, `cc-lhc --lhc-help omits ${command.name}`).toContain(command.name);
+    }
   });
 
   it("advertises no capture-disabled or observe-only mode", () => {

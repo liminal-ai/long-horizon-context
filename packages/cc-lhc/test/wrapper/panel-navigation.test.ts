@@ -21,12 +21,16 @@ import {
   PANEL_TITLE,
 } from "../../src/wrapper/panel-commands.js";
 import {
+  ACTION_CARET,
   ENTER_ALT_SCREEN,
   LEAVE_ALT_SCREEN,
+  PANEL_HINT_READONLY,
+  PANEL_HINT_SURVIVAL,
   PANEL_PROMPT,
   renderPanel,
 } from "../../src/wrapper/panel.js";
 import { run } from "../../src/wrapper/run.js";
+import { drawnRows, panelText } from "../helpers/panel-text.js";
 
 const LEADER = Buffer.from([DEFAULT_LEADER_BYTE]);
 
@@ -66,9 +70,9 @@ function executed(actions: InputAction[]): string[] {
 
 describe("TC-1.2a New user discovers actions", () => {
   it("Home identifies common actions and provides direct Help and Introduction paths", () => {
-    const out = renderPanel(openHome(), 120, 40);
+    const out = panelText(renderPanel(openHome(), 120, 40));
     expect(out).toContain(PANEL_TITLE);
-    expect(out).toContain("Common actions:");
+    expect(out).toContain("Actions");
     expect(out).toContain("Smart Compact");
     expect(out).toContain("Smart Prune");
     expect(out).toContain("Band allocation");
@@ -81,6 +85,17 @@ describe("TC-1.2a New user discovers actions", () => {
     const intro = feed(openHome(), "introduction\r");
     expect(intro.state.route).toBe("introduction");
     expect(executed(intro.actions)).toEqual([]);
+  });
+
+  it("every action label the panel prints is a command the parser accepts", () => {
+    for (const action of HOME_ACTIONS) {
+      for (const typed of [action.label, action.label.toLowerCase(), action.label.toUpperCase()]) {
+        const result = feed(openHome(), `${typed}\r`);
+        const opened = result.state.route !== "home" || result.state.mode === "executing";
+        expect(opened, `panel rejected its own label ${JSON.stringify(typed)}`).toBe(true);
+        expect(panelText(renderPanel(result.state, 120, 40))).not.toContain("unknown command");
+      }
+    }
   });
 });
 
@@ -170,12 +185,12 @@ describe("TC-1.5a Small Home remains operable", () => {
     expect([panelView.low, panelView.medium, panelView.high, panelView.full]).toEqual([25, 25, 25, 25]);
     const home: InputState = { ...openHome(), panelView };
     const statusNeedles = [
-      "provider context",
+      "ctx 31k",
       "target 50k",
       "trigger 90k",
-      "automatic Smart",
-      "capture: ready",
-      "Band allocation:",
+      "auto on",
+      "capture ready",
+      "alloc Balanced",
       `Low ${panelView.low}%`,
       `Medium ${panelView.medium}%`,
       `High ${panelView.high}%`,
@@ -186,8 +201,12 @@ describe("TC-1.5a Small Home remains operable", () => {
     let state = home;
     for (let step = 0; step < homeCursorLength(); step += 1) {
       const out = renderPanel(state, 20, 5);
-      expect(out).toContain("long-horizon");
-      expect(out).toMatch(/Esc/);
+      const text = panelText(out);
+      expect(text).toContain(PANEL_PROMPT);
+      expect(text).toContain("esc");
+      const drawn = drawnRows(out, 20, 5);
+      expect(drawn.length).toBeLessThanOrEqual(5);
+      for (const line of drawn) expect(line.length).toBeLessThanOrEqual(20);
       const cursorRows = [...out.matchAll(/\x1b\[(\d+);\d+H/g)].map((m) => Number.parseInt(m[1]!, 10));
       expect(cursorRows.length).toBeGreaterThan(0);
       for (const row of cursorRows) {
@@ -195,12 +214,10 @@ describe("TC-1.5a Small Home remains operable", () => {
         expect(row).toBeLessThanOrEqual(5);
       }
       statusNeedles.forEach((needle, index) => {
-        if (out.includes(needle)) seenStatus.add(index);
+        if (text.includes(needle)) seenStatus.add(index);
       });
       for (const action of HOME_ACTIONS) {
-        if (out.includes(`> ${action.label}`) || out.includes(`>${action.label}`)) {
-          seenActions.add(action.id);
-        }
+        if (text.includes(`${ACTION_CARET}${action.label}`)) seenActions.add(action.id);
       }
       if (step === 0) expect(state.viewport.selectedIndex).toBe(-1);
       state = feed(state, "\x1b[B").state;
@@ -241,11 +258,11 @@ describe("TC-1.5b Resize allocation selector", () => {
       const clamped = clampPanelViewport(state, cols, rows);
       expect(clamped.route).toBe("allocation");
       expect(clamped.viewport.selectedIndex).toBe(1);
-      const out = renderPanel(clamped, cols, rows);
+      const out = panelText(renderPanel(clamped, cols, rows));
       expect(out).toContain("Default");
       expect(out).toContain("Balanced");
       expect(out).toContain("Historical");
-      expect(out).toMatch(/>\s*Balanced/);
+      expect(out).toContain(`${ACTION_CARET}Balanced`);
       expect(out.toLowerCase()).not.toContain("edit");
       expect(out.toLowerCase()).not.toContain("create");
       const applied = feed(clamped, "\r");
@@ -305,10 +322,11 @@ describe("TC-2.3c Long text remains usable", () => {
     const scrolled = feed(help, "\x1b[B", "\x1b[B").state;
     expect(scrolled.route).toBe("help");
     expect(scrolled.viewport.scrollOffset).toBeGreaterThan(help.viewport.scrollOffset);
-    const out = renderPanel(scrolled, 40, 8);
-    expect(out).toContain("close");
-    expect(out).toContain("Enter Home");
-    expect(out).toContain("arrows scroll");
+    const out = panelText(renderPanel(scrolled, 40, 8));
+    expect(out).toContain(PANEL_HINT_READONLY);
+    expect(out).toContain("esc close");
+    expect(out).toContain("enter home");
+    expect(out).toContain("↑↓ scroll");
     expect(out).not.toContain(PANEL_PROMPT);
     expect(executed(feed(help, "\x1b[B").actions)).toEqual([]);
   });
@@ -326,8 +344,9 @@ describe("AR-10 route/scroll/resize never execute", () => {
     const resized = clampPanelViewport(scroll.state, 20, 5);
     expect(resized.route).toBe("help");
     expect(resized.mode).toBe("modal");
-    const out = renderPanel(resized, 20, 5);
-    expect(out).toContain("Esc");
+    const out = panelText(renderPanel(resized, 20, 5));
+    expect(out).toContain("esc close");
+    expect(PANEL_HINT_SURVIVAL.length).toBeLessThanOrEqual(18);
     const close = feed(resized, "\x03");
     expect(close.actions).toEqual([{ kind: "exit_modal" }]);
     expect(close.state.mode).toBe("passthrough");

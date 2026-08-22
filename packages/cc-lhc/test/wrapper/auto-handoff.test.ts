@@ -16,8 +16,10 @@ import { acceptCurrentSession, claudeSessionAlias, currentSessionAlias } from ".
 import { applySessionAllocation, type BandAllocationId } from "../../src/governor/band-allocation.js";
 import * as governor from "../../src/governor/index.js";
 import { loadContextPolicy } from "../../src/governor/config.js";
+import { PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
 import { presentAllocation } from "../../src/wrapper/preset-presentation.js";
 import { run } from "../../src/wrapper/run.js";
+import { panelText } from "../helpers/panel-text.js";
 
 /** Isolate durable governor receipts per test (shared ~/.cc-lhc would cross-talk). */
 function tempReceiptDbPath(): string {
@@ -480,13 +482,15 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(await currentSessionAlias("th_auto", defaultRegistryPath())).toBe(claudeSessionAlias(REBUILT_ID));
 
     // Slice 5: only a CONFIRMED handoff records last action. Open the panel
-    // and read the status summary.
+    // and read it on the typed details screen, where the wrapper's own
+    // diagnostics now live.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    await waitFor(() => terminalOutput.includes("last action:"), "panel status rows");
-    expect(terminalOutput).toContain("Long Horizon Context Control Panel");
-    expect(terminalOutput).toMatch(/last action: Smart Compact .*\(auto\)/);
-    expect(terminalOutput).toContain("trigger 6.0k");
-    expect(terminalOutput).toContain("view 9");
+    await waitFor(() => panelText(terminalOutput).includes(PANEL_TITLE), "panel home");
+    (stdin as unknown as PassThrough).write(Buffer.from("details\r"));
+    await waitFor(() => panelText(terminalOutput).includes("Last action"), "panel details rows");
+    expect(panelText(terminalOutput)).toMatch(/Last action Smart Compact .*\(auto\)/);
+    expect(panelText(terminalOutput)).toContain("trigger 6.0k");
+    expect(panelText(terminalOutput)).toContain("view 9");
     // Close the modal again (leader-again cancels).
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
@@ -915,9 +919,13 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       terminalOutput += chunk.toString("utf8");
     });
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    await waitFor(() => terminalOutput.includes("last action:"), "panel after nonviable swap");
-    expect(terminalOutput).toContain("last action: none this wrapper session");
-    expect(terminalOutput).toMatch(/last attempt: auto_compact replacement not viable/);
+    // The failed attempt is non-default state: Home says so, as a notice.
+    await waitFor(() => panelText(terminalOutput).includes("last attempt:"), "panel after nonviable swap");
+    expect(panelText(terminalOutput)).toMatch(/! last attempt: auto_compact replacement not viable/);
+    // And no success is claimed: details still records no last action.
+    (stdin as unknown as PassThrough).write(Buffer.from("details\r"));
+    await waitFor(() => panelText(terminalOutput).includes("Last action"), "details after nonviable swap");
+    expect(panelText(terminalOutput)).toContain("Last action none this wrapper session");
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
     // Routing was never touched. The old child still owns the terminal in both
@@ -1073,11 +1081,18 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     // Open the panel: the status summary appears before the prompt.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    await waitFor(() => terminalOutput.includes("Long Horizon Context Control Panel"), "panel summary");
-    expect(terminalOutput).toContain("last action: none this wrapper session");
-    expect(terminalOutput).toContain("automatic Smart Compact: on");
-    expect(terminalOutput).toContain("session-scoped");
-    expect(terminalOutput).toContain("precedence: builtin < user");
+    await waitFor(() => panelText(terminalOutput).includes(PANEL_TITLE), "panel summary");
+    expect(panelText(terminalOutput)).toContain("automatic Smart Compact on");
+    // Scope, precedence, and last action are one typed word away.
+    const beforeDetails = terminalOutput.length;
+    (stdin as unknown as PassThrough).write(Buffer.from("details\r"));
+    await waitFor(() => panelText(terminalOutput.slice(beforeDetails)).includes("Precedence"), "details screen");
+    const details = panelText(terminalOutput.slice(beforeDetails));
+    expect(details).toContain("Last action none this wrapper session");
+    expect(details).toContain("session-scoped");
+    expect(details).toContain("Precedence builtin < user");
+    (stdin as unknown as PassThrough).write(Buffer.from("\r"));
+    await waitFor(() => panelText(terminalOutput.slice(beforeDetails)).includes("Actions"), "back home");
 
     // Atomic rejection: inverted bounds change NOTHING.
     (stdin as unknown as PassThrough).write("bounds 200 100\r");
@@ -1085,8 +1100,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     // Live valid edit: auto off (session scope).
     (stdin as unknown as PassThrough).write("auto off\r");
-    await waitFor(() => terminalOutput.includes("auto off — applied live to this wrapper"), "applied edit");
-    expect(terminalOutput).toContain("scope: session only");
+    await waitFor(() => panelText(terminalOutput).includes("auto off — applied live to this wrapper"), "applied edit");
+    expect(panelText(terminalOutput)).toContain("scope: session only");
 
     // Close the panel (leader-again), then settle a high-pressure turn: the
     // rejected bounds left the trigger at 5k, and auto off suppresses execution.
@@ -1258,12 +1273,15 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     await new Promise((r) => setTimeout(r, 300));
 
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    await waitFor(() => terminalOutput.includes("last action:"), "panel");
-    // Floor learned from the 6.0k sample, not the zero: the warning fires.
-    expect(terminalOutput).toContain("at/below observed Claude host overhead (6.0k)");
+    await waitFor(() => panelText(terminalOutput).includes("last attempt:"), "panel");
+    // Floor learned from the 6.0k sample, not the zero: the alarm fires on Home.
+    expect(panelText(terminalOutput)).toContain("at/below observed Claude host overhead (6.0k)");
     // Refused mutation is last-attempt health state, never a success claim.
-    expect(terminalOutput).toContain("last action: none this wrapper session");
-    expect(terminalOutput).toMatch(/last attempt: Smart Compact refused/);
+    expect(panelText(terminalOutput)).toMatch(/! last attempt: Smart Compact refused/);
+    const beforeRefusedDetails = terminalOutput.length;
+    (stdin as unknown as PassThrough).write(Buffer.from("details\r"));
+    await waitFor(() => panelText(terminalOutput.slice(beforeRefusedDetails)).includes("Last action"), "details");
+    expect(panelText(terminalOutput.slice(beforeRefusedDetails))).toContain("Last action none this wrapper session");
     expect(spawned).toHaveLength(1);
 
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
