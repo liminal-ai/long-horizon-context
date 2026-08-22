@@ -285,7 +285,7 @@ describe("run", () => {
     await sleep(100);
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
-    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
 
     await waitFor(() => output.join("").includes("cc-lhc --resume new-id"), "guidance visible");
     // Panel stays open (no auto-dismiss swap)
@@ -319,7 +319,7 @@ describe("run", () => {
     await sleep(80);
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => output.some((c) => c.includes(ENTER_ALT_SCREEN)), "modal");
-    (stdin as unknown as PassThrough).write(Buffer.from("status\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/status\r"));
     await waitFor(() => output.join("").includes("status ok"), "status receipt");
     process.kill(process.pid, "SIGTERM");
     await runPromise;
@@ -358,7 +358,7 @@ describe("run", () => {
     await sleep(100);
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
-    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
 
     await waitFor(() => output.join("").includes("turn opened during rebuild"), "turn-open refusal receipt");
     const joined = output.join("");
@@ -399,7 +399,7 @@ describe("run", () => {
     await sleep(100);
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
-    (stdin as unknown as PassThrough).write(Buffer.from("status\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/status\r"));
     // every executing command shows a progress line, not a frozen prompt
     await waitFor(() => output.join("").includes("running"), "progress line");
 
@@ -409,7 +409,7 @@ describe("run", () => {
     await waitFor(() => output.some((chunk) => chunk.includes(LEAVE_ALT_SCREEN)), "detach restore");
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => output.filter((chunk) => chunk.includes(ENTER_ALT_SCREEN)).length >= 2, "panel reopened");
-    (stdin as unknown as PassThrough).write(Buffer.from("stats\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/stats\r"));
     await waitFor(() => output.join("").includes("status still running ("), "named busy refusal");
 
     // the detached command settles while the reopened panel is up: its
@@ -537,7 +537,7 @@ describe("run", () => {
 
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => modalOpen, "modal for detach");
-    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
     await sleep(50);
     (stdin as unknown as PassThrough).write(Buffer.from([0x03]));
     await waitFor(() => !modalOpen, "detach restore");
@@ -547,7 +547,7 @@ describe("run", () => {
 
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => modalOpen, "modal for compact guidance");
-    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
     // Panel stays open with relaunch guidance (no inject auto-dismiss).
     await waitFor(async () => {
       const text = await readFile(logPath, "utf8");

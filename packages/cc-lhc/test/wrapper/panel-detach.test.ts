@@ -131,7 +131,7 @@ describe("TC-1.4a Detach from running command", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     (stdin as unknown as PassThrough).write(LEADER);
     await waitFor(() => out.includes(ENTER_ALT_SCREEN), "panel open");
-    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
     await waitFor(() => runMocks.dispatchLhcCommand.mock.calls.length === 1, "command started");
     (stdin as unknown as PassThrough).write(Buffer.from([0x03]));
     await waitFor(() => out.includes(LEAVE_ALT_SCREEN), "panel closed");
@@ -142,7 +142,9 @@ describe("TC-1.4a Detach from running command", () => {
     expect(runMocks.dispatchLhcCommand).toHaveBeenCalledTimes(1);
     pty.kill();
     await runPromise;
-  }, 15_000);
+    },
+    15_000,
+  );
 });
 
 describe("TC-1.4b Deliver late result truthfully", () => {
@@ -161,6 +163,8 @@ describe("TC-1.4b Deliver late result truthfully", () => {
         resolve({ messages: ["Smart Compact rebuilt v1"] });
       },
       message: "Smart Compact rebuilt v1",
+      // The wrapper log keeps the product name; the panel names the command.
+      panelMessage: "/smart-compact rebuilt v1",
     },
     {
       name: "rejected",
@@ -168,6 +172,7 @@ describe("TC-1.4b Deliver late result truthfully", () => {
         resolve({ messages: ["turn in progress - rerun when idle"] });
       },
       message: "turn in progress - rerun when idle",
+      panelMessage: "turn in progress - rerun when idle",
     },
     {
       name: "failure",
@@ -175,8 +180,11 @@ describe("TC-1.4b Deliver late result truthfully", () => {
         reject(new Error("compact failed"));
       },
       message: "command error: compact failed",
+      panelMessage: "command error: compact failed",
     },
-  ])("late $name retains original label and appears once on each supported surface", async ({ settle, message }) => {
+  ])(
+    "late $name retains original label and appears once on each supported surface",
+    async ({ settle, message, panelMessage }) => {
     let resolveCommand: (outcome: { messages: string[] }) => void = () => {};
     let rejectCommand: (cause: Error) => void = () => {};
     runMocks.dispatchLhcCommand.mockImplementation(
@@ -232,25 +240,25 @@ describe("TC-1.4b Deliver late result truthfully", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     (stdin as unknown as PassThrough).write(LEADER);
     await waitFor(() => out.includes(ENTER_ALT_SCREEN), "panel open");
-    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
     await waitFor(() => runMocks.dispatchLhcCommand.mock.calls.length === 1, "started");
     expect(runMocks.dispatchLhcCommand.mock.calls[0]?.[0]).toBe("/lhc-compact");
     (stdin as unknown as PassThrough).write(Buffer.from([0x03]));
     await waitFor(() => out.includes(LEAVE_ALT_SCREEN), "detached");
     settle(resolveCommand, rejectCommand);
     await waitFor(
-      () => logs.filter((line) => line.includes("[smart-compact]") && line.includes(message)).length === 1,
+      () => logs.filter((line) => line.includes("[/smart-compact]") && line.includes(message)).length === 1,
       "late log receipt",
     );
-    expect(logs.filter((line) => line.includes("[smart-compact]") && line.includes(message))).toHaveLength(1);
+    expect(logs.filter((line) => line.includes("[/smart-compact]") && line.includes(message))).toHaveLength(1);
     expect(logs.filter((line) => line.includes("modal dismissed early") && line.includes(message))).toHaveLength(1);
     const reopenAt = out.length;
     (stdin as unknown as PassThrough).write(LEADER);
     await waitFor(() => out.slice(reopenAt).includes(ENTER_ALT_SCREEN), "reopen");
-    await waitFor(() => out.slice(reopenAt).includes("smart-compact finished:"), "panel late receipt");
+    await waitFor(() => out.slice(reopenAt).includes("/smart-compact finished:"), "panel late receipt");
     const panel = out.slice(reopenAt);
-    expect(panel.split("smart-compact finished:").length - 1).toBe(1);
-    expect(panel.split("smart-compact finished:")[1]).toContain(message);
+    expect(panel.split("/smart-compact finished:").length - 1).toBe(1);
+    expect(panel.split("/smart-compact finished:")[1]).toContain(panelMessage);
     expect(runMocks.dispatchLhcCommand).toHaveBeenCalledTimes(1);
     pty.kill();
     await runPromise;
@@ -324,23 +332,23 @@ describe("AR-11 detached command and late receipt settle once", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     (stdin as unknown as PassThrough).write(LEADER);
     await waitFor(() => out.includes(ENTER_ALT_SCREEN), "open");
-    (stdin as unknown as PassThrough).write(Buffer.from("status\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/status\r"));
     await waitFor(() => runMocks.dispatchLhcCommand.mock.calls.length === 1, "dispatch started");
     (stdin as unknown as PassThrough).write(Buffer.from([0x03]));
     await waitFor(() => out.includes(LEAVE_ALT_SCREEN), "detached");
     resolveCommand({ messages: ["done-once"] });
     await waitFor(() => settles === 1, "promise settled");
     await waitFor(
-      () => logs.filter((line) => line.includes("[status]") && line.includes("done-once")).length === 1,
+      () => logs.filter((line) => line.includes("[/status]") && line.includes("done-once")).length === 1,
       "late log receipt",
     );
     const reopenAt = out.length;
     (stdin as unknown as PassThrough).write(LEADER);
-    await waitFor(() => out.slice(reopenAt).includes("status finished:"), "panel late receipt");
+    await waitFor(() => out.slice(reopenAt).includes("/status finished:"), "panel late receipt");
     expect(settles).toBe(1);
     expect(runMocks.dispatchLhcCommand).toHaveBeenCalledTimes(1);
-    expect(logs.filter((line) => line.includes("[status]") && line.includes("done-once"))).toHaveLength(1);
-    expect(out.slice(reopenAt).split("status finished:").length - 1).toBe(1);
+    expect(logs.filter((line) => line.includes("[/status]") && line.includes("done-once"))).toHaveLength(1);
+    expect(out.slice(reopenAt).split("/status finished:").length - 1).toBe(1);
     expect(out.slice(reopenAt).split("done-once").length - 1).toBe(1);
     pty.kill();
     await runPromise;

@@ -10,6 +10,7 @@ import {
   LEAVE_ALT_SCREEN,
   PANEL_HINT,
   PANEL_HINT_EXECUTING,
+  PANEL_HINT_SUGGESTIONS,
   PANEL_HINT_SURVIVAL,
   PANEL_PROMPT,
   PANEL_PROMPT_PLACEHOLDER,
@@ -80,20 +81,27 @@ describe("createAltScreenGuard", () => {
 
 describe("renderPanel", () => {
   it("draws a cleared Home with title, prompt, and dim hint, cursor after the input", () => {
-    const out = renderPanel(modalState({ line: "status" }), 80, 24);
+    const out = renderPanel(modalState({ line: "/status" }), 80, 24);
     expect(out.startsWith("\x1b[?25l\x1b[2J")).toBe(true);
     expect(panelText(out)).toContain(PANEL_TITLE);
-    expect(panelText(out)).toContain(`${PANEL_PROMPT}status`);
-    expect(out).toContain(PANEL_HINT);
+    expect(panelText(out)).toContain(`${PANEL_PROMPT}/status`);
+    // A command line has the suggestion menu open, so the hint says what the
+    // arrows and Tab do right now.
+    expect(out).toContain(PANEL_HINT_SUGGESTIONS);
     expect(out.endsWith("\x1b[?25h")).toBe(true);
+
+    const idle = renderPanel(modalState(), 80, 24);
+    expect(idle).toContain(PANEL_HINT);
+    expect(idle).not.toContain(PANEL_HINT_SUGGESTIONS);
+    expect(panelText(idle)).toContain(PANEL_PROMPT_PLACEHOLDER);
   });
 
   it("hides the cursor and shows a progress line while a command is executing", () => {
-    const out = renderPanel(modalState({ mode: "executing", line: "status" }), 80, 24, undefined, STYLED);
+    const out = renderPanel(modalState({ mode: "executing", line: "/status" }), 80, 24, undefined, STYLED);
     // every executing command gets a progress line — a frozen prompt line is
     // indistinguishable from a hang
-    expect(panelText(out)).toContain("status — running…");
-    expect(panelText(out)).not.toContain(`${PANEL_PROMPT}status`);
+    expect(panelText(out)).toContain("/status — running…");
+    expect(panelText(out)).not.toContain(`${PANEL_PROMPT}/status`);
     expect(panelText(out)).not.toContain(PANEL_PROMPT_PLACEHOLDER);
     expect(out).toContain(`\x1b[2m${PANEL_HINT_EXECUTING}\x1b[22m`);
     expect(out).not.toContain(PANEL_HINT);
@@ -101,16 +109,16 @@ describe("renderPanel", () => {
   });
 
   it("labels progress per command and appends elapsed seconds from the ticker", () => {
-    expect(commandProgressLabel("smart-compact")).toBe("smart-compact — rebuilding…");
-    expect(commandProgressLabel("smart-prune 160000")).toBe("smart-prune — rebuilding…");
-    expect(commandProgressLabel("compact")).toBe("compact — rebuilding…");
-    expect(commandProgressLabel("prune 160000")).toBe("prune — rebuilding…");
-    expect(commandProgressLabel("status")).toBe("status — running…");
-    expect(commandProgressLabel("stats", 0)).toBe("stats — running…");
-    expect(commandProgressLabel("stats", 3)).toBe("stats — running… (3s)");
+    expect(commandProgressLabel("/smart-compact")).toBe("/smart-compact — rebuilding…");
+    expect(commandProgressLabel("/smart-prune 160000")).toBe("/smart-prune — rebuilding…");
+    expect(commandProgressLabel("/status")).toBe("/status — running…");
+    expect(commandProgressLabel("/stats", 0)).toBe("/stats — running…");
+    expect(commandProgressLabel("/stats", 3)).toBe("/stats — running… (3s)");
+    // Bare and title-case spellings are not commands and never label progress.
+    expect(commandProgressLabel("smart-compact")).toBe("smart-compact — running…");
 
-    const out = renderPanel(modalState({ mode: "executing", line: "smart-compact" }), 80, 24, 7);
-    expect(panelText(out)).toContain("smart-compact — rebuilding… (7s)");
+    const out = renderPanel(modalState({ mode: "executing", line: "/smart-compact" }), 80, 24, 7);
+    expect(panelText(out)).toContain("/smart-compact — rebuilding… (7s)");
     expect(out.endsWith("\x1b[?25h")).toBe(false);
   });
 
@@ -140,7 +148,7 @@ describe("renderPanel", () => {
       [20, 5],
     ] as const) {
       const wide = "x".repeat(200);
-      const state = showReceipts(modalState({ line: "smart-prune 12345" }), [wide]);
+      const state = showReceipts(modalState({ line: "/smart-prune 12345" }), [wide]);
       for (const line of panelGrid(renderPanel(state, cols, rows), cols, rows)) {
         expect(line.length, `${cols}x${rows}`).toBeLessThanOrEqual(cols);
       }
@@ -197,7 +205,7 @@ describe("the card", () => {
     const shares = rows.find((line) => line.includes("Low 20%"))!;
     expect(contextRow.indexOf("Context")).toBe(captureRow.indexOf("Capture"));
     expect(contextRow.indexOf("Context")).toBe(allocationRow.indexOf("Allocation"));
-    expect(contextRow.indexOf("38k in window")).toBe(captureRow.indexOf("ready"));
+    expect(contextRow.indexOf("38k used")).toBe(captureRow.indexOf("ready"));
     expect(shares).toContain("Low 20% · Medium 20% · High 30% · Full 30%");
     // Home carries no wrapper internals.
     const home = panelText(renderPanel(modalState(), 100, 30));
@@ -214,7 +222,7 @@ describe("the card", () => {
     expect(index).toBeGreaterThanOrEqual(0);
     const allocationRow = rows[index]!;
     expect(allocationRow).toContain("Default");
-    expect(allocationRow).toContain("emphasizes recent history");
+    expect(allocationRow).toContain("favors recent detail");
     expect(allocationRow.length).toBeLessThanOrEqual(100);
     // The shares follow immediately: no prose rows in between.
     expect(rows[index + 1]).toContain("Low 20% · Medium 20% · High 30% · Full 30%");
@@ -222,6 +230,7 @@ describe("the card", () => {
     // from the unreduced preset copy.
     const home = panelText(renderPanel(modalState(), 100, 29));
     expect(home).not.toContain("initial selection");
+    expect(home).not.toContain("emphasizes recent history");
     const selector = panelText(renderPanel(modalState({ route: "allocation" }), 100, 29));
     expect(selector).toContain("initial selection");
     expect(selector).toContain("equal fidelity distribution");
@@ -243,17 +252,17 @@ describe("the card", () => {
     // the focused status row plus the prompt caret — nothing else
     expect(carets).toHaveLength(2);
     expect(carets[0]).toContain("Context");
-    expect(first).toContain("\x1b[1;34m38k in window\x1b[22;39m");
+    expect(first).toContain("\x1b[1;34m38k used\x1b[22;39m");
 
     const down = renderPanel(feed(modalState(), "\x1b[B"), 100, 30, undefined, STYLED);
     expect(down).toContain("\x1b[1;34mtarget 180k\x1b[22;39m");
-    expect(down).not.toContain("\x1b[1;34m38k in window\x1b[22;39m");
+    expect(down).not.toContain("\x1b[1;34m38k used\x1b[22;39m");
 
     let action = modalState();
     for (let step = 0; step < 10; step += 1) action = feed(action, "\x1b[B");
     const actionRows = cardBodyRows(renderPanel(action, 100, 30, undefined, STYLED), 100, 30);
     const selected = actionRows.filter((line) => line.trimStart().startsWith(ACTION_CARET));
-    expect(selected.some((line) => line.includes("Smart Compact"))).toBe(true);
+    expect(selected.some((line) => line.includes("/smart-compact"))).toBe(true);
     // one action caret and the prompt caret
     expect(selected).toHaveLength(2);
     expect(actionRows.some((line) => line.trimStart().startsWith(FOCUS_CARET))).toBe(false);
@@ -271,7 +280,7 @@ describe("truthful degradation", () => {
     expect(rows.some((line) => line.includes(`${ACTION_CARET}${PANEL_PROMPT_PLACEHOLDER}`))).toBe(true);
     const contextRow = rows.find((line) => line.includes("Context"))!;
     const captureRow = rows.find((line) => line.includes("Capture"))!;
-    expect(contextRow.indexOf("38k in window")).toBe(captureRow.indexOf("ready"));
+    expect(contextRow.indexOf("38k used")).toBe(captureRow.indexOf("ready"));
   });
 
   it("uses colour only on top of a caret or a marker that already carries the meaning", () => {
@@ -303,8 +312,7 @@ describe("size tiers", () => {
     const rows = drawnRows(renderPanel(modalState(), 40, 16), 40, 16);
     expect(rows[0]).toContain(PANEL_TITLE_SHORT);
     expect(rows[0]).toContain("╭─");
-    expect(panelText(renderPanel(modalState(), 40, 16))).not.toContain("rebuild from durable history");
-    expect(rows.some((line) => line.includes("Smart Compact"))).toBe(true);
+    expect(rows.some((line) => line.includes("/smart-compact"))).toBe(true);
     expect(rows.some((line) => line.includes("Alloc"))).toBe(true);
   });
 

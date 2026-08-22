@@ -16,8 +16,11 @@
 
 import type { AsyncWorkFamily, OpenAsyncWork } from "../observation/async-work.js";
 
-/** Panel hint for the confirmation. Plain ASCII, like every row we draw. */
-export const COMPACT_CONFIRM_HINT = "y = Smart Compact now and kill this work  |  any other key = not now";
+/**
+ * Panel hint for the confirmation. Plain ASCII, like every row we draw, and
+ * the panel's own command spelling: this screen is Control Panel surface.
+ */
+export const COMPACT_CONFIRM_HINT = "y = run /smart-compact now and kill this work  |  any other key = not now";
 
 /** Why the confirmation ended without an affirmative answer. */
 export type CompactConfirmDecline = "declined" | "dismissed" | "stdin_closed" | "render_failed" | "interrupted";
@@ -97,7 +100,7 @@ export function compactConfirmRows(work: readonly OpenAsyncWork[], nowMs: number
   const count = work.length;
   const noun = count === 1 ? "1 piece" : `${count} pieces`;
   return [
-    `Smart Compact replaces the Claude session and will kill ${noun} of live background work:`,
+    `/smart-compact replaces the Claude session and will kill ${noun} of live background work:`,
     ...work.map((item) => describeAsyncWork(item, nowMs)),
   ];
 }

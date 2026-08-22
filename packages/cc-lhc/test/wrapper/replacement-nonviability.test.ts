@@ -47,7 +47,11 @@ describe("the standing alarm", () => {
 
   it("says what is still working, and never claims anything ended", () => {
     expect(ALARM).toContain("Session old-1111 stays live and capture keeps running");
+    // Shared raw text: the wrapper log, the terminal line, and the governor
+    // refusal log read this array as-is, so it keeps the product name. The
+    // Control Panel sees it through run.ts's projection instead.
     expect(ALARM).toContain("Manual Smart Compact still runs");
+    expect(ALARM).not.toContain("/smart-compact");
     expect(ALARM).toContain("only the automatic child swap stops");
     // "the terminal" is the screen cc-lhc refuses to parse, not a state claim.
     for (const ended of ["terminal state", "dead", "unrecoverable", "gave up", "wall"]) {

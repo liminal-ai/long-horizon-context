@@ -10,12 +10,12 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-
-import { dispatchLhcCommand } from "../../src/commands/dispatch.js";
 import { formatDurableReceipt } from "../../src/commands/context-mutation.js";
 import { formatContinuityNote } from "../../src/commands/continuity-note.js";
-import { emptyCaptureStats } from "../../src/stats.js";
+import { dispatchLhcCommand } from "../../src/commands/dispatch.js";
 import { CC_LHC_HELP } from "../../src/help.js";
+import type { OpenAsyncWork } from "../../src/observation/async-work.js";
+import { emptyCaptureStats } from "../../src/stats.js";
 import { COMPACT_CONFIRM_HINT, compactConfirmRows } from "../../src/wrapper/compact-confirm.js";
 import { formatHandoffResult } from "../../src/wrapper/handoff.js";
 import { NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY } from "../../src/wrapper/native-auto-compact.js";
@@ -25,7 +25,6 @@ import {
 } from "../../src/wrapper/replacement-nonviability.js";
 import {
   CLAUDE_NATIVE_COMPACT,
-  SMART_COMPACT,
   formatAskingBeforeSmartCompact,
   formatAutoDeferredSummary,
   formatAutoGuardBusyDetail,
@@ -51,8 +50,11 @@ import {
   nativeCompactAnomalyNotice,
   nativeCompactDisabledStatusLine,
   nativeCompactPassthroughStatusLine,
+  SMART_COMPACT,
 } from "../../src/wrapper/terminology.js";
-import type { OpenAsyncWork } from "../../src/observation/async-work.js";
+
+/** The Control Panel's own spelling of the operation. */
+const SMART_COMPACT_COMMAND = "/smart-compact";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const README = readFileSync(join(PKG_ROOT, "README.md"), "utf8");
@@ -67,19 +69,24 @@ function stripComments(source: string): string {
 }
 
 function maskLiteralInterfaces(text: string): string {
-  return text
-    .replaceAll("Smart Compact", " ")
-    .replaceAll("Claude native Compact", " ")
-    .replaceAll("/compact", " ")
-    .replaceAll("DISABLE_AUTO_COMPACT", " ")
-    .replaceAll("DISABLE_COMPACT", " ")
-    .replaceAll("--lhc-auto-compact", " ")
-    .replaceAll("--autocompact", " ")
-    .replaceAll("[lhc compact:", " ")
-    .replaceAll("autoCompact", " ")
-    .replaceAll("auto_compact", " ")
-    .replaceAll("context_compact_continue", " ")
-    .replaceAll("compact-continuation", " ");
+  return (
+    text
+      .replaceAll("Smart Compact", " ")
+      // Control Panel commands are literal interfaces, like /compact below.
+      .replaceAll("/smart-compact", " ")
+      .replaceAll("/smart-prune", " ")
+      .replaceAll("Claude native Compact", " ")
+      .replaceAll("/compact", " ")
+      .replaceAll("DISABLE_AUTO_COMPACT", " ")
+      .replaceAll("DISABLE_COMPACT", " ")
+      .replaceAll("--lhc-auto-compact", " ")
+      .replaceAll("--autocompact", " ")
+      .replaceAll("[lhc compact:", " ")
+      .replaceAll("autoCompact", " ")
+      .replaceAll("auto_compact", " ")
+      .replaceAll("context_compact_continue", " ")
+      .replaceAll("compact-continuation", " ")
+  );
 }
 
 function bareCompactHits(text: string): string[] {
@@ -296,8 +303,13 @@ describe("TC-3.3a product terminology audit", () => {
     }
 
     expect(CC_LHC_HELP).toContain(SMART_COMPACT);
-    expect(helpCommand.messages.join("\n")).toContain(SMART_COMPACT);
-    expect(confirm).toContain(SMART_COMPACT);
+    // Control Panel surfaces name the COMMAND, not the product: the panel is
+    // a CLI and its screens must print what the parser accepts.
+    expect(helpCommand.messages.join("\n")).toContain(SMART_COMPACT_COMMAND);
+    expect(helpCommand.messages.join("\n")).not.toContain(SMART_COMPACT);
+    expect(confirm).toContain(SMART_COMPACT_COMMAND);
+    expect(confirm).not.toContain(SMART_COMPACT);
+    expect(COMPACT_CONFIRM_HINT).toContain(SMART_COMPACT_COMMAND);
     expect(nativeCompactAnomalyNotice()).toContain(CLAUDE_NATIVE_COMPACT);
     expect(NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY).toContain(CLAUDE_NATIVE_COMPACT);
     expect(nativeCompactDisabledStatusLine()).toContain("/compact");
@@ -305,7 +317,12 @@ describe("TC-3.3a product terminology audit", () => {
     expect(formatSurvivalRelaunchNotice("old", false)).toContain(CLAUDE_NATIVE_COMPACT);
     expect(formatOneShotCompactedBeforeLaunch("a", "b")).toContain(SMART_COMPACT);
     expect(formatOneShotCompactedBeforeLaunch("a", "b")).not.toMatch(/compacted\b/i);
-    expect(formatAutoNotAuthorizedSummary("x")).toContain(SMART_COMPACT);
+    // Panel-facing summaries name the command; their log counterparts keep
+    // the product name.
+    expect(formatAutoNotAuthorizedSummary("x")).toContain(SMART_COMPACT_COMMAND);
+    expect(formatAutoNotAuthorizedLog("x", 1)).toContain(SMART_COMPACT);
+    expect(formatAutoMutationSummary("refused", "d")).toContain(SMART_COMPACT_COMMAND);
+    expect(formatAutoMutationLog("refused", "d")).toContain(SMART_COMPACT);
     expect(formatCompactViewLine("v1", 1, 1)).toContain(SMART_COMPACT);
     expect(formatOperatorAuthorized(1)).toContain(SMART_COMPACT);
     expect(formatAutoThrew("EIO")).toContain(SMART_COMPACT);

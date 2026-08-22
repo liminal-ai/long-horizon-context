@@ -814,7 +814,7 @@ describe("an automatic swap asks before it kills live background work", () => {
   it("keeps the operator's own panel rather than clobbering it", async () => {
     const rig = await startRig({ liveWork: [monitorWork()] });
     // The operator opened the control panel (ctrl-]) and is typing.
-    rig.stdin.write("\x1dstat");
+    rig.stdin.write("\x1d/stat");
     await settle(80);
     rig.fire(overTrigger("req:panel-busy"));
     await settle(200);
@@ -823,7 +823,7 @@ describe("an automatic swap asks before it kills live background work", () => {
     expect(rig.logs.some((line) => line.includes("the panel is busy"))).toBe(true);
     expect(rig.settledReceipts()).toEqual([]);
     expect(rig.receipts().some((receipt) => receipt.wouldMutate)).toBe(false);
-    expect(rig.panel()).toContain(`${PANEL_PROMPT}stat`);
+    expect(rig.panel()).toContain(`${PANEL_PROMPT}/stat`);
     rig.stdin.write("\x03");
     await settle();
     await rig.end();

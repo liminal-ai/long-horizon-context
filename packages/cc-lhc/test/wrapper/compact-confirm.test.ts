@@ -19,12 +19,12 @@ describe("what the operator is shown before a swap kills live work", () => {
 
   it("counts one piece in the singular and more in the plural", () => {
     const one = compactConfirmRows([work({ family: "monitor", taskId: "b1" })], NOW);
-    expect(one[0]).toBe("Smart Compact replaces the Claude session and will kill 1 piece of live background work:");
+    expect(one[0]).toBe("/smart-compact replaces the Claude session and will kill 1 piece of live background work:");
     const two = compactConfirmRows(
       [work({ family: "monitor", taskId: "b1" }), work({ family: "agent", taskId: "a1" })],
       NOW,
     );
-    expect(two[0]).toBe("Smart Compact replaces the Claude session and will kill 2 pieces of live background work:");
+    expect(two[0]).toBe("/smart-compact replaces the Claude session and will kill 2 pieces of live background work:");
     expect(two).toHaveLength(3);
   });
 

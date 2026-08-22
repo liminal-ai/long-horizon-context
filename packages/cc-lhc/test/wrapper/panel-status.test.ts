@@ -31,12 +31,12 @@ describe("TC-1.1a Home shows active state", () => {
   it("Home renders measured provider total, target, trigger, auto mode, capture health, and allocation", () => {
     const out = panelText(renderPanel(homeState(), 120, 40));
     expect(out).toContain(PANEL_TITLE);
-    expect(out).toContain("Context 31k in window");
+    expect(out).toContain("Context 31k used");
     expect(out).toContain("target 180k");
     expect(out).toContain("trigger 360k");
-    expect(out).toContain("automatic Smart Compact on");
+    expect(out).toContain("automatic /smart-compact on");
     expect(out).toContain("Capture ready");
-    expect(out).toContain("Allocation Default");
+    expect(out).toContain("Allocation Default · favors recent detail");
     expect(out).toContain("Low 20%");
     expect(out).toContain("Medium 20%");
     expect(out).toContain("High 30%");
@@ -107,7 +107,7 @@ describe("TC-1.1c Provider context not observed", () => {
     const out = panelText(renderPanel(homeState(view), 120, 40));
     expect(out).toContain("Context not observed yet");
     expect(out).not.toMatch(/Context \d/);
-    expect(out).not.toMatch(/in window/);
+    expect(out).not.toMatch(/\d+k used/);
     expect(out.toLowerCase()).not.toContain("estimate");
   });
 });
@@ -115,8 +115,8 @@ describe("TC-1.1c Provider context not observed", () => {
 describe("TC-3.4a Status contract is truthful", () => {
   it("Help descriptions match actual status and stats fields exactly", async () => {
     const help = helpLines(null).join("\n");
-    const statusSpec = PANEL_COMMANDS.find((command) => command.name === "status");
-    const statsSpec = PANEL_COMMANDS.find((command) => command.name === "stats");
+    const statusSpec = PANEL_COMMANDS.find((command) => command.name === "/status");
+    const statsSpec = PANEL_COMMANDS.find((command) => command.name === "/stats");
     expect(statusSpec?.summary).toContain("tail");
     expect(statusSpec?.summary).toContain("threshold");
     expect(statusSpec?.summary).toContain("zone");

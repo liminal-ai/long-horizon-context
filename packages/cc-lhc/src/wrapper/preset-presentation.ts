@@ -15,10 +15,8 @@ export interface PresetPresentation {
   label: BandAllocation["label"];
   description: string;
   /**
-   * Home's one-line phrase for the same allocation. Home shows the label and
-   * the shares; it has one row for the explanation, so the selector's fuller
-   * wording (which keeps context like "initial selection") is trimmed to the
-   * part that describes the allocation itself.
+   * Home's one-line phrase for the same allocation, in plain language: what
+   * this choice does to the context the user sees.
    */
   homeDescription: string;
   low: number;
@@ -28,12 +26,18 @@ export interface PresetPresentation {
 }
 
 /**
- * The trailing clause of the selector description — the part that says what
- * the allocation DOES. Derived, not restated, so the two can never drift.
+ * Home's plain-language phrase per allocation. Home has one row for the
+ * explanation, and it answers "what does this do to my context?" rather than
+ * naming band mechanics; the selector keeps the fuller wording.
  */
-export function homeAllocationPhrase(description: string): string {
-  const parts = description.split(" — ");
-  return (parts[parts.length - 1] ?? description).trim();
+const HOME_ALLOCATION_PHRASES: Record<BandAllocationId, string> = {
+  default: "favors recent detail",
+  balanced: "spreads space evenly",
+  historical: "keeps more older history",
+};
+
+export function homeAllocationPhrase(id: BandAllocationId): string {
+  return HOME_ALLOCATION_PHRASES[id];
 }
 
 export function presentAllocation(id: BandAllocationId): PresetPresentation {
@@ -42,7 +46,7 @@ export function presentAllocation(id: BandAllocationId): PresetPresentation {
     id: allocation.id,
     label: allocation.label,
     description: allocation.description,
-    homeDescription: homeAllocationPhrase(allocation.description),
+    homeDescription: homeAllocationPhrase(allocation.id),
     low: allocation.low,
     medium: allocation.medium,
     high: allocation.high,

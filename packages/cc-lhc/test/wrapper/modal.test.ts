@@ -317,7 +317,7 @@ describe("passthrough", () => {
       expect(cancelled.state.mode).toBe("passthrough");
       expect(cancelled.pty).toBe("");
 
-      const executing = feed(createInputState(), LEADER, "status\r");
+      const executing = feed(createInputState(), LEADER, "/status\r");
       const detached = feed(executing.state, "\x1b[93;5u");
       expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
       expect(detached.state.mode).toBe("passthrough");
@@ -368,43 +368,43 @@ describe("modal line editor", () => {
   }
 
   it("builds the line from typed printables, executes a known command on Enter", () => {
-    const typed = feed(openModal(), "status");
-    expect(typed.state.line).toBe("status");
+    const typed = feed(openModal(), "/status");
+    expect(typed.state.line).toBe("/status");
     const result = feed(typed.state, "\r");
     expect(result.pty).toBe("");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
     expect(result.state.mode).toBe("executing");
     // the submitted text stays visible on the panel's prompt line while running
-    expect(result.state.line).toBe("status");
+    expect(result.state.line).toBe("/status");
   });
 
   it("passes the prune target through", () => {
-    const result = feed(openModal(), "smart-prune 50000\r");
+    const result = feed(openModal(), "/smart-prune 50000\r");
     expect(executed(result.actions)).toEqual(["/lhc-prune 50000"]);
   });
 
   it("treats a malformed smart-prune argument as invalid and stays modal", () => {
-    const result = feed(openModal(), "smart-prune lots\r");
+    const result = feed(openModal(), "/smart-prune lots\r");
     expect(executed(result.actions)).toEqual([]);
-    expect(result.state.panelRows[0]).toContain("invalid smart-prune target");
+    expect(result.state.panelRows[0]).toContain("invalid /smart-prune target");
     expect(result.state.mode).toBe("modal");
   });
 
   it("opens the Help route on help and stays modal", () => {
-    const result = feed(openModal(), "help\r");
+    const result = feed(openModal(), "/help\r");
     expect(result.state.route).toBe("help");
     expect(result.state.mode).toBe("modal");
     expect(executed(result.actions)).toEqual([]);
     const home = feed(result.state, "\r");
     expect(home.state.route).toBe("home");
-    const then = feed(home.state, "stats\r");
+    const then = feed(home.state, "/stats\r");
     expect(executed(then.actions)).toEqual(["/lhc-stats"]);
   });
 
   it("shows help for an unknown command, stays modal, and still executes next", () => {
     const unknown = feed(openModal(), "bogus\r");
     expect(unknown.state.panelRows[0]).toBe(`${MODAL_UNKNOWN_PREFIX}bogus`);
-    const result = feed(unknown.state, "status\r");
+    const result = feed(unknown.state, "/status\r");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
   });
 
@@ -415,8 +415,8 @@ describe("modal line editor", () => {
   });
 
   it("backspace edits the line", () => {
-    const edited = feed(openModal(), "stx\x7f");
-    expect(edited.state.line).toBe("st");
+    const edited = feed(openModal(), "/stx\x7f");
+    expect(edited.state.line).toBe("/st");
     const result = feed(edited.state, "atus\r");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
   });
@@ -428,7 +428,7 @@ describe("modal line editor", () => {
   });
 
   it("ctrl-U kills the whole line", () => {
-    const result = feed(openModal(), "garbage\x15stats\r");
+    const result = feed(openModal(), "garbage\x15/stats\r");
     expect(executed(result.actions)).toEqual(["/lhc-stats"]);
   });
 
@@ -459,7 +459,7 @@ describe("modal line editor", () => {
     expect(arrow.pty).toBe("");
     expect(arrow.actions).toEqual([]);
     // split kitty Enter still submits
-    const kitty = feed(openModal(), "status", "\x1b", "[13;1u");
+    const kitty = feed(openModal(), "/status", "\x1b", "[13;1u");
     expect(executed(kitty.actions)).toEqual(["/lhc-status"]);
     // split OSC response forwards and stays modal
     const osc = feed(openModal(), "\x1b", "]11;rgb:aa\x07");
@@ -486,28 +486,29 @@ describe("modal line editor", () => {
   });
 
   it("handles kitty CSI-u Enter/Esc/Backspace; ignores releases", () => {
-    const enter = feed(openModal(), "status", "\x1b[13;1u");
+    const enter = feed(openModal(), "/status", "\x1b[13;1u");
     expect(executed(enter.actions)).toEqual(["/lhc-status"]);
 
     const esc = feed(openModal(), "sta", "\x1b[27;1u");
     expect(esc.actions).toEqual([{ kind: "exit_modal" }]);
 
-    const backspace = feed(openModal(), "stx", "\x1b[127;1u", "atus", "\x1b[13;1u");
+    const backspace = feed(openModal(), "/stx", "\x1b[127;1u", "atus", "\x1b[13;1u");
     expect(executed(backspace.actions)).toEqual(["/lhc-status"]);
 
-    const release = feed(openModal(), "status", "\x1b[13;1:3u");
+    const release = feed(openModal(), "/status", "\x1b[13;1:3u");
     expect(executed(release.actions)).toEqual([]);
     expect(release.state.mode).toBe("modal");
   });
 
   it("edits and submits with Windows Terminal win32 key events", () => {
-    const text = [..."status"].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0)));
+    const text = [..."/status"].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0)));
     const submitted = feed(openModal(), ...text, win32Key(13, 13));
     expect(executed(submitted.actions)).toEqual(["/lhc-status"]);
     expect(submitted.pty).toBe("");
 
     const edited = feed(
       openModal(),
+      win32Key(191, 47),
       win32Key(83, 115),
       win32Key(84, 116),
       win32Key(88, 120),
@@ -523,7 +524,7 @@ describe("modal line editor", () => {
       openModal(),
       ...[..."wrong"].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0))),
       win32Key(85, 21, 1, 40),
-      ...[..."stats"].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0))),
+      ...[..."/stats"].map((char) => win32Key(char.toUpperCase().charCodeAt(0), char.charCodeAt(0))),
       win32Key(13, 13),
     );
     expect(executed(cleared.actions)).toEqual(["/lhc-stats"]);
@@ -545,7 +546,7 @@ describe("modal line editor", () => {
   });
 
   it("drops navigation keys and mouse reports while modal", () => {
-    const result = feed(openModal(), "\x1b[A", "\x1b[3~", "\x1b[<35;10;5M", "status\r");
+    const result = feed(openModal(), "\x1b[A", "\x1b[3~", "\x1b[<35;10;5M", "/status\r");
     expect(result.pty).toBe("");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
   });
@@ -557,13 +558,13 @@ describe("modal line editor", () => {
   });
 
   it("appends pasted printables, ignores pasted newlines and control bytes", () => {
-    const result = feed(openModal(), "\x1b[200~sta\rtus\x1d\x1b[201~", "\r");
+    const result = feed(openModal(), "\x1b[200~/sta\rtus\x1d\x1b[201~", "\r");
     expect(result.pty).toBe("");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
   });
 
   it("ignores non-ASCII bytes in the editor (line stays ASCII)", () => {
-    const chunk = Buffer.concat([Buffer.from("sta"), Buffer.from([0xc3, 0xa9]), Buffer.from("tus\r")]);
+    const chunk = Buffer.concat([Buffer.from("/sta"), Buffer.from([0xc3, 0xa9]), Buffer.from("tus\r")]);
     const result = feed(openModal(), chunk);
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
   });
@@ -571,7 +572,7 @@ describe("modal line editor", () => {
 
 describe("executing mode", () => {
   function startExecuting(): InputState {
-    const opened = feed(createInputState(), LEADER, "status\r");
+    const opened = feed(createInputState(), LEADER, "/status\r");
     expect(opened.state.mode).toBe("executing");
     return opened.state;
   }
@@ -582,7 +583,7 @@ describe("executing mode", () => {
     expect(result.actions).toEqual([]);
     expect(result.state.mode).toBe("executing");
     // the running command stays visible on the panel's progress line
-    expect(result.state.line).toBe("status");
+    expect(result.state.line).toBe("/status");
   });
 
   it("ctrl-C while executing DETACHES: modal leaves, output resumes, command unaffected", () => {
@@ -737,7 +738,7 @@ describe("string-sequence wedge escape hatch", () => {
   });
 
   it("hatch also works while executing (detach)", () => {
-    const executing = feed(createInputState(), LEADER, "status\r");
+    const executing = feed(createInputState(), LEADER, "/status\r");
     const wedged = feed(executing.state, Buffer.from([0x1b, 0x5d]));
     expect(wedged.state.escape).toEqual({ kind: "string_term" });
     const escaped = feed(wedged.state, "\x03");
@@ -748,17 +749,17 @@ describe("string-sequence wedge escape hatch", () => {
 
 describe("mapModalCommand", () => {
   it("maps the surface", () => {
-    expect(mapModalCommand("status")).toBe("/lhc-status");
-    expect(mapModalCommand("stats")).toBe("/lhc-stats");
-    expect(mapModalCommand("smart-compact")).toBe("/lhc-compact");
+    expect(mapModalCommand("/status")).toBe("/lhc-status");
+    expect(mapModalCommand("/stats")).toBe("/lhc-stats");
+    expect(mapModalCommand("/smart-compact")).toBe("/lhc-compact");
     expect(mapModalCommand("compact")).toBeNull();
-    expect(mapModalCommand("export")).toBe("/lhc-export");
-    expect(mapModalCommand("export extra")).toBeNull();
-    expect(mapModalCommand("smart-prune")).toBe("/lhc-prune");
-    expect(mapModalCommand("smart-prune 1234")).toBe("/lhc-prune 1234");
+    expect(mapModalCommand("/export")).toBe("/lhc-export");
+    expect(mapModalCommand("/export extra")).toBeNull();
+    expect(mapModalCommand("/smart-prune")).toBe("/lhc-prune");
+    expect(mapModalCommand("/smart-prune 1234")).toBe("/lhc-prune 1234");
     expect(mapModalCommand("prune")).toBeNull();
-    expect(mapModalCommand("status extra")).toBeNull();
-    expect(mapModalCommand("smart-prune 12 34")).toBeNull();
+    expect(mapModalCommand("/status extra")).toBeNull();
+    expect(mapModalCommand("/smart-prune 12 34")).toBeNull();
     expect(mapModalCommand("lhc-status")).toBeNull();
     expect(mapModalCommand("")).toBeNull();
   });

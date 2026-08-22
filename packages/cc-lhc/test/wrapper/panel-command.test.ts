@@ -154,19 +154,19 @@ async function waitFor(condition: () => boolean, label: string, capMs = 8_000): 
   }
 }
 
-describe("command names are case-insensitive", () => {
-  it("accepts every casing of every command and of every label the panel prints", () => {
+describe("the panel is a slash CLI", () => {
+  it("runs canonical slash commands and nothing else", () => {
     const cases: Array<[string, string]> = [
-      ["status", "/lhc-status"],
-      ["STATUS", "/lhc-status"],
-      ["Stats", "/lhc-stats"],
-      ["Smart-Compact", "/lhc-compact"],
-      ["SMART-PRUNE 2500", "/lhc-prune 2500"],
-      ["Auto ON", "/lhc-auto on"],
-      ["AUTO Off", "/lhc-auto off"],
-      ["Bounds 100 200", "/lhc-bounds 100 200"],
-      ["Smart Compact", "/lhc-compact"],
-      ["smart prune", "/lhc-prune"],
+      ["/status", "/lhc-status"],
+      ["/stats", "/lhc-stats"],
+      ["/smart-compact", "/lhc-compact"],
+      ["/smart-prune", "/lhc-prune"],
+      ["/smart-prune 2500", "/lhc-prune 2500"],
+      ["/export", "/lhc-export"],
+      ["/auto on", "/lhc-auto on"],
+      ["/auto off", "/lhc-auto off"],
+      ["/bounds 100 200", "/lhc-bounds 100 200"],
+      ["  /status  ", "/lhc-status"],
     ];
     for (const [typed, commandLine] of cases) {
       const parsed = parsePanelCommand(typed);
@@ -174,36 +174,68 @@ describe("command names are case-insensitive", () => {
       if (parsed.kind === "execute") expect(parsed.commandLine, typed).toBe(commandLine);
     }
     for (const [typed, route] of [
-      ["Introduction", "introduction"],
-      ["INTRODUCTION", "introduction"],
-      ["Help", "help"],
-      ["Details", "details"],
-      ["Band allocation", "allocation"],
-      ["BAND ALLOCATION", "allocation"],
-      ["allocation", "allocation"],
+      ["/help", "help"],
+      ["/introduction", "introduction"],
+      ["/details", "details"],
+      ["/allocation", "allocation"],
     ] as const) {
       const parsed = parsePanelCommand(typed);
       expect(parsed.kind, typed).toBe("route");
       if (parsed.kind === "route") expect(parsed.route, typed).toBe(route);
     }
-    // Every action label the panel displays round-trips through the parser.
+
+    // Every command row the panel displays is itself a canonical command.
     for (const action of HOME_ACTIONS) {
+      expect(action.label.startsWith("/"), action.label).toBe(true);
       expect(parsePanelCommand(action.label).kind, action.label).not.toBe("unknown");
     }
-    // Removed spellings stay removed in every casing.
-    for (const removed of ["Compact", "PRUNE", "prune 500", "secret"]) {
-      expect(parsePanelCommand(removed).kind, removed).toBe("unknown");
+
+    // Slashless names are recognized only well enough to teach the rule.
+    for (const bare of ["status", "smart-compact", "help", "allocation", "auto on"]) {
+      const parsed = parsePanelCommand(bare);
+      expect(parsed.kind, bare).toBe("needs_slash");
+    }
+    // Prose labels, case variants, and removed spellings do not execute.
+    for (const rejected of [
+      "Smart Compact",
+      "Smart Prune",
+      "Band allocation",
+      "/Smart-Compact",
+      "/STATUS",
+      "/Help",
+      "compact",
+      "prune 500",
+      "secret",
+      "//status",
+    ]) {
+      const parsed = parsePanelCommand(rejected);
+      expect(parsed.kind, rejected).toBe("unknown");
     }
   });
 
+  it("answers a bare command name with the grammar rule, and never runs it", () => {
+    const bare = feed(openHome(), "smart-compact\r");
+    expect(executed(bare.actions)).toEqual([]);
+    expect(bare.state.mode).toBe("modal");
+    expect(bare.state.panelRows).toEqual(["commands start with / · try /help"]);
+    const drawn = panelText(renderPanelForTest(bare.state));
+    expect(drawn).toContain("commands start with / · try /help");
+    // No hidden alias is echoed back as if it had worked.
+    expect(drawn).not.toContain("rebuilding");
+  });
+
   it("answers an unknown command with two short rows, not the vocabulary", () => {
-    const opened = feed(openHome(), "Introduc\r");
-    expect(opened.state.panelRows).toEqual(["unknown command: Introduc", "type help to list commands"]);
+    // A slash token no command starts with: nothing to complete, so Enter
+    // reaches the parser and the parser answers.
+    const opened = feed(openHome(), "/compact\r");
+    expect(opened.state.panelRows).toEqual([
+      "unknown command: /compact",
+      "commands start with / · try /help",
+    ]);
     const drawn = panelText(renderPanelForTest(opened.state));
-    expect(drawn).toContain("unknown command: Introduc");
-    expect(drawn).toContain("type help to list commands");
-    expect(drawn).not.toContain("smart-prune [targetTokens]");
-    expect(drawn).not.toContain("bounds <lower> <upper>");
+    expect(drawn).toContain("unknown command: /compact");
+    expect(drawn).toContain("commands start with / · try /help");
+    expect(drawn).not.toContain("Set the size after compact");
   });
 });
 
@@ -229,11 +261,11 @@ describe("TC-3.1a Run Smart Compact", () => {
   });
 
   it("smart-compact dispatches the existing manual Smart Compact exactly once", async () => {
-    const parsed = feed(openHome(), "smart-compact\r");
+    const parsed = feed(openHome(), "/smart-compact\r");
     expect(executed(parsed.actions)).toEqual(["/lhc-compact"]);
     expect(parsed.actions.filter((action) => action.kind === "execute")).toHaveLength(1);
     expect(parsed.state.mode).toBe("executing");
-    expect(parsed.state.line).toBe("smart-compact");
+    expect(parsed.state.line).toBe("/smart-compact");
 
     const compact = vi.fn(async () => ({
       ok: true,
@@ -279,7 +311,7 @@ describe("TC-3.1a Run Smart Compact", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     (stdin as unknown as PassThrough).write(LEADER);
     await new Promise((resolve) => setTimeout(resolve, 40));
-    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
     await waitFor(
       () => previewCompact.mock.calls.length === 1 && compact.mock.calls.length === 1,
       "manual Smart Compact complete",
@@ -314,8 +346,8 @@ describe("TC-3.1b Run Smart Prune", () => {
   });
 
   it.each([
-    { typed: "smart-prune", target: undefined as number | undefined },
-    { typed: "smart-prune 2500", target: 2500 },
+    { typed: "/smart-prune", target: undefined as number | undefined },
+    { typed: "/smart-prune 2500", target: 2500 },
   ])("wrapper $typed reaches existing prune mutation exactly once", async ({ typed, target }) => {
     const parsed = feed(openHome(), `${typed}\r`);
     expect(executed(parsed.actions)).toEqual([target === undefined ? "/lhc-prune" : `/lhc-prune ${target}`]);
@@ -449,6 +481,78 @@ describe("TC-3.1c Removed spellings stay removed", () => {
   }, 15_000);
 });
 
+describe("work in flight on Home", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  beforeEach(() => {
+    mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-inflight-"));
+    dirs.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+  afterEach(() => {
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const dir of dirs.splice(0)) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  it("shows the automatic operation as its command, never the internal guard label", async () => {
+    const sdk = {
+      drainSettled: async () => {},
+      threadView: { compact: vi.fn(), previewCompact: vi.fn(), prune: vi.fn(), status: vi.fn() },
+      intakeStream: { messageEvents: async () => ({ ok: true, value: { events: [] } }) },
+    } as unknown as Lhc;
+    mocks.captureFactory = () => scriptedCapture(sdk);
+    // The automatic path holds the guard under its internal label while it
+    // runs; this is exactly the state Home renders during an auto compaction.
+    const guard = new CommandInFlightGuard();
+    expect(guard.tryAcquire("auto-compact", Date.now())).toBe(true);
+    expect(guard.current()?.label).toBe("auto-compact");
+
+    const stdin = new PassThrough() as unknown as NodeJS.ReadStream;
+    const stdout = new PassThrough() as unknown as NodeJS.WriteStream;
+    Object.defineProperty(stdin, "isTTY", { value: true, configurable: true });
+    Object.defineProperty(stdout, "isTTY", { value: true, configurable: true });
+    Object.defineProperty(stdout, "columns", { value: 100, configurable: true });
+    Object.defineProperty(stdout, "rows", { value: 29, configurable: true });
+    (stdin as unknown as { setRawMode: (on: boolean) => void }).setRawMode = () => {};
+    let out = "";
+    (stdout as unknown as PassThrough).on("data", (chunk: Buffer) => {
+      out += chunk.toString("utf8");
+    });
+    const pty = makeFakePty(4105);
+    const runPromise = run([], {
+      claudeBin: "fake",
+      spawnPty: (() => pty) as never,
+      stdin,
+      stdout,
+      noInference: true,
+      commandGuard: guard,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    (stdin as unknown as PassThrough).write(LEADER);
+    await waitFor(() => panelText(out).includes("active operation:"), "in-flight notice on Home");
+    expect(panelText(out)).toContain("active operation: /smart-compact");
+    expect(panelText(out), "the guard's internal label reached Home").not.toContain("auto-compact");
+
+    // Details reports the same operation the same way.
+    (stdin as unknown as PassThrough).write(Buffer.from("/details\r"));
+    await waitFor(() => panelText(out).includes("Operation"), "details operation row");
+    expect(panelText(out)).toContain("Operation /smart-compact");
+    expect(panelText(out)).not.toContain("auto-compact");
+
+    (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
+    pty.fireExit(0);
+    await runPromise;
+  }, 15_000);
+});
+
 describe("TC-3.2a Reject invalid target", () => {
   const savedHome = process.env.CC_LHC_HOME;
   beforeEach(() => {
@@ -506,18 +610,18 @@ describe("TC-3.2a Reject invalid target", () => {
     (stdin as unknown as PassThrough).write(LEADER);
     await new Promise((resolve) => setTimeout(resolve, 40));
     const cases = [
-      "smart-prune 0",
-      "smart-prune -1",
-      "smart-prune 1.5",
-      "smart-prune 9007199254740993",
-      "smart-prune lots",
-      "smart-prune 12 34",
+      "/smart-prune 0",
+      "/smart-prune -1",
+      "/smart-prune 1.5",
+      "/smart-prune 9007199254740993",
+      "/smart-prune lots",
+      "/smart-prune 12 34",
     ];
     for (const line of cases) {
       const before = out.length;
       (stdin as unknown as PassThrough).write(Buffer.from(`${line}\r`));
-      await waitFor(() => out.slice(before).includes("invalid smart-prune target"), line);
-      expect(out.slice(before)).toContain("invalid smart-prune target");
+      await waitFor(() => out.slice(before).includes("invalid /smart-prune target"), line);
+      expect(out.slice(before)).toContain("invalid /smart-prune target");
     }
     expect(acquire).not.toHaveBeenCalled();
     expect(compact).not.toHaveBeenCalled();
@@ -549,7 +653,7 @@ describe("manual mutation last attempt", () => {
     }
   });
 
-  it("smart-compact without handoff records last attempt with the visible Smart command label", async () => {
+  it("/smart-compact without handoff records last attempt with the visible slash command", async () => {
     const compact = vi.fn();
     const previewCompact = vi.fn();
     const prune = vi.fn();
@@ -585,13 +689,13 @@ describe("manual mutation last attempt", () => {
     await new Promise((resolve) => setTimeout(resolve, 40));
     (stdin as unknown as PassThrough).write(LEADER);
     await new Promise((resolve) => setTimeout(resolve, 40));
-    (stdin as unknown as PassThrough).write(Buffer.from("smart-compact\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
     // A failed attempt is non-default state: it stays on Home, as a notice.
     await waitFor(
-      () => panelText(out).includes("last attempt: manual smart-compact did not hand off:"),
+      () => panelText(out).includes("last attempt: manual /smart-compact did not hand off:"),
       "home last attempt",
     );
-    expect(panelText(out)).toMatch(/! last attempt: manual smart-compact did not hand off: turn in progress/);
+    expect(panelText(out)).toMatch(/! last attempt: manual \/smart-compact did not hand off: turn in progress/);
     expect(compact).not.toHaveBeenCalled();
     expect(previewCompact).not.toHaveBeenCalled();
     pty.fireExit(0);

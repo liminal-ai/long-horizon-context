@@ -28,7 +28,7 @@ describe("modal freeze regressions (kitty encodings)", () => {
     // Enter modal via kitty leader, type status, kitty Enter -> executing
     let r = processInputChunk(LEADER_KITTY, createInputState());
     expect(r.actions).toEqual([{ kind: "enter_modal" }]);
-    r = processInputChunk(Buffer.from("status"), r.state);
+    r = processInputChunk(Buffer.from("/status"), r.state);
     r = processInputChunk(ENTER_KITTY, r.state);
     expect(r.actions).toEqual([{ kind: "execute", commandLine: "/lhc-status" }]);
     expect(r.state.mode).toBe("executing");
@@ -45,7 +45,7 @@ describe("modal freeze regressions (kitty encodings)", () => {
 
   it("post-receipts state: kitty Esc and kitty leader both dismiss", () => {
     let r = processInputChunk(LEADER_KITTY, createInputState());
-    r = processInputChunk(Buffer.from("status"), r.state);
+    r = processInputChunk(Buffer.from("/status"), r.state);
     r = processInputChunk(ENTER_KITTY, r.state);
     const settled = showReceipts(r.state, ["tail=100"]);
     expect(settled.mode).toBe("modal");

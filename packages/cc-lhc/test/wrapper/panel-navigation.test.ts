@@ -72,36 +72,52 @@ describe("TC-1.2a New user discovers actions", () => {
   it("Home identifies common actions and provides direct Help and Introduction paths", () => {
     const out = panelText(renderPanel(openHome(), 120, 40));
     expect(out).toContain(PANEL_TITLE);
-    expect(out).toContain("Actions");
-    expect(out).toContain("Smart Compact");
-    expect(out).toContain("Smart Prune");
-    expect(out).toContain("Band allocation");
-    expect(out).toContain("Help");
-    expect(out).toContain("Introduction");
+    expect(out).toContain("Commands");
+    for (const action of HOME_ACTIONS) {
+      expect(out, action.label).toContain(action.label);
+      expect(out, action.label).toContain(action.description);
+    }
+    expect(out).not.toContain("Smart Compact");
+    expect(out).not.toContain("Band allocation");
     expect(out).toContain(PANEL_PROMPT);
-    const help = feed(openHome(), "help\r");
+    const help = feed(openHome(), "/help\r");
     expect(help.state.route).toBe("help");
     expect(executed(help.actions)).toEqual([]);
-    const intro = feed(openHome(), "introduction\r");
+    const intro = feed(openHome(), "/introduction\r");
     expect(intro.state.route).toBe("introduction");
     expect(executed(intro.actions)).toEqual([]);
   });
 
-  it("every action label the panel prints is a command the parser accepts", () => {
+  it("every command row the panel prints is a command the parser accepts", () => {
     for (const action of HOME_ACTIONS) {
-      for (const typed of [action.label, action.label.toLowerCase(), action.label.toUpperCase()]) {
-        const result = feed(openHome(), `${typed}\r`);
-        const opened = result.state.route !== "home" || result.state.mode === "executing";
-        expect(opened, `panel rejected its own label ${JSON.stringify(typed)}`).toBe(true);
-        expect(panelText(renderPanel(result.state, 120, 40))).not.toContain("unknown command");
+      const result = feed(openHome(), `${action.label}\r`);
+      const opened = result.state.route !== "home" || result.state.mode === "executing";
+      expect(opened, `panel rejected its own row ${JSON.stringify(action.label)}`).toBe(true);
+      expect(panelText(renderPanel(result.state, 120, 40))).not.toContain("unknown command");
+    }
+  });
+
+  it("Enter on a command row reaches the same operation as typing it", () => {
+    for (const action of HOME_ACTIONS) {
+      const index = HOME_ACTIONS.indexOf(action);
+      let cursor = openHome();
+      // Walk the unified cursor onto this command row.
+      for (let step = 0; step < homeCursorLength() && cursor.viewport.selectedIndex !== index; step += 1) {
+        cursor = feed(cursor, "\x1b[B").state;
       }
+      expect(cursor.viewport.selectedIndex, action.label).toBe(index);
+      const activated = feed(cursor, "\r");
+      const typed = feed(openHome(), `${action.label}\r`);
+      expect(executed(activated.actions), action.label).toEqual(executed(typed.actions));
+      expect(activated.state.route, action.label).toBe(typed.state.route);
+      expect(activated.state.mode, action.label).toBe(typed.state.mode);
     }
   });
 });
 
 describe("TC-1.2b Command entry remains on Home", () => {
   it("Home command entry executes one valid command and preserves Claude screen", async () => {
-    const typed = feed(openHome(), "status\r");
+    const typed = feed(openHome(), "/status\r");
     expect(executed(typed.actions)).toEqual(["/lhc-status"]);
     expect(typed.state.mode).toBe("executing");
     expect(typed.actions.filter((action) => action.kind === "execute")).toHaveLength(1);
@@ -146,7 +162,7 @@ describe("TC-1.2b Command entry remains on Home", () => {
     (stdin as unknown as PassThrough).write(LEADER);
     await waitFor(() => out.includes(ENTER_ALT_SCREEN), "panel open");
     const before = out.length;
-    (stdin as unknown as PassThrough).write(Buffer.from("status\r"));
+    (stdin as unknown as PassThrough).write(Buffer.from("/status\r"));
     await waitFor(() => out.slice(before).includes("status") || out.slice(before).includes("running"), "command progress");
     (stdin as unknown as PassThrough).write(Buffer.from([0x1b]));
     await new Promise((resolve) => setTimeout(resolve, 80));
@@ -224,8 +240,8 @@ describe("TC-1.5a Small Home remains operable", () => {
     }
     expect([...seenStatus].sort((a, b) => a - b)).toEqual(statusNeedles.map((_, index) => index));
     expect([...seenActions].sort()).toEqual([...HOME_ACTIONS.map((action) => action.id)].sort());
-    const typed = feed(home, "status");
-    expect(typed.state.line).toBe("status");
+    const typed = feed(home, "/status");
+    expect(typed.state.line).toBe("/status");
     expect(typed.state.mode).toBe("modal");
     const submitted = feed(typed.state, "\r");
     expect(executed(submitted.actions)).toEqual(["/lhc-status"]);
@@ -285,13 +301,13 @@ describe("TC-1.5b Resize allocation selector", () => {
 
 describe("TC-2.3a Enter returns Home", () => {
   it("Enter from Help or Introduction returns Home without a command execution", () => {
-    const help = feed(openHome(), "help\r");
+    const help = feed(openHome(), "/help\r");
     expect(help.state.route).toBe("help");
     const back = feed(help.state, "\r");
     expect(back.state.route).toBe("home");
     expect(back.state.mode).toBe("modal");
     expect(executed(back.actions)).toEqual([]);
-    const intro = feed(openHome(), "introduction\r");
+    const intro = feed(openHome(), "/introduction\r");
     const home = feed(intro.state, "\r");
     expect(home.state.route).toBe("home");
     expect(executed(home.actions)).toEqual([]);
@@ -300,14 +316,14 @@ describe("TC-2.3a Enter returns Home", () => {
 
 describe("TC-2.3b Escape returns to Claude Code", () => {
   it("Esc/Ctrl-C closes Help/Introduction directly to Claude Code", () => {
-    const help = feed(openHome(), "help\r");
+    const help = feed(openHome(), "/help\r");
     expect(help.state.route).toBe("help");
     const pending = feed(help.state, "\x1b");
     const esc = resolveBareEsc(pending.state);
     expect(esc?.actions).toEqual([{ kind: "exit_modal" }]);
     expect(esc?.state.mode).toBe("passthrough");
     expect(executed([...help.actions, ...pending.actions, ...(esc?.actions ?? [])])).toEqual([]);
-    const intro = feed(openHome(), "introduction\r");
+    const intro = feed(openHome(), "/introduction\r");
     expect(intro.state.route).toBe("introduction");
     const ctrlC = feed(intro.state, "\x03");
     expect(ctrlC.actions).toEqual([{ kind: "exit_modal" }]);
@@ -318,7 +334,7 @@ describe("TC-2.3b Escape returns to Claude Code", () => {
 
 describe("TC-2.3c Long text remains usable", () => {
   it("long read-only content scrolls while footer stays visible", () => {
-    const help = feed(openHome(), "help\r").state;
+    const help = feed(openHome(), "/help\r").state;
     const scrolled = feed(help, "\x1b[B", "\x1b[B").state;
     expect(scrolled.route).toBe("help");
     expect(scrolled.viewport.scrollOffset).toBeGreaterThan(help.viewport.scrollOffset);
@@ -338,7 +354,7 @@ describe("AR-10 route/scroll/resize never execute", () => {
     const arrows = feed(home, "\x1b[A", "\x1b[B", "\x1b[B");
     expect(executed(arrows.actions)).toEqual([]);
     expect(arrows.state.mode).toBe("modal");
-    const help = feed(home, "help\r");
+    const help = feed(home, "/help\r");
     const scroll = feed(help.state, "\x1b[B", "\x1b[A");
     expect(executed([...help.actions, ...scroll.actions])).toEqual([]);
     const resized = clampPanelViewport(scroll.state, 20, 5);
@@ -351,11 +367,11 @@ describe("AR-10 route/scroll/resize never execute", () => {
     expect(close.actions).toEqual([{ kind: "exit_modal" }]);
     expect(close.state.mode).toBe("passthrough");
     expect(HOME_ACTIONS.map((action) => action.label)).toEqual([
-      "Smart Compact",
-      "Smart Prune",
-      "Band allocation",
-      "Help",
-      "Introduction",
+      "/smart-compact",
+      "/smart-prune",
+      "/allocation",
+      "/help",
+      "/introduction",
     ]);
   });
 });

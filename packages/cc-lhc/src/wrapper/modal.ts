@@ -32,6 +32,9 @@ import { PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
 import type { CompactConfirmDisposition } from "./compact-confirm.js";
 import {
   allocationIndex,
+  commandSuggestions,
+  completeCommandLine,
+  exactCommandName,
   HOME_ACTIONS,
   homeCursorLength,
   homeSelectedActionIndex,
@@ -153,6 +156,12 @@ export interface InputState {
   notifierCommand: string;
   /** Control Panel route. Ignored while passthrough/notifier/compact_confirm. */
   route: PanelRoute;
+  /**
+   * Selected row in the slash-command suggestion menu. The menu itself is
+   * derived from the line through the command registry — this is the only
+   * state it needs, so there is no second command list to drift.
+   */
+  suggestionIndex: number;
   viewport: PanelViewport;
   /** Live Home/Help/Introduction snapshot supplied by run.ts. */
   panelView: PanelViewSnapshot | null;
@@ -196,9 +205,44 @@ export function createInputState(
     heldEnter: [],
     notifierCommand: "",
     route: "home",
+    suggestionIndex: 0,
     viewport: { scrollOffset: 0, selectedIndex: -1 },
     panelView: null,
   };
+}
+
+/**
+ * The suggestion menu is open exactly when the Home line reads as a slash
+ * command with at least one registry match. Nothing else can open it, so
+ * ordinary typing never grows a menu.
+ */
+export function suggestionsOpen(state: InputState): boolean {
+  if (state.mode !== "modal" || state.route !== "home") return false;
+  return commandSuggestions(state.line).length > 0;
+}
+
+/** The suggestion the menu currently has selected, or null when closed. */
+export function selectedSuggestion(state: InputState): { name: string; usage: string; description: string } | null {
+  const suggestions = commandSuggestions(state.line);
+  if (suggestions.length === 0 || state.mode !== "modal" || state.route !== "home") return null;
+  const index = Math.max(0, Math.min(suggestions.length - 1, state.suggestionIndex));
+  return suggestions[index] ?? null;
+}
+
+/** Editing the line re-derives the menu; selection returns to its first row. */
+function withLine(state: InputState, line: string): InputState {
+  return { ...state, line, suggestionIndex: 0 };
+}
+
+/**
+ * Tab, and Enter on a partial command: put the selected command on the line
+ * and stop there. Completion never executes — the user still presses Enter on
+ * a command they can read.
+ */
+function completeSuggestion(state: InputState): StepOutcome {
+  const suggestion = selectedSuggestion(state);
+  if (suggestion === null) return { state };
+  return { state: withLine(state, completeCommandLine(state.line, suggestion.name)) };
 }
 
 /**
@@ -407,6 +451,8 @@ function isMouseCsi(params: string, finalByte: number): boolean {
 type ModalKey =
   | { kind: "enter" }
   | { kind: "cancel" }
+  /** Tab, in any encoding the terminal uses: complete, never execute. */
+  | { kind: "complete" }
   | { kind: "backspace" }
   | { kind: "clear" }
   | { kind: "text"; value: string }
@@ -779,7 +825,7 @@ function maybeOpenNotifier(state: InputState, enterBytes: number[]): StepOutcome
 }
 
 function reprompt(state: InputState, noticeLines: string[]): StepOutcome {
-  return { state: { ...state, line: "", panelRows: noticeLines, route: "home" } };
+  return { state: { ...state, line: "", suggestionIndex: 0, panelRows: noticeLines, route: "home" } };
 }
 
 function openRoute(state: InputState, route: PanelRoute): StepOutcome {
@@ -790,6 +836,7 @@ function openRoute(state: InputState, route: PanelRoute): StepOutcome {
       ...state,
       route,
       line: "",
+      suggestionIndex: 0,
       viewport: { scrollOffset: 0, selectedIndex },
       panelRows: route === "home" ? state.panelRows : [],
     },
@@ -820,13 +867,18 @@ function submitCommandText(state: InputState, text: string): StepOutcome {
   const parsed = parsePanelCommand(text);
   if (parsed.kind === "route") return openRoute(state, parsed.route);
   if (parsed.kind === "invalid") return reprompt(state, [parsed.message]);
+  if (parsed.kind === "needs_slash") {
+    // A real command typed without its slash: say the rule once. Running it
+    // anyway would teach a grammar the panel does not have.
+    return reprompt(state, [MODAL_UNKNOWN_HINT]);
+  }
   if (parsed.kind === "unknown") {
     // Two short rows, never the whole vocabulary: the dump used to truncate
-    // off the screen edge. The full list lives in Help.
+    // off the screen edge. The full list lives in /help.
     return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${text}`, MODAL_UNKNOWN_HINT]);
   }
   return {
-    state: { ...state, mode: "executing", route: "home", line: parsed.surface, panelRows: [] },
+    state: { ...state, mode: "executing", route: "home", line: parsed.surface, suggestionIndex: 0, panelRows: [] },
     actions: [{ kind: "execute", commandLine: parsed.commandLine }],
   };
 }
@@ -838,6 +890,11 @@ function submitModalLine(state: InputState): StepOutcome {
   if (trimmed === "") {
     if (state.viewport.selectedIndex >= 0) return activateHomeAction(state);
     return cancelModal(state);
+  }
+  // A half-typed command completes instead of running: Enter only executes a
+  // command the user can already read in full on the line.
+  if (exactCommandName(trimmed) === null && commandSuggestions(trimmed).length > 0) {
+    return completeSuggestion(state);
   }
   return submitCommandText(state, trimmed);
 }
@@ -864,6 +921,10 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
         return { key: { kind: "backspace" }, forward: false };
       }
       if (event.unicodeChar === 0x15) return { key: { kind: "clear" }, forward: false };
+      // Tab: Windows Terminal reports VK_TAB with Uc 0x09.
+      if (event.unicodeChar === 0x09 || event.virtualKey === 0x09) {
+        return { key: { kind: "complete" }, forward: false };
+      }
       if (event.virtualKey === 0x26) return { key: { kind: "up" }, forward: false };
       if (event.virtualKey === 0x28) return { key: { kind: "down" }, forward: false };
       if (event.unicodeChar >= 0x20 && event.unicodeChar <= 0x7e) {
@@ -892,6 +953,9 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
   }
   if (finalByte === 0x75) {
     const key = kittyKeyPressCode(params);
+    // Kitty encodes Tab as keycode 9; it is our completion key, not the
+    // child's — consumed here, never forwarded.
+    if (key === 9) return { key: { kind: "complete" }, forward: false };
     if (key === 13) return { key: { kind: "enter" }, forward: false };
     if (key === 27) return { key: { kind: "cancel" }, forward: false };
     if (key === 127) return { key: { kind: "backspace" }, forward: false };
@@ -962,16 +1026,26 @@ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
       return submitModalLine(state);
     case "cancel":
       return cancelModal(state);
+    case "complete":
+      return completeSuggestion(state);
     case "backspace":
       if (state.line.length === 0) return { state };
-      return { state: { ...state, line: state.line.slice(0, -1) } };
+      return { state: withLine(state, state.line.slice(0, -1)) };
     case "clear":
-      return { state: { ...state, line: "" } };
+      return { state: withLine(state, "") };
     case "text":
-      return { state: { ...state, line: state.line + key.value } };
+      return { state: withLine(state, state.line + key.value) };
     case "up":
     case "down": {
       const delta = key.kind === "up" ? -1 : 1;
+      // While the menu is open the arrows belong to it. The Home cursor keeps
+      // its position untouched and takes the arrows back when the line clears.
+      const suggestions = commandSuggestions(state.line);
+      if (suggestions.length > 0) {
+        const max = suggestions.length - 1;
+        const suggestionIndex = Math.max(0, Math.min(max, state.suggestionIndex + delta));
+        return { state: { ...state, suggestionIndex } };
+      }
       const max = Math.max(0, homeCursorLength() - 1);
       const scrollOffset = Math.max(0, Math.min(max, state.viewport.scrollOffset + delta));
       return {
@@ -1090,7 +1164,7 @@ function modalByte(byte: number, state: InputState): StepOutcome {
     // except ctrl-C, kept as the escape hatch if a paste never closes.
     if (byte === 0x03) return cancelModal(state);
     if (state.mode === "modal" && state.route === "home" && byte >= 0x20 && byte <= 0x7e) {
-      return { state: { ...state, line: state.line + String.fromCharCode(byte) } };
+      return { state: withLine(state, state.line + String.fromCharCode(byte)) };
     }
     return { state };
   }
@@ -1133,12 +1207,13 @@ function modalByte(byte: number, state: InputState): StepOutcome {
   }
 
   if (byte === 0x0d || byte === 0x0a) return submitModalLine(state);
+  if (byte === 0x09) return applyModalKey({ kind: "complete" }, state);
   if (byte === 0x7f || byte === 0x08) return applyModalKey({ kind: "backspace" }, state);
   if (byte === 0x15) {
-    return { state: { ...state, line: "" } };
+    return { state: withLine(state, "") };
   }
   if (byte >= 0x20 && byte <= 0x7e) {
-    return { state: { ...state, line: state.line + String.fromCharCode(byte) } };
+    return { state: withLine(state, state.line + String.fromCharCode(byte)) };
   }
   // Remaining C0 controls and non-ASCII bytes: the editor is ASCII-only.
   return { state };

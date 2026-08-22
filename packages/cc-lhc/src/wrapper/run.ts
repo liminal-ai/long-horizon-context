@@ -87,7 +87,6 @@ import {
 } from "./handoff-receipt-store.js";
 import { observeOldChildCleanup } from "./old-child-cleanup.js";
 import {
-  SMART_COMPACT,
   nativeCompactAnomalyNotice,
   nativeCompactDisabledStatusLine,
   nativeCompactPassthroughStatusLine,
@@ -141,6 +140,13 @@ import {
 } from "./modal.js";
 import { buildPanelViewSnapshot, MODAL_SCOPE_NOTE } from "./panel-commands.js";
 import {
+  formatActiveOperation,
+  formatActiveOperationRow,
+  formatHandoffFailureSummary,
+  formatLastActionRow,
+  toPanelWording,
+} from "./panel-wording.js";
+import {
   argvSuppliesNativeAutocompact,
   NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY,
   nativeAutoCompactChildEnv,
@@ -188,6 +194,15 @@ export const PENDING_ESC_RESOLVE_MS = 50;
  */
 export function settleReceipts(outcomeMessages: string[]): string[] {
   return outcomeMessages;
+}
+
+/**
+ * Receipt rows as the PANEL shows them: the same settled messages, with the
+ * operation named by the command that runs it. The wrapper log and the durable
+ * receipt keep the product terminology they are written in.
+ */
+export function panelReceiptRows(outcomeMessages: readonly string[]): string[] {
+  return outcomeMessages.map(toPanelWording);
 }
 
 export type PtySpawn = typeof defaultSpawn;
@@ -1821,36 +1836,49 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const retrievalState =
       runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
     const inFlight = commandGuard.current();
+    // The guard's label is internal (`auto-compact` for the automatic path);
+    // every panel surface names the command instead.
     const activeOperation = handoffInProgress
       ? "handoff in progress"
       : inFlight !== null
-        ? inFlight.label
+        ? formatActiveOperation(inFlight.label)
         : null;
-    const lastActionText = ((): string => {
-      if (lastAction === null) return "none this wrapper session";
-      const parts = [
-        `${lastAction.operation === "prune" ? "pruned" : SMART_COMPACT} ${formatAgo(lastAction.atMs)} (${lastAction.origin})`,
-      ];
-      if (lastAction.triggerTokens !== undefined) parts.push(`trigger ${formatTokensShort(lastAction.triggerTokens)}`);
-      if (lastAction.zoneBefore !== undefined && lastAction.zoneAfter !== undefined)
-        parts.push(`zone ${formatTokensShort(lastAction.zoneBefore)} -> ${formatTokensShort(lastAction.zoneAfter)}`);
-      if (lastAction.viewTokens !== undefined) parts.push(`view ${formatTokensShort(lastAction.viewTokens)}`);
-      return parts.join(" · ");
-    })();
+    const lastActionText =
+      lastAction === null
+        ? "none this wrapper session"
+        : formatLastActionRow({
+            operation: lastAction.operation,
+            origin: lastAction.origin,
+            ago: formatAgo(lastAction.atMs),
+            ...(lastAction.triggerTokens === undefined
+              ? {}
+              : { triggerTokens: formatTokensShort(lastAction.triggerTokens) }),
+            ...(lastAction.zoneBefore === undefined || lastAction.zoneAfter === undefined
+              ? {}
+              : {
+                  zoneBefore: formatTokensShort(lastAction.zoneBefore),
+                  zoneAfter: formatTokensShort(lastAction.zoneAfter),
+                }),
+            ...(lastAction.viewTokens === undefined
+              ? {}
+              : { viewTokens: formatTokensShort(lastAction.viewTokens) }),
+          });
 
     // Home carries only non-default operational state: an in-flight
     // operation, a failed attempt, and startup anomalies. "none" states and
     // the wrapper's own configuration chain live one typed word away, on
     // `details` — absence is the design.
     const extraStatusRows: string[] = [];
-    if (activeOperation !== null) extraStatusRows.push(`active operation: ${activeOperation}`);
+    if (activeOperation !== null) extraStatusRows.push(formatActiveOperationRow(activeOperation));
     if (lastAttempt !== null && (lastAction === null || lastAttempt.atMs > lastAction.atMs)) {
       extraStatusRows.push(`last attempt: ${lastAttempt.summary} (${formatAgo(lastAttempt.atMs)})`);
     }
     if (retrievalState !== "ready") extraStatusRows.push(`retrieval ${retrievalState}`);
     extraStatusRows.push(...startupAnomalyNotices);
 
-    const alarms: string[] = [...standingNonviabilityAlarm];
+    // The alarm array is shared raw text (wrapper log, terminal line, governor
+    // refusal log); only the panel copy names the command.
+    const alarms: string[] = standingNonviabilityAlarm.map(toPanelWording);
     if (minObservedProviderTotal !== null && policy.upperBoundTokens <= minObservedProviderTotal) {
       alarms.push(
         `WARNING: trigger ${formatTokensShort(policy.upperBoundTokens)} is at/below observed Claude host overhead ` +
@@ -2039,7 +2067,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           outputHold.flush();
           return;
         }
-        inputState = showReceipts(inputState, messages);
+        inputState = showReceipts(inputState, panelReceiptRows(messages));
         renderModalPanel();
         return;
       }
@@ -2048,7 +2076,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // where they are looking instead of vanishing it into the log,
         // preserving whatever they are mid-typing.
         if (messages.length === 0) return;
-        inputState = showLateReceipts(inputState, label, messages);
+        inputState = showLateReceipts(inputState, label, panelReceiptRows(messages));
         renderModalPanel();
         return;
       }
@@ -2057,7 +2085,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // wrapper log (doctrine — never write into CC's UI).
       for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): [${label}] ${message}`);
       if (messages.length > 0) {
-        pendingPanelNotices = [`${label} finished:`, ...messages.flatMap((message) => message.split("\n"))];
+        pendingPanelNotices = [
+          `${label} finished:`,
+          ...panelReceiptRows(messages).flatMap((message) => message.split("\n")),
+        ];
       }
     };
 
@@ -2073,13 +2104,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         const on = parts[1] === "on";
         candidate = { ...current, autoCompact: on };
         changedKeys = ["autoCompact"];
-        editLabel = `auto ${on ? "on" : "off"}`;
+        editLabel = `/auto ${on ? "on" : "off"}`;
       } else {
         const lower = Number.parseInt(parts[1] ?? "", 10);
         const upper = Number.parseInt(parts[2] ?? "", 10);
         candidate = { ...current, lowerBoundTokens: lower, upperBoundTokens: upper };
         changedKeys = ["lowerBoundTokens", "upperBoundTokens"];
-        editLabel = `bounds ${lower} ${upper}`;
+        editLabel = `/bounds ${lower} ${upper}`;
       }
       const errors = validateContextPolicy(candidate);
       if (errors.length > 0) {
@@ -2156,7 +2187,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           }
           if (mutating) {
             lastAttempt = {
-              summary: `manual ${label} did not hand off: ${outcome.messages[outcome.messages.length - 1] ?? "(no detail)"}`,
+              summary: `manual ${label} did not hand off: ${toPanelWording(
+                outcome.messages[outcome.messages.length - 1] ?? "(no detail)",
+              )}`,
               atMs: Date.now(),
             };
           }
@@ -2882,10 +2915,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           };
         } else {
           lastAttempt = {
-            summary:
-              result.kind === "cancelled"
-                ? `${request.operation} cancelled: ${result.reason}`
-                : `${request.operation} replacement not viable: ${result.reason}`,
+            summary: formatHandoffFailureSummary(
+              request.operation,
+              result.kind === "cancelled" ? "cancelled" : "nonviable",
+              result.reason,
+            ),
             atMs: Date.now(),
           };
         }
@@ -3034,7 +3068,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         wrapperLog.warn(`cc-lhc ${line}`);
         writeWrapperLine(line);
       }
-      pendingPanelNotices = [...pendingPanelNotices, ...standingNonviabilityAlarm];
+      pendingPanelNotices = [...pendingPanelNotices, ...standingNonviabilityAlarm.map(toPanelWording)];
     };
 
     // Automatic operation: shared mutation op + shared handoff, serialized with
@@ -3104,7 +3138,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         );
         wrapperLog.info(formatAutoGuardBusyLog(busyLabel, receiptId));
         lastAttempt = {
-          summary: formatAutoDeferredSummary("command_guard_busy", busyLabel),
+          // Home notice: the guard label is internal, the panel names commands.
+          summary: formatAutoDeferredSummary("command_guard_busy", formatActiveOperation(busyLabel)),
           atMs: Date.now(),
         };
         return;
@@ -3142,7 +3177,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           lastAttempt = {
             summary: formatAutoMutationSummary(
               outcome.kind,
-              outcome.messages[outcome.messages.length - 1] ?? "(no detail)",
+              // The detail is a raw mutation message: name its operation the
+              // way the panel names it before it becomes a Home notice.
+              toPanelWording(outcome.messages[outcome.messages.length - 1] ?? "(no detail)"),
             ),
             atMs: Date.now(),
           };

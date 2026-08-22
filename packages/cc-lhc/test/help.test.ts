@@ -26,10 +26,11 @@ describe("cc-lhc help surface", () => {
       "BASH_MAX_OUTPUT_LENGTH",
       "XDG_CONFIG_HOME",
       "ctrl-]",
-      "bounds <lower> <upper>",
-      "details",
-      "allocation",
-      "case-insensitive",
+      "/bounds <target> <trigger>",
+      "/details",
+      "/allocation",
+      "Commands start with / and are lowercase.",
+      "Tab completes.",
     ]) {
       expect(CC_LHC_HELP).toContain(required);
     }

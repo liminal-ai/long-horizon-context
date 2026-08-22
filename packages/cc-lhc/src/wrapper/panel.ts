@@ -17,6 +17,7 @@
 import { COMPACT_CONFIRM_HINT } from "./compact-confirm.js";
 import type { InputState } from "./modal.js";
 import {
+  commandSuggestions,
   focusedHomeStatusId,
   HOME_ACTIONS,
   type HomeStatusCanonicalId,
@@ -37,9 +38,16 @@ import { allocationSelectorChoices } from "./preset-presentation.js";
 /** Prompt caret. The command line is ours, so it wears Claude Code's caret. */
 export const PANEL_PROMPT = "❯ ";
 /** Dim placeholder shown in the empty command line. */
-export const PANEL_PROMPT_PLACEHOLDER = "type a command · help lists all";
+export const PANEL_PROMPT_PLACEHOLDER = "type /help for commands";
 /** Placeholder for cards too narrow for the full one. */
-export const PANEL_PROMPT_PLACEHOLDER_SHORT = "type a command";
+export const PANEL_PROMPT_PLACEHOLDER_SHORT = "type /help";
+/** Section label above the Home command rows. */
+export const HOME_COMMANDS_HEADING = "Commands";
+/** Section label above the slash-command suggestion menu. */
+export const SUGGESTIONS_HEADING = "Suggestions";
+/** Suggestion rows drawn at each size tier. */
+export const SUGGESTION_ROWS_FULL = 5;
+export const SUGGESTION_ROWS_COMPACT = 3;
 /** Marker on the in-flight progress row (a notice, not an alarm). */
 export const PROGRESS_PREFIX = "⋯ ";
 /** Caret on the selected action row. */
@@ -51,6 +59,8 @@ const CARET_BLANK = "  ";
 export const NOTICE_PREFIX = "! ";
 
 export const PANEL_HINT = "esc close · enter run · ↑↓ select";
+/** Shown while the suggestion menu owns the arrows and Tab completes. */
+export const PANEL_HINT_SUGGESTIONS = "esc close · tab complete · ↑↓ select";
 /** Shown while a command runs — Esc/ctrl-C/leader all detach in executing mode. */
 export const PANEL_HINT_EXECUTING = "esc detach · command keeps running";
 export const PANEL_HINT_READONLY = "esc close · enter home · ↑↓ scroll";
@@ -73,8 +83,7 @@ const MORE_BELOW_MARKER = "↓ more";
  */
 export function commandProgressLabel(commandLine: string, elapsedSeconds?: number): string {
   const name = commandLine.trim().split(/\s+/)[0] ?? "";
-  const rebuilding =
-    name === "smart-compact" || name === "smart-prune" || name === "compact" || name === "prune";
+  const rebuilding = name === "/smart-compact" || name === "/smart-prune";
   const verb = rebuilding ? "rebuilding…" : "running…";
   const elapsed = elapsedSeconds !== undefined && elapsedSeconds >= 1 ? ` (${elapsedSeconds}s)` : "";
   return `${name === "" ? "command" : name} — ${verb}${elapsed}`;
@@ -483,26 +492,69 @@ function statusBody(
   return { lines, focusLine };
 }
 
+/** One selectable command row: caret, command, and (where it fits) outcome. */
+function commandRow(
+  label: string,
+  description: string,
+  selected: boolean,
+  labelWidth: number,
+  geometry: Geometry,
+  describe: boolean,
+): Line[] {
+  const descriptionWidth = geometry.contentWidth - CARET_BLANK.length - labelWidth;
+  const caret = span(selected ? ACTION_CARET : CARET_BLANK, selected ? "accent" : "normal");
+  if (geometry.tier === "full" && descriptionWidth >= 12) {
+    return [
+      ln(
+        caret,
+        span(padTo(label, labelWidth), selected ? "accent" : "normal"),
+        span(truncate(description, descriptionWidth), "dim"),
+      ),
+    ];
+  }
+  // Too narrow for a description column: the description wraps beneath its
+  // command, indented, so the two stay visibly attached.
+  const lines = [ln(caret, span(label, selected ? "accent" : "normal"))];
+  const indent = "    ";
+  const room = geometry.contentWidth - indent.length;
+  if (describe && geometry.tier === "compact" && room >= 12) {
+    for (const text of wrapPlain(description, room)) lines.push(ln(span(`${indent}${text}`, "dim")));
+  }
+  return lines;
+}
+
 function actionBody(selectedIndex: number, geometry: Geometry): Body {
-  const { tier, contentWidth } = geometry;
-  const lines: Line[] = [];
+  const lines: Line[] = [ln(span(CARET_BLANK), span(HOME_COMMANDS_HEADING, "dim"))];
   let focusLine = 0;
-  if (tier === "full") lines.push(ln(span(CARET_BLANK), span("Actions", "dim")));
   const labelWidth = Math.max(...HOME_ACTIONS.map((action) => action.label.length)) + 2;
-  const descriptionWidth = contentWidth - CARET_BLANK.length - labelWidth;
   HOME_ACTIONS.forEach((action, index) => {
     const selected = index === selectedIndex;
     if (selected) focusLine = lines.length;
-    const showDescription = tier === "full" && descriptionWidth >= 12;
-    lines.push(
-      ln(
-        span(selected ? ACTION_CARET : CARET_BLANK, selected ? "accent" : "normal"),
-        span(showDescription ? padTo(action.label, labelWidth) : action.label, selected ? "accent" : "normal"),
-        span(showDescription ? truncate(action.description, descriptionWidth) : "", "dim"),
-      ),
-    );
+    // Every command keeps its description at narrow sizes; windowing decides
+    // how many rows are on screen, not whether they explain themselves.
+    lines.push(...commandRow(action.label, action.description, selected, labelWidth, geometry, true));
   });
   return { lines, focusLine };
+}
+
+/**
+ * The slash-command menu: registry rows filtered by what has been typed, with
+ * the selected row carrying the same caret Home uses. It is bounded by tier so
+ * the prompt and the exit hint never leave the screen.
+ */
+function suggestionBody(state: InputState, geometry: Geometry): Line[] {
+  const suggestions = commandSuggestions(state.line);
+  if (suggestions.length === 0) return [];
+  const budget = geometry.tier === "full" ? SUGGESTION_ROWS_FULL : SUGGESTION_ROWS_COMPACT;
+  const selected = Math.max(0, Math.min(suggestions.length - 1, state.suggestionIndex));
+  const labelWidth = Math.max(...suggestions.map((entry) => entry.usage.length)) + 2;
+  const rows = suggestions.flatMap((entry, index) =>
+    // The menu is transient: at narrow sizes only the selected row spends a
+    // second line on its description.
+    commandRow(entry.usage, entry.description, index === selected, labelWidth, geometry, index === selected),
+  );
+  const shown = windowAroundFocus(rows, budget, selected);
+  return [BLANK_LINE, ln(span(CARET_BLANK), span(SUGGESTIONS_HEADING, "dim")), ...shown];
 }
 
 function receiptBody(rows: readonly string[], geometry: Geometry): Line[] {
@@ -648,6 +700,21 @@ function windowAroundFocus(rows: readonly Line[], budget: number, focus: number)
   return rows.slice(start, start + budget);
 }
 
+/**
+ * A section label with none of its rows left is noise. When windowing cuts a
+ * block down to its heading, drop the heading too.
+ */
+function dropDanglingHeading(lines: readonly Line[]): Line[] {
+  const last = lines[lines.length - 1];
+  if (last === undefined) return [...lines];
+  const text = last.spans
+    .map((entry) => entry.text)
+    .join("")
+    .trim();
+  if (text === HOME_COMMANDS_HEADING || text === SUGGESTIONS_HEADING) return lines.slice(0, -1);
+  return [...lines];
+}
+
 /** Keep the tail (prompt/progress) whole; clip its head when the card is short. */
 function clipTail(tail: readonly Line[], budget: number): Line[] {
   if (budget <= 0) return [];
@@ -685,6 +752,7 @@ function homeCard(state: InputState, geometry: Geometry, elapsedSeconds: number 
 
   const tail: Line[] = [];
   if (state.panelRows.length > 0) tail.push(BLANK_LINE, ...receiptBody(state.panelRows, geometry));
+  if (!executing) tail.push(...suggestionBody(state, geometry));
   let cursorTailIndex: number | null = null;
   let cursorOffset = 0;
   if (executing) {
@@ -701,7 +769,9 @@ function homeCard(state: InputState, geometry: Geometry, elapsedSeconds: number 
   }
   const tailLines = clipTail(tail, Math.max(1, geometry.bodyBudget - 2));
   const cursorTailOffset = cursorTailIndex === null ? null : cursorTailIndex - (tail.length - tailLines.length);
-  const mainLines = windowAroundFocus(main, Math.max(0, geometry.bodyBudget - tailLines.length), focusLine);
+  const mainLines = dropDanglingHeading(
+    windowAroundFocus(main, Math.max(0, geometry.bodyBudget - tailLines.length), focusLine),
+  );
   const body = [...mainLines, ...tailLines];
   const cursorLine = cursorTailOffset === null ? null : mainLines.length + cursorTailOffset;
   return {
@@ -793,7 +863,15 @@ function survivalScreen(state: InputState, cols: number, rows: number, elapsedSe
   push(ln(span(homeSummaryLine(state.panelView, width), "dim")));
   const statusRows = homeStatusFor(state);
   const focusId = executing ? null : focusedHomeStatusId(state.viewport.scrollOffset);
-  if (focusId !== null) {
+  const suggestions = executing ? [] : commandSuggestions(state.line);
+  if (suggestions.length > 0) {
+    // One row, the selected one: at this size the menu is a single line
+    // between the summary and the prompt. It wears the selection caret, not
+    // the prompt caret, so the two rows cannot be confused.
+    const index = Math.max(0, Math.min(suggestions.length - 1, state.suggestionIndex));
+    const suggestion = suggestions[index]!;
+    push(ln(span(FOCUS_CARET, "accent"), span(truncate(suggestion.usage, width - FOCUS_CARET.length), "accent")));
+  } else if (focusId !== null) {
     const row = statusRows.find((entry) => entry.id === focusId);
     push(ln(span(FOCUS_CARET, "dim"), span(truncate(row?.tiny ?? "", width - FOCUS_CARET.length))));
   } else if (!executing) {
@@ -833,7 +911,10 @@ function hintFor(state: InputState, tier: PanelTier): string {
   if (state.mode === "executing") return tier === "survival" ? PANEL_HINT_SURVIVAL_EXECUTING : PANEL_HINT_EXECUTING;
   if (isReadonlyRoute(state.route)) return tier === "survival" ? PANEL_HINT_SURVIVAL_READONLY : PANEL_HINT_READONLY;
   if (state.route === "allocation") return tier === "survival" ? PANEL_HINT_SURVIVAL_ALLOCATION : PANEL_HINT_ALLOCATION;
-  return tier === "survival" ? PANEL_HINT_SURVIVAL : PANEL_HINT;
+  if (tier === "survival") return PANEL_HINT_SURVIVAL;
+  // While the menu is open the arrows and Tab mean something different; the
+  // hint says which keys are live rather than leaving the user to guess.
+  return commandSuggestions(state.line).length > 0 ? PANEL_HINT_SUGGESTIONS : PANEL_HINT;
 }
 
 function cardTitle(state: InputState, geometry: Geometry): string {

@@ -53,21 +53,21 @@ describe("TC-4.3a show active allocation", () => {
 });
 
 describe("Home allocation phrase", () => {
-  it("is the tail clause of the selector description, short enough for one Home row", () => {
+  it("says in plain language what each allocation does, in one Home row", () => {
+    const phrases = new Set<string>();
     for (const id of ["default", "balanced", "historical"] as const) {
       const shown = presentAllocation(id);
-      // Derived from the selector copy, so the two cannot drift apart.
-      expect(shown.description.endsWith(shown.homeDescription), id).toBe(true);
+      expect(shown.homeDescription, id).toBe(homeAllocationPhrase(id));
       expect(shown.homeDescription, id).not.toBe("");
       expect(shown.homeDescription, id).not.toContain(" — ");
       // Home has ~44 columns for label + phrase at the normal card width.
-      expect(`${shown.label} — ${shown.homeDescription}`.length, id).toBeLessThanOrEqual(44);
+      expect(`${shown.label} · ${shown.homeDescription}`.length, id).toBeLessThanOrEqual(44);
+      phrases.add(shown.homeDescription);
     }
-    expect(presentAllocation("default").homeDescription).toBe("emphasizes recent history");
-    expect(presentAllocation("balanced").homeDescription).toBe("equal fidelity distribution");
-    expect(presentAllocation("historical").homeDescription).toBe("broader low-fidelity history");
-    expect(homeAllocationPhrase("a — b — c")).toBe("c");
-    expect(homeAllocationPhrase("plain")).toBe("plain");
+    expect(phrases.size).toBe(3);
+    expect(presentAllocation("default").homeDescription).toBe("favors recent detail");
+    expect(presentAllocation("balanced").homeDescription).toBe("spreads space evenly");
+    expect(presentAllocation("historical").homeDescription).toBe("keeps more older history");
   });
 
   it("leaves the selector copy and the display rows unreduced", () => {

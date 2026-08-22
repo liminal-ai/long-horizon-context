@@ -9,6 +9,14 @@
 export const SMART_COMPACT = "Smart Compact";
 export const CLAUDE_NATIVE_COMPACT = "Claude native Compact";
 
+/**
+ * The Control Panel names an operation by the command that runs it. The
+ * `*Summary` formatters below are read by the panel (Home's `last attempt`
+ * notice), so they carry the command; the `*Log` formatters beside them keep
+ * the product name for the wrapper log and durable records.
+ */
+const SMART_COMPACT_COMMAND = "/smart-compact";
+
 export function formatOneShotStandDown(why: string, sessionId: string): string {
   return (
     `cc-lhc one-shot: ${why}; launching on ${sessionId} without ${SMART_COMPACT} — ` +
@@ -39,16 +47,19 @@ export function formatAutoNotAuthorizedLog(why: string, liveCount: number): stri
   return `cc-lhc governor: ${SMART_COMPACT} not authorized — ${why}; ${liveCount} live background item(s) left running`;
 }
 
+/** Panel: Home `last attempt`. */
 export function formatAutoNotAuthorizedSummary(why: string): string {
-  return `${SMART_COMPACT} not authorized: ${why}`;
+  return `${SMART_COMPACT_COMMAND} not authorized: ${why}`;
 }
 
+/** Panel: Home `last attempt`. */
 export function formatAutoDeferredSummary(reason: string, detail: string): string {
-  return `${SMART_COMPACT} deferred: ${reason} (${detail})`;
+  return `${SMART_COMPACT_COMMAND} deferred: ${reason} (${detail})`;
 }
 
+/** Panel: Home `last attempt`. */
 export function formatAutoNotRescheduledSummary(receiptId: string): string {
-  return `${SMART_COMPACT} not re-scheduled: existing scheduled receipt ${receiptId} (restart/replay)`;
+  return `${SMART_COMPACT_COMMAND} not re-scheduled: existing scheduled receipt ${receiptId} (restart/replay)`;
 }
 
 export function formatAutoInMemoryReceipt(receiptId: string): string {
@@ -58,8 +69,9 @@ export function formatAutoInMemoryReceipt(receiptId: string): string {
   );
 }
 
+/** Panel: Home `last attempt`. */
 export function formatAutoSuspendedSummary(): string {
-  return `${SMART_COMPACT} suspended: replacement incompatibility alarm`;
+  return `${SMART_COMPACT_COMMAND} suspended: replacement incompatibility alarm`;
 }
 
 export function formatAskingBeforeSmartCompact(count: number): string {
@@ -74,6 +86,12 @@ export function formatAutoThrew(detail: string): string {
   return `cc-lhc automatic ${SMART_COMPACT} operation threw: ${detail}`;
 }
 
+/**
+ * Durable governor outcome detail (`mutation_deferred`), not panel copy: it is
+ * attached to the receipt, so it keeps the product name and the internal guard
+ * label. Home's notice for the same event is built separately and names the
+ * command.
+ */
 export function formatAutoGuardBusyDetail(busyLabel: string): string {
   return `command guard busy (${busyLabel}); ${SMART_COMPACT} not started`;
 }
@@ -86,8 +104,9 @@ export function formatAutoMutationLog(kind: string, messages: string): string {
   return `cc-lhc automatic ${SMART_COMPACT} mutation ${kind}: ${messages}`;
 }
 
+/** Panel: Home `last attempt`. */
 export function formatAutoMutationSummary(kind: string, detail: string): string {
-  return `${SMART_COMPACT} ${kind}: ${detail}`;
+  return `${SMART_COMPACT_COMMAND} ${kind}: ${detail}`;
 }
 
 export function formatCompactViewLine(viewId: string, tailTokens: number, totalTokens: number): string {
