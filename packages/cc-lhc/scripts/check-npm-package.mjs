@@ -18,7 +18,7 @@ required("package.json");
 if (process.exitCode) process.exit();
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 if (manifest.name !== "cc-lhc") fail("manifest name must be cc-lhc");
-if (manifest.version !== "0.2.0") fail("manifest version must be 0.2.0");
+if (manifest.version !== "0.3.0") fail("manifest version must be 0.3.0");
 if (manifest.private === true) fail("release package must not be private");
 if (manifest.license !== "MIT") fail("release package must use MIT");
 if (manifest.publishConfig?.access !== "public") fail("release package must declare public access");

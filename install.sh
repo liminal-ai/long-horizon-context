@@ -3,7 +3,7 @@
 set -eu
 
 REPOSITORY="${CC_LHC_REPOSITORY:-liminal-ai/long-horizon-context}"
-VERSION="${CC_LHC_VERSION:-0.2.0}"
+VERSION="${CC_LHC_VERSION:-0.3.0}"
 PREFIX="${CC_LHC_PREFIX:-${HOME}/.local}"
 STORE="${CC_LHC_INSTALL_ROOT:-${XDG_DATA_HOME:-${HOME}/.local/share}/cc-lhc}"
 ASSET_DIR="${CC_LHC_ASSET_DIR:-}"
@@ -15,7 +15,7 @@ Install a registry-free cc-lhc runtime bundle from GitHub.
 
 Usage: install.sh [OPTIONS]
 
-  --version VERSION    Install a specific release (default: 0.2.0)
+  --version VERSION    Install a specific release (default: 0.3.0)
   --prefix DIR         Command prefix (default: ~/.local)
   --install-root DIR   Versioned package storage
   --asset-dir DIR      Install from a validated local candidate directory

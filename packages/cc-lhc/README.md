@@ -30,13 +30,13 @@ Code CLI.
 Install on Linux or macOS from the checksum-verified GitHub release:
 
 ```sh
-curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.2.0/install.sh | sh
+curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.3.0/install.sh | sh
 ```
 
 Install on Windows from PowerShell:
 
 ```powershell
-irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.2.0/install.ps1 | iex
+irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.3.0/install.ps1 | iex
 ```
 
 The installers detect x64 or ARM64, download the matching complete runtime
@@ -218,16 +218,21 @@ modifyOtherKeys, and Windows Terminal win32 input events.
 
 | Command | Effect |
 | --- | --- |
-| `status` | Capture, descriptor, derivation, context-policy, and last-action status |
-| `stats` | Current capture counters |
-| `compact` | Smart Compact and controlled child handoff |
-| `prune [targetTokens]` | Advance the visibility boundary and hand off if changed |
-| `export` | Write rollout and served-view transcript dumps |
-| `auto on|off` | Change automatic Smart Compact for this wrapper lifetime |
-| `bounds <lower> <upper>` | Change Smart Compact target/trigger for this wrapper lifetime |
-| `help` / `?` | List panel commands |
+| `/status` | Capture, retrieval, context-policy, and last-action status |
+| `/stats` | Current capture counters |
+| `/smart-compact` | Smart Compact and controlled child handoff |
+| `/smart-prune [tokens]` | Advance the visibility boundary and hand off if changed |
+| `/export` | Write rollout and served-view transcript dumps |
+| `/auto on\|off` | Change automatic Smart Compact for this wrapper lifetime |
+| `/bounds <target> <trigger>` | Change Smart Compact target/trigger for this wrapper lifetime |
+| `/allocation` | Select Default, Balanced, or Historical for this wrapper lifetime |
+| `/details` | Show retrieval state, configuration sources, and Claude native Compact status |
+| `/help` | List every panel command and its scope |
+| `/introduction` | Explain LHC, fidelity bands, and Smart Compact |
 
-Panel edits are session-scoped. Persistent policy is configured below.
+Commands are lowercase and slash-prefixed. Type `/` for suggestions; Tab or a
+partial Enter completes without execution. Panel edits are session-scoped.
+Persistent policy is configured below.
 
 The advisory lifecycle-command notifier warns on high-confidence user-entered
 `/resume`, `/clear`, and `/compact`; it never blocks or rewrites input and is
