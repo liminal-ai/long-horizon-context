@@ -565,7 +565,11 @@ pub struct CompactWarning {
 
 /// Canonical record the compact walk could not place. The raw row is retained.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
 pub enum SkippedRecord {
     OrphanedMessage {
         message_id: String,
