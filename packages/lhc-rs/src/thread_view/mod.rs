@@ -39,9 +39,9 @@ use crate::shared_tech::view::{
     CompactReceiptBands, CompactReceiptConfig, CompactRenderedBand, CompactWarning,
     CompactWarningDerivationType, LlmRequestContext, LlmRequestContextMessage,
     LlmRequestContextPart, LlmRequestContextPartType, LlmRequestContextRole, PreviewCompactOutcome,
-    PreviewCompactResult, PruneReceipt, ResolvedViewConfig, SessionThreadView, StoredView,
-    StoredViewSourceState, ViewCompactParams, ViewProfile, ViewProfilePercentages, ViewStatus,
-    ViewStatusDerivation, ViewStatusView, ViewStatusVisibility, ViewSubjectKind,
+    PreviewCompactResult, PruneReceipt, ResolvedViewConfig, SessionThreadView, SkippedRecord,
+    StoredView, StoredViewSourceState, ViewCompactParams, ViewProfile, ViewProfilePercentages,
+    ViewStatus, ViewStatusDerivation, ViewStatusView, ViewStatusVisibility, ViewSubjectKind,
 };
 use crate::threads::{ThreadRef, open_thread_database, resolve_thread_ref};
 use crate::turns;
@@ -1070,6 +1070,7 @@ pub struct PreparedCompact {
     pub warnings: Vec<CompactWarning>,
     pub degraded: Vec<CompactDegradedEntry>,
     pub gaps: Vec<CompactGapEntry>,
+    pub skipped_records: Vec<SkippedRecord>,
 }
 
 /// TS `InstallPreparedOptions`.
@@ -1129,6 +1130,7 @@ pub fn read_prepared_source_state(
         v.sort();
         v
     };
+    const SELECTED_TURN_BATCH_SIZE: usize = 400;
 
     let derivation_rows = db.prepare(
         r#"SELECT subject_kind, subject_id, derivation_type, state, content, reason, source_version, metadata
@@ -1152,40 +1154,111 @@ pub fn read_prepared_source_state(
         .collect();
     let derivation_digest = sha256_hex(&js_json_stringify(&Value::Array(derivation_payload)));
 
-    let placeholders = selected_turns
-        .iter()
-        .map(|_| "?")
-        .collect::<Vec<_>>()
-        .join(", ");
-    let turn_clause = if selected_turns.is_empty() {
-        "m.turn_id IN (SELECT turn_id FROM chunk_member)".to_string()
-    } else {
-        format!("m.turn_id IN ({placeholders})")
-    };
-    let mut bind: Vec<SqlParam> = vec![SqlParam::from(compact_point)];
-    for t in &selected_turns {
-        bind.push(SqlParam::from(t.as_str()));
-    }
-
-    let source_messages = db
-        .prepare(&format!(
-            r#"SELECT m.message_id, m.kind, m.source_event_order, m.turn_id, m.deleted_at, m.token_estimate
+    let mut message_rows: std::collections::HashMap<String, Map<String, Value>> =
+        std::collections::HashMap::new();
+    let mut block_rows: std::collections::HashMap<(String, i64), Map<String, Value>> =
+        std::collections::HashMap::new();
+    let mut collect = |where_clause: &str, bind: &[SqlParam]| {
+        for row in db
+            .prepare(&format!(
+                r#"SELECT m.message_id, m.kind, m.source_event_order, m.turn_id, m.deleted_at, m.token_estimate
        FROM message m
-       WHERE m.source_event_order > ?
-          OR {turn_clause}
-       ORDER BY m.source_event_order, m.message_id"#
-        ))
-        .all(&bind);
-    let source_blocks = db
-        .prepare(&format!(
-            r#"SELECT mb.message_id, mb.block_index, mb.block_type, mb.content
+       WHERE {where_clause}"#
+            ))
+            .all(bind)
+        {
+            let id = row
+                .get("message_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            message_rows.insert(id, row);
+        }
+        for row in db
+            .prepare(&format!(
+                r#"SELECT mb.message_id, mb.block_index, mb.block_type, mb.content
        FROM message_block mb
        JOIN message m ON m.message_id = mb.message_id
-       WHERE m.source_event_order > ?
-          OR {turn_clause}
-       ORDER BY m.source_event_order, m.message_id, mb.block_index"#
-        ))
-        .all(&bind);
+       WHERE {where_clause}"#
+            ))
+            .all(bind)
+        {
+            let id = row
+                .get("message_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let index = row.get("block_index").and_then(|v| v.as_i64()).unwrap_or(0);
+            block_rows.insert((id, index), row);
+        }
+    };
+
+    if selected_turns.is_empty() {
+        collect(
+            "m.source_event_order > ? OR m.turn_id IN (SELECT turn_id FROM chunk_member)",
+            &[SqlParam::from(compact_point)],
+        );
+    } else {
+        collect("m.source_event_order > ?", &[SqlParam::from(compact_point)]);
+        for batch in selected_turns.chunks(SELECTED_TURN_BATCH_SIZE) {
+            let placeholders = batch.iter().map(|_| "?").collect::<Vec<_>>().join(", ");
+            let bind: Vec<SqlParam> = batch
+                .iter()
+                .map(|turn_id| SqlParam::from(turn_id.as_str()))
+                .collect();
+            collect(&format!("m.turn_id IN ({placeholders})"), &bind);
+        }
+    }
+
+    // Restore the former single-query ordering after union/dedup so batching
+    // cannot perturb the digest bytes.
+    let mut source_messages: Vec<Map<String, Value>> = message_rows.into_values().collect();
+    source_messages.sort_by(|a, b| {
+        let ao = a
+            .get("source_event_order")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let bo = b
+            .get("source_event_order")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        ao.cmp(&bo).then_with(|| {
+            a.get("message_id")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .cmp(b.get("message_id").and_then(|v| v.as_str()).unwrap_or(""))
+        })
+    });
+    let message_order: std::collections::HashMap<String, i64> = source_messages
+        .iter()
+        .map(|row| {
+            (
+                row.get("message_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
+                row.get("source_event_order")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0),
+            )
+        })
+        .collect();
+    let mut source_blocks: Vec<Map<String, Value>> = block_rows.into_values().collect();
+    source_blocks.sort_by(|a, b| {
+        let aid = a.get("message_id").and_then(|v| v.as_str()).unwrap_or("");
+        let bid = b.get("message_id").and_then(|v| v.as_str()).unwrap_or("");
+        message_order
+            .get(aid)
+            .unwrap_or(&0)
+            .cmp(message_order.get(bid).unwrap_or(&0))
+            .then_with(|| aid.cmp(bid))
+            .then_with(|| {
+                a.get("block_index")
+                    .and_then(|v| v.as_i64())
+                    .unwrap_or(0)
+                    .cmp(&b.get("block_index").and_then(|v| v.as_i64()).unwrap_or(0))
+            })
+    });
 
     let filtered_messages: Vec<Value> = source_messages
         .iter()
@@ -1392,6 +1465,7 @@ fn build_prepared_from_arrangement(
     empty_chunk_ids: Vec<String>,
     max_event_order: i64,
     derivation_counts: indexmap::IndexMap<String, indexmap::IndexMap<String, i64>>,
+    skipped_records: Vec<SkippedRecord>,
     view_id: String,
     first_kept_message_id: Option<String>,
     profile_name: Option<String>,
@@ -1464,6 +1538,7 @@ fn build_prepared_from_arrangement(
         warnings,
         degraded,
         gaps,
+        skipped_records,
     }
 }
 
@@ -1530,9 +1605,10 @@ pub async fn prepare_compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<Pre
         let prepared = build_prepared_from_arrangement(
             &db,
             computed.selection,
-            computed.inputs.empty_chunk_ids,
-            computed.inputs.max_event_order,
-            computed.inputs.derivation_counts,
+            computed.source_state.empty_chunk_ids,
+            computed.source_state.max_event_order,
+            computed.source_state.derivation_counts,
+            computed.source_state.skipped_records,
             computed.view_id,
             computed.first_kept_message_id,
             profile_name,
@@ -1548,6 +1624,27 @@ pub async fn prepare_compact(ref_: ThreadRef, opts: CompactOpts) -> OpResult<Pre
                     subject_id: Some(warning.subject_id.clone()),
                     reason: Some(warning.reason.clone()),
                     floor_used: Some(LITERAL_DERIVATION_STORED_MEMBER_CONCAT.to_string()),
+                },
+            );
+        }
+        for skipped in &prepared.skipped_records {
+            let (subject_id, reason) = match skipped {
+                SkippedRecord::OrphanedMessage {
+                    message_id, reason, ..
+                } => (message_id.clone(), reason.clone()),
+                SkippedRecord::DanglingChunkMember {
+                    chunk_id, reason, ..
+                } => (chunk_id.clone(), reason.clone()),
+            };
+            write_log(
+                DbTransaction::Read(&transaction),
+                &LogEntry {
+                    level: LogLevel::Warning,
+                    message: "compact skipped an unplaceable canonical record".to_string(),
+                    derivation_type: None,
+                    subject_id: Some(subject_id),
+                    reason: Some(reason),
+                    floor_used: None,
                 },
             );
         }
@@ -1749,6 +1846,7 @@ pub async fn install_prepared_compact(
                 degraded: prepared.degraded.clone(),
                 gaps: prepared.gaps.clone(),
                 warnings: Some(prepared.warnings.clone()),
+                skipped_records: prepared.skipped_records.clone(),
                 rendered_bands,
                 first_kept_message_id: prepared.first_kept_message_id.clone(),
             },

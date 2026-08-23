@@ -665,6 +665,7 @@ export function readPreparedSourceState(
   };
   const exclude = opts.excludeMessageIds ?? new Set<string>();
   const selectedTurns = [...(opts.selectedSourceTurnIds ?? [])].sort();
+  const selectedTurnBatchSize = 400;
 
   const derivationRows = db
     .prepare(
@@ -700,42 +701,69 @@ export function readPreparedSourceState(
   // Deterministic membership: post-compact tail ∪ selected band source turns.
   // When selected turns are empty (legacy callers), fall back to chunk members
   // so stored_member_concat still fingerprints.
-  const placeholders = selectedTurns.map(() => "?").join(", ");
-  const turnClause =
-    selectedTurns.length > 0 ? `m.turn_id IN (${placeholders})` : `m.turn_id IN (SELECT turn_id FROM chunk_member)`;
-  const bind = selectedTurns.length > 0 ? [compactPoint, ...selectedTurns] : [compactPoint];
-
-  const sourceMessages = db
-    .prepare(
-      `SELECT m.message_id, m.kind, m.source_event_order, m.turn_id, m.deleted_at, m.token_estimate
-       FROM message m
-       WHERE m.source_event_order > ?
-          OR ${turnClause}
-       ORDER BY m.source_event_order, m.message_id`,
-    )
-    .all(...bind) as unknown as Array<{
+  type SourceMessageRow = {
     message_id: string;
     kind: string;
     source_event_order: number | bigint;
     turn_id: string;
     deleted_at: string | null;
     token_estimate: number | bigint;
-  }>;
-  const sourceBlocks = db
-    .prepare(
-      `SELECT mb.message_id, mb.block_index, mb.block_type, mb.content
-       FROM message_block mb
-       JOIN message m ON m.message_id = mb.message_id
-       WHERE m.source_event_order > ?
-          OR ${turnClause}
-       ORDER BY m.source_event_order, m.message_id, mb.block_index`,
-    )
-    .all(...bind) as unknown as Array<{
+  };
+  type SourceBlockRow = {
     message_id: string;
     block_index: number | bigint;
     block_type: string;
     content: string;
-  }>;
+  };
+  const messageRows = new Map<string, SourceMessageRow>();
+  const blockRows = new Map<string, SourceBlockRow>();
+  const collect = (where: string, bind: readonly (string | number)[]): void => {
+    const messages = db
+      .prepare(
+        `SELECT m.message_id, m.kind, m.source_event_order, m.turn_id, m.deleted_at, m.token_estimate
+         FROM message m
+         WHERE ${where}`,
+      )
+      .all(...bind) as unknown as SourceMessageRow[];
+    for (const row of messages) messageRows.set(row.message_id, row);
+    const blocks = db
+      .prepare(
+        `SELECT mb.message_id, mb.block_index, mb.block_type, mb.content
+         FROM message_block mb
+         JOIN message m ON m.message_id = mb.message_id
+         WHERE ${where}`,
+      )
+      .all(...bind) as unknown as SourceBlockRow[];
+    for (const row of blocks) blockRows.set(`${row.message_id}\u0000${Number(row.block_index)}`, row);
+  };
+
+  if (selectedTurns.length === 0) {
+    collect(
+      `m.source_event_order > ? OR m.turn_id IN (SELECT turn_id FROM chunk_member)`,
+      [compactPoint],
+    );
+  } else {
+    collect(`m.source_event_order > ?`, [compactPoint]);
+    for (let offset = 0; offset < selectedTurns.length; offset += selectedTurnBatchSize) {
+      const batch = selectedTurns.slice(offset, offset + selectedTurnBatchSize);
+      collect(`m.turn_id IN (${batch.map(() => "?").join(", ")})`, batch);
+    }
+  }
+
+  // Batching changes statement order, never digest order. Rebuild the exact
+  // canonical order the former single UNION query produced before hashing.
+  const sqliteBinaryCompare = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
+  const sourceMessages = [...messageRows.values()].sort(
+    (a, b) =>
+      Number(a.source_event_order) - Number(b.source_event_order) || sqliteBinaryCompare(a.message_id, b.message_id),
+  );
+  const messageOrder = new Map(sourceMessages.map((row) => [row.message_id, Number(row.source_event_order)]));
+  const sourceBlocks = [...blockRows.values()].sort(
+    (a, b) =>
+      (messageOrder.get(a.message_id) ?? 0) - (messageOrder.get(b.message_id) ?? 0) ||
+      sqliteBinaryCompare(a.message_id, b.message_id) ||
+      Number(a.block_index) - Number(b.block_index),
+  );
   const filteredMessages = sourceMessages.filter((m) => !exclude.has(m.message_id));
   const filteredBlocks = sourceBlocks.filter((b) => !exclude.has(b.message_id));
   const tailDigest = sha256Hex(

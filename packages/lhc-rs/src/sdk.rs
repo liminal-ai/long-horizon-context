@@ -97,8 +97,8 @@ pub use crate::shared_tech::view::{
     SessionAssistantMessage, SessionAssistantPart, SessionModelChangeEntry,
     SessionThinkingLevelChangeEntry, SessionThreadView, SessionThreadViewEntry,
     SessionThreadViewEntrySource, SessionThreadViewMessage, SessionToolResultMessage,
-    SessionUserMessage, StoredView, ViewCompactParams, ViewProfile, ViewProfileOverride,
-    ViewStatus, VisibilityBudgets,
+    SessionUserMessage, SkippedRecord, StoredView, ViewCompactParams, ViewProfile,
+    ViewProfileOverride, ViewStatus, VisibilityBudgets,
 };
 pub use crate::shared_tech::work_queue::{
     ClaimedWorkItem, EnqueueDerivationTarget, EnqueueInput, QueueDetailRow, WorkHandlerMap,

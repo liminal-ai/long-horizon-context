@@ -17,8 +17,6 @@ mod fixtures;
 
 use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use fixtures::{
     AssistantTextOverrides, AssistantTextPayload, AssistantThinkingOverrides,
@@ -1081,6 +1079,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
         max_event_order: 60,
         derivation_counts: IndexMap::new(),
         empty_chunk_ids: Vec::new(),
+        skipped_records: Vec::new(),
     };
 
     let selection = select_arrangement(
@@ -1535,8 +1534,7 @@ async fn status_reports_the_view_health_fields_live_after_the_degraded_compact_t
 // ── TC-2.7 ───────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_serves_record_unchanged()
- {
+async fn multiple_open_turn_rows_follow_the_ts_reachable_selection_without_rewriting_source() {
     let _hook_guard = ClearCompactWriteHook::install();
     let corrupt_store = temp_store();
     let double = create_inference_callbacks_double();
@@ -1599,26 +1597,6 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
         )
         .await;
     assert!(first.is_ok());
-    let prior_context = sdk
-        .thread_view
-        .get_llm_request_context(ThreadRef::file_path(&file_path))
-        .await;
-    assert!(prior_context.is_ok());
-    let OpResult::Ok {
-        value: prior_context,
-    } = prior_context
-    else {
-        return;
-    };
-    let prior_view = sdk
-        .thread_view
-        .describe(ThreadRef::file_path(&file_path))
-        .await;
-    assert!(prior_view.is_ok());
-    let OpResult::Ok { value: prior_view } = prior_view else {
-        return;
-    };
-
     let opened = sdk
         .intake_stream
         .message_events(
@@ -1638,7 +1616,7 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
     corrupt_two_open_turns(&file_path);
     let record_before = record_snapshot(&file_path);
 
-    let refused = sdk
+    let compacted = sdk
         .thread_view
         .compact(
             ThreadRef::file_path(&file_path),
@@ -1658,40 +1636,7 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
             },
         )
         .await;
-    assert!(!refused.is_ok());
-    if let OpResult::Err { error } = &refused {
-        assert_eq!(error.error_class, ErrorClass::StateCorruption);
-        assert_eq!(error.code, ErrorCode::TurnStateCorrupt);
-        assert!(error.reason.contains("open turns"));
-    }
-
-    let after_context = sdk
-        .thread_view
-        .get_llm_request_context(ThreadRef::file_path(&file_path))
-        .await;
-    assert!(after_context.is_ok());
-    let OpResult::Ok {
-        value: after_context,
-    } = after_context
-    else {
-        return;
-    };
-    assert_eq!(
-        js_json_stringify_of(&band_messages(&after_context.messages)).expect("stringify"),
-        js_json_stringify_of(&band_messages(&prior_context.messages)).expect("stringify")
-    );
-    let after_view = sdk
-        .thread_view
-        .describe(ThreadRef::file_path(&file_path))
-        .await;
-    assert!(after_view.is_ok());
-    let OpResult::Ok { value: after_view } = after_view else {
-        return;
-    };
-    assert_eq!(
-        after_view.as_ref().map(|v| v.view_id.as_str()),
-        prior_view.as_ref().map(|v| v.view_id.as_str())
-    );
+    assert!(compacted.is_ok());
     assert_eq!(record_snapshot(&file_path), record_before);
 }
 

@@ -8,11 +8,17 @@
 use indexmap::IndexMap;
 
 use super::super::CompactAbortSignal;
+use super::bounded_source::{ArrangementSourceState, create_bounded_selection};
+use super::compact_algorithm::{
+    CompactAlgorithm, emit_legacy_compact_diagnostic, resolve_compact_algorithm,
+};
 use super::render::CompactChunkMaterialSnapshot;
 use super::select::{
-    CanonicalCorruptionCode, CanonicalCorruptionError, PI_MAPPABLE_MESSAGE_KINDS, SelectionConfig,
-    SelectionInputs, SelectionResult, read_selection_inputs, select_arrangement,
+    CanonicalCorruptionCode, CanonicalCorruptionError, EagerSelectionSource,
+    PI_MAPPABLE_MESSAGE_KINDS, SelectionConfig, SelectionInputs, SelectionResult,
+    read_selection_inputs,
 };
+use super::walk::walk_arrangement;
 use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult, OpResult};
 use crate::shared_tech::persist::DbReadTransaction;
 use crate::shared_tech::storage::{Db, SqlParam};
@@ -41,7 +47,7 @@ pub(crate) const DIAG_COMPACT_STOPPED_BEFORE_ASSEMBLY: &str = "compact stopped b
 #[derive(Debug, Clone, PartialEq)]
 pub struct ArrangementComputeResult {
     pub selection: SelectionResult,
-    pub inputs: SelectionInputs,
+    pub source_state: ArrangementSourceState,
     pub view_id: String,
     pub first_kept_message_id: Option<String>,
 }
@@ -130,16 +136,7 @@ fn resolve_chunk_materials(
             }
             let material = get_chunk_text(transaction, &chunk.chunk_id, Some(derivation_type));
             let mapped = match material {
-                CompactChunkMaterial::Blocked { reason } => {
-                    return OpResult::Err {
-                        error: ErrorResult {
-                            error_class: ErrorClass::StateCorruption,
-                            code: ErrorCode::SourceDamaged,
-                            reason,
-                            event_index: None,
-                        },
-                    };
-                }
+                CompactChunkMaterial::Blocked { .. } => continue,
                 CompactChunkMaterial::Ready { content } => {
                     CompactChunkMaterialSnapshot::Ready { content }
                 }
@@ -176,33 +173,72 @@ pub fn compute_arrangement(
         };
     }
 
-    let mut inputs = match read_selection_inputs(db) {
-        Ok(inputs) => inputs,
-        Err(cause) => return corruption_op_err(cause),
+    let config = SelectionConfig {
+        lower_bound: merged.lower_bound,
+        percentages: merged.percentages.clone(),
+        compact_point_upper_bound: opts.compact_point_upper_bound,
+    };
+    let (selection, source_state) = match resolve_compact_algorithm() {
+        CompactAlgorithm::Legacy => {
+            emit_legacy_compact_diagnostic();
+            let mut inputs = match read_selection_inputs(db) {
+                Ok(inputs) => inputs,
+                Err(cause) => return corruption_op_err(cause),
+            };
+            if opts.include_chunk_materials {
+                let materials = resolve_chunk_materials(transaction, &inputs, opts.signal.as_ref());
+                inputs.compact_chunk_materials = match materials {
+                    OpResult::Ok { value } => Some(value),
+                    OpResult::Err { error } => return OpResult::Err { error },
+                };
+            }
+            let source_state = ArrangementSourceState {
+                empty_chunk_ids: inputs.empty_chunk_ids.clone(),
+                max_event_order: inputs.max_event_order,
+                derivation_counts: inputs.derivation_counts.clone(),
+                skipped_records: inputs.skipped_records.clone(),
+            };
+            let mut source = EagerSelectionSource::new(inputs);
+            let selection = match walk_arrangement(&mut source, &config) {
+                Ok(selection) => selection,
+                Err(stopped) => {
+                    return OpResult::Err {
+                        error: ErrorResult {
+                            error_class: ErrorClass::CallerError,
+                            code: ErrorCode::CompactStopped,
+                            reason: stopped.detail,
+                            event_index: None,
+                        },
+                    };
+                }
+            };
+            (selection, source_state)
+        }
+        CompactAlgorithm::Bounded => {
+            let mut plan = create_bounded_selection(
+                db,
+                transaction,
+                opts.include_chunk_materials,
+                opts.signal.clone(),
+            );
+            let selection = match walk_arrangement(&mut plan.source, &config) {
+                Ok(selection) => selection,
+                Err(stopped) => {
+                    return OpResult::Err {
+                        error: ErrorResult {
+                            error_class: ErrorClass::CallerError,
+                            code: ErrorCode::CompactStopped,
+                            reason: stopped.detail,
+                            event_index: None,
+                        },
+                    };
+                }
+            };
+            (selection, plan.source_state)
+        }
     };
 
-    if opts.include_chunk_materials {
-        let materials = resolve_chunk_materials(transaction, &inputs, opts.signal.as_ref());
-        let materials = match materials {
-            OpResult::Ok { value } => value,
-            OpResult::Err { error } => return OpResult::Err { error },
-        };
-        inputs.compact_chunk_materials = Some(materials);
-    }
-
-    let selection = match select_arrangement(
-        &inputs,
-        &SelectionConfig {
-            lower_bound: merged.lower_bound,
-            percentages: merged.percentages.clone(),
-            compact_point_upper_bound: opts.compact_point_upper_bound,
-        },
-    ) {
-        Ok(selection) => selection,
-        Err(cause) => return corruption_op_err(cause),
-    };
-
-    let view_id = format!("v{}", inputs.max_event_order);
+    let view_id = format!("v{}", source_state.max_event_order);
     // At compact point 0 this is the thread's first mappable message (rebuild
     // still needs an anchor). Null only when the thread has no mappable messages.
     let first_kept_message_id = first_pi_mappable_message_past(db, selection.compact_point);
@@ -210,7 +246,7 @@ pub fn compute_arrangement(
     OpResult::Ok {
         value: ArrangementComputeResult {
             selection,
-            inputs,
+            source_state,
             view_id,
             first_kept_message_id,
         },

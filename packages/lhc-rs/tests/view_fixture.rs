@@ -1251,6 +1251,7 @@ fn selection_inputs_from_fixture(value: &Value) -> SelectionInputs {
             .expect("maxEventOrder"),
         derivation_counts,
         empty_chunk_ids: Vec::new(),
+        skipped_records: Vec::new(),
     }
 }
 

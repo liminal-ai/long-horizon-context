@@ -563,6 +563,22 @@ pub struct CompactWarning {
     pub reason: String,
 }
 
+/// Canonical record the compact walk could not place. The raw row is retained.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SkippedRecord {
+    OrphanedMessage {
+        message_id: String,
+        turn_id: String,
+        reason: String,
+    },
+    DanglingChunkMember {
+        chunk_id: String,
+        turn_id: String,
+        reason: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactRenderedBand {
@@ -588,6 +604,7 @@ pub struct CompactReceipt {
     pub gaps: Vec<CompactGapEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<CompactWarning>>,
+    pub skipped_records: Vec<SkippedRecord>,
     pub rendered_bands: Vec<CompactRenderedBand>,
     pub first_kept_message_id: Option<String>,
 }

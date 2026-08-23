@@ -42,7 +42,7 @@ use crate::messages::read_live_messages;
 use crate::shared_tech::derivation::DerivationState;
 use crate::shared_tech::storage::Db;
 use crate::shared_tech::token_counting::estimate_tokens;
-use crate::shared_tech::view::{Band, ViewProfilePercentages, ViewSubjectKind};
+use crate::shared_tech::view::{Band, SkippedRecord, ViewProfilePercentages, ViewSubjectKind};
 use crate::turns::{TurnStatus, read_turn_chunk_structure};
 
 /// TS SQL — exact source bytes (subject_kind required for empty-chunk filter).
@@ -50,9 +50,6 @@ pub(crate) const SQL_DERIVATION_ROWS: &str =
     "SELECT subject_kind, subject_id, derivation_type, state, content, reason FROM derivation";
 
 pub(crate) const SQL_MAX_EVENT_ORDER: &str = "SELECT COALESCE(MAX(event_order), 0) AS m FROM event";
-
-pub(crate) const SQL_DERIVATION_COUNTS: &str =
-    "SELECT derivation_type, state, COUNT(*) AS n FROM derivation GROUP BY derivation_type, state";
 
 /// Canonical source state needed to identify or read the compacted span is
 /// damaged: compact refuses with state_corruption. Derived-material damage never
@@ -177,6 +174,7 @@ pub struct SelectionInputs {
     pub derivation_counts: IndexMap<String, IndexMap<String, i64>>,
     /// Chunks with no live (non-tombstoned) member turns — dropped at install.
     pub empty_chunk_ids: Vec<String>,
+    pub skipped_records: Vec<SkippedRecord>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -311,59 +309,22 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
         })
         .collect();
 
-    // Canonical damage the walk cannot select across: the turn-state invariant
-    // (at most one open turn, open turns carry no close), and referential damage
-    // between chunk/message rows and their turns.
-    let open_turns: Vec<&SelectionTurn> = turns
-        .iter()
-        .filter(|turn| turn.status == SelectionTurnStatus::Open)
-        .collect();
-    if open_turns.len() > 1 {
-        let open_ids = open_turns
-            .iter()
-            .map(|turn| turn.turn_id.as_str())
-            .collect::<Vec<_>>()
-            .join(DIAG_LIST_JOIN_COMMA_SPACE);
-        return Err(CanonicalCorruptionError::new(
-            CanonicalCorruptionCode::TurnStateCorrupt,
-            format!(
-                "{}{}{}{}{}",
-                DIAG_CANONICAL_TURN_STATE_CORRUPT_OPEN_TURNS_PREFIX,
-                open_turns.len(),
-                DIAG_CANONICAL_TURN_STATE_CORRUPT_OPEN_TURNS_MID,
-                open_ids,
-                DIAG_CANONICAL_TURN_STATE_CORRUPT_OPEN_TURNS_SUFFIX,
-            ),
-        ));
-    }
-    for turn in &turns {
-        if turn.status == SelectionTurnStatus::Closed && turn.closed_at.is_none() {
-            return Err(CanonicalCorruptionError::new(
-                CanonicalCorruptionCode::SourceDamaged,
-                format!(
-                    "{}{}{}",
-                    DIAG_CANONICAL_CLOSED_TURN_NO_BOUNDARY_PREFIX,
-                    turn.turn_id,
-                    DIAG_CANONICAL_CLOSED_TURN_NO_BOUNDARY_SUFFIX,
-                ),
-            ));
-        }
-    }
-
+    let live_turn_ids: HashSet<String> = turns.iter().map(|turn| turn.turn_id.clone()).collect();
+    let mut skipped_records = Vec::new();
     let mut messages: Vec<SelectionMessage> = Vec::new();
     for record in read_live_messages(db) {
         let turn_id = record.turn_id.clone();
-        if !turn_ids.contains(&turn_id) {
-            return Err(CanonicalCorruptionError::new(
-                CanonicalCorruptionCode::SourceDamaged,
-                format!(
-                    "{}{}{}{}",
-                    DIAG_CANONICAL_MESSAGE_MISSING_TURN_PREFIX,
-                    record.message_id,
-                    DIAG_CANONICAL_MESSAGE_MISSING_TURN_MID,
-                    turn_id,
+        if !live_turn_ids.contains(&turn_id) {
+            let message_id = record.message_id;
+            skipped_records.push(SkippedRecord::OrphanedMessage {
+                message_id: message_id.clone(),
+                turn_id: turn_id.clone(),
+                reason: format!(
+                    "message {} points at turn {}, which is not a live turn",
+                    message_id, turn_id
                 ),
-            ));
+            });
+            continue;
         }
         let blocks: Vec<ExcerptBlock> = record
             .blocks
@@ -383,38 +344,40 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
         });
     }
 
-    let live_turn_ids: std::collections::HashSet<String> =
-        turns.iter().map(|t| t.turn_id.clone()).collect();
     let mut empty_chunk_ids: Vec<String> = Vec::new();
     let mut chunks: Vec<SelectionChunk> = Vec::new();
     for row in &structure.chunks {
+        let mut member_turn_ids = Vec::new();
+        let mut dangling = false;
         for member_turn_id in &row.member_turn_ids {
             if !turn_ids.contains(member_turn_id) {
-                return Err(CanonicalCorruptionError::new(
-                    CanonicalCorruptionCode::SourceDamaged,
-                    format!(
-                        "{}{}{}{}",
-                        DIAG_CANONICAL_CHUNK_MISSING_TURN_PREFIX,
-                        row.chunk_id,
-                        DIAG_CANONICAL_CHUNK_MISSING_TURN_MID,
-                        member_turn_id,
+                dangling = true;
+                skipped_records.push(SkippedRecord::DanglingChunkMember {
+                    chunk_id: row.chunk_id.clone(),
+                    turn_id: member_turn_id.clone(),
+                    reason: format!(
+                        "chunk {} has a member pointing at turn {}, which has no turn row",
+                        row.chunk_id, member_turn_id
                     ),
-                ));
+                });
+                continue;
             }
+            member_turn_ids.push(member_turn_id.clone());
         }
-        if !row
-            .member_turn_ids
+        if !member_turn_ids
             .iter()
             .any(|turn_id| live_turn_ids.contains(turn_id))
         {
-            empty_chunk_ids.push(row.chunk_id.clone());
+            if !dangling {
+                empty_chunk_ids.push(row.chunk_id.clone());
+            }
             continue;
         }
         chunks.push(SelectionChunk {
             chunk_id: row.chunk_id.clone(),
             chunk_order: row.chunk_order,
             status: selection_chunk_status(row.status),
-            member_turn_ids: row.member_turn_ids.clone(),
+            member_turn_ids,
         });
     }
 
@@ -456,23 +419,6 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
         derivations.insert(format!("{subject_id}/{derivation_type}"), snapshot);
     }
 
-    // Prefer GROUP BY count order when no empty chunks (byte-stable with fixtures).
-    // Empty-chunk filter requires the scan-built map above.
-    let derivation_counts = if empty_chunk_ids.is_empty() {
-        let count_rows = db.prepare(SQL_DERIVATION_COUNTS).all(&[]);
-        let mut from_group: IndexMap<String, IndexMap<String, i64>> = IndexMap::new();
-        for row in count_rows {
-            let dtype = map_required_str(&row, "derivation_type");
-            let state = map_required_str(&row, "state");
-            let n = map_required_i64(&row, "n");
-            let entry = from_group.entry(dtype).or_default();
-            entry.insert(state, n);
-        }
-        from_group
-    } else {
-        derivation_counts
-    };
-
     let max_row = db
         .prepare(SQL_MAX_EVENT_ORDER)
         .get()
@@ -488,6 +434,7 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
         max_event_order,
         derivation_counts,
         empty_chunk_ids,
+        skipped_records,
     })
 }
 
@@ -561,28 +508,10 @@ impl ChunkMaterialDerivation {
 
 // ── canonical-corruption / coverage-gap diagnostics (select.ts) ───
 
-/// Shared `.join(", ")` separator (open-turn ids).
-pub(crate) const DIAG_LIST_JOIN_COMMA_SPACE: &str = ", ";
-
-/// `canonical turn state corrupt: ${n} open turns (${ids}); the compacted span cannot be identified`
-pub(crate) const DIAG_CANONICAL_TURN_STATE_CORRUPT_OPEN_TURNS_PREFIX: &str =
-    "canonical turn state corrupt: ";
-pub(crate) const DIAG_CANONICAL_TURN_STATE_CORRUPT_OPEN_TURNS_MID: &str = " open turns (";
-pub(crate) const DIAG_CANONICAL_TURN_STATE_CORRUPT_OPEN_TURNS_SUFFIX: &str =
-    "); the compacted span cannot be identified";
-/// `canonical turn state corrupt: closed turn ${id} carries no close boundary`
-pub(crate) const DIAG_CANONICAL_CLOSED_TURN_NO_BOUNDARY_PREFIX: &str =
-    "canonical turn state corrupt: closed turn ";
-pub(crate) const DIAG_CANONICAL_CLOSED_TURN_NO_BOUNDARY_SUFFIX: &str = " carries no close boundary";
 /// `canonical record corrupt: message ${id} references missing turn ${turnId}`
 pub(crate) const DIAG_CANONICAL_MESSAGE_MISSING_TURN_PREFIX: &str =
     "canonical record corrupt: message ";
 pub(crate) const DIAG_CANONICAL_MESSAGE_MISSING_TURN_MID: &str = " references missing turn ";
-/// `canonical record corrupt: chunk ${id} membership references missing turn ${turnId}`
-pub(crate) const DIAG_CANONICAL_CHUNK_MISSING_TURN_PREFIX: &str =
-    "canonical record corrupt: chunk ";
-pub(crate) const DIAG_CANONICAL_CHUNK_MISSING_TURN_MID: &str =
-    " membership references missing turn ";
 /// `entry did not fit the remaining ${band} budget (${tokens} tokens from
 /// ${derivationUsed}); skipped so older entries could be selected` — the
 /// reason a last-band skip reports (reference wording, select.ts).
@@ -1289,4 +1218,114 @@ pub fn select_arrangement(
         entries,
         skipped: brief.skipped,
     })
+}
+
+/// The eager inputs behind the shared walk's source contract. Every answer is
+/// already in memory; this is the `LHC_COMPACT_ALGORITHM=legacy` plan.
+pub struct EagerSelectionSource {
+    inputs: SelectionInputs,
+    messages_by_turn: HashMap<String, Vec<SelectionMessage>>,
+}
+
+impl EagerSelectionSource {
+    pub fn new(inputs: SelectionInputs) -> Self {
+        let mut messages_by_turn: HashMap<String, Vec<SelectionMessage>> = HashMap::new();
+        for message in &inputs.messages {
+            messages_by_turn
+                .entry(message.turn_id.clone())
+                .or_default()
+                .push(message.clone());
+        }
+        Self {
+            inputs,
+            messages_by_turn,
+        }
+    }
+}
+
+impl super::walk::SelectionSource for EagerSelectionSource {
+    fn turns(&self) -> Vec<SelectionTurn> {
+        self.inputs.turns.clone()
+    }
+
+    fn chunks(&self) -> Vec<SelectionChunk> {
+        self.inputs.chunks.clone()
+    }
+
+    fn has_placeable_messages(&mut self) -> bool {
+        !self.inputs.messages.is_empty()
+    }
+
+    fn crossing_message(&mut self, budget: f64) -> Option<(i64, String)> {
+        let mut sum = 0_i64;
+        for message in self.inputs.messages.iter().rev() {
+            sum += message.token_estimate;
+            if sum as f64 >= budget {
+                return Some((message.order, message.turn_id.clone()));
+            }
+        }
+        None
+    }
+
+    fn turn_min_message_order(&mut self, turn_id: &str) -> Option<i64> {
+        self.messages_by_turn
+            .get(turn_id)
+            .and_then(|messages| messages.iter().map(|message| message.order).min())
+    }
+
+    fn turn_message_tokens(&mut self, turn_id: &str) -> i64 {
+        self.messages_by_turn
+            .get(turn_id)
+            .map(|messages| messages.iter().map(|message| message.token_estimate).sum())
+            .unwrap_or(0)
+    }
+
+    fn message_tokens_after(&mut self, order: i64) -> i64 {
+        self.inputs
+            .messages
+            .iter()
+            .filter(|message| message.order > order)
+            .map(|message| message.token_estimate)
+            .sum()
+    }
+
+    fn turn_excerpt(&mut self, turn_id: &str) -> Option<String> {
+        self.messages_by_turn.get(turn_id).and_then(|messages| {
+            if messages.is_empty() {
+                None
+            } else {
+                Some(
+                    messages
+                        .iter()
+                        .map(|message| message.text.clone())
+                        .collect::<Vec<_>>()
+                        .join("\n"),
+                )
+            }
+        })
+    }
+
+    fn derivation(
+        &mut self,
+        subject_id: &str,
+        derivation_type: &str,
+    ) -> Option<DerivationSnapshot> {
+        self.inputs
+            .derivations
+            .get(&format!("{subject_id}/{derivation_type}"))
+            .cloned()
+    }
+
+    fn chunk_material(
+        &mut self,
+        chunk_id: &str,
+        derivation_type: &str,
+    ) -> Result<Option<CompactChunkMaterialSnapshot>, super::walk::CompactStoppedError> {
+        Ok(self
+            .inputs
+            .compact_chunk_materials
+            .as_ref()
+            .and_then(|materials| materials.get(&format!("{chunk_id}/{derivation_type}")))
+            .cloned())
+    }
 }

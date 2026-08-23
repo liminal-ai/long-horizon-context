@@ -18,7 +18,7 @@ use lhc::shared_tech::logging::LogQuery;
 use lhc::shared_tech::storage::SqlParam;
 use lhc::shared_tech::view::{
     Band, CompactWarning, CompactWarningDerivationType, PartialViewProfilePercentages,
-    ViewCompactParams,
+    SkippedRecord, ViewCompactParams,
 };
 use lhc::shared_tech::work_queue::queue_detail;
 use lhc::thread_view::{CompactAbortSignal, CompactOpts};
@@ -460,7 +460,7 @@ async fn halts_compact_before_fallback_assembly_when_stop_is_requested() {
 }
 
 #[tokio::test]
-async fn refuses_compact_when_canonical_member_source_is_corrupt() {
+async fn skips_and_reports_a_chunk_member_whose_turn_row_is_missing() {
     let store = temp_store();
     let sdk = sdk_for(
         create_inference_callbacks_double().to_callbacks(),
@@ -492,11 +492,14 @@ async fn refuses_compact_when_canonical_member_source_is_corrupt() {
         )
         .await;
 
-    assert!(!compacted.is_ok());
-    let OpResult::Err { error } = compacted else {
-        return;
+    let OpResult::Ok { value: receipt } = compacted else {
+        panic!("compact should skip the dangling member");
     };
-    assert_eq!(error.error_class, ErrorClass::StateCorruption);
+    assert!(receipt.skipped_records.iter().any(|record| matches!(
+        record,
+        SkippedRecord::DanglingChunkMember { chunk_id, turn_id, .. }
+            if chunk_id == "c1" && turn_id == "t1"
+    )));
 }
 
 #[tokio::test]

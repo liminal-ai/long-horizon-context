@@ -141,6 +141,7 @@ fn incident_inputs(options: IncidentOptions) -> SelectionInputs {
         max_event_order: 80,
         derivation_counts: IndexMap::new(),
         empty_chunk_ids: Vec::new(),
+        skipped_records: Vec::new(),
     }
 }
 
