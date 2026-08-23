@@ -12,10 +12,23 @@ describe("prepared-source selected-turn batching", () => {
         const actualTurnIds = (
           db.prepare(`SELECT turn_id FROM turns ORDER BY turn_id`).all() as unknown as Array<{ turn_id: string }>
         ).map((row) => row.turn_id);
+        const canonicalTurnIds = (
+          db.prepare(`SELECT turn_id FROM turns ORDER BY turn_order`).all() as unknown as Array<{ turn_id: string }>
+        ).map((row) => row.turn_id);
         const overLimit = [
           ...actualTurnIds,
-          ...Array.from({ length: 33_000 }, (_, index) => `zz-dummy-${index.toString().padStart(5, "0")}`),
+          ...Array.from(
+            { length: 33_000 },
+            (_, index) =>
+              `${actualTurnIds[index % actualTurnIds.length]}-pad-${index.toString().padStart(5, "0")}`,
+          ),
         ];
+        const sortedOverLimit = [...overLimit].sort();
+        const realBatchIndexes = new Set(
+          actualTurnIds.map((turnId) => Math.floor(sortedOverLimit.indexOf(turnId) / 400)),
+        );
+        expect(actualTurnIds).not.toEqual(canonicalTurnIds);
+        expect(realBatchIndexes.size).toBeGreaterThan(1);
         const compactPoint = Number.MAX_SAFE_INTEGER;
         const small = readPreparedSourceState(db, compactPoint, { selectedSourceTurnIds: actualTurnIds });
         const batched = readPreparedSourceState(db, compactPoint, { selectedSourceTurnIds: overLimit });
