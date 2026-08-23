@@ -88,7 +88,7 @@ describe("TC-4.1a Default allocation and core provenance", () => {
   it("proves Default 20/20/30/30, exact 1cfce5d provenance, adaptation base, and no host selector", () => {
     const def = allocationById("default");
     expect(def.label).toBe("Default");
-    expect(def.description).toBe("initial selection — emphasizes recent history");
+    expect(def.description).toBe("favors recent history");
     expect([def.low, def.medium, def.high, def.full]).toEqual([20, 20, 30, 30]);
     expect(BUILTIN_CONTEXT_POLICY.profile).toBe("default");
     expect(mutationCoreProfile("default")).toBe("continuation");

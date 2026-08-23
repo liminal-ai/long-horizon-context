@@ -71,9 +71,9 @@ describe("Home allocation phrase", () => {
   });
 
   it("leaves the selector copy and the display rows unreduced", () => {
-    expect(presentAllocation("default").description).toBe("initial selection — emphasizes recent history");
-    expect(allocationDisplayRows("default")).toContain("initial selection — emphasizes recent history");
-    expect(allocationSelectorChoices("default")[0]?.description).toBe("initial selection — emphasizes recent history");
+    expect(presentAllocation("default").description).toBe("favors recent history");
+    expect(allocationDisplayRows("default")).toContain("favors recent history");
+    expect(allocationSelectorChoices("default")[0]?.description).toBe("favors recent history");
   });
 });
 

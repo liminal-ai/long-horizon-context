@@ -226,17 +226,16 @@ describe("the card", () => {
     expect(allocationRow.length).toBeLessThanOrEqual(100);
     // The shares follow immediately: no prose rows in between.
     expect(rows[index + 1]).toContain("Low 20% · Medium 20% · High 30% · Full 30%");
-    // Home does not carry the selector's longer wording — the selector does,
-    // from the unreduced preset copy.
+    // Home and selector use their purpose-specific preset descriptions.
     const home = panelText(renderPanel(modalState(), 100, 29));
     expect(home).not.toContain("initial selection");
     expect(home).not.toContain("emphasizes recent history");
     const selector = panelText(renderPanel(modalState({ route: "allocation" }), 100, 29));
-    expect(selector).toContain("initial selection");
+    expect(selector).toContain("favors recent history");
     expect(selector).toContain("equal fidelity distribution");
     expect(selector).toContain("broader low-fidelity history");
     expect(allocationSelectorChoices("default").map((choice) => choice.description)).toEqual([
-      "initial selection — emphasizes recent history",
+      "favors recent history",
       "equal fidelity distribution",
       "broader low-fidelity history",
     ]);

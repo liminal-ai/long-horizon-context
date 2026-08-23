@@ -34,7 +34,7 @@ export const BAND_ALLOCATIONS: readonly BandAllocation[] = [
   {
     id: "default",
     label: "Default",
-    description: "initial selection — emphasizes recent history",
+    description: "favors recent history",
     low: 20,
     medium: 20,
     high: 30,
