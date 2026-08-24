@@ -72,7 +72,7 @@ export interface PartsSource {
   readonly installed: InstalledTransition | null;
   turnSteps(turnId: string): StepEdges;
   partText(turnId: string, range: { fromOrder: number; toOrder: number }, trailer: string): string;
-  wholeTurnText(turnId: string): string | null;
+  wholeTurnText(turnId: string): { text: string; capped: boolean } | null;
 }
 
 export interface SelectionSource {
@@ -320,28 +320,38 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   const bandedTurns = closedTurns.filter((turn) => turn.closedAt !== null && turn.closedAt <= compactPoint);
   const bandedTurnIds = new Set(bandedTurns.map((turn) => turn.turnId));
 
-  // The whole construction from canonical — the stored rendering when ready,
-  // else composed in-walk — with the construction reference the settle record
-  // carries. Never the excerpt or compression rung.
-  function resolveWholeConstruction(
-    turn: SelectionTurn,
-  ): { rep: ReturnType<typeof resolveSmoothRepresentation>; construction: SettleConstruction } | null {
+  type WholeConstruction = { rep: ReturnType<typeof resolveSmoothRepresentation>; construction: SettleConstruction };
+
+  // The whole construction from canonical, with the construction reference the
+  // settle record carries. Never the excerpt or compression rung.
+  //
+  // With a parts source (the bounded plan on a clean thread) a ready stored
+  // rendering is never parsed or truncated: the turn is recomposed from
+  // canonical and its ready message derivations under the serving cap (F1),
+  // and the cap decides. When no message's construction is over the cap the
+  // stored row is served as the stored construction — what the legacy plan
+  // serves; when the cap elided anything the capped recomposition is served
+  // and reported truthfully as composed_in_walk. Without a parts source the
+  // stored row serves unchanged.
+  function resolveWholeConstruction(turn: SelectionTurn, requireStored: boolean): WholeConstruction | null {
     const rendering = lookup(turn.turnId, "turn_rendering");
-    if (rendering?.state === "ready" && typeof rendering.content === "string") {
+    const stored = rendering?.state === "ready" && typeof rendering.content === "string" ? rendering.content : null;
+    if (stored === null && requireStored) return null;
+    const composed = partsSource?.wholeTurnText(turn.turnId) ?? null;
+    if (stored !== null && (composed === null || !composed.capped)) {
       return {
-        rep: { derivationUsed: "turn_rendering", body: rendering.content, degraded: false, gap: false },
+        rep: { derivationUsed: "turn_rendering", body: stored, degraded: false, gap: false },
         construction: {
           kind: "stored",
           subjectId: turn.turnId,
           derivationType: "turn_rendering",
-          sourceVersion: rendering.sourceVersion ?? 1,
+          sourceVersion: rendering?.sourceVersion ?? 1,
         },
       };
     }
-    const composed = partsSource?.wholeTurnText(turn.turnId) ?? null;
     if (composed !== null) {
       return {
-        rep: { derivationUsed: "composed_in_walk", body: composed, degraded: false, gap: false },
+        rep: { derivationUsed: "composed_in_walk", body: composed.text, degraded: false, gap: false },
         construction: { kind: "composed_in_walk", turnId: turn.turnId },
       };
     }
@@ -351,13 +361,17 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   function buildTurnEntry(turn: SelectionTurn): ArrangementEntry {
     let rep: ReturnType<typeof resolveSmoothRepresentation> | null = null;
     if (settling !== null && settling.turnId === turn.turnId) {
-      const whole = resolveWholeConstruction(turn);
+      const whole = resolveWholeConstruction(turn, false);
       if (whole !== null) {
         settledRecord = { turnId: turn.turnId, construction: whole.construction };
         rep = whole.rep;
       }
     } else if (protectedRecord?.representation === "whole_rendering" && protectedRecord.turnId === turn.turnId) {
-      rep = resolveWholeConstruction(turn)?.rep ?? null;
+      rep = resolveWholeConstruction(turn, false)?.rep ?? null;
+    } else if (partsSource !== undefined) {
+      // Ordinary smooth rung on the bounded plan: a ready stored rendering is
+      // served under the cap; anything else takes the ordinary ladder.
+      rep = resolveWholeConstruction(turn, true)?.rep ?? null;
     }
     rep ??= resolveSmoothRepresentation(turn.turnId, lookup, () => source.turnExcerpt(turn.turnId));
     const text = renderArrangementEntry("turn", turn.turnId, rep, []);

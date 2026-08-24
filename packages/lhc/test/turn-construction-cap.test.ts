@@ -5,11 +5,7 @@
 import { copyFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, type ViewCompactParams } from "../src/index.js";
-import {
-  CONSTRUCTION_MESSAGE_CAP_TOKENS,
-  capConstructionText,
-  capForConstruction,
-} from "../src/turns/internal/compose.js";
+import { CONSTRUCTION_MESSAGE_CAP_TOKENS, capForConstruction } from "../src/turns/internal/compose.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -107,29 +103,96 @@ describe("the cap is a bounded-plan serving-time transformation", () => {
     const bounded = store.threadPath("bounded");
     copyFileSync(filePath, legacy);
     copyFileSync(filePath, bounded);
-    const band = async (path: string, algorithm: "legacy" | "bounded"): Promise<string> => {
-      const previous = process.env["LHC_COMPACT_ALGORITHM"];
-      if (algorithm === "legacy") process.env["LHC_COMPACT_ALGORITHM"] = "legacy";
-      else delete process.env["LHC_COMPACT_ALGORITHM"];
-      try {
-        const receipt = await sdk.threadView.compact({ filePath: path }, { params });
-        expect(receipt.ok).toBe(true);
-        if (!receipt.ok) throw new Error(receipt.error.reason);
-        const smooth = receipt.value.renderedBands.find((b) => b.band === "smooth");
-        expect(receipt.value.renderedBands.map((b) => b.band)).toContain("smooth");
-        return smooth?.text ?? "";
-      } finally {
-        if (previous === undefined) delete process.env["LHC_COMPACT_ALGORITHM"];
-        else process.env["LHC_COMPACT_ALGORITHM"] = previous;
-      }
-    };
-    const legacyBand = await band(legacy, "legacy");
-    expect(legacyBand).toContain(rendering);
-    expect(legacyBand).not.toContain("elided at construction");
-    const boundedBand = await band(bounded, "bounded");
-    expect(boundedBand).toContain("exact content: m5 …]");
-    expect(boundedBand).not.toContain(GIANT);
-    expect(capConstructionText(rendering)).toBe(capConstructionText(capConstructionText(rendering)));
-    expect(boundedBand).toContain(capConstructionText(rendering));
+    const legacyBand = await servedSmooth(sdk, legacy, "legacy", params, "t2");
+    expect(legacyBand.rung).toBe("turn_rendering");
+    expect(legacyBand.text).toContain(rendering);
+    expect(legacyBand.text).not.toContain("elided at construction");
+    const boundedBand = await servedSmooth(sdk, bounded, "bounded", params, "t2");
+    expect(boundedBand.rung).toBe("composed_in_walk");
+    expect(boundedBand.text).toContain("exact content: m5 …]");
+    expect(boundedBand.text).not.toContain(GIANT);
+  });
+
+  it("caps at the true message boundary when a body carries its own tag-shaped close text; legacy and durable bytes stay exact", async () => {
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const filePath = store.threadPath();
+    const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    // m2 is the giant message; its body carries "</m2>" early, then keeps going.
+    const lines = GIANT.split("\n");
+    const trap = [...lines.slice(0, 20), "</m2>", "<m2>", ...lines.slice(20)].join("\n");
+    const sent = await sdk.intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "t1 prompt" } }),
+      validEvent("assistant_text", { payload: { text: trap, stepIndex: 0 } }),
+      validEvent("assistant_text", { payload: { text: "step 1 short", stepIndex: 1 } }),
+    ]);
+    expect(sent.ok).toBe(true);
+
+    const params: ViewCompactParams = { lowerBound: 400, percentages: { full: 50, smooth: 50, detailed: 0, brief: 0 } };
+    const prepared = await sdk.threadView.prepareCompact({ filePath }, { params });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+    const part = prepared.value.selection.entries.find((e) => e.part !== undefined)!;
+    expect(part.part).toEqual({ fromStep: 0, toStep: 0 });
+    // One cap over the whole body: the embedded close text sits inside the
+    // kept head, the elision follows it, and nothing behind it leaks uncapped.
+    const body = part.text.slice(part.text.indexOf("<m2>") + 4, part.text.lastIndexOf("</m2>"));
+    expect(body.split("exact content: m2 …]")).toHaveLength(2);
+    expect(body).toContain("line 19 of a very long");
+    expect(body).toContain("\n</m2>\n<m2>\n");
+    expect(body).not.toContain("line 150 of a very long");
+    expect(body).toContain("line 299 of a very long");
+    expect(part.tokens).toBeLessThan(CONSTRUCTION_MESSAGE_CAP_TOKENS + 400);
+
+    // Durable and legacy bytes are exact.
+    const exact = await sdk.retrieval.getMessages({ filePath }, ["m2"]);
+    expect(exact.ok && exact.value.served[0]?.text).toBe(trap);
+    await sdk.intakeStream.messageEvents({ filePath }, [validEvent("turn_end")]);
+    const drained = await sdk.work.drain({ filePath });
+    expect(drained.ok && drained.value.remaining).toBe(0);
+    const db = openRaw(filePath);
+    const rendering = (
+      db
+        .prepare(`SELECT content FROM derivation WHERE subject_id = 't1' AND derivation_type = 'turn_rendering'`)
+        .get() as { content: string }
+    ).content;
+    db.close();
+    expect(rendering).toContain(trap);
+    const legacy = store.threadPath("legacy-trap");
+    copyFileSync(filePath, legacy);
+    const legacyBand = await servedSmooth(sdk, legacy, "legacy", params, "t1");
+    expect(legacyBand.rung).toBe("turn_rendering");
+    expect(legacyBand.text).toContain(rendering);
+    const boundedBand = await servedSmooth(sdk, filePath, "bounded", params, "t1");
+    expect(boundedBand.rung).toBe("composed_in_walk");
+    expect(boundedBand.text).toContain("exact content: m2 …]");
+    expect(boundedBand.text).not.toContain("line 150 of a very long");
   });
 });
+
+// The smooth band a compact under one plan serves, with one subject's arrangement rung.
+async function servedSmooth(
+  sdk: ReturnType<typeof initLhc>,
+  filePath: string,
+  algorithm: "legacy" | "bounded",
+  params: ViewCompactParams,
+  subjectId: string,
+): Promise<{ text: string; rung: string | undefined }> {
+  const previous = process.env["LHC_COMPACT_ALGORITHM"];
+  if (algorithm === "legacy") process.env["LHC_COMPACT_ALGORITHM"] = "legacy";
+  else delete process.env["LHC_COMPACT_ALGORITHM"];
+  try {
+    const receipt = await sdk.threadView.compact({ filePath }, { params });
+    expect(receipt.ok).toBe(true);
+    if (!receipt.ok) throw new Error(receipt.error.reason);
+    const described = await sdk.threadView.describe({ filePath });
+    if (!described.ok || described.value === null) throw new Error("no installed view");
+    return {
+      text: receipt.value.renderedBands.find((b) => b.band === "smooth")?.text ?? "",
+      rung: described.value.arrangement.find((e) => e.subjectId === subjectId)?.derivationUsed,
+    };
+  } finally {
+    if (previous === undefined) delete process.env["LHC_COMPACT_ALGORITHM"];
+    else process.env["LHC_COMPACT_ALGORITHM"] = previous;
+  }
+}

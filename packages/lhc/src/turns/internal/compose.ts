@@ -24,22 +24,18 @@ import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 // F1 — the bounded per-message construction cap. A served construction never
 // spends more than this on one message: a giant message keeps a head and a
 // tail around a marked elision that names the exact-retrieval address (`m…`).
-// A serving-time transformation of the bounded plan only: it is applied where
-// that walk renders constructions into the served view (parts, in-walk
-// compositions, stored renderings it serves), never to the durable artifacts
-// both plans consume — composition here, stored turn_rendering rows,
-// compression/assembly inputs, and floors stay uncapped — and never to the
-// verbatim tail or canonical.
+// A serving-time option of the bounded plan only, applied here while message
+// identity and body are still structured (never over serialized text, whose
+// bodies may contain tag-shaped bytes). Composition is uncapped by default:
+// stored turn_rendering rows, compression/assembly inputs, floors, and
+// retrieval renderings keep every byte; the bounded walk requests the cap
+// explicitly for parts and in-walk whole constructions. Never the verbatim
+// tail, never canonical.
 export const CONSTRUCTION_MESSAGE_CAP_TOKENS = 2000;
 
-// Cap a composed construction per tagged message: every `<mN>…</mN>` body is
-// capped independently, naming its own address; headers, the turn wrapper,
-// and any trailer are untouched. Tags never nest, so the match is exact.
-export function capConstructionText(text: string): string {
-  return text.replace(/<(m\d+)>([\s\S]*?)<\/\1>/g, (whole, messageId: string, body: string) => {
-    const capped = capForConstruction(body, messageId);
-    return capped === body ? whole : `<${messageId}>${capped}</${messageId}>`;
-  });
+export interface ComposeOptions {
+  // Bounded-plan serving: cap each message's construction text.
+  capForServing?: boolean;
 }
 
 export function capForConstruction(text: string, messageId: string): string {
@@ -90,6 +86,8 @@ export interface CompositionInput {
   parts: RenderingPart[];
   gaps: DependencyGap[];
   recoveries: RecoveryReceipt[];
+  // Bounded serving only: whether the cap elided any message's construction.
+  capped: boolean;
 }
 
 export interface RecoveryReceipt {
@@ -237,7 +235,8 @@ function buildAtom(
   message: ComposeMessage,
   derivations: ReadonlyMap<string, ComposeDerivationRow>,
   resultByCallId: Map<string, boolean>,
-): { atom: ComposeAtom; gap?: DependencyGap; recovery?: RecoveryReceipt } {
+  capForServing: boolean,
+): { atom: ComposeAtom; gap?: DependencyGap; recovery?: RecoveryReceipt; capped: boolean } {
   const plan = PART_PLANS[message.kind];
   const derivation =
     plan.derivation === undefined
@@ -245,13 +244,17 @@ function buildAtom(
       : derivations.get(composeDerivationKey(message.messageId, plan.derivation));
   const ready = derivation !== undefined && derivation.state === "ready" && derivation.content !== undefined;
   const block = message.blocks[0]?.content ?? {};
+  // The uncapped text is what a recovery floor writes back; only bounded
+  // serving renders the capped construction.
   const text = ready ? readyText(message, derivation.content as string) : plan.fallbackText(message);
+  const served = capForServing ? capForConstruction(text, message.messageId) : text;
   const part: RenderingPart = {
     messageId: message.messageId,
     kind: message.kind,
-    text,
+    text: served,
     fallback: plan.derivation !== undefined && !ready,
   };
+  const capped = served !== text;
   if (message.kind === "model_change" || message.kind === "thinking_level_change") {
     part.blocks = message.blocks;
   }
@@ -295,7 +298,7 @@ function buildAtom(
           floorUsed: text,
         }
       : undefined;
-  return { atom, ...(gap === undefined ? {} : { gap }), ...(recovery === undefined ? {} : { recovery }) };
+  return { atom, capped, ...(gap === undefined ? {} : { gap }), ...(recovery === undefined ? {} : { recovery }) };
 }
 
 const RUN_OUTCOME_ORDER: readonly ToolOutcome[] = ["succeeded", "failed", "unknown"];
@@ -374,13 +377,16 @@ function composeRun(members: readonly ComposeAtom[]): RenderingPart {
 export function composeRenderingInput(
   messages: readonly ComposeMessage[],
   derivations: ReadonlyMap<string, ComposeDerivationRow>,
+  options: ComposeOptions = {},
 ): CompositionInput {
   const resultByCallId = recordOutcomes(messages);
   const atoms: ComposeAtom[] = [];
   const gaps: DependencyGap[] = [];
   const recoveries: RecoveryReceipt[] = [];
+  let capped = false;
   for (const message of messages) {
-    const built = buildAtom(message, derivations, resultByCallId);
+    const built = buildAtom(message, derivations, resultByCallId, options.capForServing === true);
+    capped ||= built.capped;
     atoms.push(built.atom);
     if (built.gap !== undefined) gaps.push(built.gap);
     if (built.recovery !== undefined) recoveries.push(built.recovery);
@@ -415,7 +421,7 @@ export function composeRenderingInput(
     i = j + 1;
   }
 
-  return { parts, gaps, recoveries };
+  return { parts, gaps, recoveries, capped };
 }
 
 function formatDialogueSection(part: RenderingPart): string {
@@ -506,7 +512,7 @@ export function composePreDetailedAssembly(
   const recoveries: RecoveryReceipt[] = [];
   for (const message of messages) {
     if (!DIALOG_KINDS.has(message.kind)) continue;
-    const built = buildAtom(message, derivations, resultByCallId);
+    const built = buildAtom(message, derivations, resultByCallId, false);
     parts.push(built.atom.part);
     if (built.gap !== undefined) gaps.push(built.gap);
     if (built.recovery !== undefined) recoveries.push(built.recovery);

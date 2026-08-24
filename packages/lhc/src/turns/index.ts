@@ -40,9 +40,6 @@ import {
   type TurnStructureRow,
 } from "./internal/store.js";
 
-// F1: the bounded plan caps constructions at serve time through this one door.
-export { capConstructionText } from "./internal/compose.js";
-
 export interface TurnRecord {
   turnId: string;
   turnOrder: number;
@@ -242,24 +239,33 @@ export function composeTurnPartText(
   trailer: string,
 ): string {
   const messages = readMemberMessages(db, turnId, range);
-  const { parts } = composeRenderingInput(messages, new Map());
+  // A part is bounded-plan serving: composed under the cap, explicitly.
+  const { parts } = composeRenderingInput(messages, new Map(), { capForServing: true });
   return composeStructuredTurnText(parts, turnId, trailer);
 }
 
-// Whole-turn construction composed in-walk (turn parts, settle): the same
-// composition the queued turn_derivation handler stores as turn_rendering —
-// live members with their message derivations where ready — with no write,
-// no floor write, no enqueue, no placement. Null when the turn has no live
+export interface WholeTurnComposition {
+  text: string;
+  // Whether the serving cap elided any message's construction (F1).
+  capped: boolean;
+}
+
+// Whole-turn construction composed in-walk (turn parts: settle, protection,
+// and bounded serving of a ready stored rendering): the same composition the
+// queued turn_derivation handler stores as turn_rendering — live members with
+// their message derivations where ready — requested under the bounded-serving
+// cap, with no write, no floor write, no enqueue, no placement. `capped`
+// reports whether the cap changed anything. Null when the turn has no live
 // members.
-export function composeWholeTurnText(db: DatabaseSync, turnId: string): string | null {
+export function composeWholeTurnText(db: DatabaseSync, turnId: string): WholeTurnComposition | null {
   const messages = readMemberMessages(db, turnId);
   if (messages.length === 0) return null;
   const derivations = readMessageDerivationRows(
     db,
     messages.map((message) => message.messageId),
   );
-  const { parts } = composeRenderingInput(messages, derivations);
-  return composeStructuredTurnText(parts, turnId);
+  const { parts, capped } = composeRenderingInput(messages, derivations, { capForServing: true });
+  return { text: composeStructuredTurnText(parts, turnId), capped };
 }
 
 export interface ActiveTurnSteps {
