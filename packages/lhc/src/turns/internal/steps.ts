@@ -46,7 +46,9 @@ export interface StepEdges {
   // Leading run of complete steps.
   complete: number;
   // Newest admissible k: the number of steps a part may cover — one fewer
-  // than the complete prefix. Null when no step is complete.
+  // than the complete prefix, since the newest complete step always stays in
+  // the verbatim tail. Null when fewer than two steps are complete (0 is not
+  // an admissible k).
   lastEdge: number | null;
 }
 
@@ -153,6 +155,6 @@ export function stepEdges(members: readonly StepMember[]): StepEdges {
     splittable,
     steps,
     complete,
-    lastEdge: complete >= 1 ? complete - 1 : null,
+    lastEdge: complete >= 2 ? complete - 1 : null,
   };
 }

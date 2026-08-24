@@ -69,6 +69,20 @@ describe("threadView.hostMetadata", () => {
       lastStepEdge: null,
       splittable: false,
     });
+
+    // Exactly one complete step: splittable, but no admissible k — the one
+    // complete step is the minimum verbatim tail, and 0 is not a split.
+    const one = await intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt"),
+      validEvent("assistant_text", { payload: { text: "only step", stepIndex: 0 } }),
+    ]);
+    expect(one.ok).toBe(true);
+    expect((await read(filePath)).activeTurn).toMatchObject({
+      turnId: "t2",
+      completeSteps: 1,
+      lastStepEdge: null,
+      splittable: true,
+    });
   });
 
   it("a NULL step index on any step-bearing member makes the turn not splittable with no admissible edge", async () => {
