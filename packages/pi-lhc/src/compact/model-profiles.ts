@@ -46,6 +46,9 @@ export const DEFAULT_MODEL_COMPACT_SETTINGS: readonly ModelCompactSettings[] = [
   { match: "opus-4-6", triggerTokens: 400_000, lowerBound: 180_000, percentages: { ...DEFAULT_PERCENTAGES } },
   { match: "glm", triggerTokens: 350_000, lowerBound: 140_000, percentages: { ...DEFAULT_PERCENTAGES } },
   { match: "grok", triggerTokens: 300_000, lowerBound: 100_000, percentages: { ...DEFAULT_PERCENTAGES } },
+  // deepseek (V4 Flash, 256k window): 120k→40k keeps a whole working cycle
+  // inside the window, well under Pi's native ~240k threshold.
+  { match: "deepseek", triggerTokens: 120_000, lowerBound: 40_000, percentages: { ...DEFAULT_PERCENTAGES } },
   // sol: no connector trigger. Its 272k window puts PI's native threshold at
   // 272,000 − 16,384 = 255,616 — the intended ~255k trigger already. A
   // connector trigger at the same point double-fires and races PI's own

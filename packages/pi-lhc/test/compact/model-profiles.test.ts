@@ -24,6 +24,10 @@ describe("resolveModelCompactSettings", () => {
     });
     expect(resolveModelCompactSettings("GLM-5.2")).toMatchObject({ triggerTokens: 350_000, lowerBound: 140_000 });
     expect(resolveModelCompactSettings("grok-4.5")).toMatchObject({ triggerTokens: 300_000, lowerBound: 100_000 });
+    expect(resolveModelCompactSettings("deepseek-v4-flash")).toMatchObject({
+      triggerTokens: 120_000,
+      lowerBound: 40_000,
+    });
     // sol ships without a connector trigger: PI's native threshold
     // (272k − 16,384 ≈ 255.6k) already sits at the intended trigger point,
     // and a connector trigger at the same point double-fires and races it.
