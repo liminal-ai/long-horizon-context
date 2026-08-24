@@ -159,12 +159,37 @@ export interface StoredView {
     subjectId: string;
     derivationUsed: string;
     degraded: boolean;
+    // Present only on a part entry (turn parts): the contiguous step range of
+    // the single transition turn this entry renders. Its presence in the
+    // installed view is what makes that turn unsettled; absence everywhere
+    // means every served turn is whole.
+    part?: { fromStep: number; toStep: number };
   }>;
   gaps: Array<{ band: Band; subjectId: string; reason: string }>;
   // What the compact saw, stored verbatim.
   sourceState: { maxEventOrder: number; derivationCounts: Record<string, number> };
   // Non-empty bands in gradient order with their stored token counts.
   bands: Array<{ band: Band; storedTokens: number }>;
+}
+
+// Host metadata surface (turn parts, AC-7.1): the deterministic,
+// inference-free reads a host's pressure decision needs. `activeTurn` comes
+// from the record (the open turn and its host-supplied step indices);
+// `unsettledTurn` comes from the installed view (a turn served as parts).
+export interface HostMetadata {
+  activeTurn: {
+    turnId: string;
+    // Sum of stored member token estimates.
+    estimatedTokens: number;
+    // Leading run of complete steps (every tool_call paired inside its step).
+    completeSteps: number;
+    // Newest admissible split point k (steps a part may cover), or null when
+    // no split is admissible: fewer than one complete step, or the turn is
+    // not splittable (a member with no step index, or inconsistent indices).
+    lastStepEdge: number | null;
+    splittable: boolean;
+  } | null;
+  unsettledTurn: { turnId: string } | null;
 }
 
 export interface ViewStatus {

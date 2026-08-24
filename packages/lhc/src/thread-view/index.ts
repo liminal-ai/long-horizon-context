@@ -28,6 +28,7 @@ import {
   type DbReadTransaction,
   type DbWriteTransaction,
   type ErrorResult,
+  type HostMetadata,
   type OpResult,
   resolveInstanceViewConfig,
   storageFailure,
@@ -39,6 +40,7 @@ import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
 import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
 import { compactStopped, computeArrangement } from "./internal/compact-compute.js";
+import { readHostMetadata } from "./internal/host-metadata.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import { type ProtectedBoundaryPreview, previewProtectedVisibilityBoundary } from "./internal/protected-boundary.js";
@@ -234,6 +236,15 @@ export async function describe(ref: ThreadRef): Promise<OpResult<StoredView | nu
     return await createDbReadTransaction(ref, (transaction) => readStoredView(transaction.db));
   } catch (cause) {
     return storageFailure(`view describe failed: ${detail(cause)}`);
+  }
+}
+
+// Host metadata: the pressure-decision reads (AC-7.1). Read-only.
+export async function hostMetadata(ref: ThreadRef): Promise<OpResult<HostMetadata>> {
+  try {
+    return await createDbReadTransaction(ref, (transaction) => readHostMetadata(transaction.db));
+  } catch (cause) {
+    return storageFailure(`host metadata read failed: ${detail(cause)}`);
   }
 }
 

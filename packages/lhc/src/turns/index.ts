@@ -19,6 +19,7 @@ import { type ChunkStructureRow, dropEmptyReadableChunks, readChunkStructure } f
 import { readChunkRows, readOwnedDerivations, reportTurnDerivations } from "./internal/derivations.js";
 import { deriveTurnOwnedInOpenDb } from "./internal/derive.js";
 import { backfillRenderingLabelsInOpenDb, type RenderingLabelBackfillReceipt } from "./internal/label-backfill.js";
+import { readStepMembers, type StepEdges, stepEdges } from "./internal/steps.js";
 import {
   closeTurn,
   countTurnMembers,
@@ -208,6 +209,26 @@ export function getChunkText(
 // itself. Turns carry the deleted flag and chunks carry raw (unvalidated)
 // membership so the consumer keeps ownership of the source-state corruption
 // policy; it never sees the live-only shapes listTurns/listChunks return.
+// The open turn's step facts for a host pressure decision (turn parts,
+// AC-7.1): identity, the sum of stored member estimates, and the step edges
+// read from host-supplied step indices. Deterministic, inference-free, no
+// writes. Null only when the record holds no open turn (a damaged thread; the
+// state machine otherwise keeps exactly one).
+export interface ActiveTurnSteps {
+  turnId: string;
+  estimatedTokens: number;
+  edges: StepEdges;
+}
+
+export function readActiveTurnSteps(db: DatabaseSync): ActiveTurnSteps | null {
+  const turnId = selectOpenTurnIds(db)[0];
+  if (turnId === undefined) return null;
+  const tokens = db
+    .prepare(`SELECT COALESCE(SUM(token_estimate), 0) AS total FROM message WHERE turn_id = ? AND deleted_at IS NULL`)
+    .get(turnId) as { total: number | bigint };
+  return { turnId, estimatedTokens: Number(tokens.total), edges: stepEdges(readStepMembers(db, turnId)) };
+}
+
 export interface TurnChunkStructure {
   turns: TurnStructureRow[];
   chunks: ChunkStructureRow[];

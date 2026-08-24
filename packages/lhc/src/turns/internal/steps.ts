@@ -1,3 +1,5 @@
+import type { DatabaseSync } from "node:sqlite";
+
 // Step edges over one turn's live members, from the host-supplied step index
 // (schema v12). Pure: no DB, no inference. This is the one reader of step
 // structure the walk and the host metadata surface consume; the record never
@@ -38,6 +40,38 @@ export interface StepEdges {
   // Newest admissible k: the number of steps a part may cover — one fewer
   // than the complete prefix. Null when no step is complete.
   lastEdge: number | null;
+}
+
+// The live members of one turn as step input, in message order. The tool
+// pairing key is read from the first block of tool activity; other kinds carry
+// none.
+export function readStepMembers(db: DatabaseSync, turnId: string): StepMember[] {
+  const rows = db
+    .prepare(
+      `SELECT m.message_id, m.kind, m.step_index,
+              json_extract(mb.content, '$.toolCallId') AS tool_call_id
+       FROM message m
+       LEFT JOIN message_block mb ON mb.message_id = m.message_id AND mb.block_index = 0
+       WHERE m.turn_id = ? AND m.deleted_at IS NULL
+       ORDER BY m.source_event_order`,
+    )
+    .all(turnId) as unknown as Array<{
+    message_id: string;
+    kind: string;
+    step_index: number | bigint | null;
+    tool_call_id: string | null;
+  }>;
+  return rows.map((row) => {
+    const member: StepMember = {
+      messageId: row.message_id,
+      kind: row.kind,
+      stepIndex: row.step_index === null ? null : Number(row.step_index),
+    };
+    if ((row.kind === "tool_call" || row.kind === "tool_result") && typeof row.tool_call_id === "string") {
+      member.toolCallId = row.tool_call_id;
+    }
+    return member;
+  });
 }
 
 export function stepEdges(members: readonly StepMember[]): StepEdges {
