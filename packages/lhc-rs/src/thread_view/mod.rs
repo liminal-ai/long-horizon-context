@@ -1318,6 +1318,37 @@ pub fn read_prepared_source_state(
     let boundary = db
         .prepare("SELECT position FROM view_boundary WHERE thread_singleton = 1")
         .get();
+    // Open-turn step edges are structure: they decide where the walk may split.
+    // Closed turns are already fingerprinted by their close; only the open turn's
+    // step indices can still move a split point between prepare and install.
+    let open_turn_ids: Vec<String> = turn_rows
+        .iter()
+        .filter(|t| t.get("status").and_then(|v| v.as_str()) == Some("open"))
+        .filter_map(|t| {
+            t.get("turn_id")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .collect();
+    let step_rows: Vec<Map<String, Value>> = if open_turn_ids.is_empty() {
+        Vec::new()
+    } else {
+        let placeholders = open_turn_ids
+            .iter()
+            .map(|_| "?")
+            .collect::<Vec<_>>()
+            .join(", ");
+        let params: Vec<SqlParam> = open_turn_ids
+            .iter()
+            .map(|id| SqlParam::from(id.as_str()))
+            .collect();
+        db.prepare(&format!(
+            "SELECT message_id, step_index FROM message
+             WHERE deleted_at IS NULL AND turn_id IN ({placeholders})
+             ORDER BY source_event_order"
+        ))
+        .all(&params)
+    };
     let structure_digest = sha256_hex(&js_json_stringify(&json!({
         "turns": turn_rows.iter().map(|t| json!({
             "id": t.get("turn_id").and_then(|v| v.as_str()).unwrap_or(""),
@@ -1337,6 +1368,10 @@ pub fn read_prepared_source_state(
             "i": m.get("member_idx").and_then(|v| v.as_i64()).unwrap_or(0),
         })).collect::<Vec<_>>(),
         "boundary": boundary.as_ref().and_then(|b| b.get("position")).and_then(|v| v.as_i64()).unwrap_or(0),
+        "steps": step_rows.iter().map(|r| json!([
+            r.get("message_id").and_then(|v| v.as_str()).unwrap_or(""),
+            r.get("step_index").cloned().unwrap_or(Value::Null),
+        ])).collect::<Vec<_>>(),
     })));
 
     let view = read_view_snapshot(db);

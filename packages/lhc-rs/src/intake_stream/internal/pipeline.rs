@@ -286,6 +286,10 @@ pub async fn run_message_events(
                                 event_kind: recorded_event.event_kind(),
                                 event_order: last_order,
                                 payload: turn_payload,
+                                steer: matches!(
+                                    &recorded_event,
+                                    EventRecord::UserPrompt { payload, .. } if payload.steer == Some(true)
+                                ),
                             },
                         );
                         turn_transitions

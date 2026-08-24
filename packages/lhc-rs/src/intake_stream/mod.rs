@@ -182,11 +182,17 @@ pub struct BatchResult {
 
 // ── EventRecord payloads (kind-exact, closed) ──────────────────────
 
-/// TS `{ text: string }` — user_prompt / runtime_note.
+/// TS `{ text: string }` — user_prompt / runtime_note. `steer` is the
+/// user_prompt-only host assertion (turn parts, Flow 7) that this prompt
+/// arrived inside a run already in progress: it joins the open turn as a
+/// member and is never a turn boundary. Validation rejects it on
+/// runtime_note, so a stored note never carries it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextPayload {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<bool>,
 }
 
 /// Host-captured model identity for resume (PI same-model signature keep).
@@ -216,6 +222,11 @@ pub struct AssistantThinkingPayload {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<String>,
+    /// Host-supplied step index (schema v12, turn parts F2): the zero-based
+    /// provider request/response cycle this message belongs to. Recorded
+    /// verbatim, never inferred; NULL in storage when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
 }
 
 /// TS `AssistantTextPayload` — text, optional provider usage (schema v5), optional provenance.
@@ -233,6 +244,9 @@ pub struct AssistantTextPayload {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<String>,
+    /// Host-supplied step index (schema v12, turn parts F2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
 }
 
 /// TS `{ previousModel; newModel }`.
@@ -258,6 +272,9 @@ pub struct ToolCallPayload {
     pub tool_call_id: String,
     pub tool_name: String,
     pub arguments: Map<String, Value>,
+    /// Host-supplied step index (schema v12, turn parts F2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
 }
 
 /// TS `{ toolCallId; content; isError? }`.
@@ -268,6 +285,10 @@ pub struct ToolResultPayload {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+    /// Host-supplied step index (schema v12): a tool_result carries the same
+    /// index as its tool_call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
 }
 
 /// Typed compact-continuation marker payload (LIM-61 / LIM-63A).

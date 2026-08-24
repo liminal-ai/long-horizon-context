@@ -139,6 +139,10 @@ pub struct MessageRecord {
     // the source event did not carry it (other kinds, pre-v5 rows, hosts that omit).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_usage: Option<Map<String, Value>>,
+    // Host-supplied step index (schema v12). Absent when the source event did
+    // not carry it; never inferred.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub derivations: Option<Vec<Derivation>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -231,6 +235,20 @@ pub fn create(
         | EventRecord::CompactContinuationMarker { .. }
         | EventRecord::TurnEnd { .. } => None,
     };
+    // The host-supplied step index rides the four step-bearing kinds only
+    // (schema v12); every other kind stores NULL.
+    let step_index = match recorded_event {
+        EventRecord::AssistantText { payload, .. } => payload.step_index,
+        EventRecord::AssistantThinking { payload, .. } => payload.step_index,
+        EventRecord::ToolCall { payload, .. } => payload.step_index,
+        EventRecord::ToolResult { payload, .. } => payload.step_index,
+        EventRecord::UserPrompt { .. }
+        | EventRecord::RuntimeNote { .. }
+        | EventRecord::ModelChange { .. }
+        | EventRecord::ThinkingLevelChange { .. }
+        | EventRecord::CompactContinuationMarker { .. }
+        | EventRecord::TurnEnd { .. } => None,
+    };
     insert_message(
         transaction.db,
         &MessageRow {
@@ -242,6 +260,7 @@ pub fn create(
             harness: recorded_event.harness().to_string(),
             turn_id: turn_id.to_string(),
             provider_usage,
+            step_index,
             blocks: projected.blocks,
         },
     );
@@ -474,6 +493,8 @@ pub struct MessageDetail {
     pub turn_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_usage: Option<Map<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
     pub deleted: bool,
     pub derivations: Vec<DerivationReportEntry>,
 }
@@ -513,6 +534,7 @@ pub async fn show(thread_ref: ThreadRef, message_id: &str) -> OpResult<MessageDe
                     recorded_at: record.recorded_at,
                     turn_id: record.turn_id,
                     provider_usage: record.provider_usage,
+                    step_index: record.step_index,
                     deleted: record.deleted,
                     derivations,
                 },

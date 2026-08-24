@@ -39,6 +39,8 @@ use internal::derivations::{
     report_turn_derivations,
 };
 use internal::derive::{TurnOwnedDeriveResult, derive_turn_owned_in_open_db};
+use internal::steps::{StepEdges, read_step_members, step_edges};
+use internal::store::select_open_turn_ids as select_open_turn_ids_for_steps;
 use internal::store::{
     TurnCloseHostFacts, TurnStructureRow, close_turn, count_turn_members, insert_open_turn,
     next_turn_order, read_turn_structure, read_turns, select_open_turn_ids,
@@ -216,6 +218,10 @@ pub struct RecordedTurnEvent {
     pub event_kind: EventKind,
     pub event_order: i64,
     pub payload: TurnEndPayload,
+    /// user_prompt only: the host's assertion that this prompt is an in-run
+    /// steer (turn parts, Flow 7) — a member of the open turn, never a boundary.
+    #[serde(default)]
+    pub steer: bool,
 }
 
 fn host_facts_from_turn_end(payload: &TurnEndPayload) -> TurnCloseHostFacts {
@@ -272,7 +278,10 @@ pub fn create(
             queued_work: vec![item],
         };
     }
-    if recorded_event.event_kind == EventKind::UserPrompt && has_members {
+    // A steering prompt (host-asserted `steer: true`) arrived inside a run in
+    // progress: it is a member of the open turn, never a boundary (turn parts,
+    // Flow 7 — the task's turn identity survives a steer).
+    if recorded_event.event_kind == EventKind::UserPrompt && has_members && !recorded_event.steer {
         // Prompt-boundary closes leave host facts unset (NULLs).
         let item = close_turn_and_queue_work(
             transaction,
@@ -435,6 +444,40 @@ pub fn get_chunk_text(
 pub struct TurnChunkStructure {
     pub turns: Vec<TurnStructureRow>,
     pub chunks: Vec<ChunkStructureRow>,
+}
+
+/// Step edges of one turn from its host-supplied step indices (any status).
+pub fn read_turn_steps(db: &Db, turn_id: &str) -> StepEdges {
+    step_edges(&read_step_members(db, turn_id))
+}
+
+/// The open turn's step facts for a host pressure decision (turn parts,
+/// AC-7.1): identity, the sum of stored member estimates, and the step edges
+/// read from host-supplied step indices. Deterministic, inference-free, no
+/// writes. None only when the record holds no open turn (a damaged thread;
+/// the state machine otherwise keeps exactly one).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActiveTurnSteps {
+    pub turn_id: String,
+    pub estimated_tokens: i64,
+    pub edges: StepEdges,
+}
+
+pub fn read_active_turn_steps(db: &Db) -> Option<ActiveTurnSteps> {
+    let turn_id = select_open_turn_ids_for_steps(db).into_iter().next()?;
+    let estimated_tokens = db
+        .prepare(
+            "SELECT COALESCE(SUM(token_estimate), 0) AS total FROM message WHERE turn_id = ? AND deleted_at IS NULL",
+        )
+        .get_params(&[crate::shared_tech::storage::SqlParam::from(turn_id.as_str())])
+        .and_then(|row| row.get("total").and_then(|v| v.as_i64()))
+        .unwrap_or(0);
+    Some(ActiveTurnSteps {
+        edges: read_turn_steps(db, &turn_id),
+        turn_id,
+        estimated_tokens,
+    })
 }
 
 pub fn read_turn_chunk_structure(db: &Db) -> TurnChunkStructure {
