@@ -68,8 +68,16 @@ export type CompactContinuationMarkerPayload = {
   waitForUser: false;
 };
 
+/**
+ * A user prompt. `steer: true` is the host's assertion that this prompt
+ * arrived inside a run already in progress (a steering message): it joins the
+ * open turn as a member and is never a turn boundary. Absent/false: the
+ * prompt opens a turn (closing a populated open one first).
+ */
+export type UserPromptPayload = { text: string; steer?: boolean };
+
 export type MessageEventInput =
-  | BaseEvent<"user_prompt", { text: string }>
+  | BaseEvent<"user_prompt", UserPromptPayload>
   | BaseEvent<"assistant_text", AssistantTextPayload>
   | BaseEvent<"assistant_thinking", AssistantThinkingPayload>
   | BaseEvent<"runtime_note", { text: string }>

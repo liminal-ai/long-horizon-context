@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { EventRecord, TurnEndPayload } from "../intake-stream/index.js";
+import type { EventRecord, TurnEndPayload, UserPromptPayload } from "../intake-stream/index.js";
 import type { Derivation, DerivationReportEntry, ResolvedSdkConfig } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
@@ -144,7 +144,12 @@ export function create(transaction: DbWriteTransaction, recordedEvent: RecordedT
       queuedWork: [item],
     };
   }
-  if (recordedEvent.eventKind === "user_prompt" && hasMembers) {
+  // A steering prompt (host-asserted `steer: true`) arrived inside a run in
+  // progress: it is a member of the open turn, never a boundary (turn parts,
+  // Flow 7 — the task's turn identity survives a steer).
+  const steer =
+    recordedEvent.eventKind === "user_prompt" && (recordedEvent.payload as UserPromptPayload).steer === true;
+  if (recordedEvent.eventKind === "user_prompt" && hasMembers && !steer) {
     const item = closeTurnAndQueueWork(transaction, openTurnId, recordedEvent.eventOrder);
     const turnId = insertOpenTurn(transaction.db, nextTurnOrder(transaction.db), recordedEvent.eventOrder);
     return {

@@ -3,7 +3,7 @@
 // plain entry list the test appends to exactly as Pi persists (after the
 // message_end handlers return), and the context event's message list is a
 // deep copy of those entries' messages — Pi's own objects.
-import { createDeterministicInferenceCallbacks, type ThreadRef, threadView, turns } from "lhc";
+import { createDeterministicInferenceCallbacks, messages, type ThreadRef, threadView, turns } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type Connector,
@@ -288,10 +288,139 @@ describe("the context hook", () => {
     );
   });
 
-  it("steer during a split: a user message landing at the split's step edge survives verbatim in the served tail", async () => {
+  it("steer during a split: the steer is flushed through the production context path into the same open turn — no boundary — and served as Pi's exact user object in the verbatim tail; agent_end closes that one turn", async () => {
     const { connector, ref, pi } = await startedConnector();
     for (let n = 1; n <= 3; n += 1) await closedTurn(pi, connector, n, t0 + n * 100);
     const at = t0 + 1000;
+    const user = makeUserMessage("big task", at);
+    await pi.deliver(user);
+    const live: AgentMessage[] = [user];
+    for (let step = 0; step < 2; step += 1) {
+      const call = makeAssistantMessage({
+        toolCalls: [{ id: `live${step}`, name: "read", arguments: {} }],
+        stopReason: "toolUse",
+        timestamp: at + 10 * step + 1,
+        usage: usageOf(2500 + step * 800),
+      });
+      const result = makeToolResult({
+        id: `live${step}`,
+        content: `live ${step} `.repeat(500),
+        timestamp: at + 10 * step + 2,
+      });
+      await pi.deliver(call);
+      await pi.deliver(result);
+      live.push(call, result);
+      await pi.stepEnd();
+    }
+    await connector.contextHandler(pi.contextEvent(), pi.ctx);
+    expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: true });
+    const split = await threadView.describe(ref);
+    expect(split.ok && split.value?.arrangement.some((e) => e.part !== undefined)).toBe(true);
+    const openBefore = await turns.listTurns(ref);
+    expect(openBefore.ok && openBefore.value.filter((t) => t.status === "open").map((t) => t.turnId)).toEqual(["t4"]);
+    const countBefore = openBefore.ok ? openBefore.value.length : -1;
+
+    // Pi drains a steer at the same step edge: a user message finalized inside
+    // the run. It reaches the record only when the next context event flushes
+    // pending capture — the production path.
+    const steer = makeUserMessage("actually, focus on the tests", at + 50);
+    await pi.deliver(steer);
+    live.push(steer);
+    const event = pi.contextEvent();
+    const served = (await connector.contextHandler(event, pi.ctx))?.messages ?? [];
+    expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: false });
+
+    // Same canonical open turn, no implicit close/open: the steer is a member of t4.
+    const openAfter = await turns.listTurns(ref);
+    expect(openAfter.ok && openAfter.value.filter((t) => t.status === "open").map((t) => t.turnId)).toEqual(["t4"]);
+    expect(openAfter.ok && openAfter.value.length).toBe(countBefore);
+    const recorded = await messages.list(ref);
+    const steerRow = recorded.ok ? recorded.value.filter((m) => m.kind === "user_prompt").at(-1) : undefined;
+    expect(steerRow).toMatchObject({
+      turnId: "t4",
+      blocks: [{ content: { text: "actually, focus on the tests", steer: true } }],
+    });
+
+    // Served as Pi's exact user object — the event's own object, last in the tail.
+    expect(served.at(-1)).toBe(event.messages.at(-1));
+    expect(served.at(-1)).toEqual(steer);
+    const after = await threadView.describe(ref);
+    expect(after.ok && split.ok && after.value?.viewId).toBe(split.ok ? split.value?.viewId : null);
+
+    // The run ends: agent_end closes that one turn, steer inside it.
+    const final = makeAssistantMessage({ text: "done", timestamp: at + 60, usage: usageOf(1000) });
+    await pi.deliver(final);
+    live.push(final);
+    await pi.stepEnd();
+    await connector.handlers.agent_end(makeAgentEnd(live), pi.ctx);
+    const closed = await turns.listTurns(ref);
+    expect(closed.ok && closed.value.find((t) => t.turnId === "t4")).toMatchObject({
+      status: "closed",
+      outcome: "completed",
+    });
+    expect(closed.ok && closed.value.filter((t) => t.status === "open").length).toBe(1);
+    expect(closed.ok && closed.value.length).toBe(countBefore + 1);
+  });
+
+  it("retry watermark is per raw-context epoch: a high prior watermark does not suppress the first eligible attempt in a new session/thread, nor after Pi's session_compact", async () => {
+    const first = await startedConnector();
+    for (let n = 1; n <= 3; n += 1) await closedTurn(first.pi, first.connector, n, t0 + n * 100);
+    const at = t0 + 1000;
+    await first.pi.deliver(makeUserMessage("big task", at));
+    for (let step = 0; step < 2; step += 1) {
+      await first.pi.deliver(
+        makeAssistantMessage({
+          toolCalls: [{ id: `live${step}`, name: "read", arguments: {} }],
+          stopReason: "toolUse",
+          timestamp: at + 10 * step + 1,
+          // Far over the trigger: the watermark this attempt leaves is high.
+          usage: usageOf(90_000),
+        }),
+      );
+      await first.pi.deliver(
+        makeToolResult({ id: `live${step}`, content: `live ${step} `.repeat(500), timestamp: at + 10 * step + 2 }),
+      );
+      await first.pi.stepEnd();
+    }
+    await first.connector.contextHandler(first.pi.contextEvent(), first.pi.ctx);
+    expect(first.connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: true });
+    // Kept across repeated served-only attempts (the growth bound).
+    await first.connector.contextHandler(first.pi.contextEvent(), first.pi.ctx);
+    expect(first.connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: false });
+
+    // Pi compacts (any initiator): a new raw-context epoch. The next eligible
+    // attempt is not suppressed by the old watermark.
+    await first.connector.compactHandlers.session_compact(
+      {
+        type: "session_compact",
+        compactionEntry: { type: "compaction", id: "pc" },
+        fromExtension: false,
+        reason: "threshold",
+      },
+      first.pi.ctx,
+    );
+    await first.pi.deliver(
+      makeAssistantMessage({
+        toolCalls: [{ id: "live2", name: "read", arguments: {} }],
+        stopReason: "toolUse",
+        timestamp: at + 31,
+        usage: usageOf(4000),
+      }),
+    );
+    await first.pi.deliver(makeToolResult({ id: "live2", content: "live 2 ".repeat(500), timestamp: at + 32 }));
+    await first.pi.stepEnd();
+    await first.connector.contextHandler(first.pi.contextEvent(), first.pi.ctx);
+    expect(first.connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: true });
+
+    // A new session on a new thread, same connector: the first eligible
+    // attempt compacts although the prior epoch's watermark was 90k+.
+    await first.connector.handlers.session_shutdown({ type: "session_shutdown", reason: "quit" }, first.pi.ctx);
+    const created = await makeTempThread(store);
+    const ref: ThreadRef = { threadId: created.threadId, registryPath: store.registryPath };
+    setLauncherOwnedStartup({ threadRef: ref, launchFlags: { thread: created.threadId } });
+    const pi = piSession(first.connector);
+    await first.connector.handlers.session_start(makeSessionStart("startup"), pi.ctx);
+    for (let n = 1; n <= 3; n += 1) await closedTurn(pi, first.connector, n, t0 + n * 100);
     await pi.deliver(makeUserMessage("big task", at));
     for (let step = 0; step < 2; step += 1) {
       await pi.deliver(
@@ -299,7 +428,7 @@ describe("the context hook", () => {
           toolCalls: [{ id: `live${step}`, name: "read", arguments: {} }],
           stopReason: "toolUse",
           timestamp: at + 10 * step + 1,
-          usage: usageOf(2500 + step * 800),
+          usage: usageOf(3500),
         }),
       );
       await pi.deliver(
@@ -307,20 +436,8 @@ describe("the context hook", () => {
       );
       await pi.stepEnd();
     }
-    await connector.contextHandler(pi.contextEvent(), pi.ctx);
-    expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: true });
-    const split = await threadView.describe(ref);
-    expect(split.ok && split.value?.arrangement.some((e) => e.part !== undefined)).toBe(true);
-
-    // Pi drains a steer at the same step edge: a user message in the record.
-    const steer = makeUserMessage("actually, focus on the tests", at + 50);
-    await pi.deliver(steer);
-    const served = (await connector.contextHandler(pi.contextEvent(), pi.ctx))?.messages ?? [];
-    expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: false });
-    expect(served.at(-1)).toEqual(steer);
-    // Still the same installed view: the steer rides in the verbatim tail.
-    const after = await threadView.describe(ref);
-    expect(after.ok && split.ok && after.value?.viewId).toBe(split.ok ? split.value?.viewId : null);
+    await first.connector.contextHandler(pi.contextEvent(), pi.ctx);
+    expect(first.connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: true });
   });
 
   it("overflow backstop: a raw-served step that bounces reaches Pi's overflow recovery, and the boundary-compact path serves LHC's view", async () => {

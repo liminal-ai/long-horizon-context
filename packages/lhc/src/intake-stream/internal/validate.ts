@@ -55,6 +55,8 @@ const EventEnvelopeSchema = Schema.Struct({
 // optional host-observed outcome/timing fields (D1). assistant_text may carry
 // optional providerUsage as a verbatim JSON object (no inner shape).
 const TextPayloadSchema = Schema.Struct({ text: Schema.String });
+// user_prompt may carry the host's in-run steer assertion (turn parts, Flow 7).
+const UserPromptPayloadSchema = Schema.Struct({ text: Schema.String, steer: Schema.optional(Schema.Boolean) });
 const AssistantTextPayloadSchema = Schema.Struct({
   text: Schema.String,
   providerUsage: Schema.optional(Schema.Record({ key: Schema.String, value: Schema.Unknown })),
@@ -216,6 +218,9 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
       break;
     case "compact_continuation_marker":
       issue = decodeIssue(CompactContinuationMarkerPayloadSchema, payload);
+      break;
+    case "user_prompt":
+      issue = decodeIssue(UserPromptPayloadSchema, payload);
       break;
     default:
       issue = decodeIssue(TextPayloadSchema, payload);

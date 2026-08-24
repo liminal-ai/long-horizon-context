@@ -102,7 +102,9 @@ export class TurnAccumulator {
    *  When `msg` carries a timestamp, latch `startedAt` on turn open and always
    *  advance the last-message timestamp for `endedAt`. */
   onMessage(events: MessageEventInput[], msg?: AgentMessage): void {
-    const opening = events.find((event) => event.eventKind === "user_prompt");
+    // A steering prompt (steer: true) is a member of the open turn, not an
+    // opening: no reset, the step counter keeps counting.
+    const opening = events.find((event) => event.eventKind === "user_prompt" && event.payload.steer !== true);
     if (opening !== undefined) {
       this.open = true;
       this.openTurnKey = opening.idempotencyKey;

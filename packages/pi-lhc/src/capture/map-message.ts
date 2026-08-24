@@ -40,6 +40,10 @@ export interface MapCtx {
    *  assistant_thinking, assistant_text, tool_call, tool_result. Absent →
    *  no stamp, the record keeps NULL and the turn is never split. */
   stepIndex?: number | undefined;
+  /** This user message arrived inside a run in progress (Pi steering): it is
+   *  recorded as a `user_prompt` with `steer: true` — a member of the open
+   *  LHC turn, never a boundary. */
+  steer?: boolean | undefined;
 }
 
 type StepBearing = Extract<
@@ -209,7 +213,14 @@ function mapUser(msg: UserMessage, ctx: MapCtx): MessageEventInput[] {
   let block = 0;
   if (parts.some((p) => p.type === "text")) {
     const text = textOf(parts);
-    events.push(textEvent("user_prompt", text, "user", buildKey(ctx, "user", "user_prompt", block, { content: text })));
+    const prompt = textEvent(
+      "user_prompt",
+      text,
+      "user",
+      buildKey(ctx, "user", "user_prompt", block, { content: text }),
+    );
+    const promptEvent = prompt as Extract<MessageEventInput, { eventKind: "user_prompt" }>;
+    events.push(ctx.steer === true ? { ...promptEvent, payload: { text, steer: true } } : promptEvent);
     block += 1;
   }
   for (const part of unsupportedOf(parts)) {

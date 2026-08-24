@@ -287,6 +287,11 @@ interface PendingMessage {
   /** Host step index latched when PI finalized the message — before any
    *  later per-step turn_end advances the counter. Null: no open turn. */
   stepIndex: number | null;
+  /** A user message finalized while this process's LHC turn is open is a
+   *  steering message (Pi drains steers inside the run); recorded inside that
+   *  turn, never as a boundary. The run's opening prompt arrives with no open
+   *  turn. */
+  steer: boolean;
 }
 
 /** Fork state captured from `session_before_fork` and used on the next
@@ -654,6 +659,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       pendingMessages: [],
       claimedEntryIds: new Set(),
     };
+    // A new session/thread is a new raw-context epoch: no inherited watermark.
+    contextHookState.lastAttemptTokens = null;
 
     const rehydrateModelPrefs = takePendingRehydrateModelPrefs();
     if (rehydrateModelPrefs !== null && extensionPi !== null) {
@@ -695,6 +702,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     instance = null;
     captureSession = null;
     compactDiagnostics.clear();
+    contextHookState.lastAttemptTokens = null;
   };
 
   // Record a capture failure as a plain-data health diagnostic. The converter
@@ -831,6 +839,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
           ? { piSessionId: captureSession.piSessionId, entryId: persistedEntryId }
           : { piSessionId: captureSession.piSessionId, fallbackId: message.fallbackId };
       if (message.stepIndex !== null) mapCtx.stepIndex = message.stepIndex;
+      if (message.steer) mapCtx.steer = true;
 
       let events: MessageEventInput[];
       try {
@@ -882,6 +891,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       fallbackId: legacyPosition !== null ? `message_end:${legacyPosition}` : fallbackIdFor("message_end", sourceSeq),
       legacyEntryId,
       stepIndex: captureSession.accumulator.currentStep(),
+      steer: event.message.role === "user" && captureSession.accumulator.hasOpenTurn(),
     });
   };
 
@@ -1092,6 +1102,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     autoCompactInFlight = false;
     autoCompactLastAttemptTokens = null;
     compactedSinceSettleCheck = true;
+    // A Pi compaction changed the raw-context epoch: the mid-turn watermark
+    // (kept across served-only attempts by design) must not carry over.
+    contextHookState.lastAttemptTokens = null;
   };
 
   // agent_settled is the trigger boundary — see maybeTriggerAutoCompact for

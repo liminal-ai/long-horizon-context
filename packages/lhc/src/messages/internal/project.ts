@@ -14,6 +14,18 @@ export interface ProjectedMessage {
 export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
   switch (event.eventKind) {
     case "user_prompt":
+      return {
+        blocks: [
+          {
+            blockType: "text",
+            // The steer assertion rides the block so the record says why this
+            // prompt sits mid-turn; text is what every reader consumes.
+            content:
+              event.payload.steer === true ? { text: event.payload.text, steer: true } : { text: event.payload.text },
+          },
+        ],
+        tokenEstimate: estimateTokens(event.payload.text),
+      };
     case "runtime_note":
       return {
         blocks: [{ blockType: "text", content: { text: event.payload.text } }],
