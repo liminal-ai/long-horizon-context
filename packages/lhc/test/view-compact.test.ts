@@ -248,6 +248,7 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
       detailed: 20,
       brief: 20,
       lowerBound: 120000,
+      newestClosedProtection: 0.6,
     });
     // At a 120k bound this small thread is all tail: bands empty, compact
     // point at the origin, and the reported total IS the tail (totalTokens
@@ -272,6 +273,7 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
       detailed: 15,
       brief: 20,
       lowerBound: 400,
+      newestClosedProtection: 0.6,
     });
     expect(receipt.value.profile).toBeNull();
   });

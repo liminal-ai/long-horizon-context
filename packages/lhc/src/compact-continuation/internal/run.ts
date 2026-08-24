@@ -57,7 +57,7 @@ import { storageFailure } from "../../shared-tech/errors.js";
 import type { CompactReceipt, ErrorResult, OpResult, ViewCompactParams } from "../../shared-tech/index.js";
 import { createDbReadTransaction, createDbWriteTransaction } from "../../shared-tech/persist.js";
 import * as threadView from "../../thread-view/index.js";
-import { readInstalledTransition } from "../../thread-view/internal/snapshot.js";
+import { readPartsActivation } from "../../thread-view/internal/snapshot.js";
 import type { ThreadRef } from "../../threads/index.js";
 import { resolveThreadRef } from "../../threads/index.js";
 import { assembleCandidateFromPrepared } from "./candidate.js";
@@ -1002,14 +1002,16 @@ async function runCompactContinuationInner(
   if (!resolved.ok) return resolved;
 
   // ── Per-thread mechanism exclusivity (turn parts, AC-7.3 / TC-7.3b) ────
-  // A thread whose installed view serves parts never takes the forced-
-  // boundary path. Typed, before replay, claim, or any write.
-  const transition = await createDbReadTransaction(ref, (tx) => readInstalledTransition(tx.db));
-  if (!transition.ok) return transition;
-  if (transition.value !== null) {
+  // A thread that has ever installed a view serving parts never takes the
+  // forced-boundary path: the fact is durable (thread_metadata, written in the
+  // first parts install's transaction), so it outlives settle. Typed, before
+  // replay, claim, or any write.
+  const activated = await createDbReadTransaction(ref, (tx) => readPartsActivation(tx.db));
+  if (!activated.ok) return activated;
+  if (activated.value !== null) {
     return callerError(
       "compact_continuation_parts_thread",
-      `compact-continuation refused: this thread serves turn ${transition.value.turnId} as parts; mid-turn relief on it is threadView.midTurnCompact`,
+      `compact-continuation refused: this thread has served turn parts since ${activated.value}; mid-turn relief on it is threadView.midTurnCompact`,
     );
   }
 

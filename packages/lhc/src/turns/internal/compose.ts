@@ -21,12 +21,26 @@ import type {
 import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "../../shared-tech/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 
-// F1 — the bounded per-message construction cap. A construction never spends
-// more than this on one message: a giant message keeps a head and a tail
-// around a marked elision that names the exact-retrieval address (`m…`).
-// Construction behavior only: canonical keeps every byte, the verbatim tail
-// is never capped, and derivation floors are written from the uncapped text.
+// F1 — the bounded per-message construction cap. A served construction never
+// spends more than this on one message: a giant message keeps a head and a
+// tail around a marked elision that names the exact-retrieval address (`m…`).
+// A serving-time transformation of the bounded plan only: it is applied where
+// that walk renders constructions into the served view (parts, in-walk
+// compositions, stored renderings it serves), never to the durable artifacts
+// both plans consume — composition here, stored turn_rendering rows,
+// compression/assembly inputs, and floors stay uncapped — and never to the
+// verbatim tail or canonical.
 export const CONSTRUCTION_MESSAGE_CAP_TOKENS = 2000;
+
+// Cap a composed construction per tagged message: every `<mN>…</mN>` body is
+// capped independently, naming its own address; headers, the turn wrapper,
+// and any trailer are untouched. Tags never nest, so the match is exact.
+export function capConstructionText(text: string): string {
+  return text.replace(/<(m\d+)>([\s\S]*?)<\/\1>/g, (whole, messageId: string, body: string) => {
+    const capped = capForConstruction(body, messageId);
+    return capped === body ? whole : `<${messageId}>${capped}</${messageId}>`;
+  });
+}
 
 export function capForConstruction(text: string, messageId: string): string {
   const total = estimateTokens(text);
@@ -231,13 +245,11 @@ function buildAtom(
       : derivations.get(composeDerivationKey(message.messageId, plan.derivation));
   const ready = derivation !== undefined && derivation.state === "ready" && derivation.content !== undefined;
   const block = message.blocks[0]?.content ?? {};
-  // The uncapped text is what a recovery floor writes back; the part renders
-  // the capped construction.
   const text = ready ? readyText(message, derivation.content as string) : plan.fallbackText(message);
   const part: RenderingPart = {
     messageId: message.messageId,
     kind: message.kind,
-    text: capForConstruction(text, message.messageId),
+    text,
     fallback: plan.derivation !== undefined && !ready,
   };
   if (message.kind === "model_change" || message.kind === "thinking_level_change") {

@@ -17,6 +17,7 @@ import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads
 import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from "./internal/chunk-recovery.js";
 import { type ChunkStructureRow, dropEmptyReadableChunks, readChunkStructure } from "./internal/chunks.js";
 import { composeRenderingInput, composeStructuredTurnText } from "./internal/compose.js";
+
 import {
   readChunkRows,
   readMemberMessages,
@@ -38,6 +39,9 @@ import {
   type TurnCloseHostFacts,
   type TurnStructureRow,
 } from "./internal/store.js";
+
+// F1: the bounded plan caps constructions at serve time through this one door.
+export { capConstructionText } from "./internal/compose.js";
 
 export interface TurnRecord {
   turnId: string;

@@ -2,9 +2,14 @@
 // a giant message renders as head + marked elision (naming its exact-retrieval
 // address) + tail; canonical keeps every byte, retrieval serves them, the
 // verbatim tail serves them, and derivation floors are written uncapped.
+import { copyFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, type ViewCompactParams } from "../src/index.js";
-import { CONSTRUCTION_MESSAGE_CAP_TOKENS, capForConstruction } from "../src/turns/internal/compose.js";
+import {
+  CONSTRUCTION_MESSAGE_CAP_TOKENS,
+  capConstructionText,
+  capForConstruction,
+} from "../src/turns/internal/compose.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -30,8 +35,8 @@ describe("capForConstruction", () => {
   });
 });
 
-describe("the cap in constructions, never in the verbatim tail", () => {
-  it("part and whole constructions elide with a pointer; retrieval and the tail keep every byte; the prompt floor is uncapped", async () => {
+describe("the cap is a bounded-plan serving-time transformation", () => {
+  it("parts and served renderings elide with a pointer; retrieval, the tail, the stored rendering, and the floors keep every byte; legacy serves the stored row verbatim", async () => {
     const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -73,23 +78,58 @@ describe("the cap in constructions, never in the verbatim tail", () => {
     expect(tailTexts).toContain(GIANT);
     expect(tailTexts.some((t) => t.includes("elided at construction"))).toBe(false);
 
-    // Close, drain: the smoothed_prompt floor written by the close-time path is
-    // the uncapped clean prompt, while the stored rendering is capped.
+    // Close, drain: the durable artifacts both plans consume are uncapped —
+    // the stored turn_rendering row and the smoothed_prompt floor.
     await sdk.intakeStream.messageEvents({ filePath }, [validEvent("turn_end")]);
     const drained = await sdk.work.drain({ filePath });
     expect(drained.ok && drained.value.remaining).toBe(0);
     const db = openRaw(filePath);
+    let rendering: string;
     try {
-      const rendering = db
-        .prepare(`SELECT content FROM derivation WHERE subject_id = 't2' AND derivation_type = 'turn_rendering'`)
-        .get() as { content: string };
-      expect(rendering.content).toContain("exact content: m5 …]");
-      const floors = db
+      rendering = (
+        db
+          .prepare(`SELECT content FROM derivation WHERE subject_id = 't2' AND derivation_type = 'turn_rendering'`)
+          .get() as { content: string }
+      ).content;
+      const floor = db
         .prepare(`SELECT content FROM derivation WHERE subject_id = 'm4' AND derivation_type = 'smoothed_prompt'`)
         .get() as { content: string } | undefined;
-      expect(floors?.content.includes("elided at construction")).toBe(false);
+      expect(floor?.content.includes("elided at construction")).toBe(false);
     } finally {
       db.close();
     }
+    expect(rendering).toContain(GIANT);
+    expect(rendering).not.toContain("elided at construction");
+
+    // The frozen differential: the same record, banded under each plan.
+    // Legacy serves the stored row byte-for-byte; bounded serves it capped.
+    const legacy = store.threadPath("legacy");
+    const bounded = store.threadPath("bounded");
+    copyFileSync(filePath, legacy);
+    copyFileSync(filePath, bounded);
+    const band = async (path: string, algorithm: "legacy" | "bounded"): Promise<string> => {
+      const previous = process.env["LHC_COMPACT_ALGORITHM"];
+      if (algorithm === "legacy") process.env["LHC_COMPACT_ALGORITHM"] = "legacy";
+      else delete process.env["LHC_COMPACT_ALGORITHM"];
+      try {
+        const receipt = await sdk.threadView.compact({ filePath: path }, { params });
+        expect(receipt.ok).toBe(true);
+        if (!receipt.ok) throw new Error(receipt.error.reason);
+        const smooth = receipt.value.renderedBands.find((b) => b.band === "smooth");
+        expect(receipt.value.renderedBands.map((b) => b.band)).toContain("smooth");
+        return smooth?.text ?? "";
+      } finally {
+        if (previous === undefined) delete process.env["LHC_COMPACT_ALGORITHM"];
+        else process.env["LHC_COMPACT_ALGORITHM"] = previous;
+      }
+    };
+    const legacyBand = await band(legacy, "legacy");
+    expect(legacyBand).toContain(rendering);
+    expect(legacyBand).not.toContain("elided at construction");
+    const boundedBand = await band(bounded, "bounded");
+    expect(boundedBand).toContain("exact content: m5 …]");
+    expect(boundedBand).not.toContain(GIANT);
+    expect(capConstructionText(rendering)).toBe(capConstructionText(capConstructionText(rendering)));
+    expect(boundedBand).toContain(capConstructionText(rendering));
   });
 });

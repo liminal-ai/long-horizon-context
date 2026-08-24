@@ -104,7 +104,7 @@ describe("stepEdges", () => {
     });
   });
 
-  it("is not splittable on a NULL, a non-monotonic index, or a tool pair straddling steps", () => {
+  it("is not splittable on a NULL, a regressing index, a tool pair straddling steps, a start offset, or a gap", () => {
     const base = [m("m1", "assistant_text", 0), m("m2", "tool_call", 1, "a"), m("m3", "tool_result", 1, "a")];
     expect(stepEdges(base)).toMatchObject({ splittable: true, complete: 2, lastEdge: 1 });
     expect(stepEdges([...base, m("m4", "assistant_text", null)]).splittable).toBe(false);
@@ -113,6 +113,17 @@ describe("stepEdges", () => {
       stepEdges([m("m1", "assistant_text", 0), m("m2", "tool_call", 0, "a"), m("m3", "tool_result", 1, "a")]),
     ).toMatchObject({ splittable: false, complete: 0, lastEdge: null });
     expect(stepEdges([m("m1", "user_prompt", null)])).toMatchObject({ splittable: false, steps: [], lastEdge: null });
+    // Step coordinates: the first step is 0 and each new step advances by
+    // exactly one. An offset start and a gap both fail closed; repeated
+    // members inside a step (m2/m3 above) remain valid.
+    expect(stepEdges([m("m1", "assistant_text", 1), m("m2", "assistant_text", 2)])).toMatchObject({
+      splittable: false,
+      steps: [expect.objectContaining({ index: 1 }), expect.objectContaining({ index: 2 })],
+    });
+    expect(stepEdges([m("m1", "assistant_text", 0), m("m2", "assistant_text", 2)])).toMatchObject({
+      splittable: false,
+      complete: 2,
+    });
   });
 });
 

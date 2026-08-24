@@ -231,7 +231,12 @@ export function createBoundedSelection(
               .get(entry.subjectKind, subjectId, derivationType) as { content: string | null } | undefined,
         );
         stats.derivationContentReads += 1;
-        if (row?.content !== null && row?.content !== undefined) snapshot.content = row.content;
+        if (row?.content !== null && row?.content !== undefined) {
+          // F1: the stored construction is served capped by this plan; the
+          // row itself stays uncapped (the legacy plan serves it verbatim).
+          snapshot.content =
+            derivationType === "turn_rendering" ? turnsDomain.capConstructionText(row.content) : row.content;
+        }
       }
     }
     derivationSnapshots.set(key, snapshot);
@@ -319,9 +324,14 @@ export function createBoundedSelection(
           stepsByTurn.set(turnId, edges);
           return edges;
         },
+        // F1: constructions this walk renders into the view are served capped.
         partText: (turnId, range, trailer) =>
-          counted(() => turnsDomain.composeTurnPartText(db, turnId, range, trailer)),
-        wholeTurnText: (turnId) => counted(() => turnsDomain.composeWholeTurnText(db, turnId)),
+          counted(() => turnsDomain.capConstructionText(turnsDomain.composeTurnPartText(db, turnId, range, trailer))),
+        wholeTurnText: (turnId) =>
+          counted(() => {
+            const whole = turnsDomain.composeWholeTurnText(db, turnId);
+            return whole === null ? null : turnsDomain.capConstructionText(whole);
+          }),
       };
 
   const source: SelectionSource = {

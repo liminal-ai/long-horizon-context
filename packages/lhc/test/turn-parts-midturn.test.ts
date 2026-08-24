@@ -82,6 +82,19 @@ async function pressuredThread(sdk: Lhc): Promise<string> {
   return filePath;
 }
 
+function readActivation(filePath: string): string | null {
+  const db = openRaw(filePath);
+  try {
+    return (
+      db.prepare(`SELECT parts_activated_at FROM thread_metadata WHERE id = 1`).get() as {
+        parts_activated_at: string | null;
+      }
+    ).parts_activated_at;
+  } finally {
+    db.close();
+  }
+}
+
 function tokensAfterStep(filePath: string, turnId: string, stepIndex: number): number {
   const db = openRaw(filePath);
   try {
@@ -209,6 +222,44 @@ describe("mechanism exclusivity per thread (AC-7.3)", () => {
     const before = canonical(filePath);
 
     const forced = await runCompactContinuationForTests({ filePath }, continuationFacts("attempt-on-parts"));
+    expect(forced.ok).toBe(false);
+    if (forced.ok) return;
+    expect(forced.error).toMatchObject({ errorClass: "caller_error", code: "compact_continuation_parts_thread" });
+    expect(canonical(filePath)).toEqual(before);
+    expect(before.writerClaim).toBe("none");
+    expect(before.boundaries).toBe(0);
+  });
+
+  it("the exclusivity fact is durable: once the split turn has closed and settled — no part left in the installed view — a forced-boundary attempt is still refused", async () => {
+    const sdk = sdkFor();
+    const filePath = await pressuredThread(sdk);
+    const split = await sdk.threadView.midTurnCompact(
+      { filePath },
+      { seam: SETTLED_SEAM, params: params(tokensAfterStep(filePath, "t2", 0) * 2) },
+    );
+    expect(split.ok && split.value.parts?.length).toBe(1);
+    const activated = readActivation(filePath);
+    expect(activated).not.toBeNull();
+
+    // t2 closes; a small t3 opens. A full share just over t3 bands t2 whole:
+    // it settles, and the new snapshot carries no part at all.
+    await send(sdk, filePath, [validEvent("turn_end")]);
+    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "next" } }), ...step(0, "golf")]);
+    const settled = await sdk.threadView.compact(
+      { filePath },
+      { params: params(tokensAfterStep(filePath, "t2", 2) * 2 + 2) },
+    );
+    expect(settled.ok && settled.value.settled?.turnId).toBe("t2");
+    expect(settled.ok && settled.value.parts).toBeUndefined();
+    const described = await sdk.threadView.describe({ filePath });
+    expect(described.ok && described.value?.arrangement.every((e) => e.part === undefined)).toBe(true);
+    const meta = await sdk.threadView.hostMetadata({ filePath });
+    expect(meta.ok && meta.value.unsettledTurn).toBeNull();
+    // Settle did not touch the durable fact.
+    expect(readActivation(filePath)).toBe(activated);
+
+    const before = canonical(filePath);
+    const forced = await runCompactContinuationForTests({ filePath }, continuationFacts("attempt-after-settle"));
     expect(forced.ok).toBe(false);
     if (forced.ok) return;
     expect(forced.error).toMatchObject({ errorClass: "caller_error", code: "compact_continuation_parts_thread" });

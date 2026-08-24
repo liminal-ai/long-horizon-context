@@ -828,7 +828,7 @@ describe("thread schema migration", () => {
     }
   });
 
-  it("migrates a genuine v11 file by adding nullable message.step_index; backfills nothing", async () => {
+  it("migrates a genuine v11 file by adding nullable message.step_index and thread_metadata.parts_activated_at; backfills nothing", async () => {
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
@@ -843,6 +843,7 @@ describe("thread schema migration", () => {
     const old = new DatabaseSync(filePath);
     try {
       old.exec("ALTER TABLE message DROP COLUMN step_index;");
+      old.exec("ALTER TABLE thread_metadata DROP COLUMN parts_activated_at;");
       old.exec(`PRAGMA user_version = ${THREAD_SCHEMA_VERSION_11};`);
     } finally {
       old.close();
@@ -862,6 +863,10 @@ describe("thread schema migration", () => {
         { message_id: "m1", step_index: null },
         { message_id: "m2", step_index: null },
       ]);
+      const activation = db.prepare(`SELECT parts_activated_at FROM thread_metadata WHERE id = 1`).get() as {
+        parts_activated_at: string | null;
+      };
+      expect(activation).toEqual({ parts_activated_at: null });
     } finally {
       db.close();
     }

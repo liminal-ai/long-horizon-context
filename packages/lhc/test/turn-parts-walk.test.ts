@@ -49,6 +49,9 @@ function step(stepIndex: number, label: string, weight = 6): MessageEventInput[]
   ];
 }
 
+// Over the construction cap: an oversized step the tail must carry verbatim.
+const GIANT = Array.from({ length: 300 }, (_, i) => `line ${i} of a very long assistant message body`).join("\n");
+
 const closedTurn = (label: string): MessageEventInput[] => [
   validEvent("user_prompt", { payload: { text: `${label} prompt` } }),
   validEvent("assistant_text", { payload: { text: `${label} answer` } }),
@@ -236,6 +239,40 @@ describe("turn parts: the walk splits the open turn", () => {
     expect(legacy.entries.some((e) => e.part !== undefined)).toBe(false);
     const described = await sdk.threadView.describe({ filePath: legacyPath });
     expect(described.ok && described.value?.arrangement.every((e) => !("part" in e))).toBe(true);
+  });
+});
+
+describe("turn parts: no edge fits (TC-1.8c)", () => {
+  it("serves the oversized newest complete step uncapped in the verbatim tail and moves the complete prefix into a part", async () => {
+    const sdk = sdkFor();
+    const filePath = await newThread(sdk);
+    await send(sdk, filePath, closedTurn("t1"));
+    await send(sdk, filePath, [
+      validEvent("user_prompt", { payload: { text: "long task" } }),
+      ...step(0, "alpha"),
+      validEvent("assistant_text", { payload: { text: GIANT, stepIndex: 1 } }),
+      validEvent("tool_call", { payload: { toolCallId: "c1", toolName: "read", arguments: {}, stepIndex: 1 } }),
+      validEvent("tool_result", { payload: { toolCallId: "c1", content: "result 1", stepIndex: 1 } }),
+      // In flight: step 2's call has no result yet, so step 1 is the newest
+      // complete step and k may reach at most 1.
+      validEvent("assistant_text", { payload: { text: "step 2: charlie", stepIndex: 2 } }),
+      validEvent("tool_call", { payload: { toolCallId: "c2", toolName: "read", arguments: {}, stepIndex: 2 } }),
+    ]);
+    const sums = stepSums(filePath, "t2");
+    // The full share is under the tail behind step 0's edge: no edge fits.
+    const { receipt, entries } = await compact(sdk, filePath, params(sums.after.get(0)!));
+    expect(receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 0 }]);
+    expect(receipt.compactPoint).toBe(sums.edge.get(0));
+    expect(receipt.tailTokens).toBeGreaterThan(receipt.config.lowerBound * (receipt.config.full / 100));
+    const part = entries.find((e) => e.part !== undefined)!;
+    expect(part.text).toContain("step 0: alpha");
+    expect(part.text).not.toContain("line 0 of a very long");
+    const context = await sdk.threadView.getLlmRequestContext({ filePath });
+    expect(context.ok).toBe(true);
+    if (!context.ok) return;
+    const tailTexts = context.value.messages.map((m) => m.content.map((c) => c.text).join(""));
+    expect(tailTexts).toContain(GIANT);
+    expect(tailTexts.some((t) => t.includes("elided at construction"))).toBe(false);
   });
 });
 

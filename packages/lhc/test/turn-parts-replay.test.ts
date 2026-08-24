@@ -114,11 +114,26 @@ describe("turn parts: recovery and reproducibility", () => {
     const described = await resumed.threadView.describe({ filePath });
     expect(described.ok && described.value?.viewId).toBe(receipt.value.viewId);
 
-    // Reproducibility: the walk over a frozen copy of the inputs makes the
-    // same decisions the receipt recorded, in every placement field.
+    // Reproducibility: the walk over a frozen copy of the inputs, under the
+    // params reconstructed from the receipt alone (the stored view carries the
+    // same provenance), makes the same decisions the receipt recorded, in
+    // every placement field.
+    const c = receipt.value.config;
+    expect(typeof c.newestClosedProtection).toBe("number");
+    const fromReceipt: ViewCompactParams = {
+      lowerBound: c.lowerBound,
+      percentages: { full: c.full, smooth: c.smooth, detailed: c.detailed, brief: c.brief },
+      ...(c.newestClosedProtection !== undefined ? { newestClosedProtection: c.newestClosedProtection } : {}),
+    };
+    expect(fromReceipt).toEqual(p);
+    expect(described.ok && described.value?.config).toEqual({
+      lowerBound: c.lowerBound,
+      percentages: fromReceipt.percentages,
+      newestClosedProtection: c.newestClosedProtection,
+    });
     const frozen = store.threadPath("frozen");
     copyFileSync(filePath, frozen);
-    const rerun = await resumed.threadView.prepareCompact({ filePath: frozen }, { params: p });
+    const rerun = await resumed.threadView.prepareCompact({ filePath: frozen }, { params: fromReceipt });
     expect(rerun.ok).toBe(true);
     if (!rerun.ok) return;
     const decisions = (s: {

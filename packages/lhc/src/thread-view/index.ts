@@ -1241,6 +1241,7 @@ export async function installPreparedCompact(
           configJson: JSON.stringify({
             lowerBound: installed.merged.lowerBound,
             percentages: installed.merged.percentages,
+            newestClosedProtection: installed.merged.newestClosedProtection,
           }),
           arrangementJson: JSON.stringify(
             installed.selection.entries.map((entry) => ({
@@ -1258,6 +1259,7 @@ export async function installPreparedCompact(
             derivationCounts: installed.derivationCounts,
           }),
           bands: installed.bands,
+          servesParts: installed.selection.entries.some((entry) => entry.part !== undefined),
           ...(proposedBoundary !== undefined ? { visibilityBoundary: proposedBoundary } : {}),
         };
       });
@@ -1284,7 +1286,11 @@ export async function installPreparedCompact(
       value: {
         viewId: installed.viewId,
         profile: installed.profileName,
-        config: { ...installed.merged.percentages, lowerBound: installed.merged.lowerBound },
+        config: {
+          ...installed.merged.percentages,
+          lowerBound: installed.merged.lowerBound,
+          newestClosedProtection: installed.merged.newestClosedProtection,
+        },
         bands: bandReport,
         tailTokens,
         totalTokens: bandReport.brief.tokens + bandReport.detailed.tokens + bandReport.smooth.tokens + tailTokens,

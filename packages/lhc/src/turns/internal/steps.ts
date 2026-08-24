@@ -36,8 +36,10 @@ export interface StepRange {
 
 export interface StepEdges {
   // Whether the turn may be split at all: every step-bearing member carries an
-  // index, indices are non-decreasing in message order, and no tool pair
-  // straddles a step. False also for a turn with no steps.
+  // index, the first step is 0 and each new step advances by exactly one in
+  // message order (members within a step may repeat its index), and no tool
+  // pair straddles a step. Gaps, offsets, and regressions fail closed. False
+  // also for a turn with no steps.
   splittable: boolean;
   // Every step present, in order, whether or not the turn is splittable.
   steps: StepRange[];
@@ -103,8 +105,8 @@ export function stepEdges(members: readonly StepMember[]): StepEdges {
       splittable = false;
       continue;
     }
-    if (member.stepIndex < previousIndex) splittable = false;
     if (member.stepIndex !== previousIndex) {
+      if (member.stepIndex !== previousIndex + 1) splittable = false;
       closeStep();
       steps.push({
         index: member.stepIndex,

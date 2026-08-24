@@ -439,14 +439,21 @@ function migrateTurnHostFacts(db: DatabaseSync): void {
   db.exec(`ALTER TABLE message ADD COLUMN provider_usage TEXT;`);
 }
 
-// v11→v12: host-supplied step index on messages (turn parts, F2). Nullable,
+// v11→v12: turn parts. Host-supplied step index on messages (F2) — nullable,
 // no backfill: NULL means the host never reported a step edge, and a turn with
-// any NULL step index is never split. Guarded so a crash-window reopen or a
-// simulated-old file that already carries the column migrates cleanly.
-function migrateStepIndex(db: DatabaseSync): void {
-  const columns = (db.prepare(`PRAGMA table_info(message)`).all() as Array<{ name: string }>).map((c) => c.name);
-  if (columns.includes("step_index")) return;
-  db.exec(`ALTER TABLE message ADD COLUMN step_index INTEGER;`);
+// any NULL step index is never split — and the per-thread parts-activated
+// fact on thread_metadata (AC-7.3 exclusivity). Guarded so a crash-window
+// reopen or a simulated-old file that already carries a column migrates
+// cleanly.
+function migrateTurnParts(db: DatabaseSync): void {
+  const columns = (table: string): string[] =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
+  if (!columns("message").includes("step_index")) db.exec(`ALTER TABLE message ADD COLUMN step_index INTEGER;`);
+  // The durable per-thread mechanism fact: set once, in the transaction that
+  // installs the first view serving parts; never cleared (AC-7.3).
+  if (!columns("thread_metadata").includes("parts_activated_at")) {
+    db.exec(`ALTER TABLE thread_metadata ADD COLUMN parts_activated_at TEXT;`);
+  }
 }
 
 export function migrateThreadSchema(db: DatabaseSync): void {
@@ -503,7 +510,7 @@ export function migrateThreadSchema(db: DatabaseSync): void {
       version = THREAD_SCHEMA_VERSION_11;
     }
     if (version === THREAD_SCHEMA_VERSION_11) {
-      migrateStepIndex(db);
+      migrateTurnParts(db);
       version = THREAD_SCHEMA_VERSION_12;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {

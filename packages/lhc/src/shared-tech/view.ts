@@ -156,7 +156,9 @@ export interface StoredView {
   // null when explicit params overrode a named base at compact (the stored
   // config carries the resolved truth either way).
   profileName: string | null;
-  config: { lowerBound: number; percentages: Record<string, number> };
+  // Placement provenance: the resolved profile the walk ran under. The
+  // protection fraction is optional for views written before it existed.
+  config: { lowerBound: number; percentages: Record<string, number>; newestClosedProtection?: number };
   // Every selected entry in served order, gap entries included (they are
   // arrangement rows too; `gaps` carries their reasons).
   arrangement: Array<{
@@ -239,7 +241,7 @@ export type SkippedRecord =
 export interface CompactReceipt {
   viewId: string;
   profile: string | null;
-  config: ViewProfile["percentages"] & { lowerBound: number };
+  config: ViewProfile["percentages"] & { lowerBound: number; newestClosedProtection?: number };
   bands: Record<Band, { entries: number; tokens: number }>;
   tailTokens: number;
   // The assembled view's actual total (band tokens + tail tokens) against
