@@ -352,6 +352,14 @@ pub struct SessionThreadView {
     pub entries: Vec<SessionThreadViewEntry>,
 }
 
+/// One part's step range, in host step indices (turn parts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartRange {
+    pub from_step: i64,
+    pub to_step: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredViewArrangementEntry {
@@ -360,6 +368,46 @@ pub struct StoredViewArrangementEntry {
     pub subject_id: String,
     pub derivation_used: String,
     pub degraded: bool,
+    /// Present only on a part entry (turn parts): the contiguous step range of
+    /// the single transition turn this entry renders. Its presence in the
+    /// installed view is what makes that turn unsettled; absence everywhere
+    /// means every served turn is whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<PartRange>,
+}
+
+/// Host metadata surface (turn parts, AC-7.1): the deterministic,
+/// inference-free reads a host's pressure decision needs. `active_turn` comes
+/// from the record (the open turn and its host-supplied step indices);
+/// `unsettled_turn` comes from the installed view (a turn served as parts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostMetadata {
+    pub active_turn: Option<HostMetadataActiveTurn>,
+    pub unsettled_turn: Option<HostMetadataUnsettledTurn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostMetadataActiveTurn {
+    pub turn_id: String,
+    /// Sum of stored member token estimates.
+    pub estimated_tokens: i64,
+    /// Leading run of complete steps (every tool_call paired inside its step).
+    pub complete_steps: i64,
+    /// Newest admissible split point as an ORDINAL k — the number of leading
+    /// steps a part may cover (1..completeSteps−1), not a host step index — or
+    /// None when no split is admissible: fewer than two complete steps, or the
+    /// turn is not splittable (a member with no step index, or inconsistent
+    /// indices). The receipt's splitPoint.stepIndex is the host index instead.
+    pub last_step_edge: Option<i64>,
+    pub splittable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostMetadataUnsettledTurn {
+    pub turn_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

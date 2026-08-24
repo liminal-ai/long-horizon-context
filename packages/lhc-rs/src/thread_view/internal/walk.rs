@@ -115,6 +115,7 @@ fn build_turn_entry(source: &mut dyn SelectionSource, turn: &SelectionTurn) -> A
         start_order: turn_start_order(source, turn),
         tokens: estimate_tokens(&text),
         text,
+        part: None,
     }
 }
 
@@ -175,6 +176,7 @@ fn build_chunk_entry(
         start_order: member_starts.into_iter().min().unwrap_or(compact_point),
         tokens: estimate_tokens(&text),
         text,
+        part: None,
     })
 }
 
@@ -321,6 +323,7 @@ fn build_coverage_entry(
         start_order: turn_start_order(source, turn),
         tokens: estimate_tokens(&text),
         text,
+        part: None,
     }
 }
 

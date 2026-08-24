@@ -37,7 +37,7 @@ use crate::shared_tech::token_counting::estimate_tokens;
 use crate::shared_tech::view::{
     Band, CompactBandStats, CompactDegradedEntry, CompactGapEntry, CompactReceipt,
     CompactReceiptBands, CompactReceiptConfig, CompactRenderedBand, CompactWarning,
-    CompactWarningDerivationType, LlmRequestContext, LlmRequestContextMessage,
+    CompactWarningDerivationType, HostMetadata, LlmRequestContext, LlmRequestContextMessage,
     LlmRequestContextPart, LlmRequestContextPartType, LlmRequestContextRole, PreviewCompactOutcome,
     PreviewCompactResult, PruneReceipt, ResolvedViewConfig, SessionThreadView, SkippedRecord,
     StoredView, StoredViewSourceState, ViewCompactParams, ViewProfile, ViewProfilePercentages,
@@ -49,6 +49,7 @@ use crate::turns;
 use internal::assemble::assemble_view;
 use internal::boundary::{read_boundary_position, visibility_zone_tokens};
 use internal::compact_compute::{ComputeArrangementOpts, compact_stopped, compute_arrangement};
+use internal::host_metadata::read_host_metadata;
 use internal::materialize::{
     MaterializeEntry, MaterializeInput, path_resolve, write_pi_session_file,
 };
@@ -427,6 +428,23 @@ pub async fn describe(ref_: ThreadRef) -> OpResult<Option<StoredView>> {
         Ok(OpResult::Err { error }) => OpResult::Err { error },
         Err(payload) => storage_failure(&format!(
             "{DIAG_VIEW_DESCRIBE_FAILED}{}",
+            panic_detail(payload)
+        )),
+    }
+}
+
+/// Host metadata: the pressure-decision reads (turn parts, AC-7.1). Read-only.
+pub async fn host_metadata(ref_: ThreadRef) -> OpResult<HostMetadata> {
+    let result = AssertUnwindSafe(create_db_read_transaction(ref_, move |transaction| {
+        Box::pin(async move { read_host_metadata(transaction.db) })
+    }))
+    .catch_unwind()
+    .await;
+    match result {
+        Ok(OpResult::Ok { value }) => OpResult::Ok { value },
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(payload) => storage_failure(&format!(
+            "host metadata read failed: {}",
             panic_detail(payload)
         )),
     }
@@ -863,6 +881,12 @@ fn arrangement_json_value(entries: &[ArrangementEntry]) -> Value {
                     Value::String(entry.derivation_used.clone()),
                 );
                 obj.insert("degraded".into(), Value::Bool(entry.degraded));
+                if let Some(part) = entry.part {
+                    let mut range = Map::new();
+                    range.insert("fromStep".into(), Value::from(part.from_step));
+                    range.insert("toStep".into(), Value::from(part.to_step));
+                    obj.insert("part".into(), Value::Object(range));
+                }
                 Value::Object(obj)
             })
             .collect(),
@@ -1801,6 +1825,11 @@ pub async fn install_prepared_compact(
                         &prepared.selection.skipped,
                     )),
                     source_state_json: placeholder_json,
+                    serves_parts: prepared
+                        .selection
+                        .entries
+                        .iter()
+                        .any(|entry| entry.part.is_some()),
                     bands: prepared
                         .bands
                         .iter()

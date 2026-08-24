@@ -42,7 +42,9 @@ use crate::messages::read_live_messages;
 use crate::shared_tech::derivation::DerivationState;
 use crate::shared_tech::storage::Db;
 use crate::shared_tech::token_counting::estimate_tokens;
-use crate::shared_tech::view::{Band, SkippedRecord, ViewProfilePercentages, ViewSubjectKind};
+use crate::shared_tech::view::{
+    Band, PartRange, SkippedRecord, ViewProfilePercentages, ViewSubjectKind,
+};
 use crate::turns::{TurnStatus, read_turn_chunk_structure};
 
 /// TS SQL — exact source bytes (subject_kind required for empty-chunk filter).
@@ -194,6 +196,9 @@ pub struct ArrangementEntry {
     /// rendered entry text (the band stores this verbatim)
     pub text: String,
     pub tokens: i64,
+    /// Turn parts: the step range this entry renders (part entries only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<PartRange>,
 }
 
 /// A candidate the last band's walk passed over as too large: no entry at all,
@@ -691,6 +696,7 @@ fn build_turn_entry(
         start_order: turn_start_order(turn, messages_by_turn),
         tokens: estimate_tokens(&text),
         text,
+        part: None,
     }
 }
 
@@ -749,6 +755,7 @@ fn build_chunk_entry(
         start_order,
         tokens: estimate_tokens(&text),
         text,
+        part: None,
     }
 }
 
@@ -916,6 +923,7 @@ fn build_coverage_entry(
         start_order: turn_start_order(turn, messages_by_turn),
         tokens: estimate_tokens(&text),
         text,
+        part: None,
     }
 }
 

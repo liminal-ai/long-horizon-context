@@ -92,13 +92,13 @@ pub use crate::shared_tech::token_counting::{
     TOKEN_ESTIMATOR_ID, TokenSlice, estimate_tokens, slice_tokens,
 };
 pub use crate::shared_tech::view::{
-    Band, CompactReceipt, LlmRequestContext, LlmRequestContextMessage, LlmRequestContextPart,
-    PreviewCompactOutcome, PreviewCompactResult, PruneReceipt, ResolvedViewConfig, SdkViewConfig,
-    SessionAssistantMessage, SessionAssistantPart, SessionModelChangeEntry,
-    SessionThinkingLevelChangeEntry, SessionThreadView, SessionThreadViewEntry,
-    SessionThreadViewEntrySource, SessionThreadViewMessage, SessionToolResultMessage,
-    SessionUserMessage, SkippedRecord, StoredView, ViewCompactParams, ViewProfile,
-    ViewProfileOverride, ViewStatus, VisibilityBudgets,
+    Band, CompactReceipt, HostMetadata, LlmRequestContext, LlmRequestContextMessage,
+    LlmRequestContextPart, PreviewCompactOutcome, PreviewCompactResult, PruneReceipt,
+    ResolvedViewConfig, SdkViewConfig, SessionAssistantMessage, SessionAssistantPart,
+    SessionModelChangeEntry, SessionThinkingLevelChangeEntry, SessionThreadView,
+    SessionThreadViewEntry, SessionThreadViewEntrySource, SessionThreadViewMessage,
+    SessionToolResultMessage, SessionUserMessage, SkippedRecord, StoredView, ViewCompactParams,
+    ViewProfile, ViewProfileOverride, ViewStatus, VisibilityBudgets,
 };
 pub use crate::shared_tech::work_queue::{
     ClaimedWorkItem, EnqueueDerivationTarget, EnqueueInput, QueueDetailRow, WorkHandlerMap,
@@ -357,6 +357,12 @@ impl ThreadViewSurface {
     pub async fn describe(&self, ref_: ThreadRef) -> OpResult<Option<StoredView>> {
         let seam = Arc::clone(&self.seam);
         run_with_instance_seam(seam, async move { thread_view::describe(ref_).await }).await
+    }
+
+    /// Host metadata (turn parts, AC-7.1): the pressure-decision reads.
+    pub async fn host_metadata(&self, ref_: ThreadRef) -> OpResult<HostMetadata> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { thread_view::host_metadata(ref_).await }).await
     }
 
     pub async fn preview_compact(

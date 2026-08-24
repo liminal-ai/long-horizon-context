@@ -16,8 +16,8 @@ use super::exact_i64::f64_to_exact_i64;
 use crate::shared_tech::derivation::RenderingPartKind;
 use crate::shared_tech::storage::{Db, SqlParam};
 use crate::shared_tech::view::{
-    Band, StoredView, StoredViewArrangementEntry, StoredViewBand, StoredViewConfig, StoredViewGap,
-    StoredViewSourceState,
+    Band, PartRange, StoredView, StoredViewArrangementEntry, StoredViewBand, StoredViewConfig,
+    StoredViewGap, StoredViewSourceState, ViewSubjectKind,
 };
 
 /// TS `BAND_GRADIENT_ORDER` — brief → detailed → smooth.
@@ -52,6 +52,12 @@ pub(crate) const SQL_READ_TAIL_BLOCKS: &str = "SELECT mb.message_id, mb.block_ty
 
 pub(crate) const SQL_READ_THREAD_METADATA: &str =
     "SELECT thread_id, created_at FROM thread_metadata WHERE id = 1";
+
+pub(crate) const SQL_READ_PARTS_ACTIVATION: &str =
+    "SELECT parts_activated_at FROM thread_metadata WHERE id = 1";
+
+pub(crate) const SQL_ACTIVATE_PARTS: &str =
+    "UPDATE thread_metadata SET parts_activated_at = COALESCE(parts_activated_at, ?) WHERE id = 1";
 
 pub(crate) const SQL_TAIL_TOKEN_SUM: &str =
     "SELECT COALESCE(SUM(token_estimate), 0) AS total FROM message
@@ -353,6 +359,43 @@ pub fn read_stored_view(db: &Db) -> Option<StoredView> {
     })
 }
 
+// Turn parts: the installed view's transition turn — the one turn served as
+// parts — with its part ranges in served order. None when every served turn
+// is whole (or no view exists). The one reader of "has this thread served
+// parts" for the walk, the host metadata surface, and mechanism exclusivity.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstalledTransition {
+    pub turn_id: String,
+    pub parts: Vec<PartRange>,
+}
+
+/// The durable mechanism fact: when this thread first installed a view serving
+/// parts, or None if it never has. Outlives the parts themselves.
+pub fn read_parts_activation(db: &Db) -> Option<String> {
+    db.prepare(SQL_READ_PARTS_ACTIVATION)
+        .get()
+        .and_then(|row| map_optional_str(&row, "parts_activated_at"))
+}
+
+pub fn read_installed_transition(db: &Db) -> Option<InstalledTransition> {
+    let stored = read_stored_view(db)?;
+    let part_entries: Vec<&StoredViewArrangementEntry> = stored
+        .arrangement
+        .iter()
+        .filter(|entry| entry.subject_kind == ViewSubjectKind::Turn && entry.part.is_some())
+        .collect();
+    let first = part_entries.first()?;
+    Some(InstalledTransition {
+        turn_id: first.subject_id.clone(),
+        parts: part_entries
+            .iter()
+            .filter(|entry| entry.subject_id == first.subject_id)
+            .filter_map(|entry| entry.part)
+            .collect(),
+    })
+}
+
 // ── tail record reads ─────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -479,6 +522,12 @@ pub struct ViewReplaceInput {
     pub gaps_json: String,
     pub source_state_json: String,
     pub bands: Vec<ViewReplaceBand>,
+    /// True when the arrangement carries a part entry. The first such install
+    /// records the thread's mechanism choice durably, in this same transaction:
+    /// once a thread has served parts it never takes the forced-boundary path,
+    /// whether or not the parts are still in the installed snapshot.
+    #[serde(default)]
+    pub serves_parts: bool,
     /// Visibility boundary written in the same transaction as the view replace.
     /// Defaults to compact_point (historical compact reset). Protected-escalation
     /// installs may advance to a higher proposed boundary atomically.
@@ -536,6 +585,10 @@ pub fn replace_view_snapshot_with(
                 SqlParam::from(band.rendered_text.as_str()),
                 SqlParam::from(band.token_count),
             ]);
+        }
+        if input.serves_parts {
+            db.prepare(SQL_ACTIVATE_PARTS)
+                .run(&[SqlParam::from(input.created_at.as_str())]);
         }
         let boundary_position = input.visibility_boundary.unwrap_or(input.compact_point);
         if boundary_position < input.compact_point {

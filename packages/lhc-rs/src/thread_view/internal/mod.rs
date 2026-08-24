@@ -10,6 +10,7 @@ pub mod bounded_source;
 pub mod compact_algorithm;
 pub mod compact_compute;
 pub(crate) mod exact_i64;
+pub mod host_metadata;
 pub mod materialize;
 pub mod profiles;
 pub mod protected_boundary;

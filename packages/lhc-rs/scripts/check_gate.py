@@ -927,10 +927,11 @@ def classify() -> int:
         # plus LIM-76 selector/continuation work is 728. LIM-77 adds one
         # claim_expired fallback compact test → 729. Tree at the turn-parts
         # port's start already reported 743 (literal had lagged). Turn parts
-        # slice 2 (schema v12 / wire / steps / steer) adds 7 → 750. Keep this
+        # slice 2 (schema v12 / wire / steps / steer) adds 7 → 750;
+        # slice 3 (host metadata surface) adds 3 → 753. Keep this
         # exact-count ledger in lockstep with cargo --features test-util.
         if (
-            len(buckets["passed"]) != 750
+            len(buckets["passed"]) != 753
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -938,7 +939,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=750 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=753 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")
