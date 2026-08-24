@@ -61,6 +61,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
   PiCommandHandler,
+  PiContextHookHandler,
   PiHookHandler,
   PiHookName,
   PiVoidHookHandler,
@@ -68,6 +69,7 @@ import type {
   ReplacedSessionContext,
   SessionEntry,
 } from "./pi/types.js";
+import { type ContextHookState, type ContextServeOutcome, handleContext } from "./serving/context-hook.js";
 import { registerRetrievalTools } from "./serving/retrieval-tools.js";
 import type { LhcInstance } from "./shared/instance.js";
 
@@ -175,11 +177,16 @@ export const GUARD_HOOKS = ["session_before_tree"] as const satisfies readonly P
 
 /** Hooks registered by the connector. Context is loaded via SessionManager
  *  seeding, not the context hook. */
+/** Serving hooks: the per-step `context` seam (Design F) — mid-turn compact
+ *  under pressure and steady-state serving of the installed view. */
+export const SERVING_HOOKS = ["context"] as const satisfies readonly PiHookName[];
+
 export const CONNECTOR_HOOKS = [
   ...EPIC_1_HOOKS,
   ...COMPACT_HOOKS,
   ...GUARD_HOOKS,
   ...TRIGGER_HOOKS,
+  ...SERVING_HOOKS,
 ] as const satisfies readonly PiHookName[];
 
 export type CompactHook = (typeof COMPACT_HOOKS)[number];
@@ -247,6 +254,12 @@ export interface Connector {
   /** The agent_settled handler (auto-compact trigger boundary) — exposed so
    *  tests can drive it with synthetic ctx/events without a live PI. */
   readonly settledHandler: PiVoidHookHandler<"agent_settled">;
+  /** The per-step `context` handler (Design F: mid-turn compact and
+   *  steady-state serving of the installed view) — exposed so tests can drive
+   *  it with synthetic ctx/events without a live PI. */
+  readonly contextHandler: PiContextHookHandler;
+  /** What the last `context` event served, or why it served raw. */
+  getLastContextOutcome(): ContextServeOutcome | null;
   /** Compact cancel diagnostics accumulated this PI session; cleared on session boundary and successful `session_compact`. */
   getCompactDiagnostics(): readonly CompactDiagnostic[];
   /** Most recent compact cancel diagnostic, if any. */
@@ -406,6 +419,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // still report stale pre-compact usage (PI guards the same staleness
   // internally), and triggering on it would immediately re-compact.
   let compactedSinceSettleCheck = false;
+  // Mid-turn (context hook) trigger state: retry only after real growth.
+  const contextHookState: ContextHookState = { lastAttemptTokens: null };
+  let lastContextOutcome: ContextServeOutcome | null = null;
   // Production defaults resolve under ~/.pi-lhc (or PI_LHC_HOME). Tests inject
   // temp registry/thread paths via deps so optional registryPath plumbing stays.
   const registryPath = deps.registryPath ?? defaultRegistryPath();
@@ -1125,6 +1141,30 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   for (const name of EPIC_1_HOOKS) handlers[name] = guard(name, bodies[name]);
   const settledHandler = guard("agent_settled", onAgentSettled);
 
+  // The `context` hook: Design F. handleContext fails open (raw list) on
+  // every failure; this wrapper only keeps a throw from ever reaching PI.
+  const contextHandler: PiContextHookHandler = async (event, ctx) => {
+    try {
+      const settings = modelCompactSettingsFor(ctx.model?.id);
+      return await handleContext(event, ctx, {
+        state,
+        instance,
+        piSessionId: captureSession?.piSessionId ?? null,
+        flushPendingCapture: flushPendingMessages,
+        findSeedEntryMap: findSeedEntryMapInBranch,
+        triggerTokens: settings.triggerTokens,
+        compactParams: toCompactParams(settings),
+        hookState: contextHookState,
+        onOutcome: (outcome) => {
+          lastContextOutcome = outcome;
+        },
+      });
+    } catch (err) {
+      lastContextOutcome = { kind: "raw", reason: `context: ${err instanceof Error ? err.message : String(err)}` };
+      return undefined;
+    }
+  };
+
   const onRehydrate: PiCommandHandler = async (_args, ctx) => {
     if (state === null) {
       ctx.ui.notify("pi-lhc: no LHC thread attached — rehydrate requires an active thread", "error");
@@ -1200,6 +1240,10 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     handlers,
     compactHandlers,
     settledHandler,
+    contextHandler,
+    getLastContextOutcome(): ContextServeOutcome | null {
+      return lastContextOutcome;
+    },
     treeHandler: onBeforeTree,
     register(pi: ExtensionAPI): void {
       registerLhcFlags(pi);
@@ -1240,6 +1284,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       });
       for (const name of EPIC_1_HOOKS) pi.on(name, handlers[name]);
       pi.on("agent_settled", settledHandler);
+      pi.on("context", contextHandler);
       registerRetrievalTools(pi, {
         getThreadRef: () => state?.threadRef ?? null,
         getInstance: () => instance,

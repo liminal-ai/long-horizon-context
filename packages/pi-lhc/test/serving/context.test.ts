@@ -40,7 +40,7 @@ function recordingPi(): { pi: ExtensionAPI; registered: string[] } {
 }
 
 describe("connector hook rail", () => {
-  it("registers Epic 1 capture hooks and compact hooks without the context hook", () => {
+  it("registers Epic 1 capture hooks, compact hooks, and the per-step context hook", () => {
     const { pi, registered } = recordingPi();
     createConnector({
       registryPath: store.registryPath,
@@ -51,8 +51,9 @@ describe("connector hook rail", () => {
 
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
     expect(registered).toHaveLength(CONNECTOR_HOOKS.length);
-    // History stays SessionManager-seeded; no serve-time injection.
-    expect(registered).not.toContain("context");
+    // History stays SessionManager-seeded at startup; the context hook is
+    // the mid-run serving seam (Design F), never a seeding path.
+    expect(registered).toContain("context");
   });
 });
 
