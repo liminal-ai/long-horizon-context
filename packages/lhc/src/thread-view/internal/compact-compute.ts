@@ -126,6 +126,7 @@ export function computeArrangement(
     selection = walkArrangement(plan.source, {
       lowerBound: merged.lowerBound,
       percentages: merged.percentages,
+      newestClosedProtection: merged.newestClosedProtection,
       ...(opts.compactPointUpperBound !== undefined ? { compactPointUpperBound: opts.compactPointUpperBound } : {}),
     });
   } catch (cause) {

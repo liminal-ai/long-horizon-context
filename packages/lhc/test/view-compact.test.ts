@@ -1175,11 +1175,16 @@ describe("install-time drift recomputes against fresh state", () => {
       }
 
       // Prepared while the turn/chunk derivations are still queued: the bands
-      // stand on fallbacks.
+      // stand on fallbacks — or, for the newest closed turn, on the in-walk
+      // composition that stands in for its not-yet-stored rendering (Flow 5).
       const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
       expect(stale.ok).toBe(true);
       if (!stale.ok) return;
-      expect(stale.value.selection.entries.some((entry) => entry.degraded || entry.gap)).toBe(true);
+      expect(
+        stale.value.selection.entries.some(
+          (entry) => entry.degraded || entry.gap || entry.derivationUsed === "composed_in_walk",
+        ),
+      ).toBe(true);
       const eventsBefore = maxEventOrder(filePath);
 
       // Draining writes derivations only — not one new event.

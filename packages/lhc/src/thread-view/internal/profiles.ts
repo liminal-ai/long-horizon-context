@@ -11,22 +11,29 @@ import type {
   VisibilityBudgets,
 } from "../../shared-tech/index.js";
 
+// Newest-closed-turn protection default (turn parts, Flow 5): 0.6 of the
+// lower bound — the owner's 120K-of-200K framing.
+export const DEFAULT_NEWEST_CLOSED_PROTECTION = 0.6;
+
 // Built-in profiles: defaults and knobs, not architecture.
 export const BUILT_IN_PROFILES: readonly ViewProfile[] = [
   {
     name: "continuation",
     lowerBound: 120000,
     percentages: { full: 30, smooth: 30, detailed: 20, brief: 20 },
+    newestClosedProtection: DEFAULT_NEWEST_CLOSED_PROTECTION,
   },
   {
     name: "conversation",
     lowerBound: 120000,
     percentages: { full: 12, smooth: 48, detailed: 20, brief: 20 },
+    newestClosedProtection: DEFAULT_NEWEST_CLOSED_PROTECTION,
   },
   {
     name: "coding",
     lowerBound: 120000,
     percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
+    newestClosedProtection: DEFAULT_NEWEST_CLOSED_PROTECTION,
   },
 ];
 
@@ -59,6 +66,10 @@ export function profileViolation(profile: ViewProfile): string | null {
   const sum = BAND_KEYS.reduce((total, key) => total + profile.percentages[key], 0);
   if (sum !== 100) {
     return `profile "${profile.name}": percentages must sum to 100, got ${sum}`;
+  }
+  const protection = profile.newestClosedProtection;
+  if (!Number.isFinite(protection) || protection < 0 || protection > 1) {
+    return `profile "${profile.name}": newestClosedProtection must be a fraction from 0 to 1, got ${protection}`;
   }
   return null;
 }
@@ -98,6 +109,7 @@ function mergeProfile(entry: ViewProfileOverride, base: ViewProfile | undefined)
         detailed: entry.percentages?.detailed as number,
         brief: entry.percentages?.brief as number,
       },
+      newestClosedProtection: entry.newestClosedProtection ?? DEFAULT_NEWEST_CLOSED_PROTECTION,
     };
   }
   return {
@@ -109,6 +121,7 @@ function mergeProfile(entry: ViewProfileOverride, base: ViewProfile | undefined)
       detailed: entry.percentages?.detailed ?? base.percentages.detailed,
       brief: entry.percentages?.brief ?? base.percentages.brief,
     },
+    newestClosedProtection: entry.newestClosedProtection ?? base.newestClosedProtection,
   };
 }
 

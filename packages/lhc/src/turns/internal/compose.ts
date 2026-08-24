@@ -19,6 +19,35 @@ import type {
   ToolOutcome,
 } from "../../shared-tech/index.js";
 import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "../../shared-tech/index.js";
+import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+
+// F1 — the bounded per-message construction cap. A construction never spends
+// more than this on one message: a giant message keeps a head and a tail
+// around a marked elision that names the exact-retrieval address (`m…`).
+// Construction behavior only: canonical keeps every byte, the verbatim tail
+// is never capped, and derivation floors are written from the uncapped text.
+export const CONSTRUCTION_MESSAGE_CAP_TOKENS = 2000;
+
+export function capForConstruction(text: string, messageId: string): string {
+  const total = estimateTokens(text);
+  if (total <= CONSTRUCTION_MESSAGE_CAP_TOKENS) return text;
+  const charsPerToken = text.length / total;
+  const marker = (elided: number): string =>
+    `[… ${elided} tokens elided at construction — exact content: ${messageId} …]`;
+  // Head takes two thirds of the kept budget, tail one third; shrink until the
+  // kept text plus its marker prices at or under the cap.
+  let keep = Math.floor(charsPerToken * CONSTRUCTION_MESSAGE_CAP_TOKENS);
+  for (;;) {
+    const headChars = Math.floor((keep * 2) / 3);
+    const tailChars = keep - headChars;
+    const head = text.slice(0, headChars).trimEnd();
+    const tail = tailChars === 0 ? "" : text.slice(text.length - tailChars).trimStart();
+    const elided = Math.max(0, total - estimateTokens(head) - estimateTokens(tail));
+    const capped = tail === "" ? `${head}\n${marker(elided)}` : `${head}\n${marker(elided)}\n${tail}`;
+    if (keep === 0 || estimateTokens(capped) <= CONSTRUCTION_MESSAGE_CAP_TOKENS) return capped;
+    keep = Math.max(0, Math.min(keep - 1, Math.floor(keep * 0.9)));
+  }
+}
 
 // The member message as the composer sees it: kind plus projected blocks,
 // verbatim from the record (already deleted-filtered by the caller's read).
@@ -202,10 +231,13 @@ function buildAtom(
       : derivations.get(composeDerivationKey(message.messageId, plan.derivation));
   const ready = derivation !== undefined && derivation.state === "ready" && derivation.content !== undefined;
   const block = message.blocks[0]?.content ?? {};
+  // The uncapped text is what a recovery floor writes back; the part renders
+  // the capped construction.
+  const text = ready ? readyText(message, derivation.content as string) : plan.fallbackText(message);
   const part: RenderingPart = {
     messageId: message.messageId,
     kind: message.kind,
-    text: ready ? readyText(message, derivation.content as string) : plan.fallbackText(message),
+    text: capForConstruction(text, message.messageId),
     fallback: plan.derivation !== undefined && !ready,
   };
   if (message.kind === "model_change" || message.kind === "thinking_level_change") {
@@ -245,10 +277,10 @@ function buildAtom(
           subjectKind: "message",
           subjectId: message.messageId,
           derivationType: plan.derivation,
-          content: part.text,
+          content: text,
           sourceVersion: derivation?.sourceVersion ?? 1,
           reason: derivation?.state === "failed" ? "failed_floor" : "not_ready",
-          floorUsed: part.text,
+          floorUsed: text,
         }
       : undefined;
   return { atom, ...(gap === undefined ? {} : { gap }), ...(recovery === undefined ? {} : { recovery }) };

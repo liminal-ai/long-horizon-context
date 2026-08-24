@@ -105,6 +105,7 @@ function tokensAfterStep(filePath: string, turnId: string, stepIndex: number): n
 const params = (lowerBound: number): ViewCompactParams => ({
   lowerBound,
   percentages: { full: 50, smooth: 20, detailed: 15, brief: 15 },
+  newestClosedProtection: 0, // the split is the subject; Flow 5 has its own file
 });
 
 interface CanonicalSnapshot {

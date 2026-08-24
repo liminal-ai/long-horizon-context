@@ -10,6 +10,10 @@ export interface ViewProfile {
   lowerBound: number;
   // Band shares of the lower bound; must sum to 100.
   percentages: { full: number; smooth: number; detailed: number; brief: number };
+  // Newest-closed-turn protection (turn parts, Flow 5): the fraction of the
+  // lower bound the newest closed turn may cost and still be kept full,
+  // after the active turn's minimum verbatim tail is reserved. 0 disables.
+  newestClosedProtection: number;
 }
 
 // A user profile entry as configured: a full profile under a new name, or a
@@ -20,6 +24,7 @@ export interface ViewProfileOverride {
   name: string;
   lowerBound?: number;
   percentages?: Partial<ViewProfile["percentages"]>;
+  newestClosedProtection?: number;
 }
 
 // Compact-time explicit parameters: field-wise overrides of the base profile,
@@ -28,6 +33,7 @@ export interface ViewProfileOverride {
 export interface ViewCompactParams {
   lowerBound?: number;
   percentages?: Partial<ViewProfile["percentages"]>;
+  newestClosedProtection?: number;
 }
 
 // Visibility-boundary budgets: max > target, both positive. Intake no longer
@@ -265,6 +271,10 @@ export interface CompactReceipt {
   // construction now serving it — the stored rendering row it used, or the
   // composed-in-walk marker when the walk composed it from canonical bytes.
   settled?: { turnId: string; construction: SettleConstruction };
+  // Newest-closed-turn placement (Flow 5), when the walk decided it: kept
+  // full (verbatim) within the protection bound, or served by its whole
+  // deterministic rendering — never an excerpt.
+  protectedTurn?: { turnId: string; representation: "full" | "whole_rendering" };
 }
 
 export type SettleConstruction =

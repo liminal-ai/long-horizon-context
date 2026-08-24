@@ -549,6 +549,7 @@ function resolveCompactCall(opts: {
     name: base.name,
     lowerBound: opts.params?.lowerBound ?? base.lowerBound,
     percentages: { ...base.percentages, ...opts.params?.percentages },
+    newestClosedProtection: opts.params?.newestClosedProtection ?? base.newestClosedProtection,
   };
   const violation = profileViolation(merged);
   if (violation !== null) return callerError("invalid_view_config", violation);
@@ -1298,6 +1299,9 @@ export async function installPreparedCompact(
         ...(installed.selection.parts !== undefined ? { parts: installed.selection.parts } : {}),
         ...(installed.selection.splitPoint !== undefined ? { splitPoint: installed.selection.splitPoint } : {}),
         ...(installed.selection.settled !== undefined ? { settled: installed.selection.settled } : {}),
+        ...(installed.selection.protectedTurn !== undefined
+          ? { protectedTurn: installed.selection.protectedTurn }
+          : {}),
       },
     };
   } catch (cause) {

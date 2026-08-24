@@ -87,9 +87,13 @@ function stepSums(filePath: string, turnId: string): Sums {
   }
 }
 
+// The split rule is proven with newest-closed protection off (Flow 5 has its
+// own seam file); with it on, the tiny closed t1 plus the whole open turn
+// would fit the bound and the walk would rightly not split.
 const params = (lowerBound: number): ViewCompactParams => ({
   lowerBound,
   percentages: { full: 50, smooth: 20, detailed: 15, brief: 15 },
+  newestClosedProtection: 0,
 });
 
 async function compact(sdk: Lhc, filePath: string, p: ViewCompactParams) {

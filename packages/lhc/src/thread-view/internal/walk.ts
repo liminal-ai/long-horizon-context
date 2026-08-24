@@ -25,6 +25,7 @@
 import type { SettleConstruction } from "../../shared-tech/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { StepEdges } from "../../turns/internal/steps.js";
+import { DEFAULT_NEWEST_CLOSED_PROTECTION } from "./profiles.js";
 import {
   type CompactChunkMaterialSnapshot,
   type DerivationSnapshot,
@@ -269,39 +270,96 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     }
   }
 
+  // ── Flow 5: the newest closed turn is protected by placement ──
+  //
+  // Precedence: (1) the active turn's minimum verbatim tail; (2) the newest
+  // closed turn full when its verbatim cost fits min(fraction × lower bound,
+  // what (1) left); (3)–(4) the extended tail and elder bands take the rest.
+  //
+  // The served view is contiguous — bands, then one verbatim tail from the
+  // compact point — so a full newest closed turn puts everything newer than
+  // it in the tail too. Under a planned split, (1) therefore reserves the
+  // whole active turn, and a turn already served as parts can never be
+  // followed by a full closed turn (k never moves backward). A turn that does
+  // not fit takes its whole deterministic rendering — stored or composed
+  // in-walk — never an excerpt. Requires the parts source (the bounded plan
+  // on a clean thread): the legacy plan is byte-unchanged.
+  let protectedRecord: SelectionResult["protectedTurn"];
+  let protectedOverrun = 0;
+  const newestClosed = closedTurns.length === 0 ? undefined : closedTurns[closedTurns.length - 1];
+  const transitionTurnId = partsPlan?.turn.turnId ?? settling?.turnId ?? null;
+  if (
+    partsSource !== undefined &&
+    newestClosed !== undefined &&
+    newestClosed.closedAt !== null &&
+    newestClosed.turnId !== transitionTurnId &&
+    newestClosed.closedAt <= compactPoint
+  ) {
+    const fraction = config.newestClosedProtection ?? DEFAULT_NEWEST_CLOSED_PROTECTION;
+    const activeAlreadySplit = partsSource.installed !== null && partsSource.installed.turnId === openTurn?.turnId;
+    const reserve =
+      partsPlan !== null && openTurn !== undefined
+        ? source.turnMessageTokens(openTurn.turnId)
+        : source.messageTokensAfter(compactPoint);
+    const bound = Math.min(fraction * config.lowerBound, config.lowerBound - reserve);
+    const verbatimCost = source.turnMessageTokens(newestClosed.turnId);
+    if (!activeAlreadySplit && verbatimCost <= bound) {
+      const previous = closedTurns.filter((t) => t.turnOrder < newestClosed.turnOrder).at(-1);
+      compactPoint = previous?.closedAt ?? 0;
+      partsPlan = null;
+      protectedRecord = { turnId: newestClosed.turnId, representation: "full" };
+      protectedOverrun = Math.max(0, source.messageTokensAfter(compactPoint) - fullBudget);
+    } else {
+      protectedRecord = { turnId: newestClosed.turnId, representation: "whole_rendering" };
+    }
+  }
+
   // Band candidates: closed turns wholly behind the compact point. Rule 5 is
   // structural here — chunked or not, a banded turn is a smooth candidate
   // (bands are defined by representation, not strict time strata).
   const bandedTurns = closedTurns.filter((turn) => turn.closedAt !== null && turn.closedAt <= compactPoint);
   const bandedTurnIds = new Set(bandedTurns.map((turn) => turn.turnId));
 
-  // Settle: the whole construction from canonical — the stored rendering when
-  // ready, else composed in-walk. Never the excerpt rung for the settling turn.
-  function resolveSettleRepresentation(turn: SelectionTurn): ReturnType<typeof resolveSmoothRepresentation> {
+  // The whole construction from canonical — the stored rendering when ready,
+  // else composed in-walk — with the construction reference the settle record
+  // carries. Never the excerpt or compression rung.
+  function resolveWholeConstruction(
+    turn: SelectionTurn,
+  ): { rep: ReturnType<typeof resolveSmoothRepresentation>; construction: SettleConstruction } | null {
     const rendering = lookup(turn.turnId, "turn_rendering");
     if (rendering?.state === "ready" && typeof rendering.content === "string") {
-      const construction: SettleConstruction = {
-        kind: "stored",
-        subjectId: turn.turnId,
-        derivationType: "turn_rendering",
-        sourceVersion: rendering.sourceVersion ?? 1,
+      return {
+        rep: { derivationUsed: "turn_rendering", body: rendering.content, degraded: false, gap: false },
+        construction: {
+          kind: "stored",
+          subjectId: turn.turnId,
+          derivationType: "turn_rendering",
+          sourceVersion: rendering.sourceVersion ?? 1,
+        },
       };
-      settledRecord = { turnId: turn.turnId, construction };
-      return { derivationUsed: "turn_rendering", body: rendering.content, degraded: false, gap: false };
     }
     const composed = partsSource?.wholeTurnText(turn.turnId) ?? null;
     if (composed !== null) {
-      settledRecord = { turnId: turn.turnId, construction: { kind: "composed_in_walk", turnId: turn.turnId } };
-      return { derivationUsed: "composed_in_walk", body: composed, degraded: false, gap: false };
+      return {
+        rep: { derivationUsed: "composed_in_walk", body: composed, degraded: false, gap: false },
+        construction: { kind: "composed_in_walk", turnId: turn.turnId },
+      };
     }
-    return resolveSmoothRepresentation(turn.turnId, lookup, () => source.turnExcerpt(turn.turnId));
+    return null;
   }
 
   function buildTurnEntry(turn: SelectionTurn): ArrangementEntry {
-    const rep =
-      settling !== null && settling.turnId === turn.turnId
-        ? resolveSettleRepresentation(turn)
-        : resolveSmoothRepresentation(turn.turnId, lookup, () => source.turnExcerpt(turn.turnId));
+    let rep: ReturnType<typeof resolveSmoothRepresentation> | null = null;
+    if (settling !== null && settling.turnId === turn.turnId) {
+      const whole = resolveWholeConstruction(turn);
+      if (whole !== null) {
+        settledRecord = { turnId: turn.turnId, construction: whole.construction };
+        rep = whole.rep;
+      }
+    } else if (protectedRecord?.representation === "whole_rendering" && protectedRecord.turnId === turn.turnId) {
+      rep = resolveWholeConstruction(turn)?.rep ?? null;
+    }
+    rep ??= resolveSmoothRepresentation(turn.turnId, lookup, () => source.turnExcerpt(turn.turnId));
     const text = renderArrangementEntry("turn", turn.turnId, rep, []);
     const entry: ArrangementEntry = {
       band: "smooth",
@@ -433,7 +491,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // the smooth representation, and consumes this budget).
   const smooth = fillBand(
     [...bandedTurns].reverse(),
-    Math.max(0, budget(config.percentages.smooth) - partTokens),
+    Math.max(0, budget(config.percentages.smooth) - partTokens - protectedOverrun),
     buildTurnEntry,
   );
   smooth.included.push(...partEntries);
@@ -607,5 +665,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     };
   }
   if (settledRecord !== undefined) result.settled = settledRecord;
+  if (protectedRecord !== undefined) result.protectedTurn = protectedRecord;
   return result;
 }

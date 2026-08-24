@@ -114,11 +114,14 @@ export interface SelectionResult {
   parts?: Array<{ turnId: string; fromStep: number; toStep: number }>;
   splitPoint?: { turnId: string; stepIndex: number };
   settled?: { turnId: string; construction: SettleConstruction };
+  protectedTurn?: { turnId: string; representation: "full" | "whole_rendering" };
 }
 
 export interface SelectionConfig {
   lowerBound: number;
   percentages: { full: number; smooth: number; detailed: number; brief: number };
+  /** Newest-closed-turn protection fraction (Flow 5); the profile default when absent. */
+  newestClosedProtection?: number;
   /** Compact point must stay at or behind this event order (protected-pair tail). */
   compactPointUpperBound?: number;
 }
