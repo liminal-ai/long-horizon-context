@@ -44,7 +44,13 @@ export type ErrorCode =
   // Compact-continuation runtime (LIM-61):
   | "invalid_compact_continuation_input" // caller_error — host input failed closed validation
   | "compact_continuation_writer_conflict" // caller_error — cannot claim exclusive LHC writer
-  | "compact_continuation_attempt_conflict"; // caller_error — attemptId reused for a different operation
+  | "compact_continuation_attempt_conflict" // caller_error — attemptId reused for a different operation
+  // Turn parts (mid-turn compact, AC-7.3/7.4). Core cannot observe capture in
+  // flight: the entry point takes the host's seam assertion and refuses when
+  // it is absent or false. Mechanism exclusivity is per thread, both ways.
+  | "unsettled_capture_seam" // caller_error — mid-turn compact invoked without a settled host seam assertion
+  | "forced_boundary_thread" // caller_error — mid-turn compact refused: this thread is on the forced-boundary path
+  | "compact_continuation_parts_thread"; // caller_error — forced-boundary compact refused: this thread has served parts
 
 export interface ErrorResult {
   errorClass: ErrorClass;

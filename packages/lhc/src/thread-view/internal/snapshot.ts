@@ -116,6 +116,29 @@ export function readStoredView(db: DatabaseSync): StoredView | null {
   };
 }
 
+// Turn parts: the installed view's transition turn — the one turn served as
+// parts — with its part ranges in served order. Null when every served turn
+// is whole (or no view exists). The one reader of "has this thread served
+// parts" for the walk, the host metadata surface, and mechanism exclusivity.
+export interface InstalledTransition {
+  turnId: string;
+  parts: Array<{ fromStep: number; toStep: number }>;
+}
+
+export function readInstalledTransition(db: DatabaseSync): InstalledTransition | null {
+  const stored = readStoredView(db);
+  if (stored === null) return null;
+  const partEntries = stored.arrangement.filter((entry) => entry.subjectKind === "turn" && entry.part !== undefined);
+  const first = partEntries[0];
+  if (first === undefined) return null;
+  return {
+    turnId: first.subjectId,
+    parts: partEntries
+      .filter((entry) => entry.subjectId === first.subjectId)
+      .map((entry) => ({ fromStep: entry.part!.fromStep, toStep: entry.part!.toStep })),
+  };
+}
+
 // ── tail record reads ─────────────────────────────────────────────
 
 export interface TailMessageRow {

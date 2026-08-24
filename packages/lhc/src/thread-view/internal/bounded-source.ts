@@ -16,13 +16,14 @@
 // nothing — the arrangement is the same either way, because the eager plan
 // omits blocked material too.
 import type { DatabaseSync } from "node:sqlite";
+import { hasForcedBoundaryHistory } from "../../compact-continuation/internal/store.js";
 import type { DbReadTransaction, SkippedRecord } from "../../shared-tech/index.js";
 import * as turnsDomain from "../../turns/index.js";
 import type { CompactChunkMaterialSnapshot, DerivationSnapshot } from "./render.js";
 import { excerptLine } from "./render.js";
 import type { ArrangementSourceState, ChunkSummaryType } from "./select.js";
 import { orphanedMessageSkip, shapeChunks, shapeTurns } from "./selection-structure.js";
-import { readStoredView } from "./snapshot.js";
+import { readInstalledTransition } from "./snapshot.js";
 import type { PartsSource, SelectionSource } from "./walk.js";
 
 /** Raised when the caller's abort signal trips inside an on-demand read. */
@@ -301,38 +302,32 @@ export function createBoundedSelection(
   }
 
   // ── turn parts: the installed transition turn and the step/construction
-  // reads the walk asks for only when it splits or settles ─────────
-  const stored = counted(() => readStoredView(db));
-  const installedParts = (stored?.arrangement ?? []).flatMap((entry) =>
-    entry.subjectKind === "turn" && entry.part !== undefined ? [{ turnId: entry.subjectId, ...entry.part }] : [],
-  );
-  const firstPart = installedParts[0];
+  // reads the walk asks for only when it splits or settles. A thread on the
+  // forced-boundary path has no parts source at all (AC-7.3 exclusivity):
+  // it walks exactly as before this mechanism existed. ─────────────
+  const installed = counted(() => readInstalledTransition(db));
+  const forcedBoundaryThread = counted(() => hasForcedBoundaryHistory(db));
   const stepsByTurn = new Map<string, ReturnType<typeof turnsDomain.readTurnSteps>>();
-  const parts: PartsSource = {
-    installed:
-      firstPart === undefined
-        ? null
-        : {
-            turnId: firstPart.turnId,
-            parts: installedParts
-              .filter((part) => part.turnId === firstPart.turnId)
-              .map((part) => ({ fromStep: part.fromStep, toStep: part.toStep })),
-          },
-    turnSteps(turnId) {
-      const cached = stepsByTurn.get(turnId);
-      if (cached !== undefined) return cached;
-      const edges = counted(() => turnsDomain.readTurnSteps(db, turnId));
-      stepsByTurn.set(turnId, edges);
-      return edges;
-    },
-    partText: (turnId, range, trailer) => counted(() => turnsDomain.composeTurnPartText(db, turnId, range, trailer)),
-    wholeTurnText: (turnId) => counted(() => turnsDomain.composeWholeTurnText(db, turnId)),
-  };
+  const parts: PartsSource | undefined = forcedBoundaryThread
+    ? undefined
+    : {
+        installed,
+        turnSteps(turnId) {
+          const cached = stepsByTurn.get(turnId);
+          if (cached !== undefined) return cached;
+          const edges = counted(() => turnsDomain.readTurnSteps(db, turnId));
+          stepsByTurn.set(turnId, edges);
+          return edges;
+        },
+        partText: (turnId, range, trailer) =>
+          counted(() => turnsDomain.composeTurnPartText(db, turnId, range, trailer)),
+        wholeTurnText: (turnId) => counted(() => turnsDomain.composeWholeTurnText(db, turnId)),
+      };
 
   const source: SelectionSource = {
     turns: shaped.turns,
     chunks,
-    parts,
+    ...(parts !== undefined ? { parts } : {}),
     hasPlaceableMessages: () =>
       counted(() => db.prepare(`SELECT 1 AS present ${PLACEABLE_MESSAGE_FROM} LIMIT 1`).get()) !== undefined,
     crossingMessage(budget) {

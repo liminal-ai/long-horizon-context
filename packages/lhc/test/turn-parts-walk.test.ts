@@ -145,7 +145,7 @@ describe("turn parts: the walk splits the open turn", () => {
     expect(part.text).toContain("long task");
     expect(part.text).toContain("step 1: bravo");
     expect(part.text).not.toContain("step 2: charlie");
-    expect(part.text.endsWith("\n[seam · t2 · steps 0–1 rendered above · t2 continues below]\n</t2>")).toBe(true);
+    expect(part.text.endsWith("\n[seam · t2 · steps 0–1 summarized above · t2 resumes below]\n</t2>")).toBe(true);
     expect(part.text).toMatch(/<m\d+>/);
 
     // Served view: bands, then the verbatim tail from the first message of step 2.
@@ -194,7 +194,7 @@ describe("turn parts: the walk splits the open turn", () => {
     expect(parts[1]!.text).toContain("step 1: bravo");
     expect(parts[1]!.text).toContain("step 3: delta");
     expect(parts[1]!.text).not.toContain("step 0: alpha");
-    expect(parts[1]!.text.endsWith("[seam · t2 · steps 1–3 rendered above · t2 continues below]\n</t2>")).toBe(true);
+    expect(parts[1]!.text.endsWith("[seam · t2 · steps 1–3 summarized above · t2 resumes below]\n</t2>")).toBe(true);
     expect(second.receipt.compactPoint).toBe(sums.edge.get(3));
   });
 

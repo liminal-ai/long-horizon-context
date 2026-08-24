@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { hasForcedBoundaryHistory } from "../compact-continuation/internal/store.js";
 import * as messagesDomain from "../messages/index.js";
 import type {
   Band,
@@ -237,6 +238,88 @@ export async function describe(ref: ThreadRef): Promise<OpResult<StoredView | nu
   } catch (cause) {
     return storageFailure(`view describe failed: ${detail(cause)}`);
   }
+}
+
+/**
+ * The host's seam assertion (turn parts, AC-7.4): the four facts the
+ * forced-boundary runtime already takes. Core cannot observe capture in
+ * flight; asserting these truthfully is the host's obligation.
+ */
+export type MidTurnSeamAssertion = {
+  modelResponseComplete: boolean;
+  requestedToolsSettled: boolean;
+  captureFlushed: boolean;
+  beforeNextProviderRequest: boolean;
+};
+
+export type MidTurnCompactOptions = {
+  seam: MidTurnSeamAssertion;
+  profile?: string;
+  params?: ViewCompactParams;
+  signal?: { aborted: boolean };
+  createdAt?: string;
+};
+
+function seamSettled(seam: MidTurnSeamAssertion | undefined): seam is MidTurnSeamAssertion {
+  return (
+    seam !== undefined &&
+    seam.modelResponseComplete === true &&
+    seam.requestedToolsSettled === true &&
+    seam.captureFlushed === true &&
+    seam.beforeNextProviderRequest === true
+  );
+}
+
+/**
+ * Mid-turn compact (turn parts, Flow 7): the ordinary prepare → install
+ * compact, invoked by a host between steps. Not a third algorithm state — the
+ * bounded plan splits and settles whenever it runs; this entry point adds
+ * only the two typed refusals the host contract needs before any assembly:
+ * an unsettled seam (AC-7.4) and a thread on the forced-boundary path
+ * (AC-7.3). Refusals touch nothing.
+ */
+export async function midTurnCompact(ref: ThreadRef, opts: MidTurnCompactOptions): Promise<OpResult<CompactReceipt>> {
+  if (!seamSettled(opts.seam)) {
+    return {
+      ok: false,
+      error: {
+        errorClass: "caller_error",
+        code: "unsettled_capture_seam",
+        reason:
+          "mid-turn compact requires a settled capture seam: the host must assert modelResponseComplete, requestedToolsSettled, captureFlushed, and beforeNextProviderRequest",
+      },
+    };
+  }
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  if (!existsSync(resolved.value.filePath)) return threadNotFound(resolved.value.filePath);
+  let forced: OpResult<boolean>;
+  try {
+    forced = await createDbReadTransaction(ref, (transaction) => hasForcedBoundaryHistory(transaction.db));
+  } catch (cause) {
+    return storageFailure(`view midTurnCompact failed: ${detail(cause)}`);
+  }
+  if (!forced.ok) return forced;
+  if (forced.value) {
+    return {
+      ok: false,
+      error: {
+        errorClass: "caller_error",
+        code: "forced_boundary_thread",
+        reason: "mid-turn compact refused: this thread is on the forced-boundary path and is never served parts",
+      },
+    };
+  }
+  const prepared = await prepareCompact(ref, {
+    ...(opts.profile !== undefined ? { profile: opts.profile } : {}),
+    ...(opts.params !== undefined ? { params: opts.params } : {}),
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+  });
+  if (!prepared.ok) return prepared;
+  return installPreparedCompact(ref, prepared.value, {
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    ...(opts.createdAt !== undefined ? { createdAt: opts.createdAt } : {}),
+  });
 }
 
 // Host metadata: the pressure-decision reads (AC-7.1). Read-only.

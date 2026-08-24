@@ -105,7 +105,7 @@ export interface SelectionSource {
  * reads the same whether the tail or another part follows.
  */
 export function seamMarker(turnId: string, range: PartRange): string {
-  return `[seam · ${turnId} · steps ${range.fromStep}–${range.toStep} rendered above · ${turnId} continues below]`;
+  return `[seam · ${turnId} · steps ${range.fromStep}–${range.toStep} summarized above · ${turnId} resumes below]`;
 }
 
 // Ordinal k for a part range: how many steps of the turn the parts through
@@ -140,7 +140,17 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   const fullBudget = budget(config.percentages.full);
   const closedTurns = turns.filter((turn) => turn.status === "closed");
   const openTurn = turns.find((turn) => turn.status === "open");
-  const partsSource = source.parts;
+  // A compact point upper bound is the protected-pair clamp of the
+  // forced-boundary runtime. Per-thread exclusivity (AC-7.3) means it never
+  // meets a thread that has served parts; if it does, the invariant is
+  // broken above this walk and the walk says so rather than splitting under
+  // a clamp it cannot honor. Under a bound on a clean thread, no split.
+  if (config.compactPointUpperBound !== undefined && source.parts?.installed !== null && source.parts !== undefined) {
+    throw new Error(
+      `turn parts invariant violated: compactPointUpperBound on a thread serving parts of ${source.parts.installed.turnId}`,
+    );
+  }
+  const partsSource = config.compactPointUpperBound === undefined ? source.parts : undefined;
   let compactPoint = 0;
   // The crossing is read whenever a closed turn can be banded — and, with a
   // parts source, whenever the open turn alone could need splitting.

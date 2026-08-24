@@ -4,12 +4,11 @@
 import type { DatabaseSync } from "node:sqlite";
 import type { HostMetadata } from "../../shared-tech/index.js";
 import { readActiveTurnSteps } from "../../turns/index.js";
-import { readStoredView } from "./snapshot.js";
+import { readInstalledTransition } from "./snapshot.js";
 
 export function readHostMetadata(db: DatabaseSync): HostMetadata {
   const active = readActiveTurnSteps(db);
-  const view = readStoredView(db);
-  const partEntry = view?.arrangement.find((entry) => entry.subjectKind === "turn" && entry.part !== undefined);
+  const transition = readInstalledTransition(db);
   return {
     activeTurn:
       active === null
@@ -21,6 +20,6 @@ export function readHostMetadata(db: DatabaseSync): HostMetadata {
             lastStepEdge: active.edges.splittable ? active.edges.lastEdge : null,
             splittable: active.edges.splittable,
           },
-    unsettledTurn: partEntry === undefined ? null : { turnId: partEntry.subjectId },
+    unsettledTurn: transition === null ? null : { turnId: transition.turnId },
   };
 }

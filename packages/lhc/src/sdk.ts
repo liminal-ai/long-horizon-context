@@ -340,6 +340,10 @@ export interface ThreadViewSurface {
   prune(ref: threadsDomain.ThreadRef, params?: { targetTokens?: number }): Promise<OpResult<PruneReceipt>>;
   describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
   hostMetadata(ref: threadsDomain.ThreadRef): Promise<OpResult<HostMetadata>>;
+  midTurnCompact(
+    ref: threadsDomain.ThreadRef,
+    opts: threadViewDomain.MidTurnCompactOptions,
+  ): Promise<OpResult<CompactReceipt>>;
   previewCompact(
     ref: threadsDomain.ThreadRef,
     opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
@@ -806,6 +810,7 @@ export function initLhc(config: SdkConfig): Lhc {
         prune: threadViewDomain.prune,
         describe: threadViewDomain.describe,
         hostMetadata: threadViewDomain.hostMetadata,
+        midTurnCompact: threadViewDomain.midTurnCompact,
         previewCompact: threadViewDomain.previewCompact,
         prepareCompact: threadViewDomain.prepareCompact,
         previewProtectedBoundary: threadViewDomain.previewProtectedBoundary,
