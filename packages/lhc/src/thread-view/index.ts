@@ -529,6 +529,7 @@ function selectionWouldWriteSnapshot(
     subjectId: entry.subjectId,
     derivationUsed: entry.derivationUsed,
     degraded: entry.degraded,
+    ...(entry.part !== undefined ? { part: entry.part } : {}),
   }));
   const gaps = gapNotes(selection);
   return (
@@ -1164,6 +1165,7 @@ export async function installPreparedCompact(
               subjectId: entry.subjectId,
               derivationUsed: entry.derivationUsed,
               degraded: entry.degraded,
+              ...(entry.part !== undefined ? { part: entry.part } : {}),
             })),
           ),
           gapsJson: JSON.stringify(installed.gaps),
@@ -1210,6 +1212,9 @@ export async function installPreparedCompact(
         skippedRecords: installed.skippedRecords,
         renderedBands,
         firstKeptMessageId: installed.firstKeptMessageId,
+        ...(installed.selection.parts !== undefined ? { parts: installed.selection.parts } : {}),
+        ...(installed.selection.splitPoint !== undefined ? { splitPoint: installed.selection.splitPoint } : {}),
+        ...(installed.selection.settled !== undefined ? { settled: installed.selection.settled } : {}),
       },
     };
   } catch (cause) {

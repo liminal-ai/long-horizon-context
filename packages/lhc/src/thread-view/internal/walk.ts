@@ -22,7 +22,9 @@
 // over everything older. A skipped subject renders no band text; it is
 // reported as a gap (SelectionResult.skipped) and covered_from runs to the
 // oldest INCLUDED entry, so coverage extends past the hole.
+import type { SettleConstruction } from "../../shared-tech/index.js";
 import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import type { StepEdges } from "../../turns/internal/steps.js";
 import {
   type CompactChunkMaterialSnapshot,
   type DerivationSnapshot,
@@ -47,7 +49,34 @@ import type {
  * fallback material are hydration points, reached only from the ladder rung
  * that renders them.
  */
+/** One part's step range, in host step indices. */
+export interface PartRange {
+  fromStep: number;
+  toStep: number;
+}
+
+/** The installed view's transition turn: the one turn served as parts. */
+export interface InstalledTransition {
+  turnId: string;
+  parts: PartRange[];
+}
+
+/**
+ * Turn parts: what the walk asks for beyond the band inputs. Absent on the
+ * legacy plan, so the legacy walk can neither split nor settle. Step edges and
+ * constructions are hydration points, reached only when a split or settle is
+ * actually decided.
+ */
+export interface PartsSource {
+  readonly installed: InstalledTransition | null;
+  turnSteps(turnId: string): StepEdges;
+  partText(turnId: string, range: { fromOrder: number; toOrder: number }, trailer: string): string;
+  wholeTurnText(turnId: string): string | null;
+}
+
 export interface SelectionSource {
+  /** Turn parts source; undefined on the legacy plan. */
+  readonly parts?: PartsSource;
   /** Live turns, ascending turnOrder. */
   readonly turns: readonly SelectionTurn[];
   /** Chunks the walk can place, ascending chunkOrder. */
@@ -67,6 +96,23 @@ export interface SelectionSource {
   derivation(subjectId: string, derivationType: string): DerivationSnapshot | undefined;
   /** Stored fallback material; undefined when the caller did not ask for it. */
   chunkMaterial(chunkId: string, derivationType: ChunkSummaryType): CompactChunkMaterialSnapshot | undefined;
+}
+
+/**
+ * The seam line a part ends with: identity, range, direction — nothing else.
+ * Position-independent by design: a part's bytes must not change when a later
+ * compact appends another part after it (AC-4.1b), so the last part's marker
+ * reads the same whether the tail or another part follows.
+ */
+export function seamMarker(turnId: string, range: PartRange): string {
+  return `[seam · ${turnId} · steps ${range.fromStep}–${range.toStep} rendered above · ${turnId} continues below]`;
+}
+
+// Ordinal k for a part range: how many steps of the turn the parts through
+// `toStep` cover. Zero when the step is unknown to the record.
+function ordinalThrough(steps: StepEdges, toStep: number): number {
+  const at = steps.steps.findIndex((step) => step.index === toStep);
+  return at < 0 ? 0 : at + 1;
 }
 
 function straddlingTurnStaysInFull(fullSideTokens: number, turnTokens: number): boolean {
@@ -93,11 +139,18 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // tail never begins mid-turn. Open-turn messages always land in the tail.
   const fullBudget = budget(config.percentages.full);
   const closedTurns = turns.filter((turn) => turn.status === "closed");
+  const openTurn = turns.find((turn) => turn.status === "open");
+  const partsSource = source.parts;
   let compactPoint = 0;
-  if (closedTurns.length > 0 && source.hasPlaceableMessages()) {
+  // The crossing is read whenever a closed turn can be banded — and, with a
+  // parts source, whenever the open turn alone could need splitting.
+  const crossing =
+    (closedTurns.length > 0 || partsSource !== undefined) && source.hasPlaceableMessages()
+      ? source.crossingMessage(fullBudget)
+      : null;
+  if (closedTurns.length > 0) {
     // Budget never reached ⇒ the whole record fits the full share:
     // everything is tail, no bands.
-    const crossing = source.crossingMessage(fullBudget);
     compactPoint = crossing === null ? 0 : snapCompactPoint(crossing);
   }
   if (config.compactPointUpperBound !== undefined && compactPoint > config.compactPointUpperBound) {
@@ -142,14 +195,103 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     return candidate.closedAt ?? 0;
   }
 
+  // ── turn parts: the transition turn, settle, and the split point ──
+  //
+  // The installed view names at most one transition turn. When it is closed,
+  // it settles here iff the ordinary compact point would band it (the walk
+  // never serves it whole-unsettled: short of settle it keeps its parts and
+  // the compact point stays on its installed edge). Only with no other turn
+  // left unsettled may the open turn split, at the smallest complete step
+  // edge whose verbatim tail fits the full share (inclusive), clamped up to
+  // the installed k so a split point never moves backward.
+  let settling: SelectionTurn | null = null;
+  let settledRecord: SelectionResult["settled"];
+  let partsPlan: { turn: SelectionTurn; steps: StepEdges; ranges: PartRange[] } | null = null;
+  if (partsSource !== undefined) {
+    const installed = partsSource.installed;
+    const installedTurn = installed === null ? undefined : turnsById.get(installed.turnId);
+    if (installed !== null && installedTurn !== undefined && installed.parts.length > 0) {
+      const steps = partsSource.turnSteps(installedTurn.turnId);
+      const lastInstalled = installed.parts[installed.parts.length - 1] as PartRange;
+      const installedEdge = steps.steps.find((step) => step.index === lastInstalled.toStep)?.lastOrder;
+      if (installedTurn.status === "closed" && installedTurn.closedAt !== null) {
+        if (compactPoint >= installedTurn.closedAt) {
+          settling = installedTurn;
+        } else if (installedEdge !== undefined) {
+          compactPoint = installedEdge;
+          partsPlan = { turn: installedTurn, steps, ranges: [...installed.parts] };
+        }
+      }
+    }
+    if (partsPlan === null && openTurn !== undefined) {
+      const prior =
+        installed !== null && installed.turnId === openTurn.turnId && installed.parts.length > 0 ? installed : null;
+      const steps = partsSource.turnSteps(openTurn.turnId);
+      const priorK =
+        prior === null ? 0 : ordinalThrough(steps, (prior.parts[prior.parts.length - 1] as PartRange).toStep);
+      const kMax = steps.splittable ? (steps.lastEdge ?? 0) : priorK;
+      let kComputed = 0;
+      if (crossing !== null && crossing.turnId === openTurn.turnId && kMax > 0) {
+        // The open turn alone reaches the full share. Smallest k whose tail
+        // fits (<=); when none does, the minimum verbatim tail is served —
+        // elder bands absorb the overrun.
+        kComputed = kMax;
+        for (let k = 1; k <= kMax; k += 1) {
+          const edge = (steps.steps[k - 1] as StepEdges["steps"][number]).lastOrder;
+          if (source.messageTokensAfter(edge) <= fullBudget) {
+            kComputed = k;
+            break;
+          }
+        }
+      }
+      const k = Math.max(kComputed, priorK);
+      if (k > 0) {
+        compactPoint = (steps.steps[k - 1] as StepEdges["steps"][number]).lastOrder;
+        const ranges = prior === null ? [] : [...prior.parts];
+        if (k > priorK) {
+          ranges.push({
+            fromStep: (steps.steps[priorK] as StepEdges["steps"][number]).index,
+            toStep: (steps.steps[k - 1] as StepEdges["steps"][number]).index,
+          });
+        }
+        partsPlan = { turn: openTurn, steps, ranges };
+      }
+    }
+  }
+
   // Band candidates: closed turns wholly behind the compact point. Rule 5 is
   // structural here — chunked or not, a banded turn is a smooth candidate
   // (bands are defined by representation, not strict time strata).
   const bandedTurns = closedTurns.filter((turn) => turn.closedAt !== null && turn.closedAt <= compactPoint);
   const bandedTurnIds = new Set(bandedTurns.map((turn) => turn.turnId));
 
+  // Settle: the whole construction from canonical — the stored rendering when
+  // ready, else composed in-walk. Never the excerpt rung for the settling turn.
+  function resolveSettleRepresentation(turn: SelectionTurn): ReturnType<typeof resolveSmoothRepresentation> {
+    const rendering = lookup(turn.turnId, "turn_rendering");
+    if (rendering?.state === "ready" && typeof rendering.content === "string") {
+      const construction: SettleConstruction = {
+        kind: "stored",
+        subjectId: turn.turnId,
+        derivationType: "turn_rendering",
+        sourceVersion: rendering.sourceVersion ?? 1,
+      };
+      settledRecord = { turnId: turn.turnId, construction };
+      return { derivationUsed: "turn_rendering", body: rendering.content, degraded: false, gap: false };
+    }
+    const composed = partsSource?.wholeTurnText(turn.turnId) ?? null;
+    if (composed !== null) {
+      settledRecord = { turnId: turn.turnId, construction: { kind: "composed_in_walk", turnId: turn.turnId } };
+      return { derivationUsed: "composed_in_walk", body: composed, degraded: false, gap: false };
+    }
+    return resolveSmoothRepresentation(turn.turnId, lookup, () => source.turnExcerpt(turn.turnId));
+  }
+
   function buildTurnEntry(turn: SelectionTurn): ArrangementEntry {
-    const rep = resolveSmoothRepresentation(turn.turnId, lookup, () => source.turnExcerpt(turn.turnId));
+    const rep =
+      settling !== null && settling.turnId === turn.turnId
+        ? resolveSettleRepresentation(turn)
+        : resolveSmoothRepresentation(turn.turnId, lookup, () => source.turnExcerpt(turn.turnId));
     const text = renderArrangementEntry("turn", turn.turnId, rep, []);
     const entry: ArrangementEntry = {
       band: "smooth",
@@ -247,21 +389,61 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     return { included, rest: [], skipped: reportable() };
   }
 
+  // Turn parts: one entry per part, composed independently over its own
+  // order span, each ending in its seam line. Parts are the newest smooth
+  // material and are always included; they consume the smooth share first.
+  const partEntries: ArrangementEntry[] = [];
+  if (partsPlan !== null && partsSource !== undefined) {
+    const { turn, steps, ranges } = partsPlan;
+    let fromOrder = turnStartOrder(turn);
+    for (const range of ranges) {
+      const toOrder = steps.steps.find((step) => step.index === range.toStep)?.lastOrder;
+      if (toOrder === undefined)
+        throw new Error(`turn parts: installed part ${turn.turnId} step ${range.toStep} is unknown to the record`);
+      const text = partsSource.partText(turn.turnId, { fromOrder, toOrder }, seamMarker(turn.turnId, range));
+      partEntries.push({
+        band: "smooth",
+        subjectKind: "turn",
+        subjectId: turn.turnId,
+        derivationUsed: "part",
+        degraded: false,
+        gap: false,
+        startOrder: fromOrder,
+        text,
+        tokens: estimateTokens(text),
+        part: range,
+      });
+      fromOrder = toOrder + 1;
+    }
+  }
+  const partTokens = partEntries.reduce((sum, entry) => sum + entry.tokens, 0);
+
   // Rule 2 + 5 — smooth band: banded closed turns newest-first, chunked or
   // not (rule 5 is structural: a closed-but-unchunked turn is a turn, takes
   // the smooth representation, and consumes this budget).
-  const smooth = fillBand([...bandedTurns].reverse(), budget(config.percentages.smooth), buildTurnEntry);
-  const oldestSmoothOrder = smooth.included.reduce(
-    (oldest, entry) => Math.min(oldest, turnsById.get(entry.subjectId)?.turnOrder ?? Number.POSITIVE_INFINITY),
-    Number.POSITIVE_INFINITY,
+  const smooth = fillBand(
+    [...bandedTurns].reverse(),
+    Math.max(0, budget(config.percentages.smooth) - partTokens),
+    buildTurnEntry,
   );
+  smooth.included.push(...partEntries);
+  const oldestSmoothOrder = smooth.included
+    .filter((entry) => entry.part === undefined)
+    .reduce(
+      (oldest, entry) => Math.min(oldest, turnsById.get(entry.subjectId)?.turnOrder ?? Number.POSITIVE_INFINITY),
+      Number.POSITIVE_INFINITY,
+    );
 
   // Rules 3–4 — chunk candidacy: chunks entirely older than the smooth
   // band's coverage, with the pinned tie-breaker doing the deciding — chunk
   // coverage is its NEWEST member turn, which must sit behind the compact
   // point and be older than the smooth band's oldest included turn.
+  // A chunk holding the still-unsettled transition turn is not a band
+  // candidate until that turn settles.
+  const unsettledClosedTurnId = partsPlan !== null && partsPlan.turn.status === "closed" ? partsPlan.turn.turnId : null;
   const chunkCandidates = chunks
     .filter((chunk) => chunk.status === "closed")
+    .filter((chunk) => unsettledClosedTurnId === null || !chunk.memberTurnIds.includes(unsettledClosedTurnId))
     .filter((chunk) => {
       const liveMembers = chunk.memberTurnIds
         .map((turnId) => turnsById.get(turnId))
@@ -399,5 +581,21 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     reason: `entry did not fit the remaining ${entry.band} budget (${entry.tokens} tokens from ${entry.derivationUsed}); skipped so older entries could be selected`,
   }));
 
-  return { compactPoint, coveredFrom, entries, skipped };
+  // The one invariant: at most one turn is unsettled at compact completion,
+  // and a turn settled here is not also served as parts.
+  const unsettled = new Set(entries.filter((entry) => entry.part !== undefined).map((entry) => entry.subjectId));
+  if (unsettled.size > 1 || (settling !== null && unsettled.has(settling.turnId))) {
+    throw new Error(`turn parts invariant violated: unsettled turns [${[...unsettled].join(", ")}]`);
+  }
+
+  const result: SelectionResult = { compactPoint, coveredFrom, entries, skipped };
+  if (partsPlan !== null) {
+    result.parts = partsPlan.ranges.map((range) => ({ turnId: partsPlan!.turn.turnId, ...range }));
+    result.splitPoint = {
+      turnId: partsPlan.turn.turnId,
+      stepIndex: (partsPlan.ranges[partsPlan.ranges.length - 1] as PartRange).toStep,
+    };
+  }
+  if (settledRecord !== undefined) result.settled = settledRecord;
+  return result;
 }

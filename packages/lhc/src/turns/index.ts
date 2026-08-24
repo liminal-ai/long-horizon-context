@@ -16,7 +16,14 @@ import { enqueue, type WorkItemRecord } from "../shared-tech/work-queue/index.js
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from "./internal/chunk-recovery.js";
 import { type ChunkStructureRow, dropEmptyReadableChunks, readChunkStructure } from "./internal/chunks.js";
-import { readChunkRows, readOwnedDerivations, reportTurnDerivations } from "./internal/derivations.js";
+import { composeRenderingInput, composeStructuredTurnText } from "./internal/compose.js";
+import {
+  readChunkRows,
+  readMemberMessages,
+  readMessageDerivationRows,
+  readOwnedDerivations,
+  reportTurnDerivations,
+} from "./internal/derivations.js";
 import { deriveTurnOwnedInOpenDb } from "./internal/derive.js";
 import { backfillRenderingLabelsInOpenDb, type RenderingLabelBackfillReceipt } from "./internal/label-backfill.js";
 import { readStepMembers, type StepEdges, stepEdges } from "./internal/steps.js";
@@ -214,6 +221,43 @@ export function getChunkText(
 // read from host-supplied step indices. Deterministic, inference-free, no
 // writes. Null only when the record holds no open turn (a damaged thread; the
 // state machine otherwise keeps exactly one).
+/** Step edges of one turn from its host-supplied step indices (any status). */
+export function readTurnSteps(db: DatabaseSync, turnId: string): StepEdges {
+  return stepEdges(readStepMembers(db, turnId));
+}
+
+// Part construction (turn parts): the deterministic rendering of one
+// contiguous span of a turn, composed independently over exactly that span
+// with no message derivation as input — the raw prompt, recorded tool
+// arguments, deterministically truncated results. `trailer` is the seam line
+// the walk places inside the wrapper at the span's end.
+export function composeTurnPartText(
+  db: DatabaseSync,
+  turnId: string,
+  range: { fromOrder: number; toOrder: number },
+  trailer: string,
+): string {
+  const messages = readMemberMessages(db, turnId, range);
+  const { parts } = composeRenderingInput(messages, new Map());
+  return composeStructuredTurnText(parts, turnId, trailer);
+}
+
+// Whole-turn construction composed in-walk (turn parts, settle): the same
+// composition the queued turn_derivation handler stores as turn_rendering —
+// live members with their message derivations where ready — with no write,
+// no floor write, no enqueue, no placement. Null when the turn has no live
+// members.
+export function composeWholeTurnText(db: DatabaseSync, turnId: string): string | null {
+  const messages = readMemberMessages(db, turnId);
+  if (messages.length === 0) return null;
+  const derivations = readMessageDerivationRows(
+    db,
+    messages.map((message) => message.messageId),
+  );
+  const { parts } = composeRenderingInput(messages, derivations);
+  return composeStructuredTurnText(parts, turnId);
+}
+
 export interface ActiveTurnSteps {
   turnId: string;
   estimatedTokens: number;

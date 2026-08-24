@@ -37,13 +37,21 @@ export function readTurnSource(db: DatabaseSync, turnId: string): TurnSource | u
 
 // Member messages in message order, blocks attached, deleted messages filtered.
 // Composition always reads the live member set.
-export function readMemberMessages(db: DatabaseSync, turnId: string): ComposeMessage[] {
+// An optional order window narrows the read to one contiguous span of the
+// turn (a part's step range); the whole turn otherwise.
+export function readMemberMessages(
+  db: DatabaseSync,
+  turnId: string,
+  range?: { fromOrder: number; toOrder: number },
+): ComposeMessage[] {
+  const window = range === undefined ? "" : " AND source_event_order >= ? AND source_event_order <= ?";
+  const bind: Array<string | number> = range === undefined ? [turnId] : [turnId, range.fromOrder, range.toOrder];
   const messages = db
     .prepare(
       `SELECT message_id, kind, token_estimate FROM message
-       WHERE turn_id = ? AND deleted_at IS NULL ORDER BY source_event_order`,
+       WHERE turn_id = ? AND deleted_at IS NULL${window} ORDER BY source_event_order`,
     )
-    .all(turnId) as unknown as Array<{ message_id: string; kind: string; token_estimate: number | bigint }>;
+    .all(...bind) as unknown as Array<{ message_id: string; kind: string; token_estimate: number | bigint }>;
   const blockStmt = db.prepare(
     `SELECT block_type, content FROM message_block
      WHERE message_id = ? ORDER BY block_index`,

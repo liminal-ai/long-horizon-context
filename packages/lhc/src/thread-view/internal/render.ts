@@ -195,6 +195,7 @@ export interface DerivationSnapshot {
   state: "pending" | "ready" | "failed" | "blocked";
   content?: string;
   reason?: string;
+  sourceVersion?: number;
 }
 
 export type CompactChunkMaterialSnapshot =

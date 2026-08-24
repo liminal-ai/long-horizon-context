@@ -421,7 +421,7 @@ function renderingPartLabel(kind: RenderingPartKind): string {
 
 /** Smooth-band turn_rendering text: turn wrap + per-message tags. Not used for
  *  pre_detailed_assembly (compression stays untagged). */
-export function composeStructuredTurnText(parts: readonly RenderingPart[], turnId: string): string {
+export function composeStructuredTurnText(parts: readonly RenderingPart[], turnId: string, trailer?: string): string {
   const inner = parts
     // Empty thinking has no usable representation in a text band. Leaving it
     // here bypasses the serving-exit tail filters once the turn is compacted.
@@ -441,7 +441,7 @@ export function composeStructuredTurnText(parts: readonly RenderingPart[], turnI
       return `${header}\n${body}`;
     })
     .join("\n\n");
-  return wrapEntityXml(turnId, inner);
+  return wrapEntityXml(turnId, trailer === undefined ? inner : `${inner}\n\n${trailer}`);
 }
 
 /** Chunk band header: member turn ids the model can request later. */

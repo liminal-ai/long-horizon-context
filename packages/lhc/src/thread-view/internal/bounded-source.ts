@@ -22,7 +22,8 @@ import type { CompactChunkMaterialSnapshot, DerivationSnapshot } from "./render.
 import { excerptLine } from "./render.js";
 import type { ArrangementSourceState, ChunkSummaryType } from "./select.js";
 import { orphanedMessageSkip, shapeChunks, shapeTurns } from "./selection-structure.js";
-import type { SelectionSource } from "./walk.js";
+import { readStoredView } from "./snapshot.js";
+import type { PartsSource, SelectionSource } from "./walk.js";
 
 /** Raised when the caller's abort signal trips inside an on-demand read. */
 export class CompactStoppedError extends Error {
@@ -68,6 +69,7 @@ interface DerivationIndexEntry {
   subjectKind: string;
   state: DerivationSnapshot["state"];
   contentNull: boolean;
+  sourceVersion: number;
 }
 
 // Enough rows per page that the full band's tail resolves in one or two reads,
@@ -164,7 +166,8 @@ export function createBoundedSelection(
     () =>
       db
         .prepare(
-          `SELECT subject_kind, subject_id, derivation_type, state, (content IS NULL) AS content_null
+          `SELECT subject_kind, subject_id, derivation_type, state, (content IS NULL) AS content_null,
+              source_version
        FROM derivation`,
         )
         .all() as unknown as Array<{
@@ -173,6 +176,7 @@ export function createBoundedSelection(
         derivation_type: string;
         state: string;
         content_null: number | bigint;
+        source_version: number | bigint;
       }>,
   );
   const derivationIndex = new Map<string, DerivationIndexEntry>();
@@ -189,6 +193,7 @@ export function createBoundedSelection(
       subjectKind: row.subject_kind,
       state: row.state as DerivationSnapshot["state"],
       contentNull: Number(row.content_null) === 1,
+      sourceVersion: Number(row.source_version),
     });
   }
 
@@ -210,7 +215,7 @@ export function createBoundedSelection(
     const entry = derivationIndex.get(key);
     let snapshot: DerivationSnapshot | undefined;
     if (entry !== undefined) {
-      snapshot = { state: entry.state };
+      snapshot = { state: entry.state, sourceVersion: entry.sourceVersion };
       // Content is read back only for the state the ladders can use. Every
       // rung that reads `content` first requires state === "ready"; a stored
       // body behind any other state is never rendered, so it is never loaded.
@@ -295,9 +300,39 @@ export function createBoundedSelection(
     return resolved;
   }
 
+  // ── turn parts: the installed transition turn and the step/construction
+  // reads the walk asks for only when it splits or settles ─────────
+  const stored = counted(() => readStoredView(db));
+  const installedParts = (stored?.arrangement ?? []).flatMap((entry) =>
+    entry.subjectKind === "turn" && entry.part !== undefined ? [{ turnId: entry.subjectId, ...entry.part }] : [],
+  );
+  const firstPart = installedParts[0];
+  const stepsByTurn = new Map<string, ReturnType<typeof turnsDomain.readTurnSteps>>();
+  const parts: PartsSource = {
+    installed:
+      firstPart === undefined
+        ? null
+        : {
+            turnId: firstPart.turnId,
+            parts: installedParts
+              .filter((part) => part.turnId === firstPart.turnId)
+              .map((part) => ({ fromStep: part.fromStep, toStep: part.toStep })),
+          },
+    turnSteps(turnId) {
+      const cached = stepsByTurn.get(turnId);
+      if (cached !== undefined) return cached;
+      const edges = counted(() => turnsDomain.readTurnSteps(db, turnId));
+      stepsByTurn.set(turnId, edges);
+      return edges;
+    },
+    partText: (turnId, range, trailer) => counted(() => turnsDomain.composeTurnPartText(db, turnId, range, trailer)),
+    wholeTurnText: (turnId) => counted(() => turnsDomain.composeWholeTurnText(db, turnId)),
+  };
+
   const source: SelectionSource = {
     turns: shaped.turns,
     chunks,
+    parts,
     hasPlaceableMessages: () =>
       counted(() => db.prepare(`SELECT 1 AS present ${PLACEABLE_MESSAGE_FROM} LIMIT 1`).get()) !== undefined,
     crossingMessage(budget) {

@@ -71,8 +71,12 @@ describe("step index on the wire and in storage", () => {
 });
 
 describe("stepEdges", () => {
-  const m = (messageId: string, kind: string, stepIndex: number | null, toolCallId?: string): StepMember =>
-    toolCallId === undefined ? { messageId, kind, stepIndex } : { messageId, kind, stepIndex, toolCallId };
+  const m = (messageId: string, kind: string, stepIndex: number | null, toolCallId?: string): StepMember => {
+    const order = Number(messageId.slice(1));
+    return toolCallId === undefined
+      ? { messageId, order, kind, stepIndex }
+      : { messageId, order, kind, stepIndex, toolCallId };
+  };
 
   it("counts complete steps with interleaved parallel results and keeps the in-flight step open", () => {
     const edges = stepEdges([
@@ -93,9 +97,9 @@ describe("stepEdges", () => {
       complete: 2,
       lastEdge: 1,
       steps: [
-        { index: 0, firstMessageId: "m2", lastMessageId: "m4", complete: true },
-        { index: 1, firstMessageId: "m5", lastMessageId: "m9", complete: true },
-        { index: 2, firstMessageId: "m10", lastMessageId: "m11", complete: false },
+        { index: 0, firstMessageId: "m2", lastMessageId: "m4", firstOrder: 2, lastOrder: 4, complete: true },
+        { index: 1, firstMessageId: "m5", lastMessageId: "m9", firstOrder: 5, lastOrder: 9, complete: true },
+        { index: 2, firstMessageId: "m10", lastMessageId: "m11", firstOrder: 10, lastOrder: 11, complete: false },
       ],
     });
   });

@@ -256,4 +256,17 @@ export interface CompactReceipt {
   skippedRecords: SkippedRecord[];
   renderedBands: Array<{ band: Band; text: string }>;
   firstKeptMessageId: string | null;
+  // Turn parts (present only when the installed view serves parts): every
+  // part the view serves, and the split point at (turn, step) precision —
+  // the host step index of the newest step inside a part.
+  parts?: Array<{ turnId: string; fromStep: number; toStep: number }>;
+  splitPoint?: { turnId: string; stepIndex: number };
+  // Present when this compact settled a previously split turn: the whole
+  // construction now serving it — the stored rendering row it used, or the
+  // composed-in-walk marker when the walk composed it from canonical bytes.
+  settled?: { turnId: string; construction: SettleConstruction };
 }
+
+export type SettleConstruction =
+  | { kind: "stored"; subjectId: string; derivationType: "turn_rendering"; sourceVersion: number }
+  | { kind: "composed_in_walk"; turnId: string };
