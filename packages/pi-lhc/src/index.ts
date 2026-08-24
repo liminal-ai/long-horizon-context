@@ -271,6 +271,9 @@ interface PendingMessage {
   beforeEntryIds: Set<string>;
   fallbackId: string;
   legacyEntryId?: string | undefined;
+  /** Host step index latched when PI finalized the message — before any
+   *  later per-step turn_end advances the counter. Null: no open turn. */
+  stepIndex: number | null;
 }
 
 /** Fork state captured from `session_before_fork` and used on the next
@@ -811,6 +814,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         persistedEntryId !== null
           ? { piSessionId: captureSession.piSessionId, entryId: persistedEntryId }
           : { piSessionId: captureSession.piSessionId, fallbackId: message.fallbackId };
+      if (message.stepIndex !== null) mapCtx.stepIndex = message.stepIndex;
 
       let events: MessageEventInput[];
       try {
@@ -861,7 +865,19 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       beforeEntryIds: new Set(entries.map(entryIdOf).filter((id): id is string => id !== null)),
       fallbackId: legacyPosition !== null ? `message_end:${legacyPosition}` : fallbackIdFor("message_end", sourceSeq),
       legacyEntryId,
+      stepIndex: captureSession.accumulator.currentStep(),
     });
+  };
+
+  // PI's per-step turn_end: never an LHC turn boundary (agent_end closes the
+  // turn), but it is the step edge (turn parts, F2) — flush what PI finalized
+  // in this step under its latched index, then advance the counter so the
+  // next assistant message stamps the next step. Also the seam the `context`
+  // hook fires at (Design F).
+  const onTurnEnd: PiVoidHookHandler<"turn_end"> = async (_event, ctx) => {
+    if (instance === null || captureSession === null) return;
+    await flushPendingMessages(ctx);
+    captureSession.accumulator.advanceStep();
   };
 
   // model_select / thinking_level_select fire only in-stream; capture each as
@@ -900,7 +916,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   };
 
   // agent_end closes the LHC turn exactly once per agent run.
-  // PI's per-step turn_end is ignored as a boundary (it stays a no-op below).
+  // PI's per-step turn_end is a step edge, never a boundary (onTurnEnd below).
   // Final assistant stopReason on event.messages governs turn outcome (schema
   // v5); hard-kill never reaches here and leaves the turn open with NULL facts.
   const onAgentEnd: PiHookHandler<"agent_end"> = async (event, ctx) => {
@@ -992,13 +1008,6 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         },
       });
     });
-  };
-
-  // Observe-only foundation: PI's per-step turn_end stays a no-op — it is not
-  // an LHC turn boundary, and it must NOT host the auto-compact trigger (see
-  // maybeTriggerAutoCompact above for why).
-  const noop: PiVoidHookHandler<Epic1Hook> = () => {
-    // Intentionally empty.
   };
 
   // session_before_fork: capture the fork point for use on the next session_start{fork}.
@@ -1105,7 +1114,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     session_before_switch: onDispose as PiVoidHookHandler<Epic1Hook>,
     session_shutdown: onDispose as PiVoidHookHandler<Epic1Hook>,
     message_end: onMessageEnd as PiVoidHookHandler<Epic1Hook>,
-    turn_end: noop,
+    turn_end: onTurnEnd as PiVoidHookHandler<Epic1Hook>,
     agent_end: onAgentEnd as PiVoidHookHandler<Epic1Hook>,
     model_select: onModelSelect as PiVoidHookHandler<Epic1Hook>,
     thinking_level_select: onThinkingLevelSelect as PiVoidHookHandler<Epic1Hook>,

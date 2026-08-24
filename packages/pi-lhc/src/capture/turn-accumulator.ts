@@ -21,6 +21,14 @@ type TurnEndPayload = Extract<MessageEventInput, { eventKind: "turn_end" }>["pay
 // `outcome` / `outcomeReason` derive from the final assistant `stopReason` at
 // `agent_end` (final state governs: a mid-turn abort that continued and ended
 // clean is `completed`).
+//
+// Step index (turn parts, F2): one step is one provider request/response
+// cycle. PI's per-step `turn_end` — still never a turn boundary — advances the
+// counter; the counter resets to 0 on every prompt (LHC opens a turn per
+// prompt). `currentStep()` is the host fact stamped on the step-bearing
+// events queued while a turn is open; with no open turn it is null and the
+// record keeps NULL (never split) — reattach onto a turn a prior process left
+// open, and every pre-existing thread, stay unsplittable.
 
 export interface TurnAccumulatorCtx {
   piSessionId: string;
@@ -79,6 +87,8 @@ export class TurnAccumulator {
   /** Last assistant stopReason/errorMessage latched from message_end (fallback when agent_end has no messages). */
   private lastStopReason: PiStopReason | undefined;
   private lastErrorMessage: string | undefined;
+  /** Host step index of the in-flight provider cycle of the open turn. */
+  private step = 0;
 
   constructor(ctx: TurnAccumulatorCtx) {
     this.piSessionId = ctx.piSessionId;
@@ -101,6 +111,7 @@ export class TurnAccumulator {
       this.lastTimestampMs = null;
       this.lastStopReason = undefined;
       this.lastErrorMessage = undefined;
+      this.step = 0;
     }
 
     if (msg !== undefined && this.open) {
@@ -154,6 +165,18 @@ export class TurnAccumulator {
 
   hasOpenTurn(): boolean {
     return this.open;
+  }
+
+  /** The step index to stamp on step-bearing events of the open turn; null
+   *  when no turn is open (the record keeps NULL — never split). */
+  currentStep(): number | null {
+    return this.open ? this.step : null;
+  }
+
+  /** PI's per-step `turn_end`: the provider cycle ended; the next assistant
+   *  message belongs to the next step. Never a turn boundary. */
+  advanceStep(): void {
+    if (this.open) this.step += 1;
   }
 
   private buildTurnEndPayload(facts?: AgentEndFacts): TurnEndPayload {

@@ -19,6 +19,7 @@ export function makeCompactReceipt(overrides: Partial<CompactReceipt> = {}): Com
     compactPoint: 28,
     degraded: [],
     gaps: [],
+    skippedRecords: [],
     renderedBands: [
       { band: "brief" as Band, text: "brief band body" },
       { band: "detailed" as Band, text: "detailed band body" },
