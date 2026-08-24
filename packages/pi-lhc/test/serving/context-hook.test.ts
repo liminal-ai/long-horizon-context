@@ -12,7 +12,8 @@ import {
   setLauncherOwnedStartup,
 } from "../../src/index.js";
 import type { AgentMessage, ContextEvent, ExtensionContext, SessionEntry } from "../../src/pi/types.js";
-import { estimateContextPressure } from "../../src/serving/context-hook.js";
+import { estimateAgentMessageTokens, estimateContextPressure } from "../../src/serving/context-hook.js";
+import { makeBeforeCompactEvent } from "../compact/fixtures.js";
 import {
   FIXTURE_TIMESTAMP_MS,
   makeAgentEnd,
@@ -211,6 +212,20 @@ describe("the context hook", () => {
     expect(described.ok && described.value?.arrangement.some((e) => e.part !== undefined)).toBe(true);
     expect(bands.some((b) => String(b.content).includes("[seam · t4 ·"))).toBe(true);
     expect(tail.some((m) => JSON.stringify(m).includes("[seam ·"))).toBe(false);
+
+    // Provider input drops: the served list is smaller than the raw one.
+    const size = (list: readonly AgentMessage[]) => list.reduce((sum, m) => sum + estimateAgentMessageTokens(m), 0);
+    expect(size(messages)).toBeLessThan(size(event.messages));
+
+    // AC-7.5 in Pi: the same pressure again (served-only, raw unchanged) does
+    // not compact again — the next attempt waits for real growth.
+    const again = await connector.contextHandler(pi.contextEvent(), pi.ctx);
+    expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: false });
+    expect(JSON.stringify(again?.messages)).toBe(JSON.stringify(messages));
+    const describedAgain = await threadView.describe(ref);
+    expect(describedAgain.ok && described.ok && describedAgain.value?.viewId).toBe(
+      described.ok ? described.value?.viewId : null,
+    );
   });
 
   it("TC-7.2e: below the trigger with an installed view, every step serves it unchanged — byte-stable prefix, no compact; the raw list only without a view", async () => {
@@ -271,6 +286,70 @@ describe("the context hook", () => {
     expect(viewAfter.ok && viewBefore.ok && viewAfter.value?.viewId).toBe(
       viewBefore.ok ? viewBefore.value?.viewId : null,
     );
+  });
+
+  it("steer during a split: a user message landing at the split's step edge survives verbatim in the served tail", async () => {
+    const { connector, ref, pi } = await startedConnector();
+    for (let n = 1; n <= 3; n += 1) await closedTurn(pi, connector, n, t0 + n * 100);
+    const at = t0 + 1000;
+    await pi.deliver(makeUserMessage("big task", at));
+    for (let step = 0; step < 2; step += 1) {
+      await pi.deliver(
+        makeAssistantMessage({
+          toolCalls: [{ id: `live${step}`, name: "read", arguments: {} }],
+          stopReason: "toolUse",
+          timestamp: at + 10 * step + 1,
+          usage: usageOf(2500 + step * 800),
+        }),
+      );
+      await pi.deliver(
+        makeToolResult({ id: `live${step}`, content: `live ${step} `.repeat(500), timestamp: at + 10 * step + 2 }),
+      );
+      await pi.stepEnd();
+    }
+    await connector.contextHandler(pi.contextEvent(), pi.ctx);
+    expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: true });
+    const split = await threadView.describe(ref);
+    expect(split.ok && split.value?.arrangement.some((e) => e.part !== undefined)).toBe(true);
+
+    // Pi drains a steer at the same step edge: a user message in the record.
+    const steer = makeUserMessage("actually, focus on the tests", at + 50);
+    await pi.deliver(steer);
+    const served = (await connector.contextHandler(pi.contextEvent(), pi.ctx))?.messages ?? [];
+    expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: false });
+    expect(served.at(-1)).toEqual(steer);
+    // Still the same installed view: the steer rides in the verbatim tail.
+    const after = await threadView.describe(ref);
+    expect(after.ok && split.ok && after.value?.viewId).toBe(split.ok ? split.value?.viewId : null);
+  });
+
+  it("overflow backstop: a raw-served step that bounces reaches Pi's overflow recovery, and the boundary-compact path serves LHC's view", async () => {
+    const { connector, ref, pi } = await startedConnector();
+    for (let n = 1; n <= 3; n += 1) await closedTurn(pi, connector, n, t0 + n * 100);
+    await pi.deliver(makeUserMessage("go", t0 + 900));
+    // The handler fails open (here: Pi's list drifted from its entries).
+    const drifted = pi.contextEvent();
+    for (const m of drifted.messages) (m as { timestamp: number }).timestamp = 1;
+    expect(await connector.contextHandler(drifted, pi.ctx)).toBeUndefined();
+
+    // Pi's overflow recovery: session_before_compact{overflow} on the raw
+    // request — the existing boundary path, unchanged, produces the LHC view.
+    const result = await connector.compactHandlers.session_before_compact(
+      makeBeforeCompactEvent({ reason: "overflow", branchEntries: pi.entries }),
+      pi.ctx,
+    );
+    expect(result).not.toEqual({ cancel: true });
+    const compaction = (result as { compaction?: { summary: string; firstKeptEntryId: string } })?.compaction;
+    expect(compaction?.summary).toContain("[context ·");
+    expect(pi.entries.some((e) => e.id === compaction?.firstKeptEntryId)).toBe(true);
+    const installed = await threadView.describe(ref);
+    expect(installed.ok && installed.value !== null).toBe(true);
+
+    // From here the context hook serves the installed view again.
+    await pi.deliver(makeAssistantMessage({ text: "recovered", timestamp: t0 + 901, usage: usageOf(300) }));
+    await pi.stepEnd();
+    expect((await connector.contextHandler(pi.contextEvent(), pi.ctx))?.messages?.length ?? 0).toBeGreaterThan(0);
+    expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: false });
   });
 
   it("fails open to the raw list: alignment refused, or the session manager cannot list context entries", async () => {
