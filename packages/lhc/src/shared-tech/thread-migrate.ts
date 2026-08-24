@@ -12,6 +12,7 @@ export const THREAD_SCHEMA_VERSION_8 = 8;
 export const THREAD_SCHEMA_VERSION_9 = 9;
 export const THREAD_SCHEMA_VERSION_10 = 10;
 export const THREAD_SCHEMA_VERSION_11 = 11;
+export const THREAD_SCHEMA_VERSION_12 = 12;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -438,6 +439,16 @@ function migrateTurnHostFacts(db: DatabaseSync): void {
   db.exec(`ALTER TABLE message ADD COLUMN provider_usage TEXT;`);
 }
 
+// v11→v12: host-supplied step index on messages (turn parts, F2). Nullable,
+// no backfill: NULL means the host never reported a step edge, and a turn with
+// any NULL step index is never split. Guarded so a crash-window reopen or a
+// simulated-old file that already carries the column migrates cleanly.
+function migrateStepIndex(db: DatabaseSync): void {
+  const columns = (db.prepare(`PRAGMA table_info(message)`).all() as Array<{ name: string }>).map((c) => c.name);
+  if (columns.includes("step_index")) return;
+  db.exec(`ALTER TABLE message ADD COLUMN step_index INTEGER;`);
+}
+
 export function migrateThreadSchema(db: DatabaseSync): void {
   let version = getSchemaVersion(db);
   if (version >= CURRENT_THREAD_SCHEMA_VERSION) {
@@ -490,6 +501,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_10) {
       migrateCompactContinuationV11(db);
       version = THREAD_SCHEMA_VERSION_11;
+    }
+    if (version === THREAD_SCHEMA_VERSION_11) {
+      migrateStepIndex(db);
+      version = THREAD_SCHEMA_VERSION_12;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);

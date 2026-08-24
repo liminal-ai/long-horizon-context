@@ -19,13 +19,15 @@ export interface MessageRow {
   // Verbatim provider usage JSON for assistant_text events that carried it
   // (schema v5). Absent / NULL for every other kind and for pre-v5 rows.
   providerUsage?: Record<string, unknown>;
+  // Host-supplied step index (schema v12). Absent / NULL when not reported.
+  stepIndex?: number;
   blocks: Block[];
 }
 
 export function insertMessage(db: DatabaseSync, row: MessageRow): void {
   db.prepare(
-    `INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, provider_usage)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, provider_usage, step_index)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.messageId,
     row.sourceEventOrder,
@@ -35,6 +37,7 @@ export function insertMessage(db: DatabaseSync, row: MessageRow): void {
     row.harness,
     row.turnId,
     row.providerUsage === undefined ? null : JSON.stringify(row.providerUsage),
+    row.stepIndex === undefined ? null : row.stepIndex,
   );
 
   const insertBlock = db.prepare(
@@ -159,6 +162,7 @@ interface RawMessageRow {
   harness: string;
   turn_id: string;
   provider_usage: string | null;
+  step_index: number | bigint | null;
   deleted_at: string | null;
   // The source event's recorded_at, joined from the durable event row on
   // source_event_order = event_order (every message has exactly one source
@@ -189,6 +193,7 @@ function recordFromRow(row: RawMessageRow, blocks: Block[]): MessageRecord {
   if (row.provider_usage !== null) {
     record.providerUsage = JSON.parse(row.provider_usage) as Record<string, unknown>;
   }
+  if (row.step_index !== null) record.stepIndex = Number(row.step_index);
   // The deleted marker is present only on deleted rows, which only the
   // includeDeleted read surfaces. It is never silently mixed into default reads.
   if (row.deleted_at !== null) record.deleted = true;
@@ -230,7 +235,7 @@ export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): M
   const messageRows = db
     .prepare(
       `SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.step_index, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order${conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : ""}
        ORDER BY m.source_event_order${opts.limit !== undefined ? " LIMIT ?" : ""}`,
     )
@@ -280,7 +285,7 @@ export function readMessageById(
   const row = db
     .prepare(
       `SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.step_index, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order
        WHERE m.message_id = ?`,
     )

@@ -67,6 +67,7 @@ function threadSchemaStatements(threadId: string, createdAt: string): string[] {
       harness TEXT NOT NULL,
       turn_id TEXT NOT NULL REFERENCES turns(turn_id),
       provider_usage TEXT,
+      step_index INTEGER,
       deleted_at TEXT
     );`,
     `CREATE TABLE message_block (

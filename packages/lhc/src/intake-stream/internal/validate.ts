@@ -26,6 +26,9 @@ const SERVER_GENERATED_FIELDS = ["eventOrder", "recordedAt", "threadEventId", "s
 const DECODE_OPTIONS = { onExcessProperty: "error", errors: "first" } as const;
 
 const NonEmptyString = Schema.String.pipe(Schema.minLength(1));
+// Host-supplied step index (schema v12): a non-negative integer, optional on
+// the four step-bearing kinds only.
+const StepIndex = Schema.Number.pipe(Schema.int(), Schema.nonNegative());
 
 // Layer 1 — envelope: thread reference shape, closed.
 const ThreadRefSchema = Schema.Union(
@@ -58,6 +61,7 @@ const AssistantTextPayloadSchema = Schema.Struct({
   provider: Schema.optional(Schema.String),
   model: Schema.optional(Schema.String),
   api: Schema.optional(Schema.String),
+  stepIndex: Schema.optional(StepIndex),
 });
 // signature is optional opaque provider bytes/token; empty string allowed only
 // via omission — if present it must be a string (may be empty; hosts should
@@ -69,6 +73,7 @@ const AssistantThinkingPayloadSchema = Schema.Struct({
   provider: Schema.optional(Schema.String),
   model: Schema.optional(Schema.String),
   api: Schema.optional(Schema.String),
+  stepIndex: Schema.optional(StepIndex),
 });
 const TurnEndPayloadSchema = Schema.Struct({
   outcome: Schema.optional(Schema.Literal("completed", "aborted")),
@@ -88,11 +93,13 @@ const ToolCallPayloadSchema = Schema.Struct({
   toolCallId: NonEmptyString,
   toolName: NonEmptyString,
   arguments: Schema.Record({ key: Schema.String, value: Schema.Unknown }),
+  stepIndex: Schema.optional(StepIndex),
 });
 const ToolResultPayloadSchema = Schema.Struct({
   toolCallId: NonEmptyString,
   content: Schema.String,
   isError: Schema.optional(Schema.Boolean),
+  stepIndex: Schema.optional(StepIndex),
 });
 // Typed compact-continuation marker: closed payload; semantics are contract-frozen.
 const CompactContinuationMarkerPayloadSchema = Schema.Struct({

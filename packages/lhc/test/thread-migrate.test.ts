@@ -10,6 +10,7 @@ import {
   THREAD_SCHEMA_VERSION_6,
   THREAD_SCHEMA_VERSION_7,
   THREAD_SCHEMA_VERSION_11,
+  THREAD_SCHEMA_VERSION_12,
 } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";
 import {
@@ -241,7 +242,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get(),
       ).toBeDefined();
@@ -273,7 +274,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       const derivation = db
         .prepare(
           `SELECT derivation_type, content FROM derivation
@@ -344,7 +345,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       const payload = JSON.parse(
         (db.prepare(`SELECT payload FROM work_item WHERE kind = 'turn_derivation'`).get() as { payload: string })
           .payload,
@@ -548,7 +549,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
 
       const turnCols = (db.prepare("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map((row) => row.name);
       const messageCols = (db.prepare("PRAGMA table_info(message)").all() as Array<{ name: string }>).map(
@@ -618,7 +619,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'").get(),
       ).toBeDefined();
@@ -663,7 +664,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       expect(
         db
           .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_writer'")
@@ -731,7 +732,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       const row = db
         .prepare(`SELECT attempt_id, terminal FROM compact_continuation_receipt WHERE attempt_id = 'a1'`)
         .get() as { attempt_id: string; terminal: number };
@@ -772,7 +773,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       expect(
         db
           .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_attempt'")
@@ -814,7 +815,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       expect(
         db
           .prepare(
@@ -822,6 +823,45 @@ describe("thread schema migration", () => {
           )
           .get(),
       ).toBeDefined();
+    } finally {
+      db.close();
+    }
+  });
+
+  it("migrates a genuine v11 file by adding nullable message.step_index; backfills nothing", async () => {
+    const filePath = store.threadPath();
+    const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const intake = await intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "v11 migration prompt" } }),
+      validEvent("assistant_text", { payload: { text: "v11 migration answer" } }),
+      validEvent("turn_end"),
+    ]);
+    expect(intake.ok).toBe(true);
+
+    const old = new DatabaseSync(filePath);
+    try {
+      old.exec("ALTER TABLE message DROP COLUMN step_index;");
+      old.exec(`PRAGMA user_version = ${THREAD_SCHEMA_VERSION_11};`);
+    } finally {
+      old.close();
+    }
+
+    const opened = openThreadDatabase(filePath);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    const db = opened.value;
+    try {
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
+      const rows = db.prepare(`SELECT message_id, step_index FROM message ORDER BY source_event_order`).all() as Array<{
+        message_id: string;
+        step_index: number | null;
+      }>;
+      expect(rows).toEqual([
+        { message_id: "m1", step_index: null },
+        { message_id: "m2", step_index: null },
+      ]);
     } finally {
       db.close();
     }

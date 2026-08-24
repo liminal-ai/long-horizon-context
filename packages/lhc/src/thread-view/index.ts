@@ -806,6 +806,20 @@ export function readPreparedSourceState(
   const boundary = db.prepare(`SELECT position FROM view_boundary WHERE thread_singleton = 1`).get() as
     | { position: number | bigint }
     | undefined;
+  // Open-turn step edges are structure: they decide where the walk may split.
+  // Closed turns are already fingerprinted by their close; only the open turn's
+  // step indices can still move a split point between prepare and install.
+  const openTurnIds = turnRows.filter((t) => t.status === "open").map((t) => t.turn_id);
+  const stepRows =
+    openTurnIds.length === 0
+      ? []
+      : (db
+          .prepare(
+            `SELECT message_id, step_index FROM message
+             WHERE deleted_at IS NULL AND turn_id IN (${openTurnIds.map(() => "?").join(", ")})
+             ORDER BY source_event_order`,
+          )
+          .all(...openTurnIds) as unknown as Array<{ message_id: string; step_index: number | bigint | null }>);
   const structureDigest = sha256Hex(
     JSON.stringify({
       turns: turnRows.map((t) => ({
@@ -818,6 +832,7 @@ export function readPreparedSourceState(
       chunks: chunkRows.map((c) => ({ id: c.chunk_id, o: Number(c.chunk_order), s: c.status })),
       members: memberRows.map((m) => ({ c: m.chunk_id, t: m.turn_id, i: Number(m.member_idx) })),
       boundary: boundary === undefined ? 0 : Number(boundary.position),
+      steps: stepRows.map((r) => [r.message_id, r.step_index === null ? null : Number(r.step_index)]),
     }),
   );
 

@@ -20,6 +20,14 @@ export type TurnEndPayload = {
   endedAt?: string;
 };
 
+// Host-supplied step index (schema v12, turn parts F2): the zero-based
+// provider request/response cycle inside the turn that this message belongs
+// to. Optional; NULL in storage when omitted. A tool_result carries the same
+// index as its tool_call. LHC records it verbatim and never infers it.
+export type StepScoped = {
+  stepIndex?: number;
+};
+
 // Host-reported model identity for one assistant message fan-out. Needed so a
 // resumed PI session can re-stamp provider/api/model and keep signed thinking
 // through PI's same-model check (transform-messages). Opaque strings.
@@ -34,7 +42,8 @@ export type AssistantModelProvenance = {
 export type AssistantTextPayload = {
   text: string;
   providerUsage?: Record<string, unknown>;
-} & AssistantModelProvenance;
+} & AssistantModelProvenance &
+  StepScoped;
 
 // Optional signature is an opaque provider token (Anthropic encrypted
 // thinking, OpenAI reasoning item id, etc.). LHC stores and returns it
@@ -42,7 +51,8 @@ export type AssistantTextPayload = {
 export type AssistantThinkingPayload = {
   text: string;
   signature?: string;
-} & AssistantModelProvenance;
+} & AssistantModelProvenance &
+  StepScoped;
 
 /**
  * Typed compact-continuation marker payload (LIM-61).
@@ -65,8 +75,8 @@ export type MessageEventInput =
   | BaseEvent<"runtime_note", { text: string }>
   | BaseEvent<"model_change", { previousModel: string; newModel: string }>
   | BaseEvent<"thinking_level_change", { previousLevel: string; newLevel: string }>
-  | BaseEvent<"tool_call", { toolCallId: string; toolName: string; arguments: Record<string, unknown> }>
-  | BaseEvent<"tool_result", { toolCallId: string; content: string; isError?: boolean }>
+  | BaseEvent<"tool_call", { toolCallId: string; toolName: string; arguments: Record<string, unknown> } & StepScoped>
+  | BaseEvent<"tool_result", { toolCallId: string; content: string; isError?: boolean } & StepScoped>
   | BaseEvent<"compact_continuation_marker", CompactContinuationMarkerPayload>
   | BaseEvent<"turn_end", TurnEndPayload>;
 
