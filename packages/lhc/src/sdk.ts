@@ -365,6 +365,14 @@ export interface ThreadViewSurface {
     prepared: threadViewDomain.PreparedCompact,
     opts?: threadViewDomain.InstallPreparedOptions,
   ): Promise<OpResult<CompactReceipt>>;
+  /**
+   * Prepare and install in one call. On the bounded plan, a thread that has
+   * never taken the forced-boundary path may have its open turn split into
+   * parts here with no seam assertion: only complete, host-recorded steps
+   * split, and the open turn's step indices ride the drift digest so a step
+   * that lands between prepare and install recomputes. `midTurnCompact` is
+   * the entry point that asserts the host's capture seam (AC-7.4).
+   */
   compact(
     ref: threadsDomain.ThreadRef,
     opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },

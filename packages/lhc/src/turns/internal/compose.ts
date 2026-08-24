@@ -36,6 +36,11 @@ export const CONSTRUCTION_MESSAGE_CAP_TOKENS = 2000;
 export interface ComposeOptions {
   // Bounded-plan serving: cap each message's construction text.
   capForServing?: boolean;
+  // A part renders the unsmoothed prompt and raw tool results by contract
+  // (AC-1.4): absent message derivations are not fallbacks there, so no
+  // [fallback] annotation, gap, or recovery is produced. Durable outputs
+  // never set this.
+  rawByDesign?: boolean;
 }
 
 export function capForConstruction(text: string, messageId: string): string {
@@ -235,7 +240,7 @@ function buildAtom(
   message: ComposeMessage,
   derivations: ReadonlyMap<string, ComposeDerivationRow>,
   resultByCallId: Map<string, boolean>,
-  capForServing: boolean,
+  options: ComposeOptions,
 ): { atom: ComposeAtom; gap?: DependencyGap; recovery?: RecoveryReceipt; capped: boolean } {
   const plan = PART_PLANS[message.kind];
   const derivation =
@@ -247,12 +252,12 @@ function buildAtom(
   // The uncapped text is what a recovery floor writes back; only bounded
   // serving renders the capped construction.
   const text = ready ? readyText(message, derivation.content as string) : plan.fallbackText(message);
-  const served = capForServing ? capForConstruction(text, message.messageId) : text;
+  const served = options.capForServing === true ? capForConstruction(text, message.messageId) : text;
   const part: RenderingPart = {
     messageId: message.messageId,
     kind: message.kind,
     text: served,
-    fallback: plan.derivation !== undefined && !ready,
+    fallback: options.rawByDesign !== true && plan.derivation !== undefined && !ready,
   };
   const capped = served !== text;
   if (message.kind === "model_change" || message.kind === "thinking_level_change") {
@@ -385,7 +390,7 @@ export function composeRenderingInput(
   const recoveries: RecoveryReceipt[] = [];
   let capped = false;
   for (const message of messages) {
-    const built = buildAtom(message, derivations, resultByCallId, options.capForServing === true);
+    const built = buildAtom(message, derivations, resultByCallId, options);
     capped ||= built.capped;
     atoms.push(built.atom);
     if (built.gap !== undefined) gaps.push(built.gap);
@@ -512,7 +517,7 @@ export function composePreDetailedAssembly(
   const recoveries: RecoveryReceipt[] = [];
   for (const message of messages) {
     if (!DIALOG_KINDS.has(message.kind)) continue;
-    const built = buildAtom(message, derivations, resultByCallId, false);
+    const built = buildAtom(message, derivations, resultByCallId, {});
     parts.push(built.atom.part);
     if (built.gap !== undefined) gaps.push(built.gap);
     if (built.recovery !== undefined) recoveries.push(built.recovery);

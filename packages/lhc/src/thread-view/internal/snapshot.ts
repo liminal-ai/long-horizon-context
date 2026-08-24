@@ -120,9 +120,15 @@ export function readStoredView(db: DatabaseSync): StoredView | null {
 // parts — with its part ranges in served order. Null when every served turn
 // is whole (or no view exists). The one reader of "has this thread served
 // parts" for the walk, the host metadata surface, and mechanism exclusivity.
+/** One part's step range, in host step indices. */
+export interface PartRange {
+  fromStep: number;
+  toStep: number;
+}
+
 export interface InstalledTransition {
   turnId: string;
-  parts: Array<{ fromStep: number; toStep: number }>;
+  parts: PartRange[];
 }
 
 // The durable mechanism fact: when this thread first installed a view serving

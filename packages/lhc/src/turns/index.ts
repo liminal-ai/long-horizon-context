@@ -239,8 +239,10 @@ export function composeTurnPartText(
   trailer: string,
 ): string {
   const messages = readMemberMessages(db, turnId, range);
-  // A part is bounded-plan serving: composed under the cap, explicitly.
-  const { parts } = composeRenderingInput(messages, new Map(), { capForServing: true });
+  // A part is bounded-plan serving: composed under the cap, explicitly, and
+  // raw by design — its unsmoothed prompt and tool results are the contract,
+  // not a degraded state.
+  const { parts } = composeRenderingInput(messages, new Map(), { capForServing: true, rawByDesign: true });
   return composeStructuredTurnText(parts, turnId, trailer);
 }
 

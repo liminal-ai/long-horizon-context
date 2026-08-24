@@ -191,9 +191,11 @@ export interface HostMetadata {
     estimatedTokens: number;
     // Leading run of complete steps (every tool_call paired inside its step).
     completeSteps: number;
-    // Newest admissible split point k (steps a part may cover), or null when
-    // no split is admissible: fewer than one complete step, or the turn is
-    // not splittable (a member with no step index, or inconsistent indices).
+    // Newest admissible split point as an ORDINAL k — the number of leading
+    // steps a part may cover (1..completeSteps−1), not a host step index — or
+    // null when no split is admissible: fewer than two complete steps, or the
+    // turn is not splittable (a member with no step index, or inconsistent
+    // indices). The receipt's splitPoint.stepIndex is the host index instead.
     lastStepEdge: number | null;
     splittable: boolean;
   } | null;
@@ -268,6 +270,9 @@ export interface CompactReceipt {
   // part the view serves, and the split point at (turn, step) precision —
   // the host step index of the newest step inside a part.
   parts?: Array<{ turnId: string; fromStep: number; toStep: number }>;
+  // (turn, step) precision (AC-1.7): `stepIndex` is the HOST step index of
+  // the newest step inside the served parts (the last part's toStep), not the
+  // ordinal k that HostMetadata.lastStepEdge reports.
   splitPoint?: { turnId: string; stepIndex: number };
   // Present when this compact settled a previously split turn: the whole
   // construction now serving it — the stored rendering row it used, or the

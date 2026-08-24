@@ -43,6 +43,7 @@ import type {
   SelectionTurn,
   SkippedSubject,
 } from "./select.js";
+import type { InstalledTransition, PartRange } from "./snapshot.js";
 
 /**
  * What the walk may ask of the record. Structure is eager because it is
@@ -50,18 +51,6 @@ import type {
  * fallback material are hydration points, reached only from the ladder rung
  * that renders them.
  */
-/** One part's step range, in host step indices. */
-export interface PartRange {
-  fromStep: number;
-  toStep: number;
-}
-
-/** The installed view's transition turn: the one turn served as parts. */
-export interface InstalledTransition {
-  turnId: string;
-  parts: PartRange[];
-}
-
 /**
  * Turn parts: what the walk asks for beyond the band inputs. Absent on the
  * legacy plan, so the legacy walk can neither split nor settle. Step edges and
@@ -285,7 +274,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // in-walk — never an excerpt. Requires the parts source (the bounded plan
   // on a clean thread): the legacy plan is byte-unchanged.
   let protectedRecord: SelectionResult["protectedTurn"];
-  let protectedOverrun = 0;
   const newestClosed = closedTurns.length === 0 ? undefined : closedTurns[closedTurns.length - 1];
   const transitionTurnId = partsPlan?.turn.turnId ?? settling?.turnId ?? null;
   if (
@@ -308,7 +296,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
       compactPoint = previous?.closedAt ?? 0;
       partsPlan = null;
       protectedRecord = { turnId: newestClosed.turnId, representation: "full" };
-      protectedOverrun = Math.max(0, source.messageTokensAfter(compactPoint) - fullBudget);
     } else {
       protectedRecord = { turnId: newestClosed.turnId, representation: "whole_rendering" };
     }
@@ -443,7 +430,11 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     bandBudget: number,
     build: (candidate: T) => ArrangementEntry,
     crossing: "stop" | "skip" = "stop",
+    // A band keeps its first candidate even over budget — except a band whose
+    // share the precedence cascade consumed entirely, which stays empty.
+    admitFirst = true,
   ): { included: ArrangementEntry[]; rest: T[]; skipped: ArrangementEntry[] } {
+    if (!admitFirst && bandBudget <= 0) return { included: [], rest: [...candidates], skipped: [] };
     const included: ArrangementEntry[] = [];
     const passedOver: Array<{ entry: ArrangementEntry; includedBefore: number }> = [];
     const reportable = (): ArrangementEntry[] =>
@@ -500,15 +491,47 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   }
   const partTokens = partEntries.reduce((sum, entry) => sum + entry.tokens, 0);
 
+  // Precedence (4): the placements this mechanism makes — a split, a settle,
+  // a lazy keep, newest-closed protection — may leave the verbatim tail over
+  // the full share. That overrun, with the part tokens, cascades through the
+  // elder shares smooth → detailed → brief, so the served view stays within
+  // the bound (plus at most one entry's slack per band that keeps a share);
+  // a share the cascade consumes entirely yields an empty band. An ordinary
+  // walk (Rule 1's straddle rounding alone) is untouched.
+  const mechanismPlacement = partsPlan !== null || settling !== null || protectedRecord !== undefined;
+  const tailOverrun = mechanismPlacement ? Math.max(0, source.messageTokensAfter(compactPoint) - fullBudget) : 0;
+
+  // Mandatory smooth entries: a settling turn's whole construction (AC-3.2,
+  // AC-3.4) and a protected turn's whole rendering (AC-5.2) are placements,
+  // not fill candidates — served whatever the share, priced against it first.
+  const mandatoryTurnIds = new Set<string>();
+  if (settling !== null) mandatoryTurnIds.add(settling.turnId);
+  if (protectedRecord?.representation === "whole_rendering") mandatoryTurnIds.add(protectedRecord.turnId);
+  const mandatoryEntries = bandedTurns.filter((turn) => mandatoryTurnIds.has(turn.turnId)).map(buildTurnEntry);
+  const mandatoryTokens = mandatoryEntries.reduce((sum, entry) => sum + entry.tokens, 0);
+  let carry = partTokens + mandatoryTokens + tailOverrun;
+  const cascading = carry > 0;
+  const shareAfterCarry = (percentage: number): number => {
+    const share = budget(percentage);
+    const usable = Math.max(0, share - carry);
+    carry = Math.max(0, carry - share);
+    return usable;
+  };
+  const smoothBudget = shareAfterCarry(config.percentages.smooth);
+  const detailedBudget = shareAfterCarry(config.percentages.detailed);
+  const briefBudget = shareAfterCarry(config.percentages.brief);
+
   // Rule 2 + 5 — smooth band: banded closed turns newest-first, chunked or
   // not (rule 5 is structural: a closed-but-unchunked turn is a turn, takes
   // the smooth representation, and consumes this budget).
   const smooth = fillBand(
-    [...bandedTurns].reverse(),
-    Math.max(0, budget(config.percentages.smooth) - partTokens - protectedOverrun),
+    [...bandedTurns].reverse().filter((turn) => !mandatoryTurnIds.has(turn.turnId)),
+    smoothBudget,
     buildTurnEntry,
+    "stop",
+    !cascading,
   );
-  smooth.included.push(...partEntries);
+  smooth.included.push(...mandatoryEntries, ...partEntries);
   const oldestSmoothOrder = smooth.included
     .filter((entry) => entry.part === undefined)
     .reduce(
@@ -537,18 +560,17 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     .reverse(); // newest-first
 
   // Rule 3 — detailed: same fill rule against its share.
-  const detailed = fillBand(chunkCandidates, budget(config.percentages.detailed), (chunk) =>
-    buildChunkEntry(chunk, "detailed"),
+  const detailed = fillBand(
+    chunkCandidates,
+    detailedBudget,
+    (chunk) => buildChunkEntry(chunk, "detailed"),
+    "stop",
+    !cascading,
   );
   // Rule 4 — brief: the remaining chunks, same fill rule against its share,
   // skipping (not stopping at) entries too large for the remaining budget —
   // this is the last band, so a stop here would drop every older chunk.
-  const brief = fillBand(
-    detailed.rest,
-    budget(config.percentages.brief),
-    (chunk) => buildChunkEntry(chunk, "brief"),
-    "skip",
-  );
+  const brief = fillBand(detailed.rest, briefBudget, (chunk) => buildChunkEntry(chunk, "brief"), "skip", !cascading);
 
   const byRecordOrder = (a: ArrangementEntry, b: ArrangementEntry): number => a.startOrder - b.startOrder;
   const selectedEntries: ArrangementEntry[] = [...brief.included, ...detailed.included, ...smooth.included];

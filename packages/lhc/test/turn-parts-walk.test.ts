@@ -372,3 +372,148 @@ describe("turn parts: close, lazy settle, settle-before-split, byte equivalence"
     expect(settledEntry.text).toBe(wholeEntry.text);
   });
 });
+
+describe("turn parts: named contract cases", () => {
+  it("TC-1.4a: a part renders the unsmoothed prompt — its text is identical whether or not a READY smoothed derivation exists", async () => {
+    const sdk = sdkFor();
+    const build = async (drainFirst: boolean) => {
+      const filePath = await newThread(sdk);
+      await send(sdk, filePath, closedTurn("t1"));
+      await send(sdk, filePath, [
+        validEvent("user_prompt", { payload: { text: "long task" } }),
+        ...step(0, "alpha"),
+        ...step(1, "bravo"),
+        ...step(2, "charlie"),
+      ]);
+      if (drainFirst) {
+        const drained = await sdk.work.drain({ filePath });
+        if (!drained.ok || drained.value.remaining !== 0) throw new Error("drain left work behind");
+        const db = openRaw(filePath);
+        const row = db
+          .prepare(
+            `SELECT state, content FROM derivation WHERE subject_id = 'm4' AND derivation_type = 'smoothed_prompt'`,
+          )
+          .get() as { state: string; content: string } | undefined;
+        db.close();
+        expect(row?.state).toBe("ready");
+        expect(row?.content).toContain("smoothed(");
+      }
+      const { receipt, entries } = await compact(sdk, filePath, params(stepSums(filePath, "t2").after.get(0)! * 2));
+      expect(receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 0 }]);
+      return entries.find((e) => e.part !== undefined)!.text;
+    };
+    const unsmoothed = await build(false);
+    const smoothed = await build(true);
+    expect(smoothed).toBe(unsmoothed);
+    expect(smoothed).toContain("long task");
+    expect(smoothed).not.toContain("smoothed(");
+    expect(smoothed).not.toContain("[fallback");
+  });
+
+  it("AC-4.2: a multi-part turn settles exactly like the single-part case — one whole construction from canonical, every part superseded", async () => {
+    const sdk = sdkFor();
+    const settleAfter = async (splits: 1 | 2): Promise<{ text: string; receiptParts: number }> => {
+      const filePath = await newThread(sdk);
+      await send(sdk, filePath, closedTurn("t1"));
+      await send(sdk, filePath, [
+        validEvent("user_prompt", { payload: { text: "long task" } }),
+        ...step(0, "alpha"),
+        ...step(1, "bravo"),
+      ]);
+      if (splits === 2) {
+        const first = await compact(sdk, filePath, params(stepSums(filePath, "t2").after.get(0)! * 2));
+        expect(first.receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 0 }]);
+      }
+      await send(sdk, filePath, [...step(2, "charlie"), ...step(3, "delta")]);
+      const sums = stepSums(filePath, "t2");
+      const split = await compact(
+        sdk,
+        filePath,
+        params(splits === 2 ? sums.after.get(2)! * 2 : sums.after.get(0)! * 2),
+      );
+      expect(split.receipt.parts).toEqual(
+        splits === 2
+          ? [
+              { turnId: "t2", fromStep: 0, toStep: 0 },
+              { turnId: "t2", fromStep: 1, toStep: 2 },
+            ]
+          : [{ turnId: "t2", fromStep: 0, toStep: 0 }],
+      );
+      await send(sdk, filePath, [validEvent("turn_end")]);
+      await send(sdk, filePath, [
+        validEvent("user_prompt", { payload: { text: "next" } }),
+        ...step(0, "golf"),
+        ...step(1, "hotel"),
+      ]);
+      const settled = await compact(sdk, filePath, params(stepSums(filePath, "t3").after.get(0)! * 2));
+      expect(settled.receipt.settled).toEqual({
+        turnId: "t2",
+        construction: { kind: "composed_in_walk", turnId: "t2" },
+      });
+      const t2 = settled.entries.filter((e) => e.subjectId === "t2");
+      expect(t2).toHaveLength(1);
+      expect(t2[0]!.part).toBeUndefined();
+      const meta = await sdk.threadView.hostMetadata({ filePath });
+      expect(meta.ok && meta.value.unsettledTurn).toEqual({ turnId: "t3" });
+      return { text: t2[0]!.text, receiptParts: split.receipt.parts!.length };
+    };
+    const multi = await settleAfter(2);
+    const single = await settleAfter(1);
+    expect(multi.receiptParts).toBe(2);
+    expect(multi.text).toBe(single.text);
+    expect(multi.text).toContain("step 3: delta");
+    expect(multi.text).not.toContain("[seam ·");
+  });
+
+  it("TC-8.1a: install is the whole commitment — after a settle nothing outside superseded snapshots holds part content and no cleanup is pending", async () => {
+    const sdk = sdkFor();
+    const filePath = await newThread(sdk);
+    await send(sdk, filePath, closedTurn("t1"));
+    await send(sdk, filePath, [
+      validEvent("user_prompt", { payload: { text: "long task" } }),
+      ...step(0, "alpha"),
+      ...step(1, "bravo"),
+    ]);
+    const split = await compact(sdk, filePath, params(stepSums(filePath, "t2").after.get(0)! * 2));
+    expect(split.receipt.parts).toHaveLength(1);
+    await send(sdk, filePath, [validEvent("turn_end")]);
+    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "next" } }), ...step(0, "golf")]);
+    // A full share just over t3 bands t2 whole: settle, no part anywhere.
+    const settled = await compact(sdk, filePath, params(stepSums(filePath, "t2").after.get(1)! * 2 + 2));
+    expect(settled.receipt.settled?.turnId).toBe("t2");
+    expect(settled.receipt.parts).toBeUndefined();
+
+    // "Interrupted immediately after install": a fresh process serves from the
+    // snapshot alone.
+    const resumed = sdkFor();
+    const served = await resumed.threadView.getLlmRequestContext({ filePath });
+    const described = await resumed.threadView.describe({ filePath });
+    expect(described.ok && described.value?.viewId).toBe(settled.receipt.viewId);
+    expect(described.ok && described.value?.arrangement.every((e) => e.part === undefined)).toBe(true);
+    const db = openRaw(filePath);
+    try {
+      const views = db.prepare(`SELECT COUNT(*) AS n FROM thread_view`).get() as { n: number };
+      const bands = db
+        .prepare(`SELECT COUNT(*) AS n FROM thread_view_band WHERE view_id <> ?`)
+        .get(settled.receipt.viewId) as {
+        n: number;
+      };
+      const seams = db
+        .prepare(`SELECT COUNT(*) AS n FROM thread_view_band WHERE rendered_text LIKE '%[seam ·%'`)
+        .get() as { n: number };
+      const derivedSeams = db.prepare(`SELECT COUNT(*) AS n FROM derivation WHERE content LIKE '%[seam ·%'`).get() as {
+        n: number;
+      };
+      expect([Number(views.n), Number(bands.n), Number(seams.n), Number(derivedSeams.n)]).toEqual([1, 0, 0, 0]);
+    } finally {
+      db.close();
+    }
+    // Nothing is pending on the view's behalf: the queue drains to zero and
+    // the installed snapshot is exactly what it was.
+    const drained = await resumed.work.drain({ filePath });
+    expect(drained.ok && drained.value.remaining).toBe(0);
+    const after = await resumed.threadView.describe({ filePath });
+    expect(JSON.stringify(after)).toBe(JSON.stringify(described));
+    expect(JSON.stringify(await resumed.threadView.getLlmRequestContext({ filePath }))).toBe(JSON.stringify(served));
+  });
+});

@@ -112,6 +112,7 @@ export interface SelectionResult {
   skipped: SkippedSubject[];
   // Turn parts (absent when no turn is split): what the receipt records.
   parts?: Array<{ turnId: string; fromStep: number; toStep: number }>;
+  // stepIndex: the host step index of the last part's toStep (not ordinal k).
   splitPoint?: { turnId: string; stepIndex: number };
   settled?: { turnId: string; construction: SettleConstruction };
   protectedTurn?: { turnId: string; representation: "full" | "whole_rendering" };
