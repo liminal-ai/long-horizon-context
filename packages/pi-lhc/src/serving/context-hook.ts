@@ -98,9 +98,10 @@ function providerContextTokens(message: AgentMessage): number | null {
 }
 
 /** Pressure at the seam: the last assistant message's provider-reported
- *  context tokens plus LHC estimates for every message after it; with no
- *  usable usage anywhere, LHC estimates for the whole list. */
-export function estimateContextPressure(messages: readonly AgentMessage[]): number {
+ *  context tokens plus LHC estimates for every message after it. Null with
+ *  no usable usage anywhere (a fresh session's first step, or only aborted /
+ *  errored responses): pressure is unknown, and unknown never triggers. */
+export function estimateContextPressure(messages: readonly AgentMessage[]): number | null {
   let lastUsageIndex = -1;
   let usage = 0;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -111,6 +112,7 @@ export function estimateContextPressure(messages: readonly AgentMessage[]): numb
       break;
     }
   }
+  if (lastUsageIndex < 0) return null;
   let since = 0;
   for (let index = lastUsageIndex + 1; index < messages.length; index += 1) {
     since += estimateAgentMessageTokens(messages[index] as AgentMessage);
@@ -173,6 +175,7 @@ export async function handleContext(
     let compacted = false;
     const contextTokens = estimateContextPressure(event.messages);
     if (
+      contextTokens !== null &&
       shouldTriggerModelCompact({
         contextTokens,
         triggerTokens: deps.triggerTokens,
@@ -199,11 +202,17 @@ export async function handleContext(
       compacted = compact.ok;
     }
 
-    // 4. Steady state: the installed view, whatever produced it.
+    // 4. Steady state: the installed view, whatever produced it. Existence is
+    // the installed view itself, not its band rows: a walk that selected no
+    // elders (the newest closed turn protected and the active turn consuming
+    // every share) installs a view with a compact point and zero bands, and
+    // that view serves as the tail alone.
+    const installed = await instance.sdk.threadView.describe(state.threadRef);
+    if (!installed.ok) return raw(`installed view unavailable: ${installed.error.reason}`);
+    if (installed.value === null) return raw("no installed view");
     const view: OpResult<SessionThreadView> = await instance.sdk.threadView.getSessionThreadView(state.threadRef);
     if (!view.ok) return raw(`session view unavailable: ${view.error.reason}`);
     const bands = view.value.entries.filter(isBandEntry);
-    if (bands.length === 0) return raw("no installed view");
     const firstKeptMessageId = firstKeptMessageIdOf(view.value);
     if (firstKeptMessageId === null) return raw("installed view keeps no mappable tail");
 

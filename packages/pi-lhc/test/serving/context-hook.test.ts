@@ -81,7 +81,9 @@ function piSession(connector: Connector, modelId = "claude-fable-5"): PiSession 
   };
 }
 
-async function startedConnector(): Promise<{ connector: Connector; ref: ThreadRef; pi: PiSession }> {
+async function startedConnector(
+  modelId = "claude-fable-5",
+): Promise<{ connector: Connector; ref: ThreadRef; pi: PiSession }> {
   const created = await makeTempThread(store);
   const ref: ThreadRef = { threadId: created.threadId, registryPath: store.registryPath };
   setLauncherOwnedStartup({ threadRef: ref, launchFlags: { thread: created.threadId } });
@@ -100,9 +102,15 @@ async function startedConnector(): Promise<{ connector: Connector; ref: ThreadRe
         lowerBound: 1200,
         percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
       },
+      {
+        match: "zeroband",
+        triggerTokens: 6500,
+        lowerBound: 6000,
+        percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
+      },
     ],
   });
-  const pi = piSession(connector);
+  const pi = piSession(connector, modelId);
   await connector.handlers.session_start(makeSessionStart("startup"), pi.ctx);
   expect(connector.getState()).not.toBeNull();
   return { connector, ref, pi };
@@ -143,7 +151,13 @@ describe("the context hook", () => {
     const pressure = estimateContextPressure(messages);
     expect(pressure).toBeGreaterThan(5010);
     expect(pressure).toBeLessThan(5010 + 400);
-    expect(estimateContextPressure([makeUserMessage("hello there", t0)])).toBeGreaterThan(0);
+    // No usable usage anywhere: pressure is unknown, never a trigger.
+    expect(estimateContextPressure([makeUserMessage("hello there", t0)])).toBeNull();
+    expect(
+      estimateContextPressure([
+        makeAssistantMessage({ text: "x", stopReason: "aborted", usage: usageOf(9000), timestamp: t0 }),
+      ]),
+    ).toBeNull();
   });
 
   it("TC-7.2a/7.2d: over the trigger mid-run, the handler compacts in the same turn and serves bands + Pi's tail from step k+1; Pi state untouched", async () => {
@@ -467,6 +481,56 @@ describe("the context hook", () => {
     await pi.stepEnd();
     expect((await connector.contextHandler(pi.contextEvent(), pi.ctx))?.messages?.length ?? 0).toBeGreaterThan(0);
     expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: false });
+  });
+
+  it("M1: an installed view with a compact point and zero band rows serves the tail alone, never the raw list", async () => {
+    // A target the protected turn fits under beside the live turn (full
+    // protection), while the tail still consumes the smooth share.
+    const { connector, ref, pi } = await startedConnector("zeroband-model");
+    // Two tiny unchunked elders; the live turn is one complete step of large
+    // output — not splittable (no admissible k) — so under pressure the walk
+    // protects the newest closed turn full and the tail consumes every share.
+    for (let n = 1; n <= 2; n += 1) {
+      const at = t0 + n * 100;
+      const user = makeUserMessage(`t${n}`, at);
+      const answer = makeAssistantMessage({ text: `a${n}`, timestamp: at + 1, usage: usageOf(50) });
+      await pi.deliver(user);
+      await pi.deliver(answer);
+      await pi.stepEnd();
+      await connector.handlers.agent_end(makeAgentEnd([user, answer]), pi.ctx);
+    }
+    const at = t0 + 1000;
+    const protectedPrompt = makeUserMessage("t3", at);
+    await pi.deliver(protectedPrompt);
+    const protectedAnswer = makeAssistantMessage({ text: "a3", timestamp: at + 1, usage: usageOf(60) });
+    await pi.deliver(protectedAnswer);
+    await pi.stepEnd();
+    await connector.handlers.agent_end(makeAgentEnd([protectedPrompt, protectedAnswer]), pi.ctx);
+    await pi.deliver(makeUserMessage("big task", at + 100));
+    await pi.deliver(
+      makeAssistantMessage({
+        toolCalls: [{ id: "live0", name: "read", arguments: {} }],
+        stopReason: "toolUse",
+        timestamp: at + 101,
+        usage: usageOf(6000),
+      }),
+    );
+    await pi.deliver(makeToolResult({ id: "live0", content: "live 0 ".repeat(1500), timestamp: at + 102 }));
+    await pi.stepEnd();
+
+    const event = pi.contextEvent();
+    const served = (await connector.contextHandler(event, pi.ctx))?.messages ?? [];
+    expect(connector.getLastContextOutcome()).toMatchObject({ kind: "served", compacted: true, bands: 0 });
+    const installed = await threadView.describe(ref);
+    expect(installed.ok && installed.value !== null && installed.value.compactPoint > 0).toBe(true);
+    expect(installed.ok && installed.value?.bands).toEqual([]);
+    // The served list is the tail alone: Pi's objects from the protected turn on.
+    const tailIndex = event.messages.findIndex(
+      (m) => m.role === "user" && (m as { timestamp: number }).timestamp === at,
+    );
+    expect(tailIndex).toBeGreaterThan(0);
+    expect(JSON.stringify(served)).toBe(JSON.stringify(event.messages.slice(tailIndex)));
+    expect(served.length).toBeLessThan(event.messages.length);
   });
 
   it("fails open to the raw list: alignment refused, or the session manager cannot list context entries", async () => {

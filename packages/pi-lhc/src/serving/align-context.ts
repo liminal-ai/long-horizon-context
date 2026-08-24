@@ -10,10 +10,9 @@
 // Primary rule: Pi builds the list from its compaction-aware context entries,
 // one entry at a time, in order (session-manager buildSessionContext). Every
 // `message` entry contributes exactly one message (bashExecution included —
-// `!!` exclusion happens later, at convertToLlm), a `compaction` entry
-// contributes its summary plus any retained tail, `branch_summary` and
-// `custom_message` one each; `custom`, model/thinking changes, labels, and
-// session info contribute none. The target index is the count of messages the
+// `!!` exclusion happens later, at convertToLlm), a `compaction` entry its
+// summary, `branch_summary` and `custom_message` one each; `custom`,
+// model/thinking changes, labels, and session info contribute none. The target index is the count of messages the
 // entries before the target contribute. The primary rule is verified at both
 // ends: the message at the index and the last message must match their
 // entries by role, timestamp, and tool-call id, and the counts must agree.
@@ -39,10 +38,7 @@ function messageCountOf(entry: SessionEntry): number {
   switch (entry.type) {
     case "message":
       return entry.message === undefined ? 0 : 1;
-    case "compaction": {
-      const tail = (entry as { retainedTail?: unknown }).retainedTail;
-      return 1 + (Array.isArray(tail) ? tail.length : 0);
-    }
+    case "compaction":
     case "branch_summary":
     case "custom_message":
       return 1;
