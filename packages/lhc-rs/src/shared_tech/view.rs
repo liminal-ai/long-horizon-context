@@ -61,6 +61,10 @@ pub struct ViewProfile {
     pub lower_bound: f64,
     /// Band shares of the lower bound; must sum to 100.
     pub percentages: ViewProfilePercentages,
+    /// Newest-closed-turn protection (turn parts, Flow 5): the fraction of the
+    /// lower bound the newest closed turn may cost and still be kept full,
+    /// after the active turn's minimum verbatim tail is reserved. 0 disables.
+    pub newest_closed_protection: f64,
 }
 
 /// Partial\<ViewProfile\["percentages"\]\> — each band share individually optional.
@@ -89,6 +93,8 @@ pub struct ViewProfileOverride {
     pub lower_bound: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub percentages: Option<PartialViewProfilePercentages>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_closed_protection: Option<f64>,
 }
 
 /// Compact-time explicit parameters: field-wise overrides of the base profile,
@@ -101,6 +107,8 @@ pub struct ViewCompactParams {
     pub lower_bound: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub percentages: Option<PartialViewProfilePercentages>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_closed_protection: Option<f64>,
 }
 
 /// Visibility-boundary budgets: max > target, both positive. Intake no longer
@@ -425,6 +433,10 @@ pub struct StoredViewConfig {
     pub lower_bound: f64,
     /// `Record<string, number>` — insertion-ordered (JSON.stringify contract).
     pub percentages: IndexMap<String, f64>,
+    /// Placement provenance (turn parts): the protection fraction the walk
+    /// ran under. Optional for views written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_closed_protection: Option<f64>,
 }
 
 /// Judgment: TS declares `derivationCounts: Record<string, number>`
@@ -568,6 +580,79 @@ pub struct CompactReceiptConfig {
     pub detailed: f64,
     pub brief: f64,
     pub lower_bound: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_closed_protection: Option<f64>,
+}
+
+/// Turn parts (receipt): one served part.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiptPart {
+    pub turn_id: String,
+    pub from_step: i64,
+    pub to_step: i64,
+}
+
+/// (turn, step) precision (AC-1.7): `step_index` is the HOST step index of
+/// the newest step inside the served parts (the last part's toStep), not the
+/// ordinal k that HostMetadata.lastStepEdge reports.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitPoint {
+    pub turn_id: String,
+    pub step_index: i64,
+}
+
+/// The whole construction that settled a previously split turn: the stored
+/// rendering row it used, or the composed-in-walk marker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SettleConstruction {
+    Stored {
+        subject_id: String,
+        derivation_type: String,
+        source_version: i64,
+    },
+    ComposedInWalk {
+        turn_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettledTurn {
+    pub turn_id: String,
+    pub construction: SettleConstruction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectedRepresentation {
+    Full,
+    WholeRendering,
+}
+
+impl ProtectedRepresentation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProtectedRepresentation::Full => "full",
+            ProtectedRepresentation::WholeRendering => "whole_rendering",
+        }
+    }
+}
+
+/// Newest-closed-turn placement (Flow 5): kept full (verbatim) within the
+/// protection bound, or served by its whole deterministic rendering — never
+/// an excerpt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedTurn {
+    pub turn_id: String,
+    pub representation: ProtectedRepresentation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -659,4 +744,14 @@ pub struct CompactReceipt {
     pub skipped_records: Vec<SkippedRecord>,
     pub rendered_bands: Vec<CompactRenderedBand>,
     pub first_kept_message_id: Option<String>,
+    /// Turn parts (present only when the installed view serves parts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<ReceiptPart>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_point: Option<SplitPoint>,
+    /// Present when this compact settled a previously split turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled: Option<SettledTurn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_turn: Option<ProtectedTurn>,
 }

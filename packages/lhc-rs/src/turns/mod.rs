@@ -32,11 +32,19 @@ use crate::shared_tech::work_queue::{
 };
 use crate::threads::{ThreadRef, open_thread_database, resolve_thread_ref};
 
+use indexmap::IndexMap;
 use internal::chunk_recovery::{CompactChunkMaterial, compact_chunk_material_from_stored_members};
 use internal::chunks::{ChunkStructureRow, drop_empty_readable_chunks, read_chunk_structure};
+use internal::compose::{
+    ComposeOptions, compose_rendering_input_with, compose_structured_turn_text,
+    compose_structured_turn_text_with_trailer,
+};
 use internal::derivations::{
     TurnOwnedSubjectKind, TurnReportOptions, read_chunk_rows, read_owned_derivations,
     report_turn_derivations,
+};
+use internal::derivations::{
+    read_member_messages, read_member_messages_in, read_message_derivation_rows,
 };
 use internal::derive::{TurnOwnedDeriveResult, derive_turn_owned_in_open_db};
 use internal::steps::{StepEdges, read_step_members, step_edges};
@@ -447,6 +455,69 @@ pub struct TurnChunkStructure {
 }
 
 /// Step edges of one turn from its host-supplied step indices (any status).
+// Part construction (turn parts): the deterministic rendering of one
+// contiguous span of a turn, composed independently over exactly that span
+// with no message derivation as input — the raw prompt, recorded tool
+// arguments, deterministically truncated results. `trailer` is the seam line
+// the walk places inside the wrapper at the span's end.
+pub fn compose_turn_part_text(
+    db: &Db,
+    turn_id: &str,
+    from_order: i64,
+    to_order: i64,
+    trailer: &str,
+) -> String {
+    let messages = read_member_messages_in(db, turn_id, Some((from_order, to_order)));
+    // A part is bounded-plan serving: composed under the cap, explicitly, and
+    // raw by design — its unsmoothed prompt and tool results are the contract,
+    // not a degraded state.
+    let composition = compose_rendering_input_with(
+        &messages,
+        &IndexMap::new(),
+        &ComposeOptions {
+            cap_for_serving: true,
+            raw_by_design: true,
+        },
+    );
+    compose_structured_turn_text_with_trailer(&composition.parts, turn_id, Some(trailer))
+}
+
+/// TS `WholeTurnComposition`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WholeTurnComposition {
+    pub text: String,
+    /// Whether the serving cap elided any message's construction (F1).
+    pub capped: bool,
+}
+
+// Whole-turn construction composed in-walk (turn parts: settle, protection,
+// and bounded serving of a ready stored rendering): the same composition the
+// queued turn_derivation handler stores as turn_rendering — live members with
+// their message derivations where ready — requested under the bounded-serving
+// cap, with no write, no floor write, no enqueue, no placement. `capped`
+// reports whether the cap changed anything. None when the turn has no live
+// members.
+pub fn compose_whole_turn_text(db: &Db, turn_id: &str) -> Option<WholeTurnComposition> {
+    let messages = read_member_messages(db, turn_id);
+    if messages.is_empty() {
+        return None;
+    }
+    let message_ids: Vec<String> = messages.iter().map(|m| m.message_id.clone()).collect();
+    let derivations = read_message_derivation_rows(db, &message_ids);
+    let composition = compose_rendering_input_with(
+        &messages,
+        &derivations,
+        &ComposeOptions {
+            cap_for_serving: true,
+            raw_by_design: false,
+        },
+    );
+    Some(WholeTurnComposition {
+        text: compose_structured_turn_text(&composition.parts, turn_id),
+        capped: composition.capped,
+    })
+}
+
 pub fn read_turn_steps(db: &Db, turn_id: &str) -> StepEdges {
     step_edges(&read_step_members(db, turn_id))
 }

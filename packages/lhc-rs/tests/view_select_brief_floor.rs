@@ -38,6 +38,7 @@ fn params() -> SelectionConfig {
             detailed: 4.0,
             brief: 70.0,
         },
+        newest_closed_protection: None,
         compact_point_upper_bound: None,
     }
 }
@@ -56,6 +57,7 @@ fn ready(content: &str) -> DerivationSnapshot {
         state: DerivationState::Ready,
         content: Some(content.to_string()),
         reason: None,
+        source_version: None,
     }
 }
 
@@ -64,6 +66,7 @@ fn failed(reason: &str) -> DerivationSnapshot {
         state: DerivationState::Failed,
         content: None,
         reason: Some(reason.to_string()),
+        source_version: None,
     }
 }
 

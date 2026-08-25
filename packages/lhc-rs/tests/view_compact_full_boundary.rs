@@ -122,6 +122,7 @@ fn compact_point_at(full_budget: i64) -> i64 {
             detailed: 0.0,
             brief: 0.0,
         },
+        newest_closed_protection: None,
         compact_point_upper_bound: None,
     };
     let legacy_point = select_arrangement(&inputs, &config)
@@ -223,6 +224,7 @@ async fn exact_fixture_points(tokens_by_turn: &[(i64, i64)]) -> (i64, i64) {
             detailed: 30.0,
             brief: 30.0,
         },
+        newest_closed_protection: None,
         compact_point_upper_bound: None,
     };
     let eager_inputs = read_selection_inputs(&db).expect("eager inputs");
@@ -329,6 +331,7 @@ async fn oversized_final_turn(remove_open_turn: bool) -> PreviewCompactResult {
                             detailed: Some(25.0),
                             brief: Some(25.0),
                         }),
+                        newest_closed_protection: None,
                     }),
                     signal: None,
                     compact_point_upper_bound: None,
@@ -377,6 +380,7 @@ fn compact_point_upper_bound_keeps_compact_point_behind_a_later_event_order() {
                 detailed: 0.0,
                 brief: 0.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: Some(3),
         },
     )
@@ -398,6 +402,7 @@ fn compact_point_upper_bound_snaps_to_greatest_closed_turn_boundary() {
                 detailed: 0.0,
                 brief: 0.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: Some(5),
         },
     )
@@ -467,6 +472,7 @@ fn includes_a_smooth_entry_that_exactly_fills_the_remaining_band_budget() {
             detailed: 0.0,
             brief: 0.0,
         },
+        newest_closed_protection: None,
         compact_point_upper_bound: None,
     };
     let mut probe_source = EagerSelectionSource::new(inputs.clone());
@@ -537,6 +543,7 @@ fn starts_the_tail_at_an_open_turn_even_when_the_budget_crosses_inside_it() {
                 detailed: 0.0,
                 brief: 0.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: None,
         },
     )
@@ -590,6 +597,7 @@ fn evicts_a_straddling_turn_even_when_the_only_newer_message_is_a_runtime_note()
                 detailed: 0.0,
                 brief: 0.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: None,
         },
     )
@@ -676,6 +684,7 @@ async fn runtime_note_only_tail_leaves_first_kept_message_id_null_after_token_sp
                             detailed: Some(25.0),
                             brief: Some(25.0),
                         }),
+                        newest_closed_protection: None,
                     }),
                     signal: None,
                     compact_point_upper_bound: None,
@@ -759,6 +768,7 @@ async fn compact_continuation_marker_is_mappable_and_anchors_first_kept_message_
                             detailed: Some(25.0),
                             brief: Some(25.0),
                         }),
+                        newest_closed_protection: None,
                     }),
                     signal: None,
                     compact_point_upper_bound: None,

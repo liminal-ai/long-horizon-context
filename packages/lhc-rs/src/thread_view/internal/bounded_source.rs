@@ -8,14 +8,18 @@ use serde_json::{Map, Value};
 use super::super::CompactAbortSignal;
 use super::render::{CompactChunkMaterialSnapshot, DerivationSnapshot, ExcerptBlock, excerpt_line};
 use super::select::{SelectionChunk, SelectionChunkStatus, SelectionTurn, SelectionTurnStatus};
+use super::snapshot::{InstalledTransition, read_installed_transition};
 use super::walk::{CompactStoppedError, SelectionSource};
+use crate::compact_continuation::has_forced_boundary_history;
 use crate::shared_tech::derivation::DerivationState;
 use crate::shared_tech::persist::DbReadTransaction;
 use crate::shared_tech::storage::{Db, SqlParam};
 use crate::shared_tech::view::SkippedRecord;
 use crate::turns::internal::chunk_recovery::CompactChunkMaterial;
+use crate::turns::internal::steps::StepEdges;
 use crate::turns::{
-    ChunkDeriveDerivationType, TurnStatus, get_chunk_text, read_turn_chunk_structure,
+    ChunkDeriveDerivationType, TurnStatus, WholeTurnComposition, compose_turn_part_text,
+    compose_whole_turn_text, get_chunk_text, read_turn_chunk_structure, read_turn_steps,
 };
 
 const COMPACT_POINT_PAGE_SIZE: i64 = 512;
@@ -55,6 +59,7 @@ struct DerivationIndexEntry {
     subject_kind: String,
     state: DerivationState,
     content_null: bool,
+    source_version: i64,
 }
 
 fn required_str(row: &Map<String, Value>, key: &str) -> String {
@@ -106,6 +111,14 @@ pub struct BoundedSelectionSource<'a> {
     derivation_snapshots: HashMap<String, Option<DerivationSnapshot>>,
     excerpts: HashMap<String, Option<String>>,
     materials: HashMap<String, Option<CompactChunkMaterialSnapshot>>,
+    // ── turn parts: the installed transition turn and the step/construction
+    // reads the walk asks for only when it splits or settles. A thread on the
+    // forced-boundary path has no parts source at all (AC-7.3 exclusivity):
+    // it walks exactly as before this mechanism existed.
+    parts_enabled: bool,
+    installed: Option<InstalledTransition>,
+    steps_by_turn: HashMap<String, StepEdges>,
+    whole_texts: HashMap<String, Option<WholeTurnComposition>>,
     pub stats: BoundedSelectionStats,
 }
 
@@ -228,7 +241,8 @@ pub fn create_bounded_selection<'a>(
     stats.queries += 1;
     let derivation_rows = db
         .prepare(
-            "SELECT subject_kind, subject_id, derivation_type, state, (content IS NULL) AS content_null
+            "SELECT subject_kind, subject_id, derivation_type, state, (content IS NULL) AS content_null,
+              source_version
        FROM derivation",
         )
         .all(&[]);
@@ -255,6 +269,7 @@ pub fn create_bounded_selection<'a>(
                     subject_kind,
                     state: derivation_state(&state_wire),
                     content_null: required_i64(&row, "content_null") == 1,
+                    source_version: required_i64(&row, "source_version"),
                 },
             );
         }
@@ -265,6 +280,11 @@ pub fn create_bounded_selection<'a>(
         .get()
         .map(|row| required_i64(&row, "m"))
         .unwrap_or(0);
+
+    stats.queries += 1;
+    let installed = read_installed_transition(db);
+    stats.queries += 1;
+    let parts_enabled = !has_forced_boundary_history(db);
 
     BoundedSelection {
         source: BoundedSelectionSource {
@@ -279,6 +299,10 @@ pub fn create_bounded_selection<'a>(
             derivation_snapshots: HashMap::new(),
             excerpts: HashMap::new(),
             materials: HashMap::new(),
+            parts_enabled,
+            installed,
+            steps_by_turn: HashMap::new(),
+            whole_texts: HashMap::new(),
             stats,
         },
         source_state: ArrangementSourceState {
@@ -434,6 +458,7 @@ impl SelectionSource for BoundedSelectionSource<'_> {
                 state: entry.state,
                 content: None,
                 reason: None,
+                source_version: Some(entry.source_version),
             };
             if entry.state == DerivationState::Ready && !entry.content_null {
                 self.stats.queries += 1;
@@ -498,5 +523,53 @@ impl SelectionSource for BoundedSelectionSource<'_> {
         };
         self.materials.insert(key, resolved.clone());
         Ok(resolved)
+    }
+
+    // ── turn parts ────────────────────────────────────────────────
+    fn has_parts_source(&self) -> bool {
+        self.parts_enabled
+    }
+
+    fn installed_transition(&self) -> Option<InstalledTransition> {
+        if self.parts_enabled {
+            self.installed.clone()
+        } else {
+            None
+        }
+    }
+
+    fn turn_steps(&mut self, turn_id: &str) -> StepEdges {
+        if let Some(cached) = self.steps_by_turn.get(turn_id) {
+            return cached.clone();
+        }
+        self.stats.queries += 1;
+        let edges = read_turn_steps(self.db, turn_id);
+        self.steps_by_turn
+            .insert(turn_id.to_string(), edges.clone());
+        edges
+    }
+
+    fn part_text(
+        &mut self,
+        turn_id: &str,
+        from_order: i64,
+        to_order: i64,
+        trailer: &str,
+    ) -> String {
+        self.stats.queries += 1;
+        compose_turn_part_text(self.db, turn_id, from_order, to_order, trailer)
+    }
+
+    // Composed once per walk per turn: the walk asks for it to settle, to
+    // protect, and to serve a ready stored rendering under the cap.
+    fn whole_turn_text(&mut self, turn_id: &str) -> Option<WholeTurnComposition> {
+        if let Some(cached) = self.whole_texts.get(turn_id) {
+            return cached.clone();
+        }
+        self.stats.queries += 1;
+        let composed = compose_whole_turn_text(self.db, turn_id);
+        self.whole_texts
+            .insert(turn_id.to_string(), composed.clone());
+        composed
     }
 }

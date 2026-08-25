@@ -928,10 +928,12 @@ def classify() -> int:
         # claim_expired fallback compact test → 729. Tree at the turn-parts
         # port's start already reported 743 (literal had lagged). Turn parts
         # slice 2 (schema v12 / wire / steps / steer) adds 7 → 750;
-        # slice 3 (host metadata surface) adds 3 → 753. Keep this
+        # slice 3 (host metadata surface) adds 3 → 753.
+        # slice 4 (walk/settle/parts/protection/cap/entry/exclusivity,
+        # install drift recompute) adds 26 → 779. Keep this
         # exact-count ledger in lockstep with cargo --features test-util.
         if (
-            len(buckets["passed"]) != 753
+            len(buckets["passed"]) != 779
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -939,7 +941,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=753 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=779 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")

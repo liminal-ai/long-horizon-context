@@ -60,6 +60,7 @@ fn default_compact_opts() -> HostCompactOpts {
                 detailed: Some(25.0),
                 brief: Some(25.0),
             }),
+            newest_closed_protection: None,
         }),
     }
 }
@@ -379,6 +380,7 @@ fn compact_params() -> CompactOpts {
                 detailed: Some(25.0),
                 brief: Some(25.0),
             }),
+            newest_closed_protection: None,
         }),
         signal: None,
         compact_point_upper_bound: None,
@@ -1341,6 +1343,7 @@ async fn message_excerpt_source_change_after_prepare_activates() {
                 detailed: Some(10.0),
                 brief: Some(10.0),
             }),
+            newest_closed_protection: None,
         }),
         signal: None,
         compact_point_upper_bound: None,
@@ -1498,6 +1501,7 @@ async fn unresolved_tool_call_exact_compact_failed_failed_repairable() {
                     detailed: Some(25.0),
                     brief: Some(25.0),
                 }),
+                newest_closed_protection: None,
             }),
             signal: None,
             compact_point_upper_bound: None,

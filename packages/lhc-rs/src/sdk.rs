@@ -150,7 +150,8 @@ use crate::shared_tech::scheduler::{
 };
 use crate::shared_tech::storage::Db;
 use crate::thread_view::{
-    self, CompactOpts, MaterializeOpts, MaterializeResult, PruneParams, resolve_view_config,
+    self, CompactOpts, MaterializeOpts, MaterializeResult, MidTurnCompactOptions, PruneParams,
+    resolve_view_config,
 };
 use crate::threads::{
     self, ListThreadsInput, NewThreadInput, NewThreadResult, ResolveInput, ResolvedThreadPath,
@@ -365,6 +366,20 @@ impl ThreadViewSurface {
         run_with_instance_seam(seam, async move { thread_view::host_metadata(ref_).await }).await
     }
 
+    /// Mid-turn compact (turn parts, Flow 7): the ordinary compact behind the
+    /// host's seam assertion and per-thread mechanism exclusivity.
+    pub async fn mid_turn_compact(
+        &self,
+        ref_: ThreadRef,
+        opts: MidTurnCompactOptions,
+    ) -> OpResult<CompactReceipt> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            thread_view::mid_turn_compact(ref_, opts).await
+        })
+        .await
+    }
+
     pub async fn preview_compact(
         &self,
         ref_: ThreadRef,
@@ -377,6 +392,12 @@ impl ThreadViewSurface {
         .await
     }
 
+    /// Prepare and install in one call. On the bounded plan, a thread that has
+    /// never taken the forced-boundary path may have its open turn split into
+    /// parts here with no seam assertion: only complete, host-recorded steps
+    /// split, and the open turn's step indices ride the drift digest so a step
+    /// that lands between prepare and install recomputes. `mid_turn_compact`
+    /// is the entry point that asserts the host's capture seam (AC-7.4).
     pub async fn compact(&self, ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactReceipt> {
         let seam = Arc::clone(&self.seam);
         run_with_instance_seam(seam, async move { thread_view::compact(ref_, opts).await }).await

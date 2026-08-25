@@ -35,6 +35,7 @@ fn params(lower_bound: f64, full: f64, smooth: f64, detailed: f64, brief: f64) -
                 detailed: Some(detailed),
                 brief: Some(brief),
             }),
+            newest_closed_protection: None,
         }),
         signal: None,
         compact_point_upper_bound: None,
@@ -188,6 +189,7 @@ async fn poison_on_an_unvisited_historical_block_is_bounded_but_selected_poison_
                 detailed: 5.0,
                 brief: 60.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: None,
         },
     )
@@ -295,6 +297,7 @@ async fn mature_fixture_reports_bounded_content_work_shape() {
                 detailed: 5.0,
                 brief: 60.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: None,
         },
     )
@@ -316,7 +319,16 @@ async fn mature_fixture_reports_bounded_content_work_shape() {
     assert_eq!(stats.chunk_material_resolutions, 0);
     assert!(stats.derivation_content_reads <= selection.entries.len() + 1);
     assert!(stats.compact_point_rows_scanned < 5_012);
-    assert!(stats.queries < 600);
+    // Turn parts: on a clean thread the bounded plan recomposes each smooth
+    // turn whose stored rendering is ready (one counted construction per such
+    // entry, F1 cap) and reads the installed transition once — bounded by the
+    // smooth band's entry count, never by conversation length.
+    let smooth_entries = selection
+        .entries
+        .iter()
+        .filter(|entry| entry.band == lhc::shared_tech::view::Band::Smooth)
+        .count();
+    assert!(stats.queries < 600 + smooth_entries);
     drop(plan);
     drop(transaction);
     db.close();

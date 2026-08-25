@@ -39,6 +39,7 @@ fn gradient_params() -> ViewCompactParams {
             detailed: Some(10.0),
             brief: Some(49.0),
         }),
+        newest_closed_protection: None,
     }
 }
 

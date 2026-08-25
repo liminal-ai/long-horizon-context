@@ -204,6 +204,7 @@ fn compact_params() -> ViewCompactParams {
             detailed: Some(70.0),
             brief: Some(10.0),
         }),
+        newest_closed_protection: None,
     }
 }
 

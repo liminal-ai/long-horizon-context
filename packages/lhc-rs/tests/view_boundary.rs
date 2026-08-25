@@ -478,6 +478,7 @@ async fn resets_a_seeded_boundary_to_the_compact_point_with_a_full_fresh_tail() 
                 params: Some(ViewCompactParams {
                     lower_bound: Some(40.0),
                     percentages: None,
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,

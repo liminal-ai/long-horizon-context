@@ -43,13 +43,13 @@ use crate::shared_tech::derivation::DerivationState;
 use crate::shared_tech::storage::Db;
 use crate::shared_tech::token_counting::estimate_tokens;
 use crate::shared_tech::view::{
-    Band, PartRange, SkippedRecord, ViewProfilePercentages, ViewSubjectKind,
+    Band, PartRange, ProtectedTurn, ReceiptPart, SettledTurn, SkippedRecord, SplitPoint,
+    ViewProfilePercentages, ViewSubjectKind,
 };
 use crate::turns::{TurnStatus, read_turn_chunk_structure};
 
 /// TS SQL — exact source bytes (subject_kind required for empty-chunk filter).
-pub(crate) const SQL_DERIVATION_ROWS: &str =
-    "SELECT subject_kind, subject_id, derivation_type, state, content, reason FROM derivation";
+pub(crate) const SQL_DERIVATION_ROWS: &str = "SELECT subject_kind, subject_id, derivation_type, state, content, reason, source_version FROM derivation";
 
 pub(crate) const SQL_MAX_EVENT_ORDER: &str = "SELECT COALESCE(MAX(event_order), 0) AS m FROM event";
 
@@ -224,6 +224,11 @@ pub struct SelectionResult {
     /// Candidates the last band's walk skipped, newest-first, with the trailing
     /// window edge trimmed.
     pub skipped: Vec<SkippedEntry>,
+    /// Turn parts (None when no turn is split): what the receipt records.
+    pub parts: Option<Vec<ReceiptPart>>,
+    pub split_point: Option<SplitPoint>,
+    pub settled: Option<SettledTurn>,
+    pub protected_turn: Option<ProtectedTurn>,
 }
 
 fn map_required_str(row: &serde_json::Map<String, Value>, key: &str) -> String {
@@ -414,6 +419,7 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
             state,
             content: None,
             reason: None,
+            source_version: Some(map_required_i64(&row, "source_version")),
         };
         if let Some(content) = map_optional_str(&row, "content") {
             snapshot.content = Some(content);
@@ -453,6 +459,9 @@ pub struct SelectionConfig {
     pub percentages: ViewProfilePercentages,
     /// Compact point must stay at or behind this event order (protected-pair
     /// tail preservation).
+    /// Newest-closed-turn protection fraction (Flow 5); the profile default when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_closed_protection: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub compact_point_upper_bound: Option<i64>,
 }
@@ -1225,6 +1234,10 @@ pub fn select_arrangement(
         covered_from,
         entries,
         skipped: brief.skipped,
+        parts: None,
+        split_point: None,
+        settled: None,
+        protected_turn: None,
     })
 }
 

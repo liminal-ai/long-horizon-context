@@ -58,6 +58,7 @@ const TARGET_PARAMS: ViewCompactParams = ViewCompactParams {
         detailed: Some(25.0),
         brief: Some(25.0),
     }),
+    newest_closed_protection: None,
 };
 
 fn gradient_params() -> ViewCompactParams {
@@ -69,6 +70,7 @@ fn gradient_params() -> ViewCompactParams {
             detailed: Some(10.0),
             brief: Some(49.0),
         }),
+        newest_closed_protection: None,
     }
 }
 
@@ -81,6 +83,7 @@ fn edge_params() -> ViewCompactParams {
             detailed: Some(10.0),
             brief: Some(30.0),
         }),
+        newest_closed_protection: None,
     }
 }
 
@@ -660,6 +663,7 @@ async fn rejects_percentages_summing_to_105_naming_the_sum_and_an_unknown_profil
                         detailed: Some(25.0),
                         brief: Some(20.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -683,6 +687,7 @@ async fn rejects_percentages_summing_to_105_naming_the_sum_and_an_unknown_profil
                 params: Some(ViewCompactParams {
                     lower_bound: Some(0.0),
                     percentages: None,
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -749,6 +754,7 @@ async fn compacts_with_a_built_in_profile_the_profiles_bound_and_mix_land_in_the
             detailed: 20.0,
             brief: 20.0,
             lower_bound: 120000.0,
+            newest_closed_protection: Some(0.6),
         }
     );
     assert_eq!(value.compact_point, 0);
@@ -775,6 +781,7 @@ async fn explicit_params_override_profile_values_field_wise_and_report_profile_n
                         detailed: Some(15.0),
                         brief: None,
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -793,6 +800,7 @@ async fn explicit_params_override_profile_values_field_wise_and_report_profile_n
             detailed: 15.0,
             brief: 20.0,
             lower_bound: 400.0,
+            newest_closed_protection: Some(0.6),
         }
     );
     assert!(value.profile.is_none());
@@ -1036,6 +1044,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Ready,
             content: Some("compressed ".repeat(200)),
             reason: None,
+            source_version: None,
         },
     );
     derivations.insert(
@@ -1044,6 +1053,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Failed,
             content: None,
             reason: Some("compression failed".into()),
+            source_version: None,
         },
     );
     derivations.insert(
@@ -1052,6 +1062,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Ready,
             content: Some(format!("User:\n{}\n\n⏺ more", "large ".repeat(500))),
             reason: None,
+            source_version: None,
         },
     );
     derivations.insert(
@@ -1060,6 +1071,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Ready,
             content: Some("newest banded turn".into()),
             reason: None,
+            source_version: None,
         },
     );
     derivations.insert(
@@ -1068,6 +1080,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Ready,
             content: Some("closed chunk summary".into()),
             reason: None,
+            source_version: None,
         },
     );
     let inputs = SelectionInputs {
@@ -1092,6 +1105,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
                 detailed: 40.0,
                 brief: 40.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: None,
         },
     )
@@ -1432,6 +1446,7 @@ async fn completes_with_ladder_fallbacks_marked_gap_entries_for_unusable_spans_a
                         detailed: Some(10.0),
                         brief: Some(40.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -1498,6 +1513,7 @@ async fn status_reports_the_view_health_fields_live_after_the_degraded_compact_t
                         detailed: Some(10.0),
                         brief: Some(40.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -1590,6 +1606,7 @@ async fn multiple_open_turn_rows_follow_the_ts_reachable_selection_without_rewri
                         detailed: Some(10.0),
                         brief: Some(10.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -1630,6 +1647,7 @@ async fn multiple_open_turn_rows_follow_the_ts_reachable_selection_without_rewri
                         detailed: Some(10.0),
                         brief: Some(10.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,

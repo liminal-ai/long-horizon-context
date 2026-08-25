@@ -27,6 +27,7 @@ use crate::shared_tech::sha256::sha256_hex;
 use crate::shared_tech::time::system_time_to_iso;
 use crate::shared_tech::view::{CompactReceipt, ViewCompactParams};
 use crate::thread_view::internal::protected_boundary::ProtectedBoundaryOpts;
+use crate::thread_view::internal::snapshot::read_parts_activation;
 use crate::thread_view::{
     CompactOpts, InstallPreparedOptions, install_prepared_compact, prepare_compact,
     preview_protected_boundary,
@@ -1233,6 +1234,28 @@ async fn run_compact_continuation_inner(
             OpResult::Err { error } => OpResult::Err { error },
             OpResult::Ok { .. } => unreachable!(),
         };
+    }
+
+    // ── Per-thread mechanism exclusivity (turn parts, AC-7.3 / TC-7.3b) ────
+    // A thread that has ever installed a view serving parts never takes the
+    // forced-boundary path: the fact is durable (thread_metadata, written in
+    // the first parts install's transaction), so it outlives settle. Typed,
+    // before replay, claim, or any write.
+    let activated = create_db_read_transaction(ref_.clone(), move |tx| {
+        Box::pin(async move { read_parts_activation(tx.db) })
+    })
+    .await;
+    let activated = match activated {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => return OpResult::Err { error },
+    };
+    if let Some(activated) = activated {
+        return caller_error(
+            ErrorCode::CompactContinuationPartsThread,
+            format!(
+                "compact-continuation refused: this thread has served turn parts since {activated}; mid-turn relief on it is threadView.midTurnCompact"
+            ),
+        );
     }
 
     // Intent identity + terminal replay before mutation.

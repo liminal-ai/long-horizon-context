@@ -176,6 +176,7 @@ pub fn compute_arrangement(
     let config = SelectionConfig {
         lower_bound: merged.lower_bound,
         percentages: merged.percentages.clone(),
+        newest_closed_protection: Some(merged.newest_closed_protection),
         compact_point_upper_bound: opts.compact_point_upper_bound,
     };
     let (selection, source_state) = match resolve_compact_algorithm() {

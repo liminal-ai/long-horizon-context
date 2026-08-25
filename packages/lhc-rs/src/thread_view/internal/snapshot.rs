@@ -207,6 +207,7 @@ fn parse_stored_config(json: &str) -> StoredViewConfig {
     StoredViewConfig {
         lower_bound,
         percentages,
+        newest_closed_protection: obj.get("newestClosedProtection").and_then(Value::as_f64),
     }
 }
 
@@ -544,10 +545,10 @@ pub struct ViewReplaceInput {
 /// stored verbatim (callers must produce them via `js_json`); this path never
 /// re-parses or rewrites those blobs.
 ///
-/// `before_replace` may return a source_state_json override computed after
-/// in-transaction validation (e.g. post-marker digests). When it returns
-/// `Some(String)`, that value is written; otherwise `input.source_state_json`
-/// is used.
+/// `before_replace` runs inside the transaction, before any write, and may
+/// rewrite the input — a source_state_json override computed after
+/// in-transaction validation, or (TS install-time drift) the whole snapshot
+/// reassembled against durable state under the same lock.
 pub fn replace_view_snapshot(db: &Db, input: &ViewReplaceInput) {
     replace_view_snapshot_with(db, input, None)
 }
@@ -557,14 +558,16 @@ pub fn replace_view_snapshot(db: &Db, input: &ViewReplaceInput) {
 pub fn replace_view_snapshot_with(
     db: &Db,
     input: &ViewReplaceInput,
-    before_replace: Option<&mut dyn FnMut(&Db) -> Option<String>>,
+    before_replace: Option<&mut dyn FnMut(&Db, &mut ViewReplaceInput)>,
 ) {
     db.exec(SQL_BEGIN_IMMEDIATE);
     let result = catch_unwind(AssertUnwindSafe(|| {
-        let source_state_json = match before_replace {
-            Some(cb) => cb(db).unwrap_or_else(|| input.source_state_json.clone()),
-            None => input.source_state_json.clone(),
-        };
+        let mut input = input.clone();
+        if let Some(cb) = before_replace {
+            cb(db, &mut input);
+        }
+        let input = &input;
+        let source_state_json = input.source_state_json.clone();
         db.prepare(SQL_DELETE_THREAD_VIEW).run(&[]);
         db.prepare(SQL_INSERT_THREAD_VIEW).run(&[
             SqlParam::from(input.view_id.as_str()),

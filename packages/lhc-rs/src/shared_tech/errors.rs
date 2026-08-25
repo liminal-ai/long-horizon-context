@@ -83,6 +83,15 @@ pub enum ErrorCode {
     CompactContinuationAttemptConflict,
     /// caller_error — visibility-boundary invariants prevent activation
     StalePreparedCompact,
+    // Turn parts (mid-turn compact, AC-7.3/7.4). Core cannot observe capture
+    // in flight: the entry point takes the host's seam assertion and refuses
+    // when it is absent or false. Mechanism exclusivity is per thread, both ways.
+    /// caller_error — mid-turn compact invoked without a settled host seam assertion
+    UnsettledCaptureSeam,
+    /// caller_error — mid-turn compact refused: this thread is on the forced-boundary path
+    ForcedBoundaryThread,
+    /// caller_error — forced-boundary compact refused: this thread has served parts
+    CompactContinuationPartsThread,
 }
 
 impl ErrorClass {
@@ -130,6 +139,9 @@ impl ErrorCode {
                 "compact_continuation_attempt_conflict"
             }
             ErrorCode::StalePreparedCompact => "stale_prepared_compact",
+            ErrorCode::UnsettledCaptureSeam => "unsettled_capture_seam",
+            ErrorCode::ForcedBoundaryThread => "forced_boundary_thread",
+            ErrorCode::CompactContinuationPartsThread => "compact_continuation_parts_thread",
         }
     }
 }

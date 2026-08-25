@@ -67,6 +67,7 @@ fn default_compact_opts() -> lhc::compact_continuation::HostCompactOpts {
                 detailed: Some(25.0),
                 brief: Some(25.0),
             }),
+            newest_closed_protection: None,
         }),
     }
 }
@@ -377,6 +378,7 @@ fn compact_params() -> CompactOpts {
                 detailed: Some(25.0),
                 brief: Some(25.0),
             }),
+            newest_closed_protection: None,
         }),
         signal: None,
         compact_point_upper_bound: None,
@@ -389,9 +391,7 @@ fn compact_params() -> CompactOpts {
 async fn compact_continuation_persists_canonical_fixed_clock_timestamps() {
     let (_store, ref_, path) = fixture_thread().await;
     seed_open_agentic_turn(&ref_).await;
-    let fixed_time = UNIX_EPOCH
-        + Duration::from_secs(1_709_251_199)
-        + Duration::from_millis(123);
+    let fixed_time = UNIX_EPOCH + Duration::from_secs(1_709_251_199) + Duration::from_millis(123);
     let clock: Clock = Arc::new(move || fixed_time);
     let expected = "2024-02-29T23:59:59.123Z";
 
@@ -426,10 +426,22 @@ async fn compact_continuation_persists_canonical_fixed_clock_timestamps() {
         )
         .get_params(&[SqlParam::from("timestamp-1")])
         .expect("timestamp persistence rows");
-    assert_eq!(summary.get("created_at").and_then(Value::as_str), Some(expected));
-    assert_eq!(summary.get("recorded_at").and_then(Value::as_str), Some(expected));
-    assert_eq!(summary.get("forced_at").and_then(Value::as_str), Some(expected));
-    assert_eq!(summary.get("completed_at").and_then(Value::as_str), Some(expected));
+    assert_eq!(
+        summary.get("created_at").and_then(Value::as_str),
+        Some(expected)
+    );
+    assert_eq!(
+        summary.get("recorded_at").and_then(Value::as_str),
+        Some(expected)
+    );
+    assert_eq!(
+        summary.get("forced_at").and_then(Value::as_str),
+        Some(expected)
+    );
+    assert_eq!(
+        summary.get("completed_at").and_then(Value::as_str),
+        Some(expected)
+    );
     assert_eq!(
         summary.get("host_recorded_at").and_then(Value::as_str),
         Some(expected)
@@ -439,14 +451,14 @@ async fn compact_continuation_persists_canonical_fixed_clock_timestamps() {
         Some(expected)
     );
     let stages = db
-        .prepare(
-            "SELECT recorded_at FROM compact_continuation_stage_log WHERE attempt_id = ?",
-        )
+        .prepare("SELECT recorded_at FROM compact_continuation_stage_log WHERE attempt_id = ?")
         .all(&[SqlParam::from("timestamp-1")]);
     assert!(!stages.is_empty(), "stage log must be durable");
-    assert!(stages.iter().all(|row| {
-        row.get("recorded_at").and_then(Value::as_str) == Some(expected)
-    }));
+    assert!(
+        stages
+            .iter()
+            .all(|row| { row.get("recorded_at").and_then(Value::as_str) == Some(expected) })
+    );
     db.close();
 }
 
@@ -2506,6 +2518,7 @@ async fn attempt_intent_inspect_returns_stored_identity_and_rejects_corrupt() {
                 detailed: Some(25.0),
                 brief: Some(25.0),
             }),
+            newest_closed_protection: None,
         }),
     });
 
@@ -2652,6 +2665,7 @@ async fn claim_only_preserve_reentry_uses_stored_identity_despite_live_drift() {
         params: Some(ViewCompactParams {
             lower_bound: Some(1.0),
             percentages: None,
+            newest_closed_protection: None,
         }),
     });
     match run_compact_continuation(ref_.clone(), live_drift).await {
@@ -3267,6 +3281,7 @@ fn escalation_facts(attempt_id: &str, safe_runway_threshold: i64) -> CompactCont
                 detailed: Some(0.0),
                 brief: Some(0.0),
             }),
+            newest_closed_protection: None,
         }),
     });
     facts

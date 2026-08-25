@@ -27,6 +27,7 @@ pub mod pi_session_format;
 pub mod read_only_delta;
 pub mod seam_conformance;
 pub mod threads;
+pub mod turn_parts;
 pub mod valid_event;
 pub mod view_boundary;
 pub mod view_seam;
