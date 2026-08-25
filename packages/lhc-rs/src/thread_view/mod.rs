@@ -2014,30 +2014,18 @@ pub async fn install_prepared_compact(
             // Background derivation or re-derivation does not invalidate this
             // coherent prepared snapshot. Later compacts can use newer material.
             fire_view_injection_with_db(ViewInjectionPoint::CompactInstallBeforeValidate, db);
-            // Boundary monotonicity / expected previous checks (atomic with install).
-            let current_boundary = read_boundary_position(db);
-            if let Some(expected) = expected_previous_boundary
-                && current_boundary != expected
-            {
-                panic!(
-                    "stale_prepared_compact:visibility boundary drifted {expected}\u{2192}{current_boundary} since prepare"
-                );
-            }
-            if let Some(proposed) = proposed_boundary {
-                if proposed < prepared.selection.compact_point {
-                    panic!(
-                        "stale_prepared_compact:proposed visibility boundary {proposed} is behind compact point {}",
-                        prepared.selection.compact_point
-                    );
-                }
-                if proposed < current_boundary {
-                    panic!(
-                        "stale_prepared_compact:proposed visibility boundary {proposed} would move backward from {current_boundary}"
-                    );
-                }
-            }
-            if opts.allowed_marker_idempotency_key.is_none()
-                && validate_prepared_source_state(db, &prepared, None).is_err()
+            // A pinned visibility boundary that has since moved is drift like
+            // any other (TS `preparedStateDrift`): recompute against the current
+            // boundary, never refuse. A proposal behind the current boundary or
+            // the compact point is not an error either — the snapshot write
+            // resolves it forward to max(proposed, current, compact point).
+            let boundary_moved = matches!(
+                expected_previous_boundary,
+                Some(expected) if read_boundary_position(db) != expected
+            );
+            if boundary_moved
+                || (opts.allowed_marker_idempotency_key.is_none()
+                    && validate_prepared_source_state(db, &prepared, None).is_err())
             {
                 let fresh = assemble_prepared_compact(
                     db,

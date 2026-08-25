@@ -12,6 +12,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use super::boundary::read_boundary_position;
 use super::exact_i64::f64_to_exact_i64;
 use crate::shared_tech::derivation::RenderingPartKind;
 use crate::shared_tech::storage::{Db, SqlParam};
@@ -530,8 +531,9 @@ pub struct ViewReplaceInput {
     #[serde(default)]
     pub serves_parts: bool,
     /// Visibility boundary written in the same transaction as the view replace.
-    /// Defaults to compact_point (historical compact reset). Protected-escalation
-    /// installs may advance to a higher proposed boundary atomically.
+    /// Absent: reset to compact_point (historical compact reset). Present: a
+    /// proposal resolved forward to max(proposed, current boundary, compact
+    /// point) — never backward, never behind the point it installs with.
     pub visibility_boundary: Option<i64>,
 }
 
@@ -593,13 +595,12 @@ pub fn replace_view_snapshot_with(
             db.prepare(SQL_ACTIVATE_PARTS)
                 .run(&[SqlParam::from(input.created_at.as_str())]);
         }
-        let boundary_position = input.visibility_boundary.unwrap_or(input.compact_point);
-        if boundary_position < input.compact_point {
-            panic!(
-                "visibility boundary {boundary_position} would land behind compact point {}",
-                input.compact_point
-            );
-        }
+        let boundary_position = match input.visibility_boundary {
+            None => input.compact_point,
+            Some(proposed) => proposed
+                .max(read_boundary_position(db))
+                .max(input.compact_point),
+        };
         db.prepare(SQL_RESET_BOUNDARY).run(&[
             SqlParam::from(boundary_position),
             SqlParam::from(input.created_at.as_str()),
