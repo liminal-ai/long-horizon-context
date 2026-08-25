@@ -930,10 +930,11 @@ def classify() -> int:
         # slice 2 (schema v12 / wire / steps / steer) adds 7 → 750;
         # slice 3 (host metadata surface) adds 3 → 753.
         # slice 4 (walk/settle/parts/protection/cap/entry/exclusivity,
-        # install drift recompute) adds 26 → 779. Keep this
+        # install drift recompute) adds 26 → 779; slice 5 (TS oracle replay)
+        # adds 1 → 780. Keep this
         # exact-count ledger in lockstep with cargo --features test-util.
         if (
-            len(buckets["passed"]) != 779
+            len(buckets["passed"]) != 780
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -941,7 +942,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=779 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=780 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")
