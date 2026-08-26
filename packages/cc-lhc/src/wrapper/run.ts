@@ -1779,6 +1779,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
   const commandRuntime = (): LhcCommandRuntime => {
     const rollout = captureSession?.getRolloutInfo();
+    const policy = resolvedContextPolicy.policy;
+    const statusSnapshot = {
+      latestProviderContextTokens: governorState.latestProviderContext?.total ?? null,
+      targetTokens: policy.lowerBoundTokens,
+      triggerTokens: policy.upperBoundTokens,
+      autoCompact: policy.autoCompact,
+    };
     if (captureSession === undefined) {
       return {
         stats: emptyCaptureStats(),
@@ -1787,16 +1794,17 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         cwd: process.cwd(),
         sourceRolloutPath: undefined,
         sourceSessionId: undefined,
+        statusSnapshot,
       };
     }
     const ctx = captureSession.getCommandContext();
-    const policy = resolvedContextPolicy.policy;
     return {
       ...ctx,
       cwd: process.cwd(),
       sourceRolloutPath: rollout?.path,
       sourceSessionId: rollout?.sessionId,
       ...(configFallbackNotice.length === 0 ? {} : { hostNotices: configFallbackNotice }),
+      statusSnapshot,
       contextPolicy: {
         profile: policy.profile,
         lowerBoundTokens: policy.lowerBoundTokens,

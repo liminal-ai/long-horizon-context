@@ -28,6 +28,13 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
     lowerBoundTokens: number;
     pruneIfDue?: { thresholdTokens: number; targetTokens: number };
   };
+  /** User-facing values shown by the Control Panel and `/status`. */
+  statusSnapshot?: {
+    latestProviderContextTokens: number | null;
+    targetTokens: number;
+    triggerTokens: number;
+    autoCompact: boolean;
+  };
   /** Host notices to include in the compact message (config fallbacks). */
   hostNotices?: readonly string[];
   /** Live turn state from the rollout tail; read once in the settled-seam snapshot. */
@@ -103,10 +110,30 @@ async function runHandler(
   }
 }
 
-function formatStatus(status: ViewStatus, threadId: string | null): string {
+function tokenNumber(tokens: number): string {
+  return tokens.toLocaleString("en-US");
+}
+
+function userStatusLines(runtime: LhcCommandRuntime): string[] {
+  const snapshot = runtime.statusSnapshot;
+  if (snapshot === undefined) return [];
+  const context =
+    snapshot.latestProviderContextTokens === null
+      ? "not measured yet"
+      : `${tokenNumber(snapshot.latestProviderContextTokens)} tokens`;
+  return [
+    `Latest provider context: ${context}`,
+    `/smart-compact: ${tokenNumber(snapshot.targetTokens)}-token target · ${tokenNumber(snapshot.triggerTokens)}-token trigger · automatic ${snapshot.autoCompact ? "on" : "off"}`,
+  ];
+}
+
+function formatStatus(status: ViewStatus, runtime: LhcCommandRuntime): string {
   const lines = [
-    `tail=${status.tailTokens} threshold=${status.threshold} zone=${status.visibility.zoneTokens}/${status.visibility.maxTokens}`,
-    `derivation pending=${status.derivation.pending} failed=${status.derivation.failed} thread=${threadId ?? "none"}`,
+    ...userStatusLines(runtime),
+    `LHC history since last Smart Compact: ${tokenNumber(status.tailTokens)} estimated tokens`,
+    `/smart-prune: ${tokenNumber(status.visibility.zoneTokens)} estimated tokens in eligible tool results`,
+    `Derivations: ${status.derivation.pending} pending · ${status.derivation.failed} failed`,
+    `Thread: ${runtime.stats.threadId ?? "none"}`,
   ];
   return lines.join("\n");
 }
@@ -120,11 +147,11 @@ function warningsLine(runtime: LhcCommandRuntime): string[] {
 
 async function handleStatus(runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   if (runtime.sdk === undefined || runtime.threadRef === undefined) {
-    return { messages: ["capture not ready", ...warningsLine(runtime)] };
+    return { messages: [[...userStatusLines(runtime), "Capture: not ready"].join("\n"), ...warningsLine(runtime)] };
   }
   const result: OpResult<ViewStatus> = await runtime.sdk.threadView.status(runtime.threadRef);
   if (!result.ok) return { messages: [`status error: ${result.error.reason}`, ...warningsLine(runtime)] };
-  return { messages: [formatStatus(result.value, runtime.stats.threadId), ...warningsLine(runtime)] };
+  return { messages: [formatStatus(result.value, runtime), ...warningsLine(runtime)] };
 }
 
 function handleStats(runtime: LhcCommandRuntime): DispatchOutcome {

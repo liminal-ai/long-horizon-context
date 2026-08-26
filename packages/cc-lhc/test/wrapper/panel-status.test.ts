@@ -117,11 +117,9 @@ describe("TC-3.4a Status contract is truthful", () => {
     const help = helpLines(null).join("\n");
     const statusSpec = PANEL_COMMANDS.find((command) => command.name === "/status");
     const statsSpec = PANEL_COMMANDS.find((command) => command.name === "/stats");
-    expect(statusSpec?.summary).toContain("tail");
-    expect(statusSpec?.summary).toContain("threshold");
-    expect(statusSpec?.summary).toContain("zone");
-    expect(statusSpec?.summary).toContain("derivation");
-    expect(statusSpec?.summary).toContain("thread id");
+    expect(statusSpec?.summary).toContain("latest provider context");
+    expect(statusSpec?.summary).toContain("/smart-compact settings");
+    expect(statusSpec?.summary).toContain("LHC health");
     expect(statsSpec?.summary).toContain("lines");
     expect(statsSpec?.summary).toContain("events");
     expect(statsSpec?.summary).toContain("thread id");
@@ -149,13 +147,20 @@ describe("TC-3.4a Status contract is truthful", () => {
       cwd: "/work",
       sourceRolloutPath: undefined,
       sourceSessionId: undefined,
+      statusSnapshot: {
+        latestProviderContextTokens: 123_456,
+        targetTokens: 180_000,
+        triggerTokens: 360_000,
+        autoCompact: true,
+      },
     };
     const status = await dispatchLhcCommand("/lhc-status", runtime);
-    expect(status.messages[0]).toContain("tail=1200");
-    expect(status.messages[0]).toContain("threshold=8000");
-    expect(status.messages[0]).toContain("zone=400/2000");
-    expect(status.messages[0]).toContain("derivation pending=1 failed=2");
-    expect(status.messages[0]).toContain("thread=th_test");
+    expect(status.messages[0]).toContain("Latest provider context: 123,456 tokens");
+    expect(status.messages[0]).toContain("/smart-compact: 180,000-token target · 360,000-token trigger · automatic on");
+    expect(status.messages[0]).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
+    expect(status.messages[0]).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
+    expect(status.messages[0]).toContain("Derivations: 1 pending · 2 failed");
+    expect(status.messages[0]).toContain("Thread: th_test");
     const stats = await dispatchLhcCommand("/lhc-stats", runtime);
     expect(stats.messages[0]).toContain("lines=3");
     expect(stats.messages[0]).toContain("events=2");

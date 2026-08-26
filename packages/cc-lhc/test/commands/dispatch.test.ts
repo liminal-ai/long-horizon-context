@@ -23,6 +23,12 @@ function fakeRuntime(overrides: Partial<LhcCommandRuntime> = {}): LhcCommandRunt
     cwd: "/work",
     sourceRolloutPath: undefined,
     sourceSessionId: undefined,
+    statusSnapshot: {
+      latestProviderContextTokens: 123_456,
+      targetTokens: 180_000,
+      triggerTokens: 360_000,
+      autoCompact: true,
+    },
     ...overrides,
   };
 }
@@ -47,8 +53,14 @@ describe("dispatchLhcCommand", () => {
       "/lhc-status",
       fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef }),
     );
-    expect(outcome.messages[0]).toContain("tail=1200 threshold=8000 zone=400/2000");
-    expect(outcome.messages[0]).toContain("derivation pending=1 failed=2 thread=th_test");
+    expect(outcome.messages[0]).toContain("Latest provider context: 123,456 tokens");
+    expect(outcome.messages[0]).toContain(
+      "/smart-compact: 180,000-token target · 360,000-token trigger · automatic on",
+    );
+    expect(outcome.messages[0]).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
+    expect(outcome.messages[0]).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
+    expect(outcome.messages[0]).toContain("Derivations: 1 pending · 2 failed");
+    expect(outcome.messages[0]).toContain("Thread: th_test");
   });
 
   it("prints the capture stats line", async () => {
@@ -61,6 +73,7 @@ describe("dispatchLhcCommand", () => {
     const outcome = await dispatchLhcCommand("/lhc-help", fakeRuntime());
     expect(outcome.messages[0]).toContain("/smart-compact");
     expect(outcome.messages[0]).toContain("/smart-prune [tokens]");
+    expect(outcome.messages[0]).toContain("Keep newest eligible tool results near [tokens] estimated tokens");
   });
 
   it("reports unknown /lhc-* commands", async () => {
@@ -102,7 +115,7 @@ describe("dispatchLhcCommand", () => {
       "/lhc-status",
       fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef, isTurnOpen: () => true }),
     );
-    expect(status.messages[0]).toContain("tail=1200");
+    expect(status.messages[0]).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
     const stats = await dispatchLhcCommand("/lhc-stats", fakeRuntime({ isTurnOpen: () => true }));
     expect(stats.messages[0]).toContain("cc-lhc-capture");
   });

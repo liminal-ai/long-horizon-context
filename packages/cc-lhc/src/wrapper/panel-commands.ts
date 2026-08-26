@@ -135,7 +135,7 @@ function isPositiveSafeIntegerToken(raw: string): boolean {
 }
 
 export const SMART_PRUNE_SYNTAX =
-  "usage: /smart-prune [positive-safe-integer] — reject zero, negative, fractional, overflow, nonnumeric, and extra arguments";
+  "usage: /smart-prune [tokens] — tokens must be a positive whole number of estimated tokens to keep";
 
 function parseSmartPrune(args: readonly string[], surface: string): PanelParseResult {
   if (args.length === 0) return { kind: "execute", commandLine: "/lhc-prune", surface };
@@ -169,9 +169,9 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
   {
     name: "/status",
     usage: "/status",
-    summary: "thread-view tail, threshold, zone, derivation counts, and thread id",
-    short: "context size, target, trigger",
-    helpSummary: "Check context size, target, and trigger.",
+    summary: "latest provider context, /smart-compact settings, and LHC health",
+    short: "context, compact settings, health",
+    helpSummary: "Show context, compact target and trigger, automatic state, and LHC health.",
     group: "common",
     scope: "none",
     parse: executeNoArgs("/lhc-status"),
@@ -190,13 +190,14 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
   {
     name: "/smart-prune",
     usage: "/smart-prune [tokens]",
-    summary: "run /smart-prune with the configured target or one positive safe-integer target",
-    short: "remove eligible old tool output",
-    helpSummary: "Remove eligible old tool output. Use after tool-heavy work without replacing the session.",
+    summary: "shorten older eligible tool results toward a requested visible-token target",
+    short: "keep newest tool output near target",
+    helpSummary:
+      "Keep newest eligible tool results near [tokens] estimated tokens; older results shorten. Omit it for the default.",
     group: "common",
     scope: "none",
     parse: parseSmartPrune,
-    homeAction: { label: "/smart-prune", order: 1, description: "remove eligible old tool output" },
+    homeAction: { label: "/smart-prune", order: 1, description: "keep newest tool output near target" },
   },
   {
     name: "/introduction",
