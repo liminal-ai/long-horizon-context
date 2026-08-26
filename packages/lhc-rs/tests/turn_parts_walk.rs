@@ -3,15 +3,16 @@
 //! Turn parts — the walk (epic Flows 1, 3, 4, 6): split the open turn at the
 //! newest admissible complete step edge, serve parts behind seam lines inside
 //! the installed snapshot, keep the split point monotone and prior part bytes
-//! stable, settle a closed transition turn whole before any other turn splits,
-//! and never emit a part on the legacy plan. One invariant, exercised by the
-//! scenario matrix: at most one unsettled turn at compact completion.
+//! stable, retain a closed transition until newer messages fill the full band,
+//! settle it whole before any other turn splits, and never emit a part on the
+//! legacy plan. One invariant, exercised by the scenario matrix: at most one
+//! unsettled turn at compact completion.
 mod fixtures;
 
 use fixtures::turn_parts::{
-    closed_turn, compact_pinned, context, context_texts, describe, drain_to_zero, event, file_ref,
-    giant, host_metadata, new_thread, params, part_entry, prompt, sdk_for, send, step, step_sums,
-    turn_end,
+    Compacted, closed_turn, compact_pinned, context, context_texts, describe, drain_to_zero, event,
+    file_ref, giant, host_metadata, new_thread, params, part_entry, prompt, sdk_for, send, step,
+    step_sums, turn_end,
 };
 use fixtures::{open_raw, temp_store};
 use lhc::intake_stream::EventKind;
@@ -39,6 +40,63 @@ fn unsettled(turn_id: &str) -> Option<HostMetadataUnsettledTurn> {
     Some(HostMetadataUnsettledTurn {
         turn_id: turn_id.into(),
     })
+}
+
+async fn assert_marker_only_in_full_suffix(
+    file_path: &str,
+    compacted: &Compacted,
+    marker: &str,
+) -> Vec<String> {
+    let part_entries: Vec<_> = compacted
+        .entries
+        .iter()
+        .filter(|entry| entry.part.is_some())
+        .collect();
+    let smooth_parts: Vec<_> = part_entries
+        .iter()
+        .filter(|entry| entry.band == Band::Smooth)
+        .collect();
+    assert_eq!(smooth_parts.len(), part_entries.len());
+    assert!(!smooth_parts.is_empty());
+    assert!(
+        smooth_parts
+            .iter()
+            .all(|entry| !entry.text.contains(marker))
+    );
+
+    let older_band_entries: Vec<_> = compacted
+        .entries
+        .iter()
+        .filter(|entry| entry.part.is_none())
+        .collect();
+    assert!(
+        older_band_entries
+            .iter()
+            .all(|entry| !entry.text.contains(marker))
+    );
+
+    let ctx = context(file_path).await;
+    // Assembly emits one message per rendered band first; every entry after
+    // that metadata-derived boundary is a verbatim Full-tail message.
+    let full_suffix_texts: Vec<String> = ctx
+        .messages
+        .iter()
+        .skip(compacted.receipt.rendered_bands.len())
+        .map(|message| {
+            message
+                .content
+                .iter()
+                .map(|part| part.text.as_str())
+                .collect()
+        })
+        .collect();
+    assert!(!full_suffix_texts.is_empty());
+    let marker_occurrences: usize = full_suffix_texts
+        .iter()
+        .map(|text| text.matches(marker).count())
+        .sum();
+    assert_eq!(marker_occurrences, 1);
+    full_suffix_texts
 }
 
 #[tokio::test]
@@ -299,7 +357,160 @@ async fn split_then_close(sdk: &lhc::Lhc, store: &fixtures::TempStore) -> (Strin
 }
 
 #[tokio::test]
-async fn a_closed_transition_turn_keeps_its_parts_until_a_compact_bands_it_a_split_elsewhere_settles_it_first()
+async fn keeps_a_200k_closed_transition_turns_late_verbatim_suffix_when_the_next_user_turn_is_small()
+ {
+    let _env = ALGORITHM_ENV.lock().await;
+    let store = temp_store();
+    let sdk = sdk_for();
+    let file_path = new_thread(&sdk, &store).await;
+    send(&sdk, &file_path, &closed_turn("t1")).await;
+    let mut events = vec![prompt("long research task")];
+    events.extend(step(0, "early-research"));
+    events.extend(step(1, "middle-research"));
+    events.push(event(
+        EventKind::AssistantText,
+        json!({"text": "step 2: LATE-RESEARCH-MARKER", "stepIndex": 2}),
+    ));
+    events.push(event(
+        EventKind::ToolCall,
+        json!({"toolCallId": "c2-late", "toolName": "read", "arguments": {"step": 2}, "stepIndex": 2}),
+    ));
+    events.push(event(
+        EventKind::ToolResult,
+        json!({"toolCallId": "c2-late", "content": "late result", "stepIndex": 2}),
+    ));
+    send(&sdk, &file_path, &events).await;
+    drain_to_zero(&sdk, &file_path).await;
+    let db = open_raw(&file_path);
+    db.prepare(
+        "UPDATE message SET token_estimate = 30000 WHERE turn_id = 't2' AND step_index IS NOT NULL",
+    )
+    .run(&[]);
+    db.prepare("UPDATE message SET token_estimate = 1 WHERE turn_id = 't2' AND step_index IS NULL")
+        .run(&[]);
+    db.close();
+    let split = compact_pinned(&file_path, params(200_000)).await;
+    assert_eq!(split.receipt.parts, Some(vec![part("t2", 0, 1)]));
+    assert_eq!(split.receipt.tail_tokens, 90_000);
+    assert_marker_only_in_full_suffix(&file_path, &split, "LATE-RESEARCH-MARKER").await;
+    let split_part_bytes: Vec<String> = split
+        .entries
+        .iter()
+        .filter(|entry| entry.part.is_some())
+        .map(|entry| entry.text.clone())
+        .collect();
+
+    send(&sdk, &file_path, &[turn_end(), prompt("next")]).await;
+    let db = open_raw(&file_path);
+    db.prepare("UPDATE message SET token_estimate = 1 WHERE turn_id = 't3'")
+        .run(&[]);
+    db.close();
+    let after_close = compact_pinned(&file_path, params(200_000)).await;
+    assert_eq!(after_close.receipt.parts, Some(vec![part("t2", 0, 1)]));
+    assert_eq!(
+        after_close.receipt.compact_point,
+        split.receipt.compact_point
+    );
+    assert_eq!(after_close.receipt.settled, None);
+    assert_eq!(
+        after_close
+            .entries
+            .iter()
+            .filter(|entry| entry.part.is_some())
+            .map(|entry| entry.text.clone())
+            .collect::<Vec<_>>(),
+        split_part_bytes
+    );
+    let full_suffix_texts =
+        assert_marker_only_in_full_suffix(&file_path, &after_close, "LATE-RESEARCH-MARKER").await;
+    let marker_index = full_suffix_texts
+        .iter()
+        .position(|text| text.contains("LATE-RESEARCH-MARKER"))
+        .expect("late marker in Full suffix");
+    let next_prompt_index = full_suffix_texts
+        .iter()
+        .position(|text| text == "next")
+        .expect("next prompt in Full suffix");
+    assert!(next_prompt_index > marker_index);
+    assert!(after_close.receipt.gaps.is_empty());
+    assert!(after_close.receipt.degraded.is_empty());
+    assert!(
+        after_close
+            .entries
+            .iter()
+            .all(|entry| !entry.gap && !entry.degraded)
+    );
+    assert!(!after_close.entries.iter().any(|entry| {
+        entry.subject_id == "t2" && entry.band == Band::Smooth && entry.part.is_none()
+    }));
+    let turns = match sdk.turns.list_turns(file_ref(&file_path)).await {
+        OpResult::Ok { value } => value,
+        OpResult::Err { error } => panic!("{}", error.reason),
+    };
+    assert_eq!(
+        turns
+            .iter()
+            .map(|turn| (turn.turn_id.as_str(), turn.status))
+            .collect::<Vec<_>>(),
+        vec![
+            ("t1", TurnStatus::Closed),
+            ("t2", TurnStatus::Closed),
+            ("t3", TurnStatus::Open),
+        ]
+    );
+    let db = open_raw(&file_path);
+    let suffix_count = db
+        .prepare(
+            "SELECT COUNT(*) AS n FROM message WHERE source_event_order > ? AND deleted_at IS NULL",
+        )
+        .get_params(&[SqlParam::from(after_close.receipt.compact_point)])
+        .and_then(|row| row["n"].as_i64())
+        .unwrap_or(0);
+    db.close();
+    assert!(suffix_count > 0);
+    store.cleanup();
+}
+
+#[tokio::test]
+async fn settlement_is_inclusive_at_the_full_band_boundary() {
+    let _env = ALGORITHM_ENV.lock().await;
+    let store = temp_store();
+    let sdk = sdk_for();
+    for (newer_tokens, settles) in [(99, false), (100, true), (101, true)] {
+        let (file_path, _) = split_then_close(&sdk, &store).await;
+        send(&sdk, &file_path, &[prompt("next")]).await;
+        let db = open_raw(&file_path);
+        db.prepare("UPDATE message SET token_estimate = ? WHERE turn_id = 't3'")
+            .run(&[SqlParam::from(newer_tokens)]);
+        db.close();
+
+        let result = compact_pinned(&file_path, params(200)).await;
+        if settles {
+            assert_eq!(result.receipt.parts, None, "newer tokens: {newer_tokens}");
+            assert_eq!(
+                result.receipt.settled,
+                Some(SettledTurn {
+                    turn_id: "t2".into(),
+                    construction: SettleConstruction::ComposedInWalk {
+                        turn_id: "t2".into()
+                    }
+                }),
+                "newer tokens: {newer_tokens}"
+            );
+        } else {
+            assert_eq!(
+                result.receipt.parts,
+                Some(vec![part("t2", 0, 0)]),
+                "newer tokens: {newer_tokens}"
+            );
+            assert_eq!(result.receipt.settled, None, "newer tokens: {newer_tokens}");
+        }
+    }
+    store.cleanup();
+}
+
+#[tokio::test]
+async fn a_closed_transition_turn_keeps_its_parts_until_newer_messages_fill_the_full_band_a_split_elsewhere_settles_it_first()
  {
     let _env = ALGORITHM_ENV.lock().await;
     let store = temp_store();
@@ -586,12 +797,12 @@ async fn tc_8_1a_install_is_the_whole_commitment_after_a_settle_nothing_outside_
     let mut next = vec![prompt("next")];
     next.extend(step(0, "golf"));
     send(&sdk, &file_path, &next).await;
-    // A full share just over t3 bands t2 whole: settle, no part anywhere.
-    let settled = compact_pinned(
-        &file_path,
-        params(step_sums(&file_path, "t2").after[&1] * 2 + 2),
-    )
-    .await;
+    let db = open_raw(&file_path);
+    db.prepare("UPDATE message SET token_estimate = 25 WHERE turn_id = 't3'")
+        .run(&[]);
+    db.close();
+    // t3 exactly fills the 100-token full share: settle, no part anywhere.
+    let settled = compact_pinned(&file_path, params(200)).await;
     assert_eq!(
         settled.receipt.settled.as_ref().map(|s| s.turn_id.as_str()),
         Some("t2")

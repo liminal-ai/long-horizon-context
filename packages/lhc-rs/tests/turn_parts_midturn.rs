@@ -11,7 +11,7 @@ use fixtures::turn_parts::{
     closed_turn, describe, file_ref, host_metadata, new_thread, prompt, scalar_i64, scalar_str,
     sdk_for, send, shares, step, tokens_after_step, turn_end,
 };
-use fixtures::{run_compact_continuation_for_tests, temp_store};
+use fixtures::{open_raw, run_compact_continuation_for_tests, temp_store};
 use lhc::compact_continuation::CompactContinuationHostFacts;
 use lhc::shared_tech::compact_continuation::{
     CompactContinuationHostCapability, CompactContinuationPolicy, CompactContinuationSeam,
@@ -297,18 +297,17 @@ async fn the_exclusivity_fact_is_durable_once_the_split_turn_has_closed_and_sett
     let activated = read_activation(&file_path);
     assert!(activated.is_some());
 
-    // t2 closes; a small t3 opens. A full share just over t3 bands t2 whole:
-    // it settles, and the new snapshot carries no part at all.
+    // t2 closes and t3 opens. Once t3 fills the full share, t2 settles and
+    // the new snapshot carries no part at all.
     send(&sdk, &file_path, &[turn_end()]).await;
     let mut next = vec![prompt("next")];
     next.extend(step(0, "golf"));
     send(&sdk, &file_path, &next).await;
-    let settled = fixtures::turn_parts::compact(
-        &sdk,
-        &file_path,
-        params(tokens_after_step(&file_path, "t2", 2) * 2 + 2),
-    )
-    .await;
+    let db = open_raw(&file_path);
+    db.prepare("UPDATE message SET token_estimate = 25 WHERE turn_id = 't3'")
+        .run(&[]);
+    db.close();
+    let settled = fixtures::turn_parts::compact(&sdk, &file_path, params(200)).await;
     assert_eq!(
         settled.settled.as_ref().map(|s| s.turn_id.as_str()),
         Some("t2")

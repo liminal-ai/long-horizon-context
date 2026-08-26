@@ -42,14 +42,25 @@ function sortKeys(value) {
 const canon = (value) => JSON.stringify(sortKeys(value));
 
 let seq = 0;
-const ev = (eventKind, payload) => ({ eventKind, idempotencyKey: `oracle-${++seq}`, actor: "oracle", harness: "oracle", payload });
+const ev = (eventKind, payload) => ({
+  eventKind,
+  idempotencyKey: `oracle-${++seq}`,
+  actor: "oracle",
+  harness: "oracle",
+  payload,
+});
 const prompt = (text) => ev("user_prompt", { text });
 const turnEnd = () => ev("turn_end", {});
 function step(stepIndex, label, weight = 6) {
   const body = `${label} `.repeat(weight).trim();
   return [
     ev("assistant_text", { text: `step ${stepIndex}: ${body}`, stepIndex }),
-    ev("tool_call", { toolCallId: `c${stepIndex}-${label}`, toolName: "read", arguments: { step: stepIndex }, stepIndex }),
+    ev("tool_call", {
+      toolCallId: `c${stepIndex}-${label}`,
+      toolName: "read",
+      arguments: { step: stepIndex },
+      stepIndex,
+    }),
     ev("tool_result", { toolCallId: `c${stepIndex}-${label}`, content: `result ${stepIndex}: ${body}`, stepIndex }),
   ];
 }
@@ -72,7 +83,9 @@ function stepSums(filePath, turnId) {
     const after = new Map();
     for (const row of rows) {
       const sum = db
-        .prepare(`SELECT COALESCE(SUM(token_estimate), 0) AS t FROM message WHERE source_event_order > ? AND deleted_at IS NULL`)
+        .prepare(
+          `SELECT COALESCE(SUM(token_estimate), 0) AS t FROM message WHERE source_event_order > ? AND deleted_at IS NULL`,
+        )
         .get(Number(row.edge));
       after.set(Number(row.s), Number(sum.t));
     }
@@ -84,7 +97,9 @@ function stepSums(filePath, turnId) {
 function turnTokens(filePath, turnId) {
   const db = new DatabaseSync(filePath, { readOnly: true });
   try {
-    return Number(db.prepare(`SELECT COALESCE(SUM(token_estimate), 0) AS t FROM message WHERE turn_id = ?`).get(turnId).t);
+    return Number(
+      db.prepare(`SELECT COALESCE(SUM(token_estimate), 0) AS t FROM message WHERE turn_id = ?`).get(turnId).t,
+    );
   } finally {
     db.close();
   }
@@ -92,15 +107,26 @@ function turnTokens(filePath, turnId) {
 function storedRows(filePath) {
   const db = new DatabaseSync(filePath, { readOnly: true });
   try {
-    const row = db.prepare(`SELECT config_json, arrangement_json, gaps_json FROM thread_view WHERE singleton = 1`).get();
+    const row = db
+      .prepare(`SELECT config_json, arrangement_json, gaps_json FROM thread_view WHERE singleton = 1`)
+      .get();
     const meta = db.prepare(`SELECT parts_activated_at FROM thread_metadata WHERE id = 1`).get();
-    return { configJson: row.config_json, arrangementJson: row.arrangement_json, gapsJson: row.gaps_json, partsActivatedAt: meta.parts_activated_at };
+    return {
+      configJson: row.config_json,
+      arrangementJson: row.arrangement_json,
+      gapsJson: row.gaps_json,
+      partsActivatedAt: meta.parts_activated_at,
+    };
   } finally {
     db.close();
   }
 }
 
-const splitParams = (lowerBound) => ({ lowerBound, percentages: { full: 50, smooth: 20, detailed: 15, brief: 15 }, newestClosedProtection: 0 });
+const splitParams = (lowerBound) => ({
+  lowerBound,
+  percentages: { full: 50, smooth: 20, detailed: 15, brief: 15 },
+  newestClosedProtection: 0,
+});
 
 const tmp = mkdtempSync(join(tmpdir(), "lhc-turn-parts-oracle-"));
 const sdk = initLhc({ inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "manual" });
@@ -116,10 +142,23 @@ async function scenario(name, script) {
     if (!sent.ok) throw new Error(sent.error.reason);
     ops.push({ op: "send", events });
   };
+  const setTokens = async (turnId, tokenEstimate, stepIndexed = "any") => {
+    const db = new DatabaseSync(filePath);
+    try {
+      const stepPredicate =
+        stepIndexed === "yes" ? " AND step_index IS NOT NULL" : stepIndexed === "no" ? " AND step_index IS NULL" : "";
+      db.prepare(`UPDATE message SET token_estimate = ? WHERE turn_id = ?${stepPredicate}`).run(tokenEstimate, turnId);
+    } finally {
+      db.close();
+    }
+    ops.push({ op: "set_tokens", turnId, tokenEstimate, stepIndexed });
+  };
   const compact = async (params) => {
     const prepared = await sdk.threadView.prepareCompact({ filePath }, { params });
     if (!prepared.ok) throw new Error(prepared.error.reason);
-    const receipt = await sdk.threadView.installPreparedCompact({ filePath }, prepared.value, { createdAt: CREATED_AT });
+    const receipt = await sdk.threadView.installPreparedCompact({ filePath }, prepared.value, {
+      createdAt: CREATED_AT,
+    });
     if (!receipt.ok) throw new Error(receipt.error.reason);
     const r = receipt.value;
     const context = await sdk.threadView.getLlmRequestContext({ filePath });
@@ -166,7 +205,7 @@ async function scenario(name, script) {
     });
     return r;
   };
-  await script({ filePath, send, compact });
+  await script({ filePath, send, setTokens, compact });
   scenarios.push({ name, ops });
 }
 
@@ -226,8 +265,15 @@ await scenario("protection_full_then_whole", async ({ filePath, send, compact })
   for (let i = 1; i <= 6; i += 1) await send(closedTurn(`old${i}`, 3));
   await send(closedTurn("research", 40));
   const research = turnTokens(filePath, "t7");
-  await compact({ lowerBound: Math.ceil(research / 0.6) + 10, percentages: { full: 20, smooth: 30, detailed: 25, brief: 25 } });
-  await compact({ lowerBound: research * 6, percentages: { full: 8, smooth: 42, detailed: 25, brief: 25 }, newestClosedProtection: 0.1 });
+  await compact({
+    lowerBound: Math.ceil(research / 0.6) + 10,
+    percentages: { full: 20, smooth: 30, detailed: 25, brief: 25 },
+  });
+  await compact({
+    lowerBound: research * 6,
+    percentages: { full: 8, smooth: 42, detailed: 25, brief: 25 },
+    newestClosedProtection: 0.1,
+  });
 });
 
 // S6 — precedence: under a planned split the whole active turn is reserved first.
@@ -241,11 +287,52 @@ await scenario("protection_precedence_reserve", async ({ filePath, send, compact
   ]);
   const research = turnTokens(filePath, "t7");
   const db = new DatabaseSync(filePath, { readOnly: true });
-  const step1 = Number(db.prepare(`SELECT token_estimate AS t FROM message WHERE turn_id = 't8' AND step_index = 1`).get().t);
+  const step1 = Number(
+    db.prepare(`SELECT token_estimate AS t FROM message WHERE turn_id = 't8' AND step_index = 1`).get().t,
+  );
   db.close();
-  await compact({ lowerBound: step1 + Math.floor(research / 2), percentages: { full: 10, smooth: 30, detailed: 30, brief: 30 } });
+  await compact({
+    lowerBound: step1 + Math.floor(research / 2),
+    percentages: { full: 10, smooth: 30, detailed: 30, brief: 30 },
+  });
 });
 
-writeFileSync(out, `${JSON.stringify({ generatedBy: "scripts/gen-turn-parts-oracle.mjs", createdAt: CREATED_AT, scenarios }, null, 2)}\n`);
+// S7 — shipped incident shape: 270K+ split turn closes, then a tiny next
+// prompt must leave the installed part and late verbatim suffix in place.
+await scenario("close_270k_small_next_tail", async ({ send, setTokens, compact }) => {
+  await send(closedTurn("t1"));
+  await send([
+    prompt("long research task"),
+    ...step(0, "early-research"),
+    ...step(1, "middle-research"),
+    ...step(2, "LATE-RESEARCH-MARKER"),
+  ]);
+  await setTokens("t2", 30_000, "yes");
+  await setTokens("t2", 1, "no");
+  await compact(splitParams(200_000));
+  await send([turnEnd(), prompt("next")]);
+  await setTokens("t3", 1);
+  await compact(splitParams(200_000));
+});
+
+for (const newerTokens of [99, 100, 101]) {
+  // S8 — settlement is retained below and eligible exactly at/above the
+  // 100-token full-band budget.
+  await scenario(`settlement_boundary_${newerTokens}`, async ({ filePath, send, setTokens, compact }) => {
+    await send(closedTurn("t1"));
+    await send([prompt("long task"), ...step(0, "alpha"), ...step(1, "bravo"), ...step(2, "charlie")]);
+    await compact(splitParams(stepSums(filePath, "t2").get(0) * 2));
+    await send([turnEnd(), prompt("next")]);
+    await setTokens("t3", newerTokens);
+    await compact(splitParams(200));
+  });
+}
+
+writeFileSync(
+  out,
+  `${JSON.stringify({ generatedBy: "scripts/gen-turn-parts-oracle.mjs", createdAt: CREATED_AT, scenarios }, null, 2)}\n`,
+);
 rmSync(tmp, { recursive: true, force: true });
-console.log(`wrote ${out}: ${scenarios.length} scenarios, ${scenarios.reduce((n, s) => n + s.ops.filter((o) => o.op === "compact").length, 0)} compacts`);
+console.log(
+  `wrote ${out}: ${scenarios.length} scenarios, ${scenarios.reduce((n, s) => n + s.ops.filter((o) => o.op === "compact").length, 0)} compacts`,
+);

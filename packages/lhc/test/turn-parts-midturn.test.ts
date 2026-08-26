@@ -241,14 +241,17 @@ describe("mechanism exclusivity per thread (AC-7.3)", () => {
     const activated = readActivation(filePath);
     expect(activated).not.toBeNull();
 
-    // t2 closes; a small t3 opens. A full share just over t3 bands t2 whole:
-    // it settles, and the new snapshot carries no part at all.
+    // t2 closes and t3 opens. Once t3 fills the full share, t2 settles and
+    // the new snapshot carries no part at all.
     await send(sdk, filePath, [validEvent("turn_end")]);
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "next" } }), ...step(0, "golf")]);
-    const settled = await sdk.threadView.compact(
-      { filePath },
-      { params: params(tokensAfterStep(filePath, "t2", 2) * 2 + 2) },
-    );
+    const db = openRaw(filePath);
+    try {
+      db.prepare(`UPDATE message SET token_estimate = 25 WHERE turn_id = 't3'`).run();
+    } finally {
+      db.close();
+    }
+    const settled = await sdk.threadView.compact({ filePath }, { params: params(200) });
     expect(settled.ok && settled.value.settled?.turnId).toBe("t2");
     expect(settled.ok && settled.value.parts).toBeUndefined();
     const described = await sdk.threadView.describe({ filePath });

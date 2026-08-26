@@ -654,12 +654,14 @@ pub fn walk_arrangement(
     // ── turn parts: the transition turn, settle, and the split point ──
     //
     // The installed view names at most one transition turn. When it is closed,
-    // it settles here iff the ordinary compact point would band it (the walk
-    // never serves it whole-unsettled: short of settle it keeps its parts and
-    // the compact point stays on its installed edge). Only with no other turn
-    // left unsettled may the open turn split, at the smallest complete step
-    // edge whose verbatim tail fits the full share (inclusive), clamped up to
-    // the installed k so a split point never moves backward.
+    // it settles once message tokens newer than its close fill the full share
+    // (inclusive). Short of that threshold it keeps its parts and compact point,
+    // even if ordinary turn-boundary rounding would band it. This preserves the
+    // installed verbatim suffix until enough genuinely newer material replaces
+    // it. Only with no other turn left unsettled may the open turn split, at the
+    // smallest complete step edge whose verbatim tail fits the full share
+    // (inclusive), clamped up to the installed k so a split point never moves
+    // backward.
     let mut settling: Option<SelectionTurn> = None;
     let mut settled_record: Option<SettledTurn> = None;
     let mut parts_plan: Option<PartsPlan> = None;
@@ -681,7 +683,7 @@ pub fn walk_arrangement(
             if installed_turn.status == SelectionTurnStatus::Closed
                 && let Some(closed_at) = installed_turn.closed_at
             {
-                if compact_point >= closed_at {
+                if (source.message_tokens_after(closed_at) as f64) >= full_budget {
                     settling = Some(installed_turn);
                 } else if let Some(edge) = installed_edge {
                     compact_point = edge;

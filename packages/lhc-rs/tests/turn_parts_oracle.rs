@@ -16,6 +16,7 @@ use fixtures::{open_raw, temp_store};
 use lhc::intake_stream::MessageEventInput;
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::js_json::js_json_stringify;
+use lhc::shared_tech::storage::SqlParam;
 use lhc::shared_tech::view::ViewCompactParams;
 use lhc::thread_view::{
     CompactOpts, InstallPreparedOptions, install_prepared_compact, prepare_compact,
@@ -41,11 +42,25 @@ enum Op {
         events: Vec<Value>,
     },
     #[serde(rename_all = "camelCase")]
+    SetTokens {
+        turn_id: String,
+        token_estimate: i64,
+        step_indexed: StepIndexed,
+    },
+    #[serde(rename_all = "camelCase")]
     Compact {
         params: ViewCompactParams,
         created_at: String,
         expect: Expect,
     },
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum StepIndexed {
+    Any,
+    Yes,
+    No,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +161,26 @@ async fn replays_the_typescript_oracle_byte_for_byte() {
                         .map(|e| serde_json::from_value(e.clone()).expect("fixture event"))
                         .collect();
                     send(&sdk, &file_path, &events).await;
+                }
+                Op::SetTokens {
+                    turn_id,
+                    token_estimate,
+                    step_indexed,
+                } => {
+                    let step_predicate = match step_indexed {
+                        StepIndexed::Any => "",
+                        StepIndexed::Yes => " AND step_index IS NOT NULL",
+                        StepIndexed::No => " AND step_index IS NULL",
+                    };
+                    let db = open_raw(&file_path);
+                    db.prepare(&format!(
+                        "UPDATE message SET token_estimate = ? WHERE turn_id = ?{step_predicate}"
+                    ))
+                    .run(&[
+                        SqlParam::from(*token_estimate),
+                        SqlParam::from(turn_id.as_str()),
+                    ]);
+                    db.close();
                 }
                 Op::Compact {
                     params,
@@ -263,6 +298,6 @@ async fn replays_the_typescript_oracle_byte_for_byte() {
             }
         }
     }
-    assert_eq!(compacts, 11, "the oracle's compact count");
+    assert_eq!(compacts, 19, "the oracle's compact count");
     store.cleanup();
 }

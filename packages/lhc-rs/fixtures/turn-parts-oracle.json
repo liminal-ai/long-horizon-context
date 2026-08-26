@@ -1688,6 +1688,998 @@
           }
         }
       ]
+    },
+    {
+      "name": "close_270k_small_next_tail",
+      "ops": [
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-120",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "t1 prompt"
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-121",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "t1 answer"
+              }
+            },
+            {
+              "eventKind": "turn_end",
+              "idempotencyKey": "oracle-122",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {}
+            }
+          ]
+        },
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-123",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "long research task"
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-124",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 0: early-research early-research early-research early-research early-research early-research",
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-125",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c0-early-research",
+                "toolName": "read",
+                "arguments": {
+                  "step": 0
+                },
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-126",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c0-early-research",
+                "content": "result 0: early-research early-research early-research early-research early-research early-research",
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-127",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 1: middle-research middle-research middle-research middle-research middle-research middle-research",
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-128",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c1-middle-research",
+                "toolName": "read",
+                "arguments": {
+                  "step": 1
+                },
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-129",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c1-middle-research",
+                "content": "result 1: middle-research middle-research middle-research middle-research middle-research middle-research",
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-130",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 2: LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER",
+                "stepIndex": 2
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-131",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c2-LATE-RESEARCH-MARKER",
+                "toolName": "read",
+                "arguments": {
+                  "step": 2
+                },
+                "stepIndex": 2
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-132",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c2-LATE-RESEARCH-MARKER",
+                "content": "result 2: LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER",
+                "stepIndex": 2
+              }
+            }
+          ]
+        },
+        {
+          "op": "set_tokens",
+          "turnId": "t2",
+          "tokenEstimate": 30000,
+          "stepIndexed": "yes"
+        },
+        {
+          "op": "set_tokens",
+          "turnId": "t2",
+          "tokenEstimate": 1,
+          "stepIndexed": "no"
+        },
+        {
+          "op": "compact",
+          "params": {
+            "lowerBound": 200000,
+            "percentages": {
+              "full": 50,
+              "smooth": 20,
+              "detailed": 15,
+              "brief": 15
+            },
+            "newestClosedProtection": 0
+          },
+          "createdAt": "2026-08-24T00:00:00.000Z",
+          "expect": {
+            "receipt": "{\"bands\":{\"brief\":{\"entries\":0,\"tokens\":0},\"detailed\":{\"entries\":0,\"tokens\":0},\"smooth\":{\"entries\":2,\"tokens\":280}},\"compactPoint\":10,\"config\":{\"brief\":15,\"detailed\":15,\"full\":50,\"lowerBound\":200000,\"newestClosedProtection\":0,\"smooth\":20},\"coveredFrom\":1,\"firstKeptMessageId\":\"m11\",\"parts\":[{\"fromStep\":0,\"toStep\":1,\"turnId\":\"t2\"}],\"protectedTurn\":{\"representation\":\"whole_rendering\",\"turnId\":\"t1\"},\"settled\":null,\"splitPoint\":{\"stepIndex\":1,\"turnId\":\"t2\"},\"tailTokens\":90000,\"totalTokens\":90280,\"viewId\":\"v13\"}",
+            "renderedBands": [
+              {
+                "band": "smooth",
+                "text": "<t1>\nUser prompt [fallback]\n<m1>\nt1 prompt\n</m1>\n\nAssistant response\n<m2>\nt1 answer\n</m2>\n</t1>\n\n<t2>\nUser prompt\n<m4>\nlong research task\n</m4>\n\nAssistant response\n<m5>\nstep 0: early-research early-research early-research early-research early-research early-research\n</m5>\n\nTool call [outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m6>read({\"step\":0}) ⇒ succeeded</m6>\n<m7>result 0: early-research early-research early-research early-research early-research early-research ⇒ succeeded</m7>\n\nAssistant response\n<m8>\nstep 1: middle-research middle-research middle-research middle-research middle-research middle-research\n</m8>\n\nTool call [outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m9>read({\"step\":1}) ⇒ succeeded</m9>\n<m10>result 1: middle-research middle-research middle-research middle-research middle-research middle-research ⇒ succeeded</m10>\n\n[seam · t2 · steps 0–1 summarized above · t2 resumes below]\n</t2>"
+              }
+            ],
+            "entries": "[{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"composed_in_walk\",\"gap\":false,\"startOrder\":1,\"subjectId\":\"t1\",\"subjectKind\":\"turn\",\"text\":\"<t1>\\nUser prompt [fallback]\\n<m1>\\nt1 prompt\\n</m1>\\n\\nAssistant response\\n<m2>\\nt1 answer\\n</m2>\\n</t1>\",\"tokens\":37},{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"part\",\"gap\":false,\"part\":{\"fromStep\":0,\"toStep\":1},\"startOrder\":4,\"subjectId\":\"t2\",\"subjectKind\":\"turn\",\"text\":\"<t2>\\nUser prompt\\n<m4>\\nlong research task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: early-research early-research early-research early-research early-research early-research\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: early-research early-research early-research early-research early-research early-research ⇒ succeeded</m7>\\n\\nAssistant response\\n<m8>\\nstep 1: middle-research middle-research middle-research middle-research middle-research middle-research\\n</m8>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m9>read({\\\"step\\\":1}) ⇒ succeeded</m9>\\n<m10>result 1: middle-research middle-research middle-research middle-research middle-research middle-research ⇒ succeeded</m10>\\n\\n[seam · t2 · steps 0–1 summarized above · t2 resumes below]\\n</t2>\",\"tokens\":243}]",
+            "stored": {
+              "configJson": "{\"lowerBound\":200000,\"percentages\":{\"full\":50,\"smooth\":20,\"detailed\":15,\"brief\":15},\"newestClosedProtection\":0}",
+              "arrangementJson": "[{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t1\",\"derivationUsed\":\"composed_in_walk\",\"degraded\":false},{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t2\",\"derivationUsed\":\"part\",\"degraded\":false,\"part\":{\"fromStep\":0,\"toStep\":1}}]",
+              "gapsJson": "[]",
+              "partsActivatedAt": "2026-08-24T00:00:00.000Z"
+            },
+            "served": "[{\"content\":[{\"text\":\"[context · smooth]\\n<t1>\\nUser prompt [fallback]\\n<m1>\\nt1 prompt\\n</m1>\\n\\nAssistant response\\n<m2>\\nt1 answer\\n</m2>\\n</t1>\\n\\n<t2>\\nUser prompt\\n<m4>\\nlong research task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: early-research early-research early-research early-research early-research early-research\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: early-research early-research early-research early-research early-research early-research ⇒ succeeded</m7>\\n\\nAssistant response\\n<m8>\\nstep 1: middle-research middle-research middle-research middle-research middle-research middle-research\\n</m8>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m9>read({\\\"step\\\":1}) ⇒ succeeded</m9>\\n<m10>result 1: middle-research middle-research middle-research middle-research middle-research middle-research ⇒ succeeded</m10>\\n\\n[seam · t2 · steps 0–1 summarized above · t2 resumes below]\\n</t2>\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 2: LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":2}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 2: LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER\",\"type\":\"text\"}],\"role\":\"user\"}]",
+            "hostMetadata": "{\"activeTurn\":{\"completeSteps\":3,\"estimatedTokens\":270001,\"lastStepEdge\":2,\"splittable\":true,\"turnId\":\"t2\"},\"unsettledTurn\":{\"turnId\":\"t2\"}}"
+          }
+        },
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "turn_end",
+              "idempotencyKey": "oracle-133",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {}
+            },
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-134",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "next"
+              }
+            }
+          ]
+        },
+        {
+          "op": "set_tokens",
+          "turnId": "t3",
+          "tokenEstimate": 1,
+          "stepIndexed": "any"
+        },
+        {
+          "op": "compact",
+          "params": {
+            "lowerBound": 200000,
+            "percentages": {
+              "full": 50,
+              "smooth": 20,
+              "detailed": 15,
+              "brief": 15
+            },
+            "newestClosedProtection": 0
+          },
+          "createdAt": "2026-08-24T00:00:00.000Z",
+          "expect": {
+            "receipt": "{\"bands\":{\"brief\":{\"entries\":0,\"tokens\":0},\"detailed\":{\"entries\":0,\"tokens\":0},\"smooth\":{\"entries\":2,\"tokens\":260}},\"compactPoint\":10,\"config\":{\"brief\":15,\"detailed\":15,\"full\":50,\"lowerBound\":200000,\"newestClosedProtection\":0,\"smooth\":20},\"coveredFrom\":1,\"firstKeptMessageId\":\"m11\",\"parts\":[{\"fromStep\":0,\"toStep\":1,\"turnId\":\"t2\"}],\"protectedTurn\":null,\"settled\":null,\"splitPoint\":{\"stepIndex\":1,\"turnId\":\"t2\"},\"tailTokens\":90001,\"totalTokens\":90261,\"viewId\":\"v15\"}",
+            "renderedBands": [
+              {
+                "band": "smooth",
+                "text": "[degraded: smooth-from-excerpt]\nt1 prompt\nt1 answer\n\n<t2>\nUser prompt\n<m4>\nlong research task\n</m4>\n\nAssistant response\n<m5>\nstep 0: early-research early-research early-research early-research early-research early-research\n</m5>\n\nTool call [outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m6>read({\"step\":0}) ⇒ succeeded</m6>\n<m7>result 0: early-research early-research early-research early-research early-research early-research ⇒ succeeded</m7>\n\nAssistant response\n<m8>\nstep 1: middle-research middle-research middle-research middle-research middle-research middle-research\n</m8>\n\nTool call [outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m9>read({\"step\":1}) ⇒ succeeded</m9>\n<m10>result 1: middle-research middle-research middle-research middle-research middle-research middle-research ⇒ succeeded</m10>\n\n[seam · t2 · steps 0–1 summarized above · t2 resumes below]\n</t2>"
+              }
+            ],
+            "entries": "[{\"band\":\"smooth\",\"degraded\":true,\"derivationUsed\":\"message_excerpt\",\"gap\":false,\"startOrder\":1,\"subjectId\":\"t1\",\"subjectKind\":\"turn\",\"text\":\"[degraded: smooth-from-excerpt]\\nt1 prompt\\nt1 answer\",\"tokens\":16},{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"part\",\"gap\":false,\"part\":{\"fromStep\":0,\"toStep\":1},\"startOrder\":4,\"subjectId\":\"t2\",\"subjectKind\":\"turn\",\"text\":\"<t2>\\nUser prompt\\n<m4>\\nlong research task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: early-research early-research early-research early-research early-research early-research\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: early-research early-research early-research early-research early-research early-research ⇒ succeeded</m7>\\n\\nAssistant response\\n<m8>\\nstep 1: middle-research middle-research middle-research middle-research middle-research middle-research\\n</m8>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m9>read({\\\"step\\\":1}) ⇒ succeeded</m9>\\n<m10>result 1: middle-research middle-research middle-research middle-research middle-research middle-research ⇒ succeeded</m10>\\n\\n[seam · t2 · steps 0–1 summarized above · t2 resumes below]\\n</t2>\",\"tokens\":243}]",
+            "stored": {
+              "configJson": "{\"lowerBound\":200000,\"percentages\":{\"full\":50,\"smooth\":20,\"detailed\":15,\"brief\":15},\"newestClosedProtection\":0}",
+              "arrangementJson": "[{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t1\",\"derivationUsed\":\"message_excerpt\",\"degraded\":true},{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t2\",\"derivationUsed\":\"part\",\"degraded\":false,\"part\":{\"fromStep\":0,\"toStep\":1}}]",
+              "gapsJson": "[]",
+              "partsActivatedAt": "2026-08-24T00:00:00.000Z"
+            },
+            "served": "[{\"content\":[{\"text\":\"[context · smooth]\\n[degraded: smooth-from-excerpt]\\nt1 prompt\\nt1 answer\\n\\n<t2>\\nUser prompt\\n<m4>\\nlong research task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: early-research early-research early-research early-research early-research early-research\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: early-research early-research early-research early-research early-research early-research ⇒ succeeded</m7>\\n\\nAssistant response\\n<m8>\\nstep 1: middle-research middle-research middle-research middle-research middle-research middle-research\\n</m8>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m9>read({\\\"step\\\":1}) ⇒ succeeded</m9>\\n<m10>result 1: middle-research middle-research middle-research middle-research middle-research middle-research ⇒ succeeded</m10>\\n\\n[seam · t2 · steps 0–1 summarized above · t2 resumes below]\\n</t2>\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 2: LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":2}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 2: LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER LATE-RESEARCH-MARKER\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"next\",\"type\":\"text\"}],\"role\":\"user\"}]",
+            "hostMetadata": "{\"activeTurn\":{\"completeSteps\":0,\"estimatedTokens\":1,\"lastStepEdge\":null,\"splittable\":false,\"turnId\":\"t3\"},\"unsettledTurn\":{\"turnId\":\"t2\"}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "settlement_boundary_99",
+      "ops": [
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-135",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "t1 prompt"
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-136",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "t1 answer"
+              }
+            },
+            {
+              "eventKind": "turn_end",
+              "idempotencyKey": "oracle-137",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {}
+            }
+          ]
+        },
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-138",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "long task"
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-139",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 0: alpha alpha alpha alpha alpha alpha",
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-140",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c0-alpha",
+                "toolName": "read",
+                "arguments": {
+                  "step": 0
+                },
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-141",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c0-alpha",
+                "content": "result 0: alpha alpha alpha alpha alpha alpha",
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-142",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 1: bravo bravo bravo bravo bravo bravo",
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-143",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c1-bravo",
+                "toolName": "read",
+                "arguments": {
+                  "step": 1
+                },
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-144",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c1-bravo",
+                "content": "result 1: bravo bravo bravo bravo bravo bravo",
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-145",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 2: charlie charlie charlie charlie charlie charlie",
+                "stepIndex": 2
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-146",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c2-charlie",
+                "toolName": "read",
+                "arguments": {
+                  "step": 2
+                },
+                "stepIndex": 2
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-147",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c2-charlie",
+                "content": "result 2: charlie charlie charlie charlie charlie charlie",
+                "stepIndex": 2
+              }
+            }
+          ]
+        },
+        {
+          "op": "compact",
+          "params": {
+            "lowerBound": 124,
+            "percentages": {
+              "full": 50,
+              "smooth": 20,
+              "detailed": 15,
+              "brief": 15
+            },
+            "newestClosedProtection": 0
+          },
+          "createdAt": "2026-08-24T00:00:00.000Z",
+          "expect": {
+            "receipt": "{\"bands\":{\"brief\":{\"entries\":0,\"tokens\":0},\"detailed\":{\"entries\":0,\"tokens\":0},\"smooth\":{\"entries\":2,\"tokens\":154}},\"compactPoint\":7,\"config\":{\"brief\":15,\"detailed\":15,\"full\":50,\"lowerBound\":124,\"newestClosedProtection\":0,\"smooth\":20},\"coveredFrom\":1,\"firstKeptMessageId\":\"m8\",\"parts\":[{\"fromStep\":0,\"toStep\":0,\"turnId\":\"t2\"}],\"protectedTurn\":{\"representation\":\"whole_rendering\",\"turnId\":\"t1\"},\"settled\":null,\"splitPoint\":{\"stepIndex\":0,\"turnId\":\"t2\"},\"tailTokens\":62,\"totalTokens\":216,\"viewId\":\"v13\"}",
+            "renderedBands": [
+              {
+                "band": "smooth",
+                "text": "<t1>\nUser prompt [fallback]\n<m1>\nt1 prompt\n</m1>\n\nAssistant response\n<m2>\nt1 answer\n</m2>\n</t1>\n\n<t2>\nUser prompt\n<m4>\nlong task\n</m4>\n\nAssistant response\n<m5>\nstep 0: alpha alpha alpha alpha alpha alpha\n</m5>\n\nTool call [outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m6>read({\"step\":0}) ⇒ succeeded</m6>\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\n\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\n</t2>"
+              }
+            ],
+            "entries": "[{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"composed_in_walk\",\"gap\":false,\"startOrder\":1,\"subjectId\":\"t1\",\"subjectKind\":\"turn\",\"text\":\"<t1>\\nUser prompt [fallback]\\n<m1>\\nt1 prompt\\n</m1>\\n\\nAssistant response\\n<m2>\\nt1 answer\\n</m2>\\n</t1>\",\"tokens\":37},{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"part\",\"gap\":false,\"part\":{\"fromStep\":0,\"toStep\":0},\"startOrder\":4,\"subjectId\":\"t2\",\"subjectKind\":\"turn\",\"text\":\"<t2>\\nUser prompt\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\\n</t2>\",\"tokens\":117}]",
+            "stored": {
+              "configJson": "{\"lowerBound\":124,\"percentages\":{\"full\":50,\"smooth\":20,\"detailed\":15,\"brief\":15},\"newestClosedProtection\":0}",
+              "arrangementJson": "[{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t1\",\"derivationUsed\":\"composed_in_walk\",\"degraded\":false},{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t2\",\"derivationUsed\":\"part\",\"degraded\":false,\"part\":{\"fromStep\":0,\"toStep\":0}}]",
+              "gapsJson": "[]",
+              "partsActivatedAt": "2026-08-24T00:00:00.000Z"
+            },
+            "served": "[{\"content\":[{\"text\":\"[context · smooth]\\n<t1>\\nUser prompt [fallback]\\n<m1>\\nt1 prompt\\n</m1>\\n\\nAssistant response\\n<m2>\\nt1 answer\\n</m2>\\n</t1>\\n\\n<t2>\\nUser prompt\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\\n</t2>\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 1: bravo bravo bravo bravo bravo bravo\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":1}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 1: bravo bravo bravo bravo bravo bravo\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 2: charlie charlie charlie charlie charlie charlie\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":2}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 2: charlie charlie charlie charlie charlie charlie\",\"type\":\"text\"}],\"role\":\"user\"}]",
+            "hostMetadata": "{\"activeTurn\":{\"completeSteps\":3,\"estimatedTokens\":89,\"lastStepEdge\":2,\"splittable\":true,\"turnId\":\"t2\"},\"unsettledTurn\":{\"turnId\":\"t2\"}}"
+          }
+        },
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "turn_end",
+              "idempotencyKey": "oracle-148",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {}
+            },
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-149",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "next"
+              }
+            }
+          ]
+        },
+        {
+          "op": "set_tokens",
+          "turnId": "t3",
+          "tokenEstimate": 99,
+          "stepIndexed": "any"
+        },
+        {
+          "op": "compact",
+          "params": {
+            "lowerBound": 200,
+            "percentages": {
+              "full": 50,
+              "smooth": 20,
+              "detailed": 15,
+              "brief": 15
+            },
+            "newestClosedProtection": 0
+          },
+          "createdAt": "2026-08-24T00:00:00.000Z",
+          "expect": {
+            "receipt": "{\"bands\":{\"brief\":{\"entries\":0,\"tokens\":0},\"detailed\":{\"entries\":0,\"tokens\":0},\"smooth\":{\"entries\":1,\"tokens\":117}},\"compactPoint\":7,\"config\":{\"brief\":15,\"detailed\":15,\"full\":50,\"lowerBound\":200,\"newestClosedProtection\":0,\"smooth\":20},\"coveredFrom\":4,\"firstKeptMessageId\":\"m8\",\"parts\":[{\"fromStep\":0,\"toStep\":0,\"turnId\":\"t2\"}],\"protectedTurn\":null,\"settled\":null,\"splitPoint\":{\"stepIndex\":0,\"turnId\":\"t2\"},\"tailTokens\":161,\"totalTokens\":278,\"viewId\":\"v15\"}",
+            "renderedBands": [
+              {
+                "band": "smooth",
+                "text": "<t2>\nUser prompt\n<m4>\nlong task\n</m4>\n\nAssistant response\n<m5>\nstep 0: alpha alpha alpha alpha alpha alpha\n</m5>\n\nTool call [outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m6>read({\"step\":0}) ⇒ succeeded</m6>\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\n\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\n</t2>"
+              }
+            ],
+            "entries": "[{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"part\",\"gap\":false,\"part\":{\"fromStep\":0,\"toStep\":0},\"startOrder\":4,\"subjectId\":\"t2\",\"subjectKind\":\"turn\",\"text\":\"<t2>\\nUser prompt\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\\n</t2>\",\"tokens\":117}]",
+            "stored": {
+              "configJson": "{\"lowerBound\":200,\"percentages\":{\"full\":50,\"smooth\":20,\"detailed\":15,\"brief\":15},\"newestClosedProtection\":0}",
+              "arrangementJson": "[{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t2\",\"derivationUsed\":\"part\",\"degraded\":false,\"part\":{\"fromStep\":0,\"toStep\":0}}]",
+              "gapsJson": "[]",
+              "partsActivatedAt": "2026-08-24T00:00:00.000Z"
+            },
+            "served": "[{\"content\":[{\"text\":\"[context · smooth]\\n<t2>\\nUser prompt\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\\n</t2>\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 1: bravo bravo bravo bravo bravo bravo\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":1}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 1: bravo bravo bravo bravo bravo bravo\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 2: charlie charlie charlie charlie charlie charlie\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":2}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 2: charlie charlie charlie charlie charlie charlie\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"next\",\"type\":\"text\"}],\"role\":\"user\"}]",
+            "hostMetadata": "{\"activeTurn\":{\"completeSteps\":0,\"estimatedTokens\":99,\"lastStepEdge\":null,\"splittable\":false,\"turnId\":\"t3\"},\"unsettledTurn\":{\"turnId\":\"t2\"}}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "settlement_boundary_100",
+      "ops": [
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-150",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "t1 prompt"
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-151",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "t1 answer"
+              }
+            },
+            {
+              "eventKind": "turn_end",
+              "idempotencyKey": "oracle-152",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {}
+            }
+          ]
+        },
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-153",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "long task"
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-154",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 0: alpha alpha alpha alpha alpha alpha",
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-155",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c0-alpha",
+                "toolName": "read",
+                "arguments": {
+                  "step": 0
+                },
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-156",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c0-alpha",
+                "content": "result 0: alpha alpha alpha alpha alpha alpha",
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-157",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 1: bravo bravo bravo bravo bravo bravo",
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-158",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c1-bravo",
+                "toolName": "read",
+                "arguments": {
+                  "step": 1
+                },
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-159",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c1-bravo",
+                "content": "result 1: bravo bravo bravo bravo bravo bravo",
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-160",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 2: charlie charlie charlie charlie charlie charlie",
+                "stepIndex": 2
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-161",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c2-charlie",
+                "toolName": "read",
+                "arguments": {
+                  "step": 2
+                },
+                "stepIndex": 2
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-162",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c2-charlie",
+                "content": "result 2: charlie charlie charlie charlie charlie charlie",
+                "stepIndex": 2
+              }
+            }
+          ]
+        },
+        {
+          "op": "compact",
+          "params": {
+            "lowerBound": 124,
+            "percentages": {
+              "full": 50,
+              "smooth": 20,
+              "detailed": 15,
+              "brief": 15
+            },
+            "newestClosedProtection": 0
+          },
+          "createdAt": "2026-08-24T00:00:00.000Z",
+          "expect": {
+            "receipt": "{\"bands\":{\"brief\":{\"entries\":0,\"tokens\":0},\"detailed\":{\"entries\":0,\"tokens\":0},\"smooth\":{\"entries\":2,\"tokens\":154}},\"compactPoint\":7,\"config\":{\"brief\":15,\"detailed\":15,\"full\":50,\"lowerBound\":124,\"newestClosedProtection\":0,\"smooth\":20},\"coveredFrom\":1,\"firstKeptMessageId\":\"m8\",\"parts\":[{\"fromStep\":0,\"toStep\":0,\"turnId\":\"t2\"}],\"protectedTurn\":{\"representation\":\"whole_rendering\",\"turnId\":\"t1\"},\"settled\":null,\"splitPoint\":{\"stepIndex\":0,\"turnId\":\"t2\"},\"tailTokens\":62,\"totalTokens\":216,\"viewId\":\"v13\"}",
+            "renderedBands": [
+              {
+                "band": "smooth",
+                "text": "<t1>\nUser prompt [fallback]\n<m1>\nt1 prompt\n</m1>\n\nAssistant response\n<m2>\nt1 answer\n</m2>\n</t1>\n\n<t2>\nUser prompt\n<m4>\nlong task\n</m4>\n\nAssistant response\n<m5>\nstep 0: alpha alpha alpha alpha alpha alpha\n</m5>\n\nTool call [outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m6>read({\"step\":0}) ⇒ succeeded</m6>\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\n\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\n</t2>"
+              }
+            ],
+            "entries": "[{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"composed_in_walk\",\"gap\":false,\"startOrder\":1,\"subjectId\":\"t1\",\"subjectKind\":\"turn\",\"text\":\"<t1>\\nUser prompt [fallback]\\n<m1>\\nt1 prompt\\n</m1>\\n\\nAssistant response\\n<m2>\\nt1 answer\\n</m2>\\n</t1>\",\"tokens\":37},{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"part\",\"gap\":false,\"part\":{\"fromStep\":0,\"toStep\":0},\"startOrder\":4,\"subjectId\":\"t2\",\"subjectKind\":\"turn\",\"text\":\"<t2>\\nUser prompt\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\\n</t2>\",\"tokens\":117}]",
+            "stored": {
+              "configJson": "{\"lowerBound\":124,\"percentages\":{\"full\":50,\"smooth\":20,\"detailed\":15,\"brief\":15},\"newestClosedProtection\":0}",
+              "arrangementJson": "[{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t1\",\"derivationUsed\":\"composed_in_walk\",\"degraded\":false},{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t2\",\"derivationUsed\":\"part\",\"degraded\":false,\"part\":{\"fromStep\":0,\"toStep\":0}}]",
+              "gapsJson": "[]",
+              "partsActivatedAt": "2026-08-24T00:00:00.000Z"
+            },
+            "served": "[{\"content\":[{\"text\":\"[context · smooth]\\n<t1>\\nUser prompt [fallback]\\n<m1>\\nt1 prompt\\n</m1>\\n\\nAssistant response\\n<m2>\\nt1 answer\\n</m2>\\n</t1>\\n\\n<t2>\\nUser prompt\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\\n</t2>\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 1: bravo bravo bravo bravo bravo bravo\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":1}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 1: bravo bravo bravo bravo bravo bravo\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 2: charlie charlie charlie charlie charlie charlie\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":2}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 2: charlie charlie charlie charlie charlie charlie\",\"type\":\"text\"}],\"role\":\"user\"}]",
+            "hostMetadata": "{\"activeTurn\":{\"completeSteps\":3,\"estimatedTokens\":89,\"lastStepEdge\":2,\"splittable\":true,\"turnId\":\"t2\"},\"unsettledTurn\":{\"turnId\":\"t2\"}}"
+          }
+        },
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "turn_end",
+              "idempotencyKey": "oracle-163",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {}
+            },
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-164",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "next"
+              }
+            }
+          ]
+        },
+        {
+          "op": "set_tokens",
+          "turnId": "t3",
+          "tokenEstimate": 100,
+          "stepIndexed": "any"
+        },
+        {
+          "op": "compact",
+          "params": {
+            "lowerBound": 200,
+            "percentages": {
+              "full": 50,
+              "smooth": 20,
+              "detailed": 15,
+              "brief": 15
+            },
+            "newestClosedProtection": 0
+          },
+          "createdAt": "2026-08-24T00:00:00.000Z",
+          "expect": {
+            "receipt": "{\"bands\":{\"brief\":{\"entries\":0,\"tokens\":0},\"detailed\":{\"entries\":0,\"tokens\":0},\"smooth\":{\"entries\":1,\"tokens\":268}},\"compactPoint\":14,\"config\":{\"brief\":15,\"detailed\":15,\"full\":50,\"lowerBound\":200,\"newestClosedProtection\":0,\"smooth\":20},\"coveredFrom\":4,\"firstKeptMessageId\":\"m15\",\"parts\":null,\"protectedTurn\":null,\"settled\":{\"construction\":{\"kind\":\"composed_in_walk\",\"turnId\":\"t2\"},\"turnId\":\"t2\"},\"splitPoint\":null,\"tailTokens\":100,\"totalTokens\":368,\"viewId\":\"v15\"}",
+            "renderedBands": [
+              {
+                "band": "smooth",
+                "text": "<t2>\nUser prompt [fallback]\n<m4>\nlong task\n</m4>\n\nAssistant response\n<m5>\nstep 0: alpha alpha alpha alpha alpha alpha\n</m5>\n\nTool call [fallback; outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m6>read({\"step\":0}) ⇒ succeeded</m6>\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\n\nAssistant response\n<m8>\nstep 1: bravo bravo bravo bravo bravo bravo\n</m8>\n\nTool call [fallback; outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m9>read({\"step\":1}) ⇒ succeeded</m9>\n<m10>result 1: bravo bravo bravo bravo bravo bravo ⇒ succeeded</m10>\n\nAssistant response\n<m11>\nstep 2: charlie charlie charlie charlie charlie charlie\n</m11>\n\nTool call [fallback; outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m12>read({\"step\":2}) ⇒ succeeded</m12>\n<m13>result 2: charlie charlie charlie charlie charlie charlie ⇒ succeeded</m13>\n</t2>"
+              }
+            ],
+            "entries": "[{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"composed_in_walk\",\"gap\":false,\"startOrder\":4,\"subjectId\":\"t2\",\"subjectKind\":\"turn\",\"text\":\"<t2>\\nUser prompt [fallback]\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\nAssistant response\\n<m8>\\nstep 1: bravo bravo bravo bravo bravo bravo\\n</m8>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m9>read({\\\"step\\\":1}) ⇒ succeeded</m9>\\n<m10>result 1: bravo bravo bravo bravo bravo bravo ⇒ succeeded</m10>\\n\\nAssistant response\\n<m11>\\nstep 2: charlie charlie charlie charlie charlie charlie\\n</m11>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m12>read({\\\"step\\\":2}) ⇒ succeeded</m12>\\n<m13>result 2: charlie charlie charlie charlie charlie charlie ⇒ succeeded</m13>\\n</t2>\",\"tokens\":268}]",
+            "stored": {
+              "configJson": "{\"lowerBound\":200,\"percentages\":{\"full\":50,\"smooth\":20,\"detailed\":15,\"brief\":15},\"newestClosedProtection\":0}",
+              "arrangementJson": "[{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t2\",\"derivationUsed\":\"composed_in_walk\",\"degraded\":false}]",
+              "gapsJson": "[]",
+              "partsActivatedAt": "2026-08-24T00:00:00.000Z"
+            },
+            "served": "[{\"content\":[{\"text\":\"[context · smooth]\\n<t2>\\nUser prompt [fallback]\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\nAssistant response\\n<m8>\\nstep 1: bravo bravo bravo bravo bravo bravo\\n</m8>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m9>read({\\\"step\\\":1}) ⇒ succeeded</m9>\\n<m10>result 1: bravo bravo bravo bravo bravo bravo ⇒ succeeded</m10>\\n\\nAssistant response\\n<m11>\\nstep 2: charlie charlie charlie charlie charlie charlie\\n</m11>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m12>read({\\\"step\\\":2}) ⇒ succeeded</m12>\\n<m13>result 2: charlie charlie charlie charlie charlie charlie ⇒ succeeded</m13>\\n</t2>\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"next\",\"type\":\"text\"}],\"role\":\"user\"}]",
+            "hostMetadata": "{\"activeTurn\":{\"completeSteps\":0,\"estimatedTokens\":100,\"lastStepEdge\":null,\"splittable\":false,\"turnId\":\"t3\"},\"unsettledTurn\":null}"
+          }
+        }
+      ]
+    },
+    {
+      "name": "settlement_boundary_101",
+      "ops": [
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-165",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "t1 prompt"
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-166",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "t1 answer"
+              }
+            },
+            {
+              "eventKind": "turn_end",
+              "idempotencyKey": "oracle-167",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {}
+            }
+          ]
+        },
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-168",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "long task"
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-169",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 0: alpha alpha alpha alpha alpha alpha",
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-170",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c0-alpha",
+                "toolName": "read",
+                "arguments": {
+                  "step": 0
+                },
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-171",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c0-alpha",
+                "content": "result 0: alpha alpha alpha alpha alpha alpha",
+                "stepIndex": 0
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-172",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 1: bravo bravo bravo bravo bravo bravo",
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-173",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c1-bravo",
+                "toolName": "read",
+                "arguments": {
+                  "step": 1
+                },
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-174",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c1-bravo",
+                "content": "result 1: bravo bravo bravo bravo bravo bravo",
+                "stepIndex": 1
+              }
+            },
+            {
+              "eventKind": "assistant_text",
+              "idempotencyKey": "oracle-175",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "step 2: charlie charlie charlie charlie charlie charlie",
+                "stepIndex": 2
+              }
+            },
+            {
+              "eventKind": "tool_call",
+              "idempotencyKey": "oracle-176",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c2-charlie",
+                "toolName": "read",
+                "arguments": {
+                  "step": 2
+                },
+                "stepIndex": 2
+              }
+            },
+            {
+              "eventKind": "tool_result",
+              "idempotencyKey": "oracle-177",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "toolCallId": "c2-charlie",
+                "content": "result 2: charlie charlie charlie charlie charlie charlie",
+                "stepIndex": 2
+              }
+            }
+          ]
+        },
+        {
+          "op": "compact",
+          "params": {
+            "lowerBound": 124,
+            "percentages": {
+              "full": 50,
+              "smooth": 20,
+              "detailed": 15,
+              "brief": 15
+            },
+            "newestClosedProtection": 0
+          },
+          "createdAt": "2026-08-24T00:00:00.000Z",
+          "expect": {
+            "receipt": "{\"bands\":{\"brief\":{\"entries\":0,\"tokens\":0},\"detailed\":{\"entries\":0,\"tokens\":0},\"smooth\":{\"entries\":2,\"tokens\":154}},\"compactPoint\":7,\"config\":{\"brief\":15,\"detailed\":15,\"full\":50,\"lowerBound\":124,\"newestClosedProtection\":0,\"smooth\":20},\"coveredFrom\":1,\"firstKeptMessageId\":\"m8\",\"parts\":[{\"fromStep\":0,\"toStep\":0,\"turnId\":\"t2\"}],\"protectedTurn\":{\"representation\":\"whole_rendering\",\"turnId\":\"t1\"},\"settled\":null,\"splitPoint\":{\"stepIndex\":0,\"turnId\":\"t2\"},\"tailTokens\":62,\"totalTokens\":216,\"viewId\":\"v13\"}",
+            "renderedBands": [
+              {
+                "band": "smooth",
+                "text": "<t1>\nUser prompt [fallback]\n<m1>\nt1 prompt\n</m1>\n\nAssistant response\n<m2>\nt1 answer\n</m2>\n</t1>\n\n<t2>\nUser prompt\n<m4>\nlong task\n</m4>\n\nAssistant response\n<m5>\nstep 0: alpha alpha alpha alpha alpha alpha\n</m5>\n\nTool call [outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m6>read({\"step\":0}) ⇒ succeeded</m6>\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\n\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\n</t2>"
+              }
+            ],
+            "entries": "[{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"composed_in_walk\",\"gap\":false,\"startOrder\":1,\"subjectId\":\"t1\",\"subjectKind\":\"turn\",\"text\":\"<t1>\\nUser prompt [fallback]\\n<m1>\\nt1 prompt\\n</m1>\\n\\nAssistant response\\n<m2>\\nt1 answer\\n</m2>\\n</t1>\",\"tokens\":37},{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"part\",\"gap\":false,\"part\":{\"fromStep\":0,\"toStep\":0},\"startOrder\":4,\"subjectId\":\"t2\",\"subjectKind\":\"turn\",\"text\":\"<t2>\\nUser prompt\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\\n</t2>\",\"tokens\":117}]",
+            "stored": {
+              "configJson": "{\"lowerBound\":124,\"percentages\":{\"full\":50,\"smooth\":20,\"detailed\":15,\"brief\":15},\"newestClosedProtection\":0}",
+              "arrangementJson": "[{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t1\",\"derivationUsed\":\"composed_in_walk\",\"degraded\":false},{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t2\",\"derivationUsed\":\"part\",\"degraded\":false,\"part\":{\"fromStep\":0,\"toStep\":0}}]",
+              "gapsJson": "[]",
+              "partsActivatedAt": "2026-08-24T00:00:00.000Z"
+            },
+            "served": "[{\"content\":[{\"text\":\"[context · smooth]\\n<t1>\\nUser prompt [fallback]\\n<m1>\\nt1 prompt\\n</m1>\\n\\nAssistant response\\n<m2>\\nt1 answer\\n</m2>\\n</t1>\\n\\n<t2>\\nUser prompt\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\n[seam · t2 · steps 0–0 summarized above · t2 resumes below]\\n</t2>\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 1: bravo bravo bravo bravo bravo bravo\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":1}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 1: bravo bravo bravo bravo bravo bravo\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"step 2: charlie charlie charlie charlie charlie charlie\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool call · read] {\\\"step\\\":2}\",\"type\":\"text\"}],\"role\":\"assistant\"},{\"content\":[{\"text\":\"[tool result · read]\\nresult 2: charlie charlie charlie charlie charlie charlie\",\"type\":\"text\"}],\"role\":\"user\"}]",
+            "hostMetadata": "{\"activeTurn\":{\"completeSteps\":3,\"estimatedTokens\":89,\"lastStepEdge\":2,\"splittable\":true,\"turnId\":\"t2\"},\"unsettledTurn\":{\"turnId\":\"t2\"}}"
+          }
+        },
+        {
+          "op": "send",
+          "events": [
+            {
+              "eventKind": "turn_end",
+              "idempotencyKey": "oracle-178",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {}
+            },
+            {
+              "eventKind": "user_prompt",
+              "idempotencyKey": "oracle-179",
+              "actor": "oracle",
+              "harness": "oracle",
+              "payload": {
+                "text": "next"
+              }
+            }
+          ]
+        },
+        {
+          "op": "set_tokens",
+          "turnId": "t3",
+          "tokenEstimate": 101,
+          "stepIndexed": "any"
+        },
+        {
+          "op": "compact",
+          "params": {
+            "lowerBound": 200,
+            "percentages": {
+              "full": 50,
+              "smooth": 20,
+              "detailed": 15,
+              "brief": 15
+            },
+            "newestClosedProtection": 0
+          },
+          "createdAt": "2026-08-24T00:00:00.000Z",
+          "expect": {
+            "receipt": "{\"bands\":{\"brief\":{\"entries\":0,\"tokens\":0},\"detailed\":{\"entries\":0,\"tokens\":0},\"smooth\":{\"entries\":1,\"tokens\":268}},\"compactPoint\":14,\"config\":{\"brief\":15,\"detailed\":15,\"full\":50,\"lowerBound\":200,\"newestClosedProtection\":0,\"smooth\":20},\"coveredFrom\":4,\"firstKeptMessageId\":\"m15\",\"parts\":null,\"protectedTurn\":null,\"settled\":{\"construction\":{\"kind\":\"composed_in_walk\",\"turnId\":\"t2\"},\"turnId\":\"t2\"},\"splitPoint\":null,\"tailTokens\":101,\"totalTokens\":369,\"viewId\":\"v15\"}",
+            "renderedBands": [
+              {
+                "band": "smooth",
+                "text": "<t2>\nUser prompt [fallback]\n<m4>\nlong task\n</m4>\n\nAssistant response\n<m5>\nstep 0: alpha alpha alpha alpha alpha alpha\n</m5>\n\nTool call [fallback; outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m6>read({\"step\":0}) ⇒ succeeded</m6>\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\n\nAssistant response\n<m8>\nstep 1: bravo bravo bravo bravo bravo bravo\n</m8>\n\nTool call [fallback; outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m9>read({\"step\":1}) ⇒ succeeded</m9>\n<m10>result 1: bravo bravo bravo bravo bravo bravo ⇒ succeeded</m10>\n\nAssistant response\n<m11>\nstep 2: charlie charlie charlie charlie charlie charlie\n</m11>\n\nTool call [fallback; outcome: succeeded]\n[tool run · read · 1 call · 1 succeeded]\n<m12>read({\"step\":2}) ⇒ succeeded</m12>\n<m13>result 2: charlie charlie charlie charlie charlie charlie ⇒ succeeded</m13>\n</t2>"
+              }
+            ],
+            "entries": "[{\"band\":\"smooth\",\"degraded\":false,\"derivationUsed\":\"composed_in_walk\",\"gap\":false,\"startOrder\":4,\"subjectId\":\"t2\",\"subjectKind\":\"turn\",\"text\":\"<t2>\\nUser prompt [fallback]\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\nAssistant response\\n<m8>\\nstep 1: bravo bravo bravo bravo bravo bravo\\n</m8>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m9>read({\\\"step\\\":1}) ⇒ succeeded</m9>\\n<m10>result 1: bravo bravo bravo bravo bravo bravo ⇒ succeeded</m10>\\n\\nAssistant response\\n<m11>\\nstep 2: charlie charlie charlie charlie charlie charlie\\n</m11>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m12>read({\\\"step\\\":2}) ⇒ succeeded</m12>\\n<m13>result 2: charlie charlie charlie charlie charlie charlie ⇒ succeeded</m13>\\n</t2>\",\"tokens\":268}]",
+            "stored": {
+              "configJson": "{\"lowerBound\":200,\"percentages\":{\"full\":50,\"smooth\":20,\"detailed\":15,\"brief\":15},\"newestClosedProtection\":0}",
+              "arrangementJson": "[{\"band\":\"smooth\",\"subjectKind\":\"turn\",\"subjectId\":\"t2\",\"derivationUsed\":\"composed_in_walk\",\"degraded\":false}]",
+              "gapsJson": "[]",
+              "partsActivatedAt": "2026-08-24T00:00:00.000Z"
+            },
+            "served": "[{\"content\":[{\"text\":\"[context · smooth]\\n<t2>\\nUser prompt [fallback]\\n<m4>\\nlong task\\n</m4>\\n\\nAssistant response\\n<m5>\\nstep 0: alpha alpha alpha alpha alpha alpha\\n</m5>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m6>read({\\\"step\\\":0}) ⇒ succeeded</m6>\\n<m7>result 0: alpha alpha alpha alpha alpha alpha ⇒ succeeded</m7>\\n\\nAssistant response\\n<m8>\\nstep 1: bravo bravo bravo bravo bravo bravo\\n</m8>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m9>read({\\\"step\\\":1}) ⇒ succeeded</m9>\\n<m10>result 1: bravo bravo bravo bravo bravo bravo ⇒ succeeded</m10>\\n\\nAssistant response\\n<m11>\\nstep 2: charlie charlie charlie charlie charlie charlie\\n</m11>\\n\\nTool call [fallback; outcome: succeeded]\\n[tool run · read · 1 call · 1 succeeded]\\n<m12>read({\\\"step\\\":2}) ⇒ succeeded</m12>\\n<m13>result 2: charlie charlie charlie charlie charlie charlie ⇒ succeeded</m13>\\n</t2>\",\"type\":\"text\"}],\"role\":\"user\"},{\"content\":[{\"text\":\"next\",\"type\":\"text\"}],\"role\":\"user\"}]",
+            "hostMetadata": "{\"activeTurn\":{\"completeSteps\":0,\"estimatedTokens\":101,\"lastStepEdge\":null,\"splittable\":false,\"turnId\":\"t3\"},\"unsettledTurn\":null}"
+          }
+        }
+      ]
     }
   ]
 }

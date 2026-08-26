@@ -1,9 +1,10 @@
 // Turn parts — the walk (epic Flows 1, 3, 4, 6): split the open turn at the
 // newest admissible complete step edge, serve parts behind seam lines inside
 // the installed snapshot, keep the split point monotone and prior part bytes
-// stable, settle a closed transition turn whole before any other turn splits,
-// and never emit a part on the legacy plan. One invariant, exercised by the
-// scenario matrix: at most one unsettled turn at compact completion.
+// stable, retain a closed transition until newer messages fill the full band,
+// settle it whole before any other turn splits, and never emit a part on the
+// legacy plan. One invariant, exercised by the scenario matrix: at most one
+// unsettled turn at compact completion.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput, type ViewCompactParams } from "../src/index.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
@@ -107,6 +108,35 @@ async function compact(sdk: Lhc, filePath: string, p: ViewCompactParams) {
   });
   if (!receipt.ok) throw new Error(receipt.error.reason);
   return { entries: prepared.value.selection.entries, receipt: receipt.value };
+}
+
+async function expectMarkerOnlyInFullSuffix(
+  sdk: Lhc,
+  filePath: string,
+  compacted: Awaited<ReturnType<typeof compact>>,
+  marker: string,
+): Promise<string[]> {
+  const partEntries = compacted.entries.filter((entry) => entry.part !== undefined);
+  const smoothParts = partEntries.filter((entry) => entry.band === "smooth");
+  expect(smoothParts).toHaveLength(partEntries.length);
+  expect(smoothParts.length).toBeGreaterThan(0);
+  for (const entry of smoothParts) expect(entry.text).not.toContain(marker);
+
+  const olderBandEntries = compacted.entries.filter((entry) => entry.part === undefined);
+  for (const entry of olderBandEntries) expect(entry.text).not.toContain(marker);
+
+  const context = await sdk.threadView.getLlmRequestContext({ filePath });
+  expect(context.ok).toBe(true);
+  if (!context.ok) throw new Error(context.error.reason);
+  // Assembly emits one message per rendered band first; every entry after
+  // that metadata-derived boundary is a verbatim Full-tail message.
+  const fullSuffixTexts = context.value.messages
+    .slice(compacted.receipt.renderedBands.length)
+    .map((message) => message.content.map((part) => part.text).join(""));
+  expect(fullSuffixTexts).not.toHaveLength(0);
+  const markerOccurrences = fullSuffixTexts.reduce((total, text) => total + text.split(marker).length - 1, 0);
+  expect(markerOccurrences).toBe(1);
+  return fullSuffixTexts;
 }
 
 describe("turn parts: the walk splits the open turn", () => {
@@ -277,6 +307,80 @@ describe("turn parts: no edge fits (TC-1.8c)", () => {
 });
 
 describe("turn parts: close, lazy settle, settle-before-split, byte equivalence", () => {
+  it("keeps a 200K+ closed transition turn's late verbatim suffix when the next user turn is small", async () => {
+    const sdk = sdkFor();
+    const filePath = await newThread(sdk);
+    await send(sdk, filePath, closedTurn("t1"));
+    await send(sdk, filePath, [
+      validEvent("user_prompt", { payload: { text: "long research task" } }),
+      ...step(0, "early-research"),
+      ...step(1, "middle-research"),
+      validEvent("assistant_text", { payload: { text: "step 2: LATE-RESEARCH-MARKER", stepIndex: 2 } }),
+      validEvent("tool_call", {
+        payload: { toolCallId: "c2-late", toolName: "read", arguments: { step: 2 }, stepIndex: 2 },
+      }),
+      validEvent("tool_result", { payload: { toolCallId: "c2-late", content: "late result", stepIndex: 2 } }),
+    ]);
+    const drained = await sdk.work.drain({ filePath });
+    expect(drained.ok && drained.value.remaining).toBe(0);
+    const db = openRaw(filePath);
+    try {
+      db.prepare(`UPDATE message SET token_estimate = 30000 WHERE turn_id = 't2' AND step_index IS NOT NULL`).run();
+      db.prepare(`UPDATE message SET token_estimate = 1 WHERE turn_id = 't2' AND step_index IS NULL`).run();
+    } finally {
+      db.close();
+    }
+    const split = await compact(sdk, filePath, params(200_000));
+    expect(split.receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 1 }]);
+    expect(split.receipt.tailTokens).toBe(90_000);
+    await expectMarkerOnlyInFullSuffix(sdk, filePath, split, "LATE-RESEARCH-MARKER");
+    const splitPartBytes = split.entries.filter((entry) => entry.part !== undefined).map((entry) => entry.text);
+
+    await send(sdk, filePath, [validEvent("turn_end"), validEvent("user_prompt", { payload: { text: "next" } })]);
+    const nextDb = openRaw(filePath);
+    try {
+      nextDb.prepare(`UPDATE message SET token_estimate = 1 WHERE turn_id = 't3'`).run();
+    } finally {
+      nextDb.close();
+    }
+    const afterClose = await compact(sdk, filePath, params(200_000));
+
+    expect(afterClose.receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 1 }]);
+    expect(afterClose.receipt.compactPoint).toBe(split.receipt.compactPoint);
+    expect(afterClose.receipt.settled).toBeUndefined();
+    expect(afterClose.entries.filter((entry) => entry.part !== undefined).map((entry) => entry.text)).toEqual(
+      splitPartBytes,
+    );
+    const fullSuffixTexts = await expectMarkerOnlyInFullSuffix(sdk, filePath, afterClose, "LATE-RESEARCH-MARKER");
+    const markerIndex = fullSuffixTexts.findIndex((text) => text.includes("LATE-RESEARCH-MARKER"));
+    const nextPromptIndex = fullSuffixTexts.indexOf("next");
+    expect(markerIndex).toBeGreaterThanOrEqual(0);
+    expect(nextPromptIndex).toBeGreaterThan(markerIndex);
+    expect(afterClose.receipt.gaps).toEqual([]);
+    expect(afterClose.receipt.degraded).toEqual([]);
+    expect(afterClose.entries.every((entry) => !entry.gap && !entry.degraded)).toBe(true);
+    expect(
+      afterClose.entries.some(
+        (entry) => entry.subjectId === "t2" && entry.band === "smooth" && entry.part === undefined,
+      ),
+    ).toBe(false);
+    const turns = await sdk.turns.listTurns({ filePath });
+    expect(turns.ok && turns.value.map((turn) => [turn.turnId, turn.status])).toEqual([
+      ["t1", "closed"],
+      ["t2", "closed"],
+      ["t3", "open"],
+    ]);
+    const suffixDb = openRaw(filePath);
+    try {
+      const suffix = suffixDb
+        .prepare(`SELECT COUNT(*) AS n FROM message WHERE source_event_order > ? AND deleted_at IS NULL`)
+        .get(afterClose.receipt.compactPoint) as { n: number };
+      expect(Number(suffix.n)).toBeGreaterThan(0);
+    } finally {
+      suffixDb.close();
+    }
+  });
+
   async function splitThenClose(sdk: Lhc): Promise<{ filePath: string; partText: string }> {
     const filePath = await newThread(sdk);
     await send(sdk, filePath, closedTurn("t1"));
@@ -292,7 +396,38 @@ describe("turn parts: close, lazy settle, settle-before-split, byte equivalence"
     return { filePath, partText: split.entries.find((e) => e.part !== undefined)!.text };
   }
 
-  it("a closed transition turn keeps its parts until a compact bands it; a split elsewhere settles it first", async () => {
+  it.each([
+    { newerTokens: 99, settles: false },
+    { newerTokens: 100, settles: true },
+    { newerTokens: 101, settles: true },
+  ])("settlement at the full-band boundary: $newerTokens newer tokens (settles=$settles)", async ({
+    newerTokens,
+    settles,
+  }) => {
+    const sdk = sdkFor();
+    const { filePath } = await splitThenClose(sdk);
+    await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "next" } })]);
+    const db = openRaw(filePath);
+    try {
+      db.prepare(`UPDATE message SET token_estimate = ? WHERE turn_id = 't3'`).run(newerTokens);
+    } finally {
+      db.close();
+    }
+
+    const result = await compact(sdk, filePath, params(200));
+    if (settles) {
+      expect(result.receipt.parts).toBeUndefined();
+      expect(result.receipt.settled).toEqual({
+        turnId: "t2",
+        construction: { kind: "composed_in_walk", turnId: "t2" },
+      });
+    } else {
+      expect(result.receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 0 }]);
+      expect(result.receipt.settled).toBeUndefined();
+    }
+  });
+
+  it("a closed transition turn keeps its parts until newer messages fill the full band; a split elsewhere settles it first", async () => {
     const sdk = sdkFor();
     const { filePath, partText } = await splitThenClose(sdk);
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "next" } })]);
@@ -478,8 +613,14 @@ describe("turn parts: named contract cases", () => {
     expect(split.receipt.parts).toHaveLength(1);
     await send(sdk, filePath, [validEvent("turn_end")]);
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "next" } }), ...step(0, "golf")]);
-    // A full share just over t3 bands t2 whole: settle, no part anywhere.
-    const settled = await compact(sdk, filePath, params(stepSums(filePath, "t2").after.get(1)! * 2 + 2));
+    const db = openRaw(filePath);
+    try {
+      db.prepare(`UPDATE message SET token_estimate = 25 WHERE turn_id = 't3'`).run();
+    } finally {
+      db.close();
+    }
+    // t3 exactly fills the 100-token full share: settle, no part anywhere.
+    const settled = await compact(sdk, filePath, params(200));
     expect(settled.receipt.settled?.turnId).toBe("t2");
     expect(settled.receipt.parts).toBeUndefined();
 
@@ -490,23 +631,23 @@ describe("turn parts: named contract cases", () => {
     const described = await resumed.threadView.describe({ filePath });
     expect(described.ok && described.value?.viewId).toBe(settled.receipt.viewId);
     expect(described.ok && described.value?.arrangement.every((e) => e.part === undefined)).toBe(true);
-    const db = openRaw(filePath);
+    const installedDb = openRaw(filePath);
     try {
-      const views = db.prepare(`SELECT COUNT(*) AS n FROM thread_view`).get() as { n: number };
-      const bands = db
+      const views = installedDb.prepare(`SELECT COUNT(*) AS n FROM thread_view`).get() as { n: number };
+      const bands = installedDb
         .prepare(`SELECT COUNT(*) AS n FROM thread_view_band WHERE view_id <> ?`)
         .get(settled.receipt.viewId) as {
         n: number;
       };
-      const seams = db
+      const seams = installedDb
         .prepare(`SELECT COUNT(*) AS n FROM thread_view_band WHERE rendered_text LIKE '%[seam ·%'`)
         .get() as { n: number };
-      const derivedSeams = db.prepare(`SELECT COUNT(*) AS n FROM derivation WHERE content LIKE '%[seam ·%'`).get() as {
-        n: number;
-      };
+      const derivedSeams = installedDb
+        .prepare(`SELECT COUNT(*) AS n FROM derivation WHERE content LIKE '%[seam ·%'`)
+        .get() as { n: number };
       expect([Number(views.n), Number(bands.n), Number(seams.n), Number(derivedSeams.n)]).toEqual([1, 0, 0, 0]);
     } finally {
-      db.close();
+      installedDb.close();
     }
     // Nothing is pending on the view's behalf: the queue drains to zero and
     // the installed snapshot is exactly what it was.

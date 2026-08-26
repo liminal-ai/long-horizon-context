@@ -198,12 +198,14 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // ── turn parts: the transition turn, settle, and the split point ──
   //
   // The installed view names at most one transition turn. When it is closed,
-  // it settles here iff the ordinary compact point would band it (the walk
-  // never serves it whole-unsettled: short of settle it keeps its parts and
-  // the compact point stays on its installed edge). Only with no other turn
-  // left unsettled may the open turn split, at the smallest complete step
-  // edge whose verbatim tail fits the full share (inclusive), clamped up to
-  // the installed k so a split point never moves backward.
+  // it settles once message tokens newer than its close fill the full share
+  // (inclusive). Short of that threshold it keeps its parts and compact point,
+  // even if ordinary turn-boundary rounding would band it. This preserves the
+  // installed verbatim suffix until enough genuinely newer material replaces
+  // it. Only with no other turn left unsettled may the open turn split, at the
+  // smallest complete step edge whose verbatim tail fits the full share
+  // (inclusive), clamped up to the installed k so a split point never moves
+  // backward.
   let settling: SelectionTurn | null = null;
   let settledRecord: SelectionResult["settled"];
   let partsPlan: { turn: SelectionTurn; steps: StepEdges; ranges: PartRange[] } | null = null;
@@ -215,7 +217,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
       const lastInstalled = installed.parts[installed.parts.length - 1] as PartRange;
       const installedEdge = steps.steps.find((step) => step.index === lastInstalled.toStep)?.lastOrder;
       if (installedTurn.status === "closed" && installedTurn.closedAt !== null) {
-        if (compactPoint >= installedTurn.closedAt) {
+        if (source.messageTokensAfter(installedTurn.closedAt) >= fullBudget) {
           settling = installedTurn;
         } else if (installedEdge !== undefined) {
           compactPoint = installedEdge;
