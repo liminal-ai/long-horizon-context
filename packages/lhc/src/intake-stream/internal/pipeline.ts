@@ -416,9 +416,12 @@ export interface EventKeyPageOptions {
 // names, the key is still present under the exact prefix, and its rank from
 // the prefix start equals the traversed count. Stale, missing-key,
 // count/rank-inconsistent, out-of-range and malformed tokens refuse as
-// invalid_bounds. A forged token that happens to be consistent with the
-// database on all three counts is indistinguishable from an issued one, and
-// is accepted; it can still neither skip a live key nor pass the cap.
+// invalid_bounds. A database-consistent hand-built token is
+// indistinguishable from an issued one and may choose any valid position at
+// or below the cap, so callers must treat the token as opaque. The witness
+// prevents stale or internally inconsistent continuation state and cap
+// extension; it does not authenticate issuance, and it does not prove that
+// the caller consumed every earlier row.
 //
 // Exact frontier equality is what keeps the walk honest under concurrent
 // appends. Any append anywhere in the thread — a key sorting before the
