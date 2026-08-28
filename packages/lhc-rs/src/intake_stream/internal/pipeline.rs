@@ -651,18 +651,31 @@ pub async fn run_event_key_prefix_counts(
 
 // ── Continuation cursor ──────────────────────────────────────────────────
 //
-// Wire form: "v1:<snapshot>:<traversed>:<lastKey>" — version literal, decimal
-// snapshot frontier, decimal traversed rank, raw key tail after the third
+// Wire form: "v1:<frontier>:<traversed>:<lastKey>" — version literal, decimal
+// thread frontier, decimal traversed rank, raw key tail after the third
 // colon. Identical to build and parse in either port.
 //
-// The cursor is an integrity token, not an authorization token: it carries no
-// secret and needs none, because every field it claims is re-checked against
-// the database inside the continuation's own read transaction. A caller may
-// hand back any string; only one that the witness confirms — the exact
-// snapshot still exists, the key is still present under the exact prefix
-// within it, and its rank from the prefix start equals the traversed count —
-// continues a walk. Anything else refuses as invalid_bounds, so a forged or
-// stale cursor can never skip a live key or extend a walk past the cap.
+// This is stateless database-consistency validation, not proof that this
+// server issued the token and not an authorization boundary: the cursor
+// carries no secret, no MAC, no persistent row and no cache. A continuation
+// runs only when all three claims still agree with the database inside its
+// own read transaction — the thread frontier is exactly the one the cursor
+// names, the key is still present under the exact prefix, and its rank from
+// the prefix start equals the traversed count. Stale, missing-key,
+// count/rank-inconsistent, out-of-range and malformed tokens refuse as
+// invalid_bounds. A forged token that happens to be consistent with the
+// database on all three counts is indistinguishable from an issued one, and
+// is accepted; it can still neither skip a live key nor pass the cap.
+//
+// Exact frontier equality is what keeps the walk honest under concurrent
+// appends. Any append anywhere in the thread — a key sorting before the
+// cursor's key, after it, or under an unrelated prefix — moves the frontier
+// and makes every outstanding cursor stale. A stale cursor is refused
+// visibly: never continued, never silently skipped past a new key, never
+// reported as `complete`. The caller restarts the walk and sees the appends.
+// That visible degradation is deliberate — it is what lets every statement
+// below stay indexed, non-payload and hard-bounded, with no snapshot table,
+// persistent cursor row or history-wide scan anywhere.
 const KEY_CURSOR_VERSION: &str = "v1";
 
 // Largest integer both ports carry exactly (TS Number.MAX_SAFE_INTEGER): a
@@ -670,36 +683,50 @@ const KEY_CURSOR_VERSION: &str = "v1";
 // decode every cursor identically.
 const MAX_EXACT_CURSOR_INTEGER: i64 = 9_007_199_254_740_991;
 
-/// Snapshot frontier for one walk: the newest event order the first page could
-/// see. An index endpoint read (event_order is the rowid), not a history count.
-pub const KEY_WALK_SNAPSHOT_SQL: &str =
+/// Thread frontier for one walk: the newest event order in the archive. An
+/// index endpoint read (event_order is the rowid), one row, never a history
+/// count. Page one stamps it into the cursor; a continuation must match it.
+pub const KEY_WALK_FRONTIER_SQL: &str =
     "SELECT event_order FROM event ORDER BY event_order DESC LIMIT 1";
 
 /// Bounded rank/existence witness for a continuation cursor.
 ///
-/// The inner LIMIT is [`LEGACY_KEY_TOTAL_LOOKUP_CAP`], so the statement
-/// examines at most that many indexed, non-payload entries — never a
-/// history-wide count. `rank` is the cursor key's exact 1-based position from
-/// the prefix start within the snapshot; `last_key` equals the cursor key
-/// exactly when the key is still present there and its rank is inside the cap.
+/// The inner LIMIT is bound to [`KEY_CURSOR_WITNESS_LIMIT`] — the total lookup
+/// cap itself — so the statement examines at most that many indexed,
+/// non-payload entries over one contiguous index range, never a history-wide
+/// count.
+///
+/// There is deliberately no `event_order` predicate. An accepted continuation
+/// has already proven the frontier is unmoved, so no row outside the walk can
+/// exist in this transaction; and an order filter would let arbitrarily many
+/// newer keys interleave inside the range, forcing SQLite to examine and
+/// reject them before the LIMIT could be satisfied. Dropping it is what makes
+/// the examined-entry bound true, not just the returned-row bound.
+///
+/// `rank` is the cursor key's exact 1-based position from the prefix start;
+/// `last_key` equals the cursor key exactly when the key is still present and
+/// its rank is inside the cap.
 ///
 /// No upper prefix bound is needed: `last_key` carries the prefix, so every key
 /// in [prefix, last_key] carries it too.
 pub const KEY_CURSOR_WITNESS_SQL: &str =
     "SELECT COUNT(*) AS rank, MAX(idempotency_key) AS last_key FROM
      (SELECT idempotency_key FROM event
-       WHERE idempotency_key >= ? AND idempotency_key <= ? AND event_order <= ?
+       WHERE idempotency_key >= ? AND idempotency_key <= ?
        ORDER BY idempotency_key ASC LIMIT ?)";
+
+/// The value bound to [`KEY_CURSOR_WITNESS_SQL`]'s inner LIMIT: the total cap.
+pub const KEY_CURSOR_WITNESS_LIMIT: i64 = LEGACY_KEY_TOTAL_LOOKUP_CAP;
 
 #[derive(Debug, Clone)]
 struct KeyCursor {
-    snapshot: i64,
+    frontier: i64,
     traversed: i64,
     last_key: String,
 }
 
-fn encode_key_cursor(snapshot: i64, traversed: i64, last_key: &str) -> String {
-    format!("{KEY_CURSOR_VERSION}:{snapshot}:{traversed}:{last_key}")
+fn encode_key_cursor(frontier: i64, traversed: i64, last_key: &str) -> String {
+    format!("{KEY_CURSOR_VERSION}:{frontier}:{traversed}:{last_key}")
 }
 
 // Digits only, and inside the range both ports represent exactly: a value the
@@ -723,19 +750,19 @@ fn decode_key_cursor(cursor: &str, prefix: &str) -> Result<KeyCursor, ErrorResul
     if &cursor[..version] != KEY_CURSOR_VERSION {
         return Err(malformed());
     }
-    let Some(after_snapshot) = cursor[version + 1..].find(':').map(|at| version + 1 + at) else {
+    let Some(after_frontier) = cursor[version + 1..].find(':').map(|at| version + 1 + at) else {
         return Err(malformed());
     };
-    let Some(after_traversed) = cursor[after_snapshot + 1..]
+    let Some(after_traversed) = cursor[after_frontier + 1..]
         .find(':')
-        .map(|at| after_snapshot + 1 + at)
+        .map(|at| after_frontier + 1 + at)
     else {
         return Err(malformed());
     };
-    let Some(snapshot) = decode_cursor_integer(&cursor[version + 1..after_snapshot]) else {
+    let Some(frontier) = decode_cursor_integer(&cursor[version + 1..after_frontier]) else {
         return Err(malformed());
     };
-    let Some(traversed) = decode_cursor_integer(&cursor[after_snapshot + 1..after_traversed])
+    let Some(traversed) = decode_cursor_integer(&cursor[after_frontier + 1..after_traversed])
     else {
         return Err(malformed());
     };
@@ -751,33 +778,38 @@ fn decode_key_cursor(cursor: &str, prefix: &str) -> Result<KeyCursor, ErrorResul
         return Err(invalid_bounds("cursor belongs to a different prefix walk"));
     }
     Ok(KeyCursor {
-        snapshot,
+        frontier,
         traversed,
         last_key: last_key.to_string(),
     })
 }
 
 // Database witness for a decoded cursor, run inside the continuation's own
-// read transaction. Refuses — never skips — on a snapshot the archive cannot
-// have produced, a key absent from that snapshot, a rank past the cap, or a
-// rank that disagrees with the claimed traversed count.
+// read transaction. Refuses — never skips — on a frontier that has moved, a
+// key absent under the prefix, a rank past the cap, or a rank that disagrees
+// with the claimed traversed count.
+//
+// Work: one index-endpoint row for the frontier plus at most
+// LEGACY_KEY_TOTAL_LOOKUP_CAP indexed, non-payload entries — never more than
+// LEGACY_KEY_TOTAL_LOOKUP_CAP + 1 examined entries, whatever the archive size.
 fn witness_key_cursor(
     db: &Db,
     prefix: &str,
     cursor: &KeyCursor,
     frontier: i64,
 ) -> Option<ErrorResult> {
-    if cursor.snapshot > frontier {
+    // Exact equality, not `<=`: any append anywhere moves the frontier, and a
+    // cursor issued before it no longer describes a walk over this archive.
+    if cursor.frontier != frontier {
         return Some(invalid_bounds(&format!(
-            "cursor snapshot {} is ahead of the thread frontier {frontier}",
-            cursor.snapshot
+            "cursor frontier {} does not match the thread frontier {frontier}: restart the walk",
+            cursor.frontier
         )));
     }
     let row = db.prepare(KEY_CURSOR_WITNESS_SQL).get_params(&[
         SqlParam::from(prefix),
         SqlParam::from(cursor.last_key.as_str()),
-        SqlParam::from(cursor.snapshot),
-        SqlParam::from(LEGACY_KEY_TOTAL_LOOKUP_CAP),
+        SqlParam::from(KEY_CURSOR_WITNESS_LIMIT),
     ]);
     let rank = row
         .as_ref()
@@ -796,7 +828,7 @@ fn witness_key_cursor(
             )));
         }
         return Some(invalid_bounds(&format!(
-            "cursor key is not in this walk's snapshot: {}",
+            "cursor key is not present under this prefix: {}",
             cursor.last_key
         )));
     }
@@ -816,13 +848,13 @@ fn page_sql(from_inclusive: bool, bounded: bool) -> String {
     } else {
         ""
     };
-    // event_order <= ? pins the page to the walk's snapshot: rows appended
-    // after the first page — lexicographically earlier or later — are outside
-    // it, so a walk neither skips a key it should have returned nor absorbs a
-    // later one.
+    // No event_order predicate, for the same reason the witness has none: a
+    // continuation only runs on an unmoved frontier, so every row in range was
+    // already there when the walk began, and an order filter would let newer
+    // keys interleave into the range and be examined past the row LIMIT.
     format!(
         "SELECT idempotency_key, event_order FROM event
-     WHERE idempotency_key {comparison} ?{upper} AND event_order <= ?
+     WHERE idempotency_key {comparison} ?{upper}
      ORDER BY idempotency_key ASC LIMIT ?"
     )
 }
@@ -883,18 +915,17 @@ pub async fn run_list_event_keys_by_prefix(
             let prefix = prefix.clone();
             let decoded = decoded.clone();
             Box::pin(async move {
-                // Snapshot frontier for this walk, captured in this read
-                // transaction: page one defines it, every continuation is
-                // re-restricted to it.
+                // Current frontier, read in this read transaction: page one
+                // stamps it into the cursor, and every continuation must still
+                // match it exactly.
                 let frontier = transaction
                     .db
-                    .prepare(KEY_WALK_SNAPSHOT_SQL)
+                    .prepare(KEY_WALK_FRONTIER_SQL)
                     .get()
                     .as_ref()
                     .and_then(|row| row.get("event_order"))
                     .and_then(json_as_i64)
                     .unwrap_or(0);
-                let mut snapshot = frontier;
                 let mut traversed = 0i64;
                 let mut last_key: Option<String> = None;
                 if let Some(cursor) = decoded.as_ref() {
@@ -903,7 +934,6 @@ pub async fn run_list_event_keys_by_prefix(
                     {
                         return Err(error);
                     }
-                    snapshot = cursor.snapshot;
                     traversed = cursor.traversed;
                     last_key = Some(cursor.last_key.clone());
                 }
@@ -929,14 +959,9 @@ pub async fn run_list_event_keys_by_prefix(
                     Some(upper) => vec![
                         SqlParam::from(from.as_str()),
                         SqlParam::from(upper.as_str()),
-                        SqlParam::from(snapshot),
                         SqlParam::from(page_size + 1),
                     ],
-                    None => vec![
-                        SqlParam::from(from.as_str()),
-                        SqlParam::from(snapshot),
-                        SqlParam::from(page_size + 1),
-                    ],
+                    None => vec![SqlParam::from(from.as_str()), SqlParam::from(page_size + 1)],
                 };
                 let rows = statement.all(&params);
                 let page_len = rows.len().min(page_size as usize);
@@ -957,9 +982,9 @@ pub async fn run_list_event_keys_by_prefix(
                 let has_more = rows.len() > page_len;
                 let walked = traversed + keys.len() as i64;
                 if !has_more {
-                    // Complete for this walk's snapshot: everything under the
-                    // prefix that existed when the walk started has been
-                    // returned.
+                    // Complete: everything under the prefix at this frontier
+                    // — which the witness proved is still the current one — has
+                    // been returned.
                     return Ok(EventKeyPage {
                         keys,
                         cursor: None,
@@ -976,7 +1001,7 @@ pub async fn run_list_event_keys_by_prefix(
                     });
                 }
                 let cursor = encode_key_cursor(
-                    snapshot,
+                    frontier,
                     walked,
                     &keys
                         .last()

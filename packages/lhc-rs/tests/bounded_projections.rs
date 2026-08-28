@@ -14,7 +14,8 @@ use std::path::Path;
 use fixtures::{RuntimeNotePayload, temp_store, valid_event_for_kind, valid_runtime_note};
 use lhc::intake_stream::internal::pipeline::{
     FRONTIER_LAST_EVENT_SQL, FRONTIER_METADATA_SQL, FRONTIER_VIEW_BOUNDARY_SQL,
-    KEY_CURSOR_WITNESS_SQL, KEY_WALK_SNAPSHOT_SQL, page_sql_shapes, prefix_upper_bound,
+    KEY_CURSOR_WITNESS_LIMIT, KEY_CURSOR_WITNESS_SQL, KEY_WALK_FRONTIER_SQL, page_sql_shapes,
+    prefix_upper_bound,
 };
 use lhc::intake_stream::{
     EventKeyPage, EventKeyPageQuery, EventKeyPrefixCount, EventKeyReference, EventKind,
@@ -303,27 +304,27 @@ fn page(prefix: &str, limit: Option<i64>, cursor: Option<String>) -> EventKeyPag
     }
 }
 
-/// "v1:<snapshot>:<traversed>:<lastKey>" — split so a test can tamper with one
+/// "v1:<frontier>:<traversed>:<lastKey>" — split so a test can tamper with one
 /// field of an otherwise authentic, server-issued cursor.
 fn cursor_parts(cursor: &str) -> (String, String, String) {
     let mut parts = cursor.splitn(4, ':');
     assert_eq!(parts.next(), Some("v1"), "cursor version");
-    let snapshot = parts.next().expect("snapshot field").to_string();
+    let frontier = parts.next().expect("frontier field").to_string();
     let traversed = parts.next().expect("traversed field").to_string();
     let last_key = parts.next().expect("key field").to_string();
-    (snapshot, traversed, last_key)
+    (frontier, traversed, last_key)
 }
 
 fn retamper(
     cursor: &str,
-    snapshot: Option<&str>,
+    frontier: Option<&str>,
     traversed: Option<&str>,
     last_key: Option<&str>,
 ) -> String {
-    let (s, t, k) = cursor_parts(cursor);
+    let (f, t, k) = cursor_parts(cursor);
     format!(
         "v1:{}:{}:{}",
-        snapshot.unwrap_or(&s),
+        frontier.unwrap_or(&f),
         traversed.unwrap_or(&t),
         last_key.unwrap_or(&k)
     )
@@ -383,7 +384,7 @@ async fn walks_every_key_exactly_once_in_stable_key_order_across_pages() {
 }
 
 #[tokio::test]
-async fn excludes_keys_appended_mid_walk_earlier_or_later_from_that_snapshot() {
+async fn refuses_a_stale_cursor_once_anything_is_appended_and_the_next_walk_sees_the_appends() {
     let store = temp_store();
     let file_path = legacy_thread(&store).await;
     let first = unwrap_ok(
@@ -393,64 +394,77 @@ async fn excludes_keys_appended_mid_walk_earlier_or_later_from_that_snapshot() {
         )
         .await,
     );
-    let mut seen: Vec<String> = first
-        .keys
-        .iter()
-        .map(|k| k.idempotency_key.clone())
-        .collect();
-    let mut cursor = first.cursor.clone().expect("a continuation");
+    let issued = first.cursor.clone().expect("a continuation");
+    assert_eq!(first.keys[9].idempotency_key, "legacy:009");
 
-    // One key sorts before the cursor's last returned key (legacy:009) and one
-    // sorts after every seeded key: neither may enter this walk, and the
-    // earlier one must not be silently skipped over either.
-    record(
-        &file_path,
-        &[keyed_note("legacy:0055"), keyed_note("legacy:900")],
-    )
-    .await;
+    // A key sorting after everything this walk could still return. The
+    // cursor's own rank arithmetic is untouched by it, so nothing but exact
+    // frontier equality can catch it: a check that only refused a cursor
+    // *ahead* of the frontier would continue the walk here and quietly absorb
+    // a row that was not in it.
+    record(&file_path, &[keyed_note("legacy:900")]).await;
+    let reason = expect_invalid_bounds(
+        intake_stream::list_event_keys_by_prefix(
+            ref_of(&file_path),
+            page("legacy:", None, Some(issued.clone())),
+        )
+        .await,
+    );
+    assert!(
+        reason.contains("does not match the thread frontier"),
+        "{reason}"
+    );
 
+    // A key sorting before the cursor's last returned key: equally stale, and
+    // refused rather than silently skipped over.
+    record(&file_path, &[keyed_note("legacy:0055")]).await;
+    let reason = expect_invalid_bounds(
+        intake_stream::list_event_keys_by_prefix(
+            ref_of(&file_path),
+            page("legacy:", None, Some(issued)),
+        )
+        .await,
+    );
+    assert!(
+        reason.contains("does not match the thread frontier"),
+        "{reason}"
+    );
+
+    // Visible degradation, not lost rows: a fresh walk — itself paged over
+    // none but server-issued cursors — returns the original keys plus both
+    // appends in exact key order.
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
     let complete;
     loop {
         let result = unwrap_ok(
             intake_stream::list_event_keys_by_prefix(
                 ref_of(&file_path),
-                page("legacy:", Some(10), Some(cursor.clone())),
+                page("legacy:", Some(10), cursor.clone()),
             )
             .await,
         );
         seen.extend(result.keys.iter().map(|k| k.idempotency_key.clone()));
-        match result.cursor {
+        match result.cursor.clone() {
             None => {
                 complete = result.complete;
                 break;
             }
-            Some(next) => cursor = next,
+            Some(next) => cursor = Some(next),
         }
     }
-    // Exactly the snapshot, in order, with nothing omitted and nothing added.
-    let expected: Vec<String> = (0..LEGACY_TOTAL)
+    assert!(complete);
+    let mut expected: Vec<String> = (0..LEGACY_TOTAL)
         .map(|i| format!("legacy:{i:03}"))
         .collect();
+    expected.push("legacy:0055".to_string());
+    expected.push("legacy:900".to_string());
+    expected.sort();
     assert_eq!(seen, expected);
-    assert!(complete);
-
-    // The appends are in the archive — they simply belong to a later walk.
-    let fresh = unwrap_ok(
-        intake_stream::list_event_keys_by_prefix(
-            ref_of(&file_path),
-            page("legacy:", Some(LEGACY_KEY_PAGE_LIMIT), None),
-        )
-        .await,
-    );
-    let fresh_keys: Vec<String> = fresh
-        .keys
-        .iter()
-        .map(|k| k.idempotency_key.clone())
-        .collect();
-    assert!(fresh.complete);
-    assert_eq!(fresh_keys.len(), LEGACY_TOTAL + 2);
-    assert!(fresh_keys.contains(&"legacy:0055".to_string()));
-    assert!(fresh_keys.contains(&"legacy:900".to_string()));
+    // Byte order, not arrival order: the earlier append lands between
+    // legacy:005 and legacy:006, the later one at the very end.
+    assert_eq!(seen[6], "legacy:0055");
+    assert_eq!(seen[seen.len() - 1], "legacy:900");
     store.cleanup();
 }
 
@@ -476,15 +490,21 @@ async fn each_key_carries_its_archive_position_and_never_a_payload() {
     for sql in page_sql_shapes() {
         assert!(!sql.contains("payload"), "{sql}");
         assert!(sql.contains("LIMIT ?"), "{sql}");
-        // Every page is pinned to the walk's snapshot.
-        assert!(sql.contains("event_order <= ?"), "{sql}");
+        // No order filter: it would let post-cursor appends interleave into
+        // the key range and be examined past the row LIMIT.
+        assert!(!sql.contains("event_order <= ?"), "{sql}");
     }
-    // The cursor witness is indexed, non-payload and bounded by the total
-    // lookup cap: it never counts the whole history.
+    // The cursor witness is indexed, non-payload, order-filter-free and hard-
+    // limited to the total lookup cap: it never counts the whole history and
+    // never examines more entries than the cap.
     assert!(!KEY_CURSOR_WITNESS_SQL.contains("payload"));
-    assert!(KEY_CURSOR_WITNESS_SQL.contains("LIMIT ?"));
-    assert!(!KEY_WALK_SNAPSHOT_SQL.contains("payload"));
-    assert!(KEY_WALK_SNAPSHOT_SQL.ends_with("ORDER BY event_order DESC LIMIT 1"));
+    assert!(!KEY_CURSOR_WITNESS_SQL.contains("event_order"));
+    assert_eq!(KEY_CURSOR_WITNESS_SQL.matches("LIMIT ?").count(), 1);
+    assert_eq!(KEY_CURSOR_WITNESS_LIMIT, LEGACY_KEY_TOTAL_LOOKUP_CAP);
+    // The frontier probe is one index-endpoint row, not a count.
+    assert!(!KEY_WALK_FRONTIER_SQL.contains("payload"));
+    assert!(!KEY_WALK_FRONTIER_SQL.contains("COUNT("));
+    assert!(KEY_WALK_FRONTIER_SQL.ends_with("ORDER BY event_order DESC LIMIT 1"));
     store.cleanup();
 }
 
@@ -574,11 +594,11 @@ async fn refuses_an_empty_prefix_and_every_malformed_foreign_or_out_of_range_cur
 }
 
 #[tokio::test]
-async fn refuses_a_cursor_whose_last_key_is_absent_from_the_snapshot() {
+async fn refuses_a_cursor_whose_last_key_is_absent_under_the_prefix() {
     let store = temp_store();
     let file_path = legacy_thread(&store).await;
     let authentic = first_page_cursor(&file_path).await;
-    // Same authentic snapshot and count, a key that was never recorded: the
+    // Same authentic frontier and count, a key that was never recorded: the
     // continuation must refuse rather than resume past the missing key.
     let forged = retamper(&authentic, None, None, Some("legacy:250"));
     let reason = expect_invalid_bounds(
@@ -588,7 +608,7 @@ async fn refuses_a_cursor_whose_last_key_is_absent_from_the_snapshot() {
         )
         .await,
     );
-    assert!(reason.contains("not in this walk's snapshot"), "{reason}");
+    assert!(reason.contains("not present under this prefix"), "{reason}");
     store.cleanup();
 }
 
@@ -626,22 +646,31 @@ async fn refuses_a_reset_or_mismatched_traversed_count() {
 }
 
 #[tokio::test]
-async fn refuses_a_cursor_whose_snapshot_the_archive_never_reached() {
+async fn refuses_a_cursor_whose_frontier_is_not_the_current_thread_frontier() {
     let store = temp_store();
     let file_path = legacy_thread(&store).await;
     let authentic = first_page_cursor(&file_path).await;
-    let reason = expect_invalid_bounds(
-        intake_stream::list_event_keys_by_prefix(
-            ref_of(&file_path),
-            page(
-                "legacy:",
-                None,
-                Some(retamper(&authentic, Some("999999"), None, None)),
-            ),
-        )
-        .await,
-    );
-    assert!(reason.contains("ahead of the thread frontier"), "{reason}");
+    assert_eq!(cursor_parts(&authentic).0, LEGACY_TOTAL.to_string());
+
+    // Ahead of the archive and behind it are the same refusal: only exact
+    // equality continues a walk.
+    for frontier in ["999999", "1"] {
+        let reason = expect_invalid_bounds(
+            intake_stream::list_event_keys_by_prefix(
+                ref_of(&file_path),
+                page(
+                    "legacy:",
+                    None,
+                    Some(retamper(&authentic, Some(frontier), None, None)),
+                ),
+            )
+            .await,
+        );
+        assert!(
+            reason.contains("does not match the thread frontier"),
+            "{reason}"
+        );
+    }
     store.cleanup();
 }
 
@@ -749,7 +778,7 @@ async fn completes_exactly_at_the_cap_and_degrades_one_row_past_it() {
     assert_eq!(over.cursor, None);
     assert!(!over_seen.contains(&format!("cap:{LEGACY_KEY_TOTAL_LOOKUP_CAP:04}")));
 
-    // A cursor pointing past the cap — authentic snapshot, real key, rank
+    // A cursor pointing past the cap — authentic frontier, real key, rank
     // 2001 — is refused rather than resumed: no walk may reach that row.
     let first_page = unwrap_ok(
         intake_stream::list_event_keys_by_prefix(

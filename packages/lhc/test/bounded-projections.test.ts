@@ -20,8 +20,9 @@ import {
   FRONTIER_LAST_EVENT_SQL,
   FRONTIER_METADATA_SQL,
   FRONTIER_VIEW_BOUNDARY_SQL,
+  KEY_CURSOR_WITNESS_LIMIT,
   KEY_CURSOR_WITNESS_SQL,
-  KEY_WALK_SNAPSHOT_SQL,
+  KEY_WALK_FRONTIER_SQL,
   PAGE_SQL_SHAPES,
   prefixUpperBound,
 } from "../src/intake-stream/internal/pipeline.js";
@@ -38,20 +39,20 @@ function pageQuery(prefix: string, limit: number, cursor?: string): intakeStream
   return cursor === undefined ? { prefix, limit } : { prefix, limit, cursor };
 }
 
-// "v1:<snapshot>:<traversed>:<lastKey>" — split so a test can tamper with one
+// "v1:<frontier>:<traversed>:<lastKey>" — split so a test can tamper with one
 // field of an otherwise authentic, server-issued cursor.
-function cursorParts(cursor: string): { snapshot: string; traversed: string; lastKey: string } {
-  const [version, snapshot, traversed, ...rest] = cursor.split(":");
+function cursorParts(cursor: string): { frontier: string; traversed: string; lastKey: string } {
+  const [version, frontier, traversed, ...rest] = cursor.split(":");
   expect(version).toBe("v1");
-  return { snapshot: snapshot as string, traversed: traversed as string, lastKey: rest.join(":") };
+  return { frontier: frontier as string, traversed: traversed as string, lastKey: rest.join(":") };
 }
 
 function retamper(
   cursor: string,
-  overrides: Partial<{ snapshot: string; traversed: string; lastKey: string }>,
+  overrides: Partial<{ frontier: string; traversed: string; lastKey: string }>,
 ): string {
   const parts = { ...cursorParts(cursor), ...overrides };
-  return `v1:${parts.snapshot}:${parts.traversed}:${parts.lastKey}`;
+  return `v1:${parts.frontier}:${parts.traversed}:${parts.lastKey}`;
 }
 
 describe("bounded archive projections", () => {
@@ -257,47 +258,72 @@ describe("bounded archive projections", () => {
       expect(seen[total - 1]).toBe("legacy:024");
     });
 
-    it("excludes keys appended mid-walk — earlier or later — from that walk's snapshot", async () => {
+    it("refuses a stale cursor once anything is appended, and the next walk sees the appends", async () => {
       const first = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", limit: 10 });
       expect(first.ok).toBe(true);
       if (!first.ok || first.value.cursor === null) throw new Error("expected a continuation");
+      const issued = first.value.cursor;
+      expect(first.value.keys[9]?.idempotencyKey).toBe("legacy:009");
 
-      // One key sorts before the cursor's last returned key (legacy:009) and
-      // one sorts after every seeded key: neither may enter this walk, and the
-      // earlier one must not be silently skipped over either.
-      const appended = await sdk.intakeStream.messageEvents({ filePath }, [
-        keyedNote("legacy:0055"),
-        keyedNote("legacy:900"),
-      ]);
-      expect(appended.ok).toBe(true);
+      // A key sorting after everything this walk could still return. The
+      // cursor's own rank arithmetic is untouched by it, so nothing but exact
+      // frontier equality can catch it: a check that only refused a cursor
+      // *ahead* of the frontier would continue the walk here and quietly
+      // absorb a row that was not in it.
+      const later = await sdk.intakeStream.messageEvents({ filePath }, [keyedNote("legacy:900")]);
+      expect(later.ok).toBe(true);
 
-      const seen = first.value.keys.map((entry) => entry.idempotencyKey);
-      let cursor: string | undefined = first.value.cursor;
+      const afterLater = await sdk.intakeStream.listEventKeysByPrefix(
+        { filePath },
+        { prefix: "legacy:", cursor: issued },
+      );
+      expect(afterLater.ok).toBe(false);
+      if (afterLater.ok) return;
+      expect(afterLater.error.errorClass).toBe("caller_error");
+      expect(afterLater.error.code).toBe("invalid_bounds");
+      expect(afterLater.error.reason).toContain("does not match the thread frontier");
+
+      // A key sorting before the cursor's last returned key: equally stale,
+      // and refused rather than silently skipped over.
+      const earlier = await sdk.intakeStream.messageEvents({ filePath }, [keyedNote("legacy:0055")]);
+      expect(earlier.ok).toBe(true);
+
+      const afterEarlier = await sdk.intakeStream.listEventKeysByPrefix(
+        { filePath },
+        { prefix: "legacy:", cursor: issued },
+      );
+      expect(afterEarlier.ok).toBe(false);
+      if (afterEarlier.ok) return;
+      expect(afterEarlier.error.code).toBe("invalid_bounds");
+      expect(afterEarlier.error.reason).toContain("does not match the thread frontier");
+
+      // Visible degradation, not lost rows: a fresh walk — itself paged over
+      // none but server-issued cursors — returns the original keys plus both
+      // appends in exact key order.
+      const seen: string[] = [];
+      let cursor: string | undefined;
       let complete = false;
-      while (cursor !== undefined) {
+      for (;;) {
         const page = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, pageQuery("legacy:", 10, cursor));
         expect(page.ok).toBe(true);
         if (!page.ok) return;
         seen.push(...page.value.keys.map((entry) => entry.idempotencyKey));
         complete = page.value.complete;
-        cursor = page.value.cursor ?? undefined;
+        if (page.value.cursor === null) break;
+        cursor = page.value.cursor;
       }
-      // Exactly the snapshot, in order, with nothing omitted and nothing added.
-      expect(seen).toEqual(Array.from({ length: total }, (_, i) => `legacy:${String(i).padStart(3, "0")}`));
       expect(complete).toBe(true);
-
-      // The appends are in the archive — they simply belong to a later walk.
-      const fresh = await sdk.intakeStream.listEventKeysByPrefix(
-        { filePath },
-        { prefix: "legacy:", limit: LEGACY_KEY_PAGE_LIMIT },
+      expect(seen).toEqual(
+        [
+          ...Array.from({ length: total }, (_, i) => `legacy:${String(i).padStart(3, "0")}`),
+          "legacy:0055",
+          "legacy:900",
+        ].sort(),
       );
-      expect(fresh.ok).toBe(true);
-      if (!fresh.ok) return;
-      const freshKeys = fresh.value.keys.map((entry) => entry.idempotencyKey);
-      expect(fresh.value.complete).toBe(true);
-      expect(freshKeys.length).toBe(total + 2);
-      expect(freshKeys).toContain("legacy:0055");
-      expect(freshKeys).toContain("legacy:900");
+      // Byte order, not arrival order: the earlier append lands between
+      // legacy:005 and legacy:006, the later one at the very end.
+      expect(seen[6]).toBe("legacy:0055");
+      expect(seen[seen.length - 1]).toBe("legacy:900");
     });
 
     it("returns the archive position with each key and never a payload", async () => {
@@ -311,15 +337,21 @@ describe("bounded archive projections", () => {
       for (const sql of PAGE_SQL_SHAPES) {
         expect(sql).not.toMatch(/payload/);
         expect(sql).toMatch(/LIMIT \?/);
-        // Every page is pinned to the walk's snapshot.
-        expect(sql).toMatch(/event_order <= \?/);
+        // No order filter: it would let post-cursor appends interleave into
+        // the key range and be examined past the row LIMIT.
+        expect(sql).not.toMatch(/event_order <= \?/);
       }
-      // The cursor witness is indexed, non-payload and bounded by the total
-      // lookup cap: it never counts the whole history.
+      // The cursor witness is indexed, non-payload, order-filter-free and
+      // hard-limited to the total lookup cap: it never counts the whole
+      // history and never examines more entries than the cap.
       expect(KEY_CURSOR_WITNESS_SQL).not.toMatch(/payload/);
-      expect(KEY_CURSOR_WITNESS_SQL).toMatch(/LIMIT \?/);
-      expect(KEY_WALK_SNAPSHOT_SQL).not.toMatch(/payload/);
-      expect(KEY_WALK_SNAPSHOT_SQL).toMatch(/ORDER BY event_order DESC LIMIT 1$/);
+      expect(KEY_CURSOR_WITNESS_SQL).not.toMatch(/event_order/);
+      expect(KEY_CURSOR_WITNESS_SQL.match(/LIMIT \?/g)).toHaveLength(1);
+      expect(KEY_CURSOR_WITNESS_LIMIT).toBe(LEGACY_KEY_TOTAL_LOOKUP_CAP);
+      // The frontier probe is one index-endpoint row, not a count.
+      expect(KEY_WALK_FRONTIER_SQL).not.toMatch(/payload/);
+      expect(KEY_WALK_FRONTIER_SQL).not.toMatch(/COUNT\(/i);
+      expect(KEY_WALK_FRONTIER_SQL).toMatch(/ORDER BY event_order DESC LIMIT 1$/);
     });
 
     it("refuses a limit above the hard page cap instead of clamping", async () => {
@@ -387,19 +419,19 @@ describe("bounded archive projections", () => {
       if (!foreign.ok) expect(foreign.error.reason).toContain("different prefix");
     });
 
-    it("refuses a cursor whose last key is absent from the snapshot", async () => {
+    it("refuses a cursor whose last key is absent under the prefix", async () => {
       const first = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", limit: 10 });
       expect(first.ok).toBe(true);
       if (!first.ok || first.value.cursor === null) throw new Error("expected a continuation");
 
-      // Same authentic snapshot and count, a key that was never recorded: the
+      // Same authentic frontier and count, a key that was never recorded: the
       // continuation must refuse rather than resume past the missing key.
       const forged = retamper(first.value.cursor, { lastKey: "legacy:250" });
       const result = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", cursor: forged });
       expect(result.ok).toBe(false);
       if (result.ok) return;
       expect(result.error.code).toBe("invalid_bounds");
-      expect(result.error.reason).toContain("not in this walk's snapshot");
+      expect(result.error.reason).toContain("not present under this prefix");
     });
 
     it("refuses a reset or mismatched traversed count", async () => {
@@ -426,18 +458,24 @@ describe("bounded archive projections", () => {
       expect(honest.ok).toBe(true);
     });
 
-    it("refuses a cursor whose snapshot the archive never reached", async () => {
+    it("refuses a cursor whose frontier is not the current thread frontier", async () => {
       const first = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", limit: 10 });
       expect(first.ok).toBe(true);
       if (!first.ok || first.value.cursor === null) throw new Error("expected a continuation");
-      const result = await sdk.intakeStream.listEventKeysByPrefix(
-        { filePath },
-        { prefix: "legacy:", cursor: retamper(first.value.cursor, { snapshot: "999999" }) },
-      );
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error.code).toBe("invalid_bounds");
-      expect(result.error.reason).toContain("ahead of the thread frontier");
+      expect(cursorParts(first.value.cursor).frontier).toBe(String(total));
+
+      // Ahead of the archive and behind it are the same refusal: only exact
+      // equality continues a walk.
+      for (const frontier of ["999999", "1"]) {
+        const result = await sdk.intakeStream.listEventKeysByPrefix(
+          { filePath },
+          { prefix: "legacy:", cursor: retamper(first.value.cursor, { frontier }) },
+        );
+        expect(result.ok, `frontier ${frontier} must be refused`).toBe(false);
+        if (result.ok) return;
+        expect(result.error.code).toBe("invalid_bounds");
+        expect(result.error.reason).toContain("does not match the thread frontier");
+      }
     });
 
     it("completes rather than exhausting when the prefix ends inside the cap", async () => {
@@ -508,7 +546,7 @@ describe("bounded archive projections", () => {
       expect(over.cursor).toBeNull();
       expect(over.seen).not.toContain(`cap:${String(LEGACY_KEY_TOTAL_LOOKUP_CAP).padStart(4, "0")}`);
 
-      // A cursor pointing past the cap — authentic snapshot, real key, rank
+      // A cursor pointing past the cap — authentic frontier, real key, rank
       // 2001 — is refused rather than resumed: no walk may reach that row.
       const firstPage = await sdk.intakeStream.listEventKeysByPrefix(
         { filePath },
