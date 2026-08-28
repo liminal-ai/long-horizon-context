@@ -306,7 +306,22 @@ pub fn open_database(path: &str) -> OpResult<Db> {
             // SQLITE_BUSY (observed live: two parallel retrieval tools racing
             // at open — TS 1687d4d / R6).
             db.exec("PRAGMA busy_timeout = 5000;");
-            db.exec("PRAGMA journal_mode = WAL;");
+            // Only promote to WAL when not already WAL. Re-applying
+            // `PRAGMA journal_mode = WAL` on every open takes a write lock that
+            // races concurrent openers (TS parity — storage.ts openDatabase).
+            // The query form is read-only against an already-WAL file.
+            let mode = db
+                .prepare("PRAGMA journal_mode")
+                .get()
+                .and_then(|row| {
+                    row.get("journal_mode")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.to_ascii_lowercase())
+                })
+                .unwrap_or_default();
+            if mode != "wal" {
+                db.exec("PRAGMA journal_mode = WAL;");
+            }
             db.exec("PRAGMA foreign_keys = ON;");
             db.exec("PRAGMA synchronous = NORMAL;");
             OpResult::Ok { value: db }
@@ -356,242 +371,43 @@ pub(crate) fn open_database_read_only(path: &str) -> OpResult<Db> {
     }
 }
 
-/// Handle from [`open_database_for_thread_validation`]: Db over a private
-/// copy plus cleanup of the temp directory on drop (after close).
-pub(crate) struct ThreadValidationDb {
-    db: Option<Db>,
-    temp_dir: Option<std::path::PathBuf>,
-}
-
-impl ThreadValidationDb {
-    pub fn db(&self) -> &Db {
-        self.db.as_ref().expect("ThreadValidationDb still open")
-    }
-
-    /// Close the SQLite handle (may panic like [`Db::close`]); temp cleanup
-    /// still runs on drop.
-    pub fn close(&mut self) {
-        if let Some(db) = self.db.take() {
-            db.close();
-        }
-    }
-}
-
-impl Drop for ThreadValidationDb {
-    fn drop(&mut self) {
-        if let Some(db) = self.db.take() {
-            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| db.close()));
-        }
-        if let Some(dir) = self.temp_dir.take() {
-            let _ = std::fs::remove_dir_all(dir);
-        }
-    }
-}
-
-/// Process-local sequence for validation temp roots (repair-r2 / Amendment F).
-static VALIDATION_TEMP_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-
-/// Bound on source-epoch stability retries. Exhaustion is [`storage_failure`],
-/// never a false `thread_not_found` for a still-valid source.
-const VALIDATION_EPOCH_RETRIES: u32 = 128;
-
-/// Fingerprint of the source main + WAL (+ rollback journal) epoch.
-///
-/// **Invariant:** a private copy is coherent iff the source fingerprint taken
-/// immediately before the copy equals the fingerprint taken immediately after.
-/// Independent main-then-WAL copies are **not** atomic across a checkpoint;
-/// stability detection + retry is required. SHM is intentionally omitted —
-/// stale `-shm` paired with a mismatched main/WAL is worse than letting
-/// SQLite rebuild a private wal-index from the coherent main+WAL pair.
-///
-/// Content hash (not mtime): a no-op `wal_checkpoint` can bump mtimes without
-/// changing bytes; mtime-based fingerprints would exhaust retries and
-/// misclassify a stable valid source as `storage_failure`.
-#[derive(Clone, PartialEq, Eq, Debug)]
-struct SourceEpoch {
-    main: (u64, u64),
-    wal: Option<(u64, u64)>,
-    journal: Option<(u64, u64)>,
-}
-
-fn file_content_fp(path: &std::path::Path) -> std::io::Result<Option<(u64, u64)>> {
-    use std::hash::{Hash, Hasher};
-    use std::io::Read;
-    if !path.exists() {
-        return Ok(None);
-    }
-    let mut file = std::fs::File::open(path)?;
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    let mut buf = [0u8; 64 * 1024];
-    let mut len = 0u64;
-    loop {
-        let n = file.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        len += n as u64;
-        buf[..n].hash(&mut hasher);
-    }
-    Ok(Some((len, hasher.finish())))
-}
-
-fn fingerprint_source(main: &std::path::Path) -> Result<SourceEpoch, String> {
-    let main_fp = file_content_fp(main)
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| "unable to open database file".to_string())?;
-    let wal = file_content_fp(&std::path::PathBuf::from(format!("{}-wal", main.display())))
-        .map_err(|e| e.to_string())?;
-    let journal = file_content_fp(&std::path::PathBuf::from(format!(
-        "{}-journal",
-        main.display()
-    )))
-    .map_err(|e| e.to_string())?;
-    Ok(SourceEpoch {
-        main: main_fp,
-        wal,
-        journal,
-    })
-}
-
-fn create_validation_temp_dir() -> OpResult<std::path::PathBuf> {
-    use std::sync::atomic::Ordering;
-    let pid = std::process::id();
-    loop {
-        let seq = VALIDATION_TEMP_SEQ.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("lhc-thread-validate-{pid}-{seq}"));
-        match std::fs::create_dir(&dir) {
-            Ok(()) => return OpResult::Ok { value: dir },
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => {
-                return storage_failure(&format!("could not prepare validation copy: {err}"));
-            }
-        }
-    }
-}
-
-fn clear_dir_files(dir: &std::path::Path) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let p = entry.path();
-            if p.is_dir() {
-                let _ = std::fs::remove_dir_all(&p);
-            } else {
-                let _ = std::fs::remove_file(&p);
-            }
-        }
-    }
-}
-
-/// Copy main + WAL (+ journal) under a stable source epoch. Does **not** copy
-/// `-shm`. Retries when the source epoch changes mid-copy.
-fn copy_coherent_validation_snapshot(
-    src_main: &std::path::Path,
-    temp_dir: &std::path::Path,
-    file_name: &str,
-) -> Result<(), String> {
-    let dest_main = temp_dir.join(file_name);
-    let src_wal = std::path::PathBuf::from(format!("{}-wal", src_main.display()));
-    let src_journal = std::path::PathBuf::from(format!("{}-journal", src_main.display()));
-    let dest_wal = temp_dir.join(format!("{file_name}-wal"));
-    let dest_journal = temp_dir.join(format!("{file_name}-journal"));
-    // Never trust/copy SHM into the private snapshot.
-    let dest_shm = temp_dir.join(format!("{file_name}-shm"));
-
-    for _attempt in 0..VALIDATION_EPOCH_RETRIES {
-        clear_dir_files(temp_dir);
-        let before = fingerprint_source(src_main)?;
-
-        std::fs::copy(src_main, &dest_main).map_err(|e| e.to_string())?;
-
-        if before.wal.is_some() {
-            if src_wal.exists() {
-                std::fs::copy(&src_wal, &dest_wal).map_err(|e| e.to_string())?;
-            }
-        }
-        if before.journal.is_some() {
-            if src_journal.exists() {
-                std::fs::copy(&src_journal, &dest_journal).map_err(|e| e.to_string())?;
-            }
-        }
-        let _ = std::fs::remove_file(&dest_shm);
-
-        let after = fingerprint_source(src_main)?;
-        if after == before {
-            return Ok(());
-        }
-        // Epoch moved (checkpoint / WAL append / truncate) — retry.
-    }
-    Err("could not prepare validation copy: source database changed under copy".to_string())
-}
-
 /// INTERNAL — WAL-aware, non-mutating open for `validateThreadFile`.
 ///
-/// TS `new DatabaseSync(path, { readOnly: true })` sees live WAL frames.
-/// A direct `mode=ro` open on the candidate can rewrite `-shm` bytes (Node
-/// does too); this path instead takes an **epoch-stable** private copy of
-/// main + `-wal` (+ `-journal` when present) — never `-shm` — into an
-/// exclusively created temp directory and opens that copy with `mode=ro`
-/// **without** `immutable=1`.
+/// Mirrors TS `new DatabaseSync(path, { readOnly: true, timeout })`: a live
+/// `mode=ro` URI open **without** `immutable=1`, so uncheckpointed WAL frames
+/// are visible and SQLite's own read snapshot keeps identity coherent across a
+/// concurrent append or checkpoint. Reads the database in place — no copy, no
+/// hash, no temporary directory, no logical byte mutation; only the normal
+/// SQLite `-shm` coordination the TypeScript reference already performs.
 ///
-/// **Coherence invariant:** fingerprint(main, wal, journal) before the copy
-/// must equal fingerprint after; otherwise retry (bounded). Independent
-/// main-then-WAL copies without that check can tear across a checkpoint
-/// (old main + emptied WAL → false `no lhc schema version`).
-///
-/// Distinct from [`open_database_read_only`] — do not reuse that immutable
-/// peek opener here.
-pub(crate) fn open_database_for_thread_validation(path: &str) -> OpResult<ThreadValidationDb> {
-    use std::path::Path;
-
-    let src = Path::new(path);
-    if !src.exists() {
+/// Distinct from [`open_database_read_only`], which is the immutable main-only
+/// peek seam and cannot see live WAL state — do not reuse it here.
+pub(crate) fn open_database_for_thread_validation(path: &str) -> OpResult<Db> {
+    // Kept ahead of the open so a missing candidate keeps its exact existing
+    // classification independent of sqlite/rusqlite message wording.
+    if !std::path::Path::new(path).exists() {
         return storage_failure("unable to open database file");
     }
-
-    let temp_dir = match create_validation_temp_dir() {
-        OpResult::Ok { value } => value,
-        OpResult::Err { error } => return OpResult::Err { error },
-    };
-
-    let file_name = match src.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n.to_string(),
-        None => {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            return storage_failure("could not prepare validation copy: invalid path");
-        }
-    };
-
-    if let Err(detail) = copy_coherent_validation_snapshot(src, &temp_dir, &file_name) {
-        let _ = std::fs::remove_dir_all(&temp_dir);
-        return storage_failure(&detail);
-    }
-
-    let dest_main = temp_dir.join(&file_name);
-    let dest_str = match dest_main.to_str() {
-        Some(s) => s.to_string(),
-        None => {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            return storage_failure("could not prepare validation copy: non-utf8 path");
-        }
-    };
-    let uri = format!("file:{}?mode=ro", sqlite_uri_encode_path(&dest_str));
+    let uri = format!("file:{}?mode=ro", sqlite_uri_encode_path(path));
     let flags = rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
         | rusqlite::OpenFlags::SQLITE_OPEN_URI
         | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX;
     match Connection::open_with_flags(&uri, flags) {
-        Ok(conn) => OpResult::Ok {
-            value: ThreadValidationDb {
-                db: Some(Db {
-                    conn: std::sync::Mutex::new(conn),
-                    path: dest_str,
-                }),
-                temp_dir: Some(temp_dir),
-            },
-        },
-        Err(err) => {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            storage_failure(&err.to_string())
+        Ok(conn) => {
+            let db = Db {
+                conn: std::sync::Mutex::new(conn),
+                path: path.to_string(),
+            };
+            // Same busy timeout as writers: a read-only probe under WAL still
+            // waits briefly when a cross-process writer holds a reserved lock.
+            // TS wraps this pragma in try/catch because a read-only handle may
+            // refuse some pragmas; the open itself already carries the wait.
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                db.exec("PRAGMA busy_timeout = 5000;");
+            }));
+            OpResult::Ok { value: db }
         }
+        Err(err) => storage_failure(&err.to_string()),
     }
 }
 

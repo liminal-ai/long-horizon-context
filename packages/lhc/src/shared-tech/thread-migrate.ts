@@ -359,17 +359,27 @@ function migratedTurnDerivationTargets(turnId: string): Array<{
   ];
 }
 
+// Candidate rows for the pre-rewire turn_derivation repair: only queued and
+// claimed items of that kind can still carry a pre-rewire payload.
+const QUEUED_TURN_DERIVATION_CANDIDATES_SQL = `SELECT work_item_id, source_ref, payload
+       FROM work_item
+       WHERE kind = 'turn_derivation' AND status IN ('queued', 'claimed')`;
+
 // Pre-rewire turn_derivation items scheduled compression inside the same handler;
 // rewrite their derivations payload and seed pre_detailed_assembly so item 1 can
 // complete and enqueue compression. Idempotent — safe on every open.
-function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
-  const rows = db
-    .prepare(
-      `SELECT work_item_id, source_ref, payload
-       FROM work_item
-       WHERE kind = 'turn_derivation' AND status IN ('queued', 'claimed')`,
-    )
-    .all() as Array<{ work_item_id: string; source_ref: string; payload: string }>;
+//
+// One scan serves both modes so the read-only predicate and the mutating pass
+// can never diverge: "probe" stops at the first row that needs repair and
+// writes nothing; "apply" repairs every such row. Both read the same rows in
+// the same order, so a malformed payload/source_ref fails identically either
+// way (JSON.parse throws, as it always has).
+function scanQueuedTurnDerivationRepairs(db: DatabaseSync, mode: "probe" | "apply"): boolean {
+  const rows = db.prepare(QUEUED_TURN_DERIVATION_CANDIDATES_SQL).all() as Array<{
+    work_item_id: string;
+    source_ref: string;
+    payload: string;
+  }>;
 
   const updatePayload = db.prepare(`UPDATE work_item SET payload = ? WHERE work_item_id = ?`);
   const seedAssembly = db.prepare(
@@ -381,6 +391,7 @@ function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
      WHERE subject_kind = 'turn' AND subject_id = ? AND derivation_type = 'pre_detailed_assembly'`,
   );
 
+  let repairNeeded = false;
   for (const row of rows) {
     const sourceRef = JSON.parse(row.source_ref) as { turnId?: string };
     const turnId = sourceRef.turnId;
@@ -396,6 +407,9 @@ function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
       needsPayloadMigration || (targetsPreDetailedAssembly && assemblyRowExists.get(turnId) === undefined);
     if (!needsPayloadMigration && !needsAssemblySeed) continue;
 
+    repairNeeded = true;
+    if (mode === "probe") return true;
+
     if (needsAssemblySeed) {
       seedAssembly.run(turnId, sourceVersion);
     }
@@ -407,12 +421,30 @@ function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
       updatePayload.run(JSON.stringify(nextPayload), row.work_item_id);
     }
   }
+  return repairNeeded;
 }
 
+function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
+  scanQueuedTurnDerivationRepairs(db, "apply");
+}
+
+/** Read-only: does any queued/claimed legacy row still need the repair? */
+function queuedTurnDerivationRepairPending(db: DatabaseSync): boolean {
+  return scanQueuedTurnDerivationRepairs(db, "probe");
+}
+
+// Current-schema open is the hot path: it must not take a write lock just to
+// discover there is nothing to repair. The read-only predicate decides, and
+// the same predicate runs again inside BEGIN IMMEDIATE so a concurrent opener
+// that repaired the same rows between probe and lock cannot cause duplicate
+// work (the repair itself is idempotent; the recheck keeps it write-free).
 function runQueuedTurnDerivationMigration(db: DatabaseSync): void {
+  if (!queuedTurnDerivationRepairPending(db)) return;
   db.exec("BEGIN IMMEDIATE;");
   try {
-    migrateQueuedTurnDerivationWorkItems(db);
+    if (queuedTurnDerivationRepairPending(db)) {
+      migrateQueuedTurnDerivationWorkItems(db);
+    }
     db.exec("COMMIT;");
   } catch (cause) {
     db.exec("ROLLBACK;");

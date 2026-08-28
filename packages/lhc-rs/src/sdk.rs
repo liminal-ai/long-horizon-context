@@ -5,7 +5,10 @@
 
 // ── Canonical public re-exports (sdk.ts) ─────────────────────────────
 
-pub use crate::intake_stream::{BatchResult, EventKind, EventRecord, MessageEventInput};
+pub use crate::intake_stream::{
+    BatchResult, EventKeyPage, EventKeyPageQuery, EventKeyPrefixCount, EventKeyReference,
+    EventKind, EventRecord, MessageEventInput, ThreadFrontier,
+};
 pub use crate::messages::{
     Block, BlockType, MessageDetail, MessageListOptions, MessageRecord, MutationResult,
 };
@@ -621,6 +624,39 @@ impl LhcIntakeStream {
             seam,
             async move { intake_stream::list_events(thread_ref).await },
         )
+        .await
+    }
+
+    pub async fn thread_frontier(&self, thread_ref: ThreadRef) -> OpResult<ThreadFrontier> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            intake_stream::thread_frontier(thread_ref).await
+        })
+        .await
+    }
+
+    pub async fn event_key_prefix_counts(
+        &self,
+        thread_ref: ThreadRef,
+        prefixes: &[String],
+    ) -> OpResult<Vec<EventKeyPrefixCount>> {
+        let seam = Arc::clone(&self.seam);
+        let prefixes = prefixes.to_vec();
+        run_with_instance_seam(seam, async move {
+            intake_stream::event_key_prefix_counts(thread_ref, &prefixes).await
+        })
+        .await
+    }
+
+    pub async fn list_event_keys_by_prefix(
+        &self,
+        thread_ref: ThreadRef,
+        options: EventKeyPageQuery,
+    ) -> OpResult<EventKeyPage> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            intake_stream::list_event_keys_by_prefix(thread_ref, options).await
+        })
         .await
     }
 

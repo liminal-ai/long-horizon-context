@@ -932,10 +932,14 @@ def classify() -> int:
         # slice 4 (walk/settle/parts/protection/cap/entry/exclusivity,
         # install drift recompute) adds 26 → 779; slice 5 (TS oracle replay)
         # adds 1 → 780; steward correction (install boundary forward
-        # resolution: 2 ported seam tests) → 782. Keep this
+        # resolution: 2 ported seam tests) → 782. Measured at the LIM-133 base
+        # (b408f897) the tree already reported 784 — the literal had lagged by
+        # two again. LIM-133 (bounded/non-copying/read-mostly opens) adds 49:
+        # thread_validation 15, bounded_projections 20, read_mostly_open 10,
+        # validation_no_snapshot 4 → 833. Keep this
         # exact-count ledger in lockstep with cargo --features test-util.
         if (
-            len(buckets["passed"]) != 782
+            len(buckets["passed"]) != 833
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -943,7 +947,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=782 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=833 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")

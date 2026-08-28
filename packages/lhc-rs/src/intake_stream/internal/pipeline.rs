@@ -431,3 +431,406 @@ pub async fn run_list_events(thread_ref: ThreadRef) -> OpResult<Vec<EventRecord>
         Err(panic) => storage_failure(&format!("event read-back failed: {}", panic_detail(panic))),
     }
 }
+
+// ── Bounded archive projections ───────────────────────────────────────────
+//
+// TS parity: packages/lhc/src/intake-stream/internal/pipeline.ts. run_list_events
+// above is the explicit full-archive read; the projections below are the
+// bounded alternative for consumers that only need durable position or a
+// finite, caller-named slice of the key space. Every statement selects
+// indexed, non-payload columns only, and every result set is constant-sized or
+// O(caller input).
+//
+// event.idempotency_key is UNIQUE (sqlite_autoindex_event_1) and event_order is
+// the rowid, so a key-prefix range is an index range whose entries already
+// carry the order — no payload is read or parsed on any of these paths.
+
+use super::super::{
+    EventKeyPage, EventKeyPageQuery, EventKeyPrefixCount, EventKeyReference, ThreadFrontier,
+};
+
+/// Constant-row frontier statements. No payload column, no history-wide COUNT.
+pub const FRONTIER_METADATA_SQL: &str =
+    "SELECT thread_id, created_at FROM thread_metadata WHERE id = 1";
+pub const FRONTIER_LAST_EVENT_SQL: &str =
+    "SELECT event_order, recorded_at FROM event ORDER BY event_order DESC LIMIT 1";
+pub const FRONTIER_VIEW_BOUNDARY_SQL: &str =
+    "SELECT position FROM view_boundary WHERE thread_singleton = 1";
+
+/// Hard per-page row cap for the legacy prefix listing.
+pub const LEGACY_KEY_PAGE_LIMIT: i64 = 200;
+/// Named total cap on rows one cursor walk may traverse for a single prefix.
+pub const LEGACY_KEY_TOTAL_LOOKUP_CAP: i64 = 2000;
+
+fn invalid_bounds(reason: &str) -> ErrorResult {
+    ErrorResult {
+        error_class: ErrorClass::CallerError,
+        code: ErrorCode::InvalidBounds,
+        reason: reason.to_string(),
+        event_index: None,
+    }
+}
+
+/// Least string strictly greater than every string carrying `prefix`.
+///
+/// SQLite's BINARY collation compares UTF-8 bytes and UTF-8 byte order equals
+/// code-point order, so incrementing the final code point — skipping the
+/// surrogate gap, carrying past U+10FFFF — makes [prefix, upper) contain
+/// exactly the prefixed keys. `None` means "no upper bound exists" (prefix is
+/// all U+10FFFF); the range is then open-ended, which is still exact because
+/// nothing sorts above it.
+pub fn prefix_upper_bound(prefix: &str) -> Option<String> {
+    let points: Vec<char> = prefix.chars().collect();
+    for index in (0..points.len()).rev() {
+        let code_point = points[index] as u32;
+        if code_point >= 0x10ffff {
+            continue; // carry into the previous position
+        }
+        let mut next = code_point + 1;
+        if (0xd800..=0xdfff).contains(&next) {
+            next = 0xe000;
+        }
+        let mut upper: String = points[..index].iter().collect();
+        upper.push(char::from_u32(next).expect("incremented scalar value"));
+        return Some(upper);
+    }
+    None
+}
+
+// A prefix must be non-empty: an empty prefix is the whole archive, which is
+// list_events' explicit job. (TS additionally rejects lone surrogates; a Rust
+// `str` cannot hold one, so that case is unrepresentable here.)
+fn validate_prefix(prefix: &str) -> Option<ErrorResult> {
+    if prefix.is_empty() {
+        return Some(invalid_bounds(
+            "prefix must be a non-empty string; use listEvents for the full archive",
+        ));
+    }
+    None
+}
+
+/// TS `runThreadFrontier`.
+pub async fn run_thread_frontier(thread_ref: ThreadRef) -> OpResult<ThreadFrontier> {
+    if let Some(error) = validate_thread_ref(&thread_ref_value(&thread_ref)) {
+        return OpResult::Err { error };
+    }
+    let result =
+        std::panic::AssertUnwindSafe(create_db_read_transaction(thread_ref, |transaction| {
+            Box::pin(async move {
+                let metadata = transaction
+                    .db
+                    .prepare(FRONTIER_METADATA_SQL)
+                    .get()
+                    .unwrap_or_else(|| panic!("thread_metadata row is missing"));
+                let thread_id = metadata
+                    .get("thread_id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("thread_metadata.thread_id missing"))
+                    .to_string();
+                let created_at = metadata
+                    .get("created_at")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_else(|| panic!("thread_metadata.created_at missing"))
+                    .to_string();
+                let last = transaction.db.prepare(FRONTIER_LAST_EVENT_SQL).get();
+                let boundary = transaction.db.prepare(FRONTIER_VIEW_BOUNDARY_SQL).get();
+                ThreadFrontier {
+                    thread_id,
+                    created_at,
+                    // 0 on an empty archive — same origin as the recorded
+                    // event counter.
+                    last_event_order: last
+                        .as_ref()
+                        .and_then(|row| row.get("event_order"))
+                        .and_then(json_as_i64)
+                        .unwrap_or(0),
+                    last_recorded_at: last
+                        .as_ref()
+                        .and_then(|row| row.get("recorded_at"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    view_boundary_position: boundary
+                        .as_ref()
+                        .and_then(|row| row.get("position"))
+                        .and_then(json_as_i64)
+                        .unwrap_or(0),
+                }
+            })
+        }));
+    match futures::FutureExt::catch_unwind(result).await {
+        Ok(OpResult::Ok { value }) => OpResult::Ok { value },
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(panic) => storage_failure(&format!(
+            "thread frontier read failed: {}",
+            panic_detail(panic)
+        )),
+    }
+}
+
+fn json_as_i64(value: &Value) -> Option<i64> {
+    match value {
+        Value::Number(n) => n
+            .as_i64()
+            .or_else(|| n.as_u64().map(|u| u as i64))
+            .or_else(|| n.as_f64().map(|f| f as i64)),
+        _ => None,
+    }
+}
+
+fn prefix_count_sql(bounded: bool) -> &'static str {
+    if bounded {
+        "SELECT COUNT(*) AS matches FROM event WHERE idempotency_key >= ? AND idempotency_key < ?"
+    } else {
+        "SELECT COUNT(*) AS matches FROM event WHERE idempotency_key >= ?"
+    }
+}
+
+/// TS `runEventKeyPrefixCounts`.
+pub async fn run_event_key_prefix_counts(
+    thread_ref: ThreadRef,
+    prefixes: &[String],
+) -> OpResult<Vec<EventKeyPrefixCount>> {
+    if let Some(error) = validate_thread_ref(&thread_ref_value(&thread_ref)) {
+        return OpResult::Err { error };
+    }
+    for prefix in prefixes {
+        if let Some(error) = validate_prefix(prefix) {
+            return OpResult::Err { error };
+        }
+    }
+    // Duplicates collapse to one queried, first-occurrence-ordered entry;
+    // overlapping prefixes stay independent (a key under both is counted by
+    // both), so the result is exactly one row per distinct input prefix.
+    let mut distinct: Vec<String> = Vec::new();
+    let mut seen: HashSet<&str> = HashSet::new();
+    for prefix in prefixes {
+        if seen.insert(prefix.as_str()) {
+            distinct.push(prefix.clone());
+        }
+    }
+    let result =
+        std::panic::AssertUnwindSafe(create_db_read_transaction(thread_ref, move |transaction| {
+            let distinct = distinct.clone();
+            Box::pin(async move {
+                let bounded = transaction.db.prepare(prefix_count_sql(true));
+                let open_ended = transaction.db.prepare(prefix_count_sql(false));
+                distinct
+                    .into_iter()
+                    .map(|prefix| {
+                        let upper = prefix_upper_bound(&prefix);
+                        let row = match &upper {
+                            Some(upper) => bounded.get_params(&[
+                                SqlParam::from(prefix.as_str()),
+                                SqlParam::from(upper.as_str()),
+                            ]),
+                            None => open_ended.get_params(&[SqlParam::from(prefix.as_str())]),
+                        };
+                        let count = row
+                            .as_ref()
+                            .and_then(|row| row.get("matches"))
+                            .and_then(json_as_i64)
+                            .unwrap_or(0);
+                        EventKeyPrefixCount {
+                            prefix,
+                            exists: count > 0,
+                            count,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+        }));
+    match futures::FutureExt::catch_unwind(result).await {
+        Ok(OpResult::Ok { value }) => OpResult::Ok { value },
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(panic) => storage_failure(&format!(
+            "event key prefix count failed: {}",
+            panic_detail(panic)
+        )),
+    }
+}
+
+// "<traversed>:<lastKey>" — decimal count, first colon delimits, raw key tail.
+// Byte-identical to construct and parse in either port; carries the traversed
+// total so the lookup cap needs no server-side state.
+fn encode_key_cursor(traversed: i64, last_key: &str) -> String {
+    format!("{traversed}:{last_key}")
+}
+
+fn decode_key_cursor(cursor: &str, prefix: &str) -> Result<(i64, String), ErrorResult> {
+    let malformed = || invalid_bounds(&format!("cursor is malformed: {cursor}"));
+    let Some(split) = cursor.find(':') else {
+        return Err(malformed());
+    };
+    if split == 0 {
+        return Err(malformed());
+    }
+    let traversed_text = &cursor[..split];
+    if !traversed_text.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(malformed());
+    }
+    let Ok(traversed) = traversed_text.parse::<i64>() else {
+        return Err(malformed());
+    };
+    let last_key = &cursor[split + 1..];
+    if !last_key.starts_with(prefix) {
+        return Err(invalid_bounds("cursor belongs to a different prefix walk"));
+    }
+    Ok((traversed, last_key.to_string()))
+}
+
+fn page_sql(from_inclusive: bool, bounded: bool) -> String {
+    let comparison = if from_inclusive { ">=" } else { ">" };
+    let upper = if bounded {
+        " AND idempotency_key < ?"
+    } else {
+        ""
+    };
+    format!(
+        "SELECT idempotency_key, event_order FROM event
+     WHERE idempotency_key {comparison} ?{upper}
+     ORDER BY idempotency_key ASC LIMIT ?"
+    )
+}
+
+/// Exported for the structural bound assertions; not a caller surface.
+pub fn page_sql_shapes() -> Vec<String> {
+    vec![
+        page_sql(true, true),
+        page_sql(true, false),
+        page_sql(false, true),
+        page_sql(false, false),
+    ]
+}
+
+/// TS `runListEventKeysByPrefix`.
+pub async fn run_list_event_keys_by_prefix(
+    thread_ref: ThreadRef,
+    options: EventKeyPageQuery,
+) -> OpResult<EventKeyPage> {
+    if let Some(error) = validate_thread_ref(&thread_ref_value(&thread_ref)) {
+        return OpResult::Err { error };
+    }
+    if let Some(error) = validate_prefix(&options.prefix) {
+        return OpResult::Err { error };
+    }
+    // A limit above the hard page cap is refused, never silently clamped: a
+    // caller that asked for more than the cap must see that it cannot have it.
+    let limit = options.limit.unwrap_or(LEGACY_KEY_PAGE_LIMIT);
+    if limit < 1 {
+        return OpResult::Err {
+            error: invalid_bounds(&format!(
+                "limit must be an integer of at least 1, got {limit}"
+            )),
+        };
+    }
+    if limit > LEGACY_KEY_PAGE_LIMIT {
+        return OpResult::Err {
+            error: invalid_bounds(&format!(
+                "limit must not exceed LEGACY_KEY_PAGE_LIMIT ({LEGACY_KEY_PAGE_LIMIT}), got {limit}"
+            )),
+        };
+    }
+    let mut traversed = 0i64;
+    let mut last_key: Option<String> = None;
+    if let Some(cursor) = options.cursor.as_deref() {
+        match decode_key_cursor(cursor, &options.prefix) {
+            Ok((walked, key)) => {
+                traversed = walked;
+                last_key = Some(key);
+            }
+            Err(error) => return OpResult::Err { error },
+        }
+    }
+    let lower = options.prefix.clone();
+    let upper = prefix_upper_bound(&options.prefix);
+
+    let result =
+        std::panic::AssertUnwindSafe(create_db_read_transaction(thread_ref, move |transaction| {
+            let lower = lower.clone();
+            let upper = upper.clone();
+            let last_key = last_key.clone();
+            Box::pin(async move {
+                let remaining = LEGACY_KEY_TOTAL_LOOKUP_CAP - traversed;
+                if remaining <= 0 {
+                    // Degraded truth: the walk is over, and it did not reach
+                    // the end.
+                    return EventKeyPage {
+                        keys: Vec::new(),
+                        cursor: None,
+                        complete: false,
+                        cap_exhausted: true,
+                    };
+                }
+                let page_size = limit.min(remaining);
+                let statement = transaction
+                    .db
+                    .prepare(&page_sql(last_key.is_none(), upper.is_some()));
+                let from = last_key.clone().unwrap_or(lower);
+                // One extra row distinguishes "page full" from "prefix
+                // exhausted".
+                let params: Vec<SqlParam> = match &upper {
+                    Some(upper) => vec![
+                        SqlParam::from(from.as_str()),
+                        SqlParam::from(upper.as_str()),
+                        SqlParam::from(page_size + 1),
+                    ],
+                    None => vec![SqlParam::from(from.as_str()), SqlParam::from(page_size + 1)],
+                };
+                let rows = statement.all(&params);
+                let page_len = rows.len().min(page_size as usize);
+                let keys: Vec<EventKeyReference> = rows[..page_len]
+                    .iter()
+                    .map(|row| EventKeyReference {
+                        idempotency_key: row
+                            .get("idempotency_key")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_else(|| panic!("event.idempotency_key missing"))
+                            .to_string(),
+                        event_order: row
+                            .get("event_order")
+                            .and_then(json_as_i64)
+                            .unwrap_or_else(|| panic!("event.event_order missing")),
+                    })
+                    .collect();
+                let has_more = rows.len() > page_len;
+                let walked = traversed + keys.len() as i64;
+                if !has_more {
+                    return EventKeyPage {
+                        keys,
+                        cursor: None,
+                        complete: true,
+                        cap_exhausted: false,
+                    };
+                }
+                if walked >= LEGACY_KEY_TOTAL_LOOKUP_CAP {
+                    return EventKeyPage {
+                        keys,
+                        cursor: None,
+                        complete: false,
+                        cap_exhausted: true,
+                    };
+                }
+                let cursor = encode_key_cursor(
+                    walked,
+                    &keys
+                        .last()
+                        .expect("a full page has a last row")
+                        .idempotency_key,
+                );
+                EventKeyPage {
+                    keys,
+                    cursor: Some(cursor),
+                    complete: false,
+                    cap_exhausted: false,
+                }
+            })
+        }));
+    match futures::FutureExt::catch_unwind(result).await {
+        Ok(OpResult::Ok { value }) => OpResult::Ok { value },
+        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Err(panic) => storage_failure(&format!(
+            "event key prefix listing failed: {}",
+            panic_detail(panic)
+        )),
+    }
+}
