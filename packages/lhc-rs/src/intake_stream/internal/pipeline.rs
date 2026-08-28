@@ -649,33 +649,164 @@ pub async fn run_event_key_prefix_counts(
     }
 }
 
-// "<traversed>:<lastKey>" — decimal count, first colon delimits, raw key tail.
-// Byte-identical to construct and parse in either port; carries the traversed
-// total so the lookup cap needs no server-side state.
-fn encode_key_cursor(traversed: i64, last_key: &str) -> String {
-    format!("{traversed}:{last_key}")
+// ── Continuation cursor ──────────────────────────────────────────────────
+//
+// Wire form: "v1:<snapshot>:<traversed>:<lastKey>" — version literal, decimal
+// snapshot frontier, decimal traversed rank, raw key tail after the third
+// colon. Identical to build and parse in either port.
+//
+// The cursor is an integrity token, not an authorization token: it carries no
+// secret and needs none, because every field it claims is re-checked against
+// the database inside the continuation's own read transaction. A caller may
+// hand back any string; only one that the witness confirms — the exact
+// snapshot still exists, the key is still present under the exact prefix
+// within it, and its rank from the prefix start equals the traversed count —
+// continues a walk. Anything else refuses as invalid_bounds, so a forged or
+// stale cursor can never skip a live key or extend a walk past the cap.
+const KEY_CURSOR_VERSION: &str = "v1";
+
+// Largest integer both ports carry exactly (TS Number.MAX_SAFE_INTEGER): a
+// cursor integer above it is refused here as it is there, so the two ports
+// decode every cursor identically.
+const MAX_EXACT_CURSOR_INTEGER: i64 = 9_007_199_254_740_991;
+
+/// Snapshot frontier for one walk: the newest event order the first page could
+/// see. An index endpoint read (event_order is the rowid), not a history count.
+pub const KEY_WALK_SNAPSHOT_SQL: &str =
+    "SELECT event_order FROM event ORDER BY event_order DESC LIMIT 1";
+
+/// Bounded rank/existence witness for a continuation cursor.
+///
+/// The inner LIMIT is [`LEGACY_KEY_TOTAL_LOOKUP_CAP`], so the statement
+/// examines at most that many indexed, non-payload entries — never a
+/// history-wide count. `rank` is the cursor key's exact 1-based position from
+/// the prefix start within the snapshot; `last_key` equals the cursor key
+/// exactly when the key is still present there and its rank is inside the cap.
+///
+/// No upper prefix bound is needed: `last_key` carries the prefix, so every key
+/// in [prefix, last_key] carries it too.
+pub const KEY_CURSOR_WITNESS_SQL: &str =
+    "SELECT COUNT(*) AS rank, MAX(idempotency_key) AS last_key FROM
+     (SELECT idempotency_key FROM event
+       WHERE idempotency_key >= ? AND idempotency_key <= ? AND event_order <= ?
+       ORDER BY idempotency_key ASC LIMIT ?)";
+
+#[derive(Debug, Clone)]
+struct KeyCursor {
+    snapshot: i64,
+    traversed: i64,
+    last_key: String,
 }
 
-fn decode_key_cursor(cursor: &str, prefix: &str) -> Result<(i64, String), ErrorResult> {
+fn encode_key_cursor(snapshot: i64, traversed: i64, last_key: &str) -> String {
+    format!("{KEY_CURSOR_VERSION}:{snapshot}:{traversed}:{last_key}")
+}
+
+// Digits only, and inside the range both ports represent exactly: a value the
+// other port could not hold is refused here rather than silently truncated.
+fn decode_cursor_integer(text: &str) -> Option<i64> {
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let value = text.parse::<i64>().ok()?;
+    if !(0..=MAX_EXACT_CURSOR_INTEGER).contains(&value) {
+        return None;
+    }
+    Some(value)
+}
+
+fn decode_key_cursor(cursor: &str, prefix: &str) -> Result<KeyCursor, ErrorResult> {
     let malformed = || invalid_bounds(&format!("cursor is malformed: {cursor}"));
-    let Some(split) = cursor.find(':') else {
+    let Some(version) = cursor.find(':') else {
         return Err(malformed());
     };
-    if split == 0 {
+    if &cursor[..version] != KEY_CURSOR_VERSION {
         return Err(malformed());
     }
-    let traversed_text = &cursor[..split];
-    if !traversed_text.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(malformed());
-    }
-    let Ok(traversed) = traversed_text.parse::<i64>() else {
+    let Some(after_snapshot) = cursor[version + 1..].find(':').map(|at| version + 1 + at) else {
         return Err(malformed());
     };
-    let last_key = &cursor[split + 1..];
+    let Some(after_traversed) = cursor[after_snapshot + 1..]
+        .find(':')
+        .map(|at| after_snapshot + 1 + at)
+    else {
+        return Err(malformed());
+    };
+    let Some(snapshot) = decode_cursor_integer(&cursor[version + 1..after_snapshot]) else {
+        return Err(malformed());
+    };
+    let Some(traversed) = decode_cursor_integer(&cursor[after_snapshot + 1..after_traversed])
+    else {
+        return Err(malformed());
+    };
+    // A walk that returned nothing emits no cursor, and no walk may claim more
+    // rows than the total cap allows.
+    if !(1..=LEGACY_KEY_TOTAL_LOOKUP_CAP).contains(&traversed) {
+        return Err(invalid_bounds(&format!(
+            "cursor traversed count must be 1..{LEGACY_KEY_TOTAL_LOOKUP_CAP}, got {traversed}"
+        )));
+    }
+    let last_key = &cursor[after_traversed + 1..];
     if !last_key.starts_with(prefix) {
         return Err(invalid_bounds("cursor belongs to a different prefix walk"));
     }
-    Ok((traversed, last_key.to_string()))
+    Ok(KeyCursor {
+        snapshot,
+        traversed,
+        last_key: last_key.to_string(),
+    })
+}
+
+// Database witness for a decoded cursor, run inside the continuation's own
+// read transaction. Refuses — never skips — on a snapshot the archive cannot
+// have produced, a key absent from that snapshot, a rank past the cap, or a
+// rank that disagrees with the claimed traversed count.
+fn witness_key_cursor(
+    db: &Db,
+    prefix: &str,
+    cursor: &KeyCursor,
+    frontier: i64,
+) -> Option<ErrorResult> {
+    if cursor.snapshot > frontier {
+        return Some(invalid_bounds(&format!(
+            "cursor snapshot {} is ahead of the thread frontier {frontier}",
+            cursor.snapshot
+        )));
+    }
+    let row = db.prepare(KEY_CURSOR_WITNESS_SQL).get_params(&[
+        SqlParam::from(prefix),
+        SqlParam::from(cursor.last_key.as_str()),
+        SqlParam::from(cursor.snapshot),
+        SqlParam::from(LEGACY_KEY_TOTAL_LOOKUP_CAP),
+    ]);
+    let rank = row
+        .as_ref()
+        .and_then(|row| row.get("rank"))
+        .and_then(json_as_i64)
+        .unwrap_or(0);
+    let witnessed = row
+        .as_ref()
+        .and_then(|row| row.get("last_key"))
+        .and_then(|value| value.as_str());
+    if witnessed != Some(cursor.last_key.as_str()) {
+        if rank >= LEGACY_KEY_TOTAL_LOOKUP_CAP {
+            return Some(invalid_bounds(&format!(
+                "cursor rank exceeds LEGACY_KEY_TOTAL_LOOKUP_CAP ({LEGACY_KEY_TOTAL_LOOKUP_CAP}): {}",
+                cursor.last_key
+            )));
+        }
+        return Some(invalid_bounds(&format!(
+            "cursor key is not in this walk's snapshot: {}",
+            cursor.last_key
+        )));
+    }
+    if rank != cursor.traversed {
+        return Some(invalid_bounds(&format!(
+            "cursor traversed count {} does not match its rank {rank}",
+            cursor.traversed
+        )));
+    }
+    None
 }
 
 fn page_sql(from_inclusive: bool, bounded: bool) -> String {
@@ -685,9 +816,13 @@ fn page_sql(from_inclusive: bool, bounded: bool) -> String {
     } else {
         ""
     };
+    // event_order <= ? pins the page to the walk's snapshot: rows appended
+    // after the first page — lexicographically earlier or later — are outside
+    // it, so a walk neither skips a key it should have returned nor absorbs a
+    // later one.
     format!(
         "SELECT idempotency_key, event_order FROM event
-     WHERE idempotency_key {comparison} ?{upper}
+     WHERE idempotency_key {comparison} ?{upper} AND event_order <= ?
      ORDER BY idempotency_key ASC LIMIT ?"
     )
 }
@@ -730,36 +865,58 @@ pub async fn run_list_event_keys_by_prefix(
             )),
         };
     }
-    let mut traversed = 0i64;
-    let mut last_key: Option<String> = None;
+    let mut decoded: Option<KeyCursor> = None;
     if let Some(cursor) = options.cursor.as_deref() {
         match decode_key_cursor(cursor, &options.prefix) {
-            Ok((walked, key)) => {
-                traversed = walked;
-                last_key = Some(key);
-            }
+            Ok(parsed) => decoded = Some(parsed),
             Err(error) => return OpResult::Err { error },
         }
     }
     let lower = options.prefix.clone();
     let upper = prefix_upper_bound(&options.prefix);
+    let prefix = options.prefix.clone();
 
     let result =
         std::panic::AssertUnwindSafe(create_db_read_transaction(thread_ref, move |transaction| {
             let lower = lower.clone();
             let upper = upper.clone();
-            let last_key = last_key.clone();
+            let prefix = prefix.clone();
+            let decoded = decoded.clone();
             Box::pin(async move {
+                // Snapshot frontier for this walk, captured in this read
+                // transaction: page one defines it, every continuation is
+                // re-restricted to it.
+                let frontier = transaction
+                    .db
+                    .prepare(KEY_WALK_SNAPSHOT_SQL)
+                    .get()
+                    .as_ref()
+                    .and_then(|row| row.get("event_order"))
+                    .and_then(json_as_i64)
+                    .unwrap_or(0);
+                let mut snapshot = frontier;
+                let mut traversed = 0i64;
+                let mut last_key: Option<String> = None;
+                if let Some(cursor) = decoded.as_ref() {
+                    if let Some(error) =
+                        witness_key_cursor(transaction.db, &prefix, cursor, frontier)
+                    {
+                        return Err(error);
+                    }
+                    snapshot = cursor.snapshot;
+                    traversed = cursor.traversed;
+                    last_key = Some(cursor.last_key.clone());
+                }
                 let remaining = LEGACY_KEY_TOTAL_LOOKUP_CAP - traversed;
                 if remaining <= 0 {
                     // Degraded truth: the walk is over, and it did not reach
                     // the end.
-                    return EventKeyPage {
+                    return Ok(EventKeyPage {
                         keys: Vec::new(),
                         cursor: None,
                         complete: false,
                         cap_exhausted: true,
-                    };
+                    });
                 }
                 let page_size = limit.min(remaining);
                 let statement = transaction
@@ -772,9 +929,14 @@ pub async fn run_list_event_keys_by_prefix(
                     Some(upper) => vec![
                         SqlParam::from(from.as_str()),
                         SqlParam::from(upper.as_str()),
+                        SqlParam::from(snapshot),
                         SqlParam::from(page_size + 1),
                     ],
-                    None => vec![SqlParam::from(from.as_str()), SqlParam::from(page_size + 1)],
+                    None => vec![
+                        SqlParam::from(from.as_str()),
+                        SqlParam::from(snapshot),
+                        SqlParam::from(page_size + 1),
+                    ],
                 };
                 let rows = statement.all(&params);
                 let page_len = rows.len().min(page_size as usize);
@@ -795,39 +957,45 @@ pub async fn run_list_event_keys_by_prefix(
                 let has_more = rows.len() > page_len;
                 let walked = traversed + keys.len() as i64;
                 if !has_more {
-                    return EventKeyPage {
+                    // Complete for this walk's snapshot: everything under the
+                    // prefix that existed when the walk started has been
+                    // returned.
+                    return Ok(EventKeyPage {
                         keys,
                         cursor: None,
                         complete: true,
                         cap_exhausted: false,
-                    };
+                    });
                 }
                 if walked >= LEGACY_KEY_TOTAL_LOOKUP_CAP {
-                    return EventKeyPage {
+                    return Ok(EventKeyPage {
                         keys,
                         cursor: None,
                         complete: false,
                         cap_exhausted: true,
-                    };
+                    });
                 }
                 let cursor = encode_key_cursor(
+                    snapshot,
                     walked,
                     &keys
                         .last()
                         .expect("a full page has a last row")
                         .idempotency_key,
                 );
-                EventKeyPage {
+                Ok(EventKeyPage {
                     keys,
                     cursor: Some(cursor),
                     complete: false,
                     cap_exhausted: false,
-                }
+                })
             })
         }));
     match futures::FutureExt::catch_unwind(result).await {
-        Ok(OpResult::Ok { value }) => OpResult::Ok { value },
-        Ok(OpResult::Err { error }) => OpResult::Err { error },
+        Ok(OpResult::Ok { value: Ok(page) }) => OpResult::Ok { value: page },
+        Ok(OpResult::Ok { value: Err(error) }) | Ok(OpResult::Err { error }) => {
+            OpResult::Err { error }
+        }
         Err(panic) => storage_failure(&format!(
             "event key prefix listing failed: {}",
             panic_detail(panic)

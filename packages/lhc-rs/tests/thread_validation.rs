@@ -14,7 +14,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use fixtures::{open_raw, temp_store};
 use lhc::shared_tech::errors::{ErrorClass, ErrorCode, OpResult};
@@ -104,6 +104,18 @@ fn event_key_count(file_path: &str, key: &str) -> i64 {
     count
 }
 
+/// `busy` column of a PASSIVE checkpoint on `db`.
+///
+/// PASSIVE checkpoints never wait for readers or writers; SQLite reports
+/// `busy = 1` only when it cannot take the exclusive checkpointer lock, i.e.
+/// when another checkpoint is in flight on the same file.
+fn passive_checkpoint_busy(db: &lhc::shared_tech::storage::Db) -> i64 {
+    db.prepare("PRAGMA wal_checkpoint(PASSIVE);")
+        .get()
+        .and_then(|row| row.get("busy").and_then(|value| value.as_i64()))
+        .expect("wal_checkpoint reports a busy column")
+}
+
 const OVERLAP_INSERT_SQL: &str = "INSERT INTO event
      (event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at)
      VALUES (?, 'runtime_note', ?, 'overlap', 'overlap', ?, '2020-01-01T00:00:00.000Z')";
@@ -122,11 +134,14 @@ const OVERLAP_INSERT_SQL: &str = "INSERT INTO event
 /// coherent committed snapshot (the in-flight row is not visible).
 ///
 /// Phase B pins a read snapshot, commits a newer event into the WAL behind it,
-/// and starts `wal_checkpoint(TRUNCATE)` on another connection. The checkpoint
-/// cannot finish while the reader pins those frames — proven by a bounded
-/// done-channel timeout used purely as synchronization — so the validation in
-/// between provably runs with the checkpoint in flight. Releasing the reader
-/// must let the checkpoint complete, which the zero-length WAL confirms.
+/// and starts `wal_checkpoint(TRUNCATE)` on another connection. That the
+/// checkpoint is genuinely in flight is established by SQLite itself: a second,
+/// PASSIVE checkpoint probe — which never waits on readers or writers — reports
+/// `busy = 1`, which can only mean the TRUNCATE checkpoint holds the exclusive
+/// checkpointer lock. The same probe reports `busy = 0` beforehand, with the
+/// reader already pinned, so the witness is about the checkpoint and not the
+/// reader. Validation runs in that window. Releasing the reader must let the
+/// checkpoint complete, which the zero-length WAL confirms.
 #[tokio::test]
 async fn survives_concurrent_appends_and_checkpoints_without_a_false_identity() {
     let store = temp_store();
@@ -204,6 +219,18 @@ async fn survives_concurrent_appends_and_checkpoints_without_a_false_identity() 
     ]);
     appender.close();
 
+    // Control for the probe below: with only the pinned reader in the way, a
+    // PASSIVE checkpoint is never busy — it copies what it can and reports
+    // busy = 0. So a busy PASSIVE probe can only mean the checkpointer lock is
+    // held by someone else.
+    let probe = open_raw(&file_path);
+    probe.exec("PRAGMA busy_timeout = 0;");
+    assert_eq!(
+        passive_checkpoint_busy(&probe),
+        0,
+        "a pinned reader alone must not make a PASSIVE checkpoint report busy"
+    );
+
     let (start_tx, start_rx) = mpsc::channel::<()>();
     let (done_tx, done_rx) = mpsc::channel::<()>();
     let checkpointer = {
@@ -218,12 +245,26 @@ async fn survives_concurrent_appends_and_checkpoints_without_a_false_identity() 
     };
     start_tx.send(()).expect("start checkpoint");
 
-    // Synchronization, not a benchmark: the checkpoint cannot complete while
-    // the reader pins older frames, so this must not resolve.
+    // Decisive lock witness: a TRUNCATE checkpoint takes SQLite's exclusive
+    // CHECKPOINTER lock first and holds it while it waits for the pinned
+    // reader's frames. A PASSIVE checkpoint never waits for readers or
+    // writers, so the only thing that can make this probe report busy is that
+    // lock being held — the TRUNCATE checkpoint is in flight, right now. The
+    // retry deadline guards liveness only; `busy == 1` is the acceptance fact.
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let mut checkpoint_lock_held = false;
+    while Instant::now() < deadline {
+        if passive_checkpoint_busy(&probe) == 1 {
+            checkpoint_lock_held = true;
+            break;
+        }
+        thread::sleep(Duration::from_millis(1));
+    }
     assert!(
-        done_rx.recv_timeout(Duration::from_millis(750)).is_err(),
-        "a TRUNCATE checkpoint must still be in flight while a reader pins WAL frames"
+        checkpoint_lock_held,
+        "the TRUNCATE checkpointer must hold sqlite's checkpoint lock while the reader pins WAL frames"
     );
+    probe.close();
 
     let opened = open_thread_database(&file_path);
     assert!(
@@ -240,6 +281,7 @@ async fn survives_concurrent_appends_and_checkpoints_without_a_false_identity() 
 
     reader.exec("ROLLBACK;");
     reader.close();
+    // Liveness guard only; the checkpoint's effect is asserted below.
     done_rx
         .recv_timeout(Duration::from_secs(30))
         .expect("the checkpoint must complete once the pinned reader releases");

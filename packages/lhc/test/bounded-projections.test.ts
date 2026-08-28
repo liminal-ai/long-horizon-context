@@ -20,6 +20,8 @@ import {
   FRONTIER_LAST_EVENT_SQL,
   FRONTIER_METADATA_SQL,
   FRONTIER_VIEW_BOUNDARY_SQL,
+  KEY_CURSOR_WITNESS_SQL,
+  KEY_WALK_SNAPSHOT_SQL,
   PAGE_SQL_SHAPES,
   prefixUpperBound,
 } from "../src/intake-stream/internal/pipeline.js";
@@ -34,6 +36,22 @@ function keyedNote(key: string): MessageEventInput {
 // exactOptionalPropertyTypes: an absent cursor must be omitted, not undefined.
 function pageQuery(prefix: string, limit: number, cursor?: string): intakeStream.EventKeyPageQuery {
   return cursor === undefined ? { prefix, limit } : { prefix, limit, cursor };
+}
+
+// "v1:<snapshot>:<traversed>:<lastKey>" — split so a test can tamper with one
+// field of an otherwise authentic, server-issued cursor.
+function cursorParts(cursor: string): { snapshot: string; traversed: string; lastKey: string } {
+  const [version, snapshot, traversed, ...rest] = cursor.split(":");
+  expect(version).toBe("v1");
+  return { snapshot: snapshot as string, traversed: traversed as string, lastKey: rest.join(":") };
+}
+
+function retamper(
+  cursor: string,
+  overrides: Partial<{ snapshot: string; traversed: string; lastKey: string }>,
+): string {
+  const parts = { ...cursorParts(cursor), ...overrides };
+  return `v1:${parts.snapshot}:${parts.traversed}:${parts.lastKey}`;
 }
 
 describe("bounded archive projections", () => {
@@ -239,32 +257,47 @@ describe("bounded archive projections", () => {
       expect(seen[total - 1]).toBe("legacy:024");
     });
 
-    it("keeps already-returned rows stable when new keys are appended mid-walk", async () => {
+    it("excludes keys appended mid-walk — earlier or later — from that walk's snapshot", async () => {
       const first = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", limit: 10 });
       expect(first.ok).toBe(true);
       if (!first.ok || first.value.cursor === null) throw new Error("expected a continuation");
 
+      // One key sorts before the cursor's last returned key (legacy:009) and
+      // one sorts after every seeded key: neither may enter this walk, and the
+      // earlier one must not be silently skipped over either.
       const appended = await sdk.intakeStream.messageEvents({ filePath }, [
+        keyedNote("legacy:0055"),
         keyedNote("legacy:900"),
-        keyedNote("legacy:901"),
       ]);
       expect(appended.ok).toBe(true);
 
-      const rest: string[] = [];
+      const seen = first.value.keys.map((entry) => entry.idempotencyKey);
       let cursor: string | undefined = first.value.cursor;
+      let complete = false;
       while (cursor !== undefined) {
         const page = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, pageQuery("legacy:", 10, cursor));
         expect(page.ok).toBe(true);
         if (!page.ok) return;
-        rest.push(...page.value.keys.map((entry) => entry.idempotencyKey));
+        seen.push(...page.value.keys.map((entry) => entry.idempotencyKey));
+        complete = page.value.complete;
         cursor = page.value.cursor ?? undefined;
       }
-      const firstKeys = first.value.keys.map((entry) => entry.idempotencyKey);
-      // No page repeats an earlier row, and the appended keys land after them.
-      expect(firstKeys.some((key) => rest.includes(key))).toBe(false);
-      expect(rest).toContain("legacy:900");
-      expect(rest).toContain("legacy:901");
-      expect([...firstKeys, ...rest]).toEqual([...firstKeys, ...rest].sort());
+      // Exactly the snapshot, in order, with nothing omitted and nothing added.
+      expect(seen).toEqual(Array.from({ length: total }, (_, i) => `legacy:${String(i).padStart(3, "0")}`));
+      expect(complete).toBe(true);
+
+      // The appends are in the archive — they simply belong to a later walk.
+      const fresh = await sdk.intakeStream.listEventKeysByPrefix(
+        { filePath },
+        { prefix: "legacy:", limit: LEGACY_KEY_PAGE_LIMIT },
+      );
+      expect(fresh.ok).toBe(true);
+      if (!fresh.ok) return;
+      const freshKeys = fresh.value.keys.map((entry) => entry.idempotencyKey);
+      expect(fresh.value.complete).toBe(true);
+      expect(freshKeys.length).toBe(total + 2);
+      expect(freshKeys).toContain("legacy:0055");
+      expect(freshKeys).toContain("legacy:900");
     });
 
     it("returns the archive position with each key and never a payload", async () => {
@@ -278,7 +311,15 @@ describe("bounded archive projections", () => {
       for (const sql of PAGE_SQL_SHAPES) {
         expect(sql).not.toMatch(/payload/);
         expect(sql).toMatch(/LIMIT \?/);
+        // Every page is pinned to the walk's snapshot.
+        expect(sql).toMatch(/event_order <= \?/);
       }
+      // The cursor witness is indexed, non-payload and bounded by the total
+      // lookup cap: it never counts the whole history.
+      expect(KEY_CURSOR_WITNESS_SQL).not.toMatch(/payload/);
+      expect(KEY_CURSOR_WITNESS_SQL).toMatch(/LIMIT \?/);
+      expect(KEY_WALK_SNAPSHOT_SQL).not.toMatch(/payload/);
+      expect(KEY_WALK_SNAPSHOT_SQL).toMatch(/ORDER BY event_order DESC LIMIT 1$/);
     });
 
     it("refuses a limit above the hard page cap instead of clamping", async () => {
@@ -301,12 +342,38 @@ describe("bounded archive projections", () => {
       }
     });
 
-    it("refuses an empty prefix and a malformed or foreign cursor", async () => {
+    it("refuses an empty prefix and every malformed, foreign or out-of-range cursor", async () => {
       const empty = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "" });
       expect(empty.ok).toBe(false);
       if (!empty.ok) expect(empty.error.code).toBe("invalid_bounds");
 
-      for (const cursor of ["", "abc", ":legacy:001", "-1:legacy:001", "1e3:legacy:001"]) {
+      for (const cursor of [
+        "",
+        "abc",
+        // Pre-version grammar and wrong versions.
+        "3:legacy:001",
+        "1:5:legacy:001",
+        "v0:5:1:legacy:001",
+        "v2:5:1:legacy:001",
+        // Missing fields.
+        "v1:legacy:001",
+        "v1:5:legacy:001",
+        // Non-decimal, signed and exponent forms in either integer field.
+        "v1:x:1:legacy:001",
+        "v1:5:x:legacy:001",
+        "v1:-1:1:legacy:001",
+        "v1:5:-1:legacy:001",
+        "v1:1e3:1:legacy:001",
+        "v1:5:1e3:legacy:001",
+        // Traversed outside 1..cap.
+        "v1:5:0:legacy:001",
+        `v1:5:${LEGACY_KEY_TOTAL_LOOKUP_CAP + 1}:legacy:001`,
+        // First unsafe integer, and an overflowing one, in either field.
+        "v1:9007199254740992:1:legacy:001",
+        "v1:5:9007199254740992:legacy:001",
+        "v1:99999999999999999999:1:legacy:001",
+        "v1:5:99999999999999999999:legacy:001",
+      ]) {
         const bad = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", cursor });
         expect(bad.ok, `cursor ${JSON.stringify(cursor)} must be refused`).toBe(false);
         if (!bad.ok) expect(bad.error.code).toBe("invalid_bounds");
@@ -314,32 +381,63 @@ describe("bounded archive projections", () => {
 
       const foreign = await sdk.intakeStream.listEventKeysByPrefix(
         { filePath },
-        { prefix: "legacy:", cursor: "3:other:001" },
+        { prefix: "legacy:", cursor: "v1:25:3:other:001" },
       );
       expect(foreign.ok).toBe(false);
       if (!foreign.ok) expect(foreign.error.reason).toContain("different prefix");
     });
 
-    it("reports cap exhaustion as a degraded result, never as complete", async () => {
-      const nearCap = LEGACY_KEY_TOTAL_LOOKUP_CAP - 3;
-      const page = await sdk.intakeStream.listEventKeysByPrefix(
-        { filePath },
-        { prefix: "legacy:", limit: 10, cursor: `${nearCap}:legacy:000` },
-      );
-      expect(page.ok).toBe(true);
-      if (!page.ok) return;
-      expect(page.value.keys.length).toBe(3);
-      expect(page.value.capExhausted).toBe(true);
-      expect(page.value.complete).toBe(false);
-      expect(page.value.cursor).toBeNull();
+    it("refuses a cursor whose last key is absent from the snapshot", async () => {
+      const first = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", limit: 10 });
+      expect(first.ok).toBe(true);
+      if (!first.ok || first.value.cursor === null) throw new Error("expected a continuation");
 
-      const past = await sdk.intakeStream.listEventKeysByPrefix(
+      // Same authentic snapshot and count, a key that was never recorded: the
+      // continuation must refuse rather than resume past the missing key.
+      const forged = retamper(first.value.cursor, { lastKey: "legacy:250" });
+      const result = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", cursor: forged });
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("invalid_bounds");
+      expect(result.error.reason).toContain("not in this walk's snapshot");
+    });
+
+    it("refuses a reset or mismatched traversed count", async () => {
+      const first = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", limit: 10 });
+      expect(first.ok).toBe(true);
+      if (!first.ok || first.value.cursor === null) throw new Error("expected a continuation");
+      const authentic = first.value.cursor;
+      expect(cursorParts(authentic).traversed).toBe("10");
+
+      for (const traversed of ["0", "1", "9", "11", String(LEGACY_KEY_TOTAL_LOOKUP_CAP)]) {
+        const result = await sdk.intakeStream.listEventKeysByPrefix(
+          { filePath },
+          { prefix: "legacy:", cursor: retamper(authentic, { traversed }) },
+        );
+        expect(result.ok, `traversed ${traversed} must be refused`).toBe(false);
+        if (!result.ok) expect(result.error.code).toBe("invalid_bounds");
+      }
+
+      // The untouched cursor still works, so the refusals are about the count.
+      const honest = await sdk.intakeStream.listEventKeysByPrefix(
         { filePath },
-        { prefix: "legacy:", cursor: `${LEGACY_KEY_TOTAL_LOOKUP_CAP}:legacy:000` },
+        { prefix: "legacy:", cursor: authentic },
       );
-      expect(past.ok).toBe(true);
-      if (!past.ok) return;
-      expect(past.value).toEqual({ keys: [], cursor: null, complete: false, capExhausted: true });
+      expect(honest.ok).toBe(true);
+    });
+
+    it("refuses a cursor whose snapshot the archive never reached", async () => {
+      const first = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", limit: 10 });
+      expect(first.ok).toBe(true);
+      if (!first.ok || first.value.cursor === null) throw new Error("expected a continuation");
+      const result = await sdk.intakeStream.listEventKeysByPrefix(
+        { filePath },
+        { prefix: "legacy:", cursor: retamper(first.value.cursor, { snapshot: "999999" }) },
+      );
+      expect(result.ok).toBe(false);
+      if (result.ok) return;
+      expect(result.error.code).toBe("invalid_bounds");
+      expect(result.error.reason).toContain("ahead of the thread frontier");
     });
 
     it("completes rather than exhausting when the prefix ends inside the cap", async () => {
@@ -360,6 +458,72 @@ describe("bounded archive projections", () => {
       expect(page.ok).toBe(true);
       if (!page.ok) return;
       expect(page.value).toEqual({ keys: [], cursor: null, complete: true, capExhausted: false });
+    });
+  });
+
+  describe("total lookup cap at its exact boundary", () => {
+    // Seeded through the public intake API and walked with none but
+    // server-issued cursors: the cap is proven by real rows, not by a
+    // hand-written count no walk could ever have emitted.
+    async function seedKeys(from: number, toExclusive: number): Promise<void> {
+      for (let base = from; base < toExclusive; base += 250) {
+        const events = Array.from({ length: Math.min(250, toExclusive - base) }, (_, i) =>
+          keyedNote(`cap:${String(base + i).padStart(4, "0")}`),
+        );
+        const recorded = await sdk.intakeStream.messageEvents({ filePath }, events);
+        expect(recorded.ok).toBe(true);
+      }
+    }
+
+    async function walk(): Promise<intakeStream.EventKeyPage & { seen: string[] }> {
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      for (;;) {
+        const page = await sdk.intakeStream.listEventKeysByPrefix(
+          { filePath },
+          pageQuery("cap:", LEGACY_KEY_PAGE_LIMIT, cursor),
+        );
+        if (!page.ok) throw new Error(page.error.reason);
+        seen.push(...page.value.keys.map((entry) => entry.idempotencyKey));
+        if (page.value.cursor === null) return { ...page.value, seen };
+        cursor = page.value.cursor;
+      }
+    }
+
+    it("completes exactly at the cap and degrades one row past it", async () => {
+      await seedKeys(0, LEGACY_KEY_TOTAL_LOOKUP_CAP);
+      const exact = await walk();
+      expect(exact.seen.length).toBe(LEGACY_KEY_TOTAL_LOOKUP_CAP);
+      expect(new Set(exact.seen).size).toBe(LEGACY_KEY_TOTAL_LOOKUP_CAP);
+      expect(exact.complete).toBe(true);
+      expect(exact.capExhausted).toBe(false);
+      expect(exact.cursor).toBeNull();
+
+      // One more matching row: the walk must stop after the cap and say so.
+      await seedKeys(LEGACY_KEY_TOTAL_LOOKUP_CAP, LEGACY_KEY_TOTAL_LOOKUP_CAP + 1);
+      const over = await walk();
+      expect(over.seen.length).toBe(LEGACY_KEY_TOTAL_LOOKUP_CAP);
+      expect(over.complete).toBe(false);
+      expect(over.capExhausted).toBe(true);
+      expect(over.cursor).toBeNull();
+      expect(over.seen).not.toContain(`cap:${String(LEGACY_KEY_TOTAL_LOOKUP_CAP).padStart(4, "0")}`);
+
+      // A cursor pointing past the cap — authentic snapshot, real key, rank
+      // 2001 — is refused rather than resumed: no walk may reach that row.
+      const firstPage = await sdk.intakeStream.listEventKeysByPrefix(
+        { filePath },
+        { prefix: "cap:", limit: LEGACY_KEY_PAGE_LIMIT },
+      );
+      expect(firstPage.ok).toBe(true);
+      if (!firstPage.ok || firstPage.value.cursor === null) throw new Error("expected a continuation");
+      const beyondCap = retamper(firstPage.value.cursor, {
+        lastKey: `cap:${String(LEGACY_KEY_TOTAL_LOOKUP_CAP).padStart(4, "0")}`,
+      });
+      const refused = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "cap:", cursor: beyondCap });
+      expect(refused.ok).toBe(false);
+      if (refused.ok) return;
+      expect(refused.error.code).toBe("invalid_bounds");
+      expect(refused.error.reason).toContain("rank exceeds LEGACY_KEY_TOTAL_LOOKUP_CAP");
     });
   });
 

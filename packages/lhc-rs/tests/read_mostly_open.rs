@@ -327,20 +327,26 @@ async fn seeds_only_the_matching_item_when_matching_and_non_matching_rows_are_mi
     store.cleanup();
 }
 
-/// Two openers must contend for real on the same pending legacy repair.
+/// Two openers must both reach the contended repair transaction, and the file
+/// must converge to exactly one repaired state.
 ///
-/// A third connection pre-holds `BEGIN IMMEDIATE`, so neither opener can take
-/// the repair transaction. Each entrant first reads, from its own connection,
-/// the exact state the production read-only predicate reads (assembly row
-/// absent, payload still legacy), then all three threads meet at one `Barrier`
-/// immediately before `open_thread_database`, so both entrants are released
-/// toward the open together with the write lock still held.
+/// Phase 1 — proof of arrival. A third connection holds `BEGIN IMMEDIATE`, so
+/// no opener can take the repair transaction. Both production openers run
+/// against the same pending legacy row and both must be refused with sqlite's
+/// own "database is locked". The only step of `open_thread_database` that needs
+/// the write lock is the repair's `BEGIN IMMEDIATE`: with nothing to repair,
+/// `opens_normally_while_another_connection_holds_the_write_lock` opens the
+/// same held-lock file successfully. Each entrant therefore provably reached
+/// that exact contested point — and the pending state is untouched afterwards,
+/// so neither slipped past it.
 ///
-/// What this proves: two simultaneous contended repair attempts against the
-/// same pending row both terminate successfully, and the file converges to
-/// exactly one repaired payload and one assembly row with no repair work left.
-/// It does not observe the losing opener's inner recheck directly — that the
-/// second evaluation happens *inside* the transaction is pinned structurally by
+/// Phase 2 — convergence. With the holder released, the two production openers
+/// run together and must both succeed, leaving exactly one repaired payload,
+/// one assembly row, and no repair work left.
+///
+/// What this does not claim: it does not observe the losing opener's inner
+/// recheck directly. That the second evaluation happens *inside* the
+/// transaction is pinned structurally by
 /// `the_current_schema_path_probes_before_it_locks`.
 #[tokio::test]
 async fn keeps_the_repair_idempotent_when_two_openers_race_the_same_file() {
@@ -348,21 +354,13 @@ async fn keeps_the_repair_idempotent_when_two_openers_race_the_same_file() {
     let file_path = thread_with_one_turn(&store, "race").await;
     poison_turn_derivation_item(&file_path, "queued", None);
 
-    // Pre-held write lock: reads (validation, the outer repair predicate) still
-    // pass under WAL, but no opener can acquire the repair transaction.
+    // ── Phase 1 — both openers reach the contended repair transaction ────
     let lock_holder = open_raw(&file_path);
     lock_holder.exec("BEGIN IMMEDIATE;");
 
-    // Two entrants plus this thread: nobody opens until everyone has observed
-    // the pending state.
-    let released = Arc::new(Barrier::new(3));
-    let completed = Arc::new(AtomicU64::new(0));
-
-    let entrants: Vec<_> = (0..2)
+    let blocked: Vec<_> = (0..2)
         .map(|entrant| {
             let file_path = file_path.clone();
-            let released = Arc::clone(&released);
-            let completed = Arc::clone(&completed);
             thread::spawn(move || {
                 // The same facts the production predicate reads, from this
                 // thread's own connection: repair is still outstanding here.
@@ -371,18 +369,59 @@ async fn keeps_the_repair_idempotent_when_two_openers_race_the_same_file() {
                     0,
                     "entrant {entrant}: repair must still be pending on entry"
                 );
-                assert!(
-                    derivation_types_of(&file_path, "w-t1-turn_derivation-v1")
-                        .contains(&"detailed_turn_compression".to_string()),
-                    "entrant {entrant}: payload must still be legacy on entry"
+                let opened = open_thread_database(&file_path);
+                let OpResult::Err { error } = opened else {
+                    panic!(
+                        "entrant {entrant}: the repair transaction must be refused while another connection holds the write lock"
+                    );
+                };
+                assert_eq!(
+                    error.error_class,
+                    lhc::shared_tech::errors::ErrorClass::SystemError
                 );
+                assert_eq!(
+                    error.code,
+                    lhc::shared_tech::errors::ErrorCode::StorageFailure
+                );
+                assert!(
+                    error.reason.contains("database is locked"),
+                    "entrant {entrant}: expected the held write lock to refuse the repair transaction, got {}",
+                    error.reason
+                );
+            })
+        })
+        .collect();
+    for entrant in blocked {
+        entrant.join().expect("blocked entrant thread");
+    }
 
+    // Refused at the repair transaction, so nothing was repaired and nothing
+    // was skipped: the same work is still pending for phase 2.
+    assert_eq!(assembly_row_count(&file_path, "t1"), 0);
+    assert!(
+        derivation_types_of(&file_path, "w-t1-turn_derivation-v1")
+            .contains(&"detailed_turn_compression".to_string()),
+        "the refused openers must have left the legacy payload in place"
+    );
+
+    lock_holder.exec("ROLLBACK;");
+    lock_holder.close();
+
+    // ── Phase 2 — the same two openers converge on one repaired state ────
+    let released = Arc::new(Barrier::new(3));
+    let completed = Arc::new(AtomicU64::new(0));
+    let entrants: Vec<_> = (0..2)
+        .map(|entrant| {
+            let file_path = file_path.clone();
+            let released = Arc::clone(&released);
+            let completed = Arc::clone(&completed);
+            thread::spawn(move || {
                 released.wait();
                 let opened = open_thread_database(&file_path);
                 completed.fetch_add(1, Ordering::SeqCst);
                 assert!(
                     opened.is_ok(),
-                    "entrant {entrant}: contended open must succeed: {}",
+                    "entrant {entrant}: uncontended open must succeed: {}",
                     match &opened {
                         OpResult::Err { error } => error.reason.clone(),
                         OpResult::Ok { .. } => String::new(),
@@ -394,23 +433,11 @@ async fn keeps_the_repair_idempotent_when_two_openers_race_the_same_file() {
             })
         })
         .collect();
-
     released.wait();
-    // Both entrants are released into the open path together, and the held
-    // write lock means neither can have repaired anything yet.
-    assert_eq!(
-        completed.load(Ordering::SeqCst),
-        0,
-        "the held write lock must keep both entrants inside the open path"
-    );
-    assert_eq!(assembly_row_count(&file_path, "t1"), 0);
-
-    lock_holder.exec("ROLLBACK;");
-    lock_holder.close();
-
     for entrant in entrants {
         entrant.join().expect("entrant thread");
     }
+    assert_eq!(completed.load(Ordering::SeqCst), 2);
 
     // Exactly one repaired state, and nothing left to repair.
     assert_eq!(assembly_row_count(&file_path, "t1"), 1);

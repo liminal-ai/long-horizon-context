@@ -390,7 +390,7 @@ export interface EventKeyPageResult {
   keys: EventKeyRef[];
   /** Opaque continuation token; null when the walk stopped for good. */
   cursor: string | null;
-  /** True only when this page reached the end of the prefix. */
+  /** True only when this page reached the end of the prefix within this walk's snapshot. */
   complete: boolean;
   /** True when the total lookup cap stopped the walk short of the end. */
   capExhausted: boolean;
@@ -402,32 +402,133 @@ export interface EventKeyPageOptions {
   limit?: number;
 }
 
-// "<traversed>:<lastKey>" — decimal count, first colon delimits, raw key tail.
-// Byte-identical to construct and parse in either port; carries the traversed
-// total so the lookup cap needs no server-side state.
-function encodeKeyCursor(traversed: number, lastKey: string): string {
-  return `${traversed}:${lastKey}`;
+// ── Continuation cursor ──────────────────────────────────────────────────
+//
+// Wire form: "v1:<snapshot>:<traversed>:<lastKey>" — version literal, decimal
+// snapshot frontier, decimal traversed rank, raw key tail after the third
+// colon. Identical to build and parse in either port.
+//
+// The cursor is an integrity token, not an authorization token: it carries no
+// secret and needs none, because every field it claims is re-checked against
+// the database inside the continuation's own read transaction. A caller may
+// hand back any string; only one that the witness confirms — the exact
+// snapshot still exists, the key is still present under the exact prefix
+// within it, and its rank from the prefix start equals the traversed count —
+// continues a walk. Anything else refuses as invalid_bounds, so a forged or
+// stale cursor can never skip a live key or extend a walk past the cap.
+const KEY_CURSOR_VERSION = "v1";
+
+// Largest integer both ports carry exactly (Number.MAX_SAFE_INTEGER, mirrored
+// as an i64 bound in Rust) so a cursor integer decodes identically in each.
+const MAX_EXACT_CURSOR_INTEGER = 9007199254740991;
+
+/**
+ * Snapshot frontier for one walk: the newest event order the first page could
+ * see. An index endpoint read (event_order is the rowid), not a history count.
+ */
+export const KEY_WALK_SNAPSHOT_SQL = "SELECT event_order FROM event ORDER BY event_order DESC LIMIT 1";
+
+/**
+ * Bounded rank/existence witness for a continuation cursor.
+ *
+ * The inner LIMIT is LEGACY_KEY_TOTAL_LOOKUP_CAP, so the statement examines at
+ * most that many indexed, non-payload entries — never a history-wide count.
+ * `rank` is the cursor key's exact 1-based position from the prefix start
+ * within the snapshot; `last_key` equals the cursor key exactly when the key
+ * is still present there and its rank is inside the cap.
+ *
+ * No upper prefix bound is needed: `lastKey` carries the prefix, so every key
+ * in [prefix, lastKey] carries it too.
+ */
+export const KEY_CURSOR_WITNESS_SQL = `SELECT COUNT(*) AS rank, MAX(idempotency_key) AS last_key FROM
+     (SELECT idempotency_key FROM event
+       WHERE idempotency_key >= ? AND idempotency_key <= ? AND event_order <= ?
+       ORDER BY idempotency_key ASC LIMIT ?)`;
+
+interface KeyCursor {
+  snapshot: number;
+  traversed: number;
+  lastKey: string;
 }
 
-function decodeKeyCursor(cursor: string, prefix: string): { traversed: number; lastKey: string } | ErrorResult {
-  const split = cursor.indexOf(":");
-  if (split <= 0) return invalidBounds(`cursor is malformed: ${cursor}`).error;
-  const traversedText = cursor.slice(0, split);
-  if (!/^[0-9]+$/.test(traversedText)) return invalidBounds(`cursor is malformed: ${cursor}`).error;
-  const traversed = Number(traversedText);
-  if (!Number.isSafeInteger(traversed)) return invalidBounds(`cursor is malformed: ${cursor}`).error;
-  const lastKey = cursor.slice(split + 1);
+function encodeKeyCursor(snapshot: number, traversed: number, lastKey: string): string {
+  return `${KEY_CURSOR_VERSION}:${snapshot}:${traversed}:${lastKey}`;
+}
+
+// Digits only, and inside the range both ports represent exactly: a value the
+// other port could not hold is refused here rather than silently truncated.
+function decodeCursorInteger(text: string): number | undefined {
+  if (!/^[0-9]+$/.test(text)) return undefined;
+  const value = Number(text);
+  if (!Number.isSafeInteger(value) || value < 0 || value > MAX_EXACT_CURSOR_INTEGER) return undefined;
+  return value;
+}
+
+function decodeKeyCursor(cursor: string, prefix: string): KeyCursor | ErrorResult {
+  const malformed = invalidBounds(`cursor is malformed: ${cursor}`).error;
+  const version = cursor.indexOf(":");
+  if (version < 0 || cursor.slice(0, version) !== KEY_CURSOR_VERSION) return malformed;
+  const afterSnapshot = cursor.indexOf(":", version + 1);
+  if (afterSnapshot < 0) return malformed;
+  const afterTraversed = cursor.indexOf(":", afterSnapshot + 1);
+  if (afterTraversed < 0) return malformed;
+  const snapshot = decodeCursorInteger(cursor.slice(version + 1, afterSnapshot));
+  const traversed = decodeCursorInteger(cursor.slice(afterSnapshot + 1, afterTraversed));
+  if (snapshot === undefined || traversed === undefined) return malformed;
+  // A walk that returned nothing emits no cursor, and no walk may claim more
+  // rows than the total cap allows.
+  if (traversed < 1 || traversed > LEGACY_KEY_TOTAL_LOOKUP_CAP) {
+    return invalidBounds(`cursor traversed count must be 1..${LEGACY_KEY_TOTAL_LOOKUP_CAP}, got ${traversed}`).error;
+  }
+  const lastKey = cursor.slice(afterTraversed + 1);
   if (!lastKey.startsWith(prefix)) {
     return invalidBounds("cursor belongs to a different prefix walk").error;
   }
-  return { traversed, lastKey };
+  return { snapshot, traversed, lastKey };
+}
+
+// Database witness for a decoded cursor, run inside the continuation's own
+// read transaction. Refuses — never skips — on a snapshot the archive cannot
+// have produced, a key absent from that snapshot, a rank past the cap, or a
+// rank that disagrees with the claimed traversed count.
+function witnessKeyCursor(
+  db: DatabaseSync,
+  prefix: string,
+  cursor: KeyCursor,
+  frontier: number,
+): ErrorResult | undefined {
+  if (cursor.snapshot > frontier) {
+    return invalidBounds(`cursor snapshot ${cursor.snapshot} is ahead of the thread frontier ${frontier}`).error;
+  }
+  const row = db
+    .prepare(KEY_CURSOR_WITNESS_SQL)
+    .get(prefix, cursor.lastKey, cursor.snapshot, LEGACY_KEY_TOTAL_LOOKUP_CAP) as
+    | { rank: number | bigint; last_key: string | null }
+    | undefined;
+  const rank = Number(row?.rank ?? 0);
+  const witnessed = row?.last_key ?? null;
+  if (witnessed !== cursor.lastKey) {
+    if (rank >= LEGACY_KEY_TOTAL_LOOKUP_CAP) {
+      return invalidBounds(
+        `cursor rank exceeds LEGACY_KEY_TOTAL_LOOKUP_CAP (${LEGACY_KEY_TOTAL_LOOKUP_CAP}): ${cursor.lastKey}`,
+      ).error;
+    }
+    return invalidBounds(`cursor key is not in this walk's snapshot: ${cursor.lastKey}`).error;
+  }
+  if (rank !== cursor.traversed) {
+    return invalidBounds(`cursor traversed count ${cursor.traversed} does not match its rank ${rank}`).error;
+  }
+  return undefined;
 }
 
 function pageSql(fromInclusive: boolean, bounded: boolean): string {
   const comparison = fromInclusive ? ">=" : ">";
   const upper = bounded ? " AND idempotency_key < ?" : "";
+  // event_order <= ? pins the page to the walk's snapshot: rows appended after
+  // the first page — lexicographically earlier or later — are outside it, so a
+  // walk neither skips a key it should have returned nor absorbs a later one.
   return `SELECT idempotency_key, event_order FROM event
-     WHERE idempotency_key ${comparison} ?${upper}
+     WHERE idempotency_key ${comparison} ?${upper} AND event_order <= ?
      ORDER BY idempotency_key ASC LIMIT ?`;
 }
 
@@ -451,18 +552,32 @@ export async function runListEventKeysByPrefix(
   if (limit > LEGACY_KEY_PAGE_LIMIT) {
     return invalidBounds(`limit must not exceed LEGACY_KEY_PAGE_LIMIT (${LEGACY_KEY_PAGE_LIMIT}), got ${limit}`);
   }
-  let traversed = 0;
-  let lastKey: string | undefined;
+  let decoded: KeyCursor | undefined;
   if (options.cursor !== undefined) {
-    const decoded = decodeKeyCursor(options.cursor, options.prefix);
-    if ("errorClass" in decoded) return { ok: false, error: decoded };
-    traversed = decoded.traversed;
-    lastKey = decoded.lastKey;
+    const parsed = decodeKeyCursor(options.cursor, options.prefix);
+    if ("errorClass" in parsed) return { ok: false, error: parsed };
+    decoded = parsed;
   }
   const { lower, upper } = prefixRange(options.prefix);
 
   try {
-    return await createDbReadTransaction(threadRef, (transaction) => {
+    const outcome = await createDbReadTransaction(threadRef, (transaction): EventKeyPageResult | ErrorResult => {
+      // Snapshot frontier for this walk, captured in this read transaction:
+      // page one defines it, every continuation is re-restricted to it.
+      const frontierRow = transaction.db.prepare(KEY_WALK_SNAPSHOT_SQL).get() as
+        | { event_order: number | bigint }
+        | undefined;
+      const frontier = Number(frontierRow?.event_order ?? 0);
+      let snapshot = frontier;
+      let traversed = 0;
+      let lastKey: string | undefined;
+      if (decoded !== undefined) {
+        const refusal = witnessKeyCursor(transaction.db, options.prefix, decoded, frontier);
+        if (refusal !== undefined) return refusal;
+        snapshot = decoded.snapshot;
+        traversed = decoded.traversed;
+        lastKey = decoded.lastKey;
+      }
       const remaining = LEGACY_KEY_TOTAL_LOOKUP_CAP - traversed;
       if (remaining <= 0) {
         // Degraded truth: the walk is over, and it did not reach the end.
@@ -472,7 +587,8 @@ export async function runListEventKeysByPrefix(
       const statement = transaction.db.prepare(pageSql(lastKey === undefined, upper !== undefined));
       const from = lastKey ?? lower;
       // One extra row distinguishes "page full" from "prefix exhausted".
-      const params: Array<string | number> = upper === undefined ? [from, pageSize + 1] : [from, upper, pageSize + 1];
+      const params: Array<string | number> =
+        upper === undefined ? [from, snapshot, pageSize + 1] : [from, upper, snapshot, pageSize + 1];
       const rows = statement.all(...params) as unknown as Array<{
         idempotency_key: string;
         event_order: number | bigint;
@@ -485,6 +601,8 @@ export async function runListEventKeysByPrefix(
       }));
       const walked = traversed + keys.length;
       if (!hasMore) {
+        // Complete for this walk's snapshot: everything under the prefix that
+        // existed when the walk started has been returned.
         return { keys, cursor: null, complete: true, capExhausted: false };
       }
       if (walked >= LEGACY_KEY_TOTAL_LOOKUP_CAP) {
@@ -493,11 +611,14 @@ export async function runListEventKeysByPrefix(
       const lastReturned = keys[keys.length - 1] as EventKeyRef;
       return {
         keys,
-        cursor: encodeKeyCursor(walked, lastReturned.idempotencyKey),
+        cursor: encodeKeyCursor(snapshot, walked, lastReturned.idempotencyKey),
         complete: false,
         capExhausted: false,
       };
     });
+    if (!outcome.ok) return outcome;
+    if ("errorClass" in outcome.value) return { ok: false, error: outcome.value };
+    return { ok: true, value: outcome.value };
   } catch (cause) {
     return storageFailure(`event key prefix listing failed: ${detail(cause)}`);
   }

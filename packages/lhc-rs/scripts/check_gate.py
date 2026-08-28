@@ -936,10 +936,13 @@ def classify() -> int:
         # (b408f897) the tree already reported 784 — the literal had lagged by
         # two again. LIM-133 (bounded/non-copying/read-mostly opens) adds 49:
         # thread_validation 15, bounded_projections 20, read_mostly_open 10,
-        # validation_no_snapshot 4 → 833. Keep this
+        # validation_no_snapshot 4 → 833. The LIM-133 correction adds 3 more
+        # bounded_projections cases (cursor-key, traversed-count and snapshot
+        # witnesses; the forged near-cap case became the authentic 2000/2001
+        # boundary walk) → 836. Keep this
         # exact-count ledger in lockstep with cargo --features test-util.
         if (
-            len(buckets["passed"]) != 833
+            len(buckets["passed"]) != 836
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -947,7 +950,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=833 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=836 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")

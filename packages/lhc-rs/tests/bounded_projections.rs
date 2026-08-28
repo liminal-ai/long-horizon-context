@@ -13,8 +13,8 @@ use std::path::Path;
 
 use fixtures::{RuntimeNotePayload, temp_store, valid_event_for_kind, valid_runtime_note};
 use lhc::intake_stream::internal::pipeline::{
-    FRONTIER_LAST_EVENT_SQL, FRONTIER_METADATA_SQL, FRONTIER_VIEW_BOUNDARY_SQL, page_sql_shapes,
-    prefix_upper_bound,
+    FRONTIER_LAST_EVENT_SQL, FRONTIER_METADATA_SQL, FRONTIER_VIEW_BOUNDARY_SQL,
+    KEY_CURSOR_WITNESS_SQL, KEY_WALK_SNAPSHOT_SQL, page_sql_shapes, prefix_upper_bound,
 };
 use lhc::intake_stream::{
     EventKeyPage, EventKeyPageQuery, EventKeyPrefixCount, EventKeyReference, EventKind,
@@ -303,6 +303,43 @@ fn page(prefix: &str, limit: Option<i64>, cursor: Option<String>) -> EventKeyPag
     }
 }
 
+/// "v1:<snapshot>:<traversed>:<lastKey>" — split so a test can tamper with one
+/// field of an otherwise authentic, server-issued cursor.
+fn cursor_parts(cursor: &str) -> (String, String, String) {
+    let mut parts = cursor.splitn(4, ':');
+    assert_eq!(parts.next(), Some("v1"), "cursor version");
+    let snapshot = parts.next().expect("snapshot field").to_string();
+    let traversed = parts.next().expect("traversed field").to_string();
+    let last_key = parts.next().expect("key field").to_string();
+    (snapshot, traversed, last_key)
+}
+
+fn retamper(
+    cursor: &str,
+    snapshot: Option<&str>,
+    traversed: Option<&str>,
+    last_key: Option<&str>,
+) -> String {
+    let (s, t, k) = cursor_parts(cursor);
+    format!(
+        "v1:{}:{}:{}",
+        snapshot.unwrap_or(&s),
+        traversed.unwrap_or(&t),
+        last_key.unwrap_or(&k)
+    )
+}
+
+async fn first_page_cursor(file_path: &str) -> String {
+    let first = unwrap_ok(
+        intake_stream::list_event_keys_by_prefix(
+            ref_of(file_path),
+            page("legacy:", Some(10), None),
+        )
+        .await,
+    );
+    first.cursor.expect("a continuation")
+}
+
 #[tokio::test]
 async fn walks_every_key_exactly_once_in_stable_key_order_across_pages() {
     let store = temp_store();
@@ -346,7 +383,7 @@ async fn walks_every_key_exactly_once_in_stable_key_order_across_pages() {
 }
 
 #[tokio::test]
-async fn already_returned_rows_stay_stable_when_new_keys_are_appended_mid_walk() {
+async fn excludes_keys_appended_mid_walk_earlier_or_later_from_that_snapshot() {
     let store = temp_store();
     let file_path = legacy_thread(&store).await;
     let first = unwrap_ok(
@@ -356,20 +393,23 @@ async fn already_returned_rows_stay_stable_when_new_keys_are_appended_mid_walk()
         )
         .await,
     );
-    let first_keys: Vec<String> = first
+    let mut seen: Vec<String> = first
         .keys
         .iter()
         .map(|k| k.idempotency_key.clone())
         .collect();
     let mut cursor = first.cursor.clone().expect("a continuation");
 
+    // One key sorts before the cursor's last returned key (legacy:009) and one
+    // sorts after every seeded key: neither may enter this walk, and the
+    // earlier one must not be silently skipped over either.
     record(
         &file_path,
-        &[keyed_note("legacy:900"), keyed_note("legacy:901")],
+        &[keyed_note("legacy:0055"), keyed_note("legacy:900")],
     )
     .await;
 
-    let mut rest: Vec<String> = Vec::new();
+    let complete;
     loop {
         let result = unwrap_ok(
             intake_stream::list_event_keys_by_prefix(
@@ -378,24 +418,39 @@ async fn already_returned_rows_stay_stable_when_new_keys_are_appended_mid_walk()
             )
             .await,
         );
-        rest.extend(result.keys.iter().map(|k| k.idempotency_key.clone()));
+        seen.extend(result.keys.iter().map(|k| k.idempotency_key.clone()));
         match result.cursor {
-            None => break,
+            None => {
+                complete = result.complete;
+                break;
+            }
             Some(next) => cursor = next,
         }
     }
-    // No page repeats an earlier row, and the appended keys land after them.
-    assert!(!first_keys.iter().any(|key| rest.contains(key)));
-    assert!(rest.contains(&"legacy:900".to_string()));
-    assert!(rest.contains(&"legacy:901".to_string()));
-    let mut all: Vec<String> = first_keys
-        .iter()
-        .cloned()
-        .chain(rest.iter().cloned())
+    // Exactly the snapshot, in order, with nothing omitted and nothing added.
+    let expected: Vec<String> = (0..LEGACY_TOTAL)
+        .map(|i| format!("legacy:{i:03}"))
         .collect();
-    let ordered = all.clone();
-    all.sort();
-    assert_eq!(ordered, all);
+    assert_eq!(seen, expected);
+    assert!(complete);
+
+    // The appends are in the archive — they simply belong to a later walk.
+    let fresh = unwrap_ok(
+        intake_stream::list_event_keys_by_prefix(
+            ref_of(&file_path),
+            page("legacy:", Some(LEGACY_KEY_PAGE_LIMIT), None),
+        )
+        .await,
+    );
+    let fresh_keys: Vec<String> = fresh
+        .keys
+        .iter()
+        .map(|k| k.idempotency_key.clone())
+        .collect();
+    assert!(fresh.complete);
+    assert_eq!(fresh_keys.len(), LEGACY_TOTAL + 2);
+    assert!(fresh_keys.contains(&"legacy:0055".to_string()));
+    assert!(fresh_keys.contains(&"legacy:900".to_string()));
     store.cleanup();
 }
 
@@ -421,7 +476,15 @@ async fn each_key_carries_its_archive_position_and_never_a_payload() {
     for sql in page_sql_shapes() {
         assert!(!sql.contains("payload"), "{sql}");
         assert!(sql.contains("LIMIT ?"), "{sql}");
+        // Every page is pinned to the walk's snapshot.
+        assert!(sql.contains("event_order <= ?"), "{sql}");
     }
+    // The cursor witness is indexed, non-payload and bounded by the total
+    // lookup cap: it never counts the whole history.
+    assert!(!KEY_CURSOR_WITNESS_SQL.contains("payload"));
+    assert!(KEY_CURSOR_WITNESS_SQL.contains("LIMIT ?"));
+    assert!(!KEY_WALK_SNAPSHOT_SQL.contains("payload"));
+    assert!(KEY_WALK_SNAPSHOT_SQL.ends_with("ORDER BY event_order DESC LIMIT 1"));
     store.cleanup();
 }
 
@@ -457,13 +520,40 @@ async fn refuses_non_positive_limits() {
 }
 
 #[tokio::test]
-async fn refuses_an_empty_prefix_and_a_malformed_or_foreign_cursor() {
+async fn refuses_an_empty_prefix_and_every_malformed_foreign_or_out_of_range_cursor() {
     let store = temp_store();
     let file_path = legacy_thread(&store).await;
     expect_invalid_bounds(
         intake_stream::list_event_keys_by_prefix(ref_of(&file_path), page("", None, None)).await,
     );
-    for cursor in ["", "abc", ":legacy:001", "-1:legacy:001", "1e3:legacy:001"] {
+    let over_cap = format!("v1:5:{}:legacy:001", LEGACY_KEY_TOTAL_LOOKUP_CAP + 1);
+    for cursor in [
+        "",
+        "abc",
+        // Pre-version grammar and wrong versions.
+        "3:legacy:001",
+        "1:5:legacy:001",
+        "v0:5:1:legacy:001",
+        "v2:5:1:legacy:001",
+        // Missing fields.
+        "v1:legacy:001",
+        "v1:5:legacy:001",
+        // Non-decimal, signed and exponent forms in either integer field.
+        "v1:x:1:legacy:001",
+        "v1:5:x:legacy:001",
+        "v1:-1:1:legacy:001",
+        "v1:5:-1:legacy:001",
+        "v1:1e3:1:legacy:001",
+        "v1:5:1e3:legacy:001",
+        // Traversed outside 1..cap.
+        "v1:5:0:legacy:001",
+        over_cap.as_str(),
+        // First unsafe integer, and an overflowing one, in either field.
+        "v1:9007199254740992:1:legacy:001",
+        "v1:5:9007199254740992:legacy:001",
+        "v1:99999999999999999999:1:legacy:001",
+        "v1:5:99999999999999999999:legacy:001",
+    ] {
         expect_invalid_bounds(
             intake_stream::list_event_keys_by_prefix(
                 ref_of(&file_path),
@@ -475,7 +565,7 @@ async fn refuses_an_empty_prefix_and_a_malformed_or_foreign_cursor() {
     let reason = expect_invalid_bounds(
         intake_stream::list_event_keys_by_prefix(
             ref_of(&file_path),
-            page("legacy:", None, Some("3:other:001".into())),
+            page("legacy:", None, Some("v1:25:3:other:001".into())),
         )
         .await,
     );
@@ -484,42 +574,74 @@ async fn refuses_an_empty_prefix_and_a_malformed_or_foreign_cursor() {
 }
 
 #[tokio::test]
-async fn reports_cap_exhaustion_as_a_degraded_result_never_as_complete() {
+async fn refuses_a_cursor_whose_last_key_is_absent_from_the_snapshot() {
     let store = temp_store();
     let file_path = legacy_thread(&store).await;
-    let near_cap = LEGACY_KEY_TOTAL_LOOKUP_CAP - 3;
-    let result = unwrap_ok(
+    let authentic = first_page_cursor(&file_path).await;
+    // Same authentic snapshot and count, a key that was never recorded: the
+    // continuation must refuse rather than resume past the missing key.
+    let forged = retamper(&authentic, None, None, Some("legacy:250"));
+    let reason = expect_invalid_bounds(
         intake_stream::list_event_keys_by_prefix(
             ref_of(&file_path),
-            page("legacy:", Some(10), Some(format!("{near_cap}:legacy:000"))),
+            page("legacy:", None, Some(forged)),
         )
         .await,
     );
-    assert_eq!(result.keys.len(), 3);
-    assert!(result.cap_exhausted);
-    assert!(!result.complete);
-    assert_eq!(result.cursor, None);
+    assert!(reason.contains("not in this walk's snapshot"), "{reason}");
+    store.cleanup();
+}
 
-    let past = unwrap_ok(
+#[tokio::test]
+async fn refuses_a_reset_or_mismatched_traversed_count() {
+    let store = temp_store();
+    let file_path = legacy_thread(&store).await;
+    let authentic = first_page_cursor(&file_path).await;
+    assert_eq!(cursor_parts(&authentic).1, "10");
+
+    let cap = LEGACY_KEY_TOTAL_LOOKUP_CAP.to_string();
+    for traversed in ["0", "1", "9", "11", cap.as_str()] {
+        expect_invalid_bounds(
+            intake_stream::list_event_keys_by_prefix(
+                ref_of(&file_path),
+                page(
+                    "legacy:",
+                    None,
+                    Some(retamper(&authentic, None, Some(traversed), None)),
+                ),
+            )
+            .await,
+        );
+    }
+
+    // The untouched cursor still works, so the refusals are about the count.
+    unwrap_ok(
+        intake_stream::list_event_keys_by_prefix(
+            ref_of(&file_path),
+            page("legacy:", None, Some(authentic)),
+        )
+        .await,
+    );
+    store.cleanup();
+}
+
+#[tokio::test]
+async fn refuses_a_cursor_whose_snapshot_the_archive_never_reached() {
+    let store = temp_store();
+    let file_path = legacy_thread(&store).await;
+    let authentic = first_page_cursor(&file_path).await;
+    let reason = expect_invalid_bounds(
         intake_stream::list_event_keys_by_prefix(
             ref_of(&file_path),
             page(
                 "legacy:",
                 None,
-                Some(format!("{LEGACY_KEY_TOTAL_LOOKUP_CAP}:legacy:000")),
+                Some(retamper(&authentic, Some("999999"), None, None)),
             ),
         )
         .await,
     );
-    assert_eq!(
-        past,
-        EventKeyPage {
-            keys: Vec::new(),
-            cursor: None,
-            complete: false,
-            cap_exhausted: true
-        }
-    );
+    assert!(reason.contains("ahead of the thread frontier"), "{reason}");
     store.cleanup();
 }
 
@@ -557,6 +679,102 @@ async fn returns_an_empty_complete_page_for_a_prefix_with_no_keys() {
             complete: true,
             cap_exhausted: false
         }
+    );
+    store.cleanup();
+}
+
+// ── total lookup cap at its exact boundary ───────────────────────────────
+//
+// Seeded through the public intake API and walked with none but server-issued
+// cursors: the cap is proven by real rows, not by a hand-written count no walk
+// could ever have emitted.
+
+async fn seed_cap_keys(file_path: &str, from: i64, to_exclusive: i64) {
+    let mut base = from;
+    while base < to_exclusive {
+        let upper = (base + 250).min(to_exclusive);
+        let events: Vec<MessageEventInput> = (base..upper)
+            .map(|i| keyed_note(&format!("cap:{i:04}")))
+            .collect();
+        record(file_path, &events).await;
+        base = upper;
+    }
+}
+
+async fn walk_cap_prefix(file_path: &str) -> (Vec<String>, EventKeyPage) {
+    let mut seen: Vec<String> = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let result = unwrap_ok(
+            intake_stream::list_event_keys_by_prefix(
+                ref_of(file_path),
+                page("cap:", Some(LEGACY_KEY_PAGE_LIMIT), cursor.clone()),
+            )
+            .await,
+        );
+        seen.extend(result.keys.iter().map(|k| k.idempotency_key.clone()));
+        match result.cursor.clone() {
+            None => return (seen, result),
+            Some(next) => cursor = Some(next),
+        }
+    }
+}
+
+#[tokio::test]
+async fn completes_exactly_at_the_cap_and_degrades_one_row_past_it() {
+    let store = temp_store();
+    let file_path = fresh_thread(&store, "cap-boundary").await;
+    seed_cap_keys(&file_path, 0, LEGACY_KEY_TOTAL_LOOKUP_CAP).await;
+    let (seen, exact) = walk_cap_prefix(&file_path).await;
+    assert_eq!(seen.len() as i64, LEGACY_KEY_TOTAL_LOOKUP_CAP);
+    let mut unique = seen.clone();
+    unique.sort();
+    unique.dedup();
+    assert_eq!(unique.len() as i64, LEGACY_KEY_TOTAL_LOOKUP_CAP);
+    assert!(exact.complete);
+    assert!(!exact.cap_exhausted);
+    assert_eq!(exact.cursor, None);
+
+    // One more matching row: the walk must stop after the cap and say so.
+    seed_cap_keys(
+        &file_path,
+        LEGACY_KEY_TOTAL_LOOKUP_CAP,
+        LEGACY_KEY_TOTAL_LOOKUP_CAP + 1,
+    )
+    .await;
+    let (over_seen, over) = walk_cap_prefix(&file_path).await;
+    assert_eq!(over_seen.len() as i64, LEGACY_KEY_TOTAL_LOOKUP_CAP);
+    assert!(!over.complete);
+    assert!(over.cap_exhausted);
+    assert_eq!(over.cursor, None);
+    assert!(!over_seen.contains(&format!("cap:{LEGACY_KEY_TOTAL_LOOKUP_CAP:04}")));
+
+    // A cursor pointing past the cap — authentic snapshot, real key, rank
+    // 2001 — is refused rather than resumed: no walk may reach that row.
+    let first_page = unwrap_ok(
+        intake_stream::list_event_keys_by_prefix(
+            ref_of(&file_path),
+            page("cap:", Some(LEGACY_KEY_PAGE_LIMIT), None),
+        )
+        .await,
+    );
+    let authentic = first_page.cursor.expect("a continuation");
+    let beyond_cap = retamper(
+        &authentic,
+        None,
+        None,
+        Some(&format!("cap:{LEGACY_KEY_TOTAL_LOOKUP_CAP:04}")),
+    );
+    let reason = expect_invalid_bounds(
+        intake_stream::list_event_keys_by_prefix(
+            ref_of(&file_path),
+            page("cap:", None, Some(beyond_cap)),
+        )
+        .await,
+    );
+    assert!(
+        reason.contains("rank exceeds LEGACY_KEY_TOTAL_LOOKUP_CAP"),
+        "{reason}"
     );
     store.cleanup();
 }
