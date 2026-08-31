@@ -32,13 +32,13 @@ export interface Proof {
   detail: string;
 }
 
-export type AffiliationSource = "linux_proc_stat" | "darwin_ps_sid" | "unavailable";
+export type AffiliationSource = "linux_proc_stat" | "darwin_python_getsid" | "unavailable";
 
 export interface Affiliation {
   pid: number;
   ppid: number | null;
   pgrp: number | null;
-  /** Numeric session ID: Linux /proc field 6, Darwin `ps -o sid=`. Not Darwin `sess` (a kernel pointer). */
+  /** Numeric session ID: Linux /proc field 6, Darwin POSIX getsid(pid). Not Darwin `sess` (a kernel pointer). */
   session: number | null;
   source: AffiliationSource;
   /** Bounded raw probe text for diagnosis; never a command body or output contents. */
@@ -71,6 +71,32 @@ function parseDecimal(token: string | undefined): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
+function spawnErrorCode(error: Error | undefined): string {
+  if (error === undefined || !("code" in error) || error.code === undefined) return "";
+  return String(error.code);
+}
+
+/** POSIX getsid(pid) via the runner Python already required by node-gyp. */
+function darwinGetsid(pid: number): { session: number | null; raw: string } {
+  const tried: string[] = [];
+  const seen = new Set<string>();
+  for (const command of [process.env.PYTHON, "python3", "python"]) {
+    if (command === undefined || command.length === 0 || seen.has(command)) continue;
+    seen.add(command);
+    const r = spawnSync(command, ["-c", "import os,sys; print(os.getsid(int(sys.argv[1])))", String(pid)], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    const errorCode = spawnErrorCode(r.error);
+    tried.push(`${command}:${r.status === null ? "null" : String(r.status)}|${r.stdout}|${r.stderr}|${errorCode}`);
+    // Missing interpreter only: try the next candidate. Any other result is final.
+    if (errorCode === "ENOENT") continue;
+    const session = r.status === 0 ? parseDecimal((r.stdout ?? "").trim()) : null;
+    return { session, raw: boundedRaw(`getsid:${tried.join(";")}`) };
+  }
+  return { session: null, raw: boundedRaw(`getsid:${tried.join(";") || "no-python"}`) };
+}
+
 export function readAffiliation(pid: number): Affiliation {
   if (process.platform === "linux") {
     try {
@@ -98,21 +124,22 @@ export function readAffiliation(pid: number): Affiliation {
     }
   }
   if (process.platform === "darwin") {
-    // Darwin `sess` is a kernel session pointer, not a decimal SID (BSD ps keywords:
-    // sess = session pointer, sid = session ID). Probe sid for the numeric SID and
-    // keep sess in raw output for diagnosis.
-    const r = spawnSync(
-      "/bin/ps",
-      ["-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "sess=", "-o", "sid=", "-p", String(pid)],
-      { encoding: "utf8", timeout: 5_000 },
-    );
-    const raw = boundedRaw(`${r.status}|${r.stdout}|${r.stderr}`);
-    const tokens = r.stdout.trim().split(/\s+/);
+    // Darwin `/bin/ps` has no `sid` keyword (`sid: keyword not found`); `sess` is a
+    // kernel pointer (observed 0). Keep ps for pid/ppid/pgid and bounded raw
+    // diagnosis. Numeric session is POSIX getsid; fail closed if unavailable
+    // or malformed — do not substitute PGID or another ps keyword.
+    const r = spawnSync("/bin/ps", ["-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "sess=", "-p", String(pid)], {
+      encoding: "utf8",
+      timeout: 5_000,
+    });
+    const psRaw = boundedRaw(`${r.status === null ? "null" : String(r.status)}|${r.stdout}|${r.stderr}`);
+    const tokens = (r.stdout ?? "").trim().split(/\s+/);
     const ppid = parseDecimal(tokens[1]);
     const pgrp = parseDecimal(tokens[2]);
-    const sid = parseDecimal(tokens[4]);
-    if (r.status === 0 && sid !== null) {
-      return { pid, ppid, pgrp, session: sid, source: "darwin_ps_sid", raw };
+    const getsid = darwinGetsid(pid);
+    const raw = boundedRaw(`ps:${psRaw} ${getsid.raw}`);
+    if (getsid.session !== null) {
+      return { pid, ppid, pgrp, session: getsid.session, source: "darwin_python_getsid", raw };
     }
     return { pid, ppid, pgrp, session: null, source: "unavailable", raw };
   }

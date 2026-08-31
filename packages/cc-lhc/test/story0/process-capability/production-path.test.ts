@@ -252,6 +252,7 @@ describe.skipIf(!selfProbe.ok && !requireAddon)("Story 0 E2 production terminate
       stage = "control_dir";
       const controlDir = mkdtempSync(join(tmpdir(), "cc-lhc-story0-e2-"));
       temps.push(controlDir);
+      const replacementManifestPath = join(controlDir, "replacement.json");
       const candidates = [
         { id: "attached", launch: "attached", outputPath: join(controlDir, "attached.output") },
         {
@@ -336,7 +337,10 @@ describe.skipIf(!selfProbe.ok && !requireAddon)("Story 0 E2 production terminate
         claudeBin: process.execPath,
         spawnPty: (_file, _args, opts) => {
           const index = spawnedPids.length;
-          const script = index === 0 ? [join(here, "old-child.mjs"), controlDir] : [join(here, "replacement.mjs")];
+          const script =
+            index === 0
+              ? [join(here, "old-child.mjs"), controlDir]
+              : [join(here, "replacement.mjs"), replacementManifestPath];
           const pty = realSpawnPty(process.execPath, script, { ...opts, cwd: controlDir });
           spawnedPids.push(pty.pid);
           return pty;
@@ -433,6 +437,35 @@ describe.skipIf(!selfProbe.ok && !requireAddon)("Story 0 E2 production terminate
       const oldChildGone = !oldChildAfter.ok && oldChildAfter.code === "not_found";
       facts.oldChildAfter = oldChildGone ? "not_found" : oldChildAfter.ok ? "ok" : oldChildAfter.code;
 
+      stage = "replacement_identity";
+      await waitFor(() => {
+        if (!fileExists(replacementManifestPath)) return false;
+        try {
+          const parsed = JSON.parse(readFileSync(replacementManifestPath, "utf8")) as { replacementPid?: unknown };
+          return Number.isSafeInteger(parsed.replacementPid) && (parsed.replacementPid as number) > 0;
+        } catch {
+          return false;
+        }
+      }, "replacement pid manifest");
+      const replacementManifest = JSON.parse(readFileSync(replacementManifestPath, "utf8")) as {
+        replacementPid: number;
+      };
+      facts.replacementPid = replacementManifest.replacementPid;
+      facts.replacementPtyPid = spawnedPids[1] ?? null;
+      if (!Number.isSafeInteger(replacementManifest.replacementPid) || replacementManifest.replacementPid <= 0) {
+        throw new Error(
+          `replacementPid is not a live pid: ${String(replacementManifest.replacementPid)}; replacementPtyPid=${String(spawnedPids[1])}`,
+        );
+      }
+      const replacementLive = probe(replacementManifest.replacementPid);
+      if (!replacementLive.ok) {
+        throw new Error(
+          `replacement identity from replacementPid=${replacementManifest.replacementPid} unavailable (${replacementLive.code}); replacementPtyPid=${String(spawnedPids[1])}`,
+        );
+      }
+      leftover.push(replacementLive.identity);
+      const replacementIdentity = replacementLive.identity;
+
       const attachedDead = after.attached !== undefined && !after.attached.ok && after.attached.code === "not_found";
       const detached = before.detached_stdio_ignore;
       const detachedLive =
@@ -489,8 +522,8 @@ describe.skipIf(!selfProbe.ok && !requireAddon)("Story 0 E2 production terminate
 
       const detachedSource = detachedAff?.source;
       const sessionSourcesOk =
-        (oldAff.source === "linux_proc_stat" || oldAff.source === "darwin_ps_sid") &&
-        (detachedSource === "linux_proc_stat" || detachedSource === "darwin_ps_sid");
+        (oldAff.source === "linux_proc_stat" || oldAff.source === "darwin_python_getsid") &&
+        (detachedSource === "linux_proc_stat" || detachedSource === "darwin_python_getsid");
       const ownSession =
         oldAff.session !== null && detachedAff?.session !== null && detachedAff?.session !== oldAff.session;
       proofs.push(
@@ -570,13 +603,10 @@ describe.skipIf(!selfProbe.ok && !requireAddon)("Story 0 E2 production terminate
       const trackedIdentities: Array<{ id: string; identity: ProcessIdentity }> = [];
       if (oldLive.ok) trackedIdentities.push({ id: "old_child", identity: oldLive.identity });
       for (const identity of leftover.splice(0)) {
+        if (identitiesEqual(identity, replacementIdentity)) continue;
         trackedIdentities.push({ id: `pid:${identity.pid}`, identity });
       }
-      const replacementPid = spawnedPids[1];
-      if (replacementPid !== undefined) {
-        const replacementLive = probe(replacementPid);
-        if (replacementLive.ok) trackedIdentities.push({ id: "replacement", identity: replacementLive.identity });
-      }
+      trackedIdentities.push({ id: "replacement", identity: replacementIdentity });
 
       const cleanupRows: Array<{ id: string; action: string; reason: string }> = [];
       let cleanupSignalOk = true;
@@ -635,6 +665,8 @@ describe.skipIf(!selfProbe.ok && !requireAddon)("Story 0 E2 production terminate
           ptyPid,
           oldChildPid: manifest.oldChildPid,
           oldChildAfter: oldChildGone ? "not_found" : oldChildAfter.ok ? "ok" : oldChildAfter.code,
+          replacementPid: replacementIdentity.pid,
+          replacementPtyPid: spawnedPids[1] ?? null,
         },
         processes: manifest.processes.map((row) => ({
           id: row.id,
