@@ -75,6 +75,15 @@ describe("matrix ↔ targets.json", () => {
     expect(story0).not.toContain("pnpm --filter cc-lhc run test");
   });
 
+  it("Story 0 receipt upload uses always() so a failed harness still uploads", () => {
+    const story0 = jobBody("story0-process-capability");
+    expect(story0).toContain("always()");
+    expect(story0).toContain("steps.story0_process_capability.conclusion == 'success'");
+    expect(story0).toContain("steps.story0_process_capability.conclusion == 'failure'");
+    expect(story0).toContain("if-no-files-found: error");
+    expect(story0).toContain("name: story0-process-capability-");
+  });
+
   it("no target is made optional: fail-fast disabled but no continue-on-error/experimental escape", () => {
     expect(workflow).toContain("fail-fast: false");
     expect(workflow).not.toContain("continue-on-error");

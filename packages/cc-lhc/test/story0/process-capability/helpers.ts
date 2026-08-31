@@ -32,11 +32,17 @@ export interface Proof {
   detail: string;
 }
 
+export type AffiliationSource = "linux_proc_stat" | "darwin_ps_sid" | "unavailable";
+
 export interface Affiliation {
   pid: number;
   ppid: number | null;
   pgrp: number | null;
+  /** Numeric session ID: Linux /proc field 6, Darwin `ps -o sid=`. Not Darwin `sess` (a kernel pointer). */
   session: number | null;
+  source: AffiliationSource;
+  /** Bounded raw probe text for diagnosis; never a command body or output contents. */
+  raw: string | null;
 }
 
 export function proof(id: string, status: ProofStatus, detail: string): Proof {
@@ -55,6 +61,16 @@ export async function waitFor(condition: () => boolean, label: string, capMs = 1
   }
 }
 
+function boundedRaw(text: string): string {
+  return text.trim().replace(/\s+/g, " ").slice(0, 200);
+}
+
+function parseDecimal(token: string | undefined): number | null {
+  if (token === undefined || !/^-?\d+$/.test(token)) return null;
+  const n = Number(token);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
 export function readAffiliation(pid: number): Affiliation {
   if (process.platform === "linux") {
     try {
@@ -64,30 +80,43 @@ export function readAffiliation(pid: number): Affiliation {
         .slice(close + 1)
         .trim()
         .split(/\s+/);
-      const ppid = Number(rest[1]);
-      const pgrp = Number(rest[2]);
-      const session = Number(rest[3]);
-      if ([ppid, pgrp, session].every((n) => Number.isSafeInteger(n))) {
-        return { pid, ppid, pgrp, session };
+      const ppid = parseDecimal(rest[1]);
+      const pgrp = parseDecimal(rest[2]);
+      const session = parseDecimal(rest[3]);
+      if (ppid !== null && pgrp !== null && session !== null) {
+        return {
+          pid,
+          ppid,
+          pgrp,
+          session,
+          source: "linux_proc_stat",
+          raw: boundedRaw(`${pid} ${rest[1]} ${rest[2]} ${rest[3]}`),
+        };
       }
     } catch {
       // Fall through.
     }
   }
   if (process.platform === "darwin") {
-    const r = spawnSync("/bin/ps", ["-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "sess=", "-p", String(pid)], {
-      encoding: "utf8",
-      timeout: 5_000,
-    });
-    const parts = r.stdout
-      .trim()
-      .split(/\s+/)
-      .map((p) => Number(p));
-    if (r.status === 0 && parts.length >= 4 && parts.every((n) => Number.isSafeInteger(n))) {
-      return { pid, ppid: parts[1] ?? null, pgrp: parts[2] ?? null, session: parts[3] ?? null };
+    // Darwin `sess` is a kernel session pointer, not a decimal SID (BSD ps keywords:
+    // sess = session pointer, sid = session ID). Probe sid for the numeric SID and
+    // keep sess in raw output for diagnosis.
+    const r = spawnSync(
+      "/bin/ps",
+      ["-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "sess=", "-o", "sid=", "-p", String(pid)],
+      { encoding: "utf8", timeout: 5_000 },
+    );
+    const raw = boundedRaw(`${r.status}|${r.stdout}|${r.stderr}`);
+    const tokens = r.stdout.trim().split(/\s+/);
+    const ppid = parseDecimal(tokens[1]);
+    const pgrp = parseDecimal(tokens[2]);
+    const sid = parseDecimal(tokens[4]);
+    if (r.status === 0 && sid !== null) {
+      return { pid, ppid, pgrp, session: sid, source: "darwin_ps_sid", raw };
     }
+    return { pid, ppid, pgrp, session: null, source: "unavailable", raw };
   }
-  return { pid, ppid: null, pgrp: null, session: null };
+  return { pid, ppid: null, pgrp: null, session: null, source: "unavailable", raw: null };
 }
 
 function posixLocator(path: string): { dev: string; ino: string } | null {

@@ -224,403 +224,461 @@ describe.skipIf(!selfProbe.ok && !requireAddon)("Story 0 E2 production terminate
   });
 
   it("enters run() killOldChild/terminateChild against a real PTY old child", async () => {
-    if (!selfProbe.ok) {
-      throw new Error(`CC_LHC_NATIVE_REQUIRE_ADDON=1 but native identity is unavailable: ${selfProbe.message}`);
-    }
-
-    const controlDir = mkdtempSync(join(tmpdir(), "cc-lhc-story0-e2-"));
-    temps.push(controlDir);
-    const candidates = [
-      { id: "attached", launch: "attached", outputPath: join(controlDir, "attached.output") },
-      {
-        id: "detached_stdio_ignore",
-        launch: "detached_stdio_ignore",
-        outputPath: join(controlDir, "detached_stdio_ignore.output"),
-      },
-      {
-        id: "detached_stdio_pipe",
-        launch: "detached_stdio_pipe",
-        outputPath: join(controlDir, "detached_stdio_pipe.output"),
-      },
-      {
-        id: "orphaned_intermediate",
-        launch: "orphaned_intermediate",
-        outputPath: join(controlDir, "orphaned_intermediate.output"),
-      },
-    ];
-    for (const c of candidates) writeFileSync(c.outputPath, "");
-    writeFileSync(
-      join(controlDir, "plan.json"),
-      `${JSON.stringify({
-        workerPath: join(here, "worker.mjs"),
-        orphanLauncherPath: join(here, "orphan-launcher.mjs"),
-        lifetimeMs: 60_000,
-        candidates,
-      })}\n`,
-    );
-
-    const sdk = sdkForCapture();
-    const captureCalls: CaptureSessionDeps[] = [];
-    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
-    const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-story0-rollout-"));
-    temps.push(rolloutDir);
-    const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
-    const rebuiltContent = '{"line":1}\n{"line":2}\n{"line":3}\n';
-    vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      writeFileSync(rebuiltPath, rebuiltContent);
-      return {
-        sessionId: REBUILT_ID,
-        rolloutPath: rebuiltPath,
-        lineCount: 3,
-        expectedReintakeLines: 3,
-        replayedPrefixLines: 2,
-        prefixBoundary: { kind: "verified" as const, lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
-        totalByteLength: Buffer.byteLength(rebuiltContent),
-      };
-    });
-    mocks.captureFactory = (opts) => {
-      captureCalls.push(opts);
-      const generation = captureCalls.length;
-      const isRebuilt = opts.knownRolloutPath !== undefined;
-      if (!isRebuilt && opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
-      return scriptedCaptureSession(
-        opts,
-        sdk,
-        isRebuilt ? REBUILT_ID : "old-session",
-        isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
-        generation,
-      );
-    };
-
-    const logLines: string[] = [];
-    const wrapperLog: WrapperLog = {
-      path: join(controlDir, "wrapper.log"),
-      info: (message) => {
-        logLines.push(message);
-      },
-      warn: (message) => {
-        logLines.push(message);
-      },
-      warningCount: () => 0,
-    };
-
-    const spawnedPids: number[] = [];
-    const results: HandoffResult[] = [];
-    const stdin = fakeStream();
-    const stdout = fakeStream();
-    const stderr = fakeStream();
-
-    const runPromise = run(["--effort", "medium"], {
-      claudeBin: process.execPath,
-      spawnPty: (_file, _args, opts) => {
-        const index = spawnedPids.length;
-        const script = index === 0 ? [join(here, "old-child.mjs"), controlDir] : [join(here, "replacement.mjs")];
-        const pty = realSpawnPty(process.execPath, script, { ...opts, cwd: controlDir });
-        spawnedPids.push(pty.pid);
-        return pty;
-      },
-      stdin,
-      stdout: stdout as never,
-      stderr: stderr as never,
-      noInference: true,
-      resolvedContextPolicy: POLICY as never,
-      governorReceiptDbPath: join(controlDir, "governor.sqlite"),
-      probeProcessIdentity: probe,
-      wrapperLog,
-      forceWrapperExit: () => {},
-      onHandoffResult: (result) => {
-        results.push(result);
-      },
-      handoffTimeouts: {
-        sigtermGraceMs: 500,
-        sigkillWaitMs: 1_000,
-        captureReadyTimeoutMs: 2_000,
-        childLivenessTimeoutMs: 5_000,
-        childStableWindowMs: 100,
-      },
-    });
-
-    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
-    await waitFor(() => spawnedPids.length === 1, "first real PTY child");
-    const manifestPath = join(controlDir, "manifest.json");
-    await waitFor(() => fileExists(manifestPath), "old-child manifest");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-      oldChildPid: number;
-      processes: Array<{ id: string; launch: string; pid: number | null; intermediatePid: number | null }>;
-    };
-
-    const before: Record<string, ProcessIdentity | null> = {};
-    const affiliationBefore: Record<string, ReturnType<typeof readAffiliation> | null> = {};
-    for (const row of manifest.processes) {
-      const live = row.pid === null ? null : probe(row.pid);
-      before[row.id] = live?.ok ? live.identity : null;
-      affiliationBefore[row.id] = live?.ok ? readAffiliation(live.identity.pid) : null;
-      if (before[row.id]) leftover.push(before[row.id]!);
-      if (row.intermediatePid !== null) {
-        const inter = probe(row.intermediatePid);
-        if (inter.ok) leftover.push(inter.identity);
-      }
-    }
-    const oldLive = probe(spawnedPids[0]!);
-    expect(oldLive.ok).toBe(true);
-    const oldAff = readAffiliation(spawnedPids[0]!);
-    const detachedBefore = before.detached_stdio_ignore;
-    const detachedAff = detachedBefore ? readAffiliation(detachedBefore.pid) : null;
-
-    const outputIdentity =
-      process.platform === "win32"
-        ? { kind: "unproven" as const, stableAcrossAppend: null, reuseDiscriminated: null }
-        : provePosixOutputIdentity(controlDir);
-
-    lifecycleSink!(BOUND_SIGNALS);
-    lifecycleSink!(TRIGGER_SIGNALS);
-
-    await waitFor(() => results.length === 1, "handoff result", 15_000);
-    const result = results[0]!;
-    expect(result.kind).toBe("success");
-    if (result.kind !== "success") throw new Error(`expected success, got ${result.kind}`);
-    expect(result.oldChildCleanup.kind).toBe("terminated");
-    expect(logLines.some((line) => line.includes("requested child termination"))).toBe(true);
-
-    await sleep(200);
-    const after: Record<string, ReturnType<typeof probe>> = {};
-    for (const row of manifest.processes) {
-      after[row.id] = row.pid === null ? { ok: false, code: "not_found", message: "no pid" } : probe(row.pid);
-    }
-
-    const attachedDead = after.attached !== undefined && !after.attached.ok && after.attached.code === "not_found";
-    const detached = before.detached_stdio_ignore;
-    const detachedLive =
-      detached !== undefined &&
-      detached !== null &&
-      after.detached_stdio_ignore?.ok === true &&
-      identitiesEqual(after.detached_stdio_ignore.identity, detached);
-
-    const proofs: Proof[] = [
-      proof("native_process_identity", "proved", "killOldChild used the injected native probe"),
-      proof(
-        "production_termination_path",
-        "proved",
-        `run() killOldChild → terminateChild; logs=${logLines.filter((l) => l.includes("child termination")).join(" | ")}; cleanup=${result.oldChildCleanup.kind}`,
-      ),
-      proof(
-        "attached_in_production_termination_set",
-        attachedDead ? "proved" : "candidate_failed",
-        attachedDead ? "attached worker not_found after production terminateChild" : "attached worker still live",
-      ),
-      proof(
-        "survives_production_old_child_termination",
-        detachedLive ? "proved" : "candidate_failed",
-        detachedLive
-          ? "detached_stdio_ignore kept pid+bootId+starttime after production terminateChild"
-          : `detached after=${after.detached_stdio_ignore?.ok ? "ok" : after.detached_stdio_ignore?.code}`,
-      ),
-      proof(
-        "result_lifetime_d12",
-        "unproved",
-        "Immediate scratch-file survival cannot prove a Claude-owned result path or carryoverRetentionMs; the CC-LHC-owned artifact requirement is not eliminated.",
-      ),
-    ];
-    if (process.platform === "win32") {
-      proofs.push(
-        proof(
-          "output_identity_d7",
-          "unproved",
-          "No authoritative Windows file-id surface in this harness; Node stat is not D-7 proof.",
-        ),
-      );
-    } else {
-      const d7ok = outputIdentity.stableAcrossAppend === true && outputIdentity.reuseDiscriminated === true;
-      proofs.push(
-        proof(
-          "output_identity_d7",
-          d7ok ? "proved" : "candidate_failed",
-          `posix_dev_ino stableAcrossAppend=${String(outputIdentity.stableAcrossAppend)} reuseDiscriminated=${String(outputIdentity.reuseDiscriminated)}`,
-        ),
-      );
-    }
-
-    proofs.push(
-      proof(
-        "posix_detached_own_session",
-        process.platform === "win32"
-          ? "unproved"
-          : detachedAff?.session !== null &&
-              detachedAff?.session !== undefined &&
-              oldAff.session !== null &&
-              detachedAff.session !== oldAff.session
-            ? "proved"
-            : "candidate_failed",
-        process.platform === "win32"
-          ? "no POSIX session axis"
-          : `detached session=${String(detachedAff?.session)} old session=${String(oldAff.session)}`,
-      ),
-    );
-
-    if (detachedLive && detached) {
-      const mutated: ProcessIdentity = { ...detached, starttime: detached.starttime === "0" ? "1" : "0" };
-      const mismatch = guardedStop(detached.pid, mutated, probe);
-      const mismatchOk =
-        mismatch.disposition === "refused" && mismatch.signaled === false && mismatch.liveAfter.ok === true;
-      proofs.push(
-        proof(
-          "guarded_stop_mismatch",
-          mismatchOk ? "proved" : "candidate_failed",
-          `disposition=${mismatch.disposition} signaled=${String(mismatch.signaled)}`,
-        ),
-      );
-      expect(mismatch.signaled).toBe(false);
-
-      const matched = guardedStop(detached.pid, detached, probe);
-      const observer = createTerminalObserver();
-      const eventId = terminalEventId(detached);
-      let previous = matched.liveAfter.ok ? matched.liveAfter : probe(detached.pid);
-      // liveAtDecision was ok; feed from a synthetic ok if the immediate after-probe already moved.
-      if (!previous.ok) previous = { ok: true, identity: detached };
-      let pollsFed = 0;
-      const deadline = Date.now() + 3_000;
-      while (Date.now() < deadline) {
-        await sleep(50);
-        const current = probe(detached.pid);
-        pollsFed += 1;
-        observer.observe(eventId, previous, current);
-        previous = current;
-        if (!current.ok && current.code === "not_found") break;
-      }
-      for (let i = 0; i < 5; i += 1) {
-        await sleep(50);
-        const current = probe(detached.pid);
-        pollsFed += 1;
-        observer.observe(eventId, previous, current);
-        previous = current;
-      }
-      const emissions = observer.emissionCount(eventId);
-      proofs.push(
-        proof(
-          "guarded_stop_match",
-          matched.signaled && !previous.ok && previous.code === "not_found" ? "proved" : "candidate_failed",
-          `signaled=${String(matched.signaled)} after=${previous.ok ? "ok" : previous.code}`,
-        ),
-      );
-      proofs.push(
-        proof(
-          "single_terminal_observation",
-          emissions === 1 ? "proved" : "candidate_failed",
-          `emissions=${emissions} pollsFed=${pollsFed} (E2 observation only; not delivery)`,
-        ),
-      );
-    } else {
-      proofs.push(
-        proof("guarded_stop_mismatch", "unproved", "detached worker did not survive production terminateChild"),
-      );
-      proofs.push(proof("guarded_stop_match", "unproved", "detached worker did not survive production terminateChild"));
-      proofs.push(
-        proof("single_terminal_observation", "unproved", "detached worker did not survive production terminateChild"),
-      );
-    }
-
-    const trackedIdentities: Array<{ id: string; identity: ProcessIdentity }> = [];
-    if (oldLive.ok) trackedIdentities.push({ id: "old_child", identity: oldLive.identity });
-    for (const identity of leftover.splice(0)) {
-      trackedIdentities.push({ id: `pid:${identity.pid}`, identity });
-    }
-    const replacementPid = spawnedPids[1];
-    if (replacementPid !== undefined) {
-      const replacementLive = probe(replacementPid);
-      if (replacementLive.ok) trackedIdentities.push({ id: "replacement", identity: replacementLive.identity });
-    }
-
-    const cleanupRows: Array<{ id: string; action: string; reason: string }> = [];
-    let cleanupSignalOk = true;
-    for (const row of trackedIdentities) {
-      const signaled = await identitySafeSignal(row.identity, probe, "kill");
-      cleanupRows.push({ id: row.id, action: signaled.action, reason: signaled.reason });
-      if (signaled.action === "refused") cleanupSignalOk = false;
-    }
-
-    const postCleanup: Array<{ id: string; result: string }> = [];
-    let cleanupGone = cleanupSignalOk;
-    for (const row of trackedIdentities) {
-      const live = probe(row.identity.pid);
-      if (!live.ok && live.code === "not_found") {
-        postCleanup.push({ id: row.id, result: "not_found" });
-        continue;
-      }
-      if (!live.ok) {
-        postCleanup.push({ id: row.id, result: `indeterminate:${live.code}` });
-        cleanupGone = false;
-        leftover.push(row.identity);
-        continue;
-      }
-      if (identitiesEqual(live.identity, row.identity)) {
-        postCleanup.push({ id: row.id, result: "exact_identity_still_live" });
-        leftover.push(row.identity);
-        cleanupGone = false;
-        continue;
-      }
-      postCleanup.push({ id: row.id, result: "different_identity" });
-    }
-    proofs.push(
-      proof(
-        "identity_safe_cleanup",
-        cleanupGone ? "proved" : "candidate_failed",
-        cleanupGone
-          ? "signaled only on exact identity match; every stored identity re-probed not_found or a different full identity"
-          : `signalRefused=${String(!cleanupSignalOk)} post=${postCleanup.map((p) => `${p.id}:${p.result}`).join(",")}`,
-      ),
-    );
-
-    const receipt = {
-      schemaVersion: 3,
-      experiment: "story0-e2-process-capability",
+    const facts: Record<string, unknown> = {
       platform: process.platform,
       arch: process.arch,
       node: process.version,
-      proofs,
-      productionPath: {
-        handoffKind: result.kind,
-        oldChildCleanup: result.oldChildCleanup,
-        terminateChildLog: logLines.filter((l) => l.includes("termination")),
-        spawnedPids,
-      },
-      processes: manifest.processes.map((row) => ({
-        id: row.id,
-        launch: row.launch,
-        identityBefore: before[row.id] ? processIdentityJson(before[row.id]!) : null,
-        after: afterStatus(after[row.id]),
-        affiliationBefore: affiliationBefore[row.id] ?? null,
-      })),
-      outputIdentity,
-      d12: {
-        status: "unproved",
-        artifactRequirementEliminated: false,
-        filePresentAfterParentDeath: fileExists(candidates[0]!.outputPath),
-      },
-      cleanup: cleanupRows,
-      postCleanup,
     };
-    writeReceipt(receiptPath(), receipt);
-    process.stdout.write(
-      `story0-process-capability platform=${process.platform} ${proofs.map((p) => `${p.id}:${p.status}`).join(" ")} receipt=${receiptPath()}\n`,
-    );
+    let stage = "addon";
+    let assembled = false;
+    const writeFailureReceipt = (cause: unknown): void => {
+      writeReceipt(receiptPath(), {
+        schemaVersion: 4,
+        experiment: "story0-e2-process-capability",
+        platform: process.platform,
+        arch: process.arch,
+        node: process.version,
+        stage,
+        harnessError: cause instanceof Error ? cause.message : String(cause),
+        facts,
+      });
+    };
 
-    const required = [
-      "native_process_identity",
-      "production_termination_path",
-      "attached_in_production_termination_set",
-      "survives_production_old_child_termination",
-      "guarded_stop_mismatch",
-      "guarded_stop_match",
-      "single_terminal_observation",
-      "identity_safe_cleanup",
-    ];
-    if (process.platform !== "win32") {
-      required.push("posix_detached_own_session", "output_identity_d7");
-    }
-    for (const id of required) {
-      expect(proofs.find((p) => p.id === id)?.status, id).toBe("proved");
-    }
+    try {
+      if (!selfProbe.ok) {
+        throw new Error(`CC_LHC_NATIVE_REQUIRE_ADDON=1 but native identity is unavailable: ${selfProbe.message}`);
+      }
 
-    await runPromise;
+      stage = "control_dir";
+      const controlDir = mkdtempSync(join(tmpdir(), "cc-lhc-story0-e2-"));
+      temps.push(controlDir);
+      const candidates = [
+        { id: "attached", launch: "attached", outputPath: join(controlDir, "attached.output") },
+        {
+          id: "detached_stdio_ignore",
+          launch: "detached_stdio_ignore",
+          outputPath: join(controlDir, "detached_stdio_ignore.output"),
+        },
+        {
+          id: "detached_stdio_pipe",
+          launch: "detached_stdio_pipe",
+          outputPath: join(controlDir, "detached_stdio_pipe.output"),
+        },
+        {
+          id: "orphaned_intermediate",
+          launch: "orphaned_intermediate",
+          outputPath: join(controlDir, "orphaned_intermediate.output"),
+        },
+      ];
+      for (const c of candidates) writeFileSync(c.outputPath, "");
+      writeFileSync(
+        join(controlDir, "plan.json"),
+        `${JSON.stringify({
+          workerPath: join(here, "worker.mjs"),
+          orphanLauncherPath: join(here, "orphan-launcher.mjs"),
+          lifetimeMs: 60_000,
+          candidates,
+        })}\n`,
+      );
+
+      const sdk = sdkForCapture();
+      const captureCalls: CaptureSessionDeps[] = [];
+      let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+      const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-story0-rollout-"));
+      temps.push(rolloutDir);
+      const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
+      const rebuiltContent = '{"line":1}\n{"line":2}\n{"line":3}\n';
+      vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+        writeFileSync(rebuiltPath, rebuiltContent);
+        return {
+          sessionId: REBUILT_ID,
+          rolloutPath: rebuiltPath,
+          lineCount: 3,
+          expectedReintakeLines: 3,
+          replayedPrefixLines: 2,
+          prefixBoundary: { kind: "verified" as const, lineCount: 2, byteLength: 40, sha256: "aa".repeat(32) },
+          totalByteLength: Buffer.byteLength(rebuiltContent),
+        };
+      });
+      mocks.captureFactory = (opts) => {
+        captureCalls.push(opts);
+        const generation = captureCalls.length;
+        const isRebuilt = opts.knownRolloutPath !== undefined;
+        if (!isRebuilt && opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+        return scriptedCaptureSession(
+          opts,
+          sdk,
+          isRebuilt ? REBUILT_ID : "old-session",
+          isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
+          generation,
+        );
+      };
+
+      const logLines: string[] = [];
+      const wrapperLog: WrapperLog = {
+        path: join(controlDir, "wrapper.log"),
+        info: (message) => {
+          logLines.push(message);
+        },
+        warn: (message) => {
+          logLines.push(message);
+        },
+        warningCount: () => 0,
+      };
+
+      const spawnedPids: number[] = [];
+      const results: HandoffResult[] = [];
+      const stdin = fakeStream();
+      const stdout = fakeStream();
+      const stderr = fakeStream();
+
+      const runPromise = run(["--effort", "medium"], {
+        claudeBin: process.execPath,
+        spawnPty: (_file, _args, opts) => {
+          const index = spawnedPids.length;
+          const script = index === 0 ? [join(here, "old-child.mjs"), controlDir] : [join(here, "replacement.mjs")];
+          const pty = realSpawnPty(process.execPath, script, { ...opts, cwd: controlDir });
+          spawnedPids.push(pty.pid);
+          return pty;
+        },
+        stdin,
+        stdout: stdout as never,
+        stderr: stderr as never,
+        noInference: true,
+        resolvedContextPolicy: POLICY as never,
+        governorReceiptDbPath: join(controlDir, "governor.sqlite"),
+        probeProcessIdentity: probe,
+        wrapperLog,
+        forceWrapperExit: () => {},
+        onHandoffResult: (result) => {
+          results.push(result);
+        },
+        handoffTimeouts: {
+          sigtermGraceMs: 500,
+          sigkillWaitMs: 1_000,
+          captureReadyTimeoutMs: 2_000,
+          childLivenessTimeoutMs: 5_000,
+          childStableWindowMs: 100,
+        },
+      });
+
+      stage = "spawn_old_child";
+      await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+      await waitFor(() => spawnedPids.length === 1, "first real PTY child");
+      const ptyPid = spawnedPids[0]!;
+      facts.ptyPid = ptyPid;
+      const manifestPath = join(controlDir, "manifest.json");
+      await waitFor(() => fileExists(manifestPath), "old-child manifest");
+      stage = "manifest";
+      const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
+        oldChildPid: number;
+        processes: Array<{ id: string; launch: string; pid: number | null; intermediatePid: number | null }>;
+      };
+      facts.oldChildPid = manifest.oldChildPid;
+      if (!Number.isSafeInteger(manifest.oldChildPid) || manifest.oldChildPid <= 0) {
+        throw new Error(`manifest.oldChildPid is not a live pid: ${String(manifest.oldChildPid)}`);
+      }
+
+      const before: Record<string, ProcessIdentity | null> = {};
+      const affiliationBefore: Record<string, ReturnType<typeof readAffiliation> | null> = {};
+      for (const row of manifest.processes) {
+        const live = row.pid === null ? null : probe(row.pid);
+        before[row.id] = live?.ok ? live.identity : null;
+        affiliationBefore[row.id] = live?.ok ? readAffiliation(live.identity.pid) : null;
+        if (before[row.id]) leftover.push(before[row.id]!);
+        if (row.intermediatePid !== null) {
+          const inter = probe(row.intermediatePid);
+          if (inter.ok) leftover.push(inter.identity);
+        }
+      }
+      const oldLive = probe(manifest.oldChildPid);
+      facts.ptyPidProbe = probe(ptyPid).ok ? "ok" : "not_ok";
+      if (!oldLive.ok) {
+        throw new Error(
+          `old-child identity from manifest.oldChildPid=${manifest.oldChildPid} unavailable (${oldLive.code}); ptyPid=${ptyPid}`,
+        );
+      }
+      leftover.push(oldLive.identity);
+      const oldAff = readAffiliation(manifest.oldChildPid);
+      facts.oldChildAffiliation = oldAff;
+      const detachedBefore = before.detached_stdio_ignore;
+      const detachedAff = detachedBefore ? readAffiliation(detachedBefore.pid) : null;
+      facts.detachedAffiliation = detachedAff;
+
+      const outputIdentity =
+        process.platform === "win32"
+          ? { kind: "unproven" as const, stableAcrossAppend: null, reuseDiscriminated: null }
+          : provePosixOutputIdentity(controlDir);
+
+      stage = "handoff";
+      lifecycleSink!(BOUND_SIGNALS);
+      lifecycleSink!(TRIGGER_SIGNALS);
+
+      await waitFor(() => results.length === 1, "handoff result", 15_000);
+      const result = results[0]!;
+      expect(result.kind).toBe("success");
+      if (result.kind !== "success") throw new Error(`expected success, got ${result.kind}`);
+      expect(result.oldChildCleanup.kind).toBe("terminated");
+      expect(logLines.some((line) => line.includes("requested child termination"))).toBe(true);
+      facts.handoffKind = result.kind;
+      facts.oldChildCleanup = result.oldChildCleanup;
+      facts.terminateChildLog = logLines.filter((l) => l.includes("termination"));
+
+      await sleep(200);
+      const after: Record<string, ReturnType<typeof probe>> = {};
+      for (const row of manifest.processes) {
+        after[row.id] = row.pid === null ? { ok: false, code: "not_found", message: "no pid" } : probe(row.pid);
+      }
+      const oldChildAfter = probe(manifest.oldChildPid);
+      const oldChildGone = !oldChildAfter.ok && oldChildAfter.code === "not_found";
+      facts.oldChildAfter = oldChildGone ? "not_found" : oldChildAfter.ok ? "ok" : oldChildAfter.code;
+
+      const attachedDead = after.attached !== undefined && !after.attached.ok && after.attached.code === "not_found";
+      const detached = before.detached_stdio_ignore;
+      const detachedLive =
+        detached !== undefined &&
+        detached !== null &&
+        after.detached_stdio_ignore?.ok === true &&
+        identitiesEqual(after.detached_stdio_ignore.identity, detached);
+
+      const proofs: Proof[] = [
+        proof("native_process_identity", "proved", "killOldChild used the injected native probe"),
+        proof(
+          "production_termination_path",
+          "proved",
+          `run() killOldChild → terminateChild; logs=${logLines.filter((l) => l.includes("child termination")).join(" | ")}; cleanup=${result.oldChildCleanup.kind}`,
+        ),
+        proof(
+          "attached_in_production_termination_set",
+          attachedDead && oldChildGone ? "proved" : "candidate_failed",
+          attachedDead && oldChildGone
+            ? `attached worker and manifest old child (${manifest.oldChildPid}) not_found after production terminateChild of ptyPid=${ptyPid}`
+            : `attachedDead=${String(attachedDead)} oldChildGone=${String(oldChildGone)} ptyPid=${ptyPid} oldChildPid=${manifest.oldChildPid}`,
+        ),
+        proof(
+          "survives_production_old_child_termination",
+          detachedLive ? "proved" : "candidate_failed",
+          detachedLive
+            ? "detached_stdio_ignore kept pid+bootId+starttime after production terminateChild"
+            : `detached after=${after.detached_stdio_ignore?.ok ? "ok" : after.detached_stdio_ignore?.code}`,
+        ),
+        proof(
+          "result_lifetime_d12",
+          "unproved",
+          "Immediate scratch-file survival cannot prove a Claude-owned result path or carryoverRetentionMs; the CC-LHC-owned artifact requirement is not eliminated.",
+        ),
+      ];
+      if (process.platform === "win32") {
+        proofs.push(
+          proof(
+            "output_identity_d7",
+            "unproved",
+            "No authoritative Windows file-id surface in this harness; Node stat is not D-7 proof.",
+          ),
+        );
+      } else {
+        const d7ok = outputIdentity.stableAcrossAppend === true && outputIdentity.reuseDiscriminated === true;
+        proofs.push(
+          proof(
+            "output_identity_d7",
+            d7ok ? "proved" : "candidate_failed",
+            `posix_dev_ino stableAcrossAppend=${String(outputIdentity.stableAcrossAppend)} reuseDiscriminated=${String(outputIdentity.reuseDiscriminated)}`,
+          ),
+        );
+      }
+
+      const detachedSource = detachedAff?.source;
+      const sessionSourcesOk =
+        (oldAff.source === "linux_proc_stat" || oldAff.source === "darwin_ps_sid") &&
+        (detachedSource === "linux_proc_stat" || detachedSource === "darwin_ps_sid");
+      const ownSession =
+        oldAff.session !== null && detachedAff?.session !== null && detachedAff?.session !== oldAff.session;
+      proofs.push(
+        proof(
+          "posix_detached_own_session",
+          process.platform === "win32" ? "unproved" : sessionSourcesOk && ownSession ? "proved" : "candidate_failed",
+          process.platform === "win32"
+            ? "no POSIX session axis"
+            : `old source=${oldAff.source} session=${String(oldAff.session)} raw=${String(oldAff.raw)}; detached source=${String(detachedAff?.source)} session=${String(detachedAff?.session)} raw=${String(detachedAff?.raw)}`,
+        ),
+      );
+
+      if (detachedLive && detached) {
+        const mutated: ProcessIdentity = { ...detached, starttime: detached.starttime === "0" ? "1" : "0" };
+        const mismatch = guardedStop(detached.pid, mutated, probe);
+        const mismatchOk =
+          mismatch.disposition === "refused" && mismatch.signaled === false && mismatch.liveAfter.ok === true;
+        proofs.push(
+          proof(
+            "guarded_stop_mismatch",
+            mismatchOk ? "proved" : "candidate_failed",
+            `disposition=${mismatch.disposition} signaled=${String(mismatch.signaled)}`,
+          ),
+        );
+        expect(mismatch.signaled).toBe(false);
+
+        const matched = guardedStop(detached.pid, detached, probe);
+        const observer = createTerminalObserver();
+        const eventId = terminalEventId(detached);
+        let previous = matched.liveAfter.ok ? matched.liveAfter : probe(detached.pid);
+        // liveAtDecision was ok; feed from a synthetic ok if the immediate after-probe already moved.
+        if (!previous.ok) previous = { ok: true, identity: detached };
+        let pollsFed = 0;
+        const deadline = Date.now() + 3_000;
+        while (Date.now() < deadline) {
+          await sleep(50);
+          const current = probe(detached.pid);
+          pollsFed += 1;
+          observer.observe(eventId, previous, current);
+          previous = current;
+          if (!current.ok && current.code === "not_found") break;
+        }
+        for (let i = 0; i < 5; i += 1) {
+          await sleep(50);
+          const current = probe(detached.pid);
+          pollsFed += 1;
+          observer.observe(eventId, previous, current);
+          previous = current;
+        }
+        const emissions = observer.emissionCount(eventId);
+        proofs.push(
+          proof(
+            "guarded_stop_match",
+            matched.signaled && !previous.ok && previous.code === "not_found" ? "proved" : "candidate_failed",
+            `signaled=${String(matched.signaled)} after=${previous.ok ? "ok" : previous.code}`,
+          ),
+        );
+        proofs.push(
+          proof(
+            "single_terminal_observation",
+            emissions === 1 ? "proved" : "candidate_failed",
+            `emissions=${emissions} pollsFed=${pollsFed} (E2 observation only; not delivery)`,
+          ),
+        );
+      } else {
+        proofs.push(
+          proof("guarded_stop_mismatch", "unproved", "detached worker did not survive production terminateChild"),
+        );
+        proofs.push(
+          proof("guarded_stop_match", "unproved", "detached worker did not survive production terminateChild"),
+        );
+        proofs.push(
+          proof("single_terminal_observation", "unproved", "detached worker did not survive production terminateChild"),
+        );
+      }
+
+      const trackedIdentities: Array<{ id: string; identity: ProcessIdentity }> = [];
+      if (oldLive.ok) trackedIdentities.push({ id: "old_child", identity: oldLive.identity });
+      for (const identity of leftover.splice(0)) {
+        trackedIdentities.push({ id: `pid:${identity.pid}`, identity });
+      }
+      const replacementPid = spawnedPids[1];
+      if (replacementPid !== undefined) {
+        const replacementLive = probe(replacementPid);
+        if (replacementLive.ok) trackedIdentities.push({ id: "replacement", identity: replacementLive.identity });
+      }
+
+      const cleanupRows: Array<{ id: string; action: string; reason: string }> = [];
+      let cleanupSignalOk = true;
+      for (const row of trackedIdentities) {
+        const signaled = await identitySafeSignal(row.identity, probe, "kill");
+        cleanupRows.push({ id: row.id, action: signaled.action, reason: signaled.reason });
+        if (signaled.action === "refused") cleanupSignalOk = false;
+      }
+
+      const postCleanup: Array<{ id: string; result: string }> = [];
+      let cleanupGone = cleanupSignalOk;
+      for (const row of trackedIdentities) {
+        const live = probe(row.identity.pid);
+        if (!live.ok && live.code === "not_found") {
+          postCleanup.push({ id: row.id, result: "not_found" });
+          continue;
+        }
+        if (!live.ok) {
+          postCleanup.push({ id: row.id, result: `indeterminate:${live.code}` });
+          cleanupGone = false;
+          leftover.push(row.identity);
+          continue;
+        }
+        if (identitiesEqual(live.identity, row.identity)) {
+          postCleanup.push({ id: row.id, result: "exact_identity_still_live" });
+          leftover.push(row.identity);
+          cleanupGone = false;
+          continue;
+        }
+        postCleanup.push({ id: row.id, result: "different_identity" });
+      }
+      proofs.push(
+        proof(
+          "identity_safe_cleanup",
+          cleanupGone ? "proved" : "candidate_failed",
+          cleanupGone
+            ? "signaled only on exact identity match; every stored identity re-probed not_found or a different full identity"
+            : `signalRefused=${String(!cleanupSignalOk)} post=${postCleanup.map((p) => `${p.id}:${p.result}`).join(",")}`,
+        ),
+      );
+
+      const receipt = {
+        schemaVersion: 4,
+        experiment: "story0-e2-process-capability",
+        platform: process.platform,
+        arch: process.arch,
+        node: process.version,
+        stage: "complete",
+        harnessError: null,
+        proofs,
+        productionPath: {
+          handoffKind: result.kind,
+          oldChildCleanup: result.oldChildCleanup,
+          terminateChildLog: logLines.filter((l) => l.includes("termination")),
+          spawnedPids,
+          ptyPid,
+          oldChildPid: manifest.oldChildPid,
+          oldChildAfter: oldChildGone ? "not_found" : oldChildAfter.ok ? "ok" : oldChildAfter.code,
+        },
+        processes: manifest.processes.map((row) => ({
+          id: row.id,
+          launch: row.launch,
+          identityBefore: before[row.id] ? processIdentityJson(before[row.id]!) : null,
+          after: afterStatus(after[row.id]),
+          affiliationBefore: affiliationBefore[row.id] ?? null,
+        })),
+        outputIdentity,
+        d12: {
+          status: "unproved",
+          artifactRequirementEliminated: false,
+          filePresentAfterParentDeath: fileExists(candidates[0]!.outputPath),
+        },
+        cleanup: cleanupRows,
+        postCleanup,
+      };
+      writeReceipt(receiptPath(), receipt);
+      assembled = true;
+      process.stdout.write(
+        `story0-process-capability platform=${process.platform} ${proofs.map((p) => `${p.id}:${p.status}`).join(" ")} receipt=${receiptPath()}\n`,
+      );
+
+      const required = [
+        "native_process_identity",
+        "production_termination_path",
+        "attached_in_production_termination_set",
+        "survives_production_old_child_termination",
+        "guarded_stop_mismatch",
+        "guarded_stop_match",
+        "single_terminal_observation",
+        "identity_safe_cleanup",
+      ];
+      if (process.platform !== "win32") {
+        required.push("posix_detached_own_session", "output_identity_d7");
+      }
+      for (const id of required) {
+        expect(proofs.find((p) => p.id === id)?.status, id).toBe("proved");
+      }
+
+      await runPromise;
+    } catch (cause) {
+      if (!assembled) writeFailureReceipt(cause);
+      throw cause;
+    }
   }, 30_000);
 });

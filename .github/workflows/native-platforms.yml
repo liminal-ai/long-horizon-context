@@ -285,7 +285,7 @@ jobs:
         run: pnpm --filter cc-lhc run story0:process-capability
 
       - name: Preserve Story 0 process-capability receipt
-        if: ${{ steps.story0_process_capability.conclusion == 'success' || steps.story0_process_capability.conclusion == 'failure' }}
+        if: ${{ always() && (steps.story0_process_capability.conclusion == 'success' || steps.story0_process_capability.conclusion == 'failure') }}
         uses: actions/upload-artifact@v7
         with:
           name: story0-process-capability-${{ matrix.target }}
