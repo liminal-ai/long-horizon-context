@@ -230,6 +230,68 @@ jobs:
           path: packages/cc-lhc-native/prebuilds/${{ matrix.target }}/cc_lhc_identity.node
           if-no-files-found: error
 
+  story0-process-capability:
+    name: story0-${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: blacksmith-2vcpu-ubuntu-2404
+          - target: darwin-arm64
+            runner: blacksmith-6vcpu-macos-15
+          - target: win32-x64
+            runner: blacksmith-2vcpu-windows-2025
+    steps:
+      - name: Checkout (recursive submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install build Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build lhc
+        run: pnpm --filter lhc run build
+
+      - name: Build cc-lhc-native (TypeScript)
+        run: pnpm --filter cc-lhc-native run build
+
+      - name: Compile native addon (node-gyp)
+        run: pnpm --filter cc-lhc-native run build:native
+        env:
+          npm_config_msvs_version: "2022"
+
+      - name: Stage prebuild for ${{ matrix.target }}
+        run: pnpm --filter cc-lhc-native run stage:prebuild
+
+      - name: Story 0 process-capability harness
+        id: story0_process_capability
+        env:
+          CC_LHC_NATIVE_REQUIRE_ADDON: "1"
+          CC_LHC_STORY0_RECEIPT: ${{ github.workspace }}/build/story0/process-capability.json
+        run: pnpm --filter cc-lhc run story0:process-capability
+
+      - name: Preserve Story 0 process-capability receipt
+        if: ${{ steps.story0_process_capability.conclusion == 'success' || steps.story0_process_capability.conclusion == 'failure' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: story0-process-capability-${{ matrix.target }}
+          path: build/story0/process-capability.json
+          if-no-files-found: error
+
   npm-package:
     name: npm-package
     needs: native

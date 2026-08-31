@@ -32,9 +32,24 @@ const EXPECTED_RUNNERS: Record<string, string> = {
   "win32-arm64": "windows-11-arm",
 };
 
-function matrixEntries(): Map<string, string> {
+const STORY0_RUNNERS: Record<string, string> = {
+  "linux-x64": "blacksmith-2vcpu-ubuntu-2404",
+  "darwin-arm64": "blacksmith-6vcpu-macos-15",
+  "win32-x64": "blacksmith-2vcpu-windows-2025",
+};
+
+function jobBody(name: string): string {
+  const heading = `\n  ${name}:\n`;
+  const start = workflow.indexOf(heading);
+  expect(start, `missing job ${name}`).toBeGreaterThan(-1);
+  const from = start + heading.length;
+  const next = workflow.slice(from).search(/\n {2}[A-Za-z0-9_-]+:\n/);
+  return next === -1 ? workflow.slice(from) : workflow.slice(from, from + next);
+}
+
+function matrixEntries(section: string): Map<string, string> {
   const entries = new Map<string, string>();
-  for (const match of workflow.matchAll(/- target: (\S+)\n\s+runner: (\S+)/g)) {
+  for (const match of section.matchAll(/- target: (\S+)\n\s+runner: (\S+)/g)) {
     expect(entries.has(match[1]!), `duplicate matrix target ${match[1]}`).toBe(false);
     entries.set(match[1]!, match[2]!);
   }
@@ -42,12 +57,22 @@ function matrixEntries(): Map<string, string> {
 }
 
 describe("matrix ↔ targets.json", () => {
-  it("matrix targets are exactly the manifest targets", () => {
-    expect([...matrixEntries().keys()].sort()).toEqual([...manifestKeys].sort());
+  it("native-job matrix targets are exactly the manifest targets", () => {
+    expect([...matrixEntries(jobBody("native")).keys()].sort()).toEqual([...manifestKeys].sort());
   });
 
-  it("every target runs on its certified runner label", () => {
-    expect(Object.fromEntries(matrixEntries())).toEqual(EXPECTED_RUNNERS);
+  it("every native-job target runs on its certified runner label", () => {
+    expect(Object.fromEntries(matrixEntries(jobBody("native")))).toEqual(EXPECTED_RUNNERS);
+  });
+
+  it("Story 0 process-capability is a dedicated Blacksmith job, not a native-job step", () => {
+    expect(jobBody("native")).not.toContain("story0:process-capability");
+    expect(workflow).toContain("  story0-process-capability:\n");
+    const story0 = jobBody("story0-process-capability");
+    expect(Object.fromEntries(matrixEntries(story0))).toEqual(STORY0_RUNNERS);
+    expect(story0).toContain('npm_config_msvs_version: "2022"');
+    expect(story0).toContain("story0:process-capability");
+    expect(story0).not.toContain("pnpm --filter cc-lhc run test");
   });
 
   it("no target is made optional: fail-fast disabled but no continue-on-error/experimental escape", () => {
@@ -59,7 +84,7 @@ describe("matrix ↔ targets.json", () => {
 
 describe("pinned toolchain and required steps", () => {
   it("checks out recursive submodules in every job", () => {
-    expect(workflow.match(/submodules: recursive/g)?.length).toBe(2);
+    expect(workflow.match(/submodules: recursive/g)?.length).toBe(3);
   });
 
   it("pins current-runtime action majors (Node 24) so Node 20 deprecation warnings cannot return", () => {
@@ -83,7 +108,7 @@ describe("pinned toolchain and required steps", () => {
 
   it("pins Node 24.18.0 and pnpm 11.8.0 (matching packageManager)", () => {
     expect(workflow).toContain("node-version: 24.18.0");
-    expect(workflow.match(/version: 11\.8\.0/g)?.length).toBe(2);
+    expect(workflow.match(/version: 11\.8\.0/g)?.length).toBe(3);
     const rootPkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { packageManager?: string };
     expect(rootPkg.packageManager).toBe("pnpm@11.8.0");
   });

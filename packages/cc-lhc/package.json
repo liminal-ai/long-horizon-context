@@ -21,7 +21,8 @@
     "assemble:npm": "node scripts/assemble-npm-package.mjs",
     "check:npm": "node scripts/check-npm-package.mjs",
     "smoke:npm": "node scripts/smoke-npm-package.mjs",
-    "verify": "pnpm run typecheck && pnpm run test"
+    "verify": "pnpm run typecheck && pnpm run test",
+    "story0:process-capability": "vitest run test/story0/process-capability/production-path.test.ts"
   },
   "engines": {
     "node": ">=24.3.0"
