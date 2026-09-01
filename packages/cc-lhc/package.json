@@ -13,7 +13,7 @@
   ],
   "scripts": {
     "clean": "node scripts/clean.mjs",
-    "build": "node scripts/clean.mjs && tsc -p tsconfig.json",
+    "build": "node scripts/clean.mjs && tsc -p tsconfig.json && node scripts/stamp-build-identity.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run --exclude test/package/**",
     "test:all": "vitest run --exclude test/package/**",

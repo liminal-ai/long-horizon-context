@@ -60,11 +60,15 @@ export function parseRetrievalArgv(argv: readonly string[]): ParseResult {
   const kind = op === "get-turns" ? "turn" : "message";
 
   let fromToken = 0;
+  let fromSeen = false;
   const ids: string[] = [];
   let i = 1;
   while (i < argv.length) {
     const a = argv[i]!;
     if (a === "--from") {
+      if (fromSeen) {
+        return { ok: false, reason: "--from may appear at most once", usage: usageFor(op) };
+      }
       const v = argv[i + 1];
       if (v === undefined) {
         return { ok: false, reason: "--from requires a non-negative integer", usage: usageFor(op) };
@@ -77,10 +81,14 @@ export function parseRetrievalArgv(argv: readonly string[]): ParseResult {
         };
       }
       fromToken = Number(v);
+      fromSeen = true;
       i += 2;
       continue;
     }
     if (a.startsWith("--from=")) {
+      if (fromSeen) {
+        return { ok: false, reason: "--from may appear at most once", usage: usageFor(op) };
+      }
       const v = a.slice("--from=".length);
       if (!isNonNegIntString(v)) {
         return {
@@ -90,6 +98,7 @@ export function parseRetrievalArgv(argv: readonly string[]): ParseResult {
         };
       }
       fromToken = Number(v);
+      fromSeen = true;
       i += 1;
       continue;
     }
@@ -121,6 +130,15 @@ export function parseRetrievalArgv(argv: readonly string[]): ParseResult {
   }
 
   const uniqueIds = [...new Set(ids)];
+  // A --from continuation resumes one sliced result; several unique ids have
+  // no defined continuation target (TC-3.3c). Repeats of one id normalize.
+  if (fromSeen && uniqueIds.length > 1) {
+    return {
+      ok: false,
+      reason: `--from is a single-id continuation — got ${uniqueIds.length} unique ids; request exactly one id`,
+      usage: usageFor(op),
+    };
+  }
   if (uniqueIds.length > MAX_RETRIEVAL_IDS_PER_CALL) {
     return {
       ok: false,

@@ -155,8 +155,10 @@ describe("TC-3.4a Status contract is truthful", () => {
       },
     };
     const status = await dispatchLhcCommand("/lhc-status", runtime);
-    expect(status.messages[0]).toContain("Latest provider context: 123,456 tokens");
-    expect(status.messages[0]).toContain("/smart-compact: 180,000-token target · 360,000-token trigger · automatic on");
+    expect(status.messages[0]).toContain("Latest provider context: 123,456 tokens (provider-reported)");
+    expect(status.messages[0]).toContain(
+      "/smart-compact: 180,000-token target · 360,000-token trigger (configured) · automatic on",
+    );
     expect(status.messages[0]).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
     expect(status.messages[0]).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
     expect(status.messages[0]).toContain("Derivations: 1 pending · 2 failed");

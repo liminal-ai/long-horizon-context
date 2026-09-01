@@ -1,11 +1,15 @@
-export const CC_LHC_HELP = `cc-lhc — Long Horizon Context wrapper for Claude Code
+import { readBuildIdentity } from "./version.js";
+
+export const CC_LHC_HELP = `cc-lhc ${readBuildIdentity().version} — Long Horizon Context wrapper for Claude Code
 
 Usage:
   cc-lhc [cc-lhc flags] [claude args...]
+  cc-lhc [cc-lhc flags] -- [claude args...]   (-- ends cc-lhc flag parsing)
   cc-lhc get-turns [--from TOKENS] <tN>...
   cc-lhc get-messages [--from TOKENS] <mN>...
   cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]
   cc-lhc --lhc-help
+  cc-lhc --lhc-version
 
 Wrapper flags:
   --lhc-no-inference               Disable derivation model calls
@@ -39,7 +43,9 @@ Control panel:
   Tab completes. /help lists every command; /introduction explains CC-LHC.
 
 Reserved subcommands are handled by cc-lhc. Ordinary Claude arguments, including
---help, are forwarded after safe session-selector normalization.`;
+--help and --version, are forwarded after safe session-selector normalization;
+use --lhc-version for the CC-LHC package itself. Everything after the first
+standalone -- is forwarded to Claude unchanged, even --lhc-* lookalikes.`;
 
 export function isLhcHelpArgv(argv: readonly string[]): boolean {
   return argv.length === 1 && argv[0] === "--lhc-help";

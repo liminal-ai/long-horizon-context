@@ -34,7 +34,7 @@ describe("cc-lhc help surface", () => {
     ]) {
       expect(CC_LHC_HELP).toContain(required);
     }
-    expect(CC_LHC_HELP).toContain("--help, are forwarded");
+    expect(CC_LHC_HELP).toContain("--help and --version, are forwarded");
   });
 
   it("lists exactly the control-panel vocabulary the parser accepts", () => {

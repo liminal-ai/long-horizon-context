@@ -1,71 +1,19 @@
+import { isLhcVersionArgv, parseWrapperArgv } from "./cli-args.js";
 import { isBackfillLabelsArgv, runBackfillLabelsCli } from "./commands/backfill-labels.js";
-import type { ContextPolicyPartial } from "./governor/index.js";
 import { CC_LHC_HELP, isLhcHelpArgv } from "./help.js";
 import { isRetrievalArgv, runRetrievalCli } from "./retrieval/service.js";
+import { formatLhcVersion, readBuildIdentity } from "./version.js";
 import { run } from "./wrapper/run.js";
-
-function stripCcLhcFlags(argv: string[]): {
-  argv: string[];
-  noInference: boolean;
-  notifierDisabled: boolean;
-  contextPolicyOverrides: ContextPolicyPartial;
-} {
-  const out: string[] = [];
-  let noInference = process.env.CC_LHC_NO_INFERENCE === "1";
-  let notifierDisabled = false;
-  const contextPolicyOverrides: ContextPolicyPartial = {};
-  for (const arg of argv) {
-    // Contract: every --lhc-* flag belongs to cc-lhc and is consumed here;
-    // everything else passes through to claude verbatim.
-    if (arg.startsWith("--lhc-")) {
-      if (arg === "--lhc-no-inference") {
-        noInference = true;
-        continue;
-      }
-      // Session overrides for context policy, applied after project config.
-      const upper = arg.match(/^--lhc-upper-bound-tokens=(\d+)$/);
-      if (upper) {
-        contextPolicyOverrides.upperBoundTokens = Number(upper[1]);
-        continue;
-      }
-      const lower = arg.match(/^--lhc-lower-bound-tokens=(\d+)$/);
-      if (lower) {
-        contextPolicyOverrides.lowerBoundTokens = Number(lower[1]);
-        continue;
-      }
-      const auto = arg.match(/^--lhc-auto-compact=(on|off)$/);
-      if (auto) {
-        contextPolicyOverrides.autoCompact = auto[1] === "on";
-        continue;
-      }
-      const profile = arg.match(/^--lhc-profile=(.+)$/);
-      if (profile?.[1]) {
-        contextPolicyOverrides.profile = profile[1];
-        continue;
-      }
-      const runway = arg.match(/^--lhc-min-runway-tokens=(\d+)$/);
-      if (runway) {
-        contextPolicyOverrides.minRunwayTokens = Number(runway[1]);
-        continue;
-      }
-      if (arg === "--lhc-no-notifier") {
-        notifierDisabled = true;
-        continue;
-      }
-      console.error(`Unknown cc-lhc flag: ${arg} (cc-lhc owns the --lhc-* namespace)`);
-      process.exit(2);
-    }
-    out.push(arg);
-  }
-  return { argv: out, noInference, notifierDisabled, contextPolicyOverrides };
-}
 
 const rawArgv = process.argv.slice(2);
 
 // Model-callable retrieval ops: bound descriptor selects the archive.
 // These never open the PTY wrapper. Do not process.exit here — set exitCode
 // so Node can drain stdout after the awaited flush-safe write.
-if (isLhcHelpArgv(rawArgv)) {
+if (isLhcVersionArgv(rawArgv)) {
+  // CC-LHC identity only; never launches Claude (TC-3.1a).
+  process.stdout.write(`${formatLhcVersion(readBuildIdentity())}\n`);
+} else if (isLhcHelpArgv(rawArgv)) {
   process.stdout.write(`${CC_LHC_HELP}\n`);
 } else if (isBackfillLabelsArgv(rawArgv)) {
   // Operator-facing label backfill: explicit thread, no PTY, no descriptor.
@@ -83,10 +31,15 @@ if (isLhcHelpArgv(rawArgv)) {
   });
   process.exitCode = exitCode;
 } else {
-  const parsed = stripCcLhcFlags(rawArgv);
+  const result = parseWrapperArgv(rawArgv);
+  if (!result.ok) {
+    console.error(result.message);
+    process.exit(2);
+  }
+  const parsed = result.parsed;
   const hasOverrides = Object.keys(parsed.contextPolicyOverrides).length > 0;
 
-  const exitCode = await run(parsed.argv, {
+  const exitCode = await run(parsed.claudeArgv, {
     noInference: parsed.noInference,
     ...(parsed.notifierDisabled ? { notifierDisabled: true } : {}),
     ...(hasOverrides ? { contextPolicyOverrides: parsed.contextPolicyOverrides } : {}),

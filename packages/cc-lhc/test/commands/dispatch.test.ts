@@ -53,9 +53,9 @@ describe("dispatchLhcCommand", () => {
       "/lhc-status",
       fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef }),
     );
-    expect(outcome.messages[0]).toContain("Latest provider context: 123,456 tokens");
+    expect(outcome.messages[0]).toContain("Latest provider context: 123,456 tokens (provider-reported)");
     expect(outcome.messages[0]).toContain(
-      "/smart-compact: 180,000-token target · 360,000-token trigger · automatic on",
+      "/smart-compact: 180,000-token target · 360,000-token trigger (configured) · automatic on",
     );
     expect(outcome.messages[0]).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
     expect(outcome.messages[0]).toContain("/smart-prune: 400 estimated tokens in eligible tool results");

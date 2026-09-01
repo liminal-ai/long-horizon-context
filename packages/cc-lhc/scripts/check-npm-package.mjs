@@ -28,6 +28,15 @@ for (const name of ["lhc", "cc-lhc-native"]) {
   required(`node_modules/${name}/package.json`);
 }
 required("dist/bin.js");
+required("dist/build-identity.json");
+if (existsSync(join(root, "dist/build-identity.json"))) {
+  const identity = JSON.parse(readFileSync(join(root, "dist/build-identity.json"), "utf8"));
+  if (identity.name !== manifest.name) fail("build identity name must match the manifest");
+  if (identity.version !== manifest.version) fail("build identity version must match the manifest");
+  if (typeof identity.sourceSha !== "string" || !/^[0-9a-f]{40}$/.test(identity.sourceSha)) {
+    fail("build identity must carry the full stamping source SHA");
+  }
+}
 required("LICENSE");
 if (existsSync(join(root, "LICENSE"))) {
   const license = readFileSync(join(root, "LICENSE"), "utf8");

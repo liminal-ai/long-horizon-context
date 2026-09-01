@@ -119,11 +119,11 @@ function userStatusLines(runtime: LhcCommandRuntime): string[] {
   if (snapshot === undefined) return [];
   const context =
     snapshot.latestProviderContextTokens === null
-      ? "not measured yet"
-      : `${tokenNumber(snapshot.latestProviderContextTokens)} tokens`;
+      ? "not observed yet"
+      : `${tokenNumber(snapshot.latestProviderContextTokens)} tokens (provider-reported)`;
   return [
     `Latest provider context: ${context}`,
-    `/smart-compact: ${tokenNumber(snapshot.targetTokens)}-token target · ${tokenNumber(snapshot.triggerTokens)}-token trigger · automatic ${snapshot.autoCompact ? "on" : "off"}`,
+    `/smart-compact: ${tokenNumber(snapshot.targetTokens)}-token target · ${tokenNumber(snapshot.triggerTokens)}-token trigger (configured) · automatic ${snapshot.autoCompact ? "on" : "off"}`,
   ];
 }
 
