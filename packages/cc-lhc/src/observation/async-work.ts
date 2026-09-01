@@ -162,8 +162,19 @@ const MAX_DIAGNOSTICS = 32;
 const NOTIFICATION_OPEN_TAG = "<task-notification>";
 const NOTIFICATION_CLOSE_TAG = "</task-notification>";
 
-export function createAsyncWorkFold(onEvent?: (event: AsyncWorkEvent) => void): AsyncWorkFold {
-  return { open: new Map(), pendingCalls: new Map(), diagnostics: [], ...(onEvent === undefined ? {} : { onEvent }) };
+/**
+ * `seed` pre-opens work the record already holds — the items a Smart Compact
+ * carried into this session (LIM-145) — so their later progress and terminal
+ * evidence in the rebuilt rollout is recognized. Seeding emits no event: the
+ * launches were recorded when they happened.
+ */
+export function createAsyncWorkFold(
+  onEvent?: (event: AsyncWorkEvent) => void,
+  seed: readonly OpenAsyncWork[] = [],
+): AsyncWorkFold {
+  const open = new Map<string, OpenAsyncWork>();
+  for (const work of seed) open.set(work.key, work);
+  return { open, pendingCalls: new Map(), diagnostics: [], ...(onEvent === undefined ? {} : { onEvent }) };
 }
 
 function closeWork(fold: AsyncWorkFold, key: string, outcome: AsyncWorkTerminalOutcome, evidence: string): void {

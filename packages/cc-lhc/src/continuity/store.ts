@@ -159,6 +159,32 @@ export interface RelaunchRecord {
   process: { pid: number; bootId: string; starttime: string } | null;
 }
 
+/**
+ * One durable terminal result for a carried item (LIM-146 AC-2.7). Written
+ * exactly once, by the same write that closes the item, keyed by the item's
+ * stable identity (thread + launch id); a repeated terminal observation is
+ * absorbed by the item and writes nothing. Holds only the sanitized label,
+ * the outcome, bounded evidence text, and the owned artifact reference —
+ * never a command, task output, or provider payload.
+ */
+export interface CarriedResult {
+  threadId: string;
+  launchId: string;
+  generation: number;
+  family: AsyncWorkFamily;
+  label: string;
+  outcome: TerminalOutcome;
+  evidence: string;
+  artifact: { kind: "adopted_output" | "relaunch_output"; path: string } | null;
+  observedAtMs: number;
+  /** Delivery to the replacement is a later pass; this pass only ever writes `pending`. */
+  delivery: "pending" | "delivered";
+  createdAtMs: number;
+}
+
+/** Bound on stored result evidence: plain printable ASCII, one line. */
+export const MAX_RESULT_EVIDENCE_CHARS = 160;
+
 export interface ContinuityItem {
   threadId: string;
   /** Stable logical identity of one launch: `family:key:toolUseId`. */
@@ -263,6 +289,10 @@ export interface ContinuityStore {
     nowMs: number;
   }): ContinuityItem | null;
   getItem(threadId: string, launchId: string): ContinuityItem | null;
+  /** The durable terminal result of one carried item, if it has one. */
+  getResult(threadId: string, launchId: string): CarriedResult | null;
+  /** Undelivered terminal results of carried items, oldest first. Reading changes nothing. */
+  listPendingResults(threadId: string): CarriedResult[];
   /** Every item of the thread in launch order. */
   listItems(threadId: string): ContinuityItem[];
   /** Allocate the next generation for the thread and stamp its members. Earlier open generations are superseded. */
@@ -371,6 +401,87 @@ function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (thread_id, generation)
     )
   `);
+}
+
+function initResultsSchema(db: DatabaseSync): void {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS cc_continuity_results (
+      thread_id TEXT NOT NULL,
+      launch_id TEXT NOT NULL,
+      generation INTEGER NOT NULL,
+      family TEXT NOT NULL,
+      label TEXT NOT NULL,
+      outcome TEXT NOT NULL,
+      evidence TEXT NOT NULL,
+      artifact_kind TEXT,
+      artifact_path TEXT,
+      observed_at_ms INTEGER NOT NULL,
+      delivery TEXT NOT NULL DEFAULT 'pending',
+      delivered_at_ms INTEGER,
+      created_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, launch_id)
+    )
+  `);
+}
+
+interface ResultRow {
+  thread_id: string;
+  launch_id: string;
+  generation: number;
+  family: string;
+  label: string;
+  outcome: string;
+  evidence: string;
+  artifact_kind: string | null;
+  artifact_path: string | null;
+  observed_at_ms: number;
+  delivery: string;
+  delivered_at_ms: number | null;
+  created_at_ms: number;
+}
+
+/** Evidence text as stored: whitespace collapsed, printable ASCII only, bounded. */
+export function boundedEvidence(text: string, maxChars: number = MAX_RESULT_EVIDENCE_CHARS): string {
+  const flattened = text.replace(/\s+/g, " ").trim();
+  const ascii = [...flattened].map((ch) => (ch.charCodeAt(0) >= 0x20 && ch.charCodeAt(0) <= 0x7e ? ch : "?")).join("");
+  return ascii.length <= maxChars ? ascii : `${ascii.slice(0, Math.max(0, maxChars - 1))}~`;
+}
+
+/** The one artifact a terminal item owns, for the result's reference. */
+function ownedArtifactOf(item: ContinuityItem): CarriedResult["artifact"] {
+  if (item.relaunch !== null) return { kind: "relaunch_output", path: item.relaunch.outputPath };
+  const id = item.verifiedIdentity;
+  if (id !== null && (id.kind === "posix_output" || id.kind === "win32_output")) {
+    return { kind: "adopted_output", path: id.path };
+  }
+  return null;
+}
+
+function parseResult(row: ResultRow): CarriedResult {
+  const malformedResult = () => new Error(`cc-lhc continuity: malformed result row ${row.thread_id} ${row.launch_id}`);
+  if (!(TERMINAL_OUTCOMES as readonly string[]).includes(row.outcome)) throw malformedResult();
+  if (row.delivery !== "pending" && row.delivery !== "delivered") throw malformedResult();
+  if ((row.artifact_kind === null) !== (row.artifact_path === null)) throw malformedResult();
+  if (row.artifact_kind !== null && row.artifact_kind !== "adopted_output" && row.artifact_kind !== "relaunch_output") {
+    throw malformedResult();
+  }
+  if (!Number.isInteger(row.generation) || row.generation < 1) throw malformedResult();
+  return {
+    threadId: row.thread_id,
+    launchId: row.launch_id,
+    generation: row.generation,
+    family: row.family as AsyncWorkFamily,
+    label: row.label,
+    outcome: row.outcome as TerminalOutcome,
+    evidence: row.evidence,
+    artifact:
+      row.artifact_kind === null || row.artifact_path === null
+        ? null
+        : { kind: row.artifact_kind as "adopted_output" | "relaunch_output", path: row.artifact_path },
+    observedAtMs: row.observed_at_ms,
+    delivery: row.delivery,
+    createdAtMs: row.created_at_ms,
+  };
 }
 
 function tableHasColumn(db: DatabaseSync, table: string, column: string): boolean {
@@ -590,6 +701,7 @@ export function openContinuityStore(
   merged.mkdirFn(dirname(dbPath));
   const db = merged.openDbFn(dbPath);
   initSchema(db);
+  initResultsSchema(db);
 
   const selectItem = db.prepare("SELECT * FROM cc_continuity_items WHERE thread_id = ? AND launch_id = ?");
   const selectItems = db.prepare("SELECT * FROM cc_continuity_items WHERE thread_id = ? ORDER BY created_at_ms, rowid");
@@ -616,6 +728,16 @@ export function openContinuityStore(
   );
   const relaunchItem = db.prepare(
     "UPDATE cc_continuity_items SET relaunch_json = ?, operations_json = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND relaunch_json IS NULL AND state != 'terminal'",
+  );
+  const insertResult = db.prepare(`
+    INSERT OR IGNORE INTO cc_continuity_results (
+      thread_id, launch_id, generation, family, label, outcome, evidence, artifact_kind, artifact_path,
+      observed_at_ms, delivery, delivered_at_ms, created_at_ms
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)
+  `);
+  const selectResult = db.prepare("SELECT * FROM cc_continuity_results WHERE thread_id = ? AND launch_id = ?");
+  const selectPendingResults = db.prepare(
+    "SELECT * FROM cc_continuity_results WHERE thread_id = ? AND delivery = 'pending' ORDER BY observed_at_ms, rowid",
   );
   const stampGeneration = db.prepare(
     "UPDATE cc_continuity_items SET generation = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND generation < ?",
@@ -680,15 +802,45 @@ export function openContinuityStore(
     },
     recordTerminal(input) {
       if (getItem(input.threadId, input.launchId) === null) return null;
-      const result = terminalizeItem.run(
-        input.outcome,
-        input.evidence,
-        input.nowMs,
-        input.nowMs,
-        input.threadId,
-        input.launchId,
-      );
-      return { item: mustGet(input.threadId, input.launchId), applied: Number(result.changes) === 1 };
+      // One transaction: the item closes and, if it was carried, its single
+      // durable result lands with it. A later terminal observation changes
+      // neither (the item is absorbing; the result key is the item's identity).
+      db.exec("BEGIN IMMEDIATE");
+      let applied: boolean;
+      let item: ContinuityItem;
+      try {
+        const result = terminalizeItem.run(
+          input.outcome,
+          input.evidence,
+          input.nowMs,
+          input.nowMs,
+          input.threadId,
+          input.launchId,
+        );
+        applied = Number(result.changes) === 1;
+        item = mustGet(input.threadId, input.launchId);
+        if (applied && item.generation > 0) {
+          const artifact = ownedArtifactOf(item);
+          insertResult.run(
+            item.threadId,
+            item.launchId,
+            item.generation,
+            item.family,
+            item.label,
+            input.outcome,
+            boundedEvidence(input.evidence),
+            artifact?.kind ?? null,
+            artifact?.path ?? null,
+            input.nowMs,
+            input.nowMs,
+          );
+        }
+        db.exec("COMMIT");
+      } catch (cause) {
+        db.exec("ROLLBACK");
+        throw cause;
+      }
+      return { item, applied };
     },
     setVerified(input) {
       if (getItem(input.threadId, input.launchId) === null) return null;
@@ -734,6 +886,13 @@ export function openContinuityStore(
       return mustGet(input.threadId, input.launchId);
     },
     getItem,
+    getResult(threadId, launchId) {
+      const row = selectResult.get(threadId, launchId) as ResultRow | undefined;
+      return row === undefined ? null : parseResult(row);
+    },
+    listPendingResults(threadId) {
+      return (selectPendingResults.all(threadId) as unknown as ResultRow[]).map(parseResult);
+    },
     listItems(threadId) {
       return (selectItems.all(threadId) as unknown as ItemRow[]).map(parseItem);
     },

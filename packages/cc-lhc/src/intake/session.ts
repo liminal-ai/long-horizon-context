@@ -200,6 +200,8 @@ export interface CaptureSessionDeps {
    * continuity record (LIM-145). Fires only for live-suffix lines after bind.
    */
   onAsyncWorkEvent?: (event: AsyncWorkEvent, threadId: string) => void;
+  /** Work carried into this (rebuilt) session by Smart Compact, pre-opened so its terminal evidence is recognized. */
+  seedAsyncWork?: readonly OpenAsyncWork[];
   /** Latest runtime choices explicitly recorded by the bound Claude rollout. */
   onRuntimeSettings?: (settings: Readonly<ClaudeRuntimeSettings>) => void;
   /** Generation id seed (tests / restart counters). */
@@ -447,7 +449,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       // The continuity record is a consumer; its failure never poisons intake.
       logError(`cc-lhc continuity: async-work subscriber threw: ${detail(cause)}`);
     }
-  });
+  }, deps.seedAsyncWork ?? []);
   let reportedAsyncDiagnostics = 0;
   const userOnLifecycle = deps.onLifecycle;
   /** Explicit boundary wins; otherwise lineage supplies provenance after resolve. */

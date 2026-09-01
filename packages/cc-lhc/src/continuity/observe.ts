@@ -101,6 +101,33 @@ export function applyAsyncWorkEvent(
   }
 }
 
+/**
+ * The carried, still-active items of a thread as the open work a rebuilt
+ * session's fold must start with (LIM-146 AC-2.7): the fold key and identity
+ * reproduce the recorded launch id exactly, so a terminal notice in the new
+ * rollout closes the same durable item.
+ */
+export function carriedOpenWork(store: ContinuityStore, threadId: string): OpenAsyncWork[] {
+  const work: OpenAsyncWork[] = [];
+  for (const item of store.listItems(threadId)) {
+    if (item.state === "terminal" || item.generation === 0) continue;
+    const prefix = `${item.family}:`;
+    const suffix = `:${item.toolUseId ?? ""}`;
+    if (!item.launchId.startsWith(prefix) || !item.launchId.endsWith(suffix)) continue;
+    const key = item.launchId.slice(prefix.length, item.launchId.length - suffix.length);
+    if (key === "") continue;
+    work.push({
+      key,
+      family: item.family,
+      ...(item.taskId === null ? {} : { taskId: item.taskId }),
+      ...(item.toolUseId === null ? {} : { toolUseId: item.toolUseId }),
+      ...(item.scheduledForMs === null ? {} : { scheduledForMs: item.scheduledForMs }),
+      ...(item.continuation === null ? {} : { continuation: item.continuation }),
+    });
+  }
+  return work;
+}
+
 export interface ContinuityObserver {
   /** The live fold, for the open-set readers that already exist. */
   readonly fold: AsyncWorkFold;

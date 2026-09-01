@@ -401,6 +401,26 @@ function sourcedValue(view: PanelViewSnapshot, source: PolicyFieldSource, text: 
  * (TC-1.6c): old and new class plus the policy now in force. Shown on the next
  * Control Panel open; never written onto Claude's screen.
  */
+/** How many finished carried items Home names before counting the rest. */
+export const MAX_NAMED_PENDING_RESULTS = 3;
+
+/**
+ * Home notices for carried work that finished and has not yet been delivered
+ * to the replacement (LIM-146 AC-2.7). Read-only: naming a result here is not
+ * delivering it. The label is the stored sanitized one; never output or a command.
+ */
+export function formatPendingResultRows(
+  results: readonly { label: string; outcome: string }[],
+  maxNamed: number = MAX_NAMED_PENDING_RESULTS,
+): string[] {
+  if (results.length === 0) return [];
+  const named = results
+    .slice(0, maxNamed)
+    .map((result) => `carried work finished: ${result.label} — ${result.outcome}`);
+  const rest = results.length - named.length;
+  return rest > 0 ? [...named, `${rest} more carried item(s) finished — see cc-lhc tasks status`] : named;
+}
+
 export function formatContextClassChangeNotice(change: {
   from: ContextClass;
   to: ContextClass;

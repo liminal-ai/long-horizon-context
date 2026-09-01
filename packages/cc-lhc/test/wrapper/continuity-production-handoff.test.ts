@@ -27,7 +27,7 @@ import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { run } from "../../src/wrapper/run.js";
-import { LAUNCH_IDS, LAUNCHES, type LaunchPaths, toolResult, toolUse } from "../continuity/helpers.js";
+import { LAUNCH_IDS, LAUNCHES, type LaunchPaths, notification, toolResult, toolUse } from "../continuity/helpers.js";
 
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -243,6 +243,8 @@ interface Rig {
   receipts: string[];
   terminalOutput: () => string;
   feed: (lines: RolloutLineItem[]) => void;
+  /** Feed the newest capture (the replacement after a handoff). */
+  feedCurrent: (lines: RolloutLineItem[]) => void;
   lifecycle: (signals: readonly LifecycleSignal[]) => void;
   runPromise: Promise<number>;
   finish: () => Promise<number>;
@@ -263,6 +265,7 @@ async function launch(layout: Parameters<typeof hostLayout>[1] = {}): Promise<Ri
   const receipts: string[] = [];
   let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
   let feedOld: ((lines: RolloutLineItem[]) => void) | undefined;
+  let feedCurrent: ((lines: RolloutLineItem[]) => void) | undefined;
 
   const rebuiltPath = join(home, `${REBUILT_ID}.jsonl`);
   vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async (input) => {
@@ -286,11 +289,12 @@ async function launch(layout: Parameters<typeof hostLayout>[1] = {}): Promise<Ri
     const isRebuilt = opts.knownRolloutPath !== undefined;
     const sessionId = isRebuilt ? REBUILT_ID : "old-session";
     const path = isRebuilt ? opts.knownRolloutPath! : rolloutPath;
-    // The real fold, wired to the parent exactly as production wires it.
-    const fold = createAsyncWorkFold((event) => opts.onAsyncWorkEvent?.(event, T));
+    // The real fold, wired to the parent exactly as production wires it — including the carried seed.
+    const fold = createAsyncWorkFold((event) => opts.onAsyncWorkEvent?.(event, T), opts.seedAsyncWork ?? []);
     const feed = (lines: RolloutLineItem[]) => {
       for (const line of lines) observeAsyncWorkLine(line, fold);
     };
+    feedCurrent = feed;
     if (!isRebuilt) {
       lifecycleSink = opts.onLifecycle;
       feedOld = feed;
@@ -370,6 +374,7 @@ async function launch(layout: Parameters<typeof hostLayout>[1] = {}): Promise<Ri
     receipts,
     terminalOutput: () => terminalOutput,
     feed: (lines) => feedOld!(lines),
+    feedCurrent: (lines) => feedCurrent!(lines),
     lifecycle: (signals) => lifecycleSink!(signals),
     runPromise,
     finish: async () => {
@@ -480,6 +485,73 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       () => wrapperLog(rig).includes("cc-lhc continuity: generation 1 closed: 5 carried, 0 not carried"),
       "closure log",
     );
+    await rig.finish();
+  }, 15_000);
+
+  it("TC-2.7a/2.7e: carried work finishing while the replacement is idle writes one durable pending result with zero provider calls, no PTY input, no rollout mutation; the panel shows it read-only", async () => {
+    const rig = await launch();
+    rig.feed(fiveFamilyLaunch(rig.paths));
+    await storeHas(rig.dbPath, ALL_IDS);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+    await waitFor(() => rig.spawned.length === 2, "replacement child");
+
+    const store = openContinuityStore(rig.dbPath);
+    const rebuiltPath = join(rig.home, `${REBUILT_ID}.jsonl`);
+    const sdkCalls = () =>
+      Object.fromEntries(
+        Object.entries(rig.sdk.threadView).map(([name, fn]) => [
+          name,
+          (fn as ReturnType<typeof vi.fn>).mock.calls.length,
+        ]),
+      );
+    const before = {
+      sdk: sdkCalls(),
+      ptyWrites: rig.spawned.map((p) => p.writes.length),
+      rollout: readFileSync(rebuiltPath),
+      terminal: rig.terminalOutput().length,
+      receipts: rig.receipts.length,
+    };
+    expect(store.listPendingResults(T)).toHaveLength(0);
+
+    // The carried agent and shell finish in the rebuilt session's own rollout while Claude is idle;
+    // the same evidence arriving again is absorbed.
+    rig.feedCurrent([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    rig.feedCurrent([notification({ taskIds: ["shell-1"], status: "failed" })]);
+    rig.feedCurrent([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    await waitFor(() => store.listPendingResults(T).length === 2, "durable results");
+
+    const pending = store.listPendingResults(T);
+    expect(pending.map((r) => [r.launchId, r.outcome, r.generation, r.delivery, r.artifact?.kind ?? null])).toEqual([
+      [LAUNCH_IDS.agent, "completed", 1, "pending", null],
+      [LAUNCH_IDS.background_shell, "failed", 1, "pending", "adopted_output"],
+    ]);
+    expect(pending[0]!.label).toBe('background agent "reviewer" (agent-1)');
+    expect(pending[1]!.artifact?.path).toBe(join(rig.paths.tasksDir, "shell-1.output"));
+    expect(store.getItem(T, LAUNCH_IDS.agent)).toMatchObject({ state: "terminal", terminal: { outcome: "completed" } });
+    expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({ state: "active" });
+
+    // Zero activity outside the database.
+    expect(sdkCalls()).toEqual(before.sdk);
+    expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
+    expect(rig.spawned.map((p) => p.writes.length)).toEqual(before.ptyWrites);
+    expect(readFileSync(rebuiltPath).equals(before.rollout)).toBe(true);
+    expect(rig.terminalOutput().length).toBe(before.terminal);
+    expect(rig.receipts).toHaveLength(before.receipts);
+
+    // Opening the Control Panel shows the pending results; it delivers nothing.
+    (rig.stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(() => rig.terminalOutput().includes("carried work finished"), "panel notice");
+    // The 80x24 fake terminal wraps and clips the Home viewport; the first notice row is on screen.
+    const panel = rig.terminalOutput();
+    expect(panel).toContain('carried work finished: background agent "reviewer"');
+    expect(panel).not.toContain("curl");
+    expect(store.listPendingResults(T).map((r) => r.delivery)).toEqual(["pending", "pending"]);
+    expect(rig.spawned.map((p) => p.writes.length)).toEqual(before.ptyWrites);
+    expect(readFileSync(rebuiltPath).equals(before.rollout)).toBe(true);
+    expect(sdkCalls()).toEqual(before.sdk);
+    store.close();
     await rig.finish();
   }, 15_000);
 

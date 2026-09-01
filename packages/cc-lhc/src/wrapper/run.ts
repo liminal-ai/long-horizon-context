@@ -12,7 +12,7 @@ import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from
 import { registerRebuiltSessionLineage } from "../commands/rebuild-receipt.js";
 import { qualifyActiveItems, statPathReal } from "../continuity/adapters.js";
 import { invokeCarryover } from "../continuity/handoff.js";
-import { applyAsyncWorkEvent } from "../continuity/observe.js";
+import { applyAsyncWorkEvent, carriedOpenWork } from "../continuity/observe.js";
 import { snapshotContinuity } from "../continuity/snapshot.js";
 import { type ContinuityStore, openContinuityStore } from "../continuity/store.js";
 import {
@@ -145,6 +145,7 @@ import { createAltScreenGuard, renderPanel } from "./panel.js";
 import {
   buildPanelViewSnapshot,
   formatContextClassChangeNotice,
+  formatPendingResultRows,
   formatPolicySource,
   MODAL_SCOPE_NOTE,
 } from "./panel-commands.js";
@@ -535,6 +536,23 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     applyAsyncWorkEvent(continuityStore, threadId, event, Date.now());
   };
   const monitorOutputDir = join(dirname(options.governorReceiptDbPath ?? defaultLineageDbPath()), "continuity");
+  /** The carried items a rebuilt session's fold starts with, so their terminal evidence closes them. */
+  const carriedSeed = (threadRef: unknown): OpenAsyncWork[] => {
+    if (continuityStore === null) return [];
+    const threadId =
+      typeof threadRef === "object" && threadRef !== null && "threadId" in threadRef
+        ? String((threadRef as { threadId: unknown }).threadId)
+        : "";
+    if (threadId === "") return [];
+    try {
+      return carriedOpenWork(continuityStore, threadId);
+    } catch (cause) {
+      wrapperLog.warn(
+        `cc-lhc continuity: carried work unreadable: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+      return [];
+    }
+  };
   /**
    * LIM-145 seam step, shared by manual and automatic Compact: qualify the
    * parent's record of active work and accept it as one carryover generation.
@@ -1055,6 +1073,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         knownRolloutPath: rebuilt.rolloutPath,
         prefixBoundary: rebuilt.prefixBoundary,
         suppressBindLineageRecord: true,
+        seedAsyncWork: carriedSeed(threadRef),
         lineageDbPath: defaultLineageDbPath(),
         log: (message) => wrapperLog.info(message),
         logError: (message) => wrapperLog.warn(message),
@@ -1914,6 +1933,22 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
     if (retrievalState !== "ready") extraStatusRows.push(`retrieval ${retrievalState}`);
     extraStatusRows.push(...startupAnomalyNotices);
+    // LIM-146: finished carried work awaiting delivery. Reading it here changes
+    // no delivery state; opening the panel is visibility, not delivery.
+    if (continuityStore !== null) {
+      const panelThreadRef = captureSession?.getCommandContext().threadRef;
+      const panelThreadId = panelThreadRef !== undefined && "threadId" in panelThreadRef ? panelThreadRef.threadId : "";
+      if (panelThreadId !== "") {
+        try {
+          extraStatusRows.push(...formatPendingResultRows(continuityStore.listPendingResults(panelThreadId)));
+        } catch (cause) {
+          wrapperLog.warn(
+            `cc-lhc continuity: results unreadable: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
+          extraStatusRows.push("carried work results unreadable (see log)");
+        }
+      }
+    }
 
     // The alarm array is shared raw text (wrapper log, terminal line, governor
     // refusal log); only the panel copy names the command.
@@ -2763,6 +2798,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           knownRolloutPath: request.rebuilt.rolloutPath,
           prefixBoundary: request.rebuilt.prefixBoundary,
           suppressBindLineageRecord: true,
+          seedAsyncWork: carriedSeed(threadRef),
           lineageDbPath: defaultLineageDbPath(),
           log: (message) => wrapperLog.info(message),
           logError: (message) => wrapperLog.warn(message),
