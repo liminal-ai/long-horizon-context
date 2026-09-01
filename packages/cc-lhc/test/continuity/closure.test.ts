@@ -38,10 +38,10 @@ function rig() {
 describe("TC-2.8a completes before snapshot", () => {
   it("is not represented as active carryover and is not reported as terminal-since", () => {
     const { store, feed, snapshot, close } = rig();
-    feed([...LAUNCHES.agent.lines(), ...LAUNCHES.monitor.lines()]);
+    feed([...LAUNCHES.agent.lines(), ...LAUNCHES.background_shell.lines()]);
     feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
     const snap = snapshot();
-    expect(snap.items.map((item) => item.launchId)).toEqual([LAUNCH_IDS.monitor]);
+    expect(snap.items.map((item) => item.launchId)).toEqual([LAUNCH_IDS.background_shell]);
     const closure = close(snap.generation);
     expect(closure).toMatchObject({
       closed: true,
@@ -51,7 +51,7 @@ describe("TC-2.8a completes before snapshot", () => {
       unverified: [],
       unqualified: [],
     });
-    expect(closure.carried.map((item) => item.launchId)).toEqual([LAUNCH_IDS.monitor]);
+    expect(closure.carried.map((item) => item.launchId)).toEqual([LAUNCH_IDS.background_shell]);
     expect(store.getGeneration(T, snap.generation)?.state).toBe("closed");
     store.close();
   });
@@ -146,13 +146,13 @@ describe("TC-2.8c new work starts before ownership", () => {
 describe("verification during construction", () => {
   it("an item that stops being verified refuses closure without a claim", () => {
     const { store, feed, snapshot, close } = rig();
-    feed(LAUNCHES.monitor.lines());
+    feed(LAUNCHES.workflow.lines());
     const snap = snapshot();
-    store.setVerified({ threadId: T, launchId: LAUNCH_IDS.monitor, verified: false, nowMs: 9_000 });
+    store.setVerified({ threadId: T, launchId: LAUNCH_IDS.workflow, verified: false, nowMs: 9_000 });
     expect(close(snap.generation)).toMatchObject({
       closed: false,
       refusal: "unverified_items",
-      unverified: [LAUNCH_IDS.monitor],
+      unverified: [LAUNCH_IDS.workflow],
       carried: [],
     });
     expect(store.getGeneration(T, snap.generation)?.state).toBe("open");

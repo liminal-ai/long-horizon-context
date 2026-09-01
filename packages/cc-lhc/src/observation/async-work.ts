@@ -51,6 +51,22 @@ import type { ContentBlock, RolloutLineItem, ToolResultBlock, ToolUseBlock } fro
  */
 export type AsyncWorkFamily = "agent" | "workflow" | "background_shell" | "monitor" | "scheduled_wakeup";
 
+/**
+ * Host continuation facts a launch acknowledgement or notification carried:
+ * the identities Claude Code 2.1.252's own continuation seams take. Paths are
+ * the host's, recorded as stated; nothing here is derived or guessed.
+ */
+export interface AsyncWorkContinuation {
+  /** `<tasksDir>/<id>.output` — from the ack (`outputFile`), the ack text, or a notification `<output-file>`. */
+  outputFile?: string;
+  /** Workflow run id the host resumes with `Workflow({resumeFromRunId})`. */
+  runId?: string;
+  /** Workflow script the resume call needs alongside the run id. */
+  scriptPath?: string;
+  /** Workflow transcript directory holding `journal.jsonl`. */
+  transcriptDir?: string;
+}
+
 /** One piece of live asynchronous work the next swap would kill. */
 export interface OpenAsyncWork {
   /** Stable identity: Claude's task id, or the launching tool-use id when there is none. */
@@ -66,6 +82,8 @@ export interface OpenAsyncWork {
   latestEvent?: string;
   /** `scheduled_wakeup` only: epoch ms the wakeup is due to fire. */
   scheduledForMs?: number;
+  /** Continuation identities the record supplied, when any. */
+  continuation?: AsyncWorkContinuation;
 }
 
 /** How a piece of work ended, as the record states it. Never inferred from time. */
@@ -213,6 +231,16 @@ function rememberCall(fold: AsyncWorkFold, toolUseId: string, toolName: AsyncWor
   fold.pendingCalls.set(toolUseId, { toolName, ...(description !== undefined ? { description } : {}) });
 }
 
+/** The visible text of a tool result: a string, or the text blocks it carries. */
+function toolResultText(content: unknown): string | undefined {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return undefined;
+  const texts = content
+    .filter((block): block is { type: "text"; text: string } => isRecord(block) && typeof block.text === "string")
+    .map((block) => block.text);
+  return texts.length === 0 ? undefined : texts.join("\n");
+}
+
 function contentBlocksOf(content: unknown): ContentBlock[] {
   if (!Array.isArray(content)) return [];
   return content.filter((block): block is ContentBlock => isRecord(block) && typeof block.type === "string");
@@ -239,9 +267,26 @@ function contentBlocksOf(content: unknown): ContentBlock[] {
  *   Monitor        `{taskId, timeoutMs, persistent?}`
  *   ScheduleWakeup `{scheduledFor, clampedDelaySeconds, wasClamped, stopped?}`
  */
+function continuationOf(
+  facts: Partial<Record<keyof AsyncWorkContinuation, string | undefined>>,
+): { continuation: AsyncWorkContinuation } | Record<string, never> {
+  const present = Object.fromEntries(Object.entries(facts).filter(([, value]) => value !== undefined));
+  return Object.keys(present).length === 0 ? {} : { continuation: present as AsyncWorkContinuation };
+}
+
+/** The `Output is being written to: <path>` sentence a background Bash result text carries. */
+const OUTPUT_PATH_SENTENCE = /Output is being written to:\s*(\S+?)\.?(?:\s|$)/;
+
+function outputFileFromText(text: string | undefined): string | undefined {
+  if (text === undefined) return undefined;
+  const match = OUTPUT_PATH_SENTENCE.exec(text);
+  return match?.[1];
+}
+
 function classifyLaunch(
   family: AsyncWorkFamily,
   result: Record<string, unknown>,
+  resultText: string | undefined,
 ): Omit<OpenAsyncWork, "key" | "toolUseId"> | null {
   switch (family) {
     case "agent": {
@@ -249,7 +294,12 @@ function classifyLaunch(
       const agentId = nonEmptyString(result.agentId);
       if (agentId === undefined || isOrphanSummaryMarker(agentId)) return null;
       const description = nonEmptyString(result.description);
-      return { family, taskId: agentId, ...(description !== undefined ? { description } : {}) };
+      return {
+        family,
+        taskId: agentId,
+        ...(description !== undefined ? { description } : {}),
+        ...continuationOf({ outputFile: nonEmptyString(result.outputFile) }),
+      };
     }
     case "workflow": {
       if (result.status !== "async_launched" || result.taskType !== "local_workflow") return null;
@@ -258,13 +308,22 @@ function classifyLaunch(
       const taskId = nonEmptyString(result.taskId);
       if (taskId === undefined || isOrphanSummaryMarker(taskId)) return null;
       const description = nonEmptyString(result.workflowName) ?? nonEmptyString(result.summary);
-      return { family, taskId, ...(description !== undefined ? { description } : {}) };
+      return {
+        family,
+        taskId,
+        ...(description !== undefined ? { description } : {}),
+        ...continuationOf({
+          runId: nonEmptyString(result.runId),
+          scriptPath: nonEmptyString(result.scriptPath),
+          transcriptDir: nonEmptyString(result.transcriptDir),
+        }),
+      };
     }
     case "background_shell": {
       if (typeof result.stdout !== "string") return null;
       const taskId = nonEmptyString(result.backgroundTaskId);
       if (taskId === undefined || isOrphanSummaryMarker(taskId)) return null;
-      return { family, taskId };
+      return { family, taskId, ...continuationOf({ outputFile: outputFileFromText(resultText) }) };
     }
     case "monitor": {
       if (typeof result.timeoutMs !== "number") return null;
@@ -329,6 +388,7 @@ function openLaunch(
     ...(launch.taskId !== undefined ? { taskId: launch.taskId } : {}),
     toolUseId,
     ...(description !== undefined ? { description } : {}),
+    ...(launch.continuation !== undefined ? { continuation: launch.continuation } : {}),
   };
   fold.open.set(key, work);
   fold.onEvent?.({ kind: "launched", work });
@@ -345,6 +405,8 @@ export interface TaskNotification {
   status?: string;
   summary?: string;
   event?: string;
+  /** `<output-file>`: where the host wrote this task's output. */
+  outputFile?: string;
 }
 
 function tagValues(body: string, tag: string): string[] {
@@ -383,6 +445,8 @@ export function parseTaskNotification(text: string): TaskNotification | null {
   if (summary !== undefined && summary !== "") notification.summary = summary;
   const event = tagValues(body, "event")[0];
   if (event !== undefined && event !== "") notification.event = event;
+  const outputFile = tagValues(body, "output-file")[0];
+  if (outputFile !== undefined && outputFile !== "") notification.outputFile = outputFile;
   return notification;
 }
 
@@ -427,13 +491,17 @@ function applyNotification(fold: AsyncWorkFold, notification: TaskNotification):
   }
   // Progress: monitor events, stall notices, suppression notices. They say
   // the work is alive, so they refresh what the operator sees and close
-  // nothing.
+  // nothing. An `<output-file>` the launch did not name is learned here once.
   const progress = notification.event ?? notification.summary;
-  if (progress === undefined) return;
+  if (progress === undefined && notification.outputFile === undefined) return;
   for (const key of keys) {
     const work = fold.open.get(key);
     if (work === undefined) continue;
-    const updated = { ...work, latestEvent: progress };
+    const learnedOutput =
+      notification.outputFile !== undefined && work.continuation?.outputFile === undefined
+        ? { continuation: { ...work.continuation, outputFile: notification.outputFile } }
+        : {};
+    const updated = { ...work, ...(progress === undefined ? {} : { latestEvent: progress }), ...learnedOutput };
     fold.open.set(key, updated);
     fold.onEvent?.({ kind: "progress", work: updated });
   }
@@ -521,6 +589,7 @@ export function observeAsyncWorkLine(item: RolloutLineItem, fold: AsyncWorkFold)
     (block): block is ToolResultBlock => block.type === "tool_result" && block.is_error !== true,
   );
   if (resultBlock === undefined) return;
+  const resultText = toolResultText(resultBlock.content);
   const toolUseId = nonEmptyString(resultBlock.tool_use_id);
   if (toolUseId === undefined) return;
 
@@ -547,7 +616,7 @@ export function observeAsyncWorkLine(item: RolloutLineItem, fold: AsyncWorkFold)
 
   const family = LAUNCHER_FAMILY[call.toolName];
   if (family === undefined) return;
-  const launch = classifyLaunch(family, result);
+  const launch = classifyLaunch(family, result, resultText);
   if (launch === null) {
     // The launcher was called and did not report a launch: a synchronous
     // agent, a workflow that failed to start, a foreground shell. Nothing is

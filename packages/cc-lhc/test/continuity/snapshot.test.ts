@@ -8,7 +8,16 @@ import { describe, expect, it } from "vitest";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
 import { snapshotContinuity } from "../../src/continuity/snapshot.js";
 import { openContinuityStore, type QualifiedCarryMode } from "../../src/continuity/store.js";
-import { allLaunchLines, LAUNCH_IDS, LAUNCHES, notification, QUALIFIED, qualifyAll, tempDbPath } from "./helpers.js";
+import {
+  allLaunchLines,
+  LAUNCH_IDS,
+  LAUNCHES,
+  notification,
+  QUALIFIED,
+  qualifyAll,
+  syntheticIdentity,
+  tempDbPath,
+} from "./helpers.js";
 
 const T = "th_snapshot";
 
@@ -44,6 +53,13 @@ describe("TC-2.5a one active item", () => {
           taskId: "agent-1",
           toolUseId: "toolu_agent",
           scheduledForMs: null,
+          verifiedIdentity: {
+            kind: "agent_transcript",
+            agentId: "agent-1",
+            path: `/synthetic/${LAUNCH_IDS.agent}.jsonl`,
+          },
+          continuation: { kind: "send_message", agentId: "agent-1" },
+          transition: "resumed",
         },
       ],
     });
@@ -59,6 +75,7 @@ describe("TC-2.5a one active item", () => {
       launchId: LAUNCH_IDS.background_shell,
       carryMode: "adopt",
       operations: ["status", "output", "stop"],
+      verifiedIdentity: syntheticIdentity({ family: "background_shell", launchId: LAUNCH_IDS.background_shell }),
       nowMs: 2_000,
     });
     const result = snapshotContinuity(store, { threadId: T, oldSessionId: "old", nowMs: 5_000 });
@@ -109,6 +126,7 @@ describe("TC-2.5d no false carryover claim", () => {
       launchId: LAUNCH_IDS.background_shell,
       carryMode: "adopt",
       operations: ["status"],
+      verifiedIdentity: syntheticIdentity({ family: "background_shell", launchId: LAUNCH_IDS.background_shell }),
       nowMs: 2_000,
     });
     const result = snapshotContinuity(store, { threadId: T, oldSessionId: "old", nowMs: 5_000 });
@@ -142,13 +160,13 @@ describe("TC-2.5d no false carryover claim", () => {
 
   it("refuses the whole snapshot while any item is unverified, allocating nothing", () => {
     const { store } = seeded();
-    store.setVerified({ threadId: T, launchId: LAUNCH_IDS.monitor, verified: false, nowMs: 2_000 });
+    store.setVerified({ threadId: T, launchId: LAUNCH_IDS.workflow, verified: false, nowMs: 2_000 });
     const result = snapshotContinuity(store, { threadId: T, oldSessionId: "old", nowMs: 5_000 });
-    expect(result).toEqual({ ok: false, reason: "unverified_items", launchIds: [LAUNCH_IDS.monitor] });
+    expect(result).toEqual({ ok: false, reason: "unverified_items", launchIds: [LAUNCH_IDS.workflow] });
     expect(store.latestGeneration(T)).toBeNull();
     expect(store.listItems(T).every((item) => item.generation === 0)).toBe(true);
     // Verified again: the same set snapshots normally.
-    store.setVerified({ threadId: T, launchId: LAUNCH_IDS.monitor, verified: true, nowMs: 6_000 });
+    store.setVerified({ threadId: T, launchId: LAUNCH_IDS.workflow, verified: true, nowMs: 6_000 });
     expect(snapshotContinuity(store, { threadId: T, oldSessionId: "old", nowMs: 7_000 }).ok).toBe(true);
     store.close();
   });

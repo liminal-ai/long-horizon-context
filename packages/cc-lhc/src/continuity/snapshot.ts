@@ -20,15 +20,24 @@
  */
 
 import type { AsyncWorkFamily } from "../observation/async-work.js";
-import type {
-  ContinuityItem,
-  ContinuityOperation,
-  ContinuityStore,
-  QualifiedCarryMode,
-  TerminalEvidence,
+import {
+  type ContinuationMechanism,
+  type ContinuityItem,
+  type ContinuityOperation,
+  type ContinuityStore,
+  type ContinuityTransition,
+  continuationMechanismOf,
+  type QualifiedCarryMode,
+  type TerminalEvidence,
+  transitionOf,
+  type VerifiedIdentity,
 } from "./store.js";
 
-/** One item as the replacement will receive it: identity, family, carry mode, state, and operations. */
+/**
+ * One item as the replacement will receive it: identity, family, carry mode,
+ * state, operations, the identity the adapter verified, and the continuation
+ * mechanism that identity supports with the parameters needed to invoke it.
+ */
 export interface CarriedItem {
   launchId: string;
   family: AsyncWorkFamily;
@@ -39,6 +48,10 @@ export interface CarriedItem {
   taskId: string | null;
   toolUseId: string | null;
   scheduledForMs: number | null;
+  verifiedIdentity: VerifiedIdentity;
+  continuation: ContinuationMechanism;
+  /** Truthful transition the mechanism produces; a relaunched Monitor is `restarted`, never adopted. */
+  transition: ContinuityTransition;
 }
 
 export interface TerminalSinceSnapshot {
@@ -89,7 +102,7 @@ export interface ClosureResult {
 
 /** Only a qualified mode may be carried; callers refuse before reaching here otherwise. */
 function carried(item: ContinuityItem): CarriedItem {
-  if (item.carryMode === "unqualified") {
+  if (item.carryMode === "unqualified" || item.verifiedIdentity === null) {
     throw new Error(`cc-lhc continuity: cannot carry unqualified item ${item.launchId}`);
   }
   return {
@@ -102,6 +115,9 @@ function carried(item: ContinuityItem): CarriedItem {
     taskId: item.taskId,
     toolUseId: item.toolUseId,
     scheduledForMs: item.scheduledForMs,
+    verifiedIdentity: item.verifiedIdentity,
+    continuation: continuationMechanismOf(item.verifiedIdentity),
+    transition: transitionOf(continuationMechanismOf(item.verifiedIdentity)),
   };
 }
 

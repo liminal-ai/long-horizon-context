@@ -113,6 +113,7 @@ describe("continuity store: one database, additive tables", () => {
       launchId: "a",
       carryMode: "adopt",
       operations: ["status", "stop"],
+      verifiedIdentity: { kind: "scheduled_time", toolUseId: "t", scheduledForMs: 1 },
       nowMs: 1_300,
     });
     expect(qualified).toMatchObject({ carryMode: "adopt", operations: ["status", "stop"] });
@@ -122,13 +123,21 @@ describe("continuity store: one database, additive tables", () => {
   it("the adapter-facing setter cannot return an item to unqualified", () => {
     const store = openContinuityStore(tempDbPath());
     store.recordLaunch(launch("a", 1_000));
-    store.setCarryMode({ threadId: T, launchId: "a", carryMode: "rearm", operations: ["status"], nowMs: 1_100 });
+    store.setCarryMode({
+      threadId: T,
+      launchId: "a",
+      carryMode: "rearm",
+      operations: ["status"],
+      verifiedIdentity: { kind: "scheduled_time", toolUseId: "t", scheduledForMs: 1 },
+      nowMs: 1_100,
+    });
     expect(() =>
       store.setCarryMode({
         threadId: T,
         launchId: "a",
         carryMode: "unqualified" as never,
         operations: [],
+        verifiedIdentity: { kind: "scheduled_time", toolUseId: "t", scheduledForMs: 1 },
         nowMs: 1_200,
       }),
     ).toThrow(/cannot be reset to unqualified/);
@@ -167,6 +176,78 @@ describe("continuity store: one database, additive tables", () => {
     const reopened = openContinuityStore(path);
     expect({ items: reopened.listItems(T), generation: reopened.latestGeneration(T) }).toEqual(before);
     reopened.close();
+  });
+
+  it("opens a database written by the foundation schema and adds the adapter columns additively", () => {
+    const path = tempDbPath();
+    const db = new DatabaseSync(path);
+    db.exec(`CREATE TABLE cc_continuity_items (
+      thread_id TEXT NOT NULL, launch_id TEXT NOT NULL, generation INTEGER NOT NULL, family TEXT NOT NULL,
+      label TEXT NOT NULL, state TEXT NOT NULL, carry_mode TEXT NOT NULL, operations_json TEXT NOT NULL,
+      task_id TEXT, tool_use_id TEXT, scheduled_for_ms INTEGER, terminal_outcome TEXT, terminal_evidence TEXT,
+      terminal_observed_at_ms INTEGER, created_at_ms INTEGER NOT NULL, updated_at_ms INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, launch_id))`);
+    db.exec(
+      `INSERT INTO cc_continuity_items VALUES ('${T}','a',0,'agent','background agent (a)','active','unqualified','[]','a','toolu_a',NULL,NULL,NULL,NULL,1,1)`,
+    );
+    db.close();
+    const store = openContinuityStore(path);
+    expect(store.getItem(T, "a")).toMatchObject({
+      continuation: null,
+      verifiedIdentity: null,
+      carryMode: "unqualified",
+    });
+    const cols = (
+      new DatabaseSync(path, { readOnly: true }).prepare("PRAGMA table_info(cc_continuity_items)").all() as {
+        name: string;
+      }[]
+    ).map((c) => c.name);
+    expect(cols).toEqual(expect.arrayContaining(["continuation_json", "identity_json"]));
+    store.close();
+  });
+
+  it("continuation facts are learned once and never rewritten", () => {
+    const store = openContinuityStore(tempDbPath());
+    store.recordLaunch({ ...launch("a", 1_000), continuation: { outputFile: "/t/a.output" } });
+    expect(store.getItem(T, "a")?.continuation).toEqual({ outputFile: "/t/a.output" });
+    store.recordProgress({
+      threadId: T,
+      launchId: "a",
+      continuation: { outputFile: "/t/other.output", runId: "r1" },
+      nowMs: 1_100,
+    });
+    expect(store.getItem(T, "a")?.continuation).toEqual({ outputFile: "/t/a.output", runId: "r1" });
+    store.close();
+  });
+
+  it("a qualified row must carry the identity it verified, and a bare qualified row is malformed", () => {
+    const path = tempDbPath();
+    const store = openContinuityStore(path);
+    store.recordLaunch(launch("a", 1_000));
+    expect(() =>
+      store.setCarryMode({
+        threadId: T,
+        launchId: "a",
+        carryMode: "adopt",
+        operations: [],
+        verifiedIdentity: { kind: "posix_output", path: "", dev: "1", ino: "2" },
+        nowMs: 2,
+      }),
+    ).toThrow(/verified identity malformed/);
+    store.setCarryMode({
+      threadId: T,
+      launchId: "a",
+      carryMode: "adopt",
+      operations: ["output"],
+      verifiedIdentity: { kind: "posix_output", path: "/t/a", dev: "1", ino: "2" },
+      nowMs: 2,
+    });
+    expect(store.getItem(T, "a")?.verifiedIdentity).toEqual({ kind: "posix_output", path: "/t/a", dev: "1", ino: "2" });
+    const db = new DatabaseSync(path);
+    db.exec("UPDATE cc_continuity_items SET identity_json = NULL WHERE launch_id = 'a'");
+    db.close();
+    expect(() => store.getItem(T, "a")).toThrow(/malformed/);
+    store.close();
   });
 
   it("a malformed row fails loud instead of being read as work", () => {

@@ -11,7 +11,16 @@ import { describe, expect, it } from "vitest";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
 import { openContinuityStore } from "../../src/continuity/store.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
-import { allLaunchLines, LAUNCH_IDS, LAUNCHES, notification, tempDbPath, toolResult, toolUse } from "./helpers.js";
+import {
+  allLaunchLines,
+  LAUNCH_IDS,
+  LAUNCHES,
+  monitorEvent,
+  notification,
+  tempDbPath,
+  toolResult,
+  toolUse,
+} from "./helpers.js";
 
 const T = "th_observe";
 const FIXTURES = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "async-work");
@@ -64,6 +73,16 @@ describe("TC-2.1a launch opens exactly one item per family", () => {
       scheduledForMs: LAUNCHES.scheduled_wakeup.scheduledForMs,
       label: 'scheduled wakeup "poll CI"',
     });
+    // Continuation facts arrive exactly as the host stated them (AC-2.2 inputs).
+    expect(byFamily.agent?.continuation).toEqual({ outputFile: "/nonexistent/tasks/agent-1.output" });
+    expect(byFamily.workflow?.continuation).toEqual({
+      runId: "wf_run-1",
+      scriptPath: "/nonexistent/projects/-x/session-old/workflows/scripts/deploy-wf_run-1.js",
+      transcriptDir: "/nonexistent/projects/-x/session-old/subagents/workflows/wf_run-1",
+    });
+    expect(byFamily.background_shell?.continuation).toEqual({ outputFile: "/nonexistent/tasks/shell-1.output" });
+    expect(byFamily.monitor?.continuation).toBeNull();
+    expect(byFamily.scheduled_wakeup?.continuation).toBeNull();
     // The shell's command body never reaches the database.
     expect(byFamily.background_shell?.label).toBe("background command (shell-1)");
     expect(JSON.stringify(items)).not.toMatch(/SECRET|Authorization|curl/);
@@ -99,6 +118,12 @@ describe("TC-2.1b progress does not close work", () => {
     expect(monitor.updatedAtMs).toBeGreaterThan(before.updatedAtMs);
     expect(store.getItem(T, LAUNCH_IDS.agent)?.state).toBe("active");
     expect(store.listItems(T).filter((item) => item.state === "active")).toHaveLength(5);
+    // A monitor learns its output file from the host's first event, once.
+    feed([monitorEvent()]);
+    feed([notification({ taskIds: ["mon-1"], event: "again", outputFile: "/nonexistent/tasks/other.output" })]);
+    expect(store.getItem(T, LAUNCH_IDS.monitor)?.continuation).toEqual({
+      outputFile: "/nonexistent/tasks/mon-1.output",
+    });
     // Progress text is never persisted.
     expect(JSON.stringify(store.listItems(T))).not.toContain("build green");
     store.close();

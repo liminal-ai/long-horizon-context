@@ -77,11 +77,17 @@ export function applyAsyncWorkEvent(
         ...(event.work.taskId === undefined ? {} : { taskId: event.work.taskId }),
         ...(event.work.toolUseId === undefined ? {} : { toolUseId: event.work.toolUseId }),
         ...(event.work.scheduledForMs === undefined ? {} : { scheduledForMs: event.work.scheduledForMs }),
+        ...(event.work.continuation === undefined ? {} : { continuation: event.work.continuation }),
         nowMs,
       });
       return;
     case "progress":
-      store.recordProgress({ threadId, launchId, nowMs });
+      store.recordProgress({
+        threadId,
+        launchId,
+        ...(event.work.continuation === undefined ? {} : { continuation: event.work.continuation }),
+        nowMs,
+      });
       return;
     case "terminal":
       store.recordTerminal({

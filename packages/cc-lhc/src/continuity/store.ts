@@ -27,7 +27,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { defaultLineageDbPath } from "../intake/paths.js";
-import type { AsyncWorkFamily } from "../observation/async-work.js";
+import type { AsyncWorkContinuation, AsyncWorkFamily } from "../observation/async-work.js";
 
 export const CONTINUITY_BUSY_TIMEOUT_MS = 10_000;
 
@@ -58,6 +58,85 @@ const TERMINAL_OUTCOMES: readonly TerminalOutcome[] = [
   "unknown",
 ];
 
+/**
+ * The identity a family adapter verified immediately before qualifying the
+ * item — the fact the replacement will reconnect through. Platform-qualified:
+ * a POSIX output identity is dev+inode; no Windows output identity is proved,
+ * so none is ever recorded there.
+ */
+export type VerifiedIdentity =
+  | { kind: "posix_output"; path: string; dev: string; ino: string }
+  | { kind: "agent_transcript"; agentId: string; path: string }
+  | { kind: "workflow_run"; runId: string; scriptPath: string; journalPath: string }
+  | { kind: "scheduled_time"; toolUseId: string; scheduledForMs: number }
+  /** The Monitor launch record resolvable from the old session's rollout by its tool-use id; never the command text. */
+  | { kind: "monitor_launch"; toolUseId: string; rolloutPath: string };
+
+/**
+ * The supported normal-path action that continues an item after the swap,
+ * with the verified facts it takes. Each kind is a mechanism Story 0 proved
+ * on Claude Code 2.1.252 or an accepted parent-owned operation. It is derived
+ * uniquely from the verified identity, so a durable item needs no second
+ * copy of the parameters.
+ */
+export type ContinuationMechanism =
+  /** The surviving process keeps writing; the parent reads the verified output file (operation `output`). */
+  | { kind: "parent_output_read"; path: string }
+  /** `SendMessage(agentId)` resumes the saved transcript. */
+  | { kind: "send_message"; agentId: string }
+  /** `Workflow({resumeFromRunId, scriptPath})` resumes the run; completed `agent()` calls are cached. */
+  | { kind: "workflow_resume"; resumeFromRunId: string; scriptPath: string }
+  /** The due time is re-armed from the durable launch and surfaced at the next real turn. */
+  | { kind: "rearm_at"; scheduledForMs: number }
+  /**
+   * The exact Monitor launch is resolved from the rollout at invocation time and
+   * relaunched once for the handoff generation (`relaunchKey`), reported as `restarted`.
+   */
+  | { kind: "monitor_relaunch"; toolUseId: string; rolloutPath: string };
+
+/**
+ * How the replacement receives the item, truthfully: `adopted` (uninterrupted,
+ * the work never stopped), `resumed` (continued from its saved record),
+ * `rearmed` (re-armed from its durable time), `restarted` (relaunched; the
+ * original run was interrupted).
+ */
+export type ContinuityTransition = "adopted" | "resumed" | "rearmed" | "restarted";
+
+export function transitionOf(mechanism: ContinuationMechanism): ContinuityTransition {
+  switch (mechanism.kind) {
+    case "parent_output_read":
+      return "adopted";
+    case "send_message":
+    case "workflow_resume":
+      return "resumed";
+    case "rearm_at":
+      return "rearmed";
+    case "monitor_relaunch":
+      return "restarted";
+  }
+}
+
+/** The exactly-once fence for a relaunch: one per carried item per handoff generation. */
+export function relaunchKey(launchId: string, generation: number): string {
+  return `${launchId}#${generation}`;
+}
+
+/** The one mechanism a verified identity supports. */
+export function continuationMechanismOf(identity: VerifiedIdentity): ContinuationMechanism {
+  switch (identity.kind) {
+    case "posix_output":
+      return { kind: "parent_output_read", path: identity.path };
+    case "agent_transcript":
+      return { kind: "send_message", agentId: identity.agentId };
+    case "workflow_run":
+      return { kind: "workflow_resume", resumeFromRunId: identity.runId, scriptPath: identity.scriptPath };
+    case "scheduled_time":
+      return { kind: "rearm_at", scheduledForMs: identity.scheduledForMs };
+    case "monitor_launch":
+      return { kind: "monitor_relaunch", toolUseId: identity.toolUseId, rolloutPath: identity.rolloutPath };
+  }
+}
+
 export interface TerminalEvidence {
   outcome: TerminalOutcome;
   /** What the record said, e.g. `task-notification completed`, `TaskStop`. */
@@ -80,6 +159,10 @@ export interface ContinuityItem {
   taskId: string | null;
   toolUseId: string | null;
   scheduledForMs: number | null;
+  /** Host continuation facts the record supplied; fields are learned once and never rewritten. */
+  continuation: AsyncWorkContinuation | null;
+  /** Identity verified by the qualifying adapter; null while unqualified. */
+  verifiedIdentity: VerifiedIdentity | null;
   terminal: TerminalEvidence | null;
   createdAtMs: number;
   updatedAtMs: number;
@@ -111,6 +194,7 @@ export interface RecordLaunchInput {
   taskId?: string;
   toolUseId?: string;
   scheduledForMs?: number;
+  continuation?: AsyncWorkContinuation;
   nowMs: number;
 }
 
@@ -118,8 +202,16 @@ export interface ContinuityStore {
   readonly path: string;
   /** Open one item per launch identity. An existing row (any state) is returned unchanged. */
   recordLaunch(input: RecordLaunchInput): { item: ContinuityItem; inserted: boolean };
-  /** Progress refreshes an open item and closes nothing. Returns null for an unknown launch. */
-  recordProgress(input: { threadId: string; launchId: string; nowMs: number }): ContinuityItem | null;
+  /**
+   * Progress refreshes an open item and closes nothing. Continuation facts the
+   * launch did not carry are learned here; a fact already recorded is kept.
+   */
+  recordProgress(input: {
+    threadId: string;
+    launchId: string;
+    continuation?: AsyncWorkContinuation;
+    nowMs: number;
+  }): ContinuityItem | null;
   /** First terminal evidence closes the item; later evidence is ignored (`applied: false`). */
   recordTerminal(input: {
     threadId: string;
@@ -130,12 +222,17 @@ export interface ContinuityStore {
   }): { item: ContinuityItem; applied: boolean } | null;
   /** Verification result for a non-terminal item: `active` when verified, `unknown` when not. */
   setVerified(input: { threadId: string; launchId: string; verified: boolean; nowMs: number }): ContinuityItem | null;
-  /** A qualified adapter declares how it carries the item and what it can do to it. Never back to `unqualified`. */
+  /**
+   * A qualified adapter declares how it carries the item, what it can do to it,
+   * and the identity it verified. Never back to `unqualified`. A terminal item
+   * is left as it is.
+   */
   setCarryMode(input: {
     threadId: string;
     launchId: string;
     carryMode: QualifiedCarryMode;
     operations: readonly ContinuityOperation[];
+    verifiedIdentity: VerifiedIdentity;
     nowMs: number;
   }): ContinuityItem | null;
   getItem(threadId: string, launchId: string): ContinuityItem | null;
@@ -171,6 +268,8 @@ interface ItemRow {
   task_id: string | null;
   tool_use_id: string | null;
   scheduled_for_ms: number | null;
+  continuation_json: string | null;
+  identity_json: string | null;
   terminal_outcome: string | null;
   terminal_evidence: string | null;
   terminal_observed_at_ms: number | null;
@@ -222,6 +321,12 @@ function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (thread_id, launch_id)
     )
   `);
+  // Additive, idempotent migrations for rows written by the foundation schema.
+  for (const column of ["continuation_json", "identity_json"]) {
+    if (!tableHasColumn(db, "cc_continuity_items", column)) {
+      db.exec(`ALTER TABLE cc_continuity_items ADD COLUMN ${column} TEXT`);
+    }
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_cc_continuity_items_thread_state
       ON cc_continuity_items(thread_id, state, created_at_ms)
@@ -238,6 +343,78 @@ function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (thread_id, generation)
     )
   `);
+}
+
+function tableHasColumn(db: DatabaseSync, table: string, column: string): boolean {
+  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+  return rows.some((row) => row.name === column);
+}
+
+const CONTINUATION_KEYS = ["outputFile", "runId", "scriptPath", "transcriptDir"] as const;
+
+function parseContinuation(json: string | null, row: ItemRow): AsyncWorkContinuation | null {
+  if (json === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw malformed("continuation", row);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw malformed("continuation", row);
+  const out: AsyncWorkContinuation = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (!(CONTINUATION_KEYS as readonly string[]).includes(key) || typeof value !== "string" || value === "") {
+      throw malformed("continuation", row);
+    }
+    out[key as (typeof CONTINUATION_KEYS)[number]] = value;
+  }
+  return Object.keys(out).length === 0 ? null : out;
+}
+
+function isVerifiedIdentity(value: unknown): value is VerifiedIdentity {
+  if (typeof value !== "object" || value === null) return false;
+  const o = value as Record<string, unknown>;
+  const str = (key: string): boolean => typeof o[key] === "string" && o[key] !== "";
+  switch (o.kind) {
+    case "posix_output":
+      return str("path") && str("dev") && str("ino");
+    case "agent_transcript":
+      return str("agentId") && str("path");
+    case "workflow_run":
+      return str("runId") && str("scriptPath") && str("journalPath");
+    case "scheduled_time":
+      return str("toolUseId") && typeof o.scheduledForMs === "number" && Number.isFinite(o.scheduledForMs);
+    case "monitor_launch":
+      return str("toolUseId") && str("rolloutPath");
+    default:
+      return false;
+  }
+}
+
+function parseVerifiedIdentity(json: string | null, row: ItemRow): VerifiedIdentity | null {
+  if (json === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw malformed("verified identity", row);
+  }
+  if (!isVerifiedIdentity(parsed)) throw malformed("verified identity", row);
+  return parsed;
+}
+
+/** Learn absent continuation fields once; recorded fields are never rewritten. */
+function mergeContinuation(
+  recorded: AsyncWorkContinuation | null,
+  learned: AsyncWorkContinuation | undefined,
+): AsyncWorkContinuation | null {
+  if (learned === undefined) return recorded;
+  const out: AsyncWorkContinuation = { ...(recorded ?? {}) };
+  for (const key of CONTINUATION_KEYS) {
+    const value = learned[key];
+    if (out[key] === undefined && typeof value === "string" && value !== "") out[key] = value;
+  }
+  return Object.keys(out).length === 0 ? null : out;
 }
 
 function isState(value: string): value is ContinuityState {
@@ -291,6 +468,9 @@ function parseItem(row: ItemRow): ContinuityItem {
   } else if (row.terminal_outcome !== null) {
     throw malformed("state", row);
   }
+  const verifiedIdentity = parseVerifiedIdentity(row.identity_json, row);
+  if (row.carry_mode === "unqualified" && verifiedIdentity !== null) throw malformed("carry mode", row);
+  if (row.carry_mode !== "unqualified" && verifiedIdentity === null) throw malformed("carry mode", row);
   return {
     threadId: row.thread_id,
     launchId: row.launch_id,
@@ -303,6 +483,8 @@ function parseItem(row: ItemRow): ContinuityItem {
     taskId: row.task_id,
     toolUseId: row.tool_use_id,
     scheduledForMs: row.scheduled_for_ms,
+    continuation: parseContinuation(row.continuation_json, row),
+    verifiedIdentity,
     terminal,
     createdAtMs: row.created_at_ms,
     updatedAtMs: row.updated_at_ms,
@@ -350,12 +532,12 @@ export function openContinuityStore(
   const insertItem = db.prepare(`
     INSERT OR IGNORE INTO cc_continuity_items (
       thread_id, launch_id, generation, family, label, state, carry_mode, operations_json,
-      task_id, tool_use_id, scheduled_for_ms, terminal_outcome, terminal_evidence,
-      terminal_observed_at_ms, created_at_ms, updated_at_ms
-    ) VALUES (?, ?, 0, ?, ?, 'active', 'unqualified', '[]', ?, ?, ?, NULL, NULL, NULL, ?, ?)
+      task_id, tool_use_id, scheduled_for_ms, continuation_json, identity_json, terminal_outcome,
+      terminal_evidence, terminal_observed_at_ms, created_at_ms, updated_at_ms
+    ) VALUES (?, ?, 0, ?, ?, 'active', 'unqualified', '[]', ?, ?, ?, ?, NULL, NULL, NULL, NULL, ?, ?)
   `);
   const touchItem = db.prepare(
-    "UPDATE cc_continuity_items SET updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND state != 'terminal'",
+    "UPDATE cc_continuity_items SET continuation_json = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND state != 'terminal'",
   );
   const terminalizeItem = db.prepare(`
     UPDATE cc_continuity_items
@@ -366,7 +548,7 @@ export function openContinuityStore(
     "UPDATE cc_continuity_items SET state = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND state != 'terminal'",
   );
   const carryItem = db.prepare(
-    "UPDATE cc_continuity_items SET carry_mode = ?, operations_json = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ?",
+    "UPDATE cc_continuity_items SET carry_mode = ?, operations_json = ?, identity_json = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND state != 'terminal'",
   );
   const stampGeneration = db.prepare(
     "UPDATE cc_continuity_items SET generation = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND generation < ?",
@@ -414,14 +596,19 @@ export function openContinuityStore(
         input.taskId ?? null,
         input.toolUseId ?? null,
         input.scheduledForMs ?? null,
+        JSON.stringify(mergeContinuation(null, input.continuation)) === "null"
+          ? null
+          : JSON.stringify(mergeContinuation(null, input.continuation)),
         input.nowMs,
         input.nowMs,
       );
       return { item: mustGet(input.threadId, input.launchId), inserted: true };
     },
     recordProgress(input) {
-      if (getItem(input.threadId, input.launchId) === null) return null;
-      touchItem.run(input.nowMs, input.threadId, input.launchId);
+      const existing = getItem(input.threadId, input.launchId);
+      if (existing === null) return null;
+      const merged = mergeContinuation(existing.continuation, input.continuation);
+      touchItem.run(merged === null ? null : JSON.stringify(merged), input.nowMs, input.threadId, input.launchId);
       return mustGet(input.threadId, input.launchId);
     },
     recordTerminal(input) {
@@ -446,9 +633,13 @@ export function openContinuityStore(
       if ((input.carryMode as CarryMode) === "unqualified") {
         throw new Error(`cc-lhc continuity: carry mode cannot be reset to unqualified (${input.launchId})`);
       }
+      if (!isVerifiedIdentity(input.verifiedIdentity)) {
+        throw new Error(`cc-lhc continuity: verified identity malformed (${input.launchId})`);
+      }
       carryItem.run(
         input.carryMode,
         JSON.stringify([...input.operations]),
+        JSON.stringify(input.verifiedIdentity),
         input.nowMs,
         input.threadId,
         input.launchId,
