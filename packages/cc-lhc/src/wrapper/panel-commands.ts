@@ -16,7 +16,14 @@
  */
 import { formatTokensShort } from "../commands/context-mutation.js";
 import { type BandAllocationId, isBandAllocationId, PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
-import type { ConfigFallback, ContextClass, ContextWindowResolution, ContextWindowSource } from "../governor/types.js";
+import { BUILTIN_CONTEXT_POLICIES } from "../governor/config.js";
+import type {
+  ConfigFallback,
+  ContextClass,
+  ContextWindowResolution,
+  ContextWindowSource,
+  PolicyFieldSource,
+} from "../governor/types.js";
 import { presentAllocation } from "./preset-presentation.js";
 
 /** Full product name; used as the card title wherever it fits. */
@@ -50,10 +57,20 @@ export interface DetailsRow {
   value: string;
 }
 
+/** Where each Smart Compact policy value came from (AC-1.6 "configuration source"). */
+export interface PanelPolicySources {
+  target: PolicyFieldSource;
+  trigger: PolicyFieldSource;
+  runway: PolicyFieldSource;
+}
+
 export interface PanelViewSnapshot {
   providerContextTokens: number | null;
   targetTokens: number;
   triggerTokens: number;
+  /** Minimum trigger − target runway the active policy requires. */
+  minRunwayTokens: number;
+  policySources: PanelPolicySources;
   /** Active context class and how it was resolved (tech-design D8). */
   contextClass: ContextClass;
   contextWindowSource: ContextWindowSource;
@@ -364,6 +381,39 @@ function fallbackField(view: PanelViewSnapshot, field: string, text: string): st
   return view.fallbackFields.includes(field) ? `${text} (fallback — not selected)` : text;
 }
 
+/** Operator-facing name of a policy value's source; built-in values name their window class. */
+export function formatPolicySource(source: PolicyFieldSource, contextClass: ContextClass): string {
+  if (source === "builtin") return `built-in ${contextClass} policy`;
+  if (source === "session") return "session";
+  return `${source} config`;
+}
+
+/**
+ * Home spelling of a configured value: the built-in default is the norm and
+ * says nothing; an explicit source is named beside the value it set.
+ */
+function sourcedValue(view: PanelViewSnapshot, source: PolicyFieldSource, text: string): string {
+  return source === "builtin" ? text : `${text} (${formatPolicySource(source, view.contextClass)})`;
+}
+
+/**
+ * The one concise notice retained when the effective context class changes
+ * (TC-1.6c): old and new class plus the policy now in force. Shown on the next
+ * Control Panel open; never written onto Claude's screen.
+ */
+export function formatContextClassChangeNotice(change: {
+  from: ContextClass;
+  to: ContextClass;
+  targetTokens: number;
+  triggerTokens: number;
+  minRunwayTokens: number;
+}): string {
+  return (
+    `context window changed ${change.from} → ${change.to} · Smart Compact now target ${formatTokensShort(change.targetTokens)}` +
+    ` · trigger ${formatTokensShort(change.triggerTokens)} · runway ${formatTokensShort(change.minRunwayTokens)} minimum`
+  );
+}
+
 const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
   {
     id: "provider",
@@ -388,7 +438,11 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
     breakBefore: true,
     dimFrom: 1,
     segments: (view) => [
-      fallbackField(view, "lowerBoundTokens", `target ${formatTokensShort(view.targetTokens)}`),
+      fallbackField(
+        view,
+        "lowerBoundTokens",
+        sourcedValue(view, view.policySources.target, `target ${formatTokensShort(view.targetTokens)}`),
+      ),
       "size after compact",
     ],
     tiny: (view) => `target ${formatTokensShort(view.targetTokens)}`,
@@ -400,7 +454,11 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
     breakBefore: true,
     dimFrom: 1,
     segments: (view) => [
-      fallbackField(view, "upperBoundTokens", `trigger ${formatTokensShort(view.triggerTokens)}`),
+      fallbackField(
+        view,
+        "upperBoundTokens",
+        sourcedValue(view, view.policySources.trigger, `trigger ${formatTokensShort(view.triggerTokens)}`),
+      ),
       "automatic compact point",
     ],
     tiny: (view) => `trigger ${formatTokensShort(view.triggerTokens)}`,
@@ -410,7 +468,11 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
     group: "context",
     navigable: true,
     breakBefore: true,
-    segments: (view) => [`window ${view.contextClass}`, contextWindowPhrase(view)],
+    segments: (view) => [
+      `window ${view.contextClass}`,
+      contextWindowPhrase(view),
+      sourcedValue(view, view.policySources.runway, `runway ${formatTokensShort(view.minRunwayTokens)} minimum`),
+    ],
     compactSegments: (view) => [`window ${view.contextClass}`],
     tiny: (view) => `window ${view.contextClass}`,
   },
@@ -821,6 +883,10 @@ export function buildPanelViewSnapshot(input: {
   targetTokens: number;
   triggerTokens: number;
   contextWindow: ContextWindowResolution;
+  /** Defaults to the active class's built-in runway. */
+  minRunwayTokens?: number;
+  /** Defaults to built-in for every field. */
+  policySources?: Partial<PanelPolicySources>;
   captureHealth: string;
   profile: string;
   alarms?: readonly string[];
@@ -835,6 +901,13 @@ export function buildPanelViewSnapshot(input: {
     providerContextTokens: input.providerContextTokens,
     targetTokens: input.targetTokens,
     triggerTokens: input.triggerTokens,
+    minRunwayTokens:
+      input.minRunwayTokens ?? BUILTIN_CONTEXT_POLICIES[input.contextWindow.contextClass].minRunwayTokens,
+    policySources: {
+      target: input.policySources?.target ?? "builtin",
+      trigger: input.policySources?.trigger ?? "builtin",
+      runway: input.policySources?.runway ?? "builtin",
+    },
     contextClass: input.contextWindow.contextClass,
     contextWindowSource: input.contextWindow.source,
     contextWindowDetail: input.contextWindow.detail,

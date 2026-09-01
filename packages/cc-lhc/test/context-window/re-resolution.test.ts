@@ -17,7 +17,9 @@ import type { LifecycleSignal } from "../../src/observation/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
+import { PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
 import { run } from "../../src/wrapper/run.js";
+import { panelText } from "../helpers/panel-text.js";
 
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -200,6 +202,8 @@ interface Rig {
   observes: GovernorObserveRecord[];
   results: HandoffResult[];
   capturePath: string;
+  stdin: PassThrough;
+  terminalOutput: string[];
   lifecycle: (signals: readonly LifecycleSignal[]) => void;
   runPromise: Promise<number>;
   logs: string[];
@@ -217,6 +221,10 @@ async function startRig(
   const observes: GovernorObserveRecord[] = [];
   const results: HandoffResult[] = [];
   const logs: string[] = [];
+  const terminalOutput: string[] = [];
+  const stdin = fakeStream();
+  const stdout = fakeStream();
+  stdout.on("data", (chunk: Buffer | string) => terminalOutput.push(String(chunk)));
   let lifecycle: ((signals: readonly LifecycleSignal[]) => void) | undefined;
   const rebuiltPath = join(dir, `${REBUILT_ID}.jsonl`);
   const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
@@ -251,8 +259,8 @@ async function startRig(
       spawned.push(fake);
       return fake as never;
     }) as never,
-    stdin: fakeStream(),
-    stdout: fakeStream() as never,
+    stdin,
+    stdout: stdout as never,
     stderr: fakeStream() as never,
     noInference: true,
     ...(options.overrides === undefined ? {} : { contextPolicyOverrides: options.overrides }),
@@ -279,6 +287,8 @@ async function startRig(
   lifecycle!([{ kind: "session_bound", sessionId: "old-session" }]);
   return {
     spawned,
+    stdin: stdin as unknown as PassThrough,
+    terminalOutput,
     observes,
     results,
     capturePath,
@@ -524,6 +534,69 @@ describe("run(): launch-scoped context-window observer on the real child argv", 
       expect(rig.logs.some((l) => l.includes("policy_disabled"))).toBe(false);
     } finally {
       for (const child of rig.spawned) child.fireExit(0);
+      await rig.runPromise;
+      rig.cleanup();
+    }
+  }, 15_000);
+});
+
+describe("run(): class-change notice is retained and shown on the next Control Panel open (TC-1.6c, TC-1.6d)", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  beforeEach(() => {
+    process.env.CC_LHC_HOME = mkdtempSync(join(tmpdir(), "cc-lhc-cw-notice-home-"));
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+  });
+
+  it("shows the 200k → 1M notice once, with the resolved policy, and nothing on Claude's screen", async () => {
+    const rig = await startRig(["--model", "opus"]);
+    try {
+      const sessionId = resumeIdIn(rig.spawned[0]!.args);
+      const leader = Buffer.from([0x1d]);
+
+      // Normal resolved operation first: no notice, no warning on Home.
+      rig.stdin.write(leader);
+      await waitFor(() => panelText(rig.terminalOutput.join("")).includes(PANEL_TITLE), "panel home (before change)");
+      const before = panelText(rig.terminalOutput.join(""));
+      expect(before).toContain("window 200k");
+      expect(before).toContain("runway 40k minimum");
+      expect(before).not.toMatch(/context window changed|WARNING|advisory|ANOMALY|may run/i);
+      rig.stdin.write(leader);
+      await waitFor(() => rig.terminalOutput.some((chunk) => chunk.includes("\u001b[?1049l")), "panel closed");
+      const screenBytesBefore = rig.terminalOutput.length;
+
+      // The child renders a 1M status line; the class changes on the next
+      // governor sync. Nothing is written to the terminal until the panel opens.
+      appendFileSync(rig.capturePath, payload(sessionId, 1_000_000, "claude-opus-5"));
+      rig.lifecycle(settledAt(10_000, "req:1"));
+      await waitFor(() => rig.observes.some((record) => record.contextClass === "1M"), "1M observe");
+      expect(rig.terminalOutput.length).toBe(screenBytesBefore);
+
+      rig.terminalOutput.length = 0;
+      rig.stdin.write(leader);
+      await waitFor(() => panelText(rig.terminalOutput.join("")).includes(PANEL_TITLE), "panel home (after change)");
+      const after = panelText(rig.terminalOutput.join(""));
+      expect(after).toContain(
+        "context window changed 200k → 1M · Smart Compact now target 180k · trigger 360k · runway 50k minimum",
+      );
+      expect(after).toContain("window 1M");
+      expect(after).toContain("target 180k");
+      expect(after).toContain("trigger 360k");
+      expect(after).toContain("runway 50k minimum");
+      rig.stdin.write(leader);
+      await waitFor(() => rig.terminalOutput.some((chunk) => chunk.includes("\u001b[?1049l")), "panel closed again");
+
+      // Shown once: the next open carries no stale notice.
+      rig.terminalOutput.length = 0;
+      rig.stdin.write(leader);
+      await waitFor(() => panelText(rig.terminalOutput.join("")).includes(PANEL_TITLE), "panel home (third open)");
+      expect(panelText(rig.terminalOutput.join(""))).not.toContain("context window changed");
+      rig.stdin.write(leader);
+    } finally {
+      rig.spawned[0]!.fireExit(0);
       await rig.runPromise;
       rig.cleanup();
     }

@@ -47,6 +47,8 @@ import {
   formatOneShotPreLaunchThrew,
   formatOneShotStandDown,
   formatOperatorAuthorized,
+  nativeCompactAdvisoryDetailsRows,
+  nativeCompactAdvisoryLine,
   nativeCompactAnomalyNotice,
   nativeCompactDisabledStatusLine,
   nativeCompactPassthroughStatusLine,
@@ -215,6 +217,13 @@ describe("TC-3.3a product terminology audit", () => {
       ["native compact override", NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY],
       ["native compact disabled status", nativeCompactDisabledStatusLine()],
       ["native compact passthrough status", nativeCompactPassthroughStatusLine()],
+      ["native compact advisory", nativeCompactAdvisoryLine()],
+      [
+        "native compact advisory details",
+        nativeCompactAdvisoryDetailsRows("--autocompact 500000")
+          .map((row) => row.value)
+          .join("\n"),
+      ],
       ["nonviability alarm", alarm],
       ["survival relaunch true", formatSurvivalRelaunchNotice("old", true)],
       ["survival relaunch false", formatSurvivalRelaunchNotice("old", false)],

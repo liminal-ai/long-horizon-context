@@ -128,11 +128,17 @@ import {
   argvSuppliesNativeAutocompact,
   NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY,
   nativeAutoCompactChildEnv,
+  nativeAutocompactArgvEvidence,
 } from "./native-auto-compact.js";
 import { observeOldChildCleanup } from "./old-child-cleanup.js";
 import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
-import { buildPanelViewSnapshot, MODAL_SCOPE_NOTE } from "./panel-commands.js";
+import {
+  buildPanelViewSnapshot,
+  formatContextClassChangeNotice,
+  formatPolicySource,
+  MODAL_SCOPE_NOTE,
+} from "./panel-commands.js";
 import {
   formatActiveOperation,
   formatActiveOperationRow,
@@ -164,9 +170,10 @@ import {
   formatOneShotPreLaunchThrew,
   formatOneShotStandDown,
   formatOperatorAuthorized,
+  nativeCompactAdvisoryDetailsRows,
+  nativeCompactAdvisoryLine,
   nativeCompactAnomalyNotice,
   nativeCompactDisabledStatusLine,
-  nativeCompactPassthroughStatusLine,
 } from "./terminology.js";
 import { TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
@@ -411,6 +418,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // re-resolved before the next automatic Smart Compact decision (AC-1.4).
   let contextWindowObserver: ContextWindowObserver | undefined;
   let lastContextWindowChange: { from: string; to: string; atMs: number } | null = null;
+  /**
+   * One retained class-change notice (AC-1.6c), shown on the next Control
+   * Panel open and then cleared. Later changes replace it; nothing is written
+   * onto Claude's screen.
+   */
+  let pendingContextChangeNotice: string | null = null;
   /** Re-resolve model-derived policy values against a newly observed window. */
   const adoptContextWindow = (next: import("../governor/index.js").ContextWindowResolution, why: string): void => {
     const previous = resolvedContextPolicy.contextWindow;
@@ -426,6 +439,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     configFallbackNotice = formatConfigFallbackNotice(resolvedContextPolicy.fallbacks);
     if (previous.contextClass !== next.contextClass) {
       lastContextWindowChange = { from: previous.contextClass, to: next.contextClass, atMs: Date.now() };
+      pendingContextChangeNotice = formatContextClassChangeNotice({
+        from: previous.contextClass,
+        to: next.contextClass,
+        targetTokens: resolvedContextPolicy.policy.lowerBoundTokens,
+        triggerTokens: resolvedContextPolicy.policy.upperBoundTokens,
+        minRunwayTokens: resolvedContextPolicy.policy.minRunwayTokens,
+      });
     }
     logContextPolicy(why);
   };
@@ -1033,7 +1053,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   const disableNativeAutoCompact = !userChoseAutocompact;
   if (userChoseAutocompact) {
     wrapperLog.warn(`cc-lhc ${NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY}`);
-    startupAnomalyNotices.push(NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY);
+    // The panel carries the one-line advisory (AC-1.7a); the full anomaly text
+    // stays in the wrapper log and the cause/remedy live on Details.
+    startupAnomalyNotices.push(nativeCompactAdvisoryLine());
   }
 
   // Per-wrapper runtime descriptor: Bash inherits only the path. Thread/archive
@@ -1994,6 +2016,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
 
     const window = resolvedContextPolicy.contextWindow;
+    const sources = resolvedContextPolicy.sources;
+    const sourceOf = (source: (typeof sources)[keyof typeof sources]): string =>
+      formatPolicySource(source, window.contextClass);
     const details = [
       { label: "Retrieval", value: retrievalState },
       {
@@ -2005,9 +2030,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           `${lastContextWindowChange === null ? "" : ` — changed from ${lastContextWindowChange.from} ${formatAgo(lastContextWindowChange.atMs)}`}`,
       },
       {
-        label: "",
-        value: disableNativeAutoCompact ? nativeCompactDisabledStatusLine() : nativeCompactPassthroughStatusLine(),
+        label: "Policy",
+        value:
+          `target ${policy.lowerBoundTokens.toLocaleString("en-US")} (${sourceOf(sources.lowerBoundTokens)})` +
+          ` · trigger ${policy.upperBoundTokens.toLocaleString("en-US")} (${sourceOf(sources.upperBoundTokens)})` +
+          ` · minimum runway ${policy.minRunwayTokens.toLocaleString("en-US")} (${sourceOf(sources.minRunwayTokens)})`,
       },
+      ...(disableNativeAutoCompact
+        ? [{ label: "", value: nativeCompactDisabledStatusLine() }]
+        : nativeCompactAdvisoryDetailsRows(nativeAutocompactArgvEvidence(argv) ?? "--autocompact")),
       { label: "Operation", value: activeOperation ?? "none" },
       { label: "Last action", value: lastActionText },
       { label: "Scope", value: MODAL_SCOPE_NOTE },
@@ -2022,6 +2053,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       targetTokens: policy.lowerBoundTokens,
       triggerTokens: policy.upperBoundTokens,
       contextWindow: resolvedContextPolicy.contextWindow,
+      minRunwayTokens: policy.minRunwayTokens,
+      policySources: {
+        target: sources.lowerBoundTokens,
+        trigger: sources.upperBoundTokens,
+        runway: sources.minRunwayTokens,
+      },
       captureHealth: capturePhase,
       profile: policy.profile,
       alarms,
@@ -2319,10 +2356,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           inputState = {
             ...inputState,
             panelView: snapshotPanelView(),
-            panelRows: [...pendingPanelNotices],
+            panelRows: [
+              ...(pendingContextChangeNotice === null ? [] : [pendingContextChangeNotice]),
+              ...pendingPanelNotices,
+            ],
             route: "home",
             viewport: { scrollOffset: 0, selectedIndex: -1 },
           };
+          pendingContextChangeNotice = null;
           pendingPanelNotices = [];
         } else if (action.kind === "select_allocation") {
           resolvedContextPolicy = applySessionAllocation(resolvedContextPolicy, action.id);

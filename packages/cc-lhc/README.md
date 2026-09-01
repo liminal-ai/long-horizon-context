@@ -351,8 +351,11 @@ cannot rewrite an unrelated automatic classification.
   with `DISABLE_AUTO_COMPACT=1`, so Claude native Compact never runs
   on a managed session; manual `/compact` stays available. An explicit user
   `--autocompact` passes through unchanged and cc-lhc does not inject the
-  disable for that launch, with an anomaly notice. Omission is all the wrapper
-  claims: inherited environment and Claude's own settings still govern whether
+  disable for that launch. The Control Panel then shows one nonblocking
+  advisory that Claude native Compact may run before Smart Compact, and
+  `/details` names the detected argument and the supported way back (relaunch
+  without `--autocompact`). Omission is all the wrapper claims: inherited
+  environment and Claude's own settings still govern whether
   Claude native Compact then runs, and cc-lhc cannot observe them.
 
 ## Verification

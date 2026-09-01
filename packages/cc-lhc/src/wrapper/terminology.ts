@@ -136,6 +136,44 @@ export function nativeCompactDisabledStatusLine(): string {
   return `${CLAUDE_NATIVE_COMPACT}: disabled for this child (DISABLE_AUTO_COMPACT=1) · manual /compact still available`;
 }
 
+/**
+ * Home advisory when the launch carries the user's own `--autocompact`
+ * (AC-1.7). "May" is the whole claim: the wrapper omitted its disable and can
+ * observe nothing further, so it never says native Compact is on.
+ */
+export function nativeCompactAdvisoryLine(): string {
+  return `${CLAUDE_NATIVE_COMPACT} may run before ${SMART_COMPACT} — explicit --autocompact on this launch (see /details)`;
+}
+
+/**
+ * Details rows for the same advisory: the detected cause, what cc-lhc did
+ * and did not do, what it cannot observe, and the supported way to remove the
+ * override. `evidence` is the exact argv the wrapper detected.
+ */
+export function nativeCompactAdvisoryDetailsRows(evidence: string): { label: string; value: string }[] {
+  return [
+    { label: CLAUDE_NATIVE_COMPACT, value: `may run before ${SMART_COMPACT} — explicit --autocompact on this launch` },
+    {
+      label: "",
+      value:
+        `detected: launch argv carries \`${evidence}\` before the -- boundary; cc-lhc passed it through ` +
+        "and did not set DISABLE_AUTO_COMPACT=1 for this child",
+    },
+    {
+      label: "",
+      value:
+        `not observed: whether ${CLAUDE_NATIVE_COMPACT} is enabled — inherited environment and Claude ` +
+        "settings govern that",
+    },
+    {
+      label: "",
+      value:
+        "to restore: relaunch cc-lhc without --autocompact; cc-lhc then sets DISABLE_AUTO_COMPACT=1 for " +
+        "the child (manual /compact stays available)",
+    },
+  ];
+}
+
 /** Control Panel status projection when the user supplied `--autocompact`. */
 export function nativeCompactPassthroughStatusLine(): string {
   return (

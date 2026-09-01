@@ -51,6 +51,24 @@ export function argvSuppliesNativeAutocompact(argv: readonly string[]): boolean 
 }
 
 /**
+ * The exact `--autocompact` tokens the launch argv supplies before the `--`
+ * boundary (`--autocompact 500000`, `--autocompact=auto`, or the bare flag),
+ * for the Control Panel's "detected cause" row. Null when absent.
+ */
+export function nativeAutocompactArgvEvidence(argv: readonly string[]): string | null {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--") return null;
+    if (arg.startsWith("--autocompact=")) return arg;
+    if (arg === "--autocompact") {
+      const value = argv[i + 1];
+      return value === undefined || value === "--" || value.startsWith("-") ? arg : `${arg} ${value}`;
+    }
+  }
+  return null;
+}
+
+/**
  * Child environment for a managed Claude child. Adds the disable by default;
  * omits it when the user supplied their own `--autocompact` (R12). Inherited
  * values are carried through as-is — nothing is cleared or rewritten.
