@@ -1,12 +1,15 @@
 {
-  "source": "code.claude.com/docs/en/statusline — context_window.context_window_size is documented as 200000 by default or 1000000 for models with extended context; model.id and session_id are documented siblings. Verified 2026-08-31.",
+  "source": "Decision table for tech-design D8 over the documented statusLine input (code.claude.com/docs/en/statusline: context_window.context_window_size, model.id, session_id). Cases marked observed:true have a live counterpart in claude-2.1.252-status-line-live.json (captured 2026-09-01 through the real `claude --settings` route); cases marked observed:false are synthetic shapes for rules the live account could not exercise (no same-family 200k/1M pair, no undocumented or malformed value was produced by a real route).",
   "decisionRule": "Only exactly 200000 and 1000000 select their built-in policies (tech-design D8). Every other observed value uses the conservative 200k policy and is reported in the Control Panel. A value below 200000 also raises the nonblocking unresolved-window advisory. A missing or malformed value means detection is unavailable and the conservative 200k policy applies.",
   "statusLineCases": [
     {
       "name": "documented-200k",
       "payload": {
         "session_id": "story0-fixture-200k",
-        "model": { "id": "claude-opus-5", "display_name": "Opus" },
+        "model": {
+          "id": "claude-opus-5",
+          "display_name": "Opus"
+        },
         "context_window": {
           "context_window_size": 200000,
           "used_percentage": 8,
@@ -16,13 +19,17 @@
         }
       },
       "expectedClass": "200k",
-      "expectedAdvisory": null
+      "expectedAdvisory": null,
+      "observed": true
     },
     {
       "name": "documented-1m",
       "payload": {
         "session_id": "story0-fixture-1m",
-        "model": { "id": "claude-sonnet-5", "display_name": "Sonnet" },
+        "model": {
+          "id": "claude-sonnet-5",
+          "display_name": "Sonnet"
+        },
         "context_window": {
           "context_window_size": 1000000,
           "used_percentage": 9,
@@ -32,13 +39,17 @@
         }
       },
       "expectedClass": "1M",
-      "expectedAdvisory": null
+      "expectedAdvisory": null,
+      "observed": true
     },
     {
       "name": "same-family-held-to-200k",
       "payload": {
         "session_id": "story0-fixture-sonnet-disabled-1m",
-        "model": { "id": "claude-sonnet-5", "display_name": "Sonnet" },
+        "model": {
+          "id": "claude-sonnet-5",
+          "display_name": "Sonnet"
+        },
         "context_window": {
           "context_window_size": 200000,
           "used_percentage": 1,
@@ -50,13 +61,17 @@
       "expectedClass": "200k",
       "expectedAdvisory": null,
       "pairedWith": "documented-1m",
-      "note": "Same model.id as documented-1m with a different documented window value: class follows the observed window, never the family name (TC-1.1c evidence shape)."
+      "note": "Same model.id as documented-1m with a different documented window value: class follows the observed window, never the family name (TC-1.1c evidence shape).",
+      "observed": false
     },
     {
       "name": "undocumented-500k",
       "payload": {
         "session_id": "story0-fixture-500k",
-        "model": { "id": "claude-opus-5", "display_name": "Opus" },
+        "model": {
+          "id": "claude-opus-5",
+          "display_name": "Opus"
+        },
         "context_window": {
           "context_window_size": 500000,
           "used_percentage": 2,
@@ -66,13 +81,17 @@
         }
       },
       "expectedClass": "conservative-200k",
-      "expectedAdvisory": "panel-report"
+      "expectedAdvisory": "panel-report",
+      "observed": false
     },
     {
       "name": "below-200k-gateway",
       "payload": {
         "session_id": "story0-fixture-131k",
-        "model": { "id": "claude-opus-5", "display_name": "Opus" },
+        "model": {
+          "id": "claude-opus-5",
+          "display_name": "Opus"
+        },
         "context_window": {
           "context_window_size": 131072,
           "used_percentage": 3,
@@ -82,26 +101,37 @@
         }
       },
       "expectedClass": "conservative-200k",
-      "expectedAdvisory": "unresolved-window"
+      "expectedAdvisory": "unresolved-window",
+      "observed": false
     },
     {
       "name": "missing-context-window",
       "payload": {
         "session_id": "story0-fixture-missing",
-        "model": { "id": "claude-opus-5", "display_name": "Opus" }
+        "model": {
+          "id": "claude-opus-5",
+          "display_name": "Opus"
+        }
       },
       "expectedClass": "detection-unavailable-200k",
-      "expectedAdvisory": "panel-report"
+      "expectedAdvisory": "panel-report",
+      "observed": false
     },
     {
       "name": "malformed-window-value",
       "payload": {
         "session_id": "story0-fixture-malformed",
-        "model": { "id": "claude-opus-5", "display_name": "Opus" },
-        "context_window": { "context_window_size": "1m" }
+        "model": {
+          "id": "claude-opus-5",
+          "display_name": "Opus"
+        },
+        "context_window": {
+          "context_window_size": "1m"
+        }
       },
       "expectedClass": "detection-unavailable-200k",
-      "expectedAdvisory": "panel-report"
+      "expectedAdvisory": "panel-report",
+      "observed": false
     }
   ],
   "settingsMergeCases": [
@@ -111,31 +141,45 @@
       "userArgvSettings": null,
       "expectedOutcome": "observe-only",
       "expectedSingleSettingsPayload": true,
-      "expectedChainsUserCommand": false
+      "expectedChainsUserCommand": false,
+      "observed": true,
+      "evidence": "claude-2.1.252-settings-chain-live.json (mode inline / mode file) + test/story0/settings-merge-harness.ts"
     },
     {
       "name": "user-settings-file-status-line",
       "userSettings": {
-        "statusLine": { "type": "command", "command": "~/.claude/statusline.sh", "padding": 2 }
+        "statusLine": {
+          "type": "command",
+          "command": "~/.claude/statusline.sh",
+          "padding": 2
+        }
       },
       "userArgvSettings": null,
       "expectedOutcome": "merge-chain",
       "expectedSingleSettingsPayload": true,
       "expectedChainsUserCommand": true,
       "expectedPreservedCommand": "~/.claude/statusline.sh",
-      "expectedPreservedPadding": 2
+      "expectedPreservedPadding": 2,
+      "observed": true,
+      "evidence": "claude-2.1.252-settings-chain-live.json (mode inline / mode file) + test/story0/settings-merge-harness.ts"
     },
     {
       "name": "user-argv-settings-status-line",
       "userSettings": {},
       "userArgvSettings": {
-        "statusLine": { "type": "command", "command": "jq -r .model.display_name", "padding": 0 }
+        "statusLine": {
+          "type": "command",
+          "command": "jq -r .model.display_name",
+          "padding": 0
+        }
       },
       "expectedOutcome": "merge-chain",
       "expectedSingleSettingsPayload": true,
       "expectedChainsUserCommand": true,
       "expectedPreservedCommand": "jq -r .model.display_name",
-      "expectedPreservedPadding": 0
+      "expectedPreservedPadding": 0,
+      "observed": true,
+      "evidence": "claude-2.1.252-settings-chain-live.json (mode inline / mode file) + test/story0/settings-merge-harness.ts"
     },
     {
       "name": "unreadable-user-argv-settings",
@@ -144,7 +188,29 @@
       "expectedOutcome": "fallback-conservative-200k",
       "expectedSingleSettingsPayload": true,
       "expectedChainsUserCommand": false,
-      "note": "Detection is unavailable; the user's argv is forwarded untouched and the conservative 200k policy applies (tech-design D8 failure path)."
+      "note": "Detection is unavailable; the user's argv is forwarded untouched and the conservative 200k policy applies (tech-design D8 failure path).",
+      "observed": true,
+      "evidence": "claude-2.1.252-settings-chain-live.json (mode inline / mode file) + test/story0/settings-merge-harness.ts"
     }
-  ]
+  ],
+  "liveProbe": {
+    "fixture": "claude-2.1.252-status-line-live.json",
+    "route": "claude [--model <alias>] --settings {\"statusLine\":{\"type\":\"command\",\"command\":\"cat >> <capture-file>\",\"padding\":0}} --dangerously-skip-permissions, driven over a PTY in the disposable trusted project /tmp/lim100/scratch",
+    "notProvenLive": [
+      "a same-family route producing different window sizes",
+      "user settings-file (~/.claude/settings.json) statusLine chaining on the real host (mechanism-proved over a fixture; operator file untouched)"
+    ],
+    "settingsChain": {
+      "fixture": "claude-2.1.252-settings-chain-live.json",
+      "proves": [
+        "operator status-line command preserved: observer and operator command received byte-identical JSON (sha256), visible USERLINE identical to the unchained control run",
+        "one merged launch-scoped --settings payload (argv inline and --settings <file> routes), never two",
+        "non-statusLine settings fields (env) survive the merge and reach the session"
+      ],
+      "mechanismOnly": [
+        "unreadable/malformed/duplicate/unmergeable input \u2192 detection_unavailable with argv verbatim (harness tests; no live run needed: the wrapper forwards the untouched argv)",
+        "status line sourced from the user settings file (~/.claude/settings.json) \u2014 chained by the harness over a fixture file; the operator file carries no statusLine and is not edited"
+      ]
+    }
+  }
 }

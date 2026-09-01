@@ -83,3 +83,32 @@ swap replaces it. Observed:
 All five families therefore stay in the confirmation list. The bullet for a
 background command is honest about the distinction: what dies is the session's
 ability to ever learn the result.
+
+## `claude-2.1.252-continuity-probe.jsonl` (LIM-143)
+
+Fifteen records, a **scrubbed projection** (not verbatim) of the LIM-143
+continuity probes on Claude Code **2.1.252**, disposable sessions in
+`/tmp/lim100/scratch`. Only the fields the production fold and the
+continuation/replay evidence read are kept: `type`, `isSidechain`,
+`message.role`, tool_use `{id,name,input}`, tool_result `{tool_use_id,is_error}`,
+and the classifier fields of `toolUseResult`; `queue-operation` records keep
+`operation` and `content` (with `<usage>` removed). Session, message, request,
+tool-use, task, agent, workflow, and run ids are replaced by stable semantic
+placeholders (`session-old`, `toolu_launch_shell`, `shell-task-1`, `agent-1`,
+`wf_run-1`, `workflow-task-2`, …) that preserve every equality the tests rely
+on; home and temp paths are `<disposable-project>` / `<disposable-temp>` /
+`<probe-dir>`; prompts and the workflow script body are elided. The
+projection covers the launch calls
+and acknowledgements for a background `Bash`, a `Monitor`, an async `Agent`,
+and a `Workflow`; the three orphan notices a plain `--resume` enqueued after
+the child was `SIGKILL`ed (aggregate shell+monitor `stopped` with the
+`__orphan_summary__:shell` marker; agent `stopped` offering `SendMessage`
+resume; workflow `stopped` offering `resumeFromRunId`); and the resumed
+session's own `SendMessage` and `Workflow` continuation calls with their
+results. What each family does across a child death, and the replay finding
+for in-flight tool calls, is in `test/story0/family-matrix.md`.
+
+Correction to fact check 2 above, observed on 2.1.252: the monitored process
+does **not** necessarily die with the child — `tail -f` survived in its own
+session; what dies is the watch (its stdout has no reader). The conclusion is
+unchanged: the session cannot learn anything more from it.

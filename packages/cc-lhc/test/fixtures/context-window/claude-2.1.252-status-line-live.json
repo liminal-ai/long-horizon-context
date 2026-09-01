@@ -1,0 +1,415 @@
+{
+  "source": "Live capture from Claude Code 2.1.252 (`claude --version` \u2192 2.1.252) on Linux, 2026-09-01, through the documented statusLine command input: the wrapper launched `claude --settings <json>` with `statusLine.command` = `cat >> <file>`, in the disposable trusted project /tmp/lim100/scratch. Volatile fields (cost, rate_limits, prompt_id, prompt_cache, session_name, transcript_path, session_id) are scrubbed; every other key is verbatim.",
+  "caveats": [
+    "This account resolves sonnet, opus, and fable to a 1,000,000 window and haiku to 200,000; no supported route on this account produced a same-family 200k/1M pair, so the same-family case in status-line-cases.json stays synthetic.",
+    "A payload is emitted at launch before any model turn (total_input_tokens 0), and re-emitted after `/model` with the new model.id and the same session_id."
+  ],
+  "records": [
+    {
+      "probe": "A",
+      "argv": [
+        "--settings",
+        "{\"statusLine\":{...}}"
+      ],
+      "sequence": 0,
+      "moment": "launch-before-first-turn",
+      "payload": {
+        "session_id": "story0-live-A",
+        "transcript_path": "<scrubbed>",
+        "cwd": "/tmp/lim100/scratch",
+        "effort": {
+          "level": "high"
+        },
+        "model": {
+          "id": "claude-fable-5",
+          "display_name": "Fable 5"
+        },
+        "workspace": {
+          "current_dir": "/tmp/lim100/scratch",
+          "project_dir": "/tmp/lim100/scratch",
+          "added_dirs": []
+        },
+        "version": "2.1.252",
+        "output_style": {
+          "name": "Concise"
+        },
+        "context_window": {
+          "total_input_tokens": 0,
+          "total_output_tokens": 0,
+          "context_window_size": 1000000,
+          "current_usage": null,
+          "used_percentage": null,
+          "remaining_percentage": null
+        },
+        "exceeds_200k_tokens": false,
+        "fast_mode": false,
+        "thinking": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "probe": "A",
+      "argv": [
+        "--settings",
+        "{\"statusLine\":{...}}"
+      ],
+      "sequence": 1,
+      "moment": "after-turn-1",
+      "payload": {
+        "session_id": "story0-live-A",
+        "transcript_path": "<scrubbed>",
+        "cwd": "/tmp/lim100/scratch",
+        "effort": {
+          "level": "high"
+        },
+        "model": {
+          "id": "claude-fable-5",
+          "display_name": "Fable 5"
+        },
+        "workspace": {
+          "current_dir": "/tmp/lim100/scratch",
+          "project_dir": "/tmp/lim100/scratch",
+          "added_dirs": []
+        },
+        "version": "2.1.252",
+        "output_style": {
+          "name": "Concise"
+        },
+        "context_window": {
+          "total_input_tokens": 33990,
+          "total_output_tokens": 4,
+          "context_window_size": 1000000,
+          "current_usage": {
+            "input_tokens": 2,
+            "output_tokens": 4,
+            "cache_creation_input_tokens": 33988,
+            "cache_read_input_tokens": 0
+          },
+          "used_percentage": 3,
+          "remaining_percentage": 97
+        },
+        "exceeds_200k_tokens": false,
+        "fast_mode": false,
+        "thinking": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "probe": "A",
+      "argv": [
+        "--settings",
+        "{\"statusLine\":{...}}"
+      ],
+      "sequence": 2,
+      "moment": "after-/model sonnet[1m] then turn-2",
+      "payload": {
+        "session_id": "story0-live-A",
+        "transcript_path": "<scrubbed>",
+        "cwd": "/tmp/lim100/scratch",
+        "effort": {
+          "level": "high"
+        },
+        "model": {
+          "id": "claude-sonnet-5[1m]",
+          "display_name": "Sonnet 5"
+        },
+        "workspace": {
+          "current_dir": "/tmp/lim100/scratch",
+          "project_dir": "/tmp/lim100/scratch",
+          "added_dirs": []
+        },
+        "version": "2.1.252",
+        "output_style": {
+          "name": "Concise"
+        },
+        "context_window": {
+          "total_input_tokens": 33990,
+          "total_output_tokens": 4,
+          "context_window_size": 1000000,
+          "current_usage": {
+            "input_tokens": 2,
+            "output_tokens": 4,
+            "cache_creation_input_tokens": 33988,
+            "cache_read_input_tokens": 0
+          },
+          "used_percentage": 3,
+          "remaining_percentage": 97
+        },
+        "exceeds_200k_tokens": false,
+        "fast_mode": false,
+        "thinking": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "probe": "haiku",
+      "argv": [
+        "--model",
+        "haiku"
+      ],
+      "sequence": 0,
+      "moment": "launch-before-first-turn",
+      "payload": {
+        "session_id": "story0-live-haiku",
+        "transcript_path": "<scrubbed>",
+        "cwd": "/tmp/lim100/scratch",
+        "model": {
+          "id": "claude-haiku-4-5-20251001",
+          "display_name": "Haiku 4.5"
+        },
+        "workspace": {
+          "current_dir": "/tmp/lim100/scratch",
+          "project_dir": "/tmp/lim100/scratch",
+          "added_dirs": []
+        },
+        "version": "2.1.252",
+        "output_style": {
+          "name": "Concise"
+        },
+        "context_window": {
+          "total_input_tokens": 0,
+          "total_output_tokens": 0,
+          "context_window_size": 200000,
+          "current_usage": null,
+          "used_percentage": null,
+          "remaining_percentage": null
+        },
+        "exceeds_200k_tokens": false,
+        "fast_mode": false,
+        "thinking": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "probe": "haiku",
+      "argv": [
+        "--model",
+        "haiku"
+      ],
+      "sequence": 1,
+      "moment": "after-turn-1",
+      "payload": {
+        "session_id": "story0-live-haiku",
+        "transcript_path": "<scrubbed>",
+        "cwd": "/tmp/lim100/scratch",
+        "model": {
+          "id": "claude-haiku-4-5-20251001",
+          "display_name": "Haiku 4.5"
+        },
+        "workspace": {
+          "current_dir": "/tmp/lim100/scratch",
+          "project_dir": "/tmp/lim100/scratch",
+          "added_dirs": []
+        },
+        "version": "2.1.252",
+        "output_style": {
+          "name": "Concise"
+        },
+        "context_window": {
+          "total_input_tokens": 30409,
+          "total_output_tokens": 43,
+          "context_window_size": 200000,
+          "current_usage": {
+            "input_tokens": 10,
+            "output_tokens": 43,
+            "cache_creation_input_tokens": 30399,
+            "cache_read_input_tokens": 0
+          },
+          "used_percentage": 15,
+          "remaining_percentage": 85
+        },
+        "exceeds_200k_tokens": false,
+        "fast_mode": false,
+        "thinking": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "probe": "sonnet",
+      "argv": [
+        "--model",
+        "sonnet"
+      ],
+      "sequence": 0,
+      "moment": "launch-before-first-turn",
+      "payload": {
+        "session_id": "story0-live-sonnet",
+        "transcript_path": "<scrubbed>",
+        "cwd": "/tmp/lim100/scratch",
+        "effort": {
+          "level": "high"
+        },
+        "model": {
+          "id": "claude-sonnet-5",
+          "display_name": "Sonnet 5"
+        },
+        "workspace": {
+          "current_dir": "/tmp/lim100/scratch",
+          "project_dir": "/tmp/lim100/scratch",
+          "added_dirs": []
+        },
+        "version": "2.1.252",
+        "output_style": {
+          "name": "Concise"
+        },
+        "context_window": {
+          "total_input_tokens": 0,
+          "total_output_tokens": 0,
+          "context_window_size": 1000000,
+          "current_usage": null,
+          "used_percentage": null,
+          "remaining_percentage": null
+        },
+        "exceeds_200k_tokens": false,
+        "fast_mode": false,
+        "thinking": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "probe": "sonnet",
+      "argv": [
+        "--model",
+        "sonnet"
+      ],
+      "sequence": 1,
+      "moment": "after-turn-1",
+      "payload": {
+        "session_id": "story0-live-sonnet",
+        "transcript_path": "<scrubbed>",
+        "cwd": "/tmp/lim100/scratch",
+        "effort": {
+          "level": "high"
+        },
+        "model": {
+          "id": "claude-sonnet-5",
+          "display_name": "Sonnet 5"
+        },
+        "workspace": {
+          "current_dir": "/tmp/lim100/scratch",
+          "project_dir": "/tmp/lim100/scratch",
+          "added_dirs": []
+        },
+        "version": "2.1.252",
+        "output_style": {
+          "name": "Concise"
+        },
+        "context_window": {
+          "total_input_tokens": 41673,
+          "total_output_tokens": 4,
+          "context_window_size": 1000000,
+          "current_usage": {
+            "input_tokens": 2,
+            "output_tokens": 4,
+            "cache_creation_input_tokens": 41671,
+            "cache_read_input_tokens": 0
+          },
+          "used_percentage": 4,
+          "remaining_percentage": 96
+        },
+        "exceeds_200k_tokens": false,
+        "fast_mode": false,
+        "thinking": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "probe": "opus",
+      "argv": [
+        "--model",
+        "opus"
+      ],
+      "sequence": 0,
+      "moment": "launch-before-first-turn",
+      "payload": {
+        "session_id": "story0-live-opus",
+        "transcript_path": "<scrubbed>",
+        "cwd": "/tmp/lim100/scratch",
+        "effort": {
+          "level": "high"
+        },
+        "model": {
+          "id": "claude-opus-5",
+          "display_name": "Opus 5"
+        },
+        "workspace": {
+          "current_dir": "/tmp/lim100/scratch",
+          "project_dir": "/tmp/lim100/scratch",
+          "added_dirs": []
+        },
+        "version": "2.1.252",
+        "output_style": {
+          "name": "Concise"
+        },
+        "context_window": {
+          "total_input_tokens": 0,
+          "total_output_tokens": 0,
+          "context_window_size": 1000000,
+          "current_usage": null,
+          "used_percentage": null,
+          "remaining_percentage": null
+        },
+        "exceeds_200k_tokens": false,
+        "fast_mode": false,
+        "thinking": {
+          "enabled": true
+        }
+      }
+    },
+    {
+      "probe": "opus",
+      "argv": [
+        "--model",
+        "opus"
+      ],
+      "sequence": 1,
+      "moment": "after-turn-1",
+      "payload": {
+        "session_id": "story0-live-opus",
+        "transcript_path": "<scrubbed>",
+        "cwd": "/tmp/lim100/scratch",
+        "effort": {
+          "level": "high"
+        },
+        "model": {
+          "id": "claude-opus-5",
+          "display_name": "Opus 5"
+        },
+        "workspace": {
+          "current_dir": "/tmp/lim100/scratch",
+          "project_dir": "/tmp/lim100/scratch",
+          "added_dirs": []
+        },
+        "version": "2.1.252",
+        "output_style": {
+          "name": "Concise"
+        },
+        "context_window": {
+          "total_input_tokens": 33701,
+          "total_output_tokens": 4,
+          "context_window_size": 1000000,
+          "current_usage": {
+            "input_tokens": 2,
+            "output_tokens": 4,
+            "cache_creation_input_tokens": 33699,
+            "cache_read_input_tokens": 0
+          },
+          "used_percentage": 3,
+          "remaining_percentage": 97
+        },
+        "exceeds_200k_tokens": false,
+        "fast_mode": false,
+        "thinking": {
+          "enabled": true
+        }
+      }
+    }
+  ]
+}

@@ -141,3 +141,107 @@ describe("story0 context-window evidence fixtures", () => {
     expect(fallback?.expectedChainsUserCommand).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Live 2.1.252 evidence: the documented input, captured through the real route
+// ---------------------------------------------------------------------------
+
+const LIVE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "fixtures",
+  "context-window",
+  "claude-2.1.252-status-line-live.json",
+);
+
+interface LivePayload {
+  session_id: string;
+  version: string;
+  model: { id: string; display_name: string };
+  context_window: { context_window_size: unknown; total_input_tokens: number };
+  exceeds_200k_tokens: boolean;
+}
+
+interface LiveRecord {
+  probe: string;
+  argv: string[];
+  sequence: number;
+  moment: string;
+  payload: LivePayload;
+}
+
+interface LiveFixture {
+  source: string;
+  caveats: string[];
+  records: LiveRecord[];
+}
+
+const live = JSON.parse(readFileSync(LIVE_PATH, "utf8")) as LiveFixture;
+
+describe("story0 context-window live evidence (Claude Code 2.1.252)", () => {
+  it("was captured from the pinned binary through the status-line route", () => {
+    expect(live.records.length).toBeGreaterThan(0);
+    for (const r of live.records) expect(r.payload.version, r.probe).toBe("2.1.252");
+    expect(live.source).toContain("--settings");
+  });
+
+  it("carries the documented fields on every real payload", () => {
+    for (const r of live.records) {
+      const label = `${r.probe}#${r.sequence}`;
+      expect(r.payload.session_id, label).toBeTruthy();
+      expect(r.payload.model.id, label).toBeTruthy();
+      expect(Number.isSafeInteger(r.payload.context_window.context_window_size), label).toBe(true);
+    }
+  });
+
+  it("observed both documented window values, and only those", () => {
+    const sizes = new Set(live.records.map((r) => r.payload.context_window.context_window_size));
+    expect(sizes).toEqual(new Set([200_000, 1_000_000]));
+    for (const r of live.records) {
+      const cls = expectedClassFor(r.payload.context_window.context_window_size);
+      expect(cls === "200k" || cls === "1M", `${r.probe}#${r.sequence} maps to a built-in class`).toBe(true);
+    }
+  });
+
+  it("emits a payload at launch before the first model turn", () => {
+    const probes = new Set(live.records.map((r) => r.probe));
+    for (const probe of probes) {
+      const first = live.records.find((r) => r.probe === probe && r.sequence === 0);
+      expect(first?.moment, probe).toBe("launch-before-first-turn");
+      expect(first?.payload.context_window.total_input_tokens, probe).toBe(0);
+    }
+  });
+
+  it("re-emits with the new model id and the same session after /model", () => {
+    const a = live.records.filter((r) => r.probe === "A").sort((x, y) => x.sequence - y.sequence);
+    expect(a.length).toBe(3);
+    expect(a[2]!.moment).toContain("/model");
+    expect(a[2]!.payload.model.id).not.toBe(a[1]!.payload.model.id);
+    expect(a[2]!.payload.session_id).toBe(a[1]!.payload.session_id);
+  });
+
+  it("does not resolve the window from the family name", () => {
+    // Two different families both observed at 1M, one at 200k: the value is
+    // the discriminator, the name is not.
+    const byModel = new Map(
+      live.records.map((r) => [r.payload.model.id, r.payload.context_window.context_window_size]),
+    );
+    expect(byModel.get("claude-haiku-4-5-20251001")).toBe(200_000);
+    expect(byModel.get("claude-sonnet-5")).toBe(1_000_000);
+    expect(byModel.get("claude-opus-5")).toBe(1_000_000);
+  });
+
+  it("keeps synthetic decision-table cases labelled as such", () => {
+    const observed = fixture.statusLineCases.filter((c) => (c as { observed?: boolean }).observed === true);
+    const synthetic = fixture.statusLineCases.filter((c) => (c as { observed?: boolean }).observed !== true);
+    expect(observed.map((c) => c.name).sort()).toEqual(["documented-1m", "documented-200k"]);
+    expect(synthetic.length).toBeGreaterThan(0);
+    // A synthetic case may only pin a rule the live route could not reach.
+    const liveSizes = new Set(live.records.map((r) => r.payload.context_window.context_window_size));
+    for (const c of synthetic) {
+      const size = c.payload.context_window?.context_window_size;
+      const reachableLive = typeof size === "number" && liveSizes.has(size) && c.pairedWith === undefined;
+      expect(reachableLive, `${c.name} would be live-observable and must not stay synthetic`).toBe(false);
+    }
+  });
+});
