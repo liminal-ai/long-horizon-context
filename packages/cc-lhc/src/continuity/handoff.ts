@@ -25,7 +25,16 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 
-import { type MonitorLaunchSpec, type PathFact, resolveMonitorLaunch, statPathReal } from "./adapters.js";
+import { probeProcessIdentityNative } from "../runtime/native-identity.js";
+import type { ProbeProcessIdentity } from "../runtime/process-identity.js";
+import {
+  isRefusal,
+  type MonitorLaunchSpec,
+  type PathFact,
+  resolveMonitorLaunch,
+  statPathReal,
+  verifyOutputFile,
+} from "./adapters.js";
 import { type RelaunchShell, type RelaunchShellResolution, resolveRelaunchShell } from "./relaunch-shell.js";
 import { type ClosureResult, type ContinuitySnapshot, closeContinuitySnapshot } from "./snapshot.js";
 import { type ContinuityStore, relaunchKey } from "./store.js";
@@ -72,6 +81,9 @@ export interface CarryoverPorts {
   spawnRelaunch?: RelaunchSpawn;
   /** The shell for a relaunch; resolved for this platform when omitted. */
   relaunchShell?: RelaunchShellResolution;
+  /** Exact OS identity of the relaunched process (LIM-146 stop); native addon when omitted. */
+  probeIdentity?: ProbeProcessIdentity;
+  platform?: NodeJS.Platform;
   log: (message: string) => void;
 }
 
@@ -105,7 +117,9 @@ export function invokeCarryover(
 ): CarryoverTransfer {
   const statPath = ports.statPath ?? statPathReal;
   const spawnRelaunch = ports.spawnRelaunch ?? spawnRelaunchReal;
-  const relaunchShell = ports.relaunchShell ?? resolveRelaunchShell(process.platform);
+  const platform = ports.platform ?? process.platform;
+  const relaunchShell = ports.relaunchShell ?? resolveRelaunchShell(platform);
+  const probeIdentity = ports.probeIdentity ?? probeProcessIdentityNative;
   const results: InvocationResult[] = [];
   for (const item of snapshot.items) {
     const c = item.continuation;
@@ -152,6 +166,32 @@ export function invokeCarryover(
         try {
           const spawned = spawnRelaunch(resolved.spec, fd, ports.cwd, relaunchShell.shell);
           result = { launchId: item.launchId, kind: "relaunched", pid: spawned.pid, outputPath };
+          // LIM-146: what the replacement may manage. The output file is the
+          // parent's own; the process identity is read exactly or not at all —
+          // without it the item has output but no stop.
+          const output = verifyOutputFile({ platform, sourceRolloutPath: undefined, statPath }, outputPath);
+          if (isRefusal(output)) {
+            ports.log(`cc-lhc continuity: ${item.family} ${item.launchId} relaunch output identity ${output.reason}`);
+          } else {
+            const probed = probeIdentity(spawned.pid);
+            store.setRelaunched({
+              threadId: snapshot.threadId,
+              launchId: item.launchId,
+              relaunch: {
+                outputPath,
+                output,
+                process: probed.ok
+                  ? { pid: probed.identity.pid, bootId: probed.identity.bootId, starttime: probed.identity.starttime }
+                  : null,
+              },
+              nowMs,
+            });
+            if (!probed.ok) {
+              ports.log(
+                `cc-lhc continuity: ${item.family} ${item.launchId} relaunched process identity ${probed.code}; stop unavailable`,
+              );
+            }
+          }
         } catch (cause) {
           result = failed(
             item.launchId,

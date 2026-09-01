@@ -7,6 +7,7 @@ Usage:
   cc-lhc [cc-lhc flags] -- [claude args...]   (-- ends cc-lhc flag parsing)
   cc-lhc get-turns [--from TOKENS] <tN>...
   cc-lhc get-messages [--from TOKENS] <mN>...
+  cc-lhc tasks status|output|stop <launch id> [--offset BYTES] [--max BYTES]
   cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]
   cc-lhc --lhc-help
   cc-lhc --lhc-version

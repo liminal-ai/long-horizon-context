@@ -163,7 +163,8 @@ function carriedAction(item: CarriedItem, monitorOutputDir: string, generation: 
 
 const CARRIED_LEAD = `${SMART_COMPACT_LEAD} Tracked background work carried into this session`;
 const CARRIED_TAIL =
-  "Smart Compact terminated nothing except the replaced Claude process; a restarted item is a new run.";
+  "Smart Compact terminated nothing except the replaced Claude process; a restarted item is a new run. " +
+  "Manage an item by its bracketed launch id via Bash: cc-lhc tasks status|output|stop <launch id>.";
 
 /**
  * One bounded manifest of the carried work (LIM-145 AC-2.5/2.6): each item
@@ -177,7 +178,8 @@ export function formatCarryoverNote(
 ): string | undefined {
   if (snapshot.items.length === 0) return undefined;
   const lines = snapshot.items.map(
-    (item) => `- ${carriedLabel(item, nowMs)}: ${carriedAction(item, monitorOutputDir, snapshot.generation)}`,
+    (item) =>
+      `- ${carriedLabel(item, nowMs)}: ${carriedAction(item, monitorOutputDir, snapshot.generation)} [${item.launchId}]`,
   );
   const detailed = [`${CARRIED_LEAD} (generation ${snapshot.generation}):`, ...lines, CARRIED_TAIL].join("\n");
   if (snapshot.items.length <= MAX_NAMED_CONTINUITY_ITEMS && detailed.length <= MAX_CONTINUITY_NOTE_CHARS) {
@@ -185,8 +187,9 @@ export function formatCarryoverNote(
   }
   const count = snapshot.items.length;
   const families = [...new Set(snapshot.items.map((item) => FAMILY_NOUN[item.family]))].join(", ");
+  const ids = snapshot.items.map((item) => `[${item.launchId}]`).join(" ");
   return (
-    `${CARRIED_LEAD} (generation ${snapshot.generation}): ${count} items (${families}). ` +
+    `${CARRIED_LEAD} (generation ${snapshot.generation}): ${count} items (${families}): ${ids}. ` +
     "Inspect them before relying on their results. " +
     CARRIED_TAIL
   );

@@ -205,7 +205,7 @@ function statOf(context: AdapterContext, path: string): PathFact {
 
 type Refusal = Extract<Qualification, { ok: false }>;
 
-type OutputIdentity = Extract<VerifiedIdentity, { kind: "posix_output" | "win32_output" }>;
+export type OutputIdentity = Extract<VerifiedIdentity, { kind: "posix_output" | "win32_output" }>;
 
 /**
  * Output-file identity per Story 0: dev+inode on Linux/macOS (Node's stat,
@@ -214,7 +214,7 @@ type OutputIdentity = Extract<VerifiedIdentity, { kind: "posix_output" | "win32_
  * rejected as Windows proof. A different object at the same path is a
  * different identity, so a replaced or reused path refuses carryover.
  */
-function verifyOutputFile(context: AdapterContext, path: string | undefined): Refusal | OutputIdentity {
+export function verifyOutputFile(context: AdapterContext, path: string | undefined): Refusal | OutputIdentity {
   if (path === undefined) return { ok: false, reason: "no_continuation_facts" };
   if (context.platform === "win32") {
     const read = (context.readFileIdentity ?? readExactFileIdentity)(path);
@@ -237,7 +237,7 @@ function verifyOutputFile(context: AdapterContext, path: string | undefined): Re
   return { kind: "posix_output", path, dev: fact.dev, ino: fact.ino };
 }
 
-function isRefusal(value: Refusal | OutputIdentity): value is Refusal {
+export function isRefusal(value: Refusal | OutputIdentity): value is Refusal {
   return "ok" in value;
 }
 
@@ -362,7 +362,7 @@ export const FAMILY_ADAPTERS: Readonly<Record<AsyncWorkFamily, FamilyAdapter>> =
   scheduled_wakeup: scheduledWakeup,
 };
 
-function sameIdentity(a: VerifiedIdentity, b: VerifiedIdentity): boolean {
+export function sameIdentity(a: VerifiedIdentity, b: VerifiedIdentity): boolean {
   return JSON.stringify(a, Object.keys(a).sort()) === JSON.stringify(b, Object.keys(b).sort());
 }
 

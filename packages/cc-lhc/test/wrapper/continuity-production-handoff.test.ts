@@ -516,6 +516,12 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
         outputPath,
       });
       expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({ state: "active", carryMode: "reconstruct" });
+      // LIM-146: the parent recorded its one relaunch — verified output identity and the exact
+      // process identity — so the replacement can read and stop it through `cc-lhc tasks`.
+      expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({
+        operations: ["status", "output", "stop"],
+        relaunch: { outputPath, output: { path: outputPath }, process: { pid: expect.any(Number) } },
+      });
     });
     expect(readFileSync(outputPath, "utf8")).toBe("relaunched-once-XyZ");
     // Same logical item, reported as a restart — never adopted or uninterrupted.

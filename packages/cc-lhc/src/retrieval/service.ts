@@ -3,36 +3,21 @@
  * CLI (and any future adapter) goes through this only; never invents thread/db.
  */
 
-import {
-  createDeterministicInferenceCallbacks,
-  initLhc,
-  type Lhc,
-  type ThreadRef,
-  retrieval,
-} from "lhc";
+import { createDeterministicInferenceCallbacks, initLhc, type Lhc, retrieval, type ThreadRef } from "lhc";
 
 import {
   assertReadyBinding,
+  type DescriptorIo,
+  defaultDescriptorIo,
   loadDescriptor,
   RUNTIME_DESCRIPTOR_ENV,
-  type DescriptorIo,
   type RuntimeDescriptorV1,
-  defaultDescriptorIo,
 } from "../runtime/descriptor.js";
 import { envStdoutCeiling, planByteBudget } from "./budget.js";
-import {
-  assembleEnvelope,
-  messageSection,
-  projectServedForEnvelope,
-  turnSection,
-} from "./format.js";
+import { assembleEnvelope, messageSection, projectServedForEnvelope, turnSection } from "./format.js";
 import type { ParsedRetrievalRequest, RetrievalOp } from "./parse.js";
 import { parseRetrievalArgv } from "./parse.js";
-import {
-  defaultRolloutBindIo,
-  type RolloutBindIo,
-  verifyDescriptorRolloutBinding,
-} from "./rollout-bind.js";
+import { defaultRolloutBindIo, type RolloutBindIo, verifyDescriptorRolloutBinding } from "./rollout-bind.js";
 
 export const DEFAULT_TOKEN_BUDGET = retrieval.DEFAULT_RETRIEVAL_TOKEN_BUDGET;
 
@@ -108,6 +93,47 @@ function threadRefOf(desc: RuntimeDescriptorV1): ThreadRef {
   return { threadId: desc.threadId!, registryPath: desc.registryPath! };
 }
 
+/**
+ * Bind to the wrapper's ready descriptor (LIM-146 shares this with `tasks`):
+ * env-supplied path only, fail closed on any non-ready state, then the
+ * session-mismatch/rollout cross-check. No thread or database id is ever
+ * taken from argv.
+ */
+export function bindReadyDescriptor(deps: {
+  env: NodeJS.ProcessEnv;
+  descriptorIo: DescriptorIo;
+  rolloutBindIo: RolloutBindIo;
+  descriptorPath?: string;
+}): { ok: true; descriptor: RuntimeDescriptorV1 } | { ok: false; reason: string; exitCode: 3 } {
+  const path = deps.descriptorPath ?? deps.env[RUNTIME_DESCRIPTOR_ENV];
+  if (path === undefined || path === "") {
+    return {
+      ok: false,
+      reason: `${RUNTIME_DESCRIPTOR_ENV} not set — retrieval requires a bound wrapper session`,
+      exitCode: 3,
+    };
+  }
+  const loaded = loadDescriptor(path, deps.descriptorIo);
+  if (!loaded.ok) return { ok: false, reason: loaded.reason, exitCode: 3 };
+  const desc = loaded.descriptor;
+  if (desc.state === "opening") {
+    return { ok: false, reason: "descriptor state is opening — capture not ready", exitCode: 3 };
+  }
+  if (desc.state === "closed") return { ok: false, reason: "descriptor state is closed", exitCode: 3 };
+  if (desc.state === "degraded") {
+    return {
+      ok: false,
+      reason: `descriptor state is degraded${desc.degradeReason ? `: ${desc.degradeReason}` : ""}`,
+      exitCode: 3,
+    };
+  }
+  const ready = assertReadyBinding(desc);
+  if (!ready.ok) return { ok: false, reason: ready.reason, exitCode: 3 };
+  const session = checkSessionBinding(desc, deps.env, deps.rolloutBindIo);
+  if (!session.ok) return { ok: false, reason: session.reason, exitCode: 3 };
+  return { ok: true, descriptor: desc };
+}
+
 export async function executeRetrieval(
   argv: readonly string[],
   deps: RetrievalServiceDeps = {},
@@ -128,47 +154,15 @@ export async function executeRetrieval(
   }
   const request = parsed.request;
 
-  // 2. Descriptor path from environment only.
-  const path = deps.descriptorPath ?? env[RUNTIME_DESCRIPTOR_ENV];
-  if (path === undefined || path === "") {
-    return {
-      ok: false,
-      reason: `${RUNTIME_DESCRIPTOR_ENV} not set — retrieval requires a bound wrapper session`,
-      exitCode: 3,
-    };
-  }
-
-  // 3. Load + validate descriptor (stale/malformed fail closed).
-  const loaded = loadDescriptor(path, io);
-  if (!loaded.ok) {
-    return { ok: false, reason: loaded.reason, exitCode: 3 };
-  }
-  const desc = loaded.descriptor;
-
-  if (desc.state === "opening") {
-    return { ok: false, reason: "descriptor state is opening — capture not ready", exitCode: 3 };
-  }
-  if (desc.state === "closed") {
-    return { ok: false, reason: "descriptor state is closed", exitCode: 3 };
-  }
-  if (desc.state === "degraded") {
-    return {
-      ok: false,
-      reason: `descriptor state is degraded${desc.degradeReason ? `: ${desc.degradeReason}` : ""}`,
-      exitCode: 3,
-    };
-  }
-
-  const ready = assertReadyBinding(desc);
-  if (!ready.ok) {
-    return { ok: false, reason: ready.reason, exitCode: 3 };
-  }
-
-  // 4. Session mismatch / independent rollout cross-check.
-  const session = checkSessionBinding(desc, env, rolloutIo);
-  if (!session.ok) {
-    return { ok: false, reason: session.reason, exitCode: 3 };
-  }
+  // 2–4. Descriptor from environment only; ready state; session cross-check.
+  const bound = bindReadyDescriptor({
+    env,
+    descriptorIo: io,
+    rolloutBindIo: rolloutIo,
+    ...(deps.descriptorPath === undefined ? {} : { descriptorPath: deps.descriptorPath }),
+  });
+  if (!bound.ok) return bound;
+  const desc = bound.descriptor;
 
   // 5. Budget: reserve envelope overhead; refuse if arithmetic leaves no body room.
   const plan = planByteBudget(request.op, request.uniqueIds.length, envStdoutCeiling(env));
@@ -181,8 +175,9 @@ export async function executeRetrieval(
   }
 
   // 6. SDK call — impressions only from here.
-  const sdk = (deps.initSdk ?? (() =>
-    initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() })))();
+  const sdk = (
+    deps.initSdk ?? (() => initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() }))
+  )();
   const ref = threadRefOf(desc);
   const surface = request.op === "get-turns" ? "cc-lhc:get-turns" : "cc-lhc:get-messages";
   const opts = {
@@ -193,13 +188,10 @@ export async function executeRetrieval(
   };
 
   const getTurns = deps.retrievalOverride?.getTurns ?? sdk.retrieval.getTurns.bind(sdk.retrieval);
-  const getMessages =
-    deps.retrievalOverride?.getMessages ?? sdk.retrieval.getMessages.bind(sdk.retrieval);
+  const getMessages = deps.retrievalOverride?.getMessages ?? sdk.retrieval.getMessages.bind(sdk.retrieval);
 
   const result =
-    request.op === "get-turns"
-      ? await getTurns(ref, request.ids, opts)
-      : await getMessages(ref, request.ids, opts);
+    request.op === "get-turns" ? await getTurns(ref, request.ids, opts) : await getMessages(ref, request.ids, opts);
 
   if (!result.ok) {
     // SDK caller_error after our validation is rare; treat as refusal (impressions
@@ -236,29 +228,18 @@ export async function executeRetrieval(
           ...(msg.slice !== undefined ? { slice: msg.slice } : {}),
         }));
 
-  const projected = projectServedForEnvelope(
-    request.op,
-    servedEntities,
-    receipt.unserved,
-    (entity) =>
-      request.op === "get-turns" ? turnSection(entity.text) : messageSection(entity.id, entity.text),
+  const projected = projectServedForEnvelope(request.op, servedEntities, receipt.unserved, (entity) =>
+    request.op === "get-turns" ? turnSection(entity.text) : messageSection(entity.id, entity.text),
   );
 
-  const stdout = assembleEnvelope(
-    request.op,
-    projected.sections,
-    projected.footers,
-    projected.unserved,
-  );
+  const stdout = assembleEnvelope(request.op, projected.sections, projected.footers, projected.unserved);
   const bytes = Buffer.byteLength(stdout, "utf8");
 
   // 7. Internal invariant: real SDK results under a positive plan must fit.
   // A contract-violating injected override may throw here after SDK impressions;
   // that is corruption of the SDK contract, not a pre-SDK zero-impression refusal.
   if (bytes > plan.stdoutCeiling) {
-    throw new Error(
-      `RETRIEVAL_ENVELOPE_INVARIANT: envelope ${bytes} exceeds ceiling ${plan.stdoutCeiling}`,
-    );
+    throw new Error(`RETRIEVAL_ENVELOPE_INVARIANT: envelope ${bytes} exceeds ceiling ${plan.stdoutCeiling}`);
   }
 
   return {
@@ -282,10 +263,7 @@ export async function executeRetrieval(
  * always removes this call's `error` and `drain` listeners — never attach after
  * settle (C9 leak: sync error callback cleaned up, then post-return `once(drain)`).
  */
-export function writeAll(
-  stream: NodeJS.WritableStream,
-  data: string,
-): Promise<void> {
+export function writeAll(stream: NodeJS.WritableStream, data: string): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
     let writeCallComplete = false;

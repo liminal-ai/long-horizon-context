@@ -147,6 +147,18 @@ export interface TerminalEvidence {
   observedAtMs: number;
 }
 
+/**
+ * The one run the parent itself started for a carried Monitor (LIM-145
+ * relaunch): the parent-owned output file with its verified identity, and the
+ * exact OS identity of the relaunched process when it could be read at spawn.
+ * Written once per item; `stop` exists only when `process` is present.
+ */
+export interface RelaunchRecord {
+  outputPath: string;
+  output: VerifiedIdentity;
+  process: { pid: number; bootId: string; starttime: string } | null;
+}
+
 export interface ContinuityItem {
   threadId: string;
   /** Stable logical identity of one launch: `family:key:toolUseId`. */
@@ -166,6 +178,7 @@ export interface ContinuityItem {
   continuation: AsyncWorkContinuation | null;
   /** Identity verified by the qualifying adapter; null while unqualified. */
   verifiedIdentity: VerifiedIdentity | null;
+  relaunch: RelaunchRecord | null;
   terminal: TerminalEvidence | null;
   createdAtMs: number;
   updatedAtMs: number;
@@ -238,6 +251,17 @@ export interface ContinuityStore {
     verifiedIdentity: VerifiedIdentity;
     nowMs: number;
   }): ContinuityItem | null;
+  /**
+   * Record the parent's one relaunch of a carried item (learn-once; a second
+   * call for the same item changes nothing) and declare the operations it
+   * supports: `output` always, `stop` only with an exact process identity.
+   */
+  setRelaunched(input: {
+    threadId: string;
+    launchId: string;
+    relaunch: RelaunchRecord;
+    nowMs: number;
+  }): ContinuityItem | null;
   getItem(threadId: string, launchId: string): ContinuityItem | null;
   /** Every item of the thread in launch order. */
   listItems(threadId: string): ContinuityItem[];
@@ -273,6 +297,7 @@ interface ItemRow {
   scheduled_for_ms: number | null;
   continuation_json: string | null;
   identity_json: string | null;
+  relaunch_json: string | null;
   terminal_outcome: string | null;
   terminal_evidence: string | null;
   terminal_observed_at_ms: number | null;
@@ -325,7 +350,7 @@ function initSchema(db: DatabaseSync): void {
     )
   `);
   // Additive, idempotent migrations for rows written by the foundation schema.
-  for (const column of ["continuation_json", "identity_json"]) {
+  for (const column of ["continuation_json", "identity_json", "relaunch_json"]) {
     if (!tableHasColumn(db, "cc_continuity_items", column)) {
       db.exec(`ALTER TABLE cc_continuity_items ADD COLUMN ${column} TEXT`);
     }
@@ -453,6 +478,38 @@ function parseOperations(json: string, row: ItemRow): ContinuityOperation[] {
   return parsed as ContinuityOperation[];
 }
 
+function parseRelaunch(json: string | null, row: ItemRow): RelaunchRecord | null {
+  if (json === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw malformed("relaunch", row);
+  }
+  if (parsed === null || typeof parsed !== "object") throw malformed("relaunch", row);
+  const o = parsed as Record<string, unknown>;
+  if (typeof o.outputPath !== "string" || o.outputPath === "" || !isVerifiedIdentity(o.output)) {
+    throw malformed("relaunch", row);
+  }
+  let process: RelaunchRecord["process"] = null;
+  if (o.process !== null) {
+    const p = o.process as Record<string, unknown> | undefined;
+    if (
+      p === undefined ||
+      typeof p !== "object" ||
+      !Number.isInteger(p.pid) ||
+      (p.pid as number) <= 0 ||
+      typeof p.bootId !== "string" ||
+      typeof p.starttime !== "string" ||
+      !/^\d{1,20}$/.test(p.starttime)
+    ) {
+      throw malformed("relaunch", row);
+    }
+    process = { pid: p.pid as number, bootId: p.bootId, starttime: p.starttime };
+  }
+  return { outputPath: o.outputPath, output: o.output as VerifiedIdentity, process };
+}
+
 function parseItem(row: ItemRow): ContinuityItem {
   if (!isState(row.state) || !isCarryMode(row.carry_mode)) throw malformed("item", row);
   let terminal: TerminalEvidence | null = null;
@@ -474,6 +531,7 @@ function parseItem(row: ItemRow): ContinuityItem {
     throw malformed("state", row);
   }
   const verifiedIdentity = parseVerifiedIdentity(row.identity_json, row);
+  const relaunch = parseRelaunch(row.relaunch_json, row);
   if (row.carry_mode === "unqualified" && verifiedIdentity !== null) throw malformed("carry mode", row);
   if (row.carry_mode !== "unqualified" && verifiedIdentity === null) throw malformed("carry mode", row);
   return {
@@ -490,6 +548,7 @@ function parseItem(row: ItemRow): ContinuityItem {
     scheduledForMs: row.scheduled_for_ms,
     continuation: parseContinuation(row.continuation_json, row),
     verifiedIdentity,
+    relaunch,
     terminal,
     createdAtMs: row.created_at_ms,
     updatedAtMs: row.updated_at_ms,
@@ -554,6 +613,9 @@ export function openContinuityStore(
   );
   const carryItem = db.prepare(
     "UPDATE cc_continuity_items SET carry_mode = ?, operations_json = ?, identity_json = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND state != 'terminal'",
+  );
+  const relaunchItem = db.prepare(
+    "UPDATE cc_continuity_items SET relaunch_json = ?, operations_json = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND relaunch_json IS NULL AND state != 'terminal'",
   );
   const stampGeneration = db.prepare(
     "UPDATE cc_continuity_items SET generation = ?, updated_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND generation < ?",
@@ -645,6 +707,26 @@ export function openContinuityStore(
         input.carryMode,
         JSON.stringify([...input.operations]),
         JSON.stringify(input.verifiedIdentity),
+        input.nowMs,
+        input.threadId,
+        input.launchId,
+      );
+      return mustGet(input.threadId, input.launchId);
+    },
+    setRelaunched(input) {
+      const item = getItem(input.threadId, input.launchId);
+      if (item === null) return null;
+      if (!isVerifiedIdentity(input.relaunch.output)) {
+        throw new Error(`cc-lhc continuity: relaunch output identity malformed (${input.launchId})`);
+      }
+      const operations: ContinuityOperation[] = [
+        "status",
+        "output",
+        ...(input.relaunch.process === null ? [] : ["stop" as const]),
+      ];
+      relaunchItem.run(
+        JSON.stringify(input.relaunch),
+        JSON.stringify(operations),
         input.nowMs,
         input.threadId,
         input.launchId,

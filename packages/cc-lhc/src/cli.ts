@@ -1,5 +1,6 @@
 import { isLhcVersionArgv, parseWrapperArgv } from "./cli-args.js";
 import { isBackfillLabelsArgv, runBackfillLabelsCli } from "./commands/backfill-labels.js";
+import { isTasksArgv, runTasksCli } from "./continuity/tasks-cli.js";
 import { CC_LHC_HELP, isLhcHelpArgv } from "./help.js";
 import { isRetrievalArgv, runRetrievalCli } from "./retrieval/service.js";
 import { formatLhcVersion, readBuildIdentity } from "./version.js";
@@ -18,6 +19,14 @@ if (isLhcVersionArgv(rawArgv)) {
 } else if (isBackfillLabelsArgv(rawArgv)) {
   // Operator-facing label backfill: explicit thread, no PTY, no descriptor.
   const exitCode = await runBackfillLabelsCli(rawArgv).catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Error: ${message}`);
+    return 1;
+  });
+  process.exitCode = exitCode;
+} else if (isTasksArgv(rawArgv)) {
+  // Model-callable carried-work management (LIM-146): same descriptor binding as retrieval.
+  const exitCode = await runTasksCli(rawArgv).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`Error: ${message}`);
     return 1;
