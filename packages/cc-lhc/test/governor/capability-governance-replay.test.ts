@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICIES, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import {
   applyGovernorLifecycleBatch,
   createGovernorRuntimeState,
@@ -33,11 +33,11 @@ import type { GovernorHandoffOutcome, ResolvedContextPolicy } from "../../src/go
 import type { LifecycleSignal } from "../../src/observation/types.js";
 
 function armed(over: Partial<ResolvedContextPolicy["policy"]> = {}): ResolvedContextPolicy {
-  const policy = { ...BUILTIN_CONTEXT_POLICY, autoCompact: true, ...over };
+  const policy = { ...BUILTIN_CONTEXT_POLICIES["1M"], ...over };
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "session"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, fallbacks: [] };
+  return { policy, sources, fallbacks: [], contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED };
 }
 
 const dirs: string[] = [];

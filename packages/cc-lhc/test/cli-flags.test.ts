@@ -45,7 +45,6 @@ describe("wrapper argv `--` boundary", () => {
     const parsed = parsedOrThrow([
       "--lhc-upper-bound-tokens=140000",
       "--lhc-lower-bound-tokens=70000",
-      "--lhc-auto-compact=off",
       "--lhc-profile=balanced",
       "--lhc-min-runway-tokens=40000",
       "--lhc-no-notifier",
@@ -57,10 +56,17 @@ describe("wrapper argv `--` boundary", () => {
     expect(parsed.contextPolicyOverrides).toEqual({
       upperBoundTokens: 140_000,
       lowerBoundTokens: 70_000,
-      autoCompact: false,
       profile: "balanced",
       minRunwayTokens: 40_000,
     });
+  });
+
+  it("has no --lhc-auto-compact flag: the former off switch is an unknown flag (TC-1.5d)", () => {
+    for (const flag of ["--lhc-auto-compact=off", "--lhc-auto-compact=on"]) {
+      const result = parseWrapperArgv([flag, "--model", "opus"]);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.message).toContain("Unknown cc-lhc flag");
+    }
   });
 
   it("honors CC_LHC_NO_INFERENCE from the environment", () => {

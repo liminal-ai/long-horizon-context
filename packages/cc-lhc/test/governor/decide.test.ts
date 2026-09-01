@@ -8,7 +8,6 @@ import { EMPTY_POST_MEASUREMENT_ESTIMATE } from "../../src/governor/types.js";
 function baseInput(over: Partial<GovernorInput> = {}): GovernorInput {
   const policy: ContextPolicy = {
     ...BUILTIN_CONTEXT_POLICY,
-    autoCompact: true,
   };
   return {
     policy,
@@ -62,7 +61,8 @@ describe("decideGovernor", () => {
       }),
     );
     expect(d.kind).toBe("would_compact");
-    expect(d.providerContextTotal).toBe(360_000);
+    // The conservative built-in is the 200k policy: trigger 140k.
+    expect(d.providerContextTotal).toBe(140_000);
   });
 
   it("post-measurement estimate can cross the threshold without double-counting into provider total", () => {
@@ -171,14 +171,14 @@ describe("decideGovernor", () => {
     expect(decideGovernor(baseInput({ operationInFlight: true })).kind).toBe("operation_in_flight");
   });
 
-  it("policy_disabled only when the user turned autoCompact off", () => {
-    const d = decideGovernor(
-      baseInput({
-        policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: false },
-      }),
-    );
-    expect(d.kind).toBe("policy_disabled");
-    expect(d.wouldMutate).toBe(false);
+  it("has no disabled decision: every settled over-trigger input mutates (TC-1.5d)", () => {
+    // The policy type carries no off switch; a foreign `autoCompact:false`
+    // smuggled onto the object changes nothing.
+    const smuggled = { ...BUILTIN_CONTEXT_POLICY, autoCompact: false } as unknown as typeof BUILTIN_CONTEXT_POLICY;
+    const d = decideGovernor(baseInput({ policy: smuggled }));
+    expect(d.kind).toBe("would_compact");
+    expect(d.wouldMutate).toBe(true);
+    expect(d.kind).not.toBe("policy_disabled" as never);
   });
 
   it("nothing but policy and pressure can suppress a settled compact", () => {
@@ -235,7 +235,7 @@ describe("decideGovernor", () => {
           domain: "source_labelled_estimate",
         },
         contextLimitRejected: true,
-        policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: true, upperBoundTokens: 200_000, lowerBoundTokens: 100_000 },
+        policy: { ...BUILTIN_CONTEXT_POLICY, upperBoundTokens: 200_000, lowerBoundTokens: 100_000 },
       }),
     );
     expect(d.kind).toBe("would_compact");
@@ -251,7 +251,7 @@ describe("decideGovernor", () => {
 
   it("at-or-above-trigger reason is unchanged even when the rejection latch is set", () => {
     const over = baseInput({
-      policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: true, upperBoundTokens: 200_000, lowerBoundTokens: 100_000 },
+      policy: { ...BUILTIN_CONTEXT_POLICY, upperBoundTokens: 200_000, lowerBoundTokens: 100_000 },
       providerContext: {
         inputTokens: 164_208,
         cacheCreationInputTokens: 0,

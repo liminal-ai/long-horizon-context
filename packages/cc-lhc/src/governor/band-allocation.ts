@@ -119,11 +119,9 @@ export const HOST_VIEW_PROFILES: readonly ViewProfileOverride[] = BAND_ALLOCATIO
 
 export const CAPTURE_VIEW_CONFIG = { profiles: [...HOST_VIEW_PROFILES] };
 
-export function applySessionAllocation(
-  resolved: ResolvedContextPolicy,
-  id: BandAllocationId,
-): ResolvedContextPolicy {
+export function applySessionAllocation(resolved: ResolvedContextPolicy, id: BandAllocationId): ResolvedContextPolicy {
   return {
+    ...resolved,
     policy: { ...resolved.policy, profile: id },
     sources: { ...resolved.sources, profile: "session" },
     fallbacks: resolved.fallbacks.filter((fallback) => fallback.field !== "profile"),

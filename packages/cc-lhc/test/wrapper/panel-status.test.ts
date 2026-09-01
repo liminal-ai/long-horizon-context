@@ -2,28 +2,24 @@
  * LIM-118: TC-1.1a-c, TC-3.4a. Home status and Help/status/stats contract.
  */
 import { describe, expect, it } from "vitest";
-
 import { dispatchLhcCommand, type LhcCommandRuntime } from "../../src/commands/dispatch.js";
-import { CONFIG_FALLBACK_NOTICE } from "../../src/governor/config.js";
+import { CONFIG_FALLBACK_NOTICE, resolveContextWindow } from "../../src/governor/config.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { createInputState, type InputState } from "../../src/wrapper/modal.js";
-import {
-  buildPanelViewSnapshot,
-  helpLines,
-  PANEL_COMMANDS,
-  PANEL_TITLE,
-} from "../../src/wrapper/panel-commands.js";
 import { renderPanel } from "../../src/wrapper/panel.js";
+import { buildPanelViewSnapshot, helpLines, PANEL_COMMANDS, PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
 import { panelText } from "../helpers/panel-text.js";
 
-function homeState(view = buildPanelViewSnapshot({
-  providerContextTokens: 31_000,
-  targetTokens: 180_000,
-  triggerTokens: 360_000,
-  autoCompact: true,
-  captureHealth: "ready",
-  profile: "default",
-})): InputState {
+function homeState(
+  view = buildPanelViewSnapshot({
+    providerContextTokens: 31_000,
+    targetTokens: 180_000,
+    triggerTokens: 360_000,
+    contextWindow: resolveContextWindow(1_000_000, null),
+    captureHealth: "ready",
+    profile: "default",
+  }),
+): InputState {
   return { ...createInputState(), mode: "modal", route: "home", panelView: view };
 }
 
@@ -34,7 +30,7 @@ describe("TC-1.1a Home shows active state", () => {
     expect(out).toContain("Context 31k used");
     expect(out).toContain("target 180k");
     expect(out).toContain("trigger 360k");
-    expect(out).toContain("automatic /smart-compact on");
+    expect(out).toContain("window 1M");
     expect(out).toContain("Capture ready");
     expect(out).toContain("Allocation Default · favors recent detail");
     expect(out).toContain("Low 20%");
@@ -49,7 +45,7 @@ describe("TC-1.1a Home shows active state", () => {
       providerContextTokens: 31_000,
       targetTokens: 180_000,
       triggerTokens: 360_000,
-      autoCompact: true,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "default",
       details: [
@@ -80,11 +76,13 @@ describe("TC-1.1b Home shows degraded state truthfully", () => {
       providerContextTokens: 8_000,
       targetTokens: 180_000,
       triggerTokens: 360_000,
-      autoCompact: true,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "degraded",
       profile: "default",
       degradedNotices: [CONFIG_FALLBACK_NOTICE, "  user config: profile must be one of default, balanced, historical"],
-      fallbacks: [{ origin: "user config", field: "profile", detail: "profile must be one of default, balanced, historical" }],
+      fallbacks: [
+        { origin: "user config", field: "profile", detail: "profile must be one of default, balanced, historical" },
+      ],
     });
     const out = panelText(renderPanel(homeState(view), 120, 40));
     expect(out).toContain("Capture degraded");
@@ -100,7 +98,7 @@ describe("TC-1.1c Provider context not observed", () => {
       providerContextTokens: null,
       targetTokens: 180_000,
       triggerTokens: 360_000,
-      autoCompact: true,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
     });
@@ -151,13 +149,13 @@ describe("TC-3.4a Status contract is truthful", () => {
         latestProviderContextTokens: 123_456,
         targetTokens: 180_000,
         triggerTokens: 360_000,
-        autoCompact: true,
+        contextClass: "1M",
       },
     };
     const status = await dispatchLhcCommand("/lhc-status", runtime);
     expect(status.messages[0]).toContain("Latest provider context: 123,456 tokens (provider-reported)");
     expect(status.messages[0]).toContain(
-      "/smart-compact: 180,000-token target · 360,000-token trigger (configured) · automatic on",
+      "/smart-compact: 180,000-token target · 360,000-token trigger (configured) · 1M window",
     );
     expect(status.messages[0]).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
     expect(status.messages[0]).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
@@ -167,5 +165,47 @@ describe("TC-3.4a Status contract is truthful", () => {
     expect(stats.messages[0]).toContain("lines=3");
     expect(stats.messages[0]).toContain("events=2");
     expect(stats.messages[0]).toContain("thread=th_test");
+  });
+});
+
+describe("TC-1.6a/b/d Home reports the active window and its policy without a normal-state warning", () => {
+  function homeFor(window: Parameters<typeof resolveContextWindow>[0], model: string, target: number, trigger: number) {
+    const view = buildPanelViewSnapshot({
+      providerContextTokens: 31_000,
+      targetTokens: target,
+      triggerTokens: trigger,
+      contextWindow: resolveContextWindow(window, model),
+      captureHealth: "ready",
+      profile: "default",
+    });
+    return panelText(renderPanel(homeState(view), 120, 40));
+  }
+
+  it("200k: window 200k with 70k target and 140k trigger, and no warning", () => {
+    const out = homeFor(200_000, "claude-haiku-4-5-20251001", 70_000, 140_000);
+    expect(out).toContain("window 200k");
+    expect(out).toContain("observed");
+    expect(out).toContain("target 70k");
+    expect(out).toContain("trigger 140k");
+    expect(out).not.toMatch(/WARNING|advisory|unresolved|fallback/i);
+  });
+
+  it("1M: window 1M with 180k target and 360k trigger, and no warning", () => {
+    const out = homeFor(1_000_000, "claude-opus-5", 180_000, 360_000);
+    expect(out).toContain("window 1M");
+    expect(out).toContain("target 180k");
+    expect(out).toContain("trigger 360k");
+    expect(out).not.toMatch(/WARNING|advisory|unresolved|fallback/i);
+  });
+
+  it("an unsupported observed value reports the conservative fallback on the window row (TC-1.1d)", () => {
+    const out = homeFor(500_000, "claude-x", 70_000, 140_000);
+    expect(out).toContain("window 200k");
+    expect(out).toContain("observed context window 500000 is not a supported class");
+  });
+
+  it("carries no automatic on/off state anywhere on Home", () => {
+    const out = homeFor(200_000, "m", 70_000, 140_000);
+    expect(out).not.toMatch(/\bauto (on|off)\b|automatic \/smart-compact (on|off)/);
   });
 });

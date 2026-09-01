@@ -3,8 +3,8 @@
  */
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
-
 import { PRODUCT_PRESET_IDS } from "../../src/governor/band-allocation.js";
+import { resolveContextWindow } from "../../src/governor/config.js";
 import {
   clampPanelViewport,
   createInputState,
@@ -15,12 +15,6 @@ import {
   resolveBareEsc,
 } from "../../src/wrapper/modal.js";
 import {
-  buildPanelViewSnapshot,
-  HOME_ACTIONS,
-  homeCursorLength,
-  PANEL_TITLE,
-} from "../../src/wrapper/panel-commands.js";
-import {
   ACTION_CARET,
   ENTER_ALT_SCREEN,
   LEAVE_ALT_SCREEN,
@@ -29,12 +23,21 @@ import {
   PANEL_PROMPT,
   renderPanel,
 } from "../../src/wrapper/panel.js";
+import {
+  buildPanelViewSnapshot,
+  HOME_ACTIONS,
+  homeCursorLength,
+  PANEL_TITLE,
+} from "../../src/wrapper/panel-commands.js";
 import { run } from "../../src/wrapper/run.js";
 import { drawnRows, panelText } from "../helpers/panel-text.js";
 
 const LEADER = Buffer.from([DEFAULT_LEADER_BYTE]);
 
-function feed(state: InputState, ...chunks: Array<string | Buffer>): {
+function feed(
+  state: InputState,
+  ...chunks: Array<string | Buffer>
+): {
   state: InputState;
   actions: InputAction[];
 } {
@@ -57,7 +60,7 @@ function openHome(): InputState {
       providerContextTokens: 31_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      autoCompact: true,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "default",
     }),
@@ -163,7 +166,10 @@ describe("TC-1.2b Command entry remains on Home", () => {
     await waitFor(() => out.includes(ENTER_ALT_SCREEN), "panel open");
     const before = out.length;
     (stdin as unknown as PassThrough).write(Buffer.from("/status\r"));
-    await waitFor(() => out.slice(before).includes("status") || out.slice(before).includes("running"), "command progress");
+    await waitFor(
+      () => out.slice(before).includes("status") || out.slice(before).includes("running"),
+      "command progress",
+    );
     (stdin as unknown as PassThrough).write(Buffer.from([0x1b]));
     await new Promise((resolve) => setTimeout(resolve, 80));
     pty.kill();
@@ -194,7 +200,7 @@ describe("TC-1.5a Small Home remains operable", () => {
       providerContextTokens: 31_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      autoCompact: true,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
     });
@@ -204,7 +210,7 @@ describe("TC-1.5a Small Home remains operable", () => {
       "ctx 31k",
       "target 50k",
       "trigger 90k",
-      "auto on",
+      "window 1M",
       "capture ready",
       "alloc Balanced",
       `Low ${panelView.low}%`,

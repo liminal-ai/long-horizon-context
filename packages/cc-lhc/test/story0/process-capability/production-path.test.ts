@@ -158,7 +158,6 @@ function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
 
 const POLICY = {
   policy: {
-    autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
     profile: "default",
@@ -169,7 +168,6 @@ const POLICY = {
   },
   sources: Object.fromEntries(
     [
-      "autoCompact",
       "lowerBoundTokens",
       "upperBoundTokens",
       "profile",

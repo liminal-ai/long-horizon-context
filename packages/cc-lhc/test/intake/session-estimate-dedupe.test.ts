@@ -8,10 +8,10 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { estimateTokens, type Lhc, type MessageEventInput, TOKEN_ESTIMATOR_ID, type ThreadRef } from "lhc";
+import { estimateTokens, type Lhc, type MessageEventInput, type ThreadRef, TOKEN_ESTIMATOR_ID } from "lhc";
 import { describe, expect, it } from "vitest";
 
-import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICY, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import { decideGovernor } from "../../src/governor/decide.js";
 import { applyGovernorLifecycleBatch, createGovernorRuntimeState } from "../../src/governor/observe-state.js";
 import type { ResolvedContextPolicy } from "../../src/governor/types.js";
@@ -20,9 +20,9 @@ import { signaturesForRolloutLine } from "../../src/intake/replay-dedupe.js";
 import { startCaptureSession } from "../../src/intake/session.js";
 import {
   HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+  PROVIDER_OUTPUT_ESTIMATE_SOURCE,
   pendingPromptEstimate,
   preLaunchEstimate,
-  PROVIDER_OUTPUT_ESTIMATE_SOURCE,
   USER_PROMPT_ESTIMATE_SOURCE,
 } from "../../src/observation/estimate.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
@@ -34,7 +34,7 @@ function armedPolicy(over: Partial<ResolvedContextPolicy["policy"]> = {}): Resol
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "builtin"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, fallbacks: [] };
+  return { policy, sources, fallbacks: [], contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -768,10 +768,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
 
     try {
       await waitFor(() => session.isCaptureReady(), "ready");
-      await waitFor(
-        () => lifecycle.filter((s) => s.kind === "turn_settled").length >= 2,
-        "both turns settled",
-      );
+      await waitFor(() => lifecycle.filter((s) => s.kind === "turn_settled").length >= 2, "both turns settled");
       // Allow the serial batch queue to finish any trailing publish.
       await sleep(100);
 
@@ -962,10 +959,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
 
     try {
       await waitFor(() => session2.isCaptureReady(), "phase2 ready");
-      await waitFor(
-        () => lifecycle2.some((s) => s.kind === "turn_settled"),
-        "new turn settled",
-      );
+      await waitFor(() => lifecycle2.some((s) => s.kind === "turn_settled"), "new turn settled");
       await sleep(100);
 
       // One whole-batch intake for the novel events in catch-up (replay-filtered).
@@ -989,9 +983,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       const newSample = samples.find((s) => s.kind === "sampling_observed" && s.samplingId === "req:req_new");
       expect(newSample).toBeDefined();
 
-      const iNewSample = lifecycle2.findIndex(
-        (s) => s.kind === "sampling_observed" && s.samplingId === "req:req_new",
-      );
+      const iNewSample = lifecycle2.findIndex((s) => s.kind === "sampling_observed" && s.samplingId === "req:req_new");
       const iSet = lifecycle2.findIndex(
         (s) => s.kind === "post_measurement_estimate" && s.mode === "set" && s.tokens === 33,
       );
@@ -1001,11 +993,9 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       expect(iSettle).toBeGreaterThan(iSet);
 
       // No old-turn mode:set (output 5) and no settle for old sampling.
-      expect(
-        lifecycle2.some(
-          (s) => s.kind === "post_measurement_estimate" && s.mode === "set" && s.tokens === 5,
-        ),
-      ).toBe(false);
+      expect(lifecycle2.some((s) => s.kind === "post_measurement_estimate" && s.mode === "set" && s.tokens === 5)).toBe(
+        false,
+      );
 
       expect(settledObserves).toHaveLength(1);
       expect(settledObserves[0]!.samplingId).toBe("req:req_new");
@@ -1040,7 +1030,6 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
     recordSessionThread(lineageDbPath, sid, threadId, {}, { prefix: { kind: "none" } });
 
     const resolved = armedPolicy({
-      autoCompact: true,
       lowerBoundTokens: 100_000,
       upperBoundTokens: 200_000,
       minRunwayTokens: 50_000,
@@ -1098,7 +1087,10 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
         () =>
           lifecycle.some((s) => s.kind === "sampling_observed" && s.samplingId === "req:req_prior") &&
           lifecycle.some(
-            (s) => s.kind === "post_measurement_estimate" && s.mode === "set" && s.source === PROVIDER_OUTPUT_ESTIMATE_SOURCE,
+            (s) =>
+              s.kind === "post_measurement_estimate" &&
+              s.mode === "set" &&
+              s.source === PROVIDER_OUTPUT_ESTIMATE_SOURCE,
           ),
         "prior sampling applied",
       );
@@ -1140,13 +1132,11 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       expect(gov.latestProviderContext?.total).toBe(164_208);
       expect(gov.postMeasurementEstimate.tokens).toBe(66_025);
       expect(gov.postMeasurementEstimate.source).toBe(USER_PROMPT_ESTIMATE_SOURCE);
-      const iFail = lifecycle.findIndex(
-        (s) => s.kind === "sampling_observed" && s.samplingId !== "req:req_prior",
-      );
+      const iFail = lifecycle.findIndex((s) => s.kind === "sampling_observed" && s.samplingId !== "req:req_prior");
       expect(iFail).toBeGreaterThan(0);
-      expect(
-        lifecycle.slice(iFail).some((s) => s.kind === "post_measurement_estimate" && s.mode === "set"),
-      ).toBe(false);
+      expect(lifecycle.slice(iFail).some((s) => s.kind === "post_measurement_estimate" && s.mode === "set")).toBe(
+        false,
+      );
       expect(lifecycle.some((s) => s.kind === "sampling_observed" && s.samplingId === "req:req_prior")).toBe(true);
       expect(
         lifecycle.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add" && s.tokens === 66_025),
@@ -1227,7 +1217,6 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
     recordSessionThread(lineageDbPath, sid, threadId, {}, { prefix: { kind: "none" } });
 
     const resolved = armedPolicy({
-      autoCompact: true,
       lowerBoundTokens: 100_000,
       upperBoundTokens: 200_000,
       minRunwayTokens: 50_000,
@@ -1413,10 +1402,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
           output_tokens: 0,
         }),
       );
-      await waitFor(
-        () => genGov.latestProviderContext?.total === 178_458,
-        "auth prior sampling",
-      );
+      await waitFor(() => genGov.latestProviderContext?.total === 178_458, "auth prior sampling");
       appendJsonl(genPath, userLine(genSid, "u-auth", "tiny"));
       await waitFor(() => genGov.postMeasurementEstimate.tokens > 0, "auth user growth");
       const genSettledBeforeAuth = genObserves.length;

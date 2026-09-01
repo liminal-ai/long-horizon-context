@@ -1,26 +1,26 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it } from "vitest";
 import { estimateTokens, type MessageEventInput, TOKEN_ESTIMATOR_ID } from "lhc";
-import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
+import { describe, expect, it } from "vitest";
+import { BUILTIN_CONTEXT_POLICY, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import { decideGovernor } from "../../src/governor/decide.js";
 import { applyGovernorLifecycleBatch, createGovernorRuntimeState } from "../../src/governor/observe-state.js";
 import { providerContextFromUsage } from "../../src/governor/provider-context.js";
 import type { ResolvedContextPolicy } from "../../src/governor/types.js";
 import {
+  composeEstimateSources,
   createPostMeasurementEstimateFold,
   estimateAcceptedEvent,
-  composeEstimateSources,
   HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
   hostEstimateFromCanonicalBytes,
-  mergeEstimateSource,
   MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE,
+  mergeEstimateSource,
   PENDING_PROMPT_ESTIMATE_SOURCE,
+  PROVIDER_OUTPUT_ESTIMATE_SOURCE,
   pendingPromptEstimate,
   postMeasurementEstimateFromEvents,
   preLaunchEstimate,
-  PROVIDER_OUTPUT_ESTIMATE_SOURCE,
   USER_PROMPT_ESTIMATE_SOURCE,
 } from "../../src/observation/estimate.js";
 import {
@@ -461,11 +461,12 @@ describe("observeRolloutLine", () => {
 
     // Governor fold: real watcher lifecycle moves pressure across the trigger.
     const resolved: ResolvedContextPolicy = {
-      policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: true, upperBoundTokens: 360_000 },
+      policy: { ...BUILTIN_CONTEXT_POLICY, upperBoundTokens: 360_000 },
       sources: Object.fromEntries(
         Object.keys(BUILTIN_CONTEXT_POLICY).map((k) => [k, "session"]),
       ) as ResolvedContextPolicy["sources"],
       fallbacks: [],
+      contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
     };
     const lifecycle = [
       ...rAsst.lifecycle.filter((s) => s.kind === "sampling_observed" || s.kind === "post_measurement_estimate"),
@@ -566,9 +567,7 @@ describe("pre-launch estimate: what the next request carries that no provider re
     const prompt = "y".repeat(400);
     const estimate = preLaunchEstimate(growth, prompt);
     expect(estimate.tokens).toBe(growth.tokens + estimateTokens(prompt));
-    expect(estimate.source).toBe(
-      `${HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE}+${PENDING_PROMPT_ESTIMATE_SOURCE}`,
-    );
+    expect(estimate.source).toBe(`${HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE}+${PENDING_PROMPT_ESTIMATE_SOURCE}`);
   });
 
   it("with nothing captured since the last reading, the estimate is the prompt alone", () => {
@@ -652,7 +651,6 @@ function burninPolicy(): ResolvedContextPolicy {
   return {
     policy: {
       ...BUILTIN_CONTEXT_POLICY,
-      autoCompact: true,
       lowerBoundTokens: 100_000,
       upperBoundTokens: 200_000,
       minRunwayTokens: 50_000,
@@ -662,6 +660,7 @@ function burninPolicy(): ResolvedContextPolicy {
       Object.keys(BUILTIN_CONTEXT_POLICY).map((k) => [k, "session"]),
     ) as ResolvedContextPolicy["sources"],
     fallbacks: [],
+    contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
   };
 }
 
@@ -714,17 +713,15 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
     expect(mixedUserTool?.source).toBe(
       composeEstimateSources([USER_PROMPT_ESTIMATE_SOURCE, HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE]),
     );
-    expect(mixedUserTool?.source).toBe(
-      `${HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE}+${USER_PROMPT_ESTIMATE_SOURCE}`,
-    );
+    expect(mixedUserTool?.source).toBe(`${HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE}+${USER_PROMPT_ESTIMATE_SOURCE}`);
     expect(mixedUserTool?.source).not.toBe(MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE);
     expect(mixedUserTool?.source).not.toContain("provider_output");
-    expect(
-      mergeEstimateSource(HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE, USER_PROMPT_ESTIMATE_SOURCE, 1),
-    ).toBe(mixedUserTool?.source);
-    expect(
-      mergeEstimateSource(PROVIDER_OUTPUT_ESTIMATE_SOURCE, HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE, 1),
-    ).toBe(MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE);
+    expect(mergeEstimateSource(HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE, USER_PROMPT_ESTIMATE_SOURCE, 1)).toBe(
+      mixedUserTool?.source,
+    );
+    expect(mergeEstimateSource(PROVIDER_OUTPUT_ESTIMATE_SOURCE, HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE, 1)).toBe(
+      MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE,
+    );
   });
 
   it("immediate observe mode:add and deferred accepted-event add agree on the exact prompt", () => {
@@ -789,7 +786,9 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
     const rUser = observeRolloutLine(userItem, 1, opts);
     const rErr = observeRolloutLine(promptTooLongApiError(), 2, opts);
 
-    expect(providerContextFromUsage({ input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 })).toBeNull();
+    expect(
+      providerContextFromUsage({ input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }),
+    ).toBeNull();
     expect(rUser.lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toEqual([
       {
         kind: "post_measurement_estimate",
@@ -932,11 +931,7 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
       0,
       opts,
     );
-    observeRolloutLine(
-      { type: "user", uuid: "u1", message: { role: "user", content: BURNIN_PROMPT } },
-      1,
-      opts,
-    );
+    observeRolloutLine({ type: "user", uuid: "u1", message: { role: "user", content: BURNIN_PROMPT } }, 1, opts);
     const next = observeRolloutLine(
       {
         type: "assistant",
@@ -971,9 +966,7 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
           source: USER_PROMPT_ESTIMATE_SOURCE,
           mode: "add",
         },
-        ...next.lifecycle.filter(
-          (s) => s.kind === "sampling_observed" || s.kind === "post_measurement_estimate",
-        ),
+        ...next.lifecycle.filter((s) => s.kind === "sampling_observed" || s.kind === "post_measurement_estimate"),
       ],
       resolved,
     );

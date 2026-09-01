@@ -245,3 +245,259 @@ describe("story0 context-window live evidence (Claude Code 2.1.252)", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Production observer module (LIM-144 Pass A)
+// ---------------------------------------------------------------------------
+
+import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { CONTEXT_WINDOW_TOKENS } from "../../src/governor/config.js";
+import {
+  createContextWindowObserver,
+  mergeLaunchSettings,
+  parseStatusLinePayload,
+  resolveOperatorStatusLine,
+  shellCapturePath,
+} from "../../src/wrapper/context-window-observer.js";
+
+describe("status-line payload parsing (production observer)", () => {
+  it("reads the documented fields from every live payload and nothing else", () => {
+    for (const r of live.records) {
+      const parsed = parseStatusLinePayload(JSON.stringify(r.payload));
+      expect(parsed, `${r.probe}#${r.sequence}`).not.toBeNull();
+      expect(parsed?.contextWindowTokens).toBe(r.payload.context_window.context_window_size);
+      expect(parsed?.modelId).toBe(r.payload.model.id);
+      expect(parsed?.sessionId).toBe(r.payload.session_id);
+    }
+  });
+
+  it("refuses malformed, session-less, or non-integer input", () => {
+    expect(parseStatusLinePayload("{not json")).toBeNull();
+    expect(parseStatusLinePayload(JSON.stringify({ context_window: { context_window_size: 200000 } }))).toBeNull();
+    expect(
+      parseStatusLinePayload(JSON.stringify({ session_id: "s", context_window: { context_window_size: "200k" } }))
+        ?.contextWindowTokens,
+    ).toBeNull();
+  });
+});
+
+describe("capture-file observer (production)", () => {
+  function tempCapture(): string {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-cw-"));
+    return join(dir, "capture.jsonl");
+  }
+  const payload = (session: string, size: number, model = "m"): string =>
+    `${JSON.stringify({ session_id: session, model: { id: model }, context_window: { context_window_size: size } })}\n`;
+
+  it("returns null until a payload for an accepted session arrives, then the exact class", () => {
+    const path = tempCapture();
+    const observer = createContextWindowObserver(path);
+    observer.acceptSession("s1");
+    expect(observer.poll()).toBeNull();
+    writeFileSync(path, payload("s1", CONTEXT_WINDOW_TOKENS["1M"], "claude-opus-5"));
+    const r = observer.poll();
+    expect(r).toMatchObject({ contextClass: "1M", source: "observed", modelId: "claude-opus-5" });
+    expect(observer.poll()).toBeNull();
+  });
+
+  it("reads incrementally, keeps a torn trailing line for the next poll, and takes the newest", () => {
+    const path = tempCapture();
+    const observer = createContextWindowObserver(path);
+    observer.acceptSession("s1");
+    const full = payload("s1", 200_000);
+    writeFileSync(path, `${payload("s1", 1_000_000)}${full.slice(0, 20)}`);
+    expect(observer.poll()?.contextClass).toBe("1M");
+    appendFileSync(path, full.slice(20));
+    expect(observer.poll()?.contextClass).toBe("200k");
+  });
+
+  it("ignores payloads from sessions this wrapper does not own", () => {
+    const path = tempCapture();
+    const observer = createContextWindowObserver(path);
+    observer.acceptSession("mine");
+    writeFileSync(path, payload("other", 1_000_000));
+    expect(observer.poll()).toBeNull();
+    expect(observer.ignoredPayloads).toBe(1);
+    observer.acceptSession("rebuilt");
+    appendFileSync(path, payload("rebuilt", 200_000));
+    expect(observer.poll()?.contextClass).toBe("200k");
+  });
+
+  it("reports unsupported values as the conservative class and flags below-200k", () => {
+    const path = tempCapture();
+    const observer = createContextWindowObserver(path);
+    observer.acceptSession("s");
+    writeFileSync(path, payload("s", 500_000));
+    expect(observer.poll()).toMatchObject({
+      contextClass: "200k",
+      source: "unsupported_value",
+      unresolvedAdvisory: false,
+    });
+    appendFileSync(path, payload("s", 150_000));
+    expect(observer.poll()).toMatchObject({
+      contextClass: "200k",
+      source: "unsupported_value",
+      unresolvedAdvisory: true,
+    });
+    appendFileSync(path, `${JSON.stringify({ session_id: "s", model: { id: "m" } })}\n`);
+    expect(observer.poll()).toMatchObject({ contextClass: "200k", source: "detection_unavailable" });
+  });
+});
+
+describe("production settings merge (D8)", () => {
+  const CAPTURE = "/cap/observer.jsonl";
+  const userLine = { statusLine: { type: "command", command: "my-status", padding: 0 }, env: { X: "1" } };
+  const noFile = (): string | null => null;
+  const count = (argv: readonly string[]) =>
+    argv.filter((a) => a === "--settings" || a.startsWith("--settings=")).length;
+
+  it("merges an argv status line into one payload that chains the operator command", () => {
+    const r = mergeLaunchSettings({
+      argv: ["--settings", JSON.stringify(userLine), "--model", "haiku"],
+      readFile: noFile,
+      capturePath: CAPTURE,
+    });
+    expect(r.kind).toBe("merged");
+    if (r.kind !== "merged") return;
+    expect(count(r.argv)).toBe(1);
+    expect((r.settings.statusLine as { command: string }).command).toBe(`tee -a '${CAPTURE}' | my-status`);
+    expect(r.settings.env).toEqual({ X: "1" });
+    expect(r.argv.slice(-2)).toEqual(["--model", "haiku"]);
+  });
+
+  it("chains the operator's settings-file status line when argv carries none", () => {
+    const r = mergeLaunchSettings({
+      argv: ["--model", "haiku"],
+      readFile: noFile,
+      capturePath: CAPTURE,
+      operatorStatusLine: userLine.statusLine,
+    });
+    expect(r.kind === "merged" && r.operatorStatusLine).toBe("chained");
+    expect(JSON.stringify(r)).not.toContain("chainedCommand");
+  });
+
+  it("keeps the observer ahead of a -- boundary", () => {
+    const r = mergeLaunchSettings({
+      argv: ["--model", "haiku", "--", "--settings"],
+      readFile: noFile,
+      capturePath: CAPTURE,
+    });
+    expect(r.kind).toBe("merged");
+    expect(r.argv.indexOf("--settings")).toBeLessThan(r.argv.indexOf("--"));
+    expect(r.argv.slice(-2)).toEqual(["--", "--settings"]);
+  });
+
+  for (const [label, argv] of [
+    ["an unreadable settings file", ["--settings", "/nope.json"]],
+    ["malformed inline JSON", ["--settings", "{nope"]],
+    ["two competing values", ["--settings", "{}", "--settings", "{}"]],
+    ["a non-command status line", ["--settings", JSON.stringify({ statusLine: { type: "static" } })]],
+  ] as const) {
+    it(`leaves argv verbatim and reports detection unavailable on ${label}`, () => {
+      const r = mergeLaunchSettings({ argv, readFile: noFile, capturePath: CAPTURE });
+      expect(r.kind).toBe("detection_unavailable");
+      expect(r.argv).toEqual([...argv]);
+    });
+  }
+});
+
+describe("operator status line discovery is read-only and layered", () => {
+  it("prefers project local over project over the Claude user file, and fails on an unreadable layer", () => {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-op-"));
+    const cwd = join(root, "proj");
+    const config = join(root, "claude");
+    mkdirSync(join(cwd, ".claude"), { recursive: true });
+    mkdirSync(config, { recursive: true });
+    const env = { CLAUDE_CONFIG_DIR: config };
+    expect(resolveOperatorStatusLine({ cwd, env })).toEqual({ ok: true, statusLine: undefined, origin: null });
+    writeFileSync(join(config, "settings.json"), JSON.stringify({ statusLine: { type: "command", command: "user" } }));
+    expect(resolveOperatorStatusLine({ cwd, env })).toMatchObject({ ok: true, statusLine: { command: "user" } });
+    writeFileSync(
+      join(cwd, ".claude", "settings.json"),
+      JSON.stringify({ statusLine: { type: "command", command: "proj" } }),
+    );
+    expect(resolveOperatorStatusLine({ cwd, env })).toMatchObject({ ok: true, statusLine: { command: "proj" } });
+    writeFileSync(join(cwd, ".claude", "settings.local.json"), "{nope");
+    expect(resolveOperatorStatusLine({ cwd, env }).ok).toBe(false);
+  });
+});
+
+describe("win32 status-line multiplexer (Git Bash executor, Claude Code 2.1.252)", () => {
+  const WIN_CAPTURE = "C:\\Users\\op\\AppData\\Local\\cc-lhc\\status-line\\4120-x1.jsonl";
+  const MSYS_CAPTURE = "/c/Users/op/AppData/Local/cc-lhc/status-line/4120-x1.jsonl";
+  const noFile = (): string | null => null;
+  const count = (argv: readonly string[]) =>
+    argv.filter((a) => a === "--settings" || a.startsWith("--settings=")).length;
+
+  it("writes the capture path in the MSYS form Git Bash resolves", () => {
+    expect(shellCapturePath(WIN_CAPTURE, "win32")).toBe(MSYS_CAPTURE);
+    expect(shellCapturePath("D:/already/forward.jsonl", "win32")).toBe("/d/already/forward.jsonl");
+    expect(shellCapturePath("\\\\server\\share\\cap.jsonl", "win32")).toBe("//server/share/cap.jsonl");
+    expect(shellCapturePath(WIN_CAPTURE, "linux")).toBe(WIN_CAPTURE);
+  });
+
+  it("serializes one merged --settings that chains a default-shell operator command", () => {
+    const operator = { statusLine: { type: "command", command: "my-status.exe --short", padding: 1 }, env: { X: "1" } };
+    const argv = ["--settings", JSON.stringify(operator), "--model", "haiku", "--resume", "s1"];
+    const r = mergeLaunchSettings({ argv, readFile: noFile, capturePath: WIN_CAPTURE, platform: "win32" });
+    expect(r.kind).toBe("merged");
+    if (r.kind !== "merged") return;
+    expect(count(r.argv)).toBe(1);
+    const at = r.argv.indexOf("--settings");
+    const roundTrip = JSON.parse(r.argv[at + 1]!) as typeof operator;
+    expect(roundTrip.statusLine).toEqual({
+      type: "command",
+      command: `tee -a '${MSYS_CAPTURE}' | my-status.exe --short`,
+      padding: 1,
+    });
+    expect(roundTrip.env).toEqual({ X: "1" });
+    expect(r.argv.slice(at + 2)).toEqual(["--model", "haiku", "--resume", "s1"]);
+    expect(r.operatorStatusLine).toBe("chained");
+    expect(r.argv.join(" ")).not.toContain("\\");
+  });
+
+  it("runs the observer alone on win32 when the operator has no status line", () => {
+    const r = mergeLaunchSettings({
+      argv: ["--model", "haiku"],
+      readFile: noFile,
+      capturePath: WIN_CAPTURE,
+      platform: "win32",
+    });
+    expect(r.kind === "merged" && (r.settings.statusLine as { command: string }).command).toBe(
+      `cat >> '${MSYS_CAPTURE}'`,
+    );
+    expect(r.kind === "merged" && r.operatorStatusLine).toBe("none");
+  });
+
+  it("merges a --settings <file> payload on win32 too", () => {
+    const file = JSON.stringify({ statusLine: { type: "command", command: "from-file" } });
+    const r = mergeLaunchSettings({
+      argv: ["--settings", "C:\\Users\\op\\claude-settings.json"],
+      readFile: (path) => (path === "C:\\Users\\op\\claude-settings.json" ? file : null),
+      capturePath: WIN_CAPTURE,
+      platform: "win32",
+    });
+    expect(r.kind === "merged" && (r.settings.statusLine as { command: string }).command).toBe(
+      `tee -a '${MSYS_CAPTURE}' | from-file`,
+    );
+  });
+
+  for (const [label, statusLine, reason] of [
+    [
+      "a PowerShell status line",
+      { type: "command", command: "Get-Status", shell: "powershell" },
+      "runs under PowerShell",
+    ],
+    ["an exec-form status line", { type: "command", command: "node", args: ["status.js"] }, "exec form (args)"],
+  ] as const) {
+    it(`reports detection unavailable for ${label} and forwards argv verbatim`, () => {
+      const argv = ["--settings", JSON.stringify({ statusLine }), "--model", "haiku"];
+      const r = mergeLaunchSettings({ argv, readFile: noFile, capturePath: WIN_CAPTURE, platform: "win32" });
+      expect(r.kind).toBe("detection_unavailable");
+      if (r.kind !== "detection_unavailable") return;
+      expect(r.reason).toContain(reason);
+      expect(r.argv).toEqual(argv);
+    });
+  }
+});

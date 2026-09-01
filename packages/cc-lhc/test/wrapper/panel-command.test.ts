@@ -8,9 +8,11 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveContextWindow } from "../../src/governor/config.js";
 
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { emptyCaptureStats } from "../../src/stats.js";
+import { CommandInFlightGuard } from "../../src/wrapper/command-guard.js";
 import {
   createInputState,
   DEFAULT_LEADER_BYTE,
@@ -18,13 +20,8 @@ import {
   type InputState,
   processInputChunk,
 } from "../../src/wrapper/modal.js";
-import { CommandInFlightGuard } from "../../src/wrapper/command-guard.js";
-import {
-  buildPanelViewSnapshot,
-  HOME_ACTIONS,
-  parsePanelCommand,
-} from "../../src/wrapper/panel-commands.js";
 import { renderPanel } from "../../src/wrapper/panel.js";
+import { buildPanelViewSnapshot, HOME_ACTIONS, parsePanelCommand } from "../../src/wrapper/panel-commands.js";
 import { run } from "../../src/wrapper/run.js";
 import { panelText } from "../helpers/panel-text.js";
 
@@ -33,7 +30,7 @@ function renderPanelForTest(state: InputState): string {
     providerContextTokens: 31_000,
     targetTokens: 180_000,
     triggerTokens: 360_000,
-    autoCompact: true,
+    contextWindow: resolveContextWindow(1_000_000, null),
     captureHealth: "ready",
     profile: "default",
   });
@@ -55,7 +52,10 @@ vi.mock("../../src/intake/session.js", async (importOriginal) => {
     },
   };
 });
-function feed(state: InputState, ...chunks: Array<string | Buffer>): {
+function feed(
+  state: InputState,
+  ...chunks: Array<string | Buffer>
+): {
   state: InputState;
   actions: InputAction[];
 } {
@@ -163,8 +163,6 @@ describe("the panel is a slash CLI", () => {
       ["/smart-prune", "/lhc-prune"],
       ["/smart-prune 2500", "/lhc-prune 2500"],
       ["/export", "/lhc-export"],
-      ["/auto on", "/lhc-auto on"],
-      ["/auto off", "/lhc-auto off"],
       ["/bounds 100 200", "/lhc-bounds 100 200"],
       ["  /status  ", "/lhc-status"],
     ];
@@ -191,7 +189,7 @@ describe("the panel is a slash CLI", () => {
     }
 
     // Slashless names are recognized only well enough to teach the rule.
-    for (const bare of ["status", "smart-compact", "help", "allocation", "auto on"]) {
+    for (const bare of ["status", "smart-compact", "help", "allocation", "bounds 1 2"]) {
       const parsed = parsePanelCommand(bare);
       expect(parsed.kind, bare).toBe("needs_slash");
     }
@@ -228,10 +226,7 @@ describe("the panel is a slash CLI", () => {
     // A slash token no command starts with: nothing to complete, so Enter
     // reaches the parser and the parser answers.
     const opened = feed(openHome(), "/compact\r");
-    expect(opened.state.panelRows).toEqual([
-      "unknown command: /compact",
-      "commands start with / · try /help",
-    ]);
+    expect(opened.state.panelRows).toEqual(["unknown command: /compact", "commands start with / · try /help"]);
     const drawn = panelText(renderPanelForTest(opened.state));
     expect(drawn).toContain("unknown command: /compact");
     expect(drawn).toContain("commands start with / · try /help");
@@ -273,7 +268,11 @@ describe("TC-3.1a Run Smart Compact", () => {
         viewId: "v1",
         tailTokens: 5,
         totalTokens: 9,
-        bands: { smooth: { entries: 1, tokens: 4 }, detailed: { entries: 0, tokens: 0 }, brief: { entries: 0, tokens: 0 } },
+        bands: {
+          smooth: { entries: 1, tokens: 4 },
+          detailed: { entries: 0, tokens: 0 },
+          brief: { entries: 0, tokens: 0 },
+        },
       },
     }));
     const previewCompact = vi.fn(async () => ({ ok: true, value: { kind: "ok" } }));

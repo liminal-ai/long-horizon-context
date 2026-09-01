@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
-
+import { dirname } from "node:path";
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
-
 import {
   type ContextMutationPlan,
   formatTokensShort,
@@ -11,26 +10,29 @@ import {
 import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from "../commands/dispatch.js";
 import { registerRebuiltSessionLineage } from "../commands/rebuild-receipt.js";
 import {
+  applyContextWindow,
   applyGovernorLifecycleBatch,
   applySessionAllocation,
+  CONTEXT_WINDOW_NOT_YET_OBSERVED,
   type ContextPolicyPartial,
+  contextWindowDetectionUnavailable,
   createGovernorRuntimeState,
   decideGovernor,
+  formatConfigFallbackNotice,
   formatGovernorObserveLogLine,
   type GovernorDurableReceipt,
   type GovernorHandoffOutcome,
   type GovernorMutationDeferReason,
   type GovernorReceiptStore,
   type GovernorRuntimeState,
-  formatConfigFallbackNotice,
   isTerminalHandoffOutcome,
   loadContextPolicy,
   noteGovernorInput,
   openGovernorReceiptStore,
   policySourcesSummary,
   projectConfigPath,
-  reobserveSettled,
   type ResolvedContextPolicy,
+  reobserveSettled,
   setGovernorCaptureGeneration,
   setGovernorOperationInFlight,
   userConfigPath,
@@ -52,8 +54,8 @@ import { defaultLineageDbPath } from "../intake/lineage-db.js";
 import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
 import { type CaptureSession, createCaptureThread, startCaptureSession } from "../intake/session.js";
 import { type LaunchThreadBinding, recordSwapAcceptance } from "../intake/thread-alias.js";
-import { preLaunchEstimate } from "../observation/estimate.js";
 import { asyncWorkIdentity, type OpenAsyncWork } from "../observation/async-work.js";
+import { preLaunchEstimate } from "../observation/estimate.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
 import { findExpectedSessionFileOnce } from "../rollout/discover.js";
@@ -73,23 +75,77 @@ import {
   revokeCapability,
   revokeDescriptor,
 } from "../runtime/descriptor.js";
-import { ProcessIdentityUnavailableError, type ProbeProcessIdentity } from "../runtime/process-identity.js";
 import { probeProcessIdentityNative } from "../runtime/native-identity.js";
+import { type ProbeProcessIdentity, ProcessIdentityUnavailableError } from "../runtime/process-identity.js";
 import { type ThreadOwnerLease, ThreadOwnershipConflictError } from "../runtime/thread-owner.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { forceKillChildTree, requestPtyTermination, runTaskkillTree } from "./child-termination.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
 import { type CompactConfirmDisposition, compactConfirmRows, describeDecline } from "./compact-confirm.js";
 import {
+  type ContextWindowObserver,
+  createContextWindowObserver,
+  mergeLaunchSettings,
+  newCapturePath,
+  readSettingsFileOrNull,
+  resolveOperatorStatusLine,
+} from "./context-window-observer.js";
+import {
+  type CandidateChild,
+  type CandidateViability,
+  DEFAULT_CAPTURE_READY_TIMEOUT_MS,
+  DEFAULT_CHILD_LIVENESS_TIMEOUT_MS,
+  DEFAULT_CHILD_STABLE_WINDOW_MS,
+  DEFAULT_REPLACEMENT_ATTEMPTS,
+  executeHandoff,
+  formatHandoffResult,
+  formatOldChildCleanup,
+  type HandoffPorts,
+  type HandoffResult,
+  type SwitchOutcome,
+} from "./handoff.js";
+import {
   type HandoffReceiptStore,
   handoffReceiptPortFromStore,
   openHandoffReceiptStore,
 } from "./handoff-receipt-store.js";
-import { observeOldChildCleanup } from "./old-child-cleanup.js";
+import { createInputDebugLogger } from "./input-debug.js";
+import { consumeLegacyHandoffState } from "./legacy-handoff-state.js";
 import {
-  nativeCompactAnomalyNotice,
-  nativeCompactDisabledStatusLine,
-  nativeCompactPassthroughStatusLine,
+  clampPanelViewport,
+  createInputState,
+  finishExecuting,
+  forceResetInput,
+  type InputState,
+  openCompactConfirm,
+  processInputChunk,
+  resolveBareEsc,
+  resolveLeaderByte,
+  showLateReceipts,
+  showReceipts,
+} from "./modal.js";
+import {
+  argvSuppliesNativeAutocompact,
+  NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY,
+  nativeAutoCompactChildEnv,
+} from "./native-auto-compact.js";
+import { observeOldChildCleanup } from "./old-child-cleanup.js";
+import { OutputHold } from "./output-hold.js";
+import { createAltScreenGuard, renderPanel } from "./panel.js";
+import { buildPanelViewSnapshot, MODAL_SCOPE_NOTE } from "./panel-commands.js";
+import {
+  formatActiveOperation,
+  formatActiveOperationRow,
+  formatHandoffFailureSummary,
+  formatLastActionRow,
+  toPanelWording,
+} from "./panel-wording.js";
+import {
+  formatReplacementNonviabilityAlarm,
+  formatSurvivalRelaunchNotice,
+  NONVIABLE_SWAPS_BEFORE_ALARM,
+} from "./replacement-nonviability.js";
+import {
   formatAskingBeforeSmartCompact,
   formatAutoDeferredSummary,
   formatAutoGuardBusyDetail,
@@ -108,56 +164,10 @@ import {
   formatOneShotPreLaunchThrew,
   formatOneShotStandDown,
   formatOperatorAuthorized,
+  nativeCompactAnomalyNotice,
+  nativeCompactDisabledStatusLine,
+  nativeCompactPassthroughStatusLine,
 } from "./terminology.js";
-import {
-  type CandidateChild,
-  type CandidateViability,
-  DEFAULT_CAPTURE_READY_TIMEOUT_MS,
-  DEFAULT_CHILD_LIVENESS_TIMEOUT_MS,
-  DEFAULT_CHILD_STABLE_WINDOW_MS,
-  DEFAULT_REPLACEMENT_ATTEMPTS,
-  executeHandoff,
-  formatHandoffResult,
-  formatOldChildCleanup,
-  type HandoffPorts,
-  type HandoffResult,
-  type SwitchOutcome,
-} from "./handoff.js";
-import { createInputDebugLogger } from "./input-debug.js";
-import { consumeLegacyHandoffState } from "./legacy-handoff-state.js";
-import {
-  clampPanelViewport,
-  createInputState,
-  finishExecuting,
-  forceResetInput,
-  type InputState,
-  openCompactConfirm,
-  processInputChunk,
-  resolveBareEsc,
-  resolveLeaderByte,
-  showLateReceipts,
-  showReceipts,
-} from "./modal.js";
-import { buildPanelViewSnapshot, MODAL_SCOPE_NOTE } from "./panel-commands.js";
-import {
-  formatActiveOperation,
-  formatActiveOperationRow,
-  formatHandoffFailureSummary,
-  formatLastActionRow,
-  toPanelWording,
-} from "./panel-wording.js";
-import {
-  argvSuppliesNativeAutocompact,
-  NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY,
-  nativeAutoCompactChildEnv,
-} from "./native-auto-compact.js";
-import { OutputHold } from "./output-hold.js";
-import { createAltScreenGuard, renderPanel } from "./panel.js";
-import {
-  formatReplacementNonviabilityAlarm,
-  formatSurvivalRelaunchNotice,
-  NONVIABLE_SWAPS_BEFORE_ALARM,
-} from "./replacement-nonviability.js";
 import { TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
 
@@ -248,6 +258,10 @@ export type RunOptions = {
   contextPolicyOverrides?: ContextPolicyPartial;
   /** Test hook: substitute resolved policy (skips filesystem load). */
   resolvedContextPolicy?: ResolvedContextPolicy;
+  /** Test hook: status-line capture file for the context-window observer. */
+  contextWindowCapturePath?: string;
+  /** Test hook: platform the child's status-line command is serialized for (defaults to this process). */
+  childPlatform?: NodeJS.Platform;
   /** Test hook: inspect governor runtime state after lifecycle. */
   onGovernorObserve?: (record: import("../governor/index.js").GovernorObserveRecord) => void;
   /**
@@ -373,14 +387,88 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       cwd: process.cwd(),
       ...(options.contextPolicyOverrides !== undefined ? { sessionOverrides: options.contextPolicyOverrides } : {}),
     });
+  if ((resolvedContextPolicy as Partial<ResolvedContextPolicy>).contextWindow === undefined) {
+    // The test seam may supply a policy without window provenance: it starts
+    // where every session starts, on the conservative class.
+    resolvedContextPolicy = { ...resolvedContextPolicy, contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED };
+  }
   let configFallbackNotice = formatConfigFallbackNotice(resolvedContextPolicy.fallbacks);
   for (const line of configFallbackNotice) {
     wrapperLog.warn(`cc-lhc context policy: ${line.trim()}`);
     stderr.write(`cc-lhc: ${line}\n`);
   }
-  wrapperLog.info(
-    `cc-lhc context policy autoCompact=${resolvedContextPolicy.policy.autoCompact} lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
-  );
+  const logContextPolicy = (why: string): void => {
+    const window = resolvedContextPolicy.contextWindow;
+    wrapperLog.info(
+      `cc-lhc context policy (${why}) window=${window.contextClass} (${window.source}${window.observedWindowTokens === null ? "" : ` ${window.observedWindowTokens}`}${window.modelId === null ? "" : ` ${window.modelId}`}) lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} runway=${resolvedContextPolicy.policy.minRunwayTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}${window.detail === null ? "" : ` — ${window.detail}`}`,
+    );
+  };
+  logContextPolicy("launch");
+
+  // D8: the launch-scoped status-line observer. It is installed on every
+  // managed child's argv as one merged `--settings` payload and read back
+  // synchronously before each governor decision, so a window change is
+  // re-resolved before the next automatic Smart Compact decision (AC-1.4).
+  let contextWindowObserver: ContextWindowObserver | undefined;
+  let lastContextWindowChange: { from: string; to: string; atMs: number } | null = null;
+  /** Re-resolve model-derived policy values against a newly observed window. */
+  const adoptContextWindow = (next: import("../governor/index.js").ContextWindowResolution, why: string): void => {
+    const previous = resolvedContextPolicy.contextWindow;
+    if (
+      previous.contextClass === next.contextClass &&
+      previous.source === next.source &&
+      previous.observedWindowTokens === next.observedWindowTokens &&
+      previous.modelId === next.modelId
+    ) {
+      return;
+    }
+    resolvedContextPolicy = applyContextWindow(resolvedContextPolicy, next);
+    configFallbackNotice = formatConfigFallbackNotice(resolvedContextPolicy.fallbacks);
+    if (previous.contextClass !== next.contextClass) {
+      lastContextWindowChange = { from: previous.contextClass, to: next.contextClass, atMs: Date.now() };
+    }
+    logContextPolicy(why);
+  };
+  /** Read every status-line payload appended since the last look; no timer. */
+  const syncContextWindow = (): void => {
+    if (contextWindowObserver === undefined) return;
+    const latest = contextWindowObserver.poll();
+    if (latest !== null) adoptContextWindow(latest, "status-line observed");
+  };
+  /**
+   * Install the observer on a child's argv: one merged `--settings`. When the
+   * merge is unsafe the argv is forwarded exactly as assembled and detection
+   * is reported unavailable (conservative 200k policy).
+   */
+  const installContextWindowObserver = (childArgs: readonly string[]): string[] => {
+    if (contextWindowObserver === undefined) return [...childArgs];
+    const operator = resolveOperatorStatusLine({ cwd: process.cwd() });
+    if (!operator.ok) {
+      adoptContextWindow(contextWindowDetectionUnavailable(operator.error), "operator settings unreadable");
+      return [...childArgs];
+    }
+    const merged = mergeLaunchSettings({
+      argv: childArgs,
+      readFile: readSettingsFileOrNull,
+      capturePath: contextWindowObserver.capturePath,
+      operatorStatusLine: operator.statusLine,
+      ...(options.childPlatform === undefined ? {} : { platform: options.childPlatform }),
+    });
+    if (merged.kind === "detection_unavailable") {
+      adoptContextWindow(contextWindowDetectionUnavailable(merged.reason), "settings unmergeable");
+      return merged.argv;
+    }
+    // The operator's command text is private configuration: log only that a
+    // status line was preserved and where it was declared, never its content.
+    const preserved =
+      merged.operatorStatusLine === "chained"
+        ? `, operator status line preserved (${operator.origin === null ? "launch argv" : `settings file ${operator.origin}`})`
+        : "";
+    wrapperLog.info(
+      `cc-lhc context window observer installed (capture ${contextWindowObserver.capturePath}${preserved})`,
+    );
+    return merged.argv;
+  };
 
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
   /** Most recent non-success outcome (health visibility; never claims success). */
@@ -726,6 +814,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       captureLifecycleSink(signals);
       return;
     }
+    syncContextWindow();
     governorState = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy).state;
   };
 
@@ -742,10 +831,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
    * process is running while any of this happens, so there is nothing to
    * interrupt and no way for the prompt to execute twice.
    */
-  const compactBeforeOneShotLaunch = async (
-    session: ExpectedSession,
-    thread: LaunchThreadBinding,
-  ): Promise<void> => {
+  const compactBeforeOneShotLaunch = async (session: ExpectedSession, thread: LaunchThreadBinding): Promise<void> => {
     const cwd = process.cwd();
     const transcriptPath = await findExpectedSessionFileOnce(cwd, session.sessionId);
     if (transcriptPath === null) {
@@ -995,6 +1081,19 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
   }
 
+  if (!unboundTestChild && expectedSession !== undefined) {
+    try {
+      contextWindowObserver = createContextWindowObserver(
+        options.contextWindowCapturePath ?? newCapturePath(dirname(defaultLineageDbPath()), process.pid),
+      );
+      contextWindowObserver.acceptSession(expectedSession.sessionId);
+      childArgv = installContextWindowObserver(childArgv);
+    } catch (cause) {
+      contextWindowObserver = undefined;
+      adoptContextWindow(contextWindowDetectionUnavailable(detailOf(cause)), "capture file unavailable");
+    }
+  }
+
   const cols = stdout.columns ?? DEFAULT_COLS;
   const rows = stdout.rows ?? DEFAULT_ROWS;
 
@@ -1095,8 +1194,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     frozenTriggerTokens: number | null;
     receiptId: string;
     liveAsyncWork: readonly OpenAsyncWork[];
-  }) => Promise<void> =
-    async () => {};
+  }) => Promise<void> = async () => {};
 
   const triggerFatalRevocation = (reason: string): void => {
     if (fatalRevocationExit && exited) return;
@@ -1408,6 +1506,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // WANTED is a fresh question. A turn may have settled behind the panel
       // with a smaller provider reading, leaving the session under the
       // trigger. Ask the governor again, and compact against what it says now.
+      syncContextWindow();
       const current = reobserveSettled(governorState, resolvedContextPolicy);
       const observe = current.observe;
       // The recomputed state is dropped along with the decision: an
@@ -1608,6 +1707,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       governorState = setGovernorCaptureGeneration(governorState, captureSession.getCaptureGeneration());
     }
 
+    syncContextWindow();
     const observed = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy);
     governorState = observed.state;
     for (const record of observed.observes) handleGovernorObserve(record);
@@ -1778,13 +1878,14 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
 
   const commandRuntime = (): LhcCommandRuntime => {
+    syncContextWindow();
     const rollout = captureSession?.getRolloutInfo();
     const policy = resolvedContextPolicy.policy;
     const statusSnapshot = {
       latestProviderContextTokens: governorState.latestProviderContext?.total ?? null,
       targetTokens: policy.lowerBoundTokens,
       triggerTokens: policy.upperBoundTokens,
-      autoCompact: policy.autoCompact,
+      contextClass: resolvedContextPolicy.contextWindow.contextClass,
     };
     if (captureSession === undefined) {
       return {
@@ -1839,10 +1940,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
 
   const snapshotPanelView = () => {
+    syncContextWindow();
     const policy = resolvedContextPolicy.policy;
     const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
-    const retrievalState =
-      runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
+    const retrievalState = runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
     const inFlight = commandGuard.current();
     // The guard's label is internal (`auto-compact` for the automatic path);
     // every panel surface names the command instead.
@@ -1867,9 +1968,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                   zoneBefore: formatTokensShort(lastAction.zoneBefore),
                   zoneAfter: formatTokensShort(lastAction.zoneAfter),
                 }),
-            ...(lastAction.viewTokens === undefined
-              ? {}
-              : { viewTokens: formatTokensShort(lastAction.viewTokens) }),
+            ...(lastAction.viewTokens === undefined ? {} : { viewTokens: formatTokensShort(lastAction.viewTokens) }),
           });
 
     // Home carries only non-default operational state: an in-flight
@@ -1894,13 +1993,20 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       );
     }
 
+    const window = resolvedContextPolicy.contextWindow;
     const details = [
       { label: "Retrieval", value: retrievalState },
       {
+        label: "Window",
+        value:
+          `${window.contextClass} (${window.source}` +
+          `${window.observedWindowTokens === null ? "" : ` ${window.observedWindowTokens}`}` +
+          `${window.modelId === null ? "" : ` ${window.modelId}`})` +
+          `${lastContextWindowChange === null ? "" : ` — changed from ${lastContextWindowChange.from} ${formatAgo(lastContextWindowChange.atMs)}`}`,
+      },
+      {
         label: "",
-        value: disableNativeAutoCompact
-          ? nativeCompactDisabledStatusLine()
-          : nativeCompactPassthroughStatusLine(),
+        value: disableNativeAutoCompact ? nativeCompactDisabledStatusLine() : nativeCompactPassthroughStatusLine(),
       },
       { label: "Operation", value: activeOperation ?? "none" },
       { label: "Last action", value: lastActionText },
@@ -1915,7 +2021,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       providerContextTokens: governorState.latestProviderContext?.total ?? null,
       targetTokens: policy.lowerBoundTokens,
       triggerTokens: policy.upperBoundTokens,
-      autoCompact: policy.autoCompact,
+      contextWindow: resolvedContextPolicy.contextWindow,
       captureHealth: capturePhase,
       profile: policy.profile,
       alarms,
@@ -2105,21 +2211,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const applyPolicyEdit = (commandLine: string): string[] => {
       const parts = commandLine.trim().split(/\s+/);
       const current = resolvedContextPolicy.policy;
-      let candidate: typeof current;
-      let changedKeys: Array<"autoCompact" | "lowerBoundTokens" | "upperBoundTokens">;
-      let editLabel: string;
-      if (parts[0] === "/lhc-auto") {
-        const on = parts[1] === "on";
-        candidate = { ...current, autoCompact: on };
-        changedKeys = ["autoCompact"];
-        editLabel = `/auto ${on ? "on" : "off"}`;
-      } else {
-        const lower = Number.parseInt(parts[1] ?? "", 10);
-        const upper = Number.parseInt(parts[2] ?? "", 10);
-        candidate = { ...current, lowerBoundTokens: lower, upperBoundTokens: upper };
-        changedKeys = ["lowerBoundTokens", "upperBoundTokens"];
-        editLabel = `/bounds ${lower} ${upper}`;
-      }
+      const lower = Number.parseInt(parts[1] ?? "", 10);
+      const upper = Number.parseInt(parts[2] ?? "", 10);
+      const candidate: typeof current = { ...current, lowerBoundTokens: lower, upperBoundTokens: upper };
+      const changedKeys: Array<"lowerBoundTokens" | "upperBoundTokens"> = ["lowerBoundTokens", "upperBoundTokens"];
+      const editLabel = `/bounds ${lower} ${upper}`;
       const errors = validateContextPolicy(candidate);
       if (errors.length > 0) {
         return [`rejected — nothing changed (${editLabel}):`, ...errors];
@@ -2128,10 +2224,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       for (const key of changedKeys) sources[key] = "session";
       // A panel edit that validates replaces the whole policy; the load-time
       // fallbacks it corrects are no longer in force.
-      resolvedContextPolicy = { policy: candidate, sources, fallbacks: [] };
+      resolvedContextPolicy = { ...resolvedContextPolicy, policy: candidate, sources, fallbacks: [] };
       configFallbackNotice = [];
       wrapperLog.info(
-        `cc-lhc policy edit applied (${editLabel}) session scope: auto=${candidate.autoCompact} lower=${candidate.lowerBoundTokens} upper=${candidate.upperBoundTokens}`,
+        `cc-lhc policy edit applied (${editLabel}) session scope: lower=${candidate.lowerBoundTokens} upper=${candidate.upperBoundTokens}`,
       );
       return [
         `${editLabel} — applied live to this wrapper`,
@@ -2143,7 +2239,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const runModalCommand = (commandLine: string): void => {
       const dispatchLabel = commandLine.replace(/^\/lhc-/, "");
       const label = inputState.line.trim() === "" ? dispatchLabel : inputState.line.trim();
-      if (commandLine.startsWith("/lhc-auto ") || commandLine.startsWith("/lhc-bounds ")) {
+      if (commandLine.startsWith("/lhc-bounds ")) {
         // Synchronous session-policy edit: no SDK, no processes, no guard needed.
         settleCommand(applyPolicyEdit(commandLine), label);
         return;
@@ -2538,6 +2634,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const guided = injectRetrievalGuidance(replacementArgv);
       if (guided.ok) replacementArgv = guided.argv;
       else wrapperLog.warn(`cc-lhc handoff: retrieval guidance not injected: ${guided.reason}`);
+      contextWindowObserver?.acceptSession(sessionId);
+      replacementArgv = installContextWindowObserver(replacementArgv);
       const env: Record<string, string> = injectNativeDisable
         ? nativeAutoCompactChildEnv(process.env as Record<string, string>, false)
         : { ...(process.env as Record<string, string>) };

@@ -16,7 +16,7 @@
  */
 import { formatTokensShort } from "../commands/context-mutation.js";
 import { type BandAllocationId, isBandAllocationId, PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
-import type { ConfigFallback } from "../governor/types.js";
+import type { ConfigFallback, ContextClass, ContextWindowResolution, ContextWindowSource } from "../governor/types.js";
 import { presentAllocation } from "./preset-presentation.js";
 
 /** Full product name; used as the card title wherever it fits. */
@@ -54,7 +54,10 @@ export interface PanelViewSnapshot {
   providerContextTokens: number | null;
   targetTokens: number;
   triggerTokens: number;
-  autoCompact: boolean;
+  /** Active context class and how it was resolved (tech-design D8). */
+  contextClass: ContextClass;
+  contextWindowSource: ContextWindowSource;
+  contextWindowDetail: string | null;
   captureHealth: string;
   allocationId: BandAllocationId;
   allocationLabel: string;
@@ -146,17 +149,7 @@ function parseSmartPrune(args: readonly string[], surface: string): PanelParseRe
 }
 
 /** Canonical usage strings, shared by the registry and its argument errors. */
-export const AUTO_USAGE = "/auto on|off";
 export const BOUNDS_USAGE = "/bounds <target> <trigger>";
-
-function parseAuto(args: readonly string[], surface: string): PanelParseResult {
-  if (args.length === 1 && (args[0] === "on" || args[0] === "off")) {
-    return { kind: "execute", commandLine: `/lhc-auto ${args[0]}`, surface };
-  }
-  // The command exists; only the argument is wrong. Say the usage rather than
-  // claiming the command is unknown.
-  return { kind: "invalid", message: `usage: ${AUTO_USAGE}` };
-}
 
 function parseBounds(args: readonly string[], surface: string): PanelParseResult {
   if (args.length === 2 && /^\d+$/.test(args[0]!) && /^\d+$/.test(args[1]!)) {
@@ -216,23 +209,13 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     summary: "open the band allocation selector",
     short: "choose recent vs older history",
     // Opening the selector changes nothing; applying a choice is a session
-    // policy edit, so the command carries session scope like /auto and /bounds.
+    // policy edit, so the command carries session scope like /bounds.
     helpSummary:
       "Choose how context space is split between recent detail and older compressed history. Applying a choice takes effect for this wrapper run.",
     group: "tune",
     scope: "session",
     parse: routeNoArgs("allocation"),
     homeAction: { label: "/allocation", order: 2, description: "choose recent vs older history" },
-  },
-  {
-    name: "/auto",
-    usage: AUTO_USAGE,
-    summary: "turn automatic /smart-compact on or off",
-    short: "automatic compaction on or off",
-    helpSummary: "Turn automatic compaction on or off.",
-    group: "tune",
-    scope: "session",
-    parse: parseAuto,
   },
   {
     name: "/bounds",
@@ -290,9 +273,7 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
 const COMMANDS_BY_NAME = new Map(PANEL_COMMANDS.map((command) => [command.name, command]));
 
 /** Bare spellings of real commands: recognized only to say "add the slash". */
-const COMMANDS_BY_BARE_NAME = new Map(
-  PANEL_COMMANDS.map((command) => [command.name.slice(1), command] as const),
-);
+const COMMANDS_BY_BARE_NAME = new Map(PANEL_COMMANDS.map((command) => [command.name.slice(1), command] as const));
 
 export type HomeAction =
   | { id: string; label: string; description: string; kind: "command"; command: string }
@@ -315,7 +296,7 @@ export type HomeStatusCanonicalId =
   | "provider"
   | "target"
   | "trigger"
-  | "automatic"
+  | "window"
   | "capture"
   | "allocation"
   | "low"
@@ -370,6 +351,15 @@ interface HomeStatusRowSpec {
   readonly tiny: (view: PanelViewSnapshot) => string;
 }
 
+/**
+ * The second segment of the window row: silent for an observed class, the
+ * fallback reason otherwise (D8 reports every conservative fallback).
+ */
+function contextWindowPhrase(view: PanelViewSnapshot): string {
+  if (view.contextWindowSource === "observed") return "observed";
+  return view.contextWindowDetail ?? "conservative fallback";
+}
+
 function fallbackField(view: PanelViewSnapshot, field: string, text: string): string {
   return view.fallbackFields.includes(field) ? `${text} (fallback — not selected)` : text;
 }
@@ -416,15 +406,13 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
     tiny: (view) => `trigger ${formatTokensShort(view.triggerTokens)}`,
   },
   {
-    id: "automatic",
+    id: "window",
     group: "context",
     navigable: true,
     breakBefore: true,
-    segments: (view) => [
-      fallbackField(view, "autoCompact", `automatic /smart-compact ${view.autoCompact ? "on" : "off"}`),
-    ],
-    compactSegments: (view) => [fallbackField(view, "autoCompact", `auto ${view.autoCompact ? "on" : "off"}`)],
-    tiny: (view) => `auto ${view.autoCompact ? "on" : "off"}`,
+    segments: (view) => [`window ${view.contextClass}`, contextWindowPhrase(view)],
+    compactSegments: (view) => [`window ${view.contextClass}`],
+    tiny: (view) => `window ${view.contextClass}`,
   },
   {
     id: "capture",
@@ -498,7 +486,7 @@ export function focusedHomeStatusId(scrollOffset: number): HomeStatusCanonicalId
 }
 
 export const MODAL_SCOPE_NOTE =
-  "/auto, /bounds, and /allocation changes are session-scoped: live now, survive handoffs, lost at wrapper exit";
+  "/bounds and /allocation changes are session-scoped: live now, survive handoffs, lost at wrapper exit";
 export const MODAL_ASCII_NOTE = "input is ASCII-only — non-ASCII bytes are ignored";
 export const MODAL_UNKNOWN_PREFIX = "unknown command: ";
 /** Bounded recovery: one grammar rule and one place to read the rest. */
@@ -580,7 +568,7 @@ export function mapModalCommand(line: string): string | null {
 
 export function scopeNote(scope: PanelCommandScope): string | null {
   if (scope === "session") {
-    return "/auto, /bounds, and /allocation changes survive handoffs and reset when this wrapper exits.";
+    return "/bounds and /allocation changes survive handoffs and reset when this wrapper exits.";
   }
   return null;
 }
@@ -690,28 +678,21 @@ export function helpLines(view: PanelViewSnapshot | null): string[] {
 /**
  * First-use orientation, in the order a new reader asks: what this does, what
  * happens without them, how context is kept, and what to do. Target, trigger,
- * automatic state, and allocation come from the live snapshot — when a value
- * is not available the truthful fallback wording is used instead of a default.
+ * and allocation come from the live snapshot — when a value is not available
+ * the truthful fallback wording is used instead of a default. Smart Compact is
+ * always on, so there is exactly one automatic-behaviour story to tell.
  */
 export function introductionRows(view: PanelViewSnapshot | null): PanelRow[] {
   const target = view === null ? "the active target" : formatTokensShort(view.targetTokens);
   const trigger = view === null ? "the active trigger" : formatTokensShort(view.triggerTokens);
-  const keptHeading =
-    view === null ? "How context is kept" : `How context is kept — ${view.allocationLabel}`;
-  // Three states, never two: with no live snapshot the screen must not claim
-  // automatic compaction is on OR off, and must not promise a run.
+  const keptHeading = view === null ? "How context is kept" : `How context is kept — ${view.allocationLabel}`;
   const automaticRows =
     view === null
       ? [
-          text("When automatic compaction is on, CC-LHC runs /smart-compact and rebuilds toward the target."),
-          text("Use /status to see the current target, trigger, and whether automatic compaction is on."),
+          text("CC-LHC runs /smart-compact automatically at the active trigger and rebuilds toward the target."),
+          text("Use /status to see the current window, target, and trigger."),
         ]
-      : view.autoCompact
-        ? [text(`Keep working normally. At ${trigger}, CC-LHC runs /smart-compact and rebuilds toward ${target}.`)]
-        : [
-            text(`Automatic compaction is off. Run /smart-compact yourself to rebuild toward ${target}.`),
-            text(`Turn it back on with /auto on; it then runs at ${trigger}.`),
-          ];
+      : [text(`Keep working normally. At ${trigger}, CC-LHC runs /smart-compact and rebuilds toward ${target}.`)];
   return [
     heading("What CC-LHC does"),
     text("CC-LHC saves your Claude Code session in durable LHC history."),
@@ -825,10 +806,10 @@ export function homeSummaryLine(view: PanelViewSnapshot | null, width: number): 
   if (view === null) return PANEL_TITLE_SHORT.slice(0, Math.max(0, width));
   const context = view.providerContextTokens === null ? "ctx ?" : formatTokensShort(view.providerContextTokens);
   const bounds = `${formatTokensShort(view.targetTokens)}/${formatTokensShort(view.triggerTokens)}`;
-  const auto = view.autoCompact ? "auto on" : "auto off";
+  const window = `window ${view.contextClass}`;
   const candidates = [
-    `${context} · ${bounds} · ${auto}`,
-    `${context}·${bounds}·${auto}`,
+    `${context} · ${bounds} · ${window}`,
+    `${context}·${bounds}·${window}`,
     `${context}·${bounds}`,
     context,
   ];
@@ -839,7 +820,7 @@ export function buildPanelViewSnapshot(input: {
   providerContextTokens: number | null;
   targetTokens: number;
   triggerTokens: number;
-  autoCompact: boolean;
+  contextWindow: ContextWindowResolution;
   captureHealth: string;
   profile: string;
   alarms?: readonly string[];
@@ -854,7 +835,9 @@ export function buildPanelViewSnapshot(input: {
     providerContextTokens: input.providerContextTokens,
     targetTokens: input.targetTokens,
     triggerTokens: input.triggerTokens,
-    autoCompact: input.autoCompact,
+    contextClass: input.contextWindow.contextClass,
+    contextWindowSource: input.contextWindow.source,
+    contextWindowDetail: input.contextWindow.detail,
     captureHealth: input.captureHealth,
     allocationId,
     allocationLabel: shown.label,

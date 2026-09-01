@@ -45,11 +45,6 @@ export function parseWrapperArgv(argv: readonly string[], env: NodeJS.ProcessEnv
         contextPolicyOverrides.lowerBoundTokens = Number(lower[1]);
         continue;
       }
-      const auto = arg.match(/^--lhc-auto-compact=(on|off)$/);
-      if (auto) {
-        contextPolicyOverrides.autoCompact = auto[1] === "on";
-        continue;
-      }
       const profile = arg.match(/^--lhc-profile=(.+)$/);
       if (profile?.[1]) {
         contextPolicyOverrides.profile = profile[1];

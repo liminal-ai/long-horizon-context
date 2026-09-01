@@ -11,8 +11,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-
 import { formatCompactReceipt, formatPruneReceipt } from "../../src/commands/context-mutation.js";
+import { resolveContextWindow } from "../../src/governor/config.js";
 import { COMPACT_CONFIRM_HINT, compactConfirmRows } from "../../src/wrapper/compact-confirm.js";
 import { createInputState, type InputState, processInputChunk } from "../../src/wrapper/modal.js";
 import { commandProgressLabel, PANEL_PROMPT_PLACEHOLDER, renderPanel } from "../../src/wrapper/panel.js";
@@ -64,7 +64,7 @@ const VIEW = buildPanelViewSnapshot({
   providerContextTokens: 84_000,
   targetTokens: 100_000,
   triggerTokens: 200_000,
-  autoCompact: true,
+  contextWindow: resolveContextWindow(1_000_000, null),
   captureHealth: "ready",
   profile: "balanced",
   details: [
@@ -333,7 +333,7 @@ describe("work in flight names the command, not the guard label", () => {
       providerContextTokens: 84_000,
       targetTokens: 100_000,
       triggerTokens: 200_000,
-      autoCompact: true,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
       extraStatusRows: [formatActiveOperationRow("auto-compact")],
@@ -363,7 +363,7 @@ describe("the standing alarm on Home", () => {
       providerContextTokens: 84_000,
       targetTokens: 100_000,
       triggerTokens: 200_000,
-      autoCompact: true,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
       alarms: raw.map(toPanelWording),
@@ -383,7 +383,7 @@ describe("session scope is declared truthfully", () => {
     const sessionScoped = PANEL_COMMANDS.filter((command) => command.scope === "session").map(
       (command) => command.name,
     );
-    expect(sessionScoped.sort()).toEqual(["/allocation", "/auto", "/bounds"]);
+    expect(sessionScoped.sort()).toEqual(["/allocation", "/bounds"]);
 
     // The note names exactly those commands, and each one carries the marker.
     const note = helpLines(VIEW).find((line) => line.startsWith(SESSION_SCOPE_MARKER)) ?? "";
@@ -406,7 +406,8 @@ describe("session scope is declared truthfully", () => {
     // Opening the selector is not the mutation; applying a choice is.
     expect(allocation.helpSummary).toContain("Applying a choice takes effect for this wrapper run.");
     // Details reports the same scope for all three session commands.
-    expect(MODAL_SCOPE_NOTE).toContain("/auto");
+    expect(MODAL_SCOPE_NOTE).toContain("/bounds");
+    expect(MODAL_SCOPE_NOTE).not.toContain("/auto");
     expect(MODAL_SCOPE_NOTE).toContain("/bounds");
     expect(MODAL_SCOPE_NOTE).toContain("/allocation");
     expect(MODAL_SCOPE_NOTE).toContain("session-scoped");
@@ -464,7 +465,7 @@ describe("one registry drives parser, Home, Help, and autocomplete", () => {
     for (const command of PANEL_COMMANDS) {
       expect(help, `Help omitted ${command.name}`).toContain(command.usage);
       expect(suggestions, `autocomplete omitted ${command.name}`).toContain(command.name);
-      const probe = command.name === "/auto" ? "/auto on" : command.name === "/bounds" ? "/bounds 1 2" : command.name;
+      const probe = command.name === "/bounds" ? "/bounds 1 2" : command.name;
       expect(parsePanelCommand(probe).kind, command.name).not.toBe("unknown");
     }
     // Home shows the subset marked as command rows, in their declared order.

@@ -90,10 +90,10 @@ normalization. Unknown `--lhc-*` flags exit with status 2.
   provider usage). Missing or invalid latest usage falls back to the last known
   provider reading plus that estimate, labelled `last_known` so an older
   measurement is never read as fresh — a session at 900k does not become healthy
-  because one usage line went bad. Two things decide an automatic Smart Compact: the
-  user's `autoCompact` policy and measured pressure. Capture health, descriptor
-  readiness, receipt storage, and typed-ahead input are diagnostics and have no
-  say. Classification uses explicit named states and durable receipts. Threshold
+  because one usage line went bad. One thing decides an automatic Smart Compact:
+  measured pressure against the active context window's trigger. Capture health,
+  descriptor readiness, receipt storage, and typed-ahead input are diagnostics
+  and have no say, and nothing turns Smart Compact off. Classification uses explicit named states and durable receipts. Threshold
   crossing during an open agentic turn is observed and receipted but **not**
   mutated mid-turn — Claude Code cannot replace the in-flight request the way
   Codex full continuation can. At the next Claude-safe settled seam, policy may
@@ -223,7 +223,6 @@ modifyOtherKeys, and Windows Terminal win32 input events.
 | `/smart-compact` | Smart Compact and controlled child handoff |
 | `/smart-prune [tokens]` | Advance the visibility boundary and hand off if changed |
 | `/export` | Write rollout and served-view transcript dumps |
-| `/auto on\|off` | Change automatic Smart Compact for this wrapper lifetime |
 | `/bounds <target> <trigger>` | Change Smart Compact target/trigger for this wrapper lifetime |
 | `/allocation` | Select Default, Balanced, or Historical for this wrapper lifetime |
 | `/details` | Show retrieval state, configuration sources, and Claude native Compact status |
@@ -250,18 +249,24 @@ builtin < user config < project config < launch flags / panel edits
 
 User config is `$XDG_CONFIG_HOME/cc-lhc/config.json` (or
 `~/.config/cc-lhc/config.json`); project config is `.cc-lhc.json`. Supported
-persisted fields are `autoCompact`, `lowerBoundTokens`, `upperBoundTokens`,
+persisted fields are `lowerBoundTokens`, `upperBoundTokens`,
 `profile` (`default`, `balanced`, or `historical`), `pruneEnabled`,
 `pruneThresholdTokens`, `pruneTargetTokens`, and `minRunwayTokens`.
 
+Built-in target, trigger, and minimum runway follow the effective context
+window, read from Claude Code's documented status-line payload: 200k windows
+use 70k/140k/40k, 1M windows use 180k/360k/50k, and an unknown or unsupported
+window uses the conservative 200k policy until the class is observed. Explicit
+user, project, and session values keep their precedence over those built-ins.
+
 Bad configuration never disarms the product. An unknown field, a malformed
 value, an unreadable file, or an incoherent pair of bounds falls back to the
-built-in default for the fields involved; automatic Smart Compact stays on. The
+active window's built-in default for the fields involved, naming the field and
+its source; automatic Smart Compact stays on and has no off switch. The
 fallback is announced at startup, in the wrapper log, in the control panel, and
 in the Smart Compact message written to the rebuilt session, and it says: *Invalid
 compact configuration. Default configuration used. Please fix or update the
-configuration.* Only an explicit `autoCompact: false` — in config or through a
-panel `auto off` — turns automatic Smart Compact off.
+configuration.*
 
 Run `cc-lhc --lhc-help` for the wrapper's launch flags and operative
 environment surface.

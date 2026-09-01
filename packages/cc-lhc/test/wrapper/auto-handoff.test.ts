@@ -4,18 +4,17 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import { applySessionAllocation, type BandAllocationId } from "../../src/governor/band-allocation.js";
+import { loadContextPolicy } from "../../src/governor/config.js";
+import * as governor from "../../src/governor/index.js";
+import { defaultLineageDbPath, readPendingCurrentSession } from "../../src/intake/lineage-db.js";
+import { defaultRegistryPath } from "../../src/intake/paths.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
+import { acceptCurrentSession, claudeSessionAlias, currentSessionAlias } from "../../src/intake/thread-alias.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
-import { defaultLineageDbPath, readPendingCurrentSession } from "../../src/intake/lineage-db.js";
-import { defaultRegistryPath } from "../../src/intake/paths.js";
-import { acceptCurrentSession, claudeSessionAlias, currentSessionAlias } from "../../src/intake/thread-alias.js";
-import { applySessionAllocation, type BandAllocationId } from "../../src/governor/band-allocation.js";
-import * as governor from "../../src/governor/index.js";
-import { loadContextPolicy } from "../../src/governor/config.js";
 import { PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
 import { presentAllocation } from "../../src/wrapper/preset-presentation.js";
 import { run } from "../../src/wrapper/run.js";
@@ -261,7 +260,6 @@ async function waitFor(condition: () => boolean, label: string, capMs = 8_000): 
 
 const POLICY = {
   policy: {
-    autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
     profile: "default",
@@ -272,7 +270,6 @@ const POLICY = {
   },
   sources: Object.fromEntries(
     Object.keys({
-      autoCompact: 0,
       lowerBoundTokens: 0,
       upperBoundTokens: 0,
       profile: 0,
@@ -431,10 +428,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     }
     expect(spawned[1]!.writes.join("")).not.toContain("typed during compaction");
     expect(spawned[0]!.writes.join("")).not.toContain("typed during compaction");
-    await waitFor(
-      () => terminalOutput.includes("input typed during compaction was not delivered"),
-      "resend notice",
-    );
+    await waitFor(() => terminalOutput.includes("input typed during compaction was not delivered"), "resend notice");
 
     // Spawn-first: the replacement existed before the old child was signalled.
     expect(spawnOrder.indexOf("spawn:1")).toBeLessThan(spawnOrder.indexOf("kill:0"));
@@ -508,7 +502,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       ...sessionPolicy,
       policy: {
         ...sessionPolicy.policy,
-        autoCompact: true,
         lowerBoundTokens: 4_400,
         upperBoundTokens: 5_000,
         minRunwayTokens: 100,
@@ -1082,7 +1075,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     // Open the panel: the status summary appears before the prompt.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => panelText(terminalOutput).includes(PANEL_TITLE), "panel summary");
-    expect(panelText(terminalOutput)).toContain("automatic /smart-compact on");
+    expect(panelText(terminalOutput)).toContain("window 200k");
     // Scope, precedence, and last action are one typed word away.
     const beforeDetails = terminalOutput.length;
     (stdin as unknown as PassThrough).write(Buffer.from("/details\r"));
@@ -1098,19 +1091,28 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     (stdin as unknown as PassThrough).write("/bounds 200 100\r");
     await waitFor(() => terminalOutput.includes("rejected — nothing changed"), "rejected edit");
 
-    // Live valid edit: auto off (session scope).
+    // There is no off switch: the former `/auto off` is an unknown command
+    // and changes nothing (TC-1.5d).
     (stdin as unknown as PassThrough).write("/auto off\r");
-    await waitFor(() => panelText(terminalOutput).includes("/auto off — applied live to this wrapper"), "applied edit");
-    expect(panelText(terminalOutput)).toContain("scope: session only");
+    await waitFor(() => panelText(terminalOutput).includes("unknown command: /auto off"), "no /auto command");
+    expect(panelText(terminalOutput)).not.toContain("applied live");
 
-    // Close the panel (leader-again), then settle a high-pressure turn: the
-    // rejected bounds left the trigger at 5k, and auto off suppresses execution.
+    // Close the panel (leader-again), then settle a turn below the trigger: the
+    // rejected bounds left the trigger at 5k and the governor still runs.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    lifecycleSink!(TRIGGER_SIGNALS);
+    lifecycleSink!([
+      { kind: "turn_opened", reason: "user_prompt" },
+      {
+        kind: "sampling_observed",
+        samplingId: "req:low",
+        providerUsage: { input_tokens: 2, cache_creation_input_tokens: 1_000, cache_read_input_tokens: 1_000 },
+      },
+      { kind: "turn_settled", reason: "end_turn" },
+    ]);
     await waitFor(() => observes.length >= 1, "governor observe");
     const last = observes[observes.length - 1]!;
     expect(last.upperBoundTokens).toBe(5_000); // rejected edit really changed nothing
-    expect(last.decision).toBe("policy_disabled"); // auto off is live
+    expect(last.decision).toBe("below_threshold");
     expect(last.wouldMutate).toBe(false);
     expect(spawned).toHaveLength(1); // no handoff, no respawn
 
@@ -1805,8 +1807,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
-    mocks.captureFactory = (opts) =>
-      scriptedCaptureSession(opts, sdk, OWNED_SESSION, "/tmp/owned.jsonl", 1).session;
+    mocks.captureFactory = (opts) => scriptedCaptureSession(opts, sdk, OWNED_SESSION, "/tmp/owned.jsonl", 1).session;
 
     const stderr = fakeStream();
     let stderrText = "";

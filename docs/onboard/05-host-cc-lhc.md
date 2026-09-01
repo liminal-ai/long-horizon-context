@@ -205,8 +205,9 @@ malformed, the base is the last known provider reading — still a provider
 number, marked `last_known` in the receipt — plus the growth measured on top of
 it. The session's real size never disappears with a bad line.
 
-Two inputs decide an automatic compact: the user's `autoCompact` policy and
-measured pressure. Everything else the wrapper knows — capture health,
+One input decides an automatic compact: measured pressure against the trigger
+of the active context window (200k or 1M, observed through Claude's status-line
+payload). Smart Compact cannot be turned off. Everything else the wrapper knows — capture health,
 descriptor readiness, receipt storage, typed-ahead input — is diagnostics with
 no blocking authority. Threshold crossing during an **open** agentic turn is
 classified and written as a durable receipt with `wouldMutate=false` — Claude
@@ -226,9 +227,9 @@ survive wrapper restart and are inspectable independently of `wrapper.log`.
 Receipts are write-behind: when the store is unavailable the compact runs
 against an in-memory receipt id with a loud warning rather than not running.
 
-The control panel's `auto` and `bounds` edits apply only to the current wrapper
-lifetime. `auto off` and an explicit `autoCompact: false` in config are the only
-things that stop automatic compact.
+The control panel's `bounds` and `allocation` edits apply only to the current
+wrapper lifetime. Nothing stops automatic compact; explicit bounds keep their
+precedence over the window's built-in defaults.
 
 **What this host cannot do (v1, by design):** Codex-style in-place mid-agentic-
 turn continuation, synthetic tool-tail preservation, forced
@@ -519,7 +520,7 @@ The compact-gating campaign (S1–S7) has its own retained record,
 [`packages/cc-lhc/test/fixtures/lim99-s7-certification-evidence.md`](../../packages/cc-lhc/test/fixtures/lim99-s7-certification-evidence.md)
 and its adjacent manifest, covering the forward-only compact path on Claude
 2.1.235: the interactive spawn-first swap and typed-ahead drop, the one-shot
-pre-launch compact, restart mid-swap, manual/panel compact, `autoCompact:false`,
+pre-launch compact, restart mid-swap, manual/panel compact, the since-removed off switch,
 the nonviability alarm with R16's survival relaunch, alias resolution with a
 single thread owner, and the legacy pre-rewrite upgrade.
 

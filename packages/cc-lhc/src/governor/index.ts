@@ -1,8 +1,8 @@
 export {
   ACCEPTED_BOUNDED_CORE_SOURCE_COMMIT,
   ADAPTATION_BASE_COMMIT,
-  applySessionAllocation,
   allocationById,
+  applySessionAllocation,
   BAND_ALLOCATIONS,
   type BandAllocation,
   type BandAllocationId,
@@ -15,9 +15,17 @@ export {
   PRODUCT_PRESET_IDS,
 } from "./band-allocation.js";
 export {
+  applyContextWindow,
+  BUILTIN_CONTEXT_POLICIES,
   BUILTIN_CONTEXT_POLICY,
+  builtinContextPolicy,
   CANONICAL_LHC_PROFILES,
   CONFIG_FALLBACK_NOTICE,
+  CONSERVATIVE_CONTEXT_CLASS,
+  CONTEXT_POLICY_FIELD_KEYS,
+  CONTEXT_WINDOW_NOT_YET_OBSERVED,
+  CONTEXT_WINDOW_TOKENS,
+  contextWindowDetectionUnavailable,
   formatConfigFallbackNotice,
   type LoadContextPolicyOptions,
   loadContextPolicy,
@@ -26,6 +34,7 @@ export {
   policySourcesSummary,
   projectConfigPath,
   readJsonFile,
+  resolveContextWindow,
   userConfigPath,
   validateContextPolicy,
 } from "./config.js";
@@ -62,8 +71,11 @@ export {
 export type {
   CcLhcHostCapability,
   ConfigFallback,
+  ContextClass,
   ContextPolicy,
   ContextPolicyPartial,
+  ContextWindowResolution,
+  ContextWindowSource,
   GovernorDecision,
   GovernorDecisionKind,
   GovernorDurableReceipt,

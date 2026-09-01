@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { afterEach, describe, expect, it } from "vitest";
+import { resolveContextWindow } from "../../src/governor/config.js";
 
 import { createInputState, DEFAULT_LEADER_BYTE, type InputState, processInputChunk } from "../../src/wrapper/modal.js";
 import { ENTER_ALT_SCREEN, PANEL_PROMPT, renderPanel } from "../../src/wrapper/panel.js";
@@ -38,7 +39,7 @@ function openHome(): InputState {
       providerContextTokens: 12_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      autoCompact: true,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
     }),
@@ -121,9 +122,7 @@ describe("Help teaches outcomes", () => {
     expect(text).toContain(
       "/smart-compact and /smart-prune change Claude's working context. They do not delete stored LHC history.",
     );
-    expect(text).toContain(
-      "/auto, /bounds, and /allocation changes survive handoffs and reset when this wrapper exits.",
-    );
+    expect(text).toContain("/bounds and /allocation changes survive handoffs and reset when this wrapper exits.");
     for (const jargon of ["thread-view tail", "derivation counts", "working-context fidelity", "durable record"]) {
       expect(text.toLowerCase(), `Help still says "${jargon}"`).not.toContain(jargon.toLowerCase());
     }
@@ -214,7 +213,7 @@ describe("Help teaches outcomes", () => {
 
     // The explanation itself survives, whatever the width.
     expect(helpLines(openHome().panelView).join("\n")).toContain(
-      `${SESSION_SCOPE_MARKER} /auto, /bounds, and /allocation changes survive handoffs`,
+      `${SESSION_SCOPE_MARKER} /bounds and /allocation changes survive handoffs`,
     );
   });
 });
@@ -228,8 +227,7 @@ describe("TC-2.1a Help matches parser behavior", () => {
     for (const command of PANEL_COMMANDS) {
       expect(helpText, `Help omitted ${command.usage}`).toContain(command.usage);
       expect(drawn, `the drawn Help omitted ${command.usage}`).toContain(command.usage);
-      const example =
-        command.name === "/auto" ? "/auto on" : command.name === "/bounds" ? "/bounds 1000 2000" : command.name;
+      const example = command.name === "/bounds" ? "/bounds 1000 2000" : command.name;
       const parsed = parsePanelCommand(example);
       expect(parsed.kind === "execute" || parsed.kind === "route", command.usage).toBe(true);
     }
@@ -257,13 +255,11 @@ describe("TC-2.1b Help distinguishes setting scope", () => {
   it("each setting command states session or persisted scope accurately", () => {
     const rows = helpLines(openHome().panelView);
     const lines = rows.join("\n");
-    expect(lines).toContain("/auto on|off");
     expect(lines).toContain("/bounds <target> <trigger>");
     expect(lines).toContain("survive handoffs and reset when this wrapper exits");
     // Session-scoped commands carry the marker; one-shot commands do not.
     const marked = (usage: string): boolean =>
       rows.some((line) => line.startsWith(usage) && line.includes(SESSION_SCOPE_MARKER));
-    expect(marked("/auto on|off")).toBe(true);
     expect(marked("/bounds <target> <trigger>")).toBe(true);
     // Applying an allocation choice is a session policy edit, so /allocation
     // carries the same marker as the other two.
@@ -273,7 +269,7 @@ describe("TC-2.1b Help distinguishes setting scope", () => {
     expect(marked("/status")).toBe(false);
     expect(marked("/stats")).toBe(false);
     expect(marked("/smart-compact")).toBe(false);
-    expect(lines).toContain(`${SESSION_SCOPE_MARKER} /auto, /bounds, and /allocation changes`);
+    expect(lines).toContain(`${SESSION_SCOPE_MARKER} /bounds and /allocation changes`);
     const drawn = panelText(renderPanel(feed(openHome(), "/help\r"), 120, 40));
     expect(drawn).toContain(SESSION_SCOPE_MARKER);
   });
@@ -285,7 +281,7 @@ describe("the typed details screen", () => {
       providerContextTokens: 12_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      autoCompact: true,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
       details: [
@@ -355,32 +351,26 @@ describe("TC-2.2a Introduction presents the mental model", () => {
     expect(out).not.toContain(PANEL_PROMPT);
   });
 
-  it("reflects the live automatic state instead of asserting a default", () => {
-    const off = buildPanelViewSnapshot({
+  it("tells one always-on story from the live values, and no on/off story without a snapshot", () => {
+    const view = buildPanelViewSnapshot({
       providerContextTokens: 12_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      autoCompact: false,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "historical",
     });
-    const lines = introductionLines(off).join("\n");
-    expect(lines).toContain("Automatic compaction is off.");
-    expect(lines).toContain("/auto on");
-    expect(lines).toContain("50k");
-    expect(lines).toContain("90k");
+    const lines = introductionLines(view).join("\n");
+    expect(lines).toContain("Keep working normally. At 90k, CC-LHC runs /smart-compact and rebuilds toward 50k.");
     expect(lines).toContain("Historical");
-    expect(lines).not.toContain("Keep working normally. At");
+    expect(lines).not.toMatch(/compaction is off|\/auto\b|turn it back on/i);
 
-    // With no snapshot at all the screen states neither branch: it explains
-    // the conditional and sends the reader to /status for the live answer.
+    // Without a snapshot the screen still promises the automatic run — Smart
+    // Compact is always on — but names no numbers it does not have.
     const unknown = introductionLines(null).join("\n");
-    expect(unknown).toContain("When automatic compaction is on, CC-LHC runs /smart-compact");
-    expect(unknown).toContain("Use /status to see the current target, trigger, and whether automatic compaction is on.");
-    // Neither the enabled nor the disabled branch may be taken without a snapshot.
-    expect(unknown, "null snapshot took the enabled branch").not.toContain("Keep working normally. At");
-    expect(unknown, "null snapshot took the disabled branch").not.toContain("Automatic compaction is off.");
-    expect(unknown).not.toMatch(/\bAt the active trigger\b/);
+    expect(unknown).toContain("CC-LHC runs /smart-compact automatically at the active trigger");
+    expect(unknown).toContain("Use /status to see the current window, target, and trigger.");
+    expect(unknown).not.toMatch(/compaction is (on|off)/i);
     expect(unknown).not.toContain("180k");
     expect(unknown).not.toContain("360k");
   });
@@ -392,7 +382,7 @@ describe("TC-2.2b Introduction uses current values", () => {
       providerContextTokens: 1_000,
       targetTokens: 42_000,
       triggerTokens: 77_000,
-      autoCompact: false,
+      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "historical",
     });
@@ -467,8 +457,10 @@ describe("TC-2.2c Values refresh after selection", () => {
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     const shown = (from = 0): string => panelText(out.slice(from));
     await waitFor(() => out.includes(ENTER_ALT_SCREEN) && shown().includes("Allocation Default"), "home default");
-    expect(shown()).toContain("target 180k");
-    expect(shown()).toContain("trigger 360k");
+    // A fresh wrapper starts on the conservative 200k policy until a window is observed.
+    expect(shown()).toContain("target 70k");
+    expect(shown()).toContain("trigger 140k");
+    expect(shown()).toContain("window 200k");
     (stdin as unknown as PassThrough).write(
       Buffer.from("\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\r"),
     );
@@ -478,8 +470,8 @@ describe("TC-2.2c Values refresh after selection", () => {
     await waitFor(() => shown().includes("Allocation Historical"), "preset applied");
     const afterSelect = out.length;
     (stdin as unknown as PassThrough).write(Buffer.from("/help\r"));
-    await waitFor(() => shown(afterSelect).includes("Active target 180k"), "help after select");
-    expect(shown(afterSelect)).toContain("trigger 360k · Historical");
+    await waitFor(() => shown(afterSelect).includes("Active target 70k"), "help after select");
+    expect(shown(afterSelect)).toContain("trigger 140k · Historical");
     const afterHelpEnter = out.length;
     (stdin as unknown as PassThrough).write(Buffer.from("\r"));
     await waitFor(() => shown(afterHelpEnter).includes("Commands"), "home after help");

@@ -1,4 +1,5 @@
 import type { Lhc, OpResult, ThreadRef, ViewStatus } from "lhc";
+import type { ContextClass } from "../governor/types.js";
 
 import type { OpenAsyncWork } from "../observation/async-work.js";
 import type { CaptureStats } from "../stats.js";
@@ -33,7 +34,8 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
     latestProviderContextTokens: number | null;
     targetTokens: number;
     triggerTokens: number;
-    autoCompact: boolean;
+    /** Active context class the target and trigger were resolved for. */
+    contextClass: ContextClass;
   };
   /** Host notices to include in the compact message (config fallbacks). */
   hostNotices?: readonly string[];
@@ -123,7 +125,7 @@ function userStatusLines(runtime: LhcCommandRuntime): string[] {
       : `${tokenNumber(snapshot.latestProviderContextTokens)} tokens (provider-reported)`;
   return [
     `Latest provider context: ${context}`,
-    `/smart-compact: ${tokenNumber(snapshot.targetTokens)}-token target · ${tokenNumber(snapshot.triggerTokens)}-token trigger (configured) · automatic ${snapshot.autoCompact ? "on" : "off"}`,
+    `/smart-compact: ${tokenNumber(snapshot.targetTokens)}-token target · ${tokenNumber(snapshot.triggerTokens)}-token trigger (configured) · ${snapshot.contextClass} window`,
   ];
 }
 

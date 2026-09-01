@@ -21,8 +21,8 @@ import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/sessio
 import type { OpenAsyncWork } from "../../src/observation/async-work.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import { emptyCaptureStats } from "../../src/stats.js";
-import { run } from "../../src/wrapper/run.js";
 import { PANEL_PROMPT } from "../../src/wrapper/panel.js";
+import { run } from "../../src/wrapper/run.js";
 import { panelText } from "../helpers/panel-text.js";
 
 const mocks = vi.hoisted(() => ({
@@ -183,7 +183,6 @@ async function settle(ms = 120): Promise<void> {
 
 const POLICY = (() => {
   const base = {
-    autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
     profile: "default",
@@ -454,9 +453,9 @@ describe("an automatic swap asks before it kills live background work", () => {
     await waitFor(() => rig.compactAttempts() === 1, "compact after yes");
     await settle(200);
     expect(rig.compactAttempts()).toBe(1);
-    expect(rig.logs.some((line) => line.includes("operator authorized Smart Compact over 1 live background item"))).toBe(
-      true,
-    );
+    expect(
+      rig.logs.some((line) => line.includes("operator authorized Smart Compact over 1 live background item")),
+    ).toBe(true);
     // Yes enters the ordinary path: one receipt, one classification, and no
     // trace of the confirmation itself.
     const written = rig.settledReceipts();

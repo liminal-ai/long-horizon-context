@@ -164,7 +164,6 @@ async function waitFor(condition: () => boolean, label: string, capMs = 8_000): 
 
 function policy(over: Record<string, unknown> = {}) {
   const base = {
-    autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
     profile: "default",
@@ -411,12 +410,12 @@ describe("a session over the trigger reaches compact", () => {
     await rig.end();
   }, 20_000);
 
-  it("explicit autoCompact:false is the one stop — nothing compacts", async () => {
-    const rig = await startRig({ resolvedContextPolicy: policy({ autoCompact: false }) });
-    rig.fire(overTrigger("req:off"));
-    await new Promise((r) => setTimeout(r, 300));
-    expect(rig.compacts()).toBe(0);
-    expect(rig.logs.some((l) => l.includes("policy_disabled"))).toBe(true);
+  it("no configuration stops it: a smuggled autoCompact:false still compacts (TC-1.5d)", async () => {
+    const smuggled = { ...policy(), policy: { ...policy().policy, autoCompact: false } } as never;
+    const rig = await startRig({ resolvedContextPolicy: smuggled });
+    rig.fire(overTrigger("req:smuggled"));
+    await waitFor(() => rig.compacts() > 0, "compact despite a foreign off field");
+    expect(rig.logs.some((l) => l.includes("policy_disabled"))).toBe(false);
     await rig.end();
   }, 15_000);
 
@@ -442,14 +441,14 @@ describe("the compact message carries host notices", () => {
     const notices = formatConfigFallbackNotice([
       {
         origin: "user config /home/u/.config/cc-lhc/config.json",
-        field: "autoCompact",
-        detail: "autoCompact must be a boolean",
+        field: "pruneEnabled",
+        detail: "pruneEnabled must be a boolean",
       },
     ]);
     const receipt = formatDurableReceipt("auto_compact", { origin: "auto", viewTokens: 1_000 }, notices);
     expect(receipt).toContain("[lhc compact:auto]");
     expect(receipt).toContain(CONFIG_FALLBACK_NOTICE);
-    expect(receipt).toContain("autoCompact");
+    expect(receipt).toContain("pruneEnabled");
   });
 
   it("says nothing extra when configuration was usable", () => {

@@ -11,10 +11,13 @@ Usage:
   cc-lhc --lhc-help
   cc-lhc --lhc-version
 
+Smart Compact is always active: it runs automatically at the trigger of the
+active context window (200k: 70k target, 140k trigger; 1M: 180k target, 360k
+trigger) and cannot be turned off.
+
 Wrapper flags:
   --lhc-no-inference               Disable derivation model calls
   --lhc-no-notifier                Disable lifecycle-command warnings
-  --lhc-auto-compact=on|off        Override automatic Smart Compact for this launch
   --lhc-lower-bound-tokens=N       Override Smart Compact target for this launch
   --lhc-upper-bound-tokens=N       Override automatic Smart Compact trigger
   --lhc-min-runway-tokens=N        Override minimum trigger/target runway
@@ -37,8 +40,8 @@ Environment:
 Control panel:
   Press ctrl-] (or CC_LHC_LEADER) while Claude is running.
   Commands: /status, /stats, /smart-compact, /smart-prune [tokens], /export,
-            /auto on|off, /bounds <target> <trigger>, /allocation, /details,
-            /help, /introduction
+            /bounds <target> <trigger>, /allocation, /details, /help,
+            /introduction
   Commands start with / and are lowercase. Type / in the panel for suggestions;
   Tab completes. /help lists every command; /introduction explains CC-LHC.
 

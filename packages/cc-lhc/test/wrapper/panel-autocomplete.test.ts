@@ -3,6 +3,7 @@
  * never execution, and one completion key however the terminal encodes Tab.
  */
 import { describe, expect, it } from "vitest";
+import { resolveContextWindow } from "../../src/governor/config.js";
 
 import {
   createInputState,
@@ -52,7 +53,7 @@ const VIEW = buildPanelViewSnapshot({
   providerContextTokens: 84_000,
   targetTokens: 100_000,
   triggerTokens: 200_000,
-  autoCompact: true,
+  contextWindow: resolveContextWindow(1_000_000, null),
   captureHealth: "ready",
   profile: "balanced",
 });
@@ -105,7 +106,7 @@ describe("suggestions come from the command registry", () => {
     expect(commandSuggestions("/sm").map((entry) => entry.name)).toEqual(["/smart-compact", "/smart-prune"]);
     expect(commandSuggestions("/smart-c").map((entry) => entry.name)).toEqual(["/smart-compact"]);
     // An exact command keeps exactly its own usage row.
-    expect(commandSuggestions("/auto").map((entry) => entry.usage)).toEqual(["/auto on|off"]);
+    expect(commandSuggestions("/bounds").map((entry) => entry.usage)).toEqual(["/bounds <target> <trigger>"]);
     expect(commandSuggestions("/smart-prune 2500").map((entry) => entry.usage)).toEqual(["/smart-prune [tokens]"]);
     // Unknown prefixes, non-slash input, and empty lines suggest nothing.
     for (const line of ["/zzz", "smart", "status", "", "   ", "hello /status"]) {
@@ -136,7 +137,7 @@ describe("suggestions come from the command registry", () => {
   it("completes only the command token and keeps typed arguments", () => {
     expect(completeCommandLine("/sm", "/smart-prune")).toBe("/smart-prune");
     expect(completeCommandLine("/sm 2500", "/smart-prune")).toBe("/smart-prune 2500");
-    expect(completeCommandLine("  /au on", "/auto")).toBe("/auto on");
+    expect(completeCommandLine("  /bo 1 2", "/bounds")).toBe("/bounds 1 2");
     expect(completeCommandLine("", "/help")).toBe("/help");
   });
 });
@@ -248,7 +249,6 @@ describe("completion is never execution", () => {
   it("shows argument usage without completing argument values", () => {
     for (const [line, usage] of [
       ["/smart-prune", "/smart-prune [tokens]"],
-      ["/auto", "/auto on|off"],
       ["/bounds", "/bounds <target> <trigger>"],
     ] as const) {
       const state = feed(openHome(), line).state;
@@ -262,8 +262,10 @@ describe("completion is never execution", () => {
       expect(tabbed.line, line).toBe(line);
     }
     // Argument values are never suggested.
-    expect(commandSuggestions("/auto o").map((entry) => entry.usage)).toEqual(["/auto on|off"]);
-    expect(feed(openHome(), "/auto o", TAB_RAW).state.line).toBe("/auto o");
+    expect(commandSuggestions("/bounds 1").map((entry) => entry.usage)).toEqual(["/bounds <target> <trigger>"]);
+    expect(feed(openHome(), "/bounds 1", TAB_RAW).state.line).toBe("/bounds 1");
+    // The removed off switch is not a command and gets no suggestion.
+    expect(commandSuggestions("/auto")).toEqual([]);
   });
 
   it("leaves Esc meaning exit, with no second dismissal state", () => {

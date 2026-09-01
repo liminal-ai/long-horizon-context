@@ -1,22 +1,19 @@
 /**
  * LIM-116 handoff integration: TC-5.3d-e, AR-5, AR-8, automatic cleanup surfaces.
  */
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Lhc, ThreadRef } from "lhc";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import {
-  runContextMutation,
-  type ContextMutationPlan,
-} from "../../src/commands/context-mutation.js";
+import { type ContextMutationPlan, runContextMutation } from "../../src/commands/context-mutation.js";
 import type { LhcCommandRuntime } from "../../src/commands/dispatch.js";
-import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { mapRolloutLine } from "../../src/intake/map.js";
 import * as replayDedupe from "../../src/intake/replay-dedupe.js";
 import { createReplayDedupeState, eventContentSignature } from "../../src/intake/replay-dedupe.js";
+import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import type { OpenAsyncWork } from "../../src/observation/async-work.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
@@ -25,18 +22,18 @@ import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import type { ProcessLivenessResult } from "../../src/runtime/process-identity.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import {
-  executeHandoff,
   type CandidateChild,
   type CandidateViability,
+  executeHandoff,
   type HandoffPorts,
   type HandoffResult,
   type SwitchOutcome,
 } from "../../src/wrapper/handoff.js";
 import { openHandoffReceiptStore } from "../../src/wrapper/handoff-receipt-store.js";
-import { PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
-import { lastPanelText } from "../helpers/panel-text.js";
 import { formatOldChildCleanup, type OldChildCleanup } from "../../src/wrapper/old-child-cleanup.js";
+import { PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
 import { run } from "../../src/wrapper/run.js";
+import { lastPanelText } from "../helpers/panel-text.js";
 
 const captureMocks = vi.hoisted(() => ({
   factory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -70,10 +67,7 @@ function work(family: OpenAsyncWork["family"], description: string, taskId?: str
   return { key: taskId ?? family, family, description, ...(taskId === undefined ? {} : { taskId }) };
 }
 
-function runtimeWith(
-  sdk: unknown,
-  getLiveAsyncWork: () => OpenAsyncWork[],
-): LhcCommandRuntime {
+function runtimeWith(sdk: unknown, getLiveAsyncWork: () => OpenAsyncWork[]): LhcCommandRuntime {
   return {
     stats: {
       linesSeen: 0,
@@ -108,7 +102,12 @@ function sdkMock(onCompact?: () => void, onPrune?: () => void) {
     threadView: {
       status: vi.fn(async () => ({
         ok: true,
-        value: { tailTokens: 10, threshold: 100, visibility: { zoneTokens: 0, maxTokens: 1000 }, derivation: { pending: 0, failed: 0 } },
+        value: {
+          tailTokens: 10,
+          threshold: 100,
+          visibility: { zoneTokens: 0, maxTokens: 1000 },
+          derivation: { pending: 0, failed: 0 },
+        },
       })),
       prune: vi.fn(async () => {
         onPrune?.();
@@ -133,7 +132,11 @@ function sdkMock(onCompact?: () => void, onPrune?: () => void) {
             viewId: "v1",
             tailTokens: 5,
             totalTokens: 9,
-            bands: { smooth: { entries: 1, tokens: 4 }, detailed: { entries: 0, tokens: 0 }, brief: { entries: 0, tokens: 0 } },
+            bands: {
+              smooth: { entries: 1, tokens: 4 },
+              detailed: { entries: 0, tokens: 0 },
+              brief: { entries: 0, tokens: 0 },
+            },
           },
         };
       }),
@@ -358,7 +361,10 @@ describe("AR-5 interactive manual snapshot", () => {
         operation === "compact"
           ? { operation, profile: "default", lowerBoundTokens: 100 }
           : { operation, profile: "default", lowerBoundTokens: 100, manualPruneTargetTokens: 50 };
-      const outcome = await runContextMutation(plan, runtimeWith(sdk, () => live));
+      const outcome = await runContextMutation(
+        plan,
+        runtimeWith(sdk, () => live),
+      );
       expect(outcome.kind, operation).toBe("rebuilt");
       if (outcome.kind !== "rebuilt") continue;
       expect(outcome.handoff.liveAsyncWork.map((item) => item.description)).toEqual(["seam-work"]);
@@ -438,7 +444,6 @@ describe("automatic Smart Compact exposes cleanup once on a user-visible surface
   const LAUNCH_SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
   const POLICY = {
     policy: {
-      autoCompact: true,
       lowerBoundTokens: 1_000,
       upperBoundTokens: 5_000,
       profile: "default",
@@ -449,7 +454,6 @@ describe("automatic Smart Compact exposes cleanup once on a user-visible surface
     },
     sources: Object.fromEntries(
       [
-        "autoCompact",
         "lowerBoundTokens",
         "upperBoundTokens",
         "profile",
@@ -508,9 +512,7 @@ describe("automatic Smart Compact exposes cleanup once on a user-visible surface
             settled.cause instanceof Error ? (settled.cause.stack ?? settled.cause.message) : String(settled.cause);
           throw new Error(`wrapper rejected while waiting for ${label}: ${detail}${extra ? `; ${extra}` : ""}`);
         }
-        throw new Error(
-          `wrapper returned ${settled.code} while waiting for ${label}${extra ? `; ${extra}` : ""}`,
-        );
+        throw new Error(`wrapper returned ${settled.code} while waiting for ${label}${extra ? `; ${extra}` : ""}`);
       }
       if (Date.now() - start > capMs) throw new Error(`timed out waiting for ${label}`);
       await new Promise((r) => setTimeout(r, 20));

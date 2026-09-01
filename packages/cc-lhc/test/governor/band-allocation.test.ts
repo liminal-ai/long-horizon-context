@@ -4,8 +4,8 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
 import type { Lhc, ThreadRef } from "lhc";
+import { describe, expect, it, vi } from "vitest";
 
 import { runCompactCommand } from "../../src/commands/compact.js";
 import type { LhcCommandRuntime } from "../../src/commands/dispatch.js";
@@ -17,8 +17,8 @@ import {
   PRODUCT_PRESET_IDS,
 } from "../../src/governor/band-allocation.js";
 import { BUILTIN_CONTEXT_POLICY, loadContextPolicy } from "../../src/governor/config.js";
-import { emptyCaptureStats } from "../../src/stats.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
+import { emptyCaptureStats } from "../../src/stats.js";
 
 describe("TC-4.1b Balanced allocation", () => {
   it("resolves Balanced to 25/25/25/25 and internal cc-lhc-balanced", () => {
@@ -107,7 +107,11 @@ describe("TC-4.2b configured selection precedence is shared by every mutation en
             viewId: "v1",
             tailTokens: 4,
             totalTokens: 9,
-            bands: { smooth: { entries: 1, tokens: 5 }, detailed: { entries: 0, tokens: 0 }, brief: { entries: 0, tokens: 0 } },
+            bands: {
+              smooth: { entries: 1, tokens: 5 },
+              detailed: { entries: 0, tokens: 0 },
+              brief: { entries: 0, tokens: 0 },
+            },
           },
         })),
         getSessionThreadView: vi.fn(async () => ({
@@ -179,6 +183,6 @@ describe("TC-4.2c reject unknown selection", () => {
       userConfigPath: join(dir, "missing-user.json"),
     });
     expect(invented.policy.profile).toBe("default");
-    expect(invented.policy).toMatchObject({ autoCompact: true });
+    expect(Object.keys(invented.policy)).not.toContain("autoCompact");
   });
 });

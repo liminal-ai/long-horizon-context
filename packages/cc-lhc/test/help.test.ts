@@ -18,7 +18,6 @@ describe("cc-lhc help surface", () => {
       "backfill-labels",
       "--lhc-no-inference",
       "--lhc-no-notifier",
-      "--lhc-auto-compact=on|off",
       "CC_LHC_HOME",
       "CC_LHC_CLAUDE_BIN",
       "CC_LHC_INPUT_DEBUG=FILE",
@@ -49,6 +48,8 @@ describe("cc-lhc help surface", () => {
     // core function switched off, and no live flag whose meaning is "do not
     // compact".
     expect(CC_LHC_HELP).not.toContain("--lhc-no-capture");
+    expect(CC_LHC_HELP).not.toContain("--lhc-auto-compact");
+    expect(CC_LHC_HELP).not.toMatch(/\/auto\b/);
     expect(CC_LHC_HELP).not.toContain("--lhc-observe-only");
     expect(CC_LHC_HELP).not.toContain("--lhc-retry-growth-tokens");
   });

@@ -13,6 +13,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { observeWatcherEmission } from "../../src/observation/observe.js";
@@ -204,7 +205,6 @@ async function waitFor(condition: () => boolean, label: string, capMs = 8_000): 
 
 const POLICY = {
   policy: {
-    autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
     profile: "default",
@@ -215,7 +215,6 @@ const POLICY = {
   },
   sources: Object.fromEntries(
     Object.keys({
-      autoCompact: 0,
       lowerBoundTokens: 0,
       upperBoundTokens: 0,
       profile: 0,
@@ -226,6 +225,7 @@ const POLICY = {
     }).map((k) => [k, "session"]),
   ) as never,
   fallbacks: [],
+  contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
 };
 
 const BOUND_SIGNALS: LifecycleSignal[] = [{ kind: "session_bound", sessionId: "old-session" }];

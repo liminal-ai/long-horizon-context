@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-
-import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICY, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import {
   applyGovernorLifecycleBatch,
   createGovernorRuntimeState,
@@ -11,12 +10,12 @@ import {
 import type { ResolvedContextPolicy } from "../../src/governor/types.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 
-function armed(autoCompact = true): ResolvedContextPolicy {
-  const policy = { ...BUILTIN_CONTEXT_POLICY, autoCompact };
+function armed(): ResolvedContextPolicy {
+  const policy = { ...BUILTIN_CONTEXT_POLICY };
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "builtin"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, fallbacks: [] };
+  return { policy, sources, fallbacks: [], contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED };
 }
 
 describe("governor observe-state fold", () => {
@@ -24,7 +23,7 @@ describe("governor observe-state fold", () => {
     const state = createGovernorRuntimeState({
       captureGeneration: 1,
     });
-    const resolved = armed(true);
+    const resolved = armed();
     const signals: LifecycleSignal[] = [
       { kind: "turn_opened", reason: "user_prompt" },
       {
@@ -60,7 +59,7 @@ describe("governor observe-state fold", () => {
     const state = createGovernorRuntimeState({
       captureGeneration: 1,
     });
-    const resolved = armed(true);
+    const resolved = armed();
 
     const missing = applyGovernorLifecycleBatch(
       state,
@@ -130,7 +129,7 @@ describe("governor observe-state fold", () => {
     const state = createGovernorRuntimeState({
       captureGeneration: 1,
     });
-    const resolved = armed(true);
+    const resolved = armed();
     const r = applyGovernorLifecycleBatch(
       state,
       [
@@ -160,7 +159,7 @@ describe("governor observe-state fold", () => {
     const state = createGovernorRuntimeState({
       captureGeneration: 1,
     });
-    const resolved = armed(true);
+    const resolved = armed();
     // Provider total just below upper (360k).
     const afterSampling = applyGovernorLifecycleBatch(
       state,
@@ -201,7 +200,7 @@ describe("governor observe-state fold", () => {
   });
 
   it("post_measurement_estimate mode add accumulates; set replaces; new sampling resets", () => {
-    const resolved = armed(true);
+    const resolved = armed();
     const afterSampling = applyGovernorLifecycleBatch(
       createGovernorRuntimeState({
         captureGeneration: 1,
@@ -271,7 +270,7 @@ describe("governor observe-state fold", () => {
     const state = createGovernorRuntimeState({
       captureGeneration: 1,
     });
-    const resolved = armed(true);
+    const resolved = armed();
     const r = applyGovernorLifecycleBatch(
       state,
       [
@@ -303,7 +302,7 @@ describe("governor observe-state fold", () => {
     let state = createGovernorRuntimeState({
       captureGeneration: 1,
     });
-    const resolved = armed(true);
+    const resolved = armed();
     state = applyGovernorLifecycleBatch(state, [{ kind: "turn_opened", reason: "user_prompt" }], resolved).state;
     state = noteGovernorInput(state);
     const r = applyGovernorLifecycleBatch(
@@ -342,7 +341,7 @@ describe("governor observe-state fold", () => {
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
-      armed(true),
+      armed(),
     );
     const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0];
     expect(settled?.decision).toBe("would_compact");
@@ -363,7 +362,7 @@ describe("governor observe-state fold", () => {
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
-      armed(true),
+      armed(),
     );
     const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0]!;
     expect(settled.decision).toBe("would_compact");
@@ -382,14 +381,14 @@ describe("governor observe-state fold", () => {
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
-      armed(true),
+      armed(),
     );
     const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0];
     expect(settled?.decision).toBe("would_compact");
     expect(settled?.wouldMutate).toBe(true);
   });
 
-  it("policy_disabled when autoCompact off still observes", () => {
+  it("records the active context class on every observe and never a disabled decision", () => {
     const state = createGovernorRuntimeState({});
     const r = applyGovernorLifecycleBatch(
       state,
@@ -402,9 +401,13 @@ describe("governor observe-state fold", () => {
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
-      armed(false),
+      armed(),
     );
-    expect(r.observes.filter((o) => o.observePhase === "settled_seam")[0]?.decision).toBe("policy_disabled");
+    const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0]!;
+    expect(settled.decision).toBe("would_compact");
+    expect(settled.contextClass).toBe("200k");
+    expect(settled.contextWindowSource).toBe("not_yet_observed");
+    expect(JSON.stringify(settled)).not.toContain("policy_disabled");
   });
 
   it("setGovernorPostMeasurementEstimate is pure state update", () => {
@@ -422,7 +425,7 @@ describe("governor observe-state fold", () => {
     const state = createGovernorRuntimeState({
       captureGeneration: 1,
     });
-    const resolved = armed(true);
+    const resolved = armed();
     const r = applyGovernorLifecycleBatch(
       state,
       [
@@ -442,10 +445,9 @@ describe("governor observe-state fold", () => {
   });
 
   it("all-zero sampling retains provider and growth; failed mode=set 0 cannot reset", () => {
-    const resolved = armed(true);
+    const resolved = armed();
     resolved.policy = {
       ...resolved.policy,
-      autoCompact: true,
       lowerBoundTokens: 100_000,
       upperBoundTokens: 200_000,
       minRunwayTokens: 50_000,
@@ -502,10 +504,9 @@ describe("governor observe-state fold", () => {
   });
 
   it("exact Prompt is too long below 200k settles would_compact; generic zeros do not", () => {
-    const resolved = armed(true);
+    const resolved = armed();
     resolved.policy = {
       ...resolved.policy,
-      autoCompact: true,
       lowerBoundTokens: 100_000,
       upperBoundTokens: 200_000,
       minRunwayTokens: 50_000,
