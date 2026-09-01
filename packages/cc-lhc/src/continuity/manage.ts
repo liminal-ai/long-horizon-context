@@ -32,7 +32,7 @@ import {
   statPathReal,
   verifyOutputFile,
 } from "./adapters.js";
-import type { ContinuityItem, ContinuityOperation, ContinuityStore, VerifiedIdentity } from "./store.js";
+import type { CarriedResult, ContinuityItem, ContinuityOperation, ContinuityStore, VerifiedIdentity } from "./store.js";
 
 export const DEFAULT_OUTPUT_MAX_BYTES = 64 * 1024;
 export const OUTPUT_MAX_BYTES_CEILING = 1024 * 1024;
@@ -66,7 +66,8 @@ export interface ItemStatus {
   family: ContinuityItem["family"];
   label: string;
   state: ContinuityItem["state"];
-  carryMode: ContinuityItem["carryMode"];
+  /** Null once cleanup removed the item's tracking and only the durable result remains. */
+  carryMode: ContinuityItem["carryMode"] | null;
   generation: number;
   operations: readonly ContinuityOperation[];
   /** Does the recorded identity still name the same work right now? */
@@ -157,7 +158,12 @@ export function itemStatus(
   ports: ManagePorts = {},
 ): StatusResult {
   const item = store.getItem(threadId, launchId);
-  if (item === null) return refuse("unknown_item", `no carried item ${launchId} in this session's record`);
+  if (item === null) {
+    // Tracking may have been cleaned up; the durable result still answers (AC-2.10).
+    const result = store.getResult(threadId, launchId);
+    if (result === null) return refuse("unknown_item", `no carried item ${launchId} in this session's record`);
+    return { ok: true, status: statusFromResult(result) };
+  }
   return {
     ok: true,
     status: {
@@ -173,6 +179,67 @@ export function itemStatus(
       terminal: item.terminal,
     },
   };
+}
+
+/** A cleaned-up item's status: what its durable result holds, and nothing the record no longer tracks. */
+function statusFromResult(result: CarriedResult): ItemStatus {
+  return {
+    launchId: result.launchId,
+    family: result.family,
+    label: result.label,
+    state: "terminal",
+    carryMode: null,
+    generation: result.generation,
+    operations: result.artifact?.kind === "owned_copy" ? ["status", "output"] : ["status"],
+    identity: "none",
+    process: null,
+    terminal: { outcome: result.outcome, evidence: result.evidence, observedAtMs: result.observedAtMs },
+  };
+}
+
+/** Read `[offset, offset+maxBytes)` of a file the caller has already verified it may read. */
+function readBounded(path: string, requestedOffset: number, maxBytes: number): OutputResult {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (cause) {
+    return refuse(
+      "identity_unverifiable",
+      `cannot open ${path}: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+  try {
+    const totalBytes = Number(fstatSync(fd, { bigint: true }).size);
+    const offset =
+      requestedOffset < 0 ? Math.max(0, totalBytes + requestedOffset) : Math.min(requestedOffset, totalBytes);
+    const length = Math.min(maxBytes, totalBytes - offset);
+    const bytes = Buffer.alloc(Math.max(0, length));
+    let read = 0;
+    while (read < length) {
+      const n = readSync(fd, bytes, read, length - read, offset + read);
+      if (n === 0) break;
+      read += n;
+    }
+    const got = bytes.subarray(0, read);
+    const end = offset + read;
+    return { ok: true, path, offset, bytes: got, totalBytes, nextOffset: end < totalBytes ? end : null };
+  } finally {
+    closeSync(fd);
+  }
+}
+
+function validRange(range: OutputRange): { offset: number; maxBytes: number } | null {
+  const maxBytes = range.maxBytes ?? DEFAULT_OUTPUT_MAX_BYTES;
+  const offset = range.offset ?? 0;
+  if (
+    !Number.isInteger(maxBytes) ||
+    maxBytes <= 0 ||
+    maxBytes > OUTPUT_MAX_BYTES_CEILING ||
+    !Number.isInteger(offset)
+  ) {
+    return null;
+  }
+  return { offset, maxBytes };
 }
 
 /** The one artifact an item owns for `output`, with the identity it must still have. */
@@ -191,22 +258,29 @@ export function readItemOutput(
   ports: ManagePorts = {},
 ): OutputResult {
   const item = store.getItem(threadId, launchId);
-  if (item === null) return refuse("unknown_item", `no carried item ${launchId} in this session's record`);
+  const valid = validRange(range);
+  if (item === null) {
+    // After cleanup only the CC-LHC-owned copy remains; it is the parent's own file.
+    const result = store.getResult(threadId, launchId);
+    if (result === null) return refuse("unknown_item", `no carried item ${launchId} in this session's record`);
+    if (result.artifact?.kind !== "owned_copy") {
+      return refuse("unsupported", `${result.family} ${launchId} left no parent-readable output`);
+    }
+    if (valid === null)
+      return refuse("range_invalid", `offset must be an integer and max in 1..${OUTPUT_MAX_BYTES_CEILING}`);
+    if ((ports.statPath ?? statPathReal)(result.artifact.path).kind !== "file") {
+      return refuse("identity_missing", `${launchId} owned result copy is gone: ${result.artifact.path}`);
+    }
+    return readBounded(result.artifact.path, valid.offset, valid.maxBytes);
+  }
   if (!item.operations.includes("output")) {
     return refuse("unsupported", `${item.family} ${launchId} offers no parent-readable output`);
   }
   const artifact = ownedArtifact(item);
   if (artifact === null) return refuse("identity_missing", `${launchId} has no verified output artifact`);
-  const maxBytes = range.maxBytes ?? DEFAULT_OUTPUT_MAX_BYTES;
-  const requestedOffset = range.offset ?? 0;
-  if (
-    !Number.isInteger(maxBytes) ||
-    maxBytes <= 0 ||
-    maxBytes > OUTPUT_MAX_BYTES_CEILING ||
-    !Number.isInteger(requestedOffset)
-  ) {
+  if (valid === null)
     return refuse("range_invalid", `offset must be an integer and max in 1..${OUTPUT_MAX_BYTES_CEILING}`);
-  }
+  const { offset: requestedOffset, maxBytes } = valid;
   // Re-verify the file's identity before opening it: a replaced or reused path is not this item's output.
   const current = verifyOutputFile(contextOf(ports), artifact.path);
   if (isRefusal(current)) {
@@ -217,33 +291,12 @@ export function readItemOutput(
   if (!sameIdentity(current, artifact.identity)) {
     return refuse("identity_changed", `${artifact.path} is no longer the file this item wrote`);
   }
-  let fd: number;
-  try {
-    fd = openSync(artifact.path, "r");
-  } catch (cause) {
-    return refuse(
-      "identity_unverifiable",
-      `cannot open ${artifact.path}: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-  }
-  try {
-    const totalBytes = Number(fstatSync(fd, { bigint: true }).size);
-    const offset =
-      requestedOffset < 0 ? Math.max(0, totalBytes + requestedOffset) : Math.min(requestedOffset, totalBytes);
-    const length = Math.min(maxBytes, totalBytes - offset);
-    const bytes = Buffer.alloc(Math.max(0, length));
-    let read = 0;
-    while (read < length) {
-      const n = readSync(fd, bytes, read, length - read, offset + read);
-      if (n === 0) break;
-      read += n;
-    }
-    const got = bytes.subarray(0, read);
-    const end = offset + read;
-    return { ok: true, path: artifact.path, offset, bytes: got, totalBytes, nextOffset: end < totalBytes ? end : null };
-  } finally {
-    closeSync(fd);
-  }
+  return readBounded(artifact.path, requestedOffset, maxBytes);
+}
+
+/** Exported for cleanup: the item's owned output and the identity it must still have. */
+export function ownedOutputOf(item: ContinuityItem): { path: string; identity: VerifiedIdentity } | null {
+  return ownedArtifact(item);
 }
 
 /** Platform termination of one exact-verified process the parent started detached (a group leader on POSIX). */

@@ -6,7 +6,7 @@
  * the generation closes. Covers TC-2.3a/b, TC-2.5a-d, TC-2.6a, TC-2.8a-c and
  * the Monitor relaunch fence.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { qualifyActiveItems, statPathReal } from "../../src/continuity/adapters.js";
 import { deliveredResultKeys, RESULT_HOOK_TIMEOUT_SECONDS } from "../../src/continuity/delivery.js";
 import { invokeCarryover, relaunchOutputPath } from "../../src/continuity/handoff.js";
+import { itemStatus, readItemOutput } from "../../src/continuity/manage.js";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
 import { type ContinuitySnapshot, closeContinuitySnapshot, snapshotContinuity } from "../../src/continuity/snapshot.js";
 import { type ContinuityStore, openContinuityStore } from "../../src/continuity/store.js";
@@ -1007,7 +1008,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       const other = createContinuityObserver({ store, threadId: "th_other", nowFn: () => 1 });
       for (const line of [
         toolUse("toolu_agent9", "Agent", { description: "other", subagent_type: "general-purpose" }),
-        toolResult("toolu_agent9", { taskId: "agent-9", agentId: "agent-9" }),
+        toolResult("toolu_agent9", { status: "async_launched", agentId: "agent-9", description: "agent-9" }),
       ])
         other.observeLine(line);
       qualifyAll(store, "th_other", 2);
@@ -1044,13 +1045,19 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(second.seeds[0]!.map((w) => `${w.family}:${w.key}`).sort()).toEqual(
       remaining.map((id) => id.slice(0, id.lastIndexOf(":"))).sort(),
     );
-    // Single authority, untouched by the restart: same items, same generation, same relaunch record, same result.
+    // Single authority, untouched by the restart: the open items, the generation, the relaunch record, and the
+    // result are exactly as wrapper 1 left them. Wrapper 1's orderly exit cleaned up the finished agent's tracking
+    // (AC-2.10); its durable result stayed and still answers.
     withStore(first.dbPath, (store) => {
-      expect(store.listItems(T)).toEqual(before.items);
+      expect(store.listItems(T)).toEqual(before.items.filter((item) => item.launchId !== LAUNCH_IDS.agent));
       expect(store.getGeneration(T, 1)).toEqual(before.generation);
       expect(store.listPendingResults(T)).toEqual(before.results);
       expect(store.getItem(T, LAUNCH_IDS.monitor)!.relaunch).toEqual(relaunch);
     });
+    const cleaned = await runTasks(second.spawned[0]!.env, REBUILT_ID, ["status", LAUNCH_IDS.agent]);
+    expect(cleaned.out).toMatch(/state: terminal/);
+    expect(cleaned.out).toMatch(/tracking: cleaned up; durable result only/);
+    expect(cleaned.out).toMatch(/terminal: completed/);
     expect(existsSync(relaunchOutputPath(first.monitorOutputDir, LAUNCH_IDS.monitor, 2))).toBe(false);
     expect(log2().match(/restarted once|generation \d+ closed|adopted|re-armed/g) ?? []).toEqual([]);
     expect(second.sdk.threadView.compact).not.toHaveBeenCalled();
@@ -1077,7 +1084,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     second.feed([notification({ taskIds: ["shell-1"], status: "failed" })]);
     second.feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
     withStore(first.dbPath, (store) => {
-      expect(store.listItems(T)).toHaveLength(5);
+      expect(store.listItems(T)).toHaveLength(4);
       expect(store.listPendingResults(T).map((r) => [r.launchId, r.outcome])).toEqual([
         [LAUNCH_IDS.agent, "completed"],
         [LAUNCH_IDS.background_shell, "failed"],
@@ -1163,6 +1170,152 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(rig.spawned[0]!.killed).toEqual([]);
     expect(existsSync(relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1))).toBe(false);
     await rig.finish();
+  }, 15_000);
+
+  it("TC-2.10a-c orderly exit: finished carried work is cleaned up after its result is safe — Monitor fence copied (0600) then removed, user output untouched, open work and its generation preserved, no PTY/provider/rollout activity", async () => {
+    const rig = await launch();
+    const userOutput = join(rig.paths.tasksDir, "shell-1.output");
+    writeFileSync(userOutput, "user bytes 1\n");
+    rig.feed(fiveFamilyLaunch(rig.paths));
+    await storeHas(rig.dbPath, ALL_IDS);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+    await waitFor(() => rig.spawned.length === 2, "replacement child");
+    const fence = relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1);
+    await waitFor(() => existsSync(fence) && readFileSync(fence, "utf8") === "relaunched-once-XyZ", "relaunch output");
+    rig.feedCurrent([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    rig.feedCurrent([notification({ taskIds: ["mon-1"], status: "completed" })]);
+    await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length === 2), "two results");
+    const rebuiltPath = join(rig.home, `${REBUILT_ID}.jsonl`);
+    const sdkCalls = () =>
+      Object.fromEntries(
+        Object.entries(rig.sdk.threadView).map(([name, fn]) => [
+          name,
+          (fn as ReturnType<typeof vi.fn>).mock.calls.length,
+        ]),
+      );
+    const before = {
+      sdk: sdkCalls(),
+      ptyWrites: rig.spawned.map((p) => p.writes.length),
+      rollout: readFileSync(rebuiltPath),
+      open: withStore(rig.dbPath, (store) =>
+        [LAUNCH_IDS.background_shell, LAUNCH_IDS.workflow, LAUNCH_IDS.scheduled_wakeup].map((id) =>
+          store.getItem(T, id),
+        ),
+      ),
+      generation: withStore(rig.dbPath, (store) => store.getGeneration(T, 1)),
+    };
+
+    await rig.finish();
+
+    await waitFor(() => wrapperLog(rig).includes("cc-lhc continuity cleanup: thread th_auto:"), "cleanup log");
+    expect(wrapperLog(rig)).toContain(
+      "cc-lhc continuity cleanup: thread th_auto: 2 finished item(s) removed, 0 retained, 3 still open, 0 generation row(s) removed",
+    );
+    withStore(rig.dbPath, (store) => {
+      // Finished items: tracking gone, durable results kept.
+      expect(store.getItem(T, LAUNCH_IDS.agent)).toBeNull();
+      expect(store.getItem(T, LAUNCH_IDS.monitor)).toBeNull();
+      expect(store.getResult(T, LAUNCH_IDS.agent)).toMatchObject({
+        outcome: "completed",
+        artifact: null,
+        delivery: "pending",
+      });
+      const monitor = store.getResult(T, LAUNCH_IDS.monitor)!;
+      expect(monitor).toMatchObject({ outcome: "completed", delivery: "pending" });
+      expect(monitor.artifact).toMatchObject({
+        kind: "owned_copy",
+        bytes: "relaunched-once-XyZ".length,
+        truncated: false,
+      });
+      const copy = (monitor.artifact as { path: string }).path;
+      expect(copy.startsWith(join(rig.monitorOutputDir, "results"))).toBe(true);
+      expect(readFileSync(copy, "utf8")).toBe("relaunched-once-XyZ");
+      expect(statSync(copy).mode & 0o777).toBe(0o600);
+      // The parent's fence went only after the copy; the user's own output is byte-exact.
+      expect(existsSync(fence)).toBe(false);
+      expect(readFileSync(userOutput, "utf8")).toBe("user bytes 1\n");
+      // Open work and its generation: exactly as before.
+      expect(
+        [LAUNCH_IDS.background_shell, LAUNCH_IDS.workflow, LAUNCH_IDS.scheduled_wakeup].map((id) =>
+          store.getItem(T, id),
+        ),
+      ).toEqual(before.open);
+      expect(store.getGeneration(T, 1)).toEqual(before.generation);
+      expect(store.listItems(T)).toHaveLength(3);
+      // The durable result still answers status and output.
+      expect(itemStatus(store, T, LAUNCH_IDS.monitor)).toMatchObject({
+        ok: true,
+        status: {
+          state: "terminal",
+          carryMode: null,
+          operations: ["status", "output"],
+          terminal: { outcome: "completed" },
+        },
+      });
+      const output = readItemOutput(store, T, LAUNCH_IDS.monitor);
+      expect(output.ok && output.bytes.toString("utf8")).toBe("relaunched-once-XyZ");
+    });
+    expect(sdkCalls()).toEqual(before.sdk);
+    expect(rig.spawned.map((p) => p.writes.length)).toEqual(before.ptyWrites);
+    expect(readFileSync(rebuiltPath).equals(before.rollout)).toBe(true);
+  }, 20_000);
+
+  it("TC-2.10 orderly exit with no bound thread cleans up nothing", async () => {
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-continuity-prod-"));
+    homes.push(home);
+    process.env.CC_LHC_HOME = home;
+    const { paths } = hostLayout(home);
+    const dbPath = join(home, "cc-lhc.sqlite");
+    withStore(dbPath, (store) => {
+      const observer = createContinuityObserver({ store, threadId: T, nowFn: () => 1 });
+      for (const line of fiveFamilyLaunch(paths)) observer.observeLine(line);
+      qualifyAll(store, T, 2);
+      store.allocateGeneration({ threadId: T, oldSessionId: "old-session", launchIds: ALL_IDS, nowMs: 3 });
+      store.recordTerminal({
+        threadId: T,
+        launchId: LAUNCH_IDS.agent,
+        outcome: "completed",
+        evidence: "done",
+        nowMs: 4,
+      });
+    });
+    const snapshot = () =>
+      withStore(dbPath, (store) => ({
+        items: store.listItems(T),
+        generation: store.getGeneration(T, 1),
+        results: store.listPendingResults(T),
+      }));
+    const before = snapshot();
+    const spawned: FakePty[] = [];
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      unboundTestChild: true,
+      spawnPty: ((_file: string, args: string[]) => {
+        const fake = makeFakePty(7000, args);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin: fakeStream(),
+      stdout: fakeStream() as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: dbPath,
+    });
+    await waitFor(() => spawned.length === 1, "child");
+    spawned[0]!.fireExit(0);
+    await runPromise;
+    const logPath = join(home, "wrapper.log");
+    const log = () => (existsSync(logPath) ? readFileSync(logPath, "utf8") : "");
+    await waitFor(
+      () => log().includes("cc-lhc continuity cleanup: no bound thread; nothing cleaned up"),
+      "no-binding log",
+    );
+    expect(log()).toContain("cc-lhc continuity cleanup: no bound thread; nothing cleaned up");
+    expect(log()).not.toContain("finished item(s) removed");
+    expect(snapshot()).toEqual(before);
   }, 15_000);
 
   it("Monitor: relaunched exactly once under relaunchKey(launchId, generation), reported restarted, never repeated", async () => {

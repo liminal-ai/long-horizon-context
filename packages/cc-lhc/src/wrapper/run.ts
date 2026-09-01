@@ -9,8 +9,9 @@ import {
   runContextMutation,
 } from "../commands/context-mutation.js";
 import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from "../commands/dispatch.js";
-import { registerRebuiltSessionLineage } from "../commands/rebuild-receipt.js";
+import { registerRebuiltSessionLineage, threadIdFromRef } from "../commands/rebuild-receipt.js";
 import { qualifyActiveItems, statPathReal } from "../continuity/adapters.js";
+import { cleanupThread } from "../continuity/cleanup.js";
 import { defaultResultHookCommand, RESULT_HOOK_TIMEOUT_SECONDS } from "../continuity/delivery.js";
 import { invokeCarryover } from "../continuity/handoff.js";
 import { applyAsyncWorkEvent, carriedOpenWork } from "../continuity/observe.js";
@@ -2165,6 +2166,27 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         governorReceiptStore = null;
       }
       if (continuityStore !== null) {
+        // Orderly exit: bounded cleanup of the bound thread's finished carried
+        // work (AC-2.10). No binding, no cleanup.
+        let boundThreadId = "";
+        try {
+          boundThreadId = threadIdFromRef(captureSession?.getCommandContext().threadRef);
+        } catch {
+          boundThreadId = "";
+        }
+        if (boundThreadId === "") {
+          wrapperLog.info("cc-lhc continuity cleanup: no bound thread; nothing cleaned up");
+        } else {
+          try {
+            cleanupThread(continuityStore, boundThreadId, monitorOutputDir, {
+              log: (message) => wrapperLog.info(message),
+            });
+          } catch (cause) {
+            wrapperLog.warn(
+              `cc-lhc continuity cleanup failed; tracking kept: ${cause instanceof Error ? cause.message : String(cause)}`,
+            );
+          }
+        }
         try {
           continuityStore.close();
         } catch {

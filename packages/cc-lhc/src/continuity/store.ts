@@ -175,7 +175,7 @@ export interface CarriedResult {
   label: string;
   outcome: TerminalOutcome;
   evidence: string;
-  artifact: { kind: "adopted_output" | "relaunch_output"; path: string } | null;
+  artifact: ResultArtifact | null;
   observedAtMs: number;
   /** Delivery to the replacement is a later pass; this pass only ever writes `pending`. */
   delivery: "pending" | "delivered";
@@ -184,6 +184,15 @@ export interface CarriedResult {
 
 /** Bound on stored result evidence: plain printable ASCII, one line. */
 export const MAX_RESULT_EVIDENCE_CHARS = 160;
+
+/**
+ * Where a result's output lives: the item's own verified output while the item
+ * is tracked, or the CC-LHC-owned bounded copy cleanup made before removing
+ * the item's tracking (LIM-146 AC-2.10). Copies are retained indefinitely.
+ */
+export type ResultArtifact =
+  | { kind: "adopted_output" | "relaunch_output"; path: string }
+  | { kind: "owned_copy"; path: string; bytes: number; truncated: boolean };
 
 export interface ContinuityItem {
   threadId: string;
@@ -299,6 +308,19 @@ export interface ContinuityStore {
    * Returns the keys that transitioned now (idempotent on re-observation).
    */
   markDelivered(input: { threadId: string; launchIds: readonly string[]; nowMs: number }): string[];
+  /** Cleanup: point a result at the CC-LHC-owned bounded copy of its output. False when no such result exists. */
+  setResultArtifact(input: {
+    threadId: string;
+    launchId: string;
+    artifact: Extract<ResultArtifact, { kind: "owned_copy" }>;
+  }): boolean;
+  /** Cleanup: remove one terminal item's tracking row. False when the item is absent or not terminal. */
+  deleteTerminalItem(threadId: string, launchId: string): boolean;
+  /**
+   * Cleanup: remove the thread's generation rows once no item row remains for
+   * it. Returns the number removed; 0 when any item is still tracked.
+   */
+  removeObsoleteGenerations(threadId: string): number;
   /** Every item of the thread in launch order. */
   listItems(threadId: string): ContinuityItem[];
   /** Allocate the next generation for the thread and stamp its members. Earlier open generations are superseded. */
@@ -428,6 +450,13 @@ function initResultsSchema(db: DatabaseSync): void {
       PRIMARY KEY (thread_id, launch_id)
     )
   `);
+  // Additive: the owned copy's size and whether the source exceeded the bound.
+  if (!tableHasColumn(db, "cc_continuity_results", "artifact_bytes")) {
+    db.exec("ALTER TABLE cc_continuity_results ADD COLUMN artifact_bytes INTEGER");
+  }
+  if (!tableHasColumn(db, "cc_continuity_results", "artifact_truncated")) {
+    db.exec("ALTER TABLE cc_continuity_results ADD COLUMN artifact_truncated INTEGER");
+  }
 }
 
 interface ResultRow {
@@ -440,6 +469,8 @@ interface ResultRow {
   evidence: string;
   artifact_kind: string | null;
   artifact_path: string | null;
+  artifact_bytes: number | null;
+  artifact_truncated: number | null;
   observed_at_ms: number;
   delivery: string;
   delivered_at_ms: number | null;
@@ -468,8 +499,25 @@ function parseResult(row: ResultRow): CarriedResult {
   if (!(TERMINAL_OUTCOMES as readonly string[]).includes(row.outcome)) throw malformedResult();
   if (row.delivery !== "pending" && row.delivery !== "delivered") throw malformedResult();
   if ((row.artifact_kind === null) !== (row.artifact_path === null)) throw malformedResult();
-  if (row.artifact_kind !== null && row.artifact_kind !== "adopted_output" && row.artifact_kind !== "relaunch_output") {
-    throw malformedResult();
+  let artifact: ResultArtifact | null = null;
+  if (row.artifact_kind !== null && row.artifact_path !== null) {
+    if (row.artifact_kind === "adopted_output" || row.artifact_kind === "relaunch_output") {
+      artifact = { kind: row.artifact_kind, path: row.artifact_path };
+    } else if (row.artifact_kind === "owned_copy") {
+      if (
+        !Number.isInteger(row.artifact_bytes) ||
+        (row.artifact_bytes as number) < 0 ||
+        (row.artifact_truncated !== 0 && row.artifact_truncated !== 1)
+      ) {
+        throw malformedResult();
+      }
+      artifact = {
+        kind: "owned_copy",
+        path: row.artifact_path,
+        bytes: row.artifact_bytes as number,
+        truncated: row.artifact_truncated === 1,
+      };
+    } else throw malformedResult();
   }
   if (!Number.isInteger(row.generation) || row.generation < 1) throw malformedResult();
   return {
@@ -480,10 +528,7 @@ function parseResult(row: ResultRow): CarriedResult {
     label: row.label,
     outcome: row.outcome as TerminalOutcome,
     evidence: row.evidence,
-    artifact:
-      row.artifact_kind === null || row.artifact_path === null
-        ? null
-        : { kind: row.artifact_kind as "adopted_output" | "relaunch_output", path: row.artifact_path },
+    artifact,
     observedAtMs: row.observed_at_ms,
     delivery: row.delivery,
     createdAtMs: row.created_at_ms,
@@ -745,6 +790,14 @@ export function openContinuityStore(
   const deliverResult = db.prepare(
     "UPDATE cc_continuity_results SET delivery = 'delivered', delivered_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND delivery = 'pending'",
   );
+  const setArtifact = db.prepare(
+    "UPDATE cc_continuity_results SET artifact_kind = 'owned_copy', artifact_path = ?, artifact_bytes = ?, artifact_truncated = ? WHERE thread_id = ? AND launch_id = ?",
+  );
+  const deleteItemRow = db.prepare(
+    "DELETE FROM cc_continuity_items WHERE thread_id = ? AND launch_id = ? AND state = 'terminal'",
+  );
+  const countItems = db.prepare("SELECT count(*) AS n FROM cc_continuity_items WHERE thread_id = ?");
+  const deleteGenerations = db.prepare("DELETE FROM cc_continuity_generations WHERE thread_id = ?");
   const selectPendingResults = db.prepare(
     "SELECT * FROM cc_continuity_results WHERE thread_id = ? AND delivery = 'pending' ORDER BY observed_at_ms, rowid",
   );
@@ -901,6 +954,31 @@ export function openContinuityStore(
     },
     listPendingResults(threadId) {
       return (selectPendingResults.all(threadId) as unknown as ResultRow[]).map(parseResult);
+    },
+    setResultArtifact(input) {
+      const result = setArtifact.run(
+        input.artifact.path,
+        input.artifact.bytes,
+        input.artifact.truncated ? 1 : 0,
+        input.threadId,
+        input.launchId,
+      );
+      return Number(result.changes) === 1;
+    },
+    deleteTerminalItem(threadId, launchId) {
+      return Number(deleteItemRow.run(threadId, launchId).changes) === 1;
+    },
+    removeObsoleteGenerations(threadId) {
+      db.exec("BEGIN IMMEDIATE");
+      try {
+        const remaining = Number((countItems.get(threadId) as { n: number }).n);
+        const removed = remaining === 0 ? Number(deleteGenerations.run(threadId).changes) : 0;
+        db.exec("COMMIT");
+        return removed;
+      } catch (cause) {
+        db.exec("ROLLBACK");
+        throw cause;
+      }
     },
     markDelivered(input) {
       const delivered: string[] = [];

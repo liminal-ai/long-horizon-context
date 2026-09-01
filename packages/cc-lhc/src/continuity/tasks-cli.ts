@@ -201,6 +201,7 @@ export function executeTasks(argv: readonly string[], deps: TasksCliDeps = {}): 
             line("label", s.label),
             line("state", s.state),
             line("carry mode", s.carryMode),
+            ...(s.carryMode === null ? [line("tracking", "cleaned up; durable result only")] : []),
             line("generation", s.generation),
             line("operations", s.operations.join(", ") || "none"),
             line("identity", s.identity),
