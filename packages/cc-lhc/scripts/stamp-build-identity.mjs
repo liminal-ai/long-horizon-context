@@ -2,42 +2,45 @@
 
 /**
  * Stamp dist/build-identity.json for `cc-lhc --lhc-version` (D13).
- * Deterministic for an identical source state: fixed key order, no
- * timestamps. Optional argv[2] overrides the output directory so tests can
- * stamp a disposable directory instead of the real dist/.
+ *
+ *   node scripts/stamp-build-identity.mjs [--out DIR] [--source-sha SHA]
+ *
+ * The SHA is the caller's explicit, accepted source identity. Without it the
+ * stamp truthfully records identity unavailable (an ordinary development
+ * build). This script never inspects the repository.
  */
 
-import { execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { sourceShaFromArgv, writeBuildIdentity } from "./lib/build-identity.mjs";
+
 const packageRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
-const outDir = resolve(process.argv[2] ?? join(packageRoot, "dist"));
+const argv = process.argv.slice(2);
 
-const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-
-function git(args) {
-  try {
-    return execFileSync("git", args, {
-      cwd: packageRoot,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
-  } catch {
-    return null;
-  }
+function argValue(flag) {
+  const index = argv.indexOf(flag);
+  if (index < 0) return undefined;
+  const value = argv[index + 1];
+  if (value === undefined || value.startsWith("--")) throw new Error(`${flag} requires a value`);
+  return value;
 }
 
-const sourceSha = git(["rev-parse", "HEAD"]);
-const porcelain = sourceSha === null ? null : git(["status", "--porcelain"]);
-
-const identity = {
-  name: manifest.name,
-  version: manifest.version,
-  sourceSha,
-  sourceDirty: porcelain !== null && porcelain.length > 0,
-};
-
-mkdirSync(outDir, { recursive: true });
-writeFileSync(join(outDir, "build-identity.json"), `${JSON.stringify(identity, null, 2)}\n`);
+try {
+  const known = new Set(["--out", "--source-sha"]);
+  for (let i = 0; i < argv.length; i += 1) {
+    if (known.has(argv[i])) {
+      i += 1;
+      continue;
+    }
+    throw new Error(`unknown argument ${JSON.stringify(argv[i])}`);
+  }
+  const outDir = resolve(argValue("--out") ?? join(packageRoot, "dist"));
+  const sourceSha = sourceShaFromArgv(argv) ?? null;
+  const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
+  writeBuildIdentity(outDir, { name: manifest.name, version: manifest.version, sourceSha });
+} catch (error) {
+  console.error(`stamp-build-identity: ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(2);
+}

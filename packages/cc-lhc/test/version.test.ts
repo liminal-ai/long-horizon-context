@@ -3,8 +3,8 @@
  * versioned help header. The subprocess leg drives the real bin path with a
  * poisoned CC_LHC_CLAUDE_BIN that records any launch attempt.
  */
-import { execFileSync, spawn } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync } from "node:child_process";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,51 +35,67 @@ describe("build identity", () => {
   });
 
   it("formats an unstamped source run without inventing a SHA", () => {
-    const text = formatLhcVersion({
-      name: "cc-lhc",
-      version: "9.9.9",
-      sourceSha: null,
-      sourceDirty: false,
-      stamped: false,
-    });
+    const text = formatLhcVersion({ name: "cc-lhc", version: "9.9.9", sourceSha: null, stamped: false });
     expect(text).toContain("cc-lhc 9.9.9");
     expect(text).toContain("unstamped source run");
   });
 
-  it("formats a stamped identity with SHA and dirty marker", () => {
+  it("formats a stamped identity as the accepted SHA, or truthfully unavailable", () => {
     const sha = "a".repeat(40);
-    const clean = formatLhcVersion({
-      name: "cc-lhc",
-      version: "1.2.3",
-      sourceSha: sha,
-      sourceDirty: false,
-      stamped: true,
-    });
-    expect(clean).toContain(`source: ${sha}`);
-    expect(clean).not.toContain("modified tree");
-    const dirty = formatLhcVersion({
-      name: "cc-lhc",
-      version: "1.2.3",
-      sourceSha: sha,
-      sourceDirty: true,
-      stamped: true,
-    });
-    expect(dirty).toContain("(modified tree)");
+    expect(formatLhcVersion({ name: "cc-lhc", version: "1.2.3", sourceSha: sha, stamped: true })).toContain(
+      `source: ${sha}`,
+    );
+    expect(formatLhcVersion({ name: "cc-lhc", version: "1.2.3", sourceSha: null, stamped: true })).toContain(
+      "source: unavailable",
+    );
   });
 
-  it("stamps deterministically for an identical source state", () => {
+  const STAMPER = join(packageRoot, "scripts", "stamp-build-identity.mjs");
+  /** A PATH holding only a `git` that records any invocation; Node itself is invoked by absolute path. */
+  function poisonedGitPath(): { path: string; marker: string } {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-nogit-"));
+    temps.push(dir);
+    const marker = join(dir, "git-invoked.marker");
+    const shim = join(dir, "git");
+    writeFileSync(shim, `#!/bin/sh\nprintf invoked > ${JSON.stringify(marker)}\necho deadbeef\n`);
+    chmodSync(shim, 0o755);
+    return { path: dir, marker };
+  }
+  function stamp(args: string[], path: string): ReturnType<typeof spawnSync> {
+    return spawnSync(process.execPath, [STAMPER, ...args], { encoding: "utf8", env: { PATH: path } });
+  }
+
+  it("stamps identity unavailable for an ordinary build, deterministically, without consulting git", () => {
     const out = mkdtempSync(join(tmpdir(), "cc-lhc-stamp-"));
     temps.push(out);
-    const script = join(packageRoot, "scripts", "stamp-build-identity.mjs");
-    execFileSync(process.execPath, [script, out]);
+    const git = poisonedGitPath();
+    expect(stamp(["--out", out], git.path).status).toBe(0);
     const first = readFileSync(join(out, "build-identity.json"), "utf8");
-    execFileSync(process.execPath, [script, out]);
-    const second = readFileSync(join(out, "build-identity.json"), "utf8");
-    expect(second).toBe(first);
-    const identity = JSON.parse(first) as { name: string; version: string; sourceSha: string | null };
-    expect(identity.name).toBe("cc-lhc");
-    expect(identity.version).toBe(manifestVersion);
-    if (identity.sourceSha !== null) expect(identity.sourceSha).toMatch(/^[0-9a-f]{40}$/);
+    expect(stamp(["--out", out], git.path).status).toBe(0);
+    expect(readFileSync(join(out, "build-identity.json"), "utf8")).toBe(first);
+    expect(JSON.parse(first)).toEqual({ name: "cc-lhc", version: manifestVersion, sourceSha: null });
+    expect(first).not.toContain("sourceDirty");
+    expect(existsSync(git.marker), "the stamper must never invoke git").toBe(false);
+  });
+
+  it("stamps exactly the explicit --source-sha and refuses a malformed one", () => {
+    const out = mkdtempSync(join(tmpdir(), "cc-lhc-stamp-"));
+    temps.push(out);
+    const git = poisonedGitPath();
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    expect(stamp(["--out", out, "--source-sha", sha], git.path).status).toBe(0);
+    expect(JSON.parse(readFileSync(join(out, "build-identity.json"), "utf8"))).toEqual({
+      name: "cc-lhc",
+      version: manifestVersion,
+      sourceSha: sha,
+    });
+    for (const bad of ["deadbeef", "HEAD", "A".repeat(40)]) {
+      const result = stamp(["--out", out, "--source-sha", bad], git.path);
+      expect(result.status).toBe(2);
+      expect(String(result.stderr)).toContain("--source-sha");
+    }
+    expect(stamp(["--out", out, "--dirty"], git.path).status).toBe(2);
+    expect(existsSync(git.marker)).toBe(false);
   });
 });
 
@@ -103,14 +119,10 @@ describe("cc-lhc --lhc-version subprocess", () => {
     );
 
     const tsx = tsxCommand(join(packageRoot, "src", "bin.ts"));
-    const child = spawn(
-      tsx.command,
-      [...tsx.args, "--lhc-version"],
-      {
-        env: { ...process.env, CC_LHC_HOME: home, CC_LHC_CLAUDE_BIN: fakeClaude },
-        stdio: ["ignore", "pipe", "pipe"],
-      },
-    );
+    const child = spawn(tsx.command, [...tsx.args, "--lhc-version"], {
+      env: { ...process.env, CC_LHC_HOME: home, CC_LHC_CLAUDE_BIN: fakeClaude },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
     let stdout = "";
     let stderr = "";
     child.stdout.on("data", (chunk: Buffer) => {

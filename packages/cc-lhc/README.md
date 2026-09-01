@@ -59,12 +59,17 @@ targets. A supported client does not need a C++ compiler or `node-gyp`.
 
 ```text
 cc-lhc [cc-lhc flags] [claude args...]
+cc-lhc [cc-lhc flags] -- [claude args...]
 cc-lhc --lhc-help
+cc-lhc --lhc-version
 ```
 
-The three documented subcommands are reserved by the wrapper. Ordinary Claude
-arguments, including `--help`, are forwarded after safe session-selector
-normalization. Unknown `--lhc-*` flags exit with status 2.
+The documented subcommands are reserved by the wrapper. Ordinary Claude
+arguments, including `--help` and `--version`, are forwarded after safe
+session-selector normalization; `--lhc-version` reports the CC-LHC package
+version and its stamped source identity without launching Claude. Everything
+after the first standalone `--` is forwarded unchanged, even `--lhc-*`
+lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
 `CC_LHC_CLAUDE_BIN` overrides the child binary. State defaults to
 `~/.cc-lhc`; `CC_LHC_HOME` overrides it.
 

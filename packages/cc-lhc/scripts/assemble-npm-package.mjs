@@ -16,6 +16,8 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { sourceShaFromArgv, writeBuildIdentity } from "./lib/build-identity.mjs";
+
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = resolve(packageRoot, "..", "..");
 const lhcRoot = join(repoRoot, "packages", "lhc");
@@ -34,11 +36,12 @@ function argValue(flag) {
   return value;
 }
 
+const VALUE_FLAGS = ["--out", "--name", "--version", "--targets", "--native-bundle", "--source-sha"];
 const unknown = process.argv.slice(2).filter((arg, index, args) => {
-  if (index > 0 && ["--out", "--name", "--version", "--targets", "--native-bundle"].includes(args[index - 1])) {
+  if (index > 0 && VALUE_FLAGS.includes(args[index - 1])) {
     return false;
   }
-  return !["--out", "--name", "--version", "--targets", "--native-bundle"].includes(arg);
+  return !VALUE_FLAGS.includes(arg);
 });
 if (unknown.length > 0) fail(`unknown arguments: ${unknown.join(", ")}`);
 
@@ -47,6 +50,14 @@ const packageName = argValue("--name") ?? "cc-lhc";
 const version = argValue("--version") ?? "0.3.0";
 const targetMode = argValue("--targets") ?? "all";
 const nativeBundleRoot = resolve(argValue("--native-bundle") ?? nativeRoot);
+// The candidate's accepted source identity, supplied explicitly; absent means
+// the assembled build truthfully carries identity unavailable.
+let sourceSha = null;
+try {
+  sourceSha = sourceShaFromArgv(process.argv.slice(2)) ?? null;
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
 if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName)) {
   fail(`invalid npm package name ${JSON.stringify(packageName)}`);
 }
@@ -98,6 +109,9 @@ mkdirSync(join(outputRoot, "node_modules", "lhc"), { recursive: true });
 mkdirSync(join(outputRoot, "node_modules", "cc-lhc-native"), { recursive: true });
 
 copyDirectory(join(packageRoot, "dist"), join(outputRoot, "dist"), "cc-lhc dist");
+// Re-stamp the assembled dist from explicit inputs only: the candidate name and
+// version this assembly was asked for, and the accepted source SHA if given.
+writeBuildIdentity(join(outputRoot, "dist"), { name: packageName, version, sourceSha });
 cpSync(join(packageRoot, "README.md"), join(outputRoot, "README.md"));
 cpSync(join(packageRoot, "LICENSE"), join(outputRoot, "LICENSE"));
 

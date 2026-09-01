@@ -82,4 +82,14 @@ describe("--lhc-version argv form", () => {
     expect(isLhcVersionArgv(["--version"])).toBe(false);
     expect(isLhcVersionArgv([])).toBe(false);
   });
+
+  it("after -- it is Claude's text; before -- with other arguments it is an unknown wrapper flag, never a launch", () => {
+    expect(isLhcVersionArgv(["--", "--lhc-version"])).toBe(false);
+    expect(parsedOrThrow(["--", "--lhc-version"]).claudeArgv).toEqual(["--", "--lhc-version"]);
+    const result = parseWrapperArgv(["--lhc-version", "--model", "opus"], ENV);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.message).toContain("Unknown cc-lhc flag: --lhc-version");
+    // Ordinary --version is Claude's, forwarded (TC-3.1c).
+    expect(parsedOrThrow(["--version"]).claudeArgv).toEqual(["--version"]);
+  });
 });

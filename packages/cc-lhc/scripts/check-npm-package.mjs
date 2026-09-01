@@ -1,14 +1,33 @@
 #!/usr/bin/env node
 
-/** Validate an assembled cc-lhc npm package before npm pack/install. */
+/**
+ * Validate an assembled cc-lhc npm package before npm pack/install.
+ *
+ *   node scripts/check-npm-package.mjs [ROOT] [--source-sha SHA]
+ *
+ * The build identity is bound to the caller's accepted source SHA: a stamped
+ * SHA passes only when it equals `--source-sha`; without an accepted SHA only
+ * an unavailable (null) identity passes.
+ */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-const root = resolve(process.argv[2] ?? "build/cc-lhc-npm");
+import { sourceShaFromArgv, verifyBuildIdentity } from "./lib/build-identity.mjs";
+
+const argv = process.argv.slice(2);
+const positional = argv.filter((arg, index) => !arg.startsWith("--") && argv[index - 1] !== "--source-sha");
+const root = resolve(positional[0] ?? "build/cc-lhc-npm");
 function fail(message) {
   console.error(`cc-lhc npm check: ${message}`);
   process.exitCode = 1;
+}
+let acceptedSourceSha;
+try {
+  acceptedSourceSha = sourceShaFromArgv(argv);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+  process.exit();
 }
 function required(path) {
   if (!existsSync(join(root, path))) fail(`missing ${path}`);
@@ -31,11 +50,7 @@ required("dist/bin.js");
 required("dist/build-identity.json");
 if (existsSync(join(root, "dist/build-identity.json"))) {
   const identity = JSON.parse(readFileSync(join(root, "dist/build-identity.json"), "utf8"));
-  if (identity.name !== manifest.name) fail("build identity name must match the manifest");
-  if (identity.version !== manifest.version) fail("build identity version must match the manifest");
-  if (typeof identity.sourceSha !== "string" || !/^[0-9a-f]{40}$/.test(identity.sourceSha)) {
-    fail("build identity must carry the full stamping source SHA");
-  }
+  for (const message of verifyBuildIdentity(identity, manifest, acceptedSourceSha)) fail(message);
 }
 required("LICENSE");
 if (existsSync(join(root, "LICENSE"))) {
