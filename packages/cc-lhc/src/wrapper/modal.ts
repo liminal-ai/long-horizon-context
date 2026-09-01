@@ -29,7 +29,7 @@
 
 import type { BandAllocationId } from "../governor/band-allocation.js";
 import { PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
-import type { CompactConfirmDisposition } from "./compact-confirm.js";
+import { readonlyBodyLineCount } from "./panel.js";
 import {
   allocationIndex,
   commandSuggestions,
@@ -39,29 +39,28 @@ import {
   homeCursorLength,
   homeSelectedActionIndex,
   isReadonlyRoute,
-  mapModalCommand,
   MODAL_ASCII_NOTE,
   MODAL_SCOPE_NOTE,
   MODAL_UNKNOWN_HINT,
   MODAL_UNKNOWN_PREFIX,
+  mapModalCommand,
   type PanelRoute,
-  type PanelViewSnapshot,
   type PanelViewport,
+  type PanelViewSnapshot,
   parsePanelCommand,
 } from "./panel-commands.js";
-import { readonlyBodyLineCount } from "./panel.js";
 
 export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
 export {
   isReadonlyRoute,
-  mapModalCommand,
   MODAL_ASCII_NOTE,
   MODAL_SCOPE_NOTE,
   MODAL_UNKNOWN_HINT,
   MODAL_UNKNOWN_PREFIX,
+  mapModalCommand,
   type PanelRoute,
-  type PanelViewSnapshot,
   type PanelViewport,
+  type PanelViewSnapshot,
 };
 
 /**
@@ -105,7 +104,7 @@ export type EscapeTracking =
   | { kind: "string_term_esc" }
   | { kind: "legacy_mouse"; remaining: number };
 
-export type InputMode = "passthrough" | "modal" | "executing" | "notifier" | "compact_confirm";
+export type InputMode = "passthrough" | "modal" | "executing" | "notifier";
 
 /**
  * Hazardous native lifecycle commands verified in Claude Code 2.1.226 that
@@ -154,7 +153,7 @@ export interface InputState {
   heldEnter: number[];
   /** The recognized command shown in the overlay. */
   notifierCommand: string;
-  /** Control Panel route. Ignored while passthrough/notifier/compact_confirm. */
+  /** Control Panel route. Ignored while passthrough/notifier. */
   route: PanelRoute;
   /**
    * Selected row in the slash-command suggestion menu. The menu itself is
@@ -177,7 +176,6 @@ export type InputAction =
   /** Forward nothing; Claude's typed input line is untouched. */
   | { kind: "notifier_return" }
   /** The operator answered the pre-swap confirmation. Only `yes` compacts. */
-  | { kind: "compact_confirm_answered"; disposition: CompactConfirmDisposition }
   /** Allocation selector applied a product preset; run.ts maps it at session scope. */
   | { kind: "select_allocation"; id: BandAllocationId };
 
@@ -277,7 +275,7 @@ export function showReceipts(state: InputState, lines: string[]): InputState {
 
 /** Resize clamps scroll/selection; it never resets route or starts a command. */
 export function clampPanelViewport(state: InputState, _cols: number, rows: number): InputState {
-  if (state.mode === "passthrough" || state.mode === "notifier" || state.mode === "compact_confirm") {
+  if (state.mode === "passthrough" || state.mode === "notifier") {
     return state;
   }
   const safeRows = Math.max(5, rows);
@@ -704,7 +702,6 @@ function passthroughByte(byte: number, state: InputState): StepOutcome {
 
 function cancelModal(state: InputState): StepOutcome {
   if (state.mode === "notifier") return notifierResolve(state, false);
-  if (state.mode === "compact_confirm") return compactConfirmResolve(state, { kind: "no", reason: "dismissed" });
   return {
     state: {
       ...createInputState(state.leaderByte, { notifierEnabled: state.notifierEnabled }),
@@ -731,39 +728,6 @@ function notifierResolve(state: InputState, forward: boolean): StepOutcome {
   return {
     state: { ...base, hazardLine: state.hazardLine },
     actions: [{ kind: "notifier_return" }],
-  };
-}
-
-/**
- * Raise the pre-swap confirmation on the panel. Called by the wrapper, not by
- * a keypress: the seam is what asks, and the answer is what it waits for.
- * Rows are the warning and its bullets; the panel adds the key hint.
- */
-export function openCompactConfirm(state: InputState, rows: readonly string[]): InputState {
-  return {
-    ...state,
-    mode: "compact_confirm",
-    line: "",
-    heldSeq: [],
-    escape: null,
-    heldEnter: [],
-    panelRows: [...rows],
-  };
-}
-
-/**
- * Settle the confirmation. Nothing about the answer is remembered: a decline
- * skips this seam only, and the next eligible seam asks again while the work
- * is still open.
- */
-function compactConfirmResolve(state: InputState, disposition: CompactConfirmDisposition): StepOutcome {
-  return {
-    state: {
-      ...createInputState(state.leaderByte, { notifierEnabled: state.notifierEnabled }),
-      inPaste: state.inPaste,
-      hazardLine: state.hazardLine,
-    },
-    actions: [{ kind: "compact_confirm_answered", disposition }],
   };
 }
 
@@ -844,7 +808,8 @@ function openRoute(state: InputState, route: PanelRoute): StepOutcome {
 }
 
 function applyAllocation(state: InputState): StepOutcome {
-  const id = PRODUCT_PRESET_IDS[Math.max(0, Math.min(PRODUCT_PRESET_IDS.length - 1, state.viewport.selectedIndex))] ?? "default";
+  const id =
+    PRODUCT_PRESET_IDS[Math.max(0, Math.min(PRODUCT_PRESET_IDS.length - 1, state.viewport.selectedIndex))] ?? "default";
   return {
     state: {
       ...state,
@@ -973,18 +938,6 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
 }
 
 function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
-  if (state.mode === "compact_confirm") {
-    // Only an explicit "y" authorizes killing the listed work. Enter is not an
-    // answer here; a stray keypress must never be read as consent.
-    if (key.kind === "text" && key.value.toLowerCase() === "y") {
-      return compactConfirmResolve(state, { kind: "yes" });
-    }
-    if (key.kind === "cancel") return compactConfirmResolve(state, { kind: "no", reason: "dismissed" });
-    if (key.kind === "text" || key.kind === "enter" || key.kind === "backspace") {
-      return compactConfirmResolve(state, { kind: "no", reason: "declined" });
-    }
-    return { state };
-  }
   if (state.mode === "notifier") {
     // Only two answers exist: Enter continues (forward the held Enter once),
     // cancel-family returns (forward nothing). Everything else is dropped.
@@ -1181,15 +1134,6 @@ function modalByte(byte: number, state: InputState): StepOutcome {
     // Leader-again dismisses in every mode — while executing it detaches,
     // same as Esc and ctrl-C (a running command must never trap the screen).
     return cancelModal(state);
-  }
-
-  if (state.mode === "compact_confirm") {
-    if (byte === 0x79 || byte === 0x59) return compactConfirmResolve(state, { kind: "yes" });
-    // Any other real keypress declines; sequence noise was consumed above.
-    if (byte === 0x0d || byte === 0x0a || byte === 0x7f || byte === 0x08 || (byte >= 0x20 && byte <= 0x7e)) {
-      return compactConfirmResolve(state, { kind: "no", reason: "declined" });
-    }
-    return { state };
   }
 
   if (state.mode === "notifier") {

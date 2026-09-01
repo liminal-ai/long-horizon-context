@@ -54,7 +54,7 @@ import { defaultLineageDbPath } from "../intake/lineage-db.js";
 import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
 import { type CaptureSession, createCaptureThread, startCaptureSession } from "../intake/session.js";
 import { type LaunchThreadBinding, recordSwapAcceptance } from "../intake/thread-alias.js";
-import { asyncWorkIdentity, type OpenAsyncWork } from "../observation/async-work.js";
+import type { OpenAsyncWork } from "../observation/async-work.js";
 import { preLaunchEstimate } from "../observation/estimate.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
@@ -81,7 +81,6 @@ import { type ThreadOwnerLease, ThreadOwnershipConflictError } from "../runtime/
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { forceKillChildTree, requestPtyTermination, runTaskkillTree } from "./child-termination.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
-import { type CompactConfirmDisposition, compactConfirmRows, describeDecline } from "./compact-confirm.js";
 import {
   type ContextWindowObserver,
   createContextWindowObserver,
@@ -117,7 +116,6 @@ import {
   finishExecuting,
   forceResetInput,
   type InputState,
-  openCompactConfirm,
   processInputChunk,
   resolveBareEsc,
   resolveLeaderByte,
@@ -152,15 +150,12 @@ import {
   NONVIABLE_SWAPS_BEFORE_ALARM,
 } from "./replacement-nonviability.js";
 import {
-  formatAskingBeforeSmartCompact,
   formatAutoDeferredSummary,
   formatAutoGuardBusyDetail,
   formatAutoGuardBusyLog,
   formatAutoInMemoryReceipt,
   formatAutoMutationLog,
   formatAutoMutationSummary,
-  formatAutoNotAuthorizedLog,
-  formatAutoNotAuthorizedSummary,
   formatAutoNotRescheduledSummary,
   formatAutoSuspendedSummary,
   formatAutoThrew,
@@ -169,7 +164,6 @@ import {
   formatOneShotPreLaunchOutcome,
   formatOneShotPreLaunchThrew,
   formatOneShotStandDown,
-  formatOperatorAuthorized,
   nativeCompactAdvisoryDetailsRows,
   nativeCompactAdvisoryLine,
   nativeCompactAnomalyNotice,
@@ -1192,25 +1186,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let minObservedProviderTotal: number | null = null;
   /** One auto operation scheduled/coalesced at a time. */
   let autoOperationScheduled = false;
-  /**
-   * Answer callback for a pre-swap confirmation currently on the panel.
-   * Present only while the operator is being asked; every path that tears the
-   * panel down settles it, so a seam never waits on a prompt nobody can see.
-   */
-  let pendingCompactConfirm: ((disposition: CompactConfirmDisposition) => void) | null = null;
-  /** Settle the confirmation once, whatever ended it. */
-  const resolveCompactConfirm = (disposition: CompactConfirmDisposition): void => {
-    const answer = pendingCompactConfirm;
-    if (answer === null) return;
-    pendingCompactConfirm = null;
-    answer(disposition);
-  };
-  /**
-   * A terminal the operator can actually answer on. Without one there is
-   * nobody to ask, so the swap behaves exactly as it always has — which is
-   * also why one-shot launches are exempt by construction.
-   */
-  const interactiveTerminal = stdin.isTTY === true && stdout.isTTY === true;
   /** Assigned inside the run promise where child/teardown machinery lives. */
   let runAutoOperation: (args: {
     frozenTriggerTokens: number | null;
@@ -1416,18 +1391,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     });
   };
 
-  /**
-   * The sequencing conditions that keep an executable settled seam from
-   * starting an operation right now. Named once so the seam's two readers —
-   * the pre-authorization check and the operation itself — cannot drift.
-   */
-  const settledSeamBlocked = (): boolean =>
-    exited ||
-    handoffInProgress ||
-    autoOperationScheduled ||
-    standingNonviabilityAlarm.length > 0 ||
-    captureSession?.isCaptureReady() !== true;
-
   /** Log an observation and let the host see it. In-memory only. */
   const noteGovernorObservation = (record: import("../governor/index.js").GovernorObserveRecord): void => {
     wrapperLog.info(formatGovernorObserveLogLine(record));
@@ -1442,8 +1405,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
   /**
    * One governor observation: log it, and route an executable settled decision
-   * to the operation — through the operator first when a swap would kill live
-   * background work.
+   * to the operation.
    */
   const handleGovernorObserve = (record: import("../governor/index.js").GovernorObserveRecord): void => {
     noteGovernorObservation(record);
@@ -1456,101 +1418,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       return;
     }
 
-    // A swap the operator has not authorized must leave nothing behind — not a
-    // receipt, not an outcome, not a preference. So the question comes before
-    // the record, and the ordinary persist/schedule path starts only on yes.
-    if (!settledSeamBlocked() && interactiveTerminal) {
-      const liveWork = captureSession?.getLiveAsyncWork() ?? [];
-      if (liveWork.length > 0) {
-        askBeforeSwap(liveWork);
-        return;
-      }
-    }
-
+    // Active background work never delays the seam (AC-2.3): the open set is
+    // frozen for the operation and the swap starts now.
     runSettledSeam(record, captureSession?.getLiveAsyncWork() ?? []);
-  };
-
-  /**
-   * Ask the operator before a swap kills live background work, and act on the
-   * answer. Only yes reaches the ordinary settled-seam path; every other
-   * outcome — including a prompt that could not be raised at all — reports in
-   * memory and returns, so the next seam asks again while the work is open.
-   */
-  const askBeforeSwap = (liveWork: readonly OpenAsyncWork[]): void => {
-    const notNow = (why: string): void => {
-      wrapperLog.info(formatAutoNotAuthorizedLog(why, liveWork.length));
-      lastAttempt = { summary: formatAutoNotAuthorizedSummary(why), atMs: Date.now() };
-    };
-    if (pendingCompactConfirm !== null) {
-      notNow("the background-work confirmation is already on screen");
-      return;
-    }
-    if (inputState.mode !== "passthrough") {
-      notNow(`the panel is busy (${inputState.mode})`);
-      return;
-    }
-
-    // What the operator is about to authorize, by stable identity. The session
-    // keeps running behind the panel — Claude answers a notification, another
-    // launcher starts — so consent is checked against the world at the moment
-    // of the keypress, not the one that raised the question.
-    const listed = new Set(liveWork.map((work) => asyncWorkIdentity(work)));
-    const consentStale = (): string | null => {
-      if (governorState.turnOpen || captureSession?.isTurnOpen() === true) {
-        return "a new turn opened while the question was on screen";
-      }
-      if (settledSeamBlocked()) return "the seam stopped being eligible while the question was on screen";
-      // Work that finished meanwhile is fine — killing fewer than listed is
-      // what the operator agreed to. Work that STARTED meanwhile was never on
-      // the list, so nobody has agreed to kill it.
-      const unlisted = (captureSession?.getLiveAsyncWork() ?? []).filter(
-        (work) => !listed.has(asyncWorkIdentity(work)),
-      );
-      if (unlisted.length === 0) return null;
-      const noun = unlisted.length === 1 ? "another piece" : `${unlisted.length} more pieces`;
-      return `${noun} of background work started while the question was on screen`;
-    };
-
-    const raised = raiseCompactConfirm(liveWork, (disposition) => {
-      if (disposition.kind !== "yes") {
-        notNow(describeDecline(disposition.reason));
-        return;
-      }
-      const stale = consentStale();
-      if (stale !== null) {
-        // Nothing is deferred and nothing waits for the turn to settle: the
-        // next otherwise-eligible seam raises a fresh question over whatever
-        // is open then.
-        notNow(stale);
-        return;
-      }
-      // The physical checks say a swap could happen; whether one is still
-      // WANTED is a fresh question. A turn may have settled behind the panel
-      // with a smaller provider reading, leaving the session under the
-      // trigger. Ask the governor again, and compact against what it says now.
-      syncContextWindow();
-      const current = reobserveSettled(governorState, resolvedContextPolicy);
-      const observe = current.observe;
-      // The recomputed state is dropped along with the decision: an
-      // observation nobody acts on must not consume a settle sequence, and it
-      // certainly must not leave a record behind.
-      if (observe === null) {
-        notNow("the governor no longer reports a settled seam");
-        return;
-      }
-      if (observe.observePhase !== "settled_seam" || observe.wouldMutate !== true) {
-        notNow(`the governor no longer authorizes a compact here (${observe.decision})`);
-        return;
-      }
-      // Consumed: this observation is the one the operation runs against, so
-      // its pressure, sampling, and sequences describe the session now.
-      governorState = current.state;
-      noteGovernorObservation(observe);
-      const accepted = captureSession?.getLiveAsyncWork() ?? [];
-      wrapperLog.info(formatOperatorAuthorized(accepted.length));
-      runSettledSeam(observe, accepted);
-    });
-    if (!raised) notNow(describeDecline("render_failed"));
   };
 
   /**
@@ -1680,37 +1550,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           autoOperationScheduled = false;
         });
       });
-    }
-  };
-
-  /**
-   * Put the pre-swap confirmation on the panel and register its answer
-   * callback. Returns false when the prompt could not be drawn — the caller
-   * treats that exactly like a decline, because nobody was asked.
-   */
-  const raiseCompactConfirm = (
-    work: readonly OpenAsyncWork[],
-    onAnswer: (disposition: CompactConfirmDisposition) => void,
-  ): boolean => {
-    const rows = compactConfirmRows(work, Date.now());
-    if (rows.length === 0) return false;
-    try {
-      outputHold.hold();
-      altScreen.enter();
-      inputState = openCompactConfirm(inputState, rows);
-      pendingCompactConfirm = onAnswer;
-      renderModalPanel();
-      wrapperLog.info(formatAskingBeforeSmartCompact(work.length));
-      return true;
-    } catch (cause) {
-      pendingCompactConfirm = null;
-      inputState = forceResetInput(inputState);
-      altScreen.leave();
-      outputHold.flush();
-      wrapperLog.warn(
-        `cc-lhc governor: background-work confirmation could not be shown: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
-      return false;
     }
   };
 
@@ -1885,7 +1724,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     options.outputHoldCapBytes ?? OUTPUT_HOLD_CAP_BYTES,
     (data) => stdout.write(data),
     () => {
-      resolveCompactConfirm({ kind: "no", reason: "interrupted" });
       inputState = forceResetInput(inputState);
       altScreen.leave();
       // No terminal notice — the child owns the restored screen. The event is
@@ -2119,7 +1957,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // back on the main screen either way.
   const restoreIfModal = (): void => {
     if (!altScreen.active && inputState.mode === "passthrough") return;
-    resolveCompactConfirm({ kind: "no", reason: "interrupted" });
     inputState = forceResetInput(inputState);
     altScreen.leave();
     outputHold.flush();
@@ -2140,7 +1977,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const teardownAndExit = async (exitCode: number): Promise<void> => {
       if (exited) return;
       exited = true;
-      resolveCompactConfirm({ kind: "no", reason: "interrupted" });
       if (pendingEscTimer !== null) {
         clearTimeout(pendingEscTimer);
         pendingEscTimer = null;
@@ -2398,12 +2234,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         } else if (action.kind === "notifier_return") {
           altScreen.leave();
           outputHold.flush();
-        } else if (action.kind === "compact_confirm_answered") {
-          // Leave the panel first so the answer lands on the restored screen,
-          // then hand the disposition to the seam that raised it.
-          altScreen.leave();
-          outputHold.flush();
-          resolveCompactConfirm(action.disposition);
         } else if (action.kind === "execute") runModalCommand(action.commandLine);
       }
     };
@@ -2435,7 +2265,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
     const onStdinGone = (): void => {
       // No input left means no keypress can answer a pending confirmation.
-      resolveCompactConfirm({ kind: "no", reason: "stdin_closed" });
       restoreIfModal();
     };
 
@@ -2443,7 +2272,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // Restore the terminal, then let the error do what it always did
       // (propagate as an uncaught exception) — the exit hook's guarded leave
       // makes the rethrow safe.
-      resolveCompactConfirm({ kind: "no", reason: "stdin_closed" });
       restoreIfModal();
       throw cause;
     };

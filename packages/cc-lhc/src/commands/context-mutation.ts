@@ -20,15 +20,15 @@ import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
 
 import { compactConstruction } from "../governor/band-allocation.js";
 import { CAPTURE_NOT_READY_REFUSAL } from "../intake/session.js";
+import type { OpenAsyncWork } from "../observation/async-work.js";
+import { statRolloutFile } from "../rollout/stat-file.js";
+import { type WriteRebuiltRolloutResult, writeRebuiltRollout } from "../rollout/write-rebuilt.js";
 import {
   formatCompactBlocked,
   formatCompactPreviewError,
   formatCompactSdkError,
   formatCompactViewLine,
 } from "../wrapper/terminology.js";
-import type { OpenAsyncWork } from "../observation/async-work.js";
-import { statRolloutFile } from "../rollout/stat-file.js";
-import { writeRebuiltRollout, type WriteRebuiltRolloutResult } from "../rollout/write-rebuilt.js";
 import { formatContinuityNote, freezeLiveAsyncWork } from "./continuity-note.js";
 import { CAPTURE_DEGRADED_REFUSAL, type LhcCommandRuntime, TURN_OPEN_REFUSAL } from "./dispatch.js";
 import { threadIdFromRef } from "./rebuild-receipt.js";
@@ -101,8 +101,7 @@ export function formatDurableReceipt(
     );
   }
   if (metrics.viewTokens !== undefined) {
-    const target =
-      metrics.targetTokens !== undefined ? ` (${formatTokensShort(metrics.targetTokens)} target)` : "";
+    const target = metrics.targetTokens !== undefined ? ` (${formatTokensShort(metrics.targetTokens)} target)` : "";
     parts.push(`rebuilt LHC view ${formatTokensShort(metrics.viewTokens)}${target}`);
   }
   const receipt = `[lhc ${label}:${metrics.origin}] ${parts.join("; ")}.`;
@@ -133,9 +132,9 @@ export interface ContextMutationPlan {
    */
   hostNotices?: readonly string[];
   /**
-   * Frozen live-work snapshot for automatic mutation (revalidated consent).
-   * Interactive manual compact/prune omit this so the settled-seam freeze
-   * reads `runtime.getLiveAsyncWork()`.
+   * Frozen live-work snapshot for automatic mutation, taken at the settled
+   * seam. Interactive manual compact/prune omit this so the settled-seam
+   * freeze reads `runtime.getLiveAsyncWork()`.
    */
   liveAsyncWork?: readonly OpenAsyncWork[];
   /** One-shot prelaunch has no old child and must not add a live-work note. */

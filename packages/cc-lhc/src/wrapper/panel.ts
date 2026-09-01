@@ -14,7 +14,6 @@
 // without colour, and as caret alone without any attributes, so a no-colour
 // terminal still shows the same hierarchy (border, alignment, caret).
 
-import { COMPACT_CONFIRM_HINT } from "./compact-confirm.js";
 import type { InputState } from "./modal.js";
 import {
   commandSuggestions,
@@ -417,11 +416,7 @@ interface Body {
   focusLine: number;
 }
 
-function statusBody(
-  rows: readonly HomeStatusRow[],
-  geometry: Geometry,
-  focusId: HomeStatusCanonicalId | null,
-): Body {
+function statusBody(rows: readonly HomeStatusRow[], geometry: Geometry, focusId: HomeStatusCanonicalId | null): Body {
   const { tier, contentWidth, gutter } = geometry;
   const valueWidth = Math.max(8, contentWidth - CARET_BLANK.length - gutter);
   const lines: Line[] = [];
@@ -821,9 +816,8 @@ function survivalScreen(state: InputState, cols: number, rows: number, elapsedSe
   };
   const executing = state.mode === "executing";
 
-  if (state.mode === "compact_confirm" || state.mode === "notifier") {
-    const source = state.mode === "notifier" ? [notifierWarning(state.notifierCommand)] : state.panelRows;
-    const body = source.map((row) => ln(span(truncate(row, width))));
+  if (state.mode === "notifier") {
+    const body = [notifierWarning(state.notifierCommand)].map((row) => ln(span(truncate(row, width))));
     for (const line of clipBody(body, budget, 0).lines) push(line);
     return { lines, cursorLine: null, cursorOffset: 0, showCursor: false };
   }
@@ -906,7 +900,6 @@ function notifierWarning(command: string): string {
 }
 
 function hintFor(state: InputState, tier: PanelTier): string {
-  if (state.mode === "compact_confirm") return COMPACT_CONFIRM_HINT;
   if (state.mode === "notifier") return NOTIFIER_HINT;
   if (state.mode === "executing") return tier === "survival" ? PANEL_HINT_SURVIVAL_EXECUTING : PANEL_HINT_EXECUTING;
   if (isReadonlyRoute(state.route)) return tier === "survival" ? PANEL_HINT_SURVIVAL_READONLY : PANEL_HINT_READONLY;
@@ -918,7 +911,6 @@ function hintFor(state: InputState, tier: PanelTier): string {
 }
 
 function cardTitle(state: InputState, geometry: Geometry): string {
-  if (state.mode === "compact_confirm") return "Confirm";
   if (state.mode === "notifier") return "Claude command";
   if (state.route === "allocation") return "Band allocation";
   if (isReadonlyRoute(state.route)) return readonlyRouteTitle(state.route);
@@ -931,7 +923,6 @@ function buildScreen(state: InputState, cols: number, rows: number, elapsedSecon
   if (tier === "survival") return survivalScreen(state, cols, rows, elapsedSeconds);
   const geometry = geometryFor(cols, rows, tier);
   const title = cardTitle(state, geometry);
-  if (state.mode === "compact_confirm") return plainCard(title, state.panelRows, geometry);
   if (state.mode === "notifier") {
     return plainCard(title, [notifierWarning(state.notifierCommand)], geometry);
   }

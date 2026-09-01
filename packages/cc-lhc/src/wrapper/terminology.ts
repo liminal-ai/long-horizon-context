@@ -43,15 +43,6 @@ export function formatOneShotPreLaunchThrew(detail: string): string {
   return `cc-lhc one-shot pre-launch ${SMART_COMPACT} threw: ${detail}`;
 }
 
-export function formatAutoNotAuthorizedLog(why: string, liveCount: number): string {
-  return `cc-lhc governor: ${SMART_COMPACT} not authorized — ${why}; ${liveCount} live background item(s) left running`;
-}
-
-/** Panel: Home `last attempt`. */
-export function formatAutoNotAuthorizedSummary(why: string): string {
-  return `${SMART_COMPACT_COMMAND} not authorized: ${why}`;
-}
-
 /** Panel: Home `last attempt`. */
 export function formatAutoDeferredSummary(reason: string, detail: string): string {
   return `${SMART_COMPACT_COMMAND} deferred: ${reason} (${detail})`;
@@ -72,14 +63,6 @@ export function formatAutoInMemoryReceipt(receiptId: string): string {
 /** Panel: Home `last attempt`. */
 export function formatAutoSuspendedSummary(): string {
   return `${SMART_COMPACT_COMMAND} suspended: replacement incompatibility alarm`;
-}
-
-export function formatAskingBeforeSmartCompact(count: number): string {
-  return `cc-lhc governor: asking before ${SMART_COMPACT} kills ${count} live background item(s)`;
-}
-
-export function formatOperatorAuthorized(count: number): string {
-  return `cc-lhc governor: operator authorized ${SMART_COMPACT} over ${count} live background item(s)`;
 }
 
 export function formatAutoThrew(detail: string): string {

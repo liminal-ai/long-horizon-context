@@ -308,9 +308,8 @@ v1 accepts this difference honestly. Shared LIM-60/61 strings and pressure
 accounting are reused where they remain truthful; cc-lhc does not claim effects
 Claude Code cannot perform.
 
-**Durable receipts (production):** ordinary classifications are receipted, but
-an interactive would-mutate seam that names live background work writes nothing
-until the operator explicitly authorizes the swap. Receipts are write-behind —
+**Durable receipts (production):** every classification is receipted, and
+active background work never delays the seam. Receipts are write-behind —
 they record the Smart Compact, they never decide whether it runs. When the receipt store is unavailable the operation proceeds against an
 in-memory receipt id with a loud warning (restart recovery is degraded for that
 attempt; the session still runs Smart Compact). Exact native replay is idempotent (unique

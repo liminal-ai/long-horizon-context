@@ -16,7 +16,6 @@ import { dispatchLhcCommand } from "../../src/commands/dispatch.js";
 import { CC_LHC_HELP } from "../../src/help.js";
 import type { OpenAsyncWork } from "../../src/observation/async-work.js";
 import { emptyCaptureStats } from "../../src/stats.js";
-import { COMPACT_CONFIRM_HINT, compactConfirmRows } from "../../src/wrapper/compact-confirm.js";
 import { formatHandoffResult } from "../../src/wrapper/handoff.js";
 import { NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY } from "../../src/wrapper/native-auto-compact.js";
 import {
@@ -25,15 +24,12 @@ import {
 } from "../../src/wrapper/replacement-nonviability.js";
 import {
   CLAUDE_NATIVE_COMPACT,
-  formatAskingBeforeSmartCompact,
   formatAutoDeferredSummary,
   formatAutoGuardBusyDetail,
   formatAutoGuardBusyLog,
   formatAutoInMemoryReceipt,
   formatAutoMutationLog,
   formatAutoMutationSummary,
-  formatAutoNotAuthorizedLog,
-  formatAutoNotAuthorizedSummary,
   formatAutoNotRescheduledSummary,
   formatAutoSuspendedSummary,
   formatAutoThrew,
@@ -46,7 +42,6 @@ import {
   formatOneShotPreLaunchOutcome,
   formatOneShotPreLaunchThrew,
   formatOneShotStandDown,
-  formatOperatorAuthorized,
   nativeCompactAdvisoryDetailsRows,
   nativeCompactAdvisoryLine,
   nativeCompactAnomalyNotice,
@@ -126,14 +121,10 @@ const REQUIRED_RUN_FORMATTERS = [
   "formatOneShotCompactedBeforeLaunch",
   "formatOneShotPreLaunchOutcome",
   "formatOneShotPreLaunchThrew",
-  "formatAutoNotAuthorizedLog",
-  "formatAutoNotAuthorizedSummary",
   "formatAutoDeferredSummary",
   "formatAutoNotRescheduledSummary",
   "formatAutoInMemoryReceipt",
   "formatAutoSuspendedSummary",
-  "formatAskingBeforeSmartCompact",
-  "formatOperatorAuthorized",
   "formatAutoGuardBusyDetail",
   "formatAutoGuardBusyLog",
   "formatAutoMutationLog",
@@ -167,10 +158,6 @@ describe("TC-3.3a product terminology audit", () => {
       sourceRolloutPath: undefined,
       sourceSessionId: undefined,
     });
-    const confirm = compactConfirmRows(
-      [work("agent", "reviewer"), work("background_shell", "build")],
-      1_787_135_000_000,
-    ).join("\n");
     const continuity = formatContinuityNote([work("agent", "reviewer"), work("monitor", "ci")]) ?? "";
     const receipt = formatDurableReceipt(
       "auto_compact",
@@ -212,7 +199,6 @@ describe("TC-3.3a product terminology audit", () => {
     const surfaces: Array<[string, string]> = [
       ["cli help", CC_LHC_HELP],
       ["panel help", helpCommand.messages.join("\n")],
-      ["compact confirmation", `${confirm}\n${COMPACT_CONFIRM_HINT}`],
       ["native compact anomaly", nativeCompactAnomalyNotice("summary")],
       ["native compact override", NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY],
       ["native compact disabled status", nativeCompactDisabledStatusLine()],
@@ -241,14 +227,10 @@ describe("TC-3.3a product terminology audit", () => {
       ["one-shot before launch", formatOneShotCompactedBeforeLaunch("old-id", "new-id")],
       ["one-shot prelaunch outcome", formatOneShotPreLaunchOutcome("rebuilt", "ok")],
       ["one-shot prelaunch threw", formatOneShotPreLaunchThrew("EIO")],
-      ["auto not authorized log", formatAutoNotAuthorizedLog("operator declined", 2)],
-      ["auto not authorized summary", formatAutoNotAuthorizedSummary("operator declined")],
       ["auto deferred summary", formatAutoDeferredSummary("command_guard_busy", "status")],
       ["auto not rescheduled", formatAutoNotRescheduledSummary("r1")],
       ["auto in-memory receipt", formatAutoInMemoryReceipt("mem-1")],
       ["auto suspended", formatAutoSuspendedSummary()],
-      ["asking before", formatAskingBeforeSmartCompact(2)],
-      ["operator authorized", formatOperatorAuthorized(1)],
       ["auto guard detail", formatAutoGuardBusyDetail("status")],
       ["auto guard log", formatAutoGuardBusyLog("status", "r1")],
       ["auto mutation log", formatAutoMutationLog("refused", "no")],
@@ -266,10 +248,6 @@ describe("TC-3.3a product terminology audit", () => {
       formatOneShotPreLaunchThrew("EIO"),
     ].join("\n");
     const automaticLogs = [
-      formatAskingBeforeSmartCompact(1),
-      formatOperatorAuthorized(1),
-      formatAutoNotAuthorizedLog("operator declined", 1),
-      formatAutoNotAuthorizedSummary("operator declined"),
       formatAutoDeferredSummary("command_guard_busy", "status"),
       formatAutoNotRescheduledSummary("r1"),
       formatAutoInMemoryReceipt("mem-1"),
@@ -289,7 +267,6 @@ describe("TC-3.3a product terminology audit", () => {
         "replacement-nonviability.ts",
         stripComments(readFileSync(join(SRC_ROOT, "wrapper/replacement-nonviability.ts"), "utf8")),
       ],
-      ["compact-confirm.ts", stripComments(readFileSync(join(SRC_ROOT, "wrapper/compact-confirm.ts"), "utf8"))],
       ["context-mutation.ts", stripComments(readFileSync(join(SRC_ROOT, "commands/context-mutation.ts"), "utf8"))],
       ["help.ts", stripComments(readFileSync(join(SRC_ROOT, "help.ts"), "utf8"))],
     ];
@@ -316,9 +293,6 @@ describe("TC-3.3a product terminology audit", () => {
     // a CLI and its screens must print what the parser accepts.
     expect(helpCommand.messages.join("\n")).toContain(SMART_COMPACT_COMMAND);
     expect(helpCommand.messages.join("\n")).not.toContain(SMART_COMPACT);
-    expect(confirm).toContain(SMART_COMPACT_COMMAND);
-    expect(confirm).not.toContain(SMART_COMPACT);
-    expect(COMPACT_CONFIRM_HINT).toContain(SMART_COMPACT_COMMAND);
     expect(nativeCompactAnomalyNotice()).toContain(CLAUDE_NATIVE_COMPACT);
     expect(NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY).toContain(CLAUDE_NATIVE_COMPACT);
     expect(nativeCompactDisabledStatusLine()).toContain("/compact");
@@ -328,12 +302,9 @@ describe("TC-3.3a product terminology audit", () => {
     expect(formatOneShotCompactedBeforeLaunch("a", "b")).not.toMatch(/compacted\b/i);
     // Panel-facing summaries name the command; their log counterparts keep
     // the product name.
-    expect(formatAutoNotAuthorizedSummary("x")).toContain(SMART_COMPACT_COMMAND);
-    expect(formatAutoNotAuthorizedLog("x", 1)).toContain(SMART_COMPACT);
     expect(formatAutoMutationSummary("refused", "d")).toContain(SMART_COMPACT_COMMAND);
     expect(formatAutoMutationLog("refused", "d")).toContain(SMART_COMPACT);
     expect(formatCompactViewLine("v1", 1, 1)).toContain(SMART_COMPACT);
-    expect(formatOperatorAuthorized(1)).toContain(SMART_COMPACT);
     expect(formatAutoThrew("EIO")).toContain(SMART_COMPACT);
     expect(README).toContain(SMART_COMPACT);
     expect(README).toContain(CLAUDE_NATIVE_COMPACT);

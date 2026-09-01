@@ -13,7 +13,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { formatCompactReceipt, formatPruneReceipt } from "../../src/commands/context-mutation.js";
 import { resolveContextWindow } from "../../src/governor/config.js";
-import { COMPACT_CONFIRM_HINT, compactConfirmRows } from "../../src/wrapper/compact-confirm.js";
 import { createInputState, type InputState, processInputChunk } from "../../src/wrapper/modal.js";
 import { commandProgressLabel, PANEL_PROMPT_PLACEHOLDER, renderPanel } from "../../src/wrapper/panel.js";
 import {
@@ -48,8 +47,6 @@ import {
   formatAutoGuardBusyLog,
   formatAutoMutationLog,
   formatAutoMutationSummary,
-  formatAutoNotAuthorizedLog,
-  formatAutoNotAuthorizedSummary,
   formatAutoNotRescheduledSummary,
   formatAutoSuspendedSummary,
   formatAutoThrew,
@@ -99,8 +96,6 @@ function panelOwnedCopy(): string[] {
     ...introductionLines(VIEW),
     ...detailsLines(VIEW),
     ...commandSuggestions("/").flatMap((entry) => [entry.usage, entry.description]),
-    ...compactConfirmRows([{ key: "m1", family: "monitor", taskId: "m1", description: "CI watch" }], Date.now()),
-    COMPACT_CONFIRM_HINT,
     PANEL_PROMPT_PLACEHOLDER,
     MODAL_UNKNOWN_HINT,
     commandProgressLabel("/smart-compact", 3),
@@ -159,13 +154,7 @@ describe("panel-owned copy speaks the canonical slash vocabulary", () => {
     expect(shown).not.toContain("[targetTokens]");
   });
 
-  it("uses the slash spellings on the confirmation and the progress line", () => {
-    const confirm = compactConfirmRows(
-      [{ key: "a1", family: "agent", taskId: "a1", description: "reviewer" }],
-      Date.now(),
-    ).join("\n");
-    expect(confirm).toContain("/smart-compact");
-    expect(COMPACT_CONFIRM_HINT).toContain("/smart-compact");
+  it("uses the slash spellings on the progress line", () => {
     expect(commandProgressLabel("/smart-compact", 3)).toBe("/smart-compact — rebuilding… (3s)");
     expect(commandProgressLabel("/smart-prune")).toBe("/smart-prune — rebuilding…");
   });
@@ -207,7 +196,6 @@ function panelProductionProjections(): Array<[string, string]> {
         .join("\n"),
     ],
     // Automatic last-attempt notices on Home.
-    ["auto not authorized", formatAutoNotAuthorizedSummary("operator declined")],
     ["auto deferred", formatAutoDeferredSummary("command_guard_busy", formatActiveOperation("/status"))],
     ["auto not re-scheduled", formatAutoNotRescheduledSummary("r1")],
     ["auto suspended", formatAutoSuspendedSummary()],
@@ -269,7 +257,6 @@ describe("runtime projections reach the panel in slash form", () => {
     const byName = new Map(panelProductionProjections());
     expect(byName.get("nonviability alarm")).toContain("Manual /smart-compact still runs.");
     expect(byName.get("auto deferred")).toBe("/smart-compact deferred: command_guard_busy (/status)");
-    expect(byName.get("auto not authorized")).toBe("/smart-compact not authorized: operator declined");
     expect(byName.get("auto suspended")).toBe("/smart-compact suspended: replacement incompatibility alarm");
     expect(byName.get("last action compact")).toBe("/smart-compact 3s ago (auto) · trigger 6.0k · view 9");
     expect(byName.get("last action prune")).toBe("/smart-prune 1m ago (manual) · zone 900 -> 400");
@@ -316,7 +303,6 @@ describe("runtime projections reach the panel in slash form", () => {
     // The log-side formatters beside the panel ones keep the product name, so
     // this pass changed panel wording without rewriting log semantics.
     expect(formatAutoMutationLog("refused", "detail")).toContain("Smart Compact");
-    expect(formatAutoNotAuthorizedLog("operator declined", 2)).toContain("Smart Compact");
     expect(formatAutoGuardBusyLog("/status", "r1")).toContain("Smart Compact");
     expect(formatAutoThrew("EIO")).toContain("Smart Compact");
     // And the raw mutation messages are untouched until the panel seam.

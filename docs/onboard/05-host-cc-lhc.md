@@ -278,32 +278,18 @@ Only matching terminal evidence closes an item: a `completed`, `failed`,
 task. Monitor events and stall notices are progress; they refresh what is shown
 and close nothing. Nothing closes on elapsed time either — a wakeup past its
 moment stays open until a later `ScheduleWakeup` supersedes it or `stop: true`
-cancels it, because the clock is not evidence about whether it ran. The set is
-derived wrapper state with no side store, rebuilt by re-reading the rollout on
-resume catch-up.
+cancels it, because the clock is not evidence about whether it ran. The open
+set is derived from the rollout and rebuilt by re-reading it on resume
+catch-up; the parent-owned continuity store records the same evidence durably.
 
-At an otherwise-eligible automatic seam with an operator at the terminal and
-work still open, the panel names what the swap would cost and asks. This is a
-present-user authority choice, not a gate, and the question comes before the
-record: nothing durable is written until the operator authorizes it. Only an
-explicit **y** proceeds, into the ordinary receipt-and-schedule path exactly
-once — and only if the session still looks the way it did when the question
-was asked. The session keeps running behind the panel, so consent is checked
-against the world at the keypress: a turn that opened meanwhile, a seam that
-stopped being eligible, or work that *started* meanwhile and was never on the
-list all skip the seam as if the operator had declined. Work that *finished*
-meanwhile does not — killing fewer than listed is what was agreed to.
-Comparison is by stable item identity, never by the progress text an item
-happens to be showing. The governor decision is recomputed too: a turn that
-settled behind the panel with a smaller provider reading can leave the session
-under the trigger, and then there is nothing to compact. When it still
-authorizes one, that fresh observation — not the one that raised the question
-— is what the receipt and the operation describe. Every other outcome — a decline, a dismissal, a stray key, a closed
-terminal, a prompt that could not be drawn or was interrupted — skips that one
-seam, leaves no receipt, no outcome, and no preference behind, and the next
-eligible seam asks again while the work is still open. An empty set, a
-noninteractive launch, and a one-shot launch all take the ordinary path
-unchanged.
+Active background work never delays Smart Compact and is never put to the
+operator as a question. At the eligible settled seam the wrapper freezes the
+open set, records it in the parent-owned continuity tables of the cc-lhc
+database (`cc_continuity_items`, one row per launch, monotonic: a terminal row
+never reopens), and the swap starts immediately — nothing waits on the work,
+and nothing asks the operator about it. Identity and
+verified state live with the stable parent and SQLite, not with the Claude
+child that is being replaced.
 
 **Swap: spawn first.** A working session exists at every moment.
 

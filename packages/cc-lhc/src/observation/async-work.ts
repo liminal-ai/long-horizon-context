@@ -68,6 +68,20 @@ export interface OpenAsyncWork {
   scheduledForMs?: number;
 }
 
+/** How a piece of work ended, as the record states it. Never inferred from time. */
+export type AsyncWorkTerminalOutcome = "completed" | "failed" | "killed" | "stopped" | "cancelled";
+
+/**
+ * One piece of evidence the fold accepted, in record order. `launched` opens
+ * an item, `progress` refreshes an open one, `terminal` closes one — the same
+ * three rules the open set is built from, exposed so a durable store can
+ * follow the record without a second fold.
+ */
+export type AsyncWorkEvent =
+  | { kind: "launched"; work: OpenAsyncWork }
+  | { kind: "progress"; work: OpenAsyncWork }
+  | { kind: "terminal"; work: OpenAsyncWork; outcome: AsyncWorkTerminalOutcome; evidence: string };
+
 /**
  * Insertion-ordered open set plus the launcher call details a later
  * acknowledgement needs. Launch acknowledgements carry ids but not the
@@ -75,6 +89,8 @@ export interface OpenAsyncWork {
  */
 export interface AsyncWorkFold {
   open: Map<string, OpenAsyncWork>;
+  /** Optional sink for every accepted piece of evidence, called after the set changed. */
+  onEvent?: (event: AsyncWorkEvent) => void;
   /**
    * Retained launcher and stop calls awaiting their result, by tool-use id.
    * A result is only ever read as an acknowledgement for the tool that was
@@ -128,8 +144,15 @@ const MAX_DIAGNOSTICS = 32;
 const NOTIFICATION_OPEN_TAG = "<task-notification>";
 const NOTIFICATION_CLOSE_TAG = "</task-notification>";
 
-export function createAsyncWorkFold(): AsyncWorkFold {
-  return { open: new Map(), pendingCalls: new Map(), diagnostics: [] };
+export function createAsyncWorkFold(onEvent?: (event: AsyncWorkEvent) => void): AsyncWorkFold {
+  return { open: new Map(), pendingCalls: new Map(), diagnostics: [], ...(onEvent === undefined ? {} : { onEvent }) };
+}
+
+function closeWork(fold: AsyncWorkFold, key: string, outcome: AsyncWorkTerminalOutcome, evidence: string): void {
+  const work = fold.open.get(key);
+  if (work === undefined) return;
+  fold.open.delete(key);
+  fold.onEvent?.({ kind: "terminal", work, outcome, evidence });
 }
 
 /**
@@ -285,26 +308,30 @@ function openLaunch(
   if (launch.family === "scheduled_wakeup") {
     // At most one wakeup is ever pending: each ScheduleWakeup supersedes the
     // previous one, so the new acknowledgement replaces rather than adds.
-    fold.open.delete(SCHEDULED_WAKEUP_KEY);
-    fold.open.set(SCHEDULED_WAKEUP_KEY, {
+    closeWork(fold, SCHEDULED_WAKEUP_KEY, "cancelled", "superseded by a later ScheduleWakeup");
+    const wakeup: OpenAsyncWork = {
       key: SCHEDULED_WAKEUP_KEY,
       family: "scheduled_wakeup",
       toolUseId,
       ...(description !== undefined ? { description } : {}),
       ...(launch.scheduledForMs !== undefined ? { scheduledForMs: launch.scheduledForMs } : {}),
-    });
+    };
+    fold.open.set(SCHEDULED_WAKEUP_KEY, wakeup);
+    fold.onEvent?.({ kind: "launched", work: wakeup });
     return;
   }
 
   const key = launch.taskId ?? toolUseId;
   if (fold.open.has(key)) return;
-  fold.open.set(key, {
+  const work: OpenAsyncWork = {
     key,
     family: launch.family,
     ...(launch.taskId !== undefined ? { taskId: launch.taskId } : {}),
     toolUseId,
     ...(description !== undefined ? { description } : {}),
-  });
+  };
+  fold.open.set(key, work);
+  fold.onEvent?.({ kind: "launched", work });
 }
 
 // ---------------------------------------------------------------------------
@@ -390,7 +417,8 @@ function applyNotification(fold: AsyncWorkFold, notification: TaskNotification):
   }
 
   if (terminal) {
-    for (const key of keys) fold.open.delete(key);
+    const status = notification.status as AsyncWorkTerminalOutcome;
+    for (const key of keys) closeWork(fold, key, status, `task-notification ${status}`);
     return;
   }
 
@@ -405,7 +433,9 @@ function applyNotification(fold: AsyncWorkFold, notification: TaskNotification):
   for (const key of keys) {
     const work = fold.open.get(key);
     if (work === undefined) continue;
-    fold.open.set(key, { ...work, latestEvent: progress });
+    const updated = { ...work, latestEvent: progress };
+    fold.open.set(key, updated);
+    fold.onEvent?.({ kind: "progress", work: updated });
   }
 }
 
@@ -504,14 +534,14 @@ export function observeAsyncWorkLine(item: RolloutLineItem, fold: AsyncWorkFold)
   if (call.toolName === "TaskStop") {
     const stopped = taskStopTarget(result);
     if (stopped === undefined) return;
-    for (const [key, work] of fold.open) {
-      if (work.taskId === stopped || key === stopped) fold.open.delete(key);
+    for (const [key, work] of [...fold.open]) {
+      if (work.taskId === stopped || key === stopped) closeWork(fold, key, "stopped", "TaskStop");
     }
     return;
   }
 
   if (call.toolName === "ScheduleWakeup" && isWakeupStop(result)) {
-    fold.open.delete(SCHEDULED_WAKEUP_KEY);
+    closeWork(fold, SCHEDULED_WAKEUP_KEY, "cancelled", "ScheduleWakeup stop");
     return;
   }
 
