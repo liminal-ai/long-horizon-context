@@ -11,6 +11,7 @@ import {
 import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from "../commands/dispatch.js";
 import { registerRebuiltSessionLineage } from "../commands/rebuild-receipt.js";
 import { qualifyActiveItems, statPathReal } from "../continuity/adapters.js";
+import { defaultResultHookCommand, RESULT_HOOK_TIMEOUT_SECONDS } from "../continuity/delivery.js";
 import { invokeCarryover } from "../continuity/handoff.js";
 import { applyAsyncWorkEvent, carriedOpenWork } from "../continuity/observe.js";
 import { snapshotContinuity } from "../continuity/snapshot.js";
@@ -275,6 +276,8 @@ export type RunOptions = {
   contextWindowCapturePath?: string;
   /** Test hook: platform the child's status-line command is serialized for (defaults to this process). */
   childPlatform?: NodeJS.Platform;
+  /** Test seam: the UserPromptSubmit hook command registered on managed children (LIM-146). */
+  resultHookCommand?: string;
   /** Test hook: inspect governor runtime state after lifecycle. */
   onGovernorObserve?: (record: import("../governor/index.js").GovernorObserveRecord) => void;
   /**
@@ -479,10 +482,21 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       capturePath: contextWindowObserver.capturePath,
       operatorStatusLine: operator.statusLine,
       ...(options.childPlatform === undefined ? {} : { platform: options.childPlatform }),
+      ...(continuityStore === null
+        ? {}
+        : { deliveryHook: { command: resultHookCommand, timeoutSeconds: RESULT_HOOK_TIMEOUT_SECONDS } }),
     });
     if (merged.kind === "detection_unavailable") {
       adoptContextWindow(contextWindowDetectionUnavailable(merged.reason), "settings unmergeable");
+      wrapperLog.warn(
+        "cc-lhc continuity: result delivery hook not installed (settings unmergeable); results stay pending in the Control Panel",
+      );
       return merged.argv;
+    }
+    if (merged.deliveryHook.kind === "unavailable") {
+      wrapperLog.warn(
+        `cc-lhc continuity: result delivery hook not installed (${merged.deliveryHook.reason}); results stay pending in the Control Panel`,
+      );
     }
     // The operator's command text is private configuration: log only that a
     // status line was preserved and where it was declared, never its content.
@@ -535,6 +549,17 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     if (continuityStore === null) return;
     applyAsyncWorkEvent(continuityStore, threadId, event, Date.now());
   };
+  /** LIM-146: the rollout proved these result keys reached the model; only now are they delivered. */
+  const recordResultDelivery: NonNullable<CaptureSessionDeps["onResultDelivery"]> = (launchIds, threadId) => {
+    if (continuityStore === null) return;
+    const delivered = continuityStore.markDelivered({ threadId, launchIds, nowMs: Date.now() });
+    if (delivered.length > 0) {
+      wrapperLog.info(
+        `cc-lhc continuity: ${delivered.length} carried result(s) delivered on a real prompt: ${delivered.join(", ")}`,
+      );
+    }
+  };
+  const resultHookCommand = options.resultHookCommand ?? defaultResultHookCommand();
   const monitorOutputDir = join(dirname(options.governorReceiptDbPath ?? defaultLineageDbPath()), "continuity");
   /** The carried items a rebuilt session's fold starts with, so their terminal evidence closes them. */
   const carriedSeed = (threadRef: unknown): OpenAsyncWork[] => {
@@ -946,6 +971,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       logError: (message) => wrapperLog.warn(message),
       onLifecycle: publishCaptureLifecycle,
       onAsyncWorkEvent: recordAsyncWorkEvent,
+      onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
     });
 
@@ -1079,6 +1105,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         logError: (message) => wrapperLog.warn(message),
         onLifecycle: publishCaptureLifecycle,
         onAsyncWorkEvent: recordAsyncWorkEvent,
+        onResultDelivery: recordResultDelivery,
         onRuntimeSettings,
       });
     } catch (cause) {
@@ -1457,6 +1484,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             logError: (message) => wrapperLog.warn(message),
             onLifecycle: publishCaptureLifecycle,
             onAsyncWorkEvent: recordAsyncWorkEvent,
+            onResultDelivery: recordResultDelivery,
             onRuntimeSettings,
           });
           captureContinuation = {
@@ -1747,6 +1775,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       logError: (message) => wrapperLog.warn(message),
       onLifecycle: publishCaptureLifecycle,
       onAsyncWorkEvent: recordAsyncWorkEvent,
+      onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
     });
     process.on("SIGUSR1", onSigusr1);
@@ -2804,6 +2833,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           logError: (message) => wrapperLog.warn(message),
           onLifecycle: publishCaptureLifecycle,
           onAsyncWorkEvent: recordAsyncWorkEvent,
+          onResultDelivery: recordResultDelivery,
           onRuntimeSettings,
         });
         captureContinuation = {

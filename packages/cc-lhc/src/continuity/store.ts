@@ -293,6 +293,12 @@ export interface ContinuityStore {
   getResult(threadId: string, launchId: string): CarriedResult | null;
   /** Undelivered terminal results of carried items, oldest first. Reading changes nothing. */
   listPendingResults(threadId: string): CarriedResult[];
+  /**
+   * Mark exactly these result keys delivered, if they are pending results of
+   * this thread; unknown, foreign, and already-delivered keys change nothing.
+   * Returns the keys that transitioned now (idempotent on re-observation).
+   */
+  markDelivered(input: { threadId: string; launchIds: readonly string[]; nowMs: number }): string[];
   /** Every item of the thread in launch order. */
   listItems(threadId: string): ContinuityItem[];
   /** Allocate the next generation for the thread and stamp its members. Earlier open generations are superseded. */
@@ -736,6 +742,9 @@ export function openContinuityStore(
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, ?)
   `);
   const selectResult = db.prepare("SELECT * FROM cc_continuity_results WHERE thread_id = ? AND launch_id = ?");
+  const deliverResult = db.prepare(
+    "UPDATE cc_continuity_results SET delivery = 'delivered', delivered_at_ms = ? WHERE thread_id = ? AND launch_id = ? AND delivery = 'pending'",
+  );
   const selectPendingResults = db.prepare(
     "SELECT * FROM cc_continuity_results WHERE thread_id = ? AND delivery = 'pending' ORDER BY observed_at_ms, rowid",
   );
@@ -892,6 +901,14 @@ export function openContinuityStore(
     },
     listPendingResults(threadId) {
       return (selectPendingResults.all(threadId) as unknown as ResultRow[]).map(parseResult);
+    },
+    markDelivered(input) {
+      const delivered: string[] = [];
+      for (const launchId of new Set(input.launchIds)) {
+        const result = deliverResult.run(input.nowMs, input.threadId, launchId);
+        if (Number(result.changes) === 1) delivered.push(launchId);
+      }
+      return delivered;
     },
     listItems(threadId) {
       return (selectItems.all(threadId) as unknown as ItemRow[]).map(parseItem);

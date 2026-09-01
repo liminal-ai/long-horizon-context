@@ -9,6 +9,7 @@ import { defaultRolloutBindIo, type RolloutBindIo } from "../retrieval/rollout-b
 import { bindReadyDescriptor, writeAll } from "../retrieval/service.js";
 import type { DescriptorIo } from "../runtime/descriptor.js";
 import { defaultDescriptorIo } from "../runtime/descriptor.js";
+import { formatResultContext } from "./delivery.js";
 import { DEFAULT_OUTPUT_MAX_BYTES, itemStatus, type ManagePorts, readItemOutput, stopItem } from "./manage.js";
 import { type ContinuityStore, openContinuityStore } from "./store.js";
 
@@ -21,6 +22,110 @@ export interface ParsedTasksRequest {
   launchId: string;
   offset?: number;
   maxBytes?: number;
+}
+
+/** `cc-lhc tasks hook`: the UserPromptSubmit hook Claude runs (LIM-146). Payload on stdin, context on stdout. */
+export function isTasksHookArgv(argv: readonly string[]): boolean {
+  return argv.length === 2 && argv[0] === "tasks" && argv[1] === "hook";
+}
+
+export interface TasksHookDeps {
+  env?: NodeJS.ProcessEnv;
+  descriptorIo?: DescriptorIo;
+  rolloutBindIo?: RolloutBindIo;
+  descriptorPath?: string;
+  continuityDbPath?: string;
+  openStore?: (path: string) => ContinuityStore;
+}
+
+export type TasksHookResult =
+  /** Context to hand Claude; empty string means nothing pending — print nothing. */
+  { ok: true; additionalContext: string; keys: string[] } | { ok: false; reason: string };
+
+/**
+ * Answer one UserPromptSubmit payload. Binds through the wrapper's descriptor
+ * (the payload's own session id must match it); lists the bound thread's
+ * pending results; never writes — running the hook is not delivery. Any
+ * refusal yields no context and never blocks the prompt.
+ */
+export function executeTasksHook(payloadText: string, deps: TasksHookDeps = {}): TasksHookResult {
+  let payload: unknown;
+  try {
+    payload = JSON.parse(payloadText);
+  } catch {
+    return { ok: false, reason: "hook payload is not JSON" };
+  }
+  if (typeof payload !== "object" || payload === null) return { ok: false, reason: "hook payload is not an object" };
+  const p = payload as Record<string, unknown>;
+  if (p.hook_event_name !== "UserPromptSubmit") {
+    return { ok: false, reason: `hook event ${JSON.stringify(p.hook_event_name ?? null)} is not UserPromptSubmit` };
+  }
+  const baseEnv = deps.env ?? process.env;
+  const env =
+    typeof p.session_id === "string" && p.session_id !== ""
+      ? { ...baseEnv, CLAUDE_CODE_SESSION_ID: p.session_id }
+      : baseEnv;
+  const bound = bindReadyDescriptor({
+    env,
+    descriptorIo: deps.descriptorIo ?? defaultDescriptorIo(),
+    rolloutBindIo: deps.rolloutBindIo ?? defaultRolloutBindIo(),
+    ...(deps.descriptorPath === undefined ? {} : { descriptorPath: deps.descriptorPath }),
+  });
+  if (!bound.ok) return { ok: false, reason: bound.reason };
+  const threadId = bound.descriptor.threadId as string;
+  const store = (deps.openStore ?? openContinuityStore)(deps.continuityDbPath ?? defaultLineageDbPath());
+  try {
+    const pending = store.listPendingResults(threadId);
+    return { ok: true, additionalContext: formatResultContext(pending), keys: pending.map((r) => r.launchId) };
+  } finally {
+    store.close();
+  }
+}
+
+function readAll(stream: NodeJS.ReadableStream): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    stream.on("data", (chunk: Buffer | string) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+    stream.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    stream.on("error", reject);
+  });
+}
+
+/** The hook's process contract: exit 0 always; JSON on stdout only when there is context; reasons on stderr. */
+export async function runTasksHookCli(
+  streams: { stdin?: NodeJS.ReadableStream; stdout?: NodeJS.WritableStream; stderr?: NodeJS.WritableStream } = {},
+  deps: TasksHookDeps = {},
+): Promise<number> {
+  const out = streams.stdout ?? process.stdout;
+  const err = streams.stderr ?? process.stderr;
+  let payload = "";
+  try {
+    payload = await readAll(streams.stdin ?? process.stdin);
+  } catch (cause) {
+    await writeAll(
+      err,
+      `cc-lhc tasks hook: stdin unreadable: ${cause instanceof Error ? cause.message : String(cause)}\n`,
+    );
+    return 0;
+  }
+  let result: TasksHookResult;
+  try {
+    result = executeTasksHook(payload, deps);
+  } catch (cause) {
+    result = { ok: false, reason: cause instanceof Error ? cause.message : String(cause) };
+  }
+  if (!result.ok) {
+    await writeAll(err, `cc-lhc tasks hook: no results supplied: ${result.reason}\n`);
+    return 0;
+  }
+  if (result.additionalContext === "") return 0;
+  await writeAll(
+    out,
+    `${JSON.stringify({
+      hookSpecificOutput: { hookEventName: "UserPromptSubmit", additionalContext: result.additionalContext },
+    })}\n`,
+  );
+  return 0;
 }
 
 export function parseTasksArgv(
@@ -136,9 +241,10 @@ export function executeTasks(argv: readonly string[], deps: TasksCliDeps = {}): 
 
 export async function runTasksCli(
   argv: readonly string[],
-  streams: { stdout?: NodeJS.WritableStream; stderr?: NodeJS.WritableStream } = {},
+  streams: { stdin?: NodeJS.ReadableStream; stdout?: NodeJS.WritableStream; stderr?: NodeJS.WritableStream } = {},
   deps: TasksCliDeps = {},
 ): Promise<number> {
+  if (isTasksHookArgv(argv)) return runTasksHookCli(streams, deps);
   const out = streams.stdout ?? process.stdout;
   const err = streams.stderr ?? process.stderr;
   const result = executeTasks(argv, deps);

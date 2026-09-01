@@ -12,6 +12,7 @@ import {
   threads,
 } from "lhc";
 import type { CaptureCommandContext } from "../commands/dispatch.js";
+import { deliveredResultKeys } from "../continuity/delivery.js";
 import { CAPTURE_VIEW_CONFIG } from "../governor/band-allocation.js";
 import { ccAssignments } from "../inference/assignments.js";
 import { claudeCliModelCall } from "../inference/claude-cli.js";
@@ -202,6 +203,11 @@ export interface CaptureSessionDeps {
   onAsyncWorkEvent?: (event: AsyncWorkEvent, threadId: string) => void;
   /** Work carried into this (rebuilt) session by Smart Compact, pre-opened so its terminal evidence is recognized. */
   seedAsyncWork?: readonly OpenAsyncWork[];
+  /**
+   * Result keys the live rollout proves were delivered to the model (the
+   * `UserPromptSubmit` hook's accepted context, LIM-146), with the bound thread id.
+   */
+  onResultDelivery?: (launchIds: readonly string[], threadId: string) => void;
   /** Latest runtime choices explicitly recorded by the bound Claude rollout. */
   onRuntimeSettings?: (settings: Readonly<ClaudeRuntimeSettings>) => void;
   /** Generation id seed (tests / restart counters). */
@@ -678,6 +684,17 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           if (nextRuntimeSettings !== runtimeSettings) {
             runtimeSettings = nextRuntimeSettings;
             deps.onRuntimeSettings?.({ ...runtimeSettings });
+          }
+          if (deps.onResultDelivery !== undefined && threadRef !== undefined) {
+            const deliveredKeys = deliveredResultKeys(emission.item);
+            const deliveryThreadId = threadIdFromRef(threadRef);
+            if (deliveredKeys.length > 0 && deliveryThreadId !== "") {
+              try {
+                deps.onResultDelivery(deliveredKeys, deliveryThreadId);
+              } catch (cause) {
+                logError(`cc-lhc continuity: result-delivery subscriber threw: ${detail(cause)}`);
+              }
+            }
           }
 
           stats.skippedSidechain += observed.stats.sidechain;

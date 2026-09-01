@@ -108,7 +108,20 @@ export interface SettingsMergeInput {
   operatorStatusLine?: unknown;
   /** Child platform; defaults to this process. Parameterized so win32 serialization is testable anywhere. */
   platform?: NodeJS.Platform;
+  /**
+   * LIM-146: the launch-scoped `UserPromptSubmit` hook that delivers carried
+   * results. Appended to the user's own hooks for that event, never replacing
+   * them; a payload whose `hooks` cannot be extended keeps the status line and
+   * reports the hook unavailable.
+   */
+  deliveryHook?: { command: string; timeoutSeconds: number };
 }
+
+export type DeliveryHookOutcome =
+  | { kind: "installed" }
+  | { kind: "already_present" }
+  | { kind: "not_requested" }
+  | { kind: "unavailable"; reason: string };
 
 export type SettingsMergeResult =
   | {
@@ -121,8 +134,33 @@ export type SettingsMergeResult =
        * that is the operator's private configuration.
        */
       operatorStatusLine: "chained" | "none";
+      deliveryHook: DeliveryHookOutcome;
     }
   | { kind: "detection_unavailable"; reason: string; argv: string[] };
+
+/** Extend `hooks.UserPromptSubmit` with the delivery hook, preserving every existing entry byte-for-byte. */
+function mergeDeliveryHook(
+  base: Record<string, unknown>,
+  hook: { command: string; timeoutSeconds: number } | undefined,
+): { hooks: unknown; outcome: DeliveryHookOutcome } {
+  if (hook === undefined) return { hooks: base.hooks, outcome: { kind: "not_requested" } };
+  const hooks: unknown = base.hooks ?? {};
+  if (!isPlainObject(hooks))
+    return { hooks: base.hooks, outcome: { kind: "unavailable", reason: "hooks is not an object" } };
+  const existing: unknown = hooks.UserPromptSubmit ?? [];
+  if (!Array.isArray(existing)) {
+    return { hooks: base.hooks, outcome: { kind: "unavailable", reason: "hooks.UserPromptSubmit is not an array" } };
+  }
+  const present = existing.some(
+    (group) =>
+      isPlainObject(group) &&
+      Array.isArray(group.hooks) &&
+      group.hooks.some((h) => isPlainObject(h) && h.type === "command" && h.command === hook.command),
+  );
+  if (present) return { hooks, outcome: { kind: "already_present" } };
+  const entry = { hooks: [{ type: "command", command: hook.command, timeout: hook.timeoutSeconds }] };
+  return { hooks: { ...hooks, UserPromptSubmit: [...existing, entry] }, outcome: { kind: "installed" } };
+}
 
 /**
  * The capture path as the status-line shell will resolve it. Git Bash (the
@@ -204,7 +242,8 @@ export function mergeLaunchSettings(input: SettingsMergeInput): SettingsMergeRes
     statusLine = { ...userLine, command: `tee -a ${capture} | ${userLine.command}` };
   }
 
-  const settings = { ...base, statusLine };
+  const delivery = mergeDeliveryHook(base, input.deliveryHook);
+  const settings = { ...base, statusLine, ...(delivery.hooks === undefined ? {} : { hooks: delivery.hooks }) };
   const token = JSON.stringify(settings);
   const out = [...argv];
   if (hit === null) {
@@ -215,7 +254,7 @@ export function mergeLaunchSettings(input: SettingsMergeInput): SettingsMergeRes
   } else {
     out.splice(hit.index, hit.span, "--settings", token);
   }
-  return { kind: "merged", argv: out, settings, operatorStatusLine };
+  return { kind: "merged", argv: out, settings, operatorStatusLine, deliveryHook: delivery.outcome };
 }
 
 export function readSettingsFileOrNull(path: string): string | null {

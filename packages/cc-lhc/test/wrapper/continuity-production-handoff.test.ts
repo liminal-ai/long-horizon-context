@@ -9,14 +9,16 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { qualifyActiveItems, statPathReal } from "../../src/continuity/adapters.js";
+import { deliveredResultKeys, RESULT_HOOK_TIMEOUT_SECONDS } from "../../src/continuity/delivery.js";
 import { invokeCarryover, relaunchOutputPath } from "../../src/continuity/handoff.js";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
 import { type ContinuitySnapshot, closeContinuitySnapshot, snapshotContinuity } from "../../src/continuity/snapshot.js";
 import { type ContinuityStore, openContinuityStore } from "../../src/continuity/store.js";
+import { runTasksCli } from "../../src/continuity/tasks-cli.js";
 import { CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
@@ -55,6 +57,69 @@ vi.mock("../../src/commands/rebuild-receipt.js", async (importOriginal) => {
 });
 
 const REBUILT_ID = "12345678-1234-1234-1234-123456789abc";
+/** The hook command the wrapper registers; the test runs the same op in-process. */
+const HOOK_COMMAND = "'/usr/bin/node' '/opt/cc-lhc/dist/bin.js' tasks hook";
+const OUR_HOOK_ENTRY = { hooks: [{ type: "command", command: HOOK_COMMAND, timeout: RESULT_HOOK_TIMEOUT_SECONDS }] };
+
+function settingsArg(args: readonly string[]): Record<string, unknown> {
+  const hits = args.map((a, i) => (a === "--settings" ? i : -1)).filter((i) => i >= 0);
+  expect(hits).toHaveLength(1);
+  return JSON.parse(args[hits[0]! + 1]!) as Record<string, unknown>;
+}
+
+/** Claude Code 2.1.252's rollout record for a UserPromptSubmit hook's accepted context. */
+function hookContextRecord(context: string): RolloutLineItem {
+  return {
+    type: "attachment",
+    isSidechain: false,
+    userType: "external",
+    attachment: {
+      type: "hook_additional_context",
+      content: [context],
+      hookName: "UserPromptSubmit",
+      toolUseID: "hook-7ce74903-1313-4672-b351-59461a06e9b3",
+      hookEvent: "UserPromptSubmit",
+    },
+  } as unknown as RolloutLineItem;
+}
+
+/** Run the registered hook op the way Claude does: payload on stdin, in the child's environment. */
+async function runHook(env: Record<string, string>, sessionId: string, transcriptPath: string) {
+  let out = "";
+  let err = "";
+  const stdin = new PassThrough();
+  stdin.end(
+    JSON.stringify({
+      session_id: sessionId,
+      transcript_path: transcriptPath,
+      cwd: process.cwd(),
+      prompt_id: "p-1",
+      permission_mode: "default",
+      hook_event_name: "UserPromptSubmit",
+      prompt: "what happened to the reviewer?",
+    }),
+  );
+  const code = await runTasksCli(
+    ["tasks", "hook"],
+    {
+      stdin,
+      stdout: new Writable({
+        write: (c, _e, cb) => {
+          out += c.toString();
+          cb();
+        },
+      }),
+      stderr: new Writable({
+        write: (c, _e, cb) => {
+          err += c.toString();
+          cb();
+        },
+      }),
+    },
+    { env: { ...env, CLAUDE_CODE_SESSION_ID: sessionId } },
+  );
+  return { code, out, err };
+}
 const T = "th_auto";
 /** A real, harmless Monitor command: the relaunch proves itself by what it writes. */
 const MONITOR_COMMAND = "printf relaunched-once-XyZ";
@@ -64,6 +129,8 @@ const MONITOR_LINES = [
 ];
 
 interface FakePty {
+  /** The environment the wrapper spawned this child with. */
+  env: Record<string, string>;
   pid: number;
   args: string[];
   killed: string[];
@@ -76,12 +143,13 @@ interface FakePty {
   resize(): void;
 }
 
-function makeFakePty(pid: number, args: string[]): FakePty {
+function makeFakePty(pid: number, args: string[], env: Record<string, string> = {}): FakePty {
   const exitCbs: Array<(arg: { exitCode: number; signal?: number }) => void> = [];
   const dataCbs: Array<(data: string) => void> = [];
   const fake: FakePty = {
     pid,
     args,
+    env,
     killed: [],
     writes: [],
     fireExit(code, signal) {
@@ -253,7 +321,7 @@ interface Rig {
 const homes: string[] = [];
 
 /** Launch the wrapper on the old session with capture fed by real rollout records. */
-async function launch(layout: Parameters<typeof hostLayout>[1] = {}): Promise<Rig> {
+async function launch(layout: Parameters<typeof hostLayout>[1] = {}, claudeArgv: string[] = []): Promise<Rig> {
   const home = mkdtempSync(join(tmpdir(), "cc-lhc-continuity-prod-"));
   homes.push(home);
   process.env.CC_LHC_HOME = home;
@@ -292,7 +360,11 @@ async function launch(layout: Parameters<typeof hostLayout>[1] = {}): Promise<Ri
     // The real fold, wired to the parent exactly as production wires it — including the carried seed.
     const fold = createAsyncWorkFold((event) => opts.onAsyncWorkEvent?.(event, T), opts.seedAsyncWork ?? []);
     const feed = (lines: RolloutLineItem[]) => {
-      for (const line of lines) observeAsyncWorkLine(line, fold);
+      for (const line of lines) {
+        observeAsyncWorkLine(line, fold);
+        const delivered = deliveredResultKeys(line);
+        if (delivered.length > 0) opts.onResultDelivery?.(delivered, T);
+      }
     };
     feedCurrent = feed;
     if (!isRebuilt) {
@@ -334,10 +406,11 @@ async function launch(layout: Parameters<typeof hostLayout>[1] = {}): Promise<Ri
   (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
     terminalOutput += chunk.toString("utf8");
   });
-  const runPromise = run([], {
+  const runPromise = run(claudeArgv, {
     claudeBin: "fake-claude",
-    spawnPty: ((_file: string, args: string[]) => {
-      const fake = makeFakePty(1000 + spawned.length, args);
+    resultHookCommand: HOOK_COMMAND,
+    spawnPty: ((_file: string, args: string[], opts: { env?: Record<string, string> }) => {
+      const fake = makeFakePty(1000 + spawned.length, args, opts.env ?? {});
       spawned.push(fake);
       return fake as never;
     }) as never,
@@ -551,6 +624,135 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(rig.spawned.map((p) => p.writes.length)).toEqual(before.ptyWrites);
     expect(readFileSync(rebuiltPath).equals(before.rollout)).toBe(true);
     expect(sdkCalls()).toEqual(before.sdk);
+    store.close();
+    await rig.finish();
+  }, 15_000);
+
+  it("TC-2.7c/d/e: the hook is registered beside the user's own hooks; the real hook answers the real payload; only the rollout's record of that context marks exact keys delivered", async () => {
+    const userHooks = {
+      PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/home/u/audit.sh --strict" }] }],
+      UserPromptSubmit: [{ hooks: [{ type: "command", command: "/home/u/prompt-guard.sh", timeout: 3 }] }],
+    };
+    const userSettingsPath = join(mkdtempSync(join(tmpdir(), "cc-lhc-user-settings-")), "settings.json");
+    writeFileSync(userSettingsPath, JSON.stringify({ hooks: userHooks, theme: "dark" }));
+    const rig = await launch({}, ["--settings", userSettingsPath]);
+    rig.feed(fiveFamilyLaunch(rig.paths));
+    await storeHas(rig.dbPath, ALL_IDS);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+    await waitFor(() => rig.spawned.length === 2, "replacement child");
+
+    // Every managed child carries one settings payload: the user's hooks exactly, ours appended, the status line merged.
+    for (const child of rig.spawned) {
+      const settings = settingsArg(child.args);
+      expect(settings.theme).toBe("dark");
+      expect(settings.hooks).toEqual({
+        ...userHooks,
+        UserPromptSubmit: [...userHooks.UserPromptSubmit, OUR_HOOK_ENTRY],
+      });
+      expect(settings.statusLine).toMatchObject({ type: "command" });
+      expect(child.env.CC_LHC_RUNTIME_DESCRIPTOR).toBeTruthy();
+    }
+
+    // Carried work finishes while idle → pending results (Pass B).
+    const store = openContinuityStore(rig.dbPath);
+    rig.feedCurrent([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    rig.feedCurrent([notification({ taskIds: ["shell-1"], status: "failed" })]);
+    await waitFor(() => store.listPendingResults(T).length === 2, "durable results");
+    const rebuiltPath = join(rig.home, `${REBUILT_ID}.jsonl`);
+    const sdkCalls = () =>
+      Object.fromEntries(
+        Object.entries(rig.sdk.threadView).map(([name, fn]) => [
+          name,
+          (fn as ReturnType<typeof vi.fn>).mock.calls.length,
+        ]),
+      );
+    const before = {
+      sdk: sdkCalls(),
+      ptyWrites: rig.spawned.map((p) => p.writes.length),
+      rollout: readFileSync(rebuiltPath),
+    };
+
+    // The user submits a real prompt: Claude runs the registered hook in the replacement's environment.
+    const replacement = rig.spawned[1]!;
+    const hook = await runHook(replacement.env, REBUILT_ID, rebuiltPath);
+    expect(hook.code).toBe(0);
+    expect(hook.err).toBe("");
+    const context = (JSON.parse(hook.out) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput
+      .additionalContext;
+    expect(context).toContain(`result ${LAUNCH_IDS.agent} · agent · background agent "reviewer" (agent-1) · completed`);
+    expect(context).toContain(
+      `result ${LAUNCH_IDS.background_shell} · background_shell · background command (shell-1) · failed`,
+    );
+    expect(context).not.toContain("curl");
+    expect(context).not.toContain(rig.paths.tasksDir);
+    // Hook invocation alone acknowledges nothing.
+    expect(store.listPendingResults(T).map((r) => r.delivery)).toEqual(["pending", "pending"]);
+    // A hook run for a foreign session gets nothing.
+    expect((await runHook(replacement.env, "ffffffff-0000-0000-0000-000000000000", rebuiltPath)).out).toBe("");
+
+    // Partial/foreign evidence first: a record naming a foreign key and one real key delivers exactly that key.
+    const header = context.split("\n")[0]!;
+    rig.feedCurrent([
+      hookContextRecord(
+        `${header}\nresult agent:nobody:toolu_x · agent · ghost · completed\nresult ${LAUNCH_IDS.agent} · agent · x · completed`,
+      ),
+    ]);
+    await waitFor(() => store.getResult(T, LAUNCH_IDS.agent)?.delivery === "delivered", "partial delivery");
+    expect(store.getResult(T, LAUNCH_IDS.background_shell)).toMatchObject({ delivery: "pending" });
+    // User text quoting a key is not delivery.
+    rig.feedCurrent([{ type: "user", message: { role: "user", content: context } } as unknown as RolloutLineItem]);
+    expect(store.getResult(T, LAUNCH_IDS.background_shell)).toMatchObject({ delivery: "pending" });
+
+    // Claude's record of the hook's accepted context, in the normal capture path, delivers the rest — once.
+    rig.feedCurrent([hookContextRecord(context)]);
+    await waitFor(() => store.listPendingResults(T).length === 0, "delivered");
+    const delivered = [LAUNCH_IDS.agent, LAUNCH_IDS.background_shell].map((id) => store.getResult(T, id)!);
+    expect(delivered.map((r) => r.delivery)).toEqual(["delivered", "delivered"]);
+    rig.feedCurrent([hookContextRecord(context)]);
+    expect([LAUNCH_IDS.agent, LAUNCH_IDS.background_shell].map((id) => store.getResult(T, id))).toEqual(delivered);
+    await waitFor(() => wrapperLog(rig).includes("carried result(s) delivered on a real prompt"), "delivery log");
+    expect(wrapperLog(rig).match(/carried result\(s\) delivered on a real prompt/g)).toHaveLength(2);
+
+    // Throughout: no provider call, no PTY write, no rollout mutation, no synthetic turn.
+    expect(sdkCalls()).toEqual(before.sdk);
+    expect(rig.spawned.map((p) => p.writes.length)).toEqual(before.ptyWrites);
+    expect(readFileSync(rebuiltPath).equals(before.rollout)).toBe(true);
+    // The next hook run has nothing to add; the panel no longer lists them.
+    expect((await runHook(replacement.env, REBUILT_ID, rebuiltPath)).out).toBe("");
+    (rig.stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(() => rig.terminalOutput().includes("type /help for commands"), "panel");
+    expect(rig.terminalOutput()).not.toContain("carried work finished");
+    store.close();
+    await rig.finish();
+  }, 15_000);
+
+  it("TC-2.7 fallback: when the user's settings cannot take the hook, the status line still merges, nothing blocks, and results stay pending in the panel", async () => {
+    const userSettingsPath = join(mkdtempSync(join(tmpdir(), "cc-lhc-user-settings-")), "settings.json");
+    writeFileSync(userSettingsPath, JSON.stringify({ hooks: "nope" }));
+    const rig = await launch({}, ["--settings", userSettingsPath]);
+    rig.feed(fiveFamilyLaunch(rig.paths));
+    await storeHas(rig.dbPath, ALL_IDS);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+    await waitFor(() => rig.spawned.length === 2, "replacement child");
+    for (const child of rig.spawned) {
+      const settings = settingsArg(child.args);
+      expect(settings.hooks).toBe("nope");
+      expect(settings.statusLine).toMatchObject({ type: "command" });
+    }
+    await waitFor(
+      () => wrapperLog(rig).includes("result delivery hook not installed (hooks is not an object)"),
+      "fallback log",
+    );
+    const store = openContinuityStore(rig.dbPath);
+    rig.feedCurrent([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    await waitFor(() => store.listPendingResults(T).length === 1, "durable result");
+    (rig.stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(() => rig.terminalOutput().includes("carried work finished"), "panel notice");
+    expect(store.listPendingResults(T).map((r) => r.delivery)).toEqual(["pending"]);
     store.close();
     await rig.finish();
   }, 15_000);
