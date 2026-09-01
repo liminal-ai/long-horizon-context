@@ -6,7 +6,7 @@
  * the generation closes. Covers TC-2.3a/b, TC-2.5a-d, TC-2.6a, TC-2.8a-c and
  * the Monitor relaunch fence.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough, Writable } from "node:stream";
@@ -143,7 +143,7 @@ interface FakePty {
   resize(): void;
 }
 
-function makeFakePty(pid: number, args: string[], env: Record<string, string> = {}): FakePty {
+function makeFakePty(pid: number, args: string[], env: Record<string, string> = {}, emitsOutput = true): FakePty {
   const exitCbs: Array<(arg: { exitCode: number; signal?: number }) => void> = [];
   const dataCbs: Array<(data: string) => void> = [];
   const fake: FakePty = {
@@ -157,9 +157,11 @@ function makeFakePty(pid: number, args: string[], env: Record<string, string> = 
     },
     onData: (cb) => {
       dataCbs.push(cb);
-      setTimeout(() => {
-        for (const dataCb of dataCbs) dataCb("render\r\n");
-      }, 30);
+      if (emitsOutput) {
+        setTimeout(() => {
+          for (const dataCb of dataCbs) dataCb("render\r\n");
+        }, 30);
+      }
       return { dispose() {} };
     },
     onExit: (cb) => {
@@ -257,6 +259,18 @@ const POLICY = {
 };
 
 const BOUND_SIGNALS: LifecycleSignal[] = [{ kind: "session_bound", sessionId: "old-session" }];
+/** A later settled seam over the trigger: a distinct sampling so dedupe cannot swallow it. */
+function laterSeam(id: string): LifecycleSignal[] {
+  return [
+    { kind: "turn_opened", reason: "user_prompt" },
+    {
+      kind: "sampling_observed",
+      samplingId: `req:${id}`,
+      providerUsage: { input_tokens: 2, cache_creation_input_tokens: 3_000, cache_read_input_tokens: 3_000 },
+    },
+    { kind: "turn_settled", reason: "end_turn" },
+  ];
+}
 const TRIGGER_SIGNALS: LifecycleSignal[] = [
   { kind: "turn_opened", reason: "user_prompt" },
   {
@@ -321,7 +335,18 @@ interface Rig {
 const homes: string[] = [];
 
 /** Launch the wrapper on the old session with capture fed by real rollout records. */
-async function launch(layout: Parameters<typeof hostLayout>[1] = {}, claudeArgv: string[] = []): Promise<Rig> {
+interface LaunchOptions {
+  /** The first N replacement candidates never produce output, so they fail viability before the switch. */
+  muteCandidates?: number;
+}
+
+async function launch(
+  layout: Parameters<typeof hostLayout>[1] = {},
+  claudeArgv: string[] = [],
+  options: LaunchOptions = {},
+): Promise<Rig> {
+  const muteCandidates = options.muteCandidates ?? 0;
+  let candidates = 0;
   const home = mkdtempSync(join(tmpdir(), "cc-lhc-continuity-prod-"));
   homes.push(home);
   process.env.CC_LHC_HOME = home;
@@ -410,7 +435,10 @@ async function launch(layout: Parameters<typeof hostLayout>[1] = {}, claudeArgv:
     claudeBin: "fake-claude",
     resultHookCommand: HOOK_COMMAND,
     spawnPty: ((_file: string, args: string[], opts: { env?: Record<string, string> }) => {
-      const fake = makeFakePty(1000 + spawned.length, args, opts.env ?? {});
+      const isCandidate = args.includes(REBUILT_ID);
+      if (isCandidate) candidates += 1;
+      const mute = isCandidate && candidates <= muteCandidates;
+      const fake = makeFakePty(1000 + spawned.length, args, opts.env ?? {}, !mute);
       spawned.push(fake);
       return fake as never;
     }) as never,
@@ -423,11 +451,12 @@ async function launch(layout: Parameters<typeof hostLayout>[1] = {}, claudeArgv:
     onHandoffResult: (result) => {
       results.push(result);
     },
+    ...(muteCandidates > 0 ? { replacementAttempts: 1 } : {}),
     handoffTimeouts: {
       sigtermGraceMs: 500,
       sigkillWaitMs: 300,
       captureReadyTimeoutMs: 2_000,
-      childLivenessTimeoutMs: 3_000,
+      childLivenessTimeoutMs: muteCandidates > 0 ? 400 : 3_000,
       childStableWindowMs: 100,
     },
   });
@@ -756,6 +785,143 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     store.close();
     await rig.finish();
   }, 15_000);
+
+  it("TC-2.9a/2.12a-b: a replacement that fails before the switch leaves the old child authoritative and nothing carried; old-session evidence yields one result; the next seam transfers the remainder once under the next generation", async () => {
+    const rig = await launch({}, [], { muteCandidates: 1 });
+    rig.feed(fiveFamilyLaunch(rig.paths));
+    await storeHas(rig.dbPath, ALL_IDS);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "first handoff result");
+    expect(rig.results[0]!.kind).toBe("replacement_nonviable");
+    expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
+    expect(rig.spawned).toHaveLength(2);
+    // Old routing/authority: the old child was never signalled and still receives input.
+    expect(rig.spawned[0]!.killed).toHaveLength(0);
+    (rig.stdin as unknown as PassThrough).write(Buffer.from("k"));
+    await waitFor(() => rig.spawned[0]!.writes.some((w) => String(w) === "k"), "input routed to the old child");
+    expect(wrapperLog(rig)).not.toContain("typed-ahead");
+    expect(rig.spawned[1]!.writes).toEqual([]);
+    // Zero carry invocation: no relaunch, no closure, no transition claimed.
+    expect(existsSync(relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1))).toBe(false);
+    expect(wrapperLog(rig)).not.toMatch(/restarted once|adopted|re-armed|generation 1 closed/);
+    // One truthful representation: generation 1 prepared and open, every item stamped once, no results.
+    withStore(rig.dbPath, (store) => {
+      expect(store.getGeneration(T, 1)).toMatchObject({ state: "open", launchIds: expect.arrayContaining(ALL_IDS) });
+      expect(store.listItems(T)).toHaveLength(5);
+      for (const id of ALL_IDS) expect(store.getItem(T, id)).toMatchObject({ state: "active", generation: 1 });
+      expect(store.listPendingResults(T)).toEqual([]);
+    });
+
+    // Old-session terminal evidence, plus a duplicate: one item closes, one pending result, no second row.
+    rig.feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    rig.feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length === 1), "one result");
+    withStore(rig.dbPath, (store) => {
+      expect(store.getItem(T, LAUNCH_IDS.agent)).toMatchObject({ state: "terminal", generation: 1 });
+      expect(store.listItems(T)).toHaveLength(5);
+      expect(store.listPendingResults(T).map((r) => [r.launchId, r.generation, r.outcome])).toEqual([
+        [LAUNCH_IDS.agent, 1, "completed"],
+      ]);
+    });
+
+    // A later normal seam: requalify what is still active, allocate generation 2 (1 superseded), transfer once.
+    rig.lifecycle(laterSeam("retry"));
+    await waitFor(() => rig.results.length === 2, "second handoff result");
+    expect(rig.results[1]!.kind).toBe("success");
+    expect(rig.sdk.threadView.compact).toHaveBeenCalledTimes(2);
+    expect(rig.spawned).toHaveLength(3);
+    const remaining = ALL_IDS.filter((id) => id !== LAUNCH_IDS.agent);
+    await waitFor(
+      () => wrapperLog(rig).includes("generation 2 closed: 4 carried, 0 not carried"),
+      "generation 2 closed",
+    );
+    const relaunched = relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 2);
+    await waitFor(
+      () => existsSync(relaunched) && readFileSync(relaunched, "utf8") === "relaunched-once-XyZ",
+      "relaunch output",
+    );
+    expect(existsSync(relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1))).toBe(false);
+    expect(wrapperLog(rig).match(/restarted once/g)).toHaveLength(1);
+    // The rebuilt session's manifest names the four remaining items once and not the finished agent.
+    const note = rig.receipts[1]!;
+    expect(note).toContain("generation 2");
+    expect(note).not.toContain("agent-1");
+    for (const id of remaining) expect(note.split(`[${id}]`)).toHaveLength(2);
+    withStore(rig.dbPath, (store) => {
+      expect(store.getGeneration(T, 1)).toMatchObject({ state: "superseded" });
+      expect(store.getGeneration(T, 2)).toMatchObject({
+        state: "closed",
+        launchIds: expect.arrayContaining(remaining),
+      });
+      expect(store.getGeneration(T, 2)!.launchIds).toHaveLength(4);
+      for (const id of remaining) expect(store.getItem(T, id)).toMatchObject({ state: "active", generation: 2 });
+      expect(store.getItem(T, LAUNCH_IDS.agent)).toMatchObject({ state: "terminal", generation: 1 });
+      expect(store.listItems(T)).toHaveLength(5);
+      // Still exactly one result: the failed attempt duplicated nothing.
+      expect(store.listPendingResults(T).map((r) => r.launchId)).toEqual([LAUNCH_IDS.agent]);
+    });
+    await rig.finish();
+  }, 20_000);
+
+  it("TC-2.12c: after a failed activation, a shell whose output identity changed is refused by the adapter at the next seam — never adopted — and once it has finished the remainder transfers once", async () => {
+    const rig = await launch({}, [], { muteCandidates: 1 });
+    rig.feed(fiveFamilyLaunch(rig.paths));
+    await storeHas(rig.dbPath, ALL_IDS);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "first handoff result");
+    expect(rig.results[0]!.kind).toBe("replacement_nonviable");
+
+    // The recorded output file is replaced by another object at the same path (stale/foreign identity).
+    const outputPath = join(rig.paths.tasksDir, "shell-1.output");
+    const replacement = `${outputPath}.new`;
+    writeFileSync(replacement, "someone else's output\n");
+    renameSync(replacement, outputPath);
+
+    rig.lifecycle(laterSeam("stale"));
+    await waitFor(
+      () => withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.background_shell)?.state === "unknown"),
+      "adapter refusal recorded",
+    );
+    await waitFor(
+      () => wrapperLog(rig).includes(LAUNCH_IDS.background_shell) && /unverified/.test(wrapperLog(rig)),
+      "refusal logged",
+    );
+    // Refused before any mutation: no second compact, no candidate, old child still routed and untouched.
+    expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
+    expect(rig.results).toHaveLength(1);
+    expect(rig.spawned).toHaveLength(2);
+    expect(rig.spawned[0]!.killed).toHaveLength(0);
+    withStore(rig.dbPath, (store) => {
+      expect(store.latestGeneration(T)).toMatchObject({ generation: 1 });
+      expect(store.getItem(T, LAUNCH_IDS.background_shell)).toMatchObject({ state: "unknown", generation: 1 });
+      expect(store.listPendingResults(T)).toEqual([]);
+    });
+
+    // The stale shell finishes (old-session evidence): one result, and the remaining work can move.
+    rig.feed([notification({ taskIds: ["shell-1"], status: "stopped" })]);
+    await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length === 1), "shell result");
+    rig.lifecycle(laterSeam("after-stale"));
+    await waitFor(() => rig.results.length === 2, "second handoff result");
+    expect(rig.results[1]!.kind).toBe("success");
+    expect(rig.sdk.threadView.compact).toHaveBeenCalledTimes(2);
+    await waitFor(
+      () => wrapperLog(rig).includes("generation 2 closed: 4 carried, 0 not carried"),
+      "generation 2 closed",
+    );
+    const remaining = ALL_IDS.filter((id) => id !== LAUNCH_IDS.background_shell);
+    withStore(rig.dbPath, (store) => {
+      expect(store.getGeneration(T, 1)).toMatchObject({ state: "superseded" });
+      expect([...store.getGeneration(T, 2)!.launchIds].sort()).toEqual([...remaining].sort());
+      expect(store.getItem(T, LAUNCH_IDS.background_shell)).toMatchObject({ state: "terminal", generation: 1 });
+      for (const id of remaining) expect(store.getItem(T, id)).toMatchObject({ state: "active", generation: 2 });
+      expect(store.listPendingResults(T).map((r) => [r.launchId, r.outcome])).toEqual([
+        [LAUNCH_IDS.background_shell, "stopped"],
+      ]);
+    });
+    expect(rig.receipts[1]).not.toContain("shell-1");
+    expect(wrapperLog(rig).match(/restarted once/g)).toHaveLength(1);
+    await rig.finish();
+  }, 20_000);
 
   it("Monitor: relaunched exactly once under relaunchKey(launchId, generation), reported restarted, never repeated", async () => {
     const rig = await launch();
