@@ -22,6 +22,7 @@ import {
   createAsyncWorkFold,
   type OpenAsyncWork,
   openAsyncWork,
+  seedAsyncWorkFold,
 } from "../observation/async-work.js";
 import {
   applyCaptureDegraded,
@@ -201,8 +202,13 @@ export interface CaptureSessionDeps {
    * continuity record (LIM-145). Fires only for live-suffix lines after bind.
    */
   onAsyncWorkEvent?: (event: AsyncWorkEvent, threadId: string) => void;
-  /** Work carried into this (rebuilt) session by Smart Compact, pre-opened so its terminal evidence is recognized. */
-  seedAsyncWork?: readonly OpenAsyncWork[];
+  /**
+   * Work the parent record already holds for the bound thread (carried across
+   * Smart Compact or a wrapper restart). Called once, with the thread id, after
+   * the thread is bound and before any live line is folded, so that work's
+   * terminal evidence is recognized. A throw seeds nothing and is reported.
+   */
+  seedAsyncWork?: (threadId: string) => readonly OpenAsyncWork[];
   /**
    * Result keys the live rollout proves were delivered to the model (the
    * `UserPromptSubmit` hook's accepted context, LIM-146), with the bound thread id.
@@ -455,8 +461,20 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       // The continuity record is a consumer; its failure never poisons intake.
       logError(`cc-lhc continuity: async-work subscriber threw: ${detail(cause)}`);
     }
-  }, deps.seedAsyncWork ?? []);
+  });
   let reportedAsyncDiagnostics = 0;
+  /** Post-bind seed: the record's open work for this thread, before the first live line. */
+  const seedCarriedWork = (): void => {
+    if (deps.seedAsyncWork === undefined || threadRef === undefined) return;
+    const threadId = threadIdFromRef(threadRef);
+    if (threadId === "") return;
+    try {
+      const added = seedAsyncWorkFold(asyncWorkFold, deps.seedAsyncWork(threadId));
+      if (added > 0) log(`cc-lhc continuity: ${added} carried item(s) seeded for thread ${threadId}`);
+    } catch (cause) {
+      logError(`cc-lhc continuity: carried work not seeded for thread ${threadId}: ${detail(cause)}`);
+    }
+  };
   const userOnLifecycle = deps.onLifecycle;
   /** Explicit boundary wins; otherwise lineage supplies provenance after resolve. */
   let resolvedPrefix: PrefixBoundary =
@@ -1063,6 +1081,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         }
       }
       if (stopped) return;
+      seedCarriedWork();
 
       // --- Prefix provenance gate (before any skip / watcher start) ---
       let watcherStartOffset = 0;

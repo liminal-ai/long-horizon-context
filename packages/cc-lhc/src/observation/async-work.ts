@@ -177,6 +177,22 @@ export function createAsyncWorkFold(
   return { open, pendingCalls: new Map(), diagnostics: [], ...(onEvent === undefined ? {} : { onEvent }) };
 }
 
+/**
+ * Pre-open work the record already knows about (carried across Smart Compact
+ * or a wrapper restart) without emitting events: the launch was recorded when
+ * it happened; only later terminal evidence is new. Work already open in the
+ * fold is left as it is.
+ */
+export function seedAsyncWorkFold(fold: AsyncWorkFold, seed: readonly OpenAsyncWork[]): number {
+  let added = 0;
+  for (const work of seed) {
+    if (fold.open.has(work.key)) continue;
+    fold.open.set(work.key, work);
+    added += 1;
+  }
+  return added;
+}
+
 function closeWork(fold: AsyncWorkFold, key: string, outcome: AsyncWorkTerminalOutcome, evidence: string): void {
   const work = fold.open.get(key);
   if (work === undefined) return;

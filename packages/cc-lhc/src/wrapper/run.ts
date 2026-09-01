@@ -561,19 +561,18 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
   const resultHookCommand = options.resultHookCommand ?? defaultResultHookCommand();
   const monitorOutputDir = join(dirname(options.governorReceiptDbPath ?? defaultLineageDbPath()), "continuity");
-  /** The carried items a rebuilt session's fold starts with, so their terminal evidence closes them. */
-  const carriedSeed = (threadRef: unknown): OpenAsyncWork[] => {
+  /**
+   * The record's carried open work for the bound thread, handed to every
+   * capture session (fresh launch, rebuilt session, wrapper restart) so its
+   * terminal evidence closes the same item. Unreadable state seeds nothing.
+   */
+  const carriedSeed = (threadId: string): OpenAsyncWork[] => {
     if (continuityStore === null) return [];
-    const threadId =
-      typeof threadRef === "object" && threadRef !== null && "threadId" in threadRef
-        ? String((threadRef as { threadId: unknown }).threadId)
-        : "";
-    if (threadId === "") return [];
     try {
       return carriedOpenWork(continuityStore, threadId);
     } catch (cause) {
       wrapperLog.warn(
-        `cc-lhc continuity: carried work unreadable: ${cause instanceof Error ? cause.message : String(cause)}`,
+        `cc-lhc continuity: carried work unreadable for thread ${threadId}; nothing seeded: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
       return [];
     }
@@ -971,6 +970,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       logError: (message) => wrapperLog.warn(message),
       onLifecycle: publishCaptureLifecycle,
       onAsyncWorkEvent: recordAsyncWorkEvent,
+      seedAsyncWork: carriedSeed,
       onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
     });
@@ -1099,12 +1099,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         knownRolloutPath: rebuilt.rolloutPath,
         prefixBoundary: rebuilt.prefixBoundary,
         suppressBindLineageRecord: true,
-        seedAsyncWork: carriedSeed(threadRef),
         lineageDbPath: defaultLineageDbPath(),
         log: (message) => wrapperLog.info(message),
         logError: (message) => wrapperLog.warn(message),
         onLifecycle: publishCaptureLifecycle,
         onAsyncWorkEvent: recordAsyncWorkEvent,
+        seedAsyncWork: carriedSeed,
         onResultDelivery: recordResultDelivery,
         onRuntimeSettings,
       });
@@ -1484,6 +1484,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             logError: (message) => wrapperLog.warn(message),
             onLifecycle: publishCaptureLifecycle,
             onAsyncWorkEvent: recordAsyncWorkEvent,
+            seedAsyncWork: carriedSeed,
             onResultDelivery: recordResultDelivery,
             onRuntimeSettings,
           });
@@ -1775,6 +1776,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       logError: (message) => wrapperLog.warn(message),
       onLifecycle: publishCaptureLifecycle,
       onAsyncWorkEvent: recordAsyncWorkEvent,
+      seedAsyncWork: carriedSeed,
       onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
     });
@@ -2827,12 +2829,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           knownRolloutPath: request.rebuilt.rolloutPath,
           prefixBoundary: request.rebuilt.prefixBoundary,
           suppressBindLineageRecord: true,
-          seedAsyncWork: carriedSeed(threadRef),
           lineageDbPath: defaultLineageDbPath(),
           log: (message) => wrapperLog.info(message),
           logError: (message) => wrapperLog.warn(message),
           onLifecycle: publishCaptureLifecycle,
           onAsyncWorkEvent: recordAsyncWorkEvent,
+          seedAsyncWork: carriedSeed,
           onResultDelivery: recordResultDelivery,
           onRuntimeSettings,
         });

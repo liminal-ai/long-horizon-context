@@ -9,6 +9,7 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { PassThrough, Writable } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -22,14 +23,27 @@ import { runTasksCli } from "../../src/continuity/tasks-cli.js";
 import { CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
-import { createAsyncWorkFold, observeAsyncWorkLine, openAsyncWork } from "../../src/observation/async-work.js";
+import {
+  createAsyncWorkFold,
+  type OpenAsyncWork,
+  observeAsyncWorkLine,
+  openAsyncWork,
+} from "../../src/observation/async-work.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { run } from "../../src/wrapper/run.js";
-import { LAUNCH_IDS, LAUNCHES, type LaunchPaths, notification, toolResult, toolUse } from "../continuity/helpers.js";
+import {
+  LAUNCH_IDS,
+  LAUNCHES,
+  type LaunchPaths,
+  notification,
+  qualifyAll,
+  toolResult,
+  toolUse,
+} from "../continuity/helpers.js";
 
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -120,13 +134,41 @@ async function runHook(env: Record<string, string>, sessionId: string, transcrip
   );
   return { code, out, err };
 }
+/** Run a `cc-lhc tasks` management op the way the replacement's Bash would: bound by the child's environment. */
+async function runTasks(env: Record<string, string>, sessionId: string, argv: string[]) {
+  let out = "";
+  let err = "";
+  const code = await runTasksCli(
+    ["tasks", ...argv],
+    {
+      stdout: new Writable({
+        write: (c, _e, cb) => {
+          out += c.toString();
+          cb();
+        },
+      }),
+      stderr: new Writable({
+        write: (c, _e, cb) => {
+          err += c.toString();
+          cb();
+        },
+      }),
+    },
+    { env: { ...env, CLAUDE_CODE_SESSION_ID: sessionId } },
+  );
+  return { code, out, err };
+}
 const T = "th_auto";
 /** A real, harmless Monitor command: the relaunch proves itself by what it writes. */
 const MONITOR_COMMAND = "printf relaunched-once-XyZ";
-const MONITOR_LINES = [
-  toolUse("toolu_mon", "Monitor", { command: MONITOR_COMMAND, description: "CI watch" }),
-  toolResult("toolu_mon", { taskId: "mon-1", timeoutMs: 60_000, persistent: false }),
-];
+function monitorLines(command: string): RolloutLineItem[] {
+  return [
+    toolUse("toolu_mon", "Monitor", { command, description: "CI watch" }),
+    toolResult("toolu_mon", { taskId: "mon-1", timeoutMs: 60_000, persistent: false }),
+  ];
+}
+/** A Monitor that stays alive after proving itself, so a restarted wrapper meets a live relaunched process. */
+const LONG_MONITOR_COMMAND = "printf relaunched-once-XyZ; sleep 30";
 
 interface FakePty {
   /** The environment the wrapper spawned this child with. */
@@ -258,7 +300,6 @@ const POLICY = {
   contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
 };
 
-const BOUND_SIGNALS: LifecycleSignal[] = [{ kind: "session_bound", sessionId: "old-session" }];
 /** A later settled seam over the trigger: a distinct sampling so dedupe cannot swallow it. */
 function laterSeam(id: string): LifecycleSignal[] {
   return [
@@ -282,7 +323,10 @@ const TRIGGER_SIGNALS: LifecycleSignal[] = [
 ];
 
 /** The old session's host layout, as Claude Code 2.1.252 lays it out, plus its rollout file. */
-function hostLayout(home: string, opts: { monitorInRollout?: boolean; agentTranscript?: boolean } = {}) {
+function hostLayout(
+  home: string,
+  opts: { monitorInRollout?: boolean; agentTranscript?: boolean; monitorCommand?: string } = {},
+) {
   const root = join(home, "claude-projects");
   const sessionDir = join(root, "session-old");
   const tasksDir = join(home, "tasks");
@@ -296,18 +340,18 @@ function hostLayout(home: string, opts: { monitorInRollout?: boolean; agentTrans
   writeFileSync(join(tasksDir, "mon-1.output"), "");
   const paths: LaunchPaths = { sessionDir, tasksDir };
   const rolloutPath = `${sessionDir}.jsonl`;
-  const rolloutLines = opts.monitorInRollout === false ? [] : MONITOR_LINES;
+  const rolloutLines = opts.monitorInRollout === false ? [] : monitorLines(opts.monitorCommand ?? MONITOR_COMMAND);
   writeFileSync(rolloutPath, `${rolloutLines.map((line) => JSON.stringify(line)).join("\n")}\n`);
   return { paths, rolloutPath };
 }
 
 /** Every family launched, as the old child's rollout reports it. */
-function fiveFamilyLaunch(paths: LaunchPaths): RolloutLineItem[] {
+function fiveFamilyLaunch(paths: LaunchPaths, monitorCommand = MONITOR_COMMAND): RolloutLineItem[] {
   return [
     ...LAUNCHES.agent.lines(paths),
     ...LAUNCHES.workflow.lines(paths),
     ...LAUNCHES.background_shell.lines(paths),
-    ...MONITOR_LINES,
+    ...monitorLines(monitorCommand),
     ...LAUNCHES.scheduled_wakeup.lines(paths),
   ];
 }
@@ -320,6 +364,8 @@ interface Rig {
   paths: LaunchPaths;
   sdk: ReturnType<typeof sdkForCapture>;
   spawned: FakePty[];
+  /** Per capture session, in start order: the carried work seeded into its fold. */
+  seeds: Array<readonly OpenAsyncWork[]>;
   stdin: NodeJS.ReadStream & NodeJS.WriteStream;
   results: HandoffResult[];
   receipts: string[];
@@ -338,6 +384,10 @@ const homes: string[] = [];
 interface LaunchOptions {
   /** The first N replacement candidates never produce output, so they fail viability before the switch. */
   muteCandidates?: number;
+  /** A second wrapper process over the same durable authority: reuse this home instead of a fresh one. */
+  reuseHome?: string;
+  /** The managed session this wrapper's main capture binds (default: the old session). */
+  boundSession?: { sessionId: string; rolloutPath: string };
 }
 
 async function launch(
@@ -347,13 +397,14 @@ async function launch(
 ): Promise<Rig> {
   const muteCandidates = options.muteCandidates ?? 0;
   let candidates = 0;
-  const home = mkdtempSync(join(tmpdir(), "cc-lhc-continuity-prod-"));
-  homes.push(home);
+  const home = options.reuseHome ?? mkdtempSync(join(tmpdir(), "cc-lhc-continuity-prod-"));
+  if (options.reuseHome === undefined) homes.push(home);
   process.env.CC_LHC_HOME = home;
   const { paths, rolloutPath } = hostLayout(home, layout);
   const dbPath = join(home, "cc-lhc.sqlite");
   const sdk = sdkForCapture();
   const spawned: FakePty[] = [];
+  const seeds: Array<readonly OpenAsyncWork[]> = [];
   const results: HandoffResult[] = [];
   const receipts: string[] = [];
   let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
@@ -380,10 +431,14 @@ async function launch(
   mocks.captureFactory = (opts) => {
     generation += 1;
     const isRebuilt = opts.knownRolloutPath !== undefined;
-    const sessionId = isRebuilt ? REBUILT_ID : "old-session";
-    const path = isRebuilt ? opts.knownRolloutPath! : rolloutPath;
+    const bound = options.boundSession ?? { sessionId: "old-session", rolloutPath };
+    const sessionId = isRebuilt ? REBUILT_ID : bound.sessionId;
+    const path = isRebuilt ? opts.knownRolloutPath! : bound.rolloutPath;
     // The real fold, wired to the parent exactly as production wires it — including the carried seed.
-    const fold = createAsyncWorkFold((event) => opts.onAsyncWorkEvent?.(event, T), opts.seedAsyncWork ?? []);
+    // What the wrapper hands each capture as already-open work (the record's carried items for the bound thread).
+    const seed = opts.seedAsyncWork?.(T) ?? [];
+    seeds.push(seed);
+    const fold = createAsyncWorkFold((event) => opts.onAsyncWorkEvent?.(event, T), seed);
     const feed = (lines: RolloutLineItem[]) => {
       for (const line of lines) {
         observeAsyncWorkLine(line, fold);
@@ -462,7 +517,9 @@ async function launch(
   });
   await waitFor(() => lifecycleSink !== undefined && feedOld !== undefined, "old capture");
   await waitFor(() => spawned.length === 1, "first child");
-  lifecycleSink!(BOUND_SIGNALS);
+  lifecycleSink!([
+    { kind: "session_bound", sessionId: (options.boundSession ?? { sessionId: "old-session" }).sessionId },
+  ]);
   return {
     home,
     dbPath,
@@ -471,6 +528,7 @@ async function launch(
     paths,
     sdk,
     spawned,
+    seeds,
     stdin,
     results,
     receipts,
@@ -922,6 +980,190 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(wrapperLog(rig).match(/restarted once/g)).toHaveLength(1);
     await rig.finish();
   }, 20_000);
+
+  it("TC-2.9b/2.7c restart: a fresh wrapper bound to the same session reopens the record, seeds carried work, keeps the live relaunched Monitor, and delivers pending results once", async () => {
+    // ---- wrapper 1: carry five families, relaunch a long-lived Monitor, one result while idle ----
+    const first = await launch({ monitorCommand: LONG_MONITOR_COMMAND });
+    first.feed(fiveFamilyLaunch(first.paths, LONG_MONITOR_COMMAND));
+    await storeHas(first.dbPath, ALL_IDS);
+    first.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => first.results.length === 1, "handoff result");
+    expect(first.results[0]!.kind).toBe("success");
+    await waitFor(() => first.spawned.length === 2, "replacement child");
+    const fence = relaunchOutputPath(first.monitorOutputDir, LAUNCH_IDS.monitor, 1);
+    await waitFor(() => existsSync(fence) && readFileSync(fence, "utf8") === "relaunched-once-XyZ", "relaunch output");
+    const relaunch = withStore(first.dbPath, (store) => store.getItem(T, LAUNCH_IDS.monitor)!.relaunch!);
+    expect(relaunch.process).not.toBeNull();
+    first.feedCurrent([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    await waitFor(() => withStore(first.dbPath, (store) => store.listPendingResults(T).length === 1), "one result");
+    const before = withStore(first.dbPath, (store) => ({
+      items: store.listItems(T),
+      generation: store.getGeneration(T, 1),
+      results: store.listPendingResults(T),
+    }));
+    expect(before.generation).toMatchObject({ state: "closed" });
+    // Another thread's carried item lives in the same database; it is not this session's.
+    withStore(first.dbPath, (store) => {
+      const other = createContinuityObserver({ store, threadId: "th_other", nowFn: () => 1 });
+      for (const line of [
+        toolUse("toolu_agent9", "Agent", { description: "other", subagent_type: "general-purpose" }),
+        toolResult("toolu_agent9", { taskId: "agent-9", agentId: "agent-9" }),
+      ])
+        other.observeLine(line);
+      qualifyAll(store, "th_other", 2);
+      store.allocateGeneration({
+        threadId: "th_other",
+        oldSessionId: "x",
+        launchIds: ["agent:agent-9:toolu_agent9"],
+        nowMs: 3,
+      });
+    });
+    // End wrapper 1 cleanly: the replacement child exits; the database, the fence file, and the relaunched process stay.
+    expect(await first.finish()).toBeTypeOf("number");
+    expect(existsSync(first.dbPath)).toBe(true);
+    expect(() => process.kill(relaunch.process!.pid, 0)).not.toThrow();
+    const rebuiltPath = join(first.home, `${REBUILT_ID}.jsonl`);
+    // The wrapper log appends asynchronously: let wrapper 1's own lines land before slicing.
+    await waitFor(
+      () => /restarted once/.test(wrapperLog(first)) && /generation 1 closed/.test(wrapperLog(first)),
+      "wrapper 1 log",
+    );
+    await new Promise((r) => setTimeout(r, 150));
+    const logBefore = wrapperLog(first).length;
+
+    // ---- wrapper 2: same home, bound to the rebuilt session ----
+    const second = await launch({ monitorCommand: LONG_MONITOR_COMMAND }, ["--resume", REBUILT_ID], {
+      reuseHome: first.home,
+      boundSession: { sessionId: REBUILT_ID, rolloutPath: rebuiltPath },
+    });
+    const log2 = () => wrapperLog(first).slice(logBefore);
+    expect(second.spawned).toHaveLength(1);
+    // The main capture of the new wrapper was seeded from the record: the four still-open carried items, nothing foreign.
+    expect(second.seeds).toHaveLength(1);
+    const remaining = ALL_IDS.filter((id) => id !== LAUNCH_IDS.agent);
+    expect(second.seeds[0]!.map((w) => `${w.family}:${w.key}`).sort()).toEqual(
+      remaining.map((id) => id.slice(0, id.lastIndexOf(":"))).sort(),
+    );
+    // Single authority, untouched by the restart: same items, same generation, same relaunch record, same result.
+    withStore(first.dbPath, (store) => {
+      expect(store.listItems(T)).toEqual(before.items);
+      expect(store.getGeneration(T, 1)).toEqual(before.generation);
+      expect(store.listPendingResults(T)).toEqual(before.results);
+      expect(store.getItem(T, LAUNCH_IDS.monitor)!.relaunch).toEqual(relaunch);
+    });
+    expect(existsSync(relaunchOutputPath(first.monitorOutputDir, LAUNCH_IDS.monitor, 2))).toBe(false);
+    expect(log2().match(/restarted once|generation \d+ closed|adopted|re-armed/g) ?? []).toEqual([]);
+    expect(second.sdk.threadView.compact).not.toHaveBeenCalled();
+
+    // The relaunched Monitor is the same logical item, with its process and output, through the new wrapper's binding.
+    const env = second.spawned[0]!.env;
+    const status = await runTasks(env, REBUILT_ID, ["status", LAUNCH_IDS.monitor]);
+    expect(status.code).toBe(0);
+    expect(status.out).toMatch(/state: active/);
+    expect(status.out).toMatch(/process: live/);
+    expect(status.out).toMatch(/operations: status, output, stop/);
+    expect(status.out).toMatch(/identity: verified/);
+    const output = await runTasks(env, REBUILT_ID, ["output", LAUNCH_IDS.monitor]);
+    expect(output.out).toContain("relaunched-once-XyZ");
+    // Foreign thread: not seeded, not reported.
+    expect(log2()).not.toContain("th_other");
+    const foreign = await runTasks(env, REBUILT_ID, ["status", "agent:agent-9:toolu_agent9"]);
+    expect(foreign.code).not.toBe(0);
+    expect(foreign.err).toContain("unknown_item");
+
+    // New terminal evidence in the bound session closes the seeded item once; duplicates add nothing.
+    second.feed([notification({ taskIds: ["shell-1"], status: "failed" })]);
+    await waitFor(() => withStore(first.dbPath, (store) => store.listPendingResults(T).length === 2), "second result");
+    second.feed([notification({ taskIds: ["shell-1"], status: "failed" })]);
+    second.feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    withStore(first.dbPath, (store) => {
+      expect(store.listItems(T)).toHaveLength(5);
+      expect(store.listPendingResults(T).map((r) => [r.launchId, r.outcome])).toEqual([
+        [LAUNCH_IDS.agent, "completed"],
+        [LAUNCH_IDS.background_shell, "failed"],
+      ]);
+    });
+
+    // Pending results are deliverable through the new wrapper's hook binding; delivery acknowledges once.
+    const hook = await runHook(env, REBUILT_ID, rebuiltPath);
+    expect(hook.code).toBe(0);
+    const context = (JSON.parse(hook.out) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput
+      .additionalContext;
+    expect(context).toContain(`result ${LAUNCH_IDS.agent} ·`);
+    expect(context).toContain(`result ${LAUNCH_IDS.background_shell} ·`);
+    second.feed([hookContextRecord(context)]);
+    await waitFor(() => withStore(first.dbPath, (store) => store.listPendingResults(T).length === 0), "delivered");
+    const resultsOf = () =>
+      withStore(first.dbPath, (store) =>
+        [LAUNCH_IDS.agent, LAUNCH_IDS.background_shell].map((id) => store.getResult(T, id)),
+      );
+    const delivered = resultsOf();
+    second.feed([hookContextRecord(context)]);
+    expect(resultsOf()).toEqual(delivered);
+    expect((await runHook(env, REBUILT_ID, rebuiltPath)).out).toBe("");
+
+    // Management still targets the exact relaunched identity: stop it through the new wrapper.
+    const stop = await runTasks(env, REBUILT_ID, ["stop", LAUNCH_IDS.monitor]);
+    expect(stop.code).toBe(0);
+    await waitFor(() => {
+      try {
+        process.kill(relaunch.process!.pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    }, "relaunched process gone");
+    withStore(first.dbPath, (store) => {
+      expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({
+        state: "terminal",
+        terminal: { outcome: "stopped" },
+      });
+      expect(store.listPendingResults(T).map((r) => r.launchId)).toEqual([LAUNCH_IDS.monitor]);
+    });
+    expect(second.spawned[0]!.writes).toEqual([]);
+    await second.finish();
+  }, 30_000);
+
+  it("TC-2.9b: malformed carried state is reported and seeds nothing — no item adopted, no evidence consumed, nothing signalled", async () => {
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-continuity-prod-"));
+    homes.push(home);
+    const { paths } = hostLayout(home);
+    const dbPath = join(home, "cc-lhc.sqlite");
+    withStore(dbPath, (store) => {
+      const observer = createContinuityObserver({ store, threadId: T, nowFn: () => 1 });
+      for (const line of fiveFamilyLaunch(paths)) observer.observeLine(line);
+      qualifyAll(store, T, 2);
+      store.allocateGeneration({ threadId: T, oldSessionId: "old-session", launchIds: ALL_IDS, nowMs: 3 });
+    });
+    const db = new DatabaseSync(dbPath);
+    db.prepare("UPDATE cc_continuity_items SET carry_mode = 'bogus' WHERE thread_id = ? AND launch_id = ?").run(
+      T,
+      LAUNCH_IDS.monitor,
+    );
+    db.close();
+
+    const rig = await launch({}, [], { reuseHome: home });
+    await waitFor(
+      () => wrapperLog(rig).includes("carried work unreadable for thread th_auto; nothing seeded"),
+      "truthful report",
+    );
+    expect(wrapperLog(rig)).not.toContain("seeded for thread");
+    // Terminal evidence for a carried item is not consumed: the fold holds nothing, so nothing closes and no result appears.
+    rig.feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
+    await new Promise((r) => setTimeout(r, 200));
+    const db2 = new DatabaseSync(dbPath);
+    expect(
+      db2
+        .prepare("SELECT state FROM cc_continuity_items WHERE thread_id = ? AND launch_id = ?")
+        .get(T, LAUNCH_IDS.agent),
+    ).toEqual({ state: "active" });
+    expect(db2.prepare("SELECT count(*) AS n FROM cc_continuity_results").get()).toEqual({ n: 0 });
+    db2.close();
+    expect(rig.spawned).toHaveLength(1);
+    expect(rig.spawned[0]!.killed).toEqual([]);
+    expect(existsSync(relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1))).toBe(false);
+    await rig.finish();
+  }, 15_000);
 
   it("Monitor: relaunched exactly once under relaunchKey(launchId, generation), reported restarted, never repeated", async () => {
     const rig = await launch();
