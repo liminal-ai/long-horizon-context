@@ -428,7 +428,10 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     }
     expect(spawned[1]!.writes.join("")).not.toContain("typed during compaction");
     expect(spawned[0]!.writes.join("")).not.toContain("typed during compaction");
-    await waitFor(() => terminalOutput.includes("input typed during compaction was not delivered"), "resend notice");
+    // AC-3.7a: the dropped input is never written onto Claude's screen; the
+    // rig has no TTY, so the guidance waits for the panel instead.
+    expect(terminalOutput).not.toContain("[cc-lhc]");
+    expect(terminalOutput).not.toContain("typed during compaction");
 
     // Spawn-first: the replacement existed before the old child was signalled.
     expect(spawnOrder.indexOf("spawn:1")).toBeLessThan(spawnOrder.indexOf("kill:0"));
@@ -480,6 +483,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     // diagnostics now live.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => panelText(terminalOutput).includes(PANEL_TITLE), "panel home");
+    expect(panelText(terminalOutput)).toContain("input may not have reached Claude");
+    expect(panelText(terminalOutput)).toContain("input typed during compaction was not delivered");
     (stdin as unknown as PassThrough).write(Buffer.from("/details\r"));
     await waitFor(() => panelText(terminalOutput).includes("Last action"), "panel details rows");
     expect(panelText(terminalOutput)).toMatch(/Last action \/smart-compact .*\(auto\)/);
@@ -1514,18 +1519,23 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(compactCalls).toBe(2);
 
     // --- at the bound: alarm plus survival relaunch, both at once ---
-    await waitFor(
-      () => terminalOutput.includes("cc-lhc rebuilt sessions are not loading"),
-      "standing alarm at the bound",
-    );
     await waitFor(() => spawned.length === 4, "survival relaunch child");
+    // The survival child is routed once the old child has been terminated.
+    await waitFor(() => spawned[0]!.killed.length > 0, "old child terminated after the survival relaunch");
     const survival = spawned[3]!;
     expect(survival.args[survival.args.indexOf("--resume") + 1]).toBe("old-session");
     expect(spawnedEnvs[3]!.DISABLE_AUTO_COMPACT).toBeUndefined();
-    // Nothing ended: the alarm says so in as many words.
-    expect(terminalOutput).toContain("stays live and capture keeps running");
-    expect(terminalOutput).not.toContain("terminal state");
-
+    // AC-3.7a: the alarm is never written onto Claude's screen; it opens (or
+    // waits for) the Control Panel. Nothing ended: the alarm says so in as many words.
+    expect(terminalOutput).not.toContain("[cc-lhc]");
+    expect(terminalOutput).not.toContain("rebuilt sessions are not loading");
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(
+      () => panelText(terminalOutput).includes("rebuilt sessions are not loading"),
+      "standing alarm in the panel",
+    );
+    expect(panelText(terminalOutput)).not.toContain("terminal state");
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     survival.fireExit(0);
     await runPromise;
     writeSpy.mockRestore();
@@ -1752,18 +1762,15 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(spawnedEnvs[2]!.DISABLE_AUTO_COMPACT).toBeUndefined();
     // The first child (which carries the disable) got it.
     expect(spawnedEnvs[0]!.DISABLE_AUTO_COMPACT).toBe("1");
-    // The alarm is standing, unmissable, and states that it is a best guess.
-    await waitFor(
-      () => terminalOutput.includes("cc-lhc rebuilt sessions are not loading"),
-      "standing alarm on the terminal",
-    );
+    // AC-3.7a: the alarm never lands on Claude's screen; it is read in the
+    // panel below, where it states that it is a best guess.
+    await waitFor(() => spawnOrder.includes("kill:0"), "old child terminated after the survival spawn");
+    expect(terminalOutput).not.toContain("[cc-lhc]");
+    expect(terminalOutput).not.toContain("rebuilt sessions are not loading");
     // Spawn-first here too: the old child was still serviceable when the
     // survival child was created.
     expect(spawnOrder.indexOf(`spawn:2:${survival.args.join(" ")}`)).toBeLessThan(spawnOrder.indexOf("kill:0"));
     expect(spawnOrder.indexOf("kill:0")).toBeGreaterThan(-1);
-    expect(terminalOutput).toContain("best guess");
-    expect(terminalOutput).toContain("without the injected DISABLE_AUTO_COMPACT");
-
     // A later settled seam does not quietly retry the swap.
     const compactsAtAlarm = compactCalls;
     lifecycleSink!([
@@ -1783,7 +1790,9 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     terminalOutput = "";
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => terminalOutput.includes("Long Horizon Context Control Panel"), "panel");
-    expect(terminalOutput).toContain("cc-lhc rebuilt sessions are not loading");
+    expect(panelText(terminalOutput)).toContain("cc-lhc rebuilt sessions are not loading");
+    expect(panelText(terminalOutput)).toContain("best guess");
+    expect(panelText(terminalOutput)).toContain("without the injected DISABLE_AUTO_COMPACT");
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
     survival.fireExit(0);

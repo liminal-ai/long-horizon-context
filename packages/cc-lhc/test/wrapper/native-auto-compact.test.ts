@@ -149,7 +149,7 @@ function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
   const stream = new PassThrough() as unknown as NodeJS.ReadStream & NodeJS.WriteStream;
   Object.defineProperty(stream, "isTTY", { value: false, configurable: true });
   Object.defineProperty(stream, "columns", { value: 80, configurable: true });
-  Object.defineProperty(stream, "rows", { value: 24, configurable: true });
+  Object.defineProperty(stream, "rows", { value: 30, configurable: true });
   return stream;
 }
 
@@ -331,7 +331,9 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
         "Claude native Compact may run before Smart Compact — explicit --autocompact on this launch (see /details)",
       );
       // Exactly one advisory row; the raw log anomaly is not repeated on Home.
-      expect(home.match(/may run before Smart Compact/g)).toHaveLength(1);
+      expect(
+        home.match(/may run before Smart Compact — explicit --autocompact on this launch \(see \/details\)/g),
+      ).toHaveLength(1);
       expect(home).not.toContain("ANOMALY");
       // It never claims native Compact is on.
       expect(home).not.toMatch(/native Compact (is |stays )?(on|enabled)|will (auto-?)?compact/i);

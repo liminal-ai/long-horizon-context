@@ -13,6 +13,7 @@ import { resolveContextWindow } from "../../src/governor/config.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { CommandInFlightGuard } from "../../src/wrapper/command-guard.js";
+import { firstLoadMarkerPath, markShown, ONBOARDING_VERSION } from "../../src/wrapper/first-load.js";
 import {
   createInputState,
   DEFAULT_LEADER_BYTE,
@@ -241,6 +242,8 @@ describe("TC-3.1a Run Smart Compact", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-cmd-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
+    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
+    markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
     mocks.captureFactory = null;
@@ -330,6 +333,8 @@ describe("TC-3.1b Run Smart Prune", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-prune-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
+    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
+    markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
     mocks.captureFactory = null;
@@ -416,6 +421,8 @@ describe("TC-3.1c Removed spellings stay removed", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-unknown-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
+    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
+    markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
     mocks.captureFactory = null;
@@ -487,6 +494,8 @@ describe("work in flight on Home", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-inflight-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
+    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
+    markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
     mocks.captureFactory = null;
@@ -560,6 +569,8 @@ describe("TC-3.2a Reject invalid target", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-invalid-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
+    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
+    markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
     mocks.captureFactory = null;
@@ -639,6 +650,8 @@ describe("manual mutation last attempt", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-last-attempt-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
+    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
+    markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
     mocks.captureFactory = null;

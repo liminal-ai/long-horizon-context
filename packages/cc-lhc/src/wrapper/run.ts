@@ -103,6 +103,15 @@ import {
   resolveOperatorStatusLine,
 } from "./context-window-observer.js";
 import {
+  type ActionableCondition,
+  actionableGuidanceRows,
+  firstLoadMarkerPath,
+  markShown,
+  ONBOARDING_VERSION,
+  planStartupPanel,
+  readShownVersion,
+} from "./first-load.js";
+import {
   type CandidateChild,
   type CandidateViability,
   DEFAULT_CAPTURE_READY_TIMEOUT_MS,
@@ -395,6 +404,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
   /** Launch-time anomaly notices: recorded, never a refusal (R11 posture, R12). */
   const startupAnomalyNotices: string[] = [];
+  /**
+   * Allowlisted conditions (first-load.ts). Before the terminal is wired they
+   * collect here and decide whether the panel opens at launch; afterwards the
+   * runtime binding opens the same panel for a condition raised mid-session.
+   */
+  const startupActionable: ActionableCondition[] = [];
+  let raiseActionable = (condition: ActionableCondition): void => {
+    startupActionable.push(condition);
+  };
 
   // Configuration always yields a usable policy: bad fields fall back to
   // built-in defaults and automatic compact stays armed. The fallback notice
@@ -546,7 +564,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   try {
     continuityStore = openContinuityStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
   } catch (cause) {
-    wrapperLog.warn(`cc-lhc continuity store unavailable: ${cause instanceof Error ? cause.message : String(cause)}`);
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    wrapperLog.warn(`cc-lhc continuity store unavailable: ${detail}`);
+    raiseActionable({
+      kind: "unsafe_capture_or_database_state",
+      lines: [`continuity database unavailable: ${detail}; background work is not carried across Smart Compact`],
+    });
   }
   const recordAsyncWorkEvent: NonNullable<CaptureSessionDeps["onAsyncWorkEvent"]> = (event, threadId) => {
     if (continuityStore === null) return;
@@ -574,9 +597,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     try {
       return carriedOpenWork(continuityStore, threadId);
     } catch (cause) {
-      wrapperLog.warn(
-        `cc-lhc continuity: carried work unreadable for thread ${threadId}; nothing seeded: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      wrapperLog.warn(`cc-lhc continuity: carried work unreadable for thread ${threadId}; nothing seeded: ${detail}`);
+      raiseActionable({
+        kind: "unmanageable_async_identity",
+        lines: [`carried work for thread ${threadId} is unreadable; nothing seeded — see the wrapper log`],
+      });
       return [];
     }
   };
@@ -785,6 +811,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         wrapperLog.warn(notice);
         stderr.write(`${notice}\n`);
         startupAnomalyNotices.push(notice);
+      }
+      if (legacyHandoffState.notices.length > 0) {
+        raiseActionable({ kind: "possible_undelivered_input", lines: legacyHandoffState.notices });
       }
 
       // A wrapper-owned replacement continues the conversation; it never
@@ -1165,6 +1194,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // The panel carries the one-line advisory (AC-1.7a); the full anomaly text
     // stays in the wrapper log and the cause/remedy live on Details.
     startupAnomalyNotices.push(nativeCompactAdvisoryLine());
+    raiseActionable({
+      kind: "native_auto_compact_conflict",
+      lines: ["explicit --autocompact on this launch — see /details for the cause and the way back"],
+    });
   }
 
   // Per-wrapper runtime descriptor: Bash inherits only the path. Thread/archive
@@ -2590,15 +2623,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const nonviableSwapLimit = options.nonviableSwapLimit ?? NONVIABLE_SWAPS_BEFORE_ALARM;
 
     /**
-     * One line the wrapper puts on the terminal over Claude's screen. Reserved
-     * for the two facts the operator cannot be allowed to miss: input typed
-     * during compaction was dropped, and the standing nonviability alarm.
-     */
-    const writeWrapperLine = (text: string): void => {
-      stdout.write(`\r\n\x1b[2K[cc-lhc] ${text.replace(/\n/g, " ")}\r\n`);
-    };
-
-    /**
      * Compact takes ownership of the settled session's input here. From this
      * moment nothing the operator types reaches Claude: it is dropped, counted,
      * and reported once when the operation settles.
@@ -2612,9 +2636,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       compactOwnsInput = false;
       if (droppedInputBytes === 0) return;
       wrapperLog.warn(`cc-lhc: dropped ${droppedInputBytes} typed-ahead byte(s) during compaction`);
-      writeWrapperLine(TYPED_AHEAD_RESEND_NOTICE);
-      pendingPanelNotices = [...pendingPanelNotices, TYPED_AHEAD_RESEND_NOTICE];
       droppedInputBytes = 0;
+      raiseActionable({ kind: "possible_undelivered_input", lines: [TYPED_AHEAD_RESEND_NOTICE] });
     };
 
     const waitForExpectedExit = (timeoutMs: number): Promise<boolean> =>
@@ -3239,11 +3262,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         ...standingNonviabilityAlarm,
         formatSurvivalRelaunchNotice(oldSessionId, relaunched),
       ];
-      for (const line of standingNonviabilityAlarm) {
-        wrapperLog.warn(`cc-lhc ${line}`);
-        writeWrapperLine(line);
-      }
-      pendingPanelNotices = [...pendingPanelNotices, ...standingNonviabilityAlarm.map(toPanelWording)];
+      for (const line of standingNonviabilityAlarm) wrapperLog.warn(`cc-lhc ${line}`);
+      raiseActionable({ kind: "repeated_replacement_failure", lines: standingNonviabilityAlarm.map(toPanelWording) });
     };
 
     // Automatic operation: shared mutation op + shared handoff, serialized with
@@ -3393,6 +3413,63 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         commandGuard.release();
       }
     };
+
+    /**
+     * Open the production panel for an allowlisted condition. The rows join
+     * whatever the panel already holds; nothing is written onto Claude's
+     * screen, and a panel that is already open (or a running command) simply
+     * receives the rows. Without a TTY no key can dismiss it, so it waits.
+     */
+    const openPanelFor = (rows: readonly string[]): boolean => {
+      if (inputState.mode === "passthrough") {
+        pendingPanelNotices = [...pendingPanelNotices, ...rows];
+        if (!stdin.isTTY) return false;
+        // The same transition the reopen key makes, so the panel opens exactly as it does on demand.
+        const opened = processInputChunk(Buffer.from([leaderByte]), inputState);
+        inputState = opened.state;
+        applyActions(opened.actions);
+        renderModalPanel();
+        return inputState.mode === "modal";
+      }
+      if (inputState.mode === "modal") {
+        inputState = { ...inputState, panelRows: [...inputState.panelRows, ...rows] };
+        renderModalPanel();
+        return true;
+      }
+      pendingPanelNotices = [...pendingPanelNotices, ...rows];
+      return false;
+    };
+    const startup = planStartupPanel({
+      shownVersion: readShownVersion(firstLoadMarkerPath(ccLhcHome())),
+      version: ONBOARDING_VERSION,
+      facts: {
+        targetTokens: resolvedContextPolicy.policy.lowerBoundTokens,
+        triggerTokens: resolvedContextPolicy.policy.upperBoundTokens,
+        contextClass: resolvedContextPolicy.contextWindow.contextClass,
+        nativeAutoCompact,
+        leaderByte,
+      },
+      conditions: startupActionable,
+    });
+    raiseActionable = (condition) => {
+      openPanelFor(actionableGuidanceRows([condition]));
+    };
+    // Onboarding is for an interactive terminal: without a TTY nothing is
+    // shown or marked, and only actionable guidance waits in the panel.
+    if (startup.open && !stdin.isTTY) {
+      pendingPanelNotices = [...pendingPanelNotices, ...actionableGuidanceRows(startupActionable)];
+    } else if (startup.open && openPanelFor(startup.rows)) {
+      if (startup.firstLoad) {
+        try {
+          markShown(firstLoadMarkerPath(ccLhcHome()), ONBOARDING_VERSION);
+        } catch (cause) {
+          wrapperLog.warn(`cc-lhc first-load marker not written: ${detailOf(cause)}`);
+        }
+      }
+      wrapperLog.info(
+        `cc-lhc Control Panel opened at launch (${startup.firstLoad ? `onboarding v${ONBOARDING_VERSION}` : "actionable condition"})`,
+      );
+    }
 
     attachChild(currentPty, expectedSession?.sessionId ?? "", true);
     stdin.on("data", forwardInput);
