@@ -13,16 +13,19 @@ import { describe, expect, it } from "vitest";
 import { formatDurableReceipt } from "../../src/commands/context-mutation.js";
 import { formatContinuityNote } from "../../src/commands/continuity-note.js";
 import { dispatchLhcCommand } from "../../src/commands/dispatch.js";
+import { resolveContextWindow } from "../../src/governor/config.js";
 import { CC_LHC_HELP } from "../../src/help.js";
 import type { OpenAsyncWork } from "../../src/observation/async-work.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { formatHandoffResult } from "../../src/wrapper/handoff.js";
 import { NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY } from "../../src/wrapper/native-auto-compact.js";
+import { buildPanelViewSnapshot, homeStatusLines, PANEL_COMMANDS } from "../../src/wrapper/panel-commands.js";
 import {
   formatReplacementNonviabilityAlarm,
   formatSurvivalRelaunchNotice,
 } from "../../src/wrapper/replacement-nonviability.js";
 import {
+  CLAUDE_NATIVE_AUTO_COMPACT,
   CLAUDE_NATIVE_COMPACT,
   formatAutoDeferredSummary,
   formatAutoGuardBusyDetail,
@@ -42,6 +45,8 @@ import {
   formatOneShotPreLaunchOutcome,
   formatOneShotPreLaunchThrew,
   formatOneShotStandDown,
+  nativeAutoCompactHomeSegment,
+  nativeAutoCompactStatusLine,
   nativeCompactAdvisoryDetailsRows,
   nativeCompactAdvisoryLine,
   nativeCompactAnomalyNotice,
@@ -55,6 +60,7 @@ const SMART_COMPACT_COMMAND = "/smart-compact";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
 const README = readFileSync(join(PKG_ROOT, "README.md"), "utf8");
+const ONBOARDING = readFileSync(join(PKG_ROOT, "../../docs/onboard/05-host-cc-lhc.md"), "utf8");
 const SRC_ROOT = join(PKG_ROOT, "src");
 
 function work(family: OpenAsyncWork["family"], description: string): OpenAsyncWork {
@@ -204,6 +210,27 @@ describe("TC-3.3a product terminology audit", () => {
       ["native compact disabled status", nativeCompactDisabledStatusLine()],
       ["native compact passthrough status", nativeCompactPassthroughStatusLine()],
       ["native compact advisory", nativeCompactAdvisoryLine()],
+      ["native auto-compact home off", nativeAutoCompactHomeSegment("disabled")],
+      ["native auto-compact home passthrough", nativeAutoCompactHomeSegment("passthrough")],
+      ["native auto-compact status off", nativeAutoCompactStatusLine("disabled")],
+      ["native auto-compact status passthrough", nativeAutoCompactStatusLine("passthrough")],
+      [
+        "home rows",
+        homeStatusLines(
+          buildPanelViewSnapshot({
+            providerContextTokens: 1_000,
+            targetTokens: 70_000,
+            triggerTokens: 140_000,
+            contextWindow: resolveContextWindow(200_000, null),
+            captureHealth: "ready",
+            profile: "default",
+          }),
+        ).join("\n"),
+      ],
+      [
+        "panel command copy",
+        PANEL_COMMANDS.map((c) => `${c.summary} ${c.short ?? ""} ${c.helpSummary ?? ""}`).join("\n"),
+      ],
       [
         "native compact advisory details",
         nativeCompactAdvisoryDetailsRows("--autocompact 500000")
@@ -262,6 +289,9 @@ describe("TC-3.3a product terminology audit", () => {
 
     const productionSources: Array<[string, string]> = [
       ["run.ts", stripComments(readFileSync(join(SRC_ROOT, "wrapper/run.ts"), "utf8"))],
+      ["decide.ts", stripComments(readFileSync(join(SRC_ROOT, "governor/decide.ts"), "utf8"))],
+      ["panel-commands.ts", stripComments(readFileSync(join(SRC_ROOT, "wrapper/panel-commands.ts"), "utf8"))],
+      ["dispatch.ts", stripComments(readFileSync(join(SRC_ROOT, "commands/dispatch.ts"), "utf8"))],
       ["terminology.ts", stripComments(readFileSync(join(SRC_ROOT, "wrapper/terminology.ts"), "utf8"))],
       [
         "replacement-nonviability.ts",
@@ -308,5 +338,51 @@ describe("TC-3.3a product terminology audit", () => {
     expect(formatAutoThrew("EIO")).toContain(SMART_COMPACT);
     expect(README).toContain(SMART_COMPACT);
     expect(README).toContain(CLAUDE_NATIVE_COMPACT);
+  });
+
+  it("TC-3.4a/b: documentation names both token measures and claims no fixed relationship between them", () => {
+    for (const [name, text] of [
+      ["public readme", README],
+      ["onboarding", ONBOARDING],
+    ] as const) {
+      expect(text, name).toContain("no fixed ratio or direction");
+      expect(text, name).toMatch(/may differ|may\s+differ/);
+      // Fixed-relationship claims: guaranteed inequality, or a percentage/direction of bias.
+      expect(text, name).not.toMatch(
+        /never the same number|always (?:higher|lower|larger|smaller)|(?:over|under)-?estimates? by|\d+\s*% (?:higher|lower|more|less)/i,
+      );
+    }
+    expect(README).toContain("Provider-reported context");
+    expect(README).toContain("LHC\nestimated tokens");
+  });
+
+  it("TC-3.6a/b: CC-LHC behavior is /smart-compact on the panel and Smart Compact elsewhere; Claude's own behavior is named native and distinctly", () => {
+    const homeRows = homeStatusLines(
+      buildPanelViewSnapshot({
+        providerContextTokens: 1_000,
+        targetTokens: 70_000,
+        triggerTokens: 140_000,
+        contextWindow: resolveContextWindow(200_000, null),
+        nativeAutoCompact: "passthrough",
+        captureHealth: "ready",
+        profile: "default",
+      }),
+    ).join("\n");
+    expect(homeRows).toContain("size after /smart-compact");
+    expect(homeRows).toContain("automatic /smart-compact point");
+    expect(homeRows).toContain(`${CLAUDE_NATIVE_AUTO_COMPACT} may run (--autocompact)`);
+    // Bare lowercase "compact" standing for the product is gone from panel copy.
+    const panelCopy = PANEL_COMMANDS.map((c) => `${c.summary} ${c.short ?? ""} ${c.helpSummary ?? ""}`).join("\n");
+    expect(panelCopy).not.toMatch(/(?<![/-])\bcompact\b/);
+    expect(homeRows).not.toMatch(/(?<![/-])\bcompact\b/);
+    // Governor reasons that land in durable receipts name the products.
+    const decideSource = stripComments(readFileSync(join(SRC_ROOT, "governor/decide.ts"), "utf8"));
+    expect(decideSource).toContain("Smart Compact, Tool Prune, or handoff already in flight");
+    expect(decideSource).toContain("capability-limited Smart Compact eligible at settled seam");
+    expect(decideSource).toContain("Smart Compact only at settled boundary");
+    expect(decideSource).not.toMatch(/"[^"]*\bcompact\b[^"]*"|`[^`]*\bcompact\b[^`]*`/);
+    expect(nativeAutoCompactStatusLine("disabled")).toContain(CLAUDE_NATIVE_AUTO_COMPACT);
+    expect(nativeAutoCompactStatusLine("passthrough")).toContain(CLAUDE_NATIVE_AUTO_COMPACT);
+    expect(nativeAutoCompactStatusLine("disabled")).not.toContain("may run");
   });
 });

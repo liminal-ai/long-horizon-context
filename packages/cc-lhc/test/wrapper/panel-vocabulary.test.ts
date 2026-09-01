@@ -327,8 +327,9 @@ describe("work in flight names the command, not the guard label", () => {
     });
     const home = panelText(renderPanel({ ...home_(), panelView: inFlight }, 100, 29));
     expect(home).toContain("active operation: /smart-compact");
-    expect(home, "the guard label reached Home").not.toContain("auto-compact");
-    expect(homeStatusLines(inFlight).join("\n")).not.toContain("auto-compact");
+    // The window row legitimately names "Claude native auto-compact"; the bare guard label never appears.
+    expect(home, "the guard label reached Home").not.toMatch(/(?<!native )auto-compact/);
+    expect(homeStatusLines(inFlight).join("\n")).not.toMatch(/(?<!native )auto-compact/);
 
     const details = panelText(renderPanel({ ...home_(), panelView: inFlight, route: "details" }, 100, 29));
     expect(details).toContain("Operation /smart-compact");

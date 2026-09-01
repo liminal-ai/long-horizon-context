@@ -28,6 +28,7 @@ function fakeRuntime(overrides: Partial<LhcCommandRuntime> = {}): LhcCommandRunt
       targetTokens: 180_000,
       triggerTokens: 360_000,
       contextClass: "1M",
+      nativeAutoCompact: "disabled",
     },
     ...overrides,
   };
@@ -61,6 +62,48 @@ describe("dispatchLhcCommand", () => {
     expect(outcome.messages[0]).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
     expect(outcome.messages[0]).toContain("Derivations: 1 pending · 2 failed");
     expect(outcome.messages[0]).toContain("Thread: th_test");
+    expect(outcome.messages[0]).toContain(
+      "Claude native auto-compact: disabled for this child (DISABLE_AUTO_COMPACT=1) · manual /compact still available",
+    );
+  });
+
+  it("TC-3.5a/b: /status speaks plainly, says not observed for a missing provider reading, and names the native state from the same snapshot", async () => {
+    const sdk = {
+      threadView: {
+        status: async (): Promise<OpResult<ViewStatus>> => ({ ok: true, value: sampleStatus }),
+      },
+    } as unknown as Lhc;
+    const outcome = await dispatchLhcCommand(
+      "/lhc-status",
+      fakeRuntime({
+        sdk,
+        threadRef: { threadId: "th_test" } as ThreadRef,
+        statusSnapshot: {
+          latestProviderContextTokens: null,
+          targetTokens: 70_000,
+          triggerTokens: 140_000,
+          contextClass: "200k",
+          nativeAutoCompact: "passthrough",
+        },
+      }),
+    );
+    const text = outcome.messages[0]!;
+    expect(text).toContain("Latest provider context: not observed yet");
+    expect(text).not.toMatch(/Latest provider context: 0\b/);
+    expect(text).toContain("/smart-compact: 70,000-token target · 140,000-token trigger (configured) · 200k window");
+    expect(text).toContain("Claude native auto-compact: may run — explicit --autocompact passed through");
+    expect(text).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
+    expect(text).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
+    // Human language only: no internal field labels leak.
+    for (const internal of [
+      "tailTokens",
+      "zoneTokens",
+      "upperBoundTokens",
+      "lowerBoundTokens",
+      "latestProviderContext",
+    ]) {
+      expect(text).not.toContain(internal);
+    }
   });
 
   it("prints the capture stats line", async () => {
@@ -73,7 +116,9 @@ describe("dispatchLhcCommand", () => {
     const outcome = await dispatchLhcCommand("/lhc-help", fakeRuntime());
     expect(outcome.messages[0]).toContain("/smart-compact");
     expect(outcome.messages[0]).toContain("/smart-prune [tokens]");
-    expect(outcome.messages[0]).toContain("Keep newest eligible tool results near [tokens] estimated tokens");
+    expect(outcome.messages[0]).toContain(
+      "[tokens] is the approximate estimated-token target for the newest eligible tool results kept visible",
+    );
   });
 
   it("reports unknown /lhc-* commands", async () => {

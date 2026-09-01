@@ -25,6 +25,7 @@ import type {
   PolicyFieldSource,
 } from "../governor/types.js";
 import { presentAllocation } from "./preset-presentation.js";
+import { type NativeAutoCompactState, nativeAutoCompactHomeSegment } from "./terminology.js";
 
 /** Full product name; used as the card title wherever it fits. */
 export const PANEL_TITLE = "Long Horizon Context Control Panel";
@@ -75,6 +76,8 @@ export interface PanelViewSnapshot {
   contextClass: ContextClass;
   contextWindowSource: ContextWindowSource;
   contextWindowDetail: string | null;
+  /** What cc-lhc did about Claude's automatic Compact for this launch; shared with `/status` and `/details`. */
+  nativeAutoCompact: NativeAutoCompactState;
   captureHealth: string;
   allocationId: BandAllocationId;
   allocationLabel: string;
@@ -155,7 +158,7 @@ function isPositiveSafeIntegerToken(raw: string): boolean {
 }
 
 export const SMART_PRUNE_SYNTAX =
-  "usage: /smart-prune [tokens] — tokens must be a positive whole number of estimated tokens to keep";
+  "usage: /smart-prune [tokens] — the approximate estimated-token target for the newest eligible tool results kept visible, a positive whole number";
 
 function parseSmartPrune(args: readonly string[], surface: string): PanelParseResult {
   if (args.length === 0) return { kind: "execute", commandLine: "/lhc-prune", surface };
@@ -180,8 +183,8 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "/status",
     usage: "/status",
     summary: "latest provider context, /smart-compact settings, and LHC health",
-    short: "context, compact settings, health",
-    helpSummary: "Show context, compact target and trigger, automatic state, and LHC health.",
+    short: "context, /smart-compact settings, health",
+    helpSummary: "Show provider context, the target and trigger, Claude native auto-compact state, and LHC health.",
     group: "common",
     scope: "none",
     parse: executeNoArgs("/lhc-status"),
@@ -200,10 +203,11 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
   {
     name: "/smart-prune",
     usage: "/smart-prune [tokens]",
-    summary: "shorten older eligible tool results toward a requested visible-token target",
+    summary:
+      "shorten older eligible tool results toward an approximate estimated-token target for the newest ones kept visible",
     short: "keep newest tool output near target",
     helpSummary:
-      "Keep newest eligible tool results near [tokens] estimated tokens; older results shorten. Omit it for the default.",
+      "[tokens] is the approximate estimated-token target for the newest eligible tool results kept visible; older eligible results shorten. Omit it for the default.",
     group: "common",
     scope: "none",
     parse: parseSmartPrune,
@@ -238,8 +242,8 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     name: "/bounds",
     usage: BOUNDS_USAGE,
     summary: "set the /smart-compact target and the automatic trigger",
-    short: "set size after compact and trigger",
-    helpSummary: "Set the size after compact and the point where it runs automatically.",
+    short: "set size after /smart-compact and its trigger",
+    helpSummary: "Set the size after /smart-compact and the point where it runs automatically.",
     group: "tune",
     scope: "session",
     parse: parseBounds,
@@ -463,7 +467,7 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
         "lowerBoundTokens",
         sourcedValue(view, view.policySources.target, `target ${formatTokensShort(view.targetTokens)}`),
       ),
-      "size after compact",
+      "size after /smart-compact",
     ],
     tiny: (view) => `target ${formatTokensShort(view.targetTokens)}`,
   },
@@ -479,7 +483,7 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
         "upperBoundTokens",
         sourcedValue(view, view.policySources.trigger, `trigger ${formatTokensShort(view.triggerTokens)}`),
       ),
-      "automatic compact point",
+      "automatic /smart-compact point",
     ],
     tiny: (view) => `trigger ${formatTokensShort(view.triggerTokens)}`,
   },
@@ -492,6 +496,7 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
       `window ${view.contextClass}`,
       contextWindowPhrase(view),
       sourcedValue(view, view.policySources.runway, `runway ${formatTokensShort(view.minRunwayTokens)} minimum`),
+      nativeAutoCompactHomeSegment(view.nativeAutoCompact),
     ],
     compactSegments: (view) => [`window ${view.contextClass}`],
     tiny: (view) => `window ${view.contextClass}`,
@@ -907,6 +912,8 @@ export function buildPanelViewSnapshot(input: {
   minRunwayTokens?: number;
   /** Defaults to built-in for every field. */
   policySources?: Partial<PanelPolicySources>;
+  /** Defaults to the wrapper's own posture: disabled per managed child. */
+  nativeAutoCompact?: NativeAutoCompactState;
   captureHealth: string;
   profile: string;
   alarms?: readonly string[];
@@ -931,6 +938,7 @@ export function buildPanelViewSnapshot(input: {
     contextClass: input.contextWindow.contextClass,
     contextWindowSource: input.contextWindow.source,
     contextWindowDetail: input.contextWindow.detail,
+    nativeAutoCompact: input.nativeAutoCompact ?? "disabled",
     captureHealth: input.captureHealth,
     allocationId,
     allocationLabel: shown.label,

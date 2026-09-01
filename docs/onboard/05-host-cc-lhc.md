@@ -203,7 +203,12 @@ estimate for content captured after that provider request; the estimate is never
 relabelled as provider usage. When the latest usage line is missing or
 malformed, the base is the last known provider reading — still a provider
 number, marked `last_known` in the receipt — plus the growth measured on top of
-it. The session's real size never disappears with a bad line.
+it. The session's real size never disappears with a bad line. Every LHC figure
+(rebuilt view size, history since the last Smart Compact, eligible tool-result
+zone, retrieval slices) is an estimate over text cc-lhc holds and is labelled as
+such beside the provider number; the two measures cover different domains, may
+differ (or coincidentally be equal), and no fixed ratio or direction between
+them is assumed or reported.
 
 One input decides an automatic compact: measured pressure against the trigger
 of the active context window (200k or 1M, observed through Claude's status-line

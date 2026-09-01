@@ -8,6 +8,28 @@
 
 export const SMART_COMPACT = "Smart Compact";
 export const CLAUDE_NATIVE_COMPACT = "Claude native Compact";
+/** Claude Code's automatic counterpart, the one cc-lhc turns off per managed child. */
+export const CLAUDE_NATIVE_AUTO_COMPACT = "Claude native auto-compact";
+
+/**
+ * What cc-lhc did about Claude's automatic Compact for this launch — the one
+ * fact Home, `/status`, and `/details` all project. `disabled`: the child runs
+ * with DISABLE_AUTO_COMPACT=1. `passthrough`: the launch carried the user's own
+ * `--autocompact`, so cc-lhc injected nothing and can observe nothing further.
+ */
+export type NativeAutoCompactState = "disabled" | "passthrough";
+
+/** Home window-row segment: the shortest truthful spelling of the same fact. */
+export function nativeAutoCompactHomeSegment(state: NativeAutoCompactState): string {
+  return state === "disabled"
+    ? `${CLAUDE_NATIVE_AUTO_COMPACT} off`
+    : `${CLAUDE_NATIVE_AUTO_COMPACT} may run (--autocompact)`;
+}
+
+/** `/status` and `/details` line for the same fact. */
+export function nativeAutoCompactStatusLine(state: NativeAutoCompactState): string {
+  return state === "disabled" ? nativeCompactDisabledStatusLine() : nativeCompactPassthroughStatusLine();
+}
 
 /**
  * The Control Panel names an operation by the command that runs it. The
@@ -116,7 +138,7 @@ export function nativeCompactAnomalyNotice(summaryPreview?: string): string {
 
 /** Control Panel status projection while cc-lhc has disabled Claude's automatic Compact. */
 export function nativeCompactDisabledStatusLine(): string {
-  return `${CLAUDE_NATIVE_COMPACT}: disabled for this child (DISABLE_AUTO_COMPACT=1) · manual /compact still available`;
+  return `${CLAUDE_NATIVE_AUTO_COMPACT}: disabled for this child (DISABLE_AUTO_COMPACT=1) · manual /compact still available`;
 }
 
 /**
@@ -160,7 +182,7 @@ export function nativeCompactAdvisoryDetailsRows(evidence: string): { label: str
 /** Control Panel status projection when the user supplied `--autocompact`. */
 export function nativeCompactPassthroughStatusLine(): string {
   return (
-    `${CLAUDE_NATIVE_COMPACT}: explicit --autocompact passed through; cc-lhc did not inject DISABLE_AUTO_COMPACT ` +
-    "· inherited env/settings govern"
+    `${CLAUDE_NATIVE_AUTO_COMPACT}: may run — explicit --autocompact passed through; cc-lhc did not inject ` +
+    "DISABLE_AUTO_COMPACT · inherited env/settings govern (see /details)"
   );
 }

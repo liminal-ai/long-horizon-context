@@ -178,10 +178,12 @@ import {
   formatOneShotPreLaunchOutcome,
   formatOneShotPreLaunchThrew,
   formatOneShotStandDown,
+  type NativeAutoCompactState,
+  nativeAutoCompactStatusLine,
   nativeCompactAdvisoryDetailsRows,
   nativeCompactAdvisoryLine,
   nativeCompactAnomalyNotice,
-  nativeCompactDisabledStatusLine,
+  SMART_COMPACT,
 } from "./terminology.js";
 import { TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
@@ -1127,7 +1129,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // kept all the same: whatever it still has queued must land before this
     // wrapper stops being the thread's owner.
     outgoingCaptureSettled = outgoing.stop().catch((cause: unknown) => {
-      wrapperLog.warn(`cc-lhc one-shot: pre-compact capture drain failed: ${detailOf(cause)}`);
+      wrapperLog.warn(`cc-lhc one-shot: capture drain before pre-launch ${SMART_COMPACT} failed: ${detailOf(cause)}`);
     });
 
     expectedSession = expectedSessionFromExplicitId(rebuilt.sessionId, "rebuilt_handoff");
@@ -1156,6 +1158,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // still govern whether Claude native Compact actually runs.
   const userChoseAutocompact = argvSuppliesNativeAutocompact(argv);
   const disableNativeAutoCompact = !userChoseAutocompact;
+  /** The one fact Home, `/status`, and `/details` all project about Claude's automatic Compact. */
+  const nativeAutoCompact: NativeAutoCompactState = disableNativeAutoCompact ? "disabled" : "passthrough";
   if (userChoseAutocompact) {
     wrapperLog.warn(`cc-lhc ${NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY}`);
     // The panel carries the one-line advisory (AC-1.7a); the full anomaly text
@@ -1863,6 +1867,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       targetTokens: policy.lowerBoundTokens,
       triggerTokens: policy.upperBoundTokens,
       contextClass: resolvedContextPolicy.contextWindow.contextClass,
+      nativeAutoCompact,
     };
     if (captureSession === undefined) {
       return {
@@ -1988,7 +1993,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     if (minObservedProviderTotal !== null && policy.upperBoundTokens <= minObservedProviderTotal) {
       alarms.push(
         `WARNING: trigger ${formatTokensShort(policy.upperBoundTokens)} is at/below observed Claude host overhead ` +
-          `(${formatTokensShort(minObservedProviderTotal)}) — every settled turn would compact`,
+          `(${formatTokensShort(minObservedProviderTotal)}) — every settled turn would run /smart-compact`,
       );
     }
 
@@ -2013,8 +2018,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           ` · trigger ${policy.upperBoundTokens.toLocaleString("en-US")} (${sourceOf(sources.upperBoundTokens)})` +
           ` · minimum runway ${policy.minRunwayTokens.toLocaleString("en-US")} (${sourceOf(sources.minRunwayTokens)})`,
       },
-      ...(disableNativeAutoCompact
-        ? [{ label: "", value: nativeCompactDisabledStatusLine() }]
+      ...(nativeAutoCompact === "disabled"
+        ? [{ label: "", value: nativeAutoCompactStatusLine(nativeAutoCompact) }]
         : nativeCompactAdvisoryDetailsRows(nativeAutocompactArgvEvidence(argv) ?? "--autocompact")),
       { label: "Operation", value: activeOperation ?? "none" },
       { label: "Last action", value: lastActionText },
@@ -2030,6 +2035,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       targetTokens: policy.lowerBoundTokens,
       triggerTokens: policy.upperBoundTokens,
       contextWindow: resolvedContextPolicy.contextWindow,
+      nativeAutoCompact,
       minRunwayTokens: policy.minRunwayTokens,
       policySources: {
         target: sources.lowerBoundTokens,

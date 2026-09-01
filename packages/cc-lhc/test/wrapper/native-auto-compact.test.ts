@@ -170,14 +170,17 @@ interface Live {
 }
 
 /** Launch and keep the child alive so the Control Panel can be driven. */
-async function launchLive(argv: string[]): Promise<Live> {
+async function launchLive(
+  argv: string[],
+  sdk: Record<string, unknown> = { drainSettled: async () => {} },
+): Promise<Live> {
   const spawned: FakePty[] = [];
   const logLines: string[] = [];
   const terminalOutput: string[] = [];
   const stdin = fakeStream();
   const stdout = fakeStream();
   stdout.on("data", (chunk: Buffer | string) => terminalOutput.push(String(chunk)));
-  mocks.captureFactory = () => scriptedCaptureSession({ drainSettled: async () => {} });
+  mocks.captureFactory = () => scriptedCaptureSession(sdk);
   const runPromise = run(argv, {
     claudeBin: "fake-claude",
     spawnPty: ((_file: string, args: string[], opts: { env: Record<string, string> }) => {
@@ -373,6 +376,76 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
     }
   }, 20_000);
 
+  it("TC-3.6c: Home, /status, and /details show the same window, target, trigger, and native state from one production policy state", async () => {
+    for (const [argv, native] of [
+      [[], "disabled"],
+      [["--autocompact", "500000"], "passthrough"],
+    ] as const) {
+      // A real LHC status answer, so the panel's /status renders the production formatter end to end.
+      const live = await launchLive([...argv], {
+        drainSettled: async () => {},
+        threadView: {
+          status: async () => ({
+            ok: true,
+            value: {
+              tailTokens: 1_200,
+              threshold: 8_000,
+              compactRecommended: false,
+              derivation: { pending: 0, failed: 0, blocked: 0 },
+              view: null,
+              visibility: { boundaryPosition: 0, zoneTokens: 400, maxTokens: 2_000 },
+            },
+          }),
+        },
+      });
+      try {
+        live.stdin.write(leader);
+        await waitFor(() => panelText(live.terminalOutput.join("")).includes(PANEL_TITLE), "panel home");
+        const home = panelText(live.terminalOutput.join(""));
+        // Conservative 200k policy: 70k target, 140k trigger (no status line observed in this rig).
+        expect(home).toContain("target 70k");
+        expect(home).toContain("trigger 140k");
+        expect(home).toContain("window 200k");
+        expect(home).toContain(
+          native === "disabled"
+            ? "Claude native auto-compact off"
+            : "Claude native auto-compact may run (--autocompact)",
+        );
+        expect(home).not.toContain(native === "disabled" ? "may run" : "auto-compact off");
+
+        live.terminalOutput.length = 0;
+        live.stdin.write(Buffer.from("/status\r"));
+        await waitFor(() => panelText(live.terminalOutput.join("")).includes("Latest provider context"), "status");
+        const status = panelText(live.terminalOutput.join(""));
+        expect(status).toContain("Latest provider context: not observed yet");
+        expect(status).toContain("70,000-token target · 140,000-token trigger");
+        expect(status).toContain("200k window");
+        expect(status).toContain(
+          native === "disabled"
+            ? "Claude native auto-compact: disabled for this child"
+            : "Claude native auto-compact: may run — explicit --autocompact passed through",
+        );
+
+        live.terminalOutput.length = 0;
+        live.stdin.write(Buffer.from("/details\r"));
+        // The 80x24 rig clips the lower Details rows; wait on the Policy row, which carries the values.
+        await waitFor(() => panelText(live.terminalOutput.join("")).includes("target 70,000"), "details rows");
+        const details = panelText(live.terminalOutput.join(""));
+        expect(details).toContain("target 70,000");
+        expect(details).toContain("trigger 140,000");
+        expect(details).toMatch(/Window\s+200k/);
+        expect(details).toContain(
+          native === "disabled"
+            ? "Claude native auto-compact: disabled for this child"
+            : "may run before Smart Compact — explicit --autocompact on this launch",
+        );
+        live.stdin.write(leader);
+      } finally {
+        expect(await live.finish()).toBe(0);
+      }
+    }
+  }, 30_000);
+
   it("without the flag, neither Home nor Details claims native auto-compact is on (TC-1.7c)", async () => {
     const live = await launchLive([]);
     try {
@@ -382,9 +455,12 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
       expect(home).not.toMatch(/native Compact|--autocompact|may run|ANOMALY|WARNING|advisory/i);
       live.terminalOutput.length = 0;
       live.stdin.write(Buffer.from("/details\r"));
-      await waitFor(() => panelText(live.terminalOutput.join("")).includes("Claude native Compact"), "details rows");
+      await waitFor(
+        () => panelText(live.terminalOutput.join("")).includes("Claude native auto-compact"),
+        "details rows",
+      );
       const details = panelText(live.terminalOutput.join(""));
-      expect(details).toContain("Claude native Compact: disabled for this child (DISABLE_AUTO_COMPACT=1)");
+      expect(details).toContain("Claude native auto-compact: disabled for this child (DISABLE_AUTO_COMPACT=1)");
       expect(details).not.toMatch(/may run|to restore|detected:/);
       live.stdin.write(leader);
     } finally {

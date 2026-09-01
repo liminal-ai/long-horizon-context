@@ -71,7 +71,7 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
   }
 
   if (inputWithEstimate.operationInFlight) {
-    return decide("operation_in_flight", "compact, prune, or handoff already in flight", inputWithEstimate);
+    return decide("operation_in_flight", "Smart Compact, Tool Prune, or handoff already in flight", inputWithEstimate);
   }
 
   const pressure = buildPressureReceipt(
@@ -85,7 +85,7 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
   if (pressure.atOrAboveTrigger) {
     return decide(
       "would_compact",
-      `${pressurePhrase(inputWithEstimate, pressureTokens)} >= upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}; capability-limited compact eligible at settled seam`,
+      `${pressurePhrase(inputWithEstimate, pressureTokens)} >= upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}; capability-limited Smart Compact eligible at settled seam`,
       inputWithEstimate,
     );
   }
@@ -93,7 +93,7 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
   if (inputWithEstimate.contextLimitRejected) {
     return decide(
       "would_compact",
-      `Claude rejected the request (Prompt is too long); capability-limited compact eligible at settled seam while ${pressurePhrase(inputWithEstimate, pressureTokens)} is below upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}`,
+      `Claude rejected the request (Prompt is too long); capability-limited Smart Compact eligible at settled seam while ${pressurePhrase(inputWithEstimate, pressureTokens)} is below upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}`,
       inputWithEstimate,
     );
   }
@@ -114,7 +114,7 @@ function decideOpenTurn(input: GovernorInput): GovernorDecision {
   if (input.operationInFlight) {
     return decide(
       "operation_in_flight",
-      "compact, prune, or handoff already in flight; no concurrent open-turn action",
+      "Smart Compact, Tool Prune, or handoff already in flight; no concurrent open-turn action",
       input,
       { forceNoMutate: true },
     );
@@ -132,7 +132,7 @@ function decideOpenTurn(input: GovernorInput): GovernorDecision {
     // Not yet at trigger: explicit turn_open (waiting for settle / more pressure).
     return decide(
       "turn_open",
-      `turn is still open; ${pressurePhrase(input, pressureTokens)} below upperBoundTokens ${input.policy.upperBoundTokens}; compact only at settled boundary`,
+      `turn is still open; ${pressurePhrase(input, pressureTokens)} below upperBoundTokens ${input.policy.upperBoundTokens}; Smart Compact only at settled boundary`,
       input,
       { forceNoMutate: true },
     );

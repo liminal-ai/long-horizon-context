@@ -538,13 +538,14 @@ describe("work in flight on Home", () => {
     (stdin as unknown as PassThrough).write(LEADER);
     await waitFor(() => panelText(out).includes("active operation:"), "in-flight notice on Home");
     expect(panelText(out)).toContain("active operation: /smart-compact");
-    expect(panelText(out), "the guard's internal label reached Home").not.toContain("auto-compact");
+    // The window row legitimately names "Claude native auto-compact"; the guard's bare label never appears.
+    expect(panelText(out), "the guard's internal label reached Home").not.toMatch(/(?<!native )auto-compact/);
 
     // Details reports the same operation the same way.
     (stdin as unknown as PassThrough).write(Buffer.from("/details\r"));
     await waitFor(() => panelText(out).includes("Operation"), "details operation row");
     expect(panelText(out)).toContain("Operation /smart-compact");
-    expect(panelText(out)).not.toContain("auto-compact");
+    expect(panelText(out)).not.toMatch(/(?<!native )auto-compact/);
 
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     pty.fireExit(0);

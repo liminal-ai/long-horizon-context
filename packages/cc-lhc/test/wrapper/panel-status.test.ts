@@ -157,6 +157,7 @@ describe("TC-3.4a Status contract is truthful", () => {
         targetTokens: 180_000,
         triggerTokens: 360_000,
         contextClass: "1M",
+        nativeAutoCompact: "disabled",
       },
     };
     const status = await dispatchLhcCommand("/lhc-status", runtime);
@@ -168,6 +169,13 @@ describe("TC-3.4a Status contract is truthful", () => {
     expect(status.messages[0]).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
     expect(status.messages[0]).toContain("Derivations: 1 pending · 2 failed");
     expect(status.messages[0]).toContain("Thread: th_test");
+    expect(status.messages[0]).toContain(nativeCompactDisabledStatusLine());
+    // TC-3.5c: the Tool Prune argument is explained as an approximate estimated-token target.
+    const pruneSpec = PANEL_COMMANDS.find((command) => command.name === "/smart-prune");
+    expect(pruneSpec?.helpSummary).toContain("approximate estimated-token target");
+    expect(pruneSpec?.helpSummary).toContain("newest eligible tool results kept visible");
+    expect(pruneSpec?.helpSummary).toContain("older eligible results shorten");
+    expect(help).toContain("approximate estimated-token target");
     const stats = await dispatchLhcCommand("/lhc-stats", runtime);
     expect(stats.messages[0]).toContain("lines=3");
     expect(stats.messages[0]).toContain("events=2");

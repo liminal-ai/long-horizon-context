@@ -131,8 +131,9 @@ describe("Help teaches outcomes", () => {
   it("explains the Tool Prune target where the optional argument is shown", () => {
     const text = helpLines(openHome().panelView).join("\n");
     expect(text).toContain("/smart-prune [tokens]");
-    expect(text).toContain("Keep newest eligible tool results near [tokens] estimated tokens");
-    expect(text).toContain("older results shorten");
+    expect(text).toContain("[tokens] is the approximate estimated-token target");
+    expect(text).toContain("newest eligible tool results kept visible");
+    expect(text).toContain("older eligible results shorten");
     expect(text).toContain("Omit it for the default");
     expect(text).toContain("They do not delete stored LHC history.");
   });

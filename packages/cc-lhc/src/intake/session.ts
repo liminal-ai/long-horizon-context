@@ -1089,7 +1089,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         degradeAndEmit("prefix_boundary:unknown_provenance");
         logError(
           "cc-lhc: unknown prefix provenance — capture refused; " +
-            "reconcile by re-running compact/prune (verified boundary) or " +
+            "reconcile by re-running /smart-compact or /smart-prune (verified boundary) or " +
             "explicitly establishing known-none for a native session",
         );
         return;

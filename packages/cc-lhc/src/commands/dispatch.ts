@@ -1,10 +1,10 @@
 import type { Lhc, OpResult, ThreadRef, ViewStatus } from "lhc";
 import type { ContextClass } from "../governor/types.js";
-
 import type { OpenAsyncWork } from "../observation/async-work.js";
 import type { CaptureStats } from "../stats.js";
 import { formatCaptureStatsLine } from "../stats.js";
 import { helpLines } from "../wrapper/panel-commands.js";
+import { type NativeAutoCompactState, nativeAutoCompactStatusLine } from "../wrapper/terminology.js";
 import { runCompactCommand } from "./compact.js";
 import { runExportCommand } from "./export.js";
 import { runPruneCommand } from "./prune.js";
@@ -38,6 +38,8 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
     triggerTokens: number;
     /** Active context class the target and trigger were resolved for. */
     contextClass: ContextClass;
+    /** What cc-lhc did about Claude's automatic Compact for this launch. */
+    nativeAutoCompact: NativeAutoCompactState;
   };
   /** Host notices to include in the compact message (config fallbacks). */
   hostNotices?: readonly string[];
@@ -134,6 +136,7 @@ function userStatusLines(runtime: LhcCommandRuntime): string[] {
   return [
     `Latest provider context: ${context}`,
     `/smart-compact: ${tokenNumber(snapshot.targetTokens)}-token target · ${tokenNumber(snapshot.triggerTokens)}-token trigger (configured) · ${snapshot.contextClass} window`,
+    nativeAutoCompactStatusLine(snapshot.nativeAutoCompact),
   ];
 }
 

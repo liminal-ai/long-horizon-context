@@ -264,7 +264,8 @@ function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
   const stream = new PassThrough() as unknown as NodeJS.ReadStream & NodeJS.WriteStream;
   Object.defineProperty(stream, "isTTY", { value: false, configurable: true });
   Object.defineProperty(stream, "columns", { value: 80, configurable: true });
-  Object.defineProperty(stream, "rows", { value: 24, configurable: true });
+  // Tall enough that Home's notice rows stay on screen beneath the wrapped status rows.
+  Object.defineProperty(stream, "rows", { value: 40, configurable: true });
   return stream;
 }
 
@@ -704,7 +705,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     // Opening the Control Panel shows the pending results; it delivers nothing.
     (rig.stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => rig.terminalOutput().includes("carried work finished"), "panel notice");
-    // The 80x24 fake terminal wraps and clips the Home viewport; the first notice row is on screen.
     const panel = rig.terminalOutput();
     expect(panel).toContain('carried work finished: background agent "reviewer"');
     expect(panel).not.toContain("curl");

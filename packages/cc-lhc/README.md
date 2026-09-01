@@ -258,6 +258,18 @@ persisted fields are `lowerBoundTokens`, `upperBoundTokens`,
 `profile` (`default`, `balanced`, or `historical`), `pruneEnabled`,
 `pruneThresholdTokens`, `pruneTargetTokens`, and `minRunwayTokens`.
 
+Two token measures appear in `/status`, the Control Panel, and receipts, and
+they cover different domains. **Provider-reported context** is Claude's own
+usage count for the last request (input + cache creation + cache read); it is
+the only measure Smart Compact's trigger is judged against, and when no request
+has been observed yet it is shown as not observed rather than as zero. **LHC
+estimated tokens** are CC-LHC's estimate of content it constructs or stores —
+the rebuilt view, history captured since the last Smart Compact, eligible tool
+results, retrieval slices. Estimates use a general tokenizer over text CC-LHC
+holds, so they may differ from what the provider counts for the same content
+(and may coincidentally be equal); the two are labelled wherever they appear,
+and no fixed ratio or direction between them is assumed.
+
 Built-in target, trigger, and minimum runway follow the effective context
 window, read from Claude Code's documented status-line payload: 200k windows
 use 70k/140k/40k, 1M windows use 180k/360k/50k, and an unknown or unsupported
