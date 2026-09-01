@@ -92,9 +92,10 @@ describe("TC-4.1a Default allocation and core provenance", () => {
     expect([def.low, def.medium, def.high, def.full]).toEqual([20, 20, 30, 30]);
     expect(BUILTIN_CONTEXT_POLICY.profile).toBe("default");
     expect(mutationCoreProfile("default")).toBe("continuation");
+    // LIM-144: the conservative built-in is the 200k policy (70k target).
     expect(compactConstruction(BUILTIN_CONTEXT_POLICY)).toEqual({
       profile: "continuation",
-      params: { lowerBound: 180_000 },
+      params: { lowerBound: 70_000 },
     });
 
     expect(ACCEPTED_BOUNDED_CORE_SOURCE_COMMIT).toBe("1cfce5d5b45258150278a5699657a2481de5a48e");

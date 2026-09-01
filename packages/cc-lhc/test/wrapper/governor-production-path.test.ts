@@ -13,7 +13,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICIES, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { observeWatcherEmission } from "../../src/observation/observe.js";
@@ -1466,4 +1466,242 @@ describe("LIM-64 production wrapper path", () => {
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 15_000);
+});
+
+describe("LIM-144 built-in 1M policy at the trigger through the production wrapper path (TC-4.1a)", () => {
+  const ONE_MILLION_RESOLVED = {
+    policy: BUILTIN_CONTEXT_POLICIES["1M"],
+    sources: POLICY.sources,
+    fallbacks: [],
+    contextWindow: {
+      contextClass: "1M",
+      source: "observed",
+      observedWindowTokens: 1_000_000,
+      modelId: "claude-opus-5",
+      detail: null,
+      unresolvedAdvisory: false,
+    },
+  };
+  const savedHome = process.env.CC_LHC_HOME;
+  beforeEach(() => {
+    mocks.registerLineage.mockClear();
+    mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-prod-home-"));
+    dirs.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const d of dirs.splice(0)) {
+      try {
+        rmSync(d, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  interface Observe {
+    decision: string;
+    observePhase: string;
+    wouldMutate: boolean;
+    pressure: number | null;
+    contextClass: string;
+    upperBoundTokens: number;
+  }
+
+  /** The first describe's rig, launched on the built-in 1M policy. */
+  function launchOneMillionRig() {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim144-1m-"));
+    dirs.push(dir);
+    const receiptDb = join(dir, "cc-lhc.sqlite");
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    let liveSessionId = "old-session";
+    let generation = 0;
+    const rebuiltPath = join(dir, `${REBUILT_ID}.jsonl`);
+    vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      writeFileSync(rebuiltPath, '{"line":1}\n');
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: rebuiltPath,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        totalByteLength: 11,
+      };
+    });
+    mocks.captureFactory = (opts) => {
+      generation += 1;
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      if (isRebuilt) liveSessionId = REBUILT_ID;
+      const rolloutPath = isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl";
+      const session = scriptedCaptureSession(opts, sdk, liveSessionId, rolloutPath, generation);
+      (session as { getRolloutInfo: () => { path: string; sessionId: string } }).getRolloutInfo = () => ({
+        path: rolloutPath,
+        sessionId: liveSessionId,
+      });
+      if (opts.onLifecycle !== undefined && !isRebuilt) lifecycleSink = opts.onLifecycle;
+      return session;
+    };
+    const results: HandoffResult[] = [];
+    const observes: Observe[] = [];
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const fake = makeFakePty(8100 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin: fakeStream(),
+      stdout: fakeStream() as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: ONE_MILLION_RESOLVED as never,
+      governorReceiptDbPath: receiptDb,
+      onGovernorObserve: (record) => {
+        observes.push({
+          decision: record.decision,
+          observePhase: record.observePhase,
+          wouldMutate: record.wouldMutate,
+          pressure: record.pressure.nextRequestPressureTokens,
+          contextClass: record.contextClass,
+          upperBoundTokens: record.upperBoundTokens,
+        });
+      },
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
+    });
+    return {
+      spawned,
+      results,
+      observes,
+      receiptDb,
+      signal: (signals: readonly LifecycleSignal[]) => lifecycleSink!(signals),
+      ready: () => waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink"),
+      finish: async () => {
+        spawned[spawned.length - 1]!.fireExit(0);
+        await runPromise;
+      },
+    };
+  }
+
+  const sampled = (total: number): LifecycleSignal[] => [
+    { kind: "turn_opened", reason: "user_prompt" },
+    {
+      kind: "sampling_observed",
+      samplingId: `req:${total}`,
+      providerUsage: { input_tokens: total, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+    },
+  ];
+  const SETTLED: LifecycleSignal[] = [{ kind: "turn_settled", reason: "end_turn" }];
+
+  function wouldMutateRows(receiptDb: string) {
+    const store = openGovernorReceiptStore(receiptDb);
+    try {
+      return store.listBySession("old-session").filter((r) => r.wouldMutate);
+    } finally {
+      store.close();
+    }
+  }
+
+  async function expectOneHandoff(rig: ReturnType<typeof launchOneMillionRig>, total: number): Promise<void> {
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+    const eligible = rig.observes.filter((o) => o.wouldMutate);
+    expect(eligible).toHaveLength(1);
+    expect(eligible[0]).toMatchObject({
+      decision: "would_compact",
+      observePhase: "settled_seam",
+      pressure: total,
+      contextClass: "1M",
+      upperBoundTokens: 360_000,
+    });
+    expect(rig.spawned).toHaveLength(2);
+    const rows = wouldMutateRows(rig.receiptDb);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.handoffOutcome).toMatchObject({ kind: "handoff_success", newSessionId: REBUILT_ID });
+  }
+
+  it("359,999 provider tokens at a settled seam stay below the 360k trigger: no mutation, no replacement", async () => {
+    const rig = launchOneMillionRig();
+    await rig.ready();
+    rig.signal(BOUND_SIGNALS);
+    rig.signal([...sampled(359_999), ...SETTLED]);
+    await waitFor(() => rig.observes.some((o) => o.observePhase === "settled_seam"), "settled observe");
+    const settled = rig.observes.filter((o) => o.observePhase === "settled_seam");
+    expect(settled).toHaveLength(1);
+    expect(settled[0]).toMatchObject({
+      decision: "below_threshold",
+      wouldMutate: false,
+      pressure: 359_999,
+      contextClass: "1M",
+      upperBoundTokens: 360_000,
+    });
+    expect(rig.observes.some((o) => o.wouldMutate)).toBe(false);
+    expect(wouldMutateRows(rig.receiptDb)).toHaveLength(0);
+    expect(rig.results).toHaveLength(0);
+    expect(rig.spawned).toHaveLength(1);
+    await rig.finish();
+    expect(rig.results).toHaveLength(0);
+    expect(rig.spawned).toHaveLength(1);
+  }, 20_000);
+
+  it("exactly 360,000 provider tokens at a settled seam produce exactly one Smart Compact handoff", async () => {
+    const rig = launchOneMillionRig();
+    await rig.ready();
+    rig.signal(BOUND_SIGNALS);
+    rig.signal([...sampled(360_000), ...SETTLED]);
+    await expectOneHandoff(rig, 360_000);
+    await rig.finish();
+  }, 20_000);
+
+  it("360,001 provider tokens at a settled seam produce exactly one Smart Compact handoff", async () => {
+    const rig = launchOneMillionRig();
+    await rig.ready();
+    rig.signal(BOUND_SIGNALS);
+    rig.signal([...sampled(360_001), ...SETTLED]);
+    await expectOneHandoff(rig, 360_001);
+    await rig.finish();
+  }, 20_000);
+
+  it("an open turn at exactly 360,000 does not mutate; the same pressure mutates once at settlement", async () => {
+    const rig = launchOneMillionRig();
+    await rig.ready();
+    rig.signal(BOUND_SIGNALS);
+    rig.signal(sampled(360_000));
+    await waitFor(() => rig.observes.length >= 1, "open-turn observe");
+    expect(rig.observes[0]).toMatchObject({
+      observePhase: "open_turn",
+      wouldMutate: false,
+      pressure: 360_000,
+      contextClass: "1M",
+      upperBoundTokens: 360_000,
+    });
+    expect(wouldMutateRows(rig.receiptDb)).toHaveLength(0);
+    expect(rig.results).toHaveLength(0);
+    expect(rig.spawned).toHaveLength(1);
+
+    rig.signal(SETTLED);
+    await expectOneHandoff(rig, 360_000);
+    await rig.finish();
+  }, 20_000);
 });
