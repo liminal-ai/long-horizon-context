@@ -230,13 +230,22 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
         continuation: { kind: "monitor_relaunch", toolUseId: "toolu_mon", rolloutPath: paths.rolloutPath },
       });
       const outcome = qualify();
-      expect(outcome.qualified.find((q) => q.family === "monitor")?.continuation.kind).toBe("monitor_relaunch");
       if (platform === "win32") {
-        // The Windows shell refusal is unchanged and owns the snapshot outcome there.
+        // The relaunch runs through /bin/sh; unproved on Windows, so the seam
+        // closes the Monitor truthfully instead of promising a restart.
+        expect(outcome.terminalized).toEqual([
+          {
+            launchId: LAUNCH_IDS.monitor,
+            family: "monitor",
+            outcome: "failed",
+            reason: "relaunch_unsupported_on_platform",
+          },
+        ]);
         expect(JSON.stringify([store.listItems(T), outcome])).not.toContain(MONITOR_COMMAND);
         store.close();
         continue;
       }
+      expect(outcome.qualified.find((q) => q.family === "monitor")?.continuation.kind).toBe("monitor_relaunch");
       const result = snapshot();
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -357,7 +366,10 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
     expect(outcome.refused.map((r) => [r.family, r.reason])).toEqual([
       ["background_shell", "windows_shell_identity_not_exposed"],
     ]);
-    expect(outcome.qualified.map((q) => q.family).sort()).toEqual(["agent", "monitor", "scheduled_wakeup", "workflow"]);
+    expect(outcome.qualified.map((q) => q.family).sort()).toEqual(["agent", "scheduled_wakeup", "workflow"]);
+    expect(outcome.terminalized.map((t) => [t.family, t.reason])).toEqual([
+      ["monitor", "relaunch_unsupported_on_platform"],
+    ]);
     // No Node dev/ino substitution: nothing was verified, nothing claimed.
     expect(item("background_shell")).toMatchObject({
       carryMode: "unqualified",

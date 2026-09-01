@@ -11,15 +11,16 @@ import {
   type ThreadRef,
   threads,
 } from "lhc";
-import { CAPTURE_VIEW_CONFIG } from "../governor/band-allocation.js";
 import type { CaptureCommandContext } from "../commands/dispatch.js";
+import { CAPTURE_VIEW_CONFIG } from "../governor/band-allocation.js";
 import { ccAssignments } from "../inference/assignments.js";
 import { claudeCliModelCall } from "../inference/claude-cli.js";
 import {
+  type AsyncWorkEvent,
   type AsyncWorkFold,
   createAsyncWorkFold,
-  openAsyncWork,
   type OpenAsyncWork,
+  openAsyncWork,
 } from "../observation/async-work.js";
 import {
   applyCaptureDegraded,
@@ -46,16 +47,16 @@ import {
   SessionAttributionError,
 } from "../rollout/discover.js";
 import type { ExpectedSession } from "../rollout/expected-session.js";
+import { type ClaudeRuntimeSettings, observeClaudeRuntimeSettings } from "../rollout/runtime-settings.js";
 import type { RolloutLineItem, WatcherEmission } from "../rollout/types.js";
-import { observeClaudeRuntimeSettings, type ClaudeRuntimeSettings } from "../rollout/runtime-settings.js";
 import { type RolloutWatcher, watchRolloutFile } from "../rollout/watcher.js";
 import { type CaptureStats, emptyCaptureStats } from "../stats.js";
 import {
+  bindCaptureThread,
   defaultLineageDbPath,
   type LaunchClass,
   type LineageDbDeps,
   type LineageOutcome,
-  bindCaptureThread,
   lookupSessionLineage,
   safeAppendThreadSignatures,
   safeLoadThreadSignatures,
@@ -193,6 +194,12 @@ export interface CaptureSessionDeps {
   initSdkFn?: (config: SdkConfig) => Lhc;
   drainSettledCapMs?: number;
   onLifecycle?: (signals: readonly LifecycleSignal[]) => void;
+  /**
+   * Accepted asynchronous-work evidence from the rollout fold (launch,
+   * progress, terminal), with the bound thread id, for the parent-owned
+   * continuity record (LIM-145). Fires only for live-suffix lines after bind.
+   */
+  onAsyncWorkEvent?: (event: AsyncWorkEvent, threadId: string) => void;
   /** Latest runtime choices explicitly recorded by the bound Claude rollout. */
   onRuntimeSettings?: (settings: Readonly<ClaudeRuntimeSettings>) => void;
   /** Generation id seed (tests / restart counters). */
@@ -429,7 +436,18 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   const estimateFold: PostMeasurementEstimateFold = createPostMeasurementEstimateFold();
   // One capture generation, one open-async set. A replacement child starts a
   // new capture session, and by then everything this set held is dead.
-  const asyncWorkFold: AsyncWorkFold = createAsyncWorkFold();
+  const asyncWorkFold: AsyncWorkFold = createAsyncWorkFold((event) => {
+    const onAsyncWorkEvent = deps.onAsyncWorkEvent;
+    if (onAsyncWorkEvent === undefined) return;
+    const threadId = threadRef === undefined ? "" : threadIdFromRef(threadRef);
+    if (threadId === "") return;
+    try {
+      onAsyncWorkEvent(event, threadId);
+    } catch (cause) {
+      // The continuity record is a consumer; its failure never poisons intake.
+      logError(`cc-lhc continuity: async-work subscriber threw: ${detail(cause)}`);
+    }
+  });
   let reportedAsyncDiagnostics = 0;
   const userOnLifecycle = deps.onLifecycle;
   /** Explicit boundary wins; otherwise lineage supplies provenance after resolve. */

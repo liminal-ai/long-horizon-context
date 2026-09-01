@@ -17,7 +17,7 @@
  */
 
 import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
-
+import type { ContinuitySnapshot } from "../continuity/snapshot.js";
 import { compactConstruction } from "../governor/band-allocation.js";
 import { CAPTURE_NOT_READY_REFUSAL } from "../intake/session.js";
 import type { OpenAsyncWork } from "../observation/async-work.js";
@@ -29,7 +29,7 @@ import {
   formatCompactSdkError,
   formatCompactViewLine,
 } from "../wrapper/terminology.js";
-import { formatContinuityNote, freezeLiveAsyncWork } from "./continuity-note.js";
+import { formatCarryoverNote, formatContinuityNote, freezeLiveAsyncWork } from "./continuity-note.js";
 import { CAPTURE_DEGRADED_REFUSAL, type LhcCommandRuntime, TURN_OPEN_REFUSAL } from "./dispatch.js";
 import { threadIdFromRef } from "./rebuild-receipt.js";
 
@@ -69,6 +69,14 @@ export interface HandoffRequest {
   metrics: ContextMutationMetrics;
   /** Frozen prelaunch live-work snapshot consumed by the continuity note. */
   liveAsyncWork: readonly OpenAsyncWork[];
+  /** The accepted carryover generation this handoff transfers (automatic path). */
+  carryover?: ContinuityCarryover;
+}
+
+/** The accepted continuity snapshot plus where a relaunched Monitor's output lands. */
+export interface ContinuityCarryover {
+  snapshot: ContinuitySnapshot;
+  monitorOutputDir: string;
 }
 
 /** Compact token display for receipts: 247k / 8.2k / 941. One ontology — these
@@ -139,6 +147,11 @@ export interface ContextMutationPlan {
   liveAsyncWork?: readonly OpenAsyncWork[];
   /** One-shot prelaunch has no old child and must not add a live-work note. */
   omitContinuityNote?: boolean;
+  /**
+   * The accepted continuity snapshot (automatic path): the rebuilt rollout
+   * carries its manifest instead of the continuity-lost note.
+   */
+  carryover?: ContinuityCarryover;
 }
 
 export type ContextMutationOutcome =
@@ -294,7 +307,11 @@ export async function runContextMutation(
     plan.operation,
     metrics,
     plan.hostNotices ?? [],
-    plan.omitContinuityNote === true ? undefined : formatContinuityNote(liveAsyncWork),
+    plan.omitContinuityNote === true
+      ? undefined
+      : plan.carryover !== undefined
+        ? formatCarryoverNote(plan.carryover.snapshot, plan.carryover.monitorOutputDir)
+        : formatContinuityNote(liveAsyncWork),
   );
 
   // ONE rebuilt rollout for the whole operation, written from the installed
@@ -329,6 +346,7 @@ export async function runContextMutation(
           durableReceipt,
           metrics,
           liveAsyncWork,
+          ...(plan.carryover === undefined ? {} : { carryover: plan.carryover }),
         },
       };
     } catch (cause) {

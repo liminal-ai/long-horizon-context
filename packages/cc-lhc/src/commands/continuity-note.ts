@@ -9,6 +9,8 @@
  * environment values, or command output. Truncation is not redaction.
  */
 
+import { relaunchOutputPath } from "../continuity/handoff.js";
+import type { CarriedItem, ContinuitySnapshot } from "../continuity/snapshot.js";
 import type { AsyncWorkFamily, OpenAsyncWork } from "../observation/async-work.js";
 
 /** Small fixed bound on named items in the replacement-agent note. */
@@ -35,8 +37,7 @@ const FAMILY_CATEGORY: Record<AsyncWorkFamily, string> = {
   scheduled_wakeup: "scheduled wakeups",
 };
 
-const NO_TERMINATION =
-  "This note does not claim that the previous Claude process or those items stopped.";
+const NO_TERMINATION = "This note does not claim that the previous Claude process or those items stopped.";
 
 function uniqueCategories(work: readonly OpenAsyncWork[]): string {
   const seen = new Set<AsyncWorkFamily>();
@@ -130,6 +131,65 @@ export function formatContinuityNote(work: readonly OpenAsyncWork[], nowMs: numb
     return detailed;
   }
   return genericNote(work);
+}
+
+function carriedLabel(item: CarriedItem, nowMs: number): string {
+  if (item.family === "scheduled_wakeup" && item.scheduledForMs !== null) {
+    return `${FAMILY_NOUN[item.family]} (${due(item.scheduledForMs, nowMs)})`;
+  }
+  // The stored label is already sanitized (family noun, bounded description, id).
+  return plainAscii(item.label, MAX_CONTINUITY_NAME_CHARS + MAX_TASK_ID_CHARS + 24);
+}
+
+/** What the replacement can truthfully do with one carried item. No command text, ever. */
+function carriedAction(item: CarriedItem, monitorOutputDir: string, generation: number): string {
+  const c = item.continuation;
+  switch (c.kind) {
+    case "parent_output_read":
+      return `adopted: still running, uninterrupted; output file ${c.path}`;
+    case "send_message":
+      return `resumed: continue it with SendMessage to ${c.agentId}`;
+    case "workflow_resume":
+      return `resumed: continue it with Workflow resumeFromRunId ${c.resumeFromRunId}`;
+    case "rearm_at":
+      return "re-armed from its scheduled time; surfaced at the next turn";
+    case "monitor_relaunch":
+      return (
+        "restarted: its previous run ended with the replaced process and the same command was " +
+        `relaunched once for this session; output file ${relaunchOutputPath(monitorOutputDir, item.launchId, generation)}`
+      );
+  }
+}
+
+const CARRIED_LEAD = `${SMART_COMPACT_LEAD} Tracked background work carried into this session`;
+const CARRIED_TAIL =
+  "Smart Compact terminated nothing except the replaced Claude process; a restarted item is a new run.";
+
+/**
+ * One bounded manifest of the carried work (LIM-145 AC-2.5/2.6): each item
+ * once, with the truthful transition and what the replacement can do with it.
+ * `undefined` when nothing was carried, so the receipt stays the only note.
+ */
+export function formatCarryoverNote(
+  snapshot: ContinuitySnapshot,
+  monitorOutputDir: string,
+  nowMs: number = Date.now(),
+): string | undefined {
+  if (snapshot.items.length === 0) return undefined;
+  const lines = snapshot.items.map(
+    (item) => `- ${carriedLabel(item, nowMs)}: ${carriedAction(item, monitorOutputDir, snapshot.generation)}`,
+  );
+  const detailed = [`${CARRIED_LEAD} (generation ${snapshot.generation}):`, ...lines, CARRIED_TAIL].join("\n");
+  if (snapshot.items.length <= MAX_NAMED_CONTINUITY_ITEMS && detailed.length <= MAX_CONTINUITY_NOTE_CHARS) {
+    return detailed;
+  }
+  const count = snapshot.items.length;
+  const families = [...new Set(snapshot.items.map((item) => FAMILY_NOUN[item.family]))].join(", ");
+  return (
+    `${CARRIED_LEAD} (generation ${snapshot.generation}): ${count} items (${families}). ` +
+    "Inspect them before relying on their results. " +
+    CARRIED_TAIL
+  );
 }
 
 /** Freeze a copy so later fold updates cannot rewrite the accepted snapshot. */

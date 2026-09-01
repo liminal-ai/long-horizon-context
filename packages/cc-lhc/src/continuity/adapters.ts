@@ -76,6 +76,8 @@ export interface AdapterContext {
 }
 
 export type MonitorLaunchUnresolvable =
+  /** The relaunch runs the command through the platform's POSIX shell; not proved on win32. */
+  | "relaunch_unsupported_on_platform"
   | "no_rollout_binding"
   | "rollout_unreadable"
   | "launch_not_found"
@@ -371,7 +373,10 @@ export function qualifyActiveItems(
   for (const item of store.listItems(threadId)) {
     if (item.state === "terminal") continue;
     if (item.family === "monitor") {
-      const resolved = resolveMonitorLaunch(context.sourceRolloutPath, item.toolUseId, context.readRollout);
+      const resolved: MonitorLaunchResolution =
+        context.platform === "win32"
+          ? { ok: false, reason: "relaunch_unsupported_on_platform" }
+          : resolveMonitorLaunch(context.sourceRolloutPath, item.toolUseId, context.readRollout);
       if (!resolved.ok) {
         // No command is invented and the seam is not blocked: the Monitor's
         // original run ended with the child, and nothing can restart it.
