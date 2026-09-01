@@ -25,9 +25,11 @@ import {
   readShownVersion,
 } from "../../src/wrapper/first-load.js";
 import { DEFAULT_LEADER_BYTE } from "../../src/wrapper/modal.js";
+import { panelStyleFromEnv } from "../../src/wrapper/panel.js";
 import { PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
+import { createPreviewHome, PREVIEW_FIXTURES, renderPreview } from "../../src/wrapper/preview.js";
 import { run } from "../../src/wrapper/run.js";
-import { panelText } from "../helpers/panel-text.js";
+import { panelFrames, panelText } from "../helpers/panel-text.js";
 
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -474,4 +476,82 @@ describe("first-load Control Panel on the managed launch path", () => {
     spawned[0]!.fireExit(0);
     expect(await runPromise).toBe(0);
   }, 15_000);
+});
+
+describe("D12 preview/production renderer equality", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  const homes: string[] = [];
+  let home = "";
+
+  beforeEach(() => {
+    mocks.captureFactory = null;
+    home = mkdtempSync(join(tmpdir(), "cc-lhc-first-load-eq-"));
+    homes.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+
+  /** The production launch's first frame at the preview's normal geometry (100x30). */
+  async function productionFirstFrame(argv: string[], receiptDb?: string): Promise<string> {
+    const live = await launchLive(argv, receiptDb === undefined ? {} : { receiptDb });
+    try {
+      await waitFor(() => panelFrames(live.out()).length > 0, "production panel frame");
+      return panelFrames(live.out())[0]!;
+    } finally {
+      live.stdin.write(Buffer.from(ESC));
+      expect(await live.finish()).toBe(0);
+    }
+  }
+
+  const FRAME_START = `${ESC}[?25l${ESC}[2J`;
+
+  it("normal first launch and native auto-compact conflict: the preview frame is byte-identical to the production launch frame", async () => {
+    const style = panelStyleFromEnv();
+    const preview = createPreviewHome();
+    try {
+      const firstLaunch = renderPreview(PREVIEW_FIXTURES["normal-first-launch"], "normal", preview, { style }).frame;
+      const prod = FRAME_START + (await productionFirstFrame([]));
+      {
+        let i = 0;
+        while (i < prod.length && prod[i] === firstLaunch[i]) i += 1;
+        console.log(
+          "DIFFAT",
+          i,
+          JSON.stringify(prod.slice(Math.max(0, i - 120), i + 160)),
+          "|||",
+          JSON.stringify(firstLaunch.slice(Math.max(0, i - 120), i + 160)),
+        );
+      }
+      expect(prod).toBe(firstLaunch);
+
+      markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
+      const native = renderPreview(PREVIEW_FIXTURES["native-auto-compact-conflict"], "normal", preview, {
+        style,
+      }).frame;
+      expect(FRAME_START + (await productionFirstFrame(["--autocompact", "500000"]))).toBe(native);
+    } finally {
+      preview.dispose();
+    }
+  });
+
+  it("capture/database unsafe: the preview frame is byte-identical to the production launch frame over a corrupt database", async () => {
+    const style = panelStyleFromEnv();
+    const preview = createPreviewHome();
+    try {
+      markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
+      const garbage = join(home, "garbage.sqlite");
+      writeFileSync(garbage, "not a database at all\n");
+      const unsafe = renderPreview(PREVIEW_FIXTURES["capture-database-unsafe"], "normal", preview, { style }).frame;
+      expect(FRAME_START + (await productionFirstFrame([], garbage))).toBe(unsafe);
+    } finally {
+      preview.dispose();
+    }
+  });
 });

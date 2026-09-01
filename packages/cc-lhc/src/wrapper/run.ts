@@ -165,6 +165,7 @@ import {
   formatActiveOperationRow,
   formatHandoffFailureSummary,
   formatLastActionRow,
+  formatRetrievalStateRow,
   toPanelWording,
 } from "./panel-wording.js";
 import {
@@ -2001,7 +2002,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     if (lastAttempt !== null && (lastAction === null || lastAttempt.atMs > lastAction.atMs)) {
       extraStatusRows.push(`last attempt: ${lastAttempt.summary} (${formatAgo(lastAttempt.atMs)})`);
     }
-    if (retrievalState !== "ready") extraStatusRows.push(`retrieval ${retrievalState}`);
+    if (retrievalState !== "ready") extraStatusRows.push(formatRetrievalStateRow(retrievalState));
     extraStatusRows.push(...startupAnomalyNotices);
     // LIM-146: finished carried work awaiting delivery. Reading it here changes
     // no delivery state; opening the panel is visibility, not delivery.

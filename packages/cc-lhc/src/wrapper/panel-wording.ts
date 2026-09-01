@@ -38,6 +38,11 @@ export function formatActiveOperation(label: string): string {
 }
 
 /** The Home notice row itself, so the wording and the prefix travel together. */
+/** Home's retrieval row: shown only while retrieval is not ready. */
+export function formatRetrievalStateRow(state: string): string {
+  return `retrieval ${state}`;
+}
+
 export function formatActiveOperationRow(label: string): string {
   return `active operation: ${formatActiveOperation(label)}`;
 }

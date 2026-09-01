@@ -15,6 +15,8 @@
  * character in a pattern is exactly what `noControlCharactersInRegex` exists
  * to catch, and the constructed form says what the byte is.
  */
+import { frameGrid } from "../../src/wrapper/preview.js";
+
 const ESC = String.fromCharCode(0x1b);
 const FRAME_START = `${ESC}[?25l${ESC}[2J`;
 const ANSI = new RegExp(`${ESC}\\[[0-9;?]*[a-zA-Z]`, "g");
@@ -87,24 +89,7 @@ export function lastPanelText(output: string): string {
 /** The last redraw as a `rows`-tall grid of `cols`-wide lines (right-trimmed). */
 export function panelGrid(output: string, cols: number, rows: number): string[] {
   const frames = panelFrames(output);
-  const frame = frames[frames.length - 1] ?? "";
-  const grid: string[][] = Array.from({ length: rows }, () => Array.from({ length: cols }, () => " "));
-  let row = 0;
-  let col = 0;
-  const put = (text: string): void => {
-    for (const character of text) {
-      if (row >= 0 && row < rows && col >= 0 && col < cols) grid[row]![col] = character;
-      col += 1;
-    }
-  };
-  scanFrame(frame, put, (sequence) => {
-    const move = CURSOR_MOVE.exec(sequence);
-    if (move !== null) {
-      row = Number.parseInt(move[1]!, 10) - 1;
-      col = Number.parseInt(move[2]!, 10) - 1;
-    }
-  });
-  return grid.map((line) => line.join("").replace(/\s+$/, ""));
+  return frameGrid(frames[frames.length - 1] ?? "", cols, rows);
 }
 
 /** Rows of the last frame that carry any drawn content, left padding removed. */

@@ -4,6 +4,7 @@ import { isTasksArgv, runTasksCli } from "./continuity/tasks-cli.js";
 import { CC_LHC_HELP, isLhcHelpArgv } from "./help.js";
 import { isRetrievalArgv, runRetrievalCli } from "./retrieval/service.js";
 import { formatLhcVersion, readBuildIdentity } from "./version.js";
+import { isPreviewArgv, runPreviewCli } from "./wrapper/preview.js";
 import { run } from "./wrapper/run.js";
 
 const rawArgv = process.argv.slice(2);
@@ -32,6 +33,13 @@ if (isLhcVersionArgv(rawArgv)) {
     return 1;
   });
   process.exitCode = exitCode;
+} else if (isPreviewArgv(rawArgv)) {
+  // Developer-facing first-load panel preview (D12): production renderer,
+  // disposable home, never launches Claude.
+  process.exitCode = runPreviewCli(rawArgv, {
+    stdout: (text) => process.stdout.write(text),
+    stderr: (text) => process.stderr.write(text),
+  });
 } else if (isRetrievalArgv(rawArgv)) {
   const exitCode = await runRetrievalCli(rawArgv).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : String(error);

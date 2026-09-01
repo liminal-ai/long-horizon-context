@@ -746,8 +746,16 @@ function homeCard(state: InputState, geometry: Geometry, elapsedSeconds: number 
   const focusLine = focusId === null ? actionStart + actions.focusLine : statusStart + status.focusLine;
 
   const tail: Line[] = [];
-  if (state.panelRows.length > 0) tail.push(BLANK_LINE, ...receiptBody(state.panelRows, geometry));
-  if (!executing) tail.push(...suggestionBody(state, geometry));
+  const suggestions = executing ? [] : suggestionBody(state, geometry);
+  if (state.panelRows.length > 0) {
+    // Notices and receipts read top-down: when the card is short, keep their
+    // head and say so, so a prioritized guidance header is never the row that
+    // falls off. The prompt/progress rows and the menu keep their room.
+    const reserved = suggestions.length + 3;
+    const notices = clipBody(receiptBody(state.panelRows, geometry), Math.max(1, geometry.bodyBudget - reserved), 0);
+    tail.push(BLANK_LINE, ...notices.lines);
+  }
+  tail.push(...suggestions);
   let cursorTailIndex: number | null = null;
   let cursorOffset = 0;
   if (executing) {
@@ -872,10 +880,23 @@ function survivalScreen(state: InputState, cols: number, rows: number, elapsedSe
     const action = HOME_ACTIONS[homeSelectedActionIndex(state.viewport.scrollOffset)];
     push(ln(span(ACTION_CARET, "accent"), span(truncate(action?.label ?? "", width - ACTION_CARET.length), "accent")));
   }
+  // One notice row, when it and the command line both fit: the first
+  // actionable/first-load guidance row the panel carries, else Home's own
+  // first non-normal status row.
+  const guidance = state.panelRows.find((row) => row.startsWith("! ")) ?? state.panelRows[0];
   const notice = statusRows.find((entry) => entry.tone !== "normal");
-  if (notice !== undefined && budget > lines.length + 1 + (executing ? 1 : 1)) {
-    const ink: Ink = notice.tone === "alarm" ? "alarm" : "notice";
-    push(ln(span(NOTICE_PREFIX, ink), span(truncate(notice.text.trim(), width - NOTICE_PREFIX.length), ink)));
+  if (budget >= lines.length + 2) {
+    if (guidance !== undefined) {
+      push(
+        ln(
+          span(NOTICE_PREFIX, "notice"),
+          span(truncate(guidance.replace(/^! /, "").trim(), width - NOTICE_PREFIX.length), "notice"),
+        ),
+      );
+    } else if (notice !== undefined) {
+      const ink: Ink = notice.tone === "alarm" ? "alarm" : "notice";
+      push(ln(span(NOTICE_PREFIX, ink), span(truncate(notice.text.trim(), width - NOTICE_PREFIX.length), ink)));
+    }
   }
   if (executing) {
     const progress = commandProgressLabel(state.line, elapsedSeconds);

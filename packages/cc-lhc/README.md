@@ -383,6 +383,12 @@ pnpm --config.verify-deps-before-run=false --filter cc-lhc run typecheck
 pnpm --config.verify-deps-before-run=false --filter cc-lhc run test   # CC_LHC_NATIVE_REQUIRE_ADDON=1 makes the compiled addon mandatory
 ```
 
+First-load Control Panel copy and layout are tuned against the production
+renderer only: `pnpm run preview:panel` (after `build`) draws the nine named
+fixtures at normal, narrow, and 20x5 geometry in a disposable home, and
+`cc-lhc preview --fixture <name> --geometry <name> --raw` prints one exact
+frame. The preview never launches Claude.
+
 Certification includes the real installed artifact in SSH → tmux → PTY,
 automatic Smart Compact twice, unpiped labeled retrieval and impression recording,
 prune, clean exit/relaunch, explicit resume, deliberate in-app mismatch,
