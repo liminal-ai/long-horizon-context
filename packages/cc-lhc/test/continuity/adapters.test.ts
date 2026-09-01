@@ -18,6 +18,7 @@ import {
   sessionDirOfRollout,
 } from "../../src/continuity/adapters.js";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
+import { resolveRelaunchShell } from "../../src/continuity/relaunch-shell.js";
 import { closeContinuitySnapshot, snapshotContinuity } from "../../src/continuity/snapshot.js";
 import { type ContinuityItem, openContinuityStore, relaunchKey } from "../../src/continuity/store.js";
 import type { AsyncWorkFamily } from "../../src/observation/async-work.js";
@@ -231,14 +232,14 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       });
       const outcome = qualify();
       if (platform === "win32") {
-        // The relaunch runs through /bin/sh; unproved on Windows, so the seam
-        // closes the Monitor truthfully instead of promising a restart.
+        // This host has no Git Bash where Claude Code would look for it, so
+        // the seam closes the Monitor truthfully instead of promising a restart.
         expect(outcome.terminalized).toEqual([
           {
             launchId: LAUNCH_IDS.monitor,
             family: "monitor",
             outcome: "failed",
-            reason: "relaunch_unsupported_on_platform",
+            reason: "relaunch_shell_unavailable",
           },
         ]);
         expect(JSON.stringify([store.listItems(T), outcome])).not.toContain(MONITOR_COMMAND);
@@ -268,6 +269,32 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       expect(relaunchKey(carried?.launchId ?? "", result.snapshot.generation)).toBe(`${LAUNCH_IDS.monitor}#1`);
       store.close();
     }
+  });
+
+  it("win32: a Monitor qualifies through Git Bash exactly where Claude Code resolves it (native-shell seam)", () => {
+    const paths = hostLayout();
+    const { store, item, snapshot } = rig(paths, "win32");
+    const gitBash = "C:\\Program Files\\Git\\bin\\bash.exe";
+    const context: AdapterContext = {
+      platform: "win32",
+      sourceRolloutPath: paths.rolloutPath,
+      relaunchShell: resolveRelaunchShell("win32", { PATH: "" }, (p) => p === gitBash),
+    };
+    const outcome = qualifyActiveItems(store, T, context, 5_000);
+    expect(outcome.terminalized).toEqual([]);
+    expect(outcome.qualified.find((q) => q.family === "monitor")).toMatchObject({
+      carryMode: "reconstruct",
+      continuation: { kind: "monitor_relaunch", toolUseId: "toolu_mon", rolloutPath: paths.rolloutPath },
+    });
+    expect(item("monitor")).toMatchObject({
+      carryMode: "reconstruct",
+      state: "active",
+      verifiedIdentity: { kind: "monitor_launch", toolUseId: "toolu_mon", rolloutPath: paths.rolloutPath },
+    });
+    // The Windows shell refusal is unchanged and still owns the snapshot outcome there.
+    expect(snapshot()).toEqual({ ok: false, reason: "unqualified_items", launchIds: [LAUNCH_IDS.background_shell] });
+    expect(JSON.stringify([store.listItems(T), outcome])).not.toContain(MONITOR_COMMAND);
+    store.close();
   });
 
   it("monitor: resolution needs both the rollout binding and the launching tool-use id", () => {
@@ -367,9 +394,7 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       ["background_shell", "windows_shell_identity_not_exposed"],
     ]);
     expect(outcome.qualified.map((q) => q.family).sort()).toEqual(["agent", "scheduled_wakeup", "workflow"]);
-    expect(outcome.terminalized.map((t) => [t.family, t.reason])).toEqual([
-      ["monitor", "relaunch_unsupported_on_platform"],
-    ]);
+    expect(outcome.terminalized.map((t) => [t.family, t.reason])).toEqual([["monitor", "relaunch_shell_unavailable"]]);
     // No Node dev/ino substitution: nothing was verified, nothing claimed.
     expect(item("background_shell")).toMatchObject({
       carryMode: "unqualified",

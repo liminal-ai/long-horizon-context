@@ -11,8 +11,9 @@
  *    these from the manifest in its rebuilt rollout; the parent starts nothing.
  *  - monitor_relaunch: the exact launch specification is resolved from the
  *    old rollout now, never earlier, and run once under
- *    `relaunchKey(launchId, generation)`. The fence is the exclusive creation
- *    of that key's output file: a second invocation for the same generation
+ *    `relaunchKey(launchId, generation)`, through the shell Claude Code itself
+ *    would use (`relaunch-shell.ts`). The fence is the exclusive creation of
+ *    that key's output file: a second invocation for the same generation
  *    finds it and starts nothing. The command text is held in memory only.
  *
  * An unavailable mechanism or a failed invocation closes that item with one
@@ -25,6 +26,7 @@ import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
 
 import { type MonitorLaunchSpec, type PathFact, resolveMonitorLaunch, statPathReal } from "./adapters.js";
+import { type RelaunchShell, type RelaunchShellResolution, resolveRelaunchShell } from "./relaunch-shell.js";
 import { type ClosureResult, type ContinuitySnapshot, closeContinuitySnapshot } from "./snapshot.js";
 import { type ContinuityStore, relaunchKey } from "./store.js";
 
@@ -34,15 +36,26 @@ export function relaunchOutputPath(dir: string, launchId: string, generation: nu
   return join(dir, `${safe}.output`);
 }
 
-export type RelaunchSpawn = (spec: MonitorLaunchSpec, outputFd: number, cwd: string) => { pid: number };
+export type RelaunchSpawn = (
+  spec: MonitorLaunchSpec,
+  outputFd: number,
+  cwd: string,
+  shell: RelaunchShell,
+) => { pid: number };
 
-/** The platform's POSIX shell runs the exact command string, detached, output to the fence file. */
-export function spawnRelaunchReal(spec: MonitorLaunchSpec, outputFd: number, cwd: string): { pid: number } {
-  const child: ChildProcess = spawn("/bin/sh", ["-c", spec.command], {
+/** The resolved shell runs the exact command string, detached, output to the fence file. */
+export function spawnRelaunchReal(
+  spec: MonitorLaunchSpec,
+  outputFd: number,
+  cwd: string,
+  shell: RelaunchShell,
+): { pid: number } {
+  const child: ChildProcess = spawn(shell.program, shell.args(spec.command), {
     cwd,
     env: process.env,
     stdio: ["ignore", outputFd, outputFd],
     detached: true,
+    windowsHide: true,
   });
   child.unref();
   if (child.pid === undefined) throw new Error("no pid");
@@ -57,6 +70,8 @@ export interface CarryoverPorts {
   statPath?: (path: string) => PathFact;
   readRollout?: (path: string) => string | null;
   spawnRelaunch?: RelaunchSpawn;
+  /** The shell for a relaunch; resolved for this platform when omitted. */
+  relaunchShell?: RelaunchShellResolution;
   log: (message: string) => void;
 }
 
@@ -90,6 +105,7 @@ export function invokeCarryover(
 ): CarryoverTransfer {
   const statPath = ports.statPath ?? statPathReal;
   const spawnRelaunch = ports.spawnRelaunch ?? spawnRelaunchReal;
+  const relaunchShell = ports.relaunchShell ?? resolveRelaunchShell(process.platform);
   const results: InvocationResult[] = [];
   for (const item of snapshot.items) {
     const c = item.continuation;
@@ -116,6 +132,10 @@ export function invokeCarryover(
           result = failed(item.launchId, `monitor relaunch unavailable: ${resolved.reason}`);
           break;
         }
+        if (!relaunchShell.ok) {
+          result = failed(item.launchId, `monitor relaunch unavailable: ${relaunchShell.reason}`);
+          break;
+        }
         const outputPath = relaunchOutputPath(ports.monitorOutputDir, item.launchId, snapshot.generation);
         let fd: number;
         try {
@@ -130,7 +150,7 @@ export function invokeCarryover(
           break;
         }
         try {
-          const spawned = spawnRelaunch(resolved.spec, fd, ports.cwd);
+          const spawned = spawnRelaunch(resolved.spec, fd, ports.cwd, relaunchShell.shell);
           result = { launchId: item.launchId, kind: "relaunched", pid: spawned.pid, outputPath };
         } catch (cause) {
           result = failed(

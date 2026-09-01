@@ -79,6 +79,13 @@ export interface ContinuityCarryover {
   monitorOutputDir: string;
 }
 
+/**
+ * Outcome of accepting active work at the seam. `carryover` absent with
+ * `ok: true` means the parent holds no continuity record at all (store
+ * unavailable), so the rebuilt session gets the continuity-lost note.
+ */
+export type CarryoverAcceptance = { ok: true; carryover?: ContinuityCarryover } | { ok: false; detail: string };
+
 /** Compact token display for receipts: 247k / 8.2k / 941. One ontology — these
  * are the same token numbers the SDK and governor report, only shortened. */
 export function formatTokensShort(tokens: number): string {
@@ -148,8 +155,8 @@ export interface ContextMutationPlan {
   /** One-shot prelaunch has no old child and must not add a live-work note. */
   omitContinuityNote?: boolean;
   /**
-   * The accepted continuity snapshot (automatic path): the rebuilt rollout
-   * carries its manifest instead of the continuity-lost note.
+   * An already-accepted continuity snapshot (tests / callers that snapshot
+   * themselves); otherwise the runtime's `acceptCarryover` runs at the seam.
    */
   carryover?: ContinuityCarryover;
 }
@@ -238,6 +245,15 @@ export async function runContextMutation(
   const snapshot = settledSeamSnapshot(runtime);
   if (snapshot !== null) return { kind: "refused", messages: [snapshot] };
   const liveAsyncWork = freezeContinuitySnapshot(plan, runtime);
+  // LIM-145: one carryover generation per seam, manual or automatic. Nothing
+  // waits and nobody is asked; an item no adapter can carry refuses the seam
+  // here, before any SDK mutation, and the current session stays (AC-2.5d).
+  let carryover = plan.carryover;
+  if (carryover === undefined && plan.omitContinuityNote !== true && runtime.acceptCarryover !== undefined) {
+    const accepted = runtime.acceptCarryover();
+    if (!accepted.ok) return { kind: "refused", messages: [accepted.detail] };
+    carryover = accepted.carryover;
+  }
 
   const sdk = runtime.sdk as Lhc;
   const threadRef = runtime.threadRef as ThreadRef;
@@ -309,8 +325,8 @@ export async function runContextMutation(
     plan.hostNotices ?? [],
     plan.omitContinuityNote === true
       ? undefined
-      : plan.carryover !== undefined
-        ? formatCarryoverNote(plan.carryover.snapshot, plan.carryover.monitorOutputDir)
+      : carryover !== undefined
+        ? formatCarryoverNote(carryover.snapshot, carryover.monitorOutputDir)
         : formatContinuityNote(liveAsyncWork),
   );
 
@@ -346,7 +362,7 @@ export async function runContextMutation(
           durableReceipt,
           metrics,
           liveAsyncWork,
-          ...(plan.carryover === undefined ? {} : { carryover: plan.carryover }),
+          ...(carryover === undefined ? {} : { carryover }),
         },
       };
     } catch (cause) {

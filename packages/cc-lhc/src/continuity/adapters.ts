@@ -27,7 +27,9 @@
  *    live Monitor only when its exact launch specification resolves from the
  *    old session's rollout by the launching tool-use id; the durable identity
  *    is that reference (rollout path + tool-use id), never the command text,
- *    and the command is resolved again at invocation time. The relaunch is
+ *    and the command is resolved again at invocation time. It runs through
+ *    the shell Claude Code would use (`/bin/sh`; Git Bash on Windows), so a
+ *    Windows host without Git Bash closes the Monitor truthfully instead. The relaunch is
  *    reported as `restarted`, fenced once per handoff generation. A Monitor
  *    whose launch cannot be resolved is closed with one truthful `failed`
  *    terminal outcome so Smart Compact continues without it.
@@ -45,8 +47,8 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
-
 import type { AsyncWorkFamily } from "../observation/async-work.js";
+import { type RelaunchShellResolution, resolveRelaunchShell } from "./relaunch-shell.js";
 import {
   type ContinuationMechanism,
   type ContinuityItem,
@@ -73,11 +75,13 @@ export interface AdapterContext {
   statPath?: (path: string) => PathFact;
   /** Rollout read seam (tests); production reads the real file. */
   readRollout?: (path: string) => string | null;
+  /** The shell a Monitor relaunch would run through; resolved for `platform` when omitted. */
+  relaunchShell?: RelaunchShellResolution;
 }
 
 export type MonitorLaunchUnresolvable =
-  /** The relaunch runs the command through the platform's POSIX shell; not proved on win32. */
-  | "relaunch_unsupported_on_platform"
+  /** No shell to relaunch through: on Windows, Git Bash was not found (as Claude Code resolves it). */
+  | "relaunch_shell_unavailable"
   | "no_rollout_binding"
   | "rollout_unreadable"
   | "launch_not_found"
@@ -373,10 +377,10 @@ export function qualifyActiveItems(
   for (const item of store.listItems(threadId)) {
     if (item.state === "terminal") continue;
     if (item.family === "monitor") {
-      const resolved: MonitorLaunchResolution =
-        context.platform === "win32"
-          ? { ok: false, reason: "relaunch_unsupported_on_platform" }
-          : resolveMonitorLaunch(context.sourceRolloutPath, item.toolUseId, context.readRollout);
+      const shell = context.relaunchShell ?? resolveRelaunchShell(context.platform);
+      const resolved: MonitorLaunchResolution = shell.ok
+        ? resolveMonitorLaunch(context.sourceRolloutPath, item.toolUseId, context.readRollout)
+        : { ok: false, reason: "relaunch_shell_unavailable" };
       if (!resolved.ok) {
         // No command is invented and the seam is not blocked: the Monitor's
         // original run ended with the child, and nothing can restart it.

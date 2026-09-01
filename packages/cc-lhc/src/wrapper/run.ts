@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 import {
+  type CarryoverAcceptance,
   type ContextMutationPlan,
   formatTokensShort,
   type HandoffRequest,
@@ -534,6 +535,41 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     applyAsyncWorkEvent(continuityStore, threadId, event, Date.now());
   };
   const monitorOutputDir = join(dirname(options.governorReceiptDbPath ?? defaultLineageDbPath()), "continuity");
+  /**
+   * LIM-145 seam step, shared by manual and automatic Compact: qualify the
+   * parent's record of active work and accept it as one carryover generation.
+   * A Monitor whose relaunch is impossible is closed as failed here; an item
+   * no adapter can carry refuses the seam with the current session kept.
+   */
+  const acceptCarryoverAtSeam = (
+    threadId: string,
+    sourceRolloutPath: string | undefined,
+    sourceSessionId: string | undefined,
+  ): CarryoverAcceptance => {
+    if (continuityStore === null || threadId === "") return { ok: true };
+    const qualified = qualifyActiveItems(
+      continuityStore,
+      threadId,
+      { platform: process.platform, sourceRolloutPath, statPath: statPathReal },
+      Date.now(),
+    );
+    for (const closed of qualified.terminalized) {
+      wrapperLog.warn(
+        `cc-lhc continuity: ${closed.family} ${closed.launchId} cannot be carried (${closed.reason}); recorded as failed`,
+      );
+    }
+    const snapshot = snapshotContinuity(continuityStore, {
+      threadId,
+      oldSessionId: sourceSessionId ?? "unknown",
+      nowMs: Date.now(),
+    });
+    if (!snapshot.ok) {
+      const detail = `continuity: ${snapshot.reason.replace("_", " ")} cannot be carried: ${snapshot.launchIds.join(", ")}`;
+      wrapperLog.warn(`cc-lhc ${detail}; keeping the current session this seam`);
+      return { ok: false, detail };
+    }
+    return { ok: true, carryover: { snapshot: snapshot.snapshot, monitorOutputDir } };
+  };
   const probeProcessIdentity = options.probeProcessIdentity ?? probeProcessIdentityNative;
   /**
    * Persist a classification. Returns the exact durable receipt when inserted or
@@ -1819,6 +1855,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       logLineageError: (message) => wrapperLog.warn(message),
       warnings: { count: wrapperLog.warningCount(), logPath: wrapperLog.path },
       getLiveAsyncWork: () => captureSession?.getLiveAsyncWork() ?? [],
+      acceptCarryover: () =>
+        acceptCarryoverAtSeam(
+          ctx.threadRef !== undefined && "threadId" in ctx.threadRef ? ctx.threadRef.threadId : "",
+          rollout?.path,
+          rollout?.sessionId,
+        ),
     };
   };
 
@@ -2927,6 +2969,29 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             ...(request.metrics.zoneTokensBefore === undefined ? {} : { zoneBefore: request.metrics.zoneTokensBefore }),
             ...(request.metrics.zoneTokensAfter === undefined ? {} : { zoneAfter: request.metrics.zoneTokensAfter }),
           };
+          // LIM-145: the replacement is live and routed. Invoke each carried
+          // mechanism once for this generation and close it — the same step
+          // for manual and automatic Compact. A failed invocation is one
+          // truthful terminal outcome; the handoff is done either way.
+          if (request.carryover !== undefined && continuityStore !== null) {
+            const transfer = invokeCarryover(
+              continuityStore,
+              request.carryover.snapshot,
+              { monitorOutputDir, cwd: process.cwd(), log: (message) => wrapperLog.info(message) },
+              Date.now(),
+            );
+            const notCarried = transfer.results.filter((r) => r.kind === "failed");
+            wrapperLog.info(
+              `cc-lhc continuity: generation ${transfer.generation} ${transfer.closure.closed ? "closed" : `left open (${transfer.closure.refusal})`}: ` +
+                `${transfer.results.length - notCarried.length} carried, ${notCarried.length} not carried`,
+            );
+            if (notCarried.length > 0) {
+              pendingPanelNotices = [
+                ...pendingPanelNotices,
+                `continuity: ${notCarried.length} item(s) not carried across /smart-compact (see log)`,
+              ];
+            }
+          }
         } else {
           lastAttempt = {
             summary: formatHandoffFailureSummary(
@@ -3167,40 +3232,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       try {
         const runtime = commandRuntime();
         const policy = resolvedContextPolicy.policy;
-        // LIM-145: the parent's record of active work is qualified and
-        // accepted as one carryover generation before anything is mutated.
-        // Nothing waits and nobody is asked: an item no adapter can carry
-        // refuses this seam (the old session stays authoritative, AC-2.5d)
-        // and the next settled seam re-evaluates.
-        const seamThreadId =
-          runtime.threadRef !== undefined && "threadId" in runtime.threadRef ? runtime.threadRef.threadId : "";
-        let carryover: ContextMutationPlan["carryover"];
-        if (continuityStore !== null && seamThreadId !== "") {
-          const qualified = qualifyActiveItems(
-            continuityStore,
-            seamThreadId,
-            { platform: process.platform, sourceRolloutPath: runtime.sourceRolloutPath, statPath: statPathReal },
-            Date.now(),
-          );
-          for (const closed of qualified.terminalized) {
-            wrapperLog.warn(
-              `cc-lhc continuity: ${closed.family} ${closed.launchId} cannot be carried (${closed.reason}); recorded as failed`,
-            );
-          }
-          const snapshot = snapshotContinuity(continuityStore, {
-            threadId: seamThreadId,
-            oldSessionId: runtime.sourceSessionId ?? "unknown",
-            nowMs: Date.now(),
-          });
-          if (!snapshot.ok) {
-            const detail = `continuity: ${snapshot.reason.replace("_", " ")} cannot be carried: ${snapshot.launchIds.join(", ")}`;
-            wrapperLog.warn(`cc-lhc ${detail}; keeping the current session this seam`);
-            lastAttempt = { summary: formatAutoMutationSummary("refused", detail), atMs: Date.now() };
-            attachGovernorHandoffOutcome(receiptId, { kind: "mutation_refused", detail }, { mutationBegan: true });
-            return;
-          }
-          carryover = { snapshot: snapshot.snapshot, monitorOutputDir };
-        }
         const plan: ContextMutationPlan = {
           operation: "auto_compact",
           profile: policy.profile,
@@ -3216,7 +3247,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           ...(frozenTriggerTokens === null ? {} : { triggerContextTokens: frozenTriggerTokens }),
           ...(configFallbackNotice.length === 0 ? {} : { hostNotices: configFallbackNotice }),
           liveAsyncWork,
-          ...(carryover === undefined ? {} : { carryover }),
         };
         const outcome = await runContextMutation(plan, runtime);
         wrapperLog.info(formatAutoMutationLog(outcome.kind, outcome.messages.join(" | ") || "(no receipt)"));
@@ -3250,29 +3280,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           attachGovernorHandoffOutcome(receiptId, mutationOutcome, { mutationBegan: true });
           return;
         }
-        const handoffResult = await performHandoff(outcome.handoff, receiptId);
-        // The replacement is live and routed: invoke each carried mechanism
-        // once for this generation and close it. A failed invocation is one
-        // truthful terminal outcome; the handoff is done either way.
-        if (handoffResult.kind === "success" && carryover !== undefined && continuityStore !== null) {
-          const transfer = invokeCarryover(
-            continuityStore,
-            carryover.snapshot,
-            { monitorOutputDir, cwd: runtime.cwd, log: (message) => wrapperLog.info(message) },
-            Date.now(),
-          );
-          const notCarried = transfer.results.filter((r) => r.kind === "failed");
-          wrapperLog.info(
-            `cc-lhc continuity: generation ${transfer.generation} ${transfer.closure.closed ? "closed" : `left open (${transfer.closure.refusal})`}: ` +
-              `${transfer.results.length - notCarried.length} carried, ${notCarried.length} not carried`,
-          );
-          if (notCarried.length > 0) {
-            pendingPanelNotices = [
-              ...pendingPanelNotices,
-              `continuity: ${notCarried.length} item(s) not carried across /smart-compact (see log)`,
-            ];
-          }
-        }
+        await performHandoff(outcome.handoff, receiptId);
       } catch (cause) {
         wrapperLog.warn(formatAutoThrew(cause instanceof Error ? cause.message : String(cause)));
         attachGovernorHandoffOutcome(

@@ -238,6 +238,7 @@ interface Rig {
   paths: LaunchPaths;
   sdk: ReturnType<typeof sdkForCapture>;
   spawned: FakePty[];
+  stdin: NodeJS.ReadStream & NodeJS.WriteStream;
   results: HandoffResult[];
   receipts: string[];
   terminalOutput: () => string;
@@ -364,6 +365,7 @@ async function launch(layout: Parameters<typeof hostLayout>[1] = {}): Promise<Ri
     paths,
     sdk,
     spawned,
+    stdin,
     results,
     receipts,
     terminalOutput: () => terminalOutput,
@@ -633,6 +635,58 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     withStore(rig.dbPath, (store) => {
       expect(store.latestGeneration(T)).toBeNull();
       expect(store.getItem(T, LAUNCH_IDS.agent)).toMatchObject({ carryMode: "unqualified", generation: 0 });
+    });
+    await rig.finish();
+  }, 15_000);
+
+  it("manual /smart-compact runs the same observe/qualify/snapshot/note/invoke/close flow as automatic", async () => {
+    const rig = await launch();
+    rig.feed(fiveFamilyLaunch(rig.paths));
+    await storeHas(rig.dbPath, ALL_IDS);
+    // Below the trigger: nothing automatic runs. The operator asks for it.
+    rig.lifecycle([
+      { kind: "turn_opened", reason: "user_prompt" },
+      {
+        kind: "sampling_observed",
+        samplingId: "req:r0",
+        providerUsage: { input_tokens: 2, cache_creation_input_tokens: 10, cache_read_input_tokens: 10 },
+      },
+      { kind: "turn_settled", reason: "end_turn" },
+    ]);
+    await new Promise((r) => setTimeout(r, 150));
+    expect(rig.results).toHaveLength(0);
+    (rig.stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
+    await waitFor(() => rig.terminalOutput().includes("/smart-compact"), "panel");
+    (rig.stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
+    await waitFor(() => rig.results.length === 1, "manual handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+    expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
+
+    // Same manifest, same generation, same invocation, same closure as the automatic seam.
+    expect(rig.receipts).toHaveLength(1);
+    const note = rig.receipts[0]!;
+    expect(note).toContain("[lhc compact:manual]");
+    expect(note).toContain("Tracked background work carried into this session (generation 1)");
+    for (const fragment of [
+      "resumed: continue it with SendMessage to agent-1",
+      "resumed: continue it with Workflow resumeFromRunId wf_run-1",
+      "adopted: still running",
+      "restarted:",
+      "re-armed",
+    ]) {
+      expect(note).toContain(fragment);
+    }
+    expect(note).not.toContain("cannot return output");
+    expect(note).not.toContain("continuity lost");
+    const outputPath = relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1);
+    await waitFor(
+      () => existsSync(outputPath) && readFileSync(outputPath, "utf8") === "relaunched-once-XyZ",
+      "relaunch output",
+    );
+    await waitFor(() => wrapperLog(rig).includes("generation 1 closed: 5 carried, 0 not carried"), "closure log");
+    withStore(rig.dbPath, (store) => {
+      expect(store.getGeneration(T, 1)).toMatchObject({ state: "closed", oldSessionId: "old-session" });
+      for (const id of ALL_IDS) expect(store.getItem(T, id), id).toMatchObject({ generation: 1, state: "active" });
     });
     await rig.finish();
   }, 15_000);

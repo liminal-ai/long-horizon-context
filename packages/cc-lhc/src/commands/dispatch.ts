@@ -19,6 +19,8 @@ export interface CaptureCommandContext {
   capturePhase?: "binding" | "ready" | "degraded" | "closed";
 }
 
+import type { CarryoverAcceptance } from "./context-mutation.js";
+
 export interface LhcCommandRuntime extends CaptureCommandContext {
   cwd: string;
   sourceRolloutPath: string | undefined;
@@ -57,6 +59,12 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
    * mutation supplies its snapshot on the plan instead.
    */
   getLiveAsyncWork?: () => OpenAsyncWork[];
+  /**
+   * Accept the parent's record of active work as one carryover generation at
+   * the settled seam (LIM-145): the same step for manual and automatic
+   * Compact. A refusal keeps the current session before anything is mutated.
+   */
+  acceptCarryover?: () => CarryoverAcceptance;
 }
 
 /**
