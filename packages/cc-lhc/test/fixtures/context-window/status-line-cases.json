@@ -1,0 +1,150 @@
+{
+  "source": "code.claude.com/docs/en/statusline — context_window.context_window_size is documented as 200000 by default or 1000000 for models with extended context; model.id and session_id are documented siblings. Verified 2026-08-31.",
+  "decisionRule": "Only exactly 200000 and 1000000 select their built-in policies (tech-design D8). Every other observed value uses the conservative 200k policy and is reported in the Control Panel. A value below 200000 also raises the nonblocking unresolved-window advisory. A missing or malformed value means detection is unavailable and the conservative 200k policy applies.",
+  "statusLineCases": [
+    {
+      "name": "documented-200k",
+      "payload": {
+        "session_id": "story0-fixture-200k",
+        "model": { "id": "claude-opus-5", "display_name": "Opus" },
+        "context_window": {
+          "context_window_size": 200000,
+          "used_percentage": 8,
+          "remaining_percentage": 92,
+          "total_input_tokens": 15500,
+          "total_output_tokens": 1200
+        }
+      },
+      "expectedClass": "200k",
+      "expectedAdvisory": null
+    },
+    {
+      "name": "documented-1m",
+      "payload": {
+        "session_id": "story0-fixture-1m",
+        "model": { "id": "claude-sonnet-5", "display_name": "Sonnet" },
+        "context_window": {
+          "context_window_size": 1000000,
+          "used_percentage": 9,
+          "remaining_percentage": 91,
+          "total_input_tokens": 83320,
+          "total_output_tokens": 5456
+        }
+      },
+      "expectedClass": "1M",
+      "expectedAdvisory": null
+    },
+    {
+      "name": "same-family-held-to-200k",
+      "payload": {
+        "session_id": "story0-fixture-sonnet-disabled-1m",
+        "model": { "id": "claude-sonnet-5", "display_name": "Sonnet" },
+        "context_window": {
+          "context_window_size": 200000,
+          "used_percentage": 1,
+          "remaining_percentage": 99,
+          "total_input_tokens": 1000,
+          "total_output_tokens": 100
+        }
+      },
+      "expectedClass": "200k",
+      "expectedAdvisory": null,
+      "pairedWith": "documented-1m",
+      "note": "Same model.id as documented-1m with a different documented window value: class follows the observed window, never the family name (TC-1.1c evidence shape)."
+    },
+    {
+      "name": "undocumented-500k",
+      "payload": {
+        "session_id": "story0-fixture-500k",
+        "model": { "id": "claude-opus-5", "display_name": "Opus" },
+        "context_window": {
+          "context_window_size": 500000,
+          "used_percentage": 2,
+          "remaining_percentage": 98,
+          "total_input_tokens": 9000,
+          "total_output_tokens": 400
+        }
+      },
+      "expectedClass": "conservative-200k",
+      "expectedAdvisory": "panel-report"
+    },
+    {
+      "name": "below-200k-gateway",
+      "payload": {
+        "session_id": "story0-fixture-131k",
+        "model": { "id": "claude-opus-5", "display_name": "Opus" },
+        "context_window": {
+          "context_window_size": 131072,
+          "used_percentage": 3,
+          "remaining_percentage": 97,
+          "total_input_tokens": 4000,
+          "total_output_tokens": 200
+        }
+      },
+      "expectedClass": "conservative-200k",
+      "expectedAdvisory": "unresolved-window"
+    },
+    {
+      "name": "missing-context-window",
+      "payload": {
+        "session_id": "story0-fixture-missing",
+        "model": { "id": "claude-opus-5", "display_name": "Opus" }
+      },
+      "expectedClass": "detection-unavailable-200k",
+      "expectedAdvisory": "panel-report"
+    },
+    {
+      "name": "malformed-window-value",
+      "payload": {
+        "session_id": "story0-fixture-malformed",
+        "model": { "id": "claude-opus-5", "display_name": "Opus" },
+        "context_window": { "context_window_size": "1m" }
+      },
+      "expectedClass": "detection-unavailable-200k",
+      "expectedAdvisory": "panel-report"
+    }
+  ],
+  "settingsMergeCases": [
+    {
+      "name": "no-user-status-line",
+      "userSettings": {},
+      "userArgvSettings": null,
+      "expectedOutcome": "observe-only",
+      "expectedSingleSettingsPayload": true,
+      "expectedChainsUserCommand": false
+    },
+    {
+      "name": "user-settings-file-status-line",
+      "userSettings": {
+        "statusLine": { "type": "command", "command": "~/.claude/statusline.sh", "padding": 2 }
+      },
+      "userArgvSettings": null,
+      "expectedOutcome": "merge-chain",
+      "expectedSingleSettingsPayload": true,
+      "expectedChainsUserCommand": true,
+      "expectedPreservedCommand": "~/.claude/statusline.sh",
+      "expectedPreservedPadding": 2
+    },
+    {
+      "name": "user-argv-settings-status-line",
+      "userSettings": {},
+      "userArgvSettings": {
+        "statusLine": { "type": "command", "command": "jq -r .model.display_name", "padding": 0 }
+      },
+      "expectedOutcome": "merge-chain",
+      "expectedSingleSettingsPayload": true,
+      "expectedChainsUserCommand": true,
+      "expectedPreservedCommand": "jq -r .model.display_name",
+      "expectedPreservedPadding": 0
+    },
+    {
+      "name": "unreadable-user-argv-settings",
+      "userSettings": {},
+      "userArgvSettings": "not-json-or-missing-file",
+      "expectedOutcome": "fallback-conservative-200k",
+      "expectedSingleSettingsPayload": true,
+      "expectedChainsUserCommand": false,
+      "note": "Detection is unavailable; the user's argv is forwarded untouched and the conservative 200k policy applies (tech-design D8 failure path)."
+    }
+  ]
+}
