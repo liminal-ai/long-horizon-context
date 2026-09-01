@@ -66,6 +66,8 @@ const TERMINAL_OUTCOMES: readonly TerminalOutcome[] = [
  */
 export type VerifiedIdentity =
   | { kind: "posix_output"; path: string; dev: string; ino: string }
+  /** Win32 file-object identity from the opened file (volume serial + 128-bit file id, or 64-bit index), never Node dev/ino. */
+  | { kind: "win32_output"; path: string; volumeId: string; fileId: string }
   | { kind: "agent_transcript"; agentId: string; path: string }
   | { kind: "workflow_run"; runId: string; scriptPath: string; journalPath: string }
   | { kind: "scheduled_time"; toolUseId: string; scheduledForMs: number }
@@ -125,6 +127,7 @@ export function relaunchKey(launchId: string, generation: number): string {
 export function continuationMechanismOf(identity: VerifiedIdentity): ContinuationMechanism {
   switch (identity.kind) {
     case "posix_output":
+    case "win32_output":
       return { kind: "parent_output_read", path: identity.path };
     case "agent_transcript":
       return { kind: "send_message", agentId: identity.agentId };
@@ -378,6 +381,8 @@ function isVerifiedIdentity(value: unknown): value is VerifiedIdentity {
   switch (o.kind) {
     case "posix_output":
       return str("path") && str("dev") && str("ino");
+    case "win32_output":
+      return str("path") && str("volumeId") && str("fileId");
     case "agent_transcript":
       return str("agentId") && str("path");
     case "workflow_run":

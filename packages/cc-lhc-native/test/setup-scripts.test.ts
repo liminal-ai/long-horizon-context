@@ -178,17 +178,30 @@ describe("fetch-prebuild: release-source resolution", () => {
 
 describe("fetch-prebuild: subprocess probe-report validation (full portable-identity contract)", () => {
   const goodProbe = { ok: true, pid: 4242, bootId: "boot-uuid-0799", starttime: "119880620" };
-  const goodReport = { contract: 1, platform: process.platform, pid: 4242, probe: goodProbe };
+  const goodFileProbe = { ok: true, path: "/tmp/x.node", volumeId: "66306", fileId: "ino:1234" };
+  const goodReport = { contract: 2, platform: process.platform, pid: 4242, probe: goodProbe, fileProbe: goodFileProbe };
   const withProbe = (probe: unknown) => ({ ...goodReport, probe });
+  const withFileProbe = (fileProbe: unknown) => ({ ...goodReport, fileProbe });
 
   it("accepts a complete live identity for the probed pid", () => {
     const verdict = prebuildLib.validateProbeReport(goodReport, process.platform);
     expect(verdict).toEqual({ ok: true, probe: goodProbe });
   });
 
+  it("accepts every tagged file-identity shape the addon can report", () => {
+    for (const fileId of ["ino:1234", `id128:${"ab".repeat(16)}`, "index64:8444249301319707"]) {
+      const verdict = prebuildLib.validateProbeReport(withFileProbe({ ...goodFileProbe, fileId }), process.platform);
+      expect(verdict, fileId).toEqual({ ok: true, probe: goodProbe });
+    }
+  });
+
   it.each([
     ["non-object report", "nope", /not an object/],
-    ["wrong contract version", { ...goodReport, contract: 2 }, /contract version 2/],
+    ["wrong contract version", { ...goodReport, contract: 1 }, /contract version 1/],
+    ["file probe missing (addon predates file identity)", withFileProbe(null), /identify the downloaded file/],
+    ["file probe not ok", withFileProbe({ ok: false, code: "not_found" }), /identify the downloaded file/],
+    ["file probe volumeId not digits", withFileProbe({ ...goodFileProbe, volumeId: "x" }), /volumeId/],
+    ["file probe fileId untagged", withFileProbe({ ...goodFileProbe, fileId: "1234" }), /fileId/],
     ["foreign platform", { ...goodReport, platform: "beos" }, /compiled for beos/],
     ["probe not ok", withProbe({ ok: false, code: "not_found" }), /identify a live process/],
     ["probe missing", withProbe(undefined), /identify a live process/],

@@ -17,6 +17,8 @@
 
 "use strict";
 
+const { statSync } = require("node:fs");
+
 const STUB_BOOT_ID = "cc-lhc-stub-boot-id-0000";
 
 function syntheticStarttime(pid) {
@@ -25,7 +27,7 @@ function syntheticStarttime(pid) {
 
 module.exports = {
   platform: process.platform,
-  identityContractVersion: 1,
+  identityContractVersion: 2,
   stubBootId: STUB_BOOT_ID,
   syntheticStarttime,
   readProcessIdentity(pid) {
@@ -45,5 +47,21 @@ module.exports = {
       return { ok: false, code: "native_error", message: String(cause) };
     }
     return { ok: true, pid, bootId: STUB_BOOT_ID, starttime: syntheticStarttime(pid) };
+  },
+  /** TEST-ONLY file identity: Node's stat dev/ino, tagged like the POSIX addon path. */
+  readFileIdentity(path) {
+    if (typeof path !== "string" || path === "" || path.includes("\0")) {
+      return { ok: false, code: "invalid_path", message: "invalid path" };
+    }
+    try {
+      const st = statSync(path, { bigint: true });
+      if (!st.isFile()) return { ok: false, code: "not_a_file", message: "not a regular file" };
+      return { ok: true, path, volumeId: st.dev.toString(), fileId: `ino:${st.ino.toString()}` };
+    } catch (cause) {
+      const code = cause && cause.code;
+      if (code === "ENOENT" || code === "ENOTDIR") return { ok: false, code: "not_found", message: "no such file" };
+      if (code === "EACCES" || code === "EPERM") return { ok: false, code: "access_denied", message: "access denied" };
+      return { ok: false, code: "native_error", message: String(cause) };
+    }
   },
 };

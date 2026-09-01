@@ -115,11 +115,13 @@ if (targetKey === `${process.platform}-${process.arch}`) {
     "}\n" +
     "const addon = m.exports;\n" +
     "const probe = typeof addon.readProcessIdentity === \"function\" ? addon.readProcessIdentity(process.pid) : null;\n" +
+    "const fileProbe = typeof addon.readFileIdentity === \"function\" ? addon.readFileIdentity(process.argv[1]) : null;\n" +
     "console.log(JSON.stringify({\n" +
     "  contract: addon.identityContractVersion ?? null,\n" +
     "  platform: addon.platform ?? null,\n" +
     "  pid: process.pid,\n" +
     "  probe,\n" +
+    "  fileProbe,\n" +
     "}));\n";
   const probeRun = spawnSync(process.execPath, ["-e", probeSource, tmp], {
     encoding: "utf8",

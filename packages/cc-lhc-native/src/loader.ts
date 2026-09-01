@@ -34,7 +34,7 @@ import {
 } from "./targets.js";
 
 export const IDENTITY_ADDON_ENV = "CC_LHC_IDENTITY_ADDON";
-export const IDENTITY_CONTRACT_VERSION = 1;
+export const IDENTITY_CONTRACT_VERSION = 2;
 
 export class UnsupportedPlatformTargetError extends Error {
   constructor(
@@ -69,6 +69,7 @@ export interface NativeIdentityAddon {
   readonly platform: string;
   readonly identityContractVersion: number;
   readProcessIdentity(pid: number): unknown;
+  readFileIdentity(path: string): unknown;
 }
 
 /** Deterministic seams; every field defaults to the production value. */
@@ -163,6 +164,9 @@ export function loadIdentityAddon(seams: LoaderSeams = {}): LoadedIdentityAddon 
   const candidate = mod as Record<string, unknown>;
   if (typeof candidate.readProcessIdentity !== "function") {
     throw new AddonContractError(`cc-lhc-native: addon at ${resolved.path} does not export readProcessIdentity()`);
+  }
+  if (typeof candidate.readFileIdentity !== "function") {
+    throw new AddonContractError(`cc-lhc-native: addon at ${resolved.path} does not export readFileIdentity()`);
   }
   if (candidate.identityContractVersion !== IDENTITY_CONTRACT_VERSION) {
     throw new AddonContractError(

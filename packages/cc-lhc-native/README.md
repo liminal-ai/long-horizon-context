@@ -27,6 +27,18 @@ process has exited but whose kernel object is retained by open handles reports
 cc-lhc descriptors and owner leases already store, so XP2 can adopt exact
 identity without a schema break.
 
+### File identity (contract version 2)
+
+`readFileIdentity(path)` reads the exact identity of a file from the opened
+file object, for adopting a surviving background command's output across a
+Claude child replacement (LIM-145): `{ ok, path, volumeId, fileId }`.
+`volumeId` is digits-only; `fileId` is tagged by its source so kinds never
+compare equal by accident — `ino:<st_ino>` (Linux/macOS, `volumeId` =
+`st_dev`), `id128:<32 hex>` (Windows, `GetFileInformationByHandleEx`
+`FileIdInfo` on NTFS/ReFS), or `index64:<n>` (Windows volumes without a
+128-bit id). Windows identity is never Node's `dev`/`ino`. Failures are
+results: `invalid_path | not_found | access_denied | not_a_file | native_error`.
+
 ## Loading
 
 Resolution order (`src/loader.ts`):

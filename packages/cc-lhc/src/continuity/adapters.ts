@@ -7,7 +7,8 @@
  * (`test/story0/family-matrix.md`) and the host continuation seams it proved:
  *
  *  - background_shell → `adopt`. The OS process survives the swap and keeps
- *    writing the task's output file; the parent's continuation is reading
+ *    writing the task's output file (dev+inode on POSIX, Win32 file-object
+ *    identity through the native addon on Windows); the parent's continuation is reading
  *    that verified file. The Claude-launched record (`{stdout,
  *    backgroundTaskId}` plus the "Output is being written to" sentence)
  *    exposes no pid, so the only identity the parent can verify is the
@@ -47,6 +48,7 @@
 
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
+import { type ReadFileIdentityResult, readExactFileIdentity } from "cc-lhc-native";
 import type { AsyncWorkFamily } from "../observation/async-work.js";
 import { type RelaunchShellResolution, resolveRelaunchShell } from "./relaunch-shell.js";
 import {
@@ -77,6 +79,8 @@ export interface AdapterContext {
   readRollout?: (path: string) => string | null;
   /** The shell a Monitor relaunch would run through; resolved for `platform` when omitted. */
   relaunchShell?: RelaunchShellResolution;
+  /** Win32 file-object identity seam (tests); production reads through the native addon. */
+  readFileIdentity?: (path: string) => ReadFileIdentityResult;
 }
 
 export type MonitorLaunchUnresolvable =
@@ -154,7 +158,8 @@ export type QualificationRefusal =
   | "no_continuation_facts"
   | "no_session_binding"
   /** Windows: the normal-path shell record exposes no manifest pid/creation identity and no Windows output identity is proved. */
-  | "windows_shell_identity_not_exposed"
+  /** win32: the native addon that reads Win32 file identity is unavailable, so nothing is verified. */
+  | "win32_file_identity_unavailable"
   /** Monitor: its exact launch specification does not resolve from the rollout binding. */
   | "monitor_launch_unresolvable"
   | "output_file_missing"
@@ -198,15 +203,33 @@ function statOf(context: AdapterContext, path: string): PathFact {
   return (context.statPath ?? statPathReal)(path);
 }
 
-/** POSIX output identity per Story 0: dev+inode, proved on Linux and macOS only. */
 type Refusal = Extract<Qualification, { ok: false }>;
 
-type PosixOutputIdentity = Extract<VerifiedIdentity, { kind: "posix_output" }>;
+type OutputIdentity = Extract<VerifiedIdentity, { kind: "posix_output" | "win32_output" }>;
 
-function verifyOutputFile(context: AdapterContext, path: string | undefined): Refusal | PosixOutputIdentity {
+/**
+ * Output-file identity per Story 0: dev+inode on Linux/macOS (Node's stat,
+ * proved there); on Windows the Win32 file-object identity read through the
+ * native addon (volume serial + file id) — never Node's dev/ino, which Story 0
+ * rejected as Windows proof. A different object at the same path is a
+ * different identity, so a replaced or reused path refuses carryover.
+ */
+function verifyOutputFile(context: AdapterContext, path: string | undefined): Refusal | OutputIdentity {
   if (path === undefined) return { ok: false, reason: "no_continuation_facts" };
-  if (context.platform !== "linux" && context.platform !== "darwin") {
-    return { ok: false, reason: "windows_shell_identity_not_exposed" };
+  if (context.platform === "win32") {
+    const read = (context.readFileIdentity ?? readExactFileIdentity)(path);
+    if (read.ok) {
+      return { kind: "win32_output", path, volumeId: read.identity.volumeId, fileId: read.identity.fileId };
+    }
+    switch (read.code) {
+      case "not_found":
+        return { ok: false, reason: "output_file_missing" };
+      case "addon_unavailable":
+      case "unsupported_platform":
+        return { ok: false, reason: "win32_file_identity_unavailable" };
+      default:
+        return { ok: false, reason: "output_file_unreadable" };
+    }
   }
   const fact = statOf(context, path);
   if (fact.kind === "missing") return { ok: false, reason: "output_file_missing" };
@@ -214,7 +237,7 @@ function verifyOutputFile(context: AdapterContext, path: string | undefined): Re
   return { kind: "posix_output", path, dev: fact.dev, ino: fact.ino };
 }
 
-function isRefusal(value: Refusal | PosixOutputIdentity): value is Refusal {
+function isRefusal(value: Refusal | OutputIdentity): value is Refusal {
   return "ok" in value;
 }
 

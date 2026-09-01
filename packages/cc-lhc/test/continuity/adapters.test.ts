@@ -72,7 +72,15 @@ function rig(paths: LaunchPaths & { rolloutPath: string }, platform: NodeJS.Plat
   let now = 1_000;
   const observer = createContinuityObserver({ store, threadId: T, nowFn: () => (now += 1) });
   for (const line of [...allLaunchLines(paths), monitorEvent(paths)]) observer.observeLine(line);
-  const context: AdapterContext = { platform, sourceRolloutPath: paths.rolloutPath };
+  // A win32 rig on this host has no Win32 addon: file identity is unavailable
+  // unless a test injects the reader (never Node dev/ino).
+  const context: AdapterContext = {
+    platform,
+    sourceRolloutPath: paths.rolloutPath,
+    ...(platform === "win32"
+      ? { readFileIdentity: () => ({ ok: false as const, code: "addon_unavailable" as const, message: "no addon" }) }
+      : {}),
+  };
   const qualify = () => {
     now += 100;
     return qualifyActiveItems(store, T, context, now);
@@ -104,7 +112,7 @@ const CONTRACT: Record<
     operations: ["output"],
     identityKind: "posix_output",
     mechanism: "parent_output_read",
-    win32: "windows_shell_identity_not_exposed",
+    win32: "win32_output",
   },
   agent: {
     mode: "reconstruct",
@@ -279,6 +287,7 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       platform: "win32",
       sourceRolloutPath: paths.rolloutPath,
       relaunchShell: resolveRelaunchShell("win32", { PATH: "" }, (p) => p === gitBash),
+      readFileIdentity: () => ({ ok: false, code: "addon_unavailable", message: "no addon" }),
     };
     const outcome = qualifyActiveItems(store, T, context, 5_000);
     expect(outcome.terminalized).toEqual([]);
@@ -387,21 +396,77 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
     }
   });
 
-  it("win32: the normal-path shell record exposes no manifest identity, so shells stay unqualified with that exact mismatch", () => {
+  it("win32: without the native addon nothing is verified — no Node dev/ino substitution, shell stays unqualified", () => {
     const { store, qualify, snapshot, item } = rig(hostLayout(), "win32");
     const outcome = qualify();
     expect(outcome.refused.map((r) => [r.family, r.reason])).toEqual([
-      ["background_shell", "windows_shell_identity_not_exposed"],
+      ["background_shell", "win32_file_identity_unavailable"],
     ]);
     expect(outcome.qualified.map((q) => q.family).sort()).toEqual(["agent", "scheduled_wakeup", "workflow"]);
     expect(outcome.terminalized.map((t) => [t.family, t.reason])).toEqual([["monitor", "relaunch_shell_unavailable"]]);
-    // No Node dev/ino substitution: nothing was verified, nothing claimed.
     expect(item("background_shell")).toMatchObject({
       carryMode: "unqualified",
       verifiedIdentity: null,
       state: "active",
     });
     expect(snapshot()).toEqual({ ok: false, reason: "unqualified_items", launchIds: [LAUNCH_IDS.background_shell] });
+    store.close();
+  });
+
+  it("win32: the shell adopts through the Win32 file-object identity; the same object re-verifies, a replaced path refuses", () => {
+    const paths = hostLayout();
+    const { store, item, snapshot } = rig(paths, "win32");
+    const outputPath = join(paths.tasksDir, "shell-1.output");
+    // The identity the native addon reads from the opened file: volume serial + 128-bit file id.
+    let fileId = `id128:${"0a".repeat(16)}`;
+    const readFileIdentity: AdapterContext["readFileIdentity"] = (path) =>
+      path === outputPath
+        ? { ok: true, identity: { platform: "win32", path, volumeId: "1234567890", fileId } }
+        : { ok: false, code: "not_found", message: "no such file" };
+    const context: AdapterContext = {
+      platform: "win32",
+      sourceRolloutPath: paths.rolloutPath,
+      readFileIdentity,
+      relaunchShell: resolveRelaunchShell("win32", { PATH: "" }, (p) => p === "C:\\Program Files\\Git\\bin\\bash.exe"),
+    };
+    const first = qualifyActiveItems(store, T, context, 5_000);
+    expect(first.refused).toEqual([]);
+    expect(first.qualified.find((q) => q.family === "background_shell")).toMatchObject({
+      carryMode: "adopt",
+      continuation: { kind: "parent_output_read", path: outputPath },
+    });
+    const stored = item("background_shell");
+    expect(stored.verifiedIdentity).toEqual({ kind: "win32_output", path: outputPath, volumeId: "1234567890", fileId });
+    expect(JSON.stringify(stored)).not.toMatch(/"dev"|"ino"/);
+    // Re-verification of the same object: stable, carried once with the exact identity.
+    expect(qualifyActiveItems(store, T, context, 6_000).refused).toEqual([]);
+    const result = snapshot();
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.snapshot.items.find((i) => i.family === "background_shell")).toMatchObject({
+      verifiedIdentity: { kind: "win32_output", volumeId: "1234567890", fileId },
+      transition: "adopted",
+    });
+    // The path now names a different file object (replaced/reused): a different identity, never carried.
+    fileId = `id128:${"0b".repeat(16)}`;
+    const changed = qualifyActiveItems(store, T, context, 7_000);
+    expect(changed.refused).toEqual([
+      { launchId: LAUNCH_IDS.background_shell, family: "background_shell", reason: "identity_changed" },
+    ]);
+    expect(item("background_shell")).toMatchObject({
+      state: "unknown",
+      verifiedIdentity: { fileId: `id128:${"0a".repeat(16)}` },
+    });
+    expect(snapshot()).toEqual({ ok: false, reason: "unverified_items", launchIds: [LAUNCH_IDS.background_shell] });
+    // A missing file is a missing file.
+    rmSync(outputPath);
+    const missingContext: AdapterContext = {
+      ...context,
+      readFileIdentity: () => ({ ok: false, code: "not_found", message: "gone" }),
+    };
+    expect(qualifyActiveItems(store, T, missingContext, 8_000).refused.map((r) => r.reason)).toEqual([
+      "output_file_missing",
+    ]);
     store.close();
   });
 

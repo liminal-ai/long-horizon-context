@@ -1,4 +1,14 @@
 export {
+  createExactFileIdentityReader,
+  type ExactFileIdentity,
+  type ExactFileIdentityReader,
+  exactFileIdentitiesEqual,
+  type FileIdentityFailureCode,
+  normalizeNativeFileResult,
+  type ReadFileIdentityResult,
+  readExactFileIdentity,
+} from "./file-identity.js";
+export {
   createExactIdentityReader,
   type ExactIdentityReader,
   type ExactProcessIdentity,
