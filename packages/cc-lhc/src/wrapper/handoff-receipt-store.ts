@@ -111,7 +111,19 @@ export function openHandoffReceiptStore(
   const merged = { ...defaultDeps(), ...deps };
   merged.mkdirFn(dirname(dbPath));
   const db = merged.openDbFn(dbPath);
-  initSchema(db);
+  try {
+    initSchema(db);
+  } catch (cause) {
+    // A corrupt or foreign file throws on the first statement. Release the
+    // handle before rethrowing so the failed open does not pin the file for
+    // the wrapper's lifetime (Windows refuses deletion of a pinned file).
+    try {
+      db.close();
+    } catch {
+      // never opened far enough to close
+    }
+    throw cause;
+  }
 
   const insert = db.prepare(`
     INSERT INTO cc_handoff_receipts (

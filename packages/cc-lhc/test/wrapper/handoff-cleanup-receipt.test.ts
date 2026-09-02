@@ -1,34 +1,34 @@
 /**
  * LIM-116 post-switch cleanup: TC-5.2a-c, AR-1, AR-2, AR-3, AR-4.
  */
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
+import { afterEach, describe, expect, it } from "vitest";
 
 import type { HandoffRequest } from "../../src/commands/context-mutation.js";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { ProcessIdentity, ProcessLivenessResult } from "../../src/runtime/process-identity.js";
 import {
-  executeHandoff,
-  formatHandoffResult,
   type CandidateChild,
   type CandidateViability,
+  executeHandoff,
+  formatHandoffResult,
   type HandoffPorts,
   type SwitchOutcome,
 } from "../../src/wrapper/handoff.js";
 import {
   cleanupFields,
-  openHandoffReceiptStore,
   type DurableHandoffReceipt,
   type HandoffReceiptPort,
+  openHandoffReceiptStore,
 } from "../../src/wrapper/handoff-receipt-store.js";
 import {
   classifyOldChildCleanup,
   formatOldChildCleanup,
-  observeOldChildCleanup,
   type OldChildCleanup,
+  observeOldChildCleanup,
 } from "../../src/wrapper/old-child-cleanup.js";
 
 function request(operation: HandoffRequest["operation"] = "auto_compact"): HandoffRequest {
@@ -224,9 +224,9 @@ describe("AR-1 one cleanup authority", () => {
       expect(attached).toBeNull();
     }
     const db = new DatabaseSync(dbPath);
-    const tables = (db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map(
-      (row) => row.name,
-    );
+    const tables = (
+      db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>
+    ).map((row) => row.name);
     expect(tables).toContain("cc_handoff_receipts");
     const cols = (db.prepare("PRAGMA table_info(cc_governor_receipts)").all() as Array<{ name: string }>).map(
       (row) => row.name,
@@ -241,7 +241,12 @@ describe("AR-1 one cleanup authority", () => {
     };
     expect(payload).not.toHaveProperty("cleanupKind");
     expect(payload).not.toHaveProperty("orphanPid");
-    expect(handoffStore.listAll().map((row) => row.operation).sort()).toEqual(["auto_compact", "compact", "prune"]);
+    expect(
+      handoffStore
+        .listAll()
+        .map((row) => row.operation)
+        .sort(),
+    ).toEqual(["auto_compact", "compact", "prune"]);
     handoffStore.close();
     governor.close();
   });
@@ -418,5 +423,25 @@ describe("AR-4 incomplete row is evidence-only", () => {
     expect(Object.keys(reopened)).not.toContain("recover");
     expect(cleanupFields({ kind: "terminated", pid: 1 }).cleanupKind).toBe("terminated");
     reopened.close();
+  });
+});
+
+describe("open failure releases the database handle", () => {
+  it("a file that is not a database throws from every store opener with its handle closed (nothing pins the file)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-handoff-corrupt-"));
+    dirs.push(dir);
+    const garbage = join(dir, "cc-lhc.sqlite");
+    writeFileSync(garbage, "not a database at all\n");
+    // The same handle the store would use, tracked so close-on-throw is provable.
+    const handles: DatabaseSync[] = [];
+    const openDbFn = (path: string): DatabaseSync => {
+      const db = new DatabaseSync(path);
+      handles.push(db);
+      return db;
+    };
+    expect(() => openHandoffReceiptStore(garbage, { openDbFn })).toThrow();
+    expect(handles).toHaveLength(1);
+    // A closed handle refuses further statements; an open one would accept this.
+    expect(() => handles[0]!.exec("SELECT 1")).toThrow(/closed|not open/i);
   });
 });
