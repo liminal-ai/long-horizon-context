@@ -122,13 +122,13 @@ jobs:
           node-version: ${{ matrix.consumer_node }}
 
       - name: Assemble current-target npm package
-        run: node packages/cc-lhc/scripts/assemble-npm-package.mjs --targets current
+        run: node packages/cc-lhc/scripts/assemble-npm-package.mjs --targets current --source-sha ${{ github.sha }}
 
       - name: Test assembled npm package
         run: pnpm --filter cc-lhc run test:package
 
       - name: Check current-target npm package
-        run: node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm
+        run: node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm --source-sha ${{ github.sha }}
 
       - name: Smoke global npm install without a compiler
         run: node packages/cc-lhc/scripts/smoke-npm-package.mjs build/cc-lhc-npm
@@ -351,11 +351,12 @@ jobs:
         run: |
           node packages/cc-lhc/scripts/assemble-npm-package.mjs \
             --native-bundle build/cc-lhc-native \
-            --targets all
+            --targets all \
+            --source-sha "$GITHUB_SHA"
 
       - name: Check and smoke complete npm package
         run: |
-          node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm
+          node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm --source-sha "$GITHUB_SHA"
           node packages/cc-lhc/scripts/smoke-npm-package.mjs build/cc-lhc-npm
 
       - name: Pack npm package
