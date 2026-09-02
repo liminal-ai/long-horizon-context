@@ -105,7 +105,12 @@ jobs:
         run: pnpm --filter cc-lhc run typecheck
 
       - name: Test cc-lhc (compiled addon mandatory)
-        run: pnpm --filter cc-lhc run test
+        # The Story 0 process-destructive proof runs only in the dedicated
+        # story0-process-capability job: inside the concurrent broad suite,
+        # cross-file process interference makes its survivor probe
+        # nondeterministic (observed on win32-x64 while the isolated job on
+        # the same commit stays green).
+        run: pnpm --filter cc-lhc run test -- --exclude test/story0/process-capability/production-path.test.ts
         env:
           CC_LHC_NATIVE_REQUIRE_ADDON: "1"
 
