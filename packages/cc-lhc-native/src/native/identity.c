@@ -545,8 +545,11 @@ static pc_status read_child_exit(int64_t pid, const char *starttime, exit_result
   return PC_OK;
 }
 
-/* Which direct child of `parent` holds `path` open: compare each child's
- * vnode-backed descriptors (libproc) with the path's dev+ino. */
+/* Which direct child of `parent` holds `path` open. Children come from one
+ * KERN_PROC_ALL snapshot filtered on e_ppid (what ps does); each child's
+ * vnode-backed descriptors (libproc) are compared with the path's dev+ino.
+ * The message carries a scan summary so a miss is diagnosable from the
+ * result alone. */
 static pc_status find_child_holding_file(int64_t parent, const char *path, holder_result *out) {
   struct stat target;
   if (stat(path, &target) != 0) {
@@ -567,28 +570,42 @@ static pc_status find_child_holding_file(int64_t parent, const char *path, holde
   }
   out->pid = -1;
   out->matches = 0;
-  int bytes = proc_listchildpids((pid_t)parent, NULL, 0);
-  if (bytes < 0) {
-    snprintf(out->message, sizeof(out->message), "proc_listchildpids failed (errno %d)", errno);
+  int mib[3] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL};
+  size_t len = 0;
+  if (sysctl(mib, 3, NULL, &len, NULL, 0) != 0 || len == 0) {
+    snprintf(out->message, sizeof(out->message), "sysctl KERN_PROC_ALL size failed (errno %d)", errno);
     return PC_NATIVE_ERROR;
   }
-  if (bytes == 0) {
-    return PC_OK;
-  }
-  pid_t *pids = (pid_t *)malloc((size_t)bytes);
-  if (pids == NULL) {
-    snprintf(out->message, sizeof(out->message), "cannot allocate pid buffer");
+  len += 16 * sizeof(struct kinfo_proc); /* room for processes born between the two calls */
+  struct kinfo_proc *procs = (struct kinfo_proc *)malloc(len);
+  if (procs == NULL) {
+    snprintf(out->message, sizeof(out->message), "cannot allocate process table");
     return PC_NATIVE_ERROR;
   }
-  int got = proc_listchildpids((pid_t)parent, pids, bytes);
-  int count = got > 0 ? got / (int)sizeof(pid_t) : 0;
-  for (int i = 0; i < count; i++) {
-    pid_t pid = pids[i];
+  if (sysctl(mib, 3, procs, &len, NULL, 0) != 0) {
+    free(procs);
+    snprintf(out->message, sizeof(out->message), "sysctl KERN_PROC_ALL failed (errno %d)", errno);
+    return PC_NATIVE_ERROR;
+  }
+  size_t count = len / sizeof(struct kinfo_proc);
+  int children = 0;
+  int fds_listed = 0;
+  int vnode_fds = 0;
+  int first_errno = 0;
+  for (size_t i = 0; i < count; i++) {
+    if (procs[i].kp_eproc.e_ppid != (pid_t)parent) {
+      continue;
+    }
+    pid_t pid = procs[i].kp_proc.p_pid;
     if (pid <= 0) {
       continue;
     }
+    children++;
     int fd_bytes = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, NULL, 0);
     if (fd_bytes <= 0) {
+      if (first_errno == 0) {
+        first_errno = errno;
+      }
       continue;
     }
     struct proc_fdinfo *fds = (struct proc_fdinfo *)malloc((size_t)fd_bytes);
@@ -597,16 +614,23 @@ static pc_status find_child_holding_file(int64_t parent, const char *path, holde
     }
     int fd_got = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fds, fd_bytes);
     int fd_count = fd_got > 0 ? fd_got / PROC_PIDLISTFD_SIZE : 0;
+    fds_listed += fd_count;
     int holds = 0;
     for (int j = 0; j < fd_count && !holds; j++) {
       if (fds[j].proc_fdtype != PROX_FDTYPE_VNODE) {
         continue;
       }
+      vnode_fds++;
       struct vnode_fdinfo vi;
       memset(&vi, 0, sizeof(vi));
       int r = proc_pidfdinfo(pid, fds[j].proc_fd, PROC_PIDFDVNODEINFO, &vi, PROC_PIDFDVNODEINFO_SIZE);
-      if (r == PROC_PIDFDVNODEINFO_SIZE &&
-          (unsigned long long)vi.pvi.vi_stat.vst_dev == (unsigned long long)target.st_dev &&
+      if (r != PROC_PIDFDVNODEINFO_SIZE) {
+        if (first_errno == 0) {
+          first_errno = errno;
+        }
+        continue;
+      }
+      if ((unsigned long long)vi.pvi.vi_stat.vst_dev == (unsigned long long)target.st_dev &&
           (unsigned long long)vi.pvi.vi_stat.vst_ino == (unsigned long long)target.st_ino) {
         holds = 1;
       }
@@ -617,10 +641,13 @@ static pc_status find_child_holding_file(int64_t parent, const char *path, holde
       out->pid = pid;
     }
   }
-  free(pids);
+  free(procs);
   if (out->matches != 1) {
     out->pid = -1;
   }
+  snprintf(out->message, sizeof(out->message),
+           "children=%d fds=%d vnode_fds=%d first_errno=%d target_dev=%llu target_ino=%llu", children, fds_listed,
+           vnode_fds, first_errno, (unsigned long long)target.st_dev, (unsigned long long)target.st_ino);
   return PC_OK;
 }
 
@@ -777,7 +804,7 @@ static id_status read_identity(int64_t pid, id_result *out) {
   return ID_OK;
 }
 
-#include <restartmgr.h>
+#include <restartmanager.h>
 #include <tlhelp32.h>
 
 static pc_status win32_open_failure(DWORD err, const char *what, char *message, size_t mlen) {
@@ -1407,6 +1434,14 @@ static napi_value FindChildHoldingFile(napi_env env, napi_callback_info info) {
       napi_set_named_property(env, obj, "matches", matches_v) != napi_ok) {
     napi_throw_error(env, NULL, "cc-lhc identity: cannot populate holder result");
     return NULL;
+  }
+  if (r.message[0] != '\0') {
+    /* Platform scan summary (diagnostic only; never part of the decision). */
+    napi_value detail_v = make_string(env, r.message);
+    if (detail_v == NULL || napi_set_named_property(env, obj, "detail", detail_v) != napi_ok) {
+      napi_throw_error(env, NULL, "cc-lhc identity: cannot populate holder detail");
+      return NULL;
+    }
   }
   return obj;
 }

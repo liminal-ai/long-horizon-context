@@ -48,7 +48,7 @@ export type ChildExitState =
 export type ReadChildExitResult = ({ ok: true; pid: number } & ChildExitState) | ProcessControlFailure;
 
 export type FindChildHoldingFileResult =
-  | { ok: true; parentPid: number; path: string; pid: number | null; matches: number }
+  | { ok: true; parentPid: number; path: string; pid: number | null; matches: number; detail?: string }
   | ProcessControlFailure;
 
 export interface ProcessControl {
@@ -135,11 +135,12 @@ export function normalizeHolderResult(raw: unknown, parentPid: number, path: str
     if (typeof obj.matches !== "number" || !Number.isSafeInteger(obj.matches) || obj.matches < 0) {
       return failure("native_error", "addon returned an invalid match count");
     }
-    if (obj.pid === null) return { ok: true, parentPid, path, pid: null, matches: obj.matches };
+    const detail = typeof obj.detail === "string" && obj.detail !== "" ? { detail: obj.detail } : {};
+    if (obj.pid === null) return { ok: true, parentPid, path, pid: null, matches: obj.matches, ...detail };
     if (!validPid(obj.pid) || obj.matches !== 1) {
       return failure("native_error", "addon returned an invalid holder pid");
     }
-    return { ok: true, parentPid, path, pid: obj.pid, matches: 1 };
+    return { ok: true, parentPid, path, pid: obj.pid, matches: 1, ...detail };
   }
   if (obj.ok === false) return nativeFailure(obj);
   return failure("native_error", "addon result missing ok discriminant");

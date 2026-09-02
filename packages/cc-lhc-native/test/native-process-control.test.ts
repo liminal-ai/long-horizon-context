@@ -194,8 +194,9 @@ real("supervised-child control against real children", () => {
     const found = await until(
       () => control.findChildHoldingFile(supervisor.pid as number, output),
       (r) => r.ok && r.pid !== null,
-      5_000,
+      4_000,
     );
+    // Under the test timeout, so a miss reports the addon's scan summary.
     expect(found).toMatchObject({ ok: true, pid: grandchild, matches: 1 });
     // From this test's own vantage the direct child holding the file is the
     // supervisor (it opened the fd it handed down), never the grandchild.
