@@ -25,7 +25,8 @@ const THREAD_SCHEMA_STATEMENT_TEMPLATES: &[&str] = &[
       id INTEGER PRIMARY KEY CHECK (id = 1),
       thread_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      token_estimator TEXT NOT NULL
+      token_estimator TEXT NOT NULL,
+      parts_activated_at TEXT
     );"#,
     r#"INSERT INTO thread_metadata (id, thread_id, created_at, token_estimator)
      VALUES (1, '{thread_id}', '{created_at}', '{token_estimator}');"#,
@@ -59,6 +60,7 @@ const THREAD_SCHEMA_STATEMENT_TEMPLATES: &[&str] = &[
       harness TEXT NOT NULL,
       turn_id TEXT NOT NULL REFERENCES turns(turn_id),
       provider_usage TEXT,
+      step_index INTEGER,
       deleted_at TEXT
     );"#,
     r#"CREATE TABLE message_block (
@@ -224,17 +226,19 @@ fn panic_inspect_detail(panic: Box<dyn std::any::Any + Send>) -> String {
 /// TS `validateThreadFile` — success is `{ ok: true }` (no value payload).
 ///
 /// Open / schema / metadata / close mirror TS try/catch/finally. Uses the
-/// WAL-aware validation opener (not the immutable peek opener). Storage
-/// panics from prepare/get are caught and mapped — never escape this path.
+/// live WAL-aware validation opener (not the immutable peek opener), so a
+/// thread whose identity currently lives only in uncheckpointed WAL frames
+/// validates. Storage panics from prepare/get are caught and mapped — never
+/// escape this path.
 fn validate_thread_file(file_path: &str) -> OpResult<()> {
-    let mut opened = match open_database_for_thread_validation(file_path) {
+    let opened = match open_database_for_thread_validation(file_path) {
         OpResult::Ok { value } => value,
         OpResult::Err { error } => {
             return map_inspect_failure(file_path, &error.reason);
         }
     };
     let inspect = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let db = opened.db();
+        let db = &opened;
         let schema_version = match get_schema_version(db) {
             OpResult::Ok { value } => value,
             OpResult::Err { error } => {

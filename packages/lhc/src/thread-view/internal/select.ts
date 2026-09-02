@@ -17,7 +17,7 @@
 // visits; see bounded-source.ts. Both run the same walk (walk.ts).
 import type { DatabaseSync } from "node:sqlite";
 import * as messagesDomain from "../../messages/index.js";
-import type { Band, SkippedRecord } from "../../shared-tech/index.js";
+import type { Band, SettleConstruction, SkippedRecord } from "../../shared-tech/index.js";
 import * as turnsDomain from "../../turns/index.js";
 import type { CompactChunkMaterialSnapshot, DerivationSnapshot } from "./render.js";
 import { excerptLine } from "./render.js";
@@ -89,6 +89,8 @@ export interface ArrangementEntry {
   startOrder: number; // oldest event order the entry represents (notes included)
   text: string; // rendered entry text (the band stores this verbatim)
   tokens: number;
+  // Turn parts: the step range this entry renders (part entries only).
+  part?: { fromStep: number; toStep: number };
 }
 
 // A candidate the last band's walk passed over because it did not fit while
@@ -108,11 +110,19 @@ export interface SelectionResult {
   // the order the bands render and the arrangement persists.
   entries: ArrangementEntry[];
   skipped: SkippedSubject[];
+  // Turn parts (absent when no turn is split): what the receipt records.
+  parts?: Array<{ turnId: string; fromStep: number; toStep: number }>;
+  // stepIndex: the host step index of the last part's toStep (not ordinal k).
+  splitPoint?: { turnId: string; stepIndex: number };
+  settled?: { turnId: string; construction: SettleConstruction };
+  protectedTurn?: { turnId: string; representation: "full" | "whole_rendering" };
 }
 
 export interface SelectionConfig {
   lowerBound: number;
   percentages: { full: number; smooth: number; detailed: number; brief: number };
+  /** Newest-closed-turn protection fraction (Flow 5); the profile default when absent. */
+  newestClosedProtection?: number;
   /** Compact point must stay at or behind this event order (protected-pair tail). */
   compactPointUpperBound?: number;
 }
@@ -166,7 +176,7 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
   const { chunks, emptyChunkIds } = shapeChunks(structure, shaped, skippedRecords);
 
   const derivationRows = db
-    .prepare(`SELECT subject_kind, subject_id, derivation_type, state, content, reason FROM derivation`)
+    .prepare(`SELECT subject_kind, subject_id, derivation_type, state, content, reason, source_version FROM derivation`)
     .all() as unknown as Array<{
     subject_kind: string;
     subject_id: string;
@@ -174,6 +184,7 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
     state: string;
     content: string | null;
     reason: string | null;
+    source_version: number | bigint;
   }>;
   const derivations = new Map<string, DerivationSnapshot>();
   const emptyChunkSet = new Set(emptyChunkIds);
@@ -185,7 +196,10 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
       [row.state]: (derivationCounts[row.derivation_type]?.[row.state] ?? 0) + 1,
     };
     if (row.subject_kind !== "turn" && row.subject_kind !== "chunk") continue;
-    const snapshot: DerivationSnapshot = { state: row.state as DerivationSnapshot["state"] };
+    const snapshot: DerivationSnapshot = {
+      state: row.state as DerivationSnapshot["state"],
+      sourceVersion: Number(row.source_version),
+    };
     if (row.content !== null) snapshot.content = row.content;
     if (row.reason !== null) snapshot.reason = row.reason;
     derivations.set(`${row.subject_id}/${row.derivation_type}`, snapshot);

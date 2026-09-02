@@ -925,10 +925,24 @@ def classify() -> int:
         # with a broad/prefix wildcard.
         # Prior Phase-2 close: 584. Compact-continuation stack through LIM-63
         # plus LIM-76 selector/continuation work is 728. LIM-77 adds one
-        # claim_expired fallback compact test → 729. Keep this exact-count
-        # ledger in lockstep with cargo --features test-util.
+        # claim_expired fallback compact test → 729. Tree at the turn-parts
+        # port's start already reported 743 (literal had lagged). Turn parts
+        # slice 2 (schema v12 / wire / steps / steer) adds 7 → 750;
+        # slice 3 (host metadata surface) adds 3 → 753.
+        # slice 4 (walk/settle/parts/protection/cap/entry/exclusivity,
+        # install drift recompute) adds 26 → 779; slice 5 (TS oracle replay)
+        # adds 1 → 780; steward correction (install boundary forward
+        # resolution: 2 ported seam tests) → 782. Measured at the LIM-133 base
+        # (b408f897) the tree already reported 784 — the literal had lagged by
+        # two again. LIM-133 (bounded/non-copying/read-mostly opens) adds 49:
+        # thread_validation 15, bounded_projections 20, read_mostly_open 10,
+        # validation_no_snapshot 4 → 833. The LIM-133 correction adds 3 more
+        # bounded_projections cases (cursor-key, traversed-count and snapshot
+        # witnesses; the forged near-cap case became the authentic 2000/2001
+        # boundary walk) → 836. Keep this
+        # exact-count ledger in lockstep with cargo --features test-util.
         if (
-            len(buckets["passed"]) != 729
+            len(buckets["passed"]) != 836
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -936,7 +950,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=729 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=836 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")

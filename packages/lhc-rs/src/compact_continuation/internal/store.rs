@@ -664,6 +664,15 @@ pub fn read_boundary(db: &Db, continuation_turn_id: &str) -> Option<BoundaryRow>
     Some(boundary_from_row(&row))
 }
 
+/// Whether this thread has ever taken the forced-boundary path (any boundary
+/// row, resolved or not). Per-thread mechanism exclusivity (turn parts,
+/// AC-7.3): such a thread is never served parts.
+pub fn has_forced_boundary_history(db: &Db) -> bool {
+    db.prepare("SELECT 1 AS present FROM compact_continuation_boundary LIMIT 1")
+        .get()
+        .is_some()
+}
+
 pub fn read_pending_boundary(db: &Db) -> Option<BoundaryRow> {
     let rows = db
         .prepare(

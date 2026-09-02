@@ -16,8 +16,73 @@ use crate::shared_tech::derivation::{
     DependencyGap, DerivationMetadata, DerivationState, RenderingPart, RenderingPartBlock,
     RenderingPartKind, SubjectKind, ToolOutcome,
 };
-use crate::shared_tech::js_json::{js_json_stringify, js_len, js_slice};
+use crate::shared_tech::js_json::{
+    js_json_stringify, js_len, js_slice, js_trim_end, js_trim_start,
+};
+use crate::shared_tech::token_counting::estimate_tokens;
 use crate::shared_tech::tool_result_rendering::{FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback};
+
+// F1 — the bounded per-message construction cap. A served construction never
+// spends more than this on one message: a giant message keeps a head and a
+// tail around a marked elision that names the exact-retrieval address (`m…`).
+// A serving-time option of the bounded plan only, applied here while message
+// identity and body are still structured (never over serialized text, whose
+// bodies may contain tag-shaped bytes). Composition is uncapped by default:
+// stored turn_rendering rows, compression/assembly inputs, floors, and
+// retrieval renderings keep every byte; the bounded walk requests the cap
+// explicitly for parts and in-walk whole constructions. Never the verbatim
+// tail, never canonical.
+pub const CONSTRUCTION_MESSAGE_CAP_TOKENS: i64 = 2000;
+
+/// TS `ComposeOptions`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ComposeOptions {
+    /// Bounded-plan serving: cap each message's construction text.
+    pub cap_for_serving: bool,
+    /// A part renders the unsmoothed prompt and raw tool results by contract
+    /// (AC-1.4): absent message derivations are not fallbacks there, so no
+    /// [fallback] annotation, gap, or recovery is produced. Durable outputs
+    /// never set this.
+    pub raw_by_design: bool,
+}
+
+/// TS `capForConstruction` — JS string semantics (UTF-16 lengths/slices,
+/// JS trim), identical arithmetic, so the elision marker and boundary bytes
+/// match the TypeScript construction.
+pub fn cap_for_construction(text: &str, message_id: &str) -> String {
+    let total = estimate_tokens(text);
+    if total <= CONSTRUCTION_MESSAGE_CAP_TOKENS {
+        return text.to_string();
+    }
+    let length = js_len(text) as i64;
+    let chars_per_token = length as f64 / total as f64;
+    let marker = |elided: i64| -> String {
+        format!("[… {elided} tokens elided at construction — exact content: {message_id} …]")
+    };
+    // Head takes two thirds of the kept budget, tail one third; shrink until the
+    // kept text plus its marker prices at or under the cap.
+    let mut keep: i64 = (chars_per_token * CONSTRUCTION_MESSAGE_CAP_TOKENS as f64).floor() as i64;
+    loop {
+        let head_chars = (keep * 2) / 3;
+        let tail_chars = keep - head_chars;
+        let head = js_trim_end(&js_slice(text, 0, Some(head_chars))).to_string();
+        let tail = if tail_chars == 0 {
+            String::new()
+        } else {
+            js_trim_start(&js_slice(text, length - tail_chars, None)).to_string()
+        };
+        let elided = (total - estimate_tokens(&head) - estimate_tokens(&tail)).max(0);
+        let capped = if tail.is_empty() {
+            format!("{head}\n{}", marker(elided))
+        } else {
+            format!("{head}\n{}\n{tail}", marker(elided))
+        };
+        if keep == 0 || estimate_tokens(&capped) <= CONSTRUCTION_MESSAGE_CAP_TOKENS {
+            return capped;
+        }
+        keep = (keep - 1).min((keep as f64 * 0.9).floor() as i64).max(0);
+    }
+}
 
 /// TS `ComposeMessage` block element.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -106,6 +171,8 @@ pub struct CompositionInput {
     pub parts: Vec<RenderingPart>,
     pub gaps: Vec<DependencyGap>,
     pub recoveries: Vec<RecoveryReceipt>,
+    /// Bounded serving only: whether the cap elided any message's construction.
+    pub capped: bool,
 }
 
 fn first_block_content(message: &ComposeMessage) -> Map<String, Value> {
@@ -359,12 +426,14 @@ struct BuiltAtom {
     atom: ComposeAtom,
     gap: Option<DependencyGap>,
     recovery: Option<RecoveryReceipt>,
+    capped: bool,
 }
 
 fn build_atom(
     message: &ComposeMessage,
     derivations: &IndexMap<String, ComposeDerivationRow>,
     result_by_call_id: &IndexMap<String, bool>,
+    options: &ComposeOptions,
 ) -> BuiltAtom {
     let plan = part_plan(message.kind);
     let derivation = plan.derivation.and_then(|derivation| {
@@ -379,6 +448,8 @@ fn build_atom(
         })
     );
     let block = first_block_content(message);
+    // The uncapped text is what a recovery floor writes back; only bounded
+    // serving renders the capped construction.
     let text = if ready {
         let derived = derivation
             .and_then(|d| d.content.clone())
@@ -387,11 +458,17 @@ fn build_atom(
     } else {
         (plan.fallback_text)(message)
     };
-    let fallback = plan.derivation.is_some() && !ready;
+    let served = if options.cap_for_serving {
+        cap_for_construction(&text, &message.message_id)
+    } else {
+        text.clone()
+    };
+    let capped = served != text;
+    let fallback = !options.raw_by_design && plan.derivation.is_some() && !ready;
     let mut part = RenderingPart {
         message_id: message.message_id.clone(),
         kind: message.kind,
-        text,
+        text: served,
         fallback,
         blocks: None,
         outcome: None,
@@ -475,10 +552,10 @@ fn build_atom(
                 subject_kind: RecoverySubjectKind::Message,
                 subject_id: message.message_id.clone(),
                 derivation_type: derivation_type.to_string(),
-                content: atom.part.text.clone(),
+                content: text.clone(),
                 source_version: derivation.map(|d| d.source_version).unwrap_or(1),
                 reason,
-                floor_used: atom.part.text.clone(),
+                floor_used: text.clone(),
             };
             (Some(gap), Some(recovery))
         } else {
@@ -491,6 +568,7 @@ fn build_atom(
         atom,
         gap,
         recovery,
+        capped,
     }
 }
 
@@ -605,6 +683,16 @@ fn rendering_part_label(kind: RenderingPartKind) -> &'static str {
 /// Smooth-band turn_rendering text: turn wrap + per-message tags. Not used for
 /// pre_detailed_assembly (compression stays untagged).
 pub fn compose_structured_turn_text(parts: &[RenderingPart], turn_id: &str) -> String {
+    compose_structured_turn_text_with_trailer(parts, turn_id, None)
+}
+
+/// TS `composeStructuredTurnText(parts, turnId, trailer?)`: the trailer (a
+/// part's seam line) sits inside the wrapper after the last part.
+pub fn compose_structured_turn_text_with_trailer(
+    parts: &[RenderingPart],
+    turn_id: &str,
+    trailer: Option<&str>,
+) -> String {
     let inner = parts
         .iter()
         // Empty thinking has no usable representation in a text band. Leaving it
@@ -635,7 +723,10 @@ pub fn compose_structured_turn_text(parts: &[RenderingPart], turn_id: &str) -> S
         })
         .collect::<Vec<_>>()
         .join("\n\n");
-    wrap_entity_xml(turn_id, &inner)
+    match trailer {
+        None => wrap_entity_xml(turn_id, &inner),
+        Some(trailer) => wrap_entity_xml(turn_id, &format!("{inner}\n\n{trailer}")),
+    }
 }
 
 /// True when stored turn_rendering already carries the outer turn label wrap.
@@ -698,12 +789,23 @@ pub fn compose_rendering_input(
     messages: &[ComposeMessage],
     derivations: &IndexMap<String, ComposeDerivationRow>,
 ) -> CompositionInput {
+    compose_rendering_input_with(messages, derivations, &ComposeOptions::default())
+}
+
+/// TS `composeRenderingInput(messages, derivations, options)`.
+pub fn compose_rendering_input_with(
+    messages: &[ComposeMessage],
+    derivations: &IndexMap<String, ComposeDerivationRow>,
+    options: &ComposeOptions,
+) -> CompositionInput {
     let result_by_call_id = record_outcomes(messages);
     let mut atoms: Vec<ComposeAtom> = Vec::new();
     let mut gaps: Vec<DependencyGap> = Vec::new();
     let mut recoveries: Vec<RecoveryReceipt> = Vec::new();
+    let mut capped = false;
     for message in messages {
-        let built = build_atom(message, derivations, &result_by_call_id);
+        let built = build_atom(message, derivations, &result_by_call_id, options);
+        capped |= built.capped;
         atoms.push(built.atom);
         if let Some(gap) = built.gap {
             gaps.push(gap);
@@ -747,6 +849,7 @@ pub fn compose_rendering_input(
         parts,
         gaps,
         recoveries,
+        capped,
     }
 }
 
@@ -810,7 +913,12 @@ pub fn compose_pre_detailed_assembly(
         if !is_dialog_kind(message.kind) {
             continue;
         }
-        let built = build_atom(message, derivations, &result_by_call_id);
+        let built = build_atom(
+            message,
+            derivations,
+            &result_by_call_id,
+            &ComposeOptions::default(),
+        );
         parts.push(built.atom.part);
         if let Some(gap) = built.gap {
             gaps.push(gap);

@@ -202,6 +202,7 @@ fn degraded_compact_params() -> ViewCompactParams {
             detailed: Some(10.0),
             brief: Some(40.0),
         }),
+        newest_closed_protection: None,
     }
 }
 
@@ -586,6 +587,7 @@ async fn tail_costs_short_forms_short_and_total_equals_an_independent_context_re
                         detailed: Some(10.0),
                         brief: Some(40.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,

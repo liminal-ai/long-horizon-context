@@ -7,4 +7,5 @@ pub mod chunks;
 pub mod compose;
 pub mod derivations;
 pub mod derive;
+pub mod steps;
 pub mod store;

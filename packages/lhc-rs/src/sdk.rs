@@ -5,7 +5,10 @@
 
 // ── Canonical public re-exports (sdk.ts) ─────────────────────────────
 
-pub use crate::intake_stream::{BatchResult, EventKind, EventRecord, MessageEventInput};
+pub use crate::intake_stream::{
+    BatchResult, EventKeyPage, EventKeyPageQuery, EventKeyPrefixCount, EventKeyReference,
+    EventKind, EventRecord, MessageEventInput, ThreadFrontier,
+};
 pub use crate::messages::{
     Block, BlockType, MessageDetail, MessageListOptions, MessageRecord, MutationResult,
 };
@@ -92,13 +95,13 @@ pub use crate::shared_tech::token_counting::{
     TOKEN_ESTIMATOR_ID, TokenSlice, estimate_tokens, slice_tokens,
 };
 pub use crate::shared_tech::view::{
-    Band, CompactReceipt, LlmRequestContext, LlmRequestContextMessage, LlmRequestContextPart,
-    PreviewCompactOutcome, PreviewCompactResult, PruneReceipt, ResolvedViewConfig, SdkViewConfig,
-    SessionAssistantMessage, SessionAssistantPart, SessionModelChangeEntry,
-    SessionThinkingLevelChangeEntry, SessionThreadView, SessionThreadViewEntry,
-    SessionThreadViewEntrySource, SessionThreadViewMessage, SessionToolResultMessage,
-    SessionUserMessage, StoredView, ViewCompactParams, ViewProfile, ViewProfileOverride,
-    ViewStatus, VisibilityBudgets,
+    Band, CompactReceipt, HostMetadata, LlmRequestContext, LlmRequestContextMessage,
+    LlmRequestContextPart, PreviewCompactOutcome, PreviewCompactResult, PruneReceipt,
+    ResolvedViewConfig, SdkViewConfig, SessionAssistantMessage, SessionAssistantPart,
+    SessionModelChangeEntry, SessionThinkingLevelChangeEntry, SessionThreadView,
+    SessionThreadViewEntry, SessionThreadViewEntrySource, SessionThreadViewMessage,
+    SessionToolResultMessage, SessionUserMessage, SkippedRecord, StoredView, ViewCompactParams,
+    ViewProfile, ViewProfileOverride, ViewStatus, VisibilityBudgets,
 };
 pub use crate::shared_tech::work_queue::{
     ClaimedWorkItem, EnqueueDerivationTarget, EnqueueInput, QueueDetailRow, WorkHandlerMap,
@@ -150,7 +153,8 @@ use crate::shared_tech::scheduler::{
 };
 use crate::shared_tech::storage::Db;
 use crate::thread_view::{
-    self, CompactOpts, MaterializeOpts, MaterializeResult, PruneParams, resolve_view_config,
+    self, CompactOpts, MaterializeOpts, MaterializeResult, MidTurnCompactOptions, PruneParams,
+    resolve_view_config,
 };
 use crate::threads::{
     self, ListThreadsInput, NewThreadInput, NewThreadResult, ResolveInput, ResolvedThreadPath,
@@ -359,6 +363,26 @@ impl ThreadViewSurface {
         run_with_instance_seam(seam, async move { thread_view::describe(ref_).await }).await
     }
 
+    /// Host metadata (turn parts, AC-7.1): the pressure-decision reads.
+    pub async fn host_metadata(&self, ref_: ThreadRef) -> OpResult<HostMetadata> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move { thread_view::host_metadata(ref_).await }).await
+    }
+
+    /// Mid-turn compact (turn parts, Flow 7): the ordinary compact behind the
+    /// host's seam assertion and per-thread mechanism exclusivity.
+    pub async fn mid_turn_compact(
+        &self,
+        ref_: ThreadRef,
+        opts: MidTurnCompactOptions,
+    ) -> OpResult<CompactReceipt> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            thread_view::mid_turn_compact(ref_, opts).await
+        })
+        .await
+    }
+
     pub async fn preview_compact(
         &self,
         ref_: ThreadRef,
@@ -371,6 +395,12 @@ impl ThreadViewSurface {
         .await
     }
 
+    /// Prepare and install in one call. On the bounded plan, a thread that has
+    /// never taken the forced-boundary path may have its open turn split into
+    /// parts here with no seam assertion: only complete, host-recorded steps
+    /// split, and the open turn's step indices ride the drift digest so a step
+    /// that lands between prepare and install recomputes. `mid_turn_compact`
+    /// is the entry point that asserts the host's capture seam (AC-7.4).
     pub async fn compact(&self, ref_: ThreadRef, opts: CompactOpts) -> OpResult<CompactReceipt> {
         let seam = Arc::clone(&self.seam);
         run_with_instance_seam(seam, async move { thread_view::compact(ref_, opts).await }).await
@@ -594,6 +624,39 @@ impl LhcIntakeStream {
             seam,
             async move { intake_stream::list_events(thread_ref).await },
         )
+        .await
+    }
+
+    pub async fn thread_frontier(&self, thread_ref: ThreadRef) -> OpResult<ThreadFrontier> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            intake_stream::thread_frontier(thread_ref).await
+        })
+        .await
+    }
+
+    pub async fn event_key_prefix_counts(
+        &self,
+        thread_ref: ThreadRef,
+        prefixes: &[String],
+    ) -> OpResult<Vec<EventKeyPrefixCount>> {
+        let seam = Arc::clone(&self.seam);
+        let prefixes = prefixes.to_vec();
+        run_with_instance_seam(seam, async move {
+            intake_stream::event_key_prefix_counts(thread_ref, &prefixes).await
+        })
+        .await
+    }
+
+    pub async fn list_event_keys_by_prefix(
+        &self,
+        thread_ref: ThreadRef,
+        options: EventKeyPageQuery,
+    ) -> OpResult<EventKeyPage> {
+        let seam = Arc::clone(&self.seam);
+        run_with_instance_seam(seam, async move {
+            intake_stream::list_event_keys_by_prefix(thread_ref, options).await
+        })
         .await
     }
 

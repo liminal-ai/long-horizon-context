@@ -4,7 +4,7 @@ use serde_json::{Map, Value};
 
 use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult};
 use crate::shared_tech::view::ViewProfile;
-use crate::thread_view::internal::profiles::profile_violation;
+use crate::thread_view::internal::profiles::{DEFAULT_NEWEST_CLOSED_PROTECTION, profile_violation};
 
 fn is_non_empty_string(value: &Value) -> bool {
     matches!(value, Value::String(s) if !s.is_empty())
@@ -418,6 +418,7 @@ pub fn validate_host_facts(raw: &Value) -> Option<ErrorResult> {
                             detailed: pct.get("detailed").and_then(|v| v.as_f64()).unwrap_or(0.0),
                             brief: pct.get("brief").and_then(|v| v.as_f64()).unwrap_or(0.0),
                         },
+                        newest_closed_protection: DEFAULT_NEWEST_CLOSED_PROTECTION,
                     };
                     if let Some(violation) = profile_violation(&complete) {
                         return Some(reject(&format!("compact.params: {violation}")));

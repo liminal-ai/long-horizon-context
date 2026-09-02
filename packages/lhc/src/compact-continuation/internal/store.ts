@@ -557,6 +557,15 @@ export function readPendingBoundary(db: DatabaseSync): BoundaryRow | null {
   };
 }
 
+/**
+ * Whether this thread has ever taken the forced-boundary path (any boundary
+ * row, resolved or not). Per-thread mechanism exclusivity (turn parts,
+ * AC-7.3): such a thread is never served parts.
+ */
+export function hasForcedBoundaryHistory(db: DatabaseSync): boolean {
+  return db.prepare(`SELECT 1 AS present FROM compact_continuation_boundary LIMIT 1`).get() !== undefined;
+}
+
 export function listBoundaries(db: DatabaseSync): BoundaryRow[] {
   const rows = db
     .prepare(

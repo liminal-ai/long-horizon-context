@@ -237,6 +237,7 @@ fn rejects_a_profile_whose_band_percentages_do_not_sum_to_100() {
                         detailed: Some(20.0),
                         brief: Some(20.0),
                     }),
+                    newest_closed_protection: None,
                 }]),
                 visibility: None,
                 compact_threshold: None,
@@ -279,6 +280,7 @@ fn rejects_a_non_positive_lower_bound() {
                         detailed: Some(20.0),
                         brief: Some(20.0),
                     }),
+                    newest_closed_protection: None,
                 }]),
                 visibility: None,
                 compact_threshold: None,
@@ -298,6 +300,7 @@ fn rejects_a_partial_profile_that_overrides_no_built_in_unknown_override_target(
                     name: "mystery".into(),
                     lower_bound: Some(64000.0),
                     percentages: None,
+                    newest_closed_protection: None,
                 }]),
                 visibility: None,
                 compact_threshold: None,
@@ -315,6 +318,7 @@ fn resolves_defaults_and_merges_a_built_in_override_field_wise() {
             name: "coding".into(),
             lower_bound: Some(64000.0),
             percentages: None,
+            newest_closed_protection: None,
         }]),
         visibility: None,
         compact_threshold: None,
@@ -338,6 +342,7 @@ fn resolves_defaults_and_merges_a_built_in_override_field_wise() {
                 detailed: 20.0,
                 brief: 20.0,
             },
+            newest_closed_protection: lhc::thread_view::DEFAULT_NEWEST_CLOSED_PROTECTION,
         })
     );
     assert_eq!(
@@ -351,6 +356,7 @@ fn resolves_defaults_and_merges_a_built_in_override_field_wise() {
                 detailed: 20.0,
                 brief: 20.0,
             },
+            newest_closed_protection: lhc::thread_view::DEFAULT_NEWEST_CLOSED_PROTECTION,
         })
     );
     assert_eq!(
@@ -813,6 +819,7 @@ async fn uninstalled_the_point_is_a_no_op() {
                         &SelectionConfig {
                             lower_bound,
                             percentages,
+                            newest_closed_protection: None,
                             compact_point_upper_bound: None,
                         },
                     )
@@ -822,6 +829,7 @@ async fn uninstalled_the_point_is_a_no_op() {
                         &SelectionConfig {
                             lower_bound,
                             percentages: truncated_percentages,
+                            newest_closed_protection: None,
                             compact_point_upper_bound: None,
                         },
                     )
@@ -846,6 +854,7 @@ async fn uninstalled_the_point_is_a_no_op() {
                         &SelectionConfig {
                             lower_bound,
                             percentages,
+                            newest_closed_protection: None,
                             compact_point_upper_bound: None,
                         },
                     )
@@ -1029,6 +1038,7 @@ async fn compact_with_profile(
                     detailed: Some(percentages.detailed),
                     brief: Some(percentages.brief),
                 }),
+                newest_closed_protection: None,
             }),
             signal: None,
             compact_point_upper_bound: None,
@@ -1074,6 +1084,7 @@ fn view_profile_from_fixture(value: &Value) -> ViewProfile {
             .to_string(),
         lower_bound: fixture_f64(value.get("lowerBound").expect("lowerBound")),
         percentages: percentages_from_fixture(value.get("percentages").expect("percentages")),
+        newest_closed_protection: lhc::thread_view::DEFAULT_NEWEST_CLOSED_PROTECTION,
     }
 }
 
@@ -1095,6 +1106,7 @@ fn profile_override_from_fixture(value: &Value) -> ViewProfileOverride {
             .to_string(),
         lower_bound: value.get("lowerBound").map(fixture_f64),
         percentages,
+        newest_closed_protection: None,
     }
 }
 
@@ -1223,6 +1235,7 @@ fn selection_inputs_from_fixture(value: &Value) -> SelectionInputs {
                         .get("reason")
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    source_version: None,
                 },
             );
         }
@@ -1251,6 +1264,7 @@ fn selection_inputs_from_fixture(value: &Value) -> SelectionInputs {
             .expect("maxEventOrder"),
         derivation_counts,
         empty_chunk_ids: Vec::new(),
+        skipped_records: Vec::new(),
     }
 }
 

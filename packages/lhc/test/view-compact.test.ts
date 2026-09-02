@@ -248,6 +248,7 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
       detailed: 20,
       brief: 20,
       lowerBound: 120000,
+      newestClosedProtection: 0.6,
     });
     // At a 120k bound this small thread is all tail: bands empty, compact
     // point at the origin, and the reported total IS the tail (totalTokens
@@ -272,6 +273,7 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
       detailed: 15,
       brief: 20,
       lowerBound: 400,
+      newestClosedProtection: 0.6,
     });
     expect(receipt.value.profile).toBeNull();
   });
@@ -1175,11 +1177,16 @@ describe("install-time drift recomputes against fresh state", () => {
       }
 
       // Prepared while the turn/chunk derivations are still queued: the bands
-      // stand on fallbacks.
+      // stand on fallbacks — or, for the newest closed turn, on the in-walk
+      // composition that stands in for its not-yet-stored rendering (Flow 5).
       const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
       expect(stale.ok).toBe(true);
       if (!stale.ok) return;
-      expect(stale.value.selection.entries.some((entry) => entry.degraded || entry.gap)).toBe(true);
+      expect(
+        stale.value.selection.entries.some(
+          (entry) => entry.degraded || entry.gap || entry.derivationUsed === "composed_in_walk",
+        ),
+      ).toBe(true);
       const eventsBefore = maxEventOrder(filePath);
 
       // Draining writes derivations only — not one new event.

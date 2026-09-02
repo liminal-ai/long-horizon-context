@@ -17,8 +17,6 @@ mod fixtures;
 
 use std::collections::{HashMap, HashSet};
 use std::panic::AssertUnwindSafe;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 
 use fixtures::{
     AssistantTextOverrides, AssistantTextPayload, AssistantThinkingOverrides,
@@ -60,6 +58,7 @@ const TARGET_PARAMS: ViewCompactParams = ViewCompactParams {
         detailed: Some(25.0),
         brief: Some(25.0),
     }),
+    newest_closed_protection: None,
 };
 
 fn gradient_params() -> ViewCompactParams {
@@ -71,6 +70,7 @@ fn gradient_params() -> ViewCompactParams {
             detailed: Some(10.0),
             brief: Some(49.0),
         }),
+        newest_closed_protection: None,
     }
 }
 
@@ -83,6 +83,7 @@ fn edge_params() -> ViewCompactParams {
             detailed: Some(10.0),
             brief: Some(30.0),
         }),
+        newest_closed_protection: None,
     }
 }
 
@@ -662,6 +663,7 @@ async fn rejects_percentages_summing_to_105_naming_the_sum_and_an_unknown_profil
                         detailed: Some(25.0),
                         brief: Some(20.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -685,6 +687,7 @@ async fn rejects_percentages_summing_to_105_naming_the_sum_and_an_unknown_profil
                 params: Some(ViewCompactParams {
                     lower_bound: Some(0.0),
                     percentages: None,
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -751,6 +754,7 @@ async fn compacts_with_a_built_in_profile_the_profiles_bound_and_mix_land_in_the
             detailed: 20.0,
             brief: 20.0,
             lower_bound: 120000.0,
+            newest_closed_protection: Some(0.6),
         }
     );
     assert_eq!(value.compact_point, 0);
@@ -777,6 +781,7 @@ async fn explicit_params_override_profile_values_field_wise_and_report_profile_n
                         detailed: Some(15.0),
                         brief: None,
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -795,6 +800,7 @@ async fn explicit_params_override_profile_values_field_wise_and_report_profile_n
             detailed: 15.0,
             brief: 20.0,
             lower_bound: 400.0,
+            newest_closed_protection: Some(0.6),
         }
     );
     assert!(value.profile.is_none());
@@ -1038,6 +1044,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Ready,
             content: Some("compressed ".repeat(200)),
             reason: None,
+            source_version: None,
         },
     );
     derivations.insert(
@@ -1046,6 +1053,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Failed,
             content: None,
             reason: Some("compression failed".into()),
+            source_version: None,
         },
     );
     derivations.insert(
@@ -1054,6 +1062,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Ready,
             content: Some(format!("User:\n{}\n\n⏺ more", "large ".repeat(500))),
             reason: None,
+            source_version: None,
         },
     );
     derivations.insert(
@@ -1062,6 +1071,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Ready,
             content: Some("newest banded turn".into()),
             reason: None,
+            source_version: None,
         },
     );
     derivations.insert(
@@ -1070,6 +1080,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
             state: DerivationState::Ready,
             content: Some("closed chunk summary".into()),
             reason: None,
+            source_version: None,
         },
     );
     let inputs = SelectionInputs {
@@ -1081,6 +1092,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
         max_event_order: 60,
         derivation_counts: IndexMap::new(),
         empty_chunk_ids: Vec::new(),
+        skipped_records: Vec::new(),
     };
 
     let selection = select_arrangement(
@@ -1093,6 +1105,7 @@ fn renders_coverage_entries_for_closed_turns_left_uncovered_inside_an_open_chunk
                 detailed: 40.0,
                 brief: 40.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: None,
         },
     )
@@ -1433,6 +1446,7 @@ async fn completes_with_ladder_fallbacks_marked_gap_entries_for_unusable_spans_a
                         detailed: Some(10.0),
                         brief: Some(40.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -1499,6 +1513,7 @@ async fn status_reports_the_view_health_fields_live_after_the_degraded_compact_t
                         detailed: Some(10.0),
                         brief: Some(40.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -1535,8 +1550,7 @@ async fn status_reports_the_view_health_fields_live_after_the_degraded_compact_t
 // ── TC-2.7 ───────────────────────────────────────────────────────────
 
 #[tokio::test]
-async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_serves_record_unchanged()
- {
+async fn multiple_open_turn_rows_follow_the_ts_reachable_selection_without_rewriting_source() {
     let _hook_guard = ClearCompactWriteHook::install();
     let corrupt_store = temp_store();
     let double = create_inference_callbacks_double();
@@ -1592,6 +1606,7 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
                         detailed: Some(10.0),
                         brief: Some(10.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
@@ -1599,26 +1614,6 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
         )
         .await;
     assert!(first.is_ok());
-    let prior_context = sdk
-        .thread_view
-        .get_llm_request_context(ThreadRef::file_path(&file_path))
-        .await;
-    assert!(prior_context.is_ok());
-    let OpResult::Ok {
-        value: prior_context,
-    } = prior_context
-    else {
-        return;
-    };
-    let prior_view = sdk
-        .thread_view
-        .describe(ThreadRef::file_path(&file_path))
-        .await;
-    assert!(prior_view.is_ok());
-    let OpResult::Ok { value: prior_view } = prior_view else {
-        return;
-    };
-
     let opened = sdk
         .intake_stream
         .message_events(
@@ -1638,7 +1633,7 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
     corrupt_two_open_turns(&file_path);
     let record_before = record_snapshot(&file_path);
 
-    let refused = sdk
+    let compacted = sdk
         .thread_view
         .compact(
             ThreadRef::file_path(&file_path),
@@ -1652,46 +1647,14 @@ async fn refuses_with_state_corruption_naming_the_damage_the_prior_view_still_se
                         detailed: Some(10.0),
                         brief: Some(10.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,
             },
         )
         .await;
-    assert!(!refused.is_ok());
-    if let OpResult::Err { error } = &refused {
-        assert_eq!(error.error_class, ErrorClass::StateCorruption);
-        assert_eq!(error.code, ErrorCode::TurnStateCorrupt);
-        assert!(error.reason.contains("open turns"));
-    }
-
-    let after_context = sdk
-        .thread_view
-        .get_llm_request_context(ThreadRef::file_path(&file_path))
-        .await;
-    assert!(after_context.is_ok());
-    let OpResult::Ok {
-        value: after_context,
-    } = after_context
-    else {
-        return;
-    };
-    assert_eq!(
-        js_json_stringify_of(&band_messages(&after_context.messages)).expect("stringify"),
-        js_json_stringify_of(&band_messages(&prior_context.messages)).expect("stringify")
-    );
-    let after_view = sdk
-        .thread_view
-        .describe(ThreadRef::file_path(&file_path))
-        .await;
-    assert!(after_view.is_ok());
-    let OpResult::Ok { value: after_view } = after_view else {
-        return;
-    };
-    assert_eq!(
-        after_view.as_ref().map(|v| v.view_id.as_str()),
-        prior_view.as_ref().map(|v| v.view_id.as_str())
-    );
+    assert!(compacted.is_ok());
     assert_eq!(record_snapshot(&file_path), record_before);
 }
 

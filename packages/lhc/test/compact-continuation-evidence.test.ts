@@ -1315,7 +1315,7 @@ describe("LIM-61 evidence: public export surface", () => {
 });
 
 describe("LIM-61 evidence: schema version current", () => {
-  it("fresh threads are schema v11", async () => {
+  it("fresh threads are schema v12", async () => {
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
@@ -1324,7 +1324,7 @@ describe("LIM-61 evidence: schema version current", () => {
     try {
       const v = Number((db.prepare(`PRAGMA user_version`).get() as { user_version: number | bigint }).user_version);
       expect(v).toBe(CURRENT_THREAD_SCHEMA_VERSION);
-      expect(v).toBe(11);
+      expect(v).toBe(12);
       const idx = db
         .prepare(
           `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_compact_continuation_boundary_one_unresolved'`,

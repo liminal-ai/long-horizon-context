@@ -12,6 +12,7 @@ export const THREAD_SCHEMA_VERSION_8 = 8;
 export const THREAD_SCHEMA_VERSION_9 = 9;
 export const THREAD_SCHEMA_VERSION_10 = 10;
 export const THREAD_SCHEMA_VERSION_11 = 11;
+export const THREAD_SCHEMA_VERSION_12 = 12;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -358,17 +359,27 @@ function migratedTurnDerivationTargets(turnId: string): Array<{
   ];
 }
 
+// Candidate rows for the pre-rewire turn_derivation repair: only queued and
+// claimed items of that kind can still carry a pre-rewire payload.
+const QUEUED_TURN_DERIVATION_CANDIDATES_SQL = `SELECT work_item_id, source_ref, payload
+       FROM work_item
+       WHERE kind = 'turn_derivation' AND status IN ('queued', 'claimed')`;
+
 // Pre-rewire turn_derivation items scheduled compression inside the same handler;
 // rewrite their derivations payload and seed pre_detailed_assembly so item 1 can
 // complete and enqueue compression. Idempotent — safe on every open.
-function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
-  const rows = db
-    .prepare(
-      `SELECT work_item_id, source_ref, payload
-       FROM work_item
-       WHERE kind = 'turn_derivation' AND status IN ('queued', 'claimed')`,
-    )
-    .all() as Array<{ work_item_id: string; source_ref: string; payload: string }>;
+//
+// One scan serves both modes so the read-only predicate and the mutating pass
+// can never diverge: "probe" stops at the first row that needs repair and
+// writes nothing; "apply" repairs every such row. Both read the same rows in
+// the same order, so a malformed payload/source_ref fails identically either
+// way (JSON.parse throws, as it always has).
+function scanQueuedTurnDerivationRepairs(db: DatabaseSync, mode: "probe" | "apply"): boolean {
+  const rows = db.prepare(QUEUED_TURN_DERIVATION_CANDIDATES_SQL).all() as Array<{
+    work_item_id: string;
+    source_ref: string;
+    payload: string;
+  }>;
 
   const updatePayload = db.prepare(`UPDATE work_item SET payload = ? WHERE work_item_id = ?`);
   const seedAssembly = db.prepare(
@@ -380,6 +391,7 @@ function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
      WHERE subject_kind = 'turn' AND subject_id = ? AND derivation_type = 'pre_detailed_assembly'`,
   );
 
+  let repairNeeded = false;
   for (const row of rows) {
     const sourceRef = JSON.parse(row.source_ref) as { turnId?: string };
     const turnId = sourceRef.turnId;
@@ -395,6 +407,9 @@ function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
       needsPayloadMigration || (targetsPreDetailedAssembly && assemblyRowExists.get(turnId) === undefined);
     if (!needsPayloadMigration && !needsAssemblySeed) continue;
 
+    repairNeeded = true;
+    if (mode === "probe") return true;
+
     if (needsAssemblySeed) {
       seedAssembly.run(turnId, sourceVersion);
     }
@@ -406,12 +421,30 @@ function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
       updatePayload.run(JSON.stringify(nextPayload), row.work_item_id);
     }
   }
+  return repairNeeded;
 }
 
+function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
+  scanQueuedTurnDerivationRepairs(db, "apply");
+}
+
+/** Read-only: does any queued/claimed legacy row still need the repair? */
+function queuedTurnDerivationRepairPending(db: DatabaseSync): boolean {
+  return scanQueuedTurnDerivationRepairs(db, "probe");
+}
+
+// Current-schema open is the hot path: it must not take a write lock just to
+// discover there is nothing to repair. The read-only predicate decides, and
+// the same predicate runs again inside BEGIN IMMEDIATE so a concurrent opener
+// that repaired the same rows between probe and lock cannot cause duplicate
+// work (the repair itself is idempotent; the recheck keeps it write-free).
 function runQueuedTurnDerivationMigration(db: DatabaseSync): void {
+  if (!queuedTurnDerivationRepairPending(db)) return;
   db.exec("BEGIN IMMEDIATE;");
   try {
-    migrateQueuedTurnDerivationWorkItems(db);
+    if (queuedTurnDerivationRepairPending(db)) {
+      migrateQueuedTurnDerivationWorkItems(db);
+    }
     db.exec("COMMIT;");
   } catch (cause) {
     db.exec("ROLLBACK;");
@@ -436,6 +469,23 @@ function migrateTurnHostFacts(db: DatabaseSync): void {
   db.exec(`ALTER TABLE turns ADD COLUMN started_at TEXT;`);
   db.exec(`ALTER TABLE turns ADD COLUMN ended_at TEXT;`);
   db.exec(`ALTER TABLE message ADD COLUMN provider_usage TEXT;`);
+}
+
+// v11→v12: turn parts. Host-supplied step index on messages (F2) — nullable,
+// no backfill: NULL means the host never reported a step edge, and a turn with
+// any NULL step index is never split — and the per-thread parts-activated
+// fact on thread_metadata (AC-7.3 exclusivity). Guarded so a crash-window
+// reopen or a simulated-old file that already carries a column migrates
+// cleanly.
+function migrateTurnParts(db: DatabaseSync): void {
+  const columns = (table: string): string[] =>
+    (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
+  if (!columns("message").includes("step_index")) db.exec(`ALTER TABLE message ADD COLUMN step_index INTEGER;`);
+  // The durable per-thread mechanism fact: set once, in the transaction that
+  // installs the first view serving parts; never cleared (AC-7.3).
+  if (!columns("thread_metadata").includes("parts_activated_at")) {
+    db.exec(`ALTER TABLE thread_metadata ADD COLUMN parts_activated_at TEXT;`);
+  }
 }
 
 export function migrateThreadSchema(db: DatabaseSync): void {
@@ -490,6 +540,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_10) {
       migrateCompactContinuationV11(db);
       version = THREAD_SCHEMA_VERSION_11;
+    }
+    if (version === THREAD_SCHEMA_VERSION_11) {
+      migrateTurnParts(db);
+      version = THREAD_SCHEMA_VERSION_12;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);

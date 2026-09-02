@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { hasForcedBoundaryHistory } from "../compact-continuation/internal/store.js";
 import * as messagesDomain from "../messages/index.js";
 import type {
   Band,
@@ -28,6 +29,7 @@ import {
   type DbReadTransaction,
   type DbWriteTransaction,
   type ErrorResult,
+  type HostMetadata,
   type OpResult,
   resolveInstanceViewConfig,
   storageFailure,
@@ -39,6 +41,7 @@ import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
 import { readBoundaryPosition, visibilityZoneTokens } from "./internal/boundary.js";
 import { compactStopped, computeArrangement } from "./internal/compact-compute.js";
+import { readHostMetadata } from "./internal/host-metadata.js";
 import { type MaterializeInput, writePiSessionFile } from "./internal/materialize.js";
 import { profileViolation, resolveViewConfig } from "./internal/profiles.js";
 import { type ProtectedBoundaryPreview, previewProtectedVisibilityBoundary } from "./internal/protected-boundary.js";
@@ -234,6 +237,97 @@ export async function describe(ref: ThreadRef): Promise<OpResult<StoredView | nu
     return await createDbReadTransaction(ref, (transaction) => readStoredView(transaction.db));
   } catch (cause) {
     return storageFailure(`view describe failed: ${detail(cause)}`);
+  }
+}
+
+/**
+ * The host's seam assertion (turn parts, AC-7.4): the four facts the
+ * forced-boundary runtime already takes. Core cannot observe capture in
+ * flight; asserting these truthfully is the host's obligation.
+ */
+export type MidTurnSeamAssertion = {
+  modelResponseComplete: boolean;
+  requestedToolsSettled: boolean;
+  captureFlushed: boolean;
+  beforeNextProviderRequest: boolean;
+};
+
+export type MidTurnCompactOptions = {
+  seam: MidTurnSeamAssertion;
+  profile?: string;
+  params?: ViewCompactParams;
+  signal?: { aborted: boolean };
+  createdAt?: string;
+};
+
+function seamSettled(seam: MidTurnSeamAssertion | undefined): seam is MidTurnSeamAssertion {
+  return (
+    seam !== undefined &&
+    seam.modelResponseComplete === true &&
+    seam.requestedToolsSettled === true &&
+    seam.captureFlushed === true &&
+    seam.beforeNextProviderRequest === true
+  );
+}
+
+/**
+ * Mid-turn compact (turn parts, Flow 7): the ordinary prepare → install
+ * compact, invoked by a host between steps. Not a third algorithm state — the
+ * bounded plan splits and settles whenever it runs; this entry point adds
+ * only the two typed refusals the host contract needs before any assembly:
+ * an unsettled seam (AC-7.4) and a thread on the forced-boundary path
+ * (AC-7.3). Refusals touch nothing.
+ */
+export async function midTurnCompact(ref: ThreadRef, opts: MidTurnCompactOptions): Promise<OpResult<CompactReceipt>> {
+  if (!seamSettled(opts.seam)) {
+    return {
+      ok: false,
+      error: {
+        errorClass: "caller_error",
+        code: "unsettled_capture_seam",
+        reason:
+          "mid-turn compact requires a settled capture seam: the host must assert modelResponseComplete, requestedToolsSettled, captureFlushed, and beforeNextProviderRequest",
+      },
+    };
+  }
+  const resolved = await resolveThreadRef(ref);
+  if (!resolved.ok) return resolved;
+  if (!existsSync(resolved.value.filePath)) return threadNotFound(resolved.value.filePath);
+  let forced: OpResult<boolean>;
+  try {
+    forced = await createDbReadTransaction(ref, (transaction) => hasForcedBoundaryHistory(transaction.db));
+  } catch (cause) {
+    return storageFailure(`view midTurnCompact failed: ${detail(cause)}`);
+  }
+  if (!forced.ok) return forced;
+  if (forced.value) {
+    return {
+      ok: false,
+      error: {
+        errorClass: "caller_error",
+        code: "forced_boundary_thread",
+        reason: "mid-turn compact refused: this thread is on the forced-boundary path and is never served parts",
+      },
+    };
+  }
+  const prepared = await prepareCompact(ref, {
+    ...(opts.profile !== undefined ? { profile: opts.profile } : {}),
+    ...(opts.params !== undefined ? { params: opts.params } : {}),
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+  });
+  if (!prepared.ok) return prepared;
+  return installPreparedCompact(ref, prepared.value, {
+    ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    ...(opts.createdAt !== undefined ? { createdAt: opts.createdAt } : {}),
+  });
+}
+
+// Host metadata: the pressure-decision reads (AC-7.1). Read-only.
+export async function hostMetadata(ref: ThreadRef): Promise<OpResult<HostMetadata>> {
+  try {
+    return await createDbReadTransaction(ref, (transaction) => readHostMetadata(transaction.db));
+  } catch (cause) {
+    return storageFailure(`host metadata read failed: ${detail(cause)}`);
   }
 }
 
@@ -455,6 +549,7 @@ function resolveCompactCall(opts: {
     name: base.name,
     lowerBound: opts.params?.lowerBound ?? base.lowerBound,
     percentages: { ...base.percentages, ...opts.params?.percentages },
+    newestClosedProtection: opts.params?.newestClosedProtection ?? base.newestClosedProtection,
   };
   const violation = profileViolation(merged);
   if (violation !== null) return callerError("invalid_view_config", violation);
@@ -518,6 +613,7 @@ function selectionWouldWriteSnapshot(
     subjectId: entry.subjectId,
     derivationUsed: entry.derivationUsed,
     degraded: entry.degraded,
+    ...(entry.part !== undefined ? { part: entry.part } : {}),
   }));
   const gaps = gapNotes(selection);
   return (
@@ -665,6 +761,7 @@ export function readPreparedSourceState(
   };
   const exclude = opts.excludeMessageIds ?? new Set<string>();
   const selectedTurns = [...(opts.selectedSourceTurnIds ?? [])].sort();
+  const selectedTurnBatchSize = 400;
 
   const derivationRows = db
     .prepare(
@@ -700,42 +797,69 @@ export function readPreparedSourceState(
   // Deterministic membership: post-compact tail ∪ selected band source turns.
   // When selected turns are empty (legacy callers), fall back to chunk members
   // so stored_member_concat still fingerprints.
-  const placeholders = selectedTurns.map(() => "?").join(", ");
-  const turnClause =
-    selectedTurns.length > 0 ? `m.turn_id IN (${placeholders})` : `m.turn_id IN (SELECT turn_id FROM chunk_member)`;
-  const bind = selectedTurns.length > 0 ? [compactPoint, ...selectedTurns] : [compactPoint];
-
-  const sourceMessages = db
-    .prepare(
-      `SELECT m.message_id, m.kind, m.source_event_order, m.turn_id, m.deleted_at, m.token_estimate
-       FROM message m
-       WHERE m.source_event_order > ?
-          OR ${turnClause}
-       ORDER BY m.source_event_order, m.message_id`,
-    )
-    .all(...bind) as unknown as Array<{
+  type SourceMessageRow = {
     message_id: string;
     kind: string;
     source_event_order: number | bigint;
     turn_id: string;
     deleted_at: string | null;
     token_estimate: number | bigint;
-  }>;
-  const sourceBlocks = db
-    .prepare(
-      `SELECT mb.message_id, mb.block_index, mb.block_type, mb.content
-       FROM message_block mb
-       JOIN message m ON m.message_id = mb.message_id
-       WHERE m.source_event_order > ?
-          OR ${turnClause}
-       ORDER BY m.source_event_order, m.message_id, mb.block_index`,
-    )
-    .all(...bind) as unknown as Array<{
+  };
+  type SourceBlockRow = {
     message_id: string;
     block_index: number | bigint;
     block_type: string;
     content: string;
-  }>;
+  };
+  const messageRows = new Map<string, SourceMessageRow>();
+  const blockRows = new Map<string, SourceBlockRow>();
+  const collect = (where: string, bind: readonly (string | number)[]): void => {
+    const messages = db
+      .prepare(
+        `SELECT m.message_id, m.kind, m.source_event_order, m.turn_id, m.deleted_at, m.token_estimate
+         FROM message m
+         WHERE ${where}`,
+      )
+      .all(...bind) as unknown as SourceMessageRow[];
+    for (const row of messages) messageRows.set(row.message_id, row);
+    const blocks = db
+      .prepare(
+        `SELECT mb.message_id, mb.block_index, mb.block_type, mb.content
+         FROM message_block mb
+         JOIN message m ON m.message_id = mb.message_id
+         WHERE ${where}`,
+      )
+      .all(...bind) as unknown as SourceBlockRow[];
+    for (const row of blocks) blockRows.set(`${row.message_id}\u0000${Number(row.block_index)}`, row);
+  };
+
+  if (selectedTurns.length === 0) {
+    collect(
+      `m.source_event_order > ? OR m.turn_id IN (SELECT turn_id FROM chunk_member)`,
+      [compactPoint],
+    );
+  } else {
+    collect(`m.source_event_order > ?`, [compactPoint]);
+    for (let offset = 0; offset < selectedTurns.length; offset += selectedTurnBatchSize) {
+      const batch = selectedTurns.slice(offset, offset + selectedTurnBatchSize);
+      collect(`m.turn_id IN (${batch.map(() => "?").join(", ")})`, batch);
+    }
+  }
+
+  // Batching changes statement order, never digest order. Rebuild the exact
+  // canonical order the former single UNION query produced before hashing.
+  const sqliteBinaryCompare = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
+  const sourceMessages = [...messageRows.values()].sort(
+    (a, b) =>
+      Number(a.source_event_order) - Number(b.source_event_order) || sqliteBinaryCompare(a.message_id, b.message_id),
+  );
+  const messageOrder = new Map(sourceMessages.map((row) => [row.message_id, Number(row.source_event_order)]));
+  const sourceBlocks = [...blockRows.values()].sort(
+    (a, b) =>
+      (messageOrder.get(a.message_id) ?? 0) - (messageOrder.get(b.message_id) ?? 0) ||
+      sqliteBinaryCompare(a.message_id, b.message_id) ||
+      Number(a.block_index) - Number(b.block_index),
+  );
   const filteredMessages = sourceMessages.filter((m) => !exclude.has(m.message_id));
   const filteredBlocks = sourceBlocks.filter((b) => !exclude.has(b.message_id));
   const tailDigest = sha256Hex(
@@ -778,6 +902,20 @@ export function readPreparedSourceState(
   const boundary = db.prepare(`SELECT position FROM view_boundary WHERE thread_singleton = 1`).get() as
     | { position: number | bigint }
     | undefined;
+  // Open-turn step edges are structure: they decide where the walk may split.
+  // Closed turns are already fingerprinted by their close; only the open turn's
+  // step indices can still move a split point between prepare and install.
+  const openTurnIds = turnRows.filter((t) => t.status === "open").map((t) => t.turn_id);
+  const stepRows =
+    openTurnIds.length === 0
+      ? []
+      : (db
+          .prepare(
+            `SELECT message_id, step_index FROM message
+             WHERE deleted_at IS NULL AND turn_id IN (${openTurnIds.map(() => "?").join(", ")})
+             ORDER BY source_event_order`,
+          )
+          .all(...openTurnIds) as unknown as Array<{ message_id: string; step_index: number | bigint | null }>);
   const structureDigest = sha256Hex(
     JSON.stringify({
       turns: turnRows.map((t) => ({
@@ -790,6 +928,7 @@ export function readPreparedSourceState(
       chunks: chunkRows.map((c) => ({ id: c.chunk_id, o: Number(c.chunk_order), s: c.status })),
       members: memberRows.map((m) => ({ c: m.chunk_id, t: m.turn_id, i: Number(m.member_idx) })),
       boundary: boundary === undefined ? 0 : Number(boundary.position),
+      steps: stepRows.map((r) => [r.message_id, r.step_index === null ? null : Number(r.step_index)]),
     }),
   );
 
@@ -1102,6 +1241,7 @@ export async function installPreparedCompact(
           configJson: JSON.stringify({
             lowerBound: installed.merged.lowerBound,
             percentages: installed.merged.percentages,
+            newestClosedProtection: installed.merged.newestClosedProtection,
           }),
           arrangementJson: JSON.stringify(
             installed.selection.entries.map((entry) => ({
@@ -1110,6 +1250,7 @@ export async function installPreparedCompact(
               subjectId: entry.subjectId,
               derivationUsed: entry.derivationUsed,
               degraded: entry.degraded,
+              ...(entry.part !== undefined ? { part: entry.part } : {}),
             })),
           ),
           gapsJson: JSON.stringify(installed.gaps),
@@ -1118,6 +1259,7 @@ export async function installPreparedCompact(
             derivationCounts: installed.derivationCounts,
           }),
           bands: installed.bands,
+          servesParts: installed.selection.entries.some((entry) => entry.part !== undefined),
           ...(proposedBoundary !== undefined ? { visibilityBoundary: proposedBoundary } : {}),
         };
       });
@@ -1144,7 +1286,11 @@ export async function installPreparedCompact(
       value: {
         viewId: installed.viewId,
         profile: installed.profileName,
-        config: { ...installed.merged.percentages, lowerBound: installed.merged.lowerBound },
+        config: {
+          ...installed.merged.percentages,
+          lowerBound: installed.merged.lowerBound,
+          newestClosedProtection: installed.merged.newestClosedProtection,
+        },
         bands: bandReport,
         tailTokens,
         totalTokens: bandReport.brief.tokens + bandReport.detailed.tokens + bandReport.smooth.tokens + tailTokens,
@@ -1156,6 +1302,12 @@ export async function installPreparedCompact(
         skippedRecords: installed.skippedRecords,
         renderedBands,
         firstKeptMessageId: installed.firstKeptMessageId,
+        ...(installed.selection.parts !== undefined ? { parts: installed.selection.parts } : {}),
+        ...(installed.selection.splitPoint !== undefined ? { splitPoint: installed.selection.splitPoint } : {}),
+        ...(installed.selection.settled !== undefined ? { settled: installed.selection.settled } : {}),
+        ...(installed.selection.protectedTurn !== undefined
+          ? { protectedTurn: installed.selection.protectedTurn }
+          : {}),
       },
     };
   } catch (cause) {

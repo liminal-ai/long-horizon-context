@@ -13,8 +13,8 @@ use crate::shared_tech::derivation::Derivation;
 use crate::shared_tech::js_json::js_json_stringify;
 use crate::shared_tech::storage::{Db, SqlParam};
 
-const SQL_INSERT_MESSAGE: &str = r#"INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, provider_usage)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)"#;
+const SQL_INSERT_MESSAGE: &str = r#"INSERT INTO message (message_id, source_event_order, kind, token_estimate, actor, harness, turn_id, provider_usage, step_index)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"#;
 
 const SQL_INSERT_MESSAGE_BLOCK: &str = r#"INSERT INTO message_block (message_id, block_index, block_type, content)
      VALUES (?, ?, ?, ?)"#;
@@ -56,7 +56,7 @@ const SQL_UPDATE_TOKEN_ESTIMATE: &str =
 /// Predicates are appended in order: deleted → from → to (limit is a trailing
 /// clause, not a WHERE predicate; its `?` is still pushed onto params).
 const SQL_READ_MESSAGES_SELECT: &str = r#"SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.step_index, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order"#;
 
 /// Default live-row filter (`includeDeleted !== true`).
@@ -80,7 +80,7 @@ const BLOCK_READ_BATCH_SIZE: usize = 400;
 
 #[allow(dead_code)]
 const SQL_READ_MESSAGE_BY_ID: &str = r#"SELECT m.message_id, m.source_event_order, m.kind, m.token_estimate, m.actor, m.harness,
-              m.turn_id, m.provider_usage, m.deleted_at, e.recorded_at
+              m.turn_id, m.provider_usage, m.step_index, m.deleted_at, e.recorded_at
        FROM message m JOIN event e ON e.event_order = m.source_event_order
        WHERE m.message_id = ?"#;
 
@@ -102,6 +102,8 @@ pub struct MessageRow {
     /// Verbatim provider usage JSON for assistant_text events that carried it
     /// (schema v5). Absent / NULL for every other kind and for pre-v5 rows.
     pub provider_usage: Option<Map<String, Value>>,
+    /// Host-supplied step index (schema v12). Absent / NULL when not reported.
+    pub step_index: Option<i64>,
     pub blocks: Vec<Block>,
 }
 
@@ -121,6 +123,10 @@ pub fn insert_message(db: &Db, row: &MessageRow) {
         SqlParam::from(row.harness.as_str()),
         SqlParam::from(row.turn_id.as_str()),
         provider_usage_param,
+        match row.step_index {
+            Some(index) => SqlParam::from(index),
+            None => SqlParam::Null,
+        },
     ]);
 
     let insert_block = db.prepare(SQL_INSERT_MESSAGE_BLOCK);
@@ -246,6 +252,7 @@ struct RawMessageRow {
     harness: String,
     turn_id: String,
     provider_usage: Option<String>,
+    step_index: Option<i64>,
     deleted_at: Option<String>,
     /// The source event's recorded_at, joined from the durable event row.
     recorded_at: String,
@@ -313,6 +320,17 @@ fn map_optional_str(row: &Map<String, Value>, key: &str) -> Option<String> {
     }
 }
 
+fn map_optional_i64(row: &Map<String, Value>, key: &str) -> Option<i64> {
+    match row.get(key) {
+        None | Some(Value::Null) => None,
+        Some(Value::Number(n)) => Some(
+            n.as_i64()
+                .unwrap_or_else(|| panic!("column {key} not integer")),
+        ),
+        Some(other) => panic!("column {key} not integer: {other}"),
+    }
+}
+
 fn record_from_row(row: &RawMessageRow, blocks: Vec<Block>) -> MessageRecord {
     let mut record = MessageRecord {
         message_id: row.message_id.clone(),
@@ -325,6 +343,7 @@ fn record_from_row(row: &RawMessageRow, blocks: Vec<Block>) -> MessageRecord {
         recorded_at: row.recorded_at.clone(),
         turn_id: row.turn_id.clone(),
         provider_usage: None,
+        step_index: row.step_index,
         derivations: None,
         deleted: None,
     };
@@ -408,6 +427,7 @@ pub fn read_messages(db: &Db, opts: &MessageReadOptions) -> Vec<MessageRecord> {
             harness: map_required_str(row, "harness"),
             turn_id: map_required_str(row, "turn_id"),
             provider_usage: map_optional_str(row, "provider_usage"),
+            step_index: map_optional_i64(row, "step_index"),
             deleted_at: map_optional_str(row, "deleted_at"),
             recorded_at: map_required_str(row, "recorded_at"),
         })
@@ -477,6 +497,8 @@ pub struct MessageRecordWithDeleted {
     pub turn_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub provider_usage: Option<Map<String, Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
     pub deleted: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub derivations: Option<Vec<Derivation>>,
@@ -495,6 +517,7 @@ pub fn read_message_by_id(db: &Db, message_id: &str) -> Option<MessageRecordWith
         harness: map_required_str(&row_map, "harness"),
         turn_id: map_required_str(&row_map, "turn_id"),
         provider_usage: map_optional_str(&row_map, "provider_usage"),
+        step_index: map_optional_i64(&row_map, "step_index"),
         deleted_at: map_optional_str(&row_map, "deleted_at"),
         recorded_at: map_required_str(&row_map, "recorded_at"),
     };
@@ -530,6 +553,7 @@ pub fn read_message_by_id(db: &Db, message_id: &str) -> Option<MessageRecordWith
         recorded_at: record.recorded_at,
         turn_id: record.turn_id,
         provider_usage: record.provider_usage,
+        step_index: record.step_index,
         deleted,
         derivations: record.derivations,
     })

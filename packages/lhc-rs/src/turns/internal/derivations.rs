@@ -24,6 +24,11 @@ const SQL_READ_TURN_SOURCE: &str = r#"SELECT status, deleted_at FROM turns WHERE
 const SQL_READ_MEMBER_MESSAGES: &str = r#"SELECT message_id, kind, token_estimate FROM message
        WHERE turn_id = ? AND deleted_at IS NULL ORDER BY source_event_order"#;
 
+/// TS window fragment appended to [`SQL_READ_MEMBER_MESSAGES`]'s predicate
+/// when a part's order range narrows the read.
+const SQL_READ_MEMBER_MESSAGES_WINDOW: &str = r#"SELECT message_id, kind, token_estimate FROM message
+       WHERE turn_id = ? AND deleted_at IS NULL AND source_event_order >= ? AND source_event_order <= ? ORDER BY source_event_order"#;
+
 #[allow(dead_code)]
 const SQL_READ_MESSAGE_BLOCKS: &str = r#"SELECT block_type, content FROM message_block
      WHERE message_id = ? ORDER BY block_index"#;
@@ -237,9 +242,28 @@ pub fn read_turn_source(db: &Db, turn_id: &str) -> Option<TurnSource> {
 }
 
 pub fn read_member_messages(db: &Db, turn_id: &str) -> Vec<ComposeMessage> {
-    let messages = db
-        .prepare(SQL_READ_MEMBER_MESSAGES)
-        .all(&[SqlParam::from(turn_id)]);
+    read_member_messages_in(db, turn_id, None)
+}
+
+/// Member messages in message order, blocks attached, deleted messages
+/// filtered. An optional order window `(from_order, to_order)` narrows the
+/// read to one contiguous span of the turn (a part's step range); the whole
+/// turn otherwise.
+pub fn read_member_messages_in(
+    db: &Db,
+    turn_id: &str,
+    range: Option<(i64, i64)>,
+) -> Vec<ComposeMessage> {
+    let messages = match range {
+        None => db
+            .prepare(SQL_READ_MEMBER_MESSAGES)
+            .all(&[SqlParam::from(turn_id)]),
+        Some((from_order, to_order)) => db.prepare(SQL_READ_MEMBER_MESSAGES_WINDOW).all(&[
+            SqlParam::from(turn_id),
+            SqlParam::from(from_order),
+            SqlParam::from(to_order),
+        ]),
+    };
     let block_stmt = db.prepare(SQL_READ_MESSAGE_BLOCKS);
     messages
         .into_iter()

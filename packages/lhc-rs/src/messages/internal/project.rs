@@ -23,6 +23,11 @@ pub fn project_event(event: &RecordedEvent) -> Option<ProjectedMessage> {
         EventRecord::UserPrompt { payload, .. } | EventRecord::RuntimeNote { payload, .. } => {
             let mut content = Map::new();
             content.insert("text".into(), json!(payload.text.clone()));
+            // The steer assertion rides the block so the record says why this
+            // prompt sits mid-turn; text is what every reader consumes.
+            if payload.steer == Some(true) {
+                content.insert("steer".into(), json!(true));
+            }
             Some(ProjectedMessage {
                 blocks: vec![Block {
                     block_type: BlockType::Text,

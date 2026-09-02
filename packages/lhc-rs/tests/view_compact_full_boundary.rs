@@ -13,15 +13,19 @@ use indexmap::IndexMap;
 use lhc::create_deterministic_inference_callbacks;
 use lhc::shared_tech::derivation::{SdkConfig, SdkMode};
 use lhc::shared_tech::errors::OpResult;
+use lhc::shared_tech::persist::DbReadTransaction;
+use lhc::shared_tech::storage::SqlParam;
 use lhc::shared_tech::view::{
     PartialViewProfilePercentages, PreviewCompactOutcome, PreviewCompactResult, ViewCompactParams,
     ViewProfilePercentages,
 };
 use lhc::thread_view::CompactOpts;
+use lhc::thread_view::internal::bounded_source::create_bounded_selection;
 use lhc::thread_view::internal::select::{
-    SelectionConfig, SelectionInputs, SelectionMessage, SelectionResult, SelectionTurn,
-    SelectionTurnStatus, select_arrangement,
+    EagerSelectionSource, SelectionConfig, SelectionInputs, SelectionMessage, SelectionTurn,
+    SelectionTurnStatus, read_selection_inputs, select_arrangement,
 };
+use lhc::thread_view::internal::walk::walk_arrangement;
 use lhc::threads::{NewThreadInput, ThreadRef};
 use lhc::{Lhc, init_lhc};
 
@@ -44,6 +48,7 @@ fn selection_inputs(turns: Vec<SelectionTurn>, messages: Vec<SelectionMessage>) 
         max_event_order,
         derivation_counts: IndexMap::new(),
         empty_chunk_ids: Vec::new(),
+        skipped_records: Vec::new(),
     }
 }
 
@@ -108,21 +113,27 @@ fn mid_thread_messages() -> Vec<SelectionMessage> {
 }
 
 fn compact_point_at(full_budget: i64) -> i64 {
-    let SelectionResult { compact_point, .. } = select_arrangement(
-        &selection_inputs(mid_thread_turns(), mid_thread_messages()),
-        &SelectionConfig {
-            lower_bound: full_budget as f64,
-            percentages: ViewProfilePercentages {
-                full: 100.0,
-                smooth: 0.0,
-                detailed: 0.0,
-                brief: 0.0,
-            },
-            compact_point_upper_bound: None,
+    let inputs = selection_inputs(mid_thread_turns(), mid_thread_messages());
+    let config = SelectionConfig {
+        lower_bound: full_budget as f64,
+        percentages: ViewProfilePercentages {
+            full: 100.0,
+            smooth: 0.0,
+            detailed: 0.0,
+            brief: 0.0,
         },
-    )
-    .expect("select_arrangement");
-    compact_point
+        newest_closed_protection: None,
+        compact_point_upper_bound: None,
+    };
+    let legacy_point = select_arrangement(&inputs, &config)
+        .expect("select_arrangement")
+        .compact_point;
+    let mut shared_source = EagerSelectionSource::new(inputs);
+    let shared_point = walk_arrangement(&mut shared_source, &config)
+        .expect("shared walk")
+        .compact_point;
+    assert_eq!(shared_point, legacy_point);
+    shared_point
 }
 
 async fn new_sdk(store: &TempStore) -> (Lhc, String) {
@@ -152,6 +163,88 @@ async fn new_sdk(store: &TempStore) -> (Lhc, String) {
         OpResult::Err { error } => panic!("{}", error.reason),
     }
     (sdk, file_path)
+}
+
+async fn exact_fixture_points(tokens_by_turn: &[(i64, i64)]) -> (i64, i64) {
+    let store = temp_store();
+    let (sdk, file_path) = new_sdk(&store).await;
+    for turn in 1..=tokens_by_turn.len() {
+        let sent = sdk
+            .intake_stream
+            .message_events(
+                ThreadRef::file_path(&file_path),
+                &[
+                    valid_event(
+                        kind::USER_PROMPT,
+                        UserPromptOverrides {
+                            payload: Some(UserPromptPayload {
+                                text: format!("turn {turn} prompt"),
+                            }),
+                            ..Default::default()
+                        },
+                    ),
+                    valid_event(
+                        kind::ASSISTANT_TEXT,
+                        AssistantTextOverrides {
+                            payload: Some(AssistantTextPayload::new(format!("turn {turn} answer"))),
+                            ..Default::default()
+                        },
+                    ),
+                    valid_event(kind::TURN_END, TurnEndOverrides::default()),
+                ],
+            )
+            .await;
+        assert!(sent.is_ok());
+    }
+    let db = open_raw(&file_path);
+    let rows = db
+        .prepare("SELECT message_id, turn_id FROM message ORDER BY source_event_order")
+        .all(&[]);
+    for (index, (older, newer)) in tokens_by_turn.iter().enumerate() {
+        let turn_id = format!("t{}", index + 1);
+        let turn_rows: Vec<&serde_json::Map<String, serde_json::Value>> = rows
+            .iter()
+            .filter(|row| row.get("turn_id").and_then(|value| value.as_str()) == Some(&turn_id))
+            .collect();
+        assert_eq!(turn_rows.len(), 2);
+        for (row, tokens) in turn_rows.into_iter().zip([older, newer]) {
+            let message_id = row
+                .get("message_id")
+                .and_then(|value| value.as_str())
+                .expect("message id");
+            db.prepare("UPDATE message SET token_estimate = ? WHERE message_id = ?")
+                .run(&[SqlParam::from(*tokens), SqlParam::from(message_id)]);
+        }
+    }
+    let config = SelectionConfig {
+        lower_bound: 1_000.0,
+        percentages: ViewProfilePercentages {
+            full: 10.0,
+            smooth: 30.0,
+            detailed: 30.0,
+            brief: 30.0,
+        },
+        newest_closed_protection: None,
+        compact_point_upper_bound: None,
+    };
+    let eager_inputs = read_selection_inputs(&db).expect("eager inputs");
+    let mut eager = EagerSelectionSource::new(eager_inputs);
+    let eager_point = walk_arrangement(&mut eager, &config)
+        .expect("eager shared walk")
+        .compact_point;
+    let transaction = DbReadTransaction {
+        db: &db,
+        thread_id: "exact-boundary".into(),
+        file_path: file_path.clone(),
+    };
+    let mut bounded = create_bounded_selection(&db, &transaction, true, None);
+    let bounded_point = walk_arrangement(&mut bounded.source, &config)
+        .expect("bounded shared walk")
+        .compact_point;
+    drop(bounded);
+    drop(transaction);
+    db.close();
+    (bounded_point, eager_point)
 }
 
 fn ok_preview(result: OpResult<PreviewCompactOutcome>) -> PreviewCompactResult {
@@ -238,6 +331,7 @@ async fn oversized_final_turn(remove_open_turn: bool) -> PreviewCompactResult {
                             detailed: Some(25.0),
                             brief: Some(25.0),
                         }),
+                        newest_closed_protection: None,
                     }),
                     signal: None,
                     compact_point_upper_bound: None,
@@ -286,6 +380,7 @@ fn compact_point_upper_bound_keeps_compact_point_behind_a_later_event_order() {
                 detailed: 0.0,
                 brief: 0.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: Some(3),
         },
     )
@@ -307,6 +402,7 @@ fn compact_point_upper_bound_snaps_to_greatest_closed_turn_boundary() {
                 detailed: 0.0,
                 brief: 0.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: Some(5),
         },
     )
@@ -322,6 +418,86 @@ fn keeps_a_mid_thread_straddling_turn_on_an_exact_50_50_split() {
 #[test]
 fn keeps_an_exactly_covered_closed_turn_in_full() {
     assert_eq!(compact_point_at(120), 3);
+}
+
+#[tokio::test]
+async fn real_bounded_and_eager_sources_pin_exact_crossing_and_half_turn_ties() {
+    let crossing = exact_fixture_points(&[(10, 10), (10, 10), (30, 20), (20, 20), (20, 20)]).await;
+    assert_eq!(crossing, (9, 9));
+
+    let tie = exact_fixture_points(&[(10, 10), (10, 10), (15, 25), (20, 20), (20, 20)]).await;
+    assert_eq!(tie, (6, 6));
+
+    let one_token_to_smooth =
+        exact_fixture_points(&[(10, 10), (10, 10), (16, 25), (20, 20), (20, 20)]).await;
+    assert_eq!(one_token_to_smooth, (9, 9));
+}
+
+#[test]
+fn includes_a_smooth_entry_that_exactly_fills_the_remaining_band_budget() {
+    let turns = vec![
+        SelectionTurn {
+            turn_id: "t1".into(),
+            turn_order: 1,
+            status: SelectionTurnStatus::Closed,
+            opened_at: 1,
+            closed_at: Some(2),
+        },
+        SelectionTurn {
+            turn_id: "t2".into(),
+            turn_order: 2,
+            status: SelectionTurnStatus::Closed,
+            opened_at: 3,
+            closed_at: Some(4),
+        },
+        SelectionTurn {
+            turn_id: "t3".into(),
+            turn_order: 3,
+            status: SelectionTurnStatus::Open,
+            opened_at: 5,
+            closed_at: None,
+        },
+    ];
+    let messages = vec![
+        sel_msg("first smooth entry", 1, 100, "t1", "assistant_text"),
+        sel_msg("second smooth entry", 3, 100, "t2", "assistant_text"),
+        sel_msg("open tail", 5, 1_000_000, "t3", "assistant_text"),
+    ];
+    let inputs = selection_inputs(turns, messages);
+    let probe_config = SelectionConfig {
+        lower_bound: 10_000.0,
+        percentages: ViewProfilePercentages {
+            full: 0.0,
+            smooth: 100.0,
+            detailed: 0.0,
+            brief: 0.0,
+        },
+        newest_closed_protection: None,
+        compact_point_upper_bound: None,
+    };
+    let mut probe_source = EagerSelectionSource::new(inputs.clone());
+    let probe = walk_arrangement(&mut probe_source, &probe_config).expect("probe walk");
+    let exact_tokens: i64 = probe
+        .entries
+        .iter()
+        .filter(|entry| entry.band.as_str() == "smooth")
+        .map(|entry| entry.tokens)
+        .sum();
+    assert!(exact_tokens > 0);
+    let exact_config = SelectionConfig {
+        lower_bound: exact_tokens as f64,
+        ..probe_config
+    };
+    let mut exact_source = EagerSelectionSource::new(inputs);
+    let exact = walk_arrangement(&mut exact_source, &exact_config).expect("exact walk");
+    assert_eq!(
+        exact
+            .entries
+            .iter()
+            .filter(|entry| entry.band.as_str() == "smooth")
+            .count(),
+        2
+    );
 }
 
 #[test]
@@ -367,6 +543,7 @@ fn starts_the_tail_at_an_open_turn_even_when_the_budget_crosses_inside_it() {
                 detailed: 0.0,
                 brief: 0.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: None,
         },
     )
@@ -420,6 +597,7 @@ fn evicts_a_straddling_turn_even_when_the_only_newer_message_is_a_runtime_note()
                 detailed: 0.0,
                 brief: 0.0,
             },
+            newest_closed_protection: None,
             compact_point_upper_bound: None,
         },
     )
@@ -506,6 +684,7 @@ async fn runtime_note_only_tail_leaves_first_kept_message_id_null_after_token_sp
                             detailed: Some(25.0),
                             brief: Some(25.0),
                         }),
+                        newest_closed_protection: None,
                     }),
                     signal: None,
                     compact_point_upper_bound: None,
@@ -589,6 +768,7 @@ async fn compact_continuation_marker_is_mappable_and_anchors_first_kept_message_
                             detailed: Some(25.0),
                             brief: Some(25.0),
                         }),
+                        newest_closed_protection: None,
                     }),
                     signal: None,
                     compact_point_upper_bound: None,

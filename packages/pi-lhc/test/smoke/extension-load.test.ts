@@ -74,13 +74,13 @@ function syntheticCtx(marker: string): ExtensionContext {
 }
 
 describe("extension load + hook rail", () => {
-  it("registers the connector hook rail — no context hook, history stays SessionManager-seeded", () => {
+  it("registers the connector hook rail — context hook included, history stays SessionManager-seeded", () => {
     const { pi, registered, commands, tools } = recordingPi();
     activate(pi);
 
     expect(new Set(registered)).toEqual(new Set(CONNECTOR_HOOKS));
     expect(registered).toHaveLength(CONNECTOR_HOOKS.length);
-    expect(registered).not.toContain("context");
+    expect(registered).toContain("context");
     expect(commands).toEqual(["lhc-rehydrate", "lhc-export-threadview", "lhc-export-pi-session", "lhc-tool-prune"]);
     expect(tools).toEqual(["get_turns", "get_messages"]);
   });

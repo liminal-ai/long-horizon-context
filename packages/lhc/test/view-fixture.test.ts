@@ -48,7 +48,7 @@ describe("FC-0.1: current view storage on a current thread file", () => {
     const db = openRaw(fixture.filePath);
     try {
       const version = db.prepare("PRAGMA user_version").get() as { user_version: number | bigint } | undefined;
-      expect(Number(version?.user_version ?? 0)).toBe(11);
+      expect(Number(version?.user_version ?? 0)).toBe(12);
 
       const tables = (
         db
@@ -154,11 +154,13 @@ describe("FC-0.2: view config validated at SDK construction, errors naming the v
       name: "coding",
       lowerBound: 64000,
       percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
+      newestClosedProtection: 0.6,
     });
     expect(sdk.config.view.profiles["continuation"]).toEqual({
       name: "continuation",
       lowerBound: 120000,
       percentages: { full: 30, smooth: 30, detailed: 20, brief: 20 },
+      newestClosedProtection: 0.6,
     });
     expect(sdk.config.view.profiles["conversation"]?.percentages).toEqual({
       full: 12,

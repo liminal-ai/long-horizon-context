@@ -116,6 +116,44 @@ export function readStoredView(db: DatabaseSync): StoredView | null {
   };
 }
 
+// Turn parts: the installed view's transition turn — the one turn served as
+// parts — with its part ranges in served order. Null when every served turn
+// is whole (or no view exists). The one reader of "has this thread served
+// parts" for the walk, the host metadata surface, and mechanism exclusivity.
+/** One part's step range, in host step indices. */
+export interface PartRange {
+  fromStep: number;
+  toStep: number;
+}
+
+export interface InstalledTransition {
+  turnId: string;
+  parts: PartRange[];
+}
+
+// The durable mechanism fact: when this thread first installed a view serving
+// parts, or null if it never has. Outlives the parts themselves.
+export function readPartsActivation(db: DatabaseSync): string | null {
+  const row = db.prepare(`SELECT parts_activated_at FROM thread_metadata WHERE id = 1`).get() as
+    | { parts_activated_at: string | null }
+    | undefined;
+  return row?.parts_activated_at ?? null;
+}
+
+export function readInstalledTransition(db: DatabaseSync): InstalledTransition | null {
+  const stored = readStoredView(db);
+  if (stored === null) return null;
+  const partEntries = stored.arrangement.filter((entry) => entry.subjectKind === "turn" && entry.part !== undefined);
+  const first = partEntries[0];
+  if (first === undefined) return null;
+  return {
+    turnId: first.subjectId,
+    parts: partEntries
+      .filter((entry) => entry.subjectId === first.subjectId)
+      .map((entry) => ({ fromStep: entry.part!.fromStep, toStep: entry.part!.toStep })),
+  };
+}
+
 // ── tail record reads ─────────────────────────────────────────────
 
 export interface TailMessageRow {
@@ -217,6 +255,13 @@ export interface ViewReplaceInput {
   sourceStateJson: string;
   bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
   /**
+   * True when the arrangement carries a part entry. The first such install
+   * records the thread's mechanism choice durably, in this same transaction:
+   * once a thread has served parts it never takes the forced-boundary path,
+   * whether or not the parts are still in the installed snapshot.
+   */
+  servesParts?: boolean;
+  /**
    * Visibility boundary written in the same transaction as the view replace.
    * Omitted: compactPoint (compact's boundary reset). A proposed advance is
    * resolved forward against durable state inside this transaction — never
@@ -265,6 +310,11 @@ export function replaceViewSnapshot(db: DatabaseSync, resolveInput: () => ViewRe
     );
     for (const band of input.bands) {
       insertBand.run(input.viewId, band.band, band.renderedText, band.tokenCount);
+    }
+    if (input.servesParts === true) {
+      db.prepare(`UPDATE thread_metadata SET parts_activated_at = COALESCE(parts_activated_at, ?) WHERE id = 1`).run(
+        input.createdAt,
+      );
     }
     const boundaryPosition =
       input.visibilityBoundary === undefined

@@ -182,11 +182,17 @@ pub struct BatchResult {
 
 // ── EventRecord payloads (kind-exact, closed) ──────────────────────
 
-/// TS `{ text: string }` — user_prompt / runtime_note.
+/// TS `{ text: string }` — user_prompt / runtime_note. `steer` is the
+/// user_prompt-only host assertion (turn parts, Flow 7) that this prompt
+/// arrived inside a run already in progress: it joins the open turn as a
+/// member and is never a turn boundary. Validation rejects it on
+/// runtime_note, so a stored note never carries it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextPayload {
     pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub steer: Option<bool>,
 }
 
 /// Host-captured model identity for resume (PI same-model signature keep).
@@ -216,6 +222,11 @@ pub struct AssistantThinkingPayload {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<String>,
+    /// Host-supplied step index (schema v12, turn parts F2): the zero-based
+    /// provider request/response cycle this message belongs to. Recorded
+    /// verbatim, never inferred; NULL in storage when omitted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
 }
 
 /// TS `AssistantTextPayload` — text, optional provider usage (schema v5), optional provenance.
@@ -233,6 +244,9 @@ pub struct AssistantTextPayload {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<String>,
+    /// Host-supplied step index (schema v12, turn parts F2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
 }
 
 /// TS `{ previousModel; newModel }`.
@@ -258,6 +272,9 @@ pub struct ToolCallPayload {
     pub tool_call_id: String,
     pub tool_name: String,
     pub arguments: Map<String, Value>,
+    /// Host-supplied step index (schema v12, turn parts F2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
 }
 
 /// TS `{ toolCallId; content; isError? }`.
@@ -268,6 +285,10 @@ pub struct ToolResultPayload {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+    /// Host-supplied step index (schema v12): a tool_result carries the same
+    /// index as its tool_call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_index: Option<i64>,
 }
 
 /// Typed compact-continuation marker payload (LIM-61 / LIM-63A).
@@ -677,4 +698,105 @@ pub async fn message_events(
 /// TS `listEvents`.
 pub async fn list_events(thread_ref: ThreadRef) -> OpResult<Vec<EventRecord>> {
     internal::pipeline::run_list_events(thread_ref).await
+}
+
+pub use internal::pipeline::{LEGACY_KEY_PAGE_LIMIT, LEGACY_KEY_TOTAL_LOOKUP_CAP};
+
+/// TS `ThreadFrontier` — constant-row durable position and identity for a
+/// thread: everything a normal consumer needs to place itself in the archive
+/// without reading any event payload.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThreadFrontier {
+    pub thread_id: String,
+    pub created_at: String,
+    pub last_event_order: i64,
+    pub last_recorded_at: Option<String>,
+    pub view_boundary_position: i64,
+}
+
+/// TS `EventKeyPrefixCount` — one entry per distinct requested prefix.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventKeyPrefixCount {
+    pub prefix: String,
+    pub exists: bool,
+    pub count: i64,
+}
+
+/// TS `EventKeyReference` — one matched key with its archive position.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventKeyReference {
+    pub idempotency_key: String,
+    pub event_order: i64,
+}
+
+/// TS `EventKeyPage` — one page of a legacy prefix walk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventKeyPage {
+    pub keys: Vec<EventKeyReference>,
+    /// Opaque continuation token; `None` when the walk stopped for good.
+    pub cursor: Option<String>,
+    /// True only when this page reached the end of the prefix.
+    pub complete: bool,
+    /// True when the total lookup cap stopped the walk short of the end.
+    pub cap_exhausted: bool,
+}
+
+/// TS `EventKeyPageQuery` — options for one page of a legacy prefix walk.
+///
+/// TS additionally rejects a non-integer `limit`; a Rust `i64` cannot hold one.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EventKeyPageQuery {
+    pub prefix: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cursor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub limit: Option<i64>,
+}
+
+/// TS `threadFrontier(threadRef)` — constant-row frontier. Never reads or
+/// parses event payloads.
+pub async fn thread_frontier(thread_ref: ThreadRef) -> OpResult<ThreadFrontier> {
+    internal::pipeline::run_thread_frontier(thread_ref).await
+}
+
+/// TS `eventKeyPrefixCounts(threadRef, prefixes)`.
+///
+/// Existence and count for a finite, caller-supplied set of idempotency-key
+/// prefixes, one indexed range query per distinct prefix. Results carry one
+/// entry per *distinct* prefix in first-occurrence order (duplicates collapse),
+/// so the result is O(input prefixes) rows. Overlapping prefixes are evaluated
+/// independently — a key under both is counted by both. An empty input list
+/// returns an empty result after the thread reference is resolved; an empty
+/// prefix is an `invalid_bounds` caller error, because the whole archive is
+/// `list_events`' explicit job.
+pub async fn event_key_prefix_counts(
+    thread_ref: ThreadRef,
+    prefixes: &[String],
+) -> OpResult<Vec<EventKeyPrefixCount>> {
+    internal::pipeline::run_event_key_prefix_counts(thread_ref, prefixes).await
+}
+
+/// TS `listEventKeysByPrefix(threadRef, options)`.
+///
+/// Cursor-paginated key listing under one prefix — the lazy compatibility path
+/// for legacy, ID-less occurrence resolution. Order is `idempotency_key`
+/// ascending (the unique index's own order); events are append-only and keys
+/// are immutable, so a page never repeats or reorders rows already returned.
+///
+/// `limit` defaults to and may not exceed [`LEGACY_KEY_PAGE_LIMIT`]; a larger
+/// limit is refused with `invalid_bounds` rather than clamped.
+/// [`LEGACY_KEY_TOTAL_LOOKUP_CAP`] bounds one walk: when it stops the walk
+/// before the prefix ends, the page reports `cap_exhausted: true` and
+/// `complete: false` with no cursor — a visible degraded result, never a
+/// partial answer presented as the whole truth.
+pub async fn list_event_keys_by_prefix(
+    thread_ref: ThreadRef,
+    options: EventKeyPageQuery,
+) -> OpResult<EventKeyPage> {
+    internal::pipeline::run_list_event_keys_by_prefix(thread_ref, options).await
 }

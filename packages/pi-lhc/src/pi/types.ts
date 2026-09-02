@@ -327,6 +327,14 @@ export interface SessionEntry {
 
 export interface SessionManager {
   getEntries(): SessionEntry[];
+  /** Entries on the current leaf path, root first. Optional in the mirror so
+   *  capture-only fixtures stay minimal; present on real PI. */
+  getBranch?(): SessionEntry[];
+  /** PI's compaction-aware context entry list — the entries whose messages,
+   *  in order, form the `context` event's message list (session-manager
+   *  buildContextEntries). Required for tail-cut alignment; absent → the
+   *  context handler serves raw. */
+  buildContextEntries?(): SessionEntry[];
 }
 
 export interface ExtensionContext {

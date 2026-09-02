@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import type { EventRecord, TurnEndPayload } from "../intake-stream/index.js";
+import type { EventRecord, TurnEndPayload, UserPromptPayload } from "../intake-stream/index.js";
 import type { Derivation, DerivationReportEntry, ResolvedSdkConfig } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
@@ -16,9 +16,18 @@ import { enqueue, type WorkItemRecord } from "../shared-tech/work-queue/index.js
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from "./internal/chunk-recovery.js";
 import { type ChunkStructureRow, dropEmptyReadableChunks, readChunkStructure } from "./internal/chunks.js";
-import { readChunkRows, readOwnedDerivations, reportTurnDerivations } from "./internal/derivations.js";
+import { composeRenderingInput, composeStructuredTurnText } from "./internal/compose.js";
+
+import {
+  readChunkRows,
+  readMemberMessages,
+  readMessageDerivationRows,
+  readOwnedDerivations,
+  reportTurnDerivations,
+} from "./internal/derivations.js";
 import { deriveTurnOwnedInOpenDb } from "./internal/derive.js";
 import { backfillRenderingLabelsInOpenDb, type RenderingLabelBackfillReceipt } from "./internal/label-backfill.js";
+import { readStepMembers, type StepEdges, stepEdges } from "./internal/steps.js";
 import {
   closeTurn,
   countTurnMembers,
@@ -135,7 +144,12 @@ export function create(transaction: DbWriteTransaction, recordedEvent: RecordedT
       queuedWork: [item],
     };
   }
-  if (recordedEvent.eventKind === "user_prompt" && hasMembers) {
+  // A steering prompt (host-asserted `steer: true`) arrived inside a run in
+  // progress: it is a member of the open turn, never a boundary (turn parts,
+  // Flow 7 — the task's turn identity survives a steer).
+  const steer =
+    recordedEvent.eventKind === "user_prompt" && (recordedEvent.payload as UserPromptPayload).steer === true;
+  if (recordedEvent.eventKind === "user_prompt" && hasMembers && !steer) {
     const item = closeTurnAndQueueWork(transaction, openTurnId, recordedEvent.eventOrder);
     const turnId = insertOpenTurn(transaction.db, nextTurnOrder(transaction.db), recordedEvent.eventOrder);
     return {
@@ -208,6 +222,74 @@ export function getChunkText(
 // itself. Turns carry the deleted flag and chunks carry raw (unvalidated)
 // membership so the consumer keeps ownership of the source-state corruption
 // policy; it never sees the live-only shapes listTurns/listChunks return.
+// The open turn's step facts for a host pressure decision (turn parts,
+// AC-7.1): identity, the sum of stored member estimates, and the step edges
+// read from host-supplied step indices. Deterministic, inference-free, no
+// writes. Null only when the record holds no open turn (a damaged thread; the
+// state machine otherwise keeps exactly one).
+/** Step edges of one turn from its host-supplied step indices (any status). */
+export function readTurnSteps(db: DatabaseSync, turnId: string): StepEdges {
+  return stepEdges(readStepMembers(db, turnId));
+}
+
+// Part construction (turn parts): the deterministic rendering of one
+// contiguous span of a turn, composed independently over exactly that span
+// with no message derivation as input — the raw prompt, recorded tool
+// arguments, deterministically truncated results. `trailer` is the seam line
+// the walk places inside the wrapper at the span's end.
+export function composeTurnPartText(
+  db: DatabaseSync,
+  turnId: string,
+  range: { fromOrder: number; toOrder: number },
+  trailer: string,
+): string {
+  const messages = readMemberMessages(db, turnId, range);
+  // A part is bounded-plan serving: composed under the cap, explicitly, and
+  // raw by design — its unsmoothed prompt and tool results are the contract,
+  // not a degraded state.
+  const { parts } = composeRenderingInput(messages, new Map(), { capForServing: true, rawByDesign: true });
+  return composeStructuredTurnText(parts, turnId, trailer);
+}
+
+export interface WholeTurnComposition {
+  text: string;
+  // Whether the serving cap elided any message's construction (F1).
+  capped: boolean;
+}
+
+// Whole-turn construction composed in-walk (turn parts: settle, protection,
+// and bounded serving of a ready stored rendering): the same composition the
+// queued turn_derivation handler stores as turn_rendering — live members with
+// their message derivations where ready — requested under the bounded-serving
+// cap, with no write, no floor write, no enqueue, no placement. `capped`
+// reports whether the cap changed anything. Null when the turn has no live
+// members.
+export function composeWholeTurnText(db: DatabaseSync, turnId: string): WholeTurnComposition | null {
+  const messages = readMemberMessages(db, turnId);
+  if (messages.length === 0) return null;
+  const derivations = readMessageDerivationRows(
+    db,
+    messages.map((message) => message.messageId),
+  );
+  const { parts, capped } = composeRenderingInput(messages, derivations, { capForServing: true });
+  return { text: composeStructuredTurnText(parts, turnId), capped };
+}
+
+export interface ActiveTurnSteps {
+  turnId: string;
+  estimatedTokens: number;
+  edges: StepEdges;
+}
+
+export function readActiveTurnSteps(db: DatabaseSync): ActiveTurnSteps | null {
+  const turnId = selectOpenTurnIds(db)[0];
+  if (turnId === undefined) return null;
+  const tokens = db
+    .prepare(`SELECT COALESCE(SUM(token_estimate), 0) AS total FROM message WHERE turn_id = ? AND deleted_at IS NULL`)
+    .get(turnId) as { total: number | bigint };
+  return { turnId, estimatedTokens: Number(tokens.total), edges: stepEdges(readStepMembers(db, turnId)) };
+}
+
 export interface TurnChunkStructure {
   turns: TurnStructureRow[];
   chunks: ChunkStructureRow[];

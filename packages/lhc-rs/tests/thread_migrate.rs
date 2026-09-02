@@ -14,6 +14,7 @@ use lhc::shared_tech::thread_migrate::{
     THREAD_SCHEMA_VERSION_1, THREAD_SCHEMA_VERSION_2, THREAD_SCHEMA_VERSION_4,
     THREAD_SCHEMA_VERSION_5, THREAD_SCHEMA_VERSION_6, THREAD_SCHEMA_VERSION_7,
     THREAD_SCHEMA_VERSION_8, THREAD_SCHEMA_VERSION_9, THREAD_SCHEMA_VERSION_10,
+    THREAD_SCHEMA_VERSION_11,
 };
 use lhc::threads::{NewThreadInput, open_thread_database};
 use lhc::{OpResult, ThreadRef, init_lhc, intake_stream, threads};
@@ -1171,4 +1172,112 @@ async fn migrates_a_genuine_v5_file_by_creating_the_retrieval_impression_table_a
     assert_eq!(ok_row.get("tokens").and_then(|v| v.as_i64()), Some(7));
 
     db.close();
+}
+
+// Schema v12 (turn parts): nullable `message.step_index` and
+// `thread_metadata.parts_activated_at`, no backfill. The step is guarded, so a
+// v11-marked file that already carries one column (crash-window reopen)
+// migrates cleanly too.
+fn columns(db: &Db, table: &str) -> Vec<String> {
+    db.prepare(&format!("PRAGMA table_info({table})"))
+        .all(&[])
+        .into_iter()
+        .filter_map(|row| row.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect()
+}
+
+fn simulate_v11_thread(file_path: &str, keep_step_index: bool) {
+    let db = open_raw(file_path);
+    if !keep_step_index {
+        db.exec("ALTER TABLE message DROP COLUMN step_index;");
+    }
+    db.exec("ALTER TABLE thread_metadata DROP COLUMN parts_activated_at;");
+    db.exec(&format!(
+        "PRAGMA user_version = {THREAD_SCHEMA_VERSION_11};"
+    ));
+    db.close();
+}
+
+#[tokio::test]
+async fn migrates_a_v11_file_adds_nullable_turn_parts_columns_backfills_nothing_and_is_guarded() {
+    let store = temp_store();
+    for keep_step_index in [false, true] {
+        let file_path = store.thread_path(None).to_string_lossy().into_owned();
+        let created = threads::new_thread(NewThreadInput {
+            file_path: file_path.clone(),
+            title: None,
+            cwd: None,
+            registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+        })
+        .await;
+        assert!(created.is_ok());
+        let intake = intake_stream::message_events(
+            ThreadRef::file_path(&file_path),
+            &[
+                valid_event(
+                    kind::USER_PROMPT,
+                    UserPromptOverrides {
+                        payload: Some(UserPromptPayload {
+                            text: "v11 migration prompt".into(),
+                        }),
+                        ..Default::default()
+                    },
+                ),
+                valid_event(
+                    kind::ASSISTANT_TEXT,
+                    AssistantTextOverrides {
+                        payload: Some(AssistantTextPayload::new("v11 migration answer")),
+                        ..Default::default()
+                    },
+                ),
+            ],
+        )
+        .await;
+        assert!(intake.is_ok());
+
+        simulate_v11_thread(&file_path, keep_step_index);
+        let pre = open_raw(&file_path);
+        assert_eq!(schema_version(&pre), THREAD_SCHEMA_VERSION_11);
+        assert_eq!(
+            columns(&pre, "message").iter().any(|c| c == "step_index"),
+            keep_step_index
+        );
+        assert!(
+            !columns(&pre, "thread_metadata")
+                .iter()
+                .any(|c| c == "parts_activated_at")
+        );
+        pre.close();
+
+        let opened = open_thread_database(&file_path);
+        let OpResult::Ok { value: db } = opened else {
+            panic!("production open must migrate a v11 file");
+        };
+        assert_eq!(schema_version(&db), CURRENT_THREAD_SCHEMA_VERSION);
+        assert_eq!(CURRENT_THREAD_SCHEMA_VERSION, 12);
+        assert!(columns(&db, "message").iter().any(|c| c == "step_index"));
+        assert!(
+            columns(&db, "thread_metadata")
+                .iter()
+                .any(|c| c == "parts_activated_at")
+        );
+        // No backfill: pre-migration rows keep NULL, the thread has never served parts.
+        let rows = db
+            .prepare("SELECT message_id, step_index FROM message ORDER BY source_event_order")
+            .all(&[]);
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            assert!(matches!(
+                row.get("step_index"),
+                None | Some(serde_json::Value::Null)
+            ));
+        }
+        let activated = db
+            .prepare("SELECT parts_activated_at FROM thread_metadata WHERE id = 1")
+            .get()
+            .and_then(|r| r.get("parts_activated_at").cloned());
+        assert!(matches!(activated, None | Some(serde_json::Value::Null)));
+        db.close();
+    }
+    store.cleanup();
 }

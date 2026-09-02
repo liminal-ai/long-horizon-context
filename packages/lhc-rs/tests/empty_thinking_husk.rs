@@ -523,6 +523,7 @@ async fn does_not_reintroduce_husks_through_compacted_smooth_band_rendering() {
                         detailed: Some(0.0),
                         brief: Some(0.0),
                     }),
+                    newest_closed_protection: None,
                 }),
                 signal: None,
                 compact_point_upper_bound: None,

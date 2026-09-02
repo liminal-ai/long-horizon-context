@@ -178,6 +178,7 @@ fn params_of(golden: &Golden) -> ViewCompactParams {
             detailed: Some(golden.params.percentages.detailed),
             brief: Some(golden.params.percentages.brief),
         }),
+        newest_closed_protection: None,
     }
 }
 

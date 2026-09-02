@@ -40,6 +40,7 @@ fn target_params() -> ViewCompactParams {
             detailed: Some(25.0),
             brief: Some(25.0),
         }),
+        newest_closed_protection: None,
     }
 }
 
@@ -52,6 +53,7 @@ fn gradient_params() -> ViewCompactParams {
             detailed: Some(10.0),
             brief: Some(49.0),
         }),
+        newest_closed_protection: None,
     }
 }
 
@@ -64,6 +66,7 @@ fn all_fits_params() -> ViewCompactParams {
             detailed: Some(25.0),
             brief: Some(25.0),
         }),
+        newest_closed_protection: None,
     }
 }
 
@@ -76,6 +79,7 @@ fn near_no_op_params() -> ViewCompactParams {
             detailed: Some(10.0),
             brief: Some(70.0),
         }),
+        newest_closed_protection: None,
     }
 }
 
@@ -548,6 +552,7 @@ async fn exactness_golden_corpus_sizes_agree_on_compact_point_no_op_banded_re_co
                     detailed: Some(25.0),
                     brief: Some(25.0),
                 }),
+                newest_closed_protection: None,
             },
         ),
         ("banded-target", target_params()),
