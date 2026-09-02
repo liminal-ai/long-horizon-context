@@ -25,7 +25,7 @@ afterAll(() => {
   for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-const manifest = { name: "cc-lhc", version: "0.3.0" };
+const manifest = { name: "cc-lhc", version: "0.4.0" };
 
 describe("verifyBuildIdentity binds a stamp to explicit accepted input", () => {
   it("passes only unavailable identity without an accepted SHA, and only the exact SHA with one", () => {

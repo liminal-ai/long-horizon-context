@@ -47,7 +47,7 @@ if (unknown.length > 0) fail(`unknown arguments: ${unknown.join(", ")}`);
 
 const outputRoot = resolve(argValue("--out") ?? join(repoRoot, "build", "cc-lhc-npm"));
 const packageName = argValue("--name") ?? "cc-lhc";
-const version = argValue("--version") ?? "0.3.0";
+const version = argValue("--version") ?? "0.4.0";
 const targetMode = argValue("--targets") ?? "all";
 const nativeBundleRoot = resolve(argValue("--native-bundle") ?? nativeRoot);
 // The candidate's accepted source identity, supplied explicitly; absent means
