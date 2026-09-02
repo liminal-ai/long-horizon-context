@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { formatDurableReceipt } from "../../src/commands/context-mutation.js";
 import { CONFIG_FALLBACK_NOTICE, formatConfigFallbackNotice } from "../../src/governor/config.js";
+import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import { emptyCaptureStats } from "../../src/stats.js";
@@ -162,6 +163,16 @@ async function waitFor(condition: () => boolean, label: string, capMs = 8_000): 
   }
 }
 
+/** Receipts whose automatic operation has finished (outcome attached). */
+function outcomeAttached(dbPath: string): number {
+  const receipts = openGovernorReceiptStore(dbPath);
+  try {
+    return receipts.listAll().filter((r) => r.handoffOutcome !== undefined && r.handoffOutcome !== null).length;
+  } finally {
+    receipts.close();
+  }
+}
+
 function policy(over: Record<string, unknown> = {}) {
   const base = {
     lowerBoundTokens: 1_000,
@@ -209,6 +220,7 @@ interface Rig {
   stdin: PassThrough;
   fire: (signals: LifecycleSignal[]) => void;
   compacts: () => number;
+  receiptDb: string;
   logs: string[];
   stderrText: () => string;
   end: () => Promise<number>;
@@ -272,6 +284,7 @@ async function startRig(options: {
     stdin: stdin as unknown as PassThrough,
     fire: (signals) => sink!(signals),
     compacts: () => compacts,
+    receiptDb: join(dir, "r.sqlite"),
     logs,
     stderrText: () => stderrChunks.join(""),
     end: async () => {
@@ -341,6 +354,13 @@ describe("a session over the trigger reaches compact", () => {
     const rig = await startRig({});
     rig.fire(overTrigger("req:a"));
     await waitFor(() => rig.compacts() >= 1, "first compact");
+    // The compact call is the start of the automatic operation, not its end:
+    // a seam fired while the operation still owns the flight is coalesced by
+    // design ("no second mutation"), not replayed. The claim under test is
+    // the governor's (no toll, no cooldown between seams), so wait for the
+    // first receipt's outcome — written synchronously just before the flight
+    // is released — before the next seam.
+    await waitFor(() => outcomeAttached(rig.receiptDb) >= 1, "first operation outcome");
     // Identical pressure, immediately after: nothing to earn, nothing to wait out.
     rig.fire(overTrigger("req:b"));
     await waitFor(() => rig.compacts() >= 2, "second compact at the same pressure");

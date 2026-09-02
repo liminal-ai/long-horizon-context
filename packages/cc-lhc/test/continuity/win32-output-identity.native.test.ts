@@ -7,7 +7,7 @@
 import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { loadIdentityAddon } from "cc-lhc-native";
+import { createExactFileIdentityReader, loadIdentityAddon } from "cc-lhc-native";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { type AdapterContext, FAMILY_ADAPTERS } from "../../src/continuity/adapters.js";
@@ -16,14 +16,18 @@ import { openContinuityStore } from "../../src/continuity/store.js";
 import { LAUNCH_IDS, LAUNCHES, tempDbPath } from "./helpers.js";
 
 const isWin32 = process.platform === "win32";
+// env: {} bypasses the suite-wide CC_LHC_IDENTITY_ADDON stub — this proof is
+// about the compiled artifact; the stub's Node-stat identity must never stand
+// in for the Win32 file object (that is exactly the proxy the contract bans).
 const addonLoads = ((): boolean => {
   try {
-    loadIdentityAddon();
+    loadIdentityAddon({ env: {} });
     return true;
   } catch {
     return false;
   }
 })();
+const readRealFileIdentity = createExactFileIdentityReader({ env: {} });
 
 it("win32 lane contract: the addon loads when required", () => {
   if (isWin32 && process.env.CC_LHC_NATIVE_REQUIRE_ADDON === "1") expect(addonLoads).toBe(true);
@@ -44,7 +48,11 @@ describe.skipIf(!isWin32 || !addonLoads)("win32: real Win32 file identity qualif
     const observer = createContinuityObserver({ store, threadId: "th_win" });
     for (const line of LAUNCHES.background_shell.lines({ tasksDir, sessionDir: join(tasksDir, "session") }))
       observer.observeLine(line);
-    const context: AdapterContext = { platform: "win32", sourceRolloutPath: undefined };
+    const context: AdapterContext = {
+      platform: "win32",
+      sourceRolloutPath: undefined,
+      readFileIdentity: readRealFileIdentity,
+    };
     const item = () => store.getItem("th_win", LAUNCH_IDS.background_shell)!;
 
     const first = FAMILY_ADAPTERS.background_shell.qualify(item(), context);

@@ -30,7 +30,17 @@ import { itemStatus, readItemOutput } from "../../src/continuity/manage.js";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
 import { type ContinuityStore, openContinuityStore } from "../../src/continuity/store.js";
 import { probeProcessIdentityNative } from "../../src/runtime/native-identity.js";
-import { allLaunchLines, LAUNCH_IDS, notification, qualifyAll, reapProcesses, toolResult, toolUse } from "./helpers.js";
+import {
+  allLaunchLines,
+  LAUNCH_IDS,
+  notification,
+  qualifyAll,
+  type ReapTarget,
+  reapProcesses,
+  toolResult,
+  toolUse,
+  trackForReap,
+} from "./helpers.js";
 
 const T = "th_cleanup";
 const OTHER = "th_other";
@@ -46,9 +56,27 @@ function alive(pid: number): boolean {
   }
 }
 
-const pids: number[] = [];
+/**
+ * The owned copy is created 0600. Windows has no POSIX permission bits: Node's
+ * chmod drives only the read-only attribute, a writable file reads back 0666,
+ * and per-user isolation comes from the home/temp directory ACL instead.
+ */
+const OWNED_COPY_MODE = process.platform === "win32" ? 0o666 : 0o600;
+
+const pids: ReapTarget[] = [];
 afterEach(async () => {
   await reapProcesses(pids);
+});
+
+it("reapProcesses fails closed on a target without exact identity: the live process is never signalled", async () => {
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], { stdio: "ignore" });
+  try {
+    const target: ReapTarget = { pid: child.pid!, identity: null };
+    await reapProcesses([target], 300);
+    expect(alive(child.pid!)).toBe(true); // waited out, not killed
+  } finally {
+    child.kill("SIGKILL");
+  }
 });
 
 /** A thread with five carried items: shell adopted (real 1 MiB+ output), Monitor relaunched by the parent (real live process + fence). */
@@ -71,7 +99,7 @@ function seed() {
     stdio: ["ignore", fenceFd, fenceFd],
   });
   child.unref();
-  pids.push(child.pid!);
+  trackForReap(pids, child.pid!);
   const probed = probeProcessIdentityNative(child.pid!);
   if (!probed.ok) throw new Error(`probe: ${probed.message}`);
 
@@ -196,7 +224,7 @@ describe("cleanup of finished carried work", () => {
       truncated: true,
     });
     expect(copy.path.startsWith(resultCopyDir(s.continuityDir))).toBe(true);
-    expect(statSync(copy.path).mode & 0o777).toBe(0o600);
+    expect(statSync(copy.path).mode & 0o777).toBe(OWNED_COPY_MODE);
     expect(readFileSync(copy.path).equals(s.source.subarray(0, RESULT_COPY_MAX_BYTES))).toBe(true);
     // The user's output is byte-exact and still the same file object.
     expect(readFileSync(s.shellOutput).equals(s.source)).toBe(true);
@@ -264,7 +292,7 @@ describe("cleanup of finished carried work", () => {
     const copy = report.copied[0]!;
     expect(copy).toMatchObject({ launchId: LAUNCH_IDS.monitor, bytes: "relaunched-once-XyZ".length, truncated: false });
     expect(readFileSync(copy.path, "utf8")).toBe("relaunched-once-XyZ");
-    expect(statSync(copy.path).mode & 0o777).toBe(0o600);
+    expect(statSync(copy.path).mode & 0o777).toBe(OWNED_COPY_MODE);
     expect(report.fencesRemoved).toEqual([s.fence]);
     expect(existsSync(s.fence)).toBe(false);
     expect(alive(s.pid)).toBe(true);

@@ -1249,7 +1249,8 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       const copy = (monitor.artifact as { path: string }).path;
       expect(copy.startsWith(join(rig.monitorOutputDir, "results"))).toBe(true);
       expect(readFileSync(copy, "utf8")).toBe("relaunched-once-XyZ");
-      expect(statSync(copy).mode & 0o777).toBe(0o600);
+      // 0600 where mode bits exist; on Windows Node reports 0666 for a writable file (ACLs carry the isolation).
+      expect(statSync(copy).mode & 0o777).toBe(process.platform === "win32" ? 0o666 : 0o600);
       // The parent's fence went only after the copy; the user's own output is byte-exact.
       expect(existsSync(fence)).toBe(false);
       expect(readFileSync(userOutput, "utf8")).toBe("user bytes 1\n");
@@ -1374,6 +1375,29 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
         operations: ["status", "output", "stop"],
         relaunch: { outputPath, output: { path: outputPath }, process: { pid: expect.any(Number) } },
       });
+    });
+    // With the fence gone, closed-generation readback stays read-only and
+    // truthful: no spawn, no terminal recorded, and the log says so.
+    withStore(rig.dbPath, (store) => {
+      const itemBefore = store.getItem(T, LAUNCH_IDS.monitor);
+      rmSync(outputPath);
+      const logs: string[] = [];
+      const readback = invokeCarryover(
+        store,
+        snapshotOf(store, 1),
+        { monitorOutputDir: rig.monitorOutputDir, cwd: rig.home, log: (line) => logs.push(line) },
+        Date.now(),
+      );
+      expect(readback.results.find((r) => r.launchId === LAUNCH_IDS.monitor)).toMatchObject({
+        kind: "failed",
+        reason: "monitor relaunch unavailable: generation_closed",
+      });
+      expect(store.getItem(T, LAUNCH_IDS.monitor)).toEqual(itemBefore);
+      const monitorLine = logs.find((l) => l.includes(LAUNCH_IDS.monitor));
+      expect(monitorLine).toContain("generation 1 already closed; nothing recorded");
+      expect(monitorLine).not.toContain("recorded as failed");
+      expect(existsSync(outputPath)).toBe(false); // nothing respawned the fence
+      writeFileSync(outputPath, "relaunched-once-XyZ");
     });
     expect(readFileSync(outputPath, "utf8")).toBe("relaunched-once-XyZ");
     // Same logical item in the manifest; the durable transition says restarted,

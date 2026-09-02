@@ -115,6 +115,11 @@ export function invokeCarryover(
   ports: CarryoverPorts,
   nowMs: number,
 ): CarryoverTransfer {
+  // A closed generation's transfer already happened: everything below reports
+  // read-only — no spawn, no fence creation, no terminal write — so no
+  // mechanism (a Monitor relaunch above all) can run a second time and the
+  // store's record cannot shift underneath the closure.
+  const generationClosed = store.getGeneration(snapshot.threadId, snapshot.generation)?.state === "closed";
   const statPath = ports.statPath ?? statPathReal;
   const spawnRelaunch = ports.spawnRelaunch ?? spawnRelaunchReal;
   const platform = ports.platform ?? process.platform;
@@ -141,6 +146,14 @@ export function invokeCarryover(
         result = { launchId: item.launchId, kind: "rearmed" };
         break;
       case "monitor_relaunch": {
+        if (generationClosed) {
+          const outputPath = relaunchOutputPath(ports.monitorOutputDir, item.launchId, snapshot.generation);
+          result =
+            statPath(outputPath).kind === "file"
+              ? { launchId: item.launchId, kind: "already_relaunched", outputPath }
+              : failed(item.launchId, "monitor relaunch unavailable: generation_closed");
+          break;
+        }
         const resolved = resolveMonitorLaunch(c.rolloutPath, c.toolUseId, ports.readRollout);
         if (!resolved.ok) {
           result = failed(item.launchId, `monitor relaunch unavailable: ${resolved.reason}`);
@@ -203,7 +216,7 @@ export function invokeCarryover(
         break;
       }
     }
-    if (result.kind === "failed") {
+    if (result.kind === "failed" && !generationClosed) {
       store.recordTerminal({
         threadId: snapshot.threadId,
         launchId: item.launchId,
@@ -213,7 +226,7 @@ export function invokeCarryover(
       });
     }
     results.push(result);
-    ports.log(describeInvocation(item.family, result, snapshot.generation));
+    ports.log(describeInvocation(item.family, result, snapshot.generation, generationClosed));
   }
   const closure = closeContinuitySnapshot(store, {
     threadId: snapshot.threadId,
@@ -224,7 +237,12 @@ export function invokeCarryover(
 }
 
 /** One log line per item: family, launch id, and outcome. Never the command. */
-function describeInvocation(family: string, result: InvocationResult, generation: number): string {
+function describeInvocation(
+  family: string,
+  result: InvocationResult,
+  generation: number,
+  generationClosed: boolean,
+): string {
   const head = `cc-lhc continuity: ${family} ${result.launchId}`;
   switch (result.kind) {
     case "adopted":
@@ -238,6 +256,10 @@ function describeInvocation(family: string, result: InvocationResult, generation
     case "already_relaunched":
       return `${head} already restarted for generation ${generation}; not repeated`;
     case "failed":
-      return `${head} not carried: ${result.reason} (recorded as failed)`;
+      // A closed generation's readback mutates nothing: no terminal was
+      // recorded on this call, so the log must not claim one was.
+      return generationClosed
+        ? `${head} not carried: ${result.reason} (generation ${generation} already closed; nothing recorded)`
+        : `${head} not carried: ${result.reason} (recorded as failed)`;
   }
 }

@@ -8,6 +8,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { loadIdentityAddon } from "cc-lhc-native";
 
 import type { ContinuityStore, QualifiedCarryMode, VerifiedIdentity } from "../../src/continuity/store.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
@@ -214,12 +215,56 @@ export const LAUNCH_IDS = {
   scheduled_wakeup: "scheduled_wakeup:scheduled_wakeup:toolu_wake",
 } as const;
 
+/** A test-owned pid plus its exact identity at track time (null when the real addon is absent). */
+export interface ReapTarget {
+  pid: number;
+  identity: { bootId: string; starttime: string } | null;
+}
+
+let realAddonForReap: { readProcessIdentity(pid: number): unknown } | null | undefined;
+
+/** Exact identity from the REAL compiled addon (env seam bypassed — the suite-wide stub's synthetic starttime cannot witness pid reuse). */
+function reapProbe(pid: number): { bootId: string; starttime: string } | null {
+  if (realAddonForReap === undefined) {
+    try {
+      realAddonForReap = loadIdentityAddon({ env: {} }).addon as unknown as {
+        readProcessIdentity(pid: number): unknown;
+      };
+    } catch {
+      realAddonForReap = null;
+    }
+  }
+  if (realAddonForReap === null) return null;
+  try {
+    const raw = realAddonForReap.readProcessIdentity(pid) as {
+      ok?: boolean;
+      bootId?: string;
+      starttime?: string;
+    };
+    return raw?.ok === true && typeof raw.bootId === "string" && typeof raw.starttime === "string"
+      ? { bootId: raw.bootId, starttime: raw.starttime }
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Track a pid for reaping, snapshotting its exact identity at spawn time. */
+export function trackForReap(list: ReapTarget[], pid: number): void {
+  list.push({ pid, identity: reapProbe(pid) });
+}
+
 /**
  * Terminate test-owned processes and wait for kernel-proven exit so their
  * open handles are released before temp-tree removal (Windows refuses to
- * delete a tree while a descendant still holds a file open).
+ * delete a tree while a descendant still holds a file open). A pid is only
+ * ever signalled when its exact identity still matches the track-time
+ * snapshot — a reused pid names a stranger and is left alone. A target whose
+ * identity could not be read at track time fails closed: it is never
+ * signalled (a bare pid cannot witness reuse); the reap only waits out its
+ * natural exit so handles still release when the process is short-lived.
  */
-export async function reapProcesses(pids: number[], capMs = 4_000): Promise<void> {
+export async function reapProcesses(targets: ReapTarget[], capMs = 4_000): Promise<void> {
   const alive = (pid: number): boolean => {
     try {
       process.kill(pid, 0);
@@ -228,7 +273,17 @@ export async function reapProcesses(pids: number[], capMs = 4_000): Promise<void
       return false;
     }
   };
-  for (const pid of pids.splice(0)) {
+  for (const target of targets.splice(0)) {
+    const { pid } = target;
+    if (target.identity === null) {
+      const deadline = Date.now() + capMs;
+      while (alive(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+      continue;
+    }
+    const now = reapProbe(pid);
+    if (now === null || now.bootId !== target.identity.bootId || now.starttime !== target.identity.starttime) {
+      continue; // exited, or the pid names a different process now
+    }
     if (process.platform === "win32") {
       spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
     } else {

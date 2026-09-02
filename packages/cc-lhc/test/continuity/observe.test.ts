@@ -13,6 +13,7 @@ import { openContinuityStore } from "../../src/continuity/store.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import {
   allLaunchLines,
+  DEFAULT_PATHS,
   LAUNCH_IDS,
   LAUNCHES,
   monitorEvent,
@@ -74,13 +75,17 @@ describe("TC-2.1a launch opens exactly one item per family", () => {
       label: 'scheduled wakeup "poll CI"',
     });
     // Continuation facts arrive exactly as the host stated them (AC-2.2 inputs).
-    expect(byFamily.agent?.continuation).toEqual({ outputFile: "/nonexistent/tasks/agent-1.output" });
+    // The fold records the host's own paths verbatim; the fixture states them
+    // natively, so the expectation is built the same way the fixture is.
+    expect(byFamily.agent?.continuation).toEqual({ outputFile: join(DEFAULT_PATHS.tasksDir, "agent-1.output") });
     expect(byFamily.workflow?.continuation).toEqual({
       runId: "wf_run-1",
-      scriptPath: "/nonexistent/projects/-x/session-old/workflows/scripts/deploy-wf_run-1.js",
-      transcriptDir: "/nonexistent/projects/-x/session-old/subagents/workflows/wf_run-1",
+      scriptPath: join(DEFAULT_PATHS.sessionDir, "workflows", "scripts", "deploy-wf_run-1.js"),
+      transcriptDir: join(DEFAULT_PATHS.sessionDir, "subagents", "workflows", "wf_run-1"),
     });
-    expect(byFamily.background_shell?.continuation).toEqual({ outputFile: "/nonexistent/tasks/shell-1.output" });
+    expect(byFamily.background_shell?.continuation).toEqual({
+      outputFile: join(DEFAULT_PATHS.tasksDir, "shell-1.output"),
+    });
     expect(byFamily.monitor?.continuation).toBeNull();
     expect(byFamily.scheduled_wakeup?.continuation).toBeNull();
     // The shell's command body never reaches the database.

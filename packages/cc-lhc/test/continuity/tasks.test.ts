@@ -24,12 +24,12 @@ import {
   markReady,
   newDescriptorPath,
 } from "../../src/runtime/descriptor.js";
-import { LAUNCH_IDS, LAUNCHES, reapProcesses, toolResult, toolUse } from "./helpers.js";
+import { LAUNCH_IDS, LAUNCHES, type ReapTarget, reapProcesses, toolResult, toolUse, trackForReap } from "./helpers.js";
 
 const T = "th_tasks";
 const SESSION = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const dirs: string[] = [];
-const pids: number[] = [];
+const pids: ReapTarget[] = [];
 afterEach(async () => {
   await reapProcesses(pids);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
@@ -69,7 +69,7 @@ function session(monitorCommand: string) {
   const monitorOutputDir = join(root, "continuity");
   const transfer = invokeCarryover(store, snap.snapshot, { monitorOutputDir, cwd: root, log: () => {} }, 4_000);
   const relaunched = transfer.results.find((r) => r.launchId === LAUNCH_IDS.monitor);
-  if (relaunched?.kind === "relaunched") pids.push(relaunched.pid);
+  if (relaunched?.kind === "relaunched") trackForReap(pids, relaunched.pid);
   store.close();
 
   // The wrapper's ready descriptor names the thread; the live session id matches it.

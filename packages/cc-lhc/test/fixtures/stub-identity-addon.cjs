@@ -48,7 +48,11 @@ module.exports = {
     }
     return { ok: true, pid, bootId: STUB_BOOT_ID, starttime: syntheticStarttime(pid) };
   },
-  /** TEST-ONLY file identity: Node's stat dev/ino, tagged like the POSIX addon path. */
+  /**
+   * TEST-ONLY file identity from Node's stat. On win32 Node's st_ino IS the
+   * volume's 64-bit file index, so the index64 tag is truthful there; POSIX
+   * keeps the addon's ino tag. Never id128 — the stub cannot read one.
+   */
   readFileIdentity(path) {
     if (typeof path !== "string" || path === "" || path.includes("\0")) {
       return { ok: false, code: "invalid_path", message: "invalid path" };
@@ -56,7 +60,9 @@ module.exports = {
     try {
       const st = statSync(path, { bigint: true });
       if (!st.isFile()) return { ok: false, code: "not_a_file", message: "not a regular file" };
-      return { ok: true, path, volumeId: st.dev.toString(), fileId: `ino:${st.ino.toString()}` };
+      const fileId =
+        process.platform === "win32" ? `index64:${st.ino.toString()}` : `ino:${st.ino.toString()}`;
+      return { ok: true, path, volumeId: st.dev.toString(), fileId };
     } catch (cause) {
       const code = cause && cause.code;
       if (code === "ENOENT" || code === "ENOTDIR") return { ok: false, code: "not_found", message: "no such file" };

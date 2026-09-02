@@ -50,7 +50,16 @@ const NATIVE_FAILURE_CODES: ReadonlySet<string> = new Set([
   "native_error",
 ]);
 const IDENTITY_PLATFORMS: ReadonlySet<string> = new Set(["linux", "darwin", "win32"]);
-const FILE_ID_PATTERN = /^(?:ino:\d{1,20}|id128:[0-9a-f]{32}|index64:\d{1,20})$/;
+/**
+ * The tag set is per-platform: win32 identity comes only from the opened file
+ * object (id128/index64) and an inode-shaped value there means a stat proxy
+ * leaked in — fail closed rather than accept it.
+ */
+const FILE_ID_PATTERNS: Record<ExactFileIdentity["platform"], RegExp> = {
+  linux: /^ino:\d{1,20}$/,
+  darwin: /^ino:\d{1,20}$/,
+  win32: /^(?:id128:[0-9a-f]{32}|index64:\d{1,20})$/,
+};
 
 function failure(code: FileIdentityFailureCode, message: string): ReadFileIdentityResult {
   return { ok: false, code, message };
@@ -71,7 +80,7 @@ export function normalizeNativeFileResult(
     if (typeof obj.volumeId !== "string" || !/^\d{1,20}$/.test(obj.volumeId)) {
       return failure("native_error", "addon returned an invalid volumeId");
     }
-    if (typeof obj.fileId !== "string" || !FILE_ID_PATTERN.test(obj.fileId)) {
+    if (typeof obj.fileId !== "string" || !FILE_ID_PATTERNS[platform].test(obj.fileId)) {
       return failure("native_error", "addon returned an invalid fileId");
     }
     return { ok: true, identity: { platform, path, volumeId: obj.volumeId, fileId: obj.fileId } };
