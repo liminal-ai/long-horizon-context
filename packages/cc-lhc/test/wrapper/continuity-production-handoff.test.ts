@@ -616,21 +616,17 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
     expect(rig.terminalOutput()).not.toMatch(/Compact now|wait|confirm|\[y\/n\]/i);
 
-    // The replacement receives one manifest: every family once, with its truthful transition.
+    // The replacement receives one manifest naming every item once with its
+    // launch id and the tasks guidance. Whether it is the detailed or the
+    // bounded form depends only on path length (both are proven exactly in
+    // continuity-note.test.ts); the per-item wording is not owed here.
     expect(rig.receipts).toHaveLength(1);
     const note = rig.receipts[0]!;
     expect(note).toContain("Tracked background work carried into this session (generation 1)");
-    expect(note).toContain('background agent "reviewer" (agent-1): resumed: continue it with SendMessage to agent-1');
-    expect(note).toContain("workflow");
-    expect(note).toContain("resumed: continue it with Workflow resumeFromRunId wf_run-1");
-    expect(note).toContain(
-      `background command (shell-1): adopted: still running, uninterrupted; output file ${join(rig.paths.tasksDir, "shell-1.output")}`,
-    );
-    expect(note).toContain('monitor "CI watch" (mon-1): restarted: its previous run ended with the replaced process');
-    expect(note).toContain(`output file ${relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1)}`);
-    expect(note).toContain("scheduled wakeup (fires in");
-    expect(note).toContain("re-armed");
+    for (const id of ALL_IDS) expect(note, id).toContain(`[${id}]`);
+    expect(note).toContain("cc-lhc tasks status|output|stop");
     expect(note).not.toContain("cannot return output");
+    expect(note).not.toContain("continuity lost");
 
     // The generation closed after the transfer; every item is its member and still active.
     withStore(rig.dbPath, (store) => {
@@ -642,6 +638,17 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
         toolUseId: "toolu_mon",
         rolloutPath: rig.rolloutPath,
       });
+      // The truthful transition and mechanism live durably in the manifest data.
+      const carried = snapshotOf(store, 1).items;
+      expect(new Map(carried.map((i) => [i.launchId, `${i.transition}/${i.continuation.kind}`]))).toEqual(
+        new Map([
+          [LAUNCH_IDS.agent, "resumed/send_message"],
+          [LAUNCH_IDS.workflow, "resumed/workflow_resume"],
+          [LAUNCH_IDS.background_shell, "adopted/parent_output_read"],
+          [LAUNCH_IDS.monitor, "restarted/monitor_relaunch"],
+          [LAUNCH_IDS.scheduled_wakeup, "rearmed/rearm_at"],
+        ]),
+      );
     });
     await waitFor(
       () => wrapperLog(rig).includes("cc-lhc continuity: generation 1 closed: 5 carried, 0 not carried"),
@@ -1359,9 +1366,16 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       });
     });
     expect(readFileSync(outputPath, "utf8")).toBe("relaunched-once-XyZ");
-    // Same logical item, reported as a restart — never adopted or uninterrupted.
-    expect(rig.receipts[0]).toMatch(/monitor "CI watch" \(mon-1\): restarted/);
+    // Same logical item in the manifest; the durable transition says restarted,
+    // never adopted (detailed-vs-bounded wording is owned by continuity-note.test.ts).
+    expect(rig.receipts[0]).toContain(`[${LAUNCH_IDS.monitor}]`);
     expect(rig.receipts[0]).not.toMatch(/monitor "CI watch" \(mon-1\): adopted/);
+    withStore(rig.dbPath, (store) => {
+      expect(snapshotOf(store, 1).items.find((i) => i.launchId === LAUNCH_IDS.monitor)).toMatchObject({
+        transition: "restarted",
+        continuation: { kind: "monitor_relaunch" },
+      });
+    });
     await rig.finish();
   }, 15_000);
 
@@ -1508,15 +1522,8 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     const note = rig.receipts[0]!;
     expect(note).toContain("[lhc compact:manual]");
     expect(note).toContain("Tracked background work carried into this session (generation 1)");
-    for (const fragment of [
-      "resumed: continue it with SendMessage to agent-1",
-      "resumed: continue it with Workflow resumeFromRunId wf_run-1",
-      "adopted: still running",
-      "restarted:",
-      "re-armed",
-    ]) {
-      expect(note).toContain(fragment);
-    }
+    for (const id of ALL_IDS) expect(note, id).toContain(`[${id}]`);
+    expect(note).toContain("cc-lhc tasks status|output|stop");
     expect(note).not.toContain("cannot return output");
     expect(note).not.toContain("continuity lost");
     const outputPath = relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1);
