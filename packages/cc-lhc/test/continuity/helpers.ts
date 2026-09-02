@@ -284,7 +284,18 @@ export async function reapProcesses(targets: ReapTarget[], capMs = 4_000): Promi
     if (now === null || now.bootId !== target.identity.bootId || now.starttime !== target.identity.starttime) {
       continue; // exited, or the pid names a different process now
     }
+    let treePids: number[] = [pid];
     if (process.platform === "win32") {
+      // taskkill /T kills the whole tree in one identity-gated signal, but a
+      // descendant's exit is not implied by the tracked pid's: Git Bash runs
+      // `bash -c <command>` as its own child, and that grandchild can outlive
+      // the awaited root while still holding the temp root as its CWD (the
+      // observed EPERM removing the directory itself). Snapshot the live
+      // descendants first so every process the kill reaches is awaited below.
+      // Waiting never signals, so a reused descendant pid costs at most the
+      // bounded cap — the fail-closed rule (signal only on exact identity
+      // match, and only the tracked pid) is unchanged.
+      treePids = [pid, ...win32DescendantPids(pid)];
       spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
     } else {
       try {
@@ -299,6 +310,49 @@ export async function reapProcesses(targets: ReapTarget[], capMs = 4_000): Promi
       }
     }
     const deadline = Date.now() + capMs;
-    while (alive(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    for (const treePid of treePids) {
+      while (alive(treePid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+    }
   }
+}
+
+/**
+ * Windows pids of `rootPid`'s live descendants from one process-table
+ * snapshot (pid, parent-pid pairs), walked transitively in-process. Used only
+ * to WAIT on the tree taskkill /T reaches — never to signal.
+ */
+function win32DescendantPids(rootPid: number): number[] {
+  const table = spawnSync(
+    "powershell",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      'Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId)" }',
+    ],
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (table.status !== 0 || typeof table.stdout !== "string") return [];
+  const childrenOf = new Map<number, number[]>();
+  for (const row of table.stdout.split(/\r?\n/)) {
+    const match = /^(\d+) (\d+)$/.exec(row.trim());
+    if (match === null) continue;
+    const child = Number(match[1]);
+    const parent = Number(match[2]);
+    const bucket = childrenOf.get(parent);
+    if (bucket === undefined) childrenOf.set(parent, [child]);
+    else bucket.push(child);
+  }
+  const out: number[] = [];
+  const seen = new Set<number>([rootPid]);
+  const queue = [rootPid];
+  while (queue.length > 0) {
+    for (const child of childrenOf.get(queue.shift() as number) ?? []) {
+      if (seen.has(child)) continue;
+      seen.add(child);
+      out.push(child);
+      queue.push(child);
+    }
+  }
+  return out;
 }
