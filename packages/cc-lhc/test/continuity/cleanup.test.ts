@@ -30,7 +30,7 @@ import { itemStatus, readItemOutput } from "../../src/continuity/manage.js";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
 import { type ContinuityStore, openContinuityStore } from "../../src/continuity/store.js";
 import { probeProcessIdentityNative } from "../../src/runtime/native-identity.js";
-import { allLaunchLines, LAUNCH_IDS, notification, qualifyAll, toolResult, toolUse } from "./helpers.js";
+import { allLaunchLines, LAUNCH_IDS, notification, qualifyAll, reapProcesses, toolResult, toolUse } from "./helpers.js";
 
 const T = "th_cleanup";
 const OTHER = "th_other";
@@ -47,14 +47,8 @@ function alive(pid: number): boolean {
 }
 
 const pids: number[] = [];
-afterEach(() => {
-  for (const pid of pids.splice(0)) {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      // gone
-    }
-  }
+afterEach(async () => {
+  await reapProcesses(pids);
 });
 
 /** A thread with five carried items: shell adopted (real 1 MiB+ output), Monitor relaunched by the parent (real live process + fence). */
@@ -71,7 +65,11 @@ function seed() {
   const fence = join(continuityDir, "monitor_mon-1_toolu_mon.1.output");
   writeFileSync(fence, "relaunched-once-XyZ");
   const fenceFd = openSync(fence, "a");
-  const child = spawn("/bin/sh", ["-c", "sleep 30"], { detached: true, stdio: ["ignore", fenceFd, fenceFd] });
+  // A portable long-lived writer holding the fence open (no /bin/sh on Windows).
+  const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], {
+    detached: true,
+    stdio: ["ignore", fenceFd, fenceFd],
+  });
   child.unref();
   pids.push(child.pid!);
   const probed = probeProcessIdentityNative(child.pid!);

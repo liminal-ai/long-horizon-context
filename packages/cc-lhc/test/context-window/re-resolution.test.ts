@@ -16,6 +16,7 @@ import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/sessio
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
+import { shellCapturePath } from "../../src/wrapper/context-window-observer.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
 import { run } from "../../src/wrapper/run.js";
@@ -341,7 +342,7 @@ describe("run(): launch-scoped context-window observer on the real child argv", 
       expect(count).toBe(1);
       expect(settings?.statusLine).toEqual({
         type: "command",
-        command: `tee -a '${rig.capturePath}' | my-status`,
+        command: `tee -a '${shellCapturePath(rig.capturePath, process.platform)}' | my-status`,
         padding: 1,
       });
       expect(settings?.env).toEqual({ LIM144: "argv" });
@@ -365,7 +366,9 @@ describe("run(): launch-scoped context-window observer on the real child argv", 
     try {
       // The child must still receive the exact command — that is preservation.
       const { settings } = settingsIn(rig.spawned[0]!.args);
-      expect((settings?.statusLine as { command: string }).command).toBe(`tee -a '${rig.capturePath}' | ${command}`);
+      expect((settings?.statusLine as { command: string }).command).toBe(
+        `tee -a '${shellCapturePath(rig.capturePath, process.platform)}' | ${command}`,
+      );
       // The wrapper log states only that a status line was preserved and where.
       const log = rig.logs.join("\n");
       expect(log).toContain("operator status line preserved (launch argv)");
@@ -407,7 +410,7 @@ describe("run(): launch-scoped context-window observer on the real child argv", 
       const { count, settings } = settingsIn(rig.spawned[0]!.args);
       expect(count).toBe(1);
       expect((settings?.statusLine as { command: string }).command).toBe(
-        `tee -a '${rig.capturePath}' | my-status.exe --short`,
+        `tee -a '${shellCapturePath(rig.capturePath, "win32")}' | my-status.exe --short`,
       );
       expect(rig.logs.some((l) => l.includes("preserved (launch argv)"))).toBe(true);
     } finally {
@@ -446,7 +449,9 @@ describe("run(): launch-scoped context-window observer on the real child argv", 
     try {
       const { count, settings } = settingsIn(rig.spawned[0]!.args);
       expect(count).toBe(1);
-      expect((settings?.statusLine as { command: string }).command).toBe(`tee -a '${rig.capturePath}' | file-status`);
+      expect((settings?.statusLine as { command: string }).command).toBe(
+        `tee -a '${shellCapturePath(rig.capturePath, process.platform)}' | file-status`,
+      );
     } finally {
       rig.spawned[0]!.fireExit(0);
       await rig.runPromise;
@@ -526,7 +531,9 @@ describe("run(): launch-scoped context-window observer on the real child argv", 
       await waitFor(() => rig.spawned.length === 2, "replacement child");
       const replacement = rig.spawned[1]!.args;
       expect(settingsIn(replacement).count).toBe(1);
-      expect((settingsIn(replacement).settings?.statusLine as { command: string }).command).toContain(rig.capturePath);
+      expect((settingsIn(replacement).settings?.statusLine as { command: string }).command).toContain(
+        shellCapturePath(rig.capturePath, process.platform),
+      );
       expect(resumeIdIn(replacement)).toBe(REBUILT_ID);
       expect(rig.logs.filter((l) => l.includes("observer installed"))).toHaveLength(2);
       expect(rig.logs.some((l) => l.includes("window=1M (observed 1000000 claude-opus-5)"))).toBe(true);

@@ -4,6 +4,7 @@
  * an assistant tool_use, then a user tool_result carrying `toolUseResult`,
  * then queued `<task-notification>` records.
  */
+import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -73,7 +74,7 @@ export const LAUNCHES = {
         status: "async_launched",
         agentId: "agent-1",
         description: "reviewer",
-        outputFile: `${p.tasksDir}/agent-1.output`,
+        outputFile: join(p.tasksDir, "agent-1.output"),
         canReadOutputFile: true,
       }),
     ],
@@ -82,7 +83,7 @@ export const LAUNCHES = {
     toolUseId: "toolu_wf",
     taskId: "wf-task-1",
     lines: (p: LaunchPaths = DEFAULT_PATHS) => [
-      toolUse("toolu_wf", "Workflow", { scriptPath: `${p.sessionDir}/workflows/scripts/deploy-wf_run-1.js` }),
+      toolUse("toolu_wf", "Workflow", { scriptPath: join(p.sessionDir, "workflows", "scripts", "deploy-wf_run-1.js") }),
       toolResult("toolu_wf", {
         status: "async_launched",
         taskType: "local_workflow",
@@ -90,8 +91,8 @@ export const LAUNCHES = {
         workflowName: "deploy",
         runId: "wf_run-1",
         summary: "deploy it",
-        transcriptDir: `${p.sessionDir}/subagents/workflows/wf_run-1`,
-        scriptPath: `${p.sessionDir}/workflows/scripts/deploy-wf_run-1.js`,
+        transcriptDir: join(p.sessionDir, "subagents", "workflows", "wf_run-1"),
+        scriptPath: join(p.sessionDir, "workflows", "scripts", "deploy-wf_run-1.js"),
       }),
     ],
   },
@@ -111,7 +112,7 @@ export const LAUNCHES = {
             {
               type: "tool_result",
               tool_use_id: "toolu_sh",
-              content: `Command running in background with ID: shell-1. Output is being written to: ${p.tasksDir}/shell-1.output`,
+              content: `Command running in background with ID: shell-1. Output is being written to: ${join(p.tasksDir, "shell-1.output")}`,
             },
           ],
         },
@@ -212,3 +213,37 @@ export const LAUNCH_IDS = {
   monitor: "monitor:mon-1:toolu_mon",
   scheduled_wakeup: "scheduled_wakeup:scheduled_wakeup:toolu_wake",
 } as const;
+
+/**
+ * Terminate test-owned processes and wait for kernel-proven exit so their
+ * open handles are released before temp-tree removal (Windows refuses to
+ * delete a tree while a descendant still holds a file open).
+ */
+export async function reapProcesses(pids: number[], capMs = 4_000): Promise<void> {
+  const alive = (pid: number): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  for (const pid of pids.splice(0)) {
+    if (process.platform === "win32") {
+      spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
+    } else {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        // no group of ours; fall through to the direct signal
+      }
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // already gone
+      }
+    }
+    const deadline = Date.now() + capMs;
+    while (alive(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
+  }
+}

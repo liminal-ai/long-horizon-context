@@ -24,22 +24,14 @@ import {
   markReady,
   newDescriptorPath,
 } from "../../src/runtime/descriptor.js";
-import { LAUNCH_IDS, LAUNCHES, toolResult, toolUse } from "./helpers.js";
+import { LAUNCH_IDS, LAUNCHES, reapProcesses, toolResult, toolUse } from "./helpers.js";
 
 const T = "th_tasks";
 const SESSION = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const dirs: string[] = [];
 const pids: number[] = [];
-afterEach(() => {
-  for (const pid of pids.splice(0)) {
-    try {
-      process.kill(-pid, "SIGKILL");
-    } catch {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {}
-    }
-  }
+afterEach(async () => {
+  await reapProcesses(pids);
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 

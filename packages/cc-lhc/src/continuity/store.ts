@@ -751,8 +751,20 @@ export function openContinuityStore(
   const merged = { ...defaultDeps(), ...deps };
   merged.mkdirFn(dirname(dbPath));
   const db = merged.openDbFn(dbPath);
-  initSchema(db);
-  initResultsSchema(db);
+  try {
+    initSchema(db);
+    initResultsSchema(db);
+  } catch (cause) {
+    // A corrupt or foreign file throws on the first statement. Release the
+    // handle before rethrowing so the failed open does not pin the file for
+    // the wrapper's lifetime (Windows refuses deletion of a pinned file).
+    try {
+      db.close();
+    } catch {
+      // never opened far enough to close
+    }
+    throw cause;
+  }
 
   const selectItem = db.prepare("SELECT * FROM cc_continuity_items WHERE thread_id = ? AND launch_id = ?");
   const selectItems = db.prepare("SELECT * FROM cc_continuity_items WHERE thread_id = ? ORDER BY created_at_ms, rowid");

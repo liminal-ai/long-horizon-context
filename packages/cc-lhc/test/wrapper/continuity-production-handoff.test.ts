@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { PassThrough, Writable } from "node:stream";
 import type { Lhc } from "lhc";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { qualifyActiveItems, statPathReal } from "../../src/continuity/adapters.js";
 import { deliveredResultKeys, RESULT_HOOK_TIMEOUT_SECONDS } from "../../src/continuity/delivery.js";
 import { invokeCarryover, relaunchOutputPath } from "../../src/continuity/handoff.js";
@@ -558,6 +558,15 @@ async function storeHas(dbPath: string, launchIds: readonly string[]): Promise<v
   }, "continuity record");
 }
 
+/** Close on test end even when an assertion threw first (Windows pins open files). */
+function closeQuietly(store: ContinuityStore): void {
+  try {
+    store.close();
+  } catch {
+    // already closed by the test body
+  }
+}
+
 function withStore<R>(dbPath: string, fn: (store: ContinuityStore) => R): R {
   const store = openContinuityStore(dbPath);
   try {
@@ -667,6 +676,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     await waitFor(() => rig.spawned.length === 2, "replacement child");
 
     const store = openContinuityStore(rig.dbPath);
+    onTestFinished(() => closeQuietly(store));
     const rebuiltPath = join(rig.home, `${REBUILT_ID}.jsonl`);
     const sdkCalls = () =>
       Object.fromEntries(
@@ -1411,6 +1421,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     homes.push(home);
     const { paths, rolloutPath } = hostLayout(home);
     const store = openContinuityStore(join(home, "cc-lhc.sqlite"));
+    onTestFinished(() => closeQuietly(store));
     const observer = createContinuityObserver({ store, threadId: T });
     for (const line of fiveFamilyLaunch(paths)) observer.observeLine(line);
     const context = { platform: "linux" as const, sourceRolloutPath: rolloutPath, statPath: statPathReal };

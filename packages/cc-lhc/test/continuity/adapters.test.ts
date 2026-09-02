@@ -72,13 +72,17 @@ function rig(paths: LaunchPaths & { rolloutPath: string }, platform: NodeJS.Plat
   let now = 1_000;
   const observer = createContinuityObserver({ store, threadId: T, nowFn: () => (now += 1) });
   for (const line of [...allLaunchLines(paths), monitorEvent(paths)]) observer.observeLine(line);
-  // A win32 rig on this host has no Win32 addon: file identity is unavailable
-  // unless a test injects the reader (never Node dev/ino).
+  // A simulated win32 rig is pinned host-independently: no Win32 addon (file
+  // identity unavailable unless a test injects the reader — never Node
+  // dev/ino) and no Git Bash (a real one on the host must not leak in).
   const context: AdapterContext = {
     platform,
     sourceRolloutPath: paths.rolloutPath,
     ...(platform === "win32"
-      ? { readFileIdentity: () => ({ ok: false as const, code: "addon_unavailable" as const, message: "no addon" }) }
+      ? {
+          readFileIdentity: () => ({ ok: false as const, code: "addon_unavailable" as const, message: "no addon" }),
+          relaunchShell: resolveRelaunchShell("win32", { PATH: "" }, () => false),
+        }
       : {}),
   };
   const qualify = () => {
@@ -194,11 +198,11 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       });
       expect(item("agent").verifiedIdentity).toMatchObject({
         agentId: "agent-1",
-        path: expect.stringMatching(/subagents\/agent-agent-1\.jsonl$/),
+        path: expect.stringMatching(/subagents[\\/]agent-agent-1\.jsonl$/),
       });
       expect(item("workflow").verifiedIdentity).toMatchObject({
         runId: "wf_run-1",
-        journalPath: expect.stringMatching(/wf_run-1\/journal\.jsonl$/),
+        journalPath: expect.stringMatching(/wf_run-1[\\/]journal\.jsonl$/),
       });
       expect(item("scheduled_wakeup").verifiedIdentity).toEqual({
         kind: "scheduled_time",
@@ -240,8 +244,9 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       });
       const outcome = qualify();
       if (platform === "win32") {
-        // This host has no Git Bash where Claude Code would look for it, so
-        // the seam closes the Monitor truthfully instead of promising a restart.
+        // The rig pins a host without Git Bash where Claude Code would look
+        // for it, so the seam closes the Monitor truthfully instead of
+        // promising a restart.
         expect(outcome.terminalized).toEqual([
           {
             launchId: LAUNCH_IDS.monitor,

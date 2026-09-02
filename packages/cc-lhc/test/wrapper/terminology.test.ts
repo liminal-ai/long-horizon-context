@@ -59,8 +59,12 @@ import {
 const SMART_COMPACT_COMMAND = "/smart-compact";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
-const README = readFileSync(join(PKG_ROOT, "README.md"), "utf8");
-const ONBOARDING = readFileSync(join(PKG_ROOT, "../../docs/onboard/05-host-cc-lhc.md"), "utf8");
+// Docs may be checked out with CRLF (Windows autocrlf); audit the text, not the checkout.
+const README = readFileSync(join(PKG_ROOT, "README.md"), "utf8").replaceAll("\r\n", "\n");
+const ONBOARDING = readFileSync(join(PKG_ROOT, "../../docs/onboard/05-host-cc-lhc.md"), "utf8").replaceAll(
+  "\r\n",
+  "\n",
+);
 const SRC_ROOT = join(PKG_ROOT, "src");
 
 function work(family: OpenAsyncWork["family"], description: string): OpenAsyncWork {

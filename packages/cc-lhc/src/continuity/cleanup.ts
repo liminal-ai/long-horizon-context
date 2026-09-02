@@ -106,11 +106,17 @@ export function copyBounded(source: string, target: string, maxBytes: number): {
     closeSync(out);
     out = null;
     renameSync(temp, target);
-    const dir = openSync(join(target, ".."), "r");
-    try {
-      fsyncSync(dir);
-    } finally {
-      closeSync(dir);
+    if (process.platform !== "win32") {
+      // Windows exposes no directory fsync to Node (opening a directory for
+      // read is refused), so the file's own fsync plus the NTFS rename is the
+      // local durability this platform offers. POSIX keeps the directory
+      // barrier unchanged.
+      const dir = openSync(join(target, ".."), "r");
+      try {
+        fsyncSync(dir);
+      } finally {
+        closeSync(dir);
+      }
     }
     return { bytes: copied, truncated: total > copied };
   } catch (cause) {
