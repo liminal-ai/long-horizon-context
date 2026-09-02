@@ -2004,6 +2004,10 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     // the wrapper — graceful, so Claude reaps and writes its truthful marker.
     await rig.finish();
     expect(oldPty.killed).toContain("SIGTERM");
-    expect(wrapperLog(rig)).toContain("terminating retained completion host pid 1000 on orderly exit");
+    // The wrapper log is appended asynchronously; the line lands after run() resolves on slower hosts.
+    await waitFor(
+      () => wrapperLog(rig).includes("terminating retained completion host pid 1000 on orderly exit"),
+      "teardown log",
+    );
   }, 15_000);
 });

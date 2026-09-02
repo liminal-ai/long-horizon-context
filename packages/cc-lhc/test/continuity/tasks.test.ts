@@ -200,7 +200,11 @@ describe("TC-2.6c stop carried work", () => {
       reason: expect.stringContaining("unsupported"),
     });
     const stopped = s.tasks(["stop", LAUNCH_IDS.monitor]);
-    expect(stopped.ok && stopped.stdout).toBe(`stopped ${LAUNCH_IDS.monitor} (pid ${pid}); recorded as stopped`);
+    // Whole result, so a refusal reports its reason rather than a bare false.
+    expect(stopped).toMatchObject({
+      ok: true,
+      stdout: `stopped ${LAUNCH_IDS.monitor} (pid ${pid}); recorded as stopped`,
+    });
     const deadline = Date.now() + 5_000;
     let gone = false;
     while (Date.now() < deadline && !gone) {
