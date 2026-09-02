@@ -203,7 +203,7 @@ import {
   nativeCompactAnomalyNotice,
   SMART_COMPACT,
 } from "./terminology.js";
-import { TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
+import { countTypedBytes, TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
 
 const DEFAULT_COLS = 80;
@@ -2644,8 +2644,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         //
         // While compact owns the settled session they are dropped instead of
         // delivered, and never held for replay into a replacement. The wrapper's
-        // own UI keeps working; only the path to Claude is closed.
-        if (compactOwnsInput) droppedInputBytes += result.toPty.length;
+        // own UI keeps working; only the path to Claude is closed. Only bytes a
+        // person could have typed count toward the resend notice: the terminal's
+        // replies to the replacement's startup queries land here too.
+        if (compactOwnsInput) droppedInputBytes += countTypedBytes(result.toPty);
         else {
           governorState = noteGovernorInput(governorState);
           currentPty.write(result.toPty);

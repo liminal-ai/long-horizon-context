@@ -815,6 +815,100 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     writeSpy.mockRestore();
   });
 
+  it("the terminal's replies to the replacement's startup queries arrive in the same window and raise no resend notice", async () => {
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
+    const stdin = fakeStream();
+    const stdout = fakeStream();
+    const screen: Buffer[] = [];
+    stdout.on("data", (chunk: Buffer) => screen.push(chunk));
+
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      // Nobody types. The terminal answers the replacement's startup queries
+      // (device attributes, keyboard flags, background colour, cursor position)
+      // — control sequences on stdin while compact owns input.
+      (stdin as unknown as PassThrough).write(
+        Buffer.from("\x1b[?62;4;6;22c\x1b[?0u\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\\x1b[24;1R", "latin1"),
+      );
+      await new Promise((r) => setTimeout(r, 60));
+      return {
+        sessionId: REBUILT_ID,
+        rolloutPath: `/tmp/${REBUILT_ID}.jsonl`,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        totalByteLength: 0,
+      };
+    });
+
+    const wrapperLogLines: string[] = [];
+    mocks.captureFactory = (opts) => {
+      const scripted = scriptedCaptureSession(opts, sdk, "old-session", "/tmp/old-session.jsonl", 1);
+      if (opts.onLifecycle !== undefined) lifecycleSink = opts.onLifecycle;
+      return scripted.session;
+    };
+
+    const results: HandoffResult[] = [];
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const fake = makeFakePty(2000 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin,
+      stdout: stdout as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: tempReceiptDbPath(),
+      wrapperLog: {
+        info: (m: string) => wrapperLogLines.push(m),
+        warn: (m: string) => wrapperLogLines.push(m),
+        warningCount: () => 0,
+        path: "/tmp/fake.log",
+      } as never,
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
+    });
+
+    await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
+    lifecycleSink!(BOUND_SIGNALS);
+    lifecycleSink!(TRIGGER_SIGNALS);
+
+    await waitFor(() => results.length === 1, "handoff result");
+    // Late input does not cancel a compact that succeeded.
+    expect(results[0]!.kind).toBe("success");
+    expect(spawned).toHaveLength(2);
+    expect(mocks.registerLineage).toHaveBeenCalledOnce();
+    // The replies reached neither child and were not typed-ahead: no drop
+    // line, no resend notice, and the Control Panel stays closed.
+    expect(spawned[0]!.writes.join("")).not.toContain("22c");
+    expect(spawned[1]!.writes.join("")).not.toContain("22c");
+    await waitFor(() => wrapperLogLines.some((line) => line.includes("handoff success")), "handoff settled");
+    expect(wrapperLogLines.filter((line) => line.includes("typed-ahead"))).toEqual([]);
+    expect(Buffer.concat(screen).toString("latin1")).not.toContain("\x1b[?1049h");
+
+    spawned[1]!.fireExit(0);
+    await runPromise;
+    writeSpy.mockRestore();
+  });
+
   it("a replacement that is never promoted leaves the old session routed: its output and input still flow", async () => {
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
