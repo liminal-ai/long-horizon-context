@@ -110,7 +110,9 @@ jobs:
         # cross-file process interference makes its survivor probe
         # nondeterministic (observed on win32-x64 while the isolated job on
         # the same commit stays green).
-        run: pnpm --filter cc-lhc run test -- --exclude test/story0/process-capability/production-path.test.ts
+        # pnpm run forwards "--" literally into the script's argv, so the
+        # exclusion must be an explicit vitest invocation, not script args.
+        run: pnpm --filter cc-lhc exec vitest run --exclude "test/package/**" --exclude test/story0/process-capability/production-path.test.ts
         env:
           CC_LHC_NATIVE_REQUIRE_ADDON: "1"
 

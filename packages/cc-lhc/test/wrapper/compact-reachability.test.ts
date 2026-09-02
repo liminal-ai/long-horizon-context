@@ -163,11 +163,24 @@ async function waitFor(condition: () => boolean, label: string, capMs = 8_000): 
   }
 }
 
-/** Receipts whose automatic operation has finished (outcome attached). */
-function outcomeAttached(dbPath: string): number {
+/**
+ * Receipts whose automatic operation actually CONCLUDED. Every receipt is
+ * born with an outcome (`deferred_open_turn`, `scheduled`, `not_applicable`),
+ * so "has an outcome" observes nothing; only a claimed operation's own end
+ * states prove the flight was released.
+ */
+const OPERATION_CONCLUDED = new Set([
+  "mutation_partial",
+  "mutation_refused",
+  "mutation_noop",
+  "handoff_success",
+  "handoff_cancelled",
+  "handoff_replacement_nonviable",
+]);
+function operationsConcluded(dbPath: string): number {
   const receipts = openGovernorReceiptStore(dbPath);
   try {
-    return receipts.listAll().filter((r) => r.handoffOutcome !== undefined && r.handoffOutcome !== null).length;
+    return receipts.listAll().filter((r) => OPERATION_CONCLUDED.has(r.handoffOutcome?.kind ?? "")).length;
   } finally {
     receipts.close();
   }
@@ -358,9 +371,9 @@ describe("a session over the trigger reaches compact", () => {
     // a seam fired while the operation still owns the flight is coalesced by
     // design ("no second mutation"), not replayed. The claim under test is
     // the governor's (no toll, no cooldown between seams), so wait for the
-    // first receipt's outcome — written synchronously just before the flight
-    // is released — before the next seam.
-    await waitFor(() => outcomeAttached(rig.receiptDb) >= 1, "first operation outcome");
+    // first operation's CONCLUDING outcome — attached synchronously just
+    // before the flight is released — before the next seam.
+    await waitFor(() => operationsConcluded(rig.receiptDb) >= 1, "first operation conclusion");
     // Identical pressure, immediately after: nothing to earn, nothing to wait out.
     rig.fire(overTrigger("req:b"));
     await waitFor(() => rig.compacts() >= 2, "second compact at the same pressure");
