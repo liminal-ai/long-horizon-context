@@ -230,6 +230,28 @@ export interface ContinuityGeneration {
   state: GenerationState;
   createdAtMs: number;
   updatedAtMs: number;
+  /** The retained old Claude child supervising this generation's adopted tasks, when one was kept (LIM-149). */
+  retainedHost: RetainedHostRecord | null;
+}
+
+/**
+ * Exact identity of the retained old Claude child kept alive as the adopted
+ * tasks' completion host. Recorded before retention is claimed; a settle can
+ * only ever signal a process whose live identity matches this record exactly.
+ */
+export interface RetainedHostRecord {
+  pid: number;
+  bootId: string;
+  starttime: string;
+  retainedAtMs: number;
+  /**
+   * Paused (mixed carryover, LIM-149): every thread of the old child is
+   * stopped, so its duplicate agent/workflow/monitor/wakeup never run and its
+   * model is never woken; its separate-group shells keep going and their exit
+   * records are read through the native addon (Linux, macOS, Windows alike).
+   * Absent/false means an alive host writing file markers (adopt-only).
+   */
+  frozen?: boolean;
 }
 
 export interface ContinuityStoreDeps {
@@ -271,6 +293,12 @@ export interface ContinuityStore {
     evidence: string;
     nowMs: number;
   }): { item: ContinuityItem; applied: boolean } | null;
+  /**
+   * Record the adopted shell's discovered task process identity (LIM-149),
+   * merged into the continuation. First discovery wins; terminal items are
+   * left as they are.
+   */
+  setTaskProcess(input: { threadId: string; launchId: string; taskProcess: TaskProcessIdentity; nowMs: number }): void;
   /** Verification result for a non-terminal item: `active` when verified, `unknown` when not. */
   setVerified(input: { threadId: string; launchId: string; verified: boolean; nowMs: number }): ContinuityItem | null;
   /**
@@ -331,6 +359,12 @@ export interface ContinuityStore {
     nowMs: number;
   }): ContinuityGeneration;
   getGeneration(threadId: string, generation: number): ContinuityGeneration | null;
+  /** Record the retained old-child host for a generation (LIM-149). First record wins. */
+  setRetainedHost(input: { threadId: string; generation: number; host: RetainedHostRecord; nowMs: number }): void;
+  /** The newest generation still carrying a retained-host record, if any. */
+  retainedHostGeneration(threadId: string): ContinuityGeneration | null;
+  /** Drop a generation's retained-host record once the host is proven gone or was terminated. */
+  clearRetainedHost(input: { threadId: string; generation: number; nowMs: number }): void;
   latestGeneration(threadId: string): ContinuityGeneration | null;
   setGenerationState(input: {
     threadId: string;
@@ -371,6 +405,39 @@ interface GenerationRow {
   state: string;
   created_at_ms: number;
   updated_at_ms: number;
+  host_json: string | null;
+}
+
+function parseRetainedHost(json: string | null, row: GenerationRow): RetainedHostRecord | null {
+  if (json === null) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    throw malformed("retained host", row);
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw malformed("retained host", row);
+  const o = parsed as Record<string, unknown>;
+  if (
+    typeof o.pid !== "number" ||
+    !Number.isSafeInteger(o.pid) ||
+    o.pid <= 0 ||
+    typeof o.bootId !== "string" ||
+    o.bootId === "" ||
+    typeof o.starttime !== "string" ||
+    o.starttime === "" ||
+    typeof o.retainedAtMs !== "number" ||
+    (o.frozen !== undefined && typeof o.frozen !== "boolean")
+  ) {
+    throw malformed("retained host", row);
+  }
+  return {
+    pid: o.pid,
+    bootId: o.bootId,
+    starttime: o.starttime,
+    retainedAtMs: o.retainedAtMs,
+    ...(o.frozen === true ? { frozen: true } : {}),
+  };
 }
 
 function defaultDeps(): Required<ContinuityStoreDeps> {
@@ -429,6 +496,9 @@ function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (thread_id, generation)
     )
   `);
+  if (!tableHasColumn(db, "cc_continuity_generations", "host_json")) {
+    db.exec("ALTER TABLE cc_continuity_generations ADD COLUMN host_json TEXT");
+  }
 }
 
 function initResultsSchema(db: DatabaseSync): void {
@@ -542,6 +612,28 @@ function tableHasColumn(db: DatabaseSync, table: string, column: string): boolea
 
 const CONTINUATION_KEYS = ["outputFile", "runId", "scriptPath", "transcriptDir"] as const;
 
+/** Exact identity of an adopted shell's task process (see async-work continuation). */
+export interface TaskProcessIdentity {
+  pid: number;
+  bootId: string;
+  starttime: string;
+}
+
+function isTaskProcessIdentity(value: unknown): value is TaskProcessIdentity {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const o = value as Record<string, unknown>;
+  return (
+    typeof o.pid === "number" &&
+    Number.isSafeInteger(o.pid) &&
+    o.pid > 0 &&
+    typeof o.bootId === "string" &&
+    o.bootId !== "" &&
+    typeof o.starttime === "string" &&
+    o.starttime !== "" &&
+    Object.keys(o).length === 3
+  );
+}
+
 function parseContinuation(json: string | null, row: ItemRow): AsyncWorkContinuation | null {
   if (json === null) return null;
   let parsed: unknown;
@@ -553,6 +645,11 @@ function parseContinuation(json: string | null, row: ItemRow): AsyncWorkContinua
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) throw malformed("continuation", row);
   const out: AsyncWorkContinuation = {};
   for (const [key, value] of Object.entries(parsed)) {
+    if (key === "taskProcess") {
+      if (!isTaskProcessIdentity(value)) throw malformed("continuation", row);
+      out.taskProcess = value;
+      continue;
+    }
     if (!(CONTINUATION_KEYS as readonly string[]).includes(key) || typeof value !== "string" || value === "") {
       throw malformed("continuation", row);
     }
@@ -606,6 +703,8 @@ function mergeContinuation(
     const value = learned[key];
     if (out[key] === undefined && typeof value === "string" && value !== "") out[key] = value;
   }
+  if (out.taskProcess === undefined && isTaskProcessIdentity(learned.taskProcess))
+    out.taskProcess = learned.taskProcess;
   return Object.keys(out).length === 0 ? null : out;
 }
 
@@ -736,6 +835,7 @@ function parseGeneration(row: GenerationRow): ContinuityGeneration {
     state: row.state,
     createdAtMs: row.created_at_ms,
     updatedAtMs: row.updated_at_ms,
+    retainedHost: parseRetainedHost(row.host_json, row),
   };
 }
 
@@ -820,6 +920,15 @@ export function openContinuityStore(
   const selectLatestGeneration = db.prepare(
     "SELECT * FROM cc_continuity_generations WHERE thread_id = ? ORDER BY generation DESC LIMIT 1",
   );
+  const setHost = db.prepare(
+    "UPDATE cc_continuity_generations SET host_json = ?, updated_at_ms = ? WHERE thread_id = ? AND generation = ? AND host_json IS NULL",
+  );
+  const selectHostGeneration = db.prepare(
+    "SELECT * FROM cc_continuity_generations WHERE thread_id = ? AND host_json IS NOT NULL ORDER BY generation DESC LIMIT 1",
+  );
+  const clearHost = db.prepare(
+    "UPDATE cc_continuity_generations SET host_json = NULL, updated_at_ms = ? WHERE thread_id = ? AND generation = ?",
+  );
   const insertGeneration = db.prepare(`
     INSERT INTO cc_continuity_generations (
       thread_id, generation, old_session_id, launch_ids_json, state, created_at_ms, updated_at_ms
@@ -873,6 +982,13 @@ export function openContinuityStore(
       const merged = mergeContinuation(existing.continuation, input.continuation);
       touchItem.run(merged === null ? null : JSON.stringify(merged), input.nowMs, input.threadId, input.launchId);
       return mustGet(input.threadId, input.launchId);
+    },
+    setTaskProcess(input) {
+      const existing = getItem(input.threadId, input.launchId);
+      if (existing === null || existing.state === "terminal" || existing.continuation?.taskProcess !== undefined)
+        return;
+      const merged = mergeContinuation(existing.continuation, { taskProcess: input.taskProcess });
+      touchItem.run(merged === null ? null : JSON.stringify(merged), input.nowMs, input.threadId, input.launchId);
     },
     recordTerminal(input) {
       if (getItem(input.threadId, input.launchId) === null) return null;
@@ -1031,6 +1147,16 @@ export function openContinuityStore(
       return row;
     },
     getGeneration,
+    setRetainedHost(input) {
+      setHost.run(JSON.stringify(input.host), input.nowMs, input.threadId, input.generation);
+    },
+    retainedHostGeneration(threadId) {
+      const row = selectHostGeneration.get(threadId) as GenerationRow | undefined;
+      return row === undefined ? null : parseGeneration(row);
+    },
+    clearRetainedHost(input) {
+      clearHost.run(input.nowMs, input.threadId, input.generation);
+    },
     latestGeneration(threadId) {
       const row = selectLatestGeneration.get(threadId) as GenerationRow | undefined;
       return row === undefined ? null : parseGeneration(row);

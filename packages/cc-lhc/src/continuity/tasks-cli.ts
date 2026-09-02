@@ -12,6 +12,7 @@ import { defaultDescriptorIo } from "../runtime/descriptor.js";
 import { formatResultContext } from "./delivery.js";
 import { DEFAULT_OUTPUT_MAX_BYTES, itemStatus, type ManagePorts, readItemOutput, stopItem } from "./manage.js";
 import { type ContinuityStore, openContinuityStore } from "./store.js";
+import { type ReconcileDeps, reconcileAdoptedShells } from "./task-process.js";
 
 export const TASKS_USAGE = "usage: cc-lhc tasks status|output|stop <launch id> [--offset BYTES] [--max BYTES]";
 
@@ -36,6 +37,8 @@ export interface TasksHookDeps {
   descriptorPath?: string;
   continuityDbPath?: string;
   openStore?: (path: string) => ContinuityStore;
+  /** Reconciliation seams (tests); production probes the real process. */
+  reconcile?: ReconcileDeps;
 }
 
 export type TasksHookResult =
@@ -75,6 +78,10 @@ export function executeTasksHook(payloadText: string, deps: TasksHookDeps = {}):
   const threadId = bound.descriptor.threadId as string;
   const store = (deps.openStore ?? openContinuityStore)(deps.continuityDbPath ?? defaultLineageDbPath());
   try {
+    // LIM-149: the real user prompt is the delivery seam — settle any adopted
+    // shell whose kernel-proven exit happened since, so its durable result is
+    // in this very hook's pending set (no polling anywhere).
+    reconcileAdoptedShells(store, threadId, deps.reconcile ?? {});
     const pending = store.listPendingResults(threadId);
     return { ok: true, additionalContext: formatResultContext(pending), keys: pending.map((r) => r.launchId) };
   } finally {
@@ -163,6 +170,8 @@ export interface TasksCliDeps {
   continuityDbPath?: string;
   openStore?: (path: string) => ContinuityStore;
   manage?: ManagePorts;
+  /** Reconciliation seams (tests); production probes the real process. */
+  reconcile?: ReconcileDeps;
 }
 
 export type TasksCliResult =
@@ -188,6 +197,9 @@ export function executeTasks(argv: readonly string[], deps: TasksCliDeps = {}): 
   const store = (deps.openStore ?? openContinuityStore)(deps.continuityDbPath ?? defaultLineageDbPath());
   try {
     const ports = deps.manage ?? {};
+    // LIM-149: settle kernel-proven completion before answering, so no surface
+    // ever reports a finished adopted task as active.
+    reconcileAdoptedShells(store, threadId, deps.reconcile ?? {});
     switch (request.op) {
       case "status": {
         const result = itemStatus(store, threadId, request.launchId, ports);

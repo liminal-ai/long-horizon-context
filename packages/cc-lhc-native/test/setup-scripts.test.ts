@@ -179,7 +179,14 @@ describe("fetch-prebuild: release-source resolution", () => {
 describe("fetch-prebuild: subprocess probe-report validation (full portable-identity contract)", () => {
   const goodProbe = { ok: true, pid: 4242, bootId: "boot-uuid-0799", starttime: "119880620" };
   const goodFileProbe = { ok: true, path: "/tmp/x.node", volumeId: "66306", fileId: "ino:1234" };
-  const goodReport = { contract: 2, platform: process.platform, pid: 4242, probe: goodProbe, fileProbe: goodFileProbe };
+  const goodReport = {
+    contract: 3,
+    platform: process.platform,
+    pid: 4242,
+    probe: goodProbe,
+    fileProbe: goodFileProbe,
+    exports: [...prebuildLib.PREBUILD_FUNCTION_EXPORTS],
+  };
   const withProbe = (probe: unknown) => ({ ...goodReport, probe });
   const withFileProbe = (fileProbe: unknown) => ({ ...goodReport, fileProbe });
 
@@ -197,7 +204,13 @@ describe("fetch-prebuild: subprocess probe-report validation (full portable-iden
 
   it.each([
     ["non-object report", "nope", /not an object/],
-    ["wrong contract version", { ...goodReport, contract: 1 }, /contract version 1/],
+    ["wrong contract version", { ...goodReport, contract: 2 }, /contract version 2/],
+    [
+      "contract-3 export missing",
+      { ...goodReport, exports: ["readProcessIdentity", "readFileIdentity"] },
+      /export pauseProcess/,
+    ],
+    ["exports missing entirely", { ...goodReport, exports: undefined }, /export readProcessIdentity/],
     ["file probe missing (addon predates file identity)", withFileProbe(null), /identify the downloaded file/],
     ["file probe not ok", withFileProbe({ ok: false, code: "not_found" }), /identify the downloaded file/],
     ["file probe volumeId not digits", withFileProbe({ ...goodFileProbe, volumeId: "x" }), /volumeId/],

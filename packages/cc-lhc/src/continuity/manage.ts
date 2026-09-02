@@ -72,7 +72,7 @@ export interface ItemStatus {
   operations: readonly ContinuityOperation[];
   /** Does the recorded identity still name the same work right now? */
   identity: IdentityCheck;
-  /** Parent-relaunched Monitor only: the exact recorded process. */
+  /** The exact recorded process: a parent-relaunched Monitor, or an adopted shell's discovered task (LIM-149). */
   process: "live" | "exited" | "identity_changed" | "indeterminate" | null;
   terminal: ContinuityItem["terminal"];
 }
@@ -142,7 +142,9 @@ function checkIdentity(item: ContinuityItem, ports: ManagePorts): IdentityCheck 
 }
 
 function checkProcess(item: ContinuityItem, ports: ManagePorts): ItemStatus["process"] {
-  const proc = item.relaunch?.process ?? null;
+  // Parent-relaunched Monitor process, or the adopted shell's discovered
+  // task process (LIM-149) — both are exact recorded identities.
+  const proc = item.relaunch?.process ?? item.continuation?.taskProcess ?? null;
   if (proc === null) return null;
   const probed = (ports.probeIdentity ?? probeProcessIdentityNative)(proc.pid);
   if (!probed.ok) return probed.code === "not_found" ? "exited" : "indeterminate";

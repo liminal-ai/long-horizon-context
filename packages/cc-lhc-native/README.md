@@ -39,6 +39,33 @@ compare equal by accident — `ino:<st_ino>` (Linux/macOS, `volumeId` =
 128-bit id). Windows identity is never Node's `dev`/`ino`. Failures are
 results: `invalid_path | not_found | access_denied | not_a_file | native_error`.
 
+### Supervised-child control (contract version 3)
+
+Smart Compact replaces the wrapper's Claude child and keeps the old child
+paused as the supervisor of its own still-running background tasks, so each
+task's real exit outcome survives the replacement (LIM-149). The portable
+surface for that is `exactProcessControl()`:
+
+- `pause(pid)` / `resume(pid)` — stop or continue every thread of the child
+  (`SIGSTOP`/`SIGCONT` on Linux/macOS, ntdll process suspend/resume on
+  Windows).
+- `readChildExit(pid, starttime)` — the uncollected exit record of a task
+  whose supervisor is paused: `running`, `exited` with the real code, or
+  `signaled` (POSIX). Linux reads `/proc/<pid>/stat` state `Z` plus
+  `exit_code`; macOS reads `sysctl KERN_PROC_PID` `SZOMB` plus `p_xstat`;
+  Windows reads the process object the paused parent's handle keeps alive.
+  `starttime` must equal the value `readProcessIdentity` reported, else
+  `identity_changed`.
+- `findChildHoldingFile(parentPid, path)` — the single direct child holding
+  the file open (Linux `/proc` fd objects, macOS libproc vnode info, Windows
+  Toolhelp children ∩ Restart Manager holders); `pid: null` when zero or
+  several match.
+
+Every target is a child the wrapper spawned and every call is gated on exact
+identity by the caller. Failures are results:
+`invalid_pid | invalid_path | not_found | identity_changed | access_denied |
+native_error | unsupported_platform | addon_unavailable`.
+
 ## Loading
 
 Resolution order (`src/loader.ts`):

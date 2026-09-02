@@ -52,19 +52,36 @@ export function resolveReleaseSource({ argvBaseUrl, argvTag, env = {}, config = 
  * a downloaded addon, BEFORE it may replace the installed one. Mirrors the
  * full portable-identity contract enforced by the loader
  * (packages/cc-lhc-native/src/identity.ts, file-identity.ts): identity
- * contract version 2, addon compiled for this platform, a complete identity
+ * contract version 3, addon compiled for this platform, every contract-3
+ * function export present, a complete identity
  * for the probing process — ok true, the exact probed pid echoed back, a
  * bootId of at least 8 characters, and a nonempty digits-only starttime
  * (≤ 20 digits) — and a complete file identity for the downloaded artifact
  * itself (ok true, digits-only volumeId, tagged fileId).
  * Returns { ok: true, probe } or { ok: false, reason }.
  */
+/** Mirrors ADDON_FUNCTION_EXPORTS in packages/cc-lhc-native/src/loader.ts. */
+export const PREBUILD_FUNCTION_EXPORTS = [
+  "readProcessIdentity",
+  "readFileIdentity",
+  "pauseProcess",
+  "resumeProcess",
+  "readChildExit",
+  "findChildHoldingFile",
+];
+
 export function validateProbeReport(report, platform) {
   if (report === null || typeof report !== "object" || Array.isArray(report)) {
     return { ok: false, reason: `probe report is not an object: ${JSON.stringify(report)}` };
   }
-  if (report.contract !== 2) {
-    return { ok: false, reason: `contract version ${String(report.contract)}, need 2` };
+  if (report.contract !== 3) {
+    return { ok: false, reason: `contract version ${String(report.contract)}, need 3` };
+  }
+  const exportsList = Array.isArray(report.exports) ? report.exports : [];
+  for (const name of PREBUILD_FUNCTION_EXPORTS) {
+    if (!exportsList.includes(name)) {
+      return { ok: false, reason: `addon does not export ${name}()` };
+    }
   }
   if (report.platform !== platform) {
     return { ok: false, reason: `compiled for ${String(report.platform)}, running on ${platform}` };

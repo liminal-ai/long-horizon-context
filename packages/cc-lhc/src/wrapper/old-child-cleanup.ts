@@ -6,11 +6,18 @@
  * never a collapsed `{ exited, pid }` boolean reconstructed later.
  */
 
-import { identitiesEqual, type ProbeProcessIdentity, type ProcessIdentity, type ProcessLivenessResult } from "../runtime/process-identity.js";
+import {
+  identitiesEqual,
+  type ProbeProcessIdentity,
+  type ProcessIdentity,
+  type ProcessLivenessResult,
+} from "../runtime/process-identity.js";
 
 export type OldChildCleanup =
   | { kind: "terminated"; pid: number }
   | { kind: "surviving_orphan"; pid: number }
+  /** Deliberately kept alive as the adopted background tasks' completion host (LIM-149). */
+  | { kind: "retained_task_host"; pid: number }
   | { kind: "unknown"; pid?: number; detail: string };
 
 export type OldChildTerminationAttempt =
@@ -24,6 +31,8 @@ export function formatOldChildCleanup(cleanup: OldChildCleanup): string {
       return `old child pid ${cleanup.pid} terminated`;
     case "surviving_orphan":
       return `old child pid ${cleanup.pid} is a surviving orphan and may still be running`;
+    case "retained_task_host":
+      return `old child pid ${cleanup.pid} retained as the adopted background tasks' completion host`;
     case "unknown":
       return cleanup.pid === undefined
         ? `old-child cleanup outcome unknown; the old child may still be running (${cleanup.detail})`

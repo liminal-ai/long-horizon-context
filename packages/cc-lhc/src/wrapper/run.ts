@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
+import { exactProcessControl } from "cc-lhc-native";
 import {
   type CarryoverAcceptance,
   type ContextMutationPlan,
@@ -13,10 +14,17 @@ import { registerRebuiltSessionLineage, threadIdFromRef } from "../commands/rebu
 import { qualifyActiveItems, statPathReal } from "../continuity/adapters.js";
 import { cleanupThread } from "../continuity/cleanup.js";
 import { defaultResultHookCommand, RESULT_HOOK_TIMEOUT_SECONDS } from "../continuity/delivery.js";
+
 import { invokeCarryover } from "../continuity/handoff.js";
 import { applyAsyncWorkEvent, carriedOpenWork } from "../continuity/observe.js";
 import { snapshotContinuity } from "../continuity/snapshot.js";
 import { type ContinuityStore, openContinuityStore } from "../continuity/store.js";
+import {
+  type discoverAdoptedTaskProcess,
+  reconcileAdoptedShells,
+  settleRetainedHost,
+  terminateRetainedHostReal,
+} from "../continuity/task-process.js";
 import {
   applyContextWindow,
   applyGovernorLifecycleBatch,
@@ -310,6 +318,19 @@ export type RunOptions = {
   handoffReceiptStoreHook?: (store: HandoffReceiptStore) => HandoffReceiptStore;
   /** Test hook: substitute the old-child identity probe. Production uses the native probe. */
   probeProcessIdentity?: ProbeProcessIdentity;
+  /** Adopted-task discovery seam (tests); production asks the native addon (LIM-149). */
+  discoverTaskProcess?: typeof discoverAdoptedTaskProcess;
+  /**
+   * Pause/resume/terminate the wrapper's own retained completion host
+   * (tests). Production pauses and resumes through the native addon and
+   * terminates through process.kill.
+   */
+  hostSignal?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Paused-host exit-record reader (tests; production asks the native addon, LIM-149). */
+  readTaskExit?: (proc: {
+    pid: number;
+    starttime: string;
+  }) => import("../continuity/task-process.js").TaskExitOutcome | null;
   /**
    * Test hook: inject a pre-configured command guard (e.g. already holding a flight)
    * so auto-compact can observe command_guard_busy terminalization.
@@ -562,6 +583,69 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
    * replaced child. Same database file as the receipts.
    */
   let continuityStore: ContinuityStore | null = null;
+  /** The old child deliberately kept alive as the adopted tasks' completion host (LIM-149). */
+  let retainedHostPty: { pty: IPty; threadId: string; frozen: boolean } | null = null;
+  /** Graceful PTY termination for the retained host, bound once terminateChild exists. */
+  let retainedTerminate: ((pty: IPty) => Promise<boolean>) | undefined;
+  const hostSignal =
+    options.hostSignal ??
+    ((pid: number, signal: NodeJS.Signals): void => {
+      // Pause/resume are whole-process operations the addon performs the same
+      // way everywhere; only termination is Node's own portable kill.
+      if (signal === "SIGSTOP" || signal === "SIGCONT") {
+        const control = exactProcessControl();
+        const result = signal === "SIGSTOP" ? control.pause(pid) : control.resume(pid);
+        if (!result.ok) {
+          throw new Error(`${signal === "SIGSTOP" ? "pause" : "resume"} failed: ${result.code}: ${result.message}`);
+        }
+        return;
+      }
+      process.kill(pid, signal);
+    });
+  /**
+   * Retire the retained host once every adopted item is terminal. Same-wrapper
+   * hosts terminate through the PTY handle they were spawned with; a host
+   * inherited from a prior wrapper (restart) goes through the identity-gated
+   * pid-exact route. Fail closed on indeterminate probes; never a bare pid.
+   */
+  const settleHost = async (threadId: string, terminatePty?: (pty: IPty) => Promise<boolean>): Promise<void> => {
+    if (continuityStore === null || threadId === "") return;
+    try {
+      const settle = await settleRetainedHost(continuityStore, threadId, {
+        probeIdentity: probeProcessIdentity,
+        terminateHost: async (host) => {
+          // A frozen host cannot act on the PTY handle's graceful SIGTERM, so
+          // it always retires through the identity-gated pid-exact route
+          // (straight SIGKILL, which also reaps its zombie task children).
+          if (
+            host.frozen !== true &&
+            retainedHostPty !== null &&
+            retainedHostPty.threadId === threadId &&
+            terminatePty !== undefined
+          ) {
+            const ok = await terminatePty(retainedHostPty.pty);
+            if (ok) retainedHostPty = null;
+            return ok;
+          }
+          const ok = await terminateRetainedHostReal(host, probeProcessIdentity, hostSignal);
+          if (ok && retainedHostPty?.threadId === threadId) retainedHostPty = null;
+          return ok;
+        },
+      });
+      if (settle.kind === "terminated" || settle.kind === "already_gone") {
+        if (retainedHostPty?.threadId === threadId) retainedHostPty = null;
+        wrapperLog.info(
+          `cc-lhc continuity: retained completion host ${settle.kind === "terminated" ? "terminated" : "already gone"}`,
+        );
+      } else if (settle.kind === "terminate_failed") {
+        wrapperLog.warn(`cc-lhc continuity: ${settle.detail}`);
+      }
+    } catch (cause) {
+      wrapperLog.warn(
+        `cc-lhc continuity: retained-host settle failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  };
   try {
     continuityStore = openContinuityStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
   } catch (cause) {
@@ -584,6 +668,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       wrapperLog.info(
         `cc-lhc continuity: ${delivered.length} carried result(s) delivered on a real prompt: ${delivered.join(", ")}`,
       );
+      // LIM-149: delivery is an existing event seam — if the retained host has
+      // nothing left to supervise, retire it now (no polling anywhere).
+      void settleHost(threadId, retainedTerminate);
     }
   };
   const resultHookCommand = options.resultHookCommand ?? defaultResultHookCommand();
@@ -613,16 +700,51 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
    * A Monitor whose relaunch is impossible is closed as failed here; an item
    * no adapter can carry refuses the seam with the current session kept.
    */
+  /** The current child's pid while it is spawned — the discovery root for adopted tasks. */
+  const liveChildPidForDiscovery = (): number | undefined => {
+    try {
+      return currentPty.pid;
+    } catch {
+      return undefined;
+    }
+  };
+
   const acceptCarryoverAtSeam = (
     threadId: string,
     sourceRolloutPath: string | undefined,
     sourceSessionId: string | undefined,
   ): CarryoverAcceptance => {
     if (continuityStore === null || threadId === "") return { ok: true };
+    // LIM-149: a previously adopted task that already finished (or was killed
+    // with an old session) must settle here from Claude's own markers, not be
+    // carried again or stay active forever. Lost supervision is surfaced as
+    // `unknown`, never invented as an outcome.
+    const report = reconcileAdoptedShells(continuityStore, threadId, {
+      ...(options.readTaskExit === undefined ? {} : { readTaskExit: options.readTaskExit }),
+    });
+    for (const done of report.reconciled) {
+      wrapperLog.info(`cc-lhc continuity: adopted ${done.launchId} reconciled ${done.outcome} (${done.evidence})`);
+    }
+    for (const lost of report.unsupervised) {
+      wrapperLog.warn(
+        `cc-lhc continuity: adopted ${lost} lost its supervision (host and task gone, no exit marker); ` +
+          "state is unknown — its outcome cannot be determined",
+      );
+    }
+    void settleHost(threadId, retainedTerminate);
     const qualified = qualifyActiveItems(
       continuityStore,
       threadId,
-      { platform: process.platform, sourceRolloutPath, statPath: statPathReal },
+      {
+        platform: process.platform,
+        sourceRolloutPath,
+        statPath: statPathReal,
+        ...((): { oldChildPid?: number } => {
+          const pid = liveChildPidForDiscovery();
+          return pid === undefined ? {} : { oldChildPid: pid };
+        })(),
+        ...(options.discoverTaskProcess === undefined ? {} : { discoverTaskProcess: options.discoverTaskProcess }),
+      },
       Date.now(),
     );
     for (const closed of qualified.terminalized) {
@@ -2205,6 +2327,32 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         }
         governorReceiptStore = null;
       }
+      if (retainedHostPty !== null) {
+        // Orderly exit: the retained host is this wrapper's own child; it must
+        // not outlive the wrapper. An alive host is asked gracefully so Claude
+        // reaps any still-running task and writes its truthful "[killed]"
+        // marker; a frozen host cannot act on SIGTERM, so it is SIGKILLed
+        // (reaping its zombie children). Either way the next wrapper's
+        // reconcile settles the record from durable evidence.
+        wrapperLog.info(
+          `cc-lhc continuity: terminating retained ${retainedHostPty.frozen ? "frozen " : ""}completion host ` +
+            `pid ${retainedHostPty.pty.pid} on orderly exit`,
+        );
+        try {
+          if (retainedHostPty.frozen) {
+            try {
+              hostSignal(retainedHostPty.pty.pid, "SIGKILL");
+            } catch {
+              // already gone
+            }
+          } else {
+            await (retainedTerminate?.(retainedHostPty.pty) ?? Promise.resolve(false));
+          }
+        } catch {
+          // best effort; identity-gated settle on the next wrapper cleans up
+        }
+        retainedHostPty = null;
+      }
       if (continuityStore !== null) {
         // Orderly exit: bounded cleanup of the bound thread's finished carried
         // work (AC-2.10). No binding, no cleanup.
@@ -2821,6 +2969,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       if (!killed) expectedExitPty = null;
       return killed;
     };
+    retainedTerminate = (pty) => terminateChild(pty, true);
 
     /**
      * Adopt a candidate's descriptor as the active retrieval capability and
@@ -3005,14 +3154,121 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             ...(switchWarnings.length === 0 ? {} : { switchWarnings }),
           };
         },
-        killOldChild: async () =>
-          observeOldChildCleanup({
+        killOldChild: async () => {
+          // LIM-149. The replacement is the sole interactive/model authority the
+          // instant the switch lands. This wrapper's own supervised child may
+          // only linger as an input/output-fenced completion recorder for its
+          // adopted background shells — never as a model that could make a
+          // provider call.
+          //   adopt-only carryover: keep it running. It supervises its own
+          //     shells and records the real "[exited with code N]" outcome with
+          //     no provider call; markers work on every platform.
+          //   mixed carryover (shells + any reconstruct/rearm family): the
+          //     non-shell families are already carried by the REPLACEMENT, so
+          //     the child's own copies must not complete and wake its model.
+          //     Pausing it (native addon; Linux, macOS, Windows alike) stops
+          //     every such path while its separate-group shells keep running;
+          //     each shell's real exit status is then read from the child's
+          //     own uncollected task record, which needs the task process
+          //     pinned at qualification. Without every pin the child cannot
+          //     be paused truthfully and is terminated gracefully instead, so
+          //     those shells close from Claude's own "[killed]" marker.
+          const items = request.carryover?.snapshot.items ?? [];
+          const adoptItems = items.filter((item) => item.carryMode === "adopt");
+          const nonShell = items.length - adoptItems.length;
+          const mixed = adoptItems.length > 0 && nonShell > 0;
+          const threadIdForPins = request.carryover?.snapshot.threadId ?? "";
+          const unpinned =
+            mixed && continuityStore !== null
+              ? adoptItems.filter(
+                  (item) =>
+                    continuityStore?.getItem(threadIdForPins, item.launchId)?.continuation?.taskProcess === undefined,
+                )
+              : [];
+          if (unpinned.length > 0) {
+            wrapperLog.warn(
+              "cc-lhc handoff: mixed carryover cannot pause the supervised child — no task process pinned for " +
+                `${unpinned.map((item) => item.launchId).join(", ")}; terminating it gracefully instead, those ` +
+                "shell(s) close from Claude's own marker",
+            );
+          }
+          const canRetain =
+            adoptItems.length > 0 &&
+            unpinned.length === 0 &&
+            childRecords.get(oldPty)?.exited !== true &&
+            continuityStore !== null;
+          if (canRetain) {
+            const store = continuityStore as NonNullable<typeof continuityStore>;
+            const carried = request.carryover as NonNullable<typeof request.carryover>;
+            const probed = probeProcessIdentity(oldPty.pid);
+            if (probed.ok) {
+              // Mixed carryover pauses the child before recording, so no
+              // duplicate family can wake it in the window before retirement.
+              let froze = true;
+              if (mixed) {
+                try {
+                  hostSignal(oldPty.pid, "SIGSTOP");
+                } catch (cause) {
+                  froze = false;
+                  wrapperLog.warn(
+                    "cc-lhc handoff: could not pause the supervised child for a mixed carryover " +
+                      `(${cause instanceof Error ? cause.message : String(cause)}); it will be terminated`,
+                  );
+                }
+              }
+              if (froze) {
+                const host = {
+                  pid: probed.identity.pid,
+                  bootId: probed.identity.bootId,
+                  starttime: probed.identity.starttime,
+                  retainedAtMs: Date.now(),
+                  ...(mixed ? { frozen: true } : {}),
+                };
+                try {
+                  store.setRetainedHost({
+                    threadId: carried.snapshot.threadId,
+                    generation: carried.snapshot.generation,
+                    host,
+                    nowMs: host.retainedAtMs,
+                  });
+                  retainedHostPty = { pty: oldPty, threadId: carried.snapshot.threadId, frozen: mixed };
+                  wrapperLog.info(
+                    `cc-lhc handoff: old child pid ${oldPty.pid} retained as ${mixed ? "paused " : ""}completion host ` +
+                      `for ${adoptItems.length} adopted background task(s)` +
+                      (mixed ? `; ${nonShell} non-shell item(s) carried by the replacement` : ""),
+                  );
+                  return { kind: "retained_task_host", pid: oldPty.pid };
+                } catch (cause) {
+                  if (mixed) {
+                    try {
+                      hostSignal(oldPty.pid, "SIGCONT");
+                    } catch {
+                      // it will be terminated below regardless
+                    }
+                  }
+                  wrapperLog.warn(
+                    "cc-lhc handoff: retained-host record failed; terminating instead: " +
+                      `${cause instanceof Error ? cause.message : String(cause)}`,
+                  );
+                }
+              }
+            } else {
+              // Fail closed: without an exact identity record a later settle
+              // could never safely signal the host, so it is not retained.
+              wrapperLog.warn(
+                `cc-lhc handoff: old-child identity unreadable (${probed.code}); adopted task(s) cannot be ` +
+                  "hosted and will close as killed",
+              );
+            }
+          }
+          return observeOldChildCleanup({
             pid: oldPty.pid,
             alreadyExited: childRecords.get(oldPty)?.exited === true,
             probe: probeProcessIdentity,
             terminate: () => terminateChild(oldPty, true),
             onWarn: (message) => wrapperLog.warn(message),
-          }),
+          });
+        },
         awaitReplacementCaptureReady: awaitCaptureReadyAfterReplay,
         reconcileCapture: (reason: string): void => {
           wrapperLog.warn(`cc-lhc handoff: reconciling capture from the transcript after ${reason}`);

@@ -65,6 +65,12 @@ export interface AsyncWorkContinuation {
   scriptPath?: string;
   /** Workflow transcript directory holding `journal.jsonl`. */
   transcriptDir?: string;
+  /**
+   * Exact identity of the adopted shell's live task process, discovered at
+   * qualification while the old child was alive (LIM-149). Lets completion be
+   * kernel-proven after the old session is gone; a reused pid never matches.
+   */
+  taskProcess?: { pid: number; bootId: string; starttime: string };
 }
 
 /** One piece of live asynchronous work the next swap would kill. */

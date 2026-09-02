@@ -60,6 +60,7 @@ import {
   type QualifiedCarryMode,
   type VerifiedIdentity,
 } from "./store.js";
+import { discoverAdoptedTaskProcess } from "./task-process.js";
 
 export type { ContinuationMechanism } from "./store.js";
 
@@ -81,6 +82,10 @@ export interface AdapterContext {
   relaunchShell?: RelaunchShellResolution;
   /** Win32 file-object identity seam (tests); production reads through the native addon. */
   readFileIdentity?: (path: string) => ReadFileIdentityResult;
+  /** Pid of the still-live old claude child, for adopted-task discovery (LIM-149). */
+  oldChildPid?: number;
+  /** Discovery seam (tests); production walks /proc for the fd holder. */
+  discoverTaskProcess?: typeof discoverAdoptedTaskProcess;
 }
 
 export type MonitorLaunchUnresolvable =
@@ -436,6 +441,25 @@ export function qualifyActiveItems(
         verifiedIdentity: result.verifiedIdentity,
         nowMs,
       });
+      // LIM-149: while the old child is still alive, pin the adopted shell's
+      // real task process (the direct child holding the verified output file)
+      // so its exit record stays readable after its supervisor is paused.
+      // Same on every platform. Without the pin the adopt still stands on
+      // file identity; a mixed carryover then cannot pause the host for it.
+      if (
+        item.family === "background_shell" &&
+        result.carryMode === "adopt" &&
+        (result.verifiedIdentity.kind === "posix_output" || result.verifiedIdentity.kind === "win32_output") &&
+        item.continuation?.taskProcess === undefined &&
+        context.oldChildPid !== undefined
+      ) {
+        const discovered = (context.discoverTaskProcess ?? discoverAdoptedTaskProcess)(context.oldChildPid, {
+          path: result.verifiedIdentity.path,
+        });
+        if (discovered !== null) {
+          store.setTaskProcess({ threadId, launchId: item.launchId, taskProcess: discovered, nowMs });
+        }
+      }
       if (item.state === "unknown") store.setVerified({ threadId, launchId: item.launchId, verified: true, nowMs });
       outcome.qualified.push({
         launchId: item.launchId,

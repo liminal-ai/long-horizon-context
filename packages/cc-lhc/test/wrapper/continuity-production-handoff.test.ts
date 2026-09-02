@@ -6,7 +6,18 @@
  * the generation closes. Covers TC-2.3a/b, TC-2.5a-d, TC-2.6a, TC-2.8a-c and
  * the Monitor relaunch fence.
  */
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -20,6 +31,7 @@ import { itemStatus, readItemOutput } from "../../src/continuity/manage.js";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
 import { type ContinuitySnapshot, closeContinuitySnapshot, snapshotContinuity } from "../../src/continuity/snapshot.js";
 import { type ContinuityStore, openContinuityStore } from "../../src/continuity/store.js";
+import type { discoverAdoptedTaskProcess } from "../../src/continuity/task-process.js";
 import { runTasksCli } from "../../src/continuity/tasks-cli.js";
 import { CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
@@ -33,6 +45,7 @@ import {
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
+import type { ProcessLivenessResult } from "../../src/runtime/process-identity.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { run } from "../../src/wrapper/run.js";
@@ -99,7 +112,12 @@ function hookContextRecord(context: string): RolloutLineItem {
 }
 
 /** Run the registered hook op the way Claude does: payload on stdin, in the child's environment. */
-async function runHook(env: Record<string, string>, sessionId: string, transcriptPath: string) {
+async function runHook(
+  env: Record<string, string>,
+  sessionId: string,
+  transcriptPath: string,
+  reconcile?: import("../../src/continuity/task-process.js").ReconcileDeps,
+) {
   let out = "";
   let err = "";
   const stdin = new PassThrough();
@@ -131,7 +149,7 @@ async function runHook(env: Record<string, string>, sessionId: string, transcrip
         },
       }),
     },
-    { env: { ...env, CLAUDE_CODE_SESSION_ID: sessionId } },
+    { env: { ...env, CLAUDE_CODE_SESSION_ID: sessionId }, ...(reconcile === undefined ? {} : { reconcile }) },
   );
   return { code, out, err };
 }
@@ -384,6 +402,17 @@ const homes: string[] = [];
 
 /** Launch the wrapper on the old session with capture fed by real rollout records. */
 interface LaunchOptions {
+  /** Adopted-task discovery seam handed to run() (LIM-149). */
+  discoverTaskProcess?: typeof discoverAdoptedTaskProcess;
+  /** Identity probe seam handed to run() — retention requires an exact old-child identity. */
+  probeProcessIdentity?: (pid: number) => ProcessLivenessResult;
+  /** Raw freeze/kill signal seam handed to run() — mixed carryover freezes the fake old child through this, never a real pid (LIM-149). */
+  hostSignal?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Paused-host exit-record reader handed to run() (LIM-149). */
+  readTaskExit?: (proc: {
+    pid: number;
+    starttime: string;
+  }) => import("../../src/continuity/task-process.js").TaskExitOutcome | null;
   /** The first N replacement candidates never produce output, so they fail viability before the switch. */
   muteCandidates?: number;
   /** A second wrapper process over the same durable authority: reuse this home instead of a fresh one. */
@@ -509,6 +538,10 @@ async function launch(
       results.push(result);
     },
     ...(muteCandidates > 0 ? { replacementAttempts: 1 } : {}),
+    ...(options.discoverTaskProcess === undefined ? {} : { discoverTaskProcess: options.discoverTaskProcess }),
+    ...(options.probeProcessIdentity === undefined ? {} : { probeProcessIdentity: options.probeProcessIdentity }),
+    ...(options.hostSignal === undefined ? {} : { hostSignal: options.hostSignal }),
+    ...(options.readTaskExit === undefined ? {} : { readTaskExit: options.readTaskExit }),
     handoffTimeouts: {
       sigtermGraceMs: 500,
       sigkillWaitMs: 300,
@@ -1596,5 +1629,381 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     }
     // The command lives only where it always did: the old session's rollout.
     expect(readFileSync(rig.rolloutPath, "utf8")).toContain(MONITOR_COMMAND);
+  }, 15_000);
+});
+
+describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained completion host", () => {
+  /** An identity probe where the listed pids are alive with stable exact identities. */
+  function probeFor(alive: Set<number>): (pid: number) => ProcessLivenessResult {
+    return (pid: number) =>
+      alive.has(pid)
+        ? { ok: true, identity: { pid, bootId: "boot-fixture", starttime: `st-${pid}` } }
+        : { ok: false, code: "not_found", message: "no such process" };
+  }
+
+  /** A second adopted shell launch so success and failure outcomes coexist. */
+  function secondShellLines(p: LaunchPaths): RolloutLineItem[] {
+    return [
+      {
+        type: "assistant",
+        message: {
+          role: "assistant",
+          content: [
+            {
+              type: "tool_use",
+              id: "toolu_sh2",
+              name: "Bash",
+              input: { command: "make check", run_in_background: true },
+            },
+          ],
+        },
+      } as unknown as RolloutLineItem,
+      {
+        type: "user",
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_sh2",
+              content: `Command running in background with ID: shell-2. Output is being written to: ${join(p.tasksDir, "shell-2.output")}`,
+            },
+          ],
+        },
+        toolUseResult: { stdout: "", stderr: "", interrupted: false, isImage: false, backgroundTaskId: "shell-2" },
+      } as unknown as RolloutLineItem,
+    ];
+  }
+  const SHELL2_ID = "background_shell:shell-2:toolu_sh2";
+
+  it("adopt-only carryover: host retained (no kill), distinct real outcomes delivered exactly once, host retired after delivery", async () => {
+    const alive = new Set([1000]);
+    const rig = await launch({ monitorInRollout: false }, [], { probeProcessIdentity: probeFor(alive) });
+    writeFileSync(join(rig.paths.tasksDir, "shell-2.output"), "building\n");
+
+    rig.feed([...LAUNCHES.background_shell.lines(rig.paths), ...secondShellLines(rig.paths)]);
+    await storeHas(rig.dbPath, [LAUNCH_IDS.background_shell, SHELL2_ID]);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+
+    // The old child was RETAINED, never signalled: it is the completion host.
+    const oldPty = rig.spawned[0]!;
+    expect(oldPty.killed).toEqual([]);
+    expect(wrapperLog(rig)).toContain("retained as completion host for 2 adopted background task(s)");
+    const host = withStore(rig.dbPath, (store) => store.retainedHostGeneration(T)?.retainedHost);
+    expect(host).toMatchObject({ pid: 1000, bootId: "boot-fixture", starttime: "st-1000" });
+    // Receipt truth: cleanup recorded as retained_task_host, not terminated.
+    const receiptDb = new DatabaseSync(rig.dbPath, { readOnly: true });
+    const kinds = receiptDb
+      .prepare("SELECT cleanup_kind FROM cc_handoff_receipts ORDER BY rowid DESC LIMIT 1")
+      .get() as { cleanup_kind: string };
+    receiptDb.close();
+    expect(kinds.cleanup_kind).toBe("retained_task_host");
+
+    // Both items carried as adopt, still active — no invented outcome.
+    for (const id of [LAUNCH_IDS.background_shell, SHELL2_ID]) {
+      expect(withStore(rig.dbPath, (store) => store.getItem(T, id))).toMatchObject({
+        carryMode: "adopt",
+        state: "active",
+      });
+    }
+
+    // Claude (the retained host) supervises to the end and writes the real
+    // outcomes: exit 0 for one task, exit 3 for the other (probed 2.1.258).
+    appendFileSync(join(rig.paths.tasksDir, "shell-1.output"), "\n[exited with code 0]\n");
+    appendFileSync(join(rig.paths.tasksDir, "shell-2.output"), "\n[exited with code 3]\n");
+
+    const rebuiltPath = join(rig.home, `${REBUILT_ID}.jsonl`);
+    const sdkCalls = () =>
+      Object.fromEntries(
+        Object.entries(rig.sdk.threadView).map(([name, fn]) => [
+          name,
+          (fn as ReturnType<typeof vi.fn>).mock.calls.length,
+        ]),
+      );
+    const before = { sdk: sdkCalls(), ptyWrites: rig.spawned.map((p) => p.writes.length) };
+
+    // The next real prompt's hook settles both from the markers and serves them.
+    const replacement = rig.spawned[1]!;
+    const hook = await runHook(replacement.env, REBUILT_ID, rebuiltPath);
+    expect(hook.code).toBe(0);
+    const context = (JSON.parse(hook.out) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput
+      .additionalContext;
+    expect(context).toContain(`result ${LAUNCH_IDS.background_shell}`);
+    expect(context).toContain(`result ${SHELL2_ID}`);
+    const one = withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.background_shell));
+    const two = withStore(rig.dbPath, (store) => store.getItem(T, SHELL2_ID));
+    expect(one?.terminal).toMatchObject({ outcome: "completed" });
+    expect(one?.terminal?.evidence).toContain("exited with code 0");
+    expect(two?.terminal).toMatchObject({ outcome: "failed" });
+    expect(two?.terminal?.evidence).toContain("exited with code 3");
+
+    // Exactly-once delivery of both, then a replayed ack changes nothing.
+    rig.feedCurrent([hookContextRecord(context)]);
+    await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length) === 0, "both delivered");
+    const settled = withStore(rig.dbPath, (store) => [
+      store.getResult(T, LAUNCH_IDS.background_shell),
+      store.getResult(T, SHELL2_ID),
+    ]);
+    expect(settled.map((r) => r?.outcome)).toEqual(["completed", "failed"]);
+    rig.feedCurrent([hookContextRecord(context)]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(
+      withStore(rig.dbPath, (store) => [
+        store.getResult(T, LAUNCH_IDS.background_shell),
+        store.getResult(T, SHELL2_ID),
+      ]),
+    ).toEqual(settled);
+    expect((await runHook(replacement.env, REBUILT_ID, rebuiltPath)).out).toBe("");
+
+    // Delivery was the settle seam: with nothing left to supervise, the host
+    // is retired gracefully (its own PTY handle) and the record cleared.
+    await waitFor(() => oldPty.killed.length > 0, "host retired");
+    expect(oldPty.killed).toContain("SIGTERM");
+    expect(oldPty.killed).not.toContain("SIGKILL");
+    await waitFor(
+      () => withStore(rig.dbPath, (store) => store.retainedHostGeneration(T)) === null,
+      "host record cleared",
+    );
+
+    // No provider call, no PTY write to the replacement, throughout.
+    expect(sdkCalls()).toEqual(before.sdk);
+    expect(rig.spawned[1]!.writes.length).toBe(before.ptyWrites[1]);
+    await rig.finish();
+  }, 20_000);
+
+  /**
+   * Seams for a carryover that pauses the wrapper's own supervised child.
+   * Every target is that child (pid 1000) or one of its own tasks; the test
+   * drives them through injected seams and never touches a real process.
+   */
+  function pauseSeams() {
+    const alive = new Set([1000]);
+    const signals: Array<[number, string]> = [];
+    const hostSignal = (pid: number, signal: NodeJS.Signals): void => {
+      signals.push([pid, signal]);
+      if (signal === "SIGKILL" || signal === "SIGTERM") alive.delete(pid);
+    };
+    const taskFor = (path: string): { pid: number; bootId: string; starttime: string } | null =>
+      path.endsWith("shell-1.output")
+        ? { pid: 7001, bootId: "boot-task", starttime: "st-7001" }
+        : path.endsWith("shell-2.output")
+          ? { pid: 7002, bootId: "boot-task", starttime: "st-7002" }
+          : null;
+    const discoverTaskProcess: typeof discoverAdoptedTaskProcess = (_parentPid, output) => taskFor(output.path);
+    /** The task's own exit status, as the paused supervisor's uncollected child record reports it. */
+    const readTaskExit = (proc: { pid: number; starttime: string }) =>
+      proc.pid === 7001
+        ? ({ kind: "exited", code: 0 } as const)
+        : proc.pid === 7002
+          ? ({ kind: "exited", code: 3 } as const)
+          : null;
+    return { alive, signals, hostSignal, discoverTaskProcess, readTaskExit, probe: probeFor(alive) };
+  }
+
+  function sdkCallCounts(rig: Rig): Record<string, number> {
+    return Object.fromEntries(
+      Object.entries(rig.sdk.threadView).map(([name, fn]) => [
+        name,
+        (fn as ReturnType<typeof vi.fn>).mock.calls.length,
+      ]),
+    );
+  }
+
+  it("mixed carryover (shell + agent): the supervised child is paused, its shell keeps running, and the real exit status settles exactly once", async () => {
+    const seams = pauseSeams();
+    const rig = await launch({ monitorInRollout: false }, [], {
+      probeProcessIdentity: seams.probe,
+      hostSignal: seams.hostSignal,
+      discoverTaskProcess: seams.discoverTaskProcess,
+      readTaskExit: seams.readTaskExit,
+    });
+    rig.feed([...LAUNCHES.agent.lines(rig.paths), ...LAUNCHES.background_shell.lines(rig.paths)]);
+    await storeHas(rig.dbPath, [LAUNCH_IDS.agent, LAUNCH_IDS.background_shell]);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+
+    // The supervised child was paused at the switch, never terminated: its
+    // shell keeps running, and its own model can start no further work.
+    const oldPty = rig.spawned[0]!;
+    expect(oldPty.killed).toEqual([]);
+    expect(seams.signals).toEqual([[1000, "SIGSTOP"]]);
+    expect(withStore(rig.dbPath, (store) => store.retainedHostGeneration(T)?.retainedHost)).toMatchObject({
+      pid: 1000,
+      bootId: "boot-fixture",
+      starttime: "st-1000",
+      frozen: true,
+    });
+
+    // Both families carried once under the same generation: the agent by the
+    // replacement, the shell adopted in place.
+    expect(withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.agent))).toMatchObject({
+      carryMode: "reconstruct",
+      generation: 1,
+    });
+    expect(withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.background_shell))).toMatchObject({
+      carryMode: "adopt",
+      state: "active",
+      generation: 1,
+    });
+
+    const before = { sdk: sdkCallCounts(rig), replacementWrites: rig.spawned[1]!.writes.length };
+    const replacement = rig.spawned[1]!;
+    const rebuiltPath = join(rig.home, `${REBUILT_ID}.jsonl`);
+
+    // The next real prompt settles the shell from its own exit status.
+    const hook = await runHook(replacement.env, REBUILT_ID, rebuiltPath, { readTaskExit: seams.readTaskExit });
+    expect(hook.code).toBe(0);
+    const context = (JSON.parse(hook.out) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput
+      .additionalContext;
+    expect(context).toContain(`result ${LAUNCH_IDS.background_shell}`);
+    const settledItem = withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.background_shell));
+    expect(settledItem?.terminal).toMatchObject({ outcome: "completed" });
+    expect(settledItem?.terminal?.evidence).toContain("exited with code 0");
+
+    // Delivered exactly once: a replayed acknowledgement changes no byte.
+    rig.feedCurrent([hookContextRecord(context)]);
+    await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length) === 0, "delivered");
+    const delivered = withStore(rig.dbPath, (store) => store.getResult(T, LAUNCH_IDS.background_shell));
+    expect(delivered).toMatchObject({ outcome: "completed", delivery: "delivered" });
+    rig.feedCurrent([hookContextRecord(context)]);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(withStore(rig.dbPath, (store) => store.getResult(T, LAUNCH_IDS.background_shell))).toEqual(delivered);
+    expect((await runHook(replacement.env, REBUILT_ID, rebuiltPath, { readTaskExit: seams.readTaskExit })).out).toBe(
+      "",
+    );
+
+    // Retired only once its last task had settled, and only by exact identity.
+    await waitFor(() => seams.signals.some(([, signal]) => signal === "SIGKILL"), "supervised child retired");
+    expect(seams.signals).toEqual([
+      [1000, "SIGSTOP"],
+      [1000, "SIGKILL"],
+    ]);
+    await waitFor(
+      () => withStore(rig.dbPath, (store) => store.retainedHostGeneration(T)) === null,
+      "host record cleared",
+    );
+
+    // No provider call and no terminal traffic from the old session throughout.
+    expect(sdkCallCounts(rig)).toEqual(before.sdk);
+    expect(rig.spawned[1]!.writes.length).toBe(before.replacementWrites);
+    expect(oldPty.writes).toEqual([]);
+    await rig.finish();
+  }, 20_000);
+
+  it("mixed carryover (shells + scheduled wakeup): each shell keeps its own real outcome, success and failure distinct", async () => {
+    const seams = pauseSeams();
+    const rig = await launch({ monitorInRollout: false }, [], {
+      probeProcessIdentity: seams.probe,
+      hostSignal: seams.hostSignal,
+      discoverTaskProcess: seams.discoverTaskProcess,
+      readTaskExit: seams.readTaskExit,
+    });
+    writeFileSync(join(rig.paths.tasksDir, "shell-2.output"), "building\n");
+    rig.feed([
+      ...LAUNCHES.scheduled_wakeup.lines(rig.paths),
+      ...LAUNCHES.background_shell.lines(rig.paths),
+      ...secondShellLines(rig.paths),
+    ]);
+    await storeHas(rig.dbPath, [LAUNCH_IDS.scheduled_wakeup, LAUNCH_IDS.background_shell, SHELL2_ID]);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+
+    expect(rig.spawned[0]!.killed).toEqual([]);
+    expect(seams.signals[0]).toEqual([1000, "SIGSTOP"]);
+    // The wakeup is rearmed by the replacement, exactly one carried record.
+    expect(withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.scheduled_wakeup))).toMatchObject({
+      carryMode: "rearm",
+      generation: 1,
+    });
+    expect(withStore(rig.dbPath, (store) => store.getGeneration(T, 1)?.launchIds.length)).toBe(3);
+
+    const replacement = rig.spawned[1]!;
+    const rebuiltPath = join(rig.home, `${REBUILT_ID}.jsonl`);
+    const hook = await runHook(replacement.env, REBUILT_ID, rebuiltPath, { readTaskExit: seams.readTaskExit });
+    expect(hook.code).toBe(0);
+
+    const first = withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.background_shell));
+    const second = withStore(rig.dbPath, (store) => store.getItem(T, SHELL2_ID));
+    expect(first?.terminal).toMatchObject({ outcome: "completed" });
+    expect(first?.terminal?.evidence).toContain("exited with code 0");
+    expect(second?.terminal).toMatchObject({ outcome: "failed" });
+    expect(second?.terminal?.evidence).toContain("exited with code 3");
+
+    const context = (JSON.parse(hook.out) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput
+      .additionalContext;
+    rig.feedCurrent([hookContextRecord(context)]);
+    await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length) === 0, "both delivered");
+    expect(
+      withStore(rig.dbPath, (store) => [
+        store.getResult(T, LAUNCH_IDS.background_shell)?.outcome,
+        store.getResult(T, SHELL2_ID)?.outcome,
+      ]),
+    ).toEqual(["completed", "failed"]);
+    await rig.finish();
+  }, 20_000);
+
+  it("FAIL CLOSED: a mixed carryover whose task process could not be pinned never pauses the child — it is terminated gracefully and the shell closes from Claude's own marker", async () => {
+    const seams = pauseSeams();
+    const rig = await launch({ monitorInRollout: false }, [], {
+      probeProcessIdentity: seams.probe,
+      hostSignal: seams.hostSignal,
+      discoverTaskProcess: () => null,
+      readTaskExit: seams.readTaskExit,
+    });
+    rig.feed([...LAUNCHES.agent.lines(rig.paths), ...LAUNCHES.background_shell.lines(rig.paths)]);
+    await storeHas(rig.dbPath, [LAUNCH_IDS.agent, LAUNCH_IDS.background_shell]);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+    // No pause, no host record: the plain graceful discipline, logged truthfully.
+    expect(seams.signals).toEqual([]);
+    expect(rig.spawned[0]!.killed).toEqual(["SIGTERM"]);
+    expect(withStore(rig.dbPath, (store) => store.retainedHostGeneration(T))).toBeNull();
+    expect(wrapperLog(rig)).toContain("no task process pinned for background_shell:shell-1:toolu_sh");
+    // The agent still carried by the replacement; the shell settles from Claude's marker.
+    expect(withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.agent))).toMatchObject({
+      carryMode: "reconstruct",
+      generation: 1,
+    });
+    appendFileSync(join(rig.paths.tasksDir, "shell-1.output"), "\n[killed]\n");
+    const hook = await runHook(rig.spawned[1]!.env, REBUILT_ID, join(rig.home, `${REBUILT_ID}.jsonl`));
+    expect(hook.code).toBe(0);
+    expect(withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.background_shell))?.terminal).toMatchObject({
+      outcome: "killed",
+    });
+    await rig.finish();
+  }, 20_000);
+
+  it("a handoff carrying no adopted item keeps the plain graceful discipline and records no host", async () => {
+    const rig = await launch({ monitorInRollout: false });
+    rig.feed(LAUNCHES.scheduled_wakeup.lines());
+    await storeHas(rig.dbPath, [LAUNCH_IDS.scheduled_wakeup]);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    expect(rig.results[0]!.kind).toBe("success");
+    expect(rig.spawned[0]!.killed).toContain("SIGTERM");
+    expect(wrapperLog(rig)).not.toContain("retained as completion host");
+    expect(withStore(rig.dbPath, (store) => store.retainedHostGeneration(T))).toBeNull();
+    await rig.finish();
+  }, 15_000);
+
+  it("orderly wrapper exit retires the retained host instead of orphaning it", async () => {
+    const alive = new Set([1000]);
+    const rig = await launch({ monitorInRollout: false }, [], { probeProcessIdentity: probeFor(alive) });
+    rig.feed(LAUNCHES.background_shell.lines(rig.paths));
+    await storeHas(rig.dbPath, [LAUNCH_IDS.background_shell]);
+    rig.lifecycle(TRIGGER_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "handoff result");
+    const oldPty = rig.spawned[0]!;
+    expect(oldPty.killed).toEqual([]);
+    // The task is still running; the wrapper exits. The host must not outlive
+    // the wrapper — graceful, so Claude reaps and writes its truthful marker.
+    await rig.finish();
+    expect(oldPty.killed).toContain("SIGTERM");
+    expect(wrapperLog(rig)).toContain("terminating retained completion host pid 1000 on orderly exit");
   }, 15_000);
 });

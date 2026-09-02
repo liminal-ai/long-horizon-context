@@ -118,6 +118,7 @@ if (targetKey === `${process.platform}-${process.arch}`) {
     "const fileProbe = typeof addon.readFileIdentity === \"function\" ? addon.readFileIdentity(process.argv[1]) : null;\n" +
     "console.log(JSON.stringify({\n" +
     "  contract: addon.identityContractVersion ?? null,\n" +
+    "  exports: Object.keys(addon).filter((k) => typeof addon[k] === \"function\"),\n" +
     "  platform: addon.platform ?? null,\n" +
     "  pid: process.pid,\n" +
     "  probe,\n" +

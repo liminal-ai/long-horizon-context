@@ -34,7 +34,7 @@ import {
 } from "./targets.js";
 
 export const IDENTITY_ADDON_ENV = "CC_LHC_IDENTITY_ADDON";
-export const IDENTITY_CONTRACT_VERSION = 2;
+export const IDENTITY_CONTRACT_VERSION = 3;
 
 export class UnsupportedPlatformTargetError extends Error {
   constructor(
@@ -70,7 +70,21 @@ export interface NativeIdentityAddon {
   readonly identityContractVersion: number;
   readProcessIdentity(pid: number): unknown;
   readFileIdentity(path: string): unknown;
+  pauseProcess(pid: number): unknown;
+  resumeProcess(pid: number): unknown;
+  readChildExit(pid: number, starttime: string): unknown;
+  findChildHoldingFile(parentPid: number, path: string): unknown;
 }
+
+/** Every export a contract-3 addon must present as a function. */
+export const ADDON_FUNCTION_EXPORTS = [
+  "readProcessIdentity",
+  "readFileIdentity",
+  "pauseProcess",
+  "resumeProcess",
+  "readChildExit",
+  "findChildHoldingFile",
+] as const;
 
 /** Deterministic seams; every field defaults to the production value. */
 export interface LoaderSeams {
@@ -162,11 +176,10 @@ export function loadIdentityAddon(seams: LoaderSeams = {}): LoadedIdentityAddon 
     throw new AddonContractError(`cc-lhc-native: addon at ${resolved.path} did not export an object`);
   }
   const candidate = mod as Record<string, unknown>;
-  if (typeof candidate.readProcessIdentity !== "function") {
-    throw new AddonContractError(`cc-lhc-native: addon at ${resolved.path} does not export readProcessIdentity()`);
-  }
-  if (typeof candidate.readFileIdentity !== "function") {
-    throw new AddonContractError(`cc-lhc-native: addon at ${resolved.path} does not export readFileIdentity()`);
+  for (const name of ADDON_FUNCTION_EXPORTS) {
+    if (typeof candidate[name] !== "function") {
+      throw new AddonContractError(`cc-lhc-native: addon at ${resolved.path} does not export ${name}()`);
+    }
   }
   if (candidate.identityContractVersion !== IDENTITY_CONTRACT_VERSION) {
     throw new AddonContractError(

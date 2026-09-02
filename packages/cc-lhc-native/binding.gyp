@@ -23,6 +23,7 @@
         [
           "OS=='win'",
           {
+            "libraries": ["rstrtmgr.lib"],
             "msvs_settings": {
               "VCCLCompilerTool": {
                 "WarningLevel": "3",

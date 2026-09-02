@@ -95,6 +95,7 @@ function parseRow(row: Record<string, unknown>): DurableHandoffReceipt {
     cleanupKind:
       row.cleanup_kind === "terminated" ||
       row.cleanup_kind === "surviving_orphan" ||
+      row.cleanup_kind === "retained_task_host" ||
       row.cleanup_kind === "unknown"
         ? row.cleanup_kind
         : null,
@@ -225,7 +226,9 @@ export function openHandoffReceiptStore(
   return store;
 }
 
-export function cleanupFields(cleanup: OldChildCleanup): Pick<DurableHandoffReceipt, "cleanupKind" | "cleanupPid" | "detail"> {
+export function cleanupFields(
+  cleanup: OldChildCleanup,
+): Pick<DurableHandoffReceipt, "cleanupKind" | "cleanupPid" | "detail"> {
   if (cleanup.kind === "unknown") {
     return {
       cleanupKind: "unknown",
