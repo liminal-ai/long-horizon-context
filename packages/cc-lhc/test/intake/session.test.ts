@@ -2,9 +2,9 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type { Lhc, ThreadRef } from "lhc";
+import type { Lhc } from "lhc";
 import { describe, expect, it } from "vitest";
-import { awaitDrainSettled, DRAIN_NOT_SETTLED_MESSAGE, startCaptureSession } from "../../src/intake/session.js";
+import { startCaptureSession } from "../../src/intake/session.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import { emptyCaptureStats } from "../../src/stats.js";
@@ -108,98 +108,6 @@ describe("startCaptureSession stop()", () => {
 
     expect(pollCount).toBeGreaterThan(0);
     expect(session.stats.threadId).toBeNull();
-  });
-
-  it("awaits drainSettled after batch flush when inference is enabled", async () => {
-    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-drain-"));
-    const cwd = "/work/session-drain-test";
-    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
-    mkdirSync(projectDir, { recursive: true });
-    const rolloutPath = join(projectDir, "session.jsonl");
-    const startedAt = new Date(Date.now() - 60_000);
-
-    writeFileSync(
-      rolloutPath,
-      `${JSON.stringify({
-        type: "user",
-        uuid: "drain-one",
-        message: { role: "user", content: "hello" },
-      })}\n`,
-    );
-
-    let batchFlushed = false;
-    let drainAfterBatch = false;
-    const drainSettledSpy = async () => {
-      drainAfterBatch = batchFlushed;
-    };
-
-    const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-drain-"));
-    const session = startCaptureSession({
-      expectedSession: { sessionId: "session", source: "fresh" },
-      launchThread: { threadId: "th_drain", createdAtLaunch: true },
-      cwd,
-      startedAt,
-      discoverDeps: { projectsRoot, pollMs: 20 },
-      lineageDbPath: join(home, "cc-lhc.sqlite"),
-      registryPath: join(home, "registry.sqlite"),
-      log: () => {},
-      logError: () => {},
-      flushBatchFn: async () => {
-        batchFlushed = true;
-      },
-      initSdkFn: () =>
-        ({
-          drainSettled: drainSettledSpy,
-        }) as unknown as Lhc,
-    });
-
-    for (let attempt = 0; attempt < 50 && !batchFlushed; attempt += 1) {
-      await sleep(50);
-    }
-    expect(batchFlushed).toBe(true);
-
-    await session.stop();
-    expect(drainAfterBatch).toBe(true);
-  });
-
-  it("caps drainSettled wait at stop and logs when work remains pending", async () => {
-    const projectsRoot = mkdtempSync(join(tmpdir(), "cc-lhc-session-drain-cap-"));
-    const cwd = "/work/session-drain-cap";
-    const projectDir = join(projectsRoot, encodeProjectPath(cwd));
-    mkdirSync(projectDir, { recursive: true });
-    const rolloutPath = join(projectDir, "session.jsonl");
-    const startedAt = new Date(Date.now() - 60_000);
-
-    writeFileSync(
-      rolloutPath,
-      `${JSON.stringify({
-        type: "user",
-        uuid: "drain-cap",
-        message: { role: "user", content: "hello" },
-      })}\n`,
-    );
-
-    const errors: string[] = [];
-    const session = startCaptureSession({
-      expectedSession: { sessionId: "session", source: "fresh" },
-      launchThread: { threadId: "th_drain", createdAtLaunch: true },
-      cwd,
-      startedAt,
-      discoverDeps: { projectsRoot, pollMs: 20 },
-      log: () => {},
-      logError: (message) => {
-        errors.push(message);
-      },
-      drainSettledCapMs: 30,
-      initSdkFn: () =>
-        ({
-          drainSettled: () => new Promise<void>(() => {}),
-        }) as unknown as Lhc,
-    });
-
-    await sleep(200);
-    await session.stop();
-    expect(errors).toContain(DRAIN_NOT_SETTLED_MESSAGE);
   });
 });
 
@@ -403,18 +311,6 @@ describe("resume handoff capture", () => {
     expect(session.stats.skippedReplay).toBe(0);
     expect(session.stats.replayedPrefixLines).toBe(2);
     await session.stop();
-  });
-});
-
-describe("awaitDrainSettled", () => {
-  it("logs and proceeds when drainSettled does not resolve before cap", async () => {
-    const errors: string[] = [];
-    const threadRef = { threadId: "test-thread" } as ThreadRef;
-    await awaitDrainSettled({ drainSettled: () => new Promise<void>(() => {}) } as unknown as Lhc, threadRef, {
-      capMs: 20,
-      logError: (message) => errors.push(message),
-    });
-    expect(errors).toContain(DRAIN_NOT_SETTLED_MESSAGE);
   });
 });
 

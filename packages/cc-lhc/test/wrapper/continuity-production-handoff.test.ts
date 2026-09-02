@@ -658,15 +658,11 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
     expect(rig.terminalOutput()).not.toMatch(/Compact now|wait|confirm|\[y\/n\]/i);
 
-    // The replacement receives one manifest naming every item once with its
-    // launch id and the tasks guidance. Whether it is the detailed or the
-    // bounded form depends only on path length (both are proven exactly in
-    // continuity-note.test.ts); the per-item wording is not owed here.
+    // The replacement receives one short line: how many processes were carried.
+    // Item identities and transitions live durably in the store (asserted below).
     expect(rig.receipts).toHaveLength(1);
     const note = rig.receipts[0]!;
-    expect(note).toContain("Tracked background work carried into this session (generation 1)");
-    for (const id of ALL_IDS) expect(note, id).toContain(`[${id}]`);
-    expect(note).toContain("cc-lhc tasks status|output|stop");
+    expect(note).toContain("5 background processes carried over.");
     expect(note).not.toContain("cannot return output");
     expect(note).not.toContain("continuity lost");
 
@@ -951,11 +947,10 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     );
     expect(existsSync(relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1))).toBe(false);
     expect(wrapperLog(rig).match(/restarted once/g)).toHaveLength(1);
-    // The rebuilt session's manifest names the four remaining items once and not the finished agent.
+    // The rebuilt session's note counts the four remaining items, not the finished agent.
     const note = rig.receipts[1]!;
-    expect(note).toContain("generation 2");
+    expect(note).toContain("4 background processes carried over.");
     expect(note).not.toContain("agent-1");
-    for (const id of remaining) expect(note.split(`[${id}]`)).toHaveLength(2);
     withStore(rig.dbPath, (store) => {
       expect(store.getGeneration(T, 1)).toMatchObject({ state: "superseded" });
       expect(store.getGeneration(T, 2)).toMatchObject({
@@ -1433,10 +1428,8 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       writeFileSync(outputPath, "relaunched-once-XyZ");
     });
     expect(readFileSync(outputPath, "utf8")).toBe("relaunched-once-XyZ");
-    // Same logical item in the manifest; the durable transition says restarted,
-    // never adopted (detailed-vs-bounded wording is owned by continuity-note.test.ts).
-    expect(rig.receipts[0]).toContain(`[${LAUNCH_IDS.monitor}]`);
-    expect(rig.receipts[0]).not.toMatch(/monitor "CI watch" \(mon-1\): adopted/);
+    // The note only counts; the durable transition (restarted, never adopted) is in the store above.
+    expect(rig.receipts[0]).toMatch(/\d+ background processes? carried over\./);
     withStore(rig.dbPath, (store) => {
       expect(snapshotOf(store, 1).items.find((i) => i.launchId === LAUNCH_IDS.monitor)).toMatchObject({
         transition: "restarted",
@@ -1464,7 +1457,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     });
     const note = rig.receipts[0]!;
     expect(note).not.toContain("monitor");
-    expect(note).toContain("(generation 1)");
+    expect(note).toMatch(/\d+ background processes? carried over\./);
     expect(existsSync(relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1))).toBe(false);
     await waitFor(() => wrapperLog(rig).includes("generation 1 closed: 4 carried, 0 not carried"), "closure log");
     expect(wrapperLog(rig)).toMatch(
@@ -1589,9 +1582,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(rig.receipts).toHaveLength(1);
     const note = rig.receipts[0]!;
     expect(note).toContain("[lhc compact:manual]");
-    expect(note).toContain("Tracked background work carried into this session (generation 1)");
-    for (const id of ALL_IDS) expect(note, id).toContain(`[${id}]`);
-    expect(note).toContain("cc-lhc tasks status|output|stop");
+    expect(note).toContain("5 background processes carried over.");
     expect(note).not.toContain("cannot return output");
     expect(note).not.toContain("continuity lost");
     const outputPath = relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1);

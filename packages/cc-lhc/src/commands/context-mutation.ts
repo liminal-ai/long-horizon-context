@@ -326,7 +326,7 @@ export async function runContextMutation(
     plan.omitContinuityNote === true
       ? undefined
       : carryover !== undefined
-        ? formatCarryoverNote(carryover.snapshot, carryover.monitorOutputDir)
+        ? formatCarryoverNote(carryover.snapshot)
         : formatContinuityNote(liveAsyncWork),
   );
 

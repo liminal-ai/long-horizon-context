@@ -84,8 +84,6 @@ import {
 import { classifyTurnSignal } from "./turn-signal.js";
 
 const DEFAULT_INFERENCE_TIMEOUT_MS = 60_000;
-export const DEFAULT_DRAIN_SETTLED_CAP_MS = 30_000;
-export const DRAIN_NOT_SETTLED_MESSAGE = "cc-lhc: drain not settled at exit, work remains pending";
 export const CAPTURE_DEGRADED_REFUSAL = "capture degraded — mutation refused until restart/reconciliation";
 export const CAPTURE_NOT_READY_REFUSAL = "capture not ready — binding incomplete";
 
@@ -194,7 +192,6 @@ export interface CaptureSessionDeps {
     ...args: Parameters<typeof flushBatch>
   ) => ReturnType<typeof flushBatch> | Promise<void> | Promise<boolean> | boolean;
   initSdkFn?: (config: SdkConfig) => Lhc;
-  drainSettledCapMs?: number;
   onLifecycle?: (signals: readonly LifecycleSignal[]) => void;
   /**
    * Accepted asynchronous-work evidence from the rollout fold (launch,
@@ -411,24 +408,6 @@ function normalizeFlushResult(
     };
   }
   return result;
-}
-
-export async function awaitDrainSettled(
-  sdk: Lhc,
-  threadRef: ThreadRef,
-  options: { capMs?: number; logError?: (message: string) => void } = {},
-): Promise<void> {
-  const capMs = options.capMs ?? DEFAULT_DRAIN_SETTLED_CAP_MS;
-  const logError = options.logError ?? (() => {});
-  await Promise.race([
-    sdk.drainSettled(threadRef),
-    new Promise<void>((resolve) => {
-      setTimeout(() => {
-        logError(DRAIN_NOT_SETTLED_MESSAGE);
-        resolve();
-      }, capMs);
-    }),
-  ]);
 }
 
 /** Start capture synchronously; `stop()` is always safe even before discovery resolves. */
@@ -1255,30 +1234,10 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       if (watcher !== undefined) watcher.stop();
       // Final flush and queue settlement may still degrade; closed is applied last.
       await batchQueue;
+      // Derivation work queued by this session's last records finishes on the
+      // scheduler whether or not this capture is still open; stopping the tail
+      // never waits on it. Only the pending count is read, for stats.
       if (sdk !== undefined && threadRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
-        let drainTimedOut = false;
-        await awaitDrainSettled(sdk, threadRef, {
-          ...(deps.drainSettledCapMs === undefined ? {} : { capMs: deps.drainSettledCapMs }),
-          logError: (message) => {
-            drainTimedOut = true;
-            logError(message);
-          },
-        });
-        if (drainTimedOut) {
-          try {
-            await sdk.intakeStream.messageEvents(threadRef, [
-              {
-                eventKind: "runtime_note",
-                idempotencyKey: `cc-lhc:drain-not-settled:${Date.now()}`,
-                actor: "system",
-                harness: "cc",
-                payload: { text: `[capture] ${DRAIN_NOT_SETTLED_MESSAGE}` },
-              },
-            ]);
-          } catch {
-            // Best-effort
-          }
-        }
         const overview = await inspect.overview(threadRef);
         if (overview.ok) {
           stats.derivationsPending = overview.value.derivation.pending;

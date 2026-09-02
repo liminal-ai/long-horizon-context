@@ -1,40 +1,34 @@
 /**
  * LIM-116 continuity note: TC-5.1a-d, TC-5.3a-c, AR-9.
  */
-import { mkdtempSync, mkdirSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { describe, expect, it, vi } from "vitest";
 import type { Lhc, ThreadRef } from "lhc";
+import { describe, expect, it, vi } from "vitest";
 
 import {
+  type ContextMutationPlan,
   formatDurableReceipt,
   runContextMutation,
-  type ContextMutationPlan,
 } from "../../src/commands/context-mutation.js";
 import {
   formatCarryoverNote,
   formatContinuityNote,
   freezeLiveAsyncWork,
-  MAX_CONTINUITY_NOTE_CHARS,
   MAX_NAMED_CONTINUITY_ITEMS,
 } from "../../src/commands/continuity-note.js";
-import { relaunchOutputPath } from "../../src/continuity/handoff.js";
-import type { CarriedItem, ContinuitySnapshot } from "../../src/continuity/snapshot.js";
 import type { LhcCommandRuntime } from "../../src/commands/dispatch.js";
+import type { CarriedItem, ContinuitySnapshot } from "../../src/continuity/snapshot.js";
 import { mapRolloutLine } from "../../src/intake/map.js";
-import {
-  createAsyncWorkFold,
-  openAsyncWork,
-  type OpenAsyncWork,
-} from "../../src/observation/async-work.js";
+import { createAsyncWorkFold, type OpenAsyncWork, openAsyncWork } from "../../src/observation/async-work.js";
 import { observeRolloutLines } from "../../src/observation/observe.js";
+import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { writeRebuiltRollout } from "../../src/rollout/write-rebuilt.js";
 import { formatOldChildCleanup } from "../../src/wrapper/old-child-cleanup.js";
-import { encodeProjectPath } from "../../src/rollout/discover.js";
 
 const NOW = 1_787_135_000_000;
 const FIXTURE_PATH = join(
@@ -124,9 +118,7 @@ describe("TC-5.1c do not report completed work", () => {
 
 describe("TC-5.1d reuse accepted tracking", () => {
   it("formats the exact accepted OpenAsyncWork[] snapshot without creating a second fold", () => {
-    const snapshot = freezeLiveAsyncWork([
-      work({ family: "agent", taskId: "a1", description: "reviewer" }),
-    ]);
+    const snapshot = freezeLiveAsyncWork([work({ family: "agent", taskId: "a1", description: "reviewer" })]);
     const note = formatContinuityNote(snapshot, NOW);
     expect(note).toContain("reviewer");
     expect(createAsyncWorkFold().open.size).toBe(0);
@@ -180,8 +172,7 @@ describe("TC-5.3b generic fallback", () => {
 
 describe("durable continuity labels redact command bodies and latestEvent", () => {
   it("never copies background_shell description or latestEvent into the durable note", () => {
-    const secretCommand =
-      "curl https://api.example.com/v1 -H 'Authorization: Bearer API_KEY=sk-live-secret-value'";
+    const secretCommand = "curl https://api.example.com/v1 -H 'Authorization: Bearer API_KEY=sk-live-secret-value'";
     const secretEvent = "stdout: token=eyJhbGciOi output dump with secret material";
     const snapshot = [
       work({
@@ -250,7 +241,11 @@ describe("durable continuity labels redact command bodies and latestEvent", () =
             viewId: "v1",
             tailTokens: 5,
             totalTokens: 9,
-            bands: { smooth: { entries: 1, tokens: 4 }, detailed: { entries: 0, tokens: 0 }, brief: { entries: 0, tokens: 0 } },
+            bands: {
+              smooth: { entries: 1, tokens: 4 },
+              detailed: { entries: 0, tokens: 0 },
+              brief: { entries: 0, tokens: 0 },
+            },
           },
         })),
         getSessionThreadView: vi.fn(async () => ({
@@ -375,7 +370,11 @@ describe("manual mutation freezes live work at the settled seam", () => {
             viewId: "v1",
             tailTokens: 5,
             totalTokens: 9,
-            bands: { smooth: { entries: 1, tokens: 4 }, detailed: { entries: 0, tokens: 0 }, brief: { entries: 0, tokens: 0 } },
+            bands: {
+              smooth: { entries: 1, tokens: 4 },
+              detailed: { entries: 0, tokens: 0 },
+              brief: { entries: 0, tokens: 0 },
+            },
           },
         })),
         getSessionThreadView: vi.fn(async () => ({
@@ -432,7 +431,7 @@ describe("manual mutation freezes live work at the settled seam", () => {
   });
 });
 
-describe("formatCarryoverNote: detailed under short paths, bounded under long paths (macOS runner shape)", () => {
+describe("formatCarryoverNote: one short count line", () => {
   const WAKE_AT = 1_800_000_000_000;
   /** The five-family manifest exactly as LIM-145's production snapshot carries it, rooted at `home`. */
   function fiveCarried(home: string): ContinuitySnapshot {
@@ -532,65 +531,22 @@ describe("formatCarryoverNote: detailed under short paths, bounded under long pa
     "scheduled_wakeup:toolu_wake:toolu_wake",
   ];
 
-  it("short stable fixture: the detailed form, one line per item with the exact transition wording", () => {
-    const home = "/tmp/w";
-    const note = formatCarryoverNote(fiveCarried(home), `${home}/mon`, WAKE_AT - 30_000);
-    expect(note).toBeDefined();
-    expect(note!.length).toBeLessThanOrEqual(MAX_CONTINUITY_NOTE_CHARS);
-    expect(note).toContain("Tracked background work carried into this session (generation 1):");
-    expect(note).toContain('background agent "reviewer" (agent-1): resumed: continue it with SendMessage to agent-1');
-    expect(note).toContain(
-      'workflow "deploy" (wf-task-1): resumed: continue it with Workflow resumeFromRunId wf_run-1',
-    );
-    expect(note).toContain(
-      `background command (shell-1): adopted: still running, uninterrupted; output file ${home}/tasks/shell-1.output`,
-    );
-    expect(note).toContain('monitor "CI watch" (mon-1): restarted: its previous run ended with the replaced process');
-    expect(note).toContain(`output file ${relaunchOutputPath(`${home}/mon`, "monitor:mon-1:toolu_mon", 1)}`);
-    expect(note).toContain("scheduled wakeup (fires in 30s): re-armed from its scheduled time");
-    for (const id of ALL) expect(note, id).toContain(`[${id}]`);
-    expect(note).toContain("cc-lhc tasks status|output|stop");
+  it("says how many background processes were carried, singular and plural, and nothing else", () => {
+    const home = `/${"p".repeat(120)}/home`;
+    const five = fiveCarried(home);
+    expect(formatCarryoverNote(five)).toBe("5 background processes carried over.");
+    expect(formatCarryoverNote({ ...five, items: five.items.slice(2, 3) })).toBe("1 background process carried over.");
+    expect(formatCarryoverNote({ ...five, items: [] })).toBeUndefined();
   });
 
-  it("long-path fixture (macOS runner shape): the bounded form keeps every id, the families, and the tasks guidance", () => {
-    // A darwin runner's tmpdir home: /var/folders/<xx>/<27 chars>/T/cc-lhc-continuity-prod-XXXXXX.
-    const home = `/var/folders/zz/${"x".repeat(27)}/T/cc-lhc-continuity-prod-AbCdEf${"y".repeat(40)}`;
-    const note = formatCarryoverNote(fiveCarried(home), `${home}/mon`, WAKE_AT - 30_000);
-    expect(note).toBeDefined();
-    expect(note).toContain("Tracked background work carried into this session (generation 1): 5 items");
-    expect(note).toContain("Inspect them before relying on their results.");
-    for (const id of ALL) expect(note, id).toContain(`[${id}]`);
-    for (const noun of ["background agent", "workflow", "background command", "monitor", "scheduled wakeup"]) {
-      expect(note, noun).toContain(noun);
+  it("never repeats item identities, paths, transitions, or command text in the note", () => {
+    const home = `/${"p".repeat(120)}/home`;
+    const note = formatCarryoverNote(fiveCarried(home))!;
+    expect(note.length).toBeLessThan(80);
+    for (const id of ALL) expect(note).not.toContain(id);
+    expect(note).not.toContain(home);
+    for (const word of ["adopted", "resumed", "restarted", "rearmed", "SendMessage", "tasks status", "generation"]) {
+      expect(note).not.toContain(word);
     }
-    expect(note).toContain("cc-lhc tasks status|output|stop");
-    // No per-item transition claims survive in the bounded form.
-    expect(note).not.toContain("SendMessage");
-    expect(note).not.toContain("adopted:");
-    expect(note).not.toContain("restarted:");
-    // The single line stays well under the detailed cap.
-    expect(note!.length).toBeLessThanOrEqual(MAX_CONTINUITY_NOTE_CHARS);
-  });
-
-  it("the two forms switch exactly at the character cap for the same manifest", () => {
-    const noteAt = (homeLen: number) =>
-      formatCarryoverNote(fiveCarried(`/${"p".repeat(homeLen)}`), "/mon", WAKE_AT - 30_000)!;
-    const detailed = (n: string) => n.includes("SendMessage");
-    // Find the boundary by construction: short is detailed, long is bounded.
-    expect(detailed(noteAt(2))).toBe(true);
-    expect(detailed(noteAt(200))).toBe(false);
-    let lo = 2;
-    let hi = 200;
-    while (hi - lo > 1) {
-      const mid = Math.floor((lo + hi) / 2);
-      if (detailed(noteAt(mid))) lo = mid;
-      else hi = mid;
-    }
-    // The last detailed note fits the cap; one home-path character more and
-    // the same manifest is served in the bounded form instead of truncated.
-    expect(hi - lo).toBe(1);
-    expect(noteAt(lo).length).toBeLessThanOrEqual(MAX_CONTINUITY_NOTE_CHARS);
-    expect(detailed(noteAt(hi))).toBe(false);
-    for (const id of ALL) expect(noteAt(hi), id).toContain(`[${id}]`);
   });
 });
