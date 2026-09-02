@@ -1690,7 +1690,10 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     // The old child was RETAINED, never signalled: it is the completion host.
     const oldPty = rig.spawned[0]!;
     expect(oldPty.killed).toEqual([]);
-    expect(wrapperLog(rig)).toContain("retained as completion host for 2 adopted background task(s)");
+    await waitFor(
+      () => wrapperLog(rig).includes("retained as completion host for 2 adopted background task(s)"),
+      "log line",
+    );
     const host = withStore(rig.dbPath, (store) => store.retainedHostGeneration(T)?.retainedHost);
     expect(host).toMatchObject({ pid: 1000, bootId: "boot-fixture", starttime: "st-1000" });
     // Receipt truth: cleanup recorded as retained_task_host, not terminated.
@@ -1963,7 +1966,10 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     expect(seams.signals).toEqual([]);
     expect(rig.spawned[0]!.killed).toEqual(["SIGTERM"]);
     expect(withStore(rig.dbPath, (store) => store.retainedHostGeneration(T))).toBeNull();
-    expect(wrapperLog(rig)).toContain("no task process pinned for background_shell:shell-1:toolu_sh");
+    await waitFor(
+      () => wrapperLog(rig).includes("no task process pinned for background_shell:shell-1:toolu_sh"),
+      "log line",
+    );
     // The agent still carried by the replacement; the shell settles from Claude's marker.
     expect(withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.agent))).toMatchObject({
       carryMode: "reconstruct",
