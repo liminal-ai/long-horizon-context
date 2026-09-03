@@ -49,6 +49,18 @@ describe("mapSdkMessage", () => {
     expect(result.events[0]?.payload).toEqual({ toolCallId: "toolu_1", content: "a\nb", isError: true });
     expect(stringifyToolResultContent({ k: 1 })).toBe('{"k":1}');
   });
+  test("CLI-injected user text (task notification, hook output) is a system runtime note, never a prompt", () => {
+    const result = mapSdkMessage({ type: "user", uuid: "n1", parent_tool_use_id: null, session_id: "s", message: { role: "user", content: [{ type: "text", text: "<task-notification>agent done</task-notification>" }] } } as never, undefined);
+    expect(result.events.map((e) => e.eventKind)).toEqual(["runtime_note"]);
+    expect(result.events[0]?.actor).toBe("system");
+    expect(result.events[0]?.idempotencyKey).toBe("claude-lhc:n1:0:runtime_note");
+    expect(result.turnEnd).toBe(false);
+    const hook = mapSdkMessage({ type: "user", uuid: "n2", parent_tool_use_id: null, message: { role: "user", content: "<user-prompt-submit-hook>lint ok</user-prompt-submit-hook>" } } as never, undefined);
+    expect((hook.events[0]?.payload as { text: string }).text).toStartWith("<user-prompt-submit-hook>");
+  });
+  test("replayed user messages on resume are skipped", () => {
+    expect(mapSdkMessage({ type: "user", uuid: "r2", isReplay: true, parent_tool_use_id: null, message: { role: "user", content: [{ type: "text", text: "old prompt" }] } } as never, undefined).events).toEqual([]);
+  });
   test("result closes the turn", () => {
     const result = mapSdkMessage({ type: "result", subtype: "success", is_error: false, uuid: "x", session_id: "s" } as never, "2026-09-03T00:00:00.000Z");
     expect(result.turnEnd).toBe(true);

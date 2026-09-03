@@ -8,7 +8,9 @@
  *
  * The user's prompt is not mapped from the wire: the session records it at the
  * moment it hands the prompt to the SDK (see `mapPrompt`), which is the model-visible
- * seam. Wire `user` frames are tool results.
+ * seam; the SDK does not echo it back. Wire `user` frames are therefore tool results
+ * or text the CLI injected itself (task notifications, hook output), which is recorded
+ * as a runtime note so it never opens a turn. Replays on resume are skipped.
  */
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { MessageEventInput } from "lhc";
@@ -143,14 +145,20 @@ export function mapSdkMessage(message: SDKMessage, turnStartedAt: string | undef
 
   if (message.type === "user") {
     if (message.parent_tool_use_id !== null) return none;
+    if (m["isReplay"] === true) return none;
     const events: MessageEventInput[] = [];
     const id = uuid ?? `user:${Date.now()}`;
     for (const [index, block] of blocks(message.message.content).entries()) {
-      if (block["type"] !== "tool_result") continue;
-      events.push({
-        eventKind: "tool_result", idempotencyKey: idempotencyKey(id, index, "tool_result"), actor: "tool", harness: HARNESS,
-        payload: { toolCallId: String(block["tool_use_id"]), content: stringifyToolResultContent(block["content"]), isError: block["is_error"] === true },
-      });
+      if (block["type"] === "tool_result") {
+        events.push({
+          eventKind: "tool_result", idempotencyKey: idempotencyKey(id, index, "tool_result"), actor: "tool", harness: HARNESS,
+          payload: { toolCallId: String(block["tool_use_id"]), content: stringifyToolResultContent(block["content"]), isError: block["is_error"] === true },
+        });
+      } else if (block["type"] === "text") {
+        const body = typeof block["text"] === "string" ? block["text"] : "";
+        if (body === "") continue;
+        events.push(text("runtime_note", body, "system", idempotencyKey(id, index, "runtime_note")));
+      }
     }
     return { events, turnEnd: false };
   }
