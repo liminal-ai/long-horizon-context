@@ -4,6 +4,7 @@
 // directly; everything else should flow through this index.
 export * from "./classify.js";
 export * from "./compact-continuation/index.js";
+export * from "./content-blocks.js";
 export * from "./context.js";
 export * from "./derivation.js";
 export * from "./deterministic.js";

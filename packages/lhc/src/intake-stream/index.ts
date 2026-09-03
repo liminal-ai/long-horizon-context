@@ -1,4 +1,4 @@
-import type { OpResult } from "../shared-tech/index.js";
+import type { ApiBlock, OpResult } from "../shared-tech/index.js";
 import type { WorkKind, WorkOwner, WorkSourceRef } from "../shared-tech/work-queue/index.js";
 import type { ThreadRef } from "../threads/index.js";
 import { runListEvents, runMessageEvents } from "./internal/pipeline.js";
@@ -42,6 +42,8 @@ export type AssistantTextPayload = {
 export type AssistantThinkingPayload = {
   text: string;
   signature?: string;
+  /** The verbatim block when the provider sent `redacted_thinking`: text is "" and the opaque data is a blob. */
+  block?: ApiBlock;
 } & AssistantModelProvenance;
 
 /**
@@ -58,15 +60,31 @@ export type CompactContinuationMarkerPayload = {
   waitForUser: false;
 };
 
+// Content blocks as the Anthropic Messages API shapes them (see
+// shared-tech/content-blocks.ts). `text` stays the text of the message for
+// hosts and readers that only speak text; `blocks` is the full ordered content
+// when the message carried anything besides text. Hosts send base64 in the
+// blocks; intake moves the bytes to the blob table and the record never holds
+// base64 inside JSON.
+export type UserPromptPayload = { text: string; blocks?: ApiBlock[] };
+export type ToolResultPayload = { toolCallId: string; content: string; isError?: boolean; blocks?: ApiBlock[] };
+export type ToolCallPayload = {
+  toolCallId: string;
+  toolName: string;
+  arguments: Record<string, unknown>;
+  /** The verbatim block when the call was a `server_tool_use`. */
+  block?: ApiBlock;
+};
+
 export type MessageEventInput =
-  | BaseEvent<"user_prompt", { text: string }>
+  | BaseEvent<"user_prompt", UserPromptPayload>
   | BaseEvent<"assistant_text", AssistantTextPayload>
   | BaseEvent<"assistant_thinking", AssistantThinkingPayload>
   | BaseEvent<"runtime_note", { text: string }>
   | BaseEvent<"model_change", { previousModel: string; newModel: string }>
   | BaseEvent<"thinking_level_change", { previousLevel: string; newLevel: string }>
-  | BaseEvent<"tool_call", { toolCallId: string; toolName: string; arguments: Record<string, unknown> }>
-  | BaseEvent<"tool_result", { toolCallId: string; content: string; isError?: boolean }>
+  | BaseEvent<"tool_call", ToolCallPayload>
+  | BaseEvent<"tool_result", ToolResultPayload>
   | BaseEvent<"compact_continuation_marker", CompactContinuationMarkerPayload>
   | BaseEvent<"turn_end", TurnEndPayload>;
 

@@ -221,7 +221,13 @@ export type {
   WorkHandler,
 } from "./shared-tech/index.js";
 export {
+  API_BLOCK_TYPES,
+  type ApiBlock,
+  type ApiBlockType,
   applyDerivationSuccess,
+  type BlobLoader,
+  type BlobRef,
+  blobTokenEstimate,
   createDbReadTransaction,
   createDbWriteTransaction,
   createDeterministicInferenceCallbacks,
@@ -230,8 +236,14 @@ export {
   type DeterministicOpName,
   deterministicOutcomesSuffix,
   deterministicText,
+  type ExtractedBlob,
+  extractBlobs,
+  hasBlobPayload,
+  inlineBlobs,
+  isApiBlock,
   type PostCommitHook,
   type ProviderProvenance,
+  placeholderText,
   setSchedulerPoke,
   setThreadTouch,
 } from "./shared-tech/index.js";
