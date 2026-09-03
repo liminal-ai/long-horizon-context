@@ -24,6 +24,17 @@ describe("mapPrompt", () => {
   });
 });
 
+describe("the mid-turn continuation input", () => {
+  test("is recorded as a runtime note, never as a prompt, even though it lands in an open turn", () => {
+    const note = "[runtime note] Context was compacted in the middle of this turn. The turn is still in progress: the 5 tool calls already made in this turn (Read ×5) and their results are recorded above, up to the compact continuation marker. Continue the task from exactly that point.";
+    const events = mapPrompt(prompt(note), "u9", true);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.eventKind).toBe("runtime_note");
+    expect(events[0]?.actor).toBe("system");
+    expect((events[0]?.payload as { text: string }).text.startsWith("Context was compacted in the middle")).toBe(true);
+  });
+});
+
 describe("content blocks", () => {
   const png = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
   const pdf = { type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQ=" }, title: "spec.pdf" };
