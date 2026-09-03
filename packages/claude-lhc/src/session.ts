@@ -112,15 +112,6 @@ interface Generation {
   superseded: boolean;
 }
 
-/**
- * Honest post-compact context estimate: the rebuilt view plus the overhead the provider adds on
- * top of it. With no overhead measured yet (nothing was sent before the compact) the view size is
- * all that is known.
- */
-export function estimatePostTokens(viewTokens: number, overhead: number | null): number {
-  return viewTokens + (overhead ?? 0);
-}
-
 /** The view size a compact aims for: a fixed target, never more than a share of the trigger it must clear. */
 export function viewTargetFor(autoCompactTrigger: number): number {
   return Math.max(1, Math.min(DEFAULT_VIEW_TARGET_TOKENS, Math.floor(autoCompactTrigger * VIEW_TARGET_TRIGGER_SHARE)));
@@ -152,8 +143,6 @@ export class ClaudeLhcSession {
   #turnOpen = false;
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
-  /** Provider input tokens beyond the LHC view (system prompt, tools, tokenizer drift), measured at the last swap. */
-  #lastOverhead: number | null = null;
   #pendingApprovals = 0;
   #pendingCompact: "manual" | "auto" | null = null;
   #compacting = false;
@@ -393,16 +382,6 @@ export class ClaudeLhcSession {
     const startedAt = Date.now();
     const preTokens = this.#lastContextTokens;
     try {
-      const status = await this.#lhc.threadView.status(this.#thread);
-      const tail = status.ok ? status.value.tailTokens : 0;
-      // The provider's context is the view plus a fixed overhead the view never sees (system
-      // prompt, tool schemas, tokenizer drift). Measure it now, before the swap, so post_tokens
-      // estimates what the next turn will actually read instead of reporting the bare view size.
-      if (status.ok && preTokens > 0) {
-        const stored = await this.#lhc.threadView.describe(this.#thread);
-        const bandTokens = stored.ok && stored.value !== null ? stored.value.bands.reduce((sum, band) => sum + band.storedTokens, 0) : 0;
-        this.#lastOverhead = Math.max(0, preTokens - (bandTokens + tail));
-      }
       await this.#awaitDerivations();
       // A compact never makes the model forget what the record still holds. The view aims at a
       // fixed target: a thread that fits the full share stays whole in the tail (no bands), a
@@ -447,8 +426,10 @@ export class ClaudeLhcSession {
           waitForUser: false,
         },
       }]);
-      const postTokens = estimatePostTokens(receipt.totalTokens, this.#lastOverhead);
-      const summary = `[lhc compact:${trigger}] provider context ${preTokens} tokens; rebuilt view ${receipt.totalTokens} tokens (target ${lowerBound}); overhead ${this.#lastOverhead ?? "unknown"}; estimated next context ${postTokens}; compact point ${receipt.compactPoint}, covered from ${receipt.coveredFrom}; degraded ${receipt.degraded.length}, gaps ${receipt.gaps.length}; bands ${JSON.stringify(receipt.bands)}`;
+      // post_tokens is the rebuilt view the model reads next, as stock reports its summary's
+      // size alone; the next assistant usage makes the meter exact.
+      const postTokens = receipt.totalTokens;
+      const summary = `[lhc compact:${trigger}] provider context ${preTokens} tokens; rebuilt view ${receipt.totalTokens} tokens (target ${lowerBound}); compact point ${receipt.compactPoint}, covered from ${receipt.coveredFrom}; degraded ${receipt.degraded.length}, gaps ${receipt.gaps.length}; bands ${JSON.stringify(receipt.bands)}`;
       this.#io.log(summary);
       await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
 

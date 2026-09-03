@@ -57,14 +57,6 @@ describe("mapSdkMessage", () => {
   });
 });
 
-describe("estimatePostTokens", () => {
-  test("adds the measured provider overhead to the rebuilt view", async () => {
-    const { estimatePostTokens } = await import("../src/session.ts");
-    expect(estimatePostTokens(246, 28_791)).toBe(29_037);
-    expect(estimatePostTokens(246, null)).toBe(246);
-  });
-});
-
 describe("compact view policy", () => {
   test("viewTargetFor keeps the view under a share of the trigger it must clear", async () => {
     const { viewTargetFor } = await import("../src/session.ts");
