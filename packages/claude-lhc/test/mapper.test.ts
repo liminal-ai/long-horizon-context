@@ -24,6 +24,46 @@ describe("mapPrompt", () => {
   });
 });
 
+describe("content blocks", () => {
+  const png = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
+  const pdf = { type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQ=" }, title: "spec.pdf" };
+  test("a prompt with an attached image sends the native content array as blocks; text stays the text", () => {
+    const message = { type: "user", message: { role: "user", content: [png, { type: "text", text: "what is this?" }] }, parent_tool_use_id: null, session_id: "" } as never;
+    const [event] = mapPrompt(message, "u9", false);
+    expect(event?.eventKind).toBe("user_prompt");
+    expect(event?.payload).toEqual({ text: "what is this?", blocks: [png, { type: "text", text: "what is this?" }] });
+  });
+  test("an image-only prompt is still a prompt", () => {
+    const message = { type: "user", message: { role: "user", content: [png] }, parent_tool_use_id: null, session_id: "" } as never;
+    expect(mapPrompt(message, "u10", false)).toHaveLength(1);
+  });
+  test("a Read of a PNG or PDF sends the tool result's native content array; text-only results stay strings", () => {
+    const result = mapSdkMessage({ type: "user", uuid: "r9", parent_tool_use_id: null, message: { role: "user", content: [
+      { type: "tool_result", tool_use_id: "toolu_png", content: [png] },
+      { type: "tool_result", tool_use_id: "toolu_pdf", content: [pdf, { type: "text", text: "3 pages" }] },
+      { type: "tool_result", tool_use_id: "toolu_txt", content: [{ type: "text", text: "plain" }] },
+    ] } } as never, undefined);
+    expect(result.events.map((e) => e.payload)).toEqual([
+      { toolCallId: "toolu_png", isError: false, content: "", blocks: [png] },
+      { toolCallId: "toolu_pdf", isError: false, content: "3 pages", blocks: [pdf, { type: "text", text: "3 pages" }] },
+      { toolCallId: "toolu_txt", isError: false, content: "plain" },
+    ]);
+  });
+  test("redacted thinking and server-side tool blocks ride verbatim on their events", () => {
+    const redacted = { type: "redacted_thinking", data: "EqQB" };
+    const use = { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "lhc" } };
+    const found = { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [{ type: "web_search_result", title: "T", url: "https://x", encrypted_content: "ENC" }] };
+    const failed = { type: "web_search_tool_result", tool_use_id: "srvtoolu_2", content: { type: "web_search_tool_result_error", error_code: "max_uses_exceeded" } };
+    const result = mapSdkMessage({ type: "assistant", uuid: "a9", parent_tool_use_id: null, message: { model: "claude-sonnet-5", content: [redacted, use, found, failed, { type: "text", text: "done" }] } } as never, undefined);
+    expect(result.events.map((e) => e.eventKind)).toEqual(["assistant_thinking", "tool_call", "tool_result", "tool_result", "assistant_text"]);
+    expect((result.events[0]?.payload as { text: string; block: unknown }).text).toBe("");
+    expect((result.events[0]?.payload as { block: unknown }).block).toEqual(redacted);
+    expect(result.events[1]?.payload).toMatchObject({ toolCallId: "srvtoolu_1", toolName: "web_search", arguments: { query: "lhc" }, block: use });
+    expect(result.events[2]?.payload).toEqual({ toolCallId: "srvtoolu_1", content: "", isError: false, blocks: [found] });
+    expect(result.events[3]?.payload).toEqual({ toolCallId: "srvtoolu_2", content: "", isError: true, blocks: [failed] });
+  });
+});
+
 describe("mapSdkMessage", () => {
   const usage = { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 900, output_tokens: 5 };
   test("assistant blocks map in order with provenance and usage; context tokens are input + cache", () => {
