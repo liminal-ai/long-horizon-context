@@ -9,7 +9,7 @@ import {
   THREAD_SCHEMA_VERSION_5,
   THREAD_SCHEMA_VERSION_6,
   THREAD_SCHEMA_VERSION_7,
-  THREAD_SCHEMA_VERSION_11,
+  THREAD_SCHEMA_VERSION_12,
 } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";
 import {
@@ -241,7 +241,9 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
+      // v12 added the content blob table.
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blob'").get()).toBeDefined();
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get(),
       ).toBeDefined();
@@ -273,7 +275,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       const derivation = db
         .prepare(
           `SELECT derivation_type, content FROM derivation
@@ -344,7 +346,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       const payload = JSON.parse(
         (db.prepare(`SELECT payload FROM work_item WHERE kind = 'turn_derivation'`).get() as { payload: string })
           .payload,
@@ -548,7 +550,7 @@ describe("thread schema migration", () => {
 
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
 
       const turnCols = (db.prepare("PRAGMA table_info(turns)").all() as Array<{ name: string }>).map((row) => row.name);
       const messageCols = (db.prepare("PRAGMA table_info(message)").all() as Array<{ name: string }>).map(
@@ -618,7 +620,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'retrieval_impression'").get(),
       ).toBeDefined();
@@ -663,7 +665,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       expect(
         db
           .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_writer'")
@@ -731,7 +733,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       const row = db
         .prepare(`SELECT attempt_id, terminal FROM compact_continuation_receipt WHERE attempt_id = 'a1'`)
         .get() as { attempt_id: string; terminal: number };
@@ -772,7 +774,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       expect(
         db
           .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_attempt'")
@@ -814,7 +816,7 @@ describe("thread schema migration", () => {
     if (!opened.ok) return;
     const db = opened.value;
     try {
-      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_11);
+      expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_12);
       expect(
         db
           .prepare(

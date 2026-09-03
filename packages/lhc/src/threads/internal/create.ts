@@ -10,6 +10,7 @@ import {
   SQLITE_BUSY_TIMEOUT_MS,
 } from "../../shared-tech/storage.js";
 import {
+  blobSchemaStatements,
   compactContinuationCurrentSchemaStatements,
   derivationLogSchemaStatements,
   isSupportedThreadSchemaVersion,
@@ -158,6 +159,7 @@ function threadSchemaStatements(threadId: string, createdAt: string): string[] {
     ...derivationLogSchemaStatements(),
     ...retrievalImpressionSchemaStatements(),
     ...compactContinuationCurrentSchemaStatements(),
+    ...blobSchemaStatements(),
     `INSERT INTO turns (turn_id, turn_order, status, opened_at_event_order)
      VALUES ('t1', 1, 'open', 0);`,
     `PRAGMA user_version = ${CURRENT_THREAD_SCHEMA_VERSION};`,

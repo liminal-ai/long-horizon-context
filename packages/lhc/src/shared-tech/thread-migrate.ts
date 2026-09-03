@@ -12,11 +12,29 @@ export const THREAD_SCHEMA_VERSION_8 = 8;
 export const THREAD_SCHEMA_VERSION_9 = 9;
 export const THREAD_SCHEMA_VERSION_10 = 10;
 export const THREAD_SCHEMA_VERSION_11 = 11;
+export const THREAD_SCHEMA_VERSION_12 = 12;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
 const OLD_PROMPT_NAME = "smooth-turn-compression-v1";
 const NEW_PROMPT_NAME = "detailed-turn-compression-v1";
+
+/** Schema v12: content blobs — the binary/opaque payloads of API content
+ *  blocks (image and PDF bytes, redacted-thinking data, encrypted search
+ *  content), keyed by content hash and referenced from message blocks and
+ *  event payloads as `{ $blob: "sha256:…", bytes }`. Shared by fresh create
+ *  and the 11→12 migration. */
+export function blobSchemaStatements(): string[] {
+  return [
+    `CREATE TABLE IF NOT EXISTS blob (
+      sha256 TEXT PRIMARY KEY,
+      media_type TEXT,
+      byte_length INTEGER NOT NULL,
+      data BLOB NOT NULL,
+      created_at TEXT NOT NULL
+    );`,
+  ];
+}
 
 /** Schema v6: retrieval impression log — one row per requested entity per
  *  retrieval call (get_turns / get_messages). Idempotent statements shared by
@@ -490,6 +508,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_10) {
       migrateCompactContinuationV11(db);
       version = THREAD_SCHEMA_VERSION_11;
+    }
+    if (version === THREAD_SCHEMA_VERSION_11) {
+      for (const statement of blobSchemaStatements()) db.exec(statement);
+      version = THREAD_SCHEMA_VERSION_12;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);
