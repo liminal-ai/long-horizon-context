@@ -213,7 +213,63 @@ describe("mapRolloutLine", () => {
     expect(result.stats.meta).toBe(0);
   });
 
-  it("appends image placeholder and counts skipped_image for text+image content", () => {
+  it("a tool result carrying an image sends the native content array as blocks, never base64 in text", () => {
+    const png = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
+    const item = {
+      type: "user",
+      uuid: "read-png-uuid",
+      message: {
+        role: "user",
+        content: [
+          { type: "tool_result", tool_use_id: "toolu_png", content: [png] },
+          { type: "tool_result", tool_use_id: "toolu_txt", content: [{ type: "text", text: "plain" }] },
+        ],
+      },
+    } as RolloutLineItem;
+    const result = mapRolloutLine(item);
+    expect(result.events.map((event) => event.payload)).toEqual([
+      { toolCallId: "toolu_png", content: "", isError: false, blocks: [png] },
+      // Text-only results keep cc-lhc's calibrated stringification (the dump normalizer relies on it).
+      { toolCallId: "toolu_txt", content: JSON.stringify([{ type: "text", text: "plain" }]), isError: false },
+    ]);
+  });
+
+  it("redacted thinking and server-side tool blocks ride verbatim on their events", () => {
+    const redacted = { type: "redacted_thinking", data: "EqQB" };
+    const use = { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "x" } };
+    const found = { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [] };
+    const item = {
+      type: "assistant",
+      uuid: "server-tools-uuid",
+      message: {
+        role: "assistant",
+        model: "claude-sonnet-5",
+        content: [redacted, use, found, { type: "text", text: "done" }],
+      },
+    } as RolloutLineItem;
+    const result = mapRolloutLine(item);
+    expect(result.events.map((event) => event.eventKind)).toEqual([
+      "assistant_thinking",
+      "tool_call",
+      "tool_result",
+      "assistant_text",
+    ]);
+    expect(result.events[0]?.payload).toEqual({ text: "", block: redacted, model: "claude-sonnet-5" });
+    expect(result.events[1]?.payload).toEqual({
+      toolCallId: "srvtoolu_1",
+      toolName: "web_search",
+      arguments: { query: "x" },
+      block: use,
+    });
+    expect(result.events[2]?.payload).toEqual({
+      toolCallId: "srvtoolu_1",
+      content: "",
+      isError: false,
+      blocks: [found],
+    });
+  });
+
+  it("carries attached images as the native content array and counts the line", () => {
     const imageLine = fixtures.find(
       (item) =>
         Array.isArray(item.message?.content) &&
@@ -225,7 +281,10 @@ describe("mapRolloutLine", () => {
     expect(result.events).toHaveLength(1);
     if (result.events[0]?.eventKind !== "user_prompt") throw new Error("expected user_prompt");
     expect(result.events[0].payload.text).toContain("[Image #1]");
-    expect(result.events[0].payload.text).toContain("[image content not captured]");
+    expect(result.events[0].payload.text).not.toContain("[image content not captured]");
+    const blocks = result.events[0].payload.blocks ?? [];
+    expect(blocks.some((block) => block.type === "image")).toBe(true);
+    expect(blocks.some((block) => block.type === "text")).toBe(true);
   });
 
   it("maps task-notification user messages to runtime_note, not user_prompt", () => {

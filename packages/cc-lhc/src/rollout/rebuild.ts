@@ -2,10 +2,7 @@ import { randomUUID } from "node:crypto";
 
 import type { SessionAssistantPart, SessionThreadViewEntry, SessionThreadViewMessage } from "lhc";
 
-import {
-  SELECTED_THINKING_REBUILD_ARM,
-  type ThinkingRebuildArm,
-} from "./thinking-ladder.js";
+import { SELECTED_THINKING_REBUILD_ARM, type ThinkingRebuildArm } from "./thinking-ladder.js";
 import type { ContentBlock, RolloutLineItem } from "./types.js";
 
 export interface RolloutEnvelope {
@@ -42,6 +39,9 @@ function isMessageEntry(entry: SessionThreadViewEntry): entry is SessionThreadVi
  * The tail of a rebuilt rollout must be NATIVE blocks, never bracket-labelled
  * text. Tool ids re-emit verbatim (`toolCallId` ↔ `tool_use_id`).
  *
+ * Server-side tool blocks (server_tool_use, *_tool_result) re-emit verbatim
+ * from the served part's `block`; redacted_thinking follows the thinking arm.
+ *
  * Thinking rebuild follows the certified empirical ladder (thinking-ladder.ts).
  * Selected arm: omit — no thinking blocks in rebuilt Claude rollouts until a
  * retained native compact/reload exhibit certifies signed_verbatim or
@@ -55,12 +55,13 @@ function assistantPartBlock(
   if (part.type === "text" && part.text !== undefined && part.text !== "") {
     return { type: "text", text: part.text };
   }
-  if (part.type === "thinking") {
+  if (part.type === "thinking" || part.type === "redacted_thinking") {
+    if (part.type === "redacted_thinking") {
+      return arm === "omit" ? null : ((part.block as ContentBlock | undefined) ?? null);
+    }
     const thinking = part.thinking ?? "";
     const signature =
-      typeof part.thinkingSignature === "string" && part.thinkingSignature !== ""
-        ? part.thinkingSignature
-        : undefined;
+      typeof part.thinkingSignature === "string" && part.thinkingSignature !== "" ? part.thinkingSignature : undefined;
     if (arm === "omit") return null;
     if (arm === "unsigned_visible") {
       if (thinking === "") return null;
@@ -81,7 +82,7 @@ function assistantPartBlock(
       input: part.arguments ?? {},
     };
   }
-  return null;
+  return (part.block as ContentBlock | undefined) ?? null;
 }
 
 function syntheticMessageId(lineUuid: string): string {
@@ -113,8 +114,11 @@ function baseEnvelopeFields(
   return line;
 }
 
-function userMessageContent(text: string): { role: "user"; content: string } {
-  return { role: "user", content: text };
+function userMessageContent(content: string | ContentBlock[]): {
+  role: "user";
+  content: string | ContentBlock[];
+} {
+  return { role: "user", content };
 }
 
 /**
@@ -176,7 +180,10 @@ export function runtimeNoteRolloutLine(
  * bracket labels are correct there); the tail re-emits NATIVE shapes:
  * per-block assistant lines (thinking / text / tool_use) under a shared
  * synthetic message id, and tool results as tool_result blocks paired by
- * tool_use_id. `model_change` entries stamp the model on subsequent
+ * tool_use_id. A user or toolResult entry served with `blocks` (the native
+ * content array, blob payloads inlined) re-emits that array, so an attached
+ * image or a Read of a PNG/PDF comes back as the image/document block it was,
+ * never as base64 inside text. `model_change` entries stamp the model on subsequent
  * assistant lines (their native representation — rollout files carry no
  * standalone model-change line); `thinking_level_change` has no rollout
  * representation and is skipped.
@@ -200,7 +207,7 @@ export function buildRolloutLines(input: RebuildRolloutInput): RebuiltRolloutLin
     if (entry.role === "user") {
       const line = baseEnvelopeFields(newSessionId, parentUuid, envelope, timestamp);
       line.type = "user";
-      line.message = userMessageContent(entry.content);
+      line.message = userMessageContent((entry.blocks as ContentBlock[] | undefined) ?? entry.content);
       parentUuid = typeof line.uuid === "string" ? line.uuid : null;
       rebuilt.push({ line, rolloutType: "user" });
       continue;
@@ -215,7 +222,7 @@ export function buildRolloutLines(input: RebuildRolloutInput): RebuiltRolloutLin
           {
             type: "tool_result",
             tool_use_id: entry.toolCallId,
-            content: entry.content,
+            content: (entry.blocks as ContentBlock[] | undefined) ?? entry.content,
             is_error: entry.isError === true,
           },
         ],
