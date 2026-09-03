@@ -2706,3 +2706,46 @@ hotfix c136899 pinned by both forks) and bounded retrieval output
 (id cap 32, id shape ^[tm]\d{1,12}$, budget ceiling 8000, analytic
 output bound 22k). Schema now v6. Next: fork wave A (codex) per ledger —
 pre-req FORK.md drift repair, then vendor bump + tool wiring.
+
+## TS drift (2026-09-03): content blocks — NOT ported
+
+`packages/lhc` moved ahead of the port on the content-blocks slice (TS commits
+`a6abc8d`, `717a146`, `157d88f` on `wren/content-blocks`). The Rust crate is
+still at thread schema v11 and knows nothing of this. What a port must add:
+
+- **Schema v12**: `blob (sha256 PK, media_type, byte_length, data BLOB, created_at)`,
+  created fresh and by an 11→12 migration step (`blobSchemaStatements` in
+  `shared-tech/thread-migrate.ts`). `CURRENT_THREAD_SCHEMA_VERSION = 12`.
+  Until then the Rust crate refuses v12 files as unsupported (its
+  `is_supported_thread_schema_version` caps at 11) — no silent misread.
+- **Intake payloads**: `user_prompt.blocks?`, `tool_result.blocks?`
+  (arrays of Messages API blocks), `assistant_thinking.block?`,
+  `tool_call.block?`. Rust's `deny_unknown_fields` on `ToolResultPayload` etc.
+  will reject these fields rather than drop them — correct failure mode,
+  but it means a host sending blocks cannot use the Rust crate yet.
+  Validation: closed per-kind type sets and a base64 check
+  (`intake-stream/internal/validate.ts`, `USER_BLOCK_TYPES`,
+  `TOOL_RESULT_BLOCK_TYPES`).
+- **Blob extraction at record time** (`intake-stream/internal/blobs.ts` +
+  `shared-tech/content-blocks.ts::extractBlobs`): base64 `source.data`,
+  `redacted_thinking.data`, `web_search_result.encrypted_content`, nested
+  `tool_result.content[]`, `document.source.content[]`,
+  `web_fetch_tool_result.content.content` → blob rows, replaced in the
+  JSON by `{ "$blob": "sha256:<hex>", "bytes": N }`. Hash is sha256 of the
+  decoded bytes; JSON key order of the rewritten block is the source order
+  with the replaced key in place (js_json parity matters here).
+- **Projection**: block 0 stays the text-shaped form (`placeholderText` per
+  block joined by `\n`); rows 1..n are the API blocks verbatim with
+  `block_type` = the API type name. `BlockType` widened to the API names.
+  Token estimate adds `blobTokenEstimate` (1,600 per image; 2,000 per
+  ceil(bytes/50,000) for base64 documents).
+- **Serving** (`thread-view/internal/session-view.ts`): `inlineBlobs` puts
+  base64 back; `SessionUserMessage.blocks?`, `SessionToolResultMessage.blocks?`
+  (ahead of the boundary only), `SessionAssistantPart.type` widened to the API
+  names with `block?`; server-side `*_tool_result` rows are parts of the
+  assistant entry. `isEmptyThinkingHusk` is false when a row has a second block.
+
+Ported-suite impact: `test/content-blocks.test.ts` (7 tests) is new;
+`thread-migrate`, `view-fixture`, and `compact-continuation-evidence` now
+assert v12. `scripts/check_gate.py`'s expected counts will need the same bump
+when this lands.
