@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Launches the claude-lhc sidecar under bun. Bun is found on PATH, then at ~/.bun/bin/bun,
+# or named by CLAUDE_LHC_BUN.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BUN="${CLAUDE_LHC_BUN:-}"
+if [ -z "$BUN" ]; then
+  if command -v bun >/dev/null 2>&1; then BUN="$(command -v bun)"; elif [ -x "$HOME/.bun/bin/bun" ]; then BUN="$HOME/.bun/bin/bun"; else
+    echo "claude-lhc: bun not found (set CLAUDE_LHC_BUN)" >&2; exit 127; fi
+fi
+exec "$BUN" run "$HERE/../src/sidecar.ts" "$@"
