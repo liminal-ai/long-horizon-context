@@ -56,3 +56,11 @@ describe("mapSdkMessage", () => {
     expect(mapSdkMessage({ type: "result", subtype: "error_during_execution", is_error: true, uuid: "y" } as never, undefined).events[0]?.payload).toMatchObject({ outcome: "aborted" });
   });
 });
+
+describe("estimatePostTokens", () => {
+  test("adds the measured provider overhead to the rebuilt view", async () => {
+    const { estimatePostTokens } = await import("../src/session.ts");
+    expect(estimatePostTokens(246, 28_791)).toBe(29_037);
+    expect(estimatePostTokens(246, null)).toBe(246);
+  });
+});

@@ -105,6 +105,15 @@ interface Generation {
   superseded: boolean;
 }
 
+/**
+ * Honest post-compact context estimate: the rebuilt view plus the overhead the provider adds on
+ * top of it. With no overhead measured yet (nothing was sent before the compact) the view size is
+ * all that is known.
+ */
+export function estimatePostTokens(viewTokens: number, overhead: number | null): number {
+  return viewTokens + (overhead ?? 0);
+}
+
 export class ClaudeLhcSession {
   readonly #io: SessionIO;
   #base: Record<string, unknown> = {};
@@ -118,6 +127,8 @@ export class ClaudeLhcSession {
   #turnOpen = false;
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
+  /** Provider input tokens beyond the LHC view (system prompt, tools, tokenizer drift), measured at the last swap. */
+  #lastOverhead: number | null = null;
   #pendingApprovals = 0;
   #pendingCompact: "manual" | "auto" | null = null;
   #compacting = false;
@@ -358,6 +369,14 @@ export class ClaudeLhcSession {
     try {
       const status = await this.#lhc.threadView.status(this.#thread);
       const tail = status.ok ? status.value.tailTokens : 0;
+      // The provider's context is the view plus a fixed overhead the view never sees (system
+      // prompt, tool schemas, tokenizer drift). Measure it now, before the swap, so post_tokens
+      // estimates what the next turn will actually read instead of reporting the bare view size.
+      if (status.ok && preTokens > 0) {
+        const stored = await this.#lhc.threadView.describe(this.#thread);
+        const bandTokens = stored.ok && stored.value !== null ? stored.value.bands.reduce((sum, band) => sum + band.storedTokens, 0) : 0;
+        this.#lastOverhead = Math.max(0, preTokens - (bandTokens + tail));
+      }
       // Aim the view at half the live tail (capped at the configured target): the full band then
       // holds the newest ~15% and everything older lands in the stored bands.
       const lowerBound = Math.max(100, Math.min(this.#viewTarget, Math.floor(tail * 0.5)));
@@ -383,7 +402,8 @@ export class ClaudeLhcSession {
           waitForUser: false,
         },
       }]);
-      const summary = `[lhc compact:${trigger}] provider context ${preTokens} tokens; rebuilt view ${receipt.value.totalTokens} tokens (target ${lowerBound}); bands ${JSON.stringify(receipt.value.bands)}`;
+      const postTokens = estimatePostTokens(receipt.value.totalTokens, this.#lastOverhead);
+      const summary = `[lhc compact:${trigger}] provider context ${preTokens} tokens; rebuilt view ${receipt.value.totalTokens} tokens (target ${lowerBound}); overhead ${this.#lastOverhead ?? "unknown"}; estimated next context ${postTokens}; bands ${JSON.stringify(receipt.value.bands)}`;
       this.#io.log(summary);
       await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
 
@@ -391,7 +411,7 @@ export class ClaudeLhcSession {
       this.#emitSynthetic({
         type: "system",
         subtype: "compact_boundary",
-        compact_metadata: { trigger, pre_tokens: preTokens, post_tokens: receipt.value.totalTokens, duration_ms: Date.now() - startedAt },
+        compact_metadata: { trigger, pre_tokens: preTokens, post_tokens: postTokens, duration_ms: Date.now() - startedAt },
         uuid: randomUUID(),
         session_id: next.sessionId,
       } as unknown as SDKMessage);
