@@ -64,3 +64,27 @@ describe("estimatePostTokens", () => {
     expect(estimatePostTokens(246, null)).toBe(246);
   });
 });
+
+describe("compact view policy", () => {
+  test("viewTargetFor keeps the view under a share of the trigger it must clear", async () => {
+    const { viewTargetFor } = await import("../src/session.ts");
+    expect(viewTargetFor(150_000)).toBe(60_000);
+    expect(viewTargetFor(100_000)).toBe(40_000);
+  });
+
+  test("evictedTurns names closed turns that fell past the view's coverage edge", async () => {
+    const { evictedTurns } = await import("../src/session.ts");
+    // Turn orders of the thread the orchestrator's smoke lost: three tool turns, the
+    // continuation-marker turn, the post-compact turn, and the open turn.
+    const turns = [
+      { turnId: "t1", turnOrder: 1, status: "closed", memberMessageIds: ["a", "b", "c", "d"], openedAtEventOrder: 0, closedAtEventOrder: 5 },
+      { turnId: "t2", turnOrder: 2, status: "closed", memberMessageIds: ["e", "f", "g", "h"], openedAtEventOrder: 5, closedAtEventOrder: 10 },
+      { turnId: "t3", turnOrder: 3, status: "closed", memberMessageIds: ["i", "j", "k", "l"], openedAtEventOrder: 10, closedAtEventOrder: 15 },
+      { turnId: "t4", turnOrder: 4, status: "closed", memberMessageIds: ["m"], openedAtEventOrder: 15, closedAtEventOrder: 17 },
+      { turnId: "t5", turnOrder: 5, status: "open", memberMessageIds: [], openedAtEventOrder: 17 },
+    ] as never[];
+    expect(evictedTurns(turns, 11)).toEqual(["t1", "t2"]); // the view that only carried t3
+    expect(evictedTurns(turns, 1)).toEqual([]); // bands starting at t1's first message
+    expect(evictedTurns(turns, 0)).toEqual([]); // no bands: everything in the tail
+  });
+});

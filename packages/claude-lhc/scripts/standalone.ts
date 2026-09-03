@@ -142,7 +142,9 @@ if (!turns.ok || !events.ok) fail("LHC read failed");
 const kinds = events.value.reduce<Record<string, number>>((acc, e) => { acc[e.eventKind] = (acc[e.eventKind] ?? 0) + 1; return acc; }, {});
 log(`✓ LHC thread ${threadRef.threadId}: ${events.value.length} events ${JSON.stringify(kinds)}, ${turns.value.length} turns, view ${view.value.viewId} bands=${view.value.arrangement.map((a) => a.band).join(",") || "(none)"} compactPoint=${view.value.compactPoint}`);
 if (!kinds["compact_continuation_marker"]) fail("no continuation marker recorded");
-if (view.value.arrangement.length === 0) fail("compact installed a view with no bands");
+const evicted = turns.value.filter((t) => t.status === "closed" && t.memberMessageIds.length > 0 && t.closedAtEventOrder !== undefined && t.closedAtEventOrder <= view.value!.coveredFrom);
+if (evicted.length > 0) fail(`compact evicted turns ${evicted.map((t) => t.turnId).join(",")} (covered from ${view.value.coveredFrom})`);
+log(`✓ every closed turn is still represented (covered from ${view.value.coveredFrom}, compact point ${view.value.compactPoint})`);
 
 await a.stop();
 log("sidecar-1 stopped; restarting with resume");

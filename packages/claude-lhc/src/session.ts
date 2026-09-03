@@ -32,9 +32,11 @@ import {
   COMPACT_CONTINUATION_MARKER_CAUSE,
   COMPACT_CONTINUATION_MARKER_KIND,
   compactContinuationMarkerIdempotencyKey,
+  type CompactReceipt,
   type Lhc,
   type MessageEventInput,
   type ThreadRef,
+  type TurnRecord,
 } from "lhc";
 import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/mapper.ts";
 import { killInferenceChildren } from "./inference/claudeCli.ts";
@@ -54,8 +56,13 @@ export interface SessionIO {
 
 /** Provider-reported context (input + cache) at which an automatic compact runs when no `autoCompactWindow` is configured. */
 const DEFAULT_AUTO_COMPACT_TRIGGER = 150_000;
-/** LHC-token size the rebuilt view aims for; the manual path aims lower when the thread is small. */
+/** LHC-token size the rebuilt view aims for, capped at a share of the auto-compact trigger so a compact clears the window. */
 const DEFAULT_VIEW_TARGET_TOKENS = 60_000;
+const VIEW_TARGET_TRIGGER_SHARE = 0.4;
+/** Longest a compact waits for queued derivations, so bands assemble from renderings rather than truncated excerpts. */
+const DERIVATION_WAIT_MS = 45_000;
+/** A view that would evict recorded turns is retried larger, up to this multiple of the target. */
+const MAX_VIEW_TARGET_MULTIPLE = 4;
 const FALLBACK_CLAUDE_CODE_VERSION = "2.1.259";
 
 interface QueuedPrompt {
@@ -114,6 +121,24 @@ export function estimatePostTokens(viewTokens: number, overhead: number | null):
   return viewTokens + (overhead ?? 0);
 }
 
+/** The view size a compact aims for: a fixed target, never more than a share of the trigger it must clear. */
+export function viewTargetFor(autoCompactTrigger: number): number {
+  return Math.max(1, Math.min(DEFAULT_VIEW_TARGET_TOKENS, Math.floor(autoCompactTrigger * VIEW_TARGET_TRIGGER_SHARE)));
+}
+
+/**
+ * Closed turns with recorded messages that a view no longer represents. The view's
+ * coverage edge is the oldest message it still carries; a turn that closed at or before
+ * that edge fell off the far side of the bands and the model would never see it again.
+ * A thread that fits the full share has no bands, `coveredFrom` 0, and nothing evicted.
+ */
+export function evictedTurns(turns: readonly TurnRecord[], coveredFrom: number): string[] {
+  return turns
+    .filter((turn) => turn.status === "closed" && turn.memberMessageIds.length > 0)
+    .filter((turn) => turn.closedAtEventOrder !== undefined && turn.closedAtEventOrder <= coveredFrom)
+    .map((turn) => turn.turnId);
+}
+
 export class ClaudeLhcSession {
   readonly #io: SessionIO;
   #base: Record<string, unknown> = {};
@@ -152,6 +177,7 @@ export class ClaudeLhcSession {
     const { resume, sessionId, canUseTool: _c, onUserDialog: _d, sessionStore: _s, settings, env, ...rest } = wire as Record<string, unknown>;
     const settingsRecord = typeof settings === "object" && settings !== null ? { ...(settings as Record<string, unknown>) } : {};
     if (typeof settingsRecord["autoCompactWindow"] === "number") this.#autoCompactTrigger = settingsRecord["autoCompactWindow"];
+    this.#viewTarget = viewTargetFor(this.#autoCompactTrigger);
     delete settingsRecord["autoCompactWindow"]; // LHC owns compaction; the native meter setting never reaches the child
     this.#env = { ...((env as NodeJS.ProcessEnv | undefined) ?? process.env), DISABLE_AUTO_COMPACT: "1" };
     this.#base = { ...rest, ...(Object.keys(settingsRecord).length > 0 ? { settings: settingsRecord } : {}) };
@@ -377,15 +403,34 @@ export class ClaudeLhcSession {
         const bandTokens = stored.ok && stored.value !== null ? stored.value.bands.reduce((sum, band) => sum + band.storedTokens, 0) : 0;
         this.#lastOverhead = Math.max(0, preTokens - (bandTokens + tail));
       }
-      // Aim the view at half the live tail (capped at the configured target): the full band then
-      // holds the newest ~15% and everything older lands in the stored bands.
-      const lowerBound = Math.max(100, Math.min(this.#viewTarget, Math.floor(tail * 0.5)));
-      const opts = { profile: "continuation", params: { lowerBound } };
-      const preview = await this.#lhc.threadView.previewCompact(this.#thread, opts);
-      if (!preview.ok) throw new Error(`compact preview error: ${preview.error.reason}`);
-      if (preview.value.kind === "error") throw new Error(`compact blocked: ${preview.value.reason}`);
-      const receipt = await this.#lhc.threadView.compact(this.#thread, opts);
-      if (!receipt.ok) throw new Error(`compact error: ${receipt.error.reason}`);
+      await this.#awaitDerivations();
+      // A compact never makes the model forget what the record still holds. The view aims at a
+      // fixed target: a thread that fits the full share stays whole in the tail (no bands), a
+      // larger one lands its older turns in bands. If the installed view still evicted turns
+      // past the far edge of the bands, retry larger before accepting it.
+      let lowerBound = this.#viewTarget;
+      let receipt: CompactReceipt;
+      for (;;) {
+        const opts = { profile: "continuation", params: { lowerBound } };
+        const preview = await this.#lhc.threadView.previewCompact(this.#thread, opts);
+        if (!preview.ok) throw new Error(`compact preview error: ${preview.error.reason}`);
+        if (preview.value.kind === "error") throw new Error(`compact blocked: ${preview.value.reason}`);
+        const installed = await this.#lhc.threadView.compact(this.#thread, opts);
+        if (!installed.ok) throw new Error(`compact error: ${installed.error.reason}`);
+        receipt = installed.value;
+        const turns = await this.#lhc.turns.listTurns(this.#thread);
+        if (!turns.ok) throw new Error(`LHC turns read failed: ${turns.error.reason}`);
+        const evicted = evictedTurns(turns.value, receipt.coveredFrom);
+        if (evicted.length === 0) break;
+        if (lowerBound >= this.#viewTarget * MAX_VIEW_TARGET_MULTIPLE) {
+          const warning = `[lhc compact:${trigger}] view at ${lowerBound} tokens still drops turns ${evicted.join(", ")} past the band edge; they remain in the record only`;
+          this.#io.log(warning);
+          await this.#lhc.logging.write(this.#thread, { level: "warning", message: warning }).catch(() => undefined);
+          break;
+        }
+        this.#io.log(`[lhc compact:${trigger}] view at ${lowerBound} tokens would drop turns ${evicted.join(", ")}; retrying at ${lowerBound * 2}`);
+        lowerBound *= 2;
+      }
 
       const continuationTurnId = await this.#openTurnId();
       await this.#intake([{
@@ -402,8 +447,8 @@ export class ClaudeLhcSession {
           waitForUser: false,
         },
       }]);
-      const postTokens = estimatePostTokens(receipt.value.totalTokens, this.#lastOverhead);
-      const summary = `[lhc compact:${trigger}] provider context ${preTokens} tokens; rebuilt view ${receipt.value.totalTokens} tokens (target ${lowerBound}); overhead ${this.#lastOverhead ?? "unknown"}; estimated next context ${postTokens}; bands ${JSON.stringify(receipt.value.bands)}`;
+      const postTokens = estimatePostTokens(receipt.totalTokens, this.#lastOverhead);
+      const summary = `[lhc compact:${trigger}] provider context ${preTokens} tokens; rebuilt view ${receipt.totalTokens} tokens (target ${lowerBound}); overhead ${this.#lastOverhead ?? "unknown"}; estimated next context ${postTokens}; compact point ${receipt.compactPoint}, covered from ${receipt.coveredFrom}; degraded ${receipt.degraded.length}, gaps ${receipt.gaps.length}; bands ${JSON.stringify(receipt.bands)}`;
       this.#io.log(summary);
       await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
 
@@ -426,6 +471,20 @@ export class ClaudeLhcSession {
       }
     } finally {
       this.#compacting = false;
+    }
+  }
+
+  /** Lets queued derivations finish (bounded) so the bands are built from renderings, not the truncated excerpt fallback. */
+  async #awaitDerivations(): Promise<void> {
+    const deadline = Date.now() + DERIVATION_WAIT_MS;
+    for (;;) {
+      const status = await this.#lhc.threadView.status(this.#thread);
+      if (!status.ok || status.value.derivation.pending === 0) return;
+      if (Date.now() >= deadline) {
+        this.#io.log(`compact: ${status.value.derivation.pending} derivations still pending after ${DERIVATION_WAIT_MS} ms; assembling from what is ready`);
+        return;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 250));
     }
   }
 
