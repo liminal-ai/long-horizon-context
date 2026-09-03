@@ -86,6 +86,13 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
     this.#wake?.();
   }
 
+  /** Ends the queue and hands back whatever the SDK never asked for. */
+  drain(): QueuedPrompt[] {
+    const leftover = this.#items.splice(0);
+    this.end();
+    return leftover;
+  }
+
   async *[Symbol.asyncIterator](): AsyncGenerator<SDKUserMessage> {
     for (;;) {
       const next = this.#items.shift();
@@ -146,6 +153,8 @@ export class ClaudeLhcSession {
   #pendingApprovals = 0;
   #pendingCompact: "manual" | "auto" | null = null;
   #compacting = false;
+  /** Prompts that arrived while a compact swap was running; replayed into the new generation. */
+  #heldPrompts: SDKUserMessage[] = [];
   #model: string | undefined;
   #permissionMode: PermissionMode | undefined;
   #maxThinkingTokens: number | null | undefined;
@@ -201,6 +210,12 @@ export class ClaudeLhcSession {
     if (compactCommand(message) !== null) {
       if (this.#turnOpen || this.#compacting) this.#pendingCompact = "manual";
       else await this.#compact("manual");
+      return;
+    }
+    if (this.#compacting) {
+      // The live generation is about to be superseded; queueing there would drop the prompt.
+      this.#heldPrompts.push(message);
+      this.#io.log(`holding a prompt during compact (${this.#heldPrompts.length} held)`);
       return;
     }
     const gen = this.#gen;
@@ -469,6 +484,9 @@ export class ClaudeLhcSession {
     } finally {
       this.#compacting = false;
     }
+    const held = this.#heldPrompts.splice(0);
+    if (held.length > 0) this.#io.log(`replaying ${held.length} held prompt(s) into generation ${this.#gen?.sessionId}`);
+    for (const message of held) await this.pushUser(message);
   }
 
   /** Lets queued derivations finish (bounded) so the bands are built from renderings, not the truncated excerpt fallback. */
@@ -509,7 +527,7 @@ export class ClaudeLhcSession {
     this.#gen = next;
     if (old !== null) {
       old.superseded = true;
-      old.input.end();
+      for (const item of old.input.drain()) next.input.push(item);
       old.query.close();
     }
     this.#io.log(`generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries`);

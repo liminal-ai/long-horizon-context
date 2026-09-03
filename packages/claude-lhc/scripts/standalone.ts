@@ -2,7 +2,8 @@
  * Standalone proof, no t3code: drives the sidecar over its JSONL protocol.
  *   1. start a fresh session; one tool turn (read notes.txt → secret word)
  *   2. /compact → compact_boundary + result; LHC has a view; both session ids alias the thread
- *   3. stop the sidecar; start a new one with resume: <second session id>
+ *   2b. a /compact deferred to a turn end; a prompt sent while that compact runs is answered
+ *   3. stop the sidecar; start a new one with resume: <latest session id>
  *   4. one no-tools turn that must recall the secret
  * Exit 0 on pass. T3CODE_LHC_HOME defaults to <builder dir>/home/t3code-lhc.
  */
@@ -133,6 +134,30 @@ if (!t3.text.toLowerCase().includes(SECRET)) fail(`post-compact turn lacks secre
 if (t3.sessionId !== second) fail(`post-compact result carries ${t3.sessionId}, expected ${second}`);
 log("✓ turn after compact remembers the secret, on the new session id");
 
+// ── 2b. a prompt pushed mid-compact is held and answered by the new generation.
+// The compact runs at the turn end (a /compact that arrived while the turn was open), so it
+// runs inside the SDK pump, not the wire's serial queue: the next prompt reaches the session
+// while the swap is in flight.
+const mark = a.messages.length;
+a.prompt("Read notes.txt with the Read tool, then reply with only the secret word.");
+await a.waitFor(() => a.messages.slice(mark).some((m) => m["type"] === "assistant"), 120_000, "turn open for deferred compact");
+a.prompt("/compact");
+await a.waitFor(() => a.messages.slice(mark).some((m) => m["type"] === "system" && m["subtype"] === "status" && m["status"] === "compacting"), 120_000, "deferred compact start");
+const midMark = a.messages.length;
+a.prompt("Without using tools: what is the secret word? Reply with only the word.");
+await a.waitFor(() => a.messages.slice(midMark).filter((m) => m["type"] === "result").length >= 2, 180_000, "results for the compacted turn and the held prompt");
+const afterMid = a.messages.slice(midMark);
+const midBoundary = afterMid.find((m) => m["type"] === "system" && m["subtype"] === "compact_boundary");
+if (!midBoundary) fail("deferred compact produced no boundary");
+const latest = String(midBoundary["session_id"]);
+if (latest === second) fail("deferred compact did not mint a new session id");
+const heldReply = afterMid.filter((m) => m["type"] === "assistant" && m["session_id"] === latest)
+  .flatMap((m) => ((m["message"] as any).content as any[]).filter((b) => b.type === "text").map((b) => String(b.text))).join("\n");
+if (!heldReply.toLowerCase().includes(SECRET)) fail(`prompt sent mid-compact was not answered with the secret: ${JSON.stringify(heldReply)}`);
+const heldResult = afterMid.filter((m) => m["type"] === "result").at(-1)!;
+if (heldResult["session_id"] !== latest) fail(`held prompt answered on ${heldResult["session_id"]}, expected new generation ${latest}`);
+log(`✓ prompt sent mid-compact was held and answered by generation ${latest.slice(0, 8)}: ${JSON.stringify(heldReply).slice(0, 60)}`);
+
 // LHC side.
 const registryPath = join(LHC_HOME, "registry.sqlite");
 const lhc: Lhc = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
@@ -140,7 +165,7 @@ const r1 = await threads.resolveAlias({ alias: `t3code-lhc:${first}`, registryPa
 const r2 = await threads.resolveAlias({ alias: `t3code-lhc:${second}`, registryPath });
 if (!r1.ok || !r2.ok) fail(`alias resolution failed: ${JSON.stringify([r1, r2])}`);
 if (r1.value.threadId !== r2.value.threadId) fail("session ids resolve to different threads");
-if (r2.value.currentAlias !== `t3code-lhc:${second}`) fail(`current alias is ${r2.value.currentAlias}`);
+if (r2.value.currentAlias !== `t3code-lhc:${latest}`) fail(`current alias is ${r2.value.currentAlias}, expected the deferred compact's generation ${latest}`);
 const threadRef = { threadId: r1.value.threadId, registryPath };
 const view = await lhc.threadView.describe(threadRef);
 if (!view.ok || view.value === null) fail(`no stored view after compact: ${JSON.stringify(view)}`);
@@ -158,17 +183,17 @@ await a.stop();
 log("sidecar-1 stopped; restarting with resume");
 
 const b = new Sidecar("sidecar-2");
-b.send({ type: "start", options: baseOptions({ resume: second }) });
+b.send({ type: "start", options: baseOptions({ resume: latest }) });
 const t4 = await b.turn("Without using tools: what is the secret word, and what file did we create? Be brief.");
 if (!t4.text.toLowerCase().includes(SECRET)) fail(`resumed turn lacks secret: ${t4.text}`);
 if (!t4.text.toLowerCase().includes("answer.txt")) fail(`resumed turn lacks the file name: ${t4.text}`);
 const third = String(b.messages.find((m) => m["subtype"] === "init")?.["session_id"]);
-if (third === second || third === first || third === "undefined") fail(`resume did not mint a new generation (init sid ${third})`);
+if (third === latest || third === second || third === first || third === "undefined") fail(`resume did not mint a new generation (init sid ${third})`);
 log(`✓ resumed as ${third.slice(0, 8)}; turn remembers secret and answer.txt`);
 const r3 = await threads.resolveAlias({ alias: `t3code-lhc:${third}`, registryPath });
 if (!r3.ok || r3.value.threadId !== threadRef.threadId) fail("resumed session id is not an alias of the thread");
 await b.stop();
 const finalEvents = await lhc.intakeStream.listEvents(threadRef);
-console.log(JSON.stringify({ threadId: threadRef.threadId, sessions: [first, second, third], events: finalEvents.ok ? finalEvents.value.length : -1, cwd }, null, 2));
+console.log(JSON.stringify({ threadId: threadRef.threadId, sessions: [first, second, latest, third], events: finalEvents.ok ? finalEvents.value.length : -1, cwd }, null, 2));
 console.log("RESULT: PASS");
 process.exit(0);
