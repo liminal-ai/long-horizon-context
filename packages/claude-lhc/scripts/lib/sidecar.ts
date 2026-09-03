@@ -51,8 +51,8 @@ export class Sidecar {
   error: string | null = null;
   exited: Promise<number | null>;
   #waiters: Array<() => void> = [];
-  constructor(label: string, lhcHome: string, quiet = false) {
-    this.child = spawn(BIN, [], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, T3CODE_LHC_HOME: lhcHome } });
+  constructor(label: string, lhcHome: string, quiet = false, extraEnv: Record<string, string> = {}) {
+    this.child = spawn(BIN, [], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, T3CODE_LHC_HOME: lhcHome, ...extraEnv } });
     this.exited = new Promise((r) => this.child.on("exit", (code) => { r(code); this.#notify(); }));
     createInterface({ input: this.child.stderr! }).on("line", (line) => {
       this.stderr.push(line);
@@ -86,6 +86,26 @@ export class Sidecar {
   }
   prompt(text: string) {
     this.send({ type: "user", message: { type: "user", message: { role: "user", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "" } as never });
+  }
+  /** MCP servers the turn's init reported as still pending: its first call's usage lacks their schemas. */
+  static pendingMcp(wire: Wire[]): string[] {
+    const init = wire.filter((m) => m["type"] === "system" && m["subtype"] === "init").at(-1);
+    const servers = (init?.["mcp_servers"] as Array<{ name: string; status: string }> | undefined) ?? [];
+    return servers.filter((s) => s.status === "pending").map((s) => s.name);
+  }
+  /** A "ready" turn repeated until the tool list is final (no MCP server pending), so its context reading is the settled baseline. */
+  async settledReady(maxTries = 5): Promise<{ context: number; tries: number; tools: number }> {
+    for (let i = 1; ; i++) {
+      const t = await this.turn("Reply with just the word: ready");
+      const pending = Sidecar.pendingMcp(t.wire);
+      const init = t.wire.filter((m) => m["type"] === "system" && m["subtype"] === "init").at(-1);
+      const tools = ((init?.["tools"] as string[] | undefined) ?? []).length;
+      if (pending.length === 0 || i >= maxTries) {
+        if (pending.length > 0) fail(`tool list never settled: ${pending.join(", ")} still pending after ${i} tries`);
+        return { context: t.context, tries: i, tools };
+      }
+      log(`  ready turn ${i}: ${pending.length} MCP server(s) pending (${tools} tools); repeating`);
+    }
   }
   /** Sends a prompt and waits for the next `result`; returns the wire slice for the turn. */
   async turn(text: string, timeoutMs = 240_000): Promise<{ text: string; wire: Wire[]; result: Wire; context: number }> {

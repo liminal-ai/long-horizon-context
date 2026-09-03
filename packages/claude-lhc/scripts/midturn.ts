@@ -14,6 +14,15 @@
  * correct; LHC has the forced boundary turn, the marker, and the continuation as a runtime
  * note (not a prompt). Writes cp-midturn/pass-N.wire.log and cp-midturn/record.json.
  * PARTIAL=0 turns includePartialMessages off (t3code runs with it on, the default here).
+ * FAIL_REBUILD=1 forces the rebuild to throw after the hook stop (CLAUDE_LHC_FORCE_REBUILD_FAILURE in
+ * the task sidecar): the expectation flips to no boundary, status failed, the task finishing in the
+ * stopped generation, still one result.
+ *
+ * Calibration: the account's MCP connectors join the tool list asynchronously (~24k tokens of
+ * schemas), so a call made before they connect reads low. The baseline is a "ready" turn repeated
+ * until the init reports no pending server; the task sidecar warms up the same way and its
+ * settled context must sit between the calibrated C1 and trigger − S, else the pass fails as
+ * miscalibrated rather than as a seam failure.
  * Exit 0 on pass. T3CODE_LHC_HOME defaults to <builder dir>/home/t3code-lhc.
  */
 import { randomUUID } from "node:crypto";
@@ -28,6 +37,7 @@ const BUILDER = resolve(HERE, "../../../..");
 const LHC_HOME = process.env.T3CODE_LHC_HOME ?? join(BUILDER, "home/t3code-lhc");
 const OUT = process.env.MIDTURN_OUT ?? join(BUILDER, "cp-midturn");
 const PASSES = Number(process.env.PASSES ?? 3);
+const FAIL_REBUILD = process.env.FAIL_REBUILD === "1";
 const MODEL = process.env.MODEL ?? "claude-sonnet-5";
 const VALUES = ["amber", "birch", "coral", "denim", "ember", "frost"];
 const FILLER_CHARS = Number(process.env.FILLER_CHARS ?? 80_000);
@@ -62,20 +72,23 @@ for (let pass = 1; pass <= PASSES; pass++) {
   const first = randomUUID();
   const a = new Sidecar(`p${pass}-A`, LHC_HOME, true);
   a.send({ type: "start", options: baseOptions(cwd, { sessionId: first, settings: { autoCompactWindow: 300_000 } }) });
-  const t1 = await a.turn("Reply with just the word: ready");
-  const B = t1.context;
-  log(`turn 1 assistant usage: ${JSON.stringify((t1.wire.filter((m) => m["type"] === "assistant").at(-1)?.["message"] as { usage?: unknown })?.usage)}`);
+  const ready = await a.settledReady();
+  const B = ready.context;
   const t2 = await a.turn(`Use the Read tool on ${join(cwd, "sample.txt")}, then reply with just the word after SAMPLE=.`);
   const S = t2.context - B;
   const t3 = await a.turn(`Use the Read tool on ${join(cwd, "filler.txt")} once, then reply with just: ok`);
   const C1 = t3.context;
   const trigger = Math.round(C1 + 400 + 1.5 * S);
-  log(`baseline ${B}, per-read ${S}, after filler ${C1} → trigger ${trigger}`);
-  if (t1.text.trim().toLowerCase() !== "ready" || !t2.text.toLowerCase().includes("zero")) fail(`setup turns went wrong: ${JSON.stringify([t1.text, t2.text])}`);
+  log(`baseline ${B} (settled after ${ready.tries} ready turn(s), ${ready.tools} tools), per-read ${S}, after filler ${C1} → trigger ${trigger}`);
+  if (!t2.text.toLowerCase().includes("zero")) fail(`setup turn went wrong: ${JSON.stringify(t2.text)}`);
+  if (S <= 0 || S > 20_000 || C1 <= B) fail(`calibration off: baseline ${B}, per-read ${S}, after filler ${C1}`);
   await a.stop();
 
-  const b = new Sidecar(`p${pass}-B`, LHC_HOME, false);
+  const b = new Sidecar(`p${pass}-B`, LHC_HOME, false, FAIL_REBUILD ? { CLAUDE_LHC_FORCE_REBUILD_FAILURE: "1" } : {});
   b.send({ type: "start", options: baseOptions(cwd, { resume: first, settings: { autoCompactWindow: trigger } }) });
+  const warm = await b.settledReady();
+  log(`task sidecar warmed up: settled context ${warm.context} after ${warm.tries} ready turn(s), ${warm.tools} tools (calibrated C1 ${C1}, trigger ${trigger})`);
+  if (warm.context < C1 - 2_000 || warm.context > trigger - S) fail(`pass ${pass}: miscalibrated, not a seam failure: task sidecar's settled context ${warm.context} is outside [${C1 - 2_000}, ${trigger - S}]`);
   const file = (i: number) => join(cwd, `value-${i}.txt`);
   const task = [
     "Deterministic sequencing test. Read six files with the Read tool, exactly as follows:",
@@ -116,12 +129,25 @@ for (let pass = 1; pass <= PASSES; pass++) {
     order, boundaryAt, boundary: boundaryAt >= 0 ? wire[boundaryAt]!["compact_metadata"] : null, statuses, results: results.map((r) => ({ subtype: r["subtype"], terminal: r["terminal_reason"], sid: String(r["session_id"]).slice(0, 8), is_error: r["is_error"] })),
     inits: inits.map((s) => s.slice(0, 8)), finalText, correct,
     contexts: wire.filter((m) => m["type"] === "assistant").map((m) => contextTokens(m)).filter((n) => n !== undefined),
-    hookLog: b.stderr.filter((l) => /mid-turn|safe boundary|batch|wire after stop/.test(l)),
+    hookLog: b.stderr.filter((l) => /mid-turn|safe boundary|batch|wire after stop|swap complete/.test(l)),
+    swapMs: Number(/swap complete: .* (\d+) ms after the hook stop/.exec(b.stderr.find((l) => l.includes("swap complete")) ?? "")?.[1] ?? -1),
   };
   log(JSON.stringify(summary, null, 1).replace(/\n\s*/g, " "));
   if (calls.length !== 6) fail(`pass ${pass}: ${calls.length} tool calls, expected 6`);
   if (JSON.stringify(order.slice(0, 2)) !== "[1,2]" || JSON.stringify([...order.slice(2, 5)].sort()) !== "[3,4,5]" || order[5] !== 6) fail(`pass ${pass}: tool order ${JSON.stringify(order)}`);
   if (new Set(batch.map((c) => c.msg)).size !== 1) fail(`pass ${pass}: value-3/4/5 were not one parallel batch (API message ids ${JSON.stringify(batch.map((c) => c.msg))})`);
+  if (FAIL_REBUILD) {
+    const oldSid = String(wire.find((m) => m["type"] === "assistant")?.["session_id"]);
+    if (boundaryAt >= 0) fail(`pass ${pass}: a compact_boundary appeared although the rebuild was forced to fail`);
+    // One mid-turn try, then the turn-end path's one try: two compacting/failed pairs, no more.
+    if (statuses.filter((s) => s.endsWith(":compacting")).length !== 2 || statuses.filter((s) => s.endsWith(":null:failed")).length !== 2) fail(`pass ${pass}: status sequence ${JSON.stringify(statuses)}, expected exactly two compacting→failed pairs (mid-turn once, turn end once)`);
+    if (results.length !== 1) fail(`pass ${pass}: ${results.length} results on the wire, expected 1`);
+    if (results[0]!["session_id"] !== oldSid || results[0]!["is_error"] === true) fail(`pass ${pass}: result ${JSON.stringify(summary.results)} is not the stopped session's success`);
+    if (calls.some((c) => c.sid !== oldSid)) fail(`pass ${pass}: a tool call ran outside the stopped session`);
+    if (!correct) fail(`pass ${pass}: final answer wrong: ${JSON.stringify(finalText)}`);
+    if (!b.stderr.some((l) => l.includes("continuing the turn in generation"))) fail(`pass ${pass}: sidecar log has no failure-path line`);
+    log(`✓ pass ${pass} (forced rebuild failure): 6 reads once each, status compacting→failed, no boundary, the stopped generation ${oldSid.slice(0, 8)} took the continuation note and finished with one result, answer correct`);
+  } else {
   if (boundaryAt < 0) fail(`pass ${pass}: no compact_boundary in the turn`);
   if (!batchResolvedBefore) fail(`pass ${pass}: a batch result landed after the boundary (${JSON.stringify(summary.toolCalls)})`);
   if (calls.slice(0, 5).some((c) => c.at > boundaryAt) || calls[5]!.at < boundaryAt) fail(`pass ${pass}: the seam is not between the batch and value-6`);
@@ -131,6 +157,7 @@ for (let pass = 1; pass <= PASSES; pass++) {
   if (!correct) fail(`pass ${pass}: final answer wrong: ${JSON.stringify(finalText)}`);
   if (calls[5]!.sid !== newSid) fail(`pass ${pass}: value-6 was read on ${calls[5]!.sid}, not the new session`);
   log(`✓ pass ${pass}: 6 reads once each, batch of 3 resolved before the boundary at ${boundaryAt}, one result on ${newSid.slice(0, 8)}, answer correct`);
+  }
 
   // ── LHC side
   const r = await threads.resolveAlias({ alias: `t3code-lhc:${first}`, registryPath });
@@ -149,8 +176,13 @@ for (let pass = 1; pass <= PASSES; pass++) {
   if (notes.length !== 1) fail(`pass ${pass}: continuation note recorded ${notes.length} times as runtime_note`);
   const promptsWithNote = events.value.filter((e) => e.eventKind === "user_prompt" && String((e.payload as { text?: string }).text ?? "").includes("compacted in the middle"));
   if (promptsWithNote.length !== 0) fail(`pass ${pass}: the continuation was recorded as a user prompt`);
-  if (!kinds["compact_continuation_marker"]) fail(`pass ${pass}: no continuation marker`);
-  log(`✓ pass ${pass}: LHC closed the turn on context_compact_continue, recorded the marker and the continuation as a runtime note`);
+  if (FAIL_REBUILD) {
+    if (kinds["compact_continuation_marker"]) fail(`pass ${pass}: a continuation marker was recorded although the rebuild failed`);
+    log(`✓ pass ${pass}: LHC closed the turn on context_compact_continue, no marker, the continuation as a runtime note; the rest of the task is the next turn`);
+  } else {
+    if (!kinds["compact_continuation_marker"]) fail(`pass ${pass}: no continuation marker`);
+    log(`✓ pass ${pass}: LHC closed the turn on context_compact_continue, recorded the marker and the continuation as a runtime note`);
+  }
   await b.stop();
   record.push({ ...summary, threadId: ref.threadId, turns: turnList, eventKinds: kinds, cwd });
   writeFileSync(join(OUT, "record.json"), JSON.stringify(record, null, 2) + "\n");
