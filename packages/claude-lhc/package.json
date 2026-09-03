@@ -1,0 +1,29 @@
+{
+  "name": "claude-lhc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Claude Code sidecar for t3code: runs the Claude Agent SDK, records into LHC, forwards the native stream over JSONL stdio.",
+  "type": "module",
+  "bin": {
+    "claude-lhc": "./bin/claude-lhc"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "bun test",
+    "standalone": "bun run scripts/standalone.ts"
+  },
+  "engines": {
+    "bun": ">=1.4.0"
+  },
+  "dependencies": {
+    "@anthropic-ai/claude-agent-sdk": "0.3.170",
+    "@anthropic-ai/sdk": "0.93.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "lhc": "workspace:*",
+    "zod": "4.4.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.0",
+    "typescript": "^5.9.3"
+  }
+}
