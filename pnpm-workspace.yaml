@@ -18,3 +18,13 @@ overrides:
   "@earendil-works/pi-protocol": "file:./vendor/pi/packages/protocol"
   "@earendil-works/pi-client": "file:./vendor/pi/packages/client"
   "@earendil-works/pi-telemetry": "file:./vendor/pi/packages/telemetry"
+  # claude-lhc: the sidecar drives the Claude Code binary t3code points it at
+  # (pathToClaudeCodeExecutable); the SDK's bundled platform binaries are not installed.
+  "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-arm64": "-"
+  "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-x64": "-"
+  "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-linux-arm64": "-"
+  "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-linux-arm64-musl": "-"
+  "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-linux-x64": "-"
+  "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-linux-x64-musl": "-"
+  "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-win32-arm64": "-"
+  "@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-win32-x64": "-"
