@@ -35,6 +35,12 @@ const BAND_GRADIENT_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
 // null means no view exists (never compacted): the whole record renders as tail
 // from event 1 through the same serving assembly path, snapshot-absent rather
 // than a separate branch.
+/** One blob's bytes by content hash; undefined when the store never held it. */
+export function readBlob(db: DatabaseSync, sha256: string): Uint8Array | undefined {
+  const row = db.prepare("SELECT data FROM blob WHERE sha256 = ?").get(sha256) as { data: Uint8Array } | undefined;
+  return row?.data;
+}
+
 export function readViewSnapshot(db: DatabaseSync): ViewSnapshot | null {
   const header = db
     .prepare(
