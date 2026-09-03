@@ -329,23 +329,27 @@ export class ClaudeLhcSession {
     const mapped = mapSdkMessage(message, this.#turnStartedAt);
     if (mapped.contextTokens !== undefined) this.#lastContextTokens = mapped.contextTokens;
     if (mapped.events.length > 0 && (this.#turnOpen || !mapped.turnEnd)) await this.#intake(mapped.events);
-    this.#io.emit(message);
-    if (mapped.turnEnd) {
-      this.#turnOpen = false;
-      this.#turnStartedAt = undefined;
-      await this.#afterTurn();
+    if (!mapped.turnEnd) {
+      this.#io.emit(message);
+      return;
     }
+    this.#turnOpen = false;
+    this.#turnStartedAt = undefined;
+    // A compact due at this turn end runs before the turn's result goes out, so the driver
+    // sees native order: status compacting, status cleared, compact_boundary, then the result.
+    const trigger = this.#dueCompact();
+    if (trigger === null) this.#io.emit(message);
+    else await this.#compact(trigger, message);
   }
 
-  async #afterTurn(): Promise<void> {
-    if (this.#compacting) return;
+  #dueCompact(): "manual" | "auto" | null {
+    if (this.#compacting) return null;
     if (this.#pendingCompact !== null) {
       const trigger = this.#pendingCompact;
       this.#pendingCompact = null;
-      await this.#compact(trigger);
-      return;
+      return trigger;
     }
-    if (this.#lastContextTokens >= this.#autoCompactTrigger) await this.#compact("auto");
+    return this.#lastContextTokens >= this.#autoCompactTrigger ? "auto" : null;
   }
 
   // ── LHC ────────────────────────────────────────────────────────
@@ -376,11 +380,21 @@ export class ClaudeLhcSession {
     return open.turnId;
   }
 
-  async #compact(trigger: "manual" | "auto"): Promise<void> {
-    if (this.#gen === null || this.#compacting) return;
+  /**
+   * Rebuilds the view and swaps generations. `heldResult` is the turn's own `result` when the
+   * compact runs at a turn end: it is forwarded after the boundary, on the new session id.
+   * Without one (a `/compact` sent between turns) a synthetic result closes the compact turn.
+   */
+  async #compact(trigger: "manual" | "auto", heldResult?: SDKMessage): Promise<void> {
+    if (this.#gen === null || this.#compacting) {
+      if (heldResult !== undefined) this.#io.emit(heldResult);
+      return;
+    }
     this.#compacting = true;
     const startedAt = Date.now();
     const preTokens = this.#lastContextTokens;
+    const previous = this.#gen;
+    this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, "compacting"));
     try {
       await this.#awaitDerivations();
       // A compact never makes the model forget what the record still holds. The view aims at a
@@ -434,6 +448,7 @@ export class ClaudeLhcSession {
       await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
 
       const next = await this.#startProjectedGeneration();
+      this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
       this.#emitSynthetic({
         type: "system",
         subtype: "compact_boundary",
@@ -442,14 +457,15 @@ export class ClaudeLhcSession {
         session_id: next.sessionId,
       } as unknown as SDKMessage);
       this.#lastContextTokens = 0;
-      if (trigger === "manual") this.#emitSynthetic(this.#syntheticResult(next.sessionId, startedAt, ""));
+      if (heldResult !== undefined) this.#emitSynthetic({ ...heldResult, session_id: next.sessionId } as SDKMessage);
+      else if (trigger === "manual") this.#emitSynthetic(this.#syntheticResult(next.sessionId, startedAt, ""));
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
       this.#io.log(`compact (${trigger}) failed: ${reason}`);
       await this.#lhc.logging.write(this.#thread, { level: "warning", message: `[lhc compact:${trigger}] failed: ${reason}` }).catch(() => undefined);
-      if (trigger === "manual" && this.#gen !== null) {
-        this.#emitSynthetic(this.#syntheticResult(this.#gen.sessionId, startedAt, `LHC compact failed: ${reason}`));
-      }
+      this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }));
+      if (heldResult !== undefined) this.#io.emit(heldResult);
+      else if (trigger === "manual") this.#emitSynthetic(this.#syntheticResult(previous.sessionId, startedAt, `LHC compact failed: ${reason}`));
     } finally {
       this.#compacting = false;
     }
@@ -502,6 +518,19 @@ export class ClaudeLhcSession {
 
   #emitSynthetic(message: SDKMessage): void {
     this.#io.emit(message);
+  }
+
+  /** Native's `system/status` around a compaction: `compacting` at the start, `null` with the outcome at the end. */
+  #syntheticStatus(sessionId: string, status: "compacting" | null, outcome: Record<string, unknown> = {}): SDKMessage {
+    return {
+      type: "system",
+      subtype: "status",
+      status,
+      ...(this.#permissionMode !== undefined ? { permissionMode: this.#permissionMode } : {}),
+      ...outcome,
+      uuid: randomUUID(),
+      session_id: sessionId,
+    } as unknown as SDKMessage;
   }
 
   #syntheticResult(sessionId: string, startedAt: number, resultText: string): SDKMessage {

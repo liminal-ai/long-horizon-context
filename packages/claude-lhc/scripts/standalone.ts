@@ -118,6 +118,14 @@ const boundary = a.messages.slice(beforeCompact).find((m) => m["type"] === "syst
 if (!boundary) fail("no compact_boundary after /compact");
 const second = String(boundary["session_id"]);
 if (second === first) fail("compact did not mint a new session id");
+// Native order around a compaction: status compacting → status null (compact_result) → boundary → result.
+const seq = a.messages.slice(beforeCompact).map((m) =>
+  m["type"] === "system" && m["subtype"] === "status" ? `status:${m["status"] ?? "null"}${m["compact_result"] ? ":" + m["compact_result"] : ""}`
+  : m["type"] === "system" && m["subtype"] === "compact_boundary" ? "boundary"
+  : m["type"] === "result" ? "result" : null).filter((x): x is string => x !== null);
+const expectedSeq = ["status:compacting", "status:null:success", "boundary", "result"];
+if (JSON.stringify(seq) !== JSON.stringify(expectedSeq)) fail(`compact message order ${JSON.stringify(seq)}, expected ${JSON.stringify(expectedSeq)}`);
+log(`✓ compact messages in native order: ${seq.join(" → ")}`);
 log(`✓ /compact: boundary ${JSON.stringify(boundary["compact_metadata"])}, new session ${second.slice(0, 8)}`);
 const t3 = await a.turn("Without using tools: what is the secret word? One word.");
 if (!a.messages.some((m) => m["type"] === "system" && m["subtype"] === "init" && m["session_id"] === second)) fail("new generation never reported system/init");
