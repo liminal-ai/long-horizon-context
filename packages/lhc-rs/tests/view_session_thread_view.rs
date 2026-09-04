@@ -145,7 +145,6 @@ async fn returns_user_and_assistant_messages_for_a_simple_turn() {
         SessionThreadViewMessage::User(SessionUserMessage {
             content,
             source_messages,
-            ..
         }) => {
             assert_eq!(content, "please read the file");
             assert_eq!(source_messages.len(), 1);
@@ -173,7 +172,6 @@ async fn returns_user_and_assistant_messages_for_a_simple_turn() {
                     tool_call_id: None,
                     tool_name: None,
                     arguments: None,
-                    block: None,
                 }
             );
             assert_eq!(source_messages.len(), 1);
@@ -690,7 +688,6 @@ async fn renders_runtime_notes_as_labeled_user_entries_in_tail_order() {
         SessionThreadViewMessage::User(SessionUserMessage {
             content,
             source_messages,
-            ..
         }) => {
             assert_eq!(content, &format!("[runtime note] {note_text}"));
             assert_eq!(source_messages.len(), 1);

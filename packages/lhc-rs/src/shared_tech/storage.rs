@@ -18,7 +18,7 @@ use rusqlite::{Connection, ToSql, params_from_iter};
 
 use super::errors::{OpResult, storage_failure};
 
-pub const CURRENT_THREAD_SCHEMA_VERSION: i64 = 12;
+pub const CURRENT_THREAD_SCHEMA_VERSION: i64 = 11;
 
 /// Crate-owned SQL bind value. Tests and non-storage modules bind through this
 /// type — they must not name `rusqlite`.

@@ -14,7 +14,6 @@ use lhc::shared_tech::thread_migrate::{
     THREAD_SCHEMA_VERSION_1, THREAD_SCHEMA_VERSION_2, THREAD_SCHEMA_VERSION_4,
     THREAD_SCHEMA_VERSION_5, THREAD_SCHEMA_VERSION_6, THREAD_SCHEMA_VERSION_7,
     THREAD_SCHEMA_VERSION_8, THREAD_SCHEMA_VERSION_9, THREAD_SCHEMA_VERSION_10,
-    THREAD_SCHEMA_VERSION_12,
 };
 use lhc::threads::{NewThreadInput, open_thread_database};
 use lhc::{OpResult, ThreadRef, init_lhc, intake_stream, threads};
@@ -327,13 +326,6 @@ async fn opens_a_v1_thread_file_migrates_derivation_log_and_preserves_existing_d
         return;
     };
     assert_eq!(schema_version(&db), CURRENT_THREAD_SCHEMA_VERSION);
-    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_12);
-    // v12 added the content blob table.
-    assert!(
-        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blob'")
-            .get()
-            .is_some()
-    );
     assert!(
         db.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'"

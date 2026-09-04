@@ -56,11 +56,6 @@ pub use crate::compact_continuation::{
     parse_stored_operation_identity, prove_pending_tool_pair, run_compact_continuation,
     run_compact_continuation_with_ownership, validate_host_facts,
 };
-pub use crate::shared_tech::content_blocks::{
-    API_BLOCK_TYPES, BlobLoader, BlobRef, ExtractResult, ExtractedBlob, base64_decode_node,
-    base64_encode, blob_ref_of, blob_token_estimate, extract_blobs, has_blob_payload, inline_blobs,
-    is_api_block, is_blob_ref, placeholder_text,
-};
 pub use crate::shared_tech::context::{set_scheduler_poke, set_thread_touch};
 pub use crate::shared_tech::derivation::{
     CompletionTx, DependencyGap, Derivation, DerivationMetadata, DerivationReportEntry,

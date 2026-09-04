@@ -209,11 +209,6 @@ pub struct LlmRequestContext {
 // PI SessionManager-friendly message shapes built from canonical LHC record
 // data. The host maps these to its session append API.
 
-/// LHC's three part kinds, or the API's name for a block LHC holds verbatim
-/// (redacted_thinking, server_tool_use, the server-side *_tool_result
-/// blocks); those carry the block itself in `block`. TS
-/// `"text" | "thinking" | "toolCall" | ApiBlockType` (`text` / `thinking`
-/// spell the same in both sets).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionAssistantPartType {
     #[serde(rename = "text")]
@@ -222,36 +217,6 @@ pub enum SessionAssistantPartType {
     Thinking,
     #[serde(rename = "toolCall")]
     ToolCall,
-    #[serde(rename = "image")]
-    Image,
-    #[serde(rename = "document")]
-    Document,
-    #[serde(rename = "tool_use")]
-    ToolUse,
-    #[serde(rename = "tool_result")]
-    ToolResult,
-    #[serde(rename = "redacted_thinking")]
-    RedactedThinking,
-    #[serde(rename = "server_tool_use")]
-    ServerToolUse,
-    #[serde(rename = "web_search_tool_result")]
-    WebSearchToolResult,
-    #[serde(rename = "web_fetch_tool_result")]
-    WebFetchToolResult,
-    #[serde(rename = "code_execution_tool_result")]
-    CodeExecutionToolResult,
-    #[serde(rename = "bash_code_execution_tool_result")]
-    BashCodeExecutionToolResult,
-    #[serde(rename = "text_editor_code_execution_tool_result")]
-    TextEditorCodeExecutionToolResult,
-    #[serde(rename = "tool_search_tool_result")]
-    ToolSearchToolResult,
-    #[serde(rename = "search_result")]
-    SearchResult,
-    #[serde(rename = "container_upload")]
-    ContainerUpload,
-    #[serde(rename = "tool_reference")]
-    ToolReference,
 }
 
 impl SessionAssistantPartType {
@@ -260,54 +225,7 @@ impl SessionAssistantPartType {
             SessionAssistantPartType::Text => "text",
             SessionAssistantPartType::Thinking => "thinking",
             SessionAssistantPartType::ToolCall => "toolCall",
-            SessionAssistantPartType::Image => "image",
-            SessionAssistantPartType::Document => "document",
-            SessionAssistantPartType::ToolUse => "tool_use",
-            SessionAssistantPartType::ToolResult => "tool_result",
-            SessionAssistantPartType::RedactedThinking => "redacted_thinking",
-            SessionAssistantPartType::ServerToolUse => "server_tool_use",
-            SessionAssistantPartType::WebSearchToolResult => "web_search_tool_result",
-            SessionAssistantPartType::WebFetchToolResult => "web_fetch_tool_result",
-            SessionAssistantPartType::CodeExecutionToolResult => "code_execution_tool_result",
-            SessionAssistantPartType::BashCodeExecutionToolResult => {
-                "bash_code_execution_tool_result"
-            }
-            SessionAssistantPartType::TextEditorCodeExecutionToolResult => {
-                "text_editor_code_execution_tool_result"
-            }
-            SessionAssistantPartType::ToolSearchToolResult => "tool_search_tool_result",
-            SessionAssistantPartType::SearchResult => "search_result",
-            SessionAssistantPartType::ContainerUpload => "container_upload",
-            SessionAssistantPartType::ToolReference => "tool_reference",
         }
-    }
-
-    const API_NAMED: [SessionAssistantPartType; 18] = [
-        SessionAssistantPartType::Text,
-        SessionAssistantPartType::Thinking,
-        SessionAssistantPartType::Image,
-        SessionAssistantPartType::Document,
-        SessionAssistantPartType::ToolUse,
-        SessionAssistantPartType::ToolResult,
-        SessionAssistantPartType::RedactedThinking,
-        SessionAssistantPartType::ServerToolUse,
-        SessionAssistantPartType::WebSearchToolResult,
-        SessionAssistantPartType::WebFetchToolResult,
-        SessionAssistantPartType::CodeExecutionToolResult,
-        SessionAssistantPartType::BashCodeExecutionToolResult,
-        SessionAssistantPartType::TextEditorCodeExecutionToolResult,
-        SessionAssistantPartType::ToolSearchToolResult,
-        SessionAssistantPartType::SearchResult,
-        SessionAssistantPartType::ContainerUpload,
-        SessionAssistantPartType::ToolReference,
-        SessionAssistantPartType::ToolCall,
-    ];
-
-    /// The part type spelled by a Messages API block `type` name.
-    pub fn from_api_type(name: &str) -> Option<SessionAssistantPartType> {
-        SessionAssistantPartType::API_NAMED
-            .into_iter()
-            .find(|t| t.as_str() == name && *t != SessionAssistantPartType::ToolCall)
     }
 }
 
@@ -329,9 +247,6 @@ pub struct SessionAssistantPart {
     pub tool_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub arguments: Option<serde_json::Map<String, serde_json::Value>>,
-    /// The Messages API block, blob payloads inlined (base64 back in place).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub block: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -345,13 +260,7 @@ pub struct SessionThreadViewEntrySource {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SessionUserMessage {
-    /// Text-shaped content: the text blocks, with a placeholder where each non-text block sits.
     pub content: String,
-    /// Present when the prompt carried blocks beyond text: the full Messages API
-    /// content array in order, blob payloads inlined. Hosts that replay the real
-    /// blocks use this; hosts that only speak text use `content`.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blocks: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
     pub source_messages: Vec<SessionThreadViewEntrySource>,
 }
 
@@ -378,12 +287,7 @@ pub struct SessionToolResultMessage {
     pub tool_call_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
-    /// Text-shaped content (placeholders for non-text blocks); abridged at or behind the boundary.
     pub content: String,
-    /// The result's Messages API content array with blob payloads inlined, only
-    /// ahead of the boundary (an abridged result is text).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub blocks: Option<Vec<serde_json::Map<String, serde_json::Value>>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
     pub source_messages: Vec<SessionThreadViewEntrySource>,

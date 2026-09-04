@@ -55,25 +55,6 @@ pub enum BlockType {
     ModelChange,
     ThinkingLevelChange,
     CompactContinuationMarker,
-    // Messages API block names for the content blocks a message carried beyond
-    // its text (rows 1..n; block 0 is always the text-shaped projection). TS
-    // `BlockType = … | ApiBlockType`; `text` and `tool_result` share the
-    // LHC spelling above. See shared_tech/content_blocks.rs.
-    Image,
-    Document,
-    ToolUse,
-    Thinking,
-    RedactedThinking,
-    ServerToolUse,
-    WebSearchToolResult,
-    WebFetchToolResult,
-    CodeExecutionToolResult,
-    BashCodeExecutionToolResult,
-    TextEditorCodeExecutionToolResult,
-    ToolSearchToolResult,
-    SearchResult,
-    ContainerUpload,
-    ToolReference,
 }
 
 impl BlockType {
@@ -85,54 +66,7 @@ impl BlockType {
             BlockType::ModelChange => "model_change",
             BlockType::ThinkingLevelChange => "thinking_level_change",
             BlockType::CompactContinuationMarker => "compact_continuation_marker",
-            BlockType::Image => "image",
-            BlockType::Document => "document",
-            BlockType::ToolUse => "tool_use",
-            BlockType::Thinking => "thinking",
-            BlockType::RedactedThinking => "redacted_thinking",
-            BlockType::ServerToolUse => "server_tool_use",
-            BlockType::WebSearchToolResult => "web_search_tool_result",
-            BlockType::WebFetchToolResult => "web_fetch_tool_result",
-            BlockType::CodeExecutionToolResult => "code_execution_tool_result",
-            BlockType::BashCodeExecutionToolResult => "bash_code_execution_tool_result",
-            BlockType::TextEditorCodeExecutionToolResult => {
-                "text_editor_code_execution_tool_result"
-            }
-            BlockType::ToolSearchToolResult => "tool_search_tool_result",
-            BlockType::SearchResult => "search_result",
-            BlockType::ContainerUpload => "container_upload",
-            BlockType::ToolReference => "tool_reference",
         }
-    }
-
-    /// Every wire spelling, LHC's own kinds and the API block names alike.
-    pub const ALL: [BlockType; 21] = [
-        BlockType::Text,
-        BlockType::ToolCall,
-        BlockType::ToolResult,
-        BlockType::ModelChange,
-        BlockType::ThinkingLevelChange,
-        BlockType::CompactContinuationMarker,
-        BlockType::Image,
-        BlockType::Document,
-        BlockType::ToolUse,
-        BlockType::Thinking,
-        BlockType::RedactedThinking,
-        BlockType::ServerToolUse,
-        BlockType::WebSearchToolResult,
-        BlockType::WebFetchToolResult,
-        BlockType::CodeExecutionToolResult,
-        BlockType::BashCodeExecutionToolResult,
-        BlockType::TextEditorCodeExecutionToolResult,
-        BlockType::ToolSearchToolResult,
-        BlockType::SearchResult,
-        BlockType::ContainerUpload,
-        BlockType::ToolReference,
-    ];
-
-    /// Wire spelling → block type (`block_type` column, API `type` names).
-    pub fn from_wire(wire: &str) -> Option<BlockType> {
-        BlockType::ALL.into_iter().find(|b| b.as_str() == wire)
     }
 }
 

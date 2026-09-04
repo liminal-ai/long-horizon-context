@@ -150,7 +150,6 @@ async fn creates_the_three_view_tables_with_their_check_constraints_and_seeds_th
         user_version,
         lhc::shared_tech::storage::CURRENT_THREAD_SCHEMA_VERSION
     );
-    assert_eq!(user_version, 12);
 
     let tables: Vec<String> = db
         .prepare(

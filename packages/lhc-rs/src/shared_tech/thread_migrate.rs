@@ -21,7 +21,6 @@ pub const THREAD_SCHEMA_VERSION_8: i64 = 8;
 pub const THREAD_SCHEMA_VERSION_9: i64 = 9;
 pub const THREAD_SCHEMA_VERSION_10: i64 = 10;
 pub const THREAD_SCHEMA_VERSION_11: i64 = 11;
-pub const THREAD_SCHEMA_VERSION_12: i64 = 12;
 
 const OLD_DERIVATION_TYPE: &str = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE: &str = "detailed_turn_compression";
@@ -53,23 +52,6 @@ const DERIVATION_LOG_SCHEMA_STATEMENTS: &[&str] = &[
 
 pub fn derivation_log_schema_statements() -> Vec<&'static str> {
     DERIVATION_LOG_SCHEMA_STATEMENTS.to_vec()
-}
-
-/// Schema v12: content blobs — the binary/opaque payloads of API content
-/// blocks (image and PDF bytes, redacted-thinking data, encrypted search
-/// content), keyed by content hash and referenced from message blocks and
-/// event payloads as `{ $blob: "sha256:…", bytes }`. Shared by fresh create
-/// and the 11→12 migration.
-const BLOB_SCHEMA_STATEMENTS: &[&str] = &[r#"CREATE TABLE IF NOT EXISTS blob (
-      sha256 TEXT PRIMARY KEY,
-      media_type TEXT,
-      byte_length INTEGER NOT NULL,
-      data BLOB NOT NULL,
-      created_at TEXT NOT NULL
-    );"#];
-
-pub fn blob_schema_statements() -> Vec<&'static str> {
-    BLOB_SCHEMA_STATEMENTS.to_vec()
 }
 
 /// Schema v6: retrieval impression log — one row per requested entity per
@@ -702,12 +684,6 @@ pub fn migrate_thread_schema(db: &Db) {
         if version == THREAD_SCHEMA_VERSION_10 {
             migrate_compact_continuation_v11(db);
             version = THREAD_SCHEMA_VERSION_11;
-        }
-        if version == THREAD_SCHEMA_VERSION_11 {
-            for statement in blob_schema_statements() {
-                db.exec(statement);
-            }
-            version = THREAD_SCHEMA_VERSION_12;
         }
         if version != CURRENT_THREAD_SCHEMA_VERSION {
             panic!("unsupported thread schema version {version}");
