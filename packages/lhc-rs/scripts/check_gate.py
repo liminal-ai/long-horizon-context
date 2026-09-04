@@ -12,7 +12,7 @@ Rust-adapted):
              final mode (crate-wide real todo count == 0): every non-ignored
              cargo ok is a pass. A nonempty allowlist in final mode is a
              GATE FAIL (transitional list retired). Target then is exactly
-             728 passed / 0 notimpl / 15 ignored / 0 wrong / 0 suspicious.
+             744 passed / 0 notimpl / 15 ignored / 0 wrong / 0 suspicious.
   ignored    #[ignore] tests, reported for the ledger
   suspicious transitional: cargo ok not on the exact-name allowlist
 
@@ -925,10 +925,13 @@ def classify() -> int:
         # with a broad/prefix wildcard.
         # Prior Phase-2 close: 584. Compact-continuation stack through LIM-63
         # plus LIM-76 selector/continuation work is 728. LIM-77 adds one
-        # claim_expired fallback compact test → 729. Keep this exact-count
-        # ledger in lockstep with cargo --features test-util.
+        # claim_expired fallback compact test → 729. CX-S5 parity, bounded
+        # large reads, and UTC timestamp fixes added 7 without bumping this
+        # ledger → 736 (reconciled 2026-09-04). Content blocks (schema v12)
+        # add test/content-blocks.test.ts (7) + the TS parity oracle (1) → 744.
+        # Keep this exact-count ledger in lockstep with cargo --features test-util.
         if (
-            len(buckets["passed"]) != 729
+            len(buckets["passed"]) != 744
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -936,7 +939,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=729 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=744 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")

@@ -274,15 +274,8 @@ fn message_kind_from_wire(kind: &str) -> MessageKind {
 }
 
 fn block_type_from_wire(block_type: &str) -> BlockType {
-    match block_type {
-        "text" => BlockType::Text,
-        "tool_call" => BlockType::ToolCall,
-        "tool_result" => BlockType::ToolResult,
-        "model_change" => BlockType::ModelChange,
-        "thinking_level_change" => BlockType::ThinkingLevelChange,
-        "compact_continuation_marker" => BlockType::CompactContinuationMarker,
-        other => panic!("unknown block type from row: {other}"),
-    }
+    BlockType::from_wire(block_type)
+        .unwrap_or_else(|| panic!("unknown block type from row: {block_type}"))
 }
 
 fn map_required_str(row: &Map<String, Value>, key: &str) -> String {

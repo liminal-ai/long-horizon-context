@@ -12,7 +12,9 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::shared_tech::content_blocks::is_api_block;
 use crate::shared_tech::errors::{ErrorClass, ErrorCode, ErrorResult};
+use crate::shared_tech::js_json::js_string_nullish;
 
 use super::super::EventKind;
 
@@ -118,6 +120,15 @@ struct TextPayloadSchema {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
+struct UserPromptPayloadSchema {
+    text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blocks: Option<Vec<Map<String, Value>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
 struct AssistantTextPayloadSchema {
     text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -141,6 +152,8 @@ struct AssistantThinkingPayloadSchema {
     text: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     signature: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    block: Option<Map<String, Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -186,6 +199,8 @@ struct ToolCallPayloadSchema {
     tool_call_id: String,
     tool_name: String,
     arguments: Map<String, Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    block: Option<Map<String, Value>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -196,6 +211,146 @@ struct ToolResultPayloadSchema {
     content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     is_error: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    blocks: Option<Vec<Map<String, Value>>>,
+}
+
+// Which API block types each kind may carry, and where. The user's content
+// set is the API's user-message set minus the kinds LHC records as their own
+// events (tool_use, tool_result, thinking). A tool result nests the API's
+// tool_result content set, plus the server-side result blocks the model
+// receives inside its own message.
+const USER_BLOCK_TYPES: &[&str] = &[
+    "text",
+    "image",
+    "document",
+    "search_result",
+    "container_upload",
+    "tool_reference",
+];
+const TOOL_RESULT_BLOCK_TYPES: &[&str] = &[
+    "text",
+    "image",
+    "document",
+    "search_result",
+    "tool_reference",
+    "web_search_tool_result",
+    "web_fetch_tool_result",
+    "code_execution_tool_result",
+    "bash_code_execution_tool_result",
+    "text_editor_code_execution_tool_result",
+    "tool_search_tool_result",
+];
+const NESTED_BLOCK_TYPES: &[&str] = &["text", "image"];
+
+/// TS `BASE64_RE = /^[A-Za-z0-9+/]*={0,2}$/`.
+fn is_base64_text(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len()
+        && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'+' || bytes[i] == b'/')
+    {
+        i += 1;
+    }
+    let padding = bytes.len() - i;
+    padding <= 2 && bytes[i..].iter().all(|b| *b == b'=')
+}
+
+/// JS `typeof` for the non-record diagnostic in [`block_issue`].
+fn js_typeof(value: &Value) -> &'static str {
+    match value {
+        Value::Null | Value::Array(_) | Value::Object(_) => "object",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+    }
+}
+
+/// JS `String(block["type"])` — `undefined` when the key is absent.
+fn js_string_of_type(block: &Map<String, Value>) -> String {
+    match block.get("type") {
+        None => "undefined".to_string(),
+        Some(Value::Null) => "null".to_string(),
+        Some(other) => js_string_nullish(Some(other)),
+    }
+}
+
+fn block_issue(block: &Value, allowed: &[&str], path: &str) -> Option<String> {
+    if !is_api_block(block) {
+        let type_ = match block.as_object() {
+            Some(record) => js_string_of_type(record),
+            None => js_typeof(block).to_string(),
+        };
+        return Some(format!(
+            "\"{path}\" is not a Messages API content block (type {type_})"
+        ));
+    }
+    let record = block.as_object().expect("api block is a record");
+    let block_type = record
+        .get("type")
+        .and_then(Value::as_str)
+        .expect("api block has a string type");
+    if !allowed.contains(&block_type) {
+        return Some(format!(
+            "\"{path}\" block type \"{block_type}\" is not allowed here"
+        ));
+    }
+    let source = record.get("source").and_then(Value::as_object);
+    if (block_type == "image" || block_type == "document")
+        && let Some(source) = source
+        && source.get("type").and_then(Value::as_str) == Some("base64")
+    {
+        if !matches!(source.get("media_type"), Some(Value::String(_))) {
+            return Some(format!(
+                "\"{path}.source.media_type\" is required for a base64 source"
+            ));
+        }
+        match source.get("data") {
+            Some(Value::String(data)) if is_base64_text(data) => {}
+            _ => {
+                return Some(format!("\"{path}.source.data\" must be a base64 string"));
+            }
+        }
+    }
+    let nested_content = if block_type == "tool_result" {
+        record.get("content")
+    } else if block_type == "document"
+        && source.is_some_and(|s| s.get("type").and_then(Value::as_str) == Some("content"))
+    {
+        source.and_then(|s| s.get("content"))
+    } else {
+        None
+    };
+    if let Some(Value::Array(inner)) = nested_content {
+        for (i, child) in inner.iter().enumerate() {
+            if let Some(issue) =
+                block_issue(child, NESTED_BLOCK_TYPES, &format!("{path}.content[{i}]"))
+            {
+                return Some(issue);
+            }
+        }
+    }
+    None
+}
+
+fn blocks_issue(blocks: Option<&Value>, allowed: &[&str], key: &str) -> Option<String> {
+    let blocks = blocks?;
+    let Value::Array(items) = blocks else {
+        return Some(format!("\"{key}\" must be an array of content blocks"));
+    };
+    for (i, block) in items.iter().enumerate() {
+        if let Some(issue) = block_issue(block, allowed, &format!("{key}[{i}]")) {
+            return Some(issue);
+        }
+    }
+    None
+}
+
+/// TS: a single optional `block` is checked as a one-element array under key `block`.
+fn single_block_issue(block: Option<&Value>, allowed: &[&str]) -> Option<String> {
+    let block = block?;
+    let wrapped = Value::Array(vec![block.clone()]);
+    blocks_issue(Some(&wrapped), allowed, "block")
 }
 
 // Typed compact-continuation marker: closed payload; semantics are contract-frozen.
@@ -219,6 +374,7 @@ enum DecodeSchema {
     ThreadRefByPath,
     EventEnvelope,
     TextPayload,
+    UserPromptPayload,
     AssistantTextPayload,
     AssistantThinkingPayload,
     TurnEndPayload,
@@ -293,6 +449,7 @@ fn type_label(kind: &str) -> &str {
         "string" => "string",
         "boolean" => "boolean",
         "record" => "{ readonly [x: string]: unknown }",
+        "record_array" => "ReadonlyArray<{ readonly [x: string]: unknown }>",
         "unknown" => "unknown",
         "event_kind" => "\"user_prompt\"",
         // Effect Schema.Literal("completed", "aborted") surface for turn_end.outcome.
@@ -405,6 +562,28 @@ fn struct_issue(value: &Value, fields: &[(&str, &str, bool)]) -> Option<ParseErr
                     });
                 }
             }
+            "record_array" => {
+                let Some(items) = item.as_array() else {
+                    return Some(ParseError {
+                        path: vec![(*name).to_string()],
+                        message: format!(
+                            "Expected ReadonlyArray<{{ readonly [x: string]: unknown }}>, actual {}",
+                            actual(item)
+                        ),
+                    });
+                };
+                for (i, inner) in items.iter().enumerate() {
+                    if !inner.is_object() {
+                        return Some(ParseError {
+                            path: vec![(*name).to_string(), i.to_string()],
+                            message: format!(
+                                "Expected {{ readonly [x: string]: unknown }}, actual {}",
+                                actual(inner)
+                            ),
+                        });
+                    }
+                }
+            }
             "event_kind" => {
                 let ok = item
                     .as_str()
@@ -512,6 +691,10 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
             )
         }
         DecodeSchema::TextPayload => struct_issue(value, &[("text", "string", false)]),
+        DecodeSchema::UserPromptPayload => struct_issue(
+            value,
+            &[("text", "string", false), ("blocks", "record_array", true)],
+        ),
         DecodeSchema::AssistantTextPayload => struct_issue(
             value,
             &[
@@ -527,6 +710,7 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
             &[
                 ("text", "string", false),
                 ("signature", "string", true),
+                ("block", "record", true),
                 ("provider", "string", true),
                 ("model", "string", true),
                 ("api", "string", true),
@@ -561,6 +745,7 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
                 ("toolCallId", "nonempty", false),
                 ("toolName", "nonempty", false),
                 ("arguments", "record", false),
+                ("block", "record", true),
             ],
         ),
         DecodeSchema::ToolResultPayload => struct_issue(
@@ -569,6 +754,7 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
                 ("toolCallId", "nonempty", false),
                 ("content", "string", false),
                 ("isError", "boolean", true),
+                ("blocks", "record_array", true),
             ],
         ),
         DecodeSchema::CompactContinuationMarkerPayload => struct_issue(
@@ -685,6 +871,7 @@ fn validate_one_event(event: &Value, index: i64) -> Option<ErrorResult> {
     };
 
     let payload_schema = match kind {
+        Some("user_prompt") => DecodeSchema::UserPromptPayload,
         Some("turn_end") => DecodeSchema::TurnEndPayload,
         Some("assistant_text") => DecodeSchema::AssistantTextPayload,
         Some("assistant_thinking") => DecodeSchema::AssistantThinkingPayload,
@@ -696,6 +883,21 @@ fn validate_one_event(event: &Value, index: i64) -> Option<ErrorResult> {
         _ => DecodeSchema::TextPayload,
     };
     if let Some(issue) = decode_issue(payload_schema, payload) {
+        return Some(caller_error(&format!("payload: {issue}"), Some(index)));
+    }
+    let record = payload.as_object().expect("payload is an object");
+    let block_check = match kind {
+        Some("assistant_thinking") => {
+            single_block_issue(record.get("block"), &["redacted_thinking"])
+        }
+        Some("tool_call") => single_block_issue(record.get("block"), &["server_tool_use"]),
+        Some("tool_result") => {
+            blocks_issue(record.get("blocks"), TOOL_RESULT_BLOCK_TYPES, "blocks")
+        }
+        Some("user_prompt") => blocks_issue(record.get("blocks"), USER_BLOCK_TYPES, "blocks"),
+        _ => None,
+    };
+    if let Some(issue) = block_check {
         return Some(caller_error(&format!("payload: {issue}"), Some(index)));
     }
     None

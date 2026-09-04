@@ -1,5 +1,8 @@
 //! Ported from packages/lhc/src/thread-view/internal/session-view.ts.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use serde_json::{Map, Value};
 
 use super::boundary::read_boundary_position;
@@ -7,8 +10,9 @@ use super::render::{
     TailRenderContext, is_empty_thinking_husk, tool_names_by_call_id, tool_result_session_content,
 };
 use super::snapshot::{
-    TailMessageRow, read_tail_messages, read_thread_metadata, read_view_snapshot,
+    TailMessageRow, read_blob, read_tail_messages, read_thread_metadata, read_view_snapshot,
 };
+use crate::shared_tech::content_blocks::{BlobLoader, inline_blobs};
 use crate::shared_tech::derivation::RenderingPartKind;
 use crate::shared_tech::storage::Db;
 use crate::shared_tech::view::{
@@ -24,6 +28,63 @@ pub(crate) const LITERAL_CONTEXT_PREFIX: &str = "[context · ";
 pub(crate) const LITERAL_CONTEXT_MID: &str = "]\n";
 pub(crate) const LITERAL_UNKNOWN_TOOL: &str = "unknown_tool";
 pub(crate) const LITERAL_RUNTIME_NOTE_PREFIX: &str = "[runtime note] ";
+
+// Server-side tool results arrive inside the model's own message in the API;
+// LHC records them as tool_result events (pairing, summaries) and serves them
+// back where they came from: as parts of the assistant entry.
+const SERVER_RESULT_TYPES: &[&str] = &[
+    "web_search_tool_result",
+    "web_fetch_tool_result",
+    "code_execution_tool_result",
+    "bash_code_execution_tool_result",
+    "text_editor_code_execution_tool_result",
+    "tool_search_tool_result",
+];
+
+/// Rows 1..n of a message: the Messages API content array it carried beyond
+/// its text-shaped block 0, blob payloads inlined. Empty when the message was text only.
+fn api_blocks_of(message: &TailMessageRow, load: BlobLoader<'_>) -> Vec<Map<String, Value>> {
+    message
+        .blocks
+        .iter()
+        .skip(1)
+        .map(
+            |block| match inline_blobs(&Value::Object(block.content.clone()), load) {
+                Value::Object(map) => map,
+                _ => block.content.clone(),
+            },
+        )
+        .collect()
+}
+
+fn api_part(type_: SessionAssistantPartType, block: Map<String, Value>) -> SessionAssistantPart {
+    SessionAssistantPart {
+        type_,
+        text: None,
+        thinking: None,
+        thinking_signature: None,
+        tool_call_id: None,
+        tool_name: None,
+        arguments: None,
+        block: Some(block),
+    }
+}
+
+fn block_type_name(block: &Map<String, Value>) -> &str {
+    block.get("type").and_then(Value::as_str).unwrap_or("")
+}
+
+fn server_result_part(blocks: &[Map<String, Value>]) -> Option<SessionAssistantPart> {
+    let [only] = blocks else {
+        return None;
+    };
+    let name = block_type_name(only);
+    if !SERVER_RESULT_TYPES.contains(&name) {
+        return None;
+    }
+    let type_ = SessionAssistantPartType::from_api_type(name)?;
+    Some(api_part(type_, only.clone()))
+}
 
 fn block_content(message: &TailMessageRow) -> Map<String, Value> {
     message
@@ -70,6 +131,7 @@ fn band_user_message(band: Band, rendered_text: &str) -> SessionThreadViewEntry 
             "{LITERAL_CONTEXT_PREFIX}{}{LITERAL_CONTEXT_MID}{rendered_text}",
             band.as_str()
         ),
+        blocks: None,
         source_messages: Vec::new(),
     }))
 }
@@ -155,7 +217,19 @@ fn model_provenance_of(rows: &[TailMessageRow]) -> ModelProvenance {
     }
 }
 
-fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
+fn assistant_part_of(message: &TailMessageRow, load: BlobLoader<'_>) -> SessionAssistantPart {
+    // A verbatim API block behind the text-shaped row (redacted_thinking behind
+    // a thinking row, server_tool_use behind a tool call) is the part itself.
+    if let Some(api_block) = api_blocks_of(message, load).into_iter().next() {
+        let type_ = match block_type_name(&api_block) {
+            "redacted_thinking" => Some(SessionAssistantPartType::RedactedThinking),
+            "server_tool_use" => Some(SessionAssistantPartType::ServerToolUse),
+            _ => None,
+        };
+        if let Some(type_) = type_ {
+            return api_part(type_, api_block);
+        }
+    }
     match message.kind {
         RenderingPartKind::AssistantThinking => SessionAssistantPart {
             type_: SessionAssistantPartType::Thinking,
@@ -165,6 +239,7 @@ fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
             tool_call_id: None,
             tool_name: None,
             arguments: None,
+            block: None,
         },
         RenderingPartKind::AssistantText => SessionAssistantPart {
             type_: SessionAssistantPartType::Text,
@@ -174,6 +249,7 @@ fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
             tool_call_id: None,
             tool_name: None,
             arguments: None,
+            block: None,
         },
         RenderingPartKind::ToolCall => {
             let block = block_content(message);
@@ -198,6 +274,7 @@ fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
                 text: None,
                 thinking: None,
                 thinking_signature: None,
+                block: None,
             }
         }
         // Remaining closed kinds are never passed into assistant_part_of by the
@@ -215,11 +292,16 @@ fn assistant_part_of(message: &TailMessageRow) -> SessionAssistantPart {
             tool_call_id: None,
             tool_name: None,
             arguments: None,
+            block: None,
         },
     }
 }
 
-fn tool_result_of(message: &TailMessageRow, ctx: &TailRenderContext) -> SessionThreadViewEntry {
+fn tool_result_of(
+    message: &TailMessageRow,
+    ctx: &TailRenderContext,
+    load: BlobLoader<'_>,
+) -> SessionThreadViewEntry {
     let block = block_content(message);
     let tool_call_id = match block.get("toolCallId") {
         Some(Value::String(s)) => s.clone(),
@@ -231,11 +313,23 @@ fn tool_result_of(message: &TailMessageRow, ctx: &TailRenderContext) -> SessionT
         .cloned()
         .unwrap_or_else(|| LITERAL_UNKNOWN_TOOL.to_string());
     let is_error = matches!(block.get("isError"), Some(Value::Bool(true)));
+    // The real content array rides along only ahead of the boundary: an
+    // abridged result is text, and its placeholder already names the blocks.
+    let blocks = if message.source_event_order > ctx.boundary_position {
+        api_blocks_of(message, load)
+    } else {
+        Vec::new()
+    };
     SessionThreadViewEntry::Message(SessionThreadViewMessage::ToolResult(
         SessionToolResultMessage {
             tool_call_id,
             tool_name: Some(tool_name),
             content: tool_result_session_content(message, ctx),
+            blocks: if blocks.is_empty() {
+                None
+            } else {
+                Some(blocks)
+            },
             is_error: if is_error { Some(true) } else { None },
             source_messages: vec![entry_source(message)],
         },
@@ -297,7 +391,11 @@ fn flush_assistant(
     pending_rows.clear();
 }
 
-fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<SessionThreadViewEntry> {
+fn tail_entries_of(
+    rows: &[TailMessageRow],
+    boundary_position: i64,
+    load: BlobLoader<'_>,
+) -> Vec<SessionThreadViewEntry> {
     let render_ctx = TailRenderContext {
         boundary_position,
         tool_name_by_call_id: tool_names_by_call_id(rows),
@@ -321,9 +419,15 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                     &mut assistant_provenance,
                     &mut entries,
                 );
+                let blocks = api_blocks_of(row, load);
                 entries.push(SessionThreadViewEntry::Message(
                     SessionThreadViewMessage::User(SessionUserMessage {
                         content: text_of(row),
+                        blocks: if blocks.is_empty() {
+                            None
+                        } else {
+                            Some(blocks)
+                        },
                         source_messages: vec![entry_source(row)],
                     }),
                 ));
@@ -355,11 +459,18 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                 if assistant_provenance.api.is_none() {
                     assistant_provenance.api = rp.api;
                 }
-                assistant_parts.push(assistant_part_of(row));
+                assistant_parts.push(assistant_part_of(row, load));
                 assistant_sources.push(entry_source(row));
                 assistant_rows.push(row.clone());
             }
             RenderingPartKind::ToolResult => {
+                if let Some(server_part) = server_result_part(&api_blocks_of(row, load)) {
+                    // Stays inside the assistant entry it belongs to.
+                    assistant_parts.push(server_part);
+                    assistant_sources.push(entry_source(row));
+                    assistant_rows.push(row.clone());
+                    continue;
+                }
                 flush_assistant(
                     &mut assistant_parts,
                     &mut assistant_sources,
@@ -367,7 +478,7 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                     &mut assistant_provenance,
                     &mut entries,
                 );
-                entries.push(tool_result_of(row, &render_ctx));
+                entries.push(tool_result_of(row, &render_ctx, load));
             }
             RenderingPartKind::ModelChange => {
                 // Flush first: the change marks a boundary in time, so it
@@ -405,6 +516,7 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                 entries.push(SessionThreadViewEntry::Message(
                     SessionThreadViewMessage::User(SessionUserMessage {
                         content: format!("{LITERAL_RUNTIME_NOTE_PREFIX}{}", text_of(row)),
+                        blocks: None,
                         source_messages: vec![entry_source(row)],
                     }),
                 ));
@@ -443,6 +555,7 @@ fn tail_entries_of(rows: &[TailMessageRow], boundary_position: i64) -> Vec<Sessi
                             &format!("continuationTurnId={turn_id}"),
                         ]
                         .join(" "),
+                        blocks: None,
                         source_messages: vec![entry_source(row)],
                     }),
                 ));
@@ -465,6 +578,14 @@ pub fn build_session_thread_view(db: &Db) -> SessionThreadView {
     let compact_point = snapshot.as_ref().map(|s| s.compact_point).unwrap_or(0);
     let boundary_position = read_boundary_position(db);
     let tail_rows = read_tail_messages(db, compact_point);
+    let blob_cache: RefCell<HashMap<String, Option<Vec<u8>>>> = RefCell::new(HashMap::new());
+    let load = |sha256: &str| -> Option<Vec<u8>> {
+        blob_cache
+            .borrow_mut()
+            .entry(sha256.to_string())
+            .or_insert_with(|| read_blob(db, sha256))
+            .clone()
+    };
 
     let mut entries: Vec<SessionThreadViewEntry> = Vec::new();
     if let Some(ref snapshot) = snapshot {
@@ -472,6 +593,6 @@ pub fn build_session_thread_view(db: &Db) -> SessionThreadView {
             entries.push(band_user_message(band.band, &band.rendered_text));
         }
     }
-    entries.extend(tail_entries_of(&tail_rows, boundary_position));
+    entries.extend(tail_entries_of(&tail_rows, boundary_position, &load));
     SessionThreadView { thread_id, entries }
 }

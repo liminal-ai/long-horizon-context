@@ -8,8 +8,55 @@ use serde_json::{Map, Value, json};
 
 use crate::intake_stream::EventRecord;
 use crate::messages::{Block, BlockType, RecordedEvent};
+use crate::shared_tech::content_blocks::{blob_token_estimate, placeholder_text};
 use crate::shared_tech::js_json::js_json_stringify;
 use crate::shared_tech::token_counting::estimate_tokens;
+
+// A message that carried content blocks beyond text keeps block 0 as its
+// text-shaped form — the text of its text blocks with a short placeholder
+// (type, media type, size, title) where each non-text block sits — so every
+// reader of block 0 (bands, derivations, retrieval, token pricing) sees that
+// the block existed without seeing its bytes. Rows 1..n hold the API blocks
+// verbatim (blob payloads already replaced by references at intake), in order,
+// so serving can replay the exact content array.
+fn api_block_rows(blocks: Option<&[Map<String, Value>]>) -> Vec<Block> {
+    blocks
+        .unwrap_or(&[])
+        .iter()
+        .map(|block| Block {
+            block_type: block
+                .get("type")
+                .and_then(Value::as_str)
+                .and_then(BlockType::from_wire)
+                .unwrap_or_else(|| panic!("validated API block carries a known type: {block:?}")),
+            content: block.clone(),
+        })
+        .collect()
+}
+
+fn text_shaped(text: &str, blocks: Option<&[Map<String, Value>]>) -> String {
+    match blocks {
+        None | Some([]) => text.to_string(),
+        Some(blocks) => blocks
+            .iter()
+            .map(|block| placeholder_text(&Value::Object(block.clone())))
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+fn blob_tokens(blocks: Option<&[Map<String, Value>]>) -> i64 {
+    blocks
+        .unwrap_or(&[])
+        .iter()
+        .map(|block| blob_token_estimate(&Value::Object(block.clone())))
+        .sum()
+}
+
+fn single_block(block: Option<&Map<String, Value>>) -> Option<Vec<Map<String, Value>>> {
+    block.map(|b| vec![b.clone()])
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ProjectedMessage {
@@ -20,7 +67,21 @@ pub struct ProjectedMessage {
 /// turn_end is recorded in the event order but produces no message.
 pub fn project_event(event: &RecordedEvent) -> Option<ProjectedMessage> {
     match event {
-        EventRecord::UserPrompt { payload, .. } | EventRecord::RuntimeNote { payload, .. } => {
+        EventRecord::UserPrompt { payload, .. } => {
+            let text = text_shaped(&payload.text, payload.blocks.as_deref());
+            let mut content = Map::new();
+            content.insert("text".into(), json!(text.clone()));
+            let mut blocks = vec![Block {
+                block_type: BlockType::Text,
+                content,
+            }];
+            blocks.extend(api_block_rows(payload.blocks.as_deref()));
+            Some(ProjectedMessage {
+                blocks,
+                token_estimate: estimate_tokens(&text) + blob_tokens(payload.blocks.as_deref()),
+            })
+        }
+        EventRecord::RuntimeNote { payload, .. } => {
             let mut content = Map::new();
             content.insert("text".into(), json!(payload.text.clone()));
             Some(ProjectedMessage {
@@ -76,11 +137,14 @@ pub fn project_event(event: &RecordedEvent) -> Option<ProjectedMessage> {
                 Some(sig) if !sig.is_empty() => format!("{}{}", payload.text, sig),
                 _ => payload.text.clone(),
             };
+            let mut blocks = vec![Block {
+                block_type: BlockType::Text,
+                content,
+            }];
+            let single = single_block(payload.block.as_ref());
+            blocks.extend(api_block_rows(single.as_deref()));
             Some(ProjectedMessage {
-                blocks: vec![Block {
-                    block_type: BlockType::Text,
-                    content,
-                }],
+                blocks,
                 token_estimate: estimate_tokens(&estimate_source),
             })
         }
@@ -127,27 +191,34 @@ pub fn project_event(event: &RecordedEvent) -> Option<ProjectedMessage> {
             content.insert("arguments".into(), Value::Object(payload.arguments.clone()));
             // Tool calls count their serialized arguments.
             let args_json = js_json_stringify(&Value::Object(payload.arguments.clone()));
+            let mut blocks = vec![Block {
+                block_type: BlockType::ToolCall,
+                content,
+            }];
+            let single = single_block(payload.block.as_ref());
+            blocks.extend(api_block_rows(single.as_deref()));
             Some(ProjectedMessage {
-                blocks: vec![Block {
-                    block_type: BlockType::ToolCall,
-                    content,
-                }],
+                blocks,
                 token_estimate: estimate_tokens(&args_json),
             })
         }
         EventRecord::ToolResult { payload, .. } => {
+            let text = text_shaped(&payload.content, payload.blocks.as_deref());
             let mut content = Map::new();
             content.insert("toolCallId".into(), json!(payload.tool_call_id.clone()));
-            content.insert("content".into(), json!(payload.content.clone()));
+            content.insert("content".into(), json!(text.clone()));
             content.insert("isError".into(), json!(payload.is_error.unwrap_or(false)));
-            // Tool results count the full content string — the same string the
-            // block carries in full.
+            let mut blocks = vec![Block {
+                block_type: BlockType::ToolResult,
+                content,
+            }];
+            blocks.extend(api_block_rows(payload.blocks.as_deref()));
+            // Tool results count the full text-shaped content — the same string
+            // block 0 carries in full — plus the blob estimate of any nested
+            // image or document the text cannot see.
             Some(ProjectedMessage {
-                blocks: vec![Block {
-                    block_type: BlockType::ToolResult,
-                    content,
-                }],
-                token_estimate: estimate_tokens(&payload.content),
+                blocks,
+                token_estimate: estimate_tokens(&text) + blob_tokens(payload.blocks.as_deref()),
             })
         }
         EventRecord::CompactContinuationMarker { payload, .. } => {

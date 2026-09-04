@@ -167,6 +167,10 @@ pub fn is_empty_thinking_husk(message: &TailMessageRow) -> bool {
     if message.kind != RenderingPartKind::AssistantThinking {
         return false;
     }
+    // A redacted_thinking block behind the row is content the provider can use.
+    if message.blocks.len() > 1 {
+        return false;
+    }
     let content = block_content(message);
     let has_text = match content.get("text") {
         Some(Value::String(s)) => !s.trim().is_empty(),

@@ -299,10 +299,7 @@ async fn tc_5_5_key_wins_over_content_original_payload_intact_resent_payload_sto
     let events = read_back(&file_path).await;
     assert_eq!(events.len(), 1);
     // Full payload structural equality — rejects extras (TS `.toEqual({ text })`).
-    assert_eq!(
-        events[0].text_payload().map(|p| p.text.as_str()),
-        Some("PAYLOAD-A-ORIGINAL")
-    );
+    assert_eq!(events[0].prompt_or_note_text(), Some("PAYLOAD-A-ORIGINAL"));
     assert_eq!(events[0].event_kind(), EventKind::UserPrompt);
 
     // openRaw scan: payload B appears in no table at all.

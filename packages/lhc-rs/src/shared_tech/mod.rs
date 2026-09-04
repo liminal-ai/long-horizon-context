@@ -11,6 +11,7 @@
 
 pub mod classify;
 pub mod compact_continuation;
+pub mod content_blocks;
 pub mod context;
 pub mod derivation;
 pub mod deterministic;
@@ -27,8 +28,8 @@ pub mod report;
 pub mod scheduler;
 pub mod sha256;
 pub mod storage;
-pub(crate) mod time;
 pub mod thread_migrate;
+pub(crate) mod time;
 pub mod token_counting;
 pub mod tool_result_rendering;
 pub mod view;
@@ -45,6 +46,7 @@ pub mod work_queue;
 
 pub use classify::*;
 pub use compact_continuation::*;
+pub use content_blocks::*;
 pub use context::*;
 pub use derivation::*;
 pub use deterministic::*;

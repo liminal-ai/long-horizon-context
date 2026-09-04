@@ -21,6 +21,8 @@ use crate::shared_tech::work_queue::WorkItemRecord;
 use crate::threads::ThreadRef;
 use crate::turns::{RecordedTurnEvent, TurnStateCorruptionError, create as create_turn};
 
+use super::blobs::extract_payload_blobs;
+
 /// Called after each event is processed inside the walk (TS `IntakeWalkHook`).
 /// Public setter still accepts `Box`; storage is `Arc` for reentrant dispatch
 /// (clone out of the RefCell before invoke — clear/replace/nested intake).
@@ -181,6 +183,7 @@ fn map_turn_transition(t: &crate::turns::TurnTransition) -> TurnTransition {
 
 fn build_recorded_event(
     event: &MessageEventInput,
+    payload: &Map<String, Value>,
     event_order: i64,
     recorded_at: &str,
 ) -> EventRecord {
@@ -193,7 +196,7 @@ fn build_recorded_event(
     obj.insert("idempotencyKey".into(), Value::String(key));
     obj.insert("actor".into(), Value::String(event.actor.clone()));
     obj.insert("harness".into(), Value::String(event.harness.clone()));
-    obj.insert("payload".into(), Value::Object(event.payload.clone()));
+    obj.insert("payload".into(), Value::Object(payload.clone()));
     obj.insert("eventOrder".into(), Value::Number(event_order.into()));
     obj.insert("recordedAt".into(), Value::String(recorded_at.to_string()));
     serde_json::from_value(Value::Object(obj)).expect("validated event builds EventRecord")
@@ -243,6 +246,9 @@ pub async fn run_message_events(
                     "INSERT INTO event (event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)",
                 );
+                let insert_blob = transaction.db.prepare(
+                    "INSERT OR IGNORE INTO blob (sha256, media_type, byte_length, data, created_at) VALUES (?, ?, ?, ?, ?)",
+                );
 
                 let mut event_results = Vec::new();
                 let mut turn_transitions = Vec::new();
@@ -263,7 +269,22 @@ pub async fn run_message_events(
                     } else {
                         last_order += 1;
                         let recorded_at = system_time_to_iso(effective());
-                        let payload_json = js_json_stringify(&Value::Object(event.payload.clone()));
+                        // Binary/opaque block payloads go to the blob table first; the
+                        // event and its message blocks hold references, never base64.
+                        let (payload, blobs) = extract_payload_blobs(&event.payload);
+                        for blob in &blobs {
+                            insert_blob.run(&[
+                                SqlParam::from(blob.sha256.as_str()),
+                                match &blob.media_type {
+                                    Some(media_type) => SqlParam::from(media_type.as_str()),
+                                    None => SqlParam::Null,
+                                },
+                                SqlParam::from(blob.data.len() as i64),
+                                SqlParam::Blob(blob.data.clone()),
+                                SqlParam::from(recorded_at.as_str()),
+                            ]);
+                        }
+                        let payload_json = js_json_stringify(&Value::Object(payload.clone()));
                         insert.run(&[
                             SqlParam::from(last_order),
                             SqlParam::from(event.event_kind.as_str()),
@@ -274,7 +295,8 @@ pub async fn run_message_events(
                             SqlParam::from(recorded_at.as_str()),
                         ]);
                         skip_set.insert(key.to_string());
-                        let recorded_event = build_recorded_event(event, last_order, &recorded_at);
+                        let recorded_event =
+                            build_recorded_event(event, &payload, last_order, &recorded_at);
                         // turn_end payload carries host facts; other kinds pass empty.
                         let turn_payload = recorded_event
                             .turn_end_payload()

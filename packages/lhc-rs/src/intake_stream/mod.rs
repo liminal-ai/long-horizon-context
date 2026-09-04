@@ -182,11 +182,27 @@ pub struct BatchResult {
 
 // ── EventRecord payloads (kind-exact, closed) ──────────────────────
 
-/// TS `{ text: string }` — user_prompt / runtime_note.
+/// TS `{ text: string }` — runtime_note.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct TextPayload {
     pub text: String,
+}
+
+// Content blocks as the Anthropic Messages API shapes them (see
+// shared_tech/content_blocks.rs). `text` stays the text of the message for
+// hosts and readers that only speak text; `blocks` is the full ordered content
+// when the message carried anything besides text. Hosts send base64 in the
+// blocks; intake moves the bytes to the blob table and the record never holds
+// base64 inside JSON.
+
+/// TS `UserPromptPayload = { text; blocks? }`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UserPromptPayload {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<Map<String, Value>>>,
 }
 
 /// Host-captured model identity for resume (PI same-model signature keep).
@@ -210,6 +226,10 @@ pub struct AssistantThinkingPayload {
     /// Opaque provider thinking token (Anthropic encrypted thinking, etc.).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<String>,
+    /// The verbatim block when the provider sent `redacted_thinking`: text is
+    /// "" and the opaque data is a blob.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<Map<String, Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -258,6 +278,9 @@ pub struct ToolCallPayload {
     pub tool_call_id: String,
     pub tool_name: String,
     pub arguments: Map<String, Value>,
+    /// The verbatim block when the call was a `server_tool_use`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub block: Option<Map<String, Value>>,
 }
 
 /// TS `{ toolCallId; content; isError? }`.
@@ -268,6 +291,8 @@ pub struct ToolResultPayload {
     pub content: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_error: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocks: Option<Vec<Map<String, Value>>>,
 }
 
 /// Typed compact-continuation marker payload (LIM-61 / LIM-63A).
@@ -329,7 +354,7 @@ pub enum EventRecord {
         idempotency_key: String,
         actor: String,
         harness: String,
-        payload: TextPayload,
+        payload: UserPromptPayload,
         event_order: i64,
         recorded_at: String,
     },
@@ -531,9 +556,39 @@ impl EventRecord {
     // must fail compilation here and force a mapping decision (brief rule 6).
     pub fn text_payload(&self) -> Option<&TextPayload> {
         match self {
-            EventRecord::UserPrompt { payload, .. } | EventRecord::RuntimeNote { payload, .. } => {
-                Some(payload)
-            }
+            EventRecord::RuntimeNote { payload, .. } => Some(payload),
+            EventRecord::UserPrompt { .. }
+            | EventRecord::AssistantText { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::ModelChange { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::ToolResult { .. }
+            | EventRecord::CompactContinuationMarker { .. }
+            | EventRecord::TurnEnd { .. } => None,
+        }
+    }
+
+    pub fn user_prompt_payload(&self) -> Option<&UserPromptPayload> {
+        match self {
+            EventRecord::UserPrompt { payload, .. } => Some(payload),
+            EventRecord::RuntimeNote { .. }
+            | EventRecord::AssistantText { .. }
+            | EventRecord::AssistantThinking { .. }
+            | EventRecord::ModelChange { .. }
+            | EventRecord::ThinkingLevelChange { .. }
+            | EventRecord::ToolCall { .. }
+            | EventRecord::ToolResult { .. }
+            | EventRecord::CompactContinuationMarker { .. }
+            | EventRecord::TurnEnd { .. } => None,
+        }
+    }
+
+    /// The `text` of a user_prompt or runtime_note (TS `event.payload.text`).
+    pub fn prompt_or_note_text(&self) -> Option<&str> {
+        match self {
+            EventRecord::UserPrompt { payload, .. } => Some(payload.text.as_str()),
+            EventRecord::RuntimeNote { payload, .. } => Some(payload.text.as_str()),
             EventRecord::AssistantText { .. }
             | EventRecord::AssistantThinking { .. }
             | EventRecord::ModelChange { .. }
