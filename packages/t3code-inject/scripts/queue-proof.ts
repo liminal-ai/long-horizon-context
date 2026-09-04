@@ -8,23 +8,24 @@
 import { parseArgs } from "node:util";
 import { join } from "node:path";
 import { BASE_URL, connect, createThread, deleteProject, fetchThread, inject, now, pickModel, Timeline, writeRecord, type InjectRun } from "./lib.ts";
-import { READ_TASK, chainFiles } from "./fixtures.ts";
+import { chainFiles } from "./fixtures.ts";
 
 const { values: a } = parseArgs({ options: { provider: { type: "string", default: "claude-lhc" }, model: { type: "string" }, out: { type: "string", default: "/srv/work/t3code-campaign/builders/wren/inject" }, keep: { type: "boolean", default: false } } });
 const log: string[] = [];
 const say = (m: string) => { const line = `[${now()}] ${m}`; log.push(line); console.log(line); };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+const fx = chainFiles();
 const { rpc, bearer } = await connect();
 const modelSelection = await pickModel(rpc, a.provider!, a.model);
 const ws = join(a.out!, "ws", `queue-${a.provider}-${Date.now()}`);
-const { projectId, threadId } = await createThread({ rpc, label: `queue ${a.provider}`, workspaceRoot: ws, modelSelection, files: chainFiles().files });
+const { projectId, threadId } = await createThread({ rpc, label: `queue ${a.provider}`, workspaceRoot: ws, modelSelection, files: fx.files });
 say(`thread ${threadId} project ${projectId} model ${modelSelection.model}`);
 const timeline = new Timeline();
 const unsubscribe = await rpc.subscribeThread(threadId, timeline.onItem, () => undefined);
 let pass = false;
 try {
-  const loader = inject("loader", ["--thread", threadId, "--from", "loader", "--json"], READ_TASK);
+  const loader = inject("loader", ["--thread", threadId, "--from", "loader", "--json"], fx.task);
   say("spawned loader (normal, idle thread): the long read task");
   await timeline.until(() => timeline.toolsCompleted >= 2, 180_000, "2 completed tools");
   say("thread busy; spawning A1, B1, C1, A2, B2 one second apart");

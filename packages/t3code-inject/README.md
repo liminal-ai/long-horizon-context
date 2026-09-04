@@ -58,3 +58,23 @@ pairing token with the server's own CLI (`T3CODE_INJECT_CHECKOUT`, default
   `steer.ts`, `queue-proof.ts`, `cleanup.ts`.
 - `link-deps.sh` symlinks `@t3tools/*` and `effect` from the t3code checkout;
   the bin runs it on first use.
+
+## C2: the seat on the relay
+
+`scripts/seat.ts --label <seat>` creates the durable project + Claude LHC thread a
+relay seat points at (workspace `~/.t3code-inject/seats/<seat>`). Register the seat
+in `~/.lhc-console/agents.json` with `relay.command` = this package's bin,
+`relay.concurrent = true`, and restart lhc-console (the registry is read once at
+start). Then:
+
+```
+node --no-warnings scripts/relay-proof.ts --seat <seat> --thread <seat thread id>
+```
+
+drives `lhc-agent` against the seat: direct reply, `--priority` steer of a busy
+thread, two senders queued while busy (per-sender bundles), and Lee's path (a
+prioritized job with no sender). Each chain task gets a fresh fixture (new codes
+and names, ~700 tokens a file); the previous chain's files are removed from the
+seat workspace first. Codeword compliance after a steer is recorded as an
+observation, not a gate: on this seat the model refused every mid-turn
+`[from: x]` request as a prompt injection, including `[from: lee]`.

@@ -6,7 +6,7 @@
 import { parseArgs } from "node:util";
 import { join } from "node:path";
 import { BASE_URL, connect, createThread, deleteProject, fetchThread, inject, now, pickModel, Timeline, writeRecord } from "./lib.ts";
-import { CODES, READ_TASK, chainFiles, linkOf } from "./fixtures.ts";
+import { chainFiles, hasAllCodes, linkOf } from "./fixtures.ts";
 
 const { values: a } = parseArgs({ options: { provider: { type: "string", default: "claude-lhc" }, model: { type: "string" }, out: { type: "string", default: "/srv/work/t3code-campaign/builders/wren/inject" }, keep: { type: "boolean", default: false }, "steer-after": { type: "string", default: "4" } } });
 const log: string[] = [];
@@ -16,14 +16,15 @@ const CODEWORD = "marigold";
 const { rpc, bearer } = await connect();
 const modelSelection = await pickModel(rpc, a.provider!, a.model);
 const ws = join(a.out!, "ws", `steer-${a.provider}-${Date.now()}`);
-const { files, chain } = chainFiles();
+const fx = chainFiles();
+const { files, chain } = fx;
 const { projectId, threadId } = await createThread({ rpc, label: `steer ${a.provider}`, workspaceRoot: ws, modelSelection, files });
 say(`thread ${threadId} project ${projectId} model ${modelSelection.model}`);
 const timeline = new Timeline();
 const unsubscribe = await rpc.subscribeThread(threadId, timeline.onItem, () => undefined);
 let pass = false;
 try {
-  const task = inject("task", ["--thread", threadId, "--from", "wren", "--json"], READ_TASK);
+  const task = inject("task", ["--thread", threadId, "--from", "wren", "--json"], fx.task);
   say("spawned task injector (normal, idle thread)");
   await timeline.until(() => timeline.toolsCompleted >= Number(a["steer-after"]), 180_000, `${a["steer-after"]} completed tools`);
   say(`${timeline.toolsCompleted} tools completed; spawning the high-priority injector`);
@@ -40,14 +41,14 @@ try {
   const turnId = thread.latestTurn?.turnId ?? null;
   const turnIds = new Set([...thread.activities.map((x) => x.turnId), ...thread.messages.filter((m) => m.role === "assistant").map((m) => m.turnId)].filter((t) => t !== null));
   const tools = thread.activities.filter((x) => x.kind === "tool.completed").sort((x, y) => x.createdAt.localeCompare(y.createdAt));
-  const parts = tools.map((x) => linkOf(JSON.stringify(x.payload ?? {}), chain)).filter((p): p is string => p !== null);
+  const parts = tools.map((x) => linkOf(JSON.stringify(x.payload ?? {}), fx)).filter((p): p is string => p !== null);
   const afterSteer = steerMsg ? tools.filter((x) => x.createdAt > steerMsg.createdAt) : [];
-  const partsAfter = afterSteer.map((x) => linkOf(JSON.stringify(x.payload ?? {}), chain)).filter((p): p is string => p !== null);
+  const partsAfter = afterSteer.map((x) => linkOf(JSON.stringify(x.payload ?? {}), fx)).filter((p): p is string => p !== null);
   const before = parts.slice(0, parts.length - partsAfter.length);
   const repeated = partsAfter.filter((p, i) => p !== "decoy" && partsAfter.indexOf(p) !== i);
   const decoys = parts.filter((p) => p === "decoy").length;
   const assistantText = thread.messages.filter((m) => m.role === "assistant" && m.turnId === turnId).map((m) => m.text).join("\n");
-  const codesFound = CODES.filter(({ nn, word }) => new RegExp(`${nn}\\s*=\\s*${word}`, "i").test(assistantText)).length;
+  const codesFound = fx.codes.filter(({ nn, word }) => new RegExp(`${nn}\\s*=\\s*${word}`, "i").test(assistantText)).length;
   const firstAfter = steerMsg ? [...thread.activities, ...thread.messages.filter((m) => m.role === "assistant")].map((x) => x.createdAt).filter((t) => t > steerMsg.createdAt).sort()[0] ?? null : null;
   const sessions = timeline.entries.filter((e) => e.kind === "session");
   const running = sessions.find((e) => e.detail.startsWith("running"));
@@ -71,11 +72,11 @@ try {
     allCodes: codesFound === 24,
     codewordInFinalText: assistantText.toLowerCase().includes(CODEWORD),
     steerReplyHasCodeword: steerReply !== null && steerReply.text.toLowerCase().includes(CODEWORD),
-    taskReplyHasCodes: taskReply !== null && CODES.every(({ nn, word }) => new RegExp(`${nn}\\s*=\\s*${word}`, "i").test(taskReply.text)),
+    taskReplyHasCodes: taskReply !== null && hasAllCodes(taskReply.text, fx.codes),
   };
   pass = Object.values(checks).every(Boolean);
   say(`${pass ? "PASS" : "FAIL"} ${JSON.stringify(checks)}`);
-  writeRecord(a.out!, `steer-${a.provider}`, log, { provider: a.provider, modelSelection, threadId, projectId, turnId, chain, sessionProviderInstance: thread.session?.providerInstanceId ?? null, checks, pass, times: { t0: running?.at ?? null, t1: steerMsg?.createdAt ?? null, t2: firstAfter, t3: ended?.at ?? null }, taskSpawnedAt: task.spawnedAt, steerSpawnedAt: steer.spawnedAt, taskResult, steerResult, userMessages: users.map((m) => ({ createdAt: m.createdAt, turnId: m.turnId, text: m.text })), toolsCompleted: tools.map((x) => ({ createdAt: x.createdAt, turnId: x.turnId, summary: x.summary, part: linkOf(JSON.stringify(x.payload ?? {}), chain) })), assistantMessages: thread.messages.filter((m) => m.role === "assistant").map((m) => ({ createdAt: m.createdAt, turnId: m.turnId, text: m.text })), timeline: timeline.entries });
+  writeRecord(a.out!, `steer-${a.provider}`, log, { provider: a.provider, modelSelection, threadId, projectId, turnId, chain, sessionProviderInstance: thread.session?.providerInstanceId ?? null, checks, pass, times: { t0: running?.at ?? null, t1: steerMsg?.createdAt ?? null, t2: firstAfter, t3: ended?.at ?? null }, taskSpawnedAt: task.spawnedAt, steerSpawnedAt: steer.spawnedAt, taskResult, steerResult, userMessages: users.map((m) => ({ createdAt: m.createdAt, turnId: m.turnId, text: m.text })), toolsCompleted: tools.map((x) => ({ createdAt: x.createdAt, turnId: x.turnId, summary: x.summary, part: linkOf(JSON.stringify(x.payload ?? {}), fx) })), assistantMessages: thread.messages.filter((m) => m.role === "assistant").map((m) => ({ createdAt: m.createdAt, turnId: m.turnId, text: m.text })), timeline: timeline.entries });
 } finally {
   await unsubscribe();
   if (!a.keep) { await deleteProject(rpc, projectId); say(`deleted project ${projectId}`); }
