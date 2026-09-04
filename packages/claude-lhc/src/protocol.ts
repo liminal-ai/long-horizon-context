@@ -11,8 +11,14 @@
  */
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 
-/** SDK `Options` with the non-serialisable members removed. */
-export type WireOptions = Record<string, unknown>;
+/**
+ * SDK `Options` with the non-serialisable members removed, plus the sidecar's own
+ * `lhc` block, which never reaches the SDK:
+ *   lhc.forceRebuildFailure — every compact rebuild throws before touching LHC
+ *   (proof scripts exercise the failure path with a live model; never set by t3code).
+ */
+export type WireOptions = Record<string, unknown> & { lhc?: SidecarOptions };
+export type SidecarOptions = { forceRebuildFailure?: boolean };
 
 export type DriverControlMethod = "setModel" | "setPermissionMode" | "setMaxThinkingTokens" | "interrupt";
 export type SidecarRequestMethod = "canUseTool" | "onUserDialog";

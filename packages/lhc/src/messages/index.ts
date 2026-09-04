@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
 import type { EventKind, EventRecord } from "../intake-stream/index.js";
-import type { Derivation, DerivationReportEntry, HandlerRunContext } from "../shared-tech/index.js";
+import type { ApiBlockType, Derivation, DerivationReportEntry, HandlerRunContext } from "../shared-tech/index.js";
 import {
   createDbReadTransaction,
   createDbWriteTransaction,
@@ -30,13 +30,17 @@ import {
   readMutableMessage,
 } from "./internal/store.js";
 
+// LHC's projected block kinds, plus the Messages API block names for the
+// content blocks a message carried beyond its text (rows 1..n; block 0 is
+// always the text-shaped projection). See shared-tech/content-blocks.ts.
 export type BlockType =
   | "text"
   | "tool_call"
   | "tool_result"
   | "model_change"
   | "thinking_level_change"
-  | "compact_continuation_marker";
+  | "compact_continuation_marker"
+  | ApiBlockType;
 
 export interface Block {
   blockType: BlockType;

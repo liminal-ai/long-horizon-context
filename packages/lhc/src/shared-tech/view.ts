@@ -1,3 +1,4 @@
+import type { ApiBlock, ApiBlockType } from "./content-blocks.js";
 // Shared thread-view vocabulary. Shared so CLI, SDK, and tests import one
 // home; the thread-view domain owns behavior, this module owns only shapes.
 
@@ -72,7 +73,10 @@ export interface LlmRequestContext {
 // PI SessionManager-friendly message shapes built from canonical LHC record
 // data. The host maps these to its session append API.
 export interface SessionAssistantPart {
-  type: "text" | "thinking" | "toolCall";
+  /** LHC's three part kinds, or the API's name for a block LHC holds verbatim
+   *  (redacted_thinking, server_tool_use, the server-side *_tool_result
+   *  blocks); those carry the block itself in `block`. */
+  type: "text" | "thinking" | "toolCall" | ApiBlockType;
   text?: string;
   thinking?: string;
   /** Opaque provider thinking token (PI `thinkingSignature`). Round-tripped only. */
@@ -80,6 +84,8 @@ export interface SessionAssistantPart {
   toolCallId?: string;
   toolName?: string;
   arguments?: Record<string, unknown>;
+  /** The Messages API block, blob payloads inlined (base64 back in place). */
+  block?: ApiBlock;
 }
 
 export interface SessionThreadViewEntrySource {
@@ -89,7 +95,12 @@ export interface SessionThreadViewEntrySource {
 
 export interface SessionUserMessage {
   role: "user";
+  /** Text-shaped content: the text blocks, with a placeholder where each non-text block sits. */
   content: string;
+  /** Present when the prompt carried blocks beyond text: the full Messages API
+   *  content array in order, blob payloads inlined. Hosts that replay the real
+   *  blocks use this; hosts that only speak text use `content`. */
+  blocks?: ApiBlock[];
   sourceMessages: SessionThreadViewEntrySource[];
 }
 
@@ -108,7 +119,11 @@ export interface SessionToolResultMessage {
   role: "toolResult";
   toolCallId: string;
   toolName?: string;
+  /** Text-shaped content (placeholders for non-text blocks); abridged at or behind the boundary. */
   content: string;
+  /** The result's Messages API content array with blob payloads inlined, only
+   *  ahead of the boundary (an abridged result is text). */
+  blocks?: ApiBlock[];
   isError?: boolean;
   sourceMessages: SessionThreadViewEntrySource[];
 }

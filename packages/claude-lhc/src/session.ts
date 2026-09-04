@@ -11,14 +11,26 @@
  * fresh native session id (the new id becomes the thread's current alias):
  *   - restart: `start` with `resume: <any alias of the thread>`;
  *   - compact: manual (`/compact` prompt) or auto (provider-reported context over the
- *     trigger at the end of a turn). `threadView.compact` installs the view, a
- *     continuation marker starts the next turn, and the old generation is closed once
- *     the new one exists.
+ *     trigger). `threadView.compact` installs the view, a continuation marker starts the
+ *     next turn, and the old generation is closed once the new one exists.
+ *
+ * A compact that falls due while a turn is open does not wait for the turn to end: the
+ * next safe tool boundary stops the live query (PostToolUse `continue: false`, after
+ * every tool_use of the current assistant message has its result), LHC closes the turn
+ * on the contract's canonical `context_compact_continue` boundary, the view is rebuilt
+ * and projected into a new generation, and a continuation input (recorded as a runtime
+ * note, never a prompt) resumes the task there. The stopped query's own result
+ * (`terminal_reason: hook_stopped`) never reaches the driver: it sees one turn with a
+ * compact_boundary in the middle and one result, from the new session.
  */
 import {
+  type HookJSONOutput,
   type Options,
   type PermissionMode,
   type PermissionResult,
+  type PostToolBatchHookInput,
+  type PostToolUseFailureHookInput,
+  type PostToolUseHookInput,
   type Query,
   query,
   type SDKMessage,
@@ -31,6 +43,7 @@ import {
   COMPACT_CONTINUATION_MARKER_ACTION,
   COMPACT_CONTINUATION_MARKER_CAUSE,
   COMPACT_CONTINUATION_MARKER_KIND,
+  CONTEXT_COMPACT_CONTINUE_REASON,
   compactContinuationMarkerIdempotencyKey,
   type CompactReceipt,
   type Lhc,
@@ -38,11 +51,12 @@ import {
   type ThreadRef,
   type TurnRecord,
 } from "lhc";
+import { ToolBatch } from "./capture/batch.ts";
 import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/mapper.ts";
 import { killInferenceChildren } from "./inference/claudeCli.ts";
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.ts";
 import { projectView } from "./projection/project.ts";
-import type { SidecarRequestMethod, WireOptions } from "./protocol.ts";
+import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.ts";
 
 export interface SessionIO {
   emit(message: SDKMessage): void;
@@ -61,9 +75,22 @@ const DEFAULT_VIEW_TARGET_TOKENS = 60_000;
 const VIEW_TARGET_TRIGGER_SHARE = 0.4;
 /** Longest a compact waits for queued derivations, so bands assemble from renderings rather than truncated excerpts. */
 const DERIVATION_WAIT_MS = 45_000;
-/** A view that would evict recorded turns is retried larger, up to this multiple of the target. */
+/** A view that would evict recorded turns is retried larger, up to this multiple of the target ... */
 const MAX_VIEW_TARGET_MULTIPLE = 4;
+/**
+ * ... and never past this share of the trigger, so the rebuilt view plus the system prompt and
+ * tool schemas (~26k tokens with the account's MCP connectors) stays under the trigger: the next
+ * boundary after a swap cannot compact again at once.
+ */
+const MAX_VIEW_RETRY_TRIGGER_SHARE = 0.7;
 const FALLBACK_CLAUDE_CODE_VERSION = "2.1.259";
+/** The stop reason the PostToolUse hook hands the CLI; it stays inside the stopped session. */
+const MID_TURN_STOP_REASON = "lhc mid-turn compact";
+/** The SDK result's terminal_reason when a hook stopped the query. */
+const HOOK_STOPPED = "hook_stopped";
+
+type CompactTrigger = "manual" | "auto";
+const stamp = (): string => new Date().toISOString().slice(11, 23);
 
 interface QueuedPrompt {
   message: SDKUserMessage;
@@ -151,8 +178,18 @@ export class ClaudeLhcSession {
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
   #pendingApprovals = 0;
-  #pendingCompact: "manual" | "auto" | null = null;
+  #pendingCompact: CompactTrigger | null = null;
   #compacting = false;
+  /** The current assistant message's tool calls on the main thread and which have their result. */
+  #batch = new ToolBatch();
+  /** Tool calls seen so far in the open turn, by tool name; the continuation note names them. */
+  #turnToolCalls = new Map<string, number>();
+  /** Set by the PostToolUse hook when it stopped the live query for a mid-turn compact. */
+  #stopping: CompactTrigger | null = null;
+  /** A mid-turn compact failed in the open turn: no second try before the turn ends (the turn-end path tries once more). */
+  #midTurnFailed = false;
+  /** When the hook stopped the query (ms epoch) and the generation whose first wire message ends the swap measurement. */
+  #swap: { stoppedAt: number; sessionId: string } | null = null;
   /** Prompts that arrived while a compact swap was running; replayed into the new generation. */
   #heldPrompts: SDKUserMessage[] = [];
   #model: string | undefined;
@@ -160,6 +197,8 @@ export class ClaudeLhcSession {
   #maxThinkingTokens: number | null | undefined;
   #claudeCodeVersion = FALLBACK_CLAUDE_CODE_VERSION;
   #autoCompactTrigger = DEFAULT_AUTO_COMPACT_TRIGGER;
+  /** Start option `lhc.forceRebuildFailure`: proof scripts only; see protocol.ts. */
+  #forceRebuildFailure = false;
   #viewTarget = DEFAULT_VIEW_TARGET_TOKENS;
   #closed = false;
 
@@ -172,7 +211,10 @@ export class ClaudeLhcSession {
   }
 
   async start(wire: WireOptions): Promise<void> {
-    const { resume, sessionId, canUseTool: _c, onUserDialog: _d, sessionStore: _s, settings, env, ...rest } = wire as Record<string, unknown>;
+    const { resume, sessionId, canUseTool: _c, onUserDialog: _d, sessionStore: _s, settings, env, lhc, ...rest } = wire as Record<string, unknown>;
+    const sidecarOptions = (typeof lhc === "object" && lhc !== null ? lhc : {}) as SidecarOptions;
+    this.#forceRebuildFailure = sidecarOptions.forceRebuildFailure === true;
+    if (this.#forceRebuildFailure) this.#io.log("start option lhc.forceRebuildFailure: every compact rebuild will fail (proof mode)");
     const settingsRecord = typeof settings === "object" && settings !== null ? { ...(settings as Record<string, unknown>) } : {};
     if (typeof settingsRecord["autoCompactWindow"] === "number") this.#autoCompactTrigger = settingsRecord["autoCompactWindow"];
     this.#viewTarget = viewTargetFor(this.#autoCompactTrigger);
@@ -208,6 +250,8 @@ export class ClaudeLhcSession {
   async pushUser(message: SDKUserMessage): Promise<void> {
     if (this.#closed) return;
     if (compactCommand(message) !== null) {
+      // In an open turn the next safe tool boundary takes it (see #onPostToolUse); a turn
+      // that ends without one runs it at the turn end as before.
       if (this.#turnOpen || this.#compacting) this.#pendingCompact = "manual";
       else await this.#compact("manual");
       return;
@@ -270,6 +314,7 @@ export class ClaudeLhcSession {
     this.#closed = true;
     const gen = this.#gen;
     this.#gen = null;
+    this.#stopping = null;
     if (gen !== null) {
       gen.superseded = true;
       gen.input.end();
@@ -282,6 +327,7 @@ export class ClaudeLhcSession {
 
   #startGeneration(sessionId: string, extra: Partial<Options>): Generation {
     const input = new InputQueue();
+    let gen: Generation | null = null;
     const options: Options = {
       ...(this.#base as Options),
       ...(this.#model !== undefined ? { model: this.#model } : {}),
@@ -300,12 +346,85 @@ export class ClaudeLhcSession {
       },
       onUserDialog: async (request, callbackOptions) =>
         (await this.#io.request("onUserDialog", { request }, callbackOptions.signal)) as UserDialogResult,
+      hooks: {
+        ...((this.#base as Options).hooks ?? {}),
+        PostToolUse: [{ hooks: [async (hookInput) => this.#onPostToolUse(gen, hookInput as PostToolUseHookInput)] }],
+        PostToolUseFailure: [{ hooks: [async (hookInput) => this.#onPostToolUseFailure(gen, hookInput as PostToolUseFailureHookInput)] }],
+        PostToolBatch: [{ hooks: [async (hookInput) => this.#onPostToolBatch(gen, hookInput as PostToolBatchHookInput)] }],
+      },
       ...extra,
     };
     const q = query({ prompt: input, options });
-    const gen: Generation = { sessionId, query: q, input, superseded: false };
+    gen = { sessionId, query: q, input, superseded: false };
     void this.#pump(gen);
     return gen;
+  }
+
+  // ── mid-turn seam ──────────────────────────────────────────────
+
+  /** A compact is due in the open turn: a pended `/compact`, or provider context over the trigger. */
+  #midTurnDue(): CompactTrigger | null {
+    if (this.#compacting || this.#stopping !== null || this.#closed || this.#midTurnFailed) return null;
+    if (this.#pendingCompact !== null) return this.#pendingCompact;
+    return this.#lastContextTokens >= this.#autoCompactTrigger ? "auto" : null;
+  }
+
+  /**
+   * PostToolUse fires per tool with the tool's result already in hand, before that result
+   * is on the wire. With parallel tool calls, stopping at the first one must not strand
+   * its siblings, so the stop waits for the boundary at which every tool_use of the
+   * current assistant message is settled. The batch is known from the stream events
+   * (content_block_start, all blocks before any tool runs) when the driver asks for
+   * partial messages; without them the CLI emits each tool_use only as it runs that tool,
+   * and the count sees one — the CLI still drains the batch before honouring the stop
+   * (measured: scripts/midturn.ts), so the seam lands after the batch either way.
+   * Subagent tool calls never stop anything: the Task call that owns them is the
+   * main-thread boundary.
+   */
+  #onPostToolUse(gen: Generation | null, hookInput: PostToolUseHookInput): HookJSONOutput {
+    const proceed: HookJSONOutput = { continue: true };
+    if (gen === null || gen.superseded || gen !== this.#gen || hookInput.agent_id !== undefined) return proceed;
+    this.#batch.settle(hookInput.tool_use_id);
+    const trigger = this.#midTurnDue();
+    if (trigger === null) return proceed;
+    const unsettled = this.#batch.unsettled();
+    if (unsettled.length > 0) {
+      this.#io.log(`${stamp()} compact (${trigger}) due mid-turn; PostToolUse ${hookInput.tool_name} ${hookInput.tool_use_id} is not a safe boundary: ${unsettled.length} of ${this.#batch.size} tool call(s) in the batch unsettled (${unsettled.join(", ")})`);
+      return proceed;
+    }
+    this.#stopping = trigger;
+    this.#swap = { stoppedAt: Date.now(), sessionId: "" };
+    if (this.#pendingCompact === trigger) this.#pendingCompact = null;
+    this.#io.log(`${stamp()} compact (${trigger}) due mid-turn; stopping generation ${gen.sessionId} at the safe boundary after PostToolUse ${hookInput.tool_name} ${hookInput.tool_use_id} (batch of ${this.#batch.size} settled)`);
+    return { continue: false, suppressOutput: true, stopReason: MID_TURN_STOP_REASON };
+  }
+
+  /** Fires once per batch after every tool in it ran; logged so the seam's timing is on record. Never stops anything. */
+  #onPostToolBatch(gen: Generation | null, hookInput: PostToolBatchHookInput): HookJSONOutput {
+    if (gen !== null && gen === this.#gen && hookInput.agent_id === undefined && (this.#stopping !== null || this.#midTurnDue() !== null)) {
+      this.#io.log(`${stamp()} PostToolBatch: ${hookInput.tool_calls.length} tool call(s) ${hookInput.tool_calls.map((c) => c.tool_use_id).join(", ")}${this.#stopping !== null ? " (stop already requested)" : ""}`);
+    }
+    return { continue: true };
+  }
+
+  /** A failed tool still settles its slot in the batch; the stop waits for a PostToolUse. */
+  #onPostToolUseFailure(gen: Generation | null, hookInput: PostToolUseFailureHookInput): HookJSONOutput {
+    if (gen !== null && gen === this.#gen && hookInput.agent_id === undefined) this.#batch.settle(hookInput.tool_use_id);
+    return { continue: true };
+  }
+
+  /** Feeds the wire to the batch tracker and tallies the turn's tool calls by name. */
+  #trackTools(message: SDKMessage): void {
+    for (const name of this.#batch.observe(message)) this.#turnToolCalls.set(name, (this.#turnToolCalls.get(name) ?? 0) + 1);
+  }
+
+  /** The input that resumes the task in the new generation. A runtime note in LHC, never a prompt. */
+  #continuationNote(): SDKUserMessage {
+    const total = [...this.#turnToolCalls.values()].reduce((a, b) => a + b, 0);
+    const byName = [...this.#turnToolCalls.entries()].map(([name, n]) => `${name} ×${n}`).join(", ");
+    const done = total === 0 ? "the work already done in this turn is" : `the ${total} tool call${total === 1 ? "" : "s"} already made in this turn (${byName}) and their results are`;
+    const body = `[runtime note] Context was compacted in the middle of this turn. The turn is still in progress: ${done} recorded above, up to the compact continuation marker. Continue the task from exactly that point. Do not repeat a completed step, do not start over, and do not wait for a new user message.`;
+    return { type: "user", message: { role: "user", content: [{ type: "text", text: body }] }, parent_tool_use_id: null, session_id: "" } as SDKUserMessage;
   }
 
   async #pump(gen: Generation): Promise<void> {
@@ -333,13 +452,40 @@ export class ClaudeLhcSession {
   }
 
   async #onMessage(message: SDKMessage): Promise<void> {
+    if (this.#swap !== null && this.#swap.sessionId !== "" && message.session_id === this.#swap.sessionId) {
+      // The measure the brief asks for: hook stop → first message of the new session on the wire.
+      this.#io.log(`${stamp()} swap complete: first message (${message.type}${"subtype" in message ? `/${String(message.subtype)}` : ""}) of generation ${message.session_id} ${Date.now() - this.#swap.stoppedAt} ms after the hook stop`);
+      this.#swap = null;
+    }
     if (message.type === "system" && message.subtype === "init") {
       this.#claudeCodeVersion = message.claude_code_version;
+      // The CLI sends an init per turn with the tool list as it stands. Account MCP connectors
+      // connect asynchronously; a call made before they do carries no schemas for them, so its
+      // usage reads low by that block (measured ~24k tokens for 52 tools). Real for that call,
+      // and the next call reads them: worth a log line, not a correction.
+      const pending = (message.mcp_servers ?? []).filter((server) => server.status === "pending").map((server) => server.name);
+      if (pending.length > 0) this.#io.log(`init ${message.session_id}: ${message.tools.length} tool(s); ${pending.length} MCP server(s) still pending (${pending.join(", ")}), so usage reads low until they join the tool list`);
     }
     if (message.type === "assistant" && message.parent_tool_use_id === null && !this.#turnOpen) {
       // Output without a prompt of ours (a task notification the CLI answered): the turn is open.
       this.#turnOpen = true;
       this.#turnStartedAt = new Date().toISOString();
+    }
+    this.#trackTools(message);
+    if (this.#stopping !== null && (message.type === "user" || message.type === "result")) this.#io.log(`${stamp()} wire after stop: ${message.type}${message.type === "result" ? `/${message.subtype} terminal=${String((message as unknown as Record<string, unknown>)["terminal_reason"])}` : ""}`);
+    if (message.type === "result") {
+      const stopped = (message as unknown as Record<string, unknown>)["terminal_reason"] === HOOK_STOPPED;
+      const trigger = this.#stopping;
+      this.#stopping = null;
+      this.#batch.clear();
+      if (trigger !== null && stopped) {
+        // The seam: the stopped query's result is not the turn's end and never goes out.
+        await this.#compactMidTurn(trigger);
+        return;
+      }
+      if (trigger !== null) this.#io.log(`mid-turn stop requested but the result came back ${message.subtype}/${String((message as unknown as Record<string, unknown>)["terminal_reason"])}; treating it as the turn end`);
+      this.#turnToolCalls.clear();
+      this.#midTurnFailed = false;
     }
     const mapped = mapSdkMessage(message, this.#turnStartedAt);
     if (mapped.contextTokens !== undefined) this.#lastContextTokens = mapped.contextTokens;
@@ -400,7 +546,7 @@ export class ClaudeLhcSession {
    * compact runs at a turn end: it is forwarded after the boundary, on the new session id.
    * Without one (a `/compact` sent between turns) a synthetic result closes the compact turn.
    */
-  async #compact(trigger: "manual" | "auto", heldResult?: SDKMessage): Promise<void> {
+  async #compact(trigger: CompactTrigger, heldResult?: SDKMessage): Promise<void> {
     if (this.#gen === null || this.#compacting) {
       if (heldResult !== undefined) this.#io.emit(heldResult);
       return;
@@ -411,66 +557,9 @@ export class ClaudeLhcSession {
     const previous = this.#gen;
     this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, "compacting"));
     try {
-      await this.#awaitDerivations();
-      // A compact never makes the model forget what the record still holds. The view aims at a
-      // fixed target: a thread that fits the full share stays whole in the tail (no bands), a
-      // larger one lands its older turns in bands. If the installed view still evicted turns
-      // past the far edge of the bands, retry larger before accepting it.
-      let lowerBound = this.#viewTarget;
-      let receipt: CompactReceipt;
-      for (;;) {
-        const opts = { profile: "continuation", params: { lowerBound } };
-        const preview = await this.#lhc.threadView.previewCompact(this.#thread, opts);
-        if (!preview.ok) throw new Error(`compact preview error: ${preview.error.reason}`);
-        if (preview.value.kind === "error") throw new Error(`compact blocked: ${preview.value.reason}`);
-        const installed = await this.#lhc.threadView.compact(this.#thread, opts);
-        if (!installed.ok) throw new Error(`compact error: ${installed.error.reason}`);
-        receipt = installed.value;
-        const turns = await this.#lhc.turns.listTurns(this.#thread);
-        if (!turns.ok) throw new Error(`LHC turns read failed: ${turns.error.reason}`);
-        const evicted = evictedTurns(turns.value, receipt.coveredFrom);
-        if (evicted.length === 0) break;
-        if (lowerBound >= this.#viewTarget * MAX_VIEW_TARGET_MULTIPLE) {
-          const warning = `[lhc compact:${trigger}] view at ${lowerBound} tokens still drops turns ${evicted.join(", ")} past the band edge; they remain in the record only`;
-          this.#io.log(warning);
-          await this.#lhc.logging.write(this.#thread, { level: "warning", message: warning }).catch(() => undefined);
-          break;
-        }
-        this.#io.log(`[lhc compact:${trigger}] view at ${lowerBound} tokens would drop turns ${evicted.join(", ")}; retrying at ${lowerBound * 2}`);
-        lowerBound *= 2;
-      }
-
-      const continuationTurnId = await this.#openTurnId();
-      await this.#intake([{
-        eventKind: "compact_continuation_marker",
-        idempotencyKey: compactContinuationMarkerIdempotencyKey(continuationTurnId),
-        actor: "system",
-        harness: HARNESS,
-        payload: {
-          kind: COMPACT_CONTINUATION_MARKER_KIND,
-          continuationTurnId,
-          cause: COMPACT_CONTINUATION_MARKER_CAUSE,
-          action: COMPACT_CONTINUATION_MARKER_ACTION,
-          newUserRequest: false,
-          waitForUser: false,
-        },
-      }]);
-      // post_tokens is the rebuilt view the model reads next, as stock reports its summary's
-      // size alone; the next assistant usage makes the meter exact.
-      const postTokens = receipt.totalTokens;
-      const summary = `[lhc compact:${trigger}] provider context ${preTokens} tokens; rebuilt view ${receipt.totalTokens} tokens (target ${lowerBound}); compact point ${receipt.compactPoint}, covered from ${receipt.coveredFrom}; degraded ${receipt.degraded.length}, gaps ${receipt.gaps.length}; bands ${JSON.stringify(receipt.bands)}`;
-      this.#io.log(summary);
-      await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
-
-      const next = await this.#startProjectedGeneration();
+      const { next, postTokens } = await this.#rebuild(trigger, preTokens);
       this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
-      this.#emitSynthetic({
-        type: "system",
-        subtype: "compact_boundary",
-        compact_metadata: { trigger, pre_tokens: preTokens, post_tokens: postTokens, duration_ms: Date.now() - startedAt },
-        uuid: randomUUID(),
-        session_id: next.sessionId,
-      } as unknown as SDKMessage);
+      this.#emitSynthetic(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
       this.#lastContextTokens = 0;
       if (heldResult !== undefined) this.#emitSynthetic({ ...heldResult, session_id: next.sessionId } as SDKMessage);
       else if (trigger === "manual") this.#emitSynthetic(this.#syntheticResult(next.sessionId, startedAt, ""));
@@ -484,9 +573,129 @@ export class ClaudeLhcSession {
     } finally {
       this.#compacting = false;
     }
+    await this.#replayHeld();
+  }
+
+  /**
+   * The mid-turn seam, entered when the stopped query's `hook_stopped` result arrives (so
+   * the tool result at the stop point is already recorded — the wire carried it before
+   * the result). LHC closes the turn on the contract's canonical boundary, the view is
+   * rebuilt into a new generation, and the continuation note resumes the task there. The
+   * driver's turn stays open throughout: it sees status, boundary, then more tool cards
+   * and the one result. If the rebuild fails the note goes to the stopped generation
+   * instead, so the task still finishes, uncompacted.
+   */
+  async #compactMidTurn(trigger: CompactTrigger): Promise<void> {
+    const previous = this.#gen;
+    if (previous === null) return;
+    this.#compacting = true;
+    const startedAt = Date.now();
+    const preTokens = this.#lastContextTokens;
+    this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, "compacting"));
+    let target: Generation = previous;
+    try {
+      const openTurn = await this.#openTurnId();
+      await this.#intake([{
+        eventKind: "turn_end", idempotencyKey: `claude-lhc:midturn:${openTurn}:turn_end`, actor: "system", harness: HARNESS,
+        payload: { outcomeReason: CONTEXT_COMPACT_CONTINUE_REASON, ...(this.#turnStartedAt ? { startedAt: this.#turnStartedAt } : {}), endedAt: new Date().toISOString() },
+      }]);
+      const { next, postTokens } = await this.#rebuild(trigger, preTokens);
+      target = next;
+      this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
+      this.#emitSynthetic(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
+      this.#lastContextTokens = 0;
+      if (this.#swap !== null) this.#swap.sessionId = next.sessionId;
+      this.#io.log(`${stamp()} mid-turn compact (${trigger}) swapped ${previous.sessionId} → ${next.sessionId}; rebuild took ${Date.now() - startedAt} ms; continuing the turn there`);
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      this.#io.log(`mid-turn compact (${trigger}) failed: ${reason}; continuing the turn in generation ${previous.sessionId} uncompacted`);
+      await this.#lhc.logging.write(this.#thread, { level: "warning", message: `[lhc compact:${trigger}] mid-turn failed: ${reason}` }).catch(() => undefined);
+      this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }));
+      this.#midTurnFailed = true;
+      this.#swap = null;
+    } finally {
+      this.#compacting = false;
+    }
+    const note = this.#continuationNote();
+    const uuid = randomUUID();
+    target.input.push({ message: note, before: async () => this.#intake(mapPrompt(note, uuid, true)) });
+    await this.#replayHeld();
+  }
+
+  async #replayHeld(): Promise<void> {
     const held = this.#heldPrompts.splice(0);
     if (held.length > 0) this.#io.log(`replaying ${held.length} held prompt(s) into generation ${this.#gen?.sessionId}`);
     for (const message of held) await this.pushUser(message);
+  }
+
+  #compactBoundary(trigger: CompactTrigger, preTokens: number, postTokens: number, startedAt: number, sessionId: string): SDKMessage {
+    return {
+      type: "system",
+      subtype: "compact_boundary",
+      compact_metadata: { trigger, pre_tokens: preTokens, post_tokens: postTokens, duration_ms: Date.now() - startedAt },
+      uuid: randomUUID(),
+      session_id: sessionId,
+    } as unknown as SDKMessage;
+  }
+
+  /** Waits for derivations, installs the compacted view, records the marker, and projects the view into a new generation. */
+  async #rebuild(trigger: CompactTrigger, preTokens: number): Promise<{ next: Generation; postTokens: number }> {
+    if (this.#forceRebuildFailure) throw new Error("rebuild failure forced by the start option lhc.forceRebuildFailure");
+    await this.#awaitDerivations();
+    // A compact never makes the model forget what the record still holds. The view aims at a
+    // fixed target: a thread that fits the full share stays whole in the tail (no bands), a
+    // larger one lands its older turns in bands. If the installed view still evicted turns
+    // past the far edge of the bands, retry larger before accepting it.
+    let lowerBound = this.#viewTarget;
+    const retryCap = Math.max(this.#viewTarget, Math.min(this.#viewTarget * MAX_VIEW_TARGET_MULTIPLE, Math.floor(this.#autoCompactTrigger * MAX_VIEW_RETRY_TRIGGER_SHARE)));
+    let receipt: CompactReceipt;
+    for (;;) {
+      const opts = { profile: "continuation", params: { lowerBound } };
+      const preview = await this.#lhc.threadView.previewCompact(this.#thread, opts);
+      if (!preview.ok) throw new Error(`compact preview error: ${preview.error.reason}`);
+      if (preview.value.kind === "error") throw new Error(`compact blocked: ${preview.value.reason}`);
+      const installed = await this.#lhc.threadView.compact(this.#thread, opts);
+      if (!installed.ok) throw new Error(`compact error: ${installed.error.reason}`);
+      receipt = installed.value;
+      const turns = await this.#lhc.turns.listTurns(this.#thread);
+      if (!turns.ok) throw new Error(`LHC turns read failed: ${turns.error.reason}`);
+      const evicted = evictedTurns(turns.value, receipt.coveredFrom);
+      if (evicted.length === 0) break;
+      if (lowerBound >= retryCap) {
+        const warning = `[lhc compact:${trigger}] view at ${lowerBound} tokens (retry cap ${retryCap} for trigger ${this.#autoCompactTrigger}) still drops turns ${evicted.join(", ")} past the band edge; they remain in the record only`;
+        this.#io.log(warning);
+        await this.#lhc.logging.write(this.#thread, { level: "warning", message: warning }).catch(() => undefined);
+        break;
+      }
+      const larger = Math.min(lowerBound * 2, retryCap);
+      this.#io.log(`[lhc compact:${trigger}] view at ${lowerBound} tokens would drop turns ${evicted.join(", ")}; retrying at ${larger}`);
+      lowerBound = larger;
+    }
+
+    const continuationTurnId = await this.#openTurnId();
+    await this.#intake([{
+      eventKind: "compact_continuation_marker",
+      idempotencyKey: compactContinuationMarkerIdempotencyKey(continuationTurnId),
+      actor: "system",
+      harness: HARNESS,
+      payload: {
+        kind: COMPACT_CONTINUATION_MARKER_KIND,
+        continuationTurnId,
+        cause: COMPACT_CONTINUATION_MARKER_CAUSE,
+        action: COMPACT_CONTINUATION_MARKER_ACTION,
+        newUserRequest: false,
+        waitForUser: false,
+      },
+    }]);
+    // post_tokens is the rebuilt view the model reads next, as stock reports its summary's
+    // size alone; the next assistant usage makes the meter exact.
+    const postTokens = receipt.totalTokens;
+    const summary = `[lhc compact:${trigger}] provider context ${preTokens} tokens; rebuilt view ${receipt.totalTokens} tokens (target ${lowerBound}); compact point ${receipt.compactPoint}, covered from ${receipt.coveredFrom}; degraded ${receipt.degraded.length}, gaps ${receipt.gaps.length}; bands ${JSON.stringify(receipt.bands)}`;
+    this.#io.log(summary);
+    await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
+
+    const next = await this.#startProjectedGeneration();
+    return { next, postTokens };
   }
 
   /** Lets queued derivations finish (bounded) so the bands are built from renderings, not the truncated excerpt fallback. */

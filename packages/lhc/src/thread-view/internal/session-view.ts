@@ -1,14 +1,42 @@
-import type {
-  Band,
-  SessionAssistantPart,
-  SessionThreadView,
-  SessionThreadViewEntry,
-  SessionThreadViewEntrySource,
+import {
+  type ApiBlock,
+  type ApiBlockType,
+  type Band,
+  type BlobLoader,
+  inlineBlobs,
+  type SessionAssistantPart,
+  type SessionThreadView,
+  type SessionThreadViewEntry,
+  type SessionThreadViewEntrySource,
 } from "../../shared-tech/index.js";
 import { readBoundaryPosition } from "./boundary.js";
 import { isEmptyThinkingHusk, type TailRenderContext, toolNamesByCallId, toolResultSessionContent } from "./render.js";
 import type { TailMessageRow } from "./snapshot.js";
-import { readTailMessages, readThreadMetadata, readViewSnapshot } from "./snapshot.js";
+import { readBlob, readTailMessages, readThreadMetadata, readViewSnapshot } from "./snapshot.js";
+
+// Server-side tool results arrive inside the model's own message in the API;
+// LHC records them as tool_result events (pairing, summaries) and serves them
+// back where they came from: as parts of the assistant entry.
+const SERVER_RESULT_TYPES: ReadonlySet<string> = new Set([
+  "web_search_tool_result",
+  "web_fetch_tool_result",
+  "code_execution_tool_result",
+  "bash_code_execution_tool_result",
+  "text_editor_code_execution_tool_result",
+  "tool_search_tool_result",
+]);
+
+/** Rows 1..n of a message: the Messages API content array it carried beyond
+ *  its text-shaped block 0, blob payloads inlined. Empty when the message was text only. */
+function apiBlocksOf(message: TailMessageRow, load: BlobLoader): ApiBlock[] {
+  return message.blocks.slice(1).map((block) => inlineBlobs(block.content, load) as ApiBlock);
+}
+
+function serverResultPart(blocks: readonly ApiBlock[]): SessionAssistantPart | null {
+  const [only] = blocks;
+  if (blocks.length !== 1 || only === undefined || !SERVER_RESULT_TYPES.has(only.type)) return null;
+  return { type: only.type as ApiBlockType, block: only };
+}
 
 function blockContent(message: TailMessageRow): Record<string, unknown> {
   return message.blocks[0]?.content ?? {};
@@ -98,7 +126,13 @@ function modelProvenanceOf(rows: readonly TailMessageRow[]): {
   };
 }
 
-function assistantPartOf(message: TailMessageRow): SessionAssistantPart {
+function assistantPartOf(message: TailMessageRow, load: BlobLoader): SessionAssistantPart {
+  // A verbatim API block behind the text-shaped row (redacted_thinking behind
+  // a thinking row, server_tool_use behind a tool call) is the part itself.
+  const [apiBlock] = apiBlocksOf(message, load);
+  if (apiBlock !== undefined && (apiBlock.type === "redacted_thinking" || apiBlock.type === "server_tool_use")) {
+    return { type: apiBlock.type, block: apiBlock };
+  }
   switch (message.kind) {
     case "assistant_thinking": {
       const part: SessionAssistantPart = { type: "thinking", thinking: textOf(message) };
@@ -125,14 +159,18 @@ function assistantPartOf(message: TailMessageRow): SessionAssistantPart {
   }
 }
 
-function toolResultOf(message: TailMessageRow, ctx: TailRenderContext): SessionThreadViewEntry {
+function toolResultOf(message: TailMessageRow, ctx: TailRenderContext, load: BlobLoader): SessionThreadViewEntry {
   const block = blockContent(message);
   const toolCallId = typeof block["toolCallId"] === "string" ? block["toolCallId"] : "";
+  // The real content array rides along only ahead of the boundary: an
+  // abridged result is text, and its placeholder already names the blocks.
+  const blocks = message.sourceEventOrder > ctx.boundaryPosition ? apiBlocksOf(message, load) : [];
   const result: SessionThreadViewEntry = {
     role: "toolResult",
     toolCallId,
     toolName: ctx.toolNameByCallId.get(toolCallId) ?? "unknown_tool",
     content: toolResultSessionContent(message, ctx),
+    ...(blocks.length > 0 ? { blocks } : {}),
     sourceMessages: [entrySource(message)],
   };
   if (block["isError"] === true) {
@@ -160,7 +198,11 @@ function thinkingLevelChangeOf(message: TailMessageRow): SessionThreadViewEntry 
   return { kind: "thinking_level_change", level, sourceMessages: [entrySource(message)] };
 }
 
-function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number): SessionThreadViewEntry[] {
+function tailEntriesOf(
+  rows: readonly TailMessageRow[],
+  boundaryPosition: number,
+  load: BlobLoader,
+): SessionThreadViewEntry[] {
   const renderCtx: TailRenderContext = {
     boundaryPosition,
     toolNameByCallId: toolNamesByCallId(rows),
@@ -189,10 +231,17 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
   for (const row of rows) {
     if (isEmptyThinkingHusk(row)) continue;
     switch (row.kind) {
-      case "user_prompt":
+      case "user_prompt": {
         flushAssistant();
-        entries.push({ role: "user", content: textOf(row), sourceMessages: [entrySource(row)] });
+        const blocks = apiBlocksOf(row, load);
+        entries.push({
+          role: "user",
+          content: textOf(row),
+          ...(blocks.length > 0 ? { blocks } : {}),
+          sourceMessages: [entrySource(row)],
+        });
         break;
+      }
       case "assistant_thinking":
       case "assistant_text":
       case "tool_call": {
@@ -212,15 +261,24 @@ function tailEntriesOf(rows: readonly TailMessageRow[], boundaryPosition: number
           ...(merged.model !== undefined ? { model: merged.model } : {}),
           ...(merged.api !== undefined ? { api: merged.api } : {}),
         };
-        assistantParts.push(assistantPartOf(row));
+        assistantParts.push(assistantPartOf(row, load));
         assistantSources.push(entrySource(row));
         assistantRows.push(row);
         break;
       }
-      case "tool_result":
+      case "tool_result": {
+        const serverPart = serverResultPart(apiBlocksOf(row, load));
+        if (serverPart !== null) {
+          // Stays inside the assistant entry it belongs to.
+          assistantParts.push(serverPart);
+          assistantSources.push(entrySource(row));
+          assistantRows.push(row);
+          break;
+        }
         flushAssistant();
-        entries.push(toolResultOf(row, renderCtx));
+        entries.push(toolResultOf(row, renderCtx, load));
         break;
+      }
       case "model_change": {
         // Flush first: the change marks a boundary in time, so it must not
         // appear BEFORE assistant output that preceded it.
@@ -274,6 +332,11 @@ export function buildSessionThreadView(db: Parameters<typeof readViewSnapshot>[0
   const compactPoint = snapshot?.compactPoint ?? 0;
   const boundaryPosition = readBoundaryPosition(db);
   const tailRows = readTailMessages(db, compactPoint);
+  const blobCache = new Map<string, Uint8Array | undefined>();
+  const load: BlobLoader = (sha256) => {
+    if (!blobCache.has(sha256)) blobCache.set(sha256, readBlob(db, sha256));
+    return blobCache.get(sha256);
+  };
 
   const entries: SessionThreadViewEntry[] = [];
   if (snapshot !== null) {
@@ -281,6 +344,6 @@ export function buildSessionThreadView(db: Parameters<typeof readViewSnapshot>[0
       entries.push(bandUserMessage(band.band, band.renderedText));
     }
   }
-  entries.push(...tailEntriesOf(tailRows, boundaryPosition));
+  entries.push(...tailEntriesOf(tailRows, boundaryPosition, load));
   return { threadId, entries };
 }

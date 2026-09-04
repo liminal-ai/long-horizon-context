@@ -40,6 +40,70 @@ const sampleEntries: SessionThreadViewEntry[] = [
   },
 ];
 
+describe("buildRolloutLines: content blocks", () => {
+  const png = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
+  it("a Read of a PNG rebuilds as an image block inside the tool_result, not as text (the base64-bloat bug)", () => {
+    const lines = buildRolloutLines({
+      entries: [
+        {
+          role: "user",
+          content: "[image · image/png · 8 B]\nlook",
+          blocks: [png, { type: "text", text: "look" }],
+          sourceMessages: [],
+        },
+        {
+          role: "assistant",
+          content: [{ type: "toolCall", toolCallId: "toolu_1", toolName: "Read", arguments: { file_path: "a.png" } }],
+          sourceMessages: [],
+        },
+        {
+          role: "toolResult",
+          toolCallId: "toolu_1",
+          content: "[image · image/png · 8 B]",
+          blocks: [png],
+          sourceMessages: [],
+        },
+        { role: "toolResult", toolCallId: "toolu_2", content: "abridged", sourceMessages: [] },
+      ],
+      newSessionId: "s",
+      envelope: { cwd: "/w" },
+    });
+    const [prompt, , result, abridged] = lines;
+    expect(prompt?.line.message?.content).toEqual([png, { type: "text", text: "look" }]);
+    const resultBlock = (result?.line.message?.content as Array<Record<string, unknown>>)[0];
+    expect(resultBlock).toEqual({ type: "tool_result", tool_use_id: "toolu_1", content: [png], is_error: false });
+    expect((abridged?.line.message?.content as Array<Record<string, unknown>>)[0]?.content).toBe("abridged");
+    expect(serializeRolloutLines(lines)).not.toContain("[image ·");
+  });
+  it("server-side tool blocks re-emit verbatim inside the assistant message; redacted thinking follows the omit arm", () => {
+    const use = { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "x" } };
+    const found = { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [] };
+    const lines = buildRolloutLines({
+      entries: [
+        {
+          role: "assistant",
+          content: [
+            { type: "redacted_thinking", block: { type: "redacted_thinking", data: "E" } },
+            { type: "server_tool_use", block: use },
+            { type: "web_search_tool_result", block: found },
+            { type: "text", text: "found" },
+          ],
+          sourceMessages: [],
+        },
+      ],
+      newSessionId: "s",
+      envelope: { cwd: "/w" },
+    });
+    expect(lines.map((entry) => (entry.line.message?.content as ContentBlockLike[])[0])).toEqual([
+      use,
+      found,
+      { type: "text", text: "found" },
+    ]);
+  });
+});
+
+type ContentBlockLike = Record<string, unknown>;
+
 describe("buildRolloutLines", () => {
   it("maps view entries to uuid-linked NATIVE rollout lines (one block per line, shared message id)", () => {
     const sessionId = "new-session-id";
@@ -108,9 +172,7 @@ describe("buildRolloutLines", () => {
       thinkingRebuildArm: "signed_verbatim",
     });
     expect(lines).toHaveLength(2);
-    expect(lines[0]?.line.message?.content).toEqual([
-      { type: "thinking", thinking: "", signature: "OPAQUE_SIG" },
-    ]);
+    expect(lines[0]?.line.message?.content).toEqual([{ type: "thinking", thinking: "", signature: "OPAQUE_SIG" }]);
   });
 
   it("production omit projection: signed-empty and non-empty thinking omitted; text/tools/parent chain exact", () => {
@@ -442,9 +504,7 @@ describe("writeRebuiltRollout", () => {
     expect(receipt.parentUuid).toBe(lines[2]!.uuid);
     // Slice 5: exactly one concise labeled receipt — no session ids or recovery
     // detail in the durable note.
-    expect(receipt.message?.content).toBe(
-      "[runtime note] [lhc compact:manual] rebuilt LHC view 1.4k (240k target).",
-    );
+    expect(receipt.message?.content).toBe("[runtime note] [lhc compact:manual] rebuilt LHC view 1.4k (240k target).");
 
     // First prompt shown in the sessions index stays the conversation opener, not the receipt.
     const index = await readSessionsIndex(projectDir);

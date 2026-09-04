@@ -9,6 +9,14 @@
  * signature); model_change stamps later assistant lines; thinking_level_change has
  * no native shape. A tool call the record never answered gets a synthetic error
  * result so the resumed transcript never ends on a dangling tool_use.
+ *
+ * Content blocks: a user or toolResult entry that carries `blocks` (LHC served
+ * the native content array with blob payloads inlined) is written as that array,
+ * so an attached image or a Read of a PNG/PDF comes back to the model as the
+ * image/document block it was, never as base64 inside text. Server-side tool
+ * blocks (server_tool_use and its *_tool_result) are written verbatim inside
+ * the assistant message they came from. redacted_thinking follows the thinking
+ * arm: omitted with the rest of the thinking.
  */
 import { randomUUID } from "node:crypto";
 import type { SessionAssistantPart, SessionThreadView, SessionThreadViewEntry } from "lhc";
@@ -43,9 +51,9 @@ export function projectView(view: SessionThreadView, stamp: ProjectionStamp): Na
     lines.push({ ...line, uuid });
     parent = uuid;
   };
-  const userText = (content: string): void =>
+  const userText = (content: string | NativeEntry[]): void =>
     push({ ...base(), type: "user", message: { role: "user", content }, permissionMode: stamp.permissionMode, promptSource: "sdk" });
-  const toolResult = (toolCallId: string, content: string, isError: boolean): void => {
+  const toolResult = (toolCallId: string, content: string | NativeEntry[], isError: boolean): void => {
     openCalls.delete(toolCallId);
     push({ ...base(), type: "user", message: { role: "user", content: [{ tool_use_id: toolCallId, type: "tool_result", content, is_error: isError }] } });
   };
@@ -58,8 +66,8 @@ export function projectView(view: SessionThreadView, stamp: ProjectionStamp): Na
       if (entry.kind === "model_change" && entry.modelId !== "") model = entry.modelId;
       continue;
     }
-    if (entry.role === "user") { settleOpenCalls(); userText(entry.content); continue; }
-    if (entry.role === "toolResult") { toolResult(entry.toolCallId, entry.content, entry.isError === true); continue; }
+    if (entry.role === "user") { settleOpenCalls(); userText(entry.blocks ?? entry.content); continue; }
+    if (entry.role === "toolResult") { toolResult(entry.toolCallId, entry.blocks ?? entry.content, entry.isError === true); continue; }
     settleOpenCalls();
     const blocks = entry.content.map(nativeBlock).filter((b): b is NativeEntry => b !== null);
     if (blocks.length === 0) continue;
@@ -81,7 +89,8 @@ export function projectView(view: SessionThreadView, stamp: ProjectionStamp): Na
 function nativeBlock(part: SessionAssistantPart): NativeEntry | null {
   if (part.type === "text") return part.text !== undefined && part.text !== "" ? { type: "text", text: part.text } : null;
   if (part.type === "toolCall") return { type: "tool_use", id: part.toolCallId ?? "", name: part.toolName ?? "tool", input: part.arguments ?? {} };
-  return null; // thinking: omitted
+  if (part.type === "thinking" || part.type === "redacted_thinking") return null; // thinking arm: omitted
+  return part.block ?? null; // server_tool_use and server-side results: the block as the API sent it
 }
 
 export function isMessageEntry(entry: SessionThreadViewEntry): boolean {

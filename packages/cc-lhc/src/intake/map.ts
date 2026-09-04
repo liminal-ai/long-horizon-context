@@ -9,7 +9,17 @@ import type {
 } from "../rollout/types.js";
 
 const HARNESS = "cc";
-const IMAGE_PLACEHOLDER = "[image content not captured]";
+
+// Server-side tool blocks the model receives inside its own message; recorded
+// as tool_result events carrying the block, paired by tool_use_id.
+const SERVER_RESULT_TYPES = new Set([
+  "web_search_tool_result",
+  "web_fetch_tool_result",
+  "code_execution_tool_result",
+  "bash_code_execution_tool_result",
+  "text_editor_code_execution_tool_result",
+  "tool_search_tool_result",
+]);
 
 const META_MARKERS = ["<local-command-caveat>", "<command-name>", "<local-command-stdout>"] as const;
 
@@ -95,6 +105,19 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export function contentBlocks(content: unknown): ContentBlock[] {
   if (!Array.isArray(content)) return [];
   return content.filter((block): block is ContentBlock => isRecord(block) && typeof block.type === "string");
+}
+
+/** The native content array when any block is not text; undefined for text-only (or string) content. */
+function nonTextBlocks(content: unknown): ContentBlock[] | undefined {
+  const blocks = contentBlocks(content);
+  return blocks.some((block) => block.type !== "text") ? blocks : undefined;
+}
+
+function joinedText(blocks: readonly ContentBlock[]): string {
+  return blocks
+    .filter((block) => block.type === "text")
+    .map((block) => (typeof block.text === "string" ? block.text : ""))
+    .join("");
 }
 
 /**
@@ -185,14 +208,17 @@ function mapUserToolResults(item: RolloutLineItem, blocks: ToolResultBlock[], li
   let blockIndex = 0;
   for (const block of blocks) {
     const toolCallId = block.tool_use_id;
-    const content = stringifyToolResultContent(block.content);
     const isError = block.is_error === true;
+    // A result carrying images or documents (Read on a PNG or PDF) sends the
+    // native content array as `blocks`; the bytes never enter the text.
+    const attached = nonTextBlocks(block.content);
+    const content = attached === undefined ? stringifyToolResultContent(block.content) : joinedText(attached);
     events.push({
       eventKind: "tool_result",
       idempotencyKey: idempotencyKey(uuid, blockIndex, "tool_result"),
       actor: "tool",
       harness: HARNESS,
-      payload: { toolCallId, content, isError },
+      payload: { toolCallId, content, isError, ...(attached === undefined ? {} : { blocks: attached }) },
     });
     blockIndex += 1;
   }
@@ -204,19 +230,19 @@ function mapUserTextBlocks(
   blocks: ContentBlock[],
   lineIndex: number,
 ): { events: MessageEventInput[]; imageCount: number } {
-  let text = blocks
-    .filter((block) => block.type === "text")
-    .map((block) => (typeof block.text === "string" ? block.text : ""))
-    .join("");
-  const hasImage = blocks.some((block) => block.type === "image");
-  let imageCount = 0;
-  if (hasImage) {
-    imageCount = 1;
-    if (text !== "") text += "\n";
-    text += IMAGE_PLACEHOLDER;
+  const text = joinedText(blocks);
+  const attached = nonTextBlocks(blocks);
+  const imageCount = attached === undefined ? 0 : 1;
+  if (text === "" && attached === undefined) return { events: [], imageCount };
+  const events = mapUserString(item, text, lineIndex);
+  // A prompt with attached images or documents carries the native content
+  // array as `blocks`; runtime notes stay text.
+  if (attached !== undefined) {
+    for (const event of events) {
+      if (event.eventKind === "user_prompt") event.payload = { ...event.payload, blocks: attached };
+    }
   }
-  if (text === "") return { events: [], imageCount };
-  return { events: mapUserString(item, text, lineIndex), imageCount };
+  return { events, imageCount };
 }
 
 function mapAssistant(item: RolloutLineItem, lineIndex: number): MessageEventInput[] {
@@ -276,6 +302,41 @@ function mapAssistant(item: RolloutLineItem, lineIndex: number): MessageEventInp
         actor: "assistant",
         harness: HARNESS,
         payload: { toolCallId, toolName, arguments: args },
+      });
+      continue;
+    }
+    if (block.type === "redacted_thinking") {
+      const extra: Record<string, unknown> = { block };
+      if (model !== undefined) extra.model = model;
+      events.push(
+        textEvent("assistant_thinking", "", "assistant", idempotencyKey(uuid, blockIndex, "assistant_thinking"), extra),
+      );
+      continue;
+    }
+    if (block.type === "server_tool_use") {
+      events.push({
+        eventKind: "tool_call",
+        idempotencyKey: idempotencyKey(uuid, blockIndex, "tool_call"),
+        actor: "assistant",
+        harness: HARNESS,
+        payload: {
+          toolCallId: String(block.id),
+          toolName: String(block.name),
+          arguments: isRecord(block.input) ? (block.input as Record<string, unknown>) : {},
+          block,
+        },
+      });
+      continue;
+    }
+    if (SERVER_RESULT_TYPES.has(block.type)) {
+      const errored =
+        isRecord(block.content) && typeof (block.content as Record<string, unknown>).error_code === "string";
+      events.push({
+        eventKind: "tool_result",
+        idempotencyKey: idempotencyKey(uuid, blockIndex, "tool_result"),
+        actor: "tool",
+        harness: HARNESS,
+        payload: { toolCallId: String(block.tool_use_id), content: "", isError: errored, blocks: [block] },
       });
     }
   }

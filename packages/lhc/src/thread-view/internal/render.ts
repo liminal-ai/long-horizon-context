@@ -112,6 +112,8 @@ function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): Asse
 // useful on the text LLM-request path, which can only emit [thinking] fences.
 export function isEmptyThinkingHusk(message: TailMessageRow): boolean {
   if (message.kind !== "assistant_thinking") return false;
+  // A redacted_thinking block behind the row is content the provider can use.
+  if (message.blocks.length > 1) return false;
   const content = message.blocks[0]?.content ?? {};
   const text = content["text"];
   const hasText = typeof text === "string" && text.trim() !== "";

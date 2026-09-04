@@ -14,6 +14,7 @@ import type { WorkItemRecord } from "../../shared-tech/work-queue/index.js";
 import type { ThreadRef } from "../../threads/index.js";
 import { create as createTurn, TurnStateCorruptionError } from "../../turns/index.js";
 import type { BatchResult, EventRecord, MessageEventInput } from "../index.js";
+import { extractPayloadBlobs } from "./blobs.js";
 import { validateEvents, validateThreadRef } from "./validate.js";
 
 // Test seam (set only through test/fixtures): called after each event is
@@ -93,6 +94,9 @@ export async function runMessageEvents(
           `INSERT INTO event (event_order, event_kind, idempotency_key, actor, harness, payload, recorded_at)
          VALUES (?, ?, ?, ?, ?, ?, ?)`,
         );
+        const insertBlob = transaction.db.prepare(
+          `INSERT OR IGNORE INTO blob (sha256, media_type, byte_length, data, created_at) VALUES (?, ?, ?, ?, ?)`,
+        );
 
         const eventResults: BatchResult["events"] = [];
         const turnTransitions: BatchResult["turnTransitions"] = [];
@@ -107,21 +111,27 @@ export async function runMessageEvents(
           } else {
             lastOrder += 1;
             const recordedAt = clock().toISOString();
+            // Binary/opaque block payloads go to the blob table first; the
+            // event and its message blocks hold references, never base64.
+            const { payload, blobs } = extractPayloadBlobs(event.payload);
+            for (const blob of blobs)
+              insertBlob.run(blob.sha256, blob.mediaType, blob.data.byteLength, blob.data, recordedAt);
             insert.run(
               lastOrder,
               event.eventKind,
               event.idempotencyKey,
               event.actor,
               event.harness,
-              JSON.stringify(event.payload),
+              JSON.stringify(payload),
               recordedAt,
             );
             skipSet.add(event.idempotencyKey);
             const recordedEvent = {
               ...event,
+              payload,
               eventOrder: lastOrder,
               recordedAt,
-            };
+            } as typeof event & { eventOrder: number; recordedAt: string };
             const turnOutcome = createTurn(transaction, recordedEvent);
             turnTransitions.push(...turnOutcome.transitions);
             queuedItems.push(...turnOutcome.queuedWork);

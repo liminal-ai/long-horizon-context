@@ -3,8 +3,16 @@
  *
  * Pure: messages in, events out. Rules follow cc-lhc's calibrated rollout mapper
  * (one event per content block in native order, block-indexed idempotency keys,
- * verbatim provider usage, opaque thinking signatures, stringified tool results,
- * subagent sidechains skipped) applied to the SDK stream instead of the file.
+ * verbatim provider usage, opaque thinking signatures, subagent sidechains
+ * skipped) applied to the SDK stream instead of the file.
+ *
+ * Content blocks beyond text (images, documents, redacted thinking, server-side
+ * tool blocks) ride verbatim: a prompt or tool result that carries any non-text
+ * block sends the whole native content array as `blocks` (LHC moves the bytes to
+ * its blob table and keeps the block shape); `redacted_thinking` and
+ * `server_tool_use` ride as `block` on their thinking / tool_call event; the
+ * server-side *_tool_result blocks inside an assistant message are tool_result
+ * events carrying the block, paired by tool_use_id like any other result.
  *
  * The user's prompt is not mapped from the wire: the session records it at the
  * moment it hands the prompt to the SDK (see `mapPrompt`), which is the model-visible
@@ -13,10 +21,9 @@
  * as a runtime note so it never opens a turn. Replays on resume are skipped.
  */
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import type { MessageEventInput } from "lhc";
+import type { ApiBlock, MessageEventInput } from "lhc";
 
 export const HARNESS = "claude-lhc";
-const IMAGE_PLACEHOLDER = "[image content not captured]";
 const TASK_NOTIFICATION_MARKER = "<task-notification>";
 const RUNTIME_NOTE_LABEL = "[runtime note]";
 const STEER_LABEL = "[user steer]";
@@ -42,6 +49,25 @@ function blocks(content: unknown): Record<string, unknown>[] {
   return content.filter(isRecord);
 }
 
+const SERVER_RESULT_TYPES = new Set([
+  "web_search_tool_result",
+  "web_fetch_tool_result",
+  "code_execution_tool_result",
+  "bash_code_execution_tool_result",
+  "text_editor_code_execution_tool_result",
+  "tool_search_tool_result",
+]);
+
+/** The native content array when any block is not text; undefined for text-only content. */
+function nonTextBlocks(content: unknown): ApiBlock[] | undefined {
+  const parts = blocks(content).filter((b): b is ApiBlock => typeof b["type"] === "string");
+  return parts.some((b) => b.type !== "text") ? parts : undefined;
+}
+
+function joinedText(content: unknown): string {
+  return blocks(content).filter((b) => b["type"] === "text").map((b) => (typeof b["text"] === "string" ? b["text"] : "")).join("");
+}
+
 export function stringifyToolResultContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (content === undefined || content === null) return "";
@@ -57,12 +83,9 @@ function text(kind: "user_prompt" | "assistant_text" | "assistant_thinking" | "r
   return { eventKind: kind, idempotencyKey: key, actor, harness: HARNESS, payload: { text: body, ...extra } } as MessageEventInput;
 }
 
-/** Text of a prompt: text blocks joined, one placeholder when images are attached. */
+/** Text of a prompt: its text blocks joined. Attached images and documents ride as `blocks`. */
 export function promptText(message: SDKUserMessage): string {
-  const parts = blocks(message.message.content);
-  let body = parts.filter((b) => b["type"] === "text").map((b) => (typeof b["text"] === "string" ? b["text"] : "")).join("");
-  if (parts.some((b) => b["type"] === "image")) body += (body === "" ? "" : "\n") + IMAGE_PLACEHOLDER;
-  return body;
+  return joinedText(message.message.content);
 }
 
 /** `/compact [args]` as the whole prompt → the manual compact command. */
@@ -80,7 +103,7 @@ export function compactCommand(message: SDKUserMessage): { args: string } | null
  */
 export function mapPrompt(message: SDKUserMessage, uuid: string, turnOpen: boolean): MessageEventInput[] {
   const body = promptText(message);
-  if (body === "") return [];
+  if (body === "" && nonTextBlocks(message.message.content) === undefined) return [];
   const trimmed = body.trimStart();
   if (trimmed.startsWith(TASK_NOTIFICATION_MARKER)) return [text("runtime_note", body, "system", idempotencyKey(uuid, 0, "runtime_note"))];
   if (trimmed.startsWith(RUNTIME_NOTE_LABEL)) {
@@ -88,7 +111,8 @@ export function mapPrompt(message: SDKUserMessage, uuid: string, turnOpen: boole
     return [text("runtime_note", stripped, "system", idempotencyKey(uuid, 0, "runtime_note"))];
   }
   if (turnOpen) return [text("runtime_note", `${STEER_LABEL} ${body}`, "user", idempotencyKey(uuid, 0, "runtime_note"))];
-  return [text("user_prompt", body, "user", idempotencyKey(uuid, 0, "user_prompt"))];
+  const attached = nonTextBlocks(message.message.content);
+  return [text("user_prompt", body, "user", idempotencyKey(uuid, 0, "user_prompt"), attached === undefined ? {} : { blocks: attached })];
 }
 
 export interface MapResult {
@@ -126,6 +150,18 @@ export function mapSdkMessage(message: SDKMessage, turnStartedAt: string | undef
         events.push(text("assistant_thinking", typeof block["thinking"] === "string" ? block["thinking"] : "", "assistant", idempotencyKey(id, index, "assistant_thinking"), {
           ...(signature !== "" ? { signature } : {}), ...provenance,
         }));
+      } else if (block["type"] === "redacted_thinking") {
+        events.push(text("assistant_thinking", "", "assistant", idempotencyKey(id, index, "assistant_thinking"), { block, ...provenance }));
+      } else if (block["type"] === "server_tool_use") {
+        events.push({
+          eventKind: "tool_call", idempotencyKey: idempotencyKey(id, index, "tool_call"), actor: "assistant", harness: HARNESS,
+          payload: { toolCallId: String(block["id"]), toolName: String(block["name"]), arguments: isRecord(block["input"]) ? block["input"] : {}, block: block as ApiBlock },
+        });
+      } else if (typeof block["type"] === "string" && SERVER_RESULT_TYPES.has(block["type"])) {
+        events.push({
+          eventKind: "tool_result", idempotencyKey: idempotencyKey(id, index, "tool_result"), actor: "tool", harness: HARNESS,
+          payload: { toolCallId: String(block["tool_use_id"]), content: "", isError: isRecord(block["content"]) && typeof block["content"]["error_code"] === "string", blocks: [block as ApiBlock] },
+        });
       } else if (block["type"] === "text") {
         const body = typeof block["text"] === "string" ? block["text"] : "";
         if (body === "") continue;
@@ -150,9 +186,16 @@ export function mapSdkMessage(message: SDKMessage, turnStartedAt: string | undef
     const id = uuid ?? `user:${Date.now()}`;
     for (const [index, block] of blocks(message.message.content).entries()) {
       if (block["type"] === "tool_result") {
+        // A result carrying images or documents (Read on a PNG or PDF) sends the
+        // native content array; text-only results stay a string.
+        const attached = nonTextBlocks(block["content"]);
         events.push({
           eventKind: "tool_result", idempotencyKey: idempotencyKey(id, index, "tool_result"), actor: "tool", harness: HARNESS,
-          payload: { toolCallId: String(block["tool_use_id"]), content: stringifyToolResultContent(block["content"]), isError: block["is_error"] === true },
+          payload: {
+            toolCallId: String(block["tool_use_id"]), isError: block["is_error"] === true,
+            content: attached === undefined ? stringifyToolResultContent(block["content"]) : joinedText(block["content"]),
+            ...(attached === undefined ? {} : { blocks: attached }),
+          },
         });
       } else if (block["type"] === "text") {
         const body = typeof block["text"] === "string" ? block["text"] : "";
