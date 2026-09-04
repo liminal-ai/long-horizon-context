@@ -141,7 +141,8 @@ async fn rejects_a_negative_non_integer_or_non_step_kind_step_index_whole() {
         ),
         (
             event(EventKind::UserPrompt, json!({"text": "x", "stepIndex": 0})),
-            "payload: \"stepIndex\" is unexpected, expected: \"text\" | \"steer\"",
+            // Merged schema (v13 line): user_prompt also admits `blocks`.
+            "payload: \"stepIndex\" is unexpected, expected: \"text\" | \"steer\" | \"blocks\"",
         ),
     ];
     for (e, reason) in bad {

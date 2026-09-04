@@ -14,13 +14,13 @@ use lhc::shared_tech::thread_migrate::{
     THREAD_SCHEMA_VERSION_1, THREAD_SCHEMA_VERSION_2, THREAD_SCHEMA_VERSION_4,
     THREAD_SCHEMA_VERSION_5, THREAD_SCHEMA_VERSION_6, THREAD_SCHEMA_VERSION_7,
     THREAD_SCHEMA_VERSION_8, THREAD_SCHEMA_VERSION_9, THREAD_SCHEMA_VERSION_10,
-    THREAD_SCHEMA_VERSION_11,
+    THREAD_SCHEMA_VERSION_11, THREAD_SCHEMA_VERSION_12, THREAD_SCHEMA_VERSION_13,
 };
 use lhc::threads::{NewThreadInput, open_thread_database};
 use lhc::{OpResult, ThreadRef, init_lhc, intake_stream, threads};
 
 use fixtures::{
-    AssistantTextOverrides, AssistantTextPayload, TurnEndOverrides, UserPromptOverrides,
+    AssistantTextOverrides, AssistantTextPayload, TempStore, TurnEndOverrides, UserPromptOverrides,
     UserPromptPayload, create_inference_callbacks_double, kind, open_raw, read_derived_forms,
     temp_store, valid_event,
 };
@@ -327,6 +327,13 @@ async fn opens_a_v1_thread_file_migrates_derivation_log_and_preserves_existing_d
         return;
     };
     assert_eq!(schema_version(&db), CURRENT_THREAD_SCHEMA_VERSION);
+    assert_eq!(schema_version(&db), THREAD_SCHEMA_VERSION_13);
+    // v13 added the content blob table.
+    assert!(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blob'")
+            .get()
+            .is_some()
+    );
     assert!(
         db.prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'"
@@ -1254,7 +1261,7 @@ async fn migrates_a_v11_file_adds_nullable_turn_parts_columns_backfills_nothing_
             panic!("production open must migrate a v11 file");
         };
         assert_eq!(schema_version(&db), CURRENT_THREAD_SCHEMA_VERSION);
-        assert_eq!(CURRENT_THREAD_SCHEMA_VERSION, 12);
+        assert_eq!(CURRENT_THREAD_SCHEMA_VERSION, 13);
         assert!(columns(&db, "message").iter().any(|c| c == "step_index"));
         assert!(
             columns(&db, "thread_metadata")
@@ -1279,5 +1286,96 @@ async fn migrates_a_v11_file_adds_nullable_turn_parts_columns_backfills_nothing_
         assert!(matches!(activated, None | Some(serde_json::Value::Null)));
         db.close();
     }
+    store.cleanup();
+}
+
+// Schema v13 (content blobs). Two v12 flavors exist in the wild: the released
+// turn-parts v12 (step_index, no blob table) and a short-lived blob-flavored
+// v12 (blob table, no step_index). The 12→13 step is idempotent on both
+// halves, so either converges at 13 with both.
+async fn seeded_thread(store: &TempStore, text: &str) -> String {
+    let file_path = store.thread_path(None).to_string_lossy().into_owned();
+    let created = threads::new_thread(NewThreadInput {
+        file_path: file_path.clone(),
+        title: None,
+        cwd: None,
+        registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+    })
+    .await;
+    assert!(created.is_ok());
+    let intake = intake_stream::message_events(
+        ThreadRef::file_path(&file_path),
+        &[
+            valid_event(
+                kind::USER_PROMPT,
+                UserPromptOverrides {
+                    payload: Some(UserPromptPayload { text: text.into() }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(kind::TURN_END, TurnEndOverrides::default()),
+        ],
+    )
+    .await;
+    assert!(intake.is_ok());
+    file_path
+}
+
+fn assert_v13_with_both(db: &Db, expected_messages: i64) {
+    assert_eq!(schema_version(db), THREAD_SCHEMA_VERSION_13);
+    assert!(
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blob'")
+            .get()
+            .is_some()
+    );
+    assert!(columns(db, "message").iter().any(|c| c == "step_index"));
+    assert!(
+        columns(db, "thread_metadata")
+            .iter()
+            .any(|c| c == "parts_activated_at")
+    );
+    let count = db
+        .prepare("SELECT COUNT(*) AS n FROM message")
+        .get()
+        .and_then(|r| r.get("n").and_then(|v| v.as_i64()));
+    assert_eq!(count, Some(expected_messages));
+}
+
+#[tokio::test]
+async fn migrates_a_step_flavored_v12_file_to_v13_by_adding_the_blob_table() {
+    let store = temp_store();
+    let file_path = seeded_thread(&store, "step-flavored v12").await;
+    let old = open_raw(&file_path);
+    old.exec("DROP TABLE blob;");
+    old.exec(&format!(
+        "PRAGMA user_version = {THREAD_SCHEMA_VERSION_12};"
+    ));
+    old.close();
+
+    let OpResult::Ok { value: db } = open_thread_database(&file_path) else {
+        panic!("production open must migrate a step-flavored v12 file");
+    };
+    assert_v13_with_both(&db, 1);
+    db.close();
+    store.cleanup();
+}
+
+#[tokio::test]
+async fn migrates_a_blob_flavored_v12_file_to_v13_by_adding_the_turn_parts_columns() {
+    let store = temp_store();
+    let file_path = seeded_thread(&store, "blob-flavored v12").await;
+    let old = open_raw(&file_path);
+    old.exec("ALTER TABLE message DROP COLUMN step_index;");
+    old.exec("ALTER TABLE thread_metadata DROP COLUMN parts_activated_at;");
+    old.exec(&format!(
+        "PRAGMA user_version = {THREAD_SCHEMA_VERSION_12};"
+    ));
+    old.close();
+
+    let OpResult::Ok { value: db } = open_thread_database(&file_path) else {
+        panic!("production open must migrate a blob-flavored v12 file");
+    };
+    assert_v13_with_both(&db, 1);
+    db.close();
     store.cleanup();
 }

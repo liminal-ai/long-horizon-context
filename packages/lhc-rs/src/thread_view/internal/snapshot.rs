@@ -262,6 +262,24 @@ fn parse_stored_gaps(json: &str) -> Vec<StoredViewGap> {
 /// null means no view exists (never compacted): the whole record renders as tail
 /// from event 1 through the same serving assembly path, snapshot-absent rather
 /// than a separate branch.
+/// One blob's bytes by content hash; `None` when the store never held it.
+pub fn read_blob(db: &Db, sha256: &str) -> Option<Vec<u8>> {
+    let row = db
+        .prepare("SELECT data FROM blob WHERE sha256 = ?")
+        .get_params(&[SqlParam::from(sha256)])?;
+    match row.get("data") {
+        // The storage seam maps BLOB columns to a JSON array of byte values.
+        Some(Value::Array(bytes)) => Some(
+            bytes
+                .iter()
+                .map(|b| b.as_u64().unwrap_or(0) as u8)
+                .collect(),
+        ),
+        Some(Value::String(text)) => Some(text.as_bytes().to_vec()),
+        _ => None,
+    }
+}
+
 pub fn read_view_snapshot(db: &Db) -> Option<ViewSnapshot> {
     let header_row = db.prepare(SQL_READ_VIEW_SNAPSHOT).get()?;
     let header = RawViewRow {

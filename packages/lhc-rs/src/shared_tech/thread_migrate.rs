@@ -22,6 +22,7 @@ pub const THREAD_SCHEMA_VERSION_9: i64 = 9;
 pub const THREAD_SCHEMA_VERSION_10: i64 = 10;
 pub const THREAD_SCHEMA_VERSION_11: i64 = 11;
 pub const THREAD_SCHEMA_VERSION_12: i64 = 12;
+pub const THREAD_SCHEMA_VERSION_13: i64 = 13;
 
 const OLD_DERIVATION_TYPE: &str = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE: &str = "detailed_turn_compression";
@@ -53,6 +54,23 @@ const DERIVATION_LOG_SCHEMA_STATEMENTS: &[&str] = &[
 
 pub fn derivation_log_schema_statements() -> Vec<&'static str> {
     DERIVATION_LOG_SCHEMA_STATEMENTS.to_vec()
+}
+
+/// Schema v12: content blobs — the binary/opaque payloads of API content
+/// blocks (image and PDF bytes, redacted-thinking data, encrypted search
+/// content), keyed by content hash and referenced from message blocks and
+/// event payloads as `{ $blob: "sha256:…", bytes }`. Shared by fresh create
+/// and the 12→13 migration.
+const BLOB_SCHEMA_STATEMENTS: &[&str] = &[r#"CREATE TABLE IF NOT EXISTS blob (
+      sha256 TEXT PRIMARY KEY,
+      media_type TEXT,
+      byte_length INTEGER NOT NULL,
+      data BLOB NOT NULL,
+      created_at TEXT NOT NULL
+    );"#];
+
+pub fn blob_schema_statements() -> Vec<&'static str> {
+    BLOB_SCHEMA_STATEMENTS.to_vec()
 }
 
 /// Schema v6: retrieval impression log — one row per requested entity per
@@ -699,6 +717,17 @@ fn migrate_turn_parts(db: &Db) {
     }
 }
 
+// v12→v13: content blobs. Two v12 flavors exist in the wild: the released
+// turn-parts v12 (step_index, no blob table) and a short-lived blob-flavored
+// v12 (blob table, no step_index). Both halves are idempotent so either
+// flavor converges at 13 with both.
+fn migrate_content_blobs_v13(db: &Db) {
+    for statement in blob_schema_statements() {
+        db.exec(statement);
+    }
+    migrate_turn_parts(db);
+}
+
 pub fn migrate_thread_schema(db: &Db) {
     let mut version = match get_schema_version(db) {
         OpResult::Ok { value } => value,
@@ -764,6 +793,10 @@ pub fn migrate_thread_schema(db: &Db) {
         if version == THREAD_SCHEMA_VERSION_11 {
             migrate_turn_parts(db);
             version = THREAD_SCHEMA_VERSION_12;
+        }
+        if version == THREAD_SCHEMA_VERSION_12 {
+            migrate_content_blobs_v13(db);
+            version = THREAD_SCHEMA_VERSION_13;
         }
         if version != CURRENT_THREAD_SCHEMA_VERSION {
             panic!("unsupported thread schema version {version}");

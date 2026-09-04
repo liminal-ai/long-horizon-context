@@ -65,7 +65,7 @@ async fn accepts_a_thread_whose_schema_marker_exists_only_in_the_wal() {
     // open so the change stays in the WAL only.
     let wal_only = open_raw(&file_path);
     wal_only.exec("PRAGMA wal_autocheckpoint = 0;");
-    wal_only.exec("PRAGMA user_version = 12;");
+    wal_only.exec("PRAGMA user_version = 13;");
 
     // The main file still says "no lhc schema version" ...
     assert_eq!(main_file_user_version(&file_path), 0);
@@ -396,7 +396,7 @@ fn unsupported_schema_is_a_caller_error_naming_the_range() {
     db.exec("CREATE TABLE unrelated (x);");
     db.exec("PRAGMA user_version = 99;");
     db.close();
-    expect_caller_error(&file_path, "schema version 99, expected 1..12");
+    expect_caller_error(&file_path, "schema version 99, expected 1..13");
     store.cleanup();
 }
 
@@ -406,7 +406,7 @@ fn missing_metadata_table_is_a_caller_error() {
     let file_path = candidate_path(&store, "missing-table");
     let db = open_raw(&file_path);
     db.exec("CREATE TABLE unrelated (x);");
-    db.exec("PRAGMA user_version = 12;");
+    db.exec("PRAGMA user_version = 13;");
     db.close();
     expect_caller_error(&file_path, "no thread_metadata table");
     store.cleanup();
@@ -418,7 +418,7 @@ fn missing_metadata_row_is_a_caller_error() {
     let file_path = candidate_path(&store, "missing-row");
     let db = open_raw(&file_path);
     db.exec("CREATE TABLE thread_metadata (id INTEGER PRIMARY KEY, thread_id TEXT);");
-    db.exec("PRAGMA user_version = 12;");
+    db.exec("PRAGMA user_version = 13;");
     db.close();
     expect_caller_error(&file_path, "no thread metadata row");
     store.cleanup();
