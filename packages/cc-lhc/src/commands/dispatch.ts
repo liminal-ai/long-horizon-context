@@ -1,7 +1,10 @@
 import type { Lhc, OpResult, ThreadRef, ViewStatus } from "lhc";
-
+import type { ContextClass } from "../governor/types.js";
+import type { OpenAsyncWork } from "../observation/async-work.js";
 import type { CaptureStats } from "../stats.js";
 import { formatCaptureStatsLine } from "../stats.js";
+import { helpLines } from "../wrapper/panel-commands.js";
+import { type NativeAutoCompactState, nativeAutoCompactStatusLine } from "../wrapper/terminology.js";
 import { runCompactCommand } from "./compact.js";
 import { runExportCommand } from "./export.js";
 import { runPruneCommand } from "./prune.js";
@@ -16,6 +19,8 @@ export interface CaptureCommandContext {
   capturePhase?: "binding" | "ready" | "degraded" | "closed";
 }
 
+import type { CarryoverAcceptance } from "./context-mutation.js";
+
 export interface LhcCommandRuntime extends CaptureCommandContext {
   cwd: string;
   sourceRolloutPath: string | undefined;
@@ -25,6 +30,16 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
     profile: string;
     lowerBoundTokens: number;
     pruneIfDue?: { thresholdTokens: number; targetTokens: number };
+  };
+  /** User-facing values shown by the Control Panel and `/status`. */
+  statusSnapshot?: {
+    latestProviderContextTokens: number | null;
+    targetTokens: number;
+    triggerTokens: number;
+    /** Active context class the target and trigger were resolved for. */
+    contextClass: ContextClass;
+    /** What cc-lhc did about Claude's automatic Compact for this launch. */
+    nativeAutoCompact: NativeAutoCompactState;
   };
   /** Host notices to include in the compact message (config fallbacks). */
   hostNotices?: readonly string[];
@@ -41,6 +56,17 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   logLineageError?: (message: string) => void;
   /** Wrapper-log warnings since launch — surfaced by `status` so nothing logged is silently lost. */
   warnings?: { count: number; logPath: string };
+  /**
+   * Interactive manual compact/prune freeze this at the settled seam. Automatic
+   * mutation supplies its snapshot on the plan instead.
+   */
+  getLiveAsyncWork?: () => OpenAsyncWork[];
+  /**
+   * Accept the parent's record of active work as one carryover generation at
+   * the settled seam (LIM-145): the same step for manual and automatic
+   * Compact. A refusal keeps the current session before anything is mutated.
+   */
+  acceptCarryover?: () => CarryoverAcceptance;
 }
 
 /**
@@ -96,10 +122,31 @@ async function runHandler(
   }
 }
 
-function formatStatus(status: ViewStatus, threadId: string | null): string {
+function tokenNumber(tokens: number): string {
+  return tokens.toLocaleString("en-US");
+}
+
+function userStatusLines(runtime: LhcCommandRuntime): string[] {
+  const snapshot = runtime.statusSnapshot;
+  if (snapshot === undefined) return [];
+  const context =
+    snapshot.latestProviderContextTokens === null
+      ? "not observed yet"
+      : `${tokenNumber(snapshot.latestProviderContextTokens)} tokens (provider-reported)`;
+  return [
+    `Latest provider context: ${context}`,
+    `/smart-compact: ${tokenNumber(snapshot.targetTokens)}-token target · ${tokenNumber(snapshot.triggerTokens)}-token trigger (configured) · ${snapshot.contextClass} window`,
+    nativeAutoCompactStatusLine(snapshot.nativeAutoCompact),
+  ];
+}
+
+function formatStatus(status: ViewStatus, runtime: LhcCommandRuntime): string {
   const lines = [
-    `tail=${status.tailTokens} threshold=${status.threshold} zone=${status.visibility.zoneTokens}/${status.visibility.maxTokens}`,
-    `derivation pending=${status.derivation.pending} failed=${status.derivation.failed} thread=${threadId ?? "none"}`,
+    ...userStatusLines(runtime),
+    `LHC history since last Smart Compact: ${tokenNumber(status.tailTokens)} estimated tokens`,
+    `/smart-prune: ${tokenNumber(status.visibility.zoneTokens)} estimated tokens in eligible tool results`,
+    `Derivations: ${status.derivation.pending} pending · ${status.derivation.failed} failed`,
+    `Thread: ${runtime.stats.threadId ?? "none"}`,
   ];
   return lines.join("\n");
 }
@@ -113,11 +160,11 @@ function warningsLine(runtime: LhcCommandRuntime): string[] {
 
 async function handleStatus(runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   if (runtime.sdk === undefined || runtime.threadRef === undefined) {
-    return { messages: ["capture not ready", ...warningsLine(runtime)] };
+    return { messages: [[...userStatusLines(runtime), "Capture: not ready"].join("\n"), ...warningsLine(runtime)] };
   }
   const result: OpResult<ViewStatus> = await runtime.sdk.threadView.status(runtime.threadRef);
   if (!result.ok) return { messages: [`status error: ${result.error.reason}`, ...warningsLine(runtime)] };
-  return { messages: [formatStatus(result.value, runtime.stats.threadId), ...warningsLine(runtime)] };
+  return { messages: [formatStatus(result.value, runtime), ...warningsLine(runtime)] };
 }
 
 function handleStats(runtime: LhcCommandRuntime): DispatchOutcome {
@@ -125,18 +172,7 @@ function handleStats(runtime: LhcCommandRuntime): DispatchOutcome {
 }
 
 function handleHelp(_runtime: LhcCommandRuntime): DispatchOutcome {
-  return {
-    messages: [
-      [
-        "status — thread-view status + capture stats",
-        "stats — capture stats line",
-        "compact — compact LHC view + write rebuilt session (relaunch via cc-lhc --resume; refused mid-turn)",
-        "prune [targetTokens] — prune zone + write rebuilt session (relaunch via cc-lhc --resume; refused mid-turn)",
-        "export — write canonical transcript dumps (rollout + thread view) to cwd",
-        "help — this list",
-      ].join("\n"),
-    ],
-  };
+  return { messages: [helpLines(null).join("\n")] };
 }
 
 const HANDLERS: Record<string, CommandHandler> = {

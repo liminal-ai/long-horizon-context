@@ -51,18 +51,37 @@ export function resolveReleaseSource({ argvBaseUrl, argvTag, env = {}, config = 
  * Judge the JSON report emitted by fetch-prebuild's subprocess load-probe of
  * a downloaded addon, BEFORE it may replace the installed one. Mirrors the
  * full portable-identity contract enforced by the loader
- * (packages/cc-lhc-native/src/identity.ts): identity contract version 1,
- * addon compiled for this platform, and a complete identity for the probing
- * process — ok true, the exact probed pid echoed back, a bootId of at least
- * 8 characters, and a nonempty digits-only starttime (≤ 20 digits).
+ * (packages/cc-lhc-native/src/identity.ts, file-identity.ts): identity
+ * contract version 3, addon compiled for this platform, every contract-3
+ * function export present, a complete identity
+ * for the probing process — ok true, the exact probed pid echoed back, a
+ * bootId of at least 8 characters, and a nonempty digits-only starttime
+ * (≤ 20 digits) — and a complete file identity for the downloaded artifact
+ * itself (ok true, digits-only volumeId, tagged fileId).
  * Returns { ok: true, probe } or { ok: false, reason }.
  */
+/** Mirrors ADDON_FUNCTION_EXPORTS in packages/cc-lhc-native/src/loader.ts. */
+export const PREBUILD_FUNCTION_EXPORTS = [
+  "readProcessIdentity",
+  "readFileIdentity",
+  "pauseProcess",
+  "resumeProcess",
+  "readChildExit",
+  "findChildHoldingFile",
+];
+
 export function validateProbeReport(report, platform) {
   if (report === null || typeof report !== "object" || Array.isArray(report)) {
     return { ok: false, reason: `probe report is not an object: ${JSON.stringify(report)}` };
   }
-  if (report.contract !== 1) {
-    return { ok: false, reason: `contract version ${String(report.contract)}, need 1` };
+  if (report.contract !== 3) {
+    return { ok: false, reason: `contract version ${String(report.contract)}, need 3` };
+  }
+  const exportsList = Array.isArray(report.exports) ? report.exports : [];
+  for (const name of PREBUILD_FUNCTION_EXPORTS) {
+    if (!exportsList.includes(name)) {
+      return { ok: false, reason: `addon does not export ${name}()` };
+    }
   }
   if (report.platform !== platform) {
     return { ok: false, reason: `compiled for ${String(report.platform)}, running on ${platform}` };
@@ -82,6 +101,16 @@ export function validateProbeReport(report, platform) {
   }
   if (typeof probe.starttime !== "string" || !/^\d{1,20}$/.test(probe.starttime)) {
     return { ok: false, reason: `invalid starttime ${JSON.stringify(probe.starttime)} (need 1–20 digits)` };
+  }
+  const fileProbe = report.fileProbe;
+  if (fileProbe === null || typeof fileProbe !== "object" || Array.isArray(fileProbe) || fileProbe.ok !== true) {
+    return { ok: false, reason: `could not identify the downloaded file: ${JSON.stringify(fileProbe)}` };
+  }
+  if (typeof fileProbe.volumeId !== "string" || !/^\d{1,20}$/.test(fileProbe.volumeId)) {
+    return { ok: false, reason: `file identity volumeId ${JSON.stringify(fileProbe.volumeId)} is not digits-only` };
+  }
+  if (typeof fileProbe.fileId !== "string" || !/^(?:ino:\d{1,20}|id128:[0-9a-f]{32}|index64:\d{1,20})$/.test(fileProbe.fileId)) {
+    return { ok: false, reason: `file identity fileId ${JSON.stringify(fileProbe.fileId)} is not a tagged id` };
   }
   return { ok: true, probe };
 }

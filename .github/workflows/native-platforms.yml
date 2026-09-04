@@ -105,7 +105,14 @@ jobs:
         run: pnpm --filter cc-lhc run typecheck
 
       - name: Test cc-lhc (compiled addon mandatory)
-        run: pnpm --filter cc-lhc run test
+        # The Story 0 process-destructive proof runs only in the dedicated
+        # story0-process-capability job: inside the concurrent broad suite,
+        # cross-file process interference makes its survivor probe
+        # nondeterministic (observed on win32-x64 while the isolated job on
+        # the same commit stays green).
+        # pnpm run forwards "--" literally into the script's argv, so the
+        # exclusion must be an explicit vitest invocation, not script args.
+        run: pnpm --filter cc-lhc exec vitest run --exclude "test/package/**" --exclude test/story0/process-capability/production-path.test.ts
         env:
           CC_LHC_NATIVE_REQUIRE_ADDON: "1"
 
@@ -115,10 +122,13 @@ jobs:
           node-version: ${{ matrix.consumer_node }}
 
       - name: Assemble current-target npm package
-        run: node packages/cc-lhc/scripts/assemble-npm-package.mjs --targets current
+        run: node packages/cc-lhc/scripts/assemble-npm-package.mjs --targets current --source-sha ${{ github.sha }}
+
+      - name: Test assembled npm package
+        run: pnpm --filter cc-lhc run test:package
 
       - name: Check current-target npm package
-        run: node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm
+        run: node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm --source-sha ${{ github.sha }}
 
       - name: Smoke global npm install without a compiler
         run: node packages/cc-lhc/scripts/smoke-npm-package.mjs build/cc-lhc-npm
@@ -134,7 +144,7 @@ jobs:
       - name: Check standalone runtime bundle
         run: >-
           node packages/cc-lhc/scripts/check-standalone-bundle.mjs
-          build/cc-lhc-standalone/cc-lhc-v0.2.0-${{ matrix.target }}
+          build/cc-lhc-standalone/cc-lhc-v0.4.0-${{ matrix.target }}
 
       - name: Package standalone runtime bundle (Unix)
         if: runner.os != 'Windows'
@@ -142,7 +152,7 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          bundle="cc-lhc-v0.2.0-${TARGET}"
+          bundle="cc-lhc-v0.4.0-${TARGET}"
           asset="${bundle}.tar.gz"
           mkdir -p build/standalone-assets
           tar -C build/cc-lhc-standalone -czf "build/standalone-assets/${asset}" "$bundle"
@@ -158,7 +168,7 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
         run: |
-          $bundle = "cc-lhc-v0.2.0-$env:TARGET"
+          $bundle = "cc-lhc-v0.4.0-$env:TARGET"
           $asset = "$bundle.zip"
           New-Item -ItemType Directory -Path build/standalone-assets -Force | Out-Null
           Push-Location build/cc-lhc-standalone
@@ -182,7 +192,7 @@ jobs:
           HOME="$scratch/home" \
           CC_LHC_PREFIX="$scratch/prefix" \
           CC_LHC_INSTALL_ROOT="$scratch/store" \
-          ./install.sh --version 0.2.0 --asset-dir build/standalone-assets
+          ./install.sh --version 0.4.0 --asset-dir build/standalone-assets
           CC_LHC_NATIVE_REQUIRE_ADDON=1 "$scratch/prefix/bin/cc-lhc" --lhc-help >/dev/null
           HOME="$scratch/home" \
           CC_LHC_PREFIX="$scratch/prefix" \
@@ -199,7 +209,7 @@ jobs:
           $prefix = Join-Path $scratch prefix
           $store = Join-Path $scratch store
           try {
-            & ./install.ps1 -Version 0.2.0 -Prefix $prefix -InstallRoot $store -AssetDir build/standalone-assets
+            & ./install.ps1 -Version 0.4.0 -Prefix $prefix -InstallRoot $store -AssetDir build/standalone-assets
             if ($LASTEXITCODE -ne 0) { throw "installer failed" }
             $env:CC_LHC_NATIVE_REQUIRE_ADDON = "1"
             & (Join-Path $prefix "bin/cc-lhc.cmd") --lhc-help | Out-Null
@@ -225,6 +235,68 @@ jobs:
         with:
           name: prebuild-${{ matrix.target }}
           path: packages/cc-lhc-native/prebuilds/${{ matrix.target }}/cc_lhc_identity.node
+          if-no-files-found: error
+
+  story0-process-capability:
+    name: story0-${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-x64
+            runner: blacksmith-2vcpu-ubuntu-2404
+          - target: darwin-arm64
+            runner: blacksmith-6vcpu-macos-15
+          - target: win32-x64
+            runner: blacksmith-2vcpu-windows-2025
+    steps:
+      - name: Checkout (recursive submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install build Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build lhc
+        run: pnpm --filter lhc run build
+
+      - name: Build cc-lhc-native (TypeScript)
+        run: pnpm --filter cc-lhc-native run build
+
+      - name: Compile native addon (node-gyp)
+        run: pnpm --filter cc-lhc-native run build:native
+        env:
+          npm_config_msvs_version: "2022"
+
+      - name: Stage prebuild for ${{ matrix.target }}
+        run: pnpm --filter cc-lhc-native run stage:prebuild
+
+      - name: Story 0 process-capability harness
+        id: story0_process_capability
+        env:
+          CC_LHC_NATIVE_REQUIRE_ADDON: "1"
+          CC_LHC_STORY0_RECEIPT: ${{ github.workspace }}/build/story0/process-capability.json
+        run: pnpm --filter cc-lhc run story0:process-capability
+
+      - name: Preserve Story 0 process-capability receipt
+        if: ${{ always() && (steps.story0_process_capability.conclusion == 'success' || steps.story0_process_capability.conclusion == 'failure') }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: story0-process-capability-${{ matrix.target }}
+          path: build/story0/process-capability.json
           if-no-files-found: error
 
   npm-package:
@@ -279,11 +351,12 @@ jobs:
         run: |
           node packages/cc-lhc/scripts/assemble-npm-package.mjs \
             --native-bundle build/cc-lhc-native \
-            --targets all
+            --targets all \
+            --source-sha "$GITHUB_SHA"
 
       - name: Check and smoke complete npm package
         run: |
-          node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm
+          node packages/cc-lhc/scripts/check-npm-package.mjs build/cc-lhc-npm --source-sha "$GITHUB_SHA"
           node packages/cc-lhc/scripts/smoke-npm-package.mjs build/cc-lhc-npm
 
       - name: Pack npm package
@@ -318,12 +391,12 @@ jobs:
           set -euo pipefail
           cd build/standalone-release
           expected=(
-            cc-lhc-v0.2.0-linux-x64.tar.gz
-            cc-lhc-v0.2.0-linux-arm64.tar.gz
-            cc-lhc-v0.2.0-darwin-x64.tar.gz
-            cc-lhc-v0.2.0-darwin-arm64.tar.gz
-            cc-lhc-v0.2.0-win32-x64.zip
-            cc-lhc-v0.2.0-win32-arm64.zip
+            cc-lhc-v0.4.0-linux-x64.tar.gz
+            cc-lhc-v0.4.0-linux-arm64.tar.gz
+            cc-lhc-v0.4.0-darwin-x64.tar.gz
+            cc-lhc-v0.4.0-darwin-arm64.tar.gz
+            cc-lhc-v0.4.0-win32-x64.zip
+            cc-lhc-v0.4.0-win32-arm64.zip
           )
           for asset in "${expected[@]}"; do test -f "$asset"; done
           test "$(find . -maxdepth 1 \( -name '*.tar.gz' -o -name '*.zip' \) -type f | wc -l)" -eq 6
@@ -340,7 +413,7 @@ jobs:
           writeFileSync("release-manifest.json", `${JSON.stringify({
             schemaVersion: 1,
             product: "cc-lhc",
-            version: "0.2.0",
+            version: "0.4.0",
             sourceCommit: process.env.SOURCE_COMMIT,
             assets: hashes,
           }, null, 2)}\n`);

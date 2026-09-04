@@ -116,13 +116,13 @@ platform. They do not invoke npm or a native compiler on the client.
 Linux or macOS:
 
 ```sh
-curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.2.0/install.sh | sh
+curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.0/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.2.0/install.ps1 | iex
+irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.0/install.ps1 | iex
 ```
 
 Update a script-owned installation by running the installer from the desired
@@ -132,7 +132,7 @@ removing the old launcher; otherwise two `cc-lhc` commands can exist on
 `PATH`.
 
 Release assets and checksums are on the
-[`cc-lhc-v0.2.0` release](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.2.0).
+[`cc-lhc-v0.4.0` release](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.0).
 
 ### Use
 

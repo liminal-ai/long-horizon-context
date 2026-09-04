@@ -182,6 +182,8 @@ describe("schema v5: turn outcome and timing", () => {
       providerUsage: SAMPLE_USAGE,
       provider: "test",
       model: "test-model",
+      // Step index recorded at intake (turn parts, F2): the first step of the turn.
+      stepIndex: 0,
     });
 
     const listed = await turns.listTurns(threadRef);

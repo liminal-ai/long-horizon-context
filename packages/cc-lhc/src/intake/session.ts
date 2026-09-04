@@ -12,13 +12,17 @@ import {
   threads,
 } from "lhc";
 import type { CaptureCommandContext } from "../commands/dispatch.js";
+import { deliveredResultKeys } from "../continuity/delivery.js";
+import { CAPTURE_VIEW_CONFIG } from "../governor/band-allocation.js";
 import { ccAssignments } from "../inference/assignments.js";
 import { claudeCliModelCall } from "../inference/claude-cli.js";
 import {
+  type AsyncWorkEvent,
   type AsyncWorkFold,
   createAsyncWorkFold,
-  openAsyncWork,
   type OpenAsyncWork,
+  openAsyncWork,
+  seedAsyncWorkFold,
 } from "../observation/async-work.js";
 import {
   applyCaptureDegraded,
@@ -45,16 +49,16 @@ import {
   SessionAttributionError,
 } from "../rollout/discover.js";
 import type { ExpectedSession } from "../rollout/expected-session.js";
+import { type ClaudeRuntimeSettings, observeClaudeRuntimeSettings } from "../rollout/runtime-settings.js";
 import type { RolloutLineItem, WatcherEmission } from "../rollout/types.js";
-import { observeClaudeRuntimeSettings, type ClaudeRuntimeSettings } from "../rollout/runtime-settings.js";
 import { type RolloutWatcher, watchRolloutFile } from "../rollout/watcher.js";
 import { type CaptureStats, emptyCaptureStats } from "../stats.js";
 import {
+  bindCaptureThread,
   defaultLineageDbPath,
   type LaunchClass,
   type LineageDbDeps,
   type LineageOutcome,
-  bindCaptureThread,
   lookupSessionLineage,
   safeAppendThreadSignatures,
   safeLoadThreadSignatures,
@@ -80,8 +84,6 @@ import {
 import { classifyTurnSignal } from "./turn-signal.js";
 
 const DEFAULT_INFERENCE_TIMEOUT_MS = 60_000;
-export const DEFAULT_DRAIN_SETTLED_CAP_MS = 30_000;
-export const DRAIN_NOT_SETTLED_MESSAGE = "cc-lhc: drain not settled at exit, work remains pending";
 export const CAPTURE_DEGRADED_REFUSAL = "capture degraded — mutation refused until restart/reconciliation";
 export const CAPTURE_NOT_READY_REFUSAL = "capture not ready — binding incomplete";
 
@@ -94,6 +96,7 @@ export function captureSdkConfig(options: { noInference?: boolean } = {}): SdkCo
     return {
       mode: "manual",
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
+      view: CAPTURE_VIEW_CONFIG,
     };
   }
   return {
@@ -103,6 +106,7 @@ export function captureSdkConfig(options: { noInference?: boolean } = {}): SdkCo
       assignments: ccAssignments(),
       timeoutMs: DEFAULT_INFERENCE_TIMEOUT_MS,
     },
+    view: CAPTURE_VIEW_CONFIG,
   };
 }
 
@@ -188,8 +192,25 @@ export interface CaptureSessionDeps {
     ...args: Parameters<typeof flushBatch>
   ) => ReturnType<typeof flushBatch> | Promise<void> | Promise<boolean> | boolean;
   initSdkFn?: (config: SdkConfig) => Lhc;
-  drainSettledCapMs?: number;
   onLifecycle?: (signals: readonly LifecycleSignal[]) => void;
+  /**
+   * Accepted asynchronous-work evidence from the rollout fold (launch,
+   * progress, terminal), with the bound thread id, for the parent-owned
+   * continuity record (LIM-145). Fires only for live-suffix lines after bind.
+   */
+  onAsyncWorkEvent?: (event: AsyncWorkEvent, threadId: string) => void;
+  /**
+   * Work the parent record already holds for the bound thread (carried across
+   * Smart Compact or a wrapper restart). Called once, with the thread id, after
+   * the thread is bound and before any live line is folded, so that work's
+   * terminal evidence is recognized. A throw seeds nothing and is reported.
+   */
+  seedAsyncWork?: (threadId: string) => readonly OpenAsyncWork[];
+  /**
+   * Result keys the live rollout proves were delivered to the model (the
+   * `UserPromptSubmit` hook's accepted context, LIM-146), with the bound thread id.
+   */
+  onResultDelivery?: (launchIds: readonly string[], threadId: string) => void;
   /** Latest runtime choices explicitly recorded by the bound Claude rollout. */
   onRuntimeSettings?: (settings: Readonly<ClaudeRuntimeSettings>) => void;
   /** Generation id seed (tests / restart counters). */
@@ -389,24 +410,6 @@ function normalizeFlushResult(
   return result;
 }
 
-export async function awaitDrainSettled(
-  sdk: Lhc,
-  threadRef: ThreadRef,
-  options: { capMs?: number; logError?: (message: string) => void } = {},
-): Promise<void> {
-  const capMs = options.capMs ?? DEFAULT_DRAIN_SETTLED_CAP_MS;
-  const logError = options.logError ?? (() => {});
-  await Promise.race([
-    sdk.drainSettled(threadRef),
-    new Promise<void>((resolve) => {
-      setTimeout(() => {
-        logError(DRAIN_NOT_SETTLED_MESSAGE);
-        resolve();
-      }, capMs);
-    }),
-  ]);
-}
-
 /** Start capture synchronously; `stop()` is always safe even before discovery resolves. */
 export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSession {
   const cwd = deps.cwd ?? process.cwd();
@@ -426,8 +429,31 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   const estimateFold: PostMeasurementEstimateFold = createPostMeasurementEstimateFold();
   // One capture generation, one open-async set. A replacement child starts a
   // new capture session, and by then everything this set held is dead.
-  const asyncWorkFold: AsyncWorkFold = createAsyncWorkFold();
+  const asyncWorkFold: AsyncWorkFold = createAsyncWorkFold((event) => {
+    const onAsyncWorkEvent = deps.onAsyncWorkEvent;
+    if (onAsyncWorkEvent === undefined) return;
+    const threadId = threadRef === undefined ? "" : threadIdFromRef(threadRef);
+    if (threadId === "") return;
+    try {
+      onAsyncWorkEvent(event, threadId);
+    } catch (cause) {
+      // The continuity record is a consumer; its failure never poisons intake.
+      logError(`cc-lhc continuity: async-work subscriber threw: ${detail(cause)}`);
+    }
+  });
   let reportedAsyncDiagnostics = 0;
+  /** Post-bind seed: the record's open work for this thread, before the first live line. */
+  const seedCarriedWork = (): void => {
+    if (deps.seedAsyncWork === undefined || threadRef === undefined) return;
+    const threadId = threadIdFromRef(threadRef);
+    if (threadId === "") return;
+    try {
+      const added = seedAsyncWorkFold(asyncWorkFold, deps.seedAsyncWork(threadId));
+      if (added > 0) log(`cc-lhc continuity: ${added} carried item(s) seeded for thread ${threadId}`);
+    } catch (cause) {
+      logError(`cc-lhc continuity: carried work not seeded for thread ${threadId}: ${detail(cause)}`);
+    }
+  };
   const userOnLifecycle = deps.onLifecycle;
   /** Explicit boundary wins; otherwise lineage supplies provenance after resolve. */
   let resolvedPrefix: PrefixBoundary =
@@ -655,6 +681,17 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           if (nextRuntimeSettings !== runtimeSettings) {
             runtimeSettings = nextRuntimeSettings;
             deps.onRuntimeSettings?.({ ...runtimeSettings });
+          }
+          if (deps.onResultDelivery !== undefined && threadRef !== undefined) {
+            const deliveredKeys = deliveredResultKeys(emission.item);
+            const deliveryThreadId = threadIdFromRef(threadRef);
+            if (deliveredKeys.length > 0 && deliveryThreadId !== "") {
+              try {
+                deps.onResultDelivery(deliveredKeys, deliveryThreadId);
+              } catch (cause) {
+                logError(`cc-lhc continuity: result-delivery subscriber threw: ${detail(cause)}`);
+              }
+            }
           }
 
           stats.skippedSidechain += observed.stats.sidechain;
@@ -1023,6 +1060,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         }
       }
       if (stopped) return;
+      seedCarriedWork();
 
       // --- Prefix provenance gate (before any skip / watcher start) ---
       let watcherStartOffset = 0;
@@ -1030,7 +1068,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         degradeAndEmit("prefix_boundary:unknown_provenance");
         logError(
           "cc-lhc: unknown prefix provenance — capture refused; " +
-            "reconcile by re-running compact/prune (verified boundary) or " +
+            "reconcile by re-running /smart-compact or /smart-prune (verified boundary) or " +
             "explicitly establishing known-none for a native session",
         );
         return;
@@ -1196,30 +1234,10 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       if (watcher !== undefined) watcher.stop();
       // Final flush and queue settlement may still degrade; closed is applied last.
       await batchQueue;
+      // Derivation work queued by this session's last records finishes on the
+      // scheduler whether or not this capture is still open; stopping the tail
+      // never waits on it. Only the pending count is read, for stats.
       if (sdk !== undefined && threadRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
-        let drainTimedOut = false;
-        await awaitDrainSettled(sdk, threadRef, {
-          ...(deps.drainSettledCapMs === undefined ? {} : { capMs: deps.drainSettledCapMs }),
-          logError: (message) => {
-            drainTimedOut = true;
-            logError(message);
-          },
-        });
-        if (drainTimedOut) {
-          try {
-            await sdk.intakeStream.messageEvents(threadRef, [
-              {
-                eventKind: "runtime_note",
-                idempotencyKey: `cc-lhc:drain-not-settled:${Date.now()}`,
-                actor: "system",
-                harness: "cc",
-                payload: { text: `[capture] ${DRAIN_NOT_SETTLED_MESSAGE}` },
-              },
-            ]);
-          } catch {
-            // Best-effort
-          }
-        }
         const overview = await inspect.overview(threadRef);
         if (overview.ok) {
           stats.derivationsPending = overview.value.derivation.pending;

@@ -61,6 +61,7 @@ import type {
   ExtensionCommandContext,
   ExtensionContext,
   PiCommandHandler,
+  PiContextHookHandler,
   PiHookHandler,
   PiHookName,
   PiVoidHookHandler,
@@ -68,6 +69,7 @@ import type {
   ReplacedSessionContext,
   SessionEntry,
 } from "./pi/types.js";
+import { type ContextHookState, type ContextServeOutcome, handleContext } from "./serving/context-hook.js";
 import { registerRetrievalTools } from "./serving/retrieval-tools.js";
 import type { LhcInstance } from "./shared/instance.js";
 
@@ -175,11 +177,16 @@ export const GUARD_HOOKS = ["session_before_tree"] as const satisfies readonly P
 
 /** Hooks registered by the connector. Context is loaded via SessionManager
  *  seeding, not the context hook. */
+/** Serving hooks: the per-step `context` seam (Design F) — mid-turn compact
+ *  under pressure and steady-state serving of the installed view. */
+export const SERVING_HOOKS = ["context"] as const satisfies readonly PiHookName[];
+
 export const CONNECTOR_HOOKS = [
   ...EPIC_1_HOOKS,
   ...COMPACT_HOOKS,
   ...GUARD_HOOKS,
   ...TRIGGER_HOOKS,
+  ...SERVING_HOOKS,
 ] as const satisfies readonly PiHookName[];
 
 export type CompactHook = (typeof COMPACT_HOOKS)[number];
@@ -247,6 +254,12 @@ export interface Connector {
   /** The agent_settled handler (auto-compact trigger boundary) — exposed so
    *  tests can drive it with synthetic ctx/events without a live PI. */
   readonly settledHandler: PiVoidHookHandler<"agent_settled">;
+  /** The per-step `context` handler (Design F: mid-turn compact and
+   *  steady-state serving of the installed view) — exposed so tests can drive
+   *  it with synthetic ctx/events without a live PI. */
+  readonly contextHandler: PiContextHookHandler;
+  /** What the last `context` event served, or why it served raw. */
+  getLastContextOutcome(): ContextServeOutcome | null;
   /** Compact cancel diagnostics accumulated this PI session; cleared on session boundary and successful `session_compact`. */
   getCompactDiagnostics(): readonly CompactDiagnostic[];
   /** Most recent compact cancel diagnostic, if any. */
@@ -271,6 +284,14 @@ interface PendingMessage {
   beforeEntryIds: Set<string>;
   fallbackId: string;
   legacyEntryId?: string | undefined;
+  /** Host step index latched when PI finalized the message — before any
+   *  later per-step turn_end advances the counter. Null: no open turn. */
+  stepIndex: number | null;
+  /** A user message finalized while this process's LHC turn is open is a
+   *  steering message (Pi drains steers inside the run); recorded inside that
+   *  turn, never as a boundary. The run's opening prompt arrives with no open
+   *  turn. */
+  steer: boolean;
 }
 
 /** Fork state captured from `session_before_fork` and used on the next
@@ -403,6 +424,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // still report stale pre-compact usage (PI guards the same staleness
   // internally), and triggering on it would immediately re-compact.
   let compactedSinceSettleCheck = false;
+  // Mid-turn (context hook) trigger state: retry only after real growth.
+  const contextHookState: ContextHookState = { lastAttemptTokens: null };
+  let lastContextOutcome: ContextServeOutcome | null = null;
   // Production defaults resolve under ~/.pi-lhc (or PI_LHC_HOME). Tests inject
   // temp registry/thread paths via deps so optional registryPath plumbing stays.
   const registryPath = deps.registryPath ?? defaultRegistryPath();
@@ -635,6 +659,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       pendingMessages: [],
       claimedEntryIds: new Set(),
     };
+    // A new session/thread is a new raw-context epoch: no inherited watermark.
+    contextHookState.lastAttemptTokens = null;
 
     const rehydrateModelPrefs = takePendingRehydrateModelPrefs();
     if (rehydrateModelPrefs !== null && extensionPi !== null) {
@@ -676,6 +702,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     instance = null;
     captureSession = null;
     compactDiagnostics.clear();
+    contextHookState.lastAttemptTokens = null;
   };
 
   // Record a capture failure as a plain-data health diagnostic. The converter
@@ -811,6 +838,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
         persistedEntryId !== null
           ? { piSessionId: captureSession.piSessionId, entryId: persistedEntryId }
           : { piSessionId: captureSession.piSessionId, fallbackId: message.fallbackId };
+      if (message.stepIndex !== null) mapCtx.stepIndex = message.stepIndex;
+      if (message.steer) mapCtx.steer = true;
 
       let events: MessageEventInput[];
       try {
@@ -861,7 +890,20 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       beforeEntryIds: new Set(entries.map(entryIdOf).filter((id): id is string => id !== null)),
       fallbackId: legacyPosition !== null ? `message_end:${legacyPosition}` : fallbackIdFor("message_end", sourceSeq),
       legacyEntryId,
+      stepIndex: captureSession.accumulator.currentStep(),
+      steer: event.message.role === "user" && captureSession.accumulator.hasOpenTurn(),
     });
+  };
+
+  // PI's per-step turn_end: never an LHC turn boundary (agent_end closes the
+  // turn), but it is the step edge (turn parts, F2) — flush what PI finalized
+  // in this step under its latched index, then advance the counter so the
+  // next assistant message stamps the next step. Also the seam the `context`
+  // hook fires at (Design F).
+  const onTurnEnd: PiVoidHookHandler<"turn_end"> = async (_event, ctx) => {
+    if (instance === null || captureSession === null) return;
+    await flushPendingMessages(ctx);
+    captureSession.accumulator.advanceStep();
   };
 
   // model_select / thinking_level_select fire only in-stream; capture each as
@@ -900,7 +942,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   };
 
   // agent_end closes the LHC turn exactly once per agent run.
-  // PI's per-step turn_end is ignored as a boundary (it stays a no-op below).
+  // PI's per-step turn_end is a step edge, never a boundary (onTurnEnd below).
   // Final assistant stopReason on event.messages governs turn outcome (schema
   // v5); hard-kill never reaches here and leaves the turn open with NULL facts.
   const onAgentEnd: PiHookHandler<"agent_end"> = async (event, ctx) => {
@@ -994,13 +1036,6 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     });
   };
 
-  // Observe-only foundation: PI's per-step turn_end stays a no-op — it is not
-  // an LHC turn boundary, and it must NOT host the auto-compact trigger (see
-  // maybeTriggerAutoCompact above for why).
-  const noop: PiVoidHookHandler<Epic1Hook> = () => {
-    // Intentionally empty.
-  };
-
   // session_before_fork: capture the fork point for use on the next session_start{fork}.
   // The source thread ref is captured from the current session state; the hook
   // provides entryId/position identifying the fork point. No writes to the source
@@ -1067,6 +1102,9 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     autoCompactInFlight = false;
     autoCompactLastAttemptTokens = null;
     compactedSinceSettleCheck = true;
+    // A Pi compaction changed the raw-context epoch: the mid-turn watermark
+    // (kept across served-only attempts by design) must not carry over.
+    contextHookState.lastAttemptTokens = null;
   };
 
   // agent_settled is the trigger boundary — see maybeTriggerAutoCompact for
@@ -1105,7 +1143,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     session_before_switch: onDispose as PiVoidHookHandler<Epic1Hook>,
     session_shutdown: onDispose as PiVoidHookHandler<Epic1Hook>,
     message_end: onMessageEnd as PiVoidHookHandler<Epic1Hook>,
-    turn_end: noop,
+    turn_end: onTurnEnd as PiVoidHookHandler<Epic1Hook>,
     agent_end: onAgentEnd as PiVoidHookHandler<Epic1Hook>,
     model_select: onModelSelect as PiVoidHookHandler<Epic1Hook>,
     thinking_level_select: onThinkingLevelSelect as PiVoidHookHandler<Epic1Hook>,
@@ -1115,6 +1153,30 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   const handlers = {} as Record<Epic1Hook, PiVoidHookHandler<Epic1Hook>>;
   for (const name of EPIC_1_HOOKS) handlers[name] = guard(name, bodies[name]);
   const settledHandler = guard("agent_settled", onAgentSettled);
+
+  // The `context` hook: Design F. handleContext fails open (raw list) on
+  // every failure; this wrapper only keeps a throw from ever reaching PI.
+  const contextHandler: PiContextHookHandler = async (event, ctx) => {
+    try {
+      const settings = modelCompactSettingsFor(ctx.model?.id);
+      return await handleContext(event, ctx, {
+        state,
+        instance,
+        piSessionId: captureSession?.piSessionId ?? null,
+        flushPendingCapture: flushPendingMessages,
+        findSeedEntryMap: findSeedEntryMapInBranch,
+        triggerTokens: settings.triggerTokens,
+        compactParams: toCompactParams(settings),
+        hookState: contextHookState,
+        onOutcome: (outcome) => {
+          lastContextOutcome = outcome;
+        },
+      });
+    } catch (err) {
+      lastContextOutcome = { kind: "raw", reason: `context: ${err instanceof Error ? err.message : String(err)}` };
+      return undefined;
+    }
+  };
 
   const onRehydrate: PiCommandHandler = async (_args, ctx) => {
     if (state === null) {
@@ -1191,6 +1253,10 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     handlers,
     compactHandlers,
     settledHandler,
+    contextHandler,
+    getLastContextOutcome(): ContextServeOutcome | null {
+      return lastContextOutcome;
+    },
     treeHandler: onBeforeTree,
     register(pi: ExtensionAPI): void {
       registerLhcFlags(pi);
@@ -1231,6 +1297,7 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
       });
       for (const name of EPIC_1_HOOKS) pi.on(name, handlers[name]);
       pi.on("agent_settled", settledHandler);
+      pi.on("context", contextHandler);
       registerRetrievalTools(pi, {
         getThreadRef: () => state?.threadRef ?? null,
         getInstance: () => instance,

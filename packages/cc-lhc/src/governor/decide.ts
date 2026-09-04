@@ -2,17 +2,18 @@
  * Pure capability-limited governor decision.
  * No I/O, no mutation. Returns a named decision/reason and pressure receipt.
  *
- * Exactly two things decide whether an automatic compact happens: the user's
- * `autoCompact` policy and measured pressure. Capture health, descriptor
- * readiness, receipt storage, and typed-ahead input are diagnostics the
- * wrapper records and recovers from — none of them may suppress the treatment
- * from here. The remaining non-pressure kinds are sequencing, not vetoes:
- * `turn_open` says *not at this instant* and `operation_in_flight` says
- * *already running*; each is followed by another seam.
+ * Exactly one thing decides whether an automatic compact happens: measured
+ * pressure against the active window's trigger. Smart Compact cannot be
+ * turned off — there is no policy field or decision kind for it. Capture
+ * health, descriptor readiness, receipt storage, and typed-ahead input are
+ * diagnostics the wrapper records and recovers from — none of them may
+ * suppress the treatment from here. The remaining non-pressure kinds are
+ * sequencing, not vetoes: `turn_open` says *not at this instant* and
+ * `operation_in_flight` says *already running*; each is followed by another
+ * seam.
  *
  * Claude Code cannot replace the in-flight request mid-agentic-turn.
- * wouldMutate is true only at a settled seam for would_compact under an
- * enabled policy.
+ * wouldMutate is true only at a settled seam for would_compact.
  */
 
 import { buildPressureReceipt, normalizePostMeasurementEstimate } from "./provider-context.js";
@@ -30,8 +31,7 @@ function decide(
     input.policy.upperBoundTokens,
     input.providerContextFreshness,
   );
-  const wouldMutate =
-    options.forceNoMutate === true ? false : kind === "would_compact" && !input.turnOpen && input.policy.autoCompact;
+  const wouldMutate = options.forceNoMutate === true ? false : kind === "would_compact" && !input.turnOpen;
   return {
     kind,
     reason,
@@ -56,8 +56,7 @@ function pressurePhrase(input: GovernorInput, pressureTokens: number): string {
 
 /**
  * Deterministic decision at an observation point (open-turn or settled seam).
- * Order: explicit user policy, then the open-turn capability boundary, then
- * sequencing, then pressure.
+ * Order: the open-turn capability boundary, then sequencing, then pressure.
  *
  * When turnOpen is true and pressure is at/above the upper trigger, the
  * decision is still `would_compact` with wouldMutate=false so the threshold
@@ -67,17 +66,12 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
   const estimate = normalizePostMeasurementEstimate(input.postMeasurementEstimate);
   const inputWithEstimate: GovernorInput = { ...input, postMeasurementEstimate: estimate };
 
-  // The one legitimate stop: the user turned automatic compact off.
-  if (!inputWithEstimate.policy.autoCompact) {
-    return decide("policy_disabled", "autoCompact is disabled", inputWithEstimate);
-  }
-
   if (inputWithEstimate.turnOpen) {
     return decideOpenTurn(inputWithEstimate);
   }
 
   if (inputWithEstimate.operationInFlight) {
-    return decide("operation_in_flight", "compact, prune, or handoff already in flight", inputWithEstimate);
+    return decide("operation_in_flight", "Smart Compact, Tool Prune, or handoff already in flight", inputWithEstimate);
   }
 
   const pressure = buildPressureReceipt(
@@ -88,17 +82,25 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
   );
   const pressureTokens = pressure.nextRequestPressureTokens;
 
-  if (!pressure.atOrAboveTrigger) {
+  if (pressure.atOrAboveTrigger) {
     return decide(
-      "below_threshold",
-      `${pressurePhrase(inputWithEstimate, pressureTokens)} is below upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}`,
+      "would_compact",
+      `${pressurePhrase(inputWithEstimate, pressureTokens)} >= upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}; capability-limited Smart Compact eligible at settled seam`,
+      inputWithEstimate,
+    );
+  }
+
+  if (inputWithEstimate.contextLimitRejected) {
+    return decide(
+      "would_compact",
+      `Claude rejected the request (Prompt is too long); capability-limited Smart Compact eligible at settled seam while ${pressurePhrase(inputWithEstimate, pressureTokens)} is below upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}`,
       inputWithEstimate,
     );
   }
 
   return decide(
-    "would_compact",
-    `${pressurePhrase(inputWithEstimate, pressureTokens)} >= upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}; capability-limited compact eligible at settled seam`,
+    "below_threshold",
+    `${pressurePhrase(inputWithEstimate, pressureTokens)} is below upperBoundTokens ${inputWithEstimate.policy.upperBoundTokens}`,
     inputWithEstimate,
   );
 }
@@ -112,7 +114,7 @@ function decideOpenTurn(input: GovernorInput): GovernorDecision {
   if (input.operationInFlight) {
     return decide(
       "operation_in_flight",
-      "compact, prune, or handoff already in flight; no concurrent open-turn action",
+      "Smart Compact, Tool Prune, or handoff already in flight; no concurrent open-turn action",
       input,
       { forceNoMutate: true },
     );
@@ -130,7 +132,7 @@ function decideOpenTurn(input: GovernorInput): GovernorDecision {
     // Not yet at trigger: explicit turn_open (waiting for settle / more pressure).
     return decide(
       "turn_open",
-      `turn is still open; ${pressurePhrase(input, pressureTokens)} below upperBoundTokens ${input.policy.upperBoundTokens}; compact only at settled boundary`,
+      `turn is still open; ${pressurePhrase(input, pressureTokens)} below upperBoundTokens ${input.policy.upperBoundTokens}; Smart Compact only at settled boundary`,
       input,
       { forceNoMutate: true },
     );

@@ -18,7 +18,9 @@ import {
   NATIVE_AUTO_COMPACT_DISABLE_ENV,
   nativeAutoCompactChildEnv,
 } from "../../src/wrapper/native-auto-compact.js";
+import { PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
 import { run } from "../../src/wrapper/run.js";
+import { panelText } from "../helpers/panel-text.js";
 
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
@@ -81,6 +83,7 @@ describe("native auto-compact child environment", () => {
 interface FakePty {
   args: string[];
   env: Record<string, string>;
+  written: string[];
   fireExit(code: number): void;
   onData(cb: (data: string) => void): { dispose(): void };
   onExit(cb: (arg: { exitCode: number; signal?: number }) => void): { dispose(): void };
@@ -91,9 +94,11 @@ interface FakePty {
 
 function makeFakePty(args: string[], env: Record<string, string>): FakePty {
   const exitCbs: Array<(arg: { exitCode: number; signal?: number }) => void> = [];
+  const written: string[] = [];
   return {
     args,
     env,
+    written,
     fireExit(code: number) {
       for (const cb of exitCbs) cb({ exitCode: code });
     },
@@ -103,7 +108,9 @@ function makeFakePty(args: string[], env: Record<string, string>): FakePty {
       return { dispose: () => {} };
     },
     kill: () => {},
-    write: () => {},
+    write: (data: string) => {
+      written.push(data);
+    },
     resize: () => {},
   };
 }
@@ -142,8 +149,67 @@ function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
   const stream = new PassThrough() as unknown as NodeJS.ReadStream & NodeJS.WriteStream;
   Object.defineProperty(stream, "isTTY", { value: false, configurable: true });
   Object.defineProperty(stream, "columns", { value: 80, configurable: true });
-  Object.defineProperty(stream, "rows", { value: 24, configurable: true });
+  Object.defineProperty(stream, "rows", { value: 30, configurable: true });
   return stream;
+}
+
+async function waitFor(condition: () => boolean, label: string, capMs = 8_000): Promise<void> {
+  const started = Date.now();
+  while (!condition()) {
+    if (Date.now() - started > capMs) throw new Error(`timeout waiting for ${label}`);
+    await new Promise((r) => setTimeout(r, 15));
+  }
+}
+
+interface Live {
+  spawned: FakePty[];
+  logLines: string[];
+  stdin: PassThrough;
+  terminalOutput: string[];
+  finish: () => Promise<number>;
+}
+
+/** Launch and keep the child alive so the Control Panel can be driven. */
+async function launchLive(
+  argv: string[],
+  sdk: Record<string, unknown> = { drainSettled: async () => {} },
+): Promise<Live> {
+  const spawned: FakePty[] = [];
+  const logLines: string[] = [];
+  const terminalOutput: string[] = [];
+  const stdin = fakeStream();
+  const stdout = fakeStream();
+  stdout.on("data", (chunk: Buffer | string) => terminalOutput.push(String(chunk)));
+  mocks.captureFactory = () => scriptedCaptureSession(sdk);
+  const runPromise = run(argv, {
+    claudeBin: "fake-claude",
+    spawnPty: ((_file: string, args: string[], opts: { env: Record<string, string> }) => {
+      const fake = makeFakePty(args, opts.env);
+      spawned.push(fake);
+      return fake as never;
+    }) as never,
+    stdin,
+    stdout: stdout as never,
+    stderr: fakeStream() as never,
+    noInference: true,
+    wrapperLog: {
+      info: (m: string) => logLines.push(m),
+      warn: (m: string) => logLines.push(m),
+      warningCount: () => 0,
+      path: "/tmp/fake.log",
+    } as never,
+  });
+  await waitFor(() => spawned.length > 0, "child spawn");
+  return {
+    spawned,
+    logLines,
+    stdin: stdin as unknown as PassThrough,
+    terminalOutput,
+    finish: async () => {
+      spawned[0]!.fireExit(0);
+      return runPromise;
+    },
+  };
 }
 
 async function launch(argv: string[]): Promise<{ spawned: FakePty[]; logLines: string[] }> {
@@ -227,4 +293,209 @@ describe("run: managed Claude child launch environment", () => {
     expect(anomaly).toMatch(/inherited environment and Claude settings still govern/i);
     expect(anomaly).not.toMatch(/stays enabled|is enabled|will (auto-?)?compact/i);
   });
+});
+
+describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  const homes: string[] = [];
+  const leader = Buffer.from([0x1d]);
+
+  beforeEach(() => {
+    mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-lim144-home-"));
+    homes.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const dir of homes.splice(0)) {
+      try {
+        rmSync(dir, { recursive: true, force: true });
+      } catch {
+        // best effort
+      }
+    }
+  });
+
+  it("Home shows one concise 'may run' advisory and Details explains the cause and the way back (TC-1.7a, TC-1.7b)", async () => {
+    const live = await launchLive(["--autocompact", "500000"]);
+    try {
+      live.stdin.write(leader);
+      await waitFor(() => panelText(live.terminalOutput.join("")).includes(PANEL_TITLE), "panel home");
+      const home = panelText(live.terminalOutput.join(""));
+      expect(home).toContain(
+        "Claude native Compact may run before Smart Compact — explicit --autocompact on this launch (see /details)",
+      );
+      // Exactly one advisory row; the raw log anomaly is not repeated on Home.
+      expect(
+        home.match(/may run before Smart Compact — explicit --autocompact on this launch \(see \/details\)/g),
+      ).toHaveLength(1);
+      expect(home).not.toContain("ANOMALY");
+      // It never claims native Compact is on.
+      expect(home).not.toMatch(/native Compact (is |stays )?(on|enabled)|will (auto-?)?compact/i);
+
+      live.terminalOutput.length = 0;
+      live.stdin.write(Buffer.from("/details\r"));
+      await waitFor(() => panelText(live.terminalOutput.join("")).includes("to restore"), "details rows");
+      const details = panelText(live.terminalOutput.join(""));
+      expect(details).toContain(
+        "Claude native Compact may run before Smart Compact — explicit --autocompact on this launch",
+      );
+      expect(details).toContain("detected: launch argv carries `--autocompact 500000` before the -- boundary");
+      expect(details).toContain("did not set DISABLE_AUTO_COMPACT=1 for this child");
+      expect(details).toContain("not observed: whether Claude native Compact is enabled");
+      expect(details).toContain("to restore: relaunch cc-lhc without --autocompact");
+      expect(details).toContain("manual /compact stays available");
+      expect(details).not.toContain("disabled for this child");
+      live.stdin.write(leader);
+    } finally {
+      expect(await live.finish()).toBe(0);
+    }
+  }, 15_000);
+
+  it("names the exact form the launch used, including =value and the bare flag", async () => {
+    for (const [argv, evidence] of [
+      [["--autocompact=auto"], "--autocompact=auto"],
+      [["--autocompact"], "--autocompact"],
+    ] as const) {
+      const live = await launchLive([...argv]);
+      try {
+        live.stdin.write(leader);
+        await waitFor(() => panelText(live.terminalOutput.join("")).includes(PANEL_TITLE), "panel home");
+        live.stdin.write(Buffer.from("/details\r"));
+        await waitFor(() => panelText(live.terminalOutput.join("")).includes("to restore"), "details rows");
+        expect(panelText(live.terminalOutput.join(""))).toContain(
+          `launch argv carries \`${evidence}\` before the -- boundary`,
+        );
+        live.stdin.write(leader);
+      } finally {
+        await live.finish();
+      }
+    }
+  }, 20_000);
+
+  it("TC-3.6c: Home, /status, and /details show the same window, target, trigger, and native state from one production policy state", async () => {
+    for (const [argv, native] of [
+      [[], "disabled"],
+      [["--autocompact", "500000"], "passthrough"],
+    ] as const) {
+      // A real LHC status answer, so the panel's /status renders the production formatter end to end.
+      const live = await launchLive([...argv], {
+        drainSettled: async () => {},
+        threadView: {
+          status: async () => ({
+            ok: true,
+            value: {
+              tailTokens: 1_200,
+              threshold: 8_000,
+              compactRecommended: false,
+              derivation: { pending: 0, failed: 0, blocked: 0 },
+              view: null,
+              visibility: { boundaryPosition: 0, zoneTokens: 400, maxTokens: 2_000 },
+            },
+          }),
+        },
+      });
+      try {
+        live.stdin.write(leader);
+        await waitFor(() => panelText(live.terminalOutput.join("")).includes(PANEL_TITLE), "panel home");
+        const home = panelText(live.terminalOutput.join(""));
+        // Conservative 200k policy: 70k target, 140k trigger (no status line observed in this rig).
+        expect(home).toContain("target 70k");
+        expect(home).toContain("trigger 140k");
+        expect(home).toContain("window 200k");
+        expect(home).toContain(
+          native === "disabled"
+            ? "Claude native auto-compact off"
+            : "Claude native auto-compact may run (--autocompact)",
+        );
+        expect(home).not.toContain(native === "disabled" ? "may run" : "auto-compact off");
+
+        live.terminalOutput.length = 0;
+        live.stdin.write(Buffer.from("/status\r"));
+        await waitFor(() => panelText(live.terminalOutput.join("")).includes("Latest provider context"), "status");
+        const status = panelText(live.terminalOutput.join(""));
+        expect(status).toContain("Latest provider context: not observed yet");
+        expect(status).toContain("70,000-token target · 140,000-token trigger");
+        expect(status).toContain("200k window");
+        expect(status).toContain(
+          native === "disabled"
+            ? "Claude native auto-compact: disabled for this child"
+            : "Claude native auto-compact: may run — explicit --autocompact passed through",
+        );
+
+        live.terminalOutput.length = 0;
+        live.stdin.write(Buffer.from("/details\r"));
+        // The 80x24 rig clips the lower Details rows; wait on the Policy row, which carries the values.
+        await waitFor(() => panelText(live.terminalOutput.join("")).includes("target 70,000"), "details rows");
+        const details = panelText(live.terminalOutput.join(""));
+        expect(details).toContain("target 70,000");
+        expect(details).toContain("trigger 140,000");
+        expect(details).toMatch(/Window\s+200k/);
+        expect(details).toContain(
+          native === "disabled"
+            ? "Claude native auto-compact: disabled for this child"
+            : "may run before Smart Compact — explicit --autocompact on this launch",
+        );
+        live.stdin.write(leader);
+      } finally {
+        expect(await live.finish()).toBe(0);
+      }
+    }
+  }, 30_000);
+
+  it("without the flag, neither Home nor Details claims native auto-compact is on (TC-1.7c)", async () => {
+    const live = await launchLive([]);
+    try {
+      live.stdin.write(leader);
+      await waitFor(() => panelText(live.terminalOutput.join("")).includes(PANEL_TITLE), "panel home");
+      const home = panelText(live.terminalOutput.join(""));
+      expect(home).not.toMatch(/native Compact|--autocompact|may run|ANOMALY|WARNING|advisory/i);
+      live.terminalOutput.length = 0;
+      live.stdin.write(Buffer.from("/details\r"));
+      await waitFor(
+        () => panelText(live.terminalOutput.join("")).includes("Claude native auto-compact"),
+        "details rows",
+      );
+      const details = panelText(live.terminalOutput.join(""));
+      expect(details).toContain("Claude native auto-compact: disabled for this child (DISABLE_AUTO_COMPACT=1)");
+      expect(details).not.toMatch(/may run|to restore|detected:/);
+      live.stdin.write(leader);
+    } finally {
+      expect(await live.finish()).toBe(0);
+    }
+  }, 15_000);
+
+  it("the advisory is nonblocking: input reaches Claude untouched and no panel opens by itself (TC-1.7d)", async () => {
+    const live = await launchLive(["--autocompact", "500000"]);
+    try {
+      // Give the wrapper a moment: nothing may be painted on the main screen
+      // and no modal may open without the user's leader key.
+      await new Promise((r) => setTimeout(r, 150));
+      expect(live.terminalOutput.join("")).not.toContain(PANEL_TITLE);
+      expect(live.terminalOutput.join("")).not.toMatch(/may run|ANOMALY|--autocompact/);
+
+      // Typed input is forwarded to the child immediately — no acknowledgement gate.
+      live.stdin.write(Buffer.from("hello claude\r"));
+      await waitFor(() => live.spawned[0]!.written.join("").includes("hello claude\r"), "input forwarded");
+      expect(live.terminalOutput.join("")).not.toContain(PANEL_TITLE);
+
+      // Opening and closing the panel afterwards leaves input flowing.
+      live.stdin.write(leader);
+      await waitFor(
+        () => panelText(live.terminalOutput.join("")).includes("may run before Smart Compact"),
+        "advisory shown",
+      );
+      live.stdin.write(leader);
+      await waitFor(() => live.terminalOutput.some((chunk) => chunk.includes("\u001b[?1049l")), "panel closed");
+      live.stdin.write(Buffer.from("again\r"));
+      await waitFor(() => live.spawned[0]!.written.join("").includes("again\r"), "input forwarded after panel");
+    } finally {
+      expect(await live.finish()).toBe(0);
+    }
+  }, 15_000);
 });

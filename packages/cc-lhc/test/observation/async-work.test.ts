@@ -467,3 +467,132 @@ describe("open async work: shapes beyond the captured session", () => {
     expect(fold.diagnostics).toEqual(['task-notification with unrecognized status "bewildered"']);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Claude Code 2.1.252: what a plain --resume reports after the child died
+// ---------------------------------------------------------------------------
+
+/**
+ * Verbatim records from the LIM-143 continuity probes (see
+ * `fixtures/async-work/claude-2.1.252-continuity-probe.jsonl` and
+ * `test/story0/family-matrix.md`): launches of a background shell, a monitor,
+ * a background agent, and a workflow; the orphan notices the resumed session
+ * enqueued after SIGKILL; and the host's own continuation calls.
+ */
+const PROBE_PATH = join(
+  dirname(fileURLToPath(import.meta.url)),
+  "..",
+  "fixtures",
+  "async-work",
+  "claude-2.1.252-continuity-probe.jsonl",
+);
+
+function probeLines(): RolloutLineItem[] {
+  return readFileSync(PROBE_PATH, "utf8")
+    .split("\n")
+    .filter((line) => line.trim().length > 0)
+    .map((line) => JSON.parse(line) as RolloutLineItem);
+}
+
+function isOrphanNotice(item: RolloutLineItem): boolean {
+  return (
+    item.type === "queue-operation" &&
+    typeof (item as { content?: unknown }).content === "string" &&
+    /previous session/.test((item as { content: string }).content)
+  );
+}
+
+/**
+ * The fixture is in transcript order: launches, then the orphan notices the
+ * resumed session enqueued, then that session's own continuation calls.
+ */
+function probeParts(): { launches: RolloutLineItem[]; notices: RolloutLineItem[]; continuation: RolloutLineItem[] } {
+  const lines = probeLines();
+  const lastNotice = lines.reduce((last, item, index) => (isOrphanNotice(item) ? index : last), -1);
+  return {
+    launches: lines.slice(0, lastNotice + 1).filter((item) => !isOrphanNotice(item)),
+    notices: lines.filter(isOrphanNotice),
+    continuation: lines.slice(lastNotice + 1),
+  };
+}
+
+describe("open async work: 2.1.252 orphan notices after a child death", () => {
+  it("opens all four families from the 2.1.252 launch acknowledgements", () => {
+    const open = replay(probeParts().launches);
+    expect(open.map((w) => w.family).sort()).toEqual(["agent", "background_shell", "monitor", "workflow"]);
+  });
+
+  it("closes the shell and the monitor on the aggregate stopped notice, ignoring the scan marker", () => {
+    const { launches, notices } = probeParts();
+    const aggregate = notices.find((item) =>
+      (item as { content: string }).content.includes("__orphan_summary__:shell"),
+    );
+    expect(aggregate).toBeDefined();
+    const open = replay([...launches, aggregate!]);
+    expect(open.map((w) => w.family).sort()).toEqual(["agent", "workflow"]);
+  });
+
+  it("closes the agent and the workflow on their own stopped notices", () => {
+    const { launches, notices } = probeParts();
+    const agentNotice = notices.find((item) => (item as { content: string }).content.includes("background agent"));
+    const workflowNotice = notices.find((item) =>
+      (item as { content: string }).content.includes("background workflow"),
+    );
+    expect(agentNotice).toBeDefined();
+    expect(workflowNotice).toBeDefined();
+    const open = replay([...launches, agentNotice!, workflowNotice!]);
+    expect(open.map((w) => w.family).sort()).toEqual(["background_shell", "monitor"]);
+  });
+
+  it("reads the host's continuation handles out of the orphan notices", () => {
+    // The host itself offers the continuation seams Story 0 measured: an
+    // agent resumes from its saved transcript via SendMessage, a workflow via
+    // Workflow({resumeFromRunId}). Both replay a tool call that was in flight
+    // when the child died (family-matrix.md), so neither is a carry mode on
+    // its own; the fold only has to see them as terminal for the old session.
+    const texts = probeParts().notices.map((item) => (item as { content: string }).content);
+    expect(texts.some((t) => /Resume it by sending it a message with SendMessage/.test(t))).toBe(true);
+    expect(texts.some((t) => /resumeFromRunId: "wf_[a-z0-9-]+"/.test(t))).toBe(true);
+    for (const t of texts) expect(t).toMatch(/<status>stopped<\/status>/);
+  });
+
+  it("does not reopen anything from the resumed session's own continuation calls", () => {
+    // SendMessage and the resumed Workflow acknowledge new work under the
+    // same ids; SendMessage is not a retained launcher, and the Workflow
+    // resume opens a fresh item only because it is a real relaunch.
+    const { launches, notices, continuation } = probeParts();
+    expect(continuation.length).toBeGreaterThan(0);
+    const open = replay([...launches, ...notices, ...continuation]);
+    expect(open.map((w) => w.family)).toEqual(["workflow"]);
+    expect(open[0]?.description).toBe("lim143-wf3");
+  });
+});
+
+describe("2.1.252 continuity fixture is a scrubbed projection", () => {
+  it("carries no operator paths, volatile ids, or model envelope fields", () => {
+    const text = readFileSync(PROBE_PATH, "utf8");
+    expect(text).not.toMatch(/\/home\//);
+    expect(text).not.toMatch(/toolu_01[A-Za-z0-9]{22}/);
+    expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/);
+    expect(text).not.toMatch(
+      /requestId|"usage"|"thinking"|"signature"|"uuid"|"timestamp"|"sessionId"|"cwd"|"gitBranch"|"version"/,
+    );
+    for (const item of probeLines()) {
+      expect(Object.keys(item).sort()).toSatisfy((keys: string[]) =>
+        item.type === "queue-operation"
+          ? keys.join(",") === "content,operation,type"
+          : keys.every((k) => ["type", "isSidechain", "message", "toolUseResult"].includes(k)),
+      );
+    }
+  });
+
+  it("keeps every reference the fold and the resume evidence rely on", () => {
+    const text = readFileSync(PROBE_PATH, "utf8");
+    // Launch ids recur in their orphan notices; the resumed workflow's fresh
+    // task id appears once, and the run id ties both launches together.
+    for (const id of ["shell-task-1", "monitor-task-1", "agent-1", "workflow-task-1", "wf_run-1"]) {
+      expect(text.split(id).length, id).toBeGreaterThan(2);
+    }
+    expect(text.split("workflow-task-2").length).toBe(2);
+  });
+});

@@ -203,10 +203,16 @@ estimate for content captured after that provider request; the estimate is never
 relabelled as provider usage. When the latest usage line is missing or
 malformed, the base is the last known provider reading — still a provider
 number, marked `last_known` in the receipt — plus the growth measured on top of
-it. The session's real size never disappears with a bad line.
+it. The session's real size never disappears with a bad line. Every LHC figure
+(rebuilt view size, history since the last Smart Compact, eligible tool-result
+zone, retrieval slices) is an estimate over text cc-lhc holds and is labelled as
+such beside the provider number; the two measures cover different domains, may
+differ (or coincidentally be equal), and no fixed ratio or direction between
+them is assumed or reported.
 
-Two inputs decide an automatic compact: the user's `autoCompact` policy and
-measured pressure. Everything else the wrapper knows — capture health,
+One input decides an automatic compact: measured pressure against the trigger
+of the active context window (200k or 1M, observed through Claude's status-line
+payload). Smart Compact cannot be turned off. Everything else the wrapper knows — capture health,
 descriptor readiness, receipt storage, typed-ahead input — is diagnostics with
 no blocking authority. Threshold crossing during an **open** agentic turn is
 classified and written as a durable receipt with `wouldMutate=false` — Claude
@@ -226,9 +232,9 @@ survive wrapper restart and are inspectable independently of `wrapper.log`.
 Receipts are write-behind: when the store is unavailable the compact runs
 against an in-memory receipt id with a loud warning rather than not running.
 
-The control panel's `auto` and `bounds` edits apply only to the current wrapper
-lifetime. `auto off` and an explicit `autoCompact: false` in config are the only
-things that stop automatic compact.
+The control panel's `bounds` and `allocation` edits apply only to the current
+wrapper lifetime. Nothing stops automatic compact; explicit bounds keep their
+precedence over the window's built-in defaults.
 
 **What this host cannot do (v1, by design):** Codex-style in-place mid-agentic-
 turn continuation, synthetic tool-tail preservation, forced
@@ -277,32 +283,18 @@ Only matching terminal evidence closes an item: a `completed`, `failed`,
 task. Monitor events and stall notices are progress; they refresh what is shown
 and close nothing. Nothing closes on elapsed time either — a wakeup past its
 moment stays open until a later `ScheduleWakeup` supersedes it or `stop: true`
-cancels it, because the clock is not evidence about whether it ran. The set is
-derived wrapper state with no side store, rebuilt by re-reading the rollout on
-resume catch-up.
+cancels it, because the clock is not evidence about whether it ran. The open
+set is derived from the rollout and rebuilt by re-reading it on resume
+catch-up; the parent-owned continuity store records the same evidence durably.
 
-At an otherwise-eligible automatic seam with an operator at the terminal and
-work still open, the panel names what the swap would cost and asks. This is a
-present-user authority choice, not a gate, and the question comes before the
-record: nothing durable is written until the operator authorizes it. Only an
-explicit **y** proceeds, into the ordinary receipt-and-schedule path exactly
-once — and only if the session still looks the way it did when the question
-was asked. The session keeps running behind the panel, so consent is checked
-against the world at the keypress: a turn that opened meanwhile, a seam that
-stopped being eligible, or work that *started* meanwhile and was never on the
-list all skip the seam as if the operator had declined. Work that *finished*
-meanwhile does not — killing fewer than listed is what was agreed to.
-Comparison is by stable item identity, never by the progress text an item
-happens to be showing. The governor decision is recomputed too: a turn that
-settled behind the panel with a smaller provider reading can leave the session
-under the trigger, and then there is nothing to compact. When it still
-authorizes one, that fresh observation — not the one that raised the question
-— is what the receipt and the operation describe. Every other outcome — a decline, a dismissal, a stray key, a closed
-terminal, a prompt that could not be drawn or was interrupted — skips that one
-seam, leaves no receipt, no outcome, and no preference behind, and the next
-eligible seam asks again while the work is still open. An empty set, a
-noninteractive launch, and a one-shot launch all take the ordinary path
-unchanged.
+Active background work never delays Smart Compact and is never put to the
+operator as a question. At the eligible settled seam the wrapper freezes the
+open set, records it in the parent-owned continuity tables of the cc-lhc
+database (`cc_continuity_items`, one row per launch, monotonic: a terminal row
+never reopens), and the swap starts immediately — nothing waits on the work,
+and nothing asks the operator about it. Identity and
+verified state live with the stable parent and SQLite, not with the Claude
+child that is being replaced.
 
 **Swap: spawn first.** A working session exists at every moment.
 
@@ -519,7 +511,7 @@ The compact-gating campaign (S1–S7) has its own retained record,
 [`packages/cc-lhc/test/fixtures/lim99-s7-certification-evidence.md`](../../packages/cc-lhc/test/fixtures/lim99-s7-certification-evidence.md)
 and its adjacent manifest, covering the forward-only compact path on Claude
 2.1.235: the interactive spawn-first swap and typed-ahead drop, the one-shot
-pre-launch compact, restart mid-swap, manual/panel compact, `autoCompact:false`,
+pre-launch compact, restart mid-swap, manual/panel compact, the since-removed off switch,
 the nonviability alarm with R16's survival relaunch, alias resolution with a
 single thread owner, and the legacy pre-rewrite upgrade.
 

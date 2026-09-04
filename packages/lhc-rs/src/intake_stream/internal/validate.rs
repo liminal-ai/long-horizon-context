@@ -115,6 +115,16 @@ struct TextPayloadSchema {
     text: String,
 }
 
+/// user_prompt may carry the host's in-run steer assertion (turn parts, Flow 7).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+struct UserPromptPayloadSchema {
+    text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    steer: Option<bool>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[allow(dead_code)]
@@ -219,6 +229,7 @@ enum DecodeSchema {
     ThreadRefByPath,
     EventEnvelope,
     TextPayload,
+    UserPromptPayload,
     AssistantTextPayload,
     AssistantThinkingPayload,
     TurnEndPayload,
@@ -470,6 +481,28 @@ fn struct_issue(value: &Value, fields: &[(&str, &str, bool)]) -> Option<ParseErr
                     });
                 }
             }
+            // Host-supplied step index (schema v12): a non-negative integer.
+            // Messages mirror Effect's `Schema.Number.pipe(int(), nonNegative())`.
+            "step_index" => {
+                let Some(n) = item.as_f64() else {
+                    return Some(ParseError {
+                        path: vec![(*name).to_string()],
+                        message: format!("Expected number, actual {}", actual(item)),
+                    });
+                };
+                if !n.is_finite() || n.fract() != 0.0 {
+                    return Some(ParseError {
+                        path: vec![(*name).to_string()],
+                        message: format!("Expected an integer, actual {}", actual(item)),
+                    });
+                }
+                if n < 0.0 {
+                    return Some(ParseError {
+                        path: vec![(*name).to_string()],
+                        message: format!("Expected a non-negative number, actual {}", actual(item)),
+                    });
+                }
+            }
             "false_literal" => {
                 let ok = item.as_bool() == Some(false);
                 if !ok {
@@ -512,6 +545,10 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
             )
         }
         DecodeSchema::TextPayload => struct_issue(value, &[("text", "string", false)]),
+        DecodeSchema::UserPromptPayload => struct_issue(
+            value,
+            &[("text", "string", false), ("steer", "boolean", true)],
+        ),
         DecodeSchema::AssistantTextPayload => struct_issue(
             value,
             &[
@@ -520,6 +557,7 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
                 ("provider", "string", true),
                 ("model", "string", true),
                 ("api", "string", true),
+                ("stepIndex", "step_index", true),
             ],
         ),
         DecodeSchema::AssistantThinkingPayload => struct_issue(
@@ -530,6 +568,7 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
                 ("provider", "string", true),
                 ("model", "string", true),
                 ("api", "string", true),
+                ("stepIndex", "step_index", true),
             ],
         ),
         DecodeSchema::TurnEndPayload => struct_issue(
@@ -561,6 +600,7 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
                 ("toolCallId", "nonempty", false),
                 ("toolName", "nonempty", false),
                 ("arguments", "record", false),
+                ("stepIndex", "step_index", true),
             ],
         ),
         DecodeSchema::ToolResultPayload => struct_issue(
@@ -569,6 +609,7 @@ fn decode_issue(schema: DecodeSchema, value: &Value) -> Option<String> {
                 ("toolCallId", "nonempty", false),
                 ("content", "string", false),
                 ("isError", "boolean", true),
+                ("stepIndex", "step_index", true),
             ],
         ),
         DecodeSchema::CompactContinuationMarkerPayload => struct_issue(
@@ -693,6 +734,7 @@ fn validate_one_event(event: &Value, index: i64) -> Option<ErrorResult> {
         Some("model_change") => DecodeSchema::ModelChangePayload,
         Some("thinking_level_change") => DecodeSchema::ThinkingLevelChangePayload,
         Some("compact_continuation_marker") => DecodeSchema::CompactContinuationMarkerPayload,
+        Some("user_prompt") => DecodeSchema::UserPromptPayload,
         _ => DecodeSchema::TextPayload,
     };
     if let Some(issue) = decode_issue(payload_schema, payload) {

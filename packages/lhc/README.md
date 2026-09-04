@@ -368,6 +368,18 @@ Poke and touch are no-ops. Work is only processed via explicit `sdk.work.drain(r
 5. **Coverage check**: Any banded turn not represented by selected entries or chunk membership gets a coverage entry in the detailed band.
 6. **Atomic snapshot replace**: Band text rendered, stored in `thread_view` + `thread_view_band` rows, visibility boundary reset to compact point — all in one `BEGIN IMMEDIATE` transaction.
 
+### Selection Execution Plan
+
+Selection reads turn/message metadata aggregates and hydrates only what the walk visits: raw message blocks for the tail and for the specific candidates that need an excerpt, and a chunk's stored-member fallback material only when its summary derivation is unusable. A historical candidate the walk passes over is never read.
+
+The prior eager plan — which loaded every live message with its blocks, and resolved detailed and brief fallback material for every closed chunk, before selecting — is still selectable:
+
+| Variable | Accepted value | Effect |
+|---|---|---|
+| `LHC_COMPACT_ALGORITHM` | `legacy` | Runs the eager plan. Any other value, and unset, run the bounded plan. |
+
+Both plans run the same band walk and produce the same arrangement. The legacy plan announces itself once per process as a Node `LhcCompactAlgorithmWarning` on stderr; it exists as an escape hatch, not a supported mode.
+
 ### Built-in Profiles
 
 | Profile | Full | Smooth | Detailed | Brief | Lower Bound |

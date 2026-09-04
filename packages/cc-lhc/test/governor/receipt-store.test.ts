@@ -5,18 +5,18 @@ import { DatabaseSync } from "node:sqlite";
 import { Worker } from "node:worker_threads";
 import { afterEach, describe, expect, it } from "vitest";
 
-import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICY, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
 import { applyGovernorLifecycleBatch, createGovernorRuntimeState } from "../../src/governor/observe-state.js";
 import { governorReceiptReplayKey, openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { ResolvedContextPolicy } from "../../src/governor/types.js";
 import { openLineageDatabase } from "../../src/intake/lineage-db.js";
 
 function armed(): ResolvedContextPolicy {
-  const policy = { ...BUILTIN_CONTEXT_POLICY, autoCompact: true };
+  const policy = { ...BUILTIN_CONTEXT_POLICY };
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "builtin"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, fallbacks: [] };
+  return { policy, sources, fallbacks: [], contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED };
 }
 
 const dirs: string[] = [];

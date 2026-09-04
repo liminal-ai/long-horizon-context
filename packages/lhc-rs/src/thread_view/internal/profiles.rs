@@ -19,6 +19,10 @@ use crate::shared_tech::view::{
     ViewProfilePercentages, VisibilityBudgets,
 };
 
+/// Newest-closed-turn protection default (turn parts, Flow 5): 0.6 of the
+/// lower bound — the owner's 120K-of-200K framing.
+pub const DEFAULT_NEWEST_CLOSED_PROTECTION: f64 = 0.6;
+
 /// Built-in profiles: defaults and knobs, not architecture.
 pub static BUILT_IN_PROFILES: LazyLock<Vec<ViewProfile>> = LazyLock::new(|| {
     vec![
@@ -31,6 +35,7 @@ pub static BUILT_IN_PROFILES: LazyLock<Vec<ViewProfile>> = LazyLock::new(|| {
                 detailed: 20.0,
                 brief: 20.0,
             },
+            newest_closed_protection: DEFAULT_NEWEST_CLOSED_PROTECTION,
         },
         ViewProfile {
             name: "conversation".to_string(),
@@ -41,6 +46,7 @@ pub static BUILT_IN_PROFILES: LazyLock<Vec<ViewProfile>> = LazyLock::new(|| {
                 detailed: 20.0,
                 brief: 20.0,
             },
+            newest_closed_protection: DEFAULT_NEWEST_CLOSED_PROTECTION,
         },
         ViewProfile {
             name: "coding".to_string(),
@@ -51,6 +57,7 @@ pub static BUILT_IN_PROFILES: LazyLock<Vec<ViewProfile>> = LazyLock::new(|| {
                 detailed: 20.0,
                 brief: 20.0,
             },
+            newest_closed_protection: DEFAULT_NEWEST_CLOSED_PROTECTION,
         },
     ]
 });
@@ -84,6 +91,9 @@ pub(crate) const DIAG_PROFILE_PERCENTAGE_MID: &str = "\": percentage ";
 pub(crate) const DIAG_PROFILE_PERCENTAGE_MUST_BE: &str = " must be a non-negative number, got ";
 /// `profile "${name}": percentages must sum to 100, got ${…}`
 pub(crate) const DIAG_PROFILE_PERCENTAGES_SUM_MID: &str = "\": percentages must sum to 100, got ";
+/// `profile "${name}": newestClosedProtection must be a fraction from 0 to 1, got ${…}`
+pub(crate) const DIAG_PROFILE_PROTECTION_MID: &str =
+    "\": newestClosedProtection must be a fraction from 0 to 1, got ";
 /// `profile "${name}" is partial but overrides no built-in …`
 pub(crate) const DIAG_PROFILE_PARTIAL_UNKNOWN_MID: &str =
     "\" is partial but overrides no built-in (unknown built-in override target); built-ins are ";
@@ -158,6 +168,16 @@ pub fn profile_violation(profile: &ViewProfile) -> Option<String> {
             js_string_of_number(sum),
         ));
     }
+    let protection = profile.newest_closed_protection;
+    if !protection.is_finite() || !(0.0..=1.0).contains(&protection) {
+        return Some(format!(
+            "{}{}{}{}",
+            DIAG_PROFILE_PREFIX,
+            profile.name,
+            DIAG_PROFILE_PROTECTION_MID,
+            js_string_of_number(protection),
+        ));
+    }
     None
 }
 
@@ -216,6 +236,9 @@ fn merge_profile(entry: &ViewProfileOverride, base: Option<&ViewProfile>) -> Vie
                 detailed: percentages.detailed.expect("complete override"),
                 brief: percentages.brief.expect("complete override"),
             },
+            newest_closed_protection: entry
+                .newest_closed_protection
+                .unwrap_or(DEFAULT_NEWEST_CLOSED_PROTECTION),
         };
     };
     let override_pct = entry.percentages.as_ref();
@@ -236,6 +259,9 @@ fn merge_profile(entry: &ViewProfileOverride, base: Option<&ViewProfile>) -> Vie
                 .and_then(|p| p.brief)
                 .unwrap_or(base.percentages.brief),
         },
+        newest_closed_protection: entry
+            .newest_closed_protection
+            .unwrap_or(base.newest_closed_protection),
     }
 }
 

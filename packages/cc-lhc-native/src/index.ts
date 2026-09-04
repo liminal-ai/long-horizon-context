@@ -1,4 +1,14 @@
 export {
+  createExactFileIdentityReader,
+  type ExactFileIdentity,
+  type ExactFileIdentityReader,
+  exactFileIdentitiesEqual,
+  type FileIdentityFailureCode,
+  normalizeNativeFileResult,
+  type ReadFileIdentityResult,
+  readExactFileIdentity,
+} from "./file-identity.js";
+export {
   createExactIdentityReader,
   type ExactIdentityReader,
   type ExactProcessIdentity,
@@ -11,6 +21,7 @@ export {
   toPortableProcessIdentity,
 } from "./identity.js";
 export {
+  ADDON_FUNCTION_EXPORTS,
   AddonArtifactMissingError,
   AddonContractError,
   type AddonSource,
@@ -25,6 +36,20 @@ export {
   resolveAddonArtifact,
   UnsupportedPlatformTargetError,
 } from "./loader.js";
+export {
+  type ChildExitState,
+  type ControlResult,
+  createProcessControl,
+  exactProcessControl,
+  type FindChildHoldingFileResult,
+  normalizeChildExitResult,
+  normalizeControlResult,
+  normalizeHolderResult,
+  type ProcessControl,
+  type ProcessControlFailure,
+  type ProcessControlFailureCode,
+  type ReadChildExitResult,
+} from "./process-control.js";
 export {
   missingReleaseBundleFiles,
   prebuiltArtifactRelativePath,

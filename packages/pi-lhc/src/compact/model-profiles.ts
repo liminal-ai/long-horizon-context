@@ -46,6 +46,13 @@ export const DEFAULT_MODEL_COMPACT_SETTINGS: readonly ModelCompactSettings[] = [
   { match: "opus-4-6", triggerTokens: 400_000, lowerBound: 180_000, percentages: { ...DEFAULT_PERCENTAGES } },
   { match: "glm", triggerTokens: 350_000, lowerBound: 140_000, percentages: { ...DEFAULT_PERCENTAGES } },
   { match: "grok", triggerTokens: 300_000, lowerBound: 100_000, percentages: { ...DEFAULT_PERCENTAGES } },
+  // deepseek-v4 only: the operator route (piq-ds4) serves deepseek-v4-flash
+  // at a 256k window, and these proportions target that window — 120k→50k is
+  // a whole working cycle inside it, under Pi's native ~240k threshold. The
+  // broader "deepseek" family (R1 / V3.x catalog routes at 64k–164k, the
+  // 200k free variant) is deliberately unmatched: a 50k floor would
+  // misgovern a 64k model through the native path.
+  { match: "deepseek-v4", triggerTokens: 120_000, lowerBound: 50_000, percentages: { ...DEFAULT_PERCENTAGES } },
   // sol: no connector trigger. Its 272k window puts PI's native threshold at
   // 272,000 − 16,384 = 255,616 — the intended ~255k trigger already. A
   // connector trigger at the same point double-fires and races PI's own

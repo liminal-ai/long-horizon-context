@@ -61,15 +61,15 @@ export function formatReplacementNonviabilityAlarm(input: ReplacementNonviabilit
     "This is a best guess inferred from observable viability (process survival, session file writing). " +
       "cc-lhc cannot observe whether Claude rejected the rebuilt file and never parses the terminal to find out.",
     `Session ${input.oldSessionId} stays live and capture keeps running; only the automatic child swap stops. ` +
-      "Manual compact still runs.",
+      "Manual Smart Compact still runs.",
   ];
 }
 
 /** What the wrapper did about keeping the old session alive (R16). */
 export function formatSurvivalRelaunchNotice(oldSessionId: string, relaunched: boolean): string {
   return relaunched
-    ? `cc-lhc relaunched session ${oldSessionId} without the injected DISABLE_AUTO_COMPACT so Claude's own ` +
-        "automatic compaction can keep it alive in degraded form."
+    ? `cc-lhc relaunched session ${oldSessionId} without the injected DISABLE_AUTO_COMPACT so Claude native Compact ` +
+        "can keep it alive in degraded form."
     : `cc-lhc could not relaunch session ${oldSessionId} without the injected DISABLE_AUTO_COMPACT; the ` +
-        "running child still carries it, so native auto-compact will not rescue this session.";
+        "running child still carries it, so Claude native Compact will not rescue this session.";
 }

@@ -61,6 +61,10 @@ pub struct ViewProfile {
     pub lower_bound: f64,
     /// Band shares of the lower bound; must sum to 100.
     pub percentages: ViewProfilePercentages,
+    /// Newest-closed-turn protection (turn parts, Flow 5): the fraction of the
+    /// lower bound the newest closed turn may cost and still be kept full,
+    /// after the active turn's minimum verbatim tail is reserved. 0 disables.
+    pub newest_closed_protection: f64,
 }
 
 /// Partial\<ViewProfile\["percentages"\]\> — each band share individually optional.
@@ -89,6 +93,8 @@ pub struct ViewProfileOverride {
     pub lower_bound: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub percentages: Option<PartialViewProfilePercentages>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_closed_protection: Option<f64>,
 }
 
 /// Compact-time explicit parameters: field-wise overrides of the base profile,
@@ -101,6 +107,8 @@ pub struct ViewCompactParams {
     pub lower_bound: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub percentages: Option<PartialViewProfilePercentages>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_closed_protection: Option<f64>,
 }
 
 /// Visibility-boundary budgets: max > target, both positive. Intake no longer
@@ -352,6 +360,14 @@ pub struct SessionThreadView {
     pub entries: Vec<SessionThreadViewEntry>,
 }
 
+/// One part's step range, in host step indices (turn parts).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PartRange {
+    pub from_step: i64,
+    pub to_step: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredViewArrangementEntry {
@@ -360,6 +376,46 @@ pub struct StoredViewArrangementEntry {
     pub subject_id: String,
     pub derivation_used: String,
     pub degraded: bool,
+    /// Present only on a part entry (turn parts): the contiguous step range of
+    /// the single transition turn this entry renders. Its presence in the
+    /// installed view is what makes that turn unsettled; absence everywhere
+    /// means every served turn is whole.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub part: Option<PartRange>,
+}
+
+/// Host metadata surface (turn parts, AC-7.1): the deterministic,
+/// inference-free reads a host's pressure decision needs. `active_turn` comes
+/// from the record (the open turn and its host-supplied step indices);
+/// `unsettled_turn` comes from the installed view (a turn served as parts).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostMetadata {
+    pub active_turn: Option<HostMetadataActiveTurn>,
+    pub unsettled_turn: Option<HostMetadataUnsettledTurn>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostMetadataActiveTurn {
+    pub turn_id: String,
+    /// Sum of stored member token estimates.
+    pub estimated_tokens: i64,
+    /// Leading run of complete steps (every tool_call paired inside its step).
+    pub complete_steps: i64,
+    /// Newest admissible split point as an ORDINAL k — the number of leading
+    /// steps a part may cover (1..completeSteps−1), not a host step index — or
+    /// None when no split is admissible: fewer than two complete steps, or the
+    /// turn is not splittable (a member with no step index, or inconsistent
+    /// indices). The receipt's splitPoint.stepIndex is the host index instead.
+    pub last_step_edge: Option<i64>,
+    pub splittable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HostMetadataUnsettledTurn {
+    pub turn_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -377,6 +433,10 @@ pub struct StoredViewConfig {
     pub lower_bound: f64,
     /// `Record<string, number>` — insertion-ordered (JSON.stringify contract).
     pub percentages: IndexMap<String, f64>,
+    /// Placement provenance (turn parts): the protection fraction the walk
+    /// ran under. Optional for views written before it existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_closed_protection: Option<f64>,
 }
 
 /// Judgment: TS declares `derivationCounts: Record<string, number>`
@@ -520,6 +580,79 @@ pub struct CompactReceiptConfig {
     pub detailed: f64,
     pub brief: f64,
     pub lower_bound: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub newest_closed_protection: Option<f64>,
+}
+
+/// Turn parts (receipt): one served part.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReceiptPart {
+    pub turn_id: String,
+    pub from_step: i64,
+    pub to_step: i64,
+}
+
+/// (turn, step) precision (AC-1.7): `step_index` is the HOST step index of
+/// the newest step inside the served parts (the last part's toStep), not the
+/// ordinal k that HostMetadata.lastStepEdge reports.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SplitPoint {
+    pub turn_id: String,
+    pub step_index: i64,
+}
+
+/// The whole construction that settled a previously split turn: the stored
+/// rendering row it used, or the composed-in-walk marker.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SettleConstruction {
+    Stored {
+        subject_id: String,
+        derivation_type: String,
+        source_version: i64,
+    },
+    ComposedInWalk {
+        turn_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SettledTurn {
+    pub turn_id: String,
+    pub construction: SettleConstruction,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProtectedRepresentation {
+    Full,
+    WholeRendering,
+}
+
+impl ProtectedRepresentation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ProtectedRepresentation::Full => "full",
+            ProtectedRepresentation::WholeRendering => "whole_rendering",
+        }
+    }
+}
+
+/// Newest-closed-turn placement (Flow 5): kept full (verbatim) within the
+/// protection bound, or served by its whole deterministic rendering — never
+/// an excerpt.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProtectedTurn {
+    pub turn_id: String,
+    pub representation: ProtectedRepresentation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -563,6 +696,26 @@ pub struct CompactWarning {
     pub reason: String,
 }
 
+/// Canonical record the compact walk could not place. The raw row is retained.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "snake_case",
+    rename_all_fields = "camelCase"
+)]
+pub enum SkippedRecord {
+    OrphanedMessage {
+        message_id: String,
+        turn_id: String,
+        reason: String,
+    },
+    DanglingChunkMember {
+        chunk_id: String,
+        turn_id: String,
+        reason: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CompactRenderedBand {
@@ -588,6 +741,17 @@ pub struct CompactReceipt {
     pub gaps: Vec<CompactGapEntry>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warnings: Option<Vec<CompactWarning>>,
+    pub skipped_records: Vec<SkippedRecord>,
     pub rendered_bands: Vec<CompactRenderedBand>,
     pub first_kept_message_id: Option<String>,
+    /// Turn parts (present only when the installed view serves parts).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parts: Option<Vec<ReceiptPart>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub split_point: Option<SplitPoint>,
+    /// Present when this compact settled a previously split turn.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub settled: Option<SettledTurn>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub protected_turn: Option<ProtectedTurn>,
 }

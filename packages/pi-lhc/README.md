@@ -93,9 +93,10 @@ PI calls `activate(pi)`, which creates a connector and registers:
 |---|---|---|
 | `session_start` | Resolve thread, init SDK instance, set up capture session, run startup validation | void |
 | `message_end` | Queue the PI message for deferred capture (PI entry id not yet available) | void |
-| `turn_end` | No-op. PI's per-step turn_end is explicitly ignored as an LHC boundary. | void |
+| `turn_end` | Flush pending capture, advance the host step index (turn parts, F2). PI's per-step turn_end is a step edge, never an LHC turn boundary. | void |
 | `agent_end` | Flush pending messages, emit `turn_end` to close the LHC turn | void |
 | `agent_settled` | Evaluate the per-model auto-compact trigger — after PI's own retry/compaction machinery has finished | void |
+| `context` | Design F, before every LLM call: flush capture to the seam; over the per-model trigger (last assistant's provider-reported context + LHC estimates since) run LHC mid-turn compact with the seam assertion; whenever an installed view exists serve it — rendered bands (parts + seam marker inside), then PI's own message objects from step k+1 (tail-cut alignment); otherwise `undefined` (raw list, PI overflow recovery as backstop) | `{ messages }` or `undefined` |
 | `model_select` | Flush pending, capture a `model_change` event | void |
 | `thinking_level_select` | Flush pending, capture a `thinking_level_change` event | void |
 | `session_before_fork` | Flush pending, record the fork point (source thread + entry id) for the next `session_start` | void |
@@ -368,7 +369,7 @@ The `capture_incomplete` gate is the critical safety: if the last capture failed
 
 - **pi-ai is loaded dynamically.** `@earendil-works/pi-ai` is imported at runtime via `new Function("specifier", "return import(specifier)")` to avoid a build-time dependency. If the host runtime doesn't provide pi-ai, inference calls fail as retryable `other` errors.
 
-- **No context hook.** Context is served via session seeding and rehydration, not PI's `context` hook. This means the context is a snapshot from session creation time (or the last `/lhc-rehydrate`), not continuously updated.
+- **Mid-run serving is served-only (Design F).** The `context` hook serves the LHC view to the provider per step but never writes a PI CompactionEntry; PI's raw session remains the record, so raw-state diagnostics (TUI token display, `getContextUsage`, RPC state) show raw sizes, and a session opened without pi-lhc shows the uncompacted record. Startup context is still session-seeded (and `/lhc-rehydrate`); the boundary-compact path keeps its existing behavior. Later-loaded extensions' `context` handlers see (and may mutate) the served list — load pi-lhc last if that matters. PI's per-event `structuredClone` of the raw list is paid by any `context` handler: measured ≈ 5 ms at 2 000 messages / 2.4 MB and ≈ 20 ms at 8 000 messages / 9.6 MB; the serve step itself is < 0.1 ms.
 
 - **Tool result summaries use truncation fallback.** `FORCE_TOOL_RESULT_SUMMARY_FALLBACK = true` in the LHC handlers means tool result summaries currently use deterministic truncation rather than inference. Inference-backed summaries are wired but gated off.
 

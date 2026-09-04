@@ -40,7 +40,15 @@ export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
     case "user_prompt": {
       const text = textShaped(event.payload.text, event.payload.blocks);
       return {
-        blocks: [{ blockType: "text", content: { text } }, ...apiBlockRows(event.payload.blocks)],
+        blocks: [
+          {
+            blockType: "text",
+            // The steer assertion rides the block so the record says why this
+            // prompt sits mid-turn; text is what every reader consumes.
+            content: event.payload.steer === true ? { text, steer: true } : { text },
+          },
+          ...apiBlockRows(event.payload.blocks),
+        ],
         tokenEstimate: estimateTokens(text) + blobTokens(event.payload.blocks),
       };
     }

@@ -18,6 +18,7 @@ import * as retrievalDomain from "./retrieval/index.js";
 import type {
   CompactReceipt,
   ErrorResult,
+  HostMetadata,
   LlmRequestContext,
   OpResult,
   PreviewCompactOutcome,
@@ -171,6 +172,7 @@ export type {
   HandlerOutcome,
   HandlerRunContext,
   HealthReport,
+  HostMetadata,
   InferenceCallbacks,
   InferenceConfig,
   InferenceResult,
@@ -349,6 +351,11 @@ export interface ThreadViewSurface {
   status(ref: threadsDomain.ThreadRef): Promise<OpResult<ViewStatus>>;
   prune(ref: threadsDomain.ThreadRef, params?: { targetTokens?: number }): Promise<OpResult<PruneReceipt>>;
   describe(ref: threadsDomain.ThreadRef): Promise<OpResult<StoredView | null>>;
+  hostMetadata(ref: threadsDomain.ThreadRef): Promise<OpResult<HostMetadata>>;
+  midTurnCompact(
+    ref: threadsDomain.ThreadRef,
+    opts: threadViewDomain.MidTurnCompactOptions,
+  ): Promise<OpResult<CompactReceipt>>;
   previewCompact(
     ref: threadsDomain.ThreadRef,
     opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
@@ -370,6 +377,14 @@ export interface ThreadViewSurface {
     prepared: threadViewDomain.PreparedCompact,
     opts?: threadViewDomain.InstallPreparedOptions,
   ): Promise<OpResult<CompactReceipt>>;
+  /**
+   * Prepare and install in one call. On the bounded plan, a thread that has
+   * never taken the forced-boundary path may have its open turn split into
+   * parts here with no seam assertion: only complete, host-recorded steps
+   * split, and the open turn's step indices ride the drift digest so a step
+   * that lands between prepare and install recomputes. `midTurnCompact` is
+   * the entry point that asserts the host's capture seam (AC-7.4).
+   */
   compact(
     ref: threadsDomain.ThreadRef,
     opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
@@ -814,6 +829,8 @@ export function initLhc(config: SdkConfig): Lhc {
         status: threadViewDomain.status,
         prune: threadViewDomain.prune,
         describe: threadViewDomain.describe,
+        hostMetadata: threadViewDomain.hostMetadata,
+        midTurnCompact: threadViewDomain.midTurnCompact,
         previewCompact: threadViewDomain.previewCompact,
         prepareCompact: threadViewDomain.prepareCompact,
         previewProtectedBoundary: threadViewDomain.previewProtectedBoundary,

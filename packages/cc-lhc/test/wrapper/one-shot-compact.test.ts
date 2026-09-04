@@ -14,25 +14,28 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   renameSync,
   rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
-import type { Lhc } from "lhc";
+import { fileURLToPath } from "node:url";
+import { estimateTokens, type Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
+import { applySessionAllocation } from "../../src/governor/band-allocation.js";
+import { loadContextPolicy } from "../../src/governor/config.js";
 import { defaultRegistryPath } from "../../src/intake/paths.js";
-import type { DescriptorIo } from "../../src/runtime/descriptor.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { currentSessionAlias } from "../../src/intake/thread-alias.js";
+import { pendingPromptEstimate, preLaunchEstimate } from "../../src/observation/estimate.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
+import type { DescriptorIo } from "../../src/runtime/descriptor.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { run } from "../../src/wrapper/run.js";
 import { indeterminateResult, selfOnlyProbe } from "../helpers/identity.js";
@@ -320,10 +323,9 @@ async function waitForAsync(condition: () => Promise<boolean>, label: string, ca
 
 const POLICY = {
   policy: {
-    autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
-    profile: "continuation",
+    profile: "default",
     pruneEnabled: false,
     pruneThresholdTokens: null,
     pruneTargetTokens: null,
@@ -331,7 +333,6 @@ const POLICY = {
   },
   sources: Object.fromEntries(
     [
-      "autoCompact",
       "lowerBoundTokens",
       "upperBoundTokens",
       "profile",
@@ -445,7 +446,14 @@ describe("run: one-shot pre-launch compaction", () => {
     /** Descriptor IO seam (process-identity failure injection). */
     descriptorIo?: import("../../src/runtime/descriptor.js").DescriptorIo;
     onSpawn?: (fake: FakePty, index: number) => void;
-  }): { harness: OneShotHarness; runPromise: Promise<number>; rebuiltPath: string; writeSpy: ReturnType<typeof vi.spyOn> } {
+    resolvedContextPolicy?: typeof POLICY;
+  }): {
+    harness: OneShotHarness;
+    runPromise: Promise<number>;
+    rebuiltPath: string;
+    writeSpy: ReturnType<typeof vi.spyOn>;
+    sdk: ReturnType<typeof sdkForCapture>;
+  } {
     const sdk = sdkForCapture(input.compactFails === true ? { compactFails: true } : {});
     const spawned: FakePty[] = [];
     /** Every argv the wrapper tried to spawn, whether or not a child resulted. */
@@ -515,7 +523,7 @@ describe("run: one-shot pre-launch compaction", () => {
       stdout: fakeStream() as never,
       stderr: fakeStream() as never,
       noInference: true,
-      resolvedContextPolicy: POLICY as never,
+      resolvedContextPolicy: (input.resolvedContextPolicy ?? POLICY) as never,
       governorReceiptDbPath: join(rolloutDir, "receipts.sqlite"),
       preLaunchCaptureTimeoutMs: 2_000,
       ...(input.descriptorIo === undefined ? {} : { descriptorIo: input.descriptorIo }),
@@ -536,6 +544,7 @@ describe("run: one-shot pre-launch compaction", () => {
       runPromise,
       rebuiltPath,
       writeSpy,
+      sdk,
     };
   }
 
@@ -564,6 +573,35 @@ describe("run: one-shot pre-launch compaction", () => {
     harness.spawned[0]!.fireExit(0);
     await runPromise;
     expect(harness.spawned).toHaveLength(1);
+  }, 20_000);
+
+  it("TC-4.2b one-shot Smart Compact passes mapped Balanced profile and explicit lowerBound", async () => {
+    const selected = applySessionAllocation(loadContextPolicy(), "balanced");
+    const resolved = {
+      ...selected,
+      policy: {
+        ...selected.policy,
+        lowerBoundTokens: 2_500,
+        upperBoundTokens: 5_000,
+        minRunwayTokens: 100,
+      },
+    };
+    const { harness, runPromise, sdk } = launchOneShot({
+      prompt: "do the thing",
+      transcriptTokens: 6_000,
+      resolvedContextPolicy: resolved as never,
+    });
+    await waitFor(() => harness.spawned.length === 1, "the single launched child");
+    expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), {
+      profile: "cc-lhc-balanced",
+      params: { lowerBound: 2_500 },
+    });
+    expect(sdk.threadView.previewCompact).toHaveBeenCalledWith(expect.anything(), {
+      profile: "cc-lhc-balanced",
+      params: { lowerBound: 2_500 },
+    });
+    harness.spawned[0]!.fireExit(0);
+    await runPromise;
   }, 20_000);
 
   it("the current-session pointer advances only when the rebuilt session is observed taking the prompt", async () => {
@@ -705,7 +743,9 @@ describe("run: one-shot pre-launch compaction", () => {
   }, 30_000);
 
   it("no provider reading in the transcript: pressure falls back to the estimate and still compacts", async () => {
-    const { harness, runPromise } = launchOneShot({ prompt: "x".repeat(24_000), transcriptTokens: null });
+    const prompt = "word ".repeat(8_000);
+    expect(pendingPromptEstimate(prompt).tokens).toBeGreaterThan(POLICY.policy.upperBoundTokens);
+    const { harness, runPromise } = launchOneShot({ prompt, transcriptTokens: null });
 
     await waitFor(() => harness.spawned.length === 1, "launched child");
     expect(harness.spawned[0]!.args[harness.spawned[0]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
@@ -893,9 +933,9 @@ describe("run: one-shot pre-launch compaction", () => {
       await waitFor(() => mocks.captureStopsSettled.includes(REBUILT_ID), "rebuilt capture stop to settle");
       expect(harness.rebuiltStopped()).toBe(true);
       expect(mocks.captureStopsSettled).not.toContain(RESUMED_ID);
-      expect(
-        await Promise.race([rejection, new Promise<"pending">((r) => setTimeout(() => r("pending"), 400))]),
-      ).toBe("pending");
+      expect(await Promise.race([rejection, new Promise<"pending">((r) => setTimeout(() => r("pending"), 400))])).toBe(
+        "pending",
+      );
       expect(leaseFiles()).toHaveLength(1);
 
       // The outgoing generation settles last, and only then does the lease go.
@@ -986,6 +1026,46 @@ describe("run: one-shot pre-launch compaction", () => {
       expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${RESUMED_ID}`);
     }, 20_000);
   });
+
+  it("exact 164208 + 104263-byte prompt estimates 66025 and compacts before launch", async () => {
+    const prompt = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "burnin-defect-001-prompt.txt"),
+      "utf8",
+    );
+    expect(Buffer.byteLength(prompt, "utf8")).toBe(104_263);
+    expect(estimateTokens(prompt)).toBe(66_025);
+    expect(pendingPromptEstimate(prompt).tokens).toBe(66_025);
+    expect(pendingPromptEstimate(prompt).tokens).not.toBe(26_065);
+    const captured = { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" as const };
+    expect(preLaunchEstimate(captured, prompt).tokens).toBe(66_025);
+
+    const selected = applySessionAllocation(loadContextPolicy(), "balanced");
+    const resolved = {
+      ...selected,
+      policy: {
+        ...selected.policy,
+        lowerBoundTokens: 100_000,
+        upperBoundTokens: 200_000,
+        minRunwayTokens: 50_000,
+      },
+    };
+    const { harness, runPromise, sdk } = launchOneShot({
+      prompt,
+      transcriptTokens: 164_208,
+      resolvedContextPolicy: resolved as never,
+    });
+
+    await waitFor(() => harness.spawned.length === 1, "the single launched child");
+    expect(harness.spawnedWhenRebuilt()).toBe(0);
+    const args = harness.spawned[0]!.args;
+    expect(args[args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
+    expect(args.filter((token) => token === prompt)).toHaveLength(1);
+    expect(sdk.threadView.compact).toHaveBeenCalled();
+
+    harness.spawned[0]!.fireExit(0);
+    await runPromise;
+    expect(harness.spawned).toHaveLength(1);
+  }, 30_000);
 
   it("a one-shot on a session with no persisted transcript launches directly", async () => {
     mocks.transcriptPath = null;

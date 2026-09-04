@@ -1,35 +1,54 @@
 import { randomUUID } from "node:crypto";
-
+import { dirname, join } from "node:path";
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
-
+import { exactProcessControl } from "cc-lhc-native";
 import {
+  type CarryoverAcceptance,
   type ContextMutationPlan,
   formatTokensShort,
   type HandoffRequest,
   runContextMutation,
 } from "../commands/context-mutation.js";
 import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from "../commands/dispatch.js";
-import { registerRebuiltSessionLineage } from "../commands/rebuild-receipt.js";
+import { registerRebuiltSessionLineage, threadIdFromRef } from "../commands/rebuild-receipt.js";
+import { qualifyActiveItems, statPathReal } from "../continuity/adapters.js";
+import { cleanupThread } from "../continuity/cleanup.js";
+import { defaultResultHookCommand, RESULT_HOOK_TIMEOUT_SECONDS } from "../continuity/delivery.js";
+
+import { invokeCarryover } from "../continuity/handoff.js";
+import { applyAsyncWorkEvent, carriedOpenWork } from "../continuity/observe.js";
+import { snapshotContinuity } from "../continuity/snapshot.js";
+import { type ContinuityStore, openContinuityStore } from "../continuity/store.js";
 import {
+  type discoverAdoptedTaskProcess,
+  reconcileAdoptedShells,
+  settleRetainedHost,
+  terminateRetainedHostReal,
+} from "../continuity/task-process.js";
+import {
+  applyContextWindow,
   applyGovernorLifecycleBatch,
+  applySessionAllocation,
+  CONTEXT_WINDOW_NOT_YET_OBSERVED,
   type ContextPolicyPartial,
+  contextWindowDetectionUnavailable,
   createGovernorRuntimeState,
   decideGovernor,
+  formatConfigFallbackNotice,
   formatGovernorObserveLogLine,
   type GovernorDurableReceipt,
   type GovernorHandoffOutcome,
   type GovernorMutationDeferReason,
   type GovernorReceiptStore,
   type GovernorRuntimeState,
-  formatConfigFallbackNotice,
   isTerminalHandoffOutcome,
   loadContextPolicy,
   noteGovernorInput,
   openGovernorReceiptStore,
   policySourcesSummary,
   projectConfigPath,
-  reobserveSettled,
   type ResolvedContextPolicy,
+  reobserveSettled,
   setGovernorCaptureGeneration,
   setGovernorOperationInFlight,
   userConfigPath,
@@ -49,10 +68,15 @@ import {
 import { openLaunchThread } from "../intake/launch-thread.js";
 import { defaultLineageDbPath } from "../intake/lineage-db.js";
 import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
-import { type CaptureSession, createCaptureThread, startCaptureSession } from "../intake/session.js";
+import {
+  type CaptureSession,
+  type CaptureSessionDeps,
+  createCaptureThread,
+  startCaptureSession,
+} from "../intake/session.js";
 import { type LaunchThreadBinding, recordSwapAcceptance } from "../intake/thread-alias.js";
+import type { OpenAsyncWork } from "../observation/async-work.js";
 import { preLaunchEstimate } from "../observation/estimate.js";
-import { asyncWorkIdentity, type OpenAsyncWork } from "../observation/async-work.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
 import { findExpectedSessionFileOnce } from "../rollout/discover.js";
@@ -72,12 +96,29 @@ import {
   revokeCapability,
   revokeDescriptor,
 } from "../runtime/descriptor.js";
-import { ProcessIdentityUnavailableError } from "../runtime/process-identity.js";
+import { probeProcessIdentityNative } from "../runtime/native-identity.js";
+import { type ProbeProcessIdentity, ProcessIdentityUnavailableError } from "../runtime/process-identity.js";
 import { type ThreadOwnerLease, ThreadOwnershipConflictError } from "../runtime/thread-owner.js";
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { forceKillChildTree, requestPtyTermination, runTaskkillTree } from "./child-termination.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
-import { type CompactConfirmDisposition, compactConfirmRows, describeDecline } from "./compact-confirm.js";
+import {
+  type ContextWindowObserver,
+  createContextWindowObserver,
+  mergeLaunchSettings,
+  newCapturePath,
+  readSettingsFileOrNull,
+  resolveOperatorStatusLine,
+} from "./context-window-observer.js";
+import {
+  type ActionableCondition,
+  actionableGuidanceRows,
+  firstLoadMarkerPath,
+  markShown,
+  ONBOARDING_VERSION,
+  planStartupPanel,
+  readShownVersion,
+} from "./first-load.js";
 import {
   type CandidateChild,
   type CandidateViability,
@@ -87,18 +128,24 @@ import {
   DEFAULT_REPLACEMENT_ATTEMPTS,
   executeHandoff,
   formatHandoffResult,
+  formatOldChildCleanup,
   type HandoffPorts,
   type HandoffResult,
   type SwitchOutcome,
 } from "./handoff.js";
+import {
+  type HandoffReceiptStore,
+  handoffReceiptPortFromStore,
+  openHandoffReceiptStore,
+} from "./handoff-receipt-store.js";
 import { createInputDebugLogger } from "./input-debug.js";
 import { consumeLegacyHandoffState } from "./legacy-handoff-state.js";
 import {
+  clampPanelViewport,
   createInputState,
   finishExecuting,
   forceResetInput,
   type InputState,
-  openCompactConfirm,
   processInputChunk,
   resolveBareEsc,
   resolveLeaderByte,
@@ -109,15 +156,54 @@ import {
   argvSuppliesNativeAutocompact,
   NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY,
   nativeAutoCompactChildEnv,
+  nativeAutocompactArgvEvidence,
 } from "./native-auto-compact.js";
+import { observeOldChildCleanup } from "./old-child-cleanup.js";
 import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
+import {
+  buildPanelViewSnapshot,
+  formatContextClassChangeNotice,
+  formatPendingResultRows,
+  formatPolicySource,
+  MODAL_SCOPE_NOTE,
+} from "./panel-commands.js";
+import {
+  formatActiveOperation,
+  formatActiveOperationRow,
+  formatHandoffFailureSummary,
+  formatLastActionRow,
+  formatRetrievalStateRow,
+  toPanelWording,
+} from "./panel-wording.js";
 import {
   formatReplacementNonviabilityAlarm,
   formatSurvivalRelaunchNotice,
   NONVIABLE_SWAPS_BEFORE_ALARM,
 } from "./replacement-nonviability.js";
-import { TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
+import {
+  formatAutoDeferredSummary,
+  formatAutoGuardBusyDetail,
+  formatAutoGuardBusyLog,
+  formatAutoInMemoryReceipt,
+  formatAutoMutationLog,
+  formatAutoMutationSummary,
+  formatAutoNotRescheduledSummary,
+  formatAutoSuspendedSummary,
+  formatAutoThrew,
+  formatOneShotCompactedBeforeLaunch,
+  formatOneShotMissingThread,
+  formatOneShotPreLaunchOutcome,
+  formatOneShotPreLaunchThrew,
+  formatOneShotStandDown,
+  type NativeAutoCompactState,
+  nativeAutoCompactStatusLine,
+  nativeCompactAdvisoryDetailsRows,
+  nativeCompactAdvisoryLine,
+  nativeCompactAnomalyNotice,
+  SMART_COMPACT,
+} from "./terminology.js";
+import { countTypedBytes, TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
 import { createWrapperLog, type WrapperLog } from "./wrapper-log.js";
 
 const DEFAULT_COLS = 80;
@@ -153,6 +239,15 @@ export const PENDING_ESC_RESOLVE_MS = 50;
  */
 export function settleReceipts(outcomeMessages: string[]): string[] {
   return outcomeMessages;
+}
+
+/**
+ * Receipt rows as the PANEL shows them: the same settled messages, with the
+ * operation named by the command that runs it. The wrapper log and the durable
+ * receipt keep the product terminology they are written in.
+ */
+export function panelReceiptRows(outcomeMessages: readonly string[]): string[] {
+  return outcomeMessages.map(toPanelWording);
 }
 
 export type PtySpawn = typeof defaultSpawn;
@@ -198,6 +293,12 @@ export type RunOptions = {
   contextPolicyOverrides?: ContextPolicyPartial;
   /** Test hook: substitute resolved policy (skips filesystem load). */
   resolvedContextPolicy?: ResolvedContextPolicy;
+  /** Test hook: status-line capture file for the context-window observer. */
+  contextWindowCapturePath?: string;
+  /** Test hook: platform the child's status-line command is serialized for (defaults to this process). */
+  childPlatform?: NodeJS.Platform;
+  /** Test seam: the UserPromptSubmit hook command registered on managed children (LIM-146). */
+  resultHookCommand?: string;
   /** Test hook: inspect governor runtime state after lifecycle. */
   onGovernorObserve?: (record: import("../governor/index.js").GovernorObserveRecord) => void;
   /**
@@ -210,6 +311,26 @@ export type RunOptions = {
    * Not used in production.
    */
   governorReceiptStoreHook?: (store: GovernorReceiptStore) => GovernorReceiptStore;
+  /**
+   * Test hook: wrap the opened evidence-only handoff receipt store.
+   * Not used in production.
+   */
+  handoffReceiptStoreHook?: (store: HandoffReceiptStore) => HandoffReceiptStore;
+  /** Test hook: substitute the old-child identity probe. Production uses the native probe. */
+  probeProcessIdentity?: ProbeProcessIdentity;
+  /** Adopted-task discovery seam (tests); production asks the native addon (LIM-149). */
+  discoverTaskProcess?: typeof discoverAdoptedTaskProcess;
+  /**
+   * Pause/resume/terminate the wrapper's own retained completion host
+   * (tests). Production pauses and resumes through the native addon and
+   * terminates through process.kill.
+   */
+  hostSignal?: (pid: number, signal: NodeJS.Signals) => void;
+  /** Paused-host exit-record reader (tests; production asks the native addon, LIM-149). */
+  readTaskExit?: (proc: {
+    pid: number;
+    starttime: string;
+  }) => import("../continuity/task-process.js").TaskExitOutcome | null;
   /**
    * Test hook: inject a pre-configured command guard (e.g. already holding a flight)
    * so auto-compact can observe command_guard_busy terminalization.
@@ -305,6 +426,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
   /** Launch-time anomaly notices: recorded, never a refusal (R11 posture, R12). */
   const startupAnomalyNotices: string[] = [];
+  /**
+   * Allowlisted conditions (first-load.ts). Before the terminal is wired they
+   * collect here and decide whether the panel opens at launch; afterwards the
+   * runtime binding opens the same panel for a condition raised mid-session.
+   */
+  const startupActionable: ActionableCondition[] = [];
+  let raiseActionable = (condition: ActionableCondition): void => {
+    startupActionable.push(condition);
+  };
 
   // Configuration always yields a usable policy: bad fields fall back to
   // built-in defaults and automatic compact stays armed. The fallback notice
@@ -316,14 +446,112 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       cwd: process.cwd(),
       ...(options.contextPolicyOverrides !== undefined ? { sessionOverrides: options.contextPolicyOverrides } : {}),
     });
+  if ((resolvedContextPolicy as Partial<ResolvedContextPolicy>).contextWindow === undefined) {
+    // The test seam may supply a policy without window provenance: it starts
+    // where every session starts, on the conservative class.
+    resolvedContextPolicy = { ...resolvedContextPolicy, contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED };
+  }
   let configFallbackNotice = formatConfigFallbackNotice(resolvedContextPolicy.fallbacks);
   for (const line of configFallbackNotice) {
     wrapperLog.warn(`cc-lhc context policy: ${line.trim()}`);
     stderr.write(`cc-lhc: ${line}\n`);
   }
-  wrapperLog.info(
-    `cc-lhc context policy autoCompact=${resolvedContextPolicy.policy.autoCompact} lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
-  );
+  const logContextPolicy = (why: string): void => {
+    const window = resolvedContextPolicy.contextWindow;
+    wrapperLog.info(
+      `cc-lhc context policy (${why}) window=${window.contextClass} (${window.source}${window.observedWindowTokens === null ? "" : ` ${window.observedWindowTokens}`}${window.modelId === null ? "" : ` ${window.modelId}`}) lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} runway=${resolvedContextPolicy.policy.minRunwayTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}${window.detail === null ? "" : ` — ${window.detail}`}`,
+    );
+  };
+  logContextPolicy("launch");
+
+  // D8: the launch-scoped status-line observer. It is installed on every
+  // managed child's argv as one merged `--settings` payload and read back
+  // synchronously before each governor decision, so a window change is
+  // re-resolved before the next automatic Smart Compact decision (AC-1.4).
+  let contextWindowObserver: ContextWindowObserver | undefined;
+  let lastContextWindowChange: { from: string; to: string; atMs: number } | null = null;
+  /**
+   * One retained class-change notice (AC-1.6c), shown on the next Control
+   * Panel open and then cleared. Later changes replace it; nothing is written
+   * onto Claude's screen.
+   */
+  let pendingContextChangeNotice: string | null = null;
+  /** Re-resolve model-derived policy values against a newly observed window. */
+  const adoptContextWindow = (next: import("../governor/index.js").ContextWindowResolution, why: string): void => {
+    const previous = resolvedContextPolicy.contextWindow;
+    if (
+      previous.contextClass === next.contextClass &&
+      previous.source === next.source &&
+      previous.observedWindowTokens === next.observedWindowTokens &&
+      previous.modelId === next.modelId
+    ) {
+      return;
+    }
+    resolvedContextPolicy = applyContextWindow(resolvedContextPolicy, next);
+    configFallbackNotice = formatConfigFallbackNotice(resolvedContextPolicy.fallbacks);
+    if (previous.contextClass !== next.contextClass) {
+      lastContextWindowChange = { from: previous.contextClass, to: next.contextClass, atMs: Date.now() };
+      pendingContextChangeNotice = formatContextClassChangeNotice({
+        from: previous.contextClass,
+        to: next.contextClass,
+        targetTokens: resolvedContextPolicy.policy.lowerBoundTokens,
+        triggerTokens: resolvedContextPolicy.policy.upperBoundTokens,
+        minRunwayTokens: resolvedContextPolicy.policy.minRunwayTokens,
+      });
+    }
+    logContextPolicy(why);
+  };
+  /** Read every status-line payload appended since the last look; no timer. */
+  const syncContextWindow = (): void => {
+    if (contextWindowObserver === undefined) return;
+    const latest = contextWindowObserver.poll();
+    if (latest !== null) adoptContextWindow(latest, "status-line observed");
+  };
+  /**
+   * Install the observer on a child's argv: one merged `--settings`. When the
+   * merge is unsafe the argv is forwarded exactly as assembled and detection
+   * is reported unavailable (conservative 200k policy).
+   */
+  const installContextWindowObserver = (childArgs: readonly string[]): string[] => {
+    if (contextWindowObserver === undefined) return [...childArgs];
+    const operator = resolveOperatorStatusLine({ cwd: process.cwd() });
+    if (!operator.ok) {
+      adoptContextWindow(contextWindowDetectionUnavailable(operator.error), "operator settings unreadable");
+      return [...childArgs];
+    }
+    const merged = mergeLaunchSettings({
+      argv: childArgs,
+      readFile: readSettingsFileOrNull,
+      capturePath: contextWindowObserver.capturePath,
+      operatorStatusLine: operator.statusLine,
+      ...(options.childPlatform === undefined ? {} : { platform: options.childPlatform }),
+      ...(continuityStore === null
+        ? {}
+        : { deliveryHook: { command: resultHookCommand, timeoutSeconds: RESULT_HOOK_TIMEOUT_SECONDS } }),
+    });
+    if (merged.kind === "detection_unavailable") {
+      adoptContextWindow(contextWindowDetectionUnavailable(merged.reason), "settings unmergeable");
+      wrapperLog.warn(
+        "cc-lhc continuity: result delivery hook not installed (settings unmergeable); results stay pending in the Control Panel",
+      );
+      return merged.argv;
+    }
+    if (merged.deliveryHook.kind === "unavailable") {
+      wrapperLog.warn(
+        `cc-lhc continuity: result delivery hook not installed (${merged.deliveryHook.reason}); results stay pending in the Control Panel`,
+      );
+    }
+    // The operator's command text is private configuration: log only that a
+    // status line was preserved and where it was declared, never its content.
+    const preserved =
+      merged.operatorStatusLine === "chained"
+        ? `, operator status line preserved (${operator.origin === null ? "launch argv" : `settings file ${operator.origin}`})`
+        : "";
+    wrapperLog.info(
+      `cc-lhc context window observer installed (capture ${contextWindowObserver.capturePath}${preserved})`,
+    );
+    return merged.argv;
+  };
 
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
   /** Most recent non-success outcome (health visibility; never claims success). */
@@ -339,6 +567,204 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       `cc-lhc governor receipt store unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
   }
+  let handoffReceiptStore: HandoffReceiptStore | null = null;
+  try {
+    const opened = openHandoffReceiptStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
+    handoffReceiptStore =
+      options.handoffReceiptStoreHook !== undefined ? options.handoffReceiptStoreHook(opened) : opened;
+  } catch (cause) {
+    wrapperLog.warn(
+      `cc-lhc handoff receipt store unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+  }
+  /**
+   * Parent-owned continuity record (LIM-145): asynchronous work observed in
+   * the child's rollout, carried across Smart Compact from here, not from the
+   * replaced child. Same database file as the receipts.
+   */
+  let continuityStore: ContinuityStore | null = null;
+  /** The old child deliberately kept alive as the adopted tasks' completion host (LIM-149). */
+  let retainedHostPty: { pty: IPty; threadId: string; frozen: boolean } | null = null;
+  /** Graceful PTY termination for the retained host, bound once terminateChild exists. */
+  let retainedTerminate: ((pty: IPty) => Promise<boolean>) | undefined;
+  const hostSignal =
+    options.hostSignal ??
+    ((pid: number, signal: NodeJS.Signals): void => {
+      // Pause/resume are whole-process operations the addon performs the same
+      // way everywhere; only termination is Node's own portable kill.
+      if (signal === "SIGSTOP" || signal === "SIGCONT") {
+        const control = exactProcessControl();
+        const result = signal === "SIGSTOP" ? control.pause(pid) : control.resume(pid);
+        if (!result.ok) {
+          throw new Error(`${signal === "SIGSTOP" ? "pause" : "resume"} failed: ${result.code}: ${result.message}`);
+        }
+        return;
+      }
+      process.kill(pid, signal);
+    });
+  /**
+   * Retire the retained host once every adopted item is terminal. Same-wrapper
+   * hosts terminate through the PTY handle they were spawned with; a host
+   * inherited from a prior wrapper (restart) goes through the identity-gated
+   * pid-exact route. Fail closed on indeterminate probes; never a bare pid.
+   */
+  const settleHost = async (threadId: string, terminatePty?: (pty: IPty) => Promise<boolean>): Promise<void> => {
+    if (continuityStore === null || threadId === "") return;
+    try {
+      const settle = await settleRetainedHost(continuityStore, threadId, {
+        probeIdentity: probeProcessIdentity,
+        terminateHost: async (host) => {
+          // A frozen host cannot act on the PTY handle's graceful SIGTERM, so
+          // it always retires through the identity-gated pid-exact route
+          // (straight SIGKILL, which also reaps its zombie task children).
+          if (
+            host.frozen !== true &&
+            retainedHostPty !== null &&
+            retainedHostPty.threadId === threadId &&
+            terminatePty !== undefined
+          ) {
+            const ok = await terminatePty(retainedHostPty.pty);
+            if (ok) retainedHostPty = null;
+            return ok;
+          }
+          const ok = await terminateRetainedHostReal(host, probeProcessIdentity, hostSignal);
+          if (ok && retainedHostPty?.threadId === threadId) retainedHostPty = null;
+          return ok;
+        },
+      });
+      if (settle.kind === "terminated" || settle.kind === "already_gone") {
+        if (retainedHostPty?.threadId === threadId) retainedHostPty = null;
+        wrapperLog.info(
+          `cc-lhc continuity: retained completion host ${settle.kind === "terminated" ? "terminated" : "already gone"}`,
+        );
+      } else if (settle.kind === "terminate_failed") {
+        wrapperLog.warn(`cc-lhc continuity: ${settle.detail}`);
+      }
+    } catch (cause) {
+      wrapperLog.warn(
+        `cc-lhc continuity: retained-host settle failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+  };
+  try {
+    continuityStore = openContinuityStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    wrapperLog.warn(`cc-lhc continuity store unavailable: ${detail}`);
+    raiseActionable({
+      kind: "unsafe_capture_or_database_state",
+      lines: [`continuity database unavailable: ${detail}; background work is not carried across Smart Compact`],
+    });
+  }
+  const recordAsyncWorkEvent: NonNullable<CaptureSessionDeps["onAsyncWorkEvent"]> = (event, threadId) => {
+    if (continuityStore === null) return;
+    applyAsyncWorkEvent(continuityStore, threadId, event, Date.now());
+  };
+  /** LIM-146: the rollout proved these result keys reached the model; only now are they delivered. */
+  const recordResultDelivery: NonNullable<CaptureSessionDeps["onResultDelivery"]> = (launchIds, threadId) => {
+    if (continuityStore === null) return;
+    const delivered = continuityStore.markDelivered({ threadId, launchIds, nowMs: Date.now() });
+    if (delivered.length > 0) {
+      wrapperLog.info(
+        `cc-lhc continuity: ${delivered.length} carried result(s) delivered on a real prompt: ${delivered.join(", ")}`,
+      );
+      // LIM-149: delivery is an existing event seam — if the retained host has
+      // nothing left to supervise, retire it now (no polling anywhere).
+      void settleHost(threadId, retainedTerminate);
+    }
+  };
+  const resultHookCommand = options.resultHookCommand ?? defaultResultHookCommand();
+  const monitorOutputDir = join(dirname(options.governorReceiptDbPath ?? defaultLineageDbPath()), "continuity");
+  /**
+   * The record's carried open work for the bound thread, handed to every
+   * capture session (fresh launch, rebuilt session, wrapper restart) so its
+   * terminal evidence closes the same item. Unreadable state seeds nothing.
+   */
+  const carriedSeed = (threadId: string): OpenAsyncWork[] => {
+    if (continuityStore === null) return [];
+    try {
+      return carriedOpenWork(continuityStore, threadId);
+    } catch (cause) {
+      const detail = cause instanceof Error ? cause.message : String(cause);
+      wrapperLog.warn(`cc-lhc continuity: carried work unreadable for thread ${threadId}; nothing seeded: ${detail}`);
+      raiseActionable({
+        kind: "unmanageable_async_identity",
+        lines: [`carried work for thread ${threadId} is unreadable; nothing seeded — see the wrapper log`],
+      });
+      return [];
+    }
+  };
+  /**
+   * LIM-145 seam step, shared by manual and automatic Compact: qualify the
+   * parent's record of active work and accept it as one carryover generation.
+   * A Monitor whose relaunch is impossible is closed as failed here; an item
+   * no adapter can carry refuses the seam with the current session kept.
+   */
+  /** The current child's pid while it is spawned — the discovery root for adopted tasks. */
+  const liveChildPidForDiscovery = (): number | undefined => {
+    try {
+      return currentPty.pid;
+    } catch {
+      return undefined;
+    }
+  };
+
+  const acceptCarryoverAtSeam = (
+    threadId: string,
+    sourceRolloutPath: string | undefined,
+    sourceSessionId: string | undefined,
+  ): CarryoverAcceptance => {
+    if (continuityStore === null || threadId === "") return { ok: true };
+    // LIM-149: a previously adopted task that already finished (or was killed
+    // with an old session) must settle here from Claude's own markers, not be
+    // carried again or stay active forever. Lost supervision is surfaced as
+    // `unknown`, never invented as an outcome.
+    const report = reconcileAdoptedShells(continuityStore, threadId, {
+      ...(options.readTaskExit === undefined ? {} : { readTaskExit: options.readTaskExit }),
+    });
+    for (const done of report.reconciled) {
+      wrapperLog.info(`cc-lhc continuity: adopted ${done.launchId} reconciled ${done.outcome} (${done.evidence})`);
+    }
+    for (const lost of report.unsupervised) {
+      wrapperLog.warn(
+        `cc-lhc continuity: adopted ${lost} lost its supervision (host and task gone, no exit marker); ` +
+          "state is unknown — its outcome cannot be determined",
+      );
+    }
+    void settleHost(threadId, retainedTerminate);
+    const qualified = qualifyActiveItems(
+      continuityStore,
+      threadId,
+      {
+        platform: process.platform,
+        sourceRolloutPath,
+        statPath: statPathReal,
+        ...((): { oldChildPid?: number } => {
+          const pid = liveChildPidForDiscovery();
+          return pid === undefined ? {} : { oldChildPid: pid };
+        })(),
+        ...(options.discoverTaskProcess === undefined ? {} : { discoverTaskProcess: options.discoverTaskProcess }),
+      },
+      Date.now(),
+    );
+    for (const closed of qualified.terminalized) {
+      wrapperLog.warn(
+        `cc-lhc continuity: ${closed.family} ${closed.launchId} cannot be carried (${closed.reason}); recorded as failed`,
+      );
+    }
+    const snapshot = snapshotContinuity(continuityStore, {
+      threadId,
+      oldSessionId: sourceSessionId ?? "unknown",
+      nowMs: Date.now(),
+    });
+    if (!snapshot.ok) {
+      const detail = `continuity: ${snapshot.reason.replace("_", " ")} cannot be carried: ${snapshot.launchIds.join(", ")}`;
+      wrapperLog.warn(`cc-lhc ${detail}; keeping the current session this seam`);
+      return { ok: false, detail };
+    }
+    return { ok: true, carryover: { snapshot: snapshot.snapshot, monitorOutputDir } };
+  };
+  const probeProcessIdentity = options.probeProcessIdentity ?? probeProcessIdentityNative;
   /**
    * Persist a classification. Returns the exact durable receipt when inserted or
    * when an exact replay hit an existing row. Open-turn may stay log-only if the
@@ -509,6 +935,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         stderr.write(`${notice}\n`);
         startupAnomalyNotices.push(notice);
       }
+      if (legacyHandoffState.notices.length > 0) {
+        raiseActionable({ kind: "possible_undelivered_input", lines: legacyHandoffState.notices });
+      }
 
       // A wrapper-owned replacement continues the conversation; it never
       // re-runs the prompt this launch carried, and it leaves behind any option
@@ -658,6 +1087,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       captureLifecycleSink(signals);
       return;
     }
+    syncContextWindow();
     governorState = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy).state;
   };
 
@@ -674,10 +1104,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
    * process is running while any of this happens, so there is nothing to
    * interrupt and no way for the prompt to execute twice.
    */
-  const compactBeforeOneShotLaunch = async (
-    session: ExpectedSession,
-    thread: LaunchThreadBinding,
-  ): Promise<void> => {
+  const compactBeforeOneShotLaunch = async (session: ExpectedSession, thread: LaunchThreadBinding): Promise<void> => {
     const cwd = process.cwd();
     const transcriptPath = await findExpectedSessionFileOnce(cwd, session.sessionId);
     if (transcriptPath === null) {
@@ -697,6 +1124,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       log: (message) => wrapperLog.info(message),
       logError: (message) => wrapperLog.warn(message),
       onLifecycle: publishCaptureLifecycle,
+      onAsyncWorkEvent: recordAsyncWorkEvent,
+      seedAsyncWork: carriedSeed,
+      onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
     });
 
@@ -721,10 +1151,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // left bound and still catching up behind the running prompt; the next
     // invocation compacts once that history has settled.
     const standDown = (why: string): void => {
-      wrapperLog.warn(
-        `cc-lhc one-shot: ${why}; launching on ${session.sessionId} without compacting — ` +
-          "capture stays bound and the next invocation compacts",
-      );
+      wrapperLog.warn(formatOneShotStandDown(why, session.sessionId));
     };
     if (!catchUp.isCaptureReady()) {
       standDown(`capture is ${catchUp.getCaptureHealth().phase} after catching up from the transcript`);
@@ -747,6 +1174,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // invocation's sampling; it is provider-reported, never fresh.
       providerContextFreshness: governorState.latestProviderContext === null ? "none" : "last_known",
       postMeasurementEstimate: preLaunchEstimate(governorState.postMeasurementEstimate, promptText),
+      contextLimitRejected: governorState.contextLimitRejected,
     });
     wrapperLog.info(`cc-lhc one-shot pre-launch seam: ${decision.kind} — ${decision.reason}`);
     if (decision.kind !== "would_compact") return;
@@ -763,6 +1191,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           : {}),
         triggerContextTokens: decision.pressure.nextRequestPressureTokens,
         ...(hostNotices.length === 0 ? {} : { hostNotices }),
+        omitContinuityNote: true,
       },
       {
         ...catchUp.getCommandContext(),
@@ -777,9 +1206,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         isCaptureHealthy: () => catchUp.isCaptureHealthy(),
       },
     );
-    wrapperLog.info(
-      `cc-lhc one-shot pre-launch compact ${outcome.kind}: ${outcome.messages.join(" | ") || "(no receipt)"}`,
-    );
+    wrapperLog.info(formatOneShotPreLaunchOutcome(outcome.kind, outcome.messages.join(" | ") || "(no receipt)"));
     if (outcome.kind !== "rebuilt") {
       // The view may well be installed and durable; what this seam did not
       // produce is a rebuilt session to launch on. The prompt runs on the
@@ -809,7 +1236,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const sdk = ctx.sdk;
     if (threadRef === undefined || sdk === undefined) {
       // Unreachable: the compact that produced this rebuild ran through both.
-      wrapperLog.warn("cc-lhc one-shot: compacted without a bound thread; launching on the resumed session");
+      wrapperLog.warn(formatOneShotMissingThread());
       return;
     }
     let rebuiltCapture: CaptureSession;
@@ -831,6 +1258,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         log: (message) => wrapperLog.info(message),
         logError: (message) => wrapperLog.warn(message),
         onLifecycle: publishCaptureLifecycle,
+        onAsyncWorkEvent: recordAsyncWorkEvent,
+        seedAsyncWork: carriedSeed,
+        onResultDelivery: recordResultDelivery,
         onRuntimeSettings,
       });
     } catch (cause) {
@@ -851,16 +1281,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // kept all the same: whatever it still has queued must land before this
     // wrapper stops being the thread's owner.
     outgoingCaptureSettled = outgoing.stop().catch((cause: unknown) => {
-      wrapperLog.warn(`cc-lhc one-shot: pre-compact capture drain failed: ${detailOf(cause)}`);
+      wrapperLog.warn(`cc-lhc one-shot: capture drain before pre-launch ${SMART_COMPACT} failed: ${detailOf(cause)}`);
     });
 
     expectedSession = expectedSessionFromExplicitId(rebuilt.sessionId, "rebuilt_handoff");
     childArgv = launchChildArgv(launchRest, launchPassthrough, rebuilt.sessionId);
     sessionAwaitingPromptIntake = { sessionId: rebuilt.sessionId, threadId: outcome.handoff.threadId };
-    wrapperLog.info(
-      `cc-lhc one-shot: compacted ${session.sessionId} -> ${rebuilt.sessionId} before launch; ` +
-        "launching once with the original prompt",
-    );
+    wrapperLog.info(formatOneShotCompactedBeforeLaunch(session.sessionId, rebuilt.sessionId));
   };
 
   if (launchForm === "one_shot" && expectedSession !== undefined && launchThread !== undefined) {
@@ -869,7 +1296,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     } catch (cause) {
       // Anything this seam cannot do, it says and leaves behind. The invocation
       // still launches, on whatever session it was already going to resume.
-      wrapperLog.warn(`cc-lhc one-shot pre-launch compact threw: ${detailOf(cause)}`);
+      wrapperLog.warn(formatOneShotPreLaunchThrew(detailOf(cause)));
     }
   }
 
@@ -880,12 +1307,20 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // R12: an explicit user `--autocompact` passes through verbatim and the
   // injected disable is omitted for that launch, with a visible anomaly notice.
   // Omission is all cc-lhc can claim: inherited environment and Claude settings
-  // still govern whether native auto-compact actually runs.
+  // still govern whether Claude native Compact actually runs.
   const userChoseAutocompact = argvSuppliesNativeAutocompact(argv);
   const disableNativeAutoCompact = !userChoseAutocompact;
+  /** The one fact Home, `/status`, and `/details` all project about Claude's automatic Compact. */
+  const nativeAutoCompact: NativeAutoCompactState = disableNativeAutoCompact ? "disabled" : "passthrough";
   if (userChoseAutocompact) {
     wrapperLog.warn(`cc-lhc ${NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY}`);
-    startupAnomalyNotices.push(NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY);
+    // The panel carries the one-line advisory (AC-1.7a); the full anomaly text
+    // stays in the wrapper log and the cause/remedy live on Details.
+    startupAnomalyNotices.push(nativeCompactAdvisoryLine());
+    raiseActionable({
+      kind: "native_auto_compact_conflict",
+      lines: ["explicit --autocompact on this launch — see /details for the cause and the way back"],
+    });
   }
 
   // Per-wrapper runtime descriptor: Bash inherits only the path. Thread/archive
@@ -930,6 +1365,19 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         return 2;
       }
       wrapperLog.warn(`cc-lhc runtime descriptor create failed: ${message}`);
+    }
+  }
+
+  if (!unboundTestChild && expectedSession !== undefined) {
+    try {
+      contextWindowObserver = createContextWindowObserver(
+        options.contextWindowCapturePath ?? newCapturePath(dirname(defaultLineageDbPath()), process.pid),
+      );
+      contextWindowObserver.acceptSession(expectedSession.sessionId);
+      childArgv = installContextWindowObserver(childArgv);
+    } catch (cause) {
+      contextWindowObserver = undefined;
+      adoptContextWindow(contextWindowDetectionUnavailable(detailOf(cause)), "capture file unavailable");
     }
   }
 
@@ -1009,28 +1457,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   let minObservedProviderTotal: number | null = null;
   /** One auto operation scheduled/coalesced at a time. */
   let autoOperationScheduled = false;
-  /**
-   * Answer callback for a pre-swap confirmation currently on the panel.
-   * Present only while the operator is being asked; every path that tears the
-   * panel down settles it, so a seam never waits on a prompt nobody can see.
-   */
-  let pendingCompactConfirm: ((disposition: CompactConfirmDisposition) => void) | null = null;
-  /** Settle the confirmation once, whatever ended it. */
-  const resolveCompactConfirm = (disposition: CompactConfirmDisposition): void => {
-    const answer = pendingCompactConfirm;
-    if (answer === null) return;
-    pendingCompactConfirm = null;
-    answer(disposition);
-  };
-  /**
-   * A terminal the operator can actually answer on. Without one there is
-   * nobody to ask, so the swap behaves exactly as it always has — which is
-   * also why one-shot launches are exempt by construction.
-   */
-  const interactiveTerminal = stdin.isTTY === true && stdout.isTTY === true;
   /** Assigned inside the run promise where child/teardown machinery lives. */
-  let runAutoOperation: (args: { frozenTriggerTokens: number | null; receiptId: string }) => Promise<void> =
-    async () => {};
+  let runAutoOperation: (args: {
+    frozenTriggerTokens: number | null;
+    receiptId: string;
+    liveAsyncWork: readonly OpenAsyncWork[];
+  }) => Promise<void> = async () => {};
 
   const triggerFatalRevocation = (reason: string): void => {
     if (fatalRevocationExit && exited) return;
@@ -1212,6 +1644,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             log: (message) => wrapperLog.info(message),
             logError: (message) => wrapperLog.warn(message),
             onLifecycle: publishCaptureLifecycle,
+            onAsyncWorkEvent: recordAsyncWorkEvent,
+            seedAsyncWork: carriedSeed,
+            onResultDelivery: recordResultDelivery,
             onRuntimeSettings,
           });
           captureContinuation = {
@@ -1230,18 +1665,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     });
   };
 
-  /**
-   * The sequencing conditions that keep an executable settled seam from
-   * starting an operation right now. Named once so the seam's two readers —
-   * the pre-authorization check and the operation itself — cannot drift.
-   */
-  const settledSeamBlocked = (): boolean =>
-    exited ||
-    handoffInProgress ||
-    autoOperationScheduled ||
-    standingNonviabilityAlarm.length > 0 ||
-    captureSession?.isCaptureReady() !== true;
-
   /** Log an observation and let the host see it. In-memory only. */
   const noteGovernorObservation = (record: import("../governor/index.js").GovernorObserveRecord): void => {
     wrapperLog.info(formatGovernorObserveLogLine(record));
@@ -1256,8 +1679,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
   /**
    * One governor observation: log it, and route an executable settled decision
-   * to the operation — through the operator first when a swap would kill live
-   * background work.
+   * to the operation.
    */
   const handleGovernorObserve = (record: import("../governor/index.js").GovernorObserveRecord): void => {
     noteGovernorObservation(record);
@@ -1270,101 +1692,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       return;
     }
 
-    // A swap the operator has not authorized must leave nothing behind — not a
-    // receipt, not an outcome, not a preference. So the question comes before
-    // the record, and the ordinary persist/schedule path starts only on yes.
-    if (!settledSeamBlocked() && interactiveTerminal) {
-      const liveWork = captureSession?.getLiveAsyncWork() ?? [];
-      if (liveWork.length > 0) {
-        askBeforeSwap(liveWork);
-        return;
-      }
-    }
-
-    runSettledSeam(record);
-  };
-
-  /**
-   * Ask the operator before a swap kills live background work, and act on the
-   * answer. Only yes reaches the ordinary settled-seam path; every other
-   * outcome — including a prompt that could not be raised at all — reports in
-   * memory and returns, so the next seam asks again while the work is open.
-   */
-  const askBeforeSwap = (liveWork: readonly OpenAsyncWork[]): void => {
-    const notNow = (why: string): void => {
-      wrapperLog.info(
-        `cc-lhc governor: compact not authorized — ${why}; ${liveWork.length} live background item(s) left running`,
-      );
-      lastAttempt = { summary: `auto compact not authorized: ${why}`, atMs: Date.now() };
-    };
-    if (pendingCompactConfirm !== null) {
-      notNow("the background-work confirmation is already on screen");
-      return;
-    }
-    if (inputState.mode !== "passthrough") {
-      notNow(`the panel is busy (${inputState.mode})`);
-      return;
-    }
-
-    // What the operator is about to authorize, by stable identity. The session
-    // keeps running behind the panel — Claude answers a notification, another
-    // launcher starts — so consent is checked against the world at the moment
-    // of the keypress, not the one that raised the question.
-    const listed = new Set(liveWork.map((work) => asyncWorkIdentity(work)));
-    const consentStale = (): string | null => {
-      if (governorState.turnOpen || captureSession?.isTurnOpen() === true) {
-        return "a new turn opened while the question was on screen";
-      }
-      if (settledSeamBlocked()) return "the seam stopped being eligible while the question was on screen";
-      // Work that finished meanwhile is fine — killing fewer than listed is
-      // what the operator agreed to. Work that STARTED meanwhile was never on
-      // the list, so nobody has agreed to kill it.
-      const unlisted = (captureSession?.getLiveAsyncWork() ?? []).filter(
-        (work) => !listed.has(asyncWorkIdentity(work)),
-      );
-      if (unlisted.length === 0) return null;
-      const noun = unlisted.length === 1 ? "another piece" : `${unlisted.length} more pieces`;
-      return `${noun} of background work started while the question was on screen`;
-    };
-
-    const raised = raiseCompactConfirm(liveWork, (disposition) => {
-      if (disposition.kind !== "yes") {
-        notNow(describeDecline(disposition.reason));
-        return;
-      }
-      const stale = consentStale();
-      if (stale !== null) {
-        // Nothing is deferred and nothing waits for the turn to settle: the
-        // next otherwise-eligible seam raises a fresh question over whatever
-        // is open then.
-        notNow(stale);
-        return;
-      }
-      // The physical checks say a swap could happen; whether one is still
-      // WANTED is a fresh question. A turn may have settled behind the panel
-      // with a smaller provider reading, leaving the session under the
-      // trigger. Ask the governor again, and compact against what it says now.
-      const current = reobserveSettled(governorState, resolvedContextPolicy);
-      const observe = current.observe;
-      // The recomputed state is dropped along with the decision: an
-      // observation nobody acts on must not consume a settle sequence, and it
-      // certainly must not leave a record behind.
-      if (observe === null) {
-        notNow("the governor no longer reports a settled seam");
-        return;
-      }
-      if (observe.observePhase !== "settled_seam" || observe.wouldMutate !== true) {
-        notNow(`the governor no longer authorizes a compact here (${observe.decision})`);
-        return;
-      }
-      // Consumed: this observation is the one the operation runs against, so
-      // its pressure, sampling, and sequences describe the session now.
-      governorState = current.state;
-      noteGovernorObservation(observe);
-      wrapperLog.info(`cc-lhc governor: operator authorized compact over ${liveWork.length} live background item(s)`);
-      runSettledSeam(observe);
-    });
-    if (!raised) notNow(describeDecline("render_failed"));
+    // Active background work never delays the seam (AC-2.3): the open set is
+    // frozen for the operation and the swap starts now.
+    runSettledSeam(record, captureSession?.getLiveAsyncWork() ?? []);
   };
 
   /**
@@ -1375,7 +1705,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
    * against an in-memory receipt id and says so; bookkeeping about the compact
    * never decides whether the compact happens.
    */
-  const runSettledSeam = (record: import("../governor/index.js").GovernorObserveRecord): void => {
+  const runSettledSeam = (
+    record: import("../governor/index.js").GovernorObserveRecord,
+    liveAsyncWork: readonly OpenAsyncWork[] = [],
+  ): void => {
     const persisted = persistGovernorObserve(record);
 
     if (persisted !== null && !persisted.inserted) {
@@ -1394,7 +1727,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           `cc-lhc governor: replay of existing scheduled receipt ${persisted.receipt.receiptId} — an operation already owns it; no re-schedule; inspect handoffOutcome`,
         );
         lastAttempt = {
-          summary: `auto compact not re-scheduled: existing scheduled receipt ${persisted.receipt.receiptId} (restart/replay)`,
+          summary: formatAutoNotRescheduledSummary(persisted.receipt.receiptId),
           atMs: Date.now(),
         };
         return;
@@ -1413,10 +1746,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     let receiptId: string;
     if (persisted === null) {
       receiptId = `mem-${randomUUID()}`;
-      wrapperLog.warn(
-        `cc-lhc governor: durable receipt unavailable; running auto compact against in-memory receipt ${receiptId} ` +
-          "(restart recovery degraded for this attempt; the session still compacts)",
-      );
+      wrapperLog.warn(formatAutoInMemoryReceipt(receiptId));
     } else {
       receiptId = persisted.receipt.receiptId;
     }
@@ -1433,7 +1763,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       else wrapperLog.info(line);
       // attachGovernorHandoffOutcome already sets lastAttempt on failure.
       if (attached) {
-        lastAttempt = { summary: `auto compact deferred: ${reason} (${detail})`, atMs: Date.now() };
+        lastAttempt = { summary: formatAutoDeferredSummary(reason, detail), atMs: Date.now() };
       }
     };
 
@@ -1463,7 +1793,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       wrapperLog.warn(
         `cc-lhc governor: wouldMutate refused — ${standingNonviabilityAlarm[0] ?? "replacements are not becoming viable"} [receipt ${receiptId}]`,
       );
-      lastAttempt = { summary: "auto compact suspended: replacement incompatibility alarm", atMs: Date.now() };
+      lastAttempt = { summary: formatAutoSuspendedSummary(), atMs: Date.now() };
     } else if (launchForm === "one_shot") {
       // A one-shot seat is one prompt and an exit. Its compaction seam is the
       // start of the next invocation, before any Claude process exists (R9) —
@@ -1490,41 +1820,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const frozenTriggerTokens = record.pressure.nextRequestPressureTokens;
       autoOperationScheduled = true;
       setImmediate(() => {
-        void runAutoOperation({ frozenTriggerTokens, receiptId }).finally(() => {
+        void runAutoOperation({ frozenTriggerTokens, receiptId, liveAsyncWork }).finally(() => {
           autoOperationScheduled = false;
         });
       });
-    }
-  };
-
-  /**
-   * Put the pre-swap confirmation on the panel and register its answer
-   * callback. Returns false when the prompt could not be drawn — the caller
-   * treats that exactly like a decline, because nobody was asked.
-   */
-  const raiseCompactConfirm = (
-    work: readonly OpenAsyncWork[],
-    onAnswer: (disposition: CompactConfirmDisposition) => void,
-  ): boolean => {
-    const rows = compactConfirmRows(work, Date.now());
-    if (rows.length === 0) return false;
-    try {
-      outputHold.hold();
-      altScreen.enter();
-      inputState = openCompactConfirm(inputState, rows);
-      pendingCompactConfirm = onAnswer;
-      renderModalPanel();
-      wrapperLog.info(`cc-lhc governor: asking before compact kills ${work.length} live background item(s)`);
-      return true;
-    } catch (cause) {
-      pendingCompactConfirm = null;
-      inputState = forceResetInput(inputState);
-      altScreen.leave();
-      outputHold.flush();
-      wrapperLog.warn(
-        `cc-lhc governor: background-work confirmation could not be shown: ${cause instanceof Error ? cause.message : String(cause)}`,
-      );
-      return false;
     }
   };
 
@@ -1533,8 +1832,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // one bounded closed turn; nothing pauses, latches, or stands down.
     for (const signal of signals) {
       if (signal.kind !== "native_compact_observed") continue;
-      const preview = signal.summaryPreview === undefined ? "" : ` — ${signal.summaryPreview}`;
-      const notice = `ANOMALY: native compact ran on a managed session${preview}`;
+      const notice = nativeCompactAnomalyNotice(signal.summaryPreview);
       wrapperLog.warn(`cc-lhc ${notice}`);
       pendingPanelNotices = [...pendingPanelNotices, notice, "captured as one bounded turn; LHC compaction continues"];
     }
@@ -1544,6 +1842,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       governorState = setGovernorCaptureGeneration(governorState, captureSession.getCaptureGeneration());
     }
 
+    syncContextWindow();
     const observed = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy);
     governorState = observed.state;
     for (const record of observed.observes) handleGovernorObserve(record);
@@ -1637,6 +1936,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       log: (message) => wrapperLog.info(message),
       logError: (message) => wrapperLog.warn(message),
       onLifecycle: publishCaptureLifecycle,
+      onAsyncWorkEvent: recordAsyncWorkEvent,
+      seedAsyncWork: carriedSeed,
+      onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
     });
     process.on("SIGUSR1", onSigusr1);
@@ -1699,7 +2001,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     options.outputHoldCapBytes ?? OUTPUT_HOLD_CAP_BYTES,
     (data) => stdout.write(data),
     () => {
-      resolveCompactConfirm({ kind: "no", reason: "interrupted" });
       inputState = forceResetInput(inputState);
       altScreen.leave();
       // No terminal notice — the child owns the restored screen. The event is
@@ -1714,7 +2015,16 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
 
   const commandRuntime = (): LhcCommandRuntime => {
+    syncContextWindow();
     const rollout = captureSession?.getRolloutInfo();
+    const policy = resolvedContextPolicy.policy;
+    const statusSnapshot = {
+      latestProviderContextTokens: governorState.latestProviderContext?.total ?? null,
+      targetTokens: policy.lowerBoundTokens,
+      triggerTokens: policy.upperBoundTokens,
+      contextClass: resolvedContextPolicy.contextWindow.contextClass,
+      nativeAutoCompact,
+    };
     if (captureSession === undefined) {
       return {
         stats: emptyCaptureStats(),
@@ -1723,16 +2033,17 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         cwd: process.cwd(),
         sourceRolloutPath: undefined,
         sourceSessionId: undefined,
+        statusSnapshot,
       };
     }
     const ctx = captureSession.getCommandContext();
-    const policy = resolvedContextPolicy.policy;
     return {
       ...ctx,
       cwd: process.cwd(),
       sourceRolloutPath: rollout?.path,
       sourceSessionId: rollout?.sessionId,
       ...(configFallbackNotice.length === 0 ? {} : { hostNotices: configFallbackNotice }),
+      statusSnapshot,
       contextPolicy: {
         profile: policy.profile,
         lowerBoundTokens: policy.lowerBoundTokens,
@@ -1755,17 +2066,161 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       lineageDbPath: defaultLineageDbPath(),
       logLineageError: (message) => wrapperLog.warn(message),
       warnings: { count: wrapperLog.warningCount(), logPath: wrapperLog.path },
+      getLiveAsyncWork: () => captureSession?.getLiveAsyncWork() ?? [],
+      acceptCarryover: () =>
+        acceptCarryoverAtSeam(
+          ctx.threadRef !== undefined && "threadId" in ctx.threadRef ? ctx.threadRef.threadId : "",
+          rollout?.path,
+          rollout?.sessionId,
+        ),
     };
+  };
+
+  const formatAgo = (atMs: number): string => {
+    const seconds = Math.max(0, Math.round((Date.now() - atMs) / 1000));
+    if (seconds < 60) return `${seconds}s ago`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
+    return `${Math.round(seconds / 3600)}h ago`;
+  };
+
+  const snapshotPanelView = () => {
+    syncContextWindow();
+    const policy = resolvedContextPolicy.policy;
+    const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
+    const retrievalState = runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
+    const inFlight = commandGuard.current();
+    // The guard's label is internal (`auto-compact` for the automatic path);
+    // every panel surface names the command instead.
+    const activeOperation = handoffInProgress
+      ? "handoff in progress"
+      : inFlight !== null
+        ? formatActiveOperation(inFlight.label)
+        : null;
+    const lastActionText =
+      lastAction === null
+        ? "none this wrapper session"
+        : formatLastActionRow({
+            operation: lastAction.operation,
+            origin: lastAction.origin,
+            ago: formatAgo(lastAction.atMs),
+            ...(lastAction.triggerTokens === undefined
+              ? {}
+              : { triggerTokens: formatTokensShort(lastAction.triggerTokens) }),
+            ...(lastAction.zoneBefore === undefined || lastAction.zoneAfter === undefined
+              ? {}
+              : {
+                  zoneBefore: formatTokensShort(lastAction.zoneBefore),
+                  zoneAfter: formatTokensShort(lastAction.zoneAfter),
+                }),
+            ...(lastAction.viewTokens === undefined ? {} : { viewTokens: formatTokensShort(lastAction.viewTokens) }),
+          });
+
+    // Home carries only non-default operational state: an in-flight
+    // operation, a failed attempt, and startup anomalies. "none" states and
+    // the wrapper's own configuration chain live one typed word away, on
+    // `details` — absence is the design.
+    const extraStatusRows: string[] = [];
+    if (activeOperation !== null) extraStatusRows.push(formatActiveOperationRow(activeOperation));
+    if (lastAttempt !== null && (lastAction === null || lastAttempt.atMs > lastAction.atMs)) {
+      extraStatusRows.push(`last attempt: ${lastAttempt.summary} (${formatAgo(lastAttempt.atMs)})`);
+    }
+    if (retrievalState !== "ready") extraStatusRows.push(formatRetrievalStateRow(retrievalState));
+    extraStatusRows.push(...startupAnomalyNotices);
+    // LIM-146: finished carried work awaiting delivery. Reading it here changes
+    // no delivery state; opening the panel is visibility, not delivery.
+    if (continuityStore !== null) {
+      const panelThreadRef = captureSession?.getCommandContext().threadRef;
+      const panelThreadId = panelThreadRef !== undefined && "threadId" in panelThreadRef ? panelThreadRef.threadId : "";
+      if (panelThreadId !== "") {
+        try {
+          extraStatusRows.push(...formatPendingResultRows(continuityStore.listPendingResults(panelThreadId)));
+        } catch (cause) {
+          wrapperLog.warn(
+            `cc-lhc continuity: results unreadable: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
+          extraStatusRows.push("carried work results unreadable (see log)");
+        }
+      }
+    }
+
+    // The alarm array is shared raw text (wrapper log, terminal line, governor
+    // refusal log); only the panel copy names the command.
+    const alarms: string[] = standingNonviabilityAlarm.map(toPanelWording);
+    if (minObservedProviderTotal !== null && policy.upperBoundTokens <= minObservedProviderTotal) {
+      alarms.push(
+        `WARNING: trigger ${formatTokensShort(policy.upperBoundTokens)} is at/below observed Claude host overhead ` +
+          `(${formatTokensShort(minObservedProviderTotal)}) — every settled turn would run /smart-compact`,
+      );
+    }
+
+    const window = resolvedContextPolicy.contextWindow;
+    const sources = resolvedContextPolicy.sources;
+    const sourceOf = (source: (typeof sources)[keyof typeof sources]): string =>
+      formatPolicySource(source, window.contextClass);
+    const details = [
+      { label: "Retrieval", value: retrievalState },
+      {
+        label: "Window",
+        value:
+          `${window.contextClass} (${window.source}` +
+          `${window.observedWindowTokens === null ? "" : ` ${window.observedWindowTokens}`}` +
+          `${window.modelId === null ? "" : ` ${window.modelId}`})` +
+          `${lastContextWindowChange === null ? "" : ` — changed from ${lastContextWindowChange.from} ${formatAgo(lastContextWindowChange.atMs)}`}`,
+      },
+      {
+        label: "Policy",
+        value:
+          `target ${policy.lowerBoundTokens.toLocaleString("en-US")} (${sourceOf(sources.lowerBoundTokens)})` +
+          ` · trigger ${policy.upperBoundTokens.toLocaleString("en-US")} (${sourceOf(sources.upperBoundTokens)})` +
+          ` · minimum runway ${policy.minRunwayTokens.toLocaleString("en-US")} (${sourceOf(sources.minRunwayTokens)})`,
+      },
+      ...(nativeAutoCompact === "disabled"
+        ? [{ label: "", value: nativeAutoCompactStatusLine(nativeAutoCompact) }]
+        : nativeCompactAdvisoryDetailsRows(nativeAutocompactArgvEvidence(argv) ?? "--autocompact")),
+      { label: "Operation", value: activeOperation ?? "none" },
+      { label: "Last action", value: lastActionText },
+      { label: "Scope", value: MODAL_SCOPE_NOTE },
+      {
+        label: "Precedence",
+        value: `builtin < user ${userConfigPath()} < project ${projectConfigPath(process.cwd())} < session`,
+      },
+    ];
+
+    return buildPanelViewSnapshot({
+      providerContextTokens: governorState.latestProviderContext?.total ?? null,
+      targetTokens: policy.lowerBoundTokens,
+      triggerTokens: policy.upperBoundTokens,
+      contextWindow: resolvedContextPolicy.contextWindow,
+      nativeAutoCompact,
+      minRunwayTokens: policy.minRunwayTokens,
+      policySources: {
+        target: sources.lowerBoundTokens,
+        trigger: sources.upperBoundTokens,
+        runway: sources.minRunwayTokens,
+      },
+      captureHealth: capturePhase,
+      profile: policy.profile,
+      alarms,
+      degradedNotices: configFallbackNotice,
+      fallbacks: resolvedContextPolicy.fallbacks,
+      extraStatusRows,
+      details,
+    });
   };
 
   const renderModalPanel = (): void => {
     if (inputState.mode === "passthrough") return;
+    const cols = stdout.columns ?? DEFAULT_COLS;
+    const rows = stdout.rows ?? DEFAULT_ROWS;
+    if (inputState.mode === "modal" || inputState.mode === "executing") {
+      inputState = clampPanelViewport({ ...inputState, panelView: snapshotPanelView() }, cols, rows);
+    }
     const inFlight = commandGuard.current();
     const elapsedSeconds =
       inputState.mode === "executing" && inFlight !== null
         ? Math.floor((Date.now() - inFlight.startedAtMs) / 1000)
         : undefined;
-    stdout.write(renderPanel(inputState, stdout.columns ?? DEFAULT_COLS, stdout.rows ?? DEFAULT_ROWS, elapsedSeconds));
+    stdout.write(renderPanel(inputState, cols, rows, elapsedSeconds));
   };
 
   // Once-a-second repaint while a command executes: the progress line's
@@ -1803,7 +2258,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // back on the main screen either way.
   const restoreIfModal = (): void => {
     if (!altScreen.active && inputState.mode === "passthrough") return;
-    resolveCompactConfirm({ kind: "no", reason: "interrupted" });
     inputState = forceResetInput(inputState);
     altScreen.leave();
     outputHold.flush();
@@ -1824,7 +2278,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const teardownAndExit = async (exitCode: number): Promise<void> => {
       if (exited) return;
       exited = true;
-      resolveCompactConfirm({ kind: "no", reason: "interrupted" });
       if (pendingEscTimer !== null) {
         clearTimeout(pendingEscTimer);
         pendingEscTimer = null;
@@ -1874,6 +2327,69 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         }
         governorReceiptStore = null;
       }
+      if (retainedHostPty !== null) {
+        // Orderly exit: the retained host is this wrapper's own child; it must
+        // not outlive the wrapper. An alive host is asked gracefully so Claude
+        // reaps any still-running task and writes its truthful "[killed]"
+        // marker; a frozen host cannot act on SIGTERM, so it is SIGKILLed
+        // (reaping its zombie children). Either way the next wrapper's
+        // reconcile settles the record from durable evidence.
+        wrapperLog.info(
+          `cc-lhc continuity: terminating retained ${retainedHostPty.frozen ? "frozen " : ""}completion host ` +
+            `pid ${retainedHostPty.pty.pid} on orderly exit`,
+        );
+        try {
+          if (retainedHostPty.frozen) {
+            try {
+              hostSignal(retainedHostPty.pty.pid, "SIGKILL");
+            } catch {
+              // already gone
+            }
+          } else {
+            await (retainedTerminate?.(retainedHostPty.pty) ?? Promise.resolve(false));
+          }
+        } catch {
+          // best effort; identity-gated settle on the next wrapper cleans up
+        }
+        retainedHostPty = null;
+      }
+      if (continuityStore !== null) {
+        // Orderly exit: bounded cleanup of the bound thread's finished carried
+        // work (AC-2.10). No binding, no cleanup.
+        let boundThreadId = "";
+        try {
+          boundThreadId = threadIdFromRef(captureSession?.getCommandContext().threadRef);
+        } catch {
+          boundThreadId = "";
+        }
+        if (boundThreadId === "") {
+          wrapperLog.info("cc-lhc continuity cleanup: no bound thread; nothing cleaned up");
+        } else {
+          try {
+            cleanupThread(continuityStore, boundThreadId, monitorOutputDir, {
+              log: (message) => wrapperLog.info(message),
+            });
+          } catch (cause) {
+            wrapperLog.warn(
+              `cc-lhc continuity cleanup failed; tracking kept: ${cause instanceof Error ? cause.message : String(cause)}`,
+            );
+          }
+        }
+        try {
+          continuityStore.close();
+        } catch {
+          // best effort
+        }
+        continuityStore = null;
+      }
+      if (handoffReceiptStore !== null) {
+        try {
+          handoffReceiptStore.close();
+        } catch {
+          // best effort
+        }
+        handoffReceiptStore = null;
+      }
       cleanup();
       resolve(exitCode);
     };
@@ -1894,7 +2410,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           outputHold.flush();
           return;
         }
-        inputState = showReceipts(inputState, messages);
+        inputState = showReceipts(inputState, panelReceiptRows(messages));
         renderModalPanel();
         return;
       }
@@ -1903,7 +2419,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         // where they are looking instead of vanishing it into the log,
         // preserving whatever they are mid-typing.
         if (messages.length === 0) return;
-        inputState = showLateReceipts(inputState, label, messages);
+        inputState = showLateReceipts(inputState, label, panelReceiptRows(messages));
         renderModalPanel();
         return;
       }
@@ -1911,8 +2427,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // reopened: the child owns the live screen, so the receipt goes to the
       // wrapper log (doctrine — never write into CC's UI).
       for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): [${label}] ${message}`);
-      if (retainForNextPanel && messages.length > 0) {
-        pendingPanelNotices = [`${label} finished:`, ...messages.flatMap((message) => message.split("\n"))];
+      if (messages.length > 0) {
+        pendingPanelNotices = [
+          `${label} finished:`,
+          ...panelReceiptRows(messages).flatMap((message) => message.split("\n")),
+        ];
       }
     };
 
@@ -1921,21 +2440,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const applyPolicyEdit = (commandLine: string): string[] => {
       const parts = commandLine.trim().split(/\s+/);
       const current = resolvedContextPolicy.policy;
-      let candidate: typeof current;
-      let changedKeys: Array<"autoCompact" | "lowerBoundTokens" | "upperBoundTokens">;
-      let editLabel: string;
-      if (parts[0] === "/lhc-auto") {
-        const on = parts[1] === "on";
-        candidate = { ...current, autoCompact: on };
-        changedKeys = ["autoCompact"];
-        editLabel = `auto ${on ? "on" : "off"}`;
-      } else {
-        const lower = Number.parseInt(parts[1] ?? "", 10);
-        const upper = Number.parseInt(parts[2] ?? "", 10);
-        candidate = { ...current, lowerBoundTokens: lower, upperBoundTokens: upper };
-        changedKeys = ["lowerBoundTokens", "upperBoundTokens"];
-        editLabel = `bounds ${lower} ${upper}`;
-      }
+      const lower = Number.parseInt(parts[1] ?? "", 10);
+      const upper = Number.parseInt(parts[2] ?? "", 10);
+      const candidate: typeof current = { ...current, lowerBoundTokens: lower, upperBoundTokens: upper };
+      const changedKeys: Array<"lowerBoundTokens" | "upperBoundTokens"> = ["lowerBoundTokens", "upperBoundTokens"];
+      const editLabel = `/bounds ${lower} ${upper}`;
       const errors = validateContextPolicy(candidate);
       if (errors.length > 0) {
         return [`rejected — nothing changed (${editLabel}):`, ...errors];
@@ -1944,10 +2453,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       for (const key of changedKeys) sources[key] = "session";
       // A panel edit that validates replaces the whole policy; the load-time
       // fallbacks it corrects are no longer in force.
-      resolvedContextPolicy = { policy: candidate, sources, fallbacks: [] };
+      resolvedContextPolicy = { ...resolvedContextPolicy, policy: candidate, sources, fallbacks: [] };
       configFallbackNotice = [];
       wrapperLog.info(
-        `cc-lhc policy edit applied (${editLabel}) session scope: auto=${candidate.autoCompact} lower=${candidate.lowerBoundTokens} upper=${candidate.upperBoundTokens}`,
+        `cc-lhc policy edit applied (${editLabel}) session scope: lower=${candidate.lowerBoundTokens} upper=${candidate.upperBoundTokens}`,
       );
       return [
         `${editLabel} — applied live to this wrapper`,
@@ -1957,8 +2466,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     };
 
     const runModalCommand = (commandLine: string): void => {
-      const label = commandLine.replace(/^\/lhc-/, "");
-      if (commandLine.startsWith("/lhc-auto ") || commandLine.startsWith("/lhc-bounds ")) {
+      const dispatchLabel = commandLine.replace(/^\/lhc-/, "");
+      const label = inputState.line.trim() === "" ? dispatchLabel : inputState.line.trim();
+      if (commandLine.startsWith("/lhc-bounds ")) {
         // Synchronous session-policy edit: no SDK, no processes, no guard needed.
         settleCommand(applyPolicyEdit(commandLine), label);
         return;
@@ -1974,7 +2484,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       startExecutingTicker();
       // A mutating manual command owns the settled session's input for the
       // whole operation, exactly like the automatic path.
-      const mutating = label === "compact" || label.startsWith("prune");
+      const mutating = dispatchLabel === "compact" || dispatchLabel.startsWith("prune");
       if (mutating) takeInputOwnership();
       // A synchronous throw (runtime-snapshot construction, dispatch setup)
       // must not escape into the stdin data handler as an uncaught exception —
@@ -2008,9 +2518,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             }
             return;
           }
-          if (label === "compact" || label.startsWith("prune")) {
+          if (mutating) {
             lastAttempt = {
-              summary: `manual ${label} did not hand off: ${outcome.messages[outcome.messages.length - 1] ?? "(no detail)"}`,
+              summary: `manual ${label} did not hand off: ${toPanelWording(
+                outcome.messages[outcome.messages.length - 1] ?? "(no detail)",
+              )}`,
               atMs: Date.now(),
             };
           }
@@ -2027,87 +2539,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         });
     };
 
-    const formatAgo = (atMs: number): string => {
-      const seconds = Math.max(0, Math.round((Date.now() - atMs) / 1000));
-      if (seconds < 60) return `${seconds}s ago`;
-      if (seconds < 3600) return `${Math.round(seconds / 60)}m ago`;
-      return `${Math.round(seconds / 3600)}h ago`;
-    };
-
-    /** Compact status summary shown above the prompt whenever the panel opens.
-     * "Trigger context" is Claude host context; "LHC view" is SDK-served size. */
-    const buildPanelStatusRows = (): string[] => {
-      const policy = resolvedContextPolicy.policy;
-      const rows: string[] = ["LHC context management"];
-      // The standing nonviability alarm sits above everything: it is the one
-      // condition where cc-lhc has stopped swapping and the operator has to act.
-      for (const line of standingNonviabilityAlarm) rows.push(line);
-
-      const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
-      const retrievalState =
-        runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
-      rows.push(`capture ${capturePhase} · retrieval ${retrievalState}`);
-
-      const provider = governorState.latestProviderContext;
-      const providerText =
-        provider === null
-          ? "provider context: none observed yet"
-          : `provider context ${formatTokensShort(provider.total)}`;
-      rows.push(
-        `${providerText} · auto ${policy.autoCompact ? "on" : "off"} · ` +
-          `trigger ${formatTokensShort(policy.upperBoundTokens)} · target ${formatTokensShort(policy.lowerBoundTokens)}`,
-      );
-      // Bad configuration never disables anything; it says so, here and in the
-      // compact message, until the operator fixes it.
-      for (const line of configFallbackNotice.slice(0, 4)) rows.push(line);
-      rows.push(
-        disableNativeAutoCompact
-          ? "native auto-compact: disabled for this child (DISABLE_AUTO_COMPACT=1) · manual /compact still available"
-          : "native auto-compact: explicit --autocompact passed through; cc-lhc did not inject DISABLE_AUTO_COMPACT " +
-              "· inherited env/settings govern",
-      );
-
-      const inFlight = commandGuard.current();
-      rows.push(
-        handoffInProgress
-          ? "active operation: handoff in progress"
-          : inFlight !== null
-            ? `active operation: ${inFlight.label}`
-            : "active operation: none",
-      );
-
-      if (lastAction === null) {
-        rows.push("last action: none this wrapper session");
-      } else {
-        const parts = [
-          `${lastAction.operation === "prune" ? "pruned" : "compacted"} ${formatAgo(lastAction.atMs)} (${lastAction.origin})`,
-        ];
-        if (lastAction.triggerTokens !== undefined)
-          parts.push(`trigger ${formatTokensShort(lastAction.triggerTokens)}`);
-        if (lastAction.zoneBefore !== undefined && lastAction.zoneAfter !== undefined)
-          parts.push(`zone ${formatTokensShort(lastAction.zoneBefore)} -> ${formatTokensShort(lastAction.zoneAfter)}`);
-        if (lastAction.viewTokens !== undefined) parts.push(`view ${formatTokensShort(lastAction.viewTokens)}`);
-        rows.push(`last action: ${parts.join(" · ")}`);
-      }
-      if (lastAttempt !== null && (lastAction === null || lastAttempt.atMs > lastAction.atMs)) {
-        rows.push(`last attempt: ${lastAttempt.summary} (${formatAgo(lastAttempt.atMs)})`);
-      }
-
-      if (minObservedProviderTotal !== null && policy.upperBoundTokens <= minObservedProviderTotal) {
-        rows.push(
-          `WARNING: trigger ${formatTokensShort(policy.upperBoundTokens)} is at/below observed Claude host overhead ` +
-            `(${formatTokensShort(minObservedProviderTotal)}) — every settled turn would compact`,
-        );
-      }
-
-      rows.push("edits (auto/bounds) are session-scoped: live now, survive handoffs, lost at wrapper exit");
-      rows.push(
-        `precedence: builtin < user ${userConfigPath()} < project ${projectConfigPath(process.cwd())} < session`,
-      );
-      for (const notice of startupAnomalyNotices) rows.push(notice);
-      return rows;
-    };
-
     const applyActions = (actions: ReturnType<typeof processInputChunk>["actions"]): void => {
       for (const action of actions) {
         if (action.kind === "enter_modal") {
@@ -2116,9 +2547,24 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           altScreen.enter();
           inputState = {
             ...inputState,
-            panelRows: [...buildPanelStatusRows(), ...pendingPanelNotices],
+            panelView: snapshotPanelView(),
+            panelRows: [
+              ...(pendingContextChangeNotice === null ? [] : [pendingContextChangeNotice]),
+              ...pendingPanelNotices,
+            ],
+            route: "home",
+            viewport: { scrollOffset: 0, selectedIndex: -1 },
           };
+          pendingContextChangeNotice = null;
           pendingPanelNotices = [];
+        } else if (action.kind === "select_allocation") {
+          resolvedContextPolicy = applySessionAllocation(resolvedContextPolicy, action.id);
+          inputState = {
+            ...inputState,
+            panelView: snapshotPanelView(),
+            route: "home",
+            viewport: { scrollOffset: 0, selectedIndex: -1 },
+          };
         } else if (action.kind === "exit_modal") {
           // Leave BEFORE flushing: the terminal restores CC's main screen,
           // then the held bytes land on it in order.
@@ -2144,12 +2590,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         } else if (action.kind === "notifier_return") {
           altScreen.leave();
           outputHold.flush();
-        } else if (action.kind === "compact_confirm_answered") {
-          // Leave the panel first so the answer lands on the restored screen,
-          // then hand the disposition to the seam that raised it.
-          altScreen.leave();
-          outputHold.flush();
-          resolveCompactConfirm(action.disposition);
         } else if (action.kind === "execute") runModalCommand(action.commandLine);
       }
     };
@@ -2181,7 +2621,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
     const onStdinGone = (): void => {
       // No input left means no keypress can answer a pending confirmation.
-      resolveCompactConfirm({ kind: "no", reason: "stdin_closed" });
       restoreIfModal();
     };
 
@@ -2189,7 +2628,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // Restore the terminal, then let the error do what it always did
       // (propagate as an uncaught exception) — the exit hook's guarded leave
       // makes the rethrow safe.
-      resolveCompactConfirm({ kind: "no", reason: "stdin_closed" });
       restoreIfModal();
       throw cause;
     };
@@ -2206,8 +2644,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         //
         // While compact owns the settled session they are dropped instead of
         // delivered, and never held for replay into a replacement. The wrapper's
-        // own UI keeps working; only the path to Claude is closed.
-        if (compactOwnsInput) droppedInputBytes += result.toPty.length;
+        // own UI keeps working; only the path to Claude is closed. Only bytes a
+        // person could have typed count toward the resend notice: the terminal's
+        // replies to the replacement's startup queries land here too.
+        if (compactOwnsInput) droppedInputBytes += countTypedBytes(result.toPty);
         else {
           governorState = noteGovernorInput(governorState);
           currentPty.write(result.toPty);
@@ -2334,15 +2774,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const nonviableSwapLimit = options.nonviableSwapLimit ?? NONVIABLE_SWAPS_BEFORE_ALARM;
 
     /**
-     * One line the wrapper puts on the terminal over Claude's screen. Reserved
-     * for the two facts the operator cannot be allowed to miss: input typed
-     * during compaction was dropped, and the standing nonviability alarm.
-     */
-    const writeWrapperLine = (text: string): void => {
-      stdout.write(`\r\n\x1b[2K[cc-lhc] ${text.replace(/\n/g, " ")}\r\n`);
-    };
-
-    /**
      * Compact takes ownership of the settled session's input here. From this
      * moment nothing the operator types reaches Claude: it is dropped, counted,
      * and reported once when the operation settles.
@@ -2356,9 +2787,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       compactOwnsInput = false;
       if (droppedInputBytes === 0) return;
       wrapperLog.warn(`cc-lhc: dropped ${droppedInputBytes} typed-ahead byte(s) during compaction`);
-      writeWrapperLine(TYPED_AHEAD_RESEND_NOTICE);
-      pendingPanelNotices = [...pendingPanelNotices, TYPED_AHEAD_RESEND_NOTICE];
       droppedInputBytes = 0;
+      raiseActionable({ kind: "possible_undelivered_input", lines: [TYPED_AHEAD_RESEND_NOTICE] });
     };
 
     const waitForExpectedExit = (timeoutMs: number): Promise<boolean> =>
@@ -2421,6 +2851,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const guided = injectRetrievalGuidance(replacementArgv);
       if (guided.ok) replacementArgv = guided.argv;
       else wrapperLog.warn(`cc-lhc handoff: retrieval guidance not injected: ${guided.reason}`);
+      contextWindowObserver?.acceptSession(sessionId);
+      replacementArgv = installContextWindowObserver(replacementArgv);
       const env: Record<string, string> = injectNativeDisable
         ? nativeAutoCompactChildEnv(process.env as Record<string, string>, false)
         : { ...(process.env as Record<string, string>) };
@@ -2539,6 +2971,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       if (!killed) expectedExitPty = null;
       return killed;
     };
+    retainedTerminate = (pty) => terminateChild(pty, true);
 
     /**
      * Adopt a candidate's descriptor as the active retrieval capability and
@@ -2603,6 +3036,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           log: (message) => wrapperLog.info(message),
           logError: (message) => wrapperLog.warn(message),
           onLifecycle: publishCaptureLifecycle,
+          onAsyncWorkEvent: recordAsyncWorkEvent,
+          seedAsyncWork: carriedSeed,
+          onResultDelivery: recordResultDelivery,
           onRuntimeSettings,
         });
         captureContinuation = {
@@ -2720,19 +3156,120 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             ...(switchWarnings.length === 0 ? {} : { switchWarnings }),
           };
         },
-        killOldChild: async (): Promise<{ exited: boolean; pid: number }> => {
-          const record = childRecords.get(oldPty);
-          if (record?.exited === true) return { exited: true, pid: oldPty.pid };
-          try {
-            return { exited: await terminateChild(oldPty, true), pid: oldPty.pid };
-          } catch (cause) {
-            // Termination that cannot even be attempted leaves a process the
-            // operator has to deal with. Report it by PID and keep going.
+        killOldChild: async () => {
+          // LIM-149. The replacement is the sole interactive/model authority the
+          // instant the switch lands. This wrapper's own supervised child may
+          // only linger as an input/output-fenced completion recorder for its
+          // adopted background shells — never as a model that could make a
+          // provider call.
+          //   adopt-only carryover: keep it running. It supervises its own
+          //     shells and records the real "[exited with code N]" outcome with
+          //     no provider call; markers work on every platform.
+          //   mixed carryover (shells + any reconstruct/rearm family): the
+          //     non-shell families are already carried by the REPLACEMENT, so
+          //     the child's own copies must not complete and wake its model.
+          //     Pausing it (native addon; Linux, macOS, Windows alike) stops
+          //     every such path while its separate-group shells keep running;
+          //     each shell's real exit status is then read from the child's
+          //     own uncollected task record, which needs the task process
+          //     pinned at qualification. Without every pin the child cannot
+          //     be paused truthfully and is terminated gracefully instead, so
+          //     those shells close from Claude's own "[killed]" marker.
+          const items = request.carryover?.snapshot.items ?? [];
+          const adoptItems = items.filter((item) => item.carryMode === "adopt");
+          const nonShell = items.length - adoptItems.length;
+          const mixed = adoptItems.length > 0 && nonShell > 0;
+          const threadIdForPins = request.carryover?.snapshot.threadId ?? "";
+          const unpinned =
+            mixed && continuityStore !== null
+              ? adoptItems.filter(
+                  (item) =>
+                    continuityStore?.getItem(threadIdForPins, item.launchId)?.continuation?.taskProcess === undefined,
+                )
+              : [];
+          if (unpinned.length > 0) {
             wrapperLog.warn(
-              `cc-lhc handoff: terminating old child pid=${oldPty.pid} threw: ${cause instanceof Error ? cause.message : String(cause)}`,
+              "cc-lhc handoff: mixed carryover cannot pause the supervised child — no task process pinned for " +
+                `${unpinned.map((item) => item.launchId).join(", ")}; terminating it gracefully instead, those ` +
+                "shell(s) close from Claude's own marker",
             );
-            return { exited: false, pid: oldPty.pid };
           }
+          const canRetain =
+            adoptItems.length > 0 &&
+            unpinned.length === 0 &&
+            childRecords.get(oldPty)?.exited !== true &&
+            continuityStore !== null;
+          if (canRetain) {
+            const store = continuityStore as NonNullable<typeof continuityStore>;
+            const carried = request.carryover as NonNullable<typeof request.carryover>;
+            const probed = probeProcessIdentity(oldPty.pid);
+            if (probed.ok) {
+              // Mixed carryover pauses the child before recording, so no
+              // duplicate family can wake it in the window before retirement.
+              let froze = true;
+              if (mixed) {
+                try {
+                  hostSignal(oldPty.pid, "SIGSTOP");
+                } catch (cause) {
+                  froze = false;
+                  wrapperLog.warn(
+                    "cc-lhc handoff: could not pause the supervised child for a mixed carryover " +
+                      `(${cause instanceof Error ? cause.message : String(cause)}); it will be terminated`,
+                  );
+                }
+              }
+              if (froze) {
+                const host = {
+                  pid: probed.identity.pid,
+                  bootId: probed.identity.bootId,
+                  starttime: probed.identity.starttime,
+                  retainedAtMs: Date.now(),
+                  ...(mixed ? { frozen: true } : {}),
+                };
+                try {
+                  store.setRetainedHost({
+                    threadId: carried.snapshot.threadId,
+                    generation: carried.snapshot.generation,
+                    host,
+                    nowMs: host.retainedAtMs,
+                  });
+                  retainedHostPty = { pty: oldPty, threadId: carried.snapshot.threadId, frozen: mixed };
+                  wrapperLog.info(
+                    `cc-lhc handoff: old child pid ${oldPty.pid} retained as ${mixed ? "paused " : ""}completion host ` +
+                      `for ${adoptItems.length} adopted background task(s)` +
+                      (mixed ? `; ${nonShell} non-shell item(s) carried by the replacement` : ""),
+                  );
+                  return { kind: "retained_task_host", pid: oldPty.pid };
+                } catch (cause) {
+                  if (mixed) {
+                    try {
+                      hostSignal(oldPty.pid, "SIGCONT");
+                    } catch {
+                      // it will be terminated below regardless
+                    }
+                  }
+                  wrapperLog.warn(
+                    "cc-lhc handoff: retained-host record failed; terminating instead: " +
+                      `${cause instanceof Error ? cause.message : String(cause)}`,
+                  );
+                }
+              }
+            } else {
+              // Fail closed: without an exact identity record a later settle
+              // could never safely signal the host, so it is not retained.
+              wrapperLog.warn(
+                `cc-lhc handoff: old-child identity unreadable (${probed.code}); adopted task(s) cannot be ` +
+                  "hosted and will close as killed",
+              );
+            }
+          }
+          return observeOldChildCleanup({
+            pid: oldPty.pid,
+            alreadyExited: childRecords.get(oldPty)?.exited === true,
+            probe: probeProcessIdentity,
+            terminate: () => terminateChild(oldPty, true),
+            onWarn: (message) => wrapperLog.warn(message),
+          });
         },
         awaitReplacementCaptureReady: awaitCaptureReadyAfterReplay,
         reconcileCapture: (reason: string): void => {
@@ -2791,6 +3328,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           childLivenessTimeoutMs,
           childStableWindowMs,
           replacementAttempts,
+          ...(handoffReceiptStore === null
+            ? {}
+            : { handoffReceipts: handoffReceiptPortFromStore(handoffReceiptStore) }),
         });
         // Last action records ONLY a confirmed handoff; anything else is a
         // last-attempt health note and never claims a successful compact.
@@ -2807,12 +3347,36 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             ...(request.metrics.zoneTokensBefore === undefined ? {} : { zoneBefore: request.metrics.zoneTokensBefore }),
             ...(request.metrics.zoneTokensAfter === undefined ? {} : { zoneAfter: request.metrics.zoneTokensAfter }),
           };
+          // LIM-145: the replacement is live and routed. Invoke each carried
+          // mechanism once for this generation and close it — the same step
+          // for manual and automatic Compact. A failed invocation is one
+          // truthful terminal outcome; the handoff is done either way.
+          if (request.carryover !== undefined && continuityStore !== null) {
+            const transfer = invokeCarryover(
+              continuityStore,
+              request.carryover.snapshot,
+              { monitorOutputDir, cwd: process.cwd(), log: (message) => wrapperLog.info(message) },
+              Date.now(),
+            );
+            const notCarried = transfer.results.filter((r) => r.kind === "failed");
+            wrapperLog.info(
+              `cc-lhc continuity: generation ${transfer.generation} ${transfer.closure.closed ? "closed" : `left open (${transfer.closure.refusal})`}: ` +
+                `${transfer.results.length - notCarried.length} carried, ${notCarried.length} not carried`,
+            );
+            if (notCarried.length > 0) {
+              pendingPanelNotices = [
+                ...pendingPanelNotices,
+                `continuity: ${notCarried.length} item(s) not carried across /smart-compact (see log)`,
+              ];
+            }
+          }
         } else {
           lastAttempt = {
-            summary:
-              result.kind === "cancelled"
-                ? `${request.operation} cancelled: ${result.reason}`
-                : `${request.operation} replacement not viable: ${result.reason}`,
+            summary: formatHandoffFailureSummary(
+              request.operation,
+              result.kind === "cancelled" ? "cancelled" : "nonviable",
+              result.reason,
+            ),
             atMs: Date.now(),
           };
         }
@@ -2822,7 +3386,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
                 kind: "handoff_success",
                 newSessionId: result.newSessionId,
                 droppedInputBytes,
-                ...(result.orphanPid === undefined ? {} : { orphanPid: result.orphanPid }),
+                handoffId: result.handoffId,
               }
             : result.kind === "cancelled"
               ? { kind: "handoff_cancelled", detail: result.reason }
@@ -2839,11 +3403,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           attachGovernorHandoffOutcome(governorReceiptId, handoffOutcome, { mutationBegan: true });
         }
         options.onHandoffResult?.(result);
-        if (result.kind === "success" && result.orphanPid !== undefined) {
-          pendingPanelNotices = [
-            ...pendingPanelNotices,
-            `ORPHANED old Claude child pid=${result.orphanPid} — kill it manually to reclaim its memory`,
-          ];
+        if (result.kind === "success" && request.metrics.origin === "auto") {
+          pendingPanelNotices = [...pendingPanelNotices, formatOldChildCleanup(result.oldChildCleanup)];
         }
         if (result.kind === "replacement_nonviable") {
           await noteNonviableSwap(result.oldSessionId, result.rebuiltSessionId, result.reason);
@@ -2960,11 +3521,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         ...standingNonviabilityAlarm,
         formatSurvivalRelaunchNotice(oldSessionId, relaunched),
       ];
-      for (const line of standingNonviabilityAlarm) {
-        wrapperLog.warn(`cc-lhc ${line}`);
-        writeWrapperLine(line);
-      }
-      pendingPanelNotices = [...pendingPanelNotices, ...standingNonviabilityAlarm];
+      for (const line of standingNonviabilityAlarm) wrapperLog.warn(`cc-lhc ${line}`);
+      raiseActionable({ kind: "repeated_replacement_failure", lines: standingNonviabilityAlarm.map(toPanelWording) });
     };
 
     // Automatic operation: shared mutation op + shared handoff, serialized with
@@ -2974,8 +3532,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     // Early gates (exited / handoff / command-guard) MUST terminalize the
     // receipt before returning — a stranded `scheduled` row fails closed forever
     // on replay with no evidence whether mutation began.
-    runAutoOperation = async (args: { frozenTriggerTokens: number | null; receiptId: string }): Promise<void> => {
-      const { frozenTriggerTokens, receiptId } = args;
+    runAutoOperation = async (args: {
+      frozenTriggerTokens: number | null;
+      receiptId: string;
+      liveAsyncWork: readonly OpenAsyncWork[];
+    }): Promise<void> => {
+      const { frozenTriggerTokens, receiptId, liveAsyncWork } = args;
       // Test seam: allow race injection before early gates (handoff / exiting).
       // forceExitedForAuto is local so we do not strand the real process-exit flag.
       let forceExitedForAuto = false;
@@ -3023,16 +3585,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           receiptId,
           {
             kind: "mutation_deferred",
-            detail: `command guard busy (${busyLabel}); auto compact not started`,
+            detail: formatAutoGuardBusyDetail(busyLabel),
             reason: "command_guard_busy",
           },
           { mutationBegan: false },
         );
-        wrapperLog.info(
-          `cc-lhc governor: auto-compact deferred — command guard busy (${busyLabel}) [receipt ${receiptId}]`,
-        );
+        wrapperLog.info(formatAutoGuardBusyLog(busyLabel, receiptId));
         lastAttempt = {
-          summary: `auto compact deferred: command_guard_busy (${busyLabel})`,
+          // Home notice: the guard label is internal, the panel names commands.
+          summary: formatAutoDeferredSummary("command_guard_busy", formatActiveOperation(busyLabel)),
           atMs: Date.now(),
         };
         return;
@@ -3060,16 +3621,20 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             : {}),
           ...(frozenTriggerTokens === null ? {} : { triggerContextTokens: frozenTriggerTokens }),
           ...(configFallbackNotice.length === 0 ? {} : { hostNotices: configFallbackNotice }),
+          liveAsyncWork,
         };
         const outcome = await runContextMutation(plan, runtime);
-        wrapperLog.info(
-          `cc-lhc auto-compact mutation ${outcome.kind}: ${outcome.messages.join(" | ") || "(no receipt)"}`,
-        );
+        wrapperLog.info(formatAutoMutationLog(outcome.kind, outcome.messages.join(" | ") || "(no receipt)"));
         if (outcome.kind !== "rebuilt") {
           // Never a successful action: a mutation that produced no handoff is
           // health/last-attempt state only.
           lastAttempt = {
-            summary: `auto compact ${outcome.kind}: ${outcome.messages[outcome.messages.length - 1] ?? "(no detail)"}`,
+            summary: formatAutoMutationSummary(
+              outcome.kind,
+              // The detail is a raw mutation message: name its operation the
+              // way the panel names it before it becomes a Home notice.
+              toPanelWording(outcome.messages[outcome.messages.length - 1] ?? "(no detail)"),
+            ),
             atMs: Date.now(),
           };
           const mutationOutcome: GovernorHandoffOutcome =
@@ -3092,9 +3657,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         }
         await performHandoff(outcome.handoff, receiptId);
       } catch (cause) {
-        wrapperLog.warn(
-          `cc-lhc auto-compact operation threw: ${cause instanceof Error ? cause.message : String(cause)}`,
-        );
+        wrapperLog.warn(formatAutoThrew(cause instanceof Error ? cause.message : String(cause)));
         attachGovernorHandoffOutcome(
           receiptId,
           {
@@ -3109,6 +3672,63 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         commandGuard.release();
       }
     };
+
+    /**
+     * Open the production panel for an allowlisted condition. The rows join
+     * whatever the panel already holds; nothing is written onto Claude's
+     * screen, and a panel that is already open (or a running command) simply
+     * receives the rows. Without a TTY no key can dismiss it, so it waits.
+     */
+    const openPanelFor = (rows: readonly string[]): boolean => {
+      if (inputState.mode === "passthrough") {
+        pendingPanelNotices = [...pendingPanelNotices, ...rows];
+        if (!stdin.isTTY) return false;
+        // The same transition the reopen key makes, so the panel opens exactly as it does on demand.
+        const opened = processInputChunk(Buffer.from([leaderByte]), inputState);
+        inputState = opened.state;
+        applyActions(opened.actions);
+        renderModalPanel();
+        return inputState.mode === "modal";
+      }
+      if (inputState.mode === "modal") {
+        inputState = { ...inputState, panelRows: [...inputState.panelRows, ...rows] };
+        renderModalPanel();
+        return true;
+      }
+      pendingPanelNotices = [...pendingPanelNotices, ...rows];
+      return false;
+    };
+    const startup = planStartupPanel({
+      shownVersion: readShownVersion(firstLoadMarkerPath(ccLhcHome())),
+      version: ONBOARDING_VERSION,
+      facts: {
+        targetTokens: resolvedContextPolicy.policy.lowerBoundTokens,
+        triggerTokens: resolvedContextPolicy.policy.upperBoundTokens,
+        contextClass: resolvedContextPolicy.contextWindow.contextClass,
+        nativeAutoCompact,
+        leaderByte,
+      },
+      conditions: startupActionable,
+    });
+    raiseActionable = (condition) => {
+      openPanelFor(actionableGuidanceRows([condition]));
+    };
+    // Onboarding is for an interactive terminal: without a TTY nothing is
+    // shown or marked, and only actionable guidance waits in the panel.
+    if (startup.open && !stdin.isTTY) {
+      pendingPanelNotices = [...pendingPanelNotices, ...actionableGuidanceRows(startupActionable)];
+    } else if (startup.open && openPanelFor(startup.rows)) {
+      if (startup.firstLoad) {
+        try {
+          markShown(firstLoadMarkerPath(ccLhcHome()), ONBOARDING_VERSION);
+        } catch (cause) {
+          wrapperLog.warn(`cc-lhc first-load marker not written: ${detailOf(cause)}`);
+        }
+      }
+      wrapperLog.info(
+        `cc-lhc Control Panel opened at launch (${startup.firstLoad ? `onboarding v${ONBOARDING_VERSION}` : "actionable condition"})`,
+      );
+    }
 
     attachChild(currentPty, expectedSession?.sessionId ?? "", true);
     stdin.on("data", forwardInput);

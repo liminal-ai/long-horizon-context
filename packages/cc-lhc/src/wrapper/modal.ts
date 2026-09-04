@@ -27,14 +27,41 @@
 // precedent. Ctrl-G was rejected: BEL (0x07) TERMINATES OSC sequences, so a
 // BEL on stdin inside an OSC response is protocol, not a keypress.
 
-import type { CompactConfirmDisposition } from "./compact-confirm.js";
+import type { BandAllocationId } from "../governor/band-allocation.js";
+import { PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
+import { readonlyBodyLineCount } from "./panel.js";
+import {
+  allocationIndex,
+  commandSuggestions,
+  completeCommandLine,
+  exactCommandName,
+  HOME_ACTIONS,
+  homeCursorLength,
+  homeSelectedActionIndex,
+  isReadonlyRoute,
+  MODAL_ASCII_NOTE,
+  MODAL_SCOPE_NOTE,
+  MODAL_UNKNOWN_HINT,
+  MODAL_UNKNOWN_PREFIX,
+  mapModalCommand,
+  type PanelRoute,
+  type PanelViewport,
+  type PanelViewSnapshot,
+  parsePanelCommand,
+} from "./panel-commands.js";
 
 export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
-export const MODAL_HELP_LINE =
-  "commands: status | stats | prune [targetTokens] | compact | export | auto on|off | bounds <lower> <upper> | help";
-export const MODAL_SCOPE_NOTE = "auto/bounds edits are session-only (live now; survive handoffs; lost at wrapper exit)";
-export const MODAL_ASCII_NOTE = "input is ASCII-only — non-ASCII bytes are ignored";
-export const MODAL_UNKNOWN_PREFIX = "unknown command: ";
+export {
+  isReadonlyRoute,
+  MODAL_ASCII_NOTE,
+  MODAL_SCOPE_NOTE,
+  MODAL_UNKNOWN_HINT,
+  MODAL_UNKNOWN_PREFIX,
+  mapModalCommand,
+  type PanelRoute,
+  type PanelViewport,
+  type PanelViewSnapshot,
+};
 
 /**
  * Bytes that cannot serve as the leader: NUL, BEL (terminates OSC — a BEL on
@@ -77,7 +104,7 @@ export type EscapeTracking =
   | { kind: "string_term_esc" }
   | { kind: "legacy_mouse"; remaining: number };
 
-export type InputMode = "passthrough" | "modal" | "executing" | "notifier" | "compact_confirm";
+export type InputMode = "passthrough" | "modal" | "executing" | "notifier";
 
 /**
  * Hazardous native lifecycle commands verified in Claude Code 2.1.226 that
@@ -126,6 +153,17 @@ export interface InputState {
   heldEnter: number[];
   /** The recognized command shown in the overlay. */
   notifierCommand: string;
+  /** Control Panel route. Ignored while passthrough/notifier. */
+  route: PanelRoute;
+  /**
+   * Selected row in the slash-command suggestion menu. The menu itself is
+   * derived from the line through the command registry — this is the only
+   * state it needs, so there is no second command list to drift.
+   */
+  suggestionIndex: number;
+  viewport: PanelViewport;
+  /** Live Home/Help/Introduction snapshot supplied by run.ts. */
+  panelView: PanelViewSnapshot | null;
 }
 
 export type InputAction =
@@ -138,7 +176,8 @@ export type InputAction =
   /** Forward nothing; Claude's typed input line is untouched. */
   | { kind: "notifier_return" }
   /** The operator answered the pre-swap confirmation. Only `yes` compacts. */
-  | { kind: "compact_confirm_answered"; disposition: CompactConfirmDisposition };
+  /** Allocation selector applied a product preset; run.ts maps it at session scope. */
+  | { kind: "select_allocation"; id: BandAllocationId };
 
 export interface InputResult {
   state: InputState;
@@ -163,35 +202,45 @@ export function createInputState(
     notifierEnabled: options.notifierEnabled ?? true,
     heldEnter: [],
     notifierCommand: "",
+    route: "home",
+    suggestionIndex: 0,
+    viewport: { scrollOffset: 0, selectedIndex: -1 },
+    panelView: null,
   };
 }
 
-/** Map a modal command line to the dispatch table's /lhc-* form; null if unknown. */
-export function mapModalCommand(line: string): string | null {
-  const parts = line.trim().split(/\s+/);
-  const name = parts[0] ?? "";
-  const args = parts.slice(1);
-  switch (name) {
-    case "status":
-    case "stats":
-    case "compact":
-    case "export":
-      return args.length === 0 ? `/lhc-${name}` : null;
-    case "prune":
-      if (args.length === 0) return "/lhc-prune";
-      if (args.length === 1 && /^\d+$/.test(args[0]!)) return `/lhc-prune ${args[0]}`;
-      return null;
-    case "auto":
-      if (args.length === 1 && (args[0] === "on" || args[0] === "off")) return `/lhc-auto ${args[0]}`;
-      return null;
-    case "bounds":
-      if (args.length === 2 && /^\d+$/.test(args[0]!) && /^\d+$/.test(args[1]!)) {
-        return `/lhc-bounds ${args[0]} ${args[1]}`;
-      }
-      return null;
-    default:
-      return null;
-  }
+/**
+ * The suggestion menu is open exactly when the Home line reads as a slash
+ * command with at least one registry match. Nothing else can open it, so
+ * ordinary typing never grows a menu.
+ */
+export function suggestionsOpen(state: InputState): boolean {
+  if (state.mode !== "modal" || state.route !== "home") return false;
+  return commandSuggestions(state.line).length > 0;
+}
+
+/** The suggestion the menu currently has selected, or null when closed. */
+export function selectedSuggestion(state: InputState): { name: string; usage: string; description: string } | null {
+  const suggestions = commandSuggestions(state.line);
+  if (suggestions.length === 0 || state.mode !== "modal" || state.route !== "home") return null;
+  const index = Math.max(0, Math.min(suggestions.length - 1, state.suggestionIndex));
+  return suggestions[index] ?? null;
+}
+
+/** Editing the line re-derives the menu; selection returns to its first row. */
+function withLine(state: InputState, line: string): InputState {
+  return { ...state, line, suggestionIndex: 0 };
+}
+
+/**
+ * Tab, and Enter on a partial command: put the selected command on the line
+ * and stop there. Completion never executes — the user still presses Enter on
+ * a command they can read.
+ */
+function completeSuggestion(state: InputState): StepOutcome {
+  const suggestion = selectedSuggestion(state);
+  if (suggestion === null) return { state };
+  return { state: withLine(state, completeCommandLine(state.line, suggestion.name)) };
 }
 
 /**
@@ -216,11 +265,37 @@ export function showReceipts(state: InputState, lines: string[]): InputState {
   return {
     ...state,
     mode: "modal",
+    route: "home",
     line: "",
     heldSeq: [],
     escape: null,
     panelRows: lines.flatMap((line) => line.split("\n")),
   };
+}
+
+/** Resize clamps scroll/selection; it never resets route or starts a command. */
+export function clampPanelViewport(state: InputState, _cols: number, rows: number): InputState {
+  if (state.mode === "passthrough" || state.mode === "notifier") {
+    return state;
+  }
+  const safeRows = Math.max(5, rows);
+  if (state.route === "allocation") {
+    const max = PRODUCT_PRESET_IDS.length - 1;
+    const selectedIndex = Math.max(0, Math.min(max, state.viewport.selectedIndex));
+    return { ...state, viewport: { scrollOffset: 0, selectedIndex } };
+  }
+  if (state.route === "home") {
+    const max = Math.max(0, homeCursorLength() - 1);
+    const scrollOffset = Math.max(0, Math.min(max, state.viewport.scrollOffset));
+    return { ...state, viewport: { scrollOffset, selectedIndex: homeSelectedActionIndex(scrollOffset) } };
+  }
+  // Read-only routes clamp against the WRAPPED line count for this size, not
+  // the row count: a resize that wraps Help must not strand its last lines.
+  const body = readonlyBodyLineCount(state, _cols, safeRows);
+  const visible = Math.max(1, safeRows - 4);
+  const maxScroll = Math.max(0, body - visible);
+  const scrollOffset = Math.max(0, Math.min(maxScroll, state.viewport.scrollOffset));
+  return { ...state, viewport: { ...state.viewport, scrollOffset } };
 }
 
 /**
@@ -374,9 +449,13 @@ function isMouseCsi(params: string, finalByte: number): boolean {
 type ModalKey =
   | { kind: "enter" }
   | { kind: "cancel" }
+  /** Tab, in any encoding the terminal uses: complete, never execute. */
+  | { kind: "complete" }
   | { kind: "backspace" }
   | { kind: "clear" }
   | { kind: "text"; value: string }
+  | { kind: "up" }
+  | { kind: "down" }
   | { kind: "none" };
 
 interface StepOutcome {
@@ -431,7 +510,16 @@ function trackForwardedEscapeByte(byte: number, state: InputState): InputState {
 
 function enterModal(state: InputState): StepOutcome {
   return {
-    state: { ...state, mode: "modal", escape: null, line: "", heldSeq: [], panelRows: [] },
+    state: {
+      ...state,
+      mode: "modal",
+      escape: null,
+      line: "",
+      heldSeq: [],
+      panelRows: [],
+      route: "home",
+      viewport: { scrollOffset: 0, selectedIndex: -1 },
+    },
     actions: [{ kind: "enter_modal" }],
   };
 }
@@ -614,7 +702,6 @@ function passthroughByte(byte: number, state: InputState): StepOutcome {
 
 function cancelModal(state: InputState): StepOutcome {
   if (state.mode === "notifier") return notifierResolve(state, false);
-  if (state.mode === "compact_confirm") return compactConfirmResolve(state, { kind: "no", reason: "dismissed" });
   return {
     state: {
       ...createInputState(state.leaderByte, { notifierEnabled: state.notifierEnabled }),
@@ -641,39 +728,6 @@ function notifierResolve(state: InputState, forward: boolean): StepOutcome {
   return {
     state: { ...base, hazardLine: state.hazardLine },
     actions: [{ kind: "notifier_return" }],
-  };
-}
-
-/**
- * Raise the pre-swap confirmation on the panel. Called by the wrapper, not by
- * a keypress: the seam is what asks, and the answer is what it waits for.
- * Rows are the warning and its bullets; the panel adds the key hint.
- */
-export function openCompactConfirm(state: InputState, rows: readonly string[]): InputState {
-  return {
-    ...state,
-    mode: "compact_confirm",
-    line: "",
-    heldSeq: [],
-    escape: null,
-    heldEnter: [],
-    panelRows: [...rows],
-  };
-}
-
-/**
- * Settle the confirmation. Nothing about the answer is remembered: a decline
- * skips this seam only, and the next eligible seam asks again while the work
- * is still open.
- */
-function compactConfirmResolve(state: InputState, disposition: CompactConfirmDisposition): StepOutcome {
-  return {
-    state: {
-      ...createInputState(state.leaderByte, { notifierEnabled: state.notifierEnabled }),
-      inPaste: state.inPaste,
-      hazardLine: state.hazardLine,
-    },
-    actions: [{ kind: "compact_confirm_answered", disposition }],
   };
 }
 
@@ -735,25 +789,79 @@ function maybeOpenNotifier(state: InputState, enterBytes: number[]): StepOutcome
 }
 
 function reprompt(state: InputState, noticeLines: string[]): StepOutcome {
-  return { state: { ...state, line: "", panelRows: noticeLines } };
+  return { state: { ...state, line: "", suggestionIndex: 0, panelRows: noticeLines, route: "home" } };
+}
+
+function openRoute(state: InputState, route: PanelRoute): StepOutcome {
+  const selectedIndex =
+    route === "allocation" ? allocationIndex(state.panelView?.allocationId ?? "default") : route === "home" ? -1 : 0;
+  return {
+    state: {
+      ...state,
+      route,
+      line: "",
+      suggestionIndex: 0,
+      viewport: { scrollOffset: 0, selectedIndex },
+      panelRows: route === "home" ? state.panelRows : [],
+    },
+  };
+}
+
+function applyAllocation(state: InputState): StepOutcome {
+  const id =
+    PRODUCT_PRESET_IDS[Math.max(0, Math.min(PRODUCT_PRESET_IDS.length - 1, state.viewport.selectedIndex))] ?? "default";
+  return {
+    state: {
+      ...state,
+      route: "home",
+      line: "",
+      viewport: { scrollOffset: 0, selectedIndex: -1 },
+    },
+    actions: [{ kind: "select_allocation", id }],
+  };
+}
+
+function activateHomeAction(state: InputState): StepOutcome {
+  const action = HOME_ACTIONS[state.viewport.selectedIndex];
+  if (action === undefined) return cancelModal(state);
+  if (action.kind === "route") return openRoute(state, action.route);
+  return submitCommandText(state, action.command);
+}
+
+function submitCommandText(state: InputState, text: string): StepOutcome {
+  const parsed = parsePanelCommand(text);
+  if (parsed.kind === "route") return openRoute(state, parsed.route);
+  if (parsed.kind === "invalid") return reprompt(state, [parsed.message]);
+  if (parsed.kind === "needs_slash") {
+    // A real command typed without its slash: say the rule once. Running it
+    // anyway would teach a grammar the panel does not have.
+    return reprompt(state, [MODAL_UNKNOWN_HINT]);
+  }
+  if (parsed.kind === "unknown") {
+    // Two short rows, never the whole vocabulary: the dump used to truncate
+    // off the screen edge. The full list lives in /help.
+    return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${text}`, MODAL_UNKNOWN_HINT]);
+  }
+  return {
+    state: { ...state, mode: "executing", route: "home", line: parsed.surface, suggestionIndex: 0, panelRows: [] },
+    actions: [{ kind: "execute", commandLine: parsed.commandLine }],
+  };
 }
 
 function submitModalLine(state: InputState): StepOutcome {
+  if (isReadonlyRoute(state.route)) return openRoute(state, "home");
+  if (state.route === "allocation") return applyAllocation(state);
   const trimmed = state.line.trim();
-  if (trimmed === "") return cancelModal(state);
-  if (trimmed === "help" || trimmed === "?") {
-    return reprompt(state, [MODAL_HELP_LINE, MODAL_SCOPE_NOTE, MODAL_ASCII_NOTE]);
+  if (trimmed === "") {
+    if (state.viewport.selectedIndex >= 0) return activateHomeAction(state);
+    return cancelModal(state);
   }
-  const commandLine = mapModalCommand(trimmed);
-  if (commandLine === null) {
-    return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${trimmed}`, MODAL_HELP_LINE]);
+  // A half-typed command completes instead of running: Enter only executes a
+  // command the user can already read in full on the line.
+  if (exactCommandName(trimmed) === null && commandSuggestions(trimmed).length > 0) {
+    return completeSuggestion(state);
   }
-  // The submitted text stays in `line` so the panel shows what is running;
-  // editing is disabled while executing, and settle/detach resets it.
-  return {
-    state: { ...state, mode: "executing", line: trimmed, panelRows: [] },
-    actions: [{ kind: "execute", commandLine }],
-  };
+  return submitCommandText(state, trimmed);
 }
 
 /**
@@ -778,6 +886,12 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
         return { key: { kind: "backspace" }, forward: false };
       }
       if (event.unicodeChar === 0x15) return { key: { kind: "clear" }, forward: false };
+      // Tab: Windows Terminal reports VK_TAB with Uc 0x09.
+      if (event.unicodeChar === 0x09 || event.virtualKey === 0x09) {
+        return { key: { kind: "complete" }, forward: false };
+      }
+      if (event.virtualKey === 0x26) return { key: { kind: "up" }, forward: false };
+      if (event.virtualKey === 0x28) return { key: { kind: "down" }, forward: false };
       if (event.unicodeChar >= 0x20 && event.unicodeChar <= 0x7e) {
         return { key: { kind: "text", value: String.fromCharCode(event.unicodeChar) }, forward: false };
       }
@@ -804,6 +918,9 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
   }
   if (finalByte === 0x75) {
     const key = kittyKeyPressCode(params);
+    // Kitty encodes Tab as keycode 9; it is our completion key, not the
+    // child's — consumed here, never forwarded.
+    if (key === 9) return { key: { kind: "complete" }, forward: false };
     if (key === 13) return { key: { kind: "enter" }, forward: false };
     if (key === 27) return { key: { kind: "cancel" }, forward: false };
     if (key === 127) return { key: { kind: "backspace" }, forward: false };
@@ -811,24 +928,16 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
   }
   if (params === "200" && finalByte === 0x7e) return { key: { kind: "none" }, forward: false };
   if (params === "201" && finalByte === 0x7e) return { key: { kind: "none" }, forward: false };
+  if (finalByte === 0x41) return { key: { kind: "up" }, forward: false };
+  if (finalByte === 0x42) return { key: { kind: "down" }, forward: false };
+  if (finalByte === 0x7e && (params === "5" || params === "5;1")) return { key: { kind: "up" }, forward: false };
+  if (finalByte === 0x7e && (params === "6" || params === "6;1")) return { key: { kind: "down" }, forward: false };
   if (isMouseCsi(params, finalByte)) return { key: { kind: "none" }, forward: false };
   if (isNavigationCsi(finalByte)) return { key: { kind: "none" }, forward: false };
   return { key: { kind: "none" }, forward: true };
 }
 
 function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
-  if (state.mode === "compact_confirm") {
-    // Only an explicit "y" authorizes killing the listed work. Enter is not an
-    // answer here; a stray keypress must never be read as consent.
-    if (key.kind === "text" && key.value.toLowerCase() === "y") {
-      return compactConfirmResolve(state, { kind: "yes" });
-    }
-    if (key.kind === "cancel") return compactConfirmResolve(state, { kind: "no", reason: "dismissed" });
-    if (key.kind === "text" || key.kind === "enter" || key.kind === "backspace") {
-      return compactConfirmResolve(state, { kind: "no", reason: "declined" });
-    }
-    return { state };
-  }
   if (state.mode === "notifier") {
     // Only two answers exist: Enter continues (forward the held Enter once),
     // cancel-family returns (forward nothing). Everything else is dropped.
@@ -845,18 +954,57 @@ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
     if (key.kind === "cancel") return cancelModal(state);
     return { state };
   }
+  if (isReadonlyRoute(state.route)) {
+    if (key.kind === "enter") return openRoute(state, "home");
+    if (key.kind === "cancel") return cancelModal(state);
+    if (key.kind === "up" || key.kind === "down") {
+      const delta = key.kind === "up" ? -1 : 1;
+      const next = Math.max(0, state.viewport.scrollOffset + delta);
+      return { state: { ...state, viewport: { ...state.viewport, scrollOffset: next } } };
+    }
+    return { state };
+  }
+  if (state.route === "allocation") {
+    if (key.kind === "enter") return applyAllocation(state);
+    if (key.kind === "cancel") return cancelModal(state);
+    if (key.kind === "up" || key.kind === "down") {
+      const delta = key.kind === "up" ? -1 : 1;
+      const selectedIndex = Math.max(0, Math.min(PRODUCT_PRESET_IDS.length - 1, state.viewport.selectedIndex + delta));
+      return { state: { ...state, viewport: { ...state.viewport, selectedIndex } } };
+    }
+    return { state };
+  }
   switch (key.kind) {
     case "enter":
       return submitModalLine(state);
     case "cancel":
       return cancelModal(state);
+    case "complete":
+      return completeSuggestion(state);
     case "backspace":
       if (state.line.length === 0) return { state };
-      return { state: { ...state, line: state.line.slice(0, -1) } };
+      return { state: withLine(state, state.line.slice(0, -1)) };
     case "clear":
-      return { state: { ...state, line: "" } };
+      return { state: withLine(state, "") };
     case "text":
-      return { state: { ...state, line: state.line + key.value } };
+      return { state: withLine(state, state.line + key.value) };
+    case "up":
+    case "down": {
+      const delta = key.kind === "up" ? -1 : 1;
+      // While the menu is open the arrows belong to it. The Home cursor keeps
+      // its position untouched and takes the arrows back when the line clears.
+      const suggestions = commandSuggestions(state.line);
+      if (suggestions.length > 0) {
+        const max = suggestions.length - 1;
+        const suggestionIndex = Math.max(0, Math.min(max, state.suggestionIndex + delta));
+        return { state: { ...state, suggestionIndex } };
+      }
+      const max = Math.max(0, homeCursorLength() - 1);
+      const scrollOffset = Math.max(0, Math.min(max, state.viewport.scrollOffset + delta));
+      return {
+        state: { ...state, viewport: { scrollOffset, selectedIndex: homeSelectedActionIndex(scrollOffset) } },
+      };
+    }
     case "none":
       return { state };
   }
@@ -968,8 +1116,8 @@ function modalByte(byte: number, state: InputState): StepOutcome {
     // treated as a submit; control bytes (including the leader) are ignored —
     // except ctrl-C, kept as the escape hatch if a paste never closes.
     if (byte === 0x03) return cancelModal(state);
-    if (state.mode === "modal" && byte >= 0x20 && byte <= 0x7e) {
-      return { state: { ...state, line: state.line + String.fromCharCode(byte) } };
+    if (state.mode === "modal" && state.route === "home" && byte >= 0x20 && byte <= 0x7e) {
+      return { state: withLine(state, state.line + String.fromCharCode(byte)) };
     }
     return { state };
   }
@@ -988,15 +1136,6 @@ function modalByte(byte: number, state: InputState): StepOutcome {
     return cancelModal(state);
   }
 
-  if (state.mode === "compact_confirm") {
-    if (byte === 0x79 || byte === 0x59) return compactConfirmResolve(state, { kind: "yes" });
-    // Any other real keypress declines; sequence noise was consumed above.
-    if (byte === 0x0d || byte === 0x0a || byte === 0x7f || byte === 0x08 || (byte >= 0x20 && byte <= 0x7e)) {
-      return compactConfirmResolve(state, { kind: "no", reason: "declined" });
-    }
-    return { state };
-  }
-
   if (state.mode === "notifier") {
     if (byte === 0x0d || byte === 0x0a) return notifierResolve(state, true);
     // 'n' is a natural "no": treat it as return; other keys are dropped.
@@ -1006,13 +1145,19 @@ function modalByte(byte: number, state: InputState): StepOutcome {
 
   if (state.mode === "executing") return { state };
 
+  if (state.route !== "home") {
+    if (byte === 0x0d || byte === 0x0a) return applyModalKey({ kind: "enter" }, state);
+    return { state };
+  }
+
   if (byte === 0x0d || byte === 0x0a) return submitModalLine(state);
+  if (byte === 0x09) return applyModalKey({ kind: "complete" }, state);
   if (byte === 0x7f || byte === 0x08) return applyModalKey({ kind: "backspace" }, state);
   if (byte === 0x15) {
-    return { state: { ...state, line: "" } };
+    return { state: withLine(state, "") };
   }
   if (byte >= 0x20 && byte <= 0x7e) {
-    return { state: { ...state, line: state.line + String.fromCharCode(byte) } };
+    return { state: withLine(state, state.line + String.fromCharCode(byte)) };
   }
   // Remaining C0 controls and non-ASCII bytes: the editor is ASCII-only.
   return { state };

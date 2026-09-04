@@ -1,7 +1,20 @@
 import type { ApiBlock, OpResult } from "../shared-tech/index.js";
 import type { WorkKind, WorkOwner, WorkSourceRef } from "../shared-tech/work-queue/index.js";
 import type { ThreadRef } from "../threads/index.js";
-import { runListEvents, runMessageEvents } from "./internal/pipeline.js";
+import {
+  type EventKeyPageOptions,
+  type EventKeyPageResult,
+  type EventKeyPrefixCountRow,
+  type EventKeyRef,
+  runEventKeyPrefixCounts,
+  runListEventKeysByPrefix,
+  runListEvents,
+  runMessageEvents,
+  runThreadFrontier,
+  type ThreadFrontierRow,
+} from "./internal/pipeline.js";
+
+export { LEGACY_KEY_PAGE_LIMIT, LEGACY_KEY_TOTAL_LOOKUP_CAP } from "./internal/pipeline.js";
 
 interface BaseEvent<K extends string, P> {
   eventKind: K;
@@ -20,6 +33,14 @@ export type TurnEndPayload = {
   endedAt?: string;
 };
 
+// Host-supplied step index (schema v12, turn parts F2): the zero-based
+// provider request/response cycle inside the turn that this message belongs
+// to. Optional; NULL in storage when omitted. A tool_result carries the same
+// index as its tool_call. LHC records it verbatim and never infers it.
+export type StepScoped = {
+  stepIndex?: number;
+};
+
 // Host-reported model identity for one assistant message fan-out. Needed so a
 // resumed PI session can re-stamp provider/api/model and keep signed thinking
 // through PI's same-model check (transform-messages). Opaque strings.
@@ -34,7 +55,8 @@ export type AssistantModelProvenance = {
 export type AssistantTextPayload = {
   text: string;
   providerUsage?: Record<string, unknown>;
-} & AssistantModelProvenance;
+} & AssistantModelProvenance &
+  StepScoped;
 
 // Optional signature is an opaque provider token (Anthropic encrypted
 // thinking, OpenAI reasoning item id, etc.). LHC stores and returns it
@@ -44,7 +66,8 @@ export type AssistantThinkingPayload = {
   signature?: string;
   /** The verbatim block when the provider sent `redacted_thinking`: text is "" and the opaque data is a blob. */
   block?: ApiBlock;
-} & AssistantModelProvenance;
+} & AssistantModelProvenance &
+  StepScoped;
 
 /**
  * Typed compact-continuation marker payload (LIM-61).
@@ -66,15 +89,21 @@ export type CompactContinuationMarkerPayload = {
 // when the message carried anything besides text. Hosts send base64 in the
 // blocks; intake moves the bytes to the blob table and the record never holds
 // base64 inside JSON.
-export type UserPromptPayload = { text: string; blocks?: ApiBlock[] };
-export type ToolResultPayload = { toolCallId: string; content: string; isError?: boolean; blocks?: ApiBlock[] };
+/**
+ * A user prompt. `steer: true` is the host's assertion that this prompt
+ * arrived inside a run already in progress (a steering message): it joins the
+ * open turn as a member and is never a turn boundary. Absent/false: the
+ * prompt opens a turn (closing a populated open one first).
+ */
+export type UserPromptPayload = { text: string; steer?: boolean; blocks?: ApiBlock[] };
+export type ToolResultPayload = { toolCallId: string; content: string; isError?: boolean; blocks?: ApiBlock[] } & StepScoped;
 export type ToolCallPayload = {
   toolCallId: string;
   toolName: string;
   arguments: Record<string, unknown>;
   /** The verbatim block when the call was a `server_tool_use`. */
   block?: ApiBlock;
-};
+} & StepScoped;
 
 export type MessageEventInput =
   | BaseEvent<"user_prompt", UserPromptPayload>
@@ -125,4 +154,72 @@ export async function messageEvents(
 
 export async function listEvents(threadRef: ThreadRef): Promise<OpResult<EventRecord[]>> {
   return runListEvents(threadRef);
+}
+
+/**
+ * Constant-row durable position and identity for a thread: everything a
+ * normal consumer needs to place itself in the archive without reading any
+ * event payload. Three indexed single-row statements; nothing here grows with
+ * archive size.
+ */
+export type ThreadFrontier = ThreadFrontierRow;
+
+/** One entry per distinct requested prefix. */
+export type EventKeyPrefixCount = EventKeyPrefixCountRow;
+
+/** One matched key with its archive position. No payload is read. */
+export type EventKeyReference = EventKeyRef;
+
+/** One page of a legacy prefix walk. */
+export type EventKeyPage = EventKeyPageResult;
+
+/** Options for one page of a legacy prefix walk. */
+export type EventKeyPageQuery = EventKeyPageOptions;
+
+/**
+ * Constant-row Thread frontier. Never reads or parses event payloads.
+ */
+export async function threadFrontier(threadRef: ThreadRef): Promise<OpResult<ThreadFrontier>> {
+  return runThreadFrontier(threadRef);
+}
+
+/**
+ * Existence and count for a finite, caller-supplied set of idempotency-key
+ * prefixes, one indexed range query per distinct prefix.
+ *
+ * Contract: results carry one entry per *distinct* prefix in first-occurrence
+ * order (duplicates collapse), so the result is O(input prefixes) rows.
+ * Overlapping prefixes are evaluated independently — a key under both is
+ * counted by both. An empty input list returns an empty result after the
+ * thread reference is resolved. An empty or malformed prefix is an
+ * `invalid_bounds` caller error: the whole archive is `listEvents`' explicit
+ * job, not a projection.
+ */
+export async function eventKeyPrefixCounts(
+  threadRef: ThreadRef,
+  prefixes: readonly string[],
+): Promise<OpResult<EventKeyPrefixCount[]>> {
+  return runEventKeyPrefixCounts(threadRef, prefixes);
+}
+
+/**
+ * Cursor-paginated key listing under one prefix — the lazy compatibility path
+ * for legacy, ID-less occurrence resolution.
+ *
+ * Order is `idempotency_key` ascending (the unique index's own order). Events
+ * are append-only and keys are immutable, so a page never repeats or reorders
+ * rows already returned.
+ *
+ * `limit` defaults to and may not exceed `LEGACY_KEY_PAGE_LIMIT`; a larger or
+ * non-integer limit is refused with `invalid_bounds` rather than clamped.
+ * `LEGACY_KEY_TOTAL_LOOKUP_CAP` bounds one walk: when it stops the walk before
+ * the prefix ends, the page reports `capExhausted: true` and `complete: false`
+ * with a null cursor — a visible degraded result, never a partial answer
+ * presented as the whole truth.
+ */
+export async function listEventKeysByPrefix(
+  threadRef: ThreadRef,
+  options: EventKeyPageQuery,
+): Promise<OpResult<EventKeyPage>> {
+  return runListEventKeysByPrefix(threadRef, options);
 }

@@ -11,6 +11,10 @@ export interface ViewProfile {
   lowerBound: number;
   // Band shares of the lower bound; must sum to 100.
   percentages: { full: number; smooth: number; detailed: number; brief: number };
+  // Newest-closed-turn protection (turn parts, Flow 5): the fraction of the
+  // lower bound the newest closed turn may cost and still be kept full,
+  // after the active turn's minimum verbatim tail is reserved. 0 disables.
+  newestClosedProtection: number;
 }
 
 // A user profile entry as configured: a full profile under a new name, or a
@@ -21,6 +25,7 @@ export interface ViewProfileOverride {
   name: string;
   lowerBound?: number;
   percentages?: Partial<ViewProfile["percentages"]>;
+  newestClosedProtection?: number;
 }
 
 // Compact-time explicit parameters: field-wise overrides of the base profile,
@@ -29,6 +34,7 @@ export interface ViewProfileOverride {
 export interface ViewCompactParams {
   lowerBound?: number;
   percentages?: Partial<ViewProfile["percentages"]>;
+  newestClosedProtection?: number;
 }
 
 // Visibility-boundary budgets: max > target, both positive. Intake no longer
@@ -165,7 +171,9 @@ export interface StoredView {
   // null when explicit params overrode a named base at compact (the stored
   // config carries the resolved truth either way).
   profileName: string | null;
-  config: { lowerBound: number; percentages: Record<string, number> };
+  // Placement provenance: the resolved profile the walk ran under. The
+  // protection fraction is optional for views written before it existed.
+  config: { lowerBound: number; percentages: Record<string, number>; newestClosedProtection?: number };
   // Every selected entry in served order, gap entries included (they are
   // arrangement rows too; `gaps` carries their reasons).
   arrangement: Array<{
@@ -174,12 +182,39 @@ export interface StoredView {
     subjectId: string;
     derivationUsed: string;
     degraded: boolean;
+    // Present only on a part entry (turn parts): the contiguous step range of
+    // the single transition turn this entry renders. Its presence in the
+    // installed view is what makes that turn unsettled; absence everywhere
+    // means every served turn is whole.
+    part?: { fromStep: number; toStep: number };
   }>;
   gaps: Array<{ band: Band; subjectId: string; reason: string }>;
   // What the compact saw, stored verbatim.
   sourceState: { maxEventOrder: number; derivationCounts: Record<string, number> };
   // Non-empty bands in gradient order with their stored token counts.
   bands: Array<{ band: Band; storedTokens: number }>;
+}
+
+// Host metadata surface (turn parts, AC-7.1): the deterministic,
+// inference-free reads a host's pressure decision needs. `activeTurn` comes
+// from the record (the open turn and its host-supplied step indices);
+// `unsettledTurn` comes from the installed view (a turn served as parts).
+export interface HostMetadata {
+  activeTurn: {
+    turnId: string;
+    // Sum of stored member token estimates.
+    estimatedTokens: number;
+    // Leading run of complete steps (every tool_call paired inside its step).
+    completeSteps: number;
+    // Newest admissible split point as an ORDINAL k — the number of leading
+    // steps a part may cover (1..completeSteps−1), not a host step index — or
+    // null when no split is admissible: fewer than two complete steps, or the
+    // turn is not splittable (a member with no step index, or inconsistent
+    // indices). The receipt's splitPoint.stepIndex is the host index instead.
+    lastStepEdge: number | null;
+    splittable: boolean;
+  } | null;
+  unsettledTurn: { turnId: string } | null;
 }
 
 export interface ViewStatus {
@@ -223,7 +258,7 @@ export type SkippedRecord =
 export interface CompactReceipt {
   viewId: string;
   profile: string | null;
-  config: ViewProfile["percentages"] & { lowerBound: number };
+  config: ViewProfile["percentages"] & { lowerBound: number; newestClosedProtection?: number };
   bands: Record<Band, { entries: number; tokens: number }>;
   tailTokens: number;
   // The assembled view's actual total (band tokens + tail tokens) against
@@ -246,4 +281,24 @@ export interface CompactReceipt {
   skippedRecords: SkippedRecord[];
   renderedBands: Array<{ band: Band; text: string }>;
   firstKeptMessageId: string | null;
+  // Turn parts (present only when the installed view serves parts): every
+  // part the view serves, and the split point at (turn, step) precision —
+  // the host step index of the newest step inside a part.
+  parts?: Array<{ turnId: string; fromStep: number; toStep: number }>;
+  // (turn, step) precision (AC-1.7): `stepIndex` is the HOST step index of
+  // the newest step inside the served parts (the last part's toStep), not the
+  // ordinal k that HostMetadata.lastStepEdge reports.
+  splitPoint?: { turnId: string; stepIndex: number };
+  // Present when this compact settled a previously split turn: the whole
+  // construction now serving it — the stored rendering row it used, or the
+  // composed-in-walk marker when the walk composed it from canonical bytes.
+  settled?: { turnId: string; construction: SettleConstruction };
+  // Newest-closed-turn placement (Flow 5), when the walk decided it: kept
+  // full (verbatim) within the protection bound, or served by its whole
+  // deterministic rendering — never an excerpt.
+  protectedTurn?: { turnId: string; representation: "full" | "whole_rendering" };
 }
+
+export type SettleConstruction =
+  | { kind: "stored"; subjectId: string; derivationType: "turn_rendering"; sourceVersion: number }
+  | { kind: "composed_in_walk"; turnId: string };

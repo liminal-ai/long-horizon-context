@@ -341,6 +341,7 @@ pub fn create_lifecycle_sdk(
                     detailed: Some(LIFECYCLE_PROFILE.percentages.detailed),
                     brief: Some(LIFECYCLE_PROFILE.percentages.brief),
                 }),
+                newest_closed_protection: None,
             }]),
             visibility: None,
             compact_threshold: Some(300.0),

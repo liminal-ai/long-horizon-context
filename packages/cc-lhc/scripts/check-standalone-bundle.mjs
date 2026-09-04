@@ -17,7 +17,7 @@ const root = resolve(process.argv[2] ?? "");
 if (!root || !existsSync(join(root, "release-manifest.json"))) fail(`bundle is missing: ${root}`);
 const manifest = JSON.parse(readFileSync(join(root, "release-manifest.json"), "utf8"));
 const expectedTarget = `${process.platform}-${process.arch}`;
-if (manifest.schemaVersion !== 1 || manifest.product !== "cc-lhc" || manifest.version !== "0.2.0") {
+if (manifest.schemaVersion !== 1 || manifest.product !== "cc-lhc" || manifest.version !== "0.4.0") {
   fail("release manifest has an unexpected identity");
 }
 if (manifest.target !== expectedTarget) fail(`bundle target ${manifest.target} does not match ${expectedTarget}`);

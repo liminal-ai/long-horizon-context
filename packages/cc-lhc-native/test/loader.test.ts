@@ -106,12 +106,33 @@ describe("resolveAddonArtifact", () => {
   });
 });
 
+const CONTROL_STUBS = {
+  pauseProcess: () => ({ ok: false, code: "not_found", message: "stub" }),
+  resumeProcess: () => ({ ok: false, code: "not_found", message: "stub" }),
+  readChildExit: () => ({ ok: false, code: "not_found", message: "stub" }),
+  findChildHoldingFile: () => ({ ok: false, code: "not_found", message: "stub" }),
+};
+
 describe("loadIdentityAddon contract validation", () => {
   const goodAddon = {
     platform: "darwin",
     identityContractVersion: IDENTITY_CONTRACT_VERSION,
+    readFileIdentity: () => ({ ok: false, code: "not_found", message: "stub" }),
+    ...CONTROL_STUBS,
     readProcessIdentity: () => ({ ok: false, code: "not_found", message: "stub" }),
   };
+
+  it("rejects an addon that predates supervised-child control (contract 2, no control exports)", () => {
+    const { pauseProcess: _p, resumeProcess: _r, readChildExit: _e, findChildHoldingFile: _f, ...legacy } = goodAddon;
+    expect(() => loadIdentityAddon(seams({ existing: [devBuild], loadAddon: () => legacy }))).toThrow(/pauseProcess/);
+  });
+
+  it("rejects an addon that predates file identity (no readFileIdentity export)", () => {
+    const { readFileIdentity: _omitted, ...legacy } = goodAddon;
+    expect(() => loadIdentityAddon(seams({ existing: [devBuild], loadAddon: () => legacy }))).toThrow(
+      /readFileIdentity/,
+    );
+  });
 
   it("loads and validates a conforming addon", () => {
     const loaded = loadIdentityAddon(seams({ existing: [prebuiltFor("darwin", "arm64")], loadAddon: () => goodAddon }));
@@ -179,6 +200,8 @@ describe("createExactIdentityReader fail-closed mapping", () => {
     const junkAddon = {
       platform: "darwin",
       identityContractVersion: IDENTITY_CONTRACT_VERSION,
+      readFileIdentity: () => ({ ok: false, code: "not_found", message: "stub" }),
+      ...CONTROL_STUBS,
       readProcessIdentity: () => ({ ok: true, pid: 999, bootId: "boot-uuid", starttime: "123" }),
     };
     const read = createExactIdentityReader(seams({ existing: [devBuild], loadAddon: () => junkAddon }));
@@ -190,6 +213,8 @@ describe("createExactIdentityReader fail-closed mapping", () => {
     const addon = {
       platform: "darwin",
       identityContractVersion: IDENTITY_CONTRACT_VERSION,
+      readFileIdentity: () => ({ ok: false, code: "not_found", message: "stub" }),
+      ...CONTROL_STUBS,
       readProcessIdentity: (pid: number) =>
         pid === 42
           ? { ok: true, pid: 42, bootId: "11111111-2222", starttime: "987654321" }

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = $(if ($env:CC_LHC_VERSION) { $env:CC_LHC_VERSION } else { "0.2.0" }),
+    [string]$Version = $(if ($env:CC_LHC_VERSION) { $env:CC_LHC_VERSION } else { "0.4.0" }),
     [string]$Prefix = $env:CC_LHC_PREFIX,
     [string]$InstallRoot = $env:CC_LHC_INSTALL_ROOT,
     [string]$AssetDir = $env:CC_LHC_ASSET_DIR,

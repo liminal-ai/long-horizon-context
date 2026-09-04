@@ -6,8 +6,11 @@
 
 pub mod assemble;
 pub mod boundary;
+pub mod bounded_source;
+pub mod compact_algorithm;
 pub mod compact_compute;
 pub(crate) mod exact_i64;
+pub mod host_metadata;
 pub mod materialize;
 pub mod profiles;
 pub mod protected_boundary;
@@ -16,3 +19,4 @@ pub mod seam;
 pub mod select;
 pub mod session_view;
 pub mod snapshot;
+pub mod walk;

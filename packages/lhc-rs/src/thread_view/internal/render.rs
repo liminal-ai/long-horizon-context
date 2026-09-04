@@ -428,6 +428,9 @@ pub struct DerivationSnapshot {
     pub content: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
+    /// Turn parts: the construction reference a settle record carries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_version: Option<i64>,
 }
 
 /// TS compact chunk material snapshot — tagged on `kind`.

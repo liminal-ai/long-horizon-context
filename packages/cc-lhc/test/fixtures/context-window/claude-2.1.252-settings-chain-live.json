@@ -1,0 +1,294 @@
+{
+  "source": "Live capture from Claude Code 2.1.252 on Linux, 2026-09-01: the disposable harness merged the forwarded --settings (inline JSON or a settings file) into ONE launch-scoped --settings payload whose statusLine command chains the observer capture (`tee -a`) in front of the operator's own status-line command, then launched `claude <merged argv> --model haiku --dangerously-skip-permissions` over a PTY in the trusted disposable project. The operator command is a disposable script that records its stdin and prints `USERLINE <model.id>`. Hashes are sha256 of the raw JSON lines before scrubbing; payload copies are scrubbed (session_id, transcript_path, cost, rate_limits, prompt ids, session_name). No operator settings file was read for edit or modified; the operator settings.json carries no statusLine.",
+  "mechanism": "test/story0/settings-merge-harness.ts (the disposable driver ran a byte-for-byte mirror; the test re-derives launchedArgv from forwardedArgv through the harness)",
+  "modes": [
+    {
+      "mode": "control",
+      "forwardedArgv": [
+        "--settings",
+        "{\"statusLine\":{\"type\":\"command\",\"command\":\"LIM143_MODE=control <probe-dir>/user-status.sh\",\"padding\":0},\"env\":{\"LIM143_MARK\":\"control\"}}"
+      ],
+      "userSettingsFileText": null,
+      "launchedArgv": [
+        "--settings",
+        "{\"statusLine\":{\"type\":\"command\",\"command\":\"LIM143_MODE=control <probe-dir>/user-status.sh\",\"padding\":0},\"env\":{\"LIM143_MARK\":\"control\"}}"
+      ],
+      "mergeKind": "control",
+      "chainedCommand": null,
+      "userCommandSeenSha256": [
+        "420d78b7e63871ca6be6e4ce73ef1b6b53642e67c970aa9c66a328abd05f9f93",
+        "d1f47f7e3d028615bbe7c3ec321657f2b8bc2ef82aa2947760d1e9ce4d4a1f55"
+      ],
+      "observerSeenSha256": [],
+      "userCommandSeen": [
+        {
+          "session_id": "<scrubbed>",
+          "transcript_path": "<scrubbed>",
+          "cwd": "/tmp/lim100/scratch",
+          "model": {
+            "id": "claude-haiku-4-5-20251001",
+            "display_name": "Haiku 4.5"
+          },
+          "workspace": {
+            "current_dir": "/tmp/lim100/scratch",
+            "project_dir": "/tmp/lim100/scratch",
+            "added_dirs": []
+          },
+          "version": "2.1.252",
+          "output_style": {
+            "name": "Concise"
+          },
+          "context_window": {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "context_window_size": 200000,
+            "current_usage": null,
+            "used_percentage": null,
+            "remaining_percentage": null
+          },
+          "exceeds_200k_tokens": false,
+          "fast_mode": false,
+          "thinking": {
+            "enabled": true
+          }
+        },
+        {
+          "session_id": "<scrubbed>",
+          "transcript_path": "<scrubbed>",
+          "cwd": "/tmp/lim100/scratch",
+          "model": {
+            "id": "claude-haiku-4-5-20251001",
+            "display_name": "Haiku 4.5"
+          },
+          "workspace": {
+            "current_dir": "/tmp/lim100/scratch",
+            "project_dir": "/tmp/lim100/scratch",
+            "added_dirs": []
+          },
+          "version": "2.1.252",
+          "output_style": {
+            "name": "Concise"
+          },
+          "context_window": {
+            "total_input_tokens": 30416,
+            "total_output_tokens": 42,
+            "context_window_size": 200000,
+            "current_usage": {
+              "input_tokens": 10,
+              "output_tokens": 42,
+              "cache_creation_input_tokens": 30406,
+              "cache_read_input_tokens": 0
+            },
+            "used_percentage": 15,
+            "remaining_percentage": 85
+          },
+          "exceeds_200k_tokens": false,
+          "fast_mode": false,
+          "thinking": {
+            "enabled": true
+          }
+        }
+      ],
+      "visibleStatusLines": [
+        "USERLINE claude-haiku-4-5-20251001"
+      ],
+      "envMarkSeenByUserCommand": [
+        "mark=control"
+      ]
+    },
+    {
+      "mode": "inline",
+      "forwardedArgv": [
+        "--settings",
+        "{\"statusLine\":{\"type\":\"command\",\"command\":\"LIM143_MODE=inline <probe-dir>/user-status.sh\",\"padding\":0},\"env\":{\"LIM143_MARK\":\"inline\"}}"
+      ],
+      "userSettingsFileText": null,
+      "launchedArgv": [
+        "--settings",
+        "{\"statusLine\":{\"type\":\"command\",\"command\":\"tee -a '<probe-dir>/out/observer-inline.jsonl' | LIM143_MODE=inline <probe-dir>/user-status.sh\",\"padding\":0},\"env\":{\"LIM143_MARK\":\"inline\"}}"
+      ],
+      "mergeKind": "merged",
+      "chainedCommand": "LIM143_MODE=inline <probe-dir>/user-status.sh",
+      "userCommandSeenSha256": [
+        "e2c167e0c7aa8e754492be835e717b44f4f2f27079c100867b6e990f4cc84d90",
+        "5c21fd557754981248aa77d0db0053f86fbb121e3d9300e36395518cc836ec73"
+      ],
+      "observerSeenSha256": [
+        "e2c167e0c7aa8e754492be835e717b44f4f2f27079c100867b6e990f4cc84d90",
+        "5c21fd557754981248aa77d0db0053f86fbb121e3d9300e36395518cc836ec73"
+      ],
+      "userCommandSeen": [
+        {
+          "session_id": "<scrubbed>",
+          "transcript_path": "<scrubbed>",
+          "cwd": "/tmp/lim100/scratch",
+          "model": {
+            "id": "claude-haiku-4-5-20251001",
+            "display_name": "Haiku 4.5"
+          },
+          "workspace": {
+            "current_dir": "/tmp/lim100/scratch",
+            "project_dir": "/tmp/lim100/scratch",
+            "added_dirs": []
+          },
+          "version": "2.1.252",
+          "output_style": {
+            "name": "Concise"
+          },
+          "context_window": {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "context_window_size": 200000,
+            "current_usage": null,
+            "used_percentage": null,
+            "remaining_percentage": null
+          },
+          "exceeds_200k_tokens": false,
+          "fast_mode": false,
+          "thinking": {
+            "enabled": true
+          }
+        },
+        {
+          "session_id": "<scrubbed>",
+          "transcript_path": "<scrubbed>",
+          "cwd": "/tmp/lim100/scratch",
+          "model": {
+            "id": "claude-haiku-4-5-20251001",
+            "display_name": "Haiku 4.5"
+          },
+          "workspace": {
+            "current_dir": "/tmp/lim100/scratch",
+            "project_dir": "/tmp/lim100/scratch",
+            "added_dirs": []
+          },
+          "version": "2.1.252",
+          "output_style": {
+            "name": "Concise"
+          },
+          "context_window": {
+            "total_input_tokens": 30410,
+            "total_output_tokens": 41,
+            "context_window_size": 200000,
+            "current_usage": {
+              "input_tokens": 10,
+              "output_tokens": 41,
+              "cache_creation_input_tokens": 30400,
+              "cache_read_input_tokens": 0
+            },
+            "used_percentage": 15,
+            "remaining_percentage": 85
+          },
+          "exceeds_200k_tokens": false,
+          "fast_mode": false,
+          "thinking": {
+            "enabled": true
+          }
+        }
+      ],
+      "visibleStatusLines": [
+        "USERLINE claude-haiku-4-5-20251001"
+      ],
+      "envMarkSeenByUserCommand": [
+        "mark=inline"
+      ]
+    },
+    {
+      "mode": "file",
+      "forwardedArgv": [
+        "--settings",
+        "<probe-dir>/user-settings.json"
+      ],
+      "userSettingsFileText": "{\n  \"statusLine\": { \"type\": \"command\", \"command\": \"LIM143_MODE=file <probe-dir>/user-status.sh\", \"padding\": 0 },\n  \"env\": { \"LIM143_MARK\": \"file\" }\n}\n",
+      "launchedArgv": [
+        "--settings",
+        "{\"statusLine\":{\"type\":\"command\",\"command\":\"tee -a '<probe-dir>/out/observer-file.jsonl' | LIM143_MODE=file <probe-dir>/user-status.sh\",\"padding\":0},\"env\":{\"LIM143_MARK\":\"file\"}}"
+      ],
+      "mergeKind": "merged",
+      "chainedCommand": "LIM143_MODE=file <probe-dir>/user-status.sh",
+      "userCommandSeenSha256": [
+        "5e76c4a231dfa8097de050d0a12e3b425736c54fa6d259ed35e2fee6e6dbde05",
+        "261acda68640f8a7ad048971ec40fa1c4c1a81363063ae530023a9a3af6ceb6a"
+      ],
+      "observerSeenSha256": [
+        "5e76c4a231dfa8097de050d0a12e3b425736c54fa6d259ed35e2fee6e6dbde05",
+        "261acda68640f8a7ad048971ec40fa1c4c1a81363063ae530023a9a3af6ceb6a"
+      ],
+      "userCommandSeen": [
+        {
+          "session_id": "<scrubbed>",
+          "transcript_path": "<scrubbed>",
+          "cwd": "/tmp/lim100/scratch",
+          "model": {
+            "id": "claude-haiku-4-5-20251001",
+            "display_name": "Haiku 4.5"
+          },
+          "workspace": {
+            "current_dir": "/tmp/lim100/scratch",
+            "project_dir": "/tmp/lim100/scratch",
+            "added_dirs": []
+          },
+          "version": "2.1.252",
+          "output_style": {
+            "name": "Concise"
+          },
+          "context_window": {
+            "total_input_tokens": 0,
+            "total_output_tokens": 0,
+            "context_window_size": 200000,
+            "current_usage": null,
+            "used_percentage": null,
+            "remaining_percentage": null
+          },
+          "exceeds_200k_tokens": false,
+          "fast_mode": false,
+          "thinking": {
+            "enabled": true
+          }
+        },
+        {
+          "session_id": "<scrubbed>",
+          "transcript_path": "<scrubbed>",
+          "cwd": "/tmp/lim100/scratch",
+          "model": {
+            "id": "claude-haiku-4-5-20251001",
+            "display_name": "Haiku 4.5"
+          },
+          "workspace": {
+            "current_dir": "/tmp/lim100/scratch",
+            "project_dir": "/tmp/lim100/scratch",
+            "added_dirs": []
+          },
+          "version": "2.1.252",
+          "output_style": {
+            "name": "Concise"
+          },
+          "context_window": {
+            "total_input_tokens": 30407,
+            "total_output_tokens": 47,
+            "context_window_size": 200000,
+            "current_usage": {
+              "input_tokens": 10,
+              "output_tokens": 47,
+              "cache_creation_input_tokens": 30397,
+              "cache_read_input_tokens": 0
+            },
+            "used_percentage": 15,
+            "remaining_percentage": 85
+          },
+          "exceeds_200k_tokens": false,
+          "fast_mode": false,
+          "thinking": {
+            "enabled": true
+          }
+        }
+      ],
+      "visibleStatusLines": [
+        "USERLINE claude-haiku-4-5-20251001"
+      ],
+      "envMarkSeenByUserCommand": [
+        "mark=file"
+      ]
+    }
+  ]
+}

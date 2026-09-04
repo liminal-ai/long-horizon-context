@@ -36,7 +36,7 @@ const NATIVE_AUTO_COMPACT_DISABLE_VALUE = "1";
 export const NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY =
   "ANOMALY: launch carries an explicit --autocompact; cc-lhc passed it through and did not inject " +
   "DISABLE_AUTO_COMPACT for this Claude child. Inherited environment and Claude settings still govern " +
-  "whether native auto-compact runs. LHC compaction continues normally.";
+  "whether Claude native Compact runs. LHC compaction continues normally.";
 
 /**
  * True when the launch argv itself supplies native `--autocompact` before the
@@ -48,6 +48,24 @@ export function argvSuppliesNativeAutocompact(argv: readonly string[]): boolean 
     if (arg === "--autocompact" || arg.startsWith("--autocompact=")) return true;
   }
   return false;
+}
+
+/**
+ * The exact `--autocompact` tokens the launch argv supplies before the `--`
+ * boundary (`--autocompact 500000`, `--autocompact=auto`, or the bare flag),
+ * for the Control Panel's "detected cause" row. Null when absent.
+ */
+export function nativeAutocompactArgvEvidence(argv: readonly string[]): string | null {
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i]!;
+    if (arg === "--") return null;
+    if (arg.startsWith("--autocompact=")) return arg;
+    if (arg === "--autocompact") {
+      const value = argv[i + 1];
+      return value === undefined || value === "--" || value.startsWith("-") ? arg : `${arg} ${value}`;
+    }
+  }
+  return null;
 }
 
 /**

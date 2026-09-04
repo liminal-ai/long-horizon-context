@@ -64,6 +64,9 @@ export interface MessageRecord {
   // Host-observed provider usage from assistant_text (schema v5). Absent when
   // the source event did not carry it (other kinds, pre-v5 rows, hosts that omit).
   providerUsage?: Record<string, unknown>;
+  // Host-supplied step index (schema v12). Absent when the source event did
+  // not carry it; never inferred.
+  stepIndex?: number;
   // Stored derivations for messages that are derivation sources. Kinds with no
   // derivable output carry no rows and no key. Stored state is returned
   // verbatim, never re-derived on read.
@@ -123,6 +126,15 @@ export function create(
   };
   if (recordedEvent.eventKind === "assistant_text" && recordedEvent.payload.providerUsage !== undefined) {
     row.providerUsage = recordedEvent.payload.providerUsage;
+  }
+  if (
+    (recordedEvent.eventKind === "assistant_text" ||
+      recordedEvent.eventKind === "assistant_thinking" ||
+      recordedEvent.eventKind === "tool_call" ||
+      recordedEvent.eventKind === "tool_result") &&
+    recordedEvent.payload.stepIndex !== undefined
+  ) {
+    row.stepIndex = recordedEvent.payload.stepIndex;
   }
   insertMessage(transaction.db, row);
   const message =

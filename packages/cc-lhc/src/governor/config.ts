@@ -2,48 +2,138 @@
  * Context policy load/merge/validate.
  * Precedence: builtin < user (XDG) < project (.cc-lhc.json) < session.
  *
+ * The built-in layer is chosen by the active context class (200k or 1M), which
+ * is derived from the effective model's observed window — never from
+ * configuration. Explicit user/project/session values keep their precedence
+ * over the built-ins of whichever class is active.
+ *
  * Configuration can be wrong; it can never disarm the product. An unknown
  * field, a malformed value, an unreadable file, or an incoherent pair of
- * bounds falls back to the built-in default for the fields involved and
- * records a notice. Automatic compact stays armed either way — a typo in
- * `~/.config/cc-lhc/config.json` must not be a silent off switch for the one
- * function that keeps long sessions alive.
+ * bounds falls back to the active class's built-in default for the fields
+ * involved and records a notice naming the field and its source. There is no
+ * field that turns Smart Compact off.
  */
 
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 
+import { PRODUCT_PRESET_IDS } from "./band-allocation.js";
 import type {
   ConfigFallback,
+  ContextClass,
   ContextPolicy,
   ContextPolicyPartial,
+  ContextWindowResolution,
   PolicyFieldKey,
   PolicyFieldSource,
   PolicyFieldSources,
   ResolvedContextPolicy,
 } from "./types.js";
 
-/** Steward built-in defaults. Automatic compact is on. */
-export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
-  autoCompact: true,
-  lowerBoundTokens: 180_000,
-  upperBoundTokens: 360_000,
-  profile: "continuation",
-  pruneEnabled: false,
-  pruneThresholdTokens: null,
-  pruneTargetTokens: null,
-  minRunwayTokens: 50_000,
+/** The exact observed window values that select a built-in class (D8). */
+export const CONTEXT_WINDOW_TOKENS: Readonly<Record<ContextClass, number>> = {
+  "200k": 200_000,
+  "1M": 1_000_000,
 };
+
+/** Built-in policy per context class (D1). The class is never configured. */
+export const BUILTIN_CONTEXT_POLICIES: Readonly<Record<ContextClass, ContextPolicy>> = {
+  "200k": {
+    lowerBoundTokens: 70_000,
+    upperBoundTokens: 140_000,
+    profile: "default",
+    pruneEnabled: false,
+    pruneThresholdTokens: null,
+    pruneTargetTokens: null,
+    minRunwayTokens: 40_000,
+  },
+  "1M": {
+    lowerBoundTokens: 180_000,
+    upperBoundTokens: 360_000,
+    profile: "default",
+    pruneEnabled: false,
+    pruneThresholdTokens: null,
+    pruneTargetTokens: null,
+    minRunwayTokens: 50_000,
+  },
+};
+
+/** The class every session starts on and falls back to until a window is observed. */
+export const CONSERVATIVE_CONTEXT_CLASS: ContextClass = "200k";
+
+/** Built-in defaults of the conservative class — the policy before any window is known. */
+export const BUILTIN_CONTEXT_POLICY: ContextPolicy = BUILTIN_CONTEXT_POLICIES[CONSERVATIVE_CONTEXT_CLASS];
+
+export function builtinContextPolicy(contextClass: ContextClass): ContextPolicy {
+  return BUILTIN_CONTEXT_POLICIES[contextClass];
+}
+
+/** The resolution every session starts with: nothing observed, conservative class. */
+export const CONTEXT_WINDOW_NOT_YET_OBSERVED: ContextWindowResolution = {
+  contextClass: CONSERVATIVE_CONTEXT_CLASS,
+  source: "not_yet_observed",
+  observedWindowTokens: null,
+  modelId: null,
+  detail: "context window not observed yet; conservative 200k policy applies",
+  unresolvedAdvisory: true,
+};
+
+/** Detection could not be installed for this launch; the reason is operator-facing. */
+export function contextWindowDetectionUnavailable(reason: string): ContextWindowResolution {
+  return {
+    contextClass: CONSERVATIVE_CONTEXT_CLASS,
+    source: "detection_unavailable",
+    observedWindowTokens: null,
+    modelId: null,
+    detail: `context window detection unavailable (${reason}); conservative 200k policy applies`,
+    unresolvedAdvisory: true,
+  };
+}
+
+/**
+ * Exact class resolution from one observed `context_window_size` (D8): only
+ * 200000 and 1000000 select a class. Any other value keeps the conservative
+ * class and is reported; a value below 200000 also raises the unresolved
+ * advisory because the route is outside both supported windows.
+ */
+export function resolveContextWindow(observedWindowTokens: number, modelId: string | null): ContextWindowResolution {
+  for (const contextClass of Object.keys(CONTEXT_WINDOW_TOKENS) as ContextClass[]) {
+    if (CONTEXT_WINDOW_TOKENS[contextClass] === observedWindowTokens) {
+      return {
+        contextClass,
+        source: "observed",
+        observedWindowTokens,
+        modelId,
+        detail: null,
+        unresolvedAdvisory: false,
+      };
+    }
+  }
+  const below = observedWindowTokens < CONTEXT_WINDOW_TOKENS["200k"];
+  return {
+    contextClass: CONSERVATIVE_CONTEXT_CLASS,
+    source: "unsupported_value",
+    observedWindowTokens,
+    modelId,
+    detail: below
+      ? `observed context window ${observedWindowTokens} is below the supported 200k class; conservative 200k policy applies`
+      : `observed context window ${observedWindowTokens} is not a supported class (200000 or 1000000); conservative 200k policy applies`,
+    unresolvedAdvisory: below,
+  };
+}
 
 /** The operator-facing sentence every fallback surface repeats verbatim. */
 export const CONFIG_FALLBACK_NOTICE =
   "Invalid compact configuration. Default configuration used. Please fix or update the configuration.";
 
-/** Canonical SDK profile names — no second percentage ontology. */
-export const CANONICAL_LHC_PROFILES = ["continuation", "conversation", "coding"] as const;
+/** Accepted user/CLI `profile` values — product preset IDs, not core names. */
+export const CANONICAL_LHC_PROFILES = PRODUCT_PRESET_IDS;
 
 const POLICY_FIELD_KEYS = Object.keys(BUILTIN_CONTEXT_POLICY) as PolicyFieldKey[];
+
+/** The complete field set; anything else in a layer is unknown and dropped. */
+export const CONTEXT_POLICY_FIELD_KEYS: readonly PolicyFieldKey[] = POLICY_FIELD_KEYS;
 
 const KNOWN_KEYS = new Set<string>(POLICY_FIELD_KEYS);
 
@@ -90,7 +180,7 @@ export function parseContextPolicyPartial(raw: unknown, origin: string): ParsedP
     if (!KNOWN_KEYS.has(key)) drop(null, `unknown field "${key}" ignored`);
   }
 
-  const takeBool = (key: "autoCompact" | "pruneEnabled"): void => {
+  const takeBool = (key: "pruneEnabled"): void => {
     if (!Object.hasOwn(raw, key)) return;
     const v = raw[key];
     if (typeof v !== "boolean") {
@@ -124,7 +214,6 @@ export function parseContextPolicyPartial(raw: unknown, origin: string): ParsedP
     out[key] = v;
   };
 
-  takeBool("autoCompact");
   takeBool("pruneEnabled");
   takePosInt("lowerBoundTokens");
   takePosInt("upperBoundTokens");
@@ -135,7 +224,7 @@ export function parseContextPolicyPartial(raw: unknown, origin: string): ParsedP
   if (Object.hasOwn(raw, "profile")) {
     const v = raw.profile;
     if (typeof v !== "string" || !(CANONICAL_LHC_PROFILES as readonly string[]).includes(v)) {
-      drop("profile", `profile must be one of ${CANONICAL_LHC_PROFILES.join(", ")}`);
+      drop("profile", `profile must be one of ${PRODUCT_PRESET_IDS.join(", ")}`);
     } else {
       out.profile = v;
     }
@@ -237,7 +326,7 @@ function fieldErrors(policy: ContextPolicy): string[] {
     }
   }
   if (!(CANONICAL_LHC_PROFILES as readonly string[]).includes(policy.profile)) {
-    errors.push(`profile "${policy.profile}" is not a canonical LHC profile (${CANONICAL_LHC_PROFILES.join(", ")})`);
+    errors.push(`profile must be one of ${PRODUCT_PRESET_IDS.join(", ")}`);
   }
   return errors;
 }
@@ -257,7 +346,8 @@ export function validateContextPolicy(policy: ContextPolicy): string[] {
 }
 
 /**
- * Settle coherence by reverting configured fields to their built-in defaults.
+ * Settle coherence by reverting configured fields to the active class's
+ * built-in defaults.
  *
  * Only fields a user actually set are reverted, so the offending value loses
  * and the built-in wins. Reverting strictly reduces the configured set, so
@@ -268,6 +358,7 @@ function settleCoherence(
   sources: PolicyFieldSources,
   origins: FieldOrigins,
   fallbacks: ConfigFallback[],
+  builtin: ContextPolicy,
 ): ContextPolicy {
   let current = policy;
   for (let pass = 0; pass <= POLICY_FIELD_KEYS.length; pass += 1) {
@@ -279,11 +370,11 @@ function settleCoherence(
       if (configured.length === 0) continue;
       let next: ContextPolicy = current;
       for (const field of configured) {
-        next = { ...next, [field]: BUILTIN_CONTEXT_POLICY[field] };
+        next = { ...next, [field]: builtin[field] };
         fallbacks.push({
           origin: origins[field] ?? `${sources[field]} config`,
           field,
-          detail: `${error}; ${field} reset to built-in default`,
+          detail: `${error}; ${field} reset to the built-in default for the active context window`,
         });
         sources[field] = "builtin";
         delete origins[field];
@@ -307,6 +398,12 @@ export interface LoadContextPolicyOptions {
   projectConfigPath?: string;
   /** Test seam: read JSON by path. */
   readJson?: (path: string) => { ok: true; value: unknown } | { ok: false; error: string };
+  /**
+   * The observed context window this load resolves against. Defaults to the
+   * not-yet-observed conservative resolution; `applyContextWindow` re-resolves
+   * the same layers when a window is observed later.
+   */
+  contextWindow?: ContextWindowResolution;
 }
 
 /**
@@ -320,10 +417,12 @@ export function loadContextPolicy(options: LoadContextPolicyOptions = {}): Resol
   const userPath = options.userConfigPath ?? userConfigPath(env);
   const projectPath = options.projectConfigPath ?? projectConfigPath(cwd);
 
+  const contextWindow = options.contextWindow ?? CONTEXT_WINDOW_NOT_YET_OBSERVED;
+  const builtin = builtinContextPolicy(contextWindow.contextClass);
   const fallbacks: ConfigFallback[] = [];
   const sources = emptySources();
   const origins: FieldOrigins = {};
-  let policy: ContextPolicy = { ...BUILTIN_CONTEXT_POLICY };
+  let policy: ContextPolicy = { ...builtin };
 
   const mergeLayer = (raw: unknown, origin: string, source: PolicyFieldSource): void => {
     const parsed = parseContextPolicyPartial(raw, origin);
@@ -347,15 +446,42 @@ export function loadContextPolicy(options: LoadContextPolicyOptions = {}): Resol
     mergeLayer(options.sessionOverrides, "session overrides", "session");
   }
 
-  policy = settleCoherence(policy, sources, origins, fallbacks);
+  policy = settleCoherence(policy, sources, origins, fallbacks, builtin);
 
-  return { policy, sources, fallbacks };
+  return { policy, sources, fallbacks, contextWindow };
+}
+
+/**
+ * Re-resolve an already-loaded policy against a newly observed context window
+ * (AC-1.4). Only model-derived values move: every field still on its built-in
+ * source takes the new class's built-in; explicit user/project/session values
+ * keep their value and precedence. Coherence is settled again so an explicit
+ * value that no longer fits the new built-ins falls back per field, named.
+ */
+export function applyContextWindow(
+  resolved: ResolvedContextPolicy,
+  contextWindow: ContextWindowResolution,
+): ResolvedContextPolicy {
+  const builtin = builtinContextPolicy(contextWindow.contextClass);
+  const sources: PolicyFieldSources = { ...resolved.sources };
+  const origins: FieldOrigins = {};
+  let policy: ContextPolicy = { ...resolved.policy };
+  for (const key of POLICY_FIELD_KEYS) {
+    if (sources[key] === "builtin") policy = { ...policy, [key]: builtin[key] };
+    else origins[key] = `${sources[key]} config`;
+  }
+  // Coherence fallbacks recorded at load are re-derived here from the same
+  // explicit values; earlier notices about unknown/malformed fields survive.
+  const fallbacks = resolved.fallbacks.filter((f) => f.field === null || !f.detail.includes("reset to the built-in"));
+  const carried: ConfigFallback[] = [...fallbacks];
+  policy = settleCoherence(policy, sources, origins, carried, builtin);
+  return { policy, sources, fallbacks: carried, contextWindow };
 }
 
 /** Compact source summary for observe records. */
 export function policySourcesSummary(sources: PolicyFieldSources): string {
   const parts: string[] = [];
-  for (const key of ["autoCompact", "lowerBoundTokens", "upperBoundTokens", "profile"] as const) {
+  for (const key of ["lowerBoundTokens", "upperBoundTokens", "profile"] as const) {
     parts.push(`${key}=${sources[key]}`);
   }
   return parts.join(",");

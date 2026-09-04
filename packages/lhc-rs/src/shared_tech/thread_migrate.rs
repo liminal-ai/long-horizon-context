@@ -21,6 +21,7 @@ pub const THREAD_SCHEMA_VERSION_8: i64 = 8;
 pub const THREAD_SCHEMA_VERSION_9: i64 = 9;
 pub const THREAD_SCHEMA_VERSION_10: i64 = 10;
 pub const THREAD_SCHEMA_VERSION_11: i64 = 11;
+pub const THREAD_SCHEMA_VERSION_12: i64 = 12;
 
 const OLD_DERIVATION_TYPE: &str = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE: &str = "detailed_turn_compression";
@@ -491,14 +492,26 @@ fn migrated_turn_derivation_targets(turn_id: &str) -> Vec<EnqueueDerivationTarge
     ]
 }
 
-fn migrate_queued_turn_derivation_work_items(db: &Db) {
-    let rows = db
-        .prepare(
-            r#"SELECT work_item_id, source_ref, payload
+/// Candidate rows for the pre-rewire turn_derivation repair: only queued and
+/// claimed items of that kind can still carry a pre-rewire payload.
+const QUEUED_TURN_DERIVATION_CANDIDATES_SQL: &str = r#"SELECT work_item_id, source_ref, payload
        FROM work_item
-       WHERE kind = 'turn_derivation' AND status IN ('queued', 'claimed')"#,
-        )
-        .all(&[]);
+       WHERE kind = 'turn_derivation' AND status IN ('queued', 'claimed')"#;
+
+/// TS `scanQueuedTurnDerivationRepairs`'s mode discriminator.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RepairScanMode {
+    /// Read-only: stop at the first row that needs repair, write nothing.
+    Probe,
+    /// Repair every row that needs it.
+    Apply,
+}
+
+/// One scan serves both modes so the read-only predicate and the mutating pass
+/// can never diverge. Both read the same rows in the same order, so a malformed
+/// payload/source_ref fails identically either way.
+fn scan_queued_turn_derivation_repairs(db: &Db, mode: RepairScanMode) -> bool {
+    let rows = db.prepare(QUEUED_TURN_DERIVATION_CANDIDATES_SQL).all(&[]);
 
     let update_payload = db.prepare("UPDATE work_item SET payload = ? WHERE work_item_id = ?");
     let seed_assembly = db.prepare(
@@ -510,6 +523,7 @@ fn migrate_queued_turn_derivation_work_items(db: &Db) {
      WHERE subject_kind = 'turn' AND subject_id = ? AND derivation_type = 'pre_detailed_assembly'"#,
     );
 
+    let mut repair_needed = false;
     for row in rows {
         let source_ref_raw = row
             .get("source_ref")
@@ -551,6 +565,11 @@ fn migrate_queued_turn_derivation_work_items(db: &Db) {
             continue;
         }
 
+        repair_needed = true;
+        if mode == RepairScanMode::Probe {
+            return true;
+        }
+
         if needs_assembly_seed {
             seed_assembly.run(&[SqlParam::from(turn_id), source_version]);
         }
@@ -579,12 +598,32 @@ fn migrate_queued_turn_derivation_work_items(db: &Db) {
             ]);
         }
     }
+    repair_needed
 }
 
+fn migrate_queued_turn_derivation_work_items(db: &Db) {
+    scan_queued_turn_derivation_repairs(db, RepairScanMode::Apply);
+}
+
+/// Read-only: does any queued/claimed legacy row still need the repair?
+fn queued_turn_derivation_repair_pending(db: &Db) -> bool {
+    scan_queued_turn_derivation_repairs(db, RepairScanMode::Probe)
+}
+
+// Current-schema open is the hot path: it must not take a write lock just to
+// discover there is nothing to repair. The read-only predicate decides, and
+// the same predicate runs again inside BEGIN IMMEDIATE so a concurrent opener
+// that repaired the same rows between probe and lock cannot cause duplicate
+// work (the repair itself is idempotent; the recheck keeps it write-free).
 fn run_queued_turn_derivation_migration(db: &Db) {
+    if !queued_turn_derivation_repair_pending(db) {
+        return;
+    }
     db.exec("BEGIN IMMEDIATE;");
     match catch_unwind(AssertUnwindSafe(|| {
-        migrate_queued_turn_derivation_work_items(db);
+        if queued_turn_derivation_repair_pending(db) {
+            migrate_queued_turn_derivation_work_items(db);
+        }
     })) {
         Ok(()) => db.exec("COMMIT;"),
         Err(payload) => {
@@ -621,6 +660,43 @@ fn migrate_turn_host_facts(db: &Db) {
     db.exec(SQL_MIGRATE_V5_TURNS_STARTED_AT);
     db.exec(SQL_MIGRATE_V5_TURNS_ENDED_AT);
     db.exec(SQL_MIGRATE_V5_MESSAGE_PROVIDER_USAGE);
+}
+
+// v11→v12: turn parts. Host-supplied step index on messages (F2) — nullable,
+// no backfill: NULL means the host never reported a step edge, and a turn with
+// any NULL step index is never split — and the per-thread parts-activated
+// fact on thread_metadata (AC-7.3 exclusivity). Guarded so a crash-window
+// reopen or a simulated-old file that already carries a column migrates
+// cleanly. ALTER statements byte-match TS; migrated files append columns
+// AFTER existing ones (deliberate asymmetry with fresh DDL).
+const SQL_MIGRATE_V12_MESSAGE_STEP_INDEX: &str =
+    "ALTER TABLE message ADD COLUMN step_index INTEGER;";
+const SQL_MIGRATE_V12_THREAD_METADATA_PARTS_ACTIVATED_AT: &str =
+    "ALTER TABLE thread_metadata ADD COLUMN parts_activated_at TEXT;";
+
+fn table_columns(db: &Db, table: &str) -> Vec<String> {
+    db.prepare(&format!("PRAGMA table_info({table})"))
+        .all(&[])
+        .iter()
+        .filter_map(|row| row.get("name").and_then(|v| v.as_str()).map(str::to_string))
+        .collect()
+}
+
+fn migrate_turn_parts(db: &Db) {
+    if !table_columns(db, "message")
+        .iter()
+        .any(|c| c == "step_index")
+    {
+        db.exec(SQL_MIGRATE_V12_MESSAGE_STEP_INDEX);
+    }
+    // The durable per-thread mechanism fact: set once, in the transaction that
+    // installs the first view serving parts; never cleared (AC-7.3).
+    if !table_columns(db, "thread_metadata")
+        .iter()
+        .any(|c| c == "parts_activated_at")
+    {
+        db.exec(SQL_MIGRATE_V12_THREAD_METADATA_PARTS_ACTIVATED_AT);
+    }
 }
 
 pub fn migrate_thread_schema(db: &Db) {
@@ -684,6 +760,10 @@ pub fn migrate_thread_schema(db: &Db) {
         if version == THREAD_SCHEMA_VERSION_10 {
             migrate_compact_continuation_v11(db);
             version = THREAD_SCHEMA_VERSION_11;
+        }
+        if version == THREAD_SCHEMA_VERSION_11 {
+            migrate_turn_parts(db);
+            version = THREAD_SCHEMA_VERSION_12;
         }
         if version != CURRENT_THREAD_SCHEMA_VERSION {
             panic!("unsupported thread schema version {version}");

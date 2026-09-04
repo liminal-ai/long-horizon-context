@@ -215,6 +215,7 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
       config: {
         lowerBound: DEGRADED_COMPACT_PARAMS.lowerBound,
         percentages: DEGRADED_COMPACT_PARAMS.percentages,
+        newestClosedProtection: 0.6,
       },
       compactPoint: raw.compactPoint,
       coveredFrom: raw.coveredFrom,

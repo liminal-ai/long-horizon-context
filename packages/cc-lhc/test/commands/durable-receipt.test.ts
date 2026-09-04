@@ -116,7 +116,7 @@ describe("durable operation receipt", () => {
     const outcome = await runContextMutation(
       {
         operation: "auto_compact",
-        profile: "continuation",
+        profile: "default",
         lowerBoundTokens: 240_000,
         triggerContextTokens: 508_000,
       },
@@ -145,7 +145,7 @@ describe("durable operation receipt", () => {
     const { runtime: rt } = runtime();
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
     const outcome = await runContextMutation(
-      { operation: "prune", profile: "continuation", lowerBoundTokens: 240_000 },
+      { operation: "prune", profile: "default", lowerBoundTokens: 240_000 },
       rt,
     );
     expect(outcome.kind).toBe("rebuilt");
@@ -160,7 +160,7 @@ describe("durable operation receipt", () => {
     const outcome = await runContextMutation(
       {
         operation: "compact",
-        profile: "continuation",
+        profile: "default",
         lowerBoundTokens: 240_000,
         pruneIfDue: { thresholdTokens: 100_000, targetTokens: 30_000 },
       },

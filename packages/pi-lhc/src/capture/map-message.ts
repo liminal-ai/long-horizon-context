@@ -36,6 +36,24 @@ export interface MapCtx {
   piSessionId: string;
   entryId?: string | undefined;
   fallbackId?: string | undefined;
+  /** Host step index (turn parts, F2) for the step-bearing kinds —
+   *  assistant_thinking, assistant_text, tool_call, tool_result. Absent →
+   *  no stamp, the record keeps NULL and the turn is never split. */
+  stepIndex?: number | undefined;
+  /** This user message arrived inside a run in progress (Pi steering): it is
+   *  recorded as a `user_prompt` with `steer: true` — a member of the open
+   *  LHC turn, never a boundary. */
+  steer?: boolean | undefined;
+}
+
+type StepBearing = Extract<
+  MessageEventInput,
+  { eventKind: "assistant_thinking" | "assistant_text" | "tool_call" | "tool_result" }
+>;
+
+function stamped<E extends StepBearing>(event: E, ctx: MapCtx): E {
+  if (ctx.stepIndex === undefined) return event;
+  return { ...event, payload: { ...event.payload, stepIndex: ctx.stepIndex } };
 }
 
 const HARNESS = "pi";
@@ -195,7 +213,14 @@ function mapUser(msg: UserMessage, ctx: MapCtx): MessageEventInput[] {
   let block = 0;
   if (parts.some((p) => p.type === "text")) {
     const text = textOf(parts);
-    events.push(textEvent("user_prompt", text, "user", buildKey(ctx, "user", "user_prompt", block, { content: text })));
+    const prompt = textEvent(
+      "user_prompt",
+      text,
+      "user",
+      buildKey(ctx, "user", "user_prompt", block, { content: text }),
+    );
+    const promptEvent = prompt as Extract<MessageEventInput, { eventKind: "user_prompt" }>;
+    events.push(ctx.steer === true ? { ...promptEvent, payload: { text, steer: true } } : promptEvent);
     block += 1;
   }
   for (const part of unsupportedOf(parts)) {
@@ -266,18 +291,21 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
     const text = thinkingOf(parts);
     const signature = thinkingSignatureOf(parts);
     events.push(
-      textEvent(
-        "assistant_thinking",
-        text,
-        "assistant",
-        buildKey(ctx, "assistant", "assistant_thinking", block, {
-          responseId,
-          content: signature !== undefined ? `${text}\0${signature}` : text,
-        }),
-        {
-          ...provenance,
-          ...(signature !== undefined ? { signature } : {}),
-        },
+      stamped(
+        textEvent(
+          "assistant_thinking",
+          text,
+          "assistant",
+          buildKey(ctx, "assistant", "assistant_thinking", block, {
+            responseId,
+            content: signature !== undefined ? `${text}\0${signature}` : text,
+          }),
+          {
+            ...provenance,
+            ...(signature !== undefined ? { signature } : {}),
+          },
+        ) as Extract<MessageEventInput, { eventKind: "assistant_thinking" }>,
+        ctx,
       ),
     );
     block += 1;
@@ -287,11 +315,14 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
     // providerUsage only when a text vehicle exists — pure tool-call /
     // thinking-only messages drop usage (documented CAPTURE-GAPS / schema-v6).
     events.push(
-      assistantTextEvent(
-        text,
-        buildKey(ctx, "assistant", "assistant_text", block, { responseId, content: text }),
-        msg.usage,
-        provenance,
+      stamped(
+        assistantTextEvent(
+          text,
+          buildKey(ctx, "assistant", "assistant_text", block, { responseId, content: text }),
+          msg.usage,
+          provenance,
+        ) as Extract<MessageEventInput, { eventKind: "assistant_text" }>,
+        ctx,
       ),
     );
     block += 1;
@@ -299,15 +330,18 @@ function mapAssistant(msg: AssistantMessage, ctx: MapCtx): MessageEventInput[] {
   for (const part of parts) {
     if (part.type !== "toolCall") continue;
     events.push(
-      toolCallEvent(
-        part.id,
-        part.name,
-        part.arguments,
-        buildKey(ctx, "assistant", "tool_call", block, {
-          responseId,
-          toolCallId: part.id,
-          content: part.name,
-        }),
+      stamped(
+        toolCallEvent(
+          part.id,
+          part.name,
+          part.arguments,
+          buildKey(ctx, "assistant", "tool_call", block, {
+            responseId,
+            toolCallId: part.id,
+            content: part.name,
+          }),
+        ) as Extract<MessageEventInput, { eventKind: "tool_call" }>,
+        ctx,
       ),
     );
     block += 1;
@@ -357,11 +391,14 @@ function mapToolResult(msg: ToolResultMessage, ctx: MapCtx): MessageEventInput[]
   // Correlation is by toolCallId, not arrival order; the error flag and content
   // are always captured, even on failure.
   events.push(
-    toolResultEvent(
-      msg.toolCallId,
-      content,
-      isError,
-      buildKey(ctx, "toolResult", "tool_result", 0, { toolCallId: msg.toolCallId, content }),
+    stamped(
+      toolResultEvent(
+        msg.toolCallId,
+        content,
+        isError,
+        buildKey(ctx, "toolResult", "tool_result", 0, { toolCallId: msg.toolCallId, content }),
+      ) as Extract<MessageEventInput, { eventKind: "tool_result" }>,
+      ctx,
     ),
   );
   let block = 1;

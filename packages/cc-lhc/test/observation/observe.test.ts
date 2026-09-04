@@ -1,20 +1,34 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { estimateTokens, type MessageEventInput, TOKEN_ESTIMATOR_ID } from "lhc";
 import { describe, expect, it } from "vitest";
-import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICY, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
+import { decideGovernor } from "../../src/governor/decide.js";
 import { applyGovernorLifecycleBatch, createGovernorRuntimeState } from "../../src/governor/observe-state.js";
+import { providerContextFromUsage } from "../../src/governor/provider-context.js";
 import type { ResolvedContextPolicy } from "../../src/governor/types.js";
 import {
+  composeEstimateSources,
   createPostMeasurementEstimateFold,
+  estimateAcceptedEvent,
   HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
   hostEstimateFromCanonicalBytes,
-  PENDING_PROMPT_BYTE_ESTIMATE_SOURCE,
-  pendingPromptEstimate,
-  preLaunchEstimate,
+  MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE,
+  mergeEstimateSource,
+  PENDING_PROMPT_ESTIMATE_SOURCE,
   PROVIDER_OUTPUT_ESTIMATE_SOURCE,
+  pendingPromptEstimate,
+  postMeasurementEstimateFromEvents,
+  preLaunchEstimate,
+  USER_PROMPT_ESTIMATE_SOURCE,
 } from "../../src/observation/estimate.js";
-import { createTurnFoldState, observeRolloutLine } from "../../src/observation/observe.js";
+import {
+  createTurnFoldState,
+  isClaudePromptTooLongRejection,
+  observeRolloutLine,
+  postMeasurementAddFromAcceptedEvents,
+} from "../../src/observation/observe.js";
 import { createSamplingDedupeState } from "../../src/observation/sampling.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 
@@ -447,11 +461,12 @@ describe("observeRolloutLine", () => {
 
     // Governor fold: real watcher lifecycle moves pressure across the trigger.
     const resolved: ResolvedContextPolicy = {
-      policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: true, upperBoundTokens: 360_000 },
+      policy: { ...BUILTIN_CONTEXT_POLICY, upperBoundTokens: 360_000 },
       sources: Object.fromEntries(
         Object.keys(BUILTIN_CONTEXT_POLICY).map((k) => [k, "session"]),
       ) as ResolvedContextPolicy["sources"],
       fallbacks: [],
+      contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
     };
     const lifecycle = [
       ...rAsst.lifecycle.filter((s) => s.kind === "sampling_observed" || s.kind === "post_measurement_estimate"),
@@ -524,31 +539,494 @@ describe("observeRolloutLine", () => {
 });
 
 describe("pre-launch estimate: what the next request carries that no provider reading covers", () => {
-  it("a pending prompt is sized from its own bytes, under its own source label", () => {
-    expect(pendingPromptEstimate("x".repeat(400))).toEqual({
-      tokens: 100,
-      source: PENDING_PROMPT_BYTE_ESTIMATE_SOURCE,
+  it("a pending prompt is sized by packaged core LHC estimateTokens, labelled with estimator identity", () => {
+    const text = "x".repeat(400);
+    expect(pendingPromptEstimate(text)).toEqual({
+      tokens: estimateTokens(text),
+      source: PENDING_PROMPT_ESTIMATE_SOURCE,
       domain: "source_labelled_estimate",
     });
+    expect(PENDING_PROMPT_ESTIMATE_SOURCE).toBe(`pending_prompt:${TOKEN_ESTIMATOR_ID}`);
     expect(pendingPromptEstimate("")).toMatchObject({ tokens: 0 });
   });
 
-  it("multi-byte prompt text is measured in bytes, not code units", () => {
-    // Four bytes per character: the estimate must not read them as one token each.
-    expect(pendingPromptEstimate("𝄞".repeat(100)).tokens).toBe(100);
+  it("pending one-shot prompt estimation is not the captured-content bytes/4 heuristic", () => {
+    const prompt = readFileSync(
+      join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "burnin-defect-001-prompt.txt"),
+      "utf8",
+    );
+    expect(Buffer.byteLength(prompt, "utf8")).toBe(104_263);
+    expect(Math.floor(Buffer.byteLength(prompt, "utf8") / 4)).toBe(26_065);
+    expect(pendingPromptEstimate(prompt).tokens).toBe(66_025);
+    expect(pendingPromptEstimate(prompt).tokens).toBe(estimateTokens(prompt));
+    expect(pendingPromptEstimate(prompt).source).toContain(TOKEN_ESTIMATOR_ID);
   });
 
   it("captured growth and the pending prompt add up, and the label names both", () => {
     const growth = hostEstimateFromCanonicalBytes(800);
-    const estimate = preLaunchEstimate(growth, "y".repeat(400));
-    expect(estimate.tokens).toBe(300);
-    expect(estimate.source).toBe(
-      `${HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE}+${PENDING_PROMPT_BYTE_ESTIMATE_SOURCE}`,
-    );
+    const prompt = "y".repeat(400);
+    const estimate = preLaunchEstimate(growth, prompt);
+    expect(estimate.tokens).toBe(growth.tokens + estimateTokens(prompt));
+    expect(estimate.source).toBe(`${HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE}+${PENDING_PROMPT_ESTIMATE_SOURCE}`);
   });
 
   it("with nothing captured since the last reading, the estimate is the prompt alone", () => {
-    const estimate = preLaunchEstimate(hostEstimateFromCanonicalBytes(0), "z".repeat(40));
-    expect(estimate).toMatchObject({ tokens: 10, source: PENDING_PROMPT_BYTE_ESTIMATE_SOURCE });
+    const prompt = "z".repeat(40);
+    const estimate = preLaunchEstimate(hostEstimateFromCanonicalBytes(0), prompt);
+    expect(estimate).toMatchObject({
+      tokens: estimateTokens(prompt),
+      source: PENDING_PROMPT_ESTIMATE_SOURCE,
+    });
+  });
+});
+
+const BURNIN_PROMPT = readFileSync(
+  join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "burnin-defect-001-prompt.txt"),
+  "utf8",
+);
+
+function userPromptEvent(text: string): MessageEventInput {
+  return {
+    eventKind: "user_prompt",
+    idempotencyKey: "user:1",
+    actor: "user",
+    harness: "cc",
+    payload: { text },
+  };
+}
+
+function toolResultEvent(content: string): MessageEventInput {
+  return {
+    eventKind: "tool_result",
+    idempotencyKey: "tool:1",
+    actor: "tool",
+    harness: "cc",
+    payload: { toolCallId: "toolu_1", content },
+  };
+}
+
+function promptTooLongApiError(): RolloutLineItem {
+  return {
+    type: "assistant",
+    uuid: "api-err",
+    error: "invalid_request",
+    isApiErrorMessage: true,
+    message: {
+      role: "assistant",
+      id: "msg_api_err",
+      model: "<synthetic>",
+      stop_reason: "stop_sequence",
+      content: [{ type: "text", text: "Prompt is too long" }],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    },
+  };
+}
+
+function syntheticNoResponse(): RolloutLineItem {
+  return {
+    type: "assistant",
+    uuid: "synth-nr",
+    isApiErrorMessage: false,
+    message: {
+      role: "assistant",
+      model: "<synthetic>",
+      stop_reason: "stop_sequence",
+      content: [{ type: "text", text: "No response requested." }],
+      usage: {
+        input_tokens: 0,
+        output_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 0,
+      },
+    },
+  };
+}
+
+function burninPolicy(): ResolvedContextPolicy {
+  return {
+    policy: {
+      ...BUILTIN_CONTEXT_POLICY,
+      lowerBoundTokens: 100_000,
+      upperBoundTokens: 200_000,
+      minRunwayTokens: 50_000,
+      profile: "balanced",
+    },
+    sources: Object.fromEntries(
+      Object.keys(BUILTIN_CONTEXT_POLICY).map((k) => [k, "session"]),
+    ) as ResolvedContextPolicy["sources"],
+    fallbacks: [],
+    contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
+  };
+}
+
+describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => {
+  it("shared helper: user events are 66025, not bytes/4; tools stay bytes/4", () => {
+    expect(Buffer.byteLength(BURNIN_PROMPT, "utf8")).toBe(104_263);
+    const user = estimateAcceptedEvent(userPromptEvent(BURNIN_PROMPT));
+    expect(user.tokens).toBe(66_025);
+    expect(user.tokens).toBe(estimateTokens(BURNIN_PROMPT));
+    expect(user.tokens).not.toBe(26_065);
+    expect(user.source).toBe(USER_PROMPT_ESTIMATE_SOURCE);
+    expect(user.source).toContain(TOKEN_ESTIMATOR_ID);
+
+    const tool = estimateAcceptedEvent(toolResultEvent("T".repeat(8_000)));
+    expect(tool.tokens).toBe(2_000);
+    expect(tool.source).toBe(HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE);
+
+    const runtime: MessageEventInput = {
+      eventKind: "runtime_note",
+      idempotencyKey: "rt:1",
+      actor: "system",
+      harness: "cc",
+      payload: { text: "R".repeat(400) },
+    };
+    expect(estimateAcceptedEvent(runtime).tokens).toBe(100);
+
+    const deferred = postMeasurementAddFromAcceptedEvents([userPromptEvent(BURNIN_PROMPT)]);
+    expect(deferred).toMatchObject({
+      kind: "post_measurement_estimate",
+      tokens: 66_025,
+      source: USER_PROMPT_ESTIMATE_SOURCE,
+      mode: "add",
+    });
+    expect(postMeasurementEstimateFromEvents([userPromptEvent(BURNIN_PROMPT)]).tokens).toBe(66_025);
+    expect(postMeasurementAddFromAcceptedEvents([toolResultEvent("T".repeat(8_000))])).toMatchObject({
+      tokens: 2_000,
+      source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
+      mode: "add",
+    });
+
+    const mixedUserTool = postMeasurementAddFromAcceptedEvents([
+      userPromptEvent(BURNIN_PROMPT),
+      toolResultEvent("T".repeat(8_000)),
+    ]);
+    expect(mixedUserTool).toMatchObject({
+      kind: "post_measurement_estimate",
+      tokens: 66_025 + 2_000,
+      mode: "add",
+    });
+    expect(mixedUserTool?.source).toBe(
+      composeEstimateSources([USER_PROMPT_ESTIMATE_SOURCE, HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE]),
+    );
+    expect(mixedUserTool?.source).toBe(`${HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE}+${USER_PROMPT_ESTIMATE_SOURCE}`);
+    expect(mixedUserTool?.source).not.toBe(MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE);
+    expect(mixedUserTool?.source).not.toContain("provider_output");
+    expect(mergeEstimateSource(HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE, USER_PROMPT_ESTIMATE_SOURCE, 1)).toBe(
+      mixedUserTool?.source,
+    );
+    expect(mergeEstimateSource(PROVIDER_OUTPUT_ESTIMATE_SOURCE, HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE, 1)).toBe(
+      MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE,
+    );
+  });
+
+  it("immediate observe mode:add and deferred accepted-event add agree on the exact prompt", () => {
+    const estimateFold = createPostMeasurementEstimateFold();
+    estimateFold.hasAuthoritativeSampling = true;
+    const userItem: RolloutLineItem = {
+      type: "user",
+      uuid: "u-burnin",
+      message: { role: "user", content: BURNIN_PROMPT },
+    };
+    const immediate = observeRolloutLine(userItem, 0, {
+      estimateFold,
+      samplingDedupe: createSamplingDedupeState(),
+      turnFold: createTurnFoldState(),
+    });
+    const add = immediate.lifecycle.find((s) => s.kind === "post_measurement_estimate");
+    expect(add).toMatchObject({
+      kind: "post_measurement_estimate",
+      tokens: 66_025,
+      source: USER_PROMPT_ESTIMATE_SOURCE,
+      mode: "add",
+    });
+    expect(postMeasurementAddFromAcceptedEvents(immediate.events)).toMatchObject({
+      tokens: 66_025,
+      source: USER_PROMPT_ESTIMATE_SOURCE,
+      mode: "add",
+    });
+  });
+
+  it("valid 164208 + accepted user 66025 + all-zero API error preserves growth; next tiny prelaunch stays at trigger", () => {
+    const resolved = burninPolicy();
+    const estimateFold = createPostMeasurementEstimateFold();
+    const samplingDedupe = createSamplingDedupeState();
+    const turnFold = createTurnFoldState();
+    const opts = { estimateFold, samplingDedupe, turnFold };
+
+    const assistant: RolloutLineItem = {
+      type: "assistant",
+      uuid: "prior",
+      requestId: "req_prior",
+      message: {
+        role: "assistant",
+        id: "msg_prior",
+        model: "claude-opus-4-6",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "ok" }],
+        usage: {
+          input_tokens: 164_208,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          output_tokens: 0,
+        },
+      },
+    };
+    const userItem: RolloutLineItem = {
+      type: "user",
+      uuid: "u-burnin",
+      message: { role: "user", content: BURNIN_PROMPT },
+    };
+
+    const rAsst = observeRolloutLine(assistant, 0, opts);
+    const rUser = observeRolloutLine(userItem, 1, opts);
+    const rErr = observeRolloutLine(promptTooLongApiError(), 2, opts);
+
+    expect(
+      providerContextFromUsage({ input_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 }),
+    ).toBeNull();
+    expect(rUser.lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toEqual([
+      {
+        kind: "post_measurement_estimate",
+        tokens: 66_025,
+        source: USER_PROMPT_ESTIMATE_SOURCE,
+        mode: "add",
+      },
+    ]);
+    expect(rErr.lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toHaveLength(0);
+    expect(rErr.lifecycle.some((s) => s.kind === "sampling_observed")).toBe(true);
+
+    const folded = applyGovernorLifecycleBatch(
+      createGovernorRuntimeState({ captureGeneration: 1 }),
+      [...rAsst.lifecycle, ...rUser.lifecycle, ...rErr.lifecycle],
+      resolved,
+    );
+    expect(folded.state.latestProviderContext?.total).toBe(164_208);
+    expect(folded.state.postMeasurementEstimate.tokens).toBe(66_025);
+    const settled = folded.observes.filter((o) => o.observePhase === "settled_seam").at(-1);
+    expect(settled?.providerContextTotal).toBe(164_208);
+    expect(settled?.pressure.nextRequestPressureTokens).toBe(230_233);
+    expect(settled?.pressure.atOrAboveTrigger).toBe(true);
+    expect(settled?.decision).toBe("would_compact");
+
+    const nextPrelaunch = decideGovernor({
+      policy: resolved.policy,
+      turnOpen: false,
+      operationInFlight: false,
+      providerContext: folded.state.latestProviderContext,
+      providerContextFreshness: "last_known",
+      postMeasurementEstimate: preLaunchEstimate(folded.state.postMeasurementEstimate, "hi"),
+      contextLimitRejected: folded.state.contextLimitRejected,
+    });
+    expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBeGreaterThanOrEqual(200_000);
+    expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBe(
+      164_208 + 66_025 + pendingPromptEstimate("hi").tokens,
+    );
+    expect(nextPrelaunch.kind).toBe("would_compact");
+    // Ephemeral prelaunch of the original prompt is not stored a second time.
+    expect(folded.state.postMeasurementEstimate.tokens).not.toBe(66_025 + 66_025);
+  });
+
+  it("synthetic all-zero no-response and malformed/missing usage cannot erase pressure", () => {
+    const resolved = burninPolicy();
+    const seeded = applyGovernorLifecycleBatch(
+      createGovernorRuntimeState({ captureGeneration: 1 }),
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "req:prior",
+          providerUsage: { input_tokens: 164_208, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        },
+        {
+          kind: "post_measurement_estimate",
+          tokens: 66_025,
+          source: USER_PROMPT_ESTIMATE_SOURCE,
+          mode: "add",
+        },
+      ],
+      resolved,
+    );
+    expect(seeded.state.postMeasurementEstimate.tokens).toBe(66_025);
+
+    const estimateFold = createPostMeasurementEstimateFold();
+    estimateFold.hasAuthoritativeSampling = true;
+    const opts = {
+      estimateFold,
+      samplingDedupe: createSamplingDedupeState(),
+      turnFold: createTurnFoldState(),
+    };
+    const synth = observeRolloutLine(syntheticNoResponse(), 0, opts);
+    expect(synth.lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toHaveLength(0);
+
+    const missing: RolloutLineItem = {
+      type: "assistant",
+      uuid: "missing-usage",
+      message: {
+        role: "assistant",
+        model: "m",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "no usage" }],
+      },
+    };
+    const malformed: RolloutLineItem = {
+      type: "assistant",
+      uuid: "bad-usage",
+      requestId: "req_bad",
+      message: {
+        role: "assistant",
+        id: "msg_bad",
+        model: "m",
+        stop_reason: "end_turn",
+        content: [{ type: "text", text: "bad" }],
+        usage: { input_tokens: -1 },
+      },
+    };
+    const rMissing = observeRolloutLine(missing, 1, {
+      estimateFold: createPostMeasurementEstimateFold(),
+      samplingDedupe: createSamplingDedupeState(),
+      turnFold: createTurnFoldState(),
+    });
+    const rMalformed = observeRolloutLine(malformed, 2, {
+      estimateFold: createPostMeasurementEstimateFold(),
+      samplingDedupe: createSamplingDedupeState(),
+      turnFold: createTurnFoldState(),
+    });
+    expect(rMissing.lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toHaveLength(0);
+    expect(rMalformed.lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toHaveLength(0);
+
+    const after = applyGovernorLifecycleBatch(
+      seeded.state,
+      [...synth.lifecycle, ...rMissing.lifecycle, ...rMalformed.lifecycle],
+      resolved,
+    );
+    expect(after.state.latestProviderContext?.total).toBe(164_208);
+    expect(after.state.postMeasurementEstimate.tokens).toBe(66_025);
+  });
+
+  it("ordinary nonzero successful sampling still advances provider and resets estimate", () => {
+    const resolved = burninPolicy();
+    const estimateFold = createPostMeasurementEstimateFold();
+    const samplingDedupe = createSamplingDedupeState();
+    const turnFold = createTurnFoldState();
+    const opts = { estimateFold, samplingDedupe, turnFold };
+    observeRolloutLine(
+      {
+        type: "assistant",
+        uuid: "a1",
+        requestId: "req1",
+        message: {
+          role: "assistant",
+          id: "m1",
+          model: "m",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "a" }],
+          usage: { input_tokens: 164_208, output_tokens: 0 },
+        },
+      },
+      0,
+      opts,
+    );
+    observeRolloutLine({ type: "user", uuid: "u1", message: { role: "user", content: BURNIN_PROMPT } }, 1, opts);
+    const next = observeRolloutLine(
+      {
+        type: "assistant",
+        uuid: "a2",
+        requestId: "req2",
+        message: {
+          role: "assistant",
+          id: "m2",
+          model: "m",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "b" }],
+          usage: { input_tokens: 170_000, output_tokens: 9 },
+        },
+      },
+      2,
+      opts,
+    );
+    const set = next.lifecycle.find((s) => s.kind === "post_measurement_estimate");
+    expect(set).toMatchObject({ mode: "set", tokens: 9, source: PROVIDER_OUTPUT_ESTIMATE_SOURCE });
+    const folded = applyGovernorLifecycleBatch(
+      createGovernorRuntimeState({ captureGeneration: 1 }),
+      [
+        { kind: "turn_opened", reason: "user_prompt" },
+        {
+          kind: "sampling_observed",
+          samplingId: "req:1",
+          providerUsage: { input_tokens: 164_208 },
+        },
+        {
+          kind: "post_measurement_estimate",
+          tokens: 66_025,
+          source: USER_PROMPT_ESTIMATE_SOURCE,
+          mode: "add",
+        },
+        ...next.lifecycle.filter((s) => s.kind === "sampling_observed" || s.kind === "post_measurement_estimate"),
+      ],
+      resolved,
+    );
+    expect(folded.state.latestProviderContext?.total).toBe(170_000);
+    expect(folded.state.postMeasurementEstimate.tokens).toBe(9);
+  });
+});
+
+describe("exact Claude Prompt is too long classification", () => {
+  it("emits contextLimitRejected only for the exact assistant API-error shape", () => {
+    const exact = observeRolloutLine(promptTooLongApiError(), 0);
+    const sample = exact.lifecycle.find((s) => s.kind === "sampling_observed");
+    expect(isClaudePromptTooLongRejection(promptTooLongApiError())).toBe(true);
+    expect(sample).toMatchObject({ kind: "sampling_observed", contextLimitRejected: true });
+
+    const variants: RolloutLineItem[] = [
+      {
+        ...promptTooLongApiError(),
+        isApiErrorMessage: false,
+      },
+      {
+        ...promptTooLongApiError(),
+        error: "authentication_error",
+      },
+      {
+        type: "assistant",
+        uuid: "rate",
+        error: "invalid_request",
+        isApiErrorMessage: true,
+        message: {
+          role: "assistant",
+          id: "msg_rate",
+          model: "<synthetic>",
+          stop_reason: "stop_sequence",
+          content: [{ type: "text", text: "Rate limited" }],
+          usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        },
+      },
+      {
+        type: "assistant",
+        uuid: "auth",
+        error: "invalid_request",
+        isApiErrorMessage: true,
+        message: {
+          role: "assistant",
+          id: "msg_auth",
+          model: "<synthetic>",
+          stop_reason: "stop_sequence",
+          content: [{ type: "text", text: "authentication_error" }],
+          usage: { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 },
+        },
+      },
+    ];
+    for (const item of variants) {
+      expect(isClaudePromptTooLongRejection(item), JSON.stringify(item.error)).toBe(false);
+      const observed = observeRolloutLine(item, 0);
+      const s = observed.lifecycle.find((sig) => sig.kind === "sampling_observed");
+      if (s !== undefined && s.kind === "sampling_observed") {
+        expect(s.contextLimitRejected).toBeUndefined();
+      }
+    }
   });
 });

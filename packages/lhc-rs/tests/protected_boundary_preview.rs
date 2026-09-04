@@ -4,15 +4,20 @@
 
 mod fixtures;
 
+use std::sync::Arc;
+
 use fixtures::{
     TempStore, ToolCallOverrides, ToolCallPayload, ToolResultOverrides, ToolResultPayload,
-    UserPromptOverrides, UserPromptPayload, create_inference_callbacks_double, kind, temp_store,
-    valid_event,
+    UserPromptOverrides, UserPromptPayload, ViewInjectionPoint, create_inference_callbacks_double,
+    kind, set_view_injection_db_hook, temp_store, valid_event,
 };
 use lhc::intake_stream::{self, MessageEventInput};
 use lhc::shared_tech::derivation::{SdkConfig, SdkMode};
-use lhc::shared_tech::errors::{ErrorCode, OpResult};
-use lhc::shared_tech::view::{PartialVisibilityBudgets, SdkViewConfig};
+use lhc::shared_tech::errors::{ErrorClass, OpResult};
+use lhc::shared_tech::js_json::js_json_stringify_of;
+use lhc::shared_tech::view::{
+    PartialViewProfilePercentages, PartialVisibilityBudgets, SdkViewConfig, ViewCompactParams,
+};
 use lhc::threads::{NewThreadInput, ThreadRef, new_thread};
 use lhc::{init_lhc, messages, thread_view};
 use serde_json::{Map, json};
@@ -165,7 +170,7 @@ async fn preview_is_read_only_monotonic_and_strictly_before_earliest_protected()
 }
 
 #[tokio::test]
-async fn atomic_install_advances_view_and_boundary_together_and_stale_refuses() {
+async fn atomic_install_advances_view_and_boundary_together_and_a_moved_pin_recomputes() {
     init_test_sdk();
     let store = temp_store();
     let file_path = create_test_thread(&store).await;
@@ -251,7 +256,8 @@ async fn atomic_install_advances_view_and_boundary_together_and_stale_refuses() 
         assert!(!body.contains(" · abridged]"));
     }
 
-    // Stale expected boundary refuses without mutation.
+    // A pinned boundary that has since moved recomputes against fresh state
+    // and installs, instead of handing the host a refusal.
     let prepared2 = thread_view::prepare_compact(
         ref_.clone(),
         thread_view::CompactOpts {
@@ -263,24 +269,156 @@ async fn atomic_install_advances_view_and_boundary_together_and_stale_refuses() 
     )
     .await
     .expect_ok();
-    let stale = thread_view::install_prepared_compact(
+    let drifted = thread_view::install_prepared_compact(
         ref_.clone(),
         prepared2,
         thread_view::InstallPreparedOptions {
             visibility_boundary: Some(preview.proposed_boundary + 1),
-            expected_previous_boundary: Some(prev_boundary), // stale
+            expected_previous_boundary: Some(prev_boundary), // stale: the first install already advanced it
             ..Default::default()
         },
     )
-    .await;
-    match stale {
-        OpResult::Err { error } => assert_eq!(error.code, ErrorCode::StalePreparedCompact),
-        OpResult::Ok { .. } => panic!("stale expected boundary must refuse"),
-    }
+    .await
+    .expect_ok();
+
+    let installed_view = thread_view::describe(ref_.clone()).await.expect_ok();
+    assert_eq!(
+        installed_view.map(|v| v.view_id),
+        Some(drifted.view_id.clone())
+    );
+
+    let status2 = thread_view::status(ref_.clone()).await.expect_ok();
+    // Forward only: never behind the boundary already installed, never behind
+    // the compact point it was installed with.
+    assert!(status2.visibility.boundary_position >= preview.proposed_boundary);
+    assert!(status2.visibility.boundary_position >= drifted.compact_point);
+}
+
+#[tokio::test]
+async fn a_boundary_proposal_computed_against_older_state_is_resolved_forward_not_refused() {
+    init_test_sdk();
+    let store = temp_store();
+    let file_path = create_test_thread(&store).await;
+    let ref_ = ThreadRef::file_path(&file_path);
+
+    let mut events = vec![user_prompt("t1")];
+    events.extend(tool_pair(50, "fwd-1"));
+    events.extend(tool_pair(50, "fwd-2"));
+    events.push(valid_event(kind::TURN_END, Default::default()));
+    events.push(user_prompt("t2"));
+    events.extend(tool_pair(20, "fwd-3"));
+    events.push(valid_event(kind::TURN_END, Default::default()));
+    events.push(user_prompt("t3"));
+    events.extend(tool_pair(20, "fwd-4"));
+    intake(&ref_, events).await;
+
+    let params = || ViewCompactParams {
+        lower_bound: Some(100.0),
+        percentages: Some(PartialViewProfilePercentages {
+            full: Some(20.0),
+            smooth: Some(40.0),
+            detailed: Some(20.0),
+            brief: Some(20.0),
+        }),
+        newest_closed_protection: None,
+    };
+    let opts = || thread_view::CompactOpts {
+        profile: None,
+        params: Some(params()),
+        signal: None,
+        compact_point_upper_bound: None,
+    };
+    thread_view::compact(ref_.clone(), opts()).await.expect_ok();
+    let status1 = thread_view::status(ref_.clone()).await.expect_ok();
+    let boundary_before = status1.visibility.boundary_position;
+    assert!(boundary_before > 0);
+
+    let prepared = thread_view::prepare_compact(ref_.clone(), opts())
+        .await
+        .expect_ok();
+    // Boundary 0 is behind both the durable boundary and the compact point —
+    // the shape a proposal takes when the state it was computed from has moved.
+    let installed = thread_view::install_prepared_compact(
+        ref_.clone(),
+        prepared,
+        thread_view::InstallPreparedOptions {
+            visibility_boundary: Some(0),
+            ..Default::default()
+        },
+    )
+    .await
+    .expect_ok();
 
     let status2 = thread_view::status(ref_.clone()).await.expect_ok();
     assert_eq!(
         status2.visibility.boundary_position,
-        preview.proposed_boundary
+        boundary_before.max(installed.compact_point)
+    );
+}
+
+#[tokio::test]
+async fn a_failing_install_leaves_the_prior_view_and_boundary_exactly_as_they_were() {
+    init_test_sdk();
+    let store = temp_store();
+    let file_path = create_test_thread(&store).await;
+    let ref_ = ThreadRef::file_path(&file_path);
+
+    let mut events = vec![user_prompt("t1")];
+    events.extend(tool_pair(50, "old-1"));
+    events.extend(tool_pair(50, "old-2"));
+    events.push(valid_event(kind::TURN_END, Default::default()));
+    events.push(user_prompt("t2"));
+    events.extend(tool_pair(20, "prot-1"));
+    intake(&ref_, events).await;
+
+    let opts = || thread_view::CompactOpts {
+        profile: None,
+        params: None,
+        signal: None,
+        compact_point_upper_bound: None,
+    };
+    thread_view::compact(ref_.clone(), opts()).await.expect_ok();
+    let prior_view = thread_view::describe(ref_.clone()).await.expect_ok();
+    let prior_status = thread_view::status(ref_.clone()).await.expect_ok();
+    let prior_context = thread_view::get_llm_request_context(ref_.clone())
+        .await
+        .expect_ok();
+
+    let prepared = thread_view::prepare_compact(ref_.clone(), opts())
+        .await
+        .expect_ok();
+
+    // A real storage failure inside the install transaction, not a policy stop.
+    set_view_injection_db_hook(
+        ViewInjectionPoint::CompactInstallBeforeValidate,
+        Some(Arc::new(|_db| {
+            panic!("injected storage failure inside the install transaction");
+        })),
+    );
+    let failed = thread_view::install_prepared_compact(
+        ref_.clone(),
+        prepared,
+        thread_view::InstallPreparedOptions::default(),
+    )
+    .await;
+    set_view_injection_db_hook(ViewInjectionPoint::CompactInstallBeforeValidate, None);
+    match failed {
+        OpResult::Err { error } => assert_eq!(error.error_class, ErrorClass::SystemError),
+        OpResult::Ok { .. } => panic!("a failing install must surface as a failure"),
+    }
+
+    let after_view = thread_view::describe(ref_.clone()).await.expect_ok();
+    assert_eq!(after_view.map(|v| v.view_id), prior_view.map(|v| v.view_id));
+    let after_status = thread_view::status(ref_.clone()).await.expect_ok();
+    assert_eq!(
+        after_status.visibility.boundary_position,
+        prior_status.visibility.boundary_position
+    );
+    let after_context = thread_view::get_llm_request_context(ref_.clone())
+        .await
+        .expect_ok();
+    assert_eq!(
+        js_json_stringify_of(&after_context.messages).unwrap(),
+        js_json_stringify_of(&prior_context.messages).unwrap()
     );
 }

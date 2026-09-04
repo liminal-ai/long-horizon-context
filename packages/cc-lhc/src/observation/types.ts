@@ -22,6 +22,12 @@ export type LifecycleSignal =
       samplingId: string;
       model?: string;
       providerUsage?: Record<string, unknown>;
+      /**
+       * Exact Claude context-limit rejection (`isApiErrorMessage`,
+       * `invalid_request`, text `Prompt is too long`). Settled-seam compact
+       * reason; omitted for every other error.
+       */
+      contextLimitRejected?: true;
     }
   | {
       /**

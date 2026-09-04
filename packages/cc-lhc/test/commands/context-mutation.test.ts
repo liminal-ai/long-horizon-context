@@ -1,11 +1,9 @@
 import type { Lhc, ThreadRef } from "lhc";
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  runContextMutation,
-  type ContextMutationPlan,
-} from "../../src/commands/context-mutation.js";
+import { type ContextMutationPlan, runContextMutation } from "../../src/commands/context-mutation.js";
 import type { LhcCommandRuntime } from "../../src/commands/dispatch.js";
+import { BUILTIN_CONTEXT_POLICIES } from "../../src/governor/config.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 
 const REBUILT = {
@@ -94,7 +92,7 @@ function runtimeWith(sdk: ReturnType<typeof sdkMock>): LhcCommandRuntime {
 
 const COMPACT_PLAN: ContextMutationPlan = {
   operation: "auto_compact",
-  profile: "continuation",
+  profile: "default",
   lowerBoundTokens: 240_000,
 };
 
@@ -103,11 +101,11 @@ describe("runContextMutation", () => {
     const sdk = sdkMock(0);
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
     const outcome = await runContextMutation(
-      { ...COMPACT_PLAN, profile: "coding", lowerBoundTokens: 111_000 },
+      { ...COMPACT_PLAN, profile: "balanced", lowerBoundTokens: 111_000 },
       runtimeWith(sdk),
     );
     expect(outcome.kind).toBe("rebuilt");
-    const expected = { profile: "coding", params: { lowerBound: 111_000 } };
+    const expected = { profile: "cc-lhc-balanced", params: { lowerBound: 111_000 } };
     expect(sdk.threadView.previewCompact).toHaveBeenCalledWith(expect.anything(), expected);
     expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), expected);
     writeSpy.mockRestore();
@@ -127,7 +125,7 @@ describe("runContextMutation", () => {
     expect(writeSpy).toHaveBeenCalledOnce();
     if (outcome.kind === "rebuilt") {
       expect(outcome.messages.join("\n")).toMatch(/prune boundary/);
-      expect(outcome.messages.join("\n")).toMatch(/compact view=/);
+      expect(outcome.messages.join("\n")).toMatch(/Smart Compact view=/);
     }
     writeSpy.mockRestore();
   });
@@ -188,6 +186,53 @@ describe("runContextMutation", () => {
       expect(outcome.handoff.threadId).toBe("th_cm");
       expect(outcome.handoff.rebuilt.prefixBoundary.kind).toBe("verified");
     }
+    writeSpy.mockRestore();
+  });
+});
+
+describe("window-derived target reaches view construction (TC-1.2b, TC-1.2c)", () => {
+  it("passes the 200k built-in target of 70,000 directly, with no multiplier", async () => {
+    const sdk = sdkMock(0);
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
+    const policy = BUILTIN_CONTEXT_POLICIES["200k"];
+    const outcome = await runContextMutation(
+      { operation: "auto_compact", profile: policy.profile, lowerBoundTokens: policy.lowerBoundTokens },
+      runtimeWith(sdk),
+    );
+    expect(outcome.kind).toBe("rebuilt");
+    const expected = { profile: "continuation", params: { lowerBound: 70_000 } };
+    expect(sdk.threadView.previewCompact).toHaveBeenCalledWith(expect.anything(), expected);
+    expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), expected);
+    writeSpy.mockRestore();
+  });
+
+  it("reports the actual rebuilt size when protected material exceeds the target", async () => {
+    const sdk = sdkMock(0);
+    sdk.threadView.compact = vi.fn(async () => ({
+      ok: true,
+      value: {
+        viewId: "v-oversize",
+        tailTokens: 60_000,
+        totalTokens: 95_000,
+        bands: {
+          smooth: { entries: 1, tokens: 35_000 },
+          detailed: { entries: 0, tokens: 0 },
+          brief: { entries: 0, tokens: 0 },
+        },
+      },
+    }));
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
+    const outcome = await runContextMutation(
+      { operation: "auto_compact", profile: "default", lowerBoundTokens: 70_000 },
+      runtimeWith(sdk),
+    );
+    expect(outcome.kind).toBe("rebuilt");
+    if (outcome.kind !== "rebuilt") return;
+    expect(outcome.handoff.metrics.viewTokens).toBe(95_000);
+    expect(outcome.handoff.metrics.targetTokens).toBe(70_000);
+    const text = JSON.stringify(outcome.handoff);
+    expect(text).toContain("rebuilt LHC view 95k (70k target)");
+    expect(text).not.toMatch(/target (met|reached)/i);
     writeSpy.mockRestore();
   });
 });

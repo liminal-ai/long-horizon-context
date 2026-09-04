@@ -407,7 +407,11 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
       st.wakeTimer = undefined;
       schedule(st.threadId);
     }, delay);
-    timer.unref();
+    // A Promise waiter does not keep Node's event loop alive, so a settlement
+    // waiter must be able to rely on this wake actually firing: keep the lone
+    // wake referenced while anyone awaits drainSettled. With no waiters the
+    // wake is best-effort and must never block process exit.
+    if (st.waiters.length === 0) timer.unref();
     st.wakeTimer = timer;
   }
 
@@ -485,6 +489,9 @@ export function createScheduler(mode: SchedulerMode, deps: DrainDeps): Scheduler
       if (st === undefined || (!st.running && !st.pending && st.wakeTimer === undefined)) {
         return Promise.resolve();
       }
+      // Waiter-after-arm: an already-armed wake was unreferenced because
+      // nobody was waiting; this waiter now depends on it, so reference it.
+      st.wakeTimer?.ref();
       return new Promise((resolve) => st.waiters.push(resolve));
     },
     testPassCount(threadId: string): number {

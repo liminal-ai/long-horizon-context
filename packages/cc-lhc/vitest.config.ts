@@ -9,6 +9,9 @@ export default defineConfig({
     include: ["test/**/*.test.ts"],
     exclude: [...configDefaults.exclude],
     passWithNoTests: true,
+    // CC-LHC integration/process/SQLite waits are bounded up to 8s; loaded
+    // cross-platform runners can exceed Vitest's 5s default.
+    testTimeout: 15_000,
     // No test may write lineage, descriptors, owners, recovery artifacts, or
     // wrapper warnings into the operator's production ~/.cc-lhc directory.
     // Individual tests may override this with their own temp home.

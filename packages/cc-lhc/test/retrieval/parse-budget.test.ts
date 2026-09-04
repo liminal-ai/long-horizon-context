@@ -14,20 +14,44 @@ import { assembleEnvelope, recallClose, recallOpen } from "../../src/retrieval/f
 import { parseRetrievalArgv } from "../../src/retrieval/parse.js";
 
 describe("parseRetrievalArgv", () => {
-  it("parses get-turns with ids and --from", () => {
-    const r = parseRetrievalArgv(["get-turns", "--from", "8000", "t211", "t212"]);
+  it("parses a single-id get-turns continuation with --from (TC-3.3a)", () => {
+    const r = parseRetrievalArgv(["get-turns", "--from", "8000", "t211"]);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.request.op).toBe("get-turns");
-    expect(r.request.ids).toEqual(["t211", "t212"]);
+    expect(r.request.ids).toEqual(["t211"]);
     expect(r.request.fromToken).toBe(8000);
   });
 
-  it("parses get-messages and --from=", () => {
+  it("parses get-messages and --from= (TC-3.3b)", () => {
     const r = parseRetrievalArgv(["get-messages", "--from=0", "m1"]);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
     expect(r.request.uniqueIds).toEqual(["m1"]);
+  });
+
+  it("rejects --from with more than one unique id before any retrieval call (TC-3.3c)", () => {
+    for (const argv of [
+      ["get-turns", "--from", "8000", "t211", "t212"],
+      ["get-messages", "--from=10", "m1", "m2", "m1"],
+    ]) {
+      const r = parseRetrievalArgv(argv);
+      expect(r.ok, argv.join(" ")).toBe(false);
+      if (!r.ok) expect(r.reason).toContain("single-id continuation");
+    }
+  });
+
+  it("normalizes a repeated identical id with --from to one continuation target (TC-3.3d)", () => {
+    const r = parseRetrievalArgv(["get-turns", "--from", "500", "t7", "t7"]);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.request.uniqueIds).toEqual(["t7"]);
+    expect(r.request.fromToken).toBe(500);
+  });
+
+  it("rejects a repeated --from flag as malformed", () => {
+    expect(parseRetrievalArgv(["get-turns", "--from", "1", "--from", "2", "t1"]).ok).toBe(false);
+    expect(parseRetrievalArgv(["get-turns", "--from=1", "--from=2", "t1"]).ok).toBe(false);
   });
 
   it("rejects unknown op, flags, empty ids, wrong kind, bad from", () => {

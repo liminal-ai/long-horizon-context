@@ -197,6 +197,7 @@ export interface DerivationSnapshot {
   state: "pending" | "ready" | "failed" | "blocked";
   content?: string;
   reason?: string;
+  sourceVersion?: number;
 }
 
 export type CompactChunkMaterialSnapshot =
@@ -204,6 +205,12 @@ export type CompactChunkMaterialSnapshot =
   | { kind: "concat"; content: string; reason: string };
 
 export type DerivationLookup = (subjectId: string, derivationType: string) => DerivationSnapshot | undefined;
+
+// The two hydration rungs, behind thunks: raw member material and the raw
+// message excerpt are read only when the ladder actually reaches the rung that
+// renders them. A candidate whose stored derivation is usable costs no read.
+export type CompactChunkMaterialLookup = () => CompactChunkMaterialSnapshot | undefined;
+export type TurnExcerptLookup = () => string | null;
 
 // A subject's resolved representation: which rung of its ladder renders.
 // `derivationUsed` is the arrangement/receipt vocabulary; `degradedMarker` is the
@@ -231,7 +238,7 @@ function ladderState(derivation: DerivationSnapshot | undefined): string {
 export function resolveSmoothRepresentation(
   turnId: string,
   lookup: DerivationLookup,
-  excerpt: string | null,
+  excerpt: TurnExcerptLookup,
 ): ResolvedRepresentation {
   const rendering = lookup(turnId, "turn_rendering");
   if (usable(rendering)) {
@@ -247,10 +254,11 @@ export function resolveSmoothRepresentation(
       degradedMarker: "smooth-from-compression",
     };
   }
-  if (excerpt !== null) {
+  const excerptText = excerpt();
+  if (excerptText !== null) {
     return {
       derivationUsed: "message_excerpt",
-      body: deterministicTruncation(excerpt),
+      body: deterministicTruncation(excerptText),
       degraded: true,
       gap: false,
       degradedMarker: "smooth-from-excerpt",
@@ -270,12 +278,13 @@ export function resolveSmoothRepresentation(
 export function resolveDetailedRepresentation(
   chunkId: string,
   lookup: DerivationLookup,
-  material?: CompactChunkMaterialSnapshot,
+  materialLookup?: CompactChunkMaterialLookup,
 ): ResolvedRepresentation {
   const detailed = lookup(chunkId, "chunk_summary_detailed");
   if (usable(detailed)) {
     return { derivationUsed: "chunk_summary_detailed", body: detailed.content, degraded: false, gap: false };
   }
+  const material = materialLookup?.();
   if (material?.kind === "ready") {
     return {
       derivationUsed: "chunk_summary_detailed",
@@ -338,12 +347,13 @@ export function resolveBriefRepresentation(
   chunkId: string,
   lookup: DerivationLookup,
   briefBandBudget: number,
-  material?: CompactChunkMaterialSnapshot,
+  materialLookup?: CompactChunkMaterialLookup,
 ): ResolvedRepresentation {
   const brief = lookup(chunkId, "chunk_summary_brief");
   if (usable(brief)) {
     return { derivationUsed: "chunk_summary_brief", body: brief.content, degraded: false, gap: false };
   }
+  const material = materialLookup?.();
   if (material?.kind === "ready") {
     return {
       derivationUsed: "chunk_summary_brief",

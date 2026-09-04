@@ -60,6 +60,7 @@ fn default_compact_opts() -> HostCompactOpts {
                 detailed: Some(25.0),
                 brief: Some(25.0),
             }),
+            newest_closed_protection: None,
         }),
     }
 }
@@ -379,6 +380,7 @@ fn compact_params() -> CompactOpts {
                 detailed: Some(25.0),
                 brief: Some(25.0),
             }),
+            newest_closed_protection: None,
         }),
         signal: None,
         compact_point_upper_bound: None,
@@ -1341,6 +1343,7 @@ async fn message_excerpt_source_change_after_prepare_activates() {
                 detailed: Some(10.0),
                 brief: Some(10.0),
             }),
+            newest_closed_protection: None,
         }),
         signal: None,
         compact_point_upper_bound: None,
@@ -1498,6 +1501,7 @@ async fn unresolved_tool_call_exact_compact_failed_failed_repairable() {
                     detailed: Some(25.0),
                     brief: Some(25.0),
                 }),
+                newest_closed_protection: None,
             }),
             signal: None,
             compact_point_upper_bound: None,
@@ -2219,7 +2223,7 @@ fn public_sdk_does_not_export_run_for_tests() {
 }
 
 #[tokio::test]
-async fn fresh_threads_are_schema_v11() {
+async fn fresh_threads_are_schema_v12() {
     let store = temp_store();
     let file_path = match new_thread(NewThreadInput {
         file_path: store.thread_path(None).to_string_lossy().into_owned(),
@@ -2239,7 +2243,7 @@ async fn fresh_threads_are_schema_v11() {
         .and_then(|r| r.get("user_version").and_then(|v| v.as_i64()))
         .unwrap_or(0);
     assert_eq!(v, CURRENT_THREAD_SCHEMA_VERSION);
-    assert_eq!(v, 11);
+    assert_eq!(v, 12);
     let hv = db
         .prepare(
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'compact_continuation_host_validation'",
@@ -2307,8 +2311,8 @@ async fn marker_user_chat_hidden_model_visible() {
 }
 
 #[test]
-fn current_schema_version_is_11() {
-    assert_eq!(CURRENT_THREAD_SCHEMA_VERSION, 11);
+fn current_schema_version_is_12() {
+    assert_eq!(CURRENT_THREAD_SCHEMA_VERSION, 12);
 }
 
 #[tokio::test]

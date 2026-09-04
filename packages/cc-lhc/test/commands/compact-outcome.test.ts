@@ -12,6 +12,8 @@ import { join } from "node:path";
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, type ThreadRef } from "lhc";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+import { compactConstruction } from "../../src/governor/band-allocation.js";
+import { captureSdkConfig } from "../../src/intake/session.js";
 import { mapRolloutLine } from "../../src/intake/map.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
@@ -136,4 +138,50 @@ describe("a compact makes the session smaller and keeps the settled content", ()
   it("carries the durable compact receipt into the rebuilt session", () => {
     expect(rebuiltAfterText).toContain("[lhc compact:auto] rebuilt LHC view.");
   });
+});
+
+describe("AR-7 selected internal profile and explicit lowerBound reach core", () => {
+  it("maps Historical to cc-lhc-historical plus params.lowerBound on a captureSdkConfig SDK", async () => {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-ar7-"));
+    roots.push(root);
+    mkdirSync(join(root, "threads"), { recursive: true });
+    const sdk = initLhc(captureSdkConfig({ noInference: true }));
+    const created = await sdk.threads.newThread({
+      filePath: join(root, "threads", "t.sqlite"),
+      registryPath: join(root, "registry.sqlite"),
+    });
+    if (!created.ok) throw new Error(created.error.reason);
+    const threadRef: ThreadRef = { filePath: join(root, "threads", "t.sqlite") };
+    for (let i = 0; i < TURNS; i += 1) {
+      const line = (item: RolloutLineItem) => mapRolloutLine(item).events;
+      const events = [
+        ...line({
+          type: "user",
+          uuid: `u${i}`,
+          message: { role: "user", content: `question ${i}: ${"context ".repeat(120)}` },
+        } as RolloutLineItem),
+        ...line({
+          type: "assistant",
+          uuid: `a${i}`,
+          message: {
+            role: "assistant",
+            stop_reason: "end_turn",
+            content: [{ type: "text", text: `answer ${i}: ${"detail ".repeat(200)}` }],
+          },
+        } as RolloutLineItem),
+      ];
+      const intake = await sdk.intakeStream.messageEvents(threadRef, events);
+      if (!intake.ok) throw new Error(intake.error.reason);
+    }
+    const drained = await sdk.work.drain(threadRef, { maxItems: 10_000 });
+    if (!drained.ok) throw new Error(drained.error.reason);
+
+    const construction = compactConstruction({ profile: "historical", lowerBoundTokens: 3_000 });
+    expect(construction).toEqual({ profile: "cc-lhc-historical", params: { lowerBound: 3_000 } });
+    const compacted = await sdk.threadView.compact(threadRef, construction);
+    expect(compacted.ok, compacted.ok ? "" : compacted.error.reason).toBe(true);
+
+    const balanced = compactConstruction({ profile: "balanced", lowerBoundTokens: 4_000 });
+    expect(balanced).toEqual({ profile: "cc-lhc-balanced", params: { lowerBound: 4_000 } });
+  }, 60_000);
 });

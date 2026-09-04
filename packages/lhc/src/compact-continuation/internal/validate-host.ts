@@ -8,7 +8,7 @@
  */
 
 import type { ErrorResult } from "../../shared-tech/errors.js";
-import { profileViolation } from "../../thread-view/internal/profiles.js";
+import { DEFAULT_NEWEST_CLOSED_PROTECTION, profileViolation } from "../../thread-view/internal/profiles.js";
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -268,6 +268,9 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
               detailed: pct.obj["detailed"] as number,
               brief: pct.obj["brief"] as number,
             },
+            // Host facts carry band allocations only; the protection fraction
+            // is the profile default and is never a host input.
+            newestClosedProtection: DEFAULT_NEWEST_CLOSED_PROTECTION,
           };
           const violation = profileViolation(complete);
           if (violation !== null) {

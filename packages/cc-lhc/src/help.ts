@@ -1,20 +1,28 @@
-export const CC_LHC_HELP = `cc-lhc — Long Horizon Context wrapper for Claude Code
+import { readBuildIdentity } from "./version.js";
+
+export const CC_LHC_HELP = `cc-lhc ${readBuildIdentity().version} — Long Horizon Context wrapper for Claude Code
 
 Usage:
   cc-lhc [cc-lhc flags] [claude args...]
+  cc-lhc [cc-lhc flags] -- [claude args...]   (-- ends cc-lhc flag parsing)
   cc-lhc get-turns [--from TOKENS] <tN>...
   cc-lhc get-messages [--from TOKENS] <mN>...
+  cc-lhc tasks status|output|stop <launch id> [--offset BYTES] [--max BYTES]
   cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]
   cc-lhc --lhc-help
+  cc-lhc --lhc-version
+
+Smart Compact is always active: it runs automatically at the trigger of the
+active context window (200k: 70k target, 140k trigger; 1M: 180k target, 360k
+trigger) and cannot be turned off.
 
 Wrapper flags:
   --lhc-no-inference               Disable derivation model calls
   --lhc-no-notifier                Disable lifecycle-command warnings
-  --lhc-auto-compact=on|off        Override automatic compact for this launch
-  --lhc-lower-bound-tokens=N       Override compact target for this launch
-  --lhc-upper-bound-tokens=N       Override automatic compact trigger
+  --lhc-lower-bound-tokens=N       Override Smart Compact target for this launch
+  --lhc-upper-bound-tokens=N       Override automatic Smart Compact trigger
   --lhc-min-runway-tokens=N        Override minimum trigger/target runway
-  --lhc-profile=NAME               Override the LHC serving profile
+  --lhc-profile=default|balanced|historical  Override Band % allocation
 
 Environment:
   CC_LHC_HOME                      State root (default: ~/.cc-lhc; on Windows it
@@ -32,11 +40,16 @@ Environment:
 
 Control panel:
   Press ctrl-] (or CC_LHC_LEADER) while Claude is running.
-  Commands: status, stats, compact, prune [targetTokens], export,
-            auto on|off, bounds <lower> <upper>, help
+  Commands: /status, /stats, /smart-compact, /smart-prune [tokens], /export,
+            /bounds <target> <trigger>, /allocation, /details, /help,
+            /introduction
+  Commands start with / and are lowercase. Type / in the panel for suggestions;
+  Tab completes. /help lists every command; /introduction explains CC-LHC.
 
 Reserved subcommands are handled by cc-lhc. Ordinary Claude arguments, including
---help, are forwarded after safe session-selector normalization.`;
+--help and --version, are forwarded after safe session-selector normalization;
+use --lhc-version for the CC-LHC package itself. Everything after the first
+standalone -- is forwarded to Claude unchanged, even --lhc-* lookalikes.`;
 
 export function isLhcHelpArgv(argv: readonly string[]): boolean {
   return argv.length === 1 && argv[0] === "--lhc-help";

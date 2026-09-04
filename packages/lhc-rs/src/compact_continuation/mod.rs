@@ -27,7 +27,7 @@ pub use internal::run::{
 pub use internal::store::{
     AttemptRow, BoundaryRow, BoundaryStatus, ForceIntentRow, HostValidationRow,
     HostValidationStatus, StageLogEntry, StageName, StoredCompactContinuationReceipt,
-    WriterClaimKind, WriterClaimRow,
+    WriterClaimKind, WriterClaimRow, has_forced_boundary_history,
 };
 pub use internal::tool_pair::{
     ProtectedToolPairSetProof, ToolPairFailReason, ToolPairOk, ToolPairProof,

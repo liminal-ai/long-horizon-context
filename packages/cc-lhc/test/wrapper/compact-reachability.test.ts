@@ -18,6 +18,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { formatDurableReceipt } from "../../src/commands/context-mutation.js";
 import { CONFIG_FALLBACK_NOTICE, formatConfigFallbackNotice } from "../../src/governor/config.js";
+import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import { emptyCaptureStats } from "../../src/stats.js";
@@ -162,12 +163,34 @@ async function waitFor(condition: () => boolean, label: string, capMs = 8_000): 
   }
 }
 
+/**
+ * Receipts whose automatic operation actually CONCLUDED. Every receipt is
+ * born with an outcome (`deferred_open_turn`, `scheduled`, `not_applicable`),
+ * so "has an outcome" observes nothing; only a claimed operation's own end
+ * states prove the flight was released.
+ */
+const OPERATION_CONCLUDED = new Set([
+  "mutation_partial",
+  "mutation_refused",
+  "mutation_noop",
+  "handoff_success",
+  "handoff_cancelled",
+  "handoff_replacement_nonviable",
+]);
+function operationsConcluded(dbPath: string): number {
+  const receipts = openGovernorReceiptStore(dbPath);
+  try {
+    return receipts.listAll().filter((r) => OPERATION_CONCLUDED.has(r.handoffOutcome?.kind ?? "")).length;
+  } finally {
+    receipts.close();
+  }
+}
+
 function policy(over: Record<string, unknown> = {}) {
   const base = {
-    autoCompact: true,
     lowerBoundTokens: 1_000,
     upperBoundTokens: 5_000,
-    profile: "continuation",
+    profile: "default",
     nativeCompactMode: "emergency_backstop" as const,
     nativeBackstopTokens: 1_000_000,
     pruneEnabled: false,
@@ -210,6 +233,7 @@ interface Rig {
   stdin: PassThrough;
   fire: (signals: LifecycleSignal[]) => void;
   compacts: () => number;
+  receiptDb: string;
   logs: string[];
   stderrText: () => string;
   end: () => Promise<number>;
@@ -273,6 +297,7 @@ async function startRig(options: {
     stdin: stdin as unknown as PassThrough,
     fire: (signals) => sink!(signals),
     compacts: () => compacts,
+    receiptDb: join(dir, "r.sqlite"),
     logs,
     stderrText: () => stderrChunks.join(""),
     end: async () => {
@@ -342,6 +367,13 @@ describe("a session over the trigger reaches compact", () => {
     const rig = await startRig({});
     rig.fire(overTrigger("req:a"));
     await waitFor(() => rig.compacts() >= 1, "first compact");
+    // The compact call is the start of the automatic operation, not its end:
+    // a seam fired while the operation still owns the flight is coalesced by
+    // design ("no second mutation"), not replayed. The claim under test is
+    // the governor's (no toll, no cooldown between seams), so wait for the
+    // first operation's CONCLUDING outcome — attached synchronously just
+    // before the flight is released — before the next seam.
+    await waitFor(() => operationsConcluded(rig.receiptDb) >= 1, "first operation conclusion");
     // Identical pressure, immediately after: nothing to earn, nothing to wait out.
     rig.fire(overTrigger("req:b"));
     await waitFor(() => rig.compacts() >= 2, "second compact at the same pressure");
@@ -411,12 +443,12 @@ describe("a session over the trigger reaches compact", () => {
     await rig.end();
   }, 20_000);
 
-  it("explicit autoCompact:false is the one stop — nothing compacts", async () => {
-    const rig = await startRig({ resolvedContextPolicy: policy({ autoCompact: false }) });
-    rig.fire(overTrigger("req:off"));
-    await new Promise((r) => setTimeout(r, 300));
-    expect(rig.compacts()).toBe(0);
-    expect(rig.logs.some((l) => l.includes("policy_disabled"))).toBe(true);
+  it("no configuration stops it: a smuggled autoCompact:false still compacts (TC-1.5d)", async () => {
+    const smuggled = { ...policy(), policy: { ...policy().policy, autoCompact: false } } as never;
+    const rig = await startRig({ resolvedContextPolicy: smuggled });
+    rig.fire(overTrigger("req:smuggled"));
+    await waitFor(() => rig.compacts() > 0, "compact despite a foreign off field");
+    expect(rig.logs.some((l) => l.includes("policy_disabled"))).toBe(false);
     await rig.end();
   }, 15_000);
 
@@ -442,14 +474,14 @@ describe("the compact message carries host notices", () => {
     const notices = formatConfigFallbackNotice([
       {
         origin: "user config /home/u/.config/cc-lhc/config.json",
-        field: "autoCompact",
-        detail: "autoCompact must be a boolean",
+        field: "pruneEnabled",
+        detail: "pruneEnabled must be a boolean",
       },
     ]);
     const receipt = formatDurableReceipt("auto_compact", { origin: "auto", viewTokens: 1_000 }, notices);
     expect(receipt).toContain("[lhc compact:auto]");
     expect(receipt).toContain(CONFIG_FALLBACK_NOTICE);
-    expect(receipt).toContain("autoCompact");
+    expect(receipt).toContain("pruneEnabled");
   });
 
   it("says nothing extra when configuration was usable", () => {
