@@ -56,7 +56,7 @@ import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/map
 import { killInferenceChildren } from "./inference/claudeCli.ts";
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.ts";
 import { projectView } from "./projection/project.ts";
-import type { SidecarRequestMethod, WireOptions } from "./protocol.ts";
+import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.ts";
 
 export interface SessionIO {
   emit(message: SDKMessage): void;
@@ -83,8 +83,6 @@ const MAX_VIEW_TARGET_MULTIPLE = 4;
  * boundary after a swap cannot compact again at once.
  */
 const MAX_VIEW_RETRY_TRIGGER_SHARE = 0.7;
-/** Test hook: a rebuild throws before touching LHC, to exercise the failure path with a live model. */
-const FORCE_REBUILD_FAILURE_ENV = "CLAUDE_LHC_FORCE_REBUILD_FAILURE";
 const FALLBACK_CLAUDE_CODE_VERSION = "2.1.259";
 /** The stop reason the PostToolUse hook hands the CLI; it stays inside the stopped session. */
 const MID_TURN_STOP_REASON = "lhc mid-turn compact";
@@ -199,6 +197,8 @@ export class ClaudeLhcSession {
   #maxThinkingTokens: number | null | undefined;
   #claudeCodeVersion = FALLBACK_CLAUDE_CODE_VERSION;
   #autoCompactTrigger = DEFAULT_AUTO_COMPACT_TRIGGER;
+  /** Start option `lhc.forceRebuildFailure`: proof scripts only; see protocol.ts. */
+  #forceRebuildFailure = false;
   #viewTarget = DEFAULT_VIEW_TARGET_TOKENS;
   #closed = false;
 
@@ -211,7 +211,10 @@ export class ClaudeLhcSession {
   }
 
   async start(wire: WireOptions): Promise<void> {
-    const { resume, sessionId, canUseTool: _c, onUserDialog: _d, sessionStore: _s, settings, env, ...rest } = wire as Record<string, unknown>;
+    const { resume, sessionId, canUseTool: _c, onUserDialog: _d, sessionStore: _s, settings, env, lhc, ...rest } = wire as Record<string, unknown>;
+    const sidecarOptions = (typeof lhc === "object" && lhc !== null ? lhc : {}) as SidecarOptions;
+    this.#forceRebuildFailure = sidecarOptions.forceRebuildFailure === true;
+    if (this.#forceRebuildFailure) this.#io.log("start option lhc.forceRebuildFailure: every compact rebuild will fail (proof mode)");
     const settingsRecord = typeof settings === "object" && settings !== null ? { ...(settings as Record<string, unknown>) } : {};
     if (typeof settingsRecord["autoCompactWindow"] === "number") this.#autoCompactTrigger = settingsRecord["autoCompactWindow"];
     this.#viewTarget = viewTargetFor(this.#autoCompactTrigger);
@@ -637,7 +640,7 @@ export class ClaudeLhcSession {
 
   /** Waits for derivations, installs the compacted view, records the marker, and projects the view into a new generation. */
   async #rebuild(trigger: CompactTrigger, preTokens: number): Promise<{ next: Generation; postTokens: number }> {
-    if (process.env[FORCE_REBUILD_FAILURE_ENV] === "1") throw new Error(`rebuild failure forced by ${FORCE_REBUILD_FAILURE_ENV}=1`);
+    if (this.#forceRebuildFailure) throw new Error("rebuild failure forced by the start option lhc.forceRebuildFailure");
     await this.#awaitDerivations();
     // A compact never makes the model forget what the record still holds. The view aims at a
     // fixed target: a thread that fits the full share stays whole in the tail (no bands), a

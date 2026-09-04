@@ -14,8 +14,8 @@
  * correct; LHC has the forced boundary turn, the marker, and the continuation as a runtime
  * note (not a prompt). Writes cp-midturn/pass-N.wire.log and cp-midturn/record.json.
  * PARTIAL=0 turns includePartialMessages off (t3code runs with it on, the default here).
- * FAIL_REBUILD=1 forces the rebuild to throw after the hook stop (CLAUDE_LHC_FORCE_REBUILD_FAILURE in
- * the task sidecar): the expectation flips to no boundary, status failed, the task finishing in the
+ * FAIL_REBUILD=1 forces the rebuild to throw after the hook stop (start option lhc.forceRebuildFailure
+ * on the task sidecar): the expectation flips to no boundary, status failed, the task finishing in the
  * stopped generation, still one result.
  *
  * Calibration: the account's MCP connectors join the tool list asynchronously (~24k tokens of
@@ -84,8 +84,8 @@ for (let pass = 1; pass <= PASSES; pass++) {
   if (S <= 0 || S > 20_000 || C1 <= B) fail(`calibration off: baseline ${B}, per-read ${S}, after filler ${C1}`);
   await a.stop();
 
-  const b = new Sidecar(`p${pass}-B`, LHC_HOME, false, FAIL_REBUILD ? { CLAUDE_LHC_FORCE_REBUILD_FAILURE: "1" } : {});
-  b.send({ type: "start", options: baseOptions(cwd, { resume: first, settings: { autoCompactWindow: trigger } }) });
+  const b = new Sidecar(`p${pass}-B`, LHC_HOME, false);
+  b.send({ type: "start", options: baseOptions(cwd, { resume: first, settings: { autoCompactWindow: trigger }, ...(FAIL_REBUILD ? { lhc: { forceRebuildFailure: true } } : {}) }) });
   const warm = await b.settledReady();
   log(`task sidecar warmed up: settled context ${warm.context} after ${warm.tries} ready turn(s), ${warm.tools} tools (calibrated C1 ${C1}, trigger ${trigger})`);
   if (warm.context < C1 - 2_000 || warm.context > trigger - S) fail(`pass ${pass}: miscalibrated, not a seam failure: task sidecar's settled context ${warm.context} is outside [${C1 - 2_000}, ${trigger - S}]`);

@@ -51,8 +51,8 @@ export class Sidecar {
   error: string | null = null;
   exited: Promise<number | null>;
   #waiters: Array<() => void> = [];
-  constructor(label: string, lhcHome: string, quiet = false, extraEnv: Record<string, string> = {}) {
-    this.child = spawn(BIN, [], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, T3CODE_LHC_HOME: lhcHome, ...extraEnv } });
+  constructor(label: string, lhcHome: string, quiet = false) {
+    this.child = spawn(BIN, [], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, T3CODE_LHC_HOME: lhcHome } });
     this.exited = new Promise((r) => this.child.on("exit", (code) => { r(code); this.#notify(); }));
     createInterface({ input: this.child.stderr! }).on("line", (line) => {
       this.stderr.push(line);
@@ -93,18 +93,25 @@ export class Sidecar {
     const servers = (init?.["mcp_servers"] as Array<{ name: string; status: string }> | undefined) ?? [];
     return servers.filter((s) => s.status === "pending").map((s) => s.name);
   }
-  /** A "ready" turn repeated until the tool list is final (no MCP server pending), so its context reading is the settled baseline. */
-  async settledReady(maxTries = 5): Promise<{ context: number; tries: number; tools: number }> {
+  /**
+   * A "ready" turn repeated until the tool list is final: no MCP server pending and the same tool
+   * count on two consecutive turns (the first init of a session can report an empty server list
+   * with the connectors' tools still absent). The last reading is the settled baseline.
+   */
+  async settledReady(maxTries = 6): Promise<{ context: number; tries: number; tools: number }> {
+    let previousTools = -1;
     for (let i = 1; ; i++) {
       const t = await this.turn("Reply with just the word: ready");
       const pending = Sidecar.pendingMcp(t.wire);
       const init = t.wire.filter((m) => m["type"] === "system" && m["subtype"] === "init").at(-1);
       const tools = ((init?.["tools"] as string[] | undefined) ?? []).length;
-      if (pending.length === 0 || i >= maxTries) {
-        if (pending.length > 0) fail(`tool list never settled: ${pending.join(", ")} still pending after ${i} tries`);
+      const settled = pending.length === 0 && tools === previousTools;
+      if (settled || i >= maxTries) {
+        if (!settled) fail(`tool list never settled after ${i} ready turns (${pending.length} pending, ${tools} tools, previously ${previousTools})`);
         return { context: t.context, tries: i, tools };
       }
-      log(`  ready turn ${i}: ${pending.length} MCP server(s) pending (${tools} tools); repeating`);
+      log(`  ready turn ${i}: ${pending.length} MCP server(s) pending, ${tools} tools (previously ${previousTools}); repeating`);
+      previousTools = tools;
     }
   }
   /** Sends a prompt and waits for the next `result`; returns the wire slice for the turn. */
