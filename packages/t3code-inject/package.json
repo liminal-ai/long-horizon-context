@@ -1,0 +1,22 @@
+{
+  "name": "t3code-inject",
+  "version": "0.1.0",
+  "private": true,
+  "description": "One-shot turn injector for a t3code thread: queue per sender, bundle a sender's waiting messages into one turn, steer a busy thread for high priority. The seat command that makes a t3code thread a seat on the agent relay.",
+  "type": "module",
+  "bin": {
+    "t3code-inject": "./bin/t3code-inject"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --no-warnings --test \"test/*.test.ts\"",
+    "link-deps": "./link-deps.sh"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.3"
+  }
+}

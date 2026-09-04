@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Seat command: prompt is the last argument (the relay appends it). Reply on
+# stdout, exit 0; failure on stderr, exit 1. See README.md.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+[ -e "$HERE/node_modules/effect" ] || "$HERE/link-deps.sh" >&2
+exec node --no-warnings "$HERE/src/cli.ts" "$@"
