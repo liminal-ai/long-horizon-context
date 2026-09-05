@@ -56,7 +56,7 @@ if (!rawPrompt.trim()) fail("prompt is required (last argument, or - for stdin)"
 const baseUrl = args["base-url"]!.replace(/\/$/, "");
 const timeoutMs = Number(args.timeout);
 if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) fail("--timeout must be a positive number of ms");
-const { sender, body } = parseIncoming(rawPrompt, { fromFlag: args.from ?? null, envSender: process.env.LHC_RELAY_SENDER ?? null });
+const { sender, channel, body } = parseIncoming(rawPrompt, { fromFlag: args.from ?? null, envSender: process.env.LHC_RELAY_SENDER ?? null });
 const priority = resolvePriority(args.priority!, process.env.LHC_RELAY_JOB_CLASS);
 const arrivedAt = now();
 const deadline = Date.now() + timeoutMs;
@@ -111,7 +111,7 @@ try {
   if (priority) {
     const midTurn = tracker.busy;
     log(`high priority from ${sender}: ${midTurn ? "thread busy, steering the running turn" : "thread idle, new turn"}`);
-    const reply = await runTurn(renderTurn(sender, [{ body, arrivedAt }], { now: arrivedAt, midTurn }), midTurn);
+    const reply = await runTurn(renderTurn(sender, [{ body, arrivedAt }], { now: arrivedAt, midTurn, channel }), midTurn);
     emit(reply);
   } else {
     const queue = new InjectQueue(join(args.home!, "queue.sqlite"));

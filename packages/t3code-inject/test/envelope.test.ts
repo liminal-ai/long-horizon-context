@@ -4,7 +4,8 @@ import { parseIncoming, renderTurn, resolvePriority } from "../src/envelope.ts";
 
 describe("parseIncoming", () => {
   it("passes the relay's from line through and strips it from the body", () => {
-    assert.deepEqual(parseIncoming("[from: heron]\nhello\nthere"), { sender: "heron", body: "hello\nthere" });
+    assert.deepEqual(parseIncoming("[from: heron]\nhello\nthere"), { sender: "heron", channel: null, body: "hello\nthere" });
+    assert.deepEqual(parseIncoming("[from: lee, channel: iMessage]\nhi"), { sender: "lee", channel: "iMessage", body: "hi" });
   });
   it("falls back to --from, then the relay sender env, then lee", () => {
     assert.equal(parseIncoming("hi", { fromFlag: "a", envSender: "b" }).sender, "a");
@@ -35,6 +36,10 @@ describe("renderTurn", () => {
     assert.equal(
       renderTurn("lee", [{ body: "also X", arrivedAt: t0 }], { now: t0, midTurn: true }),
       `[from: lee]\n[arrived mid-turn at ${t0}]\nalso X`,
+    );
+    assert.equal(
+      renderTurn("lee", [{ body: "also X", arrivedAt: t0 }], { now: t0, midTurn: true, channel: "iMessage" }),
+      `[from: lee, channel: iMessage]\n[arrived mid-turn at ${t0}]\nalso X`,
     );
   });
   it("demarcates each queued prompt with its arrival time", () => {
