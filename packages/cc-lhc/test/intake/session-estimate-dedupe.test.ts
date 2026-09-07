@@ -456,8 +456,10 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
     try {
       await waitFor(() => session.isCaptureReady(), "ready");
       await waitFor(() => lifecycle.some((s) => s.kind === "turn_settled"), "settled after catch-up");
-      // Whole-batch intake: one messageEvents call for the catch-up batch, not per line.
-      expect(intakeCalls).toBe(1);
+      // Batched intake, not per line: the batch commits through the completed
+      // assistant line (segmentation boundary), appends its canonical end, then
+      // commits the remaining twelve prompts together — three calls, not fourteen.
+      expect(intakeCalls).toBe(3);
       expect(intake.length).toBeGreaterThan(10);
       // mode:add only once per novel content line that recorded (user lines after sampling).
       const adds = lifecycle.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add");
@@ -772,7 +774,8 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       // Allow the serial batch queue to finish any trailing publish.
       await sleep(100);
 
-      expect(intakeCalls).toBe(1);
+      // Two completed turns: prefix commit + canonical end for each (segmentation), not per line.
+      expect(intakeCalls).toBe(4);
 
       // Lifecycle order is model-turn order, not all-sampling-then-all-settles.
       const pressureKinds = lifecycle
@@ -963,7 +966,8 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       await sleep(100);
 
       // One whole-batch intake for the novel events in catch-up (replay-filtered).
-      expect(intakeCalls).toBe(1);
+      // Replayed lines are host-filtered; the novel turn commits once plus its canonical end.
+      expect(intakeCalls).toBe(2);
       expect(session2.stats.skippedReplay).toBeGreaterThan(0);
 
       // Replayed old turn must not arm mode:set or a settle with old sampling.

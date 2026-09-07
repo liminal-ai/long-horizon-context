@@ -135,7 +135,7 @@ export function stringifyToolResultContent(content: unknown): string {
   }
 }
 
-function recordUuid(item: RolloutLineItem, lineIndex: number): string {
+export function recordUuid(item: RolloutLineItem, lineIndex: number): string {
   if (typeof item.uuid === "string" && item.uuid !== "") return item.uuid;
   const sessionId = typeof item.sessionId === "string" ? item.sessionId : "no-session";
   const type = typeof item.type === "string" ? item.type : "no-type";

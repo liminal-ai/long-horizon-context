@@ -186,3 +186,14 @@ describe("TC-4.2c reject unknown selection", () => {
     expect(Object.keys(invented.policy)).not.toContain("autoCompact");
   });
 });
+
+describe("segment threshold from the live policy", () => {
+  it("is half the full-fidelity share of the active lower target, per preset", async () => {
+    const { segmentThresholdTokens } = await import("../../src/governor/band-allocation.js");
+    expect(segmentThresholdTokens({ profile: "default", lowerBoundTokens: 70_000 })).toBe(10_500);
+    expect(segmentThresholdTokens({ profile: "default", lowerBoundTokens: 180_000 })).toBe(27_000);
+    expect(segmentThresholdTokens({ profile: "balanced", lowerBoundTokens: 70_000 })).toBe(8_750);
+    expect(segmentThresholdTokens({ profile: "historical", lowerBoundTokens: 70_000 })).toBe(7_000);
+    expect(() => segmentThresholdTokens({ profile: "continuation", lowerBoundTokens: 70_000 })).toThrow(/preset/);
+  });
+});

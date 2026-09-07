@@ -13,6 +13,7 @@ export {
   isBandAllocationId,
   mutationCoreProfile,
   PRODUCT_PRESET_IDS,
+  segmentThresholdTokens,
 } from "./band-allocation.js";
 export {
   applyContextWindow,

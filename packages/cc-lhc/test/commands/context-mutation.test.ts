@@ -190,6 +190,39 @@ describe("runContextMutation", () => {
   });
 });
 
+describe("settled-segment catch-up at the mutation seam", () => {
+  it("closes the settled canonical segment before compact reads the record, and reports it", async () => {
+    const sdk = sdkMock(0);
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
+    const closeSettledSegment = vi.fn(async () => ({ kind: "closed" as const, detail: "line a4" }));
+    const outcome = await runContextMutation(COMPACT_PLAN, { ...runtimeWith(sdk), closeSettledSegment });
+    expect(outcome.kind).toBe("rebuilt");
+    expect(closeSettledSegment).toHaveBeenCalledTimes(1);
+    const closeOrder = closeSettledSegment.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY;
+    const previewOrder = sdk.threadView.previewCompact.mock.invocationCallOrder[0] ?? 0;
+    expect(closeOrder).toBeLessThan(previewOrder);
+    expect(outcome.messages.some((m) => m.includes("settled segment closed: line a4"))).toBe(true);
+    writeSpy.mockRestore();
+  });
+
+  it("a skipped catch-up is silent and a prune never asks for one", async () => {
+    const sdk = sdkMock(500);
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
+    const closeSettledSegment = vi.fn(async () => ({
+      kind: "skipped" as const,
+      detail: "canonical turn already closed",
+    }));
+    const compacted = await runContextMutation(COMPACT_PLAN, { ...runtimeWith(sdk), closeSettledSegment });
+    expect(compacted.messages.some((m) => m.includes("settled segment"))).toBe(false);
+    await runContextMutation(
+      { operation: "prune", profile: "default", lowerBoundTokens: 70_000, manualPruneTargetTokens: 100 },
+      { ...runtimeWith(sdk), closeSettledSegment },
+    );
+    expect(closeSettledSegment).toHaveBeenCalledTimes(1);
+    writeSpy.mockRestore();
+  });
+});
+
 describe("window-derived target reaches view construction (TC-1.2b, TC-1.2c)", () => {
   it("passes the 200k built-in target of 70,000 directly, with no multiplier", async () => {
     const sdk = sdkMock(0);

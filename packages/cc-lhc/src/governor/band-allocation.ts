@@ -88,6 +88,17 @@ export function mutationCoreProfile(profile: string): InternalCoreProfile {
   return allocationById(profile).coreProfile;
 }
 
+/**
+ * Soft canonical segment size for the reader: half the full-fidelity share of
+ * the active policy's lower target (70000 × 30% / 2 = 10500 on the 200k class;
+ * 180000 × 30% / 2 = 27000 on 1M). Read live, so preset, window and user
+ * changes apply to the next candidate. A single atomic exchange may exceed it.
+ */
+export function segmentThresholdTokens(policy: Pick<ContextPolicy, "profile" | "lowerBoundTokens">): number {
+  const allocation = allocationById(policy.profile as BandAllocationId);
+  return (policy.lowerBoundTokens * allocation.full) / 100 / 2;
+}
+
 /** SDK compact construction: internal profile plus the active policy target. */
 export function compactConstruction(policy: Pick<ContextPolicy, "profile" | "lowerBoundTokens">): {
   profile: InternalCoreProfile;

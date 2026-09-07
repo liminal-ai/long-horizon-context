@@ -14,6 +14,8 @@ export interface CaptureStats {
    */
   replayedPrefixLines: number;
   parseFailures: number;
+  /** Canonical segment/completion ends this session recorded (never native turns). */
+  segmentEnds?: number;
   derivationsPending: number | null;
   threadId: string | null;
 }
@@ -29,6 +31,7 @@ export function emptyCaptureStats(): CaptureStats {
     skippedReplay: 0,
     replayedPrefixLines: 0,
     parseFailures: 0,
+    segmentEnds: 0,
     derivationsPending: null,
     threadId: null,
   };
@@ -46,6 +49,7 @@ export function formatCaptureStatsLine(stats: CaptureStats): string {
     `skipped_image=${stats.skippedImage}`,
     `skipped_replay=${stats.skippedReplay}`,
     `replayed_prefix=${stats.replayedPrefixLines}`,
+    `segment_ends=${stats.segmentEnds ?? 0}`,
     `parse_fail=${stats.parseFailures}`,
   ];
   if (stats.derivationsPending !== null) {

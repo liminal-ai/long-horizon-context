@@ -42,11 +42,11 @@ function isMessageEntry(entry: SessionThreadViewEntry): entry is SessionThreadVi
  * Server-side tool blocks (server_tool_use, *_tool_result) re-emit verbatim
  * from the served part's `block`; redacted_thinking follows the thinking arm.
  *
- * Thinking rebuild follows the certified empirical ladder (thinking-ladder.ts).
- * Selected arm: omit — no thinking blocks in rebuilt Claude rollouts until a
- * retained native compact/reload exhibit certifies signed_verbatim or
- * unsigned_visible. Canonical LHC always retains the original signed block.
- * Never invent `signature: ""` merely to fit an assumed shape.
+ * Thinking rebuild follows the ladder in thinking-ladder.ts. Selected arm:
+ * signed_verbatim — captured signed blocks (text, empty text, redacted) re-emit
+ * exactly; unsigned thinking is dropped. Canonical LHC always retains the
+ * original signed block. Never invent `signature: ""` merely to fit an assumed
+ * shape.
  */
 function assistantPartBlock(
   part: SessionAssistantPart,

@@ -81,6 +81,13 @@ import {
   filterReplayEvents,
   type ReplayDedupeState,
 } from "./replay-dedupe.js";
+import {
+  createSegmentFoldState,
+  foldSegmentLine,
+  type SegmentCandidate,
+  type SegmentEndReason,
+  segmentEndEvent,
+} from "./segment-fold.js";
 import { classifyTurnSignal } from "./turn-signal.js";
 
 const DEFAULT_INFERENCE_TIMEOUT_MS = 60_000;
@@ -213,6 +220,12 @@ export interface CaptureSessionDeps {
   onResultDelivery?: (launchIds: readonly string[], threadId: string) => void;
   /** Latest runtime choices explicitly recorded by the bound Claude rollout. */
   onRuntimeSettings?: (settings: Readonly<ClaudeRuntimeSettings>) => void;
+  /**
+   * Live soft size of one canonical segment in SDK estimate units (the
+   * wrapper reads it from the resolved policy at every candidate). Absent:
+   * no size-based segmentation; genuine completion still closes the segment.
+   */
+  segmentThresholdTokens?: () => number;
   /** Generation id seed (tests / restart counters). */
   generationSeed?: number;
   /** Test seam: injectable watcher I/O (fstat/read failures). */
@@ -254,8 +267,18 @@ export interface CaptureSession {
    * already reads and rebuilt by re-reading them; nothing is persisted.
    */
   getLiveAsyncWork(): OpenAsyncWork[];
+  /**
+   * Settled-seam catch-up: close the canonical turn left open by a native
+   * turn the transcript already shows finished (keyed to that terminal line),
+   * once, before a compact reads the record. Ordered behind queued intake.
+   * Skips when no terminal line was folded, the native turn is open, or the
+   * SDK's open turn holds nothing.
+   */
+  closeSettledSegment(): Promise<SettledSegmentClose>;
   stop(): Promise<void>;
 }
+
+export type SettledSegmentClose = { kind: "closed" | "skipped" | "failed"; detail: string };
 
 function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
@@ -426,6 +449,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   const abort = new AbortController();
   const samplingDedupe: SamplingDedupeState = createSamplingDedupeState();
   const turnFold = createTurnFoldState();
+  const segmentFold = createSegmentFoldState();
   const estimateFold: PostMeasurementEstimateFold = createPostMeasurementEstimateFold();
   // One capture generation, one open-async set. A replacement child starts a
   // new capture session, and by then everything this set held is dead.
@@ -535,6 +559,42 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     }
   };
 
+  /** The SDK's open-turn estimate (its own stored, thinking-inclusive units); null when unreadable. */
+  const readActiveTurnTokens = async (sdkRef: Lhc, ref: ThreadRef): Promise<number | null> => {
+    try {
+      const metadata = await sdkRef.threadView.hostMetadata(ref);
+      if (!metadata.ok) {
+        logError(`cc-lhc segment: host metadata ${metadata.error.code}: ${metadata.error.reason}`);
+        return null;
+      }
+      return metadata.value.activeTurn === null ? 0 : metadata.value.activeTurn.estimatedTokens;
+    } catch (cause) {
+      logError(`cc-lhc segment: host metadata threw: ${detail(cause)}`);
+      return null;
+    }
+  };
+
+  /** Submit one canonical `turn_end`; its identity is the source line, so a repeat is an SDK skip. */
+  const appendCanonicalEnd = async (
+    sdkRef: Lhc,
+    ref: ThreadRef,
+    lineUuid: string,
+    reason: SegmentEndReason,
+  ): Promise<boolean> => {
+    const end = segmentEndEvent(lineUuid, reason);
+    const result = normalizeFlushResult(
+      (await flush(sdkRef, ref, [], [end], stats, log, logError, dedupeState, persistSignatures, (why) =>
+        degradeAndEmit(why),
+      )) as FlushBatchResult | boolean | undefined,
+      [end],
+    );
+    if (!result.ok) return false;
+    const outcome = result.eventOutcomes[0]?.outcome ?? "skipped";
+    if (outcome === "recorded") stats.segmentEnds = (stats.segmentEnds ?? 0) + 1;
+    log(`cc-lhc segment: ${reason} ${outcome} (line ${lineUuid})`);
+    return true;
+  };
+
   /**
    * Process one watcher emission batch serially.
    *
@@ -623,247 +683,320 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           if (work.ordinaryImmediate.length > 0) publishLifecycle(work.ordinaryImmediate);
         };
 
-        for (const emission of emissions) {
-          stats.linesSeen += 1;
+        /** Intake failed for a prefix of this batch: no further split, one final attempt at the end. */
+        let commitFailed = false;
+        const resetBatch = (): void => {
+          lineWork.length = 0;
+          batchEvents.length = 0;
+          batchSignatures.length = 0;
+          batchItems.length = 0;
+        };
 
-          const lineIndex = lineCounter;
-          lineCounter += 1;
-
-          // Live suffix only: full folds + runtime lifecycle. Prefix was
-          // validated separately without mutating these folds.
-          // deferPressureLifecycle: estimate/settled held until after intake.
-          const observeOpts: Parameters<typeof observeWatcherEmission>[2] = {
-            samplingDedupe,
-            generation: captureHealth.generation,
-            turnFold,
-            estimateFold,
-            asyncWorkFold,
-            deferPressureLifecycle: true,
-          };
-          if (expectedSession !== undefined) {
-            observeOpts.expectedSessionId = expectedSession.sessionId;
-          }
-          const observed = observeWatcherEmission(emission, lineIndex, observeOpts);
-
-          // Mutation fence turn state folds classifyTurnSignal directly so
-          // assistant tool_use state-maintenance keeps isTurnOpen true even
-          // when lifecycle does not re-emit turn_opened.
-          if (emission.kind === "line") {
-            const turnSignal = classifyTurnSignal(emission.item);
-            if (turnSignal === "opens") turnOpen = true;
-            if (turnSignal === "closes") turnOpen = false;
-          }
-
-          // Retain partitions; do not publish ordinary lifecycle yet.
-          // Publishing all sampling first then all settles later flattens
-          // multi-turn catch-up so settle(N) would see sampling(N+1).
-          const { healthSignals, ordinaryImmediate } = partitionLifecycle(observed.lifecycle);
-          const samplingEmitted = ordinaryImmediate.some((s) => s.kind === "sampling_observed");
-
-          if (emission.kind === "parse_error") {
-            stats.parseFailures += 1;
-            logError(`cc-lhc parse fail: ${emission.error}`);
-            lineWork.push({
-              healthSignals,
-              ordinaryImmediate,
-              samplingEmitted: false,
-              deferredPressure: [],
-              wouldPostMeasurementAdd: false,
-              toSend: [],
-              eventStart: batchEvents.length,
-              eventCount: 0,
-              fullyReplayDropped: false,
-            });
-            continue;
-          }
-
-          const nextRuntimeSettings = observeClaudeRuntimeSettings(runtimeSettings, emission.item);
-          if (nextRuntimeSettings !== runtimeSettings) {
-            runtimeSettings = nextRuntimeSettings;
-            deps.onRuntimeSettings?.({ ...runtimeSettings });
-          }
-          if (deps.onResultDelivery !== undefined && threadRef !== undefined) {
-            const deliveredKeys = deliveredResultKeys(emission.item);
-            const deliveryThreadId = threadIdFromRef(threadRef);
-            if (deliveredKeys.length > 0 && deliveryThreadId !== "") {
-              try {
-                deps.onResultDelivery(deliveredKeys, deliveryThreadId);
-              } catch (cause) {
-                logError(`cc-lhc continuity: result-delivery subscriber threw: ${detail(cause)}`);
-              }
-            }
-          }
-
-          stats.skippedSidechain += observed.stats.sidechain;
-          stats.skippedUnknown += observed.stats.unknown;
-          stats.skippedMeta += observed.stats.meta;
-          stats.skippedImage += observed.stats.image;
-
+        /**
+         * Submit everything observed so far in ONE `messageEvents` call and
+         * publish its lifecycle in line order. Returns the per-event outcomes
+         * (indices match `LineWork.eventStart`), or null when intake failed.
+         * Clears the batch either way.
+         */
+        const commitBatch = async (): Promise<IntakeEventOutcome[] | null> => {
           if (sdk === undefined || threadRef === undefined) {
-            // No intake path: still retain line order for health/chrome lifecycle.
-            lineWork.push({
-              healthSignals,
-              ordinaryImmediate,
-              samplingEmitted,
-              deferredPressure: observed.deferredPressure,
-              wouldPostMeasurementAdd: false,
-              toSend: [],
-              eventStart: batchEvents.length,
-              eventCount: 0,
-              fullyReplayDropped: false,
-            });
-            continue;
-          }
-
-          const filtered =
-            dedupeState === undefined
-              ? {
-                  toSend: observed.events,
-                  skipped: 0,
-                  signaturesToAdd: observed.events.map((e) => eventContentSignature(e)),
-                }
-              : filterReplayEvents(observed.events, dedupeState);
-
-          if (filtered.skipped > 0) {
-            stats.skippedReplay += filtered.skipped;
-            log(`cc-lhc replay dedupe: skipped ${filtered.skipped} event(s)`);
-          }
-
-          // Fully replay-dropped: zero estimate/settle. Immediate lifecycle
-          // (sampling_observed / turn_opened) replays in line order after intake.
-          if (observed.events.length > 0 && filtered.toSend.length === 0) {
-            lineWork.push({
-              healthSignals,
-              ordinaryImmediate,
-              samplingEmitted,
-              deferredPressure: observed.deferredPressure,
-              wouldPostMeasurementAdd: false,
-              toSend: [],
-              eventStart: batchEvents.length,
-              eventCount: 0,
-              fullyReplayDropped: true,
-            });
-            continue;
-          }
-
-          const eventStart = batchEvents.length;
-          batchEvents.push(...filtered.toSend);
-          batchSignatures.push(...filtered.signaturesToAdd);
-          if (emission.kind === "line") {
-            batchItems.push(emission.item);
-          }
-          lineWork.push({
-            healthSignals,
-            ordinaryImmediate,
-            samplingEmitted,
-            deferredPressure: observed.deferredPressure,
-            wouldPostMeasurementAdd: observed.wouldPostMeasurementAdd,
-            toSend: filtered.toSend,
-            eventStart,
-            eventCount: filtered.toSend.length,
-            fullyReplayDropped: false,
-          });
-        }
-
-        if (sdk === undefined || threadRef === undefined) {
-          // No SDK: publish retained lifecycle in line order (health + chrome only).
-          for (const work of lineWork) {
-            publishLineImmediate(work);
-          }
-          return;
-        }
-
-        // Empty mapped events only (meta/sidechain chrome with deferred settle):
-        // no intake call; still allow deferred set/settle for those candidates.
-        const needsIntake = batchEvents.length > 0;
-        let eventOutcomes: IntakeEventOutcome[] | null = null;
-        if (needsIntake) {
-          const rawFlush = await flush(
-            sdk,
-            threadRef,
-            batchItems,
-            batchEvents,
-            stats,
-            log,
-            logError,
-            dedupeState,
-            persistSignatures,
-            (reason) => degradeAndEmit(reason),
-            batchSignatures,
-          );
-          // `flushBatchFn` may return void (legacy injectors).
-          const flushResult = normalizeFlushResult(rawFlush as FlushBatchResult | boolean | undefined, batchEvents);
-          if (!flushResult.ok) {
-            // Failed or malformed intake: no mutation-arming lifecycle from this
-            // batch. Still publish host health + sampling/turn-open per line so
-            // observations stay ordered; captureHealthy (already latched) blocks
-            // wouldMutate if a later path ever settles.
+            // No SDK: publish retained lifecycle in line order (health + chrome only).
             for (const work of lineWork) {
               publishLineImmediate(work);
             }
-            return;
+            resetBatch();
+            return [];
           }
-          // Extra guard: injector-supplied outcomes must still align by length/key.
-          if (flushResult.eventOutcomes.length !== batchEvents.length) {
-            logError(
-              `cc-lhc intake outcome map invalid: expected ${batchEvents.length} event outcome(s), got ${flushResult.eventOutcomes.length}`,
+
+          // Empty mapped events only (meta/sidechain chrome with deferred settle):
+          // no intake call; still allow deferred set/settle for those candidates.
+          const needsIntake = batchEvents.length > 0;
+          let eventOutcomes: IntakeEventOutcome[] | null = null;
+          if (needsIntake) {
+            const rawFlush = await flush(
+              sdk,
+              threadRef,
+              batchItems,
+              batchEvents,
+              stats,
+              log,
+              logError,
+              dedupeState,
+              persistSignatures,
+              (reason) => degradeAndEmit(reason),
+              batchSignatures,
             );
-            degradeAndEmit("intake_outcome_map:length_mismatch");
-            for (const work of lineWork) {
-              publishLineImmediate(work);
-            }
-            return;
-          }
-          for (let i = 0; i < batchEvents.length; i += 1) {
-            if (flushResult.eventOutcomes[i]!.idempotencyKey !== batchEvents[i]!.idempotencyKey) {
-              logError(`cc-lhc intake outcome map invalid: key mismatch at index ${i}`);
-              degradeAndEmit("intake_outcome_map:key_mismatch");
+            // `flushBatchFn` may return void (legacy injectors).
+            const flushResult = normalizeFlushResult(rawFlush as FlushBatchResult | boolean | undefined, batchEvents);
+            if (!flushResult.ok) {
+              // Failed or malformed intake: no mutation-arming lifecycle from this
+              // batch. Still publish host health + sampling/turn-open per line so
+              // observations stay ordered; captureHealthy (already latched) blocks
+              // wouldMutate if a later path ever settles.
               for (const work of lineWork) {
                 publishLineImmediate(work);
               }
-              return;
+              commitFailed = true;
+              resetBatch();
+              return null;
+            }
+            // Extra guard: injector-supplied outcomes must still align by length/key.
+            if (flushResult.eventOutcomes.length !== batchEvents.length) {
+              logError(
+                `cc-lhc intake outcome map invalid: expected ${batchEvents.length} event outcome(s), got ${flushResult.eventOutcomes.length}`,
+              );
+              degradeAndEmit("intake_outcome_map:length_mismatch");
+              for (const work of lineWork) {
+                publishLineImmediate(work);
+              }
+              commitFailed = true;
+              resetBatch();
+              return null;
+            }
+            for (let i = 0; i < batchEvents.length; i += 1) {
+              if (flushResult.eventOutcomes[i]!.idempotencyKey !== batchEvents[i]!.idempotencyKey) {
+                logError(`cc-lhc intake outcome map invalid: key mismatch at index ${i}`);
+                degradeAndEmit("intake_outcome_map:key_mismatch");
+                for (const work of lineWork) {
+                  publishLineImmediate(work);
+                }
+                commitFailed = true;
+                resetBatch();
+                return null;
+              }
+            }
+            eventOutcomes = flushResult.eventOutcomes;
+          } else {
+            eventOutcomes = [];
+          }
+
+          // Replay lifecycle in original line order after successful intake.
+          for (const work of lineWork) {
+            publishLineImmediate(work);
+
+            // Fully replay-dropped: ordinary immediate only (no set/settle/add).
+            if (work.fullyReplayDropped) {
+              continue;
+            }
+
+            const lineOutcomes =
+              work.eventCount === 0 ? [] : eventOutcomes.slice(work.eventStart, work.eventStart + work.eventCount);
+            const recordedEvents = work.toSend.filter((_event, i) => lineOutcomes[i]?.outcome === "recorded");
+            // Submitted events but recorded none: pure skip (duplicate idempotency).
+            // Ordinary immediate already published; do not set/settle/add.
+            if (work.eventCount > 0 && recordedEvents.length === 0) {
+              continue;
+            }
+
+            const pressureSignals: LifecycleSignal[] = [];
+            for (const signal of work.deferredPressure) {
+              if (signal.kind === "post_measurement_estimate" && signal.mode !== "add") {
+                pressureSignals.push(signal);
+              }
+            }
+            if (work.wouldPostMeasurementAdd && !work.samplingEmitted && recordedEvents.length > 0) {
+              const add = postMeasurementAddFromAcceptedEvents(recordedEvents);
+              if (add !== null) pressureSignals.push(add);
+            }
+            for (const signal of work.deferredPressure) {
+              if (signal.kind === "turn_settled") {
+                pressureSignals.push(signal);
+              }
+            }
+            publishLifecycle(pressureSignals);
+          }
+          const committed = eventOutcomes;
+          resetBatch();
+          return committed;
+        };
+
+        /** Append one canonical end after a committed candidate line, when it applies. */
+        const appendSegmentEnd = async (candidate: SegmentCandidate): Promise<void> => {
+          if (sdk === undefined || threadRef === undefined) return;
+          let reason: SegmentEndReason;
+          if (candidate.kind === "completion") {
+            reason = "cc_lhc_completion";
+          } else {
+            const threshold = deps.segmentThresholdTokens?.();
+            if (threshold === undefined) return;
+            const tokens = await readActiveTurnTokens(sdk, threadRef);
+            if (tokens === null || tokens < threshold) return;
+            reason = "cc_lhc_segment";
+          }
+          await appendCanonicalEnd(sdk, threadRef, candidate.lineUuid, reason);
+        };
+
+        const processEmissions = async (): Promise<void> => {
+          for (const emission of emissions) {
+            stats.linesSeen += 1;
+
+            const lineIndex = lineCounter;
+            lineCounter += 1;
+
+            // Live suffix only: full folds + runtime lifecycle. Prefix was
+            // validated separately without mutating these folds.
+            // deferPressureLifecycle: estimate/settled held until after intake.
+            const observeOpts: Parameters<typeof observeWatcherEmission>[2] = {
+              samplingDedupe,
+              generation: captureHealth.generation,
+              turnFold,
+              estimateFold,
+              asyncWorkFold,
+              deferPressureLifecycle: true,
+            };
+            if (expectedSession !== undefined) {
+              observeOpts.expectedSessionId = expectedSession.sessionId;
+            }
+            const observed = observeWatcherEmission(emission, lineIndex, observeOpts);
+
+            // Mutation fence turn state folds classifyTurnSignal directly so
+            // assistant tool_use state-maintenance keeps isTurnOpen true even
+            // when lifecycle does not re-emit turn_opened.
+            let segmentCandidate: SegmentCandidate | null = null;
+            if (emission.kind === "line") {
+              const turnSignal = classifyTurnSignal(emission.item);
+              if (turnSignal === "opens") turnOpen = true;
+              if (turnSignal === "closes") turnOpen = false;
+              // Canonical segment fold: pairing state over every mapped line,
+              // replayed or not; the native turn state above is untouched by it.
+              segmentCandidate = foldSegmentLine(segmentFold, emission.item, lineIndex, observed.events);
+            }
+
+            // Retain partitions; do not publish ordinary lifecycle yet.
+            // Publishing all sampling first then all settles later flattens
+            // multi-turn catch-up so settle(N) would see sampling(N+1).
+            const { healthSignals, ordinaryImmediate } = partitionLifecycle(observed.lifecycle);
+            const samplingEmitted = ordinaryImmediate.some((s) => s.kind === "sampling_observed");
+
+            if (emission.kind === "parse_error") {
+              stats.parseFailures += 1;
+              logError(`cc-lhc parse fail: ${emission.error}`);
+              lineWork.push({
+                healthSignals,
+                ordinaryImmediate,
+                samplingEmitted: false,
+                deferredPressure: [],
+                wouldPostMeasurementAdd: false,
+                toSend: [],
+                eventStart: batchEvents.length,
+                eventCount: 0,
+                fullyReplayDropped: false,
+              });
+              continue;
+            }
+
+            const nextRuntimeSettings = observeClaudeRuntimeSettings(runtimeSettings, emission.item);
+            if (nextRuntimeSettings !== runtimeSettings) {
+              runtimeSettings = nextRuntimeSettings;
+              deps.onRuntimeSettings?.({ ...runtimeSettings });
+            }
+            if (deps.onResultDelivery !== undefined && threadRef !== undefined) {
+              const deliveredKeys = deliveredResultKeys(emission.item);
+              const deliveryThreadId = threadIdFromRef(threadRef);
+              if (deliveredKeys.length > 0 && deliveryThreadId !== "") {
+                try {
+                  deps.onResultDelivery(deliveredKeys, deliveryThreadId);
+                } catch (cause) {
+                  logError(`cc-lhc continuity: result-delivery subscriber threw: ${detail(cause)}`);
+                }
+              }
+            }
+
+            stats.skippedSidechain += observed.stats.sidechain;
+            stats.skippedUnknown += observed.stats.unknown;
+            stats.skippedMeta += observed.stats.meta;
+            stats.skippedImage += observed.stats.image;
+
+            if (sdk === undefined || threadRef === undefined) {
+              // No intake path: still retain line order for health/chrome lifecycle.
+              lineWork.push({
+                healthSignals,
+                ordinaryImmediate,
+                samplingEmitted,
+                deferredPressure: observed.deferredPressure,
+                wouldPostMeasurementAdd: false,
+                toSend: [],
+                eventStart: batchEvents.length,
+                eventCount: 0,
+                fullyReplayDropped: false,
+              });
+              continue;
+            }
+
+            const filtered =
+              dedupeState === undefined
+                ? {
+                    toSend: observed.events,
+                    skipped: 0,
+                    signaturesToAdd: observed.events.map((e) => eventContentSignature(e)),
+                  }
+                : filterReplayEvents(observed.events, dedupeState);
+
+            if (filtered.skipped > 0) {
+              stats.skippedReplay += filtered.skipped;
+              log(`cc-lhc replay dedupe: skipped ${filtered.skipped} event(s)`);
+            }
+
+            // Fully replay-dropped: zero estimate/settle. Immediate lifecycle
+            // (sampling_observed / turn_opened) replays in line order after intake.
+            if (observed.events.length > 0 && filtered.toSend.length === 0) {
+              lineWork.push({
+                healthSignals,
+                ordinaryImmediate,
+                samplingEmitted,
+                deferredPressure: observed.deferredPressure,
+                wouldPostMeasurementAdd: false,
+                toSend: [],
+                eventStart: batchEvents.length,
+                eventCount: 0,
+                fullyReplayDropped: true,
+              });
+              continue;
+            }
+
+            const eventStart = batchEvents.length;
+            batchEvents.push(...filtered.toSend);
+            batchSignatures.push(...filtered.signaturesToAdd);
+            if (emission.kind === "line") {
+              batchItems.push(emission.item);
+            }
+            const work: LineWork = {
+              healthSignals,
+              ordinaryImmediate,
+              samplingEmitted,
+              deferredPressure: observed.deferredPressure,
+              wouldPostMeasurementAdd: observed.wouldPostMeasurementAdd,
+              toSend: filtered.toSend,
+              eventStart,
+              eventCount: filtered.toSend.length,
+              fullyReplayDropped: false,
+            };
+            lineWork.push(work);
+
+            // A boundary candidate ends this line: commit the batch through it so
+            // the end lands after this line's events and before any later line's.
+            // Replay is decided by the SDK: the end is appended only when this
+            // line's own source events were newly recorded. While the host replay
+            // window is still active every event so far was a known duplicate, so
+            // the split is skipped as an optimization only.
+            if (
+              segmentCandidate !== null &&
+              work.eventCount > 0 &&
+              !commitFailed &&
+              dedupeState?.replayWindowActive !== true
+            ) {
+              const outcomes = await commitBatch();
+              if (outcomes === null) continue;
+              const recorded = outcomes
+                .slice(work.eventStart, work.eventStart + work.eventCount)
+                .some((outcome) => outcome.outcome === "recorded");
+              if (recorded) await appendSegmentEnd(segmentCandidate);
             }
           }
-          eventOutcomes = flushResult.eventOutcomes;
-        } else {
-          eventOutcomes = [];
-        }
 
-        // Replay lifecycle in original line order after successful intake.
-        for (const work of lineWork) {
-          publishLineImmediate(work);
-
-          // Fully replay-dropped: ordinary immediate only (no set/settle/add).
-          if (work.fullyReplayDropped) {
-            continue;
-          }
-
-          const lineOutcomes =
-            work.eventCount === 0 ? [] : eventOutcomes.slice(work.eventStart, work.eventStart + work.eventCount);
-          const recordedEvents = work.toSend.filter((_event, i) => lineOutcomes[i]?.outcome === "recorded");
-          // Submitted events but recorded none: pure skip (duplicate idempotency).
-          // Ordinary immediate already published; do not set/settle/add.
-          if (work.eventCount > 0 && recordedEvents.length === 0) {
-            continue;
-          }
-
-          const pressureSignals: LifecycleSignal[] = [];
-          for (const signal of work.deferredPressure) {
-            if (signal.kind === "post_measurement_estimate" && signal.mode !== "add") {
-              pressureSignals.push(signal);
-            }
-          }
-          if (work.wouldPostMeasurementAdd && !work.samplingEmitted && recordedEvents.length > 0) {
-            const add = postMeasurementAddFromAcceptedEvents(recordedEvents);
-            if (add !== null) pressureSignals.push(add);
-          }
-          for (const signal of work.deferredPressure) {
-            if (signal.kind === "turn_settled") {
-              pressureSignals.push(signal);
-            }
-          }
-          publishLifecycle(pressureSignals);
-        }
+          await commitBatch();
+        };
+        await processEmissions();
       })
       .catch((cause: unknown) => {
         logError(`cc-lhc batch queue error: ${detail(cause)}`);
@@ -1203,6 +1336,26 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     },
     isTurnOpen(): boolean {
       return turnOpen;
+    },
+    closeSettledSegment(): Promise<SettledSegmentClose> {
+      const run = async (): Promise<SettledSegmentClose> => {
+        if (sdk === undefined || threadRef === undefined) return { kind: "skipped", detail: "capture not bound" };
+        if (turnOpen) return { kind: "skipped", detail: "native turn open" };
+        const lineUuid = segmentFold.lastSettledLineUuid;
+        if (lineUuid === null) return { kind: "skipped", detail: "no settled terminal line folded" };
+        const tokens = await readActiveTurnTokens(sdk, threadRef);
+        if (tokens === null) return { kind: "failed", detail: "host metadata unreadable" };
+        if (tokens <= 0) return { kind: "skipped", detail: "canonical turn already closed" };
+        const ok = await appendCanonicalEnd(sdk, threadRef, lineUuid, "cc_lhc_settled_catch_up");
+        return ok ? { kind: "closed", detail: `line ${lineUuid}` } : { kind: "failed", detail: "intake failed" };
+      };
+      // Behind every queued batch so the end follows what intake already holds.
+      const result = batchQueue.then(run);
+      batchQueue = result.then(
+        () => {},
+        () => {},
+      );
+      return result;
     },
     isCaptureHealthy(): boolean {
       return isCaptureHealthy(captureHealth);

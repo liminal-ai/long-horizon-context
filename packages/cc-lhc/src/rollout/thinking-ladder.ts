@@ -10,15 +10,20 @@
  *
  * Every arm retains the original signed block in the LHC canonical record.
  *
- * Selected arm: omit (pre-exhibit floor).
- * Evidence: see packages/cc-lhc/test/fixtures/signature-ladder-evidence.md
- * and retained native-shape notes under test/fixtures/native-thinking-census.json.
+ * Selected arm: signed_verbatim (2026-09-07 segmentation repair). The rebuilt
+ * tail replays every captured signed block exactly as recorded — including the
+ * dominant empty-visible-text + signature shape and redacted blocks — so the
+ * model keeps its own recent reasoning across a Smart Compact. Unsigned
+ * thinking is still dropped rather than given an invented signature. The
+ * earlier omit floor and its evidence remain in
+ * packages/cc-lhc/test/fixtures/signature-ladder-evidence.md; omit stays
+ * selectable only by an explicit change here, never as a runtime fallback.
  */
 
 export type ThinkingRebuildArm = "signed_verbatim" | "unsigned_visible" | "omit";
 
 /** Current certified arm for rebuilt Claude rollouts. */
-export const SELECTED_THINKING_REBUILD_ARM: ThinkingRebuildArm = "omit";
+export const SELECTED_THINKING_REBUILD_ARM: ThinkingRebuildArm = "signed_verbatim";
 
 export function describeThinkingRebuildArm(arm: ThinkingRebuildArm = SELECTED_THINKING_REBUILD_ARM): string {
   switch (arm) {

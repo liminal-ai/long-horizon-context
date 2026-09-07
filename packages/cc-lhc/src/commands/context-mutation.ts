@@ -259,6 +259,12 @@ export async function runContextMutation(
   const threadRef = runtime.threadRef as ThreadRef;
   const threadId = threadIdFromRef(threadRef);
   const lines: string[] = [];
+  // The snapshot says the native turn is settled; make the record say so too
+  // before compact reads it, so a finished turn is never served as active.
+  if (plan.operation !== "prune" && runtime.closeSettledSegment !== undefined) {
+    const close = await runtime.closeSettledSegment();
+    if (close.kind !== "skipped") lines.push(`settled segment ${close.kind}: ${close.detail}`);
+  }
   let viewMutated = false;
   const metrics: ContextMutationMetrics = {
     origin: plan.operation === "auto_compact" ? "auto" : "manual",

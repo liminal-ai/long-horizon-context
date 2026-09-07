@@ -75,7 +75,7 @@ describe("buildRolloutLines: content blocks", () => {
     expect((abridged?.line.message?.content as Array<Record<string, unknown>>)[0]?.content).toBe("abridged");
     expect(serializeRolloutLines(lines)).not.toContain("[image ·");
   });
-  it("server-side tool blocks re-emit verbatim inside the assistant message; redacted thinking follows the omit arm", () => {
+  it("server-side tool blocks and redacted thinking re-emit verbatim inside the assistant message (production arm)", () => {
     const use = { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "x" } };
     const found = { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [] };
     const lines = buildRolloutLines({
@@ -95,6 +95,7 @@ describe("buildRolloutLines: content blocks", () => {
       envelope: { cwd: "/w" },
     });
     expect(lines.map((entry) => (entry.line.message?.content as ContentBlockLike[])[0])).toEqual([
+      { type: "redacted_thinking", data: "E" },
       use,
       found,
       { type: "text", text: "found" },
@@ -175,7 +176,7 @@ describe("buildRolloutLines", () => {
     expect(lines[0]?.line.message?.content).toEqual([{ type: "thinking", thinking: "", signature: "OPAQUE_SIG" }]);
   });
 
-  it("production omit projection: signed-empty and non-empty thinking omitted; text/tools/parent chain exact", () => {
+  it("production signed_verbatim projection: signed thinking re-emits exactly (empty text included); text/tools/parent chain exact", () => {
     const entries: SessionThreadViewEntry[] = [
       { role: "user", content: "list files", sourceMessages: [] },
       {
@@ -198,33 +199,62 @@ describe("buildRolloutLines", () => {
     ];
     const lines = buildRolloutLines({
       entries,
-      newSessionId: "omit-sid",
+      newSessionId: "signed-sid",
       envelope: { cwd: "/w", assistantModel: "claude-sonnet-5", dualSessionIdFields: true },
       // production selected arm
     });
-    // user + text + tool_use + tool_result (both thinking blocks omitted)
-    expect(lines).toHaveLength(4);
-    expect(lines.map((l) => l.rolloutType)).toEqual(["user", "assistant", "assistant", "user"]);
+    // user + thinking(empty, signed) + thinking(signed) + text + tool_use + tool_result
+    expect(lines).toHaveLength(6);
+    expect(lines.map((l) => l.rolloutType)).toEqual([
+      "user",
+      "assistant",
+      "assistant",
+      "assistant",
+      "assistant",
+      "user",
+    ]);
     expect(lines[0]?.line.message?.content).toBe("list files");
-    expect(lines[1]?.line.message?.content).toEqual([{ type: "text", text: "Listing." }]);
+    expect(lines[1]?.line.message?.content).toEqual([
+      { type: "thinking", thinking: "", signature: "OPAQUE_EMPTY_SIGNED" },
+    ]);
     expect(lines[2]?.line.message?.content).toEqual([
+      { type: "thinking", thinking: "I should run ls", signature: "OPAQUE_NONEMPTY" },
+    ]);
+    expect(lines[3]?.line.message?.content).toEqual([{ type: "text", text: "Listing." }]);
+    expect(lines[4]?.line.message?.content).toEqual([
       { type: "tool_use", id: "toolu_01XX", name: "Bash", input: { command: "ls" } },
     ]);
-    expect(lines[3]?.line.message?.content).toEqual([
+    expect(lines[5]?.line.message?.content).toEqual([
       { type: "tool_result", tool_use_id: "toolu_01XX", content: "a.txt", is_error: false },
     ]);
     // parent chain
     expect(lines[0]?.line.parentUuid).toBeNull();
-    expect(lines[1]?.line.parentUuid).toBe(lines[0]?.line.uuid);
-    expect(lines[2]?.line.parentUuid).toBe(lines[1]?.line.uuid);
-    expect(lines[3]?.line.parentUuid).toBe(lines[2]?.line.uuid);
-    // shared message id across assistant parts
-    expect(lines[1]?.line.message?.id).toBe(lines[2]?.line.message?.id);
+    for (let i = 1; i < lines.length; i += 1) expect(lines[i]?.line.parentUuid).toBe(lines[i - 1]?.line.uuid);
+    // shared message id across assistant parts, signatures byte-exact, none invented
+    expect(new Set(lines.slice(1, 5).map((l) => l.line.message?.id)).size).toBe(1);
     const raw = JSON.stringify(lines);
-    expect(raw).not.toMatch(/"type":"thinking"/);
     expect(raw).not.toMatch(/"signature":""/);
-    expect(raw).not.toContain("OPAQUE_EMPTY_SIGNED");
-    expect(raw).not.toContain("OPAQUE_NONEMPTY");
+    expect(raw.split("OPAQUE_EMPTY_SIGNED").length - 1).toBe(1);
+    expect(raw.split("OPAQUE_NONEMPTY").length - 1).toBe(1);
+  });
+
+  it("production arm drops unsigned thinking rather than inventing a signature", () => {
+    const lines = buildRolloutLines({
+      entries: [
+        {
+          role: "assistant",
+          content: [
+            { type: "thinking", thinking: "unsigned reasoning" },
+            { type: "text", text: "ok" },
+          ],
+          sourceMessages: [],
+        },
+      ],
+      newSessionId: "sid",
+      envelope: { cwd: "/w", assistantModel: "m" },
+    });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]?.line.message?.content).toEqual([{ type: "text", text: "ok" }]);
   });
 
   it("unsigned_visible arm retains non-empty thinking without inventing signature (uncertified alternate)", () => {
@@ -442,7 +472,7 @@ describe("writeRebuiltRollout", () => {
     });
 
     expect(existsSync(result.rolloutPath)).toBe(true);
-    // omit arm: [user, text, toolResult]
+    // unsigned sample thinking is dropped: [user, text, toolResult]
     expect(result.lineCount).toBe(3);
 
     const index = await readSessionsIndex(projectDir);
@@ -479,7 +509,7 @@ describe("writeRebuiltRollout", () => {
       receipt: { text: "[lhc compact:manual] rebuilt LHC view 1.4k (240k target)." },
     });
 
-    // omit arm: 3 content lines + receipt = 4. Receipt is NEW history (not prefix).
+    // 3 content lines (unsigned thinking dropped) + receipt = 4. Receipt is NEW history (not prefix).
     expect(result.lineCount).toBe(4);
     expect(result.expectedReintakeLines).toBe(4);
     // ...but it is NEW history, not served-view replay: the handoff capture

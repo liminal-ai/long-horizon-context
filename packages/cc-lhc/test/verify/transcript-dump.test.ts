@@ -101,7 +101,8 @@ describe("rebuild faithfulness invariant", () => {
     const view: SessionThreadView = { threadId: "th", entries: toolHeavyEntries };
     // Faithfulness of native text/tool re-emission uses unsigned_visible so
     // non-empty thinking is retained for the dump comparison. Production
-    // SELECTED arm is omit (see thinking-ladder + signature-ladder-evidence).
+    // SELECTED arm is signed_verbatim (see thinking-ladder); omit is exercised
+    // explicitly below as the retained alternate.
     const rebuilt = buildRolloutLines({
       entries: view.entries,
       newSessionId: "sid",
@@ -118,7 +119,7 @@ describe("rebuild faithfulness invariant", () => {
     });
     expect(dumpRolloutLines(omitted.map((entry) => entry.line))).not.toContain("[assistant thinking]");
 
-    // Production-omit expected projection: pure signed-empty entry alone yields no lines;
+    // Omit-arm projection: pure signed-empty entry alone yields no lines;
     // adjacent text/tool/result retained with parent chain integrity.
     const pureSignedEmpty = buildRolloutLines({
       entries: [

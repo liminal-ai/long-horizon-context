@@ -49,6 +49,7 @@ import {
   projectConfigPath,
   type ResolvedContextPolicy,
   reobserveSettled,
+  segmentThresholdTokens as segmentThresholdFromPolicy,
   setGovernorCaptureGeneration,
   setGovernorOperationInFlight,
   userConfigPath,
@@ -446,6 +447,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       cwd: process.cwd(),
       ...(options.contextPolicyOverrides !== undefined ? { sessionOverrides: options.contextPolicyOverrides } : {}),
     });
+  /** Live soft canonical segment size: half the full share of the current lower target. */
+  const segmentThresholdTokens = (): number => segmentThresholdFromPolicy(resolvedContextPolicy.policy);
   if ((resolvedContextPolicy as Partial<ResolvedContextPolicy>).contextWindow === undefined) {
     // The test seam may supply a policy without window provenance: it starts
     // where every session starts, on the conservative class.
@@ -1128,6 +1131,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       seedAsyncWork: carriedSeed,
       onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
+      segmentThresholdTokens,
     });
 
     // Catching up from the persisted transcript IS the recovery for stale
@@ -1204,6 +1208,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         isTurnOpen: () => catchUp.isTurnOpen(),
         isCaptureReady: () => catchUp.isCaptureReady(),
         isCaptureHealthy: () => catchUp.isCaptureHealthy(),
+        closeSettledSegment: () =>
+          catchUp.closeSettledSegment?.() ??
+          Promise.resolve({ kind: "skipped" as const, detail: "capture not started" }),
       },
     );
     wrapperLog.info(formatOneShotPreLaunchOutcome(outcome.kind, outcome.messages.join(" | ") || "(no receipt)"));
@@ -1262,6 +1269,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         seedAsyncWork: carriedSeed,
         onResultDelivery: recordResultDelivery,
         onRuntimeSettings,
+        segmentThresholdTokens,
       });
     } catch (cause) {
       // No capture for the rebuilt session means nothing would record the turn
@@ -1648,6 +1656,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             seedAsyncWork: carriedSeed,
             onResultDelivery: recordResultDelivery,
             onRuntimeSettings,
+            segmentThresholdTokens,
           });
           captureContinuation = {
             threadRef,
@@ -1940,6 +1949,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       seedAsyncWork: carriedSeed,
       onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
+      segmentThresholdTokens,
     });
     process.on("SIGUSR1", onSigusr1);
   }
@@ -2057,6 +2067,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           : {}),
       },
       isTurnOpen: () => captureSession?.isTurnOpen() ?? false,
+      // `?.()` on the method: test doubles script a CaptureSession without it.
+      closeSettledSegment: () =>
+        captureSession?.closeSettledSegment?.() ??
+        Promise.resolve({ kind: "skipped" as const, detail: "capture not started" }),
       isCaptureHealthy: () => captureSession?.isCaptureHealthy() ?? false,
       isCaptureReady: () => captureSession?.isCaptureReady() ?? false,
       getCaptureGeneration: () => captureSession?.getCaptureGeneration() ?? 0,
@@ -3040,6 +3054,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           seedAsyncWork: carriedSeed,
           onResultDelivery: recordResultDelivery,
           onRuntimeSettings,
+          segmentThresholdTokens,
         });
         captureContinuation = {
           threadRef,

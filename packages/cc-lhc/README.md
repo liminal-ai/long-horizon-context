@@ -81,9 +81,16 @@ lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
   capture degraded.
 - **Stable identity.** Assistant model identity is frozen from the response
   record. Thinking signatures are opaque; empty-but-signed thinking is
-  preserved in the canonical record. The certified rebuild arm currently
-  omits thinking blocks because the closed host cannot prove the prepared
-  request identity required for safe signed replay.
+  preserved in the canonical record and replayed verbatim (signature intact)
+  in the rebuilt tail, so Claude keeps its recent reasoning after a
+  Smart Compact. Unsigned thinking is dropped, never given an invented signature.
+- **Canonical segments.** One long native turn is closed into bounded canonical
+  segments as it runs: at a tool-result line with no call outstanding once the
+  SDK's open-turn estimate reaches half the full-fidelity share of the active
+  lower target, and always at the assistant's terminal line. Segments are
+  bookkeeping in the record only; the native turn, its lifecycle and the
+  running Claude process are untouched. Already-recorded turns are not
+  re-segmented. A single atomic exchange may exceed the soft size.
 - **Retrieval.** Claude can invoke `get-turns` and `get-messages` through Bash.
   A wrapper-owned runtime descriptor binds each invocation to the exact live
   session and LHC thread. Stale ownership, malformed state, and session
@@ -357,9 +364,9 @@ cannot rewrite an unrelated automatic classification.
   and unknown options in their space form — are left out of the replacement and
   named in the wrapper log; their `=value` form carries through. No launch form
   disables compaction.
-- Exact signed-thinking replay would require exact stored/live request identity.
-  The wrapper cannot observe that closed request boundary, so rebuilt rollouts
-  currently omit thinking blocks rather than guessing.
+- Signed-thinking replay re-emits captured blocks exactly as recorded; whether
+  the provider honours a replayed signature after a rebuilt prefix is provider
+  behaviour, verified by diagnostics rather than promised by the wrapper.
 - Claude Code hooks are not required. The wrapper's lifecycle events come from
   the authoritative rollout stream; PTY handling is limited to terminal
   transport, the panel, child-liveness proof, and advisory notification.

@@ -49,6 +49,11 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   isCaptureHealthy?: () => boolean;
   /** False while binding or degraded. */
   isCaptureReady?: () => boolean;
+  /**
+   * Settled-seam catch-up (segmentation): close the canonical turn a finished
+   * native turn left open, once, before compact reads the record.
+   */
+  closeSettledSegment?: () => Promise<import("../intake/session.js").SettledSegmentClose>;
   getCaptureGeneration?: () => number;
   /** Optional lineage paths for rebuilt-session registration (tests). */
   lineageDbPath?: string;
