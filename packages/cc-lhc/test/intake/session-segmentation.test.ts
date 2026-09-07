@@ -275,6 +275,36 @@ describe("canonical segmentation in the capture session", () => {
     }
   });
 
+  it("an interrupted task's abandoned call does not block the next task's segment end", async () => {
+    const INTERRUPT = line({
+      type: "user",
+      uuid: "u-int",
+      message: { role: "user", content: [{ type: "text", text: "[Request interrupted by user for tool use]" }] },
+    });
+    const NEXT_PROMPT = line({ type: "user", uuid: "u2", message: { role: "user", content: "next task" } });
+    const h = harness("/work/segment-interrupt", { threshold: 10_500, tokens: 20_000 });
+    // Task 1 issues t1/t2 and only t1 answers before the interrupt; task 2 runs t3 to completion.
+    writeFileSync(
+      h.rolloutPath,
+      PROMPT + CALLS + result("r1", "t1") + INTERRUPT + NEXT_PROMPT + LATE_CALL + result("r3", "t3") + DONE,
+    );
+    try {
+      await waitFor(() => (h.session.stats.segmentEnds ?? 0) === 2, "segment and completion ends");
+      expect(ends(h.flushes)).toEqual([
+        { key: "cc-lhc:rollout:r3:0:turn_end", reason: "cc_lhc_segment" },
+        { key: "cc-lhc:rollout:a4:0:turn_end", reason: "cc_lhc_completion" },
+      ]);
+      // The end follows r3's events and precedes a4's.
+      const flat = h.flushes.flatMap((flush) => flush.events).map((event) => event.idempotencyKey);
+      expect(flat.indexOf("cc-lhc:rollout:r3:0:turn_end")).toBe(flat.indexOf("cc-lhc:rollout:r3:0:tool_result") + 1);
+      expect(flat.indexOf("cc-lhc:rollout:a4:0:assistant_text")).toBeGreaterThan(
+        flat.indexOf("cc-lhc:rollout:r3:0:turn_end"),
+      );
+    } finally {
+      await h.stop();
+    }
+  });
+
   it("settled catch-up closes a finished turn the record still holds open, once, keyed to its terminal line", async () => {
     // Every source event skipped: this transcript was captured before the repair.
     const h = harness("/work/segment-catchup", { threshold: 10_500, tokens: 30_000, outcome: () => "skipped" });

@@ -71,6 +71,10 @@ export function foldSegmentLine(
   if (signal === "closes") {
     const lineUuid = recordUuid(item, lineIndex);
     state.lastSettledLineUuid = lineUuid;
+    // The native task is over (terminal line or interrupt): a call it left
+    // unanswered will never get its result, so it must not block exchange
+    // boundaries in the next task. Pairing protection is per native task.
+    state.openCalls.clear();
     // Only the assistant's own terminal line is a completion boundary. An
     // interrupt prompt closes the previous canonical turn by prompt boundary
     // and becomes a member of the next; the settled seam closes that one.

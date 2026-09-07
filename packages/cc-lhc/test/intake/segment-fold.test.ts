@@ -85,13 +85,45 @@ describe("segment fold", () => {
     expect(state.lastSettledLineUuid).toBe("a4");
   });
 
-  it("an interrupt settles the native turn but is not itself a completion boundary", () => {
+  it("an interrupted task's abandoned calls never block the next task's exchanges", () => {
     const state = createSegmentFoldState();
     fold(state, twoCalls);
+    // Claude Code's interrupt line: not a completion boundary, but the native
+    // task is over, so its unanswered calls are released.
     expect(fold(state, interrupt)).toBeNull();
     expect(state.lastSettledLineUuid).toBe("u9");
-    // The abandoned calls stay outstanding: no exchange boundary until they resolve.
+    expect(state.openCalls.size).toBe(0);
+    // Next real task: prompt, one call, its result — a clean exchange boundary.
+    expect(fold(state, { type: "user", uuid: "u10", message: { role: "user", content: "new task" } })).toBeNull();
+    expect(fold(state, lateCall)).toBeNull();
+    expect(fold(state, result("r3", "t3"))).toEqual({ kind: "exchange", lineUuid: "r3" });
+  });
+
+  it("an interrupt delivered as a tool_result line is handled the same way", () => {
+    const state = createSegmentFoldState();
+    fold(state, twoCalls);
+    const interruptResult: RolloutLineItem = {
+      type: "user",
+      uuid: "u11",
+      message: {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "t1", content: "[Request interrupted by user for tool use]" }],
+      },
+    };
+    expect(fold(state, interruptResult)).toBeNull();
+    expect(state.openCalls.size).toBe(0);
+    fold(state, { type: "user", uuid: "u12", message: { role: "user", content: "again" } });
+    fold(state, lateCall);
+    expect(fold(state, result("r3", "t3"))).toEqual({ kind: "exchange", lineUuid: "r3" });
+  });
+
+  it("a mid-task steer prompt does not release calls still in flight", () => {
+    const state = createSegmentFoldState();
+    fold(state, twoCalls);
+    expect(fold(state, { type: "user", uuid: "u13", message: { role: "user", content: "also check X" } })).toBeNull();
     expect(state.openCalls.has("t1")).toBe(true);
+    fold(state, result("r1", "t1"));
+    expect(fold(state, result("r2", "t2"))).toEqual({ kind: "exchange", lineUuid: "r2" });
   });
 
   it("a result line with a call still outstanding is never a boundary, even after a prior boundary", () => {
