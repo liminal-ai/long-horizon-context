@@ -78,6 +78,17 @@ export interface SessionIO {
 /** Provider-reported context (input + cache) at which an automatic compact runs when no `autoCompactWindow` is configured. */
 const DEFAULT_AUTO_COMPACT_TRIGGER = 150_000;
 /** LHC-token size the rebuilt view aims for, capped at a share of the auto-compact trigger so a compact clears the window. */
+/**
+ * Env for the Claude Code child and derivation calls. LHC owns compaction, so the native
+ * meter is off. The host's thread id (ClaudeAdapter passes `threadId` in the query options)
+ * rides along as T3CODE_THREAD_ID so lhc-agent can resolve the seat's sender identity
+ * (from-header brief item 3, 2026-09-08); cc-lhc seats get LHC_AGENT_ID from the console instead.
+ */
+export function childEnv(base: NodeJS.ProcessEnv, wireThreadId: unknown): NodeJS.ProcessEnv {
+  const threadId = typeof wireThreadId === "string" && wireThreadId !== "" ? wireThreadId : undefined;
+  return { ...base, DISABLE_AUTO_COMPACT: "1", ...(threadId === undefined ? {} : { T3CODE_THREAD_ID: threadId }) };
+}
+
 const DEFAULT_VIEW_TARGET_TOKENS = 60_000;
 /** The full share of the "continuation" profile the rebuild compacts with (lhc thread-view/internal/profiles.ts). */
 const CONTINUATION_FULL_SHARE_PERCENT = 30;
@@ -230,7 +241,7 @@ export class ClaudeLhcSession {
     if (typeof settingsRecord["autoCompactWindow"] === "number") this.#autoCompactTrigger = settingsRecord["autoCompactWindow"];
     this.#viewTarget = viewTargetFor(this.#autoCompactTrigger);
     delete settingsRecord["autoCompactWindow"]; // LHC owns compaction; the native meter setting never reaches the child
-    this.#env = { ...((env as NodeJS.ProcessEnv | undefined) ?? process.env), DISABLE_AUTO_COMPACT: "1" };
+    this.#env = childEnv((env as NodeJS.ProcessEnv | undefined) ?? process.env, rest["threadId"]);
     this.#base = { ...rest, ...(Object.keys(settingsRecord).length > 0 ? { settings: settingsRecord } : {}) };
     if (typeof rest["cwd"] === "string") this.#cwd = rest["cwd"];
     if (typeof rest["pathToClaudeCodeExecutable"] === "string") this.#claudeBin = rest["pathToClaudeCodeExecutable"];
