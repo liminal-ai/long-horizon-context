@@ -53,6 +53,13 @@ import {
 } from "lhc";
 import { ToolBatch } from "./capture/batch.ts";
 import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/mapper.ts";
+import {
+  createSegmentFoldState,
+  foldSegmentEvents,
+  resetSegmentFold,
+  segmentEndEvent,
+  segmentThresholdTokens,
+} from "./capture/segment-fold.ts";
 import { killInferenceChildren } from "./inference/claudeCli.ts";
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.ts";
 import { projectView } from "./projection/project.ts";
@@ -72,6 +79,8 @@ export interface SessionIO {
 const DEFAULT_AUTO_COMPACT_TRIGGER = 150_000;
 /** LHC-token size the rebuilt view aims for, capped at a share of the auto-compact trigger so a compact clears the window. */
 const DEFAULT_VIEW_TARGET_TOKENS = 60_000;
+/** The full share of the "continuation" profile the rebuild compacts with (lhc thread-view/internal/profiles.ts). */
+const CONTINUATION_FULL_SHARE_PERCENT = 30;
 const VIEW_TARGET_TRIGGER_SHARE = 0.4;
 /** Longest a compact waits for queued derivations, so bands assemble from renderings rather than truncated excerpts. */
 const DERIVATION_WAIT_MS = 45_000;
@@ -184,6 +193,8 @@ export class ClaudeLhcSession {
   #batch = new ToolBatch();
   /** Tool calls seen so far in the open turn, by tool name; the continuation note names them. */
   #turnToolCalls = new Map<string, number>();
+  /** Outstanding tool calls of the open canonical turn; a clean result past the threshold ends it (capture/segment-fold.ts). */
+  #segmentFold = createSegmentFoldState();
   /** Set by the PostToolUse hook when it stopped the live query for a mid-turn compact. */
   #stopping: CompactTrigger | null = null;
   /** A mid-turn compact failed in the open turn: no second try before the turn ends (the turn-end path tries once more). */
@@ -447,6 +458,7 @@ export class ClaudeLhcSession {
         }]).catch(() => undefined);
         this.#turnOpen = false;
       }
+      resetSegmentFold(this.#segmentFold);
       this.#io.fail(`Claude runtime stream failed: ${reason}`);
     }
   }
@@ -490,6 +502,8 @@ export class ClaudeLhcSession {
     const mapped = mapSdkMessage(message, this.#turnStartedAt);
     if (mapped.contextTokens !== undefined) this.#lastContextTokens = mapped.contextTokens;
     if (mapped.events.length > 0 && (this.#turnOpen || !mapped.turnEnd)) await this.#intake(mapped.events);
+    if (mapped.turnEnd) resetSegmentFold(this.#segmentFold);
+    else if (mapped.events.length > 0) await this.#maybeSegment(message, mapped.events);
     if (!mapped.turnEnd) {
       this.#io.emit(message);
       return;
@@ -501,6 +515,33 @@ export class ClaudeLhcSession {
     const trigger = this.#dueCompact();
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
+  }
+
+  /**
+   * Size-based canonical turn end at a safe tool boundary (capture/segment-fold.ts). The fold
+   * observes every message; the end is appended only in an open turn with no compact in flight
+   * and no hook stop pending (that seam belongs to the mid-turn compact), once the open turn's
+   * estimate reaches half the full share. The native turn runs on; the next canonical turn
+   * opens prompt-less and starts its timing here.
+   */
+  async #maybeSegment(message: SDKMessage, events: readonly MessageEventInput[]): Promise<void> {
+    const candidate = foldSegmentEvents(this.#segmentFold, events);
+    if (candidate === null || !this.#turnOpen || this.#compacting || this.#stopping !== null) return;
+    const threshold = segmentThresholdTokens(this.#viewTarget, CONTINUATION_FULL_SHARE_PERCENT);
+    const metadata = await this.#lhc.threadView.hostMetadata(this.#thread);
+    if (!metadata.ok) {
+      this.#io.log(`segment: host metadata ${metadata.error.code}: ${metadata.error.reason}`);
+      return;
+    }
+    const tokens = metadata.value.activeTurn === null ? 0 : metadata.value.activeTurn.estimatedTokens;
+    if (tokens < threshold) return;
+    const wireUuid = (message as unknown as Record<string, unknown>)["uuid"];
+    const lineUuid = typeof wireUuid === "string" && wireUuid !== "" ? wireUuid : `segment:${candidate.closedBy}`;
+    await this.#intake([segmentEndEvent(lineUuid, this.#turnStartedAt)]);
+    this.#turnStartedAt = new Date().toISOString();
+    this.#io.log(
+      `${stamp()} segment: canonical turn closed at ${tokens} tokens (threshold ${threshold}) after ${candidate.closedBy}`,
+    );
   }
 
   #dueCompact(): "manual" | "auto" | null {

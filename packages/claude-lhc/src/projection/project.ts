@@ -5,8 +5,9 @@
  * 0.3.170 (scripts/spikes/01). Rules (cc-lhc rebuild + claude-lhc projector): band
  * context and runtime notes as plain user lines; the tail as native blocks — one
  * assistant line per block sharing a synthetic message id, tool results paired by
- * tool_use_id; thinking omitted (cc-lhc's certified arm — never an invented
- * signature); model_change stamps later assistant lines; thinking_level_change has
+ * tool_use_id; thinking follows SELECTED_THINKING_REBUILD_ARM below (signed_verbatim:
+ * captured signed blocks re-emit exactly, never an invented signature; unsigned
+ * thinking is dropped); model_change stamps later assistant lines; thinking_level_change has
  * no native shape. A tool call the record never answered gets a synthetic error
  * result so the resumed transcript never ends on a dangling tool_use.
  *
@@ -16,7 +17,7 @@
  * image/document block it was, never as base64 inside text. Server-side tool
  * blocks (server_tool_use and its *_tool_result) are written verbatim inside
  * the assistant message they came from. redacted_thinking follows the thinking
- * arm: omitted with the rest of the thinking.
+ * arm: the captured block verbatim under signed_verbatim, omitted under omit.
  */
 import { randomUUID } from "node:crypto";
 import type { SessionAssistantPart, SessionThreadView, SessionThreadViewEntry } from "lhc";
@@ -32,9 +33,23 @@ export interface ProjectionStamp {
 
 export type NativeEntry = Record<string, unknown>;
 
+/**
+ * Thinking rebuild arm, mirroring cc-lhc's SELECTED_THINKING_REBUILD_ARM (rollout/thinking-ladder.ts).
+ * signed_verbatim: the tail's thinking blocks re-enter the projected session with their captured
+ * signatures, so the walker's tail budget (which counts them) matches what the model reads.
+ * omit: the pre-2026-09-08 behaviour. One-line flip if the API starts rejecting replayed
+ * signatures behind a compacted prefix on this account (Reed gate A1). No runtime fallback.
+ */
+export type ThinkingRebuildArm = "signed_verbatim" | "omit";
+export const SELECTED_THINKING_REBUILD_ARM: ThinkingRebuildArm = "signed_verbatim";
+
 const DANGLING_RESULT = "[tool result unavailable: the session was interrupted before this call completed]";
 
-export function projectView(view: SessionThreadView, stamp: ProjectionStamp): NativeEntry[] {
+export function projectView(
+  view: SessionThreadView,
+  stamp: ProjectionStamp,
+  arm: ThinkingRebuildArm = SELECTED_THINKING_REBUILD_ARM,
+): NativeEntry[] {
   const now = new Date().toISOString();
   const lines: NativeEntry[] = [];
   let parent: string | null = null;
@@ -69,7 +84,7 @@ export function projectView(view: SessionThreadView, stamp: ProjectionStamp): Na
     if (entry.role === "user") { settleOpenCalls(); userText(entry.blocks ?? entry.content); continue; }
     if (entry.role === "toolResult") { toolResult(entry.toolCallId, entry.blocks ?? entry.content, entry.isError === true); continue; }
     settleOpenCalls();
-    const blocks = entry.content.map(nativeBlock).filter((b): b is NativeEntry => b !== null);
+    const blocks = entry.content.map((part) => nativeBlock(part, arm)).filter((b): b is NativeEntry => b !== null);
     if (blocks.length === 0) continue;
     const stop = blocks.some((b) => b["type"] === "tool_use") ? "tool_use" : "end_turn";
     const id = `msg_${randomUUID().replace(/-/g, "")}`;
@@ -86,10 +101,17 @@ export function projectView(view: SessionThreadView, stamp: ProjectionStamp): Na
   return lines;
 }
 
-function nativeBlock(part: SessionAssistantPart): NativeEntry | null {
+function nativeBlock(part: SessionAssistantPart, arm: ThinkingRebuildArm): NativeEntry | null {
   if (part.type === "text") return part.text !== undefined && part.text !== "" ? { type: "text", text: part.text } : null;
   if (part.type === "toolCall") return { type: "tool_use", id: part.toolCallId ?? "", name: part.toolName ?? "tool", input: part.arguments ?? {} };
-  if (part.type === "thinking" || part.type === "redacted_thinking") return null; // thinking arm: omitted
+  if (part.type === "redacted_thinking") return arm === "omit" ? null : (part.block ?? null);
+  if (part.type === "thinking") {
+    if (arm === "omit") return null;
+    const signature = typeof part.thinkingSignature === "string" && part.thinkingSignature !== "" ? part.thinkingSignature : undefined;
+    // signed_verbatim: the captured block exactly (text may be empty: omitted-display thinking).
+    // No signature to preserve: drop rather than invent one.
+    return signature === undefined ? null : { type: "thinking", thinking: part.thinking ?? "", signature };
+  }
   return part.block ?? null; // server_tool_use and server-side results: the block as the API sent it
 }
 

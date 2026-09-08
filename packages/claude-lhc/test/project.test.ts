@@ -13,8 +13,10 @@ describe("projectView", () => {
       { role: "toolResult", toolCallId: "toolu_1", content: "ok", ...src },
       { role: "assistant", content: [{ type: "text", text: "done" }], ...src },
     ] }, stamp);
-    expect(lines.map((l) => l["type"])).toEqual(["user", "user", "assistant", "user", "assistant"]);
-    const [band, prompt, call, result, text] = lines as Array<Record<string, any>>;
+    expect(lines.map((l) => l["type"])).toEqual(["user", "user", "assistant", "assistant", "user", "assistant"]);
+    const [band, prompt, thinking, call, result, text] = lines as Array<Record<string, any>>;
+    expect(thinking!["message"].content[0]).toEqual({ type: "thinking", thinking: "hmm", signature: "sig" });
+    expect(thinking!["message"].id).toBe(call!["message"].id);
     expect(band!["message"].content).toStartWith("[context · smooth]");
     expect(prompt!["permissionMode"]).toBe("default");
     expect(call!["message"].content[0]).toEqual({ type: "tool_use", id: "toolu_1", name: "Read", input: { f: 1 } });
@@ -25,8 +27,22 @@ describe("projectView", () => {
     for (let i = 1; i < lines.length; i += 1) expect(lines[i]!["parentUuid"]).toBe(lines[i - 1]!["uuid"]);
     expect(lines.every((l) => l["sessionId"] === "S" && l["cwd"] === "/w" && l["version"] === "2.1.259")).toBe(true);
   });
-  test("thinking is omitted, never given an invented signature", () => {
-    const lines = projectView({ threadId: "t", entries: [{ role: "assistant", content: [{ type: "thinking", thinking: "x" }, { type: "text", text: "y" }], ...src }] }, stamp);
+  test("signed thinking re-enters verbatim (empty text kept); unsigned thinking is dropped, never given an invented signature", () => {
+    const lines = projectView({ threadId: "t", entries: [{ role: "assistant", content: [
+      { type: "thinking", thinking: "", thinkingSignature: "sig-A" },
+      { type: "thinking", thinking: "x" },
+      { type: "text", text: "y" },
+    ], ...src }] }, stamp);
+    expect(lines.map((l) => (l as any)["message"].content[0])).toEqual([{ type: "thinking", thinking: "", signature: "sig-A" }, { type: "text", text: "y" }]);
+    expect(lines.every((l) => (l as any)["message"].id === (lines[0] as any)["message"].id)).toBe(true);
+    expect((lines[0] as any)["message"].stop_reason).toBe("end_turn");
+  });
+  test("the omit arm drops signed and redacted thinking", () => {
+    const lines = projectView({ threadId: "t", entries: [{ role: "assistant", content: [
+      { type: "thinking", thinking: "", thinkingSignature: "sig-A" },
+      { type: "redacted_thinking", block: { type: "redacted_thinking", data: "E" } },
+      { type: "text", text: "y" },
+    ], ...src }] }, stamp, "omit");
     expect(lines).toHaveLength(1);
     expect((lines[0] as any)["message"].content[0].type).toBe("text");
   });
@@ -53,7 +69,7 @@ describe("projectView", () => {
     expect(abridged!["message"].content[0].content).toBe("abridged text");
     expect(JSON.stringify(lines)).not.toContain("[image ·");
   });
-  test("server-side tool blocks are written verbatim inside the assistant message; redacted thinking is omitted with the thinking arm", () => {
+  test("server-side tool blocks and redacted thinking are written verbatim inside the assistant message", () => {
     const use = { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "x" } };
     const found = { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [] };
     const lines = projectView({ threadId: "t", entries: [{ role: "assistant", content: [
@@ -62,7 +78,7 @@ describe("projectView", () => {
       { type: "web_search_tool_result", block: found },
       { type: "text", text: "found" },
     ], ...src }] }, stamp);
-    expect(lines.map((l) => (l as any)["message"].content[0])).toEqual([use, found, { type: "text", text: "found" }]);
+    expect(lines.map((l) => (l as any)["message"].content[0])).toEqual([{ type: "redacted_thinking", data: "E" }, use, found, { type: "text", text: "found" }]);
     expect((lines[0] as any)["message"].stop_reason).toBe("end_turn");
     expect(lines.every((l) => (l as any)["message"].id === (lines[0] as any)["message"].id)).toBe(true);
   });
