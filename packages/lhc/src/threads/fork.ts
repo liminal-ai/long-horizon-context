@@ -14,6 +14,7 @@ import {
   type ErrorCode,
   type ErrorResult,
   type OpResult,
+  resolveInstanceDrain,
   storageFailure,
 } from "../shared-tech/index.js";
 import { deriveBriefChunk, deriveDetailedChunk, deriveTurn } from "../turns/index.js";
@@ -463,6 +464,12 @@ export interface RepairInput {
   ref: ThreadRef;
   /** Cap per list (turns, chunks). Default: no cap. */
   limit?: number;
+  /**
+   * Passes to run. Queued work carried in the record drains before each pass,
+   * and a pass that deferred subjects behind work it enqueued is followed by
+   * another. Default 3; deferred counts on the last pass stand as reported.
+   */
+  rounds?: number;
 }
 
 export interface RepairTally {
@@ -543,7 +550,7 @@ function outcomeOf(result: OpResult<{ outcome?: string; error?: ErrorResult }>):
  * queued are deferred, not failed: drain the instance's work queue and run
  * the pass again.
  */
-export async function repairDerivations(input: RepairInput): Promise<OpResult<RepairReceipt>> {
+async function repairPass(input: RepairInput): Promise<OpResult<RepairReceipt>> {
   const targets = await repairTargets(input.ref);
   if (!targets.ok) return targets;
   const limit = input.limit;
@@ -586,6 +593,59 @@ export async function repairDerivations(input: RepairInput): Promise<OpResult<Re
   const after = await health(input.ref);
   if (!after.ok) return after;
   return { ok: true, value: { turns, chunks, remainingFailures: after.value.failures.length, errors } };
+}
+
+const DEFAULT_REPAIR_ROUNDS = 3;
+
+// Queued derivation work carried in the record runs first, so a pass never
+// meets a subject whose work is still live. Without an instance seam there is
+// nothing to drain; the pass then reports live work as deferred.
+async function drainCarriedWork(filePath: string): Promise<OpResult<number>> {
+  const drain = resolveInstanceDrain();
+  if (drain === undefined) return { ok: true, value: 0 };
+  let ran = 0;
+  for (;;) {
+    const report = await drain(filePath, { maxItems: 25 });
+    if (!report.ok) return report;
+    if (report.value.ran.length === 0) return { ok: true, value: ran };
+    ran += report.value.ran.length;
+  }
+}
+
+function sumTally(a: RepairTally, b: RepairTally): RepairTally {
+  return {
+    attempted: a.attempted + b.attempted,
+    repaired: a.repaired + b.repaired,
+    failed: a.failed + b.failed,
+    deferred: b.deferred,
+  };
+}
+
+export async function repairDerivations(input: RepairInput): Promise<OpResult<RepairReceipt>> {
+  const resolved = await resolveThreadRef(input.ref);
+  if (!resolved.ok) return resolved;
+  const filePath = resolved.value.filePath;
+  const rounds = Math.max(1, input.rounds ?? DEFAULT_REPAIR_ROUNDS);
+  let receipt: RepairReceipt | undefined;
+  for (let round = 0; round < rounds; round += 1) {
+    const drained = await drainCarriedWork(filePath);
+    if (!drained.ok) return drained;
+    const pass = await repairPass({ ...input, ref: { filePath } });
+    if (!pass.ok) return pass;
+    receipt =
+      receipt === undefined
+        ? pass.value
+        : {
+            turns: sumTally(receipt.turns, pass.value.turns),
+            chunks: sumTally(receipt.chunks, pass.value.chunks),
+            remainingFailures: pass.value.remainingFailures,
+            errors: pass.value.errors,
+          };
+    if (pass.value.turns.deferred + pass.value.chunks.deferred === 0) break;
+  }
+  const settled = await drainCarriedWork(filePath);
+  if (!settled.ok) return settled;
+  return { ok: true, value: receipt as RepairReceipt };
 }
 
 /** Fresh thread id for a caller that must name the target file before the copy (the CLI). */

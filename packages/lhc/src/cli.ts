@@ -19,9 +19,9 @@ verbs
   bind    --home H --thread-id ID --host HOST --session-id SID
   note    --home H --thread-id ID --from SOURCE_ID [--source-home H0] [--seat NAME]
   health  --home H --thread-id ID [--json]
-  repair  --home H --thread-id ID [--limit N] [--claude-bin PATH]
+  repair  --home H --thread-id ID [--limit N] [--rounds N] [--claude-bin PATH]
   export  --home H --thread-id ID [--out FILE]
-  fork    --source-home H --source-thread-id ID --home H2 --host HOST [--session-id SID] [--new-id ID] [--cwd DIR] [--title T] [--seat NAME] [--no-repair] [--limit N] [--claude-bin PATH]
+  fork    --source-home H --source-thread-id ID --home H2 --host HOST [--session-id SID] [--new-id ID] [--cwd DIR] [--title T] [--seat NAME] [--no-repair] [--limit N] [--rounds N] [--claude-bin PATH]
 
 hosts: ${FORK_HOSTS.join(", ")}. A home is <dir>/registry.sqlite plus <dir>/threads/.
 --source-file PATH may replace --source-home/--source-thread-id. Exit 0 ok, 2 refused, 1 error.
@@ -190,52 +190,13 @@ async function healthLine(flags: Flags): Promise<string> {
   return `ready=${totals.ready} pending=${totals.pending} failed=${totals.failed} blocked=${totals.blocked} repairable=${report.repairPreview.length}`;
 }
 
-// Queued derivation work carried in the record runs first, so repair never
-// meets a subject whose work is still live.
-async function drainQueue(sdk: Lhc, ref: threads.ThreadRef): Promise<number> {
-  let ran = 0;
-  for (;;) {
-    const report = unwrap(await sdk.work.drain(ref, { maxItems: 25 }));
-    if (report.ran.length === 0) return ran;
-    ran += report.ran.length;
-  }
-}
-
-// Drain, repair, and when a pass deferred subjects behind work it enqueued,
-// drain and pass again. Three rounds bound the loop; deferred counts on the
-// last round are reported as they stand.
-const REPAIR_ROUNDS = 3;
-
 async function repair(flags: Flags, sdk: Lhc, ref: threads.ThreadRef): Promise<threads.RepairReceipt> {
   const input: threads.RepairInput = { ref };
   const limit = num(flags, "limit");
   if (limit !== undefined) input.limit = limit;
-  let receipt: threads.RepairReceipt | undefined;
-  for (let round = 0; round < REPAIR_ROUNDS; round += 1) {
-    await drainQueue(sdk, ref);
-    const pass = unwrap(await sdk.threads.repairDerivations(input));
-    receipt =
-      receipt === undefined
-        ? pass
-        : {
-            turns: sumTally(receipt.turns, pass.turns),
-            chunks: sumTally(receipt.chunks, pass.chunks),
-            remainingFailures: pass.remainingFailures,
-            errors: pass.errors,
-          };
-    if (pass.turns.deferred + pass.chunks.deferred === 0) break;
-  }
-  await drainQueue(sdk, ref);
-  return receipt as threads.RepairReceipt;
-}
-
-function sumTally(a: threads.RepairTally, b: threads.RepairTally): threads.RepairTally {
-  return {
-    attempted: a.attempted + b.attempted,
-    repaired: a.repaired + b.repaired,
-    failed: a.failed + b.failed,
-    deferred: b.deferred,
-  };
+  const rounds = num(flags, "rounds");
+  if (rounds !== undefined) input.rounds = rounds;
+  return unwrap(await sdk.threads.repairDerivations(input));
 }
 
 // Counts on stdout; the per-subject reasons go to stderr so a scripted caller

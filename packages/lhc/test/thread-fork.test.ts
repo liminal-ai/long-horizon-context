@@ -328,15 +328,12 @@ describe("threads.repairDerivations", () => {
       mode: "manual",
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     });
-    // Intake queued the turns' derivation work; a synchronous derive refuses
-    // while it is live, and repair reports that as deferred.
-    const deferred = await sdk.threads.repairDerivations({ ref: { filePath } });
-    expect(deferred.ok && deferred.value.turns).toEqual({ attempted: 0, repaired: 0, failed: 0, deferred: 0 });
-    for (;;) {
-      const drained = await sdk.work.drain({ filePath }, { maxItems: 25 });
-      if (!drained.ok) throw new Error(drained.error.reason);
-      if (drained.value.ran.length === 0) break;
-    }
+    // Intake queued the turns' derivation work. Repair drains it before its
+    // first pass, so nothing is failed or deferred and the turns come out ready.
+    const carried = await sdk.threads.repairDerivations({ ref: { filePath } });
+    expect(carried.ok && carried.value.turns).toEqual({ attempted: 0, repaired: 0, failed: 0, deferred: 0 });
+    const idle = await sdk.work.drain({ filePath }, { maxItems: 25 });
+    expect(idle.ok && idle.value.ran).toEqual([]);
     for (const turnId of turnIds) {
       const derived = await sdk.turns.deriveTurn({ filePath }, turnId);
       expect(derived.ok && derived.value.outcome).toBe("derived");

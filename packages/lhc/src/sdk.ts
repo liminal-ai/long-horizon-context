@@ -750,8 +750,15 @@ export function initLhc(config: SdkConfig): Lhc {
           touch: (filePath, db) => scheduler.touch(filePath, db),
           view: resolved.view,
           config: resolved,
+          drain: (filePath, opts) => runDrain(filePath, drainDeps, opts),
         }
-      : { poke: () => {}, touch: () => {}, view: resolved.view, config: resolved };
+      : {
+          poke: () => {},
+          touch: () => {},
+          view: resolved.view,
+          config: resolved,
+          drain: (filePath, opts) => runDrain(filePath, drainDeps, opts),
+        };
 
   // Background mode also installs the below-SDK default seam so a direct
   // domain call made with no SDK scope — a top-level mutation in the

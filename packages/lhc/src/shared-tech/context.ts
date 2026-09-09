@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { DatabaseSync } from "node:sqlite";
 import type { ResolvedSdkConfig } from "./derivation.js";
+import type { OpResult } from "./errors.js";
+import type { DrainReport } from "./scheduler.js";
 import type { ResolvedViewConfig } from "./view.js";
 
 // Per-SDK-instance delivery seam. Each SDK runs every one of its operations
@@ -17,6 +19,8 @@ export interface InstanceSeam {
   // fall back to built-in defaults at the consuming site, never here.
   view?: ResolvedViewConfig;
   config?: ResolvedSdkConfig;
+  /** This instance's work-queue drain over an open thread file (threads.repairDerivations runs it between passes). */
+  drain?: (filePath: string, opts?: { maxItems?: number }) => Promise<OpResult<DrainReport>>;
 }
 const seamStore = new AsyncLocalStorage<InstanceSeam>();
 
@@ -67,6 +71,10 @@ export function resolveInstanceViewConfig(): ResolvedViewConfig | undefined {
 
 export function resolveInstanceConfig(): ResolvedSdkConfig | undefined {
   return seamStore.getStore()?.config;
+}
+
+export function resolveInstanceDrain(): InstanceSeam["drain"] {
+  return seamStore.getStore()?.drain;
 }
 
 // Reads-only operation scope: runs fn under the current seam with the
