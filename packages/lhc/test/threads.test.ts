@@ -252,7 +252,7 @@ describe("Flow 1 (SDK): thread creation, registry, resolution", () => {
       registryPath: targetRegistry,
     });
     expect(collision.ok).toBe(false);
-    if (!collision.ok) expect(collision.error.code).toBe("invalid_thread_ref");
+    if (!collision.ok) expect(collision.error.code).toBe("thread_exists");
     expect(existsSync(collisionPath)).toBe(false);
   });
 

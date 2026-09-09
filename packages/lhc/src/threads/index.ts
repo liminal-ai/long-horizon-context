@@ -1,7 +1,7 @@
-import { existsSync, mkdirSync } from "node:fs";
-import { dirname, resolve as resolvePath } from "node:path";
-import { backup, DatabaseSync } from "node:sqlite";
+import { existsSync } from "node:fs";
+import type { DatabaseSync } from "node:sqlite";
 import { createDbReadTransaction, type ErrorResult, type OpResult, storageFailure } from "../shared-tech/index.js";
+import { type CopyThreadInput, copyThread } from "./fork.js";
 import { createThreadFile, deleteThreadFile, generateThreadId, openThreadDatabase } from "./internal/create.js";
 
 // Re-exported for the other domain surfaces: opening a thread file through
@@ -157,8 +157,8 @@ export async function newThread(input: NewThreadInput): Promise<OpResult<{ threa
 
 /**
  * Copy an existing LHC thread with SQLite backup semantics and register the
- * copy under its original thread id. The source is opened read-only, so WAL
- * state is included without changing the source record.
+ * copy under its original thread id: `copyThread` with the id kept and no
+ * idle requirement. The source is opened read-only.
  */
 export async function adoptThreadCopy(
   input: AdoptThreadCopyInput,
@@ -166,80 +166,18 @@ export async function adoptThreadCopy(
   if (isBlankPath(input.sourceFilePath) || isBlankPath(input.filePath)) {
     return invalidThreadRef("sourceFilePath and filePath must be non-empty paths");
   }
-  if (resolvePath(input.sourceFilePath) === resolvePath(input.filePath)) {
-    return invalidThreadRef("sourceFilePath and filePath must name different files");
-  }
-  if (existsSync(input.filePath)) {
-    return {
-      ok: false,
-      error: {
-        errorClass: "caller_error",
-        code: "path_exists",
-        reason: `a file already exists at ${input.filePath}`,
-      },
-    };
-  }
-
-  let sourceDb: DatabaseSync | undefined;
-  let sourceMetadata: { threadId: string; createdAt: string };
-  try {
-    mkdirSync(dirname(input.filePath), { recursive: true });
-    sourceDb = new DatabaseSync(input.sourceFilePath, { readOnly: true });
-    const row = sourceDb.prepare("SELECT thread_id, created_at FROM thread_metadata WHERE id = 1").get() as
-      | { thread_id: string; created_at: string }
-      | undefined;
-    if (row === undefined) {
-      throw new Error("source has no thread metadata row");
-    }
-    sourceMetadata = { threadId: row.thread_id, createdAt: row.created_at };
-    await backup(sourceDb, input.filePath);
-  } catch (cause) {
-    deleteThreadFile(input.filePath);
-    return storageFailure(`thread backup failed: ${detail(cause)}`);
-  } finally {
-    sourceDb?.close();
-  }
-
-  const copied = await info({ filePath: input.filePath });
-  if (!copied.ok || copied.value.threadId !== sourceMetadata.threadId) {
-    deleteThreadFile(input.filePath);
-    return copied.ok
-      ? storageFailure(
-          `thread backup identity mismatch: expected ${sourceMetadata.threadId}, got ${copied.value.threadId}`,
-        )
-      : copied;
-  }
-
-  let registry: DatabaseSync | undefined;
-  try {
-    registry = openRegistryForWrite(resolveRegistryPath(input.registryPath));
-    if (selectThreadRow(registry, sourceMetadata.threadId) !== undefined) {
-      deleteThreadFile(input.filePath);
-      return {
-        ok: false,
-        error: {
-          errorClass: "caller_error",
-          code: "invalid_thread_ref",
-          reason: `thread ${sourceMetadata.threadId} is already registered`,
-        },
-      };
-    }
-    const row: RegistryRow = {
-      threadId: sourceMetadata.threadId,
-      filePath: input.filePath,
-      createdAt: sourceMetadata.createdAt,
-    };
-    if (input.title !== undefined) row.title = input.title;
-    if (input.cwd !== undefined) row.cwd = input.cwd;
-    insertThreadRow(registry, row);
-  } catch (cause) {
-    deleteThreadFile(input.filePath);
-    return storageFailure(`adopted thread registry insert failed: ${detail(cause)}`);
-  } finally {
-    registry?.close();
-  }
-
-  return { ok: true, value: { threadId: sourceMetadata.threadId, filePath: input.filePath } };
+  const copyInput: CopyThreadInput = {
+    source: { filePath: input.sourceFilePath },
+    filePath: input.filePath,
+    keepThreadId: true,
+    requireIdle: false,
+  };
+  if (input.registryPath !== undefined) copyInput.registryPath = input.registryPath;
+  if (input.title !== undefined) copyInput.title = input.title;
+  if (input.cwd !== undefined) copyInput.cwd = input.cwd;
+  const copied = await copyThread(copyInput);
+  if (!copied.ok) return copied;
+  return { ok: true, value: { threadId: copied.value.threadId, filePath: copied.value.filePath } };
 }
 
 // Resolution accepts a full or partial (prefix) thread id (A-8). An exact id
@@ -563,3 +501,31 @@ export async function currentAlias(lookup: ThreadCurrentAliasLookup): Promise<Op
     registry?.close();
   }
 }
+
+// Fork operations live beside creation and aliasing: same domain, same
+// reference rules, composed by the `lhc thread fork` verb.
+export {
+  type BindHostInput,
+  bindHost,
+  type CopyThreadInput,
+  type CopyThreadReceipt,
+  copyThread,
+  exportHistory,
+  FORK_HOSTS,
+  type ForkHost,
+  HISTORY_EXPORT_KINDS,
+  type HistoryBlock,
+  type HistoryExport,
+  type HistoryMessage,
+  type HistoryTurn,
+  type HostBinding,
+  hostBinding,
+  type IdentityNoteInput,
+  type IdentityNoteReceipt,
+  identityNoteText,
+  type RepairInput,
+  type RepairReceipt,
+  type RepairTally,
+  repairDerivations,
+  writeIdentityNote,
+} from "./fork.js";

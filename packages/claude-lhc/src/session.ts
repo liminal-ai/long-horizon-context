@@ -43,9 +43,10 @@ import {
   COMPACT_CONTINUATION_MARKER_ACTION,
   COMPACT_CONTINUATION_MARKER_CAUSE,
   COMPACT_CONTINUATION_MARKER_KIND,
-  CONTEXT_COMPACT_CONTINUE_REASON,
   compactContinuationMarkerIdempotencyKey,
   type CompactReceipt,
+  CONTEXT_COMPACT_CONTINUE_REASON,
+  killClaudeCliInferenceChildren,
   type Lhc,
   type MessageEventInput,
   type ThreadRef,
@@ -60,7 +61,6 @@ import {
   segmentEndEvent,
   segmentThresholdTokens,
 } from "./capture/segment-fold.ts";
-import { killInferenceChildren } from "./inference/claudeCli.ts";
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.ts";
 import { projectView } from "./projection/project.ts";
 import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.ts";
@@ -331,7 +331,7 @@ export class ClaudeLhcSession {
       gen.input.end();
       gen.query.close();
     }
-    killInferenceChildren();
+    killClaudeCliInferenceChildren();
   }
 
   // ── generations ────────────────────────────────────────────────

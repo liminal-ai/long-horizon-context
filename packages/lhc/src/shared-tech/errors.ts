@@ -11,6 +11,10 @@ export type ErrorCode =
   | "invalid_thread_alias" // caller_error — alias is blank or not host-qualified as <host>:<host-alias>
   | "alias_not_found" // caller_error — no thread registered under this alias
   | "alias_bound_to_other_thread" // caller_error — an alias never rebinds; it already names a different thread
+  // Fork operations (threads domain): copy, rekey, host binding.
+  | "mid_turn" // caller_error — copy refused: the source's open turn holds host activity
+  | "thread_exists" // caller_error — the target registry already holds this thread id
+  | "file_bound_host" // caller_error — host binds by file name chosen at copy time; no alias to register
   | "invalid_event"
   | "empty_batch"
   | "turn_state_corrupt"

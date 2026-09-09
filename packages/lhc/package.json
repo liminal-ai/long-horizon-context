@@ -4,6 +4,9 @@
   "private": true,
   "description": "Long Horizon Context SDK.",
   "type": "module",
+  "bin": {
+    "lhc": "./bin/lhc"
+  },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -13,6 +16,7 @@
     }
   },
   "files": [
+    "bin",
     "dist",
     "README.md"
   ],

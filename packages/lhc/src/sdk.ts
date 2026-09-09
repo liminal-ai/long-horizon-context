@@ -3,6 +3,7 @@ export * as inspect from "./inspect/index.js";
 export * as intakeStream from "./intake-stream/index.js";
 export * as messages from "./messages/index.js";
 export * as retrieval from "./retrieval/index.js";
+export * from "./shared-tech/inference-claude-cli.js";
 export * as logging from "./shared-tech/logging/index.js";
 export * as threadView from "./thread-view/index.js";
 export * as threads from "./threads/index.js";
@@ -817,7 +818,9 @@ export function initLhc(config: SdkConfig): Lhc {
   };
 
   const sdk: Lhc = {
-    threads: threadsDomain,
+    // Scoped since the fork operations landed: repairDerivations derives
+    // through this instance's inference, so the seam must reach it.
+    threads: scopeSurface(threadsDomain, seam),
     intakeStream: scopeSurface(intakeStreamSurface, seam),
     messages: scopeSurface(messagesDomain, seam),
     retrieval: scopeSurface(retrievalDomain, seam),
