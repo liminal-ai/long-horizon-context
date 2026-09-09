@@ -220,8 +220,19 @@ export async function copyThread(input: CopyThreadInput): Promise<OpResult<CopyT
 // ---------------------------------------------------------------------------
 // Host binding table
 
-export type ForkHost = "cc-lhc" | "claude-lhc" | "pi-lhc" | "codex-lhc" | "grok";
-export const FORK_HOSTS: readonly ForkHost[] = ["cc-lhc", "claude-lhc", "pi-lhc", "codex-lhc", "grok"];
+export type ForkHost = "cc-lhc" | "claude-lhc" | "pi-lhc" | "codex-lhc" | "grok" | "hermes";
+export const FORK_HOSTS: readonly ForkHost[] = ["cc-lhc", "claude-lhc", "pi-lhc", "codex-lhc", "grok", "hermes"];
+
+/**
+ * Hosts a fork may read from but not land in. hermes keeps its threads per
+ * profile (`<home>/profiles/<name>/lhc/threads/<session>.sqlite`) with no
+ * registry, so a copy could only land as an unbound file; until a hermes
+ * target is specified, the tool refuses rather than leave one behind.
+ */
+export const SOURCE_ONLY_HOSTS: readonly ForkHost[] = ["hermes"];
+export function isSourceOnlyHost(host: ForkHost): boolean {
+  return SOURCE_ONLY_HOSTS.includes(host);
+}
 
 /**
  * How a host finds a thread for a native session id. Alias hosts consult the
@@ -247,6 +258,9 @@ export const HOST_PROVIDERS: Readonly<Record<ForkHost, string>> = {
   "pi-lhc": "pi",
   "codex-lhc": "openai",
   grok: "xai",
+  // hermes ran gpt-5.6 through its own harness; its own provider, like pi,
+  // so a fork out of hermes compacts under handoff unless told not to.
+  hermes: "hermes",
 };
 
 export function hostProvider(host: ForkHost): string {
@@ -319,6 +333,10 @@ function encodeForPath(id: string, unsafe: RegExp): string {
 }
 const CODEX_UNSAFE = /[^A-Za-z0-9-]/g;
 const GROK_UNSAFE = /[^A-Za-z0-9_-]/g;
+// hermes has no path encoder: its session names are `<yyyymmdd_hhmmss_hex>`
+// and the file is that name verbatim. Anything outside that safe set is
+// refused rather than encoded, since no hermes reader would decode it.
+const HERMES_SAFE = /^[A-Za-z0-9_-]+$/;
 
 export function hostBinding(host: ForkHost, sessionId?: string): OpResult<HostBinding> {
   const needsSession = host !== "pi-lhc";
@@ -339,6 +357,16 @@ export function hostBinding(host: ForkHost, sessionId?: string): OpResult<HostBi
         ok: true,
         value: { kind: "file", fileName: `grok-${encodeForPath(sessionId ?? "", GROK_UNSAFE)}.sqlite` },
       };
+    case "hermes": {
+      const name = sessionId ?? "";
+      if (!HERMES_SAFE.test(name)) {
+        return callerError(
+          "invalid_thread_alias",
+          `host hermes names the file after the session verbatim; ${name} is not path-safe`,
+        );
+      }
+      return { ok: true, value: { kind: "file", fileName: `${name}.sqlite` } };
+    }
     default:
       return callerError("invalid_thread_alias", `unknown host ${String(host)}; one of ${FORK_HOSTS.join(", ")}`);
   }

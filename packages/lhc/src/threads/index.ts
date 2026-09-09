@@ -532,10 +532,12 @@ export {
   type IdentityNoteInput,
   type IdentityNoteReceipt,
   identityNoteText,
+  isSourceOnlyHost,
   type RepairInput,
   type RepairReceipt,
   type RepairTally,
   RUST_HOST_THREAD_SCHEMA_VERSION,
   repairDerivations,
+  SOURCE_ONLY_HOSTS,
   writeIdentityNote,
 } from "./fork.js";

@@ -230,6 +230,18 @@ describe("threads.hostBinding / bindHost", () => {
     });
     const missing = threads.hostBinding("cc-lhc");
     expect(!missing.ok && missing.error.code).toBe("invalid_thread_alias");
+    // hermes: file named after the session verbatim, no encoder, unsafe names refused.
+    expect(threads.hostBinding("hermes", "20260810_130535_bc6de9dc")).toEqual({
+      ok: true,
+      value: { kind: "file", fileName: "20260810_130535_bc6de9dc.sqlite" },
+    });
+    const unsafe = threads.hostBinding("hermes", "a.b/c");
+    expect(!unsafe.ok && unsafe.error.code).toBe("invalid_thread_alias");
+    const noSession = threads.hostBinding("hermes");
+    expect(!noSession.ok && noSession.error.code).toBe("invalid_thread_alias");
+    expect(threads.SOURCE_ONLY_HOSTS).toEqual(["hermes"]);
+    expect(threads.isSourceOnlyHost("hermes")).toBe(true);
+    expect(threads.isSourceOnlyHost("cc-lhc")).toBe(false);
   });
 
   it("alias hosts register the current alias; file hosts are refused; pi binds nothing", async () => {
@@ -259,6 +271,8 @@ describe("threads.hostBinding / bindHost", () => {
     expect(!file.ok && file.error.code).toBe("file_bound_host");
     const none = await threads.bindHost({ threadId, registryPath: target.registry, host: "pi-lhc" });
     expect(none).toEqual({ ok: true, value: { kind: "none" } });
+    const hermes = await threads.bindHost({ threadId, registryPath: target.registry, host: "hermes", sessionId: "h" });
+    expect(!hermes.ok && hermes.error.code).toBe("file_bound_host");
   });
 });
 
@@ -417,7 +431,11 @@ describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
       "pi-lhc": "pi",
       "codex-lhc": "openai",
       grok: "xai",
+      hermes: "hermes",
     });
+    expect(threads.forkCompactPlan("hermes", "cc-lhc")).toEqual({ compact: true, reason: "hermes -> anthropic" });
+    expect(threads.forkCompactPlan("hermes", "claude-lhc")).toEqual({ compact: true, reason: "hermes -> anthropic" });
+    expect(threads.forkCompactPlan("hermes", "codex-lhc")).toEqual({ compact: true, reason: "hermes -> openai" });
     expect(threads.forkCompactPlan("cc-lhc", "claude-lhc")).toEqual({
       compact: false,
       reason: "same provider anthropic",
@@ -624,6 +642,9 @@ describe("lhc thread CLI", () => {
 
       expect(await main(["thread", "copy", "--home", target.home])).toBe(1);
       expect(c.err.at(-1)).toMatch(/^usage: /);
+      // hermes is a source only: refused as a bind or fork target before any work.
+      expect(await main(["thread", "bind", ...common, "--host", "hermes", "--session-id", "h"])).toBe(1);
+      expect(c.err.at(-1)).toMatch(/^usage: host hermes is a source only/);
       expect(await main(["thread", "nope"])).toBe(1);
       expect(await main([])).toBe(0);
       expect(c.out.at(-1)).toContain("usage: lhc thread");
@@ -772,6 +793,23 @@ describe("lhc thread CLI", () => {
       ]);
       expect(forced).toBe(0);
       expect(c.out.at(-1)).toMatch(/ compact=[1-9]\d* \(forced\)\n$/);
+
+      // hermes as a source: its own provider, so the fork compacts under handoff; as a target it is refused.
+      const hermes = await main([
+        ...common,
+        "--source-host",
+        "hermes",
+        "--host",
+        "cc-lhc",
+        "--session-id",
+        "u-4",
+        "--new-id",
+        "th_h",
+      ]);
+      expect(hermes).toBe(0);
+      expect(c.out.at(-1)).toMatch(/^th_h \S+ claude-code:u-4 .* compact=[1-9]\d* \(hermes -> anthropic\)\n$/);
+      expect(await main([...common, "--source-host", "cc-lhc", "--host", "hermes", "--session-id", "h"])).toBe(1);
+      expect(c.err.at(-1)).toMatch(/^usage: host hermes is a source only/);
 
       // codex: no ids given, one uuid names the thread, the session, and the file.
       const codex = await main([...common, "--source-host", "cc-lhc", "--host", "codex-lhc"]);
