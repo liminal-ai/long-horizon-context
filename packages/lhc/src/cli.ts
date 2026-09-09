@@ -10,7 +10,14 @@ import { join } from "node:path";
 import { initLhc, type Lhc, threads } from "./sdk.js";
 import type { ErrorResult, OpResult } from "./shared-tech/index.js";
 import { claudeCliInferenceAssignments, createClaudeCliModelCall } from "./shared-tech/inference-claude-cli.js";
-import { FORK_HOSTS, type ForkCompactChoice, type ForkHost, generateThreadIdForCli } from "./threads/fork.js";
+import {
+  FORK_HOSTS,
+  type ForkCompactChoice,
+  type ForkHost,
+  generateThreadIdForCli,
+  isSourceOnlyHost,
+  SOURCE_ONLY_HOSTS,
+} from "./threads/fork.js";
 
 const HELP = `usage: lhc thread <verb> [flags]
 
@@ -24,7 +31,8 @@ verbs
   fork    --source-home H --source-thread-id ID --source-host HOST0 --home H2 --host HOST [--session-id SID] [--new-id ID] [--cwd DIR] [--title T] [--seat NAME]
           [--no-repair] [--limit N] [--rounds N] [--compact | --no-compact] [--compact-target TOKENS] [--claude-bin PATH]
 
-hosts: ${FORK_HOSTS.join(", ")}. A home is <dir>/registry.sqlite plus <dir>/threads/.
+hosts: ${FORK_HOSTS.join(", ")}; source only: ${SOURCE_ONLY_HOSTS.join(", ")} (hermes keeps records per profile under
+<home>/profiles/<name>/lhc/threads with no registry; name one with --source-file). A home is <dir>/registry.sqlite plus <dir>/threads/.
 --source-file PATH may replace --source-home/--source-thread-id. Exit 0 ok, 2 refused, 1 error.
 fork order: copy, identity note, repair, compact, bind. It compacts under the "handoff" profile when the
 source and target hosts use different providers; --compact forces it, --no-compact suppresses it.
@@ -120,6 +128,9 @@ function hostOf(flags: Flags, key = "host"): ForkHost {
   const host = need(flags, key);
   if (!(FORK_HOSTS as readonly string[]).includes(host)) {
     throw new CliRefusal("usage", `--${key} must be one of ${FORK_HOSTS.join(", ")}`);
+  }
+  if (key === "host" && isSourceOnlyHost(host as ForkHost)) {
+    throw new CliRefusal("usage", `host ${host} is a source only in this slice; it cannot be a fork or bind target`);
   }
   return host as ForkHost;
 }
