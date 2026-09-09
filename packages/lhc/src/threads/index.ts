@@ -1,5 +1,6 @@
-import { existsSync } from "node:fs";
-import type { DatabaseSync } from "node:sqlite";
+import { existsSync, mkdirSync } from "node:fs";
+import { dirname, resolve as resolvePath } from "node:path";
+import { backup, DatabaseSync } from "node:sqlite";
 import { createDbReadTransaction, type ErrorResult, type OpResult, storageFailure } from "../shared-tech/index.js";
 import { createThreadFile, deleteThreadFile, generateThreadId, openThreadDatabase } from "./internal/create.js";
 
@@ -32,6 +33,14 @@ export interface NewThreadInput {
   title?: string;
   cwd?: string;
   registryPath?: string;
+}
+
+export interface AdoptThreadCopyInput {
+  sourceFilePath: string;
+  filePath: string;
+  registryPath?: string;
+  title?: string;
+  cwd?: string;
 }
 
 export interface ThreadInfo {
@@ -144,6 +153,93 @@ export async function newThread(input: NewThreadInput): Promise<OpResult<{ threa
   }
 
   return { ok: true, value: { threadId, filePath: input.filePath } };
+}
+
+/**
+ * Copy an existing LHC thread with SQLite backup semantics and register the
+ * copy under its original thread id. The source is opened read-only, so WAL
+ * state is included without changing the source record.
+ */
+export async function adoptThreadCopy(
+  input: AdoptThreadCopyInput,
+): Promise<OpResult<{ threadId: string; filePath: string }>> {
+  if (isBlankPath(input.sourceFilePath) || isBlankPath(input.filePath)) {
+    return invalidThreadRef("sourceFilePath and filePath must be non-empty paths");
+  }
+  if (resolvePath(input.sourceFilePath) === resolvePath(input.filePath)) {
+    return invalidThreadRef("sourceFilePath and filePath must name different files");
+  }
+  if (existsSync(input.filePath)) {
+    return {
+      ok: false,
+      error: {
+        errorClass: "caller_error",
+        code: "path_exists",
+        reason: `a file already exists at ${input.filePath}`,
+      },
+    };
+  }
+
+  let sourceDb: DatabaseSync | undefined;
+  let sourceMetadata: { threadId: string; createdAt: string };
+  try {
+    mkdirSync(dirname(input.filePath), { recursive: true });
+    sourceDb = new DatabaseSync(input.sourceFilePath, { readOnly: true });
+    const row = sourceDb.prepare("SELECT thread_id, created_at FROM thread_metadata WHERE id = 1").get() as
+      | { thread_id: string; created_at: string }
+      | undefined;
+    if (row === undefined) {
+      throw new Error("source has no thread metadata row");
+    }
+    sourceMetadata = { threadId: row.thread_id, createdAt: row.created_at };
+    await backup(sourceDb, input.filePath);
+  } catch (cause) {
+    deleteThreadFile(input.filePath);
+    return storageFailure(`thread backup failed: ${detail(cause)}`);
+  } finally {
+    sourceDb?.close();
+  }
+
+  const copied = await info({ filePath: input.filePath });
+  if (!copied.ok || copied.value.threadId !== sourceMetadata.threadId) {
+    deleteThreadFile(input.filePath);
+    return copied.ok
+      ? storageFailure(
+          `thread backup identity mismatch: expected ${sourceMetadata.threadId}, got ${copied.value.threadId}`,
+        )
+      : copied;
+  }
+
+  let registry: DatabaseSync | undefined;
+  try {
+    registry = openRegistryForWrite(resolveRegistryPath(input.registryPath));
+    if (selectThreadRow(registry, sourceMetadata.threadId) !== undefined) {
+      deleteThreadFile(input.filePath);
+      return {
+        ok: false,
+        error: {
+          errorClass: "caller_error",
+          code: "invalid_thread_ref",
+          reason: `thread ${sourceMetadata.threadId} is already registered`,
+        },
+      };
+    }
+    const row: RegistryRow = {
+      threadId: sourceMetadata.threadId,
+      filePath: input.filePath,
+      createdAt: sourceMetadata.createdAt,
+    };
+    if (input.title !== undefined) row.title = input.title;
+    if (input.cwd !== undefined) row.cwd = input.cwd;
+    insertThreadRow(registry, row);
+  } catch (cause) {
+    deleteThreadFile(input.filePath);
+    return storageFailure(`adopted thread registry insert failed: ${detail(cause)}`);
+  } finally {
+    registry?.close();
+  }
+
+  return { ok: true, value: { threadId: sourceMetadata.threadId, filePath: input.filePath } };
 }
 
 // Resolution accepts a full or partial (prefix) thread id (A-8). An exact id

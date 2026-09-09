@@ -3,6 +3,7 @@
 // Story 2 and lives in test/intake.test.ts.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { TOKEN_ESTIMATOR_ID, threads } from "../src/index.js";
 import { openRaw, type TempStore, tempStore } from "./fixtures/index.js";
@@ -187,6 +188,72 @@ describe("Flow 1 (SDK): thread creation, registry, resolution", () => {
     expect(existsSync(threadPath)).toBe(false);
     expect(existsSync(badRegistry)).toBe(false);
     expect(readFileSync(blocker, "utf8")).toBe("a regular file where a directory must be");
+  });
+
+  it("adopts a WAL-backed thread copy under its original id without changing the source", async () => {
+    const sourcePath = store.threadPath("source");
+    const sourceRegistry = join(store.dir, "source-registry.sqlite");
+    const created = await threads.newThread({
+      filePath: sourcePath,
+      title: "source title",
+      cwd: "/source/worktree",
+      registryPath: sourceRegistry,
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+
+    const sourceDb = new DatabaseSync(sourcePath);
+    sourceDb.exec("PRAGMA journal_mode = WAL;");
+    sourceDb.prepare("INSERT INTO log (level, message) VALUES ('info', 'present only in the live WAL snapshot')").run();
+    const mainBefore = readFileSync(sourcePath);
+    const walBefore = readFileSync(`${sourcePath}-wal`);
+
+    const targetPath = join(store.dir, "target", "threads", `${created.value.threadId}.sqlite`);
+    const targetRegistry = join(store.dir, "target", "registry.sqlite");
+    const adopted = await threads.adoptThreadCopy({
+      sourceFilePath: sourcePath,
+      filePath: targetPath,
+      registryPath: targetRegistry,
+      title: "source title",
+      cwd: "/source/worktree",
+    });
+
+    expect(adopted).toEqual({
+      ok: true,
+      value: { threadId: created.value.threadId, filePath: targetPath },
+    });
+    expect(readFileSync(sourcePath)).toEqual(mainBefore);
+    expect(readFileSync(`${sourcePath}-wal`)).toEqual(walBefore);
+    sourceDb.close();
+
+    expect(readMetadata(targetPath).thread_id).toBe(created.value.threadId);
+    const targetDb = openRaw(targetPath);
+    try {
+      const row = targetDb
+        .prepare("SELECT message FROM log WHERE message = 'present only in the live WAL snapshot'")
+        .get() as { message: string } | undefined;
+      expect(row?.message).toBe("present only in the live WAL snapshot");
+    } finally {
+      targetDb.close();
+    }
+    expect(registryRows(targetRegistry)).toEqual([
+      {
+        thread_id: created.value.threadId,
+        file_path: targetPath,
+        title: "source title",
+        created_at: readMetadata(sourcePath).created_at,
+      },
+    ]);
+
+    const collisionPath = join(store.dir, "target", "threads", "collision.sqlite");
+    const collision = await threads.adoptThreadCopy({
+      sourceFilePath: sourcePath,
+      filePath: collisionPath,
+      registryPath: targetRegistry,
+    });
+    expect(collision.ok).toBe(false);
+    if (!collision.ok) expect(collision.error.code).toBe("invalid_thread_ref");
+    expect(existsSync(collisionPath)).toBe(false);
   });
 
   it("lazy-init supplemental: resolve against an absent registry returns thread_not_found and creates nothing", async () => {
