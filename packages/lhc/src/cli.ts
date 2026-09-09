@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { initLhc, type Lhc, threads } from "./sdk.js";
 import type { ErrorResult, OpResult } from "./shared-tech/index.js";
 import { claudeCliInferenceAssignments, createClaudeCliModelCall } from "./shared-tech/inference-claude-cli.js";
-import { FORK_HOSTS, type ForkHost, generateThreadIdForCli } from "./threads/fork.js";
+import { FORK_HOSTS, type ForkCompactChoice, type ForkHost, generateThreadIdForCli } from "./threads/fork.js";
 
 const HELP = `usage: lhc thread <verb> [flags]
 
@@ -21,10 +21,14 @@ verbs
   health  --home H --thread-id ID [--json]
   repair  --home H --thread-id ID [--limit N] [--rounds N] [--claude-bin PATH]
   export  --home H --thread-id ID [--out FILE]
-  fork    --source-home H --source-thread-id ID --home H2 --host HOST [--session-id SID] [--new-id ID] [--cwd DIR] [--title T] [--seat NAME] [--no-repair] [--limit N] [--rounds N] [--claude-bin PATH]
+  fork    --source-home H --source-thread-id ID --source-host HOST0 --home H2 --host HOST [--session-id SID] [--new-id ID] [--cwd DIR] [--title T] [--seat NAME]
+          [--no-repair] [--limit N] [--rounds N] [--compact | --no-compact] [--compact-target TOKENS] [--claude-bin PATH]
 
 hosts: ${FORK_HOSTS.join(", ")}. A home is <dir>/registry.sqlite plus <dir>/threads/.
 --source-file PATH may replace --source-home/--source-thread-id. Exit 0 ok, 2 refused, 1 error.
+fork order: copy, identity note, repair, compact, bind. It compacts under the "handoff" profile when the
+source and target hosts use different providers; --compact forces it, --no-compact suppresses it.
+codex-lhc keys the record by its rollout uuid (--new-id and --session-id are one value, minted when absent).
 `;
 
 const REFUSAL_CODES = new Set([
@@ -34,6 +38,8 @@ const REFUSAL_CODES = new Set([
   "thread_not_found",
   "alias_bound_to_other_thread",
   "file_bound_host",
+  "invalid_thread_alias",
+  "compact_refused",
 ]);
 
 class CliRefusal extends Error {
@@ -110,12 +116,19 @@ function targetRef(flags: Flags): threads.ThreadRef {
   return { threadId: need(flags, "thread-id"), registryPath: registryOf(need(flags, "home")) };
 }
 
-function hostOf(flags: Flags): ForkHost {
-  const host = need(flags, "host");
+function hostOf(flags: Flags, key = "host"): ForkHost {
+  const host = need(flags, key);
   if (!(FORK_HOSTS as readonly string[]).includes(host)) {
-    throw new CliRefusal("usage", `--host must be one of ${FORK_HOSTS.join(", ")}`);
+    throw new CliRefusal("usage", `--${key} must be one of ${FORK_HOSTS.join(", ")}`);
   }
   return host as ForkHost;
+}
+
+function compactChoice(flags: Flags): ForkCompactChoice {
+  const force = flags.get("compact") === true;
+  const suppress = flags.get("no-compact") === true;
+  if (force && suppress) throw new CliRefusal("usage", "--compact and --no-compact are exclusive");
+  return force ? "always" : suppress ? "never" : "auto";
 }
 
 function instance(flags: Flags): Lhc {
@@ -223,9 +236,16 @@ async function exportLine(flags: Flags): Promise<string> {
 async function fork(flags: Flags): Promise<string> {
   const home = need(flags, "home");
   const host = hostOf(flags);
-  const sessionId = str(flags, "session-id");
+  const sourceHost = hostOf(flags, "source-host");
+  const choice = compactChoice(flags);
+  const given: { newId?: string; sessionId?: string } = {};
+  const newId = str(flags, "new-id");
+  const sessionFlag = str(flags, "session-id");
+  if (newId !== undefined) given.newId = newId;
+  if (sessionFlag !== undefined) given.sessionId = sessionFlag;
+  const threadId = unwrap(threads.forkThreadId(host, given));
+  const sessionId = sessionFlag ?? (host === "codex-lhc" ? threadId : undefined);
   const binding = unwrap(threads.hostBinding(host, sessionId));
-  const threadId = str(flags, "new-id") ?? generateThreadIdForCli();
   const fileName = binding.kind === "file" ? binding.fileName : `${threadId}.sqlite`;
   const source = sourceRef(flags);
   const copyInput: threads.CopyThreadInput = {
@@ -248,9 +268,26 @@ async function fork(flags: Flags): Promise<string> {
   if (seat !== undefined) noteInput.seat = seat;
   unwrap(await threads.writeIdentityNote(noteInput));
 
+  let sdk: Lhc | undefined;
+  const sdkOnce = (): Lhc => {
+    sdk ??= instance(flags);
+    return sdk;
+  };
   let repairText = "repaired=0 failed=0 deferred=0 remaining=skipped";
   if (flags.get("no-repair") !== true) {
-    repairText = repairLine(await repair(flags, instance(flags), ref));
+    repairText = repairLine(await repair(flags, sdkOnce(), ref));
+  }
+
+  // Cross-provider: the copy's closed turns become text bands before any host
+  // can find it, so no host renders another harness's tool blocks.
+  const plan = threads.forkCompactPlan(sourceHost, host, choice);
+  let compactText = `compact=skipped (${plan.reason})`;
+  if (plan.compact) {
+    const opts = threads.handoffCompactOptions(num(flags, "compact-target"));
+    const preview = unwrap(await sdkOnce().threadView.previewCompact(ref, opts));
+    if (preview.kind === "error") throw new CliRefusal("compact_refused", preview.reason);
+    const receipt = unwrap(await sdkOnce().threadView.compact(ref, opts));
+    compactText = `compact=${receipt.totalTokens} (${plan.reason})`;
   }
 
   if (binding.kind === "alias") {
@@ -259,7 +296,7 @@ async function fork(flags: Flags): Promise<string> {
     unwrap(await threads.bindHost(bindInput));
   }
   const bound = binding.kind === "alias" ? binding.alias : binding.kind === "file" ? binding.fileName : "none";
-  return `${copied.threadId} ${copied.filePath} ${bound} ${repairText}`;
+  return `${copied.threadId} ${copied.filePath} ${bound} ${repairText} ${compactText}`;
 }
 
 export async function main(argv: readonly string[]): Promise<number> {

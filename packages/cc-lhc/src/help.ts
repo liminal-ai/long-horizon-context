@@ -9,6 +9,7 @@ Usage:
   cc-lhc get-messages [--from TOKENS] <mN>...
   cc-lhc tasks status|output|stop <launch id> [--offset BYTES] [--max BYTES]
   cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]
+  cc-lhc rollout write --thread-id ID --session-id UUID [--cwd DIR] [--projects-root DIR] [--envelope-from ROLLOUT]
   cc-lhc --lhc-help
   cc-lhc --lhc-version
 

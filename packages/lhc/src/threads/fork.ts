@@ -4,18 +4,21 @@
 // operation over thread references; the CLI verb `lhc thread fork` composes
 // them and holds no logic of its own. Hosts, relays, seats, and the control
 // plane are unknown here: a host is a binding rule and nothing more.
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { health } from "../inspect/index.js";
 import { messageEvents } from "../intake-stream/index.js";
 import {
+  CURRENT_THREAD_SCHEMA_VERSION,
   createDbReadTransaction,
   type ErrorCode,
   type ErrorResult,
   type OpResult,
   resolveInstanceDrain,
   storageFailure,
+  type ViewCompactParams,
 } from "../shared-tech/index.js";
 import { deriveBriefChunk, deriveDetailedChunk, deriveTurn } from "../turns/index.js";
 import { registerCurrentAlias, resolve, resolveThreadRef, type ThreadRef } from "./index.js";
@@ -227,11 +230,95 @@ export const FORK_HOSTS: readonly ForkHost[] = ["cc-lhc", "claude-lhc", "pi-lhc"
  */
 export type HostBinding = { kind: "alias"; alias: string } | { kind: "file"; fileName: string } | { kind: "none" };
 
-// Mirrors the Rust hosts' path encoders: ids that are plain uuids pass
-// through unchanged; anything else is percent-encoded per byte.
-function encodeForPath(id: string): string {
-  return id.replace(/[^A-Za-z0-9-]/g, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+/**
+ * The thread schema the Rust hosts (codex-lhc, grok) accept, pinned by the
+ * lhc-rs they vendor. A copy lands at the SDK's current version, so a fork
+ * for a Rust host is only openable while the two agree; the test that pins
+ * this fails loudly the day the SDK moves ahead of the vendored crate.
+ */
+export const RUST_HOST_THREAD_SCHEMA_VERSION = 13;
+export const FILE_HOST_THREAD_SCHEMA_VERSION: number = CURRENT_THREAD_SCHEMA_VERSION;
+
+/** Which model provider a host talks to. A fork across providers compacts first (decision 4). */
+export const HOST_PROVIDERS: Readonly<Record<ForkHost, string>> = {
+  "cc-lhc": "anthropic",
+  "claude-lhc": "anthropic",
+  // pi is multi-provider; it counts as its own so a pi fork compacts unless told not to.
+  "pi-lhc": "pi",
+  "codex-lhc": "openai",
+  grok: "xai",
+};
+
+export function hostProvider(host: ForkHost): string {
+  return HOST_PROVIDERS[host];
 }
+
+export type ForkCompactChoice = "auto" | "always" | "never";
+export interface ForkCompactPlan {
+  compact: boolean;
+  reason: string;
+}
+
+/** Compact when the providers differ, unless the caller forces or suppresses it. */
+export function forkCompactPlan(
+  sourceHost: ForkHost,
+  host: ForkHost,
+  choice: ForkCompactChoice = "auto",
+): ForkCompactPlan {
+  if (choice === "always") return { compact: true, reason: "forced" };
+  if (choice === "never") return { compact: false, reason: "suppressed" };
+  const from = hostProvider(sourceHost);
+  const to = hostProvider(host);
+  return from === to
+    ? { compact: false, reason: `same provider ${to}` }
+    : { compact: true, reason: `${from} -> ${to}` };
+}
+
+/** The built-in profile a cross-provider fork compacts under: no verbatim band, no protected closed turn. */
+export const HANDOFF_PROFILE = "handoff";
+
+export function handoffCompactOptions(lowerBound?: number): { profile: string; params?: ViewCompactParams } {
+  return lowerBound === undefined ? { profile: HANDOFF_PROFILE } : { profile: HANDOFF_PROFILE, params: { lowerBound } };
+}
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * The id a fork gives its copy. codex-lhc's thread id is the rollout uuid
+ * (`codex resume <uuid>` and `threads/<uuid>.sqlite` are the same id), so
+ * there the thread id and the session id are one value and must be a uuid;
+ * grok names the file after the session but keys the record by its own id,
+ * which is minted as a uuid too. Registry hosts keep the SDK's thread ids.
+ */
+export function forkThreadId(host: ForkHost, given: { newId?: string; sessionId?: string }): OpResult<string> {
+  switch (host) {
+    case "codex-lhc": {
+      if (given.newId !== undefined && given.sessionId !== undefined && given.newId !== given.sessionId) {
+        return callerError(
+          "invalid_thread_alias",
+          `host codex-lhc keys the record by its rollout uuid: --new-id ${given.newId} and --session-id ${given.sessionId} must agree`,
+        );
+      }
+      const id = given.newId ?? given.sessionId ?? randomUUID();
+      if (!UUID_RE.test(id))
+        return callerError("invalid_thread_alias", `host codex-lhc needs a uuid thread id, got ${id}`);
+      return { ok: true, value: id };
+    }
+    case "grok":
+      return { ok: true, value: given.newId ?? randomUUID() };
+    default:
+      return { ok: true, value: given.newId ?? generateThreadId() };
+  }
+}
+
+// Mirrors each Rust host's path encoder: bytes outside its safe set are
+// percent-encoded. codex keeps alphanumerics and `-`; grok also keeps `_`.
+// Plain uuids pass through both unchanged.
+function encodeForPath(id: string, unsafe: RegExp): string {
+  return id.replace(unsafe, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
+}
+const CODEX_UNSAFE = /[^A-Za-z0-9-]/g;
+const GROK_UNSAFE = /[^A-Za-z0-9_-]/g;
 
 export function hostBinding(host: ForkHost, sessionId?: string): OpResult<HostBinding> {
   const needsSession = host !== "pi-lhc";
@@ -246,9 +333,12 @@ export function hostBinding(host: ForkHost, sessionId?: string): OpResult<HostBi
     case "pi-lhc":
       return { ok: true, value: { kind: "none" } };
     case "codex-lhc":
-      return { ok: true, value: { kind: "file", fileName: `${encodeForPath(sessionId ?? "")}.sqlite` } };
+      return { ok: true, value: { kind: "file", fileName: `${encodeForPath(sessionId ?? "", CODEX_UNSAFE)}.sqlite` } };
     case "grok":
-      return { ok: true, value: { kind: "file", fileName: `grok-${encodeForPath(sessionId ?? "")}.sqlite` } };
+      return {
+        ok: true,
+        value: { kind: "file", fileName: `grok-${encodeForPath(sessionId ?? "", GROK_UNSAFE)}.sqlite` },
+      };
     default:
       return callerError("invalid_thread_alias", `unknown host ${String(host)}; one of ${FORK_HOSTS.join(", ")}`);
   }

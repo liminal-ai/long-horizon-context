@@ -2,8 +2,9 @@
 // binding table, identity note, neutral history export, derivation repair,
 // and the thin `lhc thread` CLI over them.
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
 import { initLhc, intakeStream, threads } from "../src/index.js";
@@ -222,6 +223,11 @@ describe("threads.hostBinding / bindHost", () => {
       ok: true,
       value: { kind: "file", fileName: "grok-g1.sqlite" },
     });
+    // grok's encoder keeps `_`; codex's does not (each mirrors its Rust host).
+    expect(threads.hostBinding("grok", "a.b_c/d")).toEqual({
+      ok: true,
+      value: { kind: "file", fileName: "grok-a%2Eb_c%2Fd.sqlite" },
+    });
     const missing = threads.hostBinding("cc-lhc");
     expect(!missing.ok && missing.error.code).toBe("invalid_thread_alias");
   });
@@ -365,6 +371,203 @@ describe("threads.repairDerivations", () => {
   });
 });
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+
+function userVersion(path: string): number {
+  const db = openRaw(path);
+  try {
+    return (db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version;
+  } finally {
+    db.close();
+  }
+}
+
+// The registry exactly as lhc-rs creates it: one `threads` table, no
+// user_version, no alias tables.
+function rustRegistry(dir: string): string {
+  mkdirSync(dir, { recursive: true });
+  const path = join(dir, "registry.sqlite");
+  const db = new DatabaseSync(path);
+  try {
+    db.exec(`CREATE TABLE threads (
+      thread_id TEXT PRIMARY KEY,
+      file_path TEXT NOT NULL,
+      title TEXT,
+      cwd TEXT,
+      created_at TEXT NOT NULL
+    );`);
+    db.prepare("INSERT INTO threads VALUES (?, ?, ?, ?, ?)").run(
+      "0f0e0d0c-0b0a-4908-8706-050403020100",
+      join(dir, "threads", "0f0e0d0c-0b0a-4908-8706-050403020100.sqlite"),
+      "rust row",
+      "/r",
+      "2026-09-01T00:00:00.000Z",
+    );
+  } finally {
+    db.close();
+  }
+  return path;
+}
+
+describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
+  it("provider table and compact plan: providers differ or the caller decides", () => {
+    expect(threads.HOST_PROVIDERS).toEqual({
+      "cc-lhc": "anthropic",
+      "claude-lhc": "anthropic",
+      "pi-lhc": "pi",
+      "codex-lhc": "openai",
+      grok: "xai",
+    });
+    expect(threads.forkCompactPlan("cc-lhc", "claude-lhc")).toEqual({
+      compact: false,
+      reason: "same provider anthropic",
+    });
+    expect(threads.forkCompactPlan("codex-lhc", "cc-lhc")).toEqual({ compact: true, reason: "openai -> anthropic" });
+    expect(threads.forkCompactPlan("cc-lhc", "grok")).toEqual({ compact: true, reason: "anthropic -> xai" });
+    expect(threads.forkCompactPlan("pi-lhc", "pi-lhc")).toEqual({ compact: false, reason: "same provider pi" });
+    expect(threads.forkCompactPlan("cc-lhc", "pi-lhc")).toEqual({ compact: true, reason: "anthropic -> pi" });
+    expect(threads.forkCompactPlan("cc-lhc", "cc-lhc", "always")).toEqual({ compact: true, reason: "forced" });
+    expect(threads.forkCompactPlan("cc-lhc", "grok", "never")).toEqual({ compact: false, reason: "suppressed" });
+    expect(threads.handoffCompactOptions()).toEqual({ profile: "handoff" });
+    expect(threads.handoffCompactOptions(5000)).toEqual({ profile: "handoff", params: { lowerBound: 5000 } });
+  });
+
+  it("codex ids are the rollout uuid; grok mints a uuid; registry hosts keep SDK ids", () => {
+    const minted = threads.forkThreadId("codex-lhc", {});
+    expect(minted.ok && UUID.test(minted.value)).toBe(true);
+    const fromSession = threads.forkThreadId("codex-lhc", { sessionId: "0f0e0d0c-0b0a-4908-8706-050403020100" });
+    expect(fromSession.ok && fromSession.value).toBe("0f0e0d0c-0b0a-4908-8706-050403020100");
+    const agree = threads.forkThreadId("codex-lhc", {
+      newId: "0f0e0d0c-0b0a-4908-8706-050403020100",
+      sessionId: "0f0e0d0c-0b0a-4908-8706-050403020100",
+    });
+    expect(agree.ok).toBe(true);
+    const disagree = threads.forkThreadId("codex-lhc", {
+      newId: "0f0e0d0c-0b0a-4908-8706-050403020100",
+      sessionId: "other",
+    });
+    expect(!disagree.ok && disagree.error.code).toBe("invalid_thread_alias");
+    const notUuid = threads.forkThreadId("codex-lhc", { newId: "th_abc" });
+    expect(!notUuid.ok && notUuid.error.code).toBe("invalid_thread_alias");
+    const grok = threads.forkThreadId("grok", { sessionId: "grok_session" });
+    expect(grok.ok && UUID.test(grok.value)).toBe(true);
+    const grokGiven = threads.forkThreadId("grok", { newId: "th_g" });
+    expect(grokGiven.ok && grokGiven.value).toBe("th_g");
+    const cc = threads.forkThreadId("cc-lhc", { sessionId: "uuid-1" });
+    expect(cc.ok && cc.value.startsWith("th_")).toBe(true);
+  });
+
+  it("a copy lands at the thread schema the Rust hosts accept (P3)", async () => {
+    // The vendored lhc-rs pins 13. The day the SDK moves ahead, this fails
+    // here instead of at a codex or grok host's open.
+    expect(threads.FILE_HOST_THREAD_SCHEMA_VERSION).toBe(threads.RUST_HOST_THREAD_SCHEMA_VERSION);
+    const source = await idleSource();
+    const target = targetHome();
+    const copied = await threads.copyThread({
+      source: { filePath: source.filePath },
+      filePath: join(target.threadsDir, "0f0e0d0c-0b0a-4908-8706-050403020101.sqlite"),
+      registryPath: target.registry,
+      newThreadId: "0f0e0d0c-0b0a-4908-8706-050403020101",
+    });
+    if (!copied.ok) throw new Error(copied.error.reason);
+    expect(userVersion(copied.value.filePath)).toBe(threads.RUST_HOST_THREAD_SCHEMA_VERSION);
+  });
+
+  it("a Rust-created registry takes a copy and an alias, keeps its rows, gains the alias tables (P2)", async () => {
+    const dir = join(store.dir, "rust-home");
+    const registryPath = rustRegistry(dir);
+    expect(userVersion(registryPath)).toBe(0);
+    const source = await idleSource();
+    const copied = await threads.copyThread({
+      source: { filePath: source.filePath },
+      filePath: join(dir, "threads", "th_into_rust.sqlite"),
+      registryPath,
+      newThreadId: "th_into_rust",
+    });
+    if (!copied.ok) throw new Error(copied.error.reason);
+    const bound = await threads.registerCurrentAlias({
+      alias: "claude-code:s9",
+      threadId: "th_into_rust",
+      registryPath,
+    });
+    expect(bound.ok).toBe(true);
+
+    const db = openRaw(registryPath);
+    try {
+      const tables = (
+        db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>
+      ).map((r) => r.name);
+      expect(tables).toEqual(["thread_alias", "thread_current_alias", "threads"]);
+      const rows = db
+        .prepare("SELECT thread_id, file_path, title, cwd, created_at FROM threads ORDER BY created_at")
+        .all();
+      expect(rows[0]).toEqual({
+        thread_id: "0f0e0d0c-0b0a-4908-8706-050403020100",
+        file_path: join(dir, "threads", "0f0e0d0c-0b0a-4908-8706-050403020100.sqlite"),
+        title: "rust row",
+        cwd: "/r",
+        created_at: "2026-09-01T00:00:00.000Z",
+      });
+      expect(rows.length).toBe(2);
+      expect((db.prepare("PRAGMA user_version").get() as { user_version: number }).user_version).toBe(2);
+    } finally {
+      db.close();
+    }
+    const listed = await threads.listThreads({ registryPath });
+    expect(listed.ok && listed.value.map((t) => t.threadId)).toEqual([
+      "0f0e0d0c-0b0a-4908-8706-050403020100",
+      "th_into_rust",
+    ]);
+  });
+
+  it("handoff compact leaves no closed turn raw and keeps the identity note in the tail", async () => {
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const source = await idleSource();
+    const drainedSource = await sdk.work.drain({ filePath: source.filePath });
+    if (!drainedSource.ok) throw new Error(drainedSource.error.reason);
+    const target = targetHome();
+    const copied = await threads.copyThread({
+      source: { filePath: source.filePath },
+      filePath: join(target.threadsDir, "h.sqlite"),
+      registryPath: target.registry,
+      newThreadId: "th_handoff",
+    });
+    if (!copied.ok) throw new Error(copied.error.reason);
+    const ref = { threadId: "th_handoff", registryPath: target.registry };
+    const noted = await threads.writeIdentityNote({ ref, sourceThreadId: source.threadId, seat: "wren" });
+    if (!noted.ok) throw new Error(noted.error.reason);
+
+    const before = await sdk.threadView.getSessionThreadView(ref);
+    if (!before.ok) throw new Error(before.error.reason);
+    expect(before.value.entries.some((e) => "role" in e && e.role === "toolResult")).toBe(true);
+
+    const opts = threads.handoffCompactOptions();
+    const preview = await sdk.threadView.previewCompact(ref, opts);
+    expect(preview.ok && preview.value.kind).toBe("ok");
+    const compacted = await sdk.threadView.compact(ref, opts);
+    if (!compacted.ok) throw new Error(compacted.error.reason);
+    expect(compacted.value.profile).toBe("handoff");
+    expect(compacted.value.config.full).toBe(0);
+    expect(compacted.value.config.newestClosedProtection).toBe(0);
+    // "full" is the verbatim share, not a band: with it at zero every closed
+    // turn lands in a text band and only the open turn (the note) is tail.
+    expect(
+      compacted.value.bands.smooth.entries +
+        compacted.value.bands.detailed.entries +
+        compacted.value.bands.brief.entries,
+    ).toBeGreaterThan(0);
+    expect(compacted.value.tailTokens).toBeGreaterThan(0);
+
+    const after = await sdk.threadView.getSessionThreadView(ref);
+    if (!after.ok) throw new Error(after.error.reason);
+    const entries = after.value.entries;
+    expect(entries.some((e) => "role" in e && e.role === "toolResult")).toBe(false);
+    const parts = entries.flatMap((e) => ("role" in e && e.role === "assistant" ? e.content : []));
+    expect(parts.some((p) => p.type === "toolCall" || p.type === "thinking")).toBe(false);
+    expect(JSON.stringify(entries)).toContain(noted.value.text);
+  });
+});
+
 describe("lhc thread CLI", () => {
   function capture(): { out: string[]; err: string[]; restore: () => void } {
     const out: string[] = [];
@@ -444,6 +647,8 @@ describe("lhc thread CLI", () => {
         source.threadId,
         "--home",
         target.home,
+        "--source-host",
+        "claude-lhc",
         "--host",
         "cc-lhc",
         "--session-id",
@@ -457,7 +662,7 @@ describe("lhc thread CLI", () => {
       expect(c.err).toEqual([]);
       expect(rc).toBe(0);
       expect(c.out.at(-1)).toBe(
-        `th_forked ${join(target.threadsDir, "th_forked.sqlite")} claude-code:uuid-1 repaired=0 failed=0 deferred=0 remaining=skipped\n`,
+        `th_forked ${join(target.threadsDir, "th_forked.sqlite")} claude-code:uuid-1 repaired=0 failed=0 deferred=0 remaining=skipped compact=skipped (same provider anthropic)\n`,
       );
       const current = await threads.currentAlias({ threadId: "th_forked", registryPath: target.registry });
       expect(current.ok && current.value.currentAlias).toBe("claude-code:uuid-1");
@@ -474,6 +679,8 @@ describe("lhc thread CLI", () => {
         "fork",
         "--source-file",
         midPath,
+        "--source-host",
+        "pi-lhc",
         "--home",
         target.home,
         "--host",
@@ -485,6 +692,127 @@ describe("lhc thread CLI", () => {
       expect(refused).toBe(2);
       expect(c.err.at(-1)).toMatch(/^mid_turn: /);
       expect(existsSync(join(target.threadsDir, "th_mid.sqlite"))).toBe(false);
+    } finally {
+      c.restore();
+    }
+  });
+
+  it("fork compacts across providers under handoff, honours --no-compact, and mints codex ids", async () => {
+    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const source = await idleSource();
+    const drained = await sdk.work.drain({ filePath: source.filePath });
+    if (!drained.ok) throw new Error(drained.error.reason);
+    const target = targetHome();
+    const c = capture();
+    try {
+      // The claude binary must never be reached: derivations are ready and
+      // repair is off, so the compact runs on stored material alone.
+      const common = [
+        "thread",
+        "fork",
+        "--source-file",
+        source.filePath,
+        "--home",
+        target.home,
+        "--no-repair",
+        "--claude-bin",
+        "/bin/false",
+      ];
+      const rc = await main([
+        ...common,
+        "--source-host",
+        "codex-lhc",
+        "--host",
+        "cc-lhc",
+        "--session-id",
+        "u-1",
+        "--new-id",
+        "th_x",
+      ]);
+      expect(c.err).toEqual([]);
+      expect(rc).toBe(0);
+      expect(c.out.at(-1)).toMatch(
+        /^th_x \S+ claude-code:u-1 repaired=0 failed=0 deferred=0 remaining=skipped compact=[1-9]\d* \(openai -> anthropic\)\n$/,
+      );
+      const view = await sdk.threadView.getSessionThreadView({ threadId: "th_x", registryPath: target.registry });
+      if (!view.ok) throw new Error(view.error.reason);
+      expect(view.value.entries.some((e) => "role" in e && e.role === "toolResult")).toBe(false);
+      expect(JSON.stringify(view.value.entries)).toContain("[lhc fork] copied from");
+      const stored = await sdk.threadView.describe({ threadId: "th_x", registryPath: target.registry });
+      expect(stored.ok && stored.value?.profileName).toBe("handoff");
+
+      const suppressed = await main([
+        ...common,
+        "--source-host",
+        "codex-lhc",
+        "--host",
+        "cc-lhc",
+        "--session-id",
+        "u-2",
+        "--new-id",
+        "th_y",
+        "--no-compact",
+      ]);
+      expect(suppressed).toBe(0);
+      expect(c.out.at(-1)).toMatch(/ compact=skipped \(suppressed\)\n$/);
+      const none = await sdk.threadView.describe({ threadId: "th_y", registryPath: target.registry });
+      expect(none.ok && none.value).toBeNull();
+
+      const forced = await main([
+        ...common,
+        "--source-host",
+        "cc-lhc",
+        "--host",
+        "cc-lhc",
+        "--session-id",
+        "u-3",
+        "--new-id",
+        "th_z",
+        "--compact",
+      ]);
+      expect(forced).toBe(0);
+      expect(c.out.at(-1)).toMatch(/ compact=[1-9]\d* \(forced\)\n$/);
+
+      // codex: no ids given, one uuid names the thread, the session, and the file.
+      const codex = await main([...common, "--source-host", "cc-lhc", "--host", "codex-lhc"]);
+      expect(codex).toBe(0);
+      const line = c.out.at(-1) as string;
+      const [id, filePath, fileName] = line.split(" ");
+      expect(UUID.test(id as string)).toBe(true);
+      expect(fileName).toBe(`${id}.sqlite`);
+      expect(filePath).toBe(join(target.threadsDir, `${id}.sqlite`));
+      expect(line).toContain("compact=");
+      expect(line).toContain("(anthropic -> openai)");
+
+      const disagree = await main([
+        ...common,
+        "--source-host",
+        "cc-lhc",
+        "--host",
+        "codex-lhc",
+        "--new-id",
+        "0f0e0d0c-0b0a-4908-8706-050403020100",
+        "--session-id",
+        "other",
+      ]);
+      expect(disagree).toBe(2);
+      expect(c.err.at(-1)).toMatch(/^invalid_thread_alias: /);
+
+      const both = await main([
+        ...common,
+        "--source-host",
+        "cc-lhc",
+        "--host",
+        "cc-lhc",
+        "--session-id",
+        "u-4",
+        "--compact",
+        "--no-compact",
+      ]);
+      expect(both).toBe(1);
+      const missingSource = await main([...common, "--host", "cc-lhc", "--session-id", "u-5"]);
+      expect(missingSource).toBe(1);
+      expect(c.err.at(-1)).toMatch(/--source-host is required/);
     } finally {
       c.restore();
     }

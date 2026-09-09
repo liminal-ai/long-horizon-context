@@ -16,6 +16,7 @@ describe("cc-lhc help surface", () => {
       "--from TOKENS",
       "get-messages",
       "backfill-labels",
+      "rollout write",
       "--lhc-no-inference",
       "--lhc-no-notifier",
       "CC_LHC_HOME",

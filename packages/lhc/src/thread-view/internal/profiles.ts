@@ -35,6 +35,16 @@ export const BUILT_IN_PROFILES: readonly ViewProfile[] = [
     percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 },
     newestClosedProtection: DEFAULT_NEWEST_CLOSED_PROTECTION,
   },
+  {
+    // The compact run when handing a record to another harness (thread fork
+    // across providers): no verbatim band and no protected closed turn, so no
+    // closed turn survives raw and a foreign host never renders this host's
+    // tool blocks. The tail is the open turn only.
+    name: "handoff",
+    lowerBound: 120000,
+    percentages: { full: 0, smooth: 40, detailed: 40, brief: 20 },
+    newestClosedProtection: 0,
+  },
 ];
 
 export const DEFAULT_VISIBILITY: VisibilityBudgets = {

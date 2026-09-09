@@ -207,6 +207,7 @@ lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
 cc-lhc get-turns [--from TOKENS] <tN>...
 cc-lhc get-messages [--from TOKENS] <mN>...
 cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]
+cc-lhc rollout write --thread-id ID --session-id UUID [--cwd DIR] [--projects-root DIR] [--envelope-from ROLLOUT]
 ```
 
 Retrieval is model-callable and uses the inherited
@@ -220,6 +221,15 @@ limit. Continuation receipts provide the next token offset.
 `turn_rendering` derivations with stable `<tN>`/`<mN>` labels for one explicit
 thread. It does not use inference, alter canonical events, queue work, or
 change source versions; `--dry-run` reports the planned changes.
+
+`rollout write` is the fork entry point (`lhc thread fork --host cc-lhc` first,
+then this). It writes the thread's served view as a Claude Code rollout under a
+fresh session id (`~/.claude/projects/<cwd>/<uuid>.jsonl`, cwd from the
+registry unless `--cwd`), records the replayed-prefix lineage so the first
+`cc-lhc --resume <uuid>` skips it instead of re-intaking it, and makes the
+session the thread's current alias. It refuses (exit 2) when the rollout
+exists, the session id is bound to another thread, or the view is empty; no
+inference, no PTY, no receipt line (a fork's identity note is already tail text).
 
 ## Control panel
 
