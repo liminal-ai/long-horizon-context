@@ -52,18 +52,18 @@ import {
   type ThreadRef,
   type TurnRecord,
 } from "lhc";
-import { ToolBatch } from "./capture/batch.ts";
-import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/mapper.ts";
+import { ToolBatch } from "./capture/batch.js";
+import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/mapper.js";
 import {
   createSegmentFoldState,
   foldSegmentEvents,
   resetSegmentFold,
   segmentEndEvent,
   segmentThresholdTokens,
-} from "./capture/segment-fold.ts";
-import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.ts";
-import { projectView } from "./projection/project.ts";
-import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.ts";
+} from "./capture/segment-fold.js";
+import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
+import { projectView } from "./projection/project.js";
+import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
 
 export interface SessionIO {
   emit(message: SDKMessage): void;

@@ -12,4 +12,4 @@ restart and every compact mints a fresh native session id from that view.
 - `src/projection/project.ts` — LHC served view → native transcript lines (`sessionStore.load`).
 - `src/lhcHome.ts` — host `t3code-lhc`: `~/.t3code-lhc` (`T3CODE_LHC_HOME`), aliases `t3code-lhc:<session id>`.
 - `src/inference/claudeCli.ts` — derivations through `claude -p --no-session-persistence`.
-- `bin/claude-lhc` — launcher (bun). `scripts/standalone.ts` — end-to-end proof without t3code.
+- `bin/claude-lhc` — Node launcher (`node dist/sidecar.js`). `scripts/standalone.ts` — end-to-end proof without t3code. T3 spawns `process.execPath` with the compiled JS entry.

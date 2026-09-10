@@ -16,7 +16,7 @@
  * empty turn is a no-op there, not an error. Pure fold; no I/O.
  */
 import type { MessageEventInput } from "lhc";
-import { HARNESS, idempotencyKey } from "./mapper.ts";
+import { HARNESS, idempotencyKey } from "./mapper.js";
 
 export const SEGMENT_END_REASON = "claude_lhc_segment";
 

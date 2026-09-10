@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { ToolBatch } from "../src/capture/batch.ts";
 
 const streamEvent = (event: Record<string, unknown>, parent: string | null = null) => ({ type: "stream_event", event, parent_tool_use_id: parent, uuid: "u", session_id: "s" }) as never;

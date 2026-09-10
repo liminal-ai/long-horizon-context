@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { projectView } from "../src/projection/project.ts";
 
 const stamp = { sessionId: "S", cwd: "/w", version: "2.1.259", permissionMode: "default", model: "claude-sonnet-5" };
@@ -17,7 +17,7 @@ describe("projectView", () => {
     const [band, prompt, thinking, call, result, text] = lines as Array<Record<string, any>>;
     expect(thinking!["message"].content[0]).toEqual({ type: "thinking", thinking: "hmm", signature: "sig" });
     expect(thinking!["message"].id).toBe(call!["message"].id);
-    expect(band!["message"].content).toStartWith("[context · smooth]");
+    expect(String(band!["message"].content).startsWith("[context · smooth]")).toBe(true);
     expect(prompt!["permissionMode"]).toBe("default");
     expect(call!["message"].content[0]).toEqual({ type: "tool_use", id: "toolu_1", name: "Read", input: { f: 1 } });
     expect(call!["message"].stop_reason).toBe("tool_use");

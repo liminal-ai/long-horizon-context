@@ -3,7 +3,7 @@
  * an empty one; a compact-style turn_end landing right after (mid-turn seam or manual
  * /compact before the next event) is a no-op on the empty turn, never an error (gate B3).
  */
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

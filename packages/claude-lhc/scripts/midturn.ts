@@ -28,11 +28,12 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { initLhc, createDeterministicInferenceCallbacks, threads, type Lhc } from "lhc";
 import { contextTokens, describe, fail, log, Sidecar, type Wire } from "./lib/sidecar.ts";
 
-const HERE = import.meta.dir;
+const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILDER = resolve(HERE, "../../../..");
 const LHC_HOME = process.env.T3CODE_LHC_HOME ?? join(BUILDER, "home/t3code-lhc");
 const OUT = process.env.MIDTURN_OUT ?? join(BUILDER, "cp-midturn");

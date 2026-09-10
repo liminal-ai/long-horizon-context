@@ -1,10 +1,12 @@
 // Drives one claude-lhc sidecar over its JSONL protocol (shared by the standalone proofs).
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { DriverFrame, SidecarFrame } from "../../src/protocol.ts";
 
-export const BIN = resolve(import.meta.dir, "../../bin/claude-lhc");
+const HERE = dirname(fileURLToPath(import.meta.url));
+export const ENTRY = resolve(HERE, "../../dist/sidecar.js");
 export type Wire = Record<string, unknown>;
 
 export function fail(reason: string): never { console.log(`RESULT: FAIL — ${reason}`); process.exit(1); }
@@ -52,7 +54,11 @@ export class Sidecar {
   exited: Promise<number | null>;
   #waiters: Array<() => void> = [];
   constructor(label: string, lhcHome: string, quiet = false) {
-    this.child = spawn(BIN, [], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, T3CODE_LHC_HOME: lhcHome } });
+    this.child = spawn(process.execPath, [ENTRY], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, T3CODE_LHC_HOME: lhcHome },
+      windowsHide: true,
+    });
     this.exited = new Promise((r) => this.child.on("exit", (code) => { r(code); this.#notify(); }));
     createInterface({ input: this.child.stderr! }).on("line", (line) => {
       this.stderr.push(line);

@@ -11,13 +11,14 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { initLhc, createDeterministicInferenceCallbacks, threads, type Lhc } from "lhc";
 import type { DriverFrame, SidecarFrame } from "../src/protocol.ts";
 
-const HERE = import.meta.dir;
-const BIN = resolve(HERE, "../bin/claude-lhc");
+const HERE = dirname(fileURLToPath(import.meta.url));
+const ENTRY = resolve(HERE, "../dist/sidecar.js");
 const LHC_HOME = process.env.T3CODE_LHC_HOME ?? resolve(HERE, "../../../../home/t3code-lhc");
 const SECRET = ["amber", "birch", "cedar", "fjord", "glade", "kestrel", "lagoon", "marble"][Math.floor(Math.random() * 8)]!;
 const MODEL = process.env.MODEL ?? "claude-sonnet-5";
@@ -34,7 +35,11 @@ class Sidecar {
   exited: Promise<number | null>;
   #waiters: Array<() => void> = [];
   constructor(label: string) {
-    this.child = spawn(BIN, [], { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, T3CODE_LHC_HOME: LHC_HOME } });
+    this.child = spawn(process.execPath, [ENTRY], {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, T3CODE_LHC_HOME: LHC_HOME },
+      windowsHide: true,
+    });
     this.exited = new Promise((r) => this.child.on("exit", (code) => { r(code); this.#notify(); }));
     this.child.stderr!.on("data", (c: Buffer) => process.stderr.write(c.toString().split("\n").filter(Boolean).map((l) => `  [${label}] ${l}\n`).join("")));
     createInterface({ input: this.child.stdout! }).on("line", (line) => {

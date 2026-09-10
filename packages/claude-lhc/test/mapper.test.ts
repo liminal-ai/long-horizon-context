@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { compactCommand, mapPrompt, mapSdkMessage, stringifyToolResultContent } from "../src/capture/mapper.ts";
 
 const prompt = (text: string) => ({ type: "user", message: { role: "user", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "" }) as never;
@@ -107,7 +107,7 @@ describe("mapSdkMessage", () => {
     expect(result.events[0]?.idempotencyKey).toBe("claude-lhc:n1:0:runtime_note");
     expect(result.turnEnd).toBe(false);
     const hook = mapSdkMessage({ type: "user", uuid: "n2", parent_tool_use_id: null, message: { role: "user", content: "<user-prompt-submit-hook>lint ok</user-prompt-submit-hook>" } } as never, undefined);
-    expect((hook.events[0]?.payload as { text: string }).text).toStartWith("<user-prompt-submit-hook>");
+    expect((hook.events[0]?.payload as { text: string }).text.startsWith("<user-prompt-submit-hook>")).toBe(true);
   });
   test("replayed user messages on resume are skipped", () => {
     expect(mapSdkMessage({ type: "user", uuid: "r2", isReplay: true, parent_tool_use_id: null, message: { role: "user", content: [{ type: "text", text: "old prompt" }] } } as never, undefined).events).toEqual([]);

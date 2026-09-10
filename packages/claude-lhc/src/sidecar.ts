@@ -3,8 +3,8 @@
  * on stderr. Frames are handled strictly in arrival order.
  */
 import { createInterface } from "node:readline";
-import { decodeFrame, type DriverFrame, encodeFrame, type SidecarFrame, type SidecarRequestMethod } from "./protocol.ts";
-import { ClaudeLhcSession, type SessionIO } from "./session.ts";
+import { decodeFrame, type DriverFrame, encodeFrame, type SidecarFrame, type SidecarRequestMethod } from "./protocol.js";
+import { ClaudeLhcSession, type SessionIO } from "./session.js";
 
 const write = (frame: SidecarFrame): void => {
   process.stdout.write(encodeFrame(frame));
