@@ -9,7 +9,8 @@ restart and every compact mints a fresh native session id from that view.
 - `src/protocol.ts` — the wire: `start`, `user`, `req`/`res`, `abort`, `msg`, `error`.
 - `src/session.ts` — generations, capture-before-forward, manual/auto compact, projection swap.
 - `src/capture/mapper.ts` — SDK messages → LHC intake events (cc-lhc's rules on the wire shapes).
-- `src/projection/project.ts` — LHC served view → native transcript lines (`sessionStore.load`).
+- `src/projection/project.ts` — LHC served view → native transcript lines.
+- `src/nativeSessionFile.ts` — write those lines into the effective Claude home (`projects/<key>/<uuid>.jsonl`) before `query({resume})`. No `sessionStore`.
 - `src/lhcHome.ts` — host `t3code-lhc`: `~/.t3code-lhc` (`T3CODE_LHC_HOME`), aliases `t3code-lhc:<session id>`.
 - `src/inference/claudeCli.ts` — derivations through `claude -p --no-session-persistence`.
 - `bin/claude-lhc` — convenience wrapper (`exec node dist/sidecar.js`). T3 spawns `process.execPath` with the compiled JS entry.

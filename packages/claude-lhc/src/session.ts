@@ -8,7 +8,8 @@
  * pulls it (the model-visible seam).
  *
  * Generations change in two cases, both projections of the LHC served view into a
- * fresh native session id (the new id becomes the thread's current alias):
+ * native session file under the effective Claude home, then resume by UUID
+ * (the new id becomes the thread's current alias):
  *   - restart: `start` with `resume: <any alias of the thread>`;
  *   - compact: manual (`/compact` prompt) or auto (provider-reported context over the
  *     trigger). `threadView.compact` installs the view, a continuation marker starts the
@@ -35,7 +36,6 @@ import {
   query,
   type SDKMessage,
   type SDKUserMessage,
-  type SessionStore,
   type UserDialogResult,
 } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
@@ -62,6 +62,7 @@ import {
   segmentThresholdTokens,
 } from "./capture/segment-fold.js";
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
+import { writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
 import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
 
@@ -753,26 +754,36 @@ export class ClaudeLhcSession {
     }
   }
 
-  /** Projects the served view into a fresh native session, binds it as the current alias, and routes to it. */
+  /** Child cwd the native CLI uses: options.cwd when set, otherwise this process. */
+  #childCwd(): string {
+    return this.#cwd;
+  }
+
+  /**
+   * Projects the served view into a native session file, then binds the alias and
+   * resumes by UUID. The write finishes before bindSession/query so a failure
+   * creates no alias and leaves the old generation in place.
+   */
   async #startProjectedGeneration(): Promise<Generation> {
     const view = await this.#lhc.threadView.getSessionThreadView(this.#thread);
     if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);
     const sessionId = randomUUID();
+    const cwd = this.#childCwd();
     const entries = projectView(view.value, {
       sessionId,
-      cwd: this.#cwd,
+      cwd,
       version: this.#claudeCodeVersion,
       permissionMode: this.#permissionMode ?? "default",
       model: this.#model ?? "claude-sonnet-5",
     });
+    const dest = await writeProjectedSession({
+      sessionId,
+      cwd,
+      entries,
+      env: this.#env,
+    });
     await bindSession(this.#threadId, sessionId);
-    const store: SessionStore = {
-      async append() {},
-      async load(key) {
-        return key.sessionId === sessionId && key.subpath === undefined ? (entries as never) : null;
-      },
-    };
-    const next = this.#startGeneration(sessionId, { resume: sessionId, sessionStore: store });
+    const next = this.#startGeneration(sessionId, { resume: sessionId });
     const old = this.#gen;
     this.#gen = next;
     if (old !== null) {
@@ -780,7 +791,9 @@ export class ClaudeLhcSession {
       for (const item of old.input.drain()) next.input.push(item);
       old.query.close();
     }
-    this.#io.log(`generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries`);
+    this.#io.log(
+      `generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries at ${dest}`,
+    );
     return next;
   }
 

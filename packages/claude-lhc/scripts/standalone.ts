@@ -3,27 +3,33 @@
  *   1. start a fresh session; one tool turn (read notes.txt → secret word)
  *   2. /compact → compact_boundary + result; LHC has a view; both session ids alias the thread
  *   2b. a /compact deferred to a turn end; a prompt sent while that compact runs is answered
+ *   2c. a unique token at the disposable project's native memory path; after the
+ *       generation swap, an observed Read of that same file (not transcript recall)
  *   3. stop the sidecar; start a new one with resume: <latest session id>
  *   4. one no-tools turn that must recall the secret
  * Exit 0 on pass. T3CODE_LHC_HOME defaults to <builder dir>/home/t3code-lhc.
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { initLhc, createDeterministicInferenceCallbacks, threads, type Lhc } from "lhc";
+import { nativeMemoryDir } from "../src/nativeSessionFile.ts";
 import type { DriverFrame, SidecarFrame } from "../src/protocol.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ENTRY = resolve(HERE, "../dist/sidecar.js");
 const LHC_HOME = process.env.T3CODE_LHC_HOME ?? resolve(HERE, "../../../../home/t3code-lhc");
 const SECRET = ["amber", "birch", "cedar", "fjord", "glade", "kestrel", "lagoon", "marble"][Math.floor(Math.random() * 8)]!;
+const MEMORY_TOKEN = `native-mem-${randomUUID()}`;
 const MODEL = process.env.MODEL ?? "claude-sonnet-5";
 const cwd = mkdtempSync(join(tmpdir(), "claude-lhc-standalone-"));
 writeFileSync(join(cwd, "notes.txt"), `the secret word is ${SECRET}\n`);
+const memoryDir = nativeMemoryDir({ cwd, env: process.env });
+const memoryFile = join(memoryDir, "MEMORY.md");
 const log = (...parts: unknown[]) => console.error(`[standalone ${new Date().toISOString().slice(11, 19)}]`, ...parts);
 function fail(reason: string): never { console.log(`RESULT: FAIL — ${reason}`); process.exit(1); }
 
@@ -139,6 +145,13 @@ if (!t3.text.toLowerCase().includes(SECRET)) fail(`post-compact turn lacks secre
 if (t3.sessionId !== second) fail(`post-compact result carries ${t3.sessionId}, expected ${second}`);
 log("✓ turn after compact remembers the secret, on the new session id");
 
+mkdirSync(memoryDir, { recursive: true });
+writeFileSync(memoryFile, `${MEMORY_TOKEN}\n`);
+if (!existsSync(memoryFile) || !readFileSync(memoryFile, "utf8").includes(MEMORY_TOKEN)) {
+  fail(`native project memory file missing at ${memoryFile}`);
+}
+log(`✓ native project memory file ${memoryFile}`);
+
 // ── 2b. a prompt pushed mid-compact is held and answered by the new generation.
 // The compact runs at the turn end (a /compact that arrived while the turn was open), so it
 // runs inside the SDK pump, not the wire's serial queue: the next prompt reaches the session
@@ -162,6 +175,28 @@ if (!heldReply.toLowerCase().includes(SECRET)) fail(`prompt sent mid-compact was
 const heldResult = afterMid.filter((m) => m["type"] === "result").at(-1)!;
 if (heldResult["session_id"] !== latest) fail(`held prompt answered on ${heldResult["session_id"]}, expected new generation ${latest}`);
 log(`✓ prompt sent mid-compact was held and answered by generation ${latest.slice(0, 8)}: ${JSON.stringify(heldReply).slice(0, 60)}`);
+
+const memoryMark = a.messages.length;
+const tMemoryRead = await a.turn(
+  `Use the Read tool on this exact path and quote its contents: ${memoryFile}`,
+);
+if (tMemoryRead.sessionId !== latest) fail(`memory Read ran on ${tMemoryRead.sessionId}, expected generation ${latest}`);
+if (tMemoryRead.tools < 1) fail("generation-replacement memory check used no Read tool");
+const memorySlice = a.messages.slice(memoryMark);
+const readUses = memorySlice.filter((m) => m["type"] === "assistant").flatMap((m) =>
+  ((m["message"] as { content?: unknown[] }).content ?? []).filter((b): b is { type: string; name?: string; input?: { file_path?: string; path?: string } } =>
+    typeof b === "object" && b !== null && (b as { type?: string }).type === "tool_use"));
+const readThisFile = readUses.find((b) =>
+  b.name === "Read" && (b.input?.file_path === memoryFile || b.input?.path === memoryFile || JSON.stringify(b.input ?? {}).includes(memoryFile)));
+if (!readThisFile) fail(`no Read of native memory path ${memoryFile}; tool_use=${JSON.stringify(readUses)}`);
+const toolResults = memorySlice.filter((m) => m["type"] === "user").flatMap((m) =>
+  ((m["message"] as { content?: unknown[] }).content ?? []));
+const observed = JSON.stringify(toolResults);
+if (!observed.includes(MEMORY_TOKEN)) fail(`Read result for ${memoryFile} lacks token: ${observed.slice(0, 500)}`);
+if (!existsSync(memoryFile) || !readFileSync(memoryFile, "utf8").includes(MEMORY_TOKEN)) {
+  fail(`native memory file gone after generation replacement: ${memoryFile}`);
+}
+log(`✓ generation ${latest.slice(0, 8)} Read ${memoryFile} and observed ${MEMORY_TOKEN}`);
 
 // LHC side.
 const registryPath = join(LHC_HOME, "registry.sqlite");
@@ -199,6 +234,13 @@ const r3 = await threads.resolveAlias({ alias: `t3code-lhc:${third}`, registryPa
 if (!r3.ok || r3.value.threadId !== threadRef.threadId) fail("resumed session id is not an alias of the thread");
 await b.stop();
 const finalEvents = await lhc.intakeStream.listEvents(threadRef);
-console.log(JSON.stringify({ threadId: threadRef.threadId, sessions: [first, second, latest, third], events: finalEvents.ok ? finalEvents.value.length : -1, cwd }, null, 2));
+console.log(JSON.stringify({
+  threadId: threadRef.threadId,
+  sessions: [first, second, latest, third],
+  events: finalEvents.ok ? finalEvents.value.length : -1,
+  cwd,
+  memoryFile,
+  memoryFiles: existsSync(memoryDir) ? readdirSync(memoryDir) : [],
+}, null, 2));
 console.log("RESULT: PASS");
 process.exit(0);
