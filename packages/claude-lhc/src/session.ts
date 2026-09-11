@@ -34,6 +34,7 @@ import {
   type PostToolUseHookInput,
   type Query,
   query,
+  renameSession,
   type SDKMessage,
   type SDKUserMessage,
   type UserDialogResult,
@@ -74,6 +75,24 @@ export interface SessionIO {
   /** Unrecoverable: report to the driver and stop. */
   fail(message: string): void;
   log(line: string): void;
+}
+
+export function nativeLhcTitle(threadId: string): string {
+  return `[LHC] ${threadId}`;
+}
+
+async function labelNativeSession(
+  sessionId: string,
+  title: string,
+  cwd: string,
+  io: SessionIO,
+): Promise<void> {
+  try {
+    await renameSession(sessionId, title, { dir: cwd });
+  } catch (cause) {
+    const detail = cause instanceof Error ? cause.message : String(cause);
+    io.log(`native title ${JSON.stringify(title)} for ${sessionId} failed: ${detail}`);
+  }
 }
 
 /** Provider-reported context (input + cache) at which an automatic compact runs when no `autoCompactWindow` is configured. */
@@ -255,7 +274,10 @@ export class ClaudeLhcSession {
     this.#threadId = await createThread(this.#cwd);
     this.#thread = threadRef(this.#threadId);
     await bindSession(this.#threadId, first);
-    this.#gen = this.#startGeneration(first, { sessionId: first });
+    this.#gen = this.#startGeneration(first, {
+      sessionId: first,
+      title: nativeLhcTitle(this.#threadId),
+    });
     this.#io.log(`created thread ${this.#threadId} as generation ${first}`);
   }
 
@@ -782,6 +804,7 @@ export class ClaudeLhcSession {
       entries,
       env: this.#env,
     });
+    await labelNativeSession(sessionId, nativeLhcTitle(this.#threadId), cwd, this.#io);
     await bindSession(this.#threadId, sessionId);
     const next = this.#startGeneration(sessionId, { resume: sessionId });
     const old = this.#gen;
