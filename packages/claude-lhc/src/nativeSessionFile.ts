@@ -36,11 +36,11 @@ export function encodeProjectKey(cwd: string): string {
   return `${encoded.slice(0, PROJECT_KEY_CAP)}-${Math.abs(javaStringHash(cwd)).toString(36)}`;
 }
 
-/** Pinned SDK `wn`: realpath when it exists, then NFC on darwin. */
+/** Pinned SDK `KU`: `realpathSync` (not `.native`), then NFC on darwin (`Or`). */
 export function canonicalizeCwd(cwd: string, platform = process.platform): string {
   let resolved = cwd;
   try {
-    resolved = NodeFS.realpathSync.native(cwd);
+    resolved = NodeFS.realpathSync(cwd);
   } catch {
     resolved = NodePath.resolve(cwd);
   }

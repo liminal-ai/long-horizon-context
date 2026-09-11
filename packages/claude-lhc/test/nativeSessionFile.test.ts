@@ -61,7 +61,7 @@ describe("nativeSessionFile", () => {
     mkdirSync(real);
     if (process.platform === "win32") symlinkSync(real, link, "junction");
     else symlinkSync(real, link);
-    expect(canonicalizeCwd(link)).toBe(realpathSync.native(link));
+    expect(canonicalizeCwd(link)).toBe(realpathSync(link));
   });
 
   test("writeProjectedSession completes before returning and uses the UUID filename", async () => {
