@@ -3,6 +3,8 @@ import o200kBase from "js-tiktoken/ranks/o200k_base";
 
 export const TOKEN_ESTIMATOR_ID = "js-tiktoken:o200k_base";
 
+const SIGNATURE_CHARS_PER_BILLED_TOKEN = 5.74;
+
 let encoder: Tiktoken | null = null;
 
 export function estimateTokens(text: string): number {
@@ -11,6 +13,16 @@ export function estimateTokens(text: string): number {
   // "<|endoftext|>" in a transcript must count, never throw — counting is
   // on the capture path and capture must be total.
   return encoder.encode(text, "all").length;
+}
+
+export function estimateSignatureTokens(signature: string): number {
+  // Calibration (2026-09-12). Signatures are base64; o200k_base tokenizes them
+  // at ~1.47 chars/token (measured on 300 live Fable signatures: 672,884 chars ->
+  // 458,756 tokens). The API bills them far lower: Alder's 2026-09-07 measurement
+  // on the cc-lhc steward thread counted 18 zero-text thinking blocks at 8,637
+  // provider tokens where o200k estimated 33,714 (ratio 3.90). 1.467 * 3.904 =
+  // 5.73 chars per billed token; 5.74 used. Re-derive if the API's rate changes.
+  return Math.ceil(signature.length / SIGNATURE_CHARS_PER_BILLED_TOKEN);
 }
 
 export interface TokenSlice {

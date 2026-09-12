@@ -3,7 +3,7 @@
 // summarizes. Token estimates come from the one counting util, called directly:
 // it is pure and deterministic, so golden counts beat stubs.
 import { type ApiBlock, blobTokenEstimate, placeholderText } from "../../shared-tech/index.js";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import { estimateSignatureTokens, estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { Block, BlockType, RecordedEvent } from "../index.js";
 
 // A message that carried content blocks beyond text keeps block 0 as its
@@ -74,18 +74,16 @@ export function projectEvent(event: RecordedEvent): ProjectedMessage | null {
       if (event.payload.provider !== undefined) content.provider = event.payload.provider;
       if (event.payload.model !== undefined) content.model = event.payload.model;
       if (event.payload.api !== undefined) content.api = event.payload.api;
-      // Count signature bytes too — when served back to the provider they sit in
-      // the live context window (the fable live-vs-LHC token gap).
-      const estimateSource =
-        event.payload.signature !== undefined && event.payload.signature !== ""
-          ? `${event.payload.text}${event.payload.signature}`
-          : event.payload.text;
+      // Replayed signatures are billed in the provider's input context and
+      // must be counted, but at the measured provider rate rather than as BPE text.
+      const signatureTokens =
+        event.payload.signature === undefined ? 0 : estimateSignatureTokens(event.payload.signature);
       return {
         blocks: [
           { blockType: "text", content },
           ...apiBlockRows(event.payload.block === undefined ? undefined : [event.payload.block]),
         ],
-        tokenEstimate: estimateTokens(estimateSource),
+        tokenEstimate: estimateTokens(event.payload.text) + signatureTokens,
       };
     }
     case "model_change":
