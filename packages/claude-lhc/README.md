@@ -22,3 +22,14 @@ pnpm --filter lhc build && pnpm --filter claude-lhc build
 ```
 
 Then run `node packages/claude-lhc/dist/sidecar.js` (or `node packages/claude-lhc/bin/claude-lhc.js`). Bun is not used.
+
+## Thinking replay after compact
+
+The projected session replays the tail's thinking blocks with their signatures
+(`SELECTED_THINKING_REBUILD_ARM` in `src/projection/project.ts`, mirroring cc-lhc).
+The API binds a thinking block to the exact history it was produced over; a compact
+rewrites that history. Accounts created on or after 2026-08-31, and later models for all
+accounts, reject that shape with a prefix-mismatch 400 on the first request after a
+compact. Older accounts accept it today. If a thread hits that 400, set the arm to `omit`
+and rebuild the sidecar; no data is lost.
+Reference: https://platform.claude.com/docs/en/build-with-claude/preserved-thinking

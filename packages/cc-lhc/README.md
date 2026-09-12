@@ -261,6 +261,17 @@ not a correctness mechanism. Disable it for one launch with
 `--lhc-no-notifier`. A real session mismatch still revokes retrieval and
 capture through the authoritative rollout/session checks.
 
+## Thinking replay after compact
+
+After each compact the rebuilt rollout replays the tail's thinking blocks with their
+signatures (`SELECTED_THINKING_REBUILD_ARM = signed_verbatim` in
+`src/rollout/thinking-ladder.ts`). The API binds a thinking block to the exact history
+it was produced over; a compact rewrites that history. Accounts created on or after
+2026-08-31, and later models for all accounts, reject that shape with a
+prefix-mismatch 400 on the first request after a compact. Older accounts accept it
+today. If a thread hits that 400, flip the arm to `omit` and rebuild; no data is lost.
+Reference: https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
+
 ## Context policy
 
 Policy precedence is:
