@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { estimateTokens, type MessageEventInput, TOKEN_ESTIMATOR_ID } from "lhc";
+import { type MessageEventInput, TOKEN_ESTIMATOR_ID, TokenEstimator } from "lhc";
 import { describe, expect, it } from "vitest";
-import { BUILTIN_CONTEXT_POLICY, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import { decideGovernor } from "../../src/governor/decide.js";
 import { applyGovernorLifecycleBatch, createGovernorRuntimeState } from "../../src/governor/observe-state.js";
 import { providerContextFromUsage } from "../../src/governor/provider-context.js";
@@ -31,6 +31,8 @@ import {
 } from "../../src/observation/observe.js";
 import { createSamplingDedupeState } from "../../src/observation/sampling.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
+
+const estimator = new TokenEstimator("claude-2026");
 
 const FIXTURE_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "rollout-samples-slice1.jsonl");
 
@@ -466,7 +468,6 @@ describe("observeRolloutLine", () => {
         Object.keys(BUILTIN_CONTEXT_POLICY).map((k) => [k, "session"]),
       ) as ResolvedContextPolicy["sources"],
       fallbacks: [],
-      contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
     };
     const lifecycle = [
       ...rAsst.lifecycle.filter((s) => s.kind === "sampling_observed" || s.kind === "post_measurement_estimate"),
@@ -539,14 +540,14 @@ describe("observeRolloutLine", () => {
 });
 
 describe("pre-launch estimate: what the next request carries that no provider reading covers", () => {
-  it("a pending prompt is sized by packaged core LHC estimateTokens, labelled with estimator identity", () => {
+  it("a pending prompt is sized by the session TokenEstimator, labelled with estimator identity and family", () => {
     const text = "x".repeat(400);
     expect(pendingPromptEstimate(text)).toEqual({
-      tokens: estimateTokens(text),
+      tokens: estimator.estimate(text),
       source: PENDING_PROMPT_ESTIMATE_SOURCE,
       domain: "source_labelled_estimate",
     });
-    expect(PENDING_PROMPT_ESTIMATE_SOURCE).toBe(`pending_prompt:${TOKEN_ESTIMATOR_ID}`);
+    expect(PENDING_PROMPT_ESTIMATE_SOURCE).toBe(`pending_prompt:${TOKEN_ESTIMATOR_ID}:claude-2026`);
     expect(pendingPromptEstimate("")).toMatchObject({ tokens: 0 });
   });
 
@@ -557,16 +558,17 @@ describe("pre-launch estimate: what the next request carries that no provider re
     );
     expect(Buffer.byteLength(prompt, "utf8")).toBe(104_263);
     expect(Math.floor(Buffer.byteLength(prompt, "utf8") / 4)).toBe(26_065);
-    expect(pendingPromptEstimate(prompt).tokens).toBe(66_025);
-    expect(pendingPromptEstimate(prompt).tokens).toBe(estimateTokens(prompt));
+    expect(pendingPromptEstimate(prompt).tokens).toBe(estimator.estimate(prompt));
+    expect(pendingPromptEstimate(prompt).tokens).not.toBe(26_065);
     expect(pendingPromptEstimate(prompt).source).toContain(TOKEN_ESTIMATOR_ID);
+    expect(pendingPromptEstimate(prompt).source).toContain("claude-2026");
   });
 
   it("captured growth and the pending prompt add up, and the label names both", () => {
     const growth = hostEstimateFromCanonicalBytes(800);
     const prompt = "y".repeat(400);
     const estimate = preLaunchEstimate(growth, prompt);
-    expect(estimate.tokens).toBe(growth.tokens + estimateTokens(prompt));
+    expect(estimate.tokens).toBe(growth.tokens + estimator.estimate(prompt));
     expect(estimate.source).toBe(`${HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE}+${PENDING_PROMPT_ESTIMATE_SOURCE}`);
   });
 
@@ -574,7 +576,7 @@ describe("pre-launch estimate: what the next request carries that no provider re
     const prompt = "z".repeat(40);
     const estimate = preLaunchEstimate(hostEstimateFromCanonicalBytes(0), prompt);
     expect(estimate).toMatchObject({
-      tokens: estimateTokens(prompt),
+      tokens: estimator.estimate(prompt),
       source: PENDING_PROMPT_ESTIMATE_SOURCE,
     });
   });
@@ -584,6 +586,7 @@ const BURNIN_PROMPT = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "burnin-defect-001-prompt.txt"),
   "utf8",
 );
+const BURNIN_TOKENS = estimator.estimate(BURNIN_PROMPT);
 
 function userPromptEvent(text: string): MessageEventInput {
   return {
@@ -660,16 +663,15 @@ function burninPolicy(): ResolvedContextPolicy {
       Object.keys(BUILTIN_CONTEXT_POLICY).map((k) => [k, "session"]),
     ) as ResolvedContextPolicy["sources"],
     fallbacks: [],
-    contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
   };
 }
 
-describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => {
-  it("shared helper: user events are 66025, not bytes/4; tools stay bytes/4", () => {
+describe("accepted user_prompt post-measurement uses the session TokenEstimator", () => {
+  it("shared helper: user events are weighted LHC estimates, not bytes/4; tools stay bytes/4", () => {
     expect(Buffer.byteLength(BURNIN_PROMPT, "utf8")).toBe(104_263);
     const user = estimateAcceptedEvent(userPromptEvent(BURNIN_PROMPT));
-    expect(user.tokens).toBe(66_025);
-    expect(user.tokens).toBe(estimateTokens(BURNIN_PROMPT));
+    expect(user.tokens).toBe(estimator.estimate(BURNIN_PROMPT));
+    expect(user.tokens).not.toBe(66_025);
     expect(user.tokens).not.toBe(26_065);
     expect(user.source).toBe(USER_PROMPT_ESTIMATE_SOURCE);
     expect(user.source).toContain(TOKEN_ESTIMATOR_ID);
@@ -690,11 +692,13 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
     const deferred = postMeasurementAddFromAcceptedEvents([userPromptEvent(BURNIN_PROMPT)]);
     expect(deferred).toMatchObject({
       kind: "post_measurement_estimate",
-      tokens: 66_025,
+      tokens: estimator.estimate(BURNIN_PROMPT),
       source: USER_PROMPT_ESTIMATE_SOURCE,
       mode: "add",
     });
-    expect(postMeasurementEstimateFromEvents([userPromptEvent(BURNIN_PROMPT)]).tokens).toBe(66_025);
+    expect(postMeasurementEstimateFromEvents([userPromptEvent(BURNIN_PROMPT)]).tokens).toBe(
+      estimator.estimate(BURNIN_PROMPT),
+    );
     expect(postMeasurementAddFromAcceptedEvents([toolResultEvent("T".repeat(8_000))])).toMatchObject({
       tokens: 2_000,
       source: HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
@@ -707,7 +711,7 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
     ]);
     expect(mixedUserTool).toMatchObject({
       kind: "post_measurement_estimate",
-      tokens: 66_025 + 2_000,
+      tokens: estimator.estimate(BURNIN_PROMPT) + 2_000,
       mode: "add",
     });
     expect(mixedUserTool?.source).toBe(
@@ -740,12 +744,12 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
     const add = immediate.lifecycle.find((s) => s.kind === "post_measurement_estimate");
     expect(add).toMatchObject({
       kind: "post_measurement_estimate",
-      tokens: 66_025,
+      tokens: BURNIN_TOKENS,
       source: USER_PROMPT_ESTIMATE_SOURCE,
       mode: "add",
     });
     expect(postMeasurementAddFromAcceptedEvents(immediate.events)).toMatchObject({
-      tokens: 66_025,
+      tokens: BURNIN_TOKENS,
       source: USER_PROMPT_ESTIMATE_SOURCE,
       mode: "add",
     });
@@ -792,7 +796,7 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
     expect(rUser.lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toEqual([
       {
         kind: "post_measurement_estimate",
-        tokens: 66_025,
+        tokens: BURNIN_TOKENS,
         source: USER_PROMPT_ESTIMATE_SOURCE,
         mode: "add",
       },
@@ -806,10 +810,10 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
       resolved,
     );
     expect(folded.state.latestProviderContext?.total).toBe(164_208);
-    expect(folded.state.postMeasurementEstimate.tokens).toBe(66_025);
+    expect(folded.state.postMeasurementEstimate.tokens).toBe(BURNIN_TOKENS);
     const settled = folded.observes.filter((o) => o.observePhase === "settled_seam").at(-1);
     expect(settled?.providerContextTotal).toBe(164_208);
-    expect(settled?.pressure.nextRequestPressureTokens).toBe(230_233);
+    expect(settled?.pressure.nextRequestPressureTokens).toBe(164_208 + BURNIN_TOKENS);
     expect(settled?.pressure.atOrAboveTrigger).toBe(true);
     expect(settled?.decision).toBe("would_compact");
 
@@ -824,11 +828,11 @@ describe("accepted user_prompt post-measurement uses LHC estimateTokens", () => 
     });
     expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBeGreaterThanOrEqual(200_000);
     expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBe(
-      164_208 + 66_025 + pendingPromptEstimate("hi").tokens,
+      164_208 + BURNIN_TOKENS + pendingPromptEstimate("hi").tokens,
     );
     expect(nextPrelaunch.kind).toBe("would_compact");
     // Ephemeral prelaunch of the original prompt is not stored a second time.
-    expect(folded.state.postMeasurementEstimate.tokens).not.toBe(66_025 + 66_025);
+    expect(folded.state.postMeasurementEstimate.tokens).not.toBe(BURNIN_TOKENS + BURNIN_TOKENS);
   });
 
   it("synthetic all-zero no-response and malformed/missing usage cannot erase pressure", () => {

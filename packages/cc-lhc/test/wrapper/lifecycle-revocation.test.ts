@@ -133,6 +133,11 @@ function makeLifecycleCapture(opts: {
     }),
     getCaptureGeneration: () => opts.health.generation,
     getLiveAsyncWork: () => [],
+    getTokenFamily: () => ({
+      modelId: null,
+      resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+      estimator: null as never,
+    }),
     stop: vi.fn(opts.stopImpl ?? (async () => {})),
   } as unknown as CaptureSession;
 }

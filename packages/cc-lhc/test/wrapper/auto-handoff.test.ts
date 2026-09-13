@@ -237,6 +237,11 @@ function scriptedCaptureSession(
     }),
     getCaptureGeneration: () => generation,
     getLiveAsyncWork: () => [],
+    getTokenFamily: () => ({
+      modelId: null,
+      resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+      estimator: null as never,
+    }),
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
   return { session, deps };
@@ -1174,7 +1179,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     // Open the panel: the status summary appears before the prompt.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => panelText(terminalOutput).includes(PANEL_TITLE), "panel summary");
-    expect(panelText(terminalOutput)).toContain("window 200k");
+    expect(panelText(terminalOutput)).toContain("target 1.0k");
+    expect(panelText(terminalOutput)).not.toContain("window ");
     // Scope, precedence, and last action are one typed word away.
     const beforeDetails = terminalOutput.length;
     (stdin as unknown as PassThrough).write(Buffer.from("/details\r"));

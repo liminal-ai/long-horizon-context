@@ -41,6 +41,12 @@ import {
   postMeasurementAddFromAcceptedEvents,
 } from "../observation/observe.js";
 import { createSamplingDedupeState, type SamplingDedupeState } from "../observation/sampling.js";
+import {
+  createSessionTokenFamilyState,
+  formatTokenFamilyChangeLog,
+  type SessionTokenFamilyState,
+  TOKEN_FAMILY_STICKY_UNTIL_RELAUNCH,
+} from "../observation/token-family.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import {
   assertRolloutMatchesExpectedSession,
@@ -98,16 +104,18 @@ export function isInferenceDisabled(): boolean {
   return process.env.CC_LHC_NO_INFERENCE === "1";
 }
 
-export function captureSdkConfig(options: { noInference?: boolean } = {}): SdkConfig {
+export function captureSdkConfig(options: { noInference?: boolean; tokenFamily: string }): SdkConfig {
   if (options.noInference === true || isInferenceDisabled()) {
     return {
       mode: "manual",
+      tokenFamily: options.tokenFamily,
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       view: CAPTURE_VIEW_CONFIG,
     };
   }
   return {
     mode: "background",
+    tokenFamily: options.tokenFamily,
     inference: {
       call: claudeCliModelCall,
       assignments: ccAssignments(),
@@ -218,6 +226,13 @@ export interface CaptureSessionDeps {
    * `UserPromptSubmit` hook's accepted context, LIM-146), with the bound thread id.
    */
   onResultDelivery?: (launchIds: readonly string[], threadId: string) => void;
+  /**
+   * Wrapper-owned token-family fold. Shared across capture generations of one
+   * wrapper run so a `/model` switch is one log line and does not recreate
+   * the SDK. Absent: this session holds its own fold, starting at the
+   * provider-fallback seed.
+   */
+  tokenFamily?: SessionTokenFamilyState;
   /** Latest runtime choices explicitly recorded by the bound Claude rollout. */
   onRuntimeSettings?: (settings: Readonly<ClaudeRuntimeSettings>) => void;
   /**
@@ -267,6 +282,8 @@ export interface CaptureSession {
    * already reads and rebuilt by re-reading them; nothing is persisted.
    */
   getLiveAsyncWork(): OpenAsyncWork[];
+  /** Current tokenizer family (seeded at launch; SDK family is sticky until relaunch). */
+  getTokenFamily(): SessionTokenFamilyState;
   /**
    * Settled-seam catch-up: close the canonical turn left open by a native
    * turn the transcript already shows finished (keyed to that terminal line),
@@ -451,6 +468,13 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   const turnFold = createTurnFoldState();
   const segmentFold = createSegmentFoldState();
   const estimateFold: PostMeasurementEstimateFold = createPostMeasurementEstimateFold();
+  const tokenFamily = deps.tokenFamily ?? createSessionTokenFamilyState();
+  const noteFamilyChange = (previous: SessionTokenFamilyState["resolved"]): void => {
+    if (tokenFamily.modelId === null) return;
+    log(
+      `${formatTokenFamilyChangeLog(previous, tokenFamily.resolved, tokenFamily.modelId)}; ${TOKEN_FAMILY_STICKY_UNTIL_RELAUNCH}`,
+    );
+  };
   // One capture generation, one open-async set. A replacement child starts a
   // new capture session, and by then everything this set held is dead.
   const asyncWorkFold: AsyncWorkFold = createAsyncWorkFold((event) => {
@@ -795,7 +819,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
               }
             }
             if (work.wouldPostMeasurementAdd && !work.samplingEmitted && recordedEvents.length > 0) {
-              const add = postMeasurementAddFromAcceptedEvents(recordedEvents);
+              const add = postMeasurementAddFromAcceptedEvents(recordedEvents, tokenFamily.estimator);
               if (add !== null) pressureSignals.push(add);
             }
             for (const signal of work.deferredPressure) {
@@ -843,11 +867,15 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
               estimateFold,
               asyncWorkFold,
               deferPressureLifecycle: true,
+              tokenFamily,
             };
             if (expectedSession !== undefined) {
               observeOpts.expectedSessionId = expectedSession.sessionId;
             }
+            const previousFamily = tokenFamily.resolved;
+            const previousModel = tokenFamily.modelId;
             const observed = observeWatcherEmission(emission, lineIndex, observeOpts);
+            if (tokenFamily.modelId !== previousModel) noteFamilyChange(previousFamily);
 
             // Mutation fence turn state folds classifyTurnSignal directly so
             // assistant tool_use state-maintenance keeps isTurnOpen true even
@@ -1145,7 +1173,12 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         }
         stats.threadId = threadIdFromRef(threadRef) || null;
         if (stopped) return;
-        sdk = (deps.initSdkFn ?? initLhc)(captureSdkConfig(deps.noInference === true ? { noInference: true } : {}));
+        sdk = (deps.initSdkFn ?? initLhc)(
+          captureSdkConfig({
+            tokenFamily: tokenFamily.resolved.family,
+            ...(deps.noInference === true ? { noInference: true } : {}),
+          }),
+        );
       } else {
         const continuedThreadId = threadIdFromRef(threadRef);
         if (continuedThreadId !== "") {
@@ -1371,6 +1404,9 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     },
     getCaptureGeneration(): number {
       return captureHealth.generation;
+    },
+    getTokenFamily(): SessionTokenFamilyState {
+      return tokenFamily;
     },
     getLiveAsyncWork(): OpenAsyncWork[] {
       // Unrecognized notification shapes are for review, not for control: they

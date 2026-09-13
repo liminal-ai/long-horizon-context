@@ -211,8 +211,7 @@ differ (or coincidentally be equal), and no fixed ratio or direction between
 them is assumed or reported.
 
 One input decides an automatic compact: measured pressure against the trigger
-of the active context window (200k or 1M, observed through Claude's status-line
-payload). Smart Compact cannot be turned off. Everything else the wrapper knows — capture health,
+(built-in 360k; cc-lhc assumes a 1M-window model). Smart Compact cannot be turned off. Everything else the wrapper knows — capture health,
 descriptor readiness, receipt storage, typed-ahead input — is diagnostics with
 no blocking authority. Threshold crossing during an **open** agentic turn is
 classified and written as a durable receipt with `wouldMutate=false` — Claude
@@ -234,7 +233,8 @@ against an in-memory receipt id with a loud warning rather than not running.
 
 The control panel's `bounds` and `allocation` edits apply only to the current
 wrapper lifetime. Nothing stops automatic compact; explicit bounds keep their
-precedence over the window's built-in defaults.
+precedence over the built-in defaults. Override the single built-in policy
+(180k/360k/50k) through user config, project config, launch flags, or `/bounds`.
 
 **What this host cannot do (v1, by design):** Codex-style in-place mid-agentic-
 turn continuation, synthetic tool-tail preservation, forced

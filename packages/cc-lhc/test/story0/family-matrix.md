@@ -16,34 +16,6 @@ cc-lhc's launch path and is refused by `intake/argv.ts`; its exit-handoff file
 is written only by that path (none appeared after SIGKILL or `/exit`).
 
 Records (scrubbed projection, see the fixture README): `test/fixtures/async-work/claude-2.1.252-continuity-probe.jsonl`.
-Status-line evidence: `test/fixtures/context-window/claude-2.1.252-status-line-live.json`.
-Settings-preservation evidence: `test/fixtures/context-window/claude-2.1.252-settings-chain-live.json`
-with the mechanism in `test/story0/settings-merge-harness.ts`.
-
-## Settings preservation (D8)
-
-Mechanism (deterministic, `test/context-window/settings-merge.test.ts`): one
-launch-scoped `--settings` payload replaces the operator's in place (or is
-appended when there was none); an existing `statusLine.command` — from the
-argv payload, a `--settings <file>`, or the user settings file — is chained
-behind `tee -a <capture>` so the observer and the operator's command receive
-the same bytes and the operator's stdout stays the visible line; every other
-settings field is carried verbatim; unreadable, malformed, non-object,
-valueless, duplicate, or non-command inputs return `detection_unavailable`
-(conservative 200k) with the operator's argv verbatim.
-
-Live (Claude Code 2.1.252, three haiku runs, same disposable project): a
-disposable operator command that records its stdin and prints
-`USERLINE <model.id>`. `control` = operator argv unchained; `inline` = the
-operator's inline `--settings` JSON merged; `file` = the operator's
-`--settings <file>` merged. In both merged modes the launched argv equals what
-the harness derives, exactly one `--settings` was forwarded, observer and
-operator command captured byte-identical JSON (sha256 per line), the visible
-status line equalled the control run, and the operator's `env` mark reached
-the session. Not exercised live: a status line held only in the operator's
-`~/.claude/settings.json` (the real file has none and is not edited; the
-harness proves that route over a fixture), and the unavailable branch (the
-wrapper forwards the untouched argv, so there is nothing host-side to observe).
 
 ## What the host does after the child dies (plain resume)
 
@@ -95,27 +67,17 @@ on that platform.
 
 ## What Story 0 now proves / does not prove
 
-Proves: documented status-line input carries `context_window.context_window_size`
-(200000 for haiku, 1000000 for sonnet/opus/fable and `sonnet[1m]` on this
-account), is emitted at launch before any turn, and re-emits on `/model` with
-the same `session_id`; settings preservation per D8 (section above): one
-merged launch-scoped `--settings` for both the inline and file routes, the
-operator's status-line command and visible output preserved, other settings
-fields carried through, unmergeable input failing to 200k with argv verbatim; every family's launch/terminal/orphan shapes on 2.1.252; the
+Proves: every family's launch/terminal/orphan shapes on 2.1.252; the
 continuation seams and their replay boundary above; shell survival through the
 production `run()` termination path on three platforms (CI).
 
-Does not prove: user settings-file statusLine chaining and file-vs-inline
-`--settings` precedence (operator `settings.json` has no statusLine and is not
-edited — Story 1 proves the merge on its own fixture); a same-family route
-producing different window sizes (no such entitlement on this account);
-`UserPromptSubmit`/`additionalContext` delivery (LIM-146 proof); macOS/Windows
+Does not prove: `UserPromptSubmit`/`additionalContext` delivery (LIM-146 proof); macOS/Windows
 behavior of the agent/workflow/monitor seams (host-level, not separately
 probed); Windows output identity; result-file lifetime.
 
 ## Commands
 
-- Story 0 suites: `CC_LHC_NATIVE_REQUIRE_ADDON=1 ./node_modules/.bin/vitest run test/story0/process-capability/production-path.test.ts test/observation/async-work.test.ts test/runtime/process-identity.test.ts test/runtime/native-identity.test.ts test/context-window/status-line-observer.test.ts test/context-window/settings-merge.test.ts`
+- Story 0 suites: `CC_LHC_NATIVE_REQUIRE_ADDON=1 ./node_modules/.bin/vitest run test/story0/process-capability/production-path.test.ts test/observation/async-work.test.ts test/runtime/process-identity.test.ts test/runtime/native-identity.test.ts`
 - Probe driver (disposable, not part of the package): a node-pty script that
   spawns `claude` in `/tmp/lim100/scratch`, answers the trust dialog, sends a
   one-line prompt pointing at an instruction file, waits on a file marker, and

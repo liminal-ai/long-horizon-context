@@ -16,6 +16,7 @@ describe("ccAssignments", () => {
     expect(() =>
       initLhc({
         mode: "background",
+        tokenFamily: "claude-2026",
         inference: {
           call: createClaudeCliModelCall({ binary: () => "/bin/false" }),
           assignments,

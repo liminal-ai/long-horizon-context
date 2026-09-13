@@ -33,7 +33,7 @@ import { type ContinuitySnapshot, closeContinuitySnapshot, snapshotContinuity } 
 import { type ContinuityStore, openContinuityStore } from "../../src/continuity/store.js";
 import type { discoverAdoptedTaskProcess } from "../../src/continuity/task-process.js";
 import { runTasksCli } from "../../src/continuity/tasks-cli.js";
-import { CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
+
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import {
@@ -317,7 +317,6 @@ const POLICY = {
     ].map((k) => [k, "session"]),
   ) as never,
   fallbacks: [],
-  contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
 };
 
 /** A later settled seam over the trigger: a distinct sampling so dedupe cannot swallow it. */
@@ -507,6 +506,11 @@ async function launch(
       }),
       getCaptureGeneration: () => gen,
       getLiveAsyncWork: () => openAsyncWork(fold),
+      getTokenFamily: () => ({
+        modelId: null,
+        resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+        estimator: null as never,
+      }),
       stop: vi.fn(async () => {}),
     } as unknown as CaptureSession;
   };
@@ -785,7 +789,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
         ...userHooks,
         UserPromptSubmit: [...userHooks.UserPromptSubmit, OUR_HOOK_ENTRY],
       });
-      expect(settings.statusLine).toMatchObject({ type: "command" });
+      expect(settings.statusLine).toBeUndefined();
       expect(child.env.CC_LHC_RUNTIME_DESCRIPTOR).toBeTruthy();
     }
 
@@ -862,7 +866,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     await rig.finish();
   }, 15_000);
 
-  it("TC-2.7 fallback: when the user's settings cannot take the hook, the status line still merges, nothing blocks, and results stay pending in the panel", async () => {
+  it("TC-2.7 fallback: when the user's settings cannot take the hook, the payload is left as-is, nothing blocks, and results stay pending in the panel", async () => {
     const userSettingsPath = join(mkdtempSync(join(tmpdir(), "cc-lhc-user-settings-")), "settings.json");
     writeFileSync(userSettingsPath, JSON.stringify({ hooks: "nope" }));
     const rig = await launch({}, ["--settings", userSettingsPath]);
@@ -875,7 +879,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     for (const child of rig.spawned) {
       const settings = settingsArg(child.args);
       expect(settings.hooks).toBe("nope");
-      expect(settings.statusLine).toMatchObject({ type: "command" });
+      expect(settings.statusLine).toBeUndefined();
     }
     await waitFor(
       () => wrapperLog(rig).includes("result delivery hook not installed (hooks is not an object)"),

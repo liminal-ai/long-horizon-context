@@ -2,14 +2,10 @@
  * Context policy load/merge/validate.
  * Precedence: builtin < user (XDG) < project (.cc-lhc.json) < session.
  *
- * The built-in layer is chosen by the active context class (200k or 1M), which
- * is derived from the effective model's observed window — never from
- * configuration. Explicit user/project/session values keep their precedence
- * over the built-ins of whichever class is active.
- *
- * Configuration can be wrong; it can never disarm the product. An unknown
- * field, a malformed value, an unreadable file, or an incoherent pair of
- * bounds falls back to the active class's built-in default for the fields
+ * There is one built-in policy. Explicit user/project/session values keep
+ * their precedence over it. Configuration can be wrong; it can never disarm
+ * the product. An unknown field, a malformed value, an unreadable file, or an
+ * incoherent pair of bounds falls back to the built-in default for the fields
  * involved and records a notice naming the field and its source. There is no
  * field that turns Smart Compact off.
  */
@@ -21,107 +17,24 @@ import { join, resolve } from "node:path";
 import { PRODUCT_PRESET_IDS } from "./band-allocation.js";
 import type {
   ConfigFallback,
-  ContextClass,
   ContextPolicy,
   ContextPolicyPartial,
-  ContextWindowResolution,
   PolicyFieldKey,
   PolicyFieldSource,
   PolicyFieldSources,
   ResolvedContextPolicy,
 } from "./types.js";
 
-/** The exact observed window values that select a built-in class (D8). */
-export const CONTEXT_WINDOW_TOKENS: Readonly<Record<ContextClass, number>> = {
-  "200k": 200_000,
-  "1M": 1_000_000,
+/** Single built-in policy. cc-lhc assumes a 1M-window model. */
+export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
+  lowerBoundTokens: 180_000,
+  upperBoundTokens: 360_000,
+  profile: "default",
+  pruneEnabled: false,
+  pruneThresholdTokens: null,
+  pruneTargetTokens: null,
+  minRunwayTokens: 50_000,
 };
-
-/** Built-in policy per context class (D1). The class is never configured. */
-export const BUILTIN_CONTEXT_POLICIES: Readonly<Record<ContextClass, ContextPolicy>> = {
-  "200k": {
-    lowerBoundTokens: 70_000,
-    upperBoundTokens: 140_000,
-    profile: "default",
-    pruneEnabled: false,
-    pruneThresholdTokens: null,
-    pruneTargetTokens: null,
-    minRunwayTokens: 40_000,
-  },
-  "1M": {
-    lowerBoundTokens: 180_000,
-    upperBoundTokens: 360_000,
-    profile: "default",
-    pruneEnabled: false,
-    pruneThresholdTokens: null,
-    pruneTargetTokens: null,
-    minRunwayTokens: 50_000,
-  },
-};
-
-/** The class every session starts on and falls back to until a window is observed. */
-export const CONSERVATIVE_CONTEXT_CLASS: ContextClass = "200k";
-
-/** Built-in defaults of the conservative class — the policy before any window is known. */
-export const BUILTIN_CONTEXT_POLICY: ContextPolicy = BUILTIN_CONTEXT_POLICIES[CONSERVATIVE_CONTEXT_CLASS];
-
-export function builtinContextPolicy(contextClass: ContextClass): ContextPolicy {
-  return BUILTIN_CONTEXT_POLICIES[contextClass];
-}
-
-/** The resolution every session starts with: nothing observed, conservative class. */
-export const CONTEXT_WINDOW_NOT_YET_OBSERVED: ContextWindowResolution = {
-  contextClass: CONSERVATIVE_CONTEXT_CLASS,
-  source: "not_yet_observed",
-  observedWindowTokens: null,
-  modelId: null,
-  detail: "context window not observed yet; conservative 200k policy applies",
-  unresolvedAdvisory: true,
-};
-
-/** Detection could not be installed for this launch; the reason is operator-facing. */
-export function contextWindowDetectionUnavailable(reason: string): ContextWindowResolution {
-  return {
-    contextClass: CONSERVATIVE_CONTEXT_CLASS,
-    source: "detection_unavailable",
-    observedWindowTokens: null,
-    modelId: null,
-    detail: `context window detection unavailable (${reason}); conservative 200k policy applies`,
-    unresolvedAdvisory: true,
-  };
-}
-
-/**
- * Exact class resolution from one observed `context_window_size` (D8): only
- * 200000 and 1000000 select a class. Any other value keeps the conservative
- * class and is reported; a value below 200000 also raises the unresolved
- * advisory because the route is outside both supported windows.
- */
-export function resolveContextWindow(observedWindowTokens: number, modelId: string | null): ContextWindowResolution {
-  for (const contextClass of Object.keys(CONTEXT_WINDOW_TOKENS) as ContextClass[]) {
-    if (CONTEXT_WINDOW_TOKENS[contextClass] === observedWindowTokens) {
-      return {
-        contextClass,
-        source: "observed",
-        observedWindowTokens,
-        modelId,
-        detail: null,
-        unresolvedAdvisory: false,
-      };
-    }
-  }
-  const below = observedWindowTokens < CONTEXT_WINDOW_TOKENS["200k"];
-  return {
-    contextClass: CONSERVATIVE_CONTEXT_CLASS,
-    source: "unsupported_value",
-    observedWindowTokens,
-    modelId,
-    detail: below
-      ? `observed context window ${observedWindowTokens} is below the supported 200k class; conservative 200k policy applies`
-      : `observed context window ${observedWindowTokens} is not a supported class (200000 or 1000000); conservative 200k policy applies`,
-    unresolvedAdvisory: below,
-  };
-}
 
 /** The operator-facing sentence every fallback surface repeats verbatim. */
 export const CONFIG_FALLBACK_NOTICE =
@@ -346,8 +259,7 @@ export function validateContextPolicy(policy: ContextPolicy): string[] {
 }
 
 /**
- * Settle coherence by reverting configured fields to the active class's
- * built-in defaults.
+ * Settle coherence by reverting configured fields to the built-in defaults.
  *
  * Only fields a user actually set are reverted, so the offending value loses
  * and the built-in wins. Reverting strictly reduces the configured set, so
@@ -374,7 +286,7 @@ function settleCoherence(
         fallbacks.push({
           origin: origins[field] ?? `${sources[field]} config`,
           field,
-          detail: `${error}; ${field} reset to the built-in default for the active context window`,
+          detail: `${error}; ${field} reset to the built-in default`,
         });
         sources[field] = "builtin";
         delete origins[field];
@@ -398,12 +310,6 @@ export interface LoadContextPolicyOptions {
   projectConfigPath?: string;
   /** Test seam: read JSON by path. */
   readJson?: (path: string) => { ok: true; value: unknown } | { ok: false; error: string };
-  /**
-   * The observed context window this load resolves against. Defaults to the
-   * not-yet-observed conservative resolution; `applyContextWindow` re-resolves
-   * the same layers when a window is observed later.
-   */
-  contextWindow?: ContextWindowResolution;
 }
 
 /**
@@ -417,8 +323,7 @@ export function loadContextPolicy(options: LoadContextPolicyOptions = {}): Resol
   const userPath = options.userConfigPath ?? userConfigPath(env);
   const projectPath = options.projectConfigPath ?? projectConfigPath(cwd);
 
-  const contextWindow = options.contextWindow ?? CONTEXT_WINDOW_NOT_YET_OBSERVED;
-  const builtin = builtinContextPolicy(contextWindow.contextClass);
+  const builtin = BUILTIN_CONTEXT_POLICY;
   const fallbacks: ConfigFallback[] = [];
   const sources = emptySources();
   const origins: FieldOrigins = {};
@@ -448,34 +353,7 @@ export function loadContextPolicy(options: LoadContextPolicyOptions = {}): Resol
 
   policy = settleCoherence(policy, sources, origins, fallbacks, builtin);
 
-  return { policy, sources, fallbacks, contextWindow };
-}
-
-/**
- * Re-resolve an already-loaded policy against a newly observed context window
- * (AC-1.4). Only model-derived values move: every field still on its built-in
- * source takes the new class's built-in; explicit user/project/session values
- * keep their value and precedence. Coherence is settled again so an explicit
- * value that no longer fits the new built-ins falls back per field, named.
- */
-export function applyContextWindow(
-  resolved: ResolvedContextPolicy,
-  contextWindow: ContextWindowResolution,
-): ResolvedContextPolicy {
-  const builtin = builtinContextPolicy(contextWindow.contextClass);
-  const sources: PolicyFieldSources = { ...resolved.sources };
-  const origins: FieldOrigins = {};
-  let policy: ContextPolicy = { ...resolved.policy };
-  for (const key of POLICY_FIELD_KEYS) {
-    if (sources[key] === "builtin") policy = { ...policy, [key]: builtin[key] };
-    else origins[key] = `${sources[key]} config`;
-  }
-  // Coherence fallbacks recorded at load are re-derived here from the same
-  // explicit values; earlier notices about unknown/malformed fields survive.
-  const fallbacks = resolved.fallbacks.filter((f) => f.field === null || !f.detail.includes("reset to the built-in"));
-  const carried: ConfigFallback[] = [...fallbacks];
-  policy = settleCoherence(policy, sources, origins, carried, builtin);
-  return { policy, sources, fallbacks: carried, contextWindow };
+  return { policy, sources, fallbacks };
 }
 
 /** Compact source summary for observe records. */

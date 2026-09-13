@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BUILTIN_CONTEXT_POLICY, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import {
   applyGovernorLifecycleBatch,
   createGovernorRuntimeState,
@@ -15,7 +15,7 @@ function armed(): ResolvedContextPolicy {
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "builtin"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, fallbacks: [], contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED };
+  return { policy, sources, fallbacks: [] };
 }
 
 describe("governor observe-state fold", () => {
@@ -405,8 +405,8 @@ describe("governor observe-state fold", () => {
     );
     const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0]!;
     expect(settled.decision).toBe("would_compact");
-    expect(settled.contextClass).toBe("200k");
-    expect(settled.contextWindowSource).toBe("not_yet_observed");
+    expect(settled.tokenFamily).toBe("claude-2026");
+    expect(settled.tokenFamilySource).toBe("provider-fallback");
     expect(JSON.stringify(settled)).not.toContain("policy_disabled");
   });
 

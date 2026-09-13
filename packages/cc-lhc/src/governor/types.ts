@@ -2,57 +2,22 @@
  * Context policy and capability-limited governor types.
  *
  * One thing decides an automatic compact: measured pressure against the
- * trigger of the active context window. Running CC-LHC means Smart Compact is
- * active; there is no policy field, launch flag, panel command, or governor
- * state that turns it off. Everything else the wrapper knows — capture
- * health, descriptor state, receipts, input epochs — is diagnostics and has no
- * blocking authority here.
+ * trigger. Running CC-LHC means Smart Compact is active; there is no policy
+ * field, launch flag, panel command, or governor state that turns it off.
+ * Everything else the wrapper knows — capture health, descriptor state,
+ * receipts, input epochs — is diagnostics and has no blocking authority here.
  *
  * Decisions name what would happen and why. Claude Code has no in-place
  * mid-agentic-turn request replacement: open-turn classifications are recorded
  * with wouldMutate=false; mutation/handoff only at a settled Claude-safe seam.
  */
 
+import type { TokenFamilySource } from "lhc";
+
+export type { TokenFamilySource };
+
 /** Where each effective field came from (Slice 5 status/help). */
 export type PolicyFieldSource = "builtin" | "user" | "project" | "session";
-
-/**
- * The two supported effective context windows. Built-in target, trigger, and
- * runway are chosen per class; every other value is explicit configuration.
- */
-export type ContextClass = "200k" | "1M";
-
-/** The documented status-line field the class is read from. */
-export type ContextWindowSource =
-  /** `context_window.context_window_size` was exactly 200000 or 1000000. */
-  | "observed"
-  /** No payload has been observed yet for this session. */
-  | "not_yet_observed"
-  /** The launch could not install the observer (settings unreadable, unmergeable, unsupported). */
-  | "detection_unavailable"
-  /** A payload arrived with a value outside {200000, 1000000}. */
-  | "unsupported_value";
-
-/**
- * How the active context class was decided. The class is derived from the
- * effective model's observed window and is never pinned by configuration.
- */
-export interface ContextWindowResolution {
-  contextClass: ContextClass;
-  source: ContextWindowSource;
-  /** The exact observed `context_window_size`, when a payload was read. */
-  observedWindowTokens: number | null;
-  /** `model.id` from the same payload, for the panel; never a class input. */
-  modelId: string | null;
-  /** Operator-facing reason when the class is a conservative fallback. */
-  detail: string | null;
-  /**
-   * Nonblocking unresolved-window advisory: the class is not known for a
-   * supported route (nothing observed, detection unavailable) or the observed
-   * window is below the smallest supported class.
-   */
-  unresolvedAdvisory: boolean;
-}
 
 /**
  * cc-lhc host capability for compact governance.
@@ -85,8 +50,8 @@ export const EMPTY_POST_MEASUREMENT_ESTIMATE: PostMeasurementEstimate = {
 
 /**
  * Effective context policy. Always usable: invalid fields fall back to the
- * active context class's built-in default with a visible notice, never to a
- * disabled product. There is no field that turns Smart Compact off.
+ * built-in default with a visible notice, never to a disabled product. There
+ * is no field that turns Smart Compact off.
  */
 export interface ContextPolicy {
   /** LHC compact construction target (tokens); passed to LHC directly. */
@@ -121,8 +86,6 @@ export type PolicyFieldSources = {
 export interface ResolvedContextPolicy {
   policy: ContextPolicy;
   sources: PolicyFieldSources;
-  /** The context window the built-in fields were taken from. */
-  contextWindow: ContextWindowResolution;
   /**
    * Per-field fallbacks applied because a configured value was unknown,
    * malformed, or incoherent. Empty when configuration was fully usable.
@@ -258,9 +221,9 @@ export interface GovernorObserveRecord {
   upperBoundTokens: number;
   lowerBoundTokens: number;
   profile: string;
-  /** Active context class and how it was decided at this observation. */
-  contextClass: ContextClass;
-  contextWindowSource: ContextWindowSource;
+  /** Tokenizer family used for host-side estimates at this observation. */
+  tokenFamily: string;
+  tokenFamilySource: TokenFamilySource;
   wouldMutate: boolean;
   /** Count of configured values replaced by built-in defaults at load. */
   configFallbackCount: number;

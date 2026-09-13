@@ -3,7 +3,6 @@
  * never execution, and one completion key however the terminal encodes Tab.
  */
 import { describe, expect, it } from "vitest";
-import { resolveContextWindow } from "../../src/governor/config.js";
 
 import {
   createInputState,
@@ -53,7 +52,6 @@ const VIEW = buildPanelViewSnapshot({
   providerContextTokens: 84_000,
   targetTokens: 100_000,
   triggerTokens: 200_000,
-  contextWindow: resolveContextWindow(1_000_000, null),
   captureHealth: "ready",
   profile: "balanced",
 });

@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { type ContextMutationPlan, runContextMutation } from "../../src/commands/context-mutation.js";
 import type { LhcCommandRuntime } from "../../src/commands/dispatch.js";
-import { BUILTIN_CONTEXT_POLICIES } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 
 const REBUILT = {
@@ -223,17 +223,17 @@ describe("settled-segment catch-up at the mutation seam", () => {
   });
 });
 
-describe("window-derived target reaches view construction (TC-1.2b, TC-1.2c)", () => {
-  it("passes the 200k built-in target of 70,000 directly, with no multiplier", async () => {
+describe("built-in target reaches view construction (TC-1.2b, TC-1.2c)", () => {
+  it("passes the built-in target of 180,000 directly, with no multiplier", async () => {
     const sdk = sdkMock(0);
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
-    const policy = BUILTIN_CONTEXT_POLICIES["200k"];
+    const policy = BUILTIN_CONTEXT_POLICY;
     const outcome = await runContextMutation(
       { operation: "auto_compact", profile: policy.profile, lowerBoundTokens: policy.lowerBoundTokens },
       runtimeWith(sdk),
     );
     expect(outcome.kind).toBe("rebuilt");
-    const expected = { profile: "continuation", params: { lowerBound: 70_000 } };
+    const expected = { profile: "continuation", params: { lowerBound: 180_000 } };
     expect(sdk.threadView.previewCompact).toHaveBeenCalledWith(expect.anything(), expected);
     expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), expected);
     writeSpy.mockRestore();

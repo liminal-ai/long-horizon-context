@@ -139,7 +139,11 @@ describe("executeRetrieval", () => {
     registryPath = join(root, "registry.sqlite");
     mkdirSync(join(root, "threads"), { recursive: true });
     threadFile = join(root, "threads", "t.sqlite");
-    sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    sdk = initLhc({
+      mode: "manual",
+      tokenFamily: "claude-2026",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
     const created = await sdk.threads.newThread({ filePath: threadFile, registryPath });
     if (!created.ok) throw new Error(created.error.reason);
     threadId = created.value.threadId;

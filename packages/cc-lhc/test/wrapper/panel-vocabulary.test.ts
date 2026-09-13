@@ -12,7 +12,6 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { formatCompactReceipt, formatPruneReceipt } from "../../src/commands/context-mutation.js";
-import { resolveContextWindow } from "../../src/governor/config.js";
 import { createInputState, type InputState, processInputChunk } from "../../src/wrapper/modal.js";
 import { commandProgressLabel, PANEL_PROMPT_PLACEHOLDER, renderPanel } from "../../src/wrapper/panel.js";
 import {
@@ -61,7 +60,6 @@ const VIEW = buildPanelViewSnapshot({
   providerContextTokens: 84_000,
   targetTokens: 100_000,
   triggerTokens: 200_000,
-  contextWindow: resolveContextWindow(1_000_000, null),
   captureHealth: "ready",
   profile: "balanced",
   details: [
@@ -319,7 +317,6 @@ describe("work in flight names the command, not the guard label", () => {
       providerContextTokens: 84_000,
       targetTokens: 100_000,
       triggerTokens: 200_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
       extraStatusRows: [formatActiveOperationRow("auto-compact")],
@@ -350,7 +347,6 @@ describe("the standing alarm on Home", () => {
       providerContextTokens: 84_000,
       targetTokens: 100_000,
       triggerTokens: 200_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
       alarms: raw.map(toPanelWording),

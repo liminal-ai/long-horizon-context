@@ -29,8 +29,8 @@ import {
   HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
   hostEstimateFromCanonicalBytes,
   type PostMeasurementEstimateFold,
-  postMeasurementEstimateFromEvents,
   PROVIDER_OUTPUT_ESTIMATE_SOURCE,
+  postMeasurementEstimateFromEvents,
   readProviderOutputTokens,
   totalCanonicalPayloadBytes,
 } from "./estimate.js";
@@ -41,6 +41,7 @@ import {
   type SamplingDedupeState,
   samplingIdFromAssistant,
 } from "./sampling.js";
+import { noteAssistantModel, type SessionTokenFamilyState } from "./token-family.js";
 import type { LifecycleSignal, ObservationStats, TurnOpenReason, TurnSettleReason } from "./types.js";
 
 /**
@@ -78,6 +79,11 @@ export interface ObserveLineOptions {
    * callers that do not track it.
    */
   asyncWorkFold?: AsyncWorkFold;
+  /**
+   * Session token-family fold. Updated from every captured assistant model id.
+   * Absent for callers that do not track it (tests of mapping only).
+   */
+  tokenFamily?: SessionTokenFamilyState;
   /**
    * When true (live capture session path): do not emit pressure-affecting
    * signals (`post_measurement_estimate`, `turn_settled`) into `lifecycle`.
@@ -321,6 +327,9 @@ export function observeRolloutLine(
       ...(reqId !== undefined ? { requestId: reqId } : {}),
       ...(msgId !== undefined ? { messageId: msgId } : {}),
     });
+    if (model !== undefined && options.tokenFamily !== undefined) {
+      noteAssistantModel(options.tokenFamily, model);
+    }
     if (isAssistantSamplingComplete(item)) {
       // Include this completing line's canonical payload in the pending assistant
       // body so host-byte fallback covers split thinking/text/tool blocks.
@@ -335,8 +344,7 @@ export function observeRolloutLine(
           ...(claim.providerUsage !== undefined ? { providerUsage: claim.providerUsage } : {}),
           ...(isClaudePromptTooLongRejection(item) ? { contextLimitRejected: true as const } : {}),
         });
-        const blocked =
-          item.isApiErrorMessage === true || (typeof item.error === "string" && item.error !== "");
+        const blocked = item.isApiErrorMessage === true || (typeof item.error === "string" && item.error !== "");
         const provider = blocked ? null : providerContextFromUsage(claim.providerUsage);
         // API-error, blocked, all-zero, malformed, or missing usage is not a
         // new measurement: do not emit mode=set that would erase growth.
@@ -382,7 +390,7 @@ export function observeRolloutLine(
     // above accumulate into pending and emit on complete).
     wouldPostMeasurementAdd = true;
     if (!deferPressure) {
-      const est = postMeasurementEstimateFromEvents(events);
+      const est = postMeasurementEstimateFromEvents(events, options.tokenFamily?.estimator);
       if (est.tokens > 0 || linePayloadBytes > 0) {
         lifecycle.push({
           kind: "post_measurement_estimate",
@@ -509,8 +517,9 @@ export function observeRolloutLines(
  */
 export function postMeasurementAddFromAcceptedEvents(
   events: readonly MessageEventInput[],
+  estimator?: import("lhc").TokenEstimator,
 ): Extract<LifecycleSignal, { kind: "post_measurement_estimate" }> | null {
-  const est = postMeasurementEstimateFromEvents(events);
+  const est = postMeasurementEstimateFromEvents(events, estimator);
   if (est.tokens <= 0) return null;
   return {
     kind: "post_measurement_estimate",

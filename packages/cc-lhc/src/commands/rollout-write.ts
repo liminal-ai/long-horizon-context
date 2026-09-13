@@ -19,6 +19,7 @@ import { defaultLineageDbPath, defaultRegistryPath } from "../intake/paths.js";
 import { acceptCurrentSession, claudeSessionAlias } from "../intake/thread-alias.js";
 import { rolloutPathForSession } from "../rollout/sessions-index.js";
 import { writeRebuiltRollout } from "../rollout/write-rebuilt.js";
+import { parseTokenFamilyFlag } from "../shared/token-family-flag.js";
 import { registerRebuiltSessionLineage } from "./rebuild-receipt.js";
 
 export interface RolloutWriteCliDeps {
@@ -35,8 +36,8 @@ export function isRolloutWriteArgv(argv: readonly string[]): boolean {
 }
 
 const USAGE =
-  "usage: cc-lhc rollout write --thread-id ID --session-id UUID [--cwd DIR] [--projects-root DIR] [--envelope-from ROLLOUT.jsonl]";
-const FLAGS = new Set(["thread-id", "session-id", "cwd", "projects-root", "envelope-from"]);
+  "usage: cc-lhc rollout write --thread-id ID --session-id UUID --token-family SLUG [--cwd DIR] [--projects-root DIR] [--envelope-from ROLLOUT.jsonl]";
+const FLAGS = new Set(["thread-id", "session-id", "cwd", "projects-root", "envelope-from", "token-family"]);
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type Parsed = { ok: true; flags: Map<string, string> } | { ok: false; reason: string };
@@ -78,11 +79,18 @@ export async function runRolloutWriteCli(argv: readonly string[], deps: RolloutW
     return 2;
   }
   if (!UUID_RE.test(sessionId)) return refuse("usage", `--session-id must be a fresh uuid, got ${sessionId}`);
+  const family = parseTokenFamilyFlag(flags.get("token-family"));
+  if (!family.ok) return refuse("usage", family.reason);
 
   const registryPath = deps.registryPath ?? defaultRegistryPath();
   const lineageDbPath = deps.lineageDbPath ?? defaultLineageDbPath();
   const sdk =
-    deps.initSdk?.() ?? initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    deps.initSdk?.() ??
+    initLhc({
+      mode: "manual",
+      tokenFamily: family.family,
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
 
   const resolved = await sdk.threads.resolve({ threadId: threadIdOrPrefix, registryPath });
   if (!resolved.ok) return refuse(resolved.error.code, resolved.error.reason);

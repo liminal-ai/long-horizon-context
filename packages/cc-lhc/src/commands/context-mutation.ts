@@ -55,6 +55,10 @@ export interface ContextMutationMetrics {
   targetTokens?: number;
   zoneTokensBefore?: number;
   zoneTokensAfter?: number;
+  /** Tokenizer family the host estimates and compact note were priced with. */
+  tokenFamily?: string;
+  /** Why this process seeded that family (`launch --model` / `resumed record` / `provider fallback`). */
+  tokenFamilySeedSource?: string;
 }
 
 export interface HandoffRequest {
@@ -119,6 +123,13 @@ export function formatDurableReceipt(
     const target = metrics.targetTokens !== undefined ? ` (${formatTokensShort(metrics.targetTokens)} target)` : "";
     parts.push(`rebuilt LHC view ${formatTokensShort(metrics.viewTokens)}${target}`);
   }
+  if (metrics.tokenFamily !== undefined && metrics.tokenFamily !== "") {
+    const seed =
+      metrics.tokenFamilySeedSource !== undefined && metrics.tokenFamilySeedSource !== ""
+        ? ` (${metrics.tokenFamilySeedSource})`
+        : "";
+    parts.push(`family ${metrics.tokenFamily}${seed}`);
+  }
   const receipt = `[lhc ${label}:${metrics.origin}] ${parts.join("; ")}.`;
   const withNotices = hostNotices.length === 0 ? receipt : [receipt, ...hostNotices].join("\n");
   if (continuityNote === undefined || continuityNote === "") return withNotices;
@@ -154,6 +165,10 @@ export interface ContextMutationPlan {
   liveAsyncWork?: readonly OpenAsyncWork[];
   /** One-shot prelaunch has no old child and must not add a live-work note. */
   omitContinuityNote?: boolean;
+  /** Tokenizer family for the durable runtime note. */
+  tokenFamily?: string;
+  /** Seed source printed next to the family in the durable runtime note. */
+  tokenFamilySeedSource?: string;
   /**
    * An already-accepted continuity snapshot (tests / callers that snapshot
    * themselves); otherwise the runtime's `acceptCarryover` runs at the seam.
@@ -266,9 +281,13 @@ export async function runContextMutation(
     if (close.kind !== "skipped") lines.push(`settled segment ${close.kind}: ${close.detail}`);
   }
   let viewMutated = false;
+  const tokenFamily = plan.tokenFamily ?? runtime.tokenFamily;
+  const tokenFamilySeedSource = plan.tokenFamilySeedSource ?? runtime.tokenFamilySeedSource;
   const metrics: ContextMutationMetrics = {
     origin: plan.operation === "auto_compact" ? "auto" : "manual",
     ...(plan.triggerContextTokens === undefined ? {} : { triggerContextTokens: plan.triggerContextTokens }),
+    ...(tokenFamily === undefined || tokenFamily === "" ? {} : { tokenFamily }),
+    ...(tokenFamilySeedSource === undefined || tokenFamilySeedSource === "" ? {} : { tokenFamilySeedSource }),
   };
 
   /** An SDK failure: `partial` once the view moved, `refused` while it has not. */

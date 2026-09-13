@@ -1,21 +1,16 @@
 import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
-import { createInterface } from "node:readline";
 import { homedir } from "node:os";
 import { join } from "node:path";
-
+import { createInterface } from "node:readline";
+import { type DiscoverDeps, encodeProjectPath, resolveContinueSessionId } from "../rollout/discover.js";
 import {
-  isSessionUuid,
-  isUnsupportedSessionChangingFlag,
-  type UnsupportedSessionFlag,
-} from "./argv.js";
-import {
-  type ExpectedSession,
   createFreshExpectedSession,
+  type ExpectedSession,
   expectedSessionFromExplicitId,
   rolloutPathForExpectedSession,
 } from "../rollout/expected-session.js";
-import { encodeProjectPath, resolveContinueSessionId, type DiscoverDeps } from "../rollout/discover.js";
+import { isSessionUuid, isUnsupportedSessionChangingFlag, type UnsupportedSessionFlag } from "./argv.js";
 
 export interface LaunchSessionPlan {
   expected: ExpectedSession;
@@ -444,11 +439,7 @@ export async function resolveLaunchSession(
  * by an external `--resume <sessionId>`. The prompt belongs to this launch and
  * runs here, exactly once.
  */
-export function launchChildArgv(
-  rest: readonly string[],
-  passthrough: readonly string[],
-  sessionId: string,
-): string[] {
+export function launchChildArgv(rest: readonly string[], passthrough: readonly string[], sessionId: string): string[] {
   return assembleChildArgv(rest, ["--resume", sessionId], passthrough);
 }
 
@@ -641,6 +632,37 @@ export function splitLaunchArgv(rest: readonly string[], passthrough: readonly s
 /** The initial prompt text this launch carries, as the child receives it. */
 export function launchPromptText(rest: readonly string[], passthrough: readonly string[]): string {
   return splitLaunchArgv(rest, passthrough).promptTokens.join(" ");
+}
+
+/**
+ * `--model` value from child argv when present (`--model <id>` or `--model=`).
+ * Last occurrence before `--` wins. Empty values are absent.
+ */
+export function launchModelFlag(argv: readonly string[]): string | undefined {
+  let model: string | undefined;
+  let i = 0;
+  while (i < argv.length) {
+    const token = argv[i]!;
+    if (token === "--") break;
+    if (token.startsWith("--model=")) {
+      const value = token.slice("--model=".length);
+      if (value !== "") model = value;
+      i += 1;
+      continue;
+    }
+    if (token === "--model") {
+      const next = argv[i + 1];
+      if (next !== undefined && !next.startsWith("-")) {
+        model = next;
+        i += 2;
+        continue;
+      }
+      i += 1;
+      continue;
+    }
+    i += 1;
+  }
+  return model;
 }
 
 // Re-export legacy parse helpers used by tests that only need UUID resume extraction

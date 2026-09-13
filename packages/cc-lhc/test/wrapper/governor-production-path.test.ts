@@ -13,7 +13,7 @@ import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { BUILTIN_CONTEXT_POLICIES, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
+import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import { openGovernorReceiptStore } from "../../src/governor/receipt-store.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { observeWatcherEmission } from "../../src/observation/observe.js";
@@ -183,6 +183,11 @@ function scriptedCaptureSession(
     }),
     getCaptureGeneration: () => generation,
     getLiveAsyncWork: () => [],
+    getTokenFamily: () => ({
+      modelId: null,
+      resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+      estimator: null as never,
+    }),
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
 }
@@ -225,7 +230,6 @@ const POLICY = {
     }).map((k) => [k, "session"]),
   ) as never,
   fallbacks: [],
-  contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
 };
 
 const BOUND_SIGNALS: LifecycleSignal[] = [{ kind: "session_bound", sessionId: "old-session" }];
@@ -1470,17 +1474,9 @@ describe("LIM-64 production wrapper path", () => {
 
 describe("LIM-144 built-in 1M policy at the trigger through the production wrapper path (TC-4.1a)", () => {
   const ONE_MILLION_RESOLVED = {
-    policy: BUILTIN_CONTEXT_POLICIES["1M"],
+    policy: BUILTIN_CONTEXT_POLICY,
     sources: POLICY.sources,
     fallbacks: [],
-    contextWindow: {
-      contextClass: "1M",
-      source: "observed",
-      observedWindowTokens: 1_000_000,
-      modelId: "claude-opus-5",
-      detail: null,
-      unresolvedAdvisory: false,
-    },
   };
   const savedHome = process.env.CC_LHC_HOME;
   beforeEach(() => {
@@ -1509,7 +1505,6 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
     observePhase: string;
     wouldMutate: boolean;
     pressure: number | null;
-    contextClass: string;
     upperBoundTokens: number;
   }
 
@@ -1575,7 +1570,6 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
           observePhase: record.observePhase,
           wouldMutate: record.wouldMutate,
           pressure: record.pressure.nextRequestPressureTokens,
-          contextClass: record.contextClass,
           upperBoundTokens: record.upperBoundTokens,
         });
       },
@@ -1632,7 +1626,6 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
       decision: "would_compact",
       observePhase: "settled_seam",
       pressure: total,
-      contextClass: "1M",
       upperBoundTokens: 360_000,
     });
     expect(rig.spawned).toHaveLength(2);
@@ -1653,7 +1646,6 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
       decision: "below_threshold",
       wouldMutate: false,
       pressure: 359_999,
-      contextClass: "1M",
       upperBoundTokens: 360_000,
     });
     expect(rig.observes.some((o) => o.wouldMutate)).toBe(false);
@@ -1693,7 +1685,6 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
       observePhase: "open_turn",
       wouldMutate: false,
       pressure: 360_000,
-      contextClass: "1M",
       upperBoundTokens: 360_000,
     });
     expect(wouldMutateRows(rig.receiptDb)).toHaveLength(0);

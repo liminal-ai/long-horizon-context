@@ -61,8 +61,7 @@ describe("decideGovernor", () => {
       }),
     );
     expect(d.kind).toBe("would_compact");
-    // The conservative built-in is the 200k policy: trigger 140k.
-    expect(d.providerContextTotal).toBe(140_000);
+    expect(d.providerContextTotal).toBe(360_000);
   });
 
   it("post-measurement estimate can cross the threshold without double-counting into provider total", () => {

@@ -5,8 +5,8 @@
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type ThreadRef } from "lhc";
+import { afterEach, describe, expect, it } from "vitest";
 
 import { CAPTURE_VIEW_CONFIG, HOST_VIEW_PROFILES } from "../../src/governor/band-allocation.js";
 import { mapRolloutLine } from "../../src/intake/map.js";
@@ -57,8 +57,8 @@ describe("AR-6 captureSdkConfig view.profiles", () => {
     const previous = process.env.CC_LHC_NO_INFERENCE;
     delete process.env.CC_LHC_NO_INFERENCE;
     try {
-      const manual = captureSdkConfig({ noInference: true });
-      const background = captureSdkConfig({ noInference: false });
+      const manual = captureSdkConfig({ noInference: true, tokenFamily: "claude-2026" });
+      const background = captureSdkConfig({ noInference: false, tokenFamily: "claude-2026" });
       expect(manual.mode).toBe("manual");
       expect(background.mode).toBe("background");
       expect(manual.inference).toBeUndefined();
@@ -68,10 +68,7 @@ describe("AR-6 captureSdkConfig view.profiles", () => {
       expect(background.view).toBe(CAPTURE_VIEW_CONFIG);
       expect(manual.view?.profiles).toBe(background.view?.profiles);
       expect(manual.view?.profiles).toEqual([...HOST_VIEW_PROFILES]);
-      expect(manual.view?.profiles?.map((profile) => profile.name)).toEqual([
-        "cc-lhc-balanced",
-        "cc-lhc-historical",
-      ]);
+      expect(manual.view?.profiles?.map((profile) => profile.name)).toEqual(["cc-lhc-balanced", "cc-lhc-historical"]);
     } finally {
       if (previous === undefined) delete process.env.CC_LHC_NO_INFERENCE;
       else process.env.CC_LHC_NO_INFERENCE = previous;
@@ -83,11 +80,8 @@ describe("AR-6 captureSdkConfig view.profiles", () => {
     delete process.env.CC_LHC_NO_INFERENCE;
     try {
       for (const noInference of [true, false] as const) {
-        const config = captureSdkConfig({ noInference });
-        expect(config.view?.profiles?.map((profile) => profile.name)).toEqual([
-          "cc-lhc-balanced",
-          "cc-lhc-historical",
-        ]);
+        const config = captureSdkConfig({ noInference, tokenFamily: "claude-2026" });
+        expect(config.view?.profiles?.map((profile) => profile.name)).toEqual(["cc-lhc-balanced", "cc-lhc-historical"]);
         const sdk = initLhc(config);
         const threadRef = await threadWithTurns(sdk);
         const balanced = await sdk.threadView.compact(threadRef, {

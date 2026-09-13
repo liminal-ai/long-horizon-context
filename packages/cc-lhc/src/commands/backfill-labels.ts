@@ -11,6 +11,7 @@
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc } from "lhc";
 
 import { defaultRegistryPath } from "../intake/paths.js";
+import { parseTokenFamilyFlag } from "../shared/token-family-flag.js";
 
 export interface BackfillCliDeps {
   initSdk?: () => Lhc;
@@ -23,18 +24,36 @@ export function isBackfillLabelsArgv(argv: readonly string[]): boolean {
   return argv[0] === "backfill-labels";
 }
 
-const USAGE = "usage: cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]";
+const USAGE = "usage: cc-lhc backfill-labels <thread-id-or-prefix> --token-family <slug> [--dry-run]";
 
-export async function runBackfillLabelsCli(
-  argv: readonly string[],
-  deps: BackfillCliDeps = {},
-): Promise<number> {
+export async function runBackfillLabelsCli(argv: readonly string[], deps: BackfillCliDeps = {}): Promise<number> {
   const out = deps.stdout ?? ((line: string) => process.stdout.write(`${line}\n`));
   const err = deps.stderr ?? ((line: string) => process.stderr.write(`${line}\n`));
 
   const rest = argv.slice(1);
   const dryRun = rest.includes("--dry-run");
-  const positional = rest.filter((arg) => arg !== "--dry-run");
+  let tokenFamilyArg: string | undefined;
+  const positional: string[] = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    const arg = rest[i] as string;
+    if (arg === "--dry-run") continue;
+    if (arg === "--token-family") {
+      const value = rest[i + 1];
+      if (value === undefined || value.startsWith("-")) {
+        err("--token-family needs a value");
+        err(USAGE);
+        return 2;
+      }
+      tokenFamilyArg = value;
+      i += 1;
+      continue;
+    }
+    if (arg.startsWith("--token-family=")) {
+      tokenFamilyArg = arg.slice("--token-family=".length);
+      continue;
+    }
+    positional.push(arg);
+  }
   const unknownFlag = positional.find((arg) => arg.startsWith("-"));
   if (unknownFlag !== undefined) {
     err(`unknown flag: ${unknownFlag}`);
@@ -45,6 +64,12 @@ export async function runBackfillLabelsCli(
     err(USAGE);
     return 2;
   }
+  const family = parseTokenFamilyFlag(tokenFamilyArg);
+  if (!family.ok) {
+    err(family.reason);
+    err(USAGE);
+    return 2;
+  }
   const threadIdOrPrefix = positional[0];
   const registryPath = deps.registryPath ?? defaultRegistryPath();
 
@@ -52,7 +77,11 @@ export async function runBackfillLabelsCli(
   // start background drains against the operator's thread.
   const sdk =
     deps.initSdk?.() ??
-    initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    initLhc({
+      mode: "manual",
+      tokenFamily: family.family,
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
 
   const resolved = await sdk.threads.resolve({ threadId: threadIdOrPrefix, registryPath });
   if (!resolved.ok) {
@@ -61,10 +90,7 @@ export async function runBackfillLabelsCli(
   }
   const threadId = resolved.value.threadId;
 
-  const result = await sdk.turns.backfillRenderingLabels(
-    { threadId, registryPath },
-    { dryRun },
-  );
+  const result = await sdk.turns.backfillRenderingLabels({ threadId, registryPath }, { dryRun });
   if (!result.ok) {
     err(`backfill failed: ${result.error.reason}`);
     return result.error.errorClass === "caller_error" ? 2 : 1;

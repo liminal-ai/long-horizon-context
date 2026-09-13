@@ -44,6 +44,11 @@ vi.mock("../../src/intake/session.js", async (importOriginal) => {
         getCaptureHealth: () => ({ generation: 1, phase: "binding" as const, reasons: [] }),
         getCaptureGeneration: () => 1,
         getLiveAsyncWork: () => [],
+        getTokenFamily: () => ({
+          modelId: null,
+          resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+          estimator: null as never,
+        }),
         stop: async () => {},
       } as unknown as CaptureSession;
     },

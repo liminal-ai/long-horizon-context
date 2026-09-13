@@ -22,8 +22,7 @@ vi.mock("../../src/commands/dispatch.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/commands/dispatch.js")>();
   return {
     ...actual,
-    dispatchLhcCommand: (...args: Parameters<typeof actual.dispatchLhcCommand>) =>
-      runMocks.dispatchLhcCommand(...args),
+    dispatchLhcCommand: (...args: Parameters<typeof actual.dispatchLhcCommand>) => runMocks.dispatchLhcCommand(...args),
   };
 });
 
@@ -63,6 +62,11 @@ function makeCaptureSession(): CaptureSession {
     }),
     getCaptureGeneration: () => 1,
     getLiveAsyncWork: () => [],
+    getTokenFamily: () => ({
+      modelId: null,
+      resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+      estimator: null as never,
+    }),
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
 }
@@ -142,9 +146,7 @@ describe("TC-1.4a Detach from running command", () => {
     expect(runMocks.dispatchLhcCommand).toHaveBeenCalledTimes(1);
     pty.kill();
     await runPromise;
-    },
-    15_000,
-  );
+  }, 15_000);
 });
 
 describe("TC-1.4b Deliver late result truthfully", () => {
@@ -182,9 +184,11 @@ describe("TC-1.4b Deliver late result truthfully", () => {
       message: "command error: compact failed",
       panelMessage: "command error: compact failed",
     },
-  ])(
-    "late $name retains original label and appears once on each supported surface",
-    async ({ settle, message, panelMessage }) => {
+  ])("late $name retains original label and appears once on each supported surface", async ({
+    settle,
+    message,
+    panelMessage,
+  }) => {
     let resolveCommand: (outcome: { messages: string[] }) => void = () => {};
     let rejectCommand: (cause: Error) => void = () => {};
     runMocks.dispatchLhcCommand.mockImplementation(

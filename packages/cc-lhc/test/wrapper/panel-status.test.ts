@@ -3,17 +3,11 @@
  */
 import { describe, expect, it } from "vitest";
 import { dispatchLhcCommand, type LhcCommandRuntime } from "../../src/commands/dispatch.js";
-import { CONFIG_FALLBACK_NOTICE, resolveContextWindow } from "../../src/governor/config.js";
+import { CONFIG_FALLBACK_NOTICE } from "../../src/governor/config.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import { createInputState, type InputState } from "../../src/wrapper/modal.js";
 import { renderPanel } from "../../src/wrapper/panel.js";
-import {
-  buildPanelViewSnapshot,
-  formatContextClassChangeNotice,
-  helpLines,
-  PANEL_COMMANDS,
-  PANEL_TITLE,
-} from "../../src/wrapper/panel-commands.js";
+import { buildPanelViewSnapshot, helpLines, PANEL_COMMANDS, PANEL_TITLE } from "../../src/wrapper/panel-commands.js";
 import { nativeCompactDisabledStatusLine } from "../../src/wrapper/terminology.js";
 import { panelText } from "../helpers/panel-text.js";
 
@@ -22,7 +16,6 @@ function homeState(
     providerContextTokens: 31_000,
     targetTokens: 180_000,
     triggerTokens: 360_000,
-    contextWindow: resolveContextWindow(1_000_000, null),
     captureHealth: "ready",
     profile: "default",
   }),
@@ -37,7 +30,8 @@ describe("TC-1.1a Home shows active state", () => {
     expect(out).toContain("Context 31k used");
     expect(out).toContain("target 180k");
     expect(out).toContain("trigger 360k");
-    expect(out).toContain("window 1M");
+    expect(out).toContain("runway 50k minimum");
+    expect(out).not.toContain("window 1M");
     expect(out).toContain("Capture ready");
     expect(out).toContain("Allocation Default · favors recent detail");
     expect(out).toContain("Low 20%");
@@ -52,7 +46,6 @@ describe("TC-1.1a Home shows active state", () => {
       providerContextTokens: 31_000,
       targetTokens: 180_000,
       triggerTokens: 360_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "default",
       details: [
@@ -83,7 +76,6 @@ describe("TC-1.1b Home shows degraded state truthfully", () => {
       providerContextTokens: 8_000,
       targetTokens: 180_000,
       triggerTokens: 360_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "degraded",
       profile: "default",
       degradedNotices: [CONFIG_FALLBACK_NOTICE, "  user config: profile must be one of default, balanced, historical"],
@@ -105,7 +97,6 @@ describe("TC-1.1c Provider context not observed", () => {
       providerContextTokens: null,
       targetTokens: 180_000,
       triggerTokens: 360_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
     });
@@ -156,15 +147,12 @@ describe("TC-3.4a Status contract is truthful", () => {
         latestProviderContextTokens: 123_456,
         targetTokens: 180_000,
         triggerTokens: 360_000,
-        contextClass: "1M",
         nativeAutoCompact: "disabled",
       },
     };
     const status = await dispatchLhcCommand("/lhc-status", runtime);
     expect(status.messages[0]).toContain("Latest provider context: 123,456 tokens (provider-reported)");
-    expect(status.messages[0]).toContain(
-      "/smart-compact: 180,000-token target · 360,000-token trigger (configured) · 1M window",
-    );
+    expect(status.messages[0]).toContain("/smart-compact: 180,000-token target · 360,000-token trigger (configured)");
     expect(status.messages[0]).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
     expect(status.messages[0]).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
     expect(status.messages[0]).toContain("Derivations: 1 pending · 2 failed");
@@ -183,35 +171,13 @@ describe("TC-3.4a Status contract is truthful", () => {
   });
 });
 
-describe("TC-1.6a/b/d Home reports the active window and its policy without a normal-state warning", () => {
-  function homeFor(window: Parameters<typeof resolveContextWindow>[0], model: string, target: number, trigger: number) {
-    const view = buildPanelViewSnapshot({
-      providerContextTokens: 31_000,
-      targetTokens: target,
-      triggerTokens: trigger,
-      contextWindow: resolveContextWindow(window, model),
-      captureHealth: "ready",
-      profile: "default",
-    });
-    return panelText(renderPanel(homeState(view), 120, 40));
-  }
-
-  it("200k: window 200k with 70k target, 140k trigger, 40k minimum runway, and no warning (TC-1.6a)", () => {
-    const out = homeFor(200_000, "claude-haiku-4-5-20251001", 70_000, 140_000);
-    expect(out).toContain("window 200k");
-    expect(out).toContain("observed");
-    expect(out).toContain("target 70k");
-    expect(out).toContain("trigger 140k");
-    expect(out).toContain("runway 40k minimum");
-    expect(out).not.toMatch(/WARNING|advisory|unresolved|fallback|ANOMALY|may run/i);
-  });
-
-  it("1M: window 1M with 180k target, 360k trigger, 50k minimum runway, and no warning (TC-1.6b)", () => {
-    const out = homeFor(1_000_000, "claude-opus-5", 180_000, 360_000);
-    expect(out).toContain("window 1M");
+describe("Home reports the built-in policy without a normal-state warning", () => {
+  it("180k target, 360k trigger, 50k minimum runway, and no warning", () => {
+    const out = panelText(renderPanel(homeState(), 120, 40));
     expect(out).toContain("target 180k");
     expect(out).toContain("trigger 360k");
     expect(out).toContain("runway 50k minimum");
+    expect(out).not.toContain("window ");
     expect(out).not.toMatch(/WARNING|advisory|unresolved|fallback|ANOMALY|may run/i);
   });
 
@@ -219,79 +185,45 @@ describe("TC-1.6a/b/d Home reports the active window and its policy without a no
     const view = buildPanelViewSnapshot({
       providerContextTokens: 31_000,
       targetTokens: 90_000,
-      triggerTokens: 140_000,
-      contextWindow: resolveContextWindow(200_000, "claude-haiku-4-5-20251001"),
-      minRunwayTokens: 40_000,
+      triggerTokens: 400_000,
+      minRunwayTokens: 50_000,
       policySources: { target: "user", trigger: "builtin", runway: "builtin" },
       captureHealth: "ready",
       profile: "default",
     });
     const out = panelText(renderPanel(homeState(view), 120, 40));
     expect(out).toContain("target 90k (user config)");
-    expect(out).toMatch(/trigger 140k(?! \()/);
-    expect(out).toMatch(/runway 40k minimum(?! \()/);
+    expect(out).toMatch(/trigger 400k(?! \()/);
+    expect(out).toMatch(/runway 50k minimum(?! \()/);
   });
 
-  it("Details reports class, policy values with their configuration source, and no warning in normal state (TC-1.6a/b/d)", () => {
+  it("Details reports family, policy values with their configuration source, and no warning in normal state", () => {
     const view = buildPanelViewSnapshot({
       providerContextTokens: 31_000,
-      targetTokens: 70_000,
-      triggerTokens: 140_000,
-      contextWindow: resolveContextWindow(200_000, "claude-haiku-4-5-20251001"),
+      targetTokens: 180_000,
+      triggerTokens: 360_000,
       captureHealth: "ready",
       profile: "default",
       details: [
-        { label: "Window", value: "200k (observed 200000 claude-haiku-4-5-20251001)" },
+        { label: "Family", value: "claude-2026 (provider fallback)" },
         {
           label: "Policy",
           value:
-            "target 70,000 (built-in 200k policy) · trigger 140,000 (built-in 200k policy) · minimum runway 40,000 (built-in 200k policy)",
+            "target 180,000 (built-in policy) · trigger 360,000 (built-in policy) · minimum runway 50,000 (built-in policy)",
         },
         { label: "", value: nativeCompactDisabledStatusLine() },
       ],
     });
     const details = panelText(renderPanel({ ...homeState(view), route: "details" }, 120, 40));
-    expect(details).toContain("Window 200k (observed 200000 claude-haiku-4-5-20251001)");
-    expect(details).toContain("target 70,000 (built-in 200k policy)");
-    expect(details).toContain("trigger 140,000 (built-in 200k policy)");
-    expect(details).toContain("minimum runway 40,000 (built-in 200k policy)");
+    expect(details).toContain("Family claude-2026 (provider fallback)");
+    expect(details).toContain("target 180,000 (built-in policy)");
+    expect(details).toContain("trigger 360,000 (built-in policy)");
+    expect(details).toContain("minimum runway 50,000 (built-in policy)");
     expect(details).not.toMatch(/WARNING|advisory|ANOMALY|may run/i);
   });
 
-  it("the retained class-change notice names old and new class and the resolved policy (TC-1.6c)", () => {
-    const notice = formatContextClassChangeNotice({
-      from: "200k",
-      to: "1M",
-      targetTokens: 180_000,
-      triggerTokens: 360_000,
-      minRunwayTokens: 50_000,
-    });
-    expect(notice).toBe(
-      "context window changed 200k → 1M · Smart Compact now target 180k · trigger 360k · runway 50k minimum",
-    );
-    expect(notice.includes("\n")).toBe(false);
-    // Shown as a Home notice row on the next panel open — same path every
-    // detached receipt takes; nothing is painted onto Claude's screen.
-    const view = buildPanelViewSnapshot({
-      providerContextTokens: 31_000,
-      targetTokens: 180_000,
-      triggerTokens: 360_000,
-      contextWindow: resolveContextWindow(1_000_000, "claude-opus-5"),
-      captureHealth: "ready",
-      profile: "default",
-    });
-    const out = panelText(renderPanel({ ...homeState(view), panelRows: [notice] }, 120, 40));
-    expect(out).toContain(notice);
-  });
-
-  it("an unsupported observed value reports the conservative fallback on the window row (TC-1.1d)", () => {
-    const out = homeFor(500_000, "claude-x", 70_000, 140_000);
-    expect(out).toContain("window 200k");
-    expect(out).toContain("observed context window 500000 is not a supported class");
-  });
-
   it("carries no automatic on/off state anywhere on Home", () => {
-    const out = homeFor(200_000, "m", 70_000, 140_000);
+    const out = panelText(renderPanel(homeState(), 120, 40));
     expect(out).not.toMatch(/\bauto (on|off)\b|automatic \/smart-compact (on|off)/);
   });
 });

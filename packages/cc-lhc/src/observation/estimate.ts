@@ -5,7 +5,7 @@
  * - Prefer provider-reported `output_tokens` for the completed response.
  * - Otherwise estimate from canonical captured payload UTF-8 bytes (~4 bytes/token).
  * - Subsequent tool results / assistant / runtime content add the same host-byte
- *   estimate. Accepted user_prompt text uses packaged LHC estimateTokens.
+ *   estimate. Accepted user_prompt text uses the session TokenEstimator.
  *   Sidechains, synthetic resume chrome, meta, and suppressed rebuilt prefixes
  *   never contribute.
  *
@@ -13,15 +13,26 @@
  * Labels keep that domain explicit (`source_labelled_estimate`).
  */
 
-import { estimateTokens, type MessageEventInput, TOKEN_ESTIMATOR_ID } from "lhc";
+import { type MessageEventInput, TOKEN_ESTIMATOR_ID, type TokenEstimator } from "lhc";
 import { estimateTokensFromCapturedBytes } from "../governor/provider-context.js";
 import type { PostMeasurementEstimate } from "../governor/types.js";
+import { defaultSessionTokenFamily, sessionDefaultEstimator } from "./token-family.js";
 
 export const PROVIDER_OUTPUT_ESTIMATE_SOURCE = "provider_reported_output_tokens";
 export const HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE = "host_canonical_payload_byte_estimate";
 export const MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE = "provider_output_plus_host_canonical_payload_byte_estimate";
-export const PENDING_PROMPT_ESTIMATE_SOURCE = `pending_prompt:${TOKEN_ESTIMATOR_ID}`;
-export const USER_PROMPT_ESTIMATE_SOURCE = `user_prompt:${TOKEN_ESTIMATOR_ID}`;
+
+export function userPromptEstimateSource(family: string): string {
+  return `user_prompt:${TOKEN_ESTIMATOR_ID}:${family}`;
+}
+
+export function pendingPromptEstimateSource(family: string): string {
+  return `pending_prompt:${TOKEN_ESTIMATOR_ID}:${family}`;
+}
+
+/** Default-family labels for tests and compose ranking of the launch fallback. */
+export const USER_PROMPT_ESTIMATE_SOURCE = userPromptEstimateSource(defaultSessionTokenFamily().family);
+export const PENDING_PROMPT_ESTIMATE_SOURCE = pendingPromptEstimateSource(defaultSessionTokenFamily().family);
 
 /** Fold state shared across observe lines for one capture generation. */
 export interface PostMeasurementEstimateFold {
@@ -108,12 +119,13 @@ export function hostEstimateFromCanonicalEvents(events: readonly MessageEventInp
   return hostEstimateFromCanonicalBytes(totalCanonicalPayloadBytes(events));
 }
 
-const ESTIMATE_SOURCE_ORDER = [
-  PROVIDER_OUTPUT_ESTIMATE_SOURCE,
-  HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE,
-  USER_PROMPT_ESTIMATE_SOURCE,
-  PENDING_PROMPT_ESTIMATE_SOURCE,
-] as const;
+function estimateSourceRank(label: string): number {
+  if (label === PROVIDER_OUTPUT_ESTIMATE_SOURCE) return 0;
+  if (label === HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE) return 1;
+  if (label.startsWith("user_prompt:")) return 2;
+  if (label.startsWith("pending_prompt:")) return 3;
+  return 4;
+}
 
 function atomicEstimateSources(source: string): string[] {
   const atoms: string[] = [];
@@ -143,10 +155,7 @@ export function composeEstimateSources(sources: readonly string[]): string {
     unique.has(PROVIDER_OUTPUT_ESTIMATE_SOURCE) &&
     unique.has(HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE);
   if (onlyProviderAndHost) return MIXED_POST_MEASUREMENT_ESTIMATE_SOURCE;
-  const rank = (label: string): number => {
-    const index = (ESTIMATE_SOURCE_ORDER as readonly string[]).indexOf(label);
-    return index === -1 ? ESTIMATE_SOURCE_ORDER.length : index;
-  };
+  const rank = estimateSourceRank;
   return labels
     .sort((left, right) => {
       const order = rank(left) - rank(right);
@@ -166,8 +175,8 @@ export function mergeEstimateSource(previousSource: string, nextSource: string, 
   return composeEstimateSources([previousSource, nextSource]);
 }
 
-function lhcTextEstimate(text: string, source: string): PostMeasurementEstimate {
-  const tokens = estimateTokens(text);
+function lhcTextEstimate(text: string, source: string, estimator: TokenEstimator): PostMeasurementEstimate {
+  const tokens = estimator.estimate(text);
   const safe = Number.isSafeInteger(tokens) && tokens >= 0 ? tokens : 0;
   return {
     tokens: safe,
@@ -176,39 +185,46 @@ function lhcTextEstimate(text: string, source: string): PostMeasurementEstimate 
   };
 }
 
+function estimatorOf(estimator: TokenEstimator | undefined): TokenEstimator {
+  return estimator ?? sessionDefaultEstimator();
+}
+
 /**
  * Size of the prompt an invocation is about to send, before it is sent.
  *
- * One-shot pre-launch uses packaged core LHC canonical estimateTokens. The
- * source label names that estimator so the figure is never read as provider
- * usage or as the captured-content bytes/4 heuristic. This value is ephemeral
- * at the seam and is not stored; accepted user_prompt events account for the
- * same text separately after intake.
+ * One-shot pre-launch uses the session TokenEstimator. The source label names
+ * that estimator and family so the figure is never read as provider usage or
+ * as the captured-content bytes/4 heuristic. This value is ephemeral at the
+ * seam and is not stored; accepted user_prompt events account for the same
+ * text separately after intake.
  */
-export function pendingPromptEstimate(promptText: string): PostMeasurementEstimate {
-  return lhcTextEstimate(promptText, PENDING_PROMPT_ESTIMATE_SOURCE);
+export function pendingPromptEstimate(promptText: string, estimator?: TokenEstimator): PostMeasurementEstimate {
+  const used = estimatorOf(estimator);
+  return lhcTextEstimate(promptText, pendingPromptEstimateSource(used.family), used);
 }
 
 /** Per-event post-measurement contribution for accepted canonical intake. */
-export function estimateAcceptedEvent(event: MessageEventInput): PostMeasurementEstimate {
+export function estimateAcceptedEvent(event: MessageEventInput, estimator?: TokenEstimator): PostMeasurementEstimate {
   if (event.eventKind === "user_prompt") {
-    return lhcTextEstimate(event.payload.text, USER_PROMPT_ESTIMATE_SOURCE);
+    const used = estimatorOf(estimator);
+    return lhcTextEstimate(event.payload.text, userPromptEstimateSource(used.family), used);
   }
   return hostEstimateFromCanonicalBytes(canonicalPayloadBytes(event));
 }
 
 /**
  * Shared add used by immediate observe and deferred post-dedupe accepted events.
- * User prompts use LHC estimateTokens; assistant/tool/runtime stay bytes/4.
+ * User prompts use the session TokenEstimator; assistant/tool/runtime stay bytes/4.
  */
 export function postMeasurementEstimateFromEvents(
   events: readonly MessageEventInput[],
+  estimator?: TokenEstimator,
 ): PostMeasurementEstimate {
   let tokens = 0;
   let source = HOST_CANONICAL_PAYLOAD_BYTE_ESTIMATE_SOURCE;
   let any = false;
   for (const event of events) {
-    const part = estimateAcceptedEvent(event);
+    const part = estimateAcceptedEvent(event, estimator);
     if (part.tokens <= 0) continue;
     source = any ? mergeEstimateSource(source, part.source, tokens) : part.source;
     any = true;
@@ -234,12 +250,16 @@ export function postMeasurementEstimateFromEvents(
 export function preLaunchEstimate(
   capturedGrowth: PostMeasurementEstimate,
   promptText: string,
+  estimator?: TokenEstimator,
 ): PostMeasurementEstimate {
-  const prompt = pendingPromptEstimate(promptText);
+  const prompt = pendingPromptEstimate(promptText, estimator);
   const parts = [capturedGrowth, prompt].filter((part) => part.tokens > 0);
   return {
     tokens: capturedGrowth.tokens + prompt.tokens,
-    source: parts.length === 0 ? PENDING_PROMPT_ESTIMATE_SOURCE : parts.map((part) => part.source).join("+"),
+    source:
+      parts.length === 0
+        ? pendingPromptEstimateSource(estimatorOf(estimator).family)
+        : parts.map((part) => part.source).join("+"),
     domain: "source_labelled_estimate",
   };
 }

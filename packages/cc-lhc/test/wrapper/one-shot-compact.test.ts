@@ -25,7 +25,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { fileURLToPath } from "node:url";
-import { estimateTokens, type Lhc } from "lhc";
+import { type Lhc, TokenEstimator } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { applySessionAllocation } from "../../src/governor/band-allocation.js";
 import { loadContextPolicy } from "../../src/governor/config.js";
@@ -1033,11 +1033,11 @@ describe("run: one-shot pre-launch compaction", () => {
       "utf8",
     );
     expect(Buffer.byteLength(prompt, "utf8")).toBe(104_263);
-    expect(estimateTokens(prompt)).toBe(66_025);
-    expect(pendingPromptEstimate(prompt).tokens).toBe(66_025);
+    const estimator = new TokenEstimator("claude-2026");
+    expect(estimator.estimate(prompt)).toBe(pendingPromptEstimate(prompt).tokens);
     expect(pendingPromptEstimate(prompt).tokens).not.toBe(26_065);
     const captured = { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" as const };
-    expect(preLaunchEstimate(captured, prompt).tokens).toBe(66_025);
+    expect(preLaunchEstimate(captured, prompt).tokens).toBe(pendingPromptEstimate(prompt).tokens);
 
     const selected = applySessionAllocation(loadContextPolicy(), "balanced");
     const resolved = {

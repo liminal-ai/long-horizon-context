@@ -13,8 +13,8 @@ import { createDeterministicInferenceCallbacks, initLhc, type Lhc, type ThreadRe
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
 import { compactConstruction } from "../../src/governor/band-allocation.js";
-import { captureSdkConfig } from "../../src/intake/session.js";
 import { mapRolloutLine } from "../../src/intake/map.js";
+import { captureSdkConfig } from "../../src/intake/session.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import { writeRebuiltRollout } from "../../src/rollout/write-rebuilt.js";
@@ -50,7 +50,11 @@ describe("a compact makes the session smaller and keeps the settled content", ()
     const root = mkdtempSync(join(tmpdir(), "cc-lhc-outcome-"));
     roots.push(root);
     mkdirSync(join(root, "threads"), { recursive: true });
-    sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    sdk = initLhc({
+      mode: "manual",
+      tokenFamily: "claude-2026",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
     const created = await sdk.threads.newThread({
       filePath: join(root, "threads", "t.sqlite"),
       registryPath: join(root, "registry.sqlite"),
@@ -145,7 +149,7 @@ describe("AR-7 selected internal profile and explicit lowerBound reach core", ()
     const root = mkdtempSync(join(tmpdir(), "cc-lhc-ar7-"));
     roots.push(root);
     mkdirSync(join(root, "threads"), { recursive: true });
-    const sdk = initLhc(captureSdkConfig({ noInference: true }));
+    const sdk = initLhc(captureSdkConfig({ noInference: true, tokenFamily: "claude-2026" }));
     const created = await sdk.threads.newThread({
       filePath: join(root, "threads", "t.sqlite"),
       registryPath: join(root, "registry.sqlite"),

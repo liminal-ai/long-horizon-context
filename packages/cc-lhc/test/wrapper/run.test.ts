@@ -3,8 +3,8 @@ import { mkdtempSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 import { PassThrough } from "node:stream";
+import { fileURLToPath } from "node:url";
 import type { IPty } from "@lydell/node-pty";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -168,6 +168,11 @@ function makeCaptureSession(stopImpl: () => Promise<void> = async () => {}): Cap
     getCaptureHealth: () => ({ ...health, reasons: [...health.reasons] }),
     getCaptureGeneration: () => health.generation,
     getLiveAsyncWork: () => [],
+    getTokenFamily: () => ({
+      modelId: null,
+      resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+      estimator: null as never,
+    }),
     stop: vi.fn(stopImpl),
   } as unknown as CaptureSession;
 }
@@ -482,10 +487,7 @@ describe("run", () => {
       if (chunk.includes(LEAVE_ALT_SCREEN)) modalOpen = false;
       if (!modalOpen) {
         passthroughWrites.push(chunk);
-        const stripped = chunk
-          .replaceAll(ENTER_ALT_SCREEN, "")
-          .replaceAll(LEAVE_ALT_SCREEN, "")
-          .replaceAll("\x0c", "");
+        const stripped = chunk.replaceAll(ENTER_ALT_SCREEN, "").replaceAll(LEAVE_ALT_SCREEN, "").replaceAll("\x0c", "");
         if (stripped.length > 0) {
           passthroughReassembly += stripped;
           // Drop completed tick lines so buffer stays bounded

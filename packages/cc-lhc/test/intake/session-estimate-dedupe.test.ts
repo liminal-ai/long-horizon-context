@@ -8,10 +8,12 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { estimateTokens, type Lhc, type MessageEventInput, type ThreadRef, TOKEN_ESTIMATOR_ID } from "lhc";
+import { type Lhc, type MessageEventInput, type ThreadRef, TOKEN_ESTIMATOR_ID, TokenEstimator } from "lhc";
 import { describe, expect, it } from "vitest";
 
-import { BUILTIN_CONTEXT_POLICY, CONTEXT_WINDOW_NOT_YET_OBSERVED } from "../../src/governor/config.js";
+const estimator = new TokenEstimator("claude-2026");
+
+import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import { decideGovernor } from "../../src/governor/decide.js";
 import { applyGovernorLifecycleBatch, createGovernorRuntimeState } from "../../src/governor/observe-state.js";
 import type { ResolvedContextPolicy } from "../../src/governor/types.js";
@@ -34,7 +36,7 @@ function armedPolicy(over: Partial<ResolvedContextPolicy["policy"]> = {}): Resol
   const sources = Object.fromEntries(
     Object.keys(policy).map((k) => [k, "builtin"]),
   ) as ResolvedContextPolicy["sources"];
-  return { policy, sources, fallbacks: [], contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED };
+  return { policy, sources, fallbacks: [] };
 }
 
 function sleep(ms: number): Promise<void> {
@@ -547,7 +549,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       const add0 = adds[0]!;
       expect(add0.kind).toBe("post_measurement_estimate");
       if (add0.kind === "post_measurement_estimate") {
-        expect(add0.tokens).toBe(estimateTokens(recordBody));
+        expect(add0.tokens).toBe(estimator.estimate(recordBody));
         expect(add0.source).toBe(USER_PROMPT_ESTIMATE_SOURCE);
         expect(add0.source).toContain(TOKEN_ESTIMATOR_ID);
       }
@@ -1018,7 +1020,9 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       "utf8",
     );
     expect(Buffer.byteLength(prompt, "utf8")).toBe(104_263);
-    expect(estimateTokens(prompt)).toBe(66_025);
+    const promptTokens = estimator.estimate(prompt);
+    expect(pendingPromptEstimate(prompt).tokens).toBe(promptTokens);
+    expect(pendingPromptEstimate(prompt).tokens).not.toBe(26_065);
 
     const root = mkdtempSync(join(tmpdir(), "cc-lhc-est-burnin-"));
     const projectsRoot = join(root, "projects");
@@ -1105,7 +1109,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
             (s) =>
               s.kind === "post_measurement_estimate" &&
               s.mode === "add" &&
-              s.tokens === 66_025 &&
+              s.tokens === promptTokens &&
               s.source === USER_PROMPT_ESTIMATE_SOURCE,
           ),
         "accepted user growth",
@@ -1134,7 +1138,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       await waitFor(() => lifecycle.some((s) => s.kind === "turn_settled"), "api-error settle", 15_000);
 
       expect(gov.latestProviderContext?.total).toBe(164_208);
-      expect(gov.postMeasurementEstimate.tokens).toBe(66_025);
+      expect(gov.postMeasurementEstimate.tokens).toBe(promptTokens);
       expect(gov.postMeasurementEstimate.source).toBe(USER_PROMPT_ESTIMATE_SOURCE);
       const iFail = lifecycle.findIndex((s) => s.kind === "sampling_observed" && s.samplingId !== "req:req_prior");
       expect(iFail).toBeGreaterThan(0);
@@ -1143,14 +1147,16 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       );
       expect(lifecycle.some((s) => s.kind === "sampling_observed" && s.samplingId === "req:req_prior")).toBe(true);
       expect(
-        lifecycle.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add" && s.tokens === 66_025),
+        lifecycle.filter(
+          (s) => s.kind === "post_measurement_estimate" && s.mode === "add" && s.tokens === promptTokens,
+        ),
       ).toHaveLength(1);
 
       const settled = observes.filter((o) => o.observePhase === "settled_seam");
       expect(settled.length).toBeGreaterThanOrEqual(1);
       const lastSettled = settled.at(-1)!;
       expect(lastSettled.providerContextTotal).toBe(164_208);
-      expect(lastSettled.pressure).toBe(230_233);
+      expect(lastSettled.pressure).toBe(164_208 + promptTokens);
       expect(lastSettled.decision).toBe("would_compact");
       expect(observes.every((o) => o.providerContextTotal !== 0 && o.pressure !== 0)).toBe(true);
 
@@ -1165,7 +1171,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       });
       expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBeGreaterThanOrEqual(200_000);
       expect(nextPrelaunch.pressure.nextRequestPressureTokens).toBe(
-        164_208 + 66_025 + pendingPromptEstimate("hi").tokens,
+        164_208 + promptTokens + pendingPromptEstimate("hi").tokens,
       );
       expect(nextPrelaunch.kind).toBe("would_compact");
     } finally {
@@ -1194,7 +1200,9 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
       await waitFor(() => session2.isCaptureReady(), "replay ready");
       expect(session2.stats.skippedReplay).toBeGreaterThan(0);
       expect(
-        lifecycle2.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add" && s.tokens === 66_025),
+        lifecycle2.filter(
+          (s) => s.kind === "post_measurement_estimate" && s.mode === "add" && s.tokens === promptTokens,
+        ),
       ).toHaveLength(0);
       expect(lifecycle2.filter((s) => s.kind === "post_measurement_estimate" && s.mode === "add")).toHaveLength(0);
     } finally {
@@ -1204,7 +1212,7 @@ describe("startCaptureSession estimate after replay dedupe + intake", () => {
 
   it("live intake: Prompt is too long below 200k settles would_compact; generic/auth errors do not", async () => {
     const userText = "next two reads";
-    const userTokens = estimateTokens(userText);
+    const userTokens = estimator.estimate(userText);
     expect(178_458 + userTokens).toBeLessThan(200_000);
 
     const root = mkdtempSync(join(tmpdir(), "cc-lhc-est-ptl-"));

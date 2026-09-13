@@ -16,17 +16,10 @@ export {
   segmentThresholdTokens,
 } from "./band-allocation.js";
 export {
-  applyContextWindow,
-  BUILTIN_CONTEXT_POLICIES,
   BUILTIN_CONTEXT_POLICY,
-  builtinContextPolicy,
   CANONICAL_LHC_PROFILES,
   CONFIG_FALLBACK_NOTICE,
-  CONSERVATIVE_CONTEXT_CLASS,
   CONTEXT_POLICY_FIELD_KEYS,
-  CONTEXT_WINDOW_NOT_YET_OBSERVED,
-  CONTEXT_WINDOW_TOKENS,
-  contextWindowDetectionUnavailable,
   formatConfigFallbackNotice,
   type LoadContextPolicyOptions,
   loadContextPolicy,
@@ -35,7 +28,6 @@ export {
   policySourcesSummary,
   projectConfigPath,
   readJsonFile,
-  resolveContextWindow,
   userConfigPath,
   validateContextPolicy,
 } from "./config.js";
@@ -52,6 +44,7 @@ export {
   setGovernorCaptureGeneration,
   setGovernorOperationInFlight,
   setGovernorPostMeasurementEstimate,
+  setGovernorTokenFamily,
 } from "./observe-state.js";
 export {
   buildPressureReceipt,
@@ -72,11 +65,8 @@ export {
 export type {
   CcLhcHostCapability,
   ConfigFallback,
-  ContextClass,
   ContextPolicy,
   ContextPolicyPartial,
-  ContextWindowResolution,
-  ContextWindowSource,
   GovernorDecision,
   GovernorDecisionKind,
   GovernorDurableReceipt,
@@ -93,5 +83,6 @@ export type {
   ProviderContextTokens,
   ResolvedContextPolicy,
   SourceLabelledEstimateDomain,
+  TokenFamilySource,
 } from "./types.js";
 export { CC_LHC_HOST_CAPABILITY, EMPTY_POST_MEASUREMENT_ESTIMATE } from "./types.js";

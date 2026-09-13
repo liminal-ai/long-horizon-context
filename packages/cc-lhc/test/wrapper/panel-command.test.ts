@@ -8,7 +8,6 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveContextWindow } from "../../src/governor/config.js";
 
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { emptyCaptureStats } from "../../src/stats.js";
@@ -31,7 +30,6 @@ function renderPanelForTest(state: InputState): string {
     providerContextTokens: 31_000,
     targetTokens: 180_000,
     triggerTokens: 360_000,
-    contextWindow: resolveContextWindow(1_000_000, null),
     captureHealth: "ready",
     profile: "default",
   });
@@ -141,6 +139,11 @@ function scriptedCapture(sdk: Lhc): CaptureSession {
     }),
     getCaptureGeneration: () => 1,
     getLiveAsyncWork: () => [],
+    getTokenFamily: () => ({
+      modelId: null,
+      resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+      estimator: null as never,
+    }),
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
 }

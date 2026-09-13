@@ -26,12 +26,9 @@ import {
   terminateRetainedHostReal,
 } from "../continuity/task-process.js";
 import {
-  applyContextWindow,
   applyGovernorLifecycleBatch,
   applySessionAllocation,
-  CONTEXT_WINDOW_NOT_YET_OBSERVED,
   type ContextPolicyPartial,
-  contextWindowDetectionUnavailable,
   createGovernorRuntimeState,
   decideGovernor,
   formatConfigFallbackNotice,
@@ -52,6 +49,7 @@ import {
   segmentThresholdTokens as segmentThresholdFromPolicy,
   setGovernorCaptureGeneration,
   setGovernorOperationInFlight,
+  setGovernorTokenFamily,
   userConfigPath,
   validateContextPolicy,
 } from "../governor/index.js";
@@ -61,6 +59,7 @@ import {
   LaunchGrammarError,
   launchChildArgv,
   launchFormOf,
+  launchModelFlag,
   launchPromptText,
   replacementChildArgv,
   resolveLaunchSession,
@@ -68,7 +67,7 @@ import {
 } from "../intake/launch-session.js";
 import { openLaunchThread } from "../intake/launch-thread.js";
 import { defaultLineageDbPath } from "../intake/lineage-db.js";
-import { ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
+import { captureThreadRef, ccLhcHome, defaultRegistryPath } from "../intake/paths.js";
 import {
   type CaptureSession,
   type CaptureSessionDeps,
@@ -78,6 +77,12 @@ import {
 import { type LaunchThreadBinding, recordSwapAcceptance } from "../intake/thread-alias.js";
 import type { OpenAsyncWork } from "../observation/async-work.js";
 import { preLaunchEstimate } from "../observation/estimate.js";
+import {
+  createSessionTokenFamilyState,
+  formatTokenFamilyLabel,
+  lastAssistantModelFromThread,
+  seedTokenFamilyAtLaunch,
+} from "../observation/token-family.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
 import { findExpectedSessionFileOnce } from "../rollout/discover.js";
@@ -103,14 +108,6 @@ import { type ThreadOwnerLease, ThreadOwnershipConflictError } from "../runtime/
 import { emptyCaptureStats, formatCaptureStatsLine } from "../stats.js";
 import { forceKillChildTree, requestPtyTermination, runTaskkillTree } from "./child-termination.js";
 import { CommandInFlightGuard, formatBusyMessage } from "./command-guard.js";
-import {
-  type ContextWindowObserver,
-  createContextWindowObserver,
-  mergeLaunchSettings,
-  newCapturePath,
-  readSettingsFileOrNull,
-  resolveOperatorStatusLine,
-} from "./context-window-observer.js";
 import {
   type ActionableCondition,
   actionableGuidanceRows,
@@ -140,6 +137,7 @@ import {
   openHandoffReceiptStore,
 } from "./handoff-receipt-store.js";
 import { createInputDebugLogger } from "./input-debug.js";
+import { mergeLaunchSettings, readSettingsFileOrNull } from "./launch-settings.js";
 import { consumeLegacyHandoffState } from "./legacy-handoff-state.js";
 import {
   clampPanelViewport,
@@ -164,7 +162,6 @@ import { OutputHold } from "./output-hold.js";
 import { createAltScreenGuard, renderPanel } from "./panel.js";
 import {
   buildPanelViewSnapshot,
-  formatContextClassChangeNotice,
   formatPendingResultRows,
   formatPolicySource,
   MODAL_SCOPE_NOTE,
@@ -294,10 +291,6 @@ export type RunOptions = {
   contextPolicyOverrides?: ContextPolicyPartial;
   /** Test hook: substitute resolved policy (skips filesystem load). */
   resolvedContextPolicy?: ResolvedContextPolicy;
-  /** Test hook: status-line capture file for the context-window observer. */
-  contextWindowCapturePath?: string;
-  /** Test hook: platform the child's status-line command is serialized for (defaults to this process). */
-  childPlatform?: NodeJS.Platform;
   /** Test seam: the UserPromptSubmit hook command registered on managed children (LIM-146). */
   resultHookCommand?: string;
   /** Test hook: inspect governor runtime state after lifecycle. */
@@ -449,93 +442,33 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     });
   /** Live soft canonical segment size: half the full share of the current lower target. */
   const segmentThresholdTokens = (): number => segmentThresholdFromPolicy(resolvedContextPolicy.policy);
-  if ((resolvedContextPolicy as Partial<ResolvedContextPolicy>).contextWindow === undefined) {
-    // The test seam may supply a policy without window provenance: it starts
-    // where every session starts, on the conservative class.
-    resolvedContextPolicy = { ...resolvedContextPolicy, contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED };
-  }
   let configFallbackNotice = formatConfigFallbackNotice(resolvedContextPolicy.fallbacks);
   for (const line of configFallbackNotice) {
     wrapperLog.warn(`cc-lhc context policy: ${line.trim()}`);
     stderr.write(`cc-lhc: ${line}\n`);
   }
   const logContextPolicy = (why: string): void => {
-    const window = resolvedContextPolicy.contextWindow;
     wrapperLog.info(
-      `cc-lhc context policy (${why}) window=${window.contextClass} (${window.source}${window.observedWindowTokens === null ? "" : ` ${window.observedWindowTokens}`}${window.modelId === null ? "" : ` ${window.modelId}`}) lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} runway=${resolvedContextPolicy.policy.minRunwayTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}${window.detail === null ? "" : ` — ${window.detail}`}`,
+      `cc-lhc context policy (${why}) lower=${resolvedContextPolicy.policy.lowerBoundTokens} upper=${resolvedContextPolicy.policy.upperBoundTokens} runway=${resolvedContextPolicy.policy.minRunwayTokens} profile=${resolvedContextPolicy.policy.profile} sources=${policySourcesSummary(resolvedContextPolicy.sources)}`,
     );
   };
   logContextPolicy("launch");
 
-  // D8: the launch-scoped status-line observer. It is installed on every
-  // managed child's argv as one merged `--settings` payload and read back
-  // synchronously before each governor decision, so a window change is
-  // re-resolved before the next automatic Smart Compact decision (AC-1.4).
-  let contextWindowObserver: ContextWindowObserver | undefined;
-  let lastContextWindowChange: { from: string; to: string; atMs: number } | null = null;
+  let sessionTokenFamily = createSessionTokenFamilyState();
   /**
-   * One retained class-change notice (AC-1.6c), shown on the next Control
-   * Panel open and then cleared. Later changes replace it; nothing is written
-   * onto Claude's screen.
+   * Launch-scoped `--settings` merge for the continuity result-delivery hook.
+   * Unmergeable operator settings leave the argv as forwarded and skip the hook.
    */
-  let pendingContextChangeNotice: string | null = null;
-  /** Re-resolve model-derived policy values against a newly observed window. */
-  const adoptContextWindow = (next: import("../governor/index.js").ContextWindowResolution, why: string): void => {
-    const previous = resolvedContextPolicy.contextWindow;
-    if (
-      previous.contextClass === next.contextClass &&
-      previous.source === next.source &&
-      previous.observedWindowTokens === next.observedWindowTokens &&
-      previous.modelId === next.modelId
-    ) {
-      return;
-    }
-    resolvedContextPolicy = applyContextWindow(resolvedContextPolicy, next);
-    configFallbackNotice = formatConfigFallbackNotice(resolvedContextPolicy.fallbacks);
-    if (previous.contextClass !== next.contextClass) {
-      lastContextWindowChange = { from: previous.contextClass, to: next.contextClass, atMs: Date.now() };
-      pendingContextChangeNotice = formatContextClassChangeNotice({
-        from: previous.contextClass,
-        to: next.contextClass,
-        targetTokens: resolvedContextPolicy.policy.lowerBoundTokens,
-        triggerTokens: resolvedContextPolicy.policy.upperBoundTokens,
-        minRunwayTokens: resolvedContextPolicy.policy.minRunwayTokens,
-      });
-    }
-    logContextPolicy(why);
-  };
-  /** Read every status-line payload appended since the last look; no timer. */
-  const syncContextWindow = (): void => {
-    if (contextWindowObserver === undefined) return;
-    const latest = contextWindowObserver.poll();
-    if (latest !== null) adoptContextWindow(latest, "status-line observed");
-  };
-  /**
-   * Install the observer on a child's argv: one merged `--settings`. When the
-   * merge is unsafe the argv is forwarded exactly as assembled and detection
-   * is reported unavailable (conservative 200k policy).
-   */
-  const installContextWindowObserver = (childArgs: readonly string[]): string[] => {
-    if (contextWindowObserver === undefined) return [...childArgs];
-    const operator = resolveOperatorStatusLine({ cwd: process.cwd() });
-    if (!operator.ok) {
-      adoptContextWindow(contextWindowDetectionUnavailable(operator.error), "operator settings unreadable");
-      return [...childArgs];
-    }
+  const installLaunchSettings = (childArgs: readonly string[]): string[] => {
+    if (continuityStore === null) return [...childArgs];
     const merged = mergeLaunchSettings({
       argv: childArgs,
       readFile: readSettingsFileOrNull,
-      capturePath: contextWindowObserver.capturePath,
-      operatorStatusLine: operator.statusLine,
-      ...(options.childPlatform === undefined ? {} : { platform: options.childPlatform }),
-      ...(continuityStore === null
-        ? {}
-        : { deliveryHook: { command: resultHookCommand, timeoutSeconds: RESULT_HOOK_TIMEOUT_SECONDS } }),
+      deliveryHook: { command: resultHookCommand, timeoutSeconds: RESULT_HOOK_TIMEOUT_SECONDS },
     });
-    if (merged.kind === "detection_unavailable") {
-      adoptContextWindow(contextWindowDetectionUnavailable(merged.reason), "settings unmergeable");
+    if (merged.kind === "unmerged") {
       wrapperLog.warn(
-        "cc-lhc continuity: result delivery hook not installed (settings unmergeable); results stay pending in the Control Panel",
+        `cc-lhc continuity: result delivery hook not installed (${merged.reason}); results stay pending in the Control Panel`,
       );
       return merged.argv;
     }
@@ -544,15 +477,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         `cc-lhc continuity: result delivery hook not installed (${merged.deliveryHook.reason}); results stay pending in the Control Panel`,
       );
     }
-    // The operator's command text is private configuration: log only that a
-    // status line was preserved and where it was declared, never its content.
-    const preserved =
-      merged.operatorStatusLine === "chained"
-        ? `, operator status line preserved (${operator.origin === null ? "launch argv" : `settings file ${operator.origin}`})`
-        : "";
-    wrapperLog.info(
-      `cc-lhc context window observer installed (capture ${contextWindowObserver.capturePath}${preserved})`,
-    );
     return merged.argv;
   };
 
@@ -954,6 +878,29 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             .join(" ")} — the value/prompt boundary is not provable; use the option=value form to keep it`,
         );
       }
+
+      // Family must be known before initLhc: --model, else last assistant
+      // model on a resumed thread, else the provider fallback.
+      const launchModel = launchModelFlag(childArgv);
+      let resumedAssistantModel: string | null = null;
+      if (
+        (launchModel === undefined || launchModel === "") &&
+        launchThread !== undefined &&
+        !launchThread.createdAtLaunch
+      ) {
+        resumedAssistantModel = await lastAssistantModelFromThread(
+          captureThreadRef(launchThread.threadId, defaultRegistryPath()),
+        );
+      }
+      sessionTokenFamily = seedTokenFamilyAtLaunch({
+        ...(launchModel === undefined ? {} : { launchModel }),
+        ...(resumedAssistantModel === null ? {} : { resumedAssistantModel }),
+      });
+      wrapperLog.info(
+        `cc-lhc token family ${formatTokenFamilyLabel(sessionTokenFamily)}${
+          sessionTokenFamily.modelId === null ? "" : ` model=${sessionTokenFamily.modelId}`
+        }`,
+      );
     } catch (cause) {
       releaseThreadOwner();
       const message =
@@ -1090,7 +1037,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       captureLifecycleSink(signals);
       return;
     }
-    syncContextWindow();
+    governorState = setGovernorTokenFamily(governorState, sessionTokenFamily.resolved);
     governorState = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy).state;
   };
 
@@ -1132,6 +1079,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
       segmentThresholdTokens,
+      tokenFamily: sessionTokenFamily,
     });
 
     // Catching up from the persisted transcript IS the recovery for stale
@@ -1177,7 +1125,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // A reading recovered from the transcript belongs to a previous
       // invocation's sampling; it is provider-reported, never fresh.
       providerContextFreshness: governorState.latestProviderContext === null ? "none" : "last_known",
-      postMeasurementEstimate: preLaunchEstimate(governorState.postMeasurementEstimate, promptText),
+      postMeasurementEstimate: preLaunchEstimate(
+        governorState.postMeasurementEstimate,
+        promptText,
+        sessionTokenFamily.estimator,
+      ),
       contextLimitRejected: governorState.contextLimitRejected,
     });
     wrapperLog.info(`cc-lhc one-shot pre-launch seam: ${decision.kind} — ${decision.reason}`);
@@ -1196,6 +1148,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         triggerContextTokens: decision.pressure.nextRequestPressureTokens,
         ...(hostNotices.length === 0 ? {} : { hostNotices }),
         omitContinuityNote: true,
+        tokenFamily: sessionTokenFamily.resolved.family,
+        tokenFamilySeedSource: sessionTokenFamily.seedSource,
       },
       {
         ...catchUp.getCommandContext(),
@@ -1270,6 +1224,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         onResultDelivery: recordResultDelivery,
         onRuntimeSettings,
         segmentThresholdTokens,
+        tokenFamily: sessionTokenFamily,
       });
     } catch (cause) {
       // No capture for the rebuilt session means nothing would record the turn
@@ -1377,16 +1332,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   }
 
   if (!unboundTestChild && expectedSession !== undefined) {
-    try {
-      contextWindowObserver = createContextWindowObserver(
-        options.contextWindowCapturePath ?? newCapturePath(dirname(defaultLineageDbPath()), process.pid),
-      );
-      contextWindowObserver.acceptSession(expectedSession.sessionId);
-      childArgv = installContextWindowObserver(childArgv);
-    } catch (cause) {
-      contextWindowObserver = undefined;
-      adoptContextWindow(contextWindowDetectionUnavailable(detailOf(cause)), "capture file unavailable");
-    }
+    childArgv = installLaunchSettings(childArgv);
   }
 
   const cols = stdout.columns ?? DEFAULT_COLS;
@@ -1565,6 +1511,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       ) {
         return;
       }
+      runtimeDescriptor = { ...runtimeDescriptor, tokenFamily: sessionTokenFamily.resolved.family };
       runtimeDescriptor = markReady(
         runtimeDescriptorPath,
         runtimeDescriptor,
@@ -1657,6 +1604,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             onResultDelivery: recordResultDelivery,
             onRuntimeSettings,
             segmentThresholdTokens,
+            tokenFamily: sessionTokenFamily,
           });
           captureContinuation = {
             threadRef,
@@ -1851,7 +1799,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       governorState = setGovernorCaptureGeneration(governorState, captureSession.getCaptureGeneration());
     }
 
-    syncContextWindow();
+    governorState = setGovernorTokenFamily(governorState, sessionTokenFamily.resolved);
     const observed = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy);
     governorState = observed.state;
     for (const record of observed.observes) handleGovernorObserve(record);
@@ -1950,6 +1898,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       onResultDelivery: recordResultDelivery,
       onRuntimeSettings,
       segmentThresholdTokens,
+      tokenFamily: sessionTokenFamily,
     });
     process.on("SIGUSR1", onSigusr1);
   }
@@ -2025,14 +1974,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
 
   const commandRuntime = (): LhcCommandRuntime => {
-    syncContextWindow();
     const rollout = captureSession?.getRolloutInfo();
     const policy = resolvedContextPolicy.policy;
     const statusSnapshot = {
       latestProviderContextTokens: governorState.latestProviderContext?.total ?? null,
       targetTokens: policy.lowerBoundTokens,
       triggerTokens: policy.upperBoundTokens,
-      contextClass: resolvedContextPolicy.contextWindow.contextClass,
       nativeAutoCompact,
     };
     if (captureSession === undefined) {
@@ -2044,6 +1991,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         sourceRolloutPath: undefined,
         sourceSessionId: undefined,
         statusSnapshot,
+        tokenFamily: sessionTokenFamily.resolved.family,
+        tokenFamilySeedSource: sessionTokenFamily.seedSource,
       };
     }
     const ctx = captureSession.getCommandContext();
@@ -2087,6 +2036,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           rollout?.path,
           rollout?.sessionId,
         ),
+      tokenFamily: sessionTokenFamily.resolved.family,
+      tokenFamilySeedSource: sessionTokenFamily.seedSource,
     };
   };
 
@@ -2098,7 +2049,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
 
   const snapshotPanelView = () => {
-    syncContextWindow();
     const policy = resolvedContextPolicy.policy;
     const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
     const retrievalState = runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
@@ -2167,19 +2117,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       );
     }
 
-    const window = resolvedContextPolicy.contextWindow;
     const sources = resolvedContextPolicy.sources;
-    const sourceOf = (source: (typeof sources)[keyof typeof sources]): string =>
-      formatPolicySource(source, window.contextClass);
+    const sourceOf = (source: (typeof sources)[keyof typeof sources]): string => formatPolicySource(source);
     const details = [
       { label: "Retrieval", value: retrievalState },
       {
-        label: "Window",
-        value:
-          `${window.contextClass} (${window.source}` +
-          `${window.observedWindowTokens === null ? "" : ` ${window.observedWindowTokens}`}` +
-          `${window.modelId === null ? "" : ` ${window.modelId}`})` +
-          `${lastContextWindowChange === null ? "" : ` — changed from ${lastContextWindowChange.from} ${formatAgo(lastContextWindowChange.atMs)}`}`,
+        label: "Family",
+        value: formatTokenFamilyLabel(sessionTokenFamily),
       },
       {
         label: "Policy",
@@ -2204,7 +2148,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       providerContextTokens: governorState.latestProviderContext?.total ?? null,
       targetTokens: policy.lowerBoundTokens,
       triggerTokens: policy.upperBoundTokens,
-      contextWindow: resolvedContextPolicy.contextWindow,
       nativeAutoCompact,
       minRunwayTokens: policy.minRunwayTokens,
       policySources: {
@@ -2562,14 +2505,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           inputState = {
             ...inputState,
             panelView: snapshotPanelView(),
-            panelRows: [
-              ...(pendingContextChangeNotice === null ? [] : [pendingContextChangeNotice]),
-              ...pendingPanelNotices,
-            ],
+            panelRows: [...pendingPanelNotices],
             route: "home",
             viewport: { scrollOffset: 0, selectedIndex: -1 },
           };
-          pendingContextChangeNotice = null;
           pendingPanelNotices = [];
         } else if (action.kind === "select_allocation") {
           resolvedContextPolicy = applySessionAllocation(resolvedContextPolicy, action.id);
@@ -2865,8 +2804,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const guided = injectRetrievalGuidance(replacementArgv);
       if (guided.ok) replacementArgv = guided.argv;
       else wrapperLog.warn(`cc-lhc handoff: retrieval guidance not injected: ${guided.reason}`);
-      contextWindowObserver?.acceptSession(sessionId);
-      replacementArgv = installContextWindowObserver(replacementArgv);
+      replacementArgv = installLaunchSettings(replacementArgv);
       const env: Record<string, string> = injectNativeDisable
         ? nativeAutoCompactChildEnv(process.env as Record<string, string>, false)
         : { ...(process.env as Record<string, string>) };
@@ -3055,6 +2993,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           onResultDelivery: recordResultDelivery,
           onRuntimeSettings,
           segmentThresholdTokens,
+          tokenFamily: sessionTokenFamily,
         });
         captureContinuation = {
           threadRef,
@@ -3719,7 +3658,6 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       facts: {
         targetTokens: resolvedContextPolicy.policy.lowerBoundTokens,
         triggerTokens: resolvedContextPolicy.policy.upperBoundTokens,
-        contextClass: resolvedContextPolicy.contextWindow.contextClass,
         nativeAutoCompact,
         leaderByte,
       },

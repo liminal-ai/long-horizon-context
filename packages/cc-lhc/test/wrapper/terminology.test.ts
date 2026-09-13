@@ -13,7 +13,6 @@ import { describe, expect, it } from "vitest";
 import { formatDurableReceipt } from "../../src/commands/context-mutation.js";
 import { formatContinuityNote } from "../../src/commands/continuity-note.js";
 import { dispatchLhcCommand } from "../../src/commands/dispatch.js";
-import { resolveContextWindow } from "../../src/governor/config.js";
 import { CC_LHC_HELP } from "../../src/help.js";
 import type { OpenAsyncWork } from "../../src/observation/async-work.js";
 import { emptyCaptureStats } from "../../src/stats.js";
@@ -225,7 +224,6 @@ describe("TC-3.3a product terminology audit", () => {
             providerContextTokens: 1_000,
             targetTokens: 70_000,
             triggerTokens: 140_000,
-            contextWindow: resolveContextWindow(200_000, null),
             captureHealth: "ready",
             profile: "default",
           }),
@@ -366,7 +364,6 @@ describe("TC-3.3a product terminology audit", () => {
         providerContextTokens: 1_000,
         targetTokens: 70_000,
         triggerTokens: 140_000,
-        contextWindow: resolveContextWindow(200_000, null),
         nativeAutoCompact: "passthrough",
         captureHealth: "ready",
         profile: "default",

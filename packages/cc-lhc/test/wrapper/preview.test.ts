@@ -49,11 +49,10 @@ describe("D12 preview fixtures and geometry matrix", () => {
     return matrix;
   }
 
-  it("provides exactly the nine named fixtures and three geometries; every fixture renders at every geometry", () => {
+  it("provides exactly the eight named fixtures and three geometries; every fixture renders at every geometry", () => {
     expect([...PREVIEW_FIXTURE_NAMES]).toEqual([
       "normal-first-launch",
       "native-auto-compact-conflict",
-      "200k-fallback",
       "capture-database-unsafe",
       "replacement-failure",
       "possible-undelivered-input",
@@ -67,7 +66,7 @@ describe("D12 preview fixtures and geometry matrix", () => {
       tiny: { cols: 20, rows: 5 },
     });
     const renders = all();
-    expect(renders).toHaveLength(27);
+    expect(renders).toHaveLength(24);
     const seen = new Set(renders.map((r) => `${r.fixture}@${r.geometry}`));
     for (const f of PREVIEW_FIXTURE_NAMES)
       for (const g of PREVIEW_GEOMETRY_NAMES) expect(seen.has(`${f}@${g}`)).toBe(true);
@@ -93,7 +92,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
     }
     const headers = (name: string): string[] => rowsOf(name)[0]!.filter((row) => row.startsWith("! "));
     expect(headers("no-messages")).toEqual([]);
-    expect(headers("200k-fallback")).toEqual([]);
     expect(headers("normal-first-launch")).toEqual([]);
     expect(rowsOf("normal-first-launch")[0]![0]).toContain("Welcome to CC-LHC");
     expect(headers("native-auto-compact-conflict")).toEqual([
@@ -311,7 +309,7 @@ describe("cc-lhc preview CLI", () => {
     expect(code).toBe(0);
     expect(err).toBe("");
     const headers = out.split("\n").filter((line) => line.startsWith("## "));
-    expect(headers).toHaveLength(27);
+    expect(headers).toHaveLength(24);
     for (const line of headers) {
       expect(line).toMatch(/ — (opens at launch|on demand only) · Esc closes · ctrl-\] reopens$/);
     }

@@ -47,6 +47,8 @@ export interface RuntimeDescriptorV1 {
   sessionId?: string;
   rolloutPath?: string;
   degradeReason?: string;
+  /** Tokenizer family the wrapper session is using; retrieval inits LHC with it. */
+  tokenFamily?: string;
 }
 
 export interface DescriptorIo {
@@ -146,6 +148,7 @@ function serialize(desc: RuntimeDescriptorV1): string {
     ...(desc.sessionId !== undefined ? { sessionId: desc.sessionId } : {}),
     ...(desc.rolloutPath !== undefined ? { rolloutPath: desc.rolloutPath } : {}),
     ...(desc.degradeReason !== undefined ? { degradeReason: desc.degradeReason } : {}),
+    ...(desc.tokenFamily !== undefined ? { tokenFamily: desc.tokenFamily } : {}),
   };
   return JSON.stringify(body, null, 2) + "\n";
 }
@@ -317,6 +320,7 @@ export function loadDescriptor(path: string, io: DescriptorIo = defaultDescripto
   if (typeof obj.sessionId === "string" && obj.sessionId !== "") desc.sessionId = obj.sessionId;
   if (typeof obj.rolloutPath === "string" && obj.rolloutPath !== "") desc.rolloutPath = obj.rolloutPath;
   if (typeof obj.degradeReason === "string") desc.degradeReason = obj.degradeReason;
+  if (typeof obj.tokenFamily === "string" && obj.tokenFamily !== "") desc.tokenFamily = obj.tokenFamily;
   return { ok: true, descriptor: desc };
 }
 

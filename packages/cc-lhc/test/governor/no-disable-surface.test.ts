@@ -13,7 +13,7 @@ import { describe, expect, it } from "vitest";
 
 import { parseWrapperArgv } from "../../src/cli-args.js";
 import {
-  BUILTIN_CONTEXT_POLICIES,
+  BUILTIN_CONTEXT_POLICY,
   CONTEXT_POLICY_FIELD_KEYS,
   loadContextPolicy,
   parseContextPolicyPartial,
@@ -75,9 +75,7 @@ describe("no Smart Compact disable surface (TC-1.5d)", () => {
 
   it("the configuration schema has no disable field and drops any it is handed", () => {
     expect(CONTEXT_POLICY_FIELD_KEYS).not.toContain("autoCompact");
-    for (const cls of ["200k", "1M"] as const) {
-      expect(Object.keys(BUILTIN_CONTEXT_POLICIES[cls])).not.toContain("autoCompact");
-    }
+    expect(Object.keys(BUILTIN_CONTEXT_POLICY)).not.toContain("autoCompact");
     const parsed = parseContextPolicyPartial({ autoCompact: false, smartCompact: "off", enabled: false }, "probe");
     expect(parsed.value).toEqual({});
     expect(parsed.fallbacks).toHaveLength(3);
@@ -86,7 +84,7 @@ describe("no Smart Compact disable surface (TC-1.5d)", () => {
       projectConfigPath: "/nonexistent/project.json",
       sessionOverrides: { autoCompact: false } as never,
     });
-    expect(loaded.policy).toEqual(BUILTIN_CONTEXT_POLICIES["200k"]);
+    expect(loaded.policy).toEqual(BUILTIN_CONTEXT_POLICY);
   });
 
   it("the Control Panel registry has no on/off command", () => {
@@ -102,9 +100,9 @@ describe("no Smart Compact disable surface (TC-1.5d)", () => {
 
   it("the governor has no disabled decision, whatever is smuggled onto the policy", () => {
     const input: GovernorInput = {
-      policy: { ...BUILTIN_CONTEXT_POLICIES["200k"], autoCompact: false, enabled: false } as never,
+      policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: false, enabled: false } as never,
       turnOpen: false,
-      providerContext: { inputTokens: 150_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, total: 150_000 },
+      providerContext: { inputTokens: 400_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, total: 400_000 },
       providerContextFreshness: "current_sampling",
       postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
       operationInFlight: false,

@@ -12,6 +12,7 @@
  */
 
 import { mergeEstimateSource } from "../observation/estimate.js";
+import { defaultSessionTokenFamily, type ResolvedTokenFamily } from "../observation/token-family.js";
 import type { LifecycleSignal } from "../observation/types.js";
 import { policySourcesSummary } from "./config.js";
 import { decideGovernor } from "./decide.js";
@@ -27,6 +28,7 @@ import type {
   ProviderBaseFreshness,
   ProviderContextTokens,
   ResolvedContextPolicy,
+  TokenFamilySource,
 } from "./types.js";
 import { CC_LHC_HOST_CAPABILITY, EMPTY_POST_MEASUREMENT_ESTIMATE } from "./types.js";
 
@@ -67,9 +69,13 @@ export interface GovernorRuntimeState {
    * authorizes compact below the configured trigger.
    */
   contextLimitRejected: boolean;
+  /** Tokenizer family used for host-side estimates at this observation. */
+  tokenFamily: string;
+  tokenFamilySource: TokenFamilySource;
 }
 
 export function createGovernorRuntimeState(seed: Partial<GovernorRuntimeState> = {}): GovernorRuntimeState {
+  const fallback = defaultSessionTokenFamily();
   return {
     turnOpen: false,
     inputEpochAtTurnOpen: 0,
@@ -85,6 +91,8 @@ export function createGovernorRuntimeState(seed: Partial<GovernorRuntimeState> =
     lastOpenTurnObserveFingerprint: null,
     sawSamplingThisTurn: false,
     contextLimitRejected: false,
+    tokenFamily: fallback.family,
+    tokenFamilySource: fallback.source,
     ...seed,
   };
 }
@@ -114,6 +122,14 @@ export function setGovernorPostMeasurementEstimate(
     ...state,
     postMeasurementEstimate: normalizePostMeasurementEstimate(estimate),
   };
+}
+
+export function setGovernorTokenFamily(
+  state: GovernorRuntimeState,
+  resolved: ResolvedTokenFamily,
+): GovernorRuntimeState {
+  if (state.tokenFamily === resolved.family && state.tokenFamilySource === resolved.source) return state;
+  return { ...state, tokenFamily: resolved.family, tokenFamilySource: resolved.source };
 }
 
 export interface GovernorLifecycleResult {
@@ -377,8 +393,8 @@ function buildObserveRecord(args: {
     upperBoundTokens: resolved.policy.upperBoundTokens,
     lowerBoundTokens: resolved.policy.lowerBoundTokens,
     profile: resolved.policy.profile,
-    contextClass: resolved.contextWindow.contextClass,
-    contextWindowSource: resolved.contextWindow.source,
+    tokenFamily: state.tokenFamily,
+    tokenFamilySource: state.tokenFamilySource,
     wouldMutate: decision.wouldMutate,
     configFallbackCount: resolved.fallbacks.length,
     policySourcesSummary: policySourcesSummary(resolved.sources),

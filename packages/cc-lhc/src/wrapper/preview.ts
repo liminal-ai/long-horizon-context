@@ -13,8 +13,6 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ContinuityStore, openContinuityStore } from "../continuity/store.js";
-import { CONTEXT_WINDOW_NOT_YET_OBSERVED, contextWindowDetectionUnavailable } from "../governor/config.js";
-import type { ContextWindowResolution } from "../governor/types.js";
 import {
   type ActionableCondition,
   firstLoadMarkerPath,
@@ -43,7 +41,6 @@ import { TYPED_AHEAD_RESEND_NOTICE } from "./typed-ahead-input.js";
 export const PREVIEW_FIXTURE_NAMES = [
   "normal-first-launch",
   "native-auto-compact-conflict",
-  "200k-fallback",
   "capture-database-unsafe",
   "replacement-failure",
   "possible-undelivered-input",
@@ -66,7 +63,6 @@ export interface PreviewFixture {
   name: PreviewFixtureName;
   /** Onboarding version already shown in this home, or none. */
   shownVersion: number | null;
-  contextWindow: ContextWindowResolution;
   nativeAutoCompact: NativeAutoCompactState;
   /** Standing Home alarms (production text through `toPanelWording`). */
   alarms: readonly string[];
@@ -112,7 +108,6 @@ const CONDITIONS = {
 
 const shown = ONBOARDING_VERSION;
 const quiet = {
-  contextWindow: CONTEXT_WINDOW_NOT_YET_OBSERVED,
   nativeAutoCompact: "disabled" as const,
   alarms: [] as const,
   extraStatusRows: [] as const,
@@ -128,14 +123,6 @@ export const PREVIEW_FIXTURES: Record<PreviewFixtureName, PreviewFixture> = {
     nativeAutoCompact: "passthrough",
     extraStatusRows: [nativeCompactAdvisoryLine()],
     conditions: [CONDITIONS.native],
-  },
-  "200k-fallback": {
-    name: "200k-fallback",
-    shownVersion: shown,
-    ...quiet,
-    contextWindow: contextWindowDetectionUnavailable("status line settings unreadable"),
-    retrievalState: "ready",
-    conditions: [],
   },
   "capture-database-unsafe": {
     name: "capture-database-unsafe",
@@ -199,9 +186,8 @@ export function createPreviewHome(): PreviewHome {
 export function previewPanelView(fixture: PreviewFixture, home: PreviewHome): PanelViewSnapshot {
   return buildPanelViewSnapshot({
     providerContextTokens: null,
-    targetTokens: 70_000,
-    triggerTokens: 140_000,
-    contextWindow: fixture.contextWindow,
+    targetTokens: 180_000,
+    triggerTokens: 360_000,
     nativeAutoCompact: fixture.nativeAutoCompact,
     captureHealth: "ready",
     profile: "default",
@@ -259,9 +245,8 @@ export function renderPreview(
     shownVersion: readShownVersion(marker),
     version: ONBOARDING_VERSION,
     facts: {
-      targetTokens: 70_000,
-      triggerTokens: 140_000,
-      contextClass: fixture.contextWindow.contextClass,
+      targetTokens: 180_000,
+      triggerTokens: 360_000,
       nativeAutoCompact: fixture.nativeAutoCompact,
       leaderByte,
     },

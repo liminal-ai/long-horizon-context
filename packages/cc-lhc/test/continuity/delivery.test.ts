@@ -28,7 +28,7 @@ import {
   markReady,
   newDescriptorPath,
 } from "../../src/runtime/descriptor.js";
-import { mergeLaunchSettings } from "../../src/wrapper/context-window-observer.js";
+import { mergeLaunchSettings } from "../../src/wrapper/launch-settings.js";
 import { allLaunchLines, LAUNCH_IDS, qualifyAll } from "./helpers.js";
 
 const T = "th_delivery";
@@ -43,8 +43,6 @@ function merge(argv: string[], extra: Partial<Parameters<typeof mergeLaunchSetti
   return mergeLaunchSettings({
     argv,
     readFile: () => null,
-    capturePath: "/tmp/capture.jsonl",
-    platform: "linux",
     deliveryHook: HOOK,
     ...extra,
   });
@@ -148,17 +146,17 @@ function boundThread() {
 }
 
 describe("one settings payload carries the delivery hook and the user's hooks untouched", () => {
-  it("no user settings: statusLine plus exactly one UserPromptSubmit entry, in one --settings", () => {
+  it("no user settings: exactly one UserPromptSubmit entry, in one --settings", () => {
     const merged = merge(["--model", "haiku"]);
     expect(merged.kind).toBe("merged");
     if (merged.kind !== "merged") return;
     expect(merged.deliveryHook).toEqual({ kind: "installed" });
     const settings = settingsOf(merged.argv);
-    expect(settings.statusLine).toMatchObject({ type: "command" });
+    expect(settings.statusLine).toBeUndefined();
     expect(settings.hooks).toEqual({ UserPromptSubmit: [OUR_ENTRY] });
   });
 
-  it("user hooks (other events and existing UserPromptSubmit groups) are preserved byte-for-byte, ours appended last; the operator status line still chains", () => {
+  it("user hooks (other events and existing UserPromptSubmit groups) are preserved byte-for-byte, ours appended last; the operator status line is left untouched", () => {
     const userHooks = {
       PreToolUse: [{ matcher: "Bash", hooks: [{ type: "command", command: "/home/u/audit.sh --strict" }] }],
       UserPromptSubmit: [
@@ -174,20 +172,19 @@ describe("one settings payload carries the delivery hook and the user's hooks un
       expect(merged.kind).toBe("merged");
       if (merged.kind !== "merged") return;
       expect(merged.deliveryHook).toEqual({ kind: "installed" });
-      expect(merged.operatorStatusLine).toBe("chained");
       const settings = settingsOf(merged.argv);
       expect(settings.theme).toBe("dark");
       expect(settings.hooks).toEqual({
         ...userHooks,
         UserPromptSubmit: [...userHooks.UserPromptSubmit, OUR_ENTRY],
       });
-      expect(settings.statusLine).toMatchObject({ command: expect.stringContaining("| my-status --short") });
+      expect(settings.statusLine).toEqual({ type: "command", command: "my-status --short" });
     }
     // The prompt token after `--` is untouched and the flag stays before it.
     if (inline.kind === "merged") expect(inline.argv.slice(-2)).toEqual(["--", "prompt"]);
   });
 
-  it("an already-registered identical hook is not duplicated; a payload whose hooks cannot be extended keeps the status line and reports the hook unavailable", () => {
+  it("an already-registered identical hook is not duplicated; a payload whose hooks cannot be extended keeps the payload and reports the hook unavailable", () => {
     const again = merge(["--settings", JSON.stringify({ hooks: { UserPromptSubmit: [OUR_ENTRY] } })]);
     expect(again.kind === "merged" && again.deliveryHook).toEqual({ kind: "already_present" });
     if (again.kind === "merged") expect(settingsOf(again.argv).hooks).toEqual({ UserPromptSubmit: [OUR_ENTRY] });
@@ -200,7 +197,6 @@ describe("one settings payload carries the delivery hook and the user's hooks un
     if (badHooks.kind === "merged") {
       const settings = settingsOf(badHooks.argv);
       expect(settings.hooks).toBe("nope");
-      expect(settings.statusLine).toMatchObject({ type: "command" });
     }
     const badEvent = merge(["--settings", JSON.stringify({ hooks: { UserPromptSubmit: { type: "command" } } })]);
     expect(badEvent.kind === "merged" && badEvent.deliveryHook).toEqual({
@@ -211,11 +207,9 @@ describe("one settings payload carries the delivery hook and the user's hooks un
     const none = mergeLaunchSettings({
       argv: ["--model", "haiku"],
       readFile: () => null,
-      capturePath: "/tmp/capture.jsonl",
-      platform: "linux",
     });
     expect(none.kind === "merged" && none.deliveryHook).toEqual({ kind: "not_requested" });
-    if (none.kind === "merged") expect(settingsOf(none.argv)).not.toHaveProperty("hooks");
+    if (none.kind === "merged") expect(none.argv).toEqual(["--model", "haiku"]);
   });
 
   it("the default hook command names this package's bin and the tasks hook op", () => {

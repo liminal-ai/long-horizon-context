@@ -81,7 +81,11 @@ beforeEach(async () => {
   const created = await threads.newThread({ filePath, registryPath, title: "forked", cwd: join(root, "work") });
   if (!created.ok) throw new Error(created.error.reason);
   threadId = created.value.threadId;
-  sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  sdk = initLhc({
+    mode: "manual",
+    tokenFamily: "claude-2026",
+    inferenceCallbacks: createDeterministicInferenceCallbacks(),
+  });
   out = [];
   errs = [];
 });
@@ -96,6 +100,8 @@ function deps() {
     stderr: (line: string) => errs.push(line),
   };
 }
+
+const FAMILY = ["--token-family", "claude-2026"] as const;
 
 function run(...rest: string[]): Promise<number> {
   return runRolloutWriteCli(["rollout", "write", ...rest], deps());
@@ -118,7 +124,10 @@ describe("rollout write CLI", () => {
     expect(await run("--thread-id", threadId, "--session-id", "not-a-uuid")).toBe(2);
     expect(errs[0]).toMatch(/^usage: --session-id must be a fresh uuid/);
     errs = [];
-    expect(await run("--thread-id", "th_missing", "--session-id", SID)).toBe(2);
+    expect(await run("--thread-id", threadId, "--session-id", SID)).toBe(2);
+    expect(errs[0]).toContain("--token-family is required");
+    errs = [];
+    expect(await run("--thread-id", "th_missing", "--session-id", SID, ...FAMILY)).toBe(2);
     expect(errs[0]).toMatch(/^thread_not_found: /);
     expect(existsSync(projectsRoot)).toBe(false);
   });
@@ -127,7 +136,7 @@ describe("rollout write CLI", () => {
     await seedTurn("first", "one", true);
     await seedTurn("second", "two");
     const cwd = join(root, "work");
-    expect(await run("--thread-id", threadId, "--session-id", SID)).toBe(0);
+    expect(await run("--thread-id", threadId, "--session-id", SID, ...FAMILY)).toBe(0);
     expect(errs).toEqual([]);
     const rolloutPath = rolloutPathForSession(projectsRoot, cwd, SID);
     const lines = readFileSync(rolloutPath, "utf8")
@@ -150,20 +159,22 @@ describe("rollout write CLI", () => {
 
     // The same session id again: the rollout exists, refuse before touching anything.
     out = [];
-    expect(await run("--thread-id", threadId, "--session-id", SID)).toBe(2);
+    expect(await run("--thread-id", threadId, "--session-id", SID, ...FAMILY)).toBe(2);
     expect(errs[0]).toMatch(/^path_exists: /);
     expect(out).toEqual([]);
 
     // Registry cwd is the default; an explicit --cwd writes under another project dir.
     errs = [];
-    expect(await run("--thread-id", threadId, "--session-id", SID2, "--cwd", join(root, "elsewhere"))).toBe(0);
+    expect(await run("--thread-id", threadId, "--session-id", SID2, "--cwd", join(root, "elsewhere"), ...FAMILY)).toBe(
+      0,
+    );
     expect(existsSync(rolloutPathForSession(projectsRoot, join(root, "elsewhere"), SID2))).toBe(true);
     const advanced = await threads.currentAlias({ threadId, registryPath });
     expect(advanced.ok && advanced.value.currentAlias).toBe(`claude-code:${SID2}`);
   });
 
   it("refuses an empty view and a session id bound to another thread", async () => {
-    expect(await run("--thread-id", threadId, "--session-id", SID)).toBe(2);
+    expect(await run("--thread-id", threadId, "--session-id", SID, ...FAMILY)).toBe(2);
     expect(errs[0]).toMatch(/^empty_view: /);
     expect(existsSync(projectsRoot)).toBe(false);
 
@@ -178,7 +189,7 @@ describe("rollout write CLI", () => {
     });
     expect(bound.ok).toBe(true);
     errs = [];
-    expect(await run("--thread-id", threadId, "--session-id", SID)).toBe(2);
+    expect(await run("--thread-id", threadId, "--session-id", SID, ...FAMILY)).toBe(2);
     expect(errs[0]).toMatch(/^alias_bound_to_other_thread: /);
     expect(existsSync(projectsRoot)).toBe(false);
   });
@@ -186,7 +197,7 @@ describe("rollout write CLI", () => {
   it("refuses a thread with no cwd anywhere", async () => {
     const bare = await threads.newThread({ filePath: join(root, "bare.sqlite"), registryPath });
     if (!bare.ok) throw new Error(bare.error.reason);
-    expect(await run("--thread-id", bare.value.threadId, "--session-id", SID)).toBe(2);
+    expect(await run("--thread-id", bare.value.threadId, "--session-id", SID, ...FAMILY)).toBe(2);
     expect(errs[0]).toMatch(/has no registry cwd; pass --cwd/);
   });
 });

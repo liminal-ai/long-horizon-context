@@ -16,14 +16,8 @@
  */
 import { formatTokensShort } from "../commands/context-mutation.js";
 import { type BandAllocationId, isBandAllocationId, PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
-import { BUILTIN_CONTEXT_POLICIES } from "../governor/config.js";
-import type {
-  ConfigFallback,
-  ContextClass,
-  ContextWindowResolution,
-  ContextWindowSource,
-  PolicyFieldSource,
-} from "../governor/types.js";
+import { BUILTIN_CONTEXT_POLICY } from "../governor/config.js";
+import type { ConfigFallback, PolicyFieldSource } from "../governor/types.js";
 import { presentAllocation } from "./preset-presentation.js";
 import { type NativeAutoCompactState, nativeAutoCompactHomeSegment } from "./terminology.js";
 
@@ -72,10 +66,6 @@ export interface PanelViewSnapshot {
   /** Minimum trigger − target runway the active policy requires. */
   minRunwayTokens: number;
   policySources: PanelPolicySources;
-  /** Active context class and how it was resolved (tech-design D8). */
-  contextClass: ContextClass;
-  contextWindowSource: ContextWindowSource;
-  contextWindowDetail: string | null;
   /** What cc-lhc did about Claude's automatic Compact for this launch; shared with `/status` and `/details`. */
   nativeAutoCompact: NativeAutoCompactState;
   captureHealth: string;
@@ -317,7 +307,7 @@ export type HomeStatusCanonicalId =
   | "provider"
   | "target"
   | "trigger"
-  | "window"
+  | "runway"
   | "capture"
   | "allocation"
   | "low"
@@ -372,22 +362,13 @@ interface HomeStatusRowSpec {
   readonly tiny: (view: PanelViewSnapshot) => string;
 }
 
-/**
- * The second segment of the window row: silent for an observed class, the
- * fallback reason otherwise (D8 reports every conservative fallback).
- */
-function contextWindowPhrase(view: PanelViewSnapshot): string {
-  if (view.contextWindowSource === "observed") return "observed";
-  return view.contextWindowDetail ?? "conservative fallback";
-}
-
 function fallbackField(view: PanelViewSnapshot, field: string, text: string): string {
   return view.fallbackFields.includes(field) ? `${text} (fallback — not selected)` : text;
 }
 
-/** Operator-facing name of a policy value's source; built-in values name their window class. */
-export function formatPolicySource(source: PolicyFieldSource, contextClass: ContextClass): string {
-  if (source === "builtin") return `built-in ${contextClass} policy`;
+/** Operator-facing name of a policy value's source. */
+export function formatPolicySource(source: PolicyFieldSource): string {
+  if (source === "builtin") return "built-in policy";
   if (source === "session") return "session";
   return `${source} config`;
 }
@@ -396,15 +377,10 @@ export function formatPolicySource(source: PolicyFieldSource, contextClass: Cont
  * Home spelling of a configured value: the built-in default is the norm and
  * says nothing; an explicit source is named beside the value it set.
  */
-function sourcedValue(view: PanelViewSnapshot, source: PolicyFieldSource, text: string): string {
-  return source === "builtin" ? text : `${text} (${formatPolicySource(source, view.contextClass)})`;
+function sourcedValue(source: PolicyFieldSource, text: string): string {
+  return source === "builtin" ? text : `${text} (${formatPolicySource(source)})`;
 }
 
-/**
- * The one concise notice retained when the effective context class changes
- * (TC-1.6c): old and new class plus the policy now in force. Shown on the next
- * Control Panel open; never written onto Claude's screen.
- */
 /** How many finished carried items Home names before counting the rest. */
 export const MAX_NAMED_PENDING_RESULTS = 3;
 
@@ -423,19 +399,6 @@ export function formatPendingResultRows(
     .map((result) => `carried work finished: ${result.label} — ${result.outcome}`);
   const rest = results.length - named.length;
   return rest > 0 ? [...named, `${rest} more carried item(s) finished — see cc-lhc tasks status`] : named;
-}
-
-export function formatContextClassChangeNotice(change: {
-  from: ContextClass;
-  to: ContextClass;
-  targetTokens: number;
-  triggerTokens: number;
-  minRunwayTokens: number;
-}): string {
-  return (
-    `context window changed ${change.from} → ${change.to} · Smart Compact now target ${formatTokensShort(change.targetTokens)}` +
-    ` · trigger ${formatTokensShort(change.triggerTokens)} · runway ${formatTokensShort(change.minRunwayTokens)} minimum`
-  );
 }
 
 const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
@@ -465,7 +428,7 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
       fallbackField(
         view,
         "lowerBoundTokens",
-        sourcedValue(view, view.policySources.target, `target ${formatTokensShort(view.targetTokens)}`),
+        sourcedValue(view.policySources.target, `target ${formatTokensShort(view.targetTokens)}`),
       ),
       "size after /smart-compact",
     ],
@@ -481,25 +444,25 @@ const HOME_STATUS_ROW_SPECS: readonly HomeStatusRowSpec[] = [
       fallbackField(
         view,
         "upperBoundTokens",
-        sourcedValue(view, view.policySources.trigger, `trigger ${formatTokensShort(view.triggerTokens)}`),
+        sourcedValue(view.policySources.trigger, `trigger ${formatTokensShort(view.triggerTokens)}`),
       ),
       "automatic /smart-compact point",
     ],
     tiny: (view) => `trigger ${formatTokensShort(view.triggerTokens)}`,
   },
   {
-    id: "window",
+    id: "runway",
     group: "context",
     navigable: true,
     breakBefore: true,
     segments: (view) => [
-      `window ${view.contextClass}`,
-      contextWindowPhrase(view),
-      sourcedValue(view, view.policySources.runway, `runway ${formatTokensShort(view.minRunwayTokens)} minimum`),
+      sourcedValue(view.policySources.runway, `runway ${formatTokensShort(view.minRunwayTokens)} minimum`),
       nativeAutoCompactHomeSegment(view.nativeAutoCompact),
     ],
-    compactSegments: (view) => [`window ${view.contextClass}`],
-    tiny: (view) => `window ${view.contextClass}`,
+    compactSegments: (view) => [
+      sourcedValue(view.policySources.runway, `runway ${formatTokensShort(view.minRunwayTokens)}`),
+    ],
+    tiny: (view) => `runway ${formatTokensShort(view.minRunwayTokens)}`,
   },
   {
     id: "capture",
@@ -777,7 +740,7 @@ export function introductionRows(view: PanelViewSnapshot | null): PanelRow[] {
     view === null
       ? [
           text("CC-LHC runs /smart-compact automatically at the active trigger and rebuilds toward the target."),
-          text("Use /status to see the current window, target, and trigger."),
+          text("Use /status to see the current target and trigger."),
         ]
       : [text(`Keep working normally. At ${trigger}, CC-LHC runs /smart-compact and rebuilds toward ${target}.`)];
   return [
@@ -893,13 +856,7 @@ export function homeSummaryLine(view: PanelViewSnapshot | null, width: number): 
   if (view === null) return PANEL_TITLE_SHORT.slice(0, Math.max(0, width));
   const context = view.providerContextTokens === null ? "ctx ?" : formatTokensShort(view.providerContextTokens);
   const bounds = `${formatTokensShort(view.targetTokens)}/${formatTokensShort(view.triggerTokens)}`;
-  const window = `window ${view.contextClass}`;
-  const candidates = [
-    `${context} · ${bounds} · ${window}`,
-    `${context}·${bounds}·${window}`,
-    `${context}·${bounds}`,
-    context,
-  ];
+  const candidates = [`${context} · ${bounds}`, `${context}·${bounds}`, context];
   return candidates.find((candidate) => candidate.length <= width) ?? context.slice(0, Math.max(0, width));
 }
 
@@ -907,8 +864,7 @@ export function buildPanelViewSnapshot(input: {
   providerContextTokens: number | null;
   targetTokens: number;
   triggerTokens: number;
-  contextWindow: ContextWindowResolution;
-  /** Defaults to the active class's built-in runway. */
+  /** Defaults to the built-in runway. */
   minRunwayTokens?: number;
   /** Defaults to built-in for every field. */
   policySources?: Partial<PanelPolicySources>;
@@ -928,16 +884,12 @@ export function buildPanelViewSnapshot(input: {
     providerContextTokens: input.providerContextTokens,
     targetTokens: input.targetTokens,
     triggerTokens: input.triggerTokens,
-    minRunwayTokens:
-      input.minRunwayTokens ?? BUILTIN_CONTEXT_POLICIES[input.contextWindow.contextClass].minRunwayTokens,
+    minRunwayTokens: input.minRunwayTokens ?? BUILTIN_CONTEXT_POLICY.minRunwayTokens,
     policySources: {
       target: input.policySources?.target ?? "builtin",
       trigger: input.policySources?.trigger ?? "builtin",
       runway: input.policySources?.runway ?? "builtin",
     },
-    contextClass: input.contextWindow.contextClass,
-    contextWindowSource: input.contextWindow.source,
-    contextWindowDetail: input.contextWindow.detail,
     nativeAutoCompact: input.nativeAutoCompact ?? "disabled",
     captureHealth: input.captureHealth,
     allocationId,

@@ -141,6 +141,11 @@ function scriptedCaptureSession(sdk: unknown): CaptureSession {
     }),
     getCaptureGeneration: () => 1,
     getLiveAsyncWork: () => [],
+    getTokenFamily: () => ({
+      modelId: null,
+      resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+      estimator: null as never,
+    }),
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
 }
@@ -404,10 +409,9 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
         live.stdin.write(leader);
         await waitFor(() => panelText(live.terminalOutput.join("")).includes(PANEL_TITLE), "panel home");
         const home = panelText(live.terminalOutput.join(""));
-        // Conservative 200k policy: 70k target, 140k trigger (no status line observed in this rig).
-        expect(home).toContain("target 70k");
-        expect(home).toContain("trigger 140k");
-        expect(home).toContain("window 200k");
+        expect(home).toContain("target 180k");
+        expect(home).toContain("trigger 360k");
+        expect(home).not.toContain("window ");
         expect(home).toContain(
           native === "disabled"
             ? "Claude native auto-compact off"
@@ -420,8 +424,8 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
         await waitFor(() => panelText(live.terminalOutput.join("")).includes("Latest provider context"), "status");
         const status = panelText(live.terminalOutput.join(""));
         expect(status).toContain("Latest provider context: not observed yet");
-        expect(status).toContain("70,000-token target · 140,000-token trigger");
-        expect(status).toContain("200k window");
+        expect(status).toContain("180,000-token target · 360,000-token trigger");
+        expect(status).not.toContain("window");
         expect(status).toContain(
           native === "disabled"
             ? "Claude native auto-compact: disabled for this child"
@@ -431,11 +435,11 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
         live.terminalOutput.length = 0;
         live.stdin.write(Buffer.from("/details\r"));
         // The 80x24 rig clips the lower Details rows; wait on the Policy row, which carries the values.
-        await waitFor(() => panelText(live.terminalOutput.join("")).includes("target 70,000"), "details rows");
+        await waitFor(() => panelText(live.terminalOutput.join("")).includes("target 180,000"), "details rows");
         const details = panelText(live.terminalOutput.join(""));
-        expect(details).toContain("target 70,000");
-        expect(details).toContain("trigger 140,000");
-        expect(details).toMatch(/Window\s+200k/);
+        expect(details).toContain("target 180,000");
+        expect(details).toContain("trigger 360,000");
+        expect(details).toMatch(/Family\s+claude-2026/);
         expect(details).toContain(
           native === "disabled"
             ? "Claude native auto-compact: disabled for this child"

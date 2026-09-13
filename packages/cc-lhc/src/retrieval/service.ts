@@ -5,6 +5,8 @@
 
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, retrieval, type ThreadRef } from "lhc";
 
+import { defaultSessionTokenFamily } from "../observation/token-family.js";
+
 import {
   assertReadyBinding,
   type DescriptorIo,
@@ -176,7 +178,13 @@ export async function executeRetrieval(
 
   // 6. SDK call — impressions only from here.
   const sdk = (
-    deps.initSdk ?? (() => initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() }))
+    deps.initSdk ??
+    (() =>
+      initLhc({
+        mode: "manual",
+        tokenFamily: desc.tokenFamily ?? defaultSessionTokenFamily().family,
+        inferenceCallbacks: createDeterministicInferenceCallbacks(),
+      }))
   )();
   const ref = threadRefOf(desc);
   const surface = request.op === "get-turns" ? "cc-lhc:get-turns" : "cc-lhc:get-messages";

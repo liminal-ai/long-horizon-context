@@ -11,7 +11,7 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createExactIdentityReader, createProcessControl } from "cc-lhc-native";
+import { createExactIdentityReader, createProcessControl, resolveAddonArtifact } from "cc-lhc-native";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { type ContinuityStore, openContinuityStore, type RetainedHostRecord } from "../../src/continuity/store.js";
 import {
@@ -329,8 +329,17 @@ describe("terminateRetainedHostReal (real processes, real signals)", () => {
 const realControl = createProcessControl({ env: {} });
 const realIdentity = createExactIdentityReader({ env: {} });
 const realFind = (parent: number, path: string) => realControl.findChildHoldingFile(parent, path);
+function compiledAddonAvailable(): boolean {
+  try {
+    const resolved = resolveAddonArtifact({ env: {} });
+    return resolved.source === "prebuilt" || resolved.source === "source-build";
+  } catch {
+    return false;
+  }
+}
+const hasCompiledAddon = compiledAddonAvailable();
 
-describe("discoverAdoptedTaskProcess (native addon, every platform)", () => {
+describe.skipIf(!hasCompiledAddon)("discoverAdoptedTaskProcess (native addon, every platform)", () => {
   it("finds the real child holding the verified output file and records exact identity", async () => {
     const dir = scratch();
     const out = join(dir, "task.output");
@@ -407,33 +416,36 @@ describe("readTaskExit (paused-host exit record over the native addon)", () => {
     }
   });
 
-  it("reads a real finished task under a paused supervisor and releases it on resume", async () => {
-    const dir = scratch();
-    const out = join(dir, "task.output");
-    writeFileSync(out, "");
-    const supervisor = spawn(process.execPath, [
-      "-e",
-      `const {spawn}=require("node:child_process");const fs=require("node:fs");const fd=fs.openSync(process.argv[1],"a");` +
-        `const g=spawn(process.execPath,["-e","setTimeout(()=>process.exit(3),500)"],{stdio:["ignore",fd,"ignore"]});` +
-        `process.stdout.write(String(g.pid)+"\\n");setInterval(()=>{},1000);`,
-      out,
-    ]);
-    trackForReap(pids, supervisor.pid as number);
-    const grandchild = await new Promise<number>((resolve) => {
-      supervisor.stdout.once("data", (chunk: Buffer) => resolve(Number(String(chunk).trim())));
-    });
-    const identity = realIdentity(grandchild);
-    if (!identity.ok) throw new Error(identity.message);
-    const read = (pid: number, starttime: string) => realControl.readChildExit(pid, starttime);
-    expect(realControl.pause(supervisor.pid as number).ok).toBe(true);
-    let outcome = readTaskExit({ pid: grandchild, starttime: identity.identity.starttime }, read);
-    const start = Date.now();
-    while (outcome?.kind === "running" && Date.now() - start < 10_000) {
-      await new Promise((resolve) => setTimeout(resolve, 25));
-      outcome = readTaskExit({ pid: grandchild, starttime: identity.identity.starttime }, read);
-    }
-    expect(outcome).toEqual({ kind: "exited", code: 3 });
-    expect(readTaskExit({ pid: grandchild, starttime: "1" }, read)).toBeNull();
-    expect(realControl.resume(supervisor.pid as number).ok).toBe(true);
-  });
+  it.skipIf(!hasCompiledAddon)(
+    "reads a real finished task under a paused supervisor and releases it on resume",
+    async () => {
+      const dir = scratch();
+      const out = join(dir, "task.output");
+      writeFileSync(out, "");
+      const supervisor = spawn(process.execPath, [
+        "-e",
+        `const {spawn}=require("node:child_process");const fs=require("node:fs");const fd=fs.openSync(process.argv[1],"a");` +
+          `const g=spawn(process.execPath,["-e","setTimeout(()=>process.exit(3),500)"],{stdio:["ignore",fd,"ignore"]});` +
+          `process.stdout.write(String(g.pid)+"\\n");setInterval(()=>{},1000);`,
+        out,
+      ]);
+      trackForReap(pids, supervisor.pid as number);
+      const grandchild = await new Promise<number>((resolve) => {
+        supervisor.stdout.once("data", (chunk: Buffer) => resolve(Number(String(chunk).trim())));
+      });
+      const identity = realIdentity(grandchild);
+      if (!identity.ok) throw new Error(identity.message);
+      const read = (pid: number, starttime: string) => realControl.readChildExit(pid, starttime);
+      expect(realControl.pause(supervisor.pid as number).ok).toBe(true);
+      let outcome = readTaskExit({ pid: grandchild, starttime: identity.identity.starttime }, read);
+      const start = Date.now();
+      while (outcome?.kind === "running" && Date.now() - start < 10_000) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        outcome = readTaskExit({ pid: grandchild, starttime: identity.identity.starttime }, read);
+      }
+      expect(outcome).toEqual({ kind: "exited", code: 3 });
+      expect(readTaskExit({ pid: grandchild, starttime: "1" }, read)).toBeNull();
+      expect(realControl.resume(supervisor.pid as number).ok).toBe(true);
+    },
+  );
 });

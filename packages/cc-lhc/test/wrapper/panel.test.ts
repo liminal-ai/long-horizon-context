@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-import { resolveContextWindow } from "../../src/governor/config.js";
 
 import { createInputState, type InputState, processInputChunk, showReceipts } from "../../src/wrapper/modal.js";
 import {
@@ -27,7 +26,6 @@ const VIEW = buildPanelViewSnapshot({
   providerContextTokens: 38_000,
   targetTokens: 180_000,
   triggerTokens: 360_000,
-  contextWindow: resolveContextWindow(1_000_000, null),
   captureHealth: "ready",
   profile: "default",
 });

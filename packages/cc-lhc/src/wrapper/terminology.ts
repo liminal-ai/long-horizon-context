@@ -19,7 +19,7 @@ export const CLAUDE_NATIVE_AUTO_COMPACT = "Claude native auto-compact";
  */
 export type NativeAutoCompactState = "disabled" | "passthrough";
 
-/** Home window-row segment: the shortest truthful spelling of the same fact. */
+/** Home runway-row segment: the shortest truthful spelling of the same fact. */
 export function nativeAutoCompactHomeSegment(state: NativeAutoCompactState): string {
   return state === "disabled"
     ? `${CLAUDE_NATIVE_AUTO_COMPACT} off`

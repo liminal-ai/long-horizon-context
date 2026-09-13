@@ -90,8 +90,8 @@ export function mutationCoreProfile(profile: string): InternalCoreProfile {
 
 /**
  * Soft canonical segment size for the reader: half the full-fidelity share of
- * the active policy's lower target (70000 × 30% / 2 = 10500 on the 200k class;
- * 180000 × 30% / 2 = 27000 on 1M). Read live, so preset, window and user
+ * the active policy's lower target (180000 × 30% / 2 = 27000 on the built-in
+ * policy). Read live, so preset and user
  * changes apply to the next candidate. A single atomic exchange may exceed it.
  */
 export function segmentThresholdTokens(policy: Pick<ContextPolicy, "profile" | "lowerBoundTokens">): number {

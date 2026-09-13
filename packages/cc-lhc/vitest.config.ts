@@ -8,6 +8,7 @@ export default defineConfig({
   test: {
     include: ["test/**/*.test.ts"],
     exclude: [...configDefaults.exclude],
+    setupFiles: ["./test/setup-env.ts"],
     passWithNoTests: true,
     // CC-LHC integration/process/SQLite waits are bounded up to 8s; loaded
     // cross-platform runners can exceed Vitest's 5s default.

@@ -11,7 +11,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { formatTokensShort } from "../commands/context-mutation.js";
-import type { ContextClass } from "../governor/types.js";
 import { type NativeAutoCompactState, nativeAutoCompactHomeSegment } from "./terminology.js";
 
 /** Bump when the onboarding content changes enough that every home should see it once more. */
@@ -96,7 +95,6 @@ export function actionableGuidanceRows(conditions: readonly ActionableCondition[
 export interface FirstLoadFacts {
   targetTokens: number;
   triggerTokens: number;
-  contextClass: ContextClass;
   nativeAutoCompact: NativeAutoCompactState;
   leaderByte: number;
 }
@@ -105,7 +103,7 @@ export interface FirstLoadFacts {
 export function firstLoadGuidanceRows(facts: FirstLoadFacts): string[] {
   return [
     "Welcome to CC-LHC. Smart Compact keeps this Claude session within its context window automatically.",
-    `target ${formatTokensShort(facts.targetTokens)} after /smart-compact · trigger ${formatTokensShort(facts.triggerTokens)} · window ${facts.contextClass}`,
+    `target ${formatTokensShort(facts.targetTokens)} after /smart-compact · trigger ${formatTokensShort(facts.triggerTokens)}`,
     nativeAutoCompactHomeSegment(facts.nativeAutoCompact),
     `reopen this panel any time with ${formatLeaderKey(facts.leaderByte)} · press Esc to continue to Claude`,
   ];

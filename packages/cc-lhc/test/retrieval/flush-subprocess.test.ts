@@ -57,6 +57,7 @@ describe("retrieval CLI flush subprocess", () => {
     const tf = join(threads, "t.sqlite");
     const sdk = initLhc({
       mode: "manual",
+      tokenFamily: "claude-2026",
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
     });
     const created = await sdk.threads.newThread({ filePath: tf, registryPath });

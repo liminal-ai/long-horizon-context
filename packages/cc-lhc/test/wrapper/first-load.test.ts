@@ -52,7 +52,6 @@ const ALT_SCREEN_LEAVE = `${ESC}[?1049l`;
 const FACTS = {
   targetTokens: 70_000,
   triggerTokens: 140_000,
-  contextClass: "200k" as const,
   nativeAutoCompact: "disabled" as const,
   leaderByte: DEFAULT_LEADER_BYTE,
 };
@@ -134,7 +133,7 @@ describe("first-load marker and allowlist (pure)", () => {
     expect(first.open).toBe(true);
     expect(first.firstLoad).toBe(true);
     expect(first.rows).toEqual(firstLoadGuidanceRows(FACTS));
-    expect(first.rows.join("\n")).toContain("target 70k after /smart-compact · trigger 140k · window 200k");
+    expect(first.rows.join("\n")).toContain("target 70k after /smart-compact · trigger 140k");
     expect(first.rows.join("\n")).toContain("Claude native auto-compact off");
     expect(first.rows.join("\n")).toContain("reopen this panel any time with ctrl-] · press Esc to continue to Claude");
     expect(planStartupPanel({ shownVersion: 1, version: 1, facts: FACTS, conditions: [] }).open).toBe(false);
@@ -151,8 +150,10 @@ describe("first-load marker and allowlist (pure)", () => {
       rows: ["! Claude native auto-compact may run before Smart Compact on this launch", "advisory"],
     });
     // The values come from the facts handed in, not from constants.
-    const oneM = firstLoadGuidanceRows({ ...FACTS, targetTokens: 180_000, triggerTokens: 360_000, contextClass: "1M" });
-    expect(oneM.join("\n")).toContain("target 180k after /smart-compact · trigger 360k · window 1M");
+    const oneM = firstLoadGuidanceRows({ ...FACTS, targetTokens: 180_000, triggerTokens: 360_000 });
+    expect(oneM.join("\n")).toContain("target 180k after /smart-compact · trigger 360k");
+    expect(oneM.join("\n")).not.toContain("window 1M");
+    expect(oneM.join("\n")).not.toContain("window 200k");
   });
 });
 
@@ -228,6 +229,11 @@ function scriptedCaptureSession(): CaptureSession {
     }),
     getCaptureGeneration: () => 1,
     getLiveAsyncWork: () => [],
+    getTokenFamily: () => ({
+      modelId: null,
+      resolved: { family: "claude-2026" as const, source: "provider-fallback" as const },
+      estimator: null as never,
+    }),
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
 }
@@ -330,12 +336,12 @@ describe("first-load Control Panel on the managed launch path", () => {
       await waitFor(() => panelText(first.out()).includes(PANEL_TITLE), "onboarding panel");
       const shown = panelText(first.out());
       expect(shown).toContain("Welcome to CC-LHC");
-      expect(shown).toContain("target 70k after /smart-compact · trigger 140k · window 200k");
+      expect(shown).toContain("target 180k after /smart-compact · trigger 360k");
       expect(shown).toContain("Claude native auto-compact off");
       expect(shown).toContain("reopen this panel any time with ctrl-] · press Esc to continue to Claude");
       // The same facts on Home's own rows: no second source of truth.
-      expect(shown).toContain("target 70k");
-      expect(shown).toContain("trigger 140k");
+      expect(shown).toContain("target 180k");
+      expect(shown).toContain("trigger 360k");
       expect(first.out().startsWith(ALT_SCREEN_ENTER)).toBe(true);
       expect(readShownVersion(marker)).toBe(ONBOARDING_VERSION);
       expect(first.logLines.join("\n")).toContain(`Control Panel opened at launch (onboarding v${ONBOARDING_VERSION})`);

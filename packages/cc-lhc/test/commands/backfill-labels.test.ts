@@ -3,12 +3,12 @@
  * resolution through the cc-lhc registry, dry-run purity, and refusal shapes.
  */
 
-import { DatabaseSync } from "node:sqlite";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 
-import { createDeterministicInferenceCallbacks, initLhc, threads, type Lhc } from "lhc";
+import { createDeterministicInferenceCallbacks, initLhc, type Lhc, threads } from "lhc";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { isBackfillLabelsArgv, runBackfillLabelsCli } from "../../src/commands/backfill-labels.js";
@@ -78,7 +78,11 @@ beforeEach(async () => {
   const created = await threads.newThread({ filePath, registryPath });
   if (!created.ok) throw new Error(created.error.reason);
   threadId = created.value.threadId;
-  sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  sdk = initLhc({
+    mode: "manual",
+    tokenFamily: "claude-2026",
+    inferenceCallbacks: createDeterministicInferenceCallbacks(),
+  });
   out = [];
   errs = [];
 });
@@ -92,6 +96,8 @@ function deps() {
   };
 }
 
+const FAMILY = ["--token-family", "claude-2026"] as const;
+
 describe("backfill-labels CLI", () => {
   it("claims only its own argv head", () => {
     expect(isBackfillLabelsArgv(["backfill-labels", "th_x"])).toBe(true);
@@ -103,14 +109,19 @@ describe("backfill-labels CLI", () => {
     expect(await runBackfillLabelsCli(["backfill-labels"], deps())).toBe(2);
     expect(errs.some((line) => line.startsWith("usage:"))).toBe(true);
     errs = [];
-    expect(await runBackfillLabelsCli(["backfill-labels", "a", "b"], deps())).toBe(2);
+    expect(await runBackfillLabelsCli(["backfill-labels", "a", "b", ...FAMILY], deps())).toBe(2);
     errs = [];
-    expect(await runBackfillLabelsCli(["backfill-labels", "th_x", "--force"], deps())).toBe(2);
+    expect(await runBackfillLabelsCli(["backfill-labels", "th_x", "--force", ...FAMILY], deps())).toBe(2);
     expect(errs[0]).toContain("unknown flag");
   });
 
+  it("refuses without --token-family", async () => {
+    expect(await runBackfillLabelsCli(["backfill-labels", "th_x"], deps())).toBe(2);
+    expect(errs[0]).toContain("--token-family is required");
+  });
+
   it("refuses an unknown thread cleanly", async () => {
-    expect(await runBackfillLabelsCli(["backfill-labels", "th_nope"], deps())).toBe(2);
+    expect(await runBackfillLabelsCli(["backfill-labels", "th_nope", ...FAMILY], deps())).toBe(2);
     expect(errs[0]).toContain("thread resolve failed");
   });
 
@@ -120,7 +131,7 @@ describe("backfill-labels CLI", () => {
     stripLabels("t1");
 
     const prefix = threadId.slice(0, 8);
-    expect(await runBackfillLabelsCli(["backfill-labels", prefix], deps())).toBe(0);
+    expect(await runBackfillLabelsCli(["backfill-labels", prefix, ...FAMILY], deps())).toBe(0);
     expect(out.some((line) => line.includes(`thread ${threadId}`))).toBe(true);
     expect(out.some((line) => line.includes("relabeled 1"))).toBe(true);
     const rewritten = renderingContent("t1");
@@ -132,7 +143,7 @@ describe("backfill-labels CLI", () => {
     await seedTurn("question one", "answer one");
     stripLabels("t1");
     const before = renderingContent("t1");
-    expect(await runBackfillLabelsCli(["backfill-labels", threadId, "--dry-run"], deps())).toBe(0);
+    expect(await runBackfillLabelsCli(["backfill-labels", threadId, "--dry-run", ...FAMILY], deps())).toBe(0);
     expect(out.some((line) => line.includes("(dry run)"))).toBe(true);
     expect(renderingContent("t1")).toBe(before);
   });

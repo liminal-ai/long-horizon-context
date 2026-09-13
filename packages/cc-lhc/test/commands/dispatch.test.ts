@@ -27,7 +27,6 @@ function fakeRuntime(overrides: Partial<LhcCommandRuntime> = {}): LhcCommandRunt
       latestProviderContextTokens: 123_456,
       targetTokens: 180_000,
       triggerTokens: 360_000,
-      contextClass: "1M",
       nativeAutoCompact: "disabled",
     },
     ...overrides,
@@ -55,9 +54,7 @@ describe("dispatchLhcCommand", () => {
       fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef }),
     );
     expect(outcome.messages[0]).toContain("Latest provider context: 123,456 tokens (provider-reported)");
-    expect(outcome.messages[0]).toContain(
-      "/smart-compact: 180,000-token target · 360,000-token trigger (configured) · 1M window",
-    );
+    expect(outcome.messages[0]).toContain("/smart-compact: 180,000-token target · 360,000-token trigger (configured)");
     expect(outcome.messages[0]).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
     expect(outcome.messages[0]).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
     expect(outcome.messages[0]).toContain("Derivations: 1 pending · 2 failed");
@@ -82,7 +79,6 @@ describe("dispatchLhcCommand", () => {
           latestProviderContextTokens: null,
           targetTokens: 70_000,
           triggerTokens: 140_000,
-          contextClass: "200k",
           nativeAutoCompact: "passthrough",
         },
       }),
@@ -90,7 +86,7 @@ describe("dispatchLhcCommand", () => {
     const text = outcome.messages[0]!;
     expect(text).toContain("Latest provider context: not observed yet");
     expect(text).not.toMatch(/Latest provider context: 0\b/);
-    expect(text).toContain("/smart-compact: 70,000-token target · 140,000-token trigger (configured) · 200k window");
+    expect(text).toContain("/smart-compact: 70,000-token target · 140,000-token trigger (configured)");
     expect(text).toContain("Claude native auto-compact: may run — explicit --autocompact passed through");
     expect(text).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
     expect(text).toContain("/smart-prune: 400 estimated tokens in eligible tool results");

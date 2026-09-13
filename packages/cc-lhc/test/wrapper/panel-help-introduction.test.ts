@@ -7,7 +7,6 @@ import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { afterEach, describe, expect, it } from "vitest";
-import { resolveContextWindow } from "../../src/governor/config.js";
 
 import { createInputState, DEFAULT_LEADER_BYTE, type InputState, processInputChunk } from "../../src/wrapper/modal.js";
 import { ENTER_ALT_SCREEN, PANEL_PROMPT, renderPanel } from "../../src/wrapper/panel.js";
@@ -39,7 +38,6 @@ function openHome(): InputState {
       providerContextTokens: 12_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
     }),
@@ -282,7 +280,6 @@ describe("the typed details screen", () => {
       providerContextTokens: 12_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
       details: [
@@ -357,7 +354,6 @@ describe("TC-2.2a Introduction presents the mental model", () => {
       providerContextTokens: 12_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "historical",
     });
@@ -370,7 +366,7 @@ describe("TC-2.2a Introduction presents the mental model", () => {
     // Compact is always on — but names no numbers it does not have.
     const unknown = introductionLines(null).join("\n");
     expect(unknown).toContain("CC-LHC runs /smart-compact automatically at the active trigger");
-    expect(unknown).toContain("Use /status to see the current window, target, and trigger.");
+    expect(unknown).toContain("Use /status to see the current target and trigger.");
     expect(unknown).not.toMatch(/compaction is (on|off)/i);
     expect(unknown).not.toContain("180k");
     expect(unknown).not.toContain("360k");
@@ -383,7 +379,6 @@ describe("TC-2.2b Introduction uses current values", () => {
       providerContextTokens: 1_000,
       targetTokens: 42_000,
       triggerTokens: 77_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "historical",
     });
@@ -458,10 +453,9 @@ describe("TC-2.2c Values refresh after selection", () => {
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     const shown = (from = 0): string => panelText(out.slice(from));
     await waitFor(() => out.includes(ENTER_ALT_SCREEN) && shown().includes("Allocation Default"), "home default");
-    // A fresh wrapper starts on the conservative 200k policy until a window is observed.
-    expect(shown()).toContain("target 70k");
-    expect(shown()).toContain("trigger 140k");
-    expect(shown()).toContain("window 200k");
+    expect(shown()).toContain("target 180k");
+    expect(shown()).toContain("trigger 360k");
+    expect(shown()).not.toContain("window ");
     (stdin as unknown as PassThrough).write(
       Buffer.from("\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\r"),
     );
@@ -471,8 +465,8 @@ describe("TC-2.2c Values refresh after selection", () => {
     await waitFor(() => shown().includes("Allocation Historical"), "preset applied");
     const afterSelect = out.length;
     (stdin as unknown as PassThrough).write(Buffer.from("/help\r"));
-    await waitFor(() => shown(afterSelect).includes("Active target 70k"), "help after select");
-    expect(shown(afterSelect)).toContain("trigger 140k · Historical");
+    await waitFor(() => shown(afterSelect).includes("Active target 180k"), "help after select");
+    expect(shown(afterSelect)).toContain("trigger 360k · Historical");
     const afterHelpEnter = out.length;
     (stdin as unknown as PassThrough).write(Buffer.from("\r"));
     await waitFor(() => shown(afterHelpEnter).includes("Commands"), "home after help");

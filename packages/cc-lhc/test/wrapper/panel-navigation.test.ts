@@ -4,7 +4,6 @@
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { PRODUCT_PRESET_IDS } from "../../src/governor/band-allocation.js";
-import { resolveContextWindow } from "../../src/governor/config.js";
 import {
   clampPanelViewport,
   createInputState,
@@ -60,7 +59,6 @@ function openHome(): InputState {
       providerContextTokens: 31_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "default",
     }),
@@ -200,7 +198,6 @@ describe("TC-1.5a Small Home remains operable", () => {
       providerContextTokens: 31_000,
       targetTokens: 50_000,
       triggerTokens: 90_000,
-      contextWindow: resolveContextWindow(1_000_000, null),
       captureHealth: "ready",
       profile: "balanced",
     });
@@ -210,7 +207,7 @@ describe("TC-1.5a Small Home remains operable", () => {
       "ctx 31k",
       "target 50k",
       "trigger 90k",
-      "window 1M",
+      "runway 50k",
       "capture ready",
       "alloc Balanced",
       `Low ${panelView.low}%`,

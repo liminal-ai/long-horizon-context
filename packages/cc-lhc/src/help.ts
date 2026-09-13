@@ -8,14 +8,15 @@ Usage:
   cc-lhc get-turns [--from TOKENS] <tN>...
   cc-lhc get-messages [--from TOKENS] <mN>...
   cc-lhc tasks status|output|stop <launch id> [--offset BYTES] [--max BYTES]
-  cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]
-  cc-lhc rollout write --thread-id ID --session-id UUID [--cwd DIR] [--projects-root DIR] [--envelope-from ROLLOUT]
+  cc-lhc backfill-labels <thread-id-or-prefix> --token-family <slug> [--dry-run]
+  cc-lhc rollout write --thread-id ID --session-id UUID --token-family SLUG [--cwd DIR] [--projects-root DIR] [--envelope-from ROLLOUT]
   cc-lhc --lhc-help
   cc-lhc --lhc-version
 
-Smart Compact is always active: it runs automatically at the trigger of the
-active context window (200k: 70k target, 140k trigger; 1M: 180k target, 360k
-trigger) and cannot be turned off.
+Smart Compact is always active: it runs automatically at the 360k trigger
+toward a 180k target (50k minimum runway) and cannot be turned off. cc-lhc
+assumes a 1M-window model. Override the built-in policy with user/project
+config or /bounds.
 
 Wrapper flags:
   --lhc-no-inference               Disable derivation model calls
