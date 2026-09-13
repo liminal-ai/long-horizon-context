@@ -1427,7 +1427,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       // scheduler whether or not this capture is still open; stopping the tail
       // never waits on it. Only the pending count is read, for stats.
       if (sdk !== undefined && threadRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
-        const overview = await inspect.overview(threadRef);
+        const overview = await sdk.inspect.overview(threadRef);
         if (overview.ok) {
           stats.derivationsPending = overview.value.derivation.pending;
         }
