@@ -5,8 +5,8 @@
 // never an excerpt for the newest closed turn.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput, type ViewCompactParams } from "../src/index.js";
-import { estimateTokens } from "../src/shared-tech/token-counting/index.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -17,7 +17,7 @@ afterEach(() => {
 });
 
 function sdkFor(): Lhc {
-  return initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
 }
 
 async function newThread(sdk: Lhc): Promise<string> {
@@ -180,6 +180,7 @@ describe("Flow 5: newest closed turn protected by placement", () => {
     // open W = 303 in two complete steps, lowerBound 447 at 25/25/25/25.
     // Before the cascade this served 784 tokens (tail 445 + 72 + 156 + 111).
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: createInferenceCallbacksDouble(),
       mode: "manual",
       chunkPolicy: { targetProjectedTokens: 30, maxProjectedTokens: 4400 },
@@ -249,6 +250,7 @@ describe("Flow 5: newest closed turn protected by placement", () => {
   it("the fraction lives beside the band allocations and is validated at construction and at compact", async () => {
     expect(() =>
       initLhc({
+        tokenFamily: "o200k",
         inferenceCallbacks: createInferenceCallbacksDouble(),
         mode: "manual",
         view: { profiles: [{ name: "coding", newestClosedProtection: 1.5 }] },

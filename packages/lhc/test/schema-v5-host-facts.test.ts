@@ -3,7 +3,7 @@
 // writes them; turns/messages reads expose them; empty turn_end stays valid.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, type MessageEventInput, messages, type ThreadRef, threads, turns } from "../src/index.js";
-import { openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, openRaw, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -21,7 +21,7 @@ async function createThread(): Promise<string> {
 }
 
 async function send(filePath: string, batch: MessageEventInput[]) {
-  const result = await intakeStream.messageEvents({ filePath } satisfies ThreadRef, batch);
+  const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath } satisfies ThreadRef, batch));
   if (!result.ok) throw new Error(`fixture batch failed: ${result.error.reason}`);
   return result.value;
 }
@@ -204,13 +204,15 @@ describe("schema v5 host facts", () => {
 
   it("invalid outcome value is rejected whole", async () => {
     const filePath = await createThread();
-    const result = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      {
-        ...validEvent("turn_end"),
-        payload: { outcome: "interrupted" },
-      } as unknown as MessageEventInput,
-    ]);
+    const result = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt"),
+        {
+          ...validEvent("turn_end"),
+          payload: { outcome: "interrupted" },
+        } as unknown as MessageEventInput,
+      ]),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.errorClass).toBe("caller_error");
@@ -221,12 +223,14 @@ describe("schema v5 host facts", () => {
 
   it("unknown key in turn_end payload is rejected", async () => {
     const filePath = await createThread();
-    const result = await intakeStream.messageEvents({ filePath }, [
-      {
-        ...validEvent("turn_end"),
-        payload: { surprise: true },
-      } as unknown as MessageEventInput,
-    ]);
+    const result = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        {
+          ...validEvent("turn_end"),
+          payload: { surprise: true },
+        } as unknown as MessageEventInput,
+      ]),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.errorClass).toBe("caller_error");
@@ -237,12 +241,14 @@ describe("schema v5 host facts", () => {
   it("providerUsage that is not a JSON object is rejected", async () => {
     const filePath = await createThread();
     for (const bad of ["tokens", 12, true, null, [1, 2]]) {
-      const result = await intakeStream.messageEvents({ filePath }, [
-        {
-          ...validEvent("assistant_text"),
-          payload: { text: "hi", providerUsage: bad },
-        } as unknown as MessageEventInput,
-      ]);
+      const result = await withEstimator(o200k, () =>
+        intakeStream.messageEvents({ filePath }, [
+          {
+            ...validEvent("assistant_text"),
+            payload: { text: "hi", providerUsage: bad },
+          } as unknown as MessageEventInput,
+        ]),
+      );
       expect(result.ok).toBe(false);
       if (result.ok) continue;
       expect(result.error.code).toBe("invalid_event");

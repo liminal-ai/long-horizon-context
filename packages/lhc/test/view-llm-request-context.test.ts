@@ -32,6 +32,7 @@ afterAll(() => {
 
 function manualSdk(view?: SdkViewConfig): Lhc {
   return initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: createInferenceCallbacksDouble(),
     mode: "manual",
     ...(view === undefined ? {} : { view }),
@@ -259,6 +260,7 @@ describe("tail mapping legs (architecture-risk): one named leg per message kind"
 describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-tool content full everywhere", () => {
   it.skip("renders deterministic tool-result floors behind the boundary and full content ahead of it", async () => {
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: createInferenceCallbacksDouble(),
       mode: "manual",
       toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
@@ -471,6 +473,7 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): model context
     // status fired it — the SV-01-PULL-STATUS-001 side-effect path.
     const bgDouble = createInferenceCallbacksDouble();
     const bg = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: bgDouble,
       mode: "background",
       view: { compactThreshold: 100 },

@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, type ViewCompactParams } from "../src/index.js";
 import { CONSTRUCTION_MESSAGE_CAP_TOKENS, capForConstruction } from "../src/turns/internal/compose.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -21,19 +22,19 @@ const GIANT = Array.from({ length: 300 }, (_, i) => `line ${i} of a very long as
 
 describe("capForConstruction", () => {
   it("is identity under the cap and a priced head/elision/tail over it", () => {
-    expect(capForConstruction("short", "m9")).toBe("short");
-    const capped = capForConstruction(GIANT, "m9");
+    expect(capForConstruction("short", "m9", o200k)).toBe("short");
+    const capped = capForConstruction(GIANT, "m9", o200k);
     expect(capped.startsWith("line 0 of")).toBe(true);
     expect(capped.endsWith("assistant message body")).toBe(true);
     expect(capped).toMatch(/\n\[… \d+ tokens elided at construction — exact content: m9 …\]\n/);
     expect(capped.length).toBeLessThan(GIANT.length);
-    expect(capped).toBe(capForConstruction(GIANT, "m9")); // deterministic
+    expect(capped).toBe(capForConstruction(GIANT, "m9", o200k)); // deterministic
   });
 });
 
 describe("the cap is a bounded-plan serving-time transformation", () => {
   it("parts and served renderings elide with a pointer; retrieval, the tail, the stored rendering, and the floors keep every byte; legacy serves the stored row verbatim", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
@@ -114,7 +115,7 @@ describe("the cap is a bounded-plan serving-time transformation", () => {
   });
 
   it("caps at the true message boundary when a body carries its own tag-shaped close text; legacy and durable bytes stay exact", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);

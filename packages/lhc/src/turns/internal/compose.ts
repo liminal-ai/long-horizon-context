@@ -10,16 +10,18 @@
 // runtime notes do not. Runs are never reordered.
 
 import { cleanPrompt } from "../../messages/index.js";
-import type {
-  DependencyGap,
-  DerivationMetadata,
-  DerivationState,
-  RenderingPart,
-  RenderingPartKind,
-  ToolOutcome,
+import {
+  type DependencyGap,
+  type DerivationMetadata,
+  type DerivationState,
+  FALLBACK_TRUNCATION_LIMIT,
+  type RenderingPart,
+  type RenderingPartKind,
+  resolveInstanceTokenEstimator,
+  type ToolOutcome,
+  truncateForFallback,
 } from "../../shared-tech/index.js";
-import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "../../shared-tech/index.js";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
 
 // F1 — the bounded per-message construction cap. A served construction never
 // spends more than this on one message: a giant message keeps a head and a
@@ -41,10 +43,11 @@ export interface ComposeOptions {
   // [fallback] annotation, gap, or recovery is produced. Durable outputs
   // never set this.
   rawByDesign?: boolean;
+  tokenEstimator?: TokenEstimator;
 }
 
-export function capForConstruction(text: string, messageId: string): string {
-  const total = estimateTokens(text);
+export function capForConstruction(text: string, messageId: string, estimator: TokenEstimator): string {
+  const total = estimator.estimate(text);
   if (total <= CONSTRUCTION_MESSAGE_CAP_TOKENS) return text;
   const charsPerToken = text.length / total;
   const marker = (elided: number): string =>
@@ -57,9 +60,9 @@ export function capForConstruction(text: string, messageId: string): string {
     const tailChars = keep - headChars;
     const head = text.slice(0, headChars).trimEnd();
     const tail = tailChars === 0 ? "" : text.slice(text.length - tailChars).trimStart();
-    const elided = Math.max(0, total - estimateTokens(head) - estimateTokens(tail));
+    const elided = Math.max(0, total - estimator.estimate(head) - estimator.estimate(tail));
     const capped = tail === "" ? `${head}\n${marker(elided)}` : `${head}\n${marker(elided)}\n${tail}`;
-    if (keep === 0 || estimateTokens(capped) <= CONSTRUCTION_MESSAGE_CAP_TOKENS) return capped;
+    if (keep === 0 || estimator.estimate(capped) <= CONSTRUCTION_MESSAGE_CAP_TOKENS) return capped;
     keep = Math.max(0, Math.min(keep - 1, Math.floor(keep * 0.9)));
   }
 }
@@ -252,7 +255,14 @@ function buildAtom(
   // The uncapped text is what a recovery floor writes back; only bounded
   // serving renders the capped construction.
   const text = ready ? readyText(message, derivation.content as string) : plan.fallbackText(message);
-  const served = options.capForServing === true ? capForConstruction(text, message.messageId) : text;
+  const served =
+    options.capForServing === true
+      ? capForConstruction(
+          text,
+          message.messageId,
+          options.tokenEstimator ?? resolveInstanceTokenEstimator("turns.compose"),
+        )
+      : text;
   const part: RenderingPart = {
     messageId: message.messageId,
     kind: message.kind,

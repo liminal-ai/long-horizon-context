@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, type MessageEventInput, messages, threads } from "../src/index.js";
 import { readPreparedSourceState } from "../src/thread-view/index.js";
 import { type StepMember, stepEdges } from "../src/turns/internal/steps.js";
-import { openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, openRaw, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -27,14 +27,16 @@ async function createThread(): Promise<string> {
 describe("step index on the wire and in storage", () => {
   it("round-trips verbatim on the four step-bearing kinds and stays absent when omitted", async () => {
     const filePath = await createThread();
-    const sent = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      validEvent("assistant_thinking", { payload: { text: "t", stepIndex: 0 } }),
-      validEvent("assistant_text", { payload: { text: "a", stepIndex: 0 } }),
-      validEvent("tool_call", { payload: { toolCallId: "c1", toolName: "read", arguments: {}, stepIndex: 0 } }),
-      validEvent("tool_result", { payload: { toolCallId: "c1", content: "r", stepIndex: 0 } }),
-      validEvent("assistant_text", { payload: { text: "b" } }),
-    ]);
+    const sent = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt"),
+        validEvent("assistant_thinking", { payload: { text: "t", stepIndex: 0 } }),
+        validEvent("assistant_text", { payload: { text: "a", stepIndex: 0 } }),
+        validEvent("tool_call", { payload: { toolCallId: "c1", toolName: "read", arguments: {}, stepIndex: 0 } }),
+        validEvent("tool_result", { payload: { toolCallId: "c1", content: "r", stepIndex: 0 } }),
+        validEvent("assistant_text", { payload: { text: "b" } }),
+      ]),
+    );
     expect(sent.ok).toBe(true);
     const listed = await messages.list({ filePath });
     expect(listed.ok).toBe(true);
@@ -61,7 +63,7 @@ describe("step index on the wire and in storage", () => {
       [validEvent("user_prompt", { payload: { text: "x", stepIndex: 0 } as never })],
     ];
     for (const batch of bad) {
-      const result = await intakeStream.messageEvents({ filePath }, batch);
+      const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error.code).toBe("invalid_event");
     }
@@ -130,13 +132,15 @@ describe("stepEdges", () => {
 describe("structureDigest folds the open turn's step edges", () => {
   it("changes when an open-turn step index changes and not when a closed-turn one does", async () => {
     const filePath = await createThread();
-    const sent = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      validEvent("assistant_text", { payload: { text: "closed", stepIndex: 0 } }),
-      validEvent("turn_end"),
-      validEvent("user_prompt"),
-      validEvent("assistant_text", { payload: { text: "open", stepIndex: 0 } }),
-    ]);
+    const sent = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt"),
+        validEvent("assistant_text", { payload: { text: "closed", stepIndex: 0 } }),
+        validEvent("turn_end"),
+        validEvent("user_prompt"),
+        validEvent("assistant_text", { payload: { text: "open", stepIndex: 0 } }),
+      ]),
+    );
     expect(sent.ok).toBe(true);
     const db = openRaw(filePath);
     try {

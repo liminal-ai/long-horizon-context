@@ -310,9 +310,6 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
     case "compact_continuation_marker":
       issue = decodeIssue(CompactContinuationMarkerPayloadSchema, payload);
       break;
-    case "user_prompt":
-      issue = decodeIssue(UserPromptPayloadSchema, payload);
-      break;
     default:
       issue = decodeIssue(TextPayloadSchema, payload);
       break;

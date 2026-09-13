@@ -4,10 +4,7 @@ import { deriveToolResultSummary } from "../src/messages/internal/handlers.js";
 import type { HandlerRunContext } from "../src/shared-tech/derivation.js";
 
 function makeRun(inferenceCallbacks: InferenceCallbacks): HandlerRunContext {
-  const sdk = initLhc({
-    inferenceCallbacks,
-    mode: "manual",
-  });
+  const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks, mode: "manual" });
   return {
     threadId: "th_test",
     filePath: "/tmp/tool-result-summary-test.sqlite",

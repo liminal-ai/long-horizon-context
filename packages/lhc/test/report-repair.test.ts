@@ -61,6 +61,7 @@ function manualSdk(
   overrides: Partial<Pick<SdkConfig, "chunkPolicy" | "clock">> = {},
 ): Lhc {
   const config: SdkConfig = {
+    tokenFamily: "o200k",
     inferenceCallbacks,
     mode: "manual",
     lease: { durationMs: 200 },

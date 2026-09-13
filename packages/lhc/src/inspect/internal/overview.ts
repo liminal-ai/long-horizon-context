@@ -5,7 +5,13 @@
 
 import * as intakeStream from "../../intake-stream/index.js";
 import * as messages from "../../messages/index.js";
-import type { DerivationReportEntry, InspectOverview, OpResult } from "../../shared-tech/index.js";
+import {
+  type DerivationReportEntry,
+  type InspectOverview,
+  type OpResult,
+  resolveInstanceTokenEstimator,
+} from "../../shared-tech/index.js";
+import { billedSignatureTokens } from "../../shared-tech/token-counting/index.js";
 import * as threadView from "../../thread-view/index.js";
 import type { ThreadRef } from "../../threads/index.js";
 import * as threads from "../../threads/index.js";
@@ -68,6 +74,7 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
     deleted: 0,
     visibleTokens: 0,
   };
+  const estimator = resolveInstanceTokenEstimator("inspect.overview");
   for (const record of listed.value) {
     if (record.deleted === true) {
       messageSection.deleted += 1;
@@ -75,7 +82,10 @@ export async function composeOverview(ref: ThreadRef): Promise<OpResult<InspectO
     }
     messageSection.visible += 1;
     messageSection.byKind[record.kind] = (messageSection.byKind[record.kind] ?? 0) + 1;
-    messageSection.visibleTokens += record.tokenEstimate;
+    messageSection.visibleTokens += estimator.weighStored(
+      record.tokenEstimate,
+      billedSignatureTokens(estimator, record.blocks),
+    );
   }
 
   const turnList = await turns.listTurns(ref);

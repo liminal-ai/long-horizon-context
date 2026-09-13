@@ -7,6 +7,7 @@
 // with any close's summary enqueues or nothing.
 import type { DatabaseSync } from "node:sqlite";
 import type { DbWriteTransaction } from "../../shared-tech/index.js";
+import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
 import { enqueue, supersedeQueued, type WorkItemRecord } from "../../shared-tech/work-queue/index.js";
 
 export interface ChunkPolicy {
@@ -65,6 +66,7 @@ export function placeTurn(
   turnId: string,
   projectedTokens: number,
   policy: ChunkPolicy,
+  estimator: TokenEstimator,
 ): PlacementResult {
   const existing = db
     .prepare(`SELECT chunk_id, member_idx FROM chunk_member WHERE turn_id = ?`)
@@ -89,7 +91,7 @@ export function placeTurn(
   if (
     open !== undefined &&
     memberCount(db, open.chunk_id) > 0 &&
-    Number(open.accumulated_projected_tokens) + projectedTokens >= policy.targetProjectedTokens
+    estimator.weigh(Number(open.accumulated_projected_tokens) + projectedTokens) >= policy.targetProjectedTokens
   ) {
     // Crossing closes without the incoming turn: the decision weighs
     // accumulated + incoming, and the incoming turn starts the next chunk.
@@ -110,7 +112,7 @@ export function placeTurn(
      WHERE chunk_id = ?`,
   ).run(projectedTokens, chunkId);
 
-  if (projectedTokens >= policy.maxProjectedTokens) {
+  if (estimator.weigh(projectedTokens) >= policy.maxProjectedTokens) {
     // Max rule: the incoming turn alone meets the maximum, so its chunk closes
     // immediately, whatever it holds.
     closeChunk(db, chunkId);

@@ -105,6 +105,7 @@ async function seedSmoothingOnly(sdk: Lhc, store: TempStore): Promise<string> {
 function inferenceSdk(call: ModelCall): { sdk: Lhc; assignments: ReturnType<typeof validAssignments> } {
   const assignments = validAssignments();
   const sdk = initLhc({
+    tokenFamily: "o200k",
     inference: { call, assignments },
     mode: "manual",
     chunkPolicy: CHUNK_POLICY,
@@ -163,6 +164,7 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     const adapterForms = await drainAll(adapterSdk, await seedSevenKinds(adapterSdk, freshStore()));
 
     const deterministicSdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "manual",
       chunkPolicy: CHUNK_POLICY,

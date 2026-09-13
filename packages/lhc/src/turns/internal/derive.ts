@@ -24,7 +24,7 @@ import {
   runWorkHandler,
 } from "../../shared-tech/index.js";
 import { appendDerivationLog, type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+
 import {
   createOrClaimImmediateWorkItem,
   type EnqueueDerivationTarget,
@@ -170,7 +170,7 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
 
   const renderingText = composeStructuredTurnText(parts, turnId);
   const assemblyText = assembly.text;
-  const projectedTokens = estimateTokens(assemblyText);
+  const projectedTokens = run.config.tokenEstimator.rawCount(assemblyText);
   const threadId = run.threadId;
   const compressionSourceVersion =
     readTurnDerivationRow(db, "turn", turnId, "pre_detailed_assembly")?.sourceVersion ?? 1;
@@ -211,7 +211,13 @@ const turnDerivationHandler: WorkHandler = async (run, item) => {
           },
         );
       }
-      const placement = placeTurn(transaction.db, turnId, projectedTokens, run.config.chunkPolicy);
+      const placement = placeTurn(
+        transaction.db,
+        turnId,
+        projectedTokens,
+        run.config.chunkPolicy,
+        run.config.tokenEstimator,
+      );
       for (const chunkId of placement.closedChunkIds) {
         enqueueChunkSummaries(
           {
@@ -248,7 +254,7 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
     );
   }
   const assemblyText = assemblyRow.content;
-  const inputTokens = estimateTokens(assemblyText);
+  const inputTokens = run.config.tokenEstimator.estimate(assemblyText);
   const tinyTurnTokens = run.config.guards.detailedTurnCompression.tinyTurnTokens;
   const targetTokens = compressionTargetTokens(inputTokens, run.config.compressionTargets);
   const compressionResult =
@@ -307,7 +313,7 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
     }
   }
 
-  const projectedTokens = estimateTokens(compressionText);
+  const projectedTokens = run.config.tokenEstimator.estimate(compressionText);
   const compressionMetadata: DerivationMetadata = {};
   if (!compressionUsedFallback && "provenance" in compressionResult && compressionResult.provenance !== undefined) {
     compressionMetadata.provenance = compressionResult.provenance;
@@ -535,7 +541,10 @@ function chunkBriefHandler(): WorkHandler {
       return dependencyNotReady(`chunk_summary_detailed_not_ready: chunk ${chunkId} has no detailed content`);
     }
 
-    const targetTokens = compressionTargetTokens(estimateTokens(detailed.content), run.config.briefTargets);
+    const targetTokens = compressionTargetTokens(
+      run.config.tokenEstimator.estimate(detailed.content),
+      run.config.briefTargets,
+    );
     const result = await run.inferenceCallbacks.summarizeChunkBrief({ text: detailed.content, ...targetTokens });
     if (!result.ok) {
       appendDerivationLog(
@@ -571,7 +580,7 @@ function chunkBriefHandler(): WorkHandler {
         },
       },
     );
-    const outputTokens = estimateTokens(result.text);
+    const outputTokens = run.config.tokenEstimator.estimate(result.text);
     const metadata: DerivationMetadata = {
       inferenceAttempted: true,
       inferenceSucceeded: true,

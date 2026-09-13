@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { RecordedEvent } from "../src/messages/index.js";
 import { projectEvent } from "../src/messages/internal/project.js";
-import { estimateSignatureTokens, estimateTokens } from "../src/shared-tech/token-counting/index.js";
+import { TokenEstimator } from "../src/shared-tech/token-counting/index.js";
 import { validEvent } from "./fixtures/index.js";
+
+const claude = new TokenEstimator("claude-2026");
 
 function thinkingEvent(text: string, signature?: string): RecordedEvent {
   const event = validEvent("assistant_thinking", {
@@ -11,13 +13,13 @@ function thinkingEvent(text: string, signature?: string): RecordedEvent {
   return { ...event, eventOrder: 1, recordedAt: "2026-09-12T00:00:00.000Z" };
 }
 
-describe("estimateSignatureTokens", () => {
+describe("estimateSignature", () => {
   it.each([
     [912, 159],
     [1_400, 244],
     [4_000, 697],
-  ])("estimates a %i-char base64 signature as %i billed tokens", (length, expected) => {
-    expect(estimateSignatureTokens("A".repeat(length))).toBe(expected);
+  ])("estimates a %i-char base64 signature as %i billed tokens at the Claude rate", (length, expected) => {
+    expect(claude.estimateSignature("A".repeat(length))).toBe(expected);
   });
 });
 
@@ -26,20 +28,20 @@ describe("assistant_thinking token projection", () => {
     const text = "considering the evidence";
     const signature = "A".repeat(1_400);
 
-    expect(projectEvent(thinkingEvent(text, signature))?.tokenEstimate).toBe(
-      estimateTokens(text) + estimateSignatureTokens(signature),
+    expect(projectEvent(thinkingEvent(text, signature), claude)?.tokenEstimate).toBe(
+      claude.rawCount(text) + claude.estimateSignature(signature),
     );
   });
 
   it("counts text only when the signature is omitted", () => {
     const text = "considering the evidence";
 
-    expect(projectEvent(thinkingEvent(text))?.tokenEstimate).toBe(estimateTokens(text));
+    expect(projectEvent(thinkingEvent(text), claude)?.tokenEstimate).toBe(claude.rawCount(text));
   });
 
   it("keeps empty-signature behavior at text only", () => {
     const text = "considering the evidence";
 
-    expect(projectEvent(thinkingEvent(text, ""))?.tokenEstimate).toBe(estimateTokens(text));
+    expect(projectEvent(thinkingEvent(text, ""), claude)?.tokenEstimate).toBe(claude.rawCount(text));
   });
 });

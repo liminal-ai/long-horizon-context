@@ -27,6 +27,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { o200k, withEstimator } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -138,30 +139,34 @@ function snapshotCanonical(filePath: string): {
 }
 
 async function seedPendingToolTurn(filePath: string, toolCallId: string): Promise<void> {
-  const batch = await intakeStream.messageEvents({ filePath }, [
-    validEvent("user_prompt", { payload: { text: "use tools" } }),
-    validEvent("assistant_text", { payload: { text: "calling tool" } }),
-    validEvent("tool_call", {
-      payload: { toolCallId, toolName: "read_file", arguments: { path: "notes.txt" } },
-    }),
-    validEvent("tool_result", {
-      payload: { toolCallId, content: "tool result verbatim payload that must survive", isError: false },
-    }),
-  ]);
+  const batch = await withEstimator(o200k, () =>
+    intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "use tools" } }),
+      validEvent("assistant_text", { payload: { text: "calling tool" } }),
+      validEvent("tool_call", {
+        payload: { toolCallId, toolName: "read_file", arguments: { path: "notes.txt" } },
+      }),
+      validEvent("tool_result", {
+        payload: { toolCallId, content: "tool result verbatim payload that must survive", isError: false },
+      }),
+    ]),
+  );
   if (!batch.ok) throw new Error(batch.error.reason);
 }
 
 async function seedOpenAgenticTurn(filePath: string): Promise<void> {
-  const batch = await intakeStream.messageEvents({ filePath }, [
-    validEvent("user_prompt", { payload: { text: "continue the investigation with more context" } }),
-    validEvent("assistant_text", { payload: { text: "working on it with more detail ".repeat(20) } }),
-    validEvent("tool_call", {
-      payload: { toolCallId: "call-active-1", toolName: "read_file", arguments: { path: "x.txt" } },
-    }),
-    validEvent("tool_result", {
-      payload: { toolCallId: "call-active-1", content: "result body ".repeat(30), isError: false },
-    }),
-  ]);
+  const batch = await withEstimator(o200k, () =>
+    intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "continue the investigation with more context" } }),
+      validEvent("assistant_text", { payload: { text: "working on it with more detail ".repeat(20) } }),
+      validEvent("tool_call", {
+        payload: { toolCallId: "call-active-1", toolName: "read_file", arguments: { path: "x.txt" } },
+      }),
+      validEvent("tool_result", {
+        payload: { toolCallId: "call-active-1", content: "result body ".repeat(30), isError: false },
+      }),
+    ]),
+  );
   if (!batch.ok) throw new Error(batch.error.reason);
 }
 
@@ -223,16 +228,18 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     const before = snapshotCanonical(fixture.filePath);
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
 
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: `pair-${name}`,
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          protectedToolCallIds: [toolCallId],
-          correlationValid: true,
-        },
-      }),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: `pair-${name}`,
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            protectedToolCallIds: [toolCallId],
+            correlationValid: true,
+          },
+        }),
+      ),
     );
     expect(result.ok, `${name} (${kind})`).toBe(true);
     if (!result.ok) return;
@@ -533,16 +540,18 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedPendingToolTurn(fixture.filePath, "call-ok-above");
     const beforeMarkers = snapshotCanonical(fixture.filePath).markerCount;
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "pair-valid-above",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          protectedToolCallIds: ["call-ok-above"],
-          correlationValid: true,
-        },
-      }),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "pair-valid-above",
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            protectedToolCallIds: ["call-ok-above"],
+            correlationValid: true,
+          },
+        }),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -602,9 +611,11 @@ describe("LIM-61 evidence: marker-event → boundary-status crash gap", () => {
     ).toBe(true);
 
     // Resume: detect marker by key, reconcile status, no second marker, complete.
-    const resumed = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "marker-event-gap-1", writerClaim: "lhc" }),
+    const resumed = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "marker-event-gap-1", writerClaim: "lhc" }),
+      ),
     );
     expect(resumed.ok).toBe(true);
     if (!resumed.ok) return;
@@ -651,7 +662,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     } finally {
       db.close();
     }
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const prep = await sdk.threadView.prepareCompact(
       { filePath },
       { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
@@ -668,23 +679,25 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     const markerKey = compactContinuationMarkerIdempotencyKey(continuationTurnId);
 
     // Append exactly one valid marker for the open continuation turn.
-    const markerBatch = await intakeStream.messageEvents({ filePath: fixture.filePath }, [
-      validEvent("compact_continuation_marker", {
-        idempotencyKey: markerKey,
-        payload: {
-          kind: "lhc.compact_continuation",
-          continuationTurnId,
-          cause: "context_compacted_task_in_progress",
-          action: "continue_existing_task",
-          newUserRequest: false,
-          waitForUser: false,
-        },
-      }),
-    ]);
+    const markerBatch = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath: fixture.filePath }, [
+        validEvent("compact_continuation_marker", {
+          idempotencyKey: markerKey,
+          payload: {
+            kind: "lhc.compact_continuation",
+            continuationTurnId,
+            cause: "context_compacted_task_in_progress",
+            action: "continue_existing_task",
+            newUserRequest: false,
+            waitForUser: false,
+          },
+        }),
+      ]),
+    );
     expect(markerBatch.ok).toBe(true);
     if (!markerBatch.ok) return;
 
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
 
     // Positive: marker-only delta installs.
     const okInstall = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prepared);
@@ -696,19 +709,21 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     await seedOpenAgenticTurn(fixture2.filePath);
     const prep2 = await prepareWithOpenContinuation(fixture2.filePath);
     const key2 = compactContinuationMarkerIdempotencyKey(prep2.continuationTurnId);
-    const marker2 = await intakeStream.messageEvents({ filePath: fixture2.filePath }, [
-      validEvent("compact_continuation_marker", {
-        idempotencyKey: key2,
-        payload: {
-          kind: "lhc.compact_continuation",
-          continuationTurnId: prep2.continuationTurnId,
-          cause: "context_compacted_task_in_progress",
-          action: "continue_existing_task",
-          newUserRequest: false,
-          waitForUser: false,
-        },
-      }),
-    ]);
+    const marker2 = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath: fixture2.filePath }, [
+        validEvent("compact_continuation_marker", {
+          idempotencyKey: key2,
+          payload: {
+            kind: "lhc.compact_continuation",
+            continuationTurnId: prep2.continuationTurnId,
+            cause: "context_compacted_task_in_progress",
+            action: "continue_existing_task",
+            newUserRequest: false,
+            waitForUser: false,
+          },
+        }),
+      ]),
+    );
     expect(marker2.ok).toBe(true);
     if (!marker2.ok) return;
 
@@ -739,7 +754,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
   });
 
   it("derivation changes after prepare do not block activation", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     // derivedThreadFixture drains work so ready derivation rows exist.
     const fixture = await derivedThreadFixture(store, { failures: false });
     const db0 = openRaw(fixture.filePath);
@@ -778,7 +793,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
   });
 
   it("message changes after prepare do not block activation", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const fixture = await derivedThreadFixture(store, { failures: false });
     const listed = await messages.list({ filePath: fixture.filePath });
     expect(listed.ok).toBe(true);
@@ -802,7 +817,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
   });
 
   it("a second coherent prepared view can replace the first", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const fixtureV = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixtureV.filePath);
     const prepA = await sdk.threadView.prepareCompact(
@@ -829,7 +844,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
   });
 
   it("compact-install-before-validate runs inside a write transaction", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const fixtureInj = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixtureInj.filePath);
     const prepInj = await sdk.threadView.prepareCompact(
@@ -859,25 +874,29 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
   });
 
   it("message excerpt source changes after prepare do not block activation", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
     // Several closed undrained turns so smooth band uses message_excerpt (no chunk membership yet).
     for (let i = 0; i < 4; i++) {
-      const batch = await intakeStream.messageEvents({ filePath }, [
-        validEvent("user_prompt", { payload: { text: `undrained turn ${i} unique-excerpt-marker-${i}` } }),
-        validEvent("assistant_text", { payload: { text: `reply ${i} `.repeat(30) } }),
-        validEvent("turn_end", { payload: { outcome: "completed" } }),
-      ]);
+      const batch = await withEstimator(o200k, () =>
+        intakeStream.messageEvents({ filePath }, [
+          validEvent("user_prompt", { payload: { text: `undrained turn ${i} unique-excerpt-marker-${i}` } }),
+          validEvent("assistant_text", { payload: { text: `reply ${i} `.repeat(30) } }),
+          validEvent("turn_end", { payload: { outcome: "completed" } }),
+        ]),
+      );
       expect(batch.ok).toBe(true);
       if (!batch.ok) return;
     }
-    await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "open tail" } }),
-      validEvent("assistant_text", { payload: { text: "still open" } }),
-    ]);
+    await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "open tail" } }),
+        validEvent("assistant_text", { payload: { text: "still open" } }),
+      ]),
+    );
     const prep = await sdk.threadView.prepareCompact(
       { filePath },
       { params: { lowerBound: 200, percentages: { full: 10, smooth: 70, detailed: 10, brief: 10 } } },
@@ -926,7 +945,7 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
   });
 
   it("source block changes after prepare do not block activation", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
     const prep = await sdk.threadView.prepareCompact(
@@ -958,23 +977,27 @@ describe("LIM-61 evidence: invalid candidate without material hooks", () => {
   it("unresolved tool_call at settled active_non_tool: bounded retry / failed_repairable", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     // Normal pipeline: open turn with tool_call and NO result (unresolved).
-    const batch = await intakeStream.messageEvents({ filePath: fixture.filePath }, [
-      validEvent("user_prompt", { payload: { text: "please use a tool" } }),
-      validEvent("assistant_text", { payload: { text: "calling" } }),
-      validEvent("tool_call", {
-        payload: { toolCallId: "call-unresolved", toolName: "read_file", arguments: { path: "a.txt" } },
-      }),
-    ]);
+    const batch = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath: fixture.filePath }, [
+        validEvent("user_prompt", { payload: { text: "please use a tool" } }),
+        validEvent("assistant_text", { payload: { text: "calling" } }),
+        validEvent("tool_call", {
+          payload: { toolCallId: "call-unresolved", toolName: "read_file", arguments: { path: "a.txt" } },
+        }),
+      ]),
+    );
     expect(batch.ok).toBe(true);
     if (!batch.ok) return;
 
     const before = snapshotCanonical(fixture.filePath);
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "invalid-candidate-1",
-        continuation: { kind: "active_non_tool" },
-      }),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "invalid-candidate-1",
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1282,9 +1305,11 @@ describe("LIM-61 evidence: storage invariants", () => {
     expect(stages1.value.some((s) => s.stage === "retry_posture")).toBe(true);
     expect(stages1.value.some((s) => s.stage === "claimed_writer")).toBe(true);
 
-    const repaired = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "hist-1", writerClaim: "none" }),
+    const repaired = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "hist-1", writerClaim: "none" }),
+      ),
     );
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) return;
@@ -1306,7 +1331,7 @@ describe("LIM-61 evidence: public export surface", () => {
     const sdk = await import("../src/index.js");
     expect("runCompactContinuationForTests" in sdk).toBe(false);
     // Runtime: nested domain from initLhc
-    const lhc = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const lhc = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     expect("runCompactContinuationForTests" in lhc.compactContinuation).toBe(false);
     // Fixtures path still has it.
     const fixtures = await import("./fixtures/compact-continuation-seam.js");

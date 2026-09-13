@@ -8,7 +8,14 @@
 // the stored view record — is the same shape, so nothing downstream of here
 // knows which one ran.
 import type { DatabaseSync } from "node:sqlite";
-import type { DbReadTransaction, ErrorResult, OpResult, ViewProfile } from "../../shared-tech/index.js";
+import {
+  type DbReadTransaction,
+  type ErrorResult,
+  type OpResult,
+  resolveInstanceTokenEstimator,
+  type ViewProfile,
+} from "../../shared-tech/index.js";
+import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
 import * as turnsDomain from "../../turns/index.js";
 import { CompactStoppedError, createBoundedSelection } from "./bounded-source.js";
 import { emitLegacyCompactDiagnostic, resolveCompactAlgorithm } from "./compact-algorithm.js";
@@ -83,8 +90,9 @@ function eagerPlan(
   db: DatabaseSync,
   transaction: DbReadTransaction,
   opts: { signal?: { aborted: boolean } | undefined; includeChunkMaterials: boolean },
+  estimator: TokenEstimator,
 ): OpResult<{ source: SelectionSource; sourceState: ArrangementSourceState }> {
-  let inputs: SelectionInputs = readSelectionInputs(db);
+  let inputs: SelectionInputs = readSelectionInputs(db, estimator);
   if (opts.includeChunkMaterials) {
     const materials = resolveChunkMaterials(transaction, inputs, opts.signal);
     if (!materials.ok) return materials;
@@ -107,16 +115,18 @@ export function computeArrangement(
     return stoppedResult("compact stopped before assembly");
   }
 
+  const estimator = resolveInstanceTokenEstimator("threadView.compact");
   let plan: { source: SelectionSource; sourceState: ArrangementSourceState };
   if (resolveCompactAlgorithm() === "legacy") {
     emitLegacyCompactDiagnostic();
-    const eager = eagerPlan(db, transaction, opts);
+    const eager = eagerPlan(db, transaction, opts, estimator);
     if (!eager.ok) return eager;
     plan = eager.value;
   } else {
     const bounded = createBoundedSelection(db, transaction, {
       includeChunkMaterials: opts.includeChunkMaterials,
       signal: opts.signal,
+      tokenEstimator: estimator,
     });
     plan = { source: bounded.source, sourceState: bounded.sourceState };
   }
@@ -127,6 +137,7 @@ export function computeArrangement(
       lowerBound: merged.lowerBound,
       percentages: merged.percentages,
       newestClosedProtection: merged.newestClosedProtection,
+      tokenEstimator: estimator,
       ...(opts.compactPointUpperBound !== undefined ? { compactPointUpperBound: opts.compactPointUpperBound } : {}),
     });
   } catch (cause) {

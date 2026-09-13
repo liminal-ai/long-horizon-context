@@ -8,7 +8,15 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, type MessageEventInput, messages, type TurnRecord, threads, turns } from "../src/index.js";
-import { corruptTwoOpenTurns, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import {
+  corruptTwoOpenTurns,
+  o200k,
+  openRaw,
+  type TempStore,
+  tempStore,
+  validEvent,
+  withEstimator,
+} from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -26,7 +34,7 @@ async function createThread(): Promise<string> {
 }
 
 async function send(filePath: string, batch: MessageEventInput[]) {
-  const result = await intakeStream.messageEvents({ filePath }, batch);
+  const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
   if (!result.ok) throw new Error(`fixture batch failed: ${result.error.reason}`);
   return result.value;
 }
@@ -288,10 +296,9 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     // nothing on top of it — full read-back diff, not just the error code.
     const baseline = await readBack(filePath);
 
-    const failed = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      validEvent("assistant_text"),
-    ]);
+    const failed = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("assistant_text")]),
+    );
     expect(failed.ok).toBe(false);
     if (failed.ok) return;
     expect(failed.error.errorClass).toBe("state_corruption");
@@ -312,7 +319,9 @@ describe("Flow 3 (SDK): turn boundaries", () => {
       db.close();
     }
     const baseline = await readBack(filePath);
-    const failed = await intakeStream.messageEvents({ filePath }, [validEvent("assistant_text")]);
+    const failed = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("assistant_text")]),
+    );
     expect(failed.ok).toBe(false);
     if (failed.ok) return;
     expect(failed.error.errorClass).toBe("state_corruption");
@@ -418,9 +427,11 @@ describe("TC-4.4: three error classes, asserted against each other (AC-4.7)", ()
   it("validation, corruption, and storage failures carry three distinct classes with stable codes", async () => {
     // Caller leg: a malformed event.
     const callerPath = await createThread();
-    const callerLeg = await intakeStream.messageEvents({ filePath: callerPath }, [
-      { ...validEvent("user_prompt"), eventKind: "bogus" } as unknown as MessageEventInput,
-    ]);
+    const callerLeg = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath: callerPath }, [
+        { ...validEvent("user_prompt"), eventKind: "bogus" } as unknown as MessageEventInput,
+      ]),
+    );
     expect(callerLeg.ok).toBe(false);
     if (callerLeg.ok) return;
     expect(callerLeg.error.errorClass).toBe("caller_error");
@@ -430,7 +441,9 @@ describe("TC-4.4: three error classes, asserted against each other (AC-4.7)", ()
     const corruptPath = await createThread();
     await send(corruptPath, [validEvent("user_prompt")]);
     corruptTwoOpenTurns(corruptPath);
-    const corruptionLeg = await intakeStream.messageEvents({ filePath: corruptPath }, [validEvent("assistant_text")]);
+    const corruptionLeg = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath: corruptPath }, [validEvent("assistant_text")]),
+    );
     expect(corruptionLeg.ok).toBe(false);
     if (corruptionLeg.ok) return;
     expect(corruptionLeg.error.errorClass).toBe("state_corruption");

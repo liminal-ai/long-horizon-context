@@ -4,6 +4,7 @@
 // vocabulary across domain lines, so it lives in shared-tech.
 import type { DatabaseSync } from "node:sqlite";
 import type { DerivationGuards, InferenceConfig, ResolvedDerivationGuards } from "./inference-types.js";
+import type { FamiliesOverlay, TokenEstimator, TokenFamily } from "./token-counting/index.js";
 import type { ResolvedViewConfig, SdkViewConfig } from "./view.js";
 
 export type SubjectKind = "message" | "turn" | "chunk";
@@ -213,6 +214,10 @@ export interface SdkConfig {
   lease?: { durationMs: number }; // 120000
   chunkPolicy?: { targetProjectedTokens: number; maxProjectedTokens: number }; // 2200 / 4400
   view?: SdkViewConfig; // profiles, visibility budgets, compact threshold
+  /** Tokenizer family the instance uses for billed-token estimates and budgets. */
+  tokenFamily: TokenFamily;
+  /** Host families/mappings; overlay entries win on slug clash. */
+  tokenFamilies?: FamiliesOverlay;
 }
 
 // Every optional filled by initLhc's central defaults.
@@ -239,6 +244,8 @@ export interface ResolvedSdkConfig {
   lease: { durationMs: number };
   chunkPolicy: { targetProjectedTokens: number; maxProjectedTokens: number };
   view: ResolvedViewConfig;
+  tokenFamily: TokenFamily;
+  tokenEstimator: TokenEstimator;
 }
 
 // ── handler contract ─────────────────────────────────────────────

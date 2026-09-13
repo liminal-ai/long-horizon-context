@@ -5,8 +5,7 @@
 // here recomputes selection, rendering, derivation choice, or boundary state.
 
 import type { Band, LlmRequestContextMessage, ViewContentsReport } from "../../shared-tech/index.js";
-import { type OpResult, storageFailure } from "../../shared-tech/index.js";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import { type OpResult, resolveInstanceTokenEstimator, storageFailure } from "../../shared-tech/index.js";
 import * as threadView from "../../thread-view/index.js";
 import type { ThreadRef } from "../../threads/index.js";
 
@@ -17,7 +16,8 @@ function messageText(message: LlmRequestContextMessage): string {
 }
 
 function measuredTokens(messages: readonly LlmRequestContextMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTokens(messageText(message)), 0);
+  const estimator = resolveInstanceTokenEstimator("inspect.view");
+  return messages.reduce((sum, message) => sum + estimator.estimate(messageText(message)), 0);
 }
 
 export async function composeViewReport(ref: ThreadRef): Promise<OpResult<ViewContentsReport>> {

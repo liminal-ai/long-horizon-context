@@ -6,7 +6,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, retrieval } from "../src/index.js";
-import { type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
 
 describe("sqlite concurrent capture + retrieval", () => {
   let store: TempStore;
@@ -15,7 +15,11 @@ describe("sqlite concurrent capture + retrieval", () => {
 
   beforeEach(async () => {
     store = tempStore();
-    sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    sdk = initLhc({
+      tokenFamily: "o200k",
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
     const path = store.threadPath();
     const created = await sdk.threads.newThread({ filePath: path, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);
@@ -34,7 +38,7 @@ describe("sqlite concurrent capture + retrieval", () => {
 
   it("Promise.all retrieval + capture both succeed repeatedly on existing archive", async () => {
     for (let i = 0; i < 20; i += 1) {
-      const retP = retrieval.getTurns({ filePath }, ["t1"], { surface: `race-${i}` });
+      const retP = withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"], { surface: `race-${i}` }));
       const capP = sdk.intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt", { payload: { text: `race-${i}` } }),
         validEvent("assistant_text", { payload: { text: `ans-${i}` } }),
@@ -44,7 +48,7 @@ describe("sqlite concurrent capture + retrieval", () => {
       expect(ret.ok, `retrieval failed iter ${i}: ${ret.ok ? "" : ret.error.reason}`).toBe(true);
       expect(cap.ok, `capture failed iter ${i}: ${cap.ok ? "" : cap.error.reason}`).toBe(true);
     }
-    const imps = await retrieval.listImpressions({ filePath });
+    const imps = await withEstimator(o200k, () => retrieval.listImpressions({ filePath }));
     expect(imps.ok).toBe(true);
     if (!imps.ok) return;
     expect(imps.value.length).toBeGreaterThanOrEqual(20);
@@ -64,7 +68,7 @@ describe("sqlite concurrent capture + retrieval", () => {
     const results = await Promise.all(
       Array.from({ length: 10 }, (_, i) =>
         Promise.all([
-          retrieval.getTurns({ filePath: path2 }, ["t1"], { surface: `f-${i}` }),
+          withEstimator(o200k, () => retrieval.getTurns({ filePath: path2 }, ["t1"], { surface: `f-${i}` })),
           sdk.intakeStream.messageEvents({ filePath: path2 }, [
             validEvent("runtime_note", { payload: { text: `n-${i}` } }),
           ]),

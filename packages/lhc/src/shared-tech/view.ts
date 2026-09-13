@@ -279,6 +279,8 @@ export interface CompactReceipt {
   // skipped, not repaired and not removed; hosts surface these so the anomaly
   // stays visible.
   skippedRecords: SkippedRecord[];
+  /** Tokenizer family used to price this compact. */
+  tokenFamily: string;
   renderedBands: Array<{ band: Band; text: string }>;
   firstKeptMessageId: string | null;
   // Turn parts (present only when the installed view serves parts): every

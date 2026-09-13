@@ -8,7 +8,7 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import { resolveInstanceTokenEstimator } from "../../shared-tech/index.js";
 import { readBoundaryPosition } from "./boundary.js";
 import { ABBREVIATION_LIMIT, deterministicTruncation } from "./render.js";
 import { readViewSnapshot } from "./snapshot.js";
@@ -70,14 +70,18 @@ function readLiveToolResultsAfter(db: DatabaseSync, effectiveStart: number): Too
     return {
       sourceEventOrder: Number(row.source_event_order),
       toolCallId,
-      tokenEstimate: Number(row.token_estimate),
+      tokenEstimate: resolveInstanceTokenEstimator("threadView.previewProtectedBoundary").weigh(
+        Number(row.token_estimate),
+      ),
       content,
     };
   });
 }
 
 function abridgedTokenEstimate(content: string): number {
-  return estimateTokens(deterministicTruncation(content));
+  return resolveInstanceTokenEstimator("threadView.previewProtectedBoundary").estimate(
+    deterministicTruncation(content),
+  );
 }
 
 /**

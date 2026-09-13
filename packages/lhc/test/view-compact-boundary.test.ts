@@ -24,7 +24,6 @@ import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput, threads } from "../src/index.js";
 import type { DbReadTransaction } from "../src/shared-tech/index.js";
-import { estimateTokens } from "../src/shared-tech/token-counting/index.js";
 import { createBoundedSelection } from "../src/thread-view/internal/bounded-source.js";
 import {
   readSelectionInputs,
@@ -36,6 +35,7 @@ import {
 } from "../src/thread-view/internal/select.js";
 import { walkArrangement } from "../src/thread-view/internal/walk.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { estimateTokens, o200k } from "./fixtures/tokens.js";
 
 let store: TempStore;
 const AMBIENT_ALGORITHM = process.env["LHC_COMPACT_ALGORITHM"];
@@ -52,10 +52,14 @@ afterEach(() => {
 // full 100 of a 1000 lower bound: the budget the fixtures land on exactly.
 const FULL_BUDGET = 100;
 const PARAMS = { lowerBound: 1000, percentages: { full: 10, smooth: 30, detailed: 30, brief: 30 } };
-const CONFIG: SelectionConfig = { lowerBound: PARAMS.lowerBound, percentages: PARAMS.percentages };
+const CONFIG: SelectionConfig = {
+  lowerBound: PARAMS.lowerBound,
+  percentages: PARAMS.percentages,
+  tokenEstimator: o200k,
+};
 
 function sdkFor(): Lhc {
-  return initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
 }
 
 async function newThread(): Promise<string> {
@@ -136,7 +140,11 @@ function closedAtOf(filePath: string, turnId: string): number {
 function boundedCompactPoint(filePath: string): number {
   return withDb(filePath, (db) => {
     const transaction: DbReadTransaction = { db, filePath, threadId: "boundary" };
-    const plan = createBoundedSelection(db, transaction, { includeChunkMaterials: true, signal: undefined });
+    const plan = createBoundedSelection(db, transaction, {
+      includeChunkMaterials: true,
+      signal: undefined,
+      tokenEstimator: o200k,
+    });
     // The real bounded source, so the compact-point keyset query is the thing
     // under test — not a stand-in SelectionSource.
     return walkArrangement(plan.source, CONFIG).compactPoint;
@@ -145,7 +153,7 @@ function boundedCompactPoint(filePath: string): number {
 
 /** The legacy plan's compact point, through its eager reads. */
 function legacyCompactPoint(filePath: string): number {
-  return withDb(filePath, (db) => selectArrangement(readSelectionInputs(db), CONFIG).compactPoint);
+  return withDb(filePath, (db) => selectArrangement(readSelectionInputs(db, o200k), CONFIG).compactPoint);
 }
 
 async function previewCompactPoint(algorithm: "bounded" | "legacy", filePath: string): Promise<number> {
@@ -251,6 +259,7 @@ describe("LIM-115 boundary C: the entry that exactly fills its band budget", () 
     const config: SelectionConfig = {
       lowerBound: 4 * smoothBudget,
       percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 },
+      tokenEstimator: o200k,
     };
     expect((config.lowerBound * config.percentages.smooth) / 100).toBe(smoothBudget);
 

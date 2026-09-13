@@ -15,7 +15,7 @@ import type {
 } from "../../shared-tech/index.js";
 import { truncateForFallback } from "../../shared-tech/index.js";
 import { appendDerivationLog, type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+
 import type { WorkKind } from "../../shared-tech/work-queue/index.js";
 import { classifyToolResult } from "./classify-tool-result.js";
 import { findPairedToolCall, type MessageSource, readMessageSource } from "./derivations.js";
@@ -76,7 +76,7 @@ export async function deriveSmoothedPrompt(
   text: string,
 ): Promise<SmoothedPromptDerivation | Extract<InferenceResult, { ok: false }>> {
   const cleaned = cleanPrompt(text);
-  const cleanedTokens = estimateTokens(cleaned);
+  const cleanedTokens = run.config.tokenEstimator.estimate(cleaned);
   const guards = run.config.guards.smoothedPrompt;
   if (isMarkerPrompt(cleaned) || cleanedTokens > guards.maxInferenceTokens) {
     return {
@@ -92,7 +92,7 @@ export async function deriveSmoothedPrompt(
   const result = await run.inferenceCallbacks.smoothPrompt({ text: cleaned });
   if (!result.ok) return result;
 
-  const resultTokens = estimateTokens(result.text);
+  const resultTokens = run.config.tokenEstimator.estimate(result.text);
   if (resultTokens < guards.suspiciousOutputRatio * cleanedTokens) {
     return {
       write: {
@@ -187,7 +187,7 @@ export async function deriveToolResultSummary(
   },
   opts?: { useInference?: boolean },
 ): Promise<ToolResultSummaryDerivation | Extract<InferenceResult, { ok: false }>> {
-  const tokens = estimateTokens(input.content);
+  const tokens = run.config.tokenEstimator.estimate(input.content);
   const useInference = opts?.useInference ?? !FORCE_TOOL_RESULT_SUMMARY_FALLBACK;
   if (!useInference) {
     return {

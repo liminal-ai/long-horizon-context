@@ -19,8 +19,7 @@ describe("prepared-source selected-turn batching", () => {
           ...actualTurnIds,
           ...Array.from(
             { length: 33_000 },
-            (_, index) =>
-              `${actualTurnIds[index % actualTurnIds.length]}-pad-${index.toString().padStart(5, "0")}`,
+            (_, index) => `${actualTurnIds[index % actualTurnIds.length]}-pad-${index.toString().padStart(5, "0")}`,
           ),
         ];
         const sortedOverLimit = [...overLimit].sort();

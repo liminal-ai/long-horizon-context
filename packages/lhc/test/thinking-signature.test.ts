@@ -4,7 +4,7 @@
 // path still skips signature-only blocks (no place to put the token).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, initLhc, intakeStream, type Lhc, messages } from "../src/index.js";
-import { type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
 
 let store: TempStore;
 let sdk: Lhc;
@@ -19,7 +19,7 @@ async function newThread(): Promise<string> {
 
 beforeEach(async () => {
   store = tempStore();
-  sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
   filePath = await newThread();
 });
 afterEach(() => {
@@ -28,14 +28,16 @@ afterEach(() => {
 
 describe("assistant_thinking signature intake", () => {
   it("accepts optional signature and materializes it on the message block", async () => {
-    const captured = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "hi" } }),
-      validEvent("assistant_thinking", {
-        payload: { text: "", signature: "enc-sig-abc" },
-      }),
-      validEvent("assistant_text", { payload: { text: "hello" } }),
-      validEvent("turn_end"),
-    ]);
+    const captured = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "hi" } }),
+        validEvent("assistant_thinking", {
+          payload: { text: "", signature: "enc-sig-abc" },
+        }),
+        validEvent("assistant_text", { payload: { text: "hello" } }),
+        validEvent("turn_end"),
+      ]),
+    );
     expect(captured.ok).toBe(true);
     if (!captured.ok) return;
 
@@ -48,12 +50,14 @@ describe("assistant_thinking signature intake", () => {
   });
 
   it("rejects unknown payload fields on assistant_thinking (closed schema)", async () => {
-    const result = await intakeStream.messageEvents({ filePath }, [
-      {
-        ...validEvent("assistant_thinking"),
-        payload: { text: "x", signature: "s", extra: true },
-      } as never,
-    ]);
+    const result = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        {
+          ...validEvent("assistant_thinking"),
+          payload: { text: "x", signature: "s", extra: true },
+        } as never,
+      ]),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("invalid_event");
@@ -61,10 +65,12 @@ describe("assistant_thinking signature intake", () => {
   });
 
   it("omitted signature stays omitted on the block (no empty key)", async () => {
-    const captured = await intakeStream.messageEvents({ filePath }, [
-      validEvent("assistant_thinking", { payload: { text: "plain thought" } }),
-      validEvent("turn_end"),
-    ]);
+    const captured = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("assistant_thinking", { payload: { text: "plain thought" } }),
+        validEvent("turn_end"),
+      ]),
+    );
     expect(captured.ok).toBe(true);
     if (!captured.ok) return;
     const listed = await messages.list({ filePath });
@@ -78,14 +84,16 @@ describe("assistant_thinking signature intake", () => {
 
 describe("serving round-trip for signed thinking", () => {
   async function seedSignedEmpty(): Promise<void> {
-    const captured = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "what changed?" } }),
-      validEvent("assistant_thinking", {
-        payload: { text: "", signature: "enc-fable-sig-001" },
-      }),
-      validEvent("assistant_text", { payload: { text: "Three files changed." } }),
-      validEvent("turn_end"),
-    ]);
+    const captured = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "what changed?" } }),
+        validEvent("assistant_thinking", {
+          payload: { text: "", signature: "enc-fable-sig-001" },
+        }),
+        validEvent("assistant_text", { payload: { text: "Three files changed." } }),
+        validEvent("turn_end"),
+      ]),
+    );
     if (!captured.ok) throw new Error(captured.error.reason);
   }
 
@@ -116,14 +124,16 @@ describe("serving round-trip for signed thinking", () => {
   });
 
   it("non-empty thinking text with signature still serves on both exits", async () => {
-    const captured = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "q" } }),
-      validEvent("assistant_thinking", {
-        payload: { text: "visible reasoning", signature: "enc-sig-2" },
-      }),
-      validEvent("assistant_text", { payload: { text: "answer" } }),
-      validEvent("turn_end"),
-    ]);
+    const captured = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "q" } }),
+        validEvent("assistant_thinking", {
+          payload: { text: "visible reasoning", signature: "enc-sig-2" },
+        }),
+        validEvent("assistant_text", { payload: { text: "answer" } }),
+        validEvent("turn_end"),
+      ]),
+    );
     expect(captured.ok).toBe(true);
     if (!captured.ok) return;
 
@@ -144,27 +154,29 @@ describe("serving round-trip for signed thinking", () => {
 
 describe("assistant model identity for resume", () => {
   it("stores provider/model/api on thinking blocks and surfaces them on session-view", async () => {
-    const captured = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "q" } }),
-      validEvent("assistant_thinking", {
-        payload: {
-          text: "",
-          signature: "enc-prov",
-          provider: "anthropic",
-          model: "claude-fable-5",
-          api: "anthropic-messages",
-        },
-      }),
-      validEvent("assistant_text", {
-        payload: {
-          text: "a",
-          provider: "anthropic",
-          model: "claude-fable-5",
-          api: "anthropic-messages",
-        },
-      }),
-      validEvent("turn_end"),
-    ]);
+    const captured = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "q" } }),
+        validEvent("assistant_thinking", {
+          payload: {
+            text: "",
+            signature: "enc-prov",
+            provider: "anthropic",
+            model: "claude-fable-5",
+            api: "anthropic-messages",
+          },
+        }),
+        validEvent("assistant_text", {
+          payload: {
+            text: "a",
+            provider: "anthropic",
+            model: "claude-fable-5",
+            api: "anthropic-messages",
+          },
+        }),
+        validEvent("turn_end"),
+      ]),
+    );
     expect(captured.ok).toBe(true);
     if (!captured.ok) return;
 

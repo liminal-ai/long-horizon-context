@@ -18,6 +18,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import { hasForcedBoundaryHistory } from "../../compact-continuation/internal/store.js";
 import type { DbReadTransaction, SkippedRecord } from "../../shared-tech/index.js";
+import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
 import * as turnsDomain from "../../turns/index.js";
 import type { CompactChunkMaterialSnapshot, DerivationSnapshot } from "./render.js";
 import { excerptLine } from "./render.js";
@@ -88,7 +89,11 @@ const PLACEABLE_MESSAGE_FROM = `FROM message m
 export function createBoundedSelection(
   db: DatabaseSync,
   transaction: DbReadTransaction,
-  opts: { includeChunkMaterials: boolean; signal?: { aborted: boolean } | undefined },
+  opts: {
+    includeChunkMaterials: boolean;
+    signal?: { aborted: boolean } | undefined;
+    tokenEstimator: TokenEstimator;
+  },
 ): BoundedSelection {
   const stats: BoundedSelectionStats = {
     queries: 0,
@@ -102,6 +107,7 @@ export function createBoundedSelection(
     stats.queries += 1;
     return run();
   };
+  const estimator = opts.tokenEstimator;
 
   // ── structure: bounded by turn and chunk counts ────────────────
   const structure = counted(() => turnsDomain.readTurnChunkStructure(db));
@@ -321,13 +327,13 @@ export function createBoundedSelection(
           return edges;
         },
         partText: (turnId, range, trailer) =>
-          counted(() => turnsDomain.composeTurnPartText(db, turnId, range, trailer)),
+          counted(() => turnsDomain.composeTurnPartText(db, turnId, range, trailer, estimator)),
         // Composed once per walk per turn: the walk asks for it to settle, to
         // protect, and to serve a ready stored rendering under the cap.
         wholeTurnText(turnId) {
           const cached = wholeTexts.get(turnId);
           if (cached !== undefined) return cached;
-          const composed = counted(() => turnsDomain.composeWholeTurnText(db, turnId));
+          const composed = counted(() => turnsDomain.composeWholeTurnText(db, turnId, estimator));
           wholeTexts.set(turnId, composed);
           return composed;
         },
@@ -341,7 +347,11 @@ export function createBoundedSelection(
       counted(() => db.prepare(`SELECT 1 AS present ${PLACEABLE_MESSAGE_FROM} LIMIT 1`).get()) !== undefined,
     crossingMessage(budget) {
       const page = db.prepare(
-        `SELECT m.source_event_order AS o, m.turn_id AS turn_id, m.token_estimate AS tok
+        `SELECT m.source_event_order AS o, m.turn_id AS turn_id, m.token_estimate AS tok,
+                CASE WHEN m.kind = 'assistant_thinking' THEN (
+                  SELECT json_extract(mb.content, '$.signature') FROM message_block mb
+                  WHERE mb.message_id = m.message_id AND mb.block_index = 0
+                ) ELSE NULL END AS sig
          ${PLACEABLE_MESSAGE_FROM}
            AND m.source_event_order < ?
          ORDER BY m.source_event_order DESC
@@ -355,10 +365,13 @@ export function createBoundedSelection(
           o: number | bigint;
           turn_id: string;
           tok: number | bigint;
+          sig: string | null;
         }>;
         for (const row of rows) {
           stats.compactPointRowsScanned += 1;
-          sum += Number(row.tok);
+          const signatureBilled =
+            typeof row.sig === "string" && row.sig.length > 0 ? estimator.estimateSignature(row.sig) : 0;
+          sum += estimator.weighStored(Number(row.tok), signatureBilled);
           if (sum >= budget) return { order: Number(row.o), turnId: row.turn_id };
           cursor = Number(row.o);
         }
@@ -366,7 +379,7 @@ export function createBoundedSelection(
       }
     },
     turnMinMessageOrder: (turnId) => turnAggregates.get(turnId)?.minOrder,
-    turnMessageTokens: (turnId) => turnAggregates.get(turnId)?.tokens ?? 0,
+    turnMessageTokens: (turnId) => estimator.weigh(turnAggregates.get(turnId)?.tokens ?? 0),
     messageTokensAfter: (order) => {
       const row = counted(
         () =>
@@ -378,7 +391,7 @@ export function createBoundedSelection(
             )
             .get(order) as { total: number | bigint },
       );
-      return Number(row.total);
+      return estimator.weigh(Number(row.total));
     },
     turnExcerpt,
     derivation,

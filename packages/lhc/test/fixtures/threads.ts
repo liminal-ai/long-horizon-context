@@ -10,7 +10,6 @@ import {
   type Derivation,
   type DerivationMetadata,
   type DerivationState,
-  intakeStream,
   type Lhc,
   type MessageEventInput,
   type SubjectKind,
@@ -20,6 +19,7 @@ import { corruptTwoOpenTurns } from "./corrupt.js";
 import { type TempStore, validEvent } from "./index.js";
 import type { InferenceCallbacksDouble } from "./inference-callbacks-double.js";
 import type { DerivationType } from "./model-call.js";
+import { sendMessageEvents } from "./tokens.js";
 
 async function newThreadFile(store: TempStore): Promise<string> {
   const filePath = store.threadPath();
@@ -29,7 +29,7 @@ async function newThreadFile(store: TempStore): Promise<string> {
 }
 
 async function send(filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
-  const result = await intakeStream.messageEvents({ filePath }, batch);
+  const result = await sendMessageEvents({ filePath }, batch);
   if (!result.ok) throw new Error(`fixture batch failed: ${result.error.reason}`);
 }
 

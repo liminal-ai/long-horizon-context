@@ -59,7 +59,7 @@ interface SmallThread {
 // turn_end is event 8). Never compacted.
 async function twoTurnThread(): Promise<SmallThread> {
   const double = createInferenceCallbacksDouble();
-  const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+  const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({
     filePath,
@@ -112,7 +112,7 @@ const ZERO_DERIVATION = { ready: 0, pending: 0, failed: 0, blocked: 0 };
 describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", () => {
   it("fresh-empty: full shape with zeros and nulls, never omitted fields", async () => {
     const double = createInferenceCallbacksDouble();
-    const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
@@ -137,7 +137,7 @@ describe("TC-1.1 / AC-1.1, AC-1.3: full overview shape across thread shapes", ()
 
   it("mid-first-turn: open turn, queued derivation, no view — full shape", async () => {
     const double = createInferenceCallbacksDouble();
-    const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
@@ -300,7 +300,7 @@ describe("TC-1.3 / AC-1.4: overview is a pure read", () => {
     const { filePath } = await twoTurnThread();
     // A separate SDK whose inference callbacks throw on contact: the read path is
     // inference-callback-free structurally, in both the new and the Story 1 surfaces.
-    const reader = initLhc({ inferenceCallbacks: throwingProvider(), mode: "manual" });
+    const reader = initLhc({ tokenFamily: "o200k", inferenceCallbacks: throwingProvider(), mode: "manual" });
 
     const overview = await expectReadOnly(filePath, () => reader.inspect.overview({ filePath }));
     expect(overview.ok).toBe(true);
@@ -312,7 +312,7 @@ describe("TC-1.3 / AC-1.4: overview is a pure read", () => {
   });
 
   it("overview on a missing thread is thread_not_found, not a shape error", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const missing = await sdk.inspect.overview({ filePath: store.threadPath("missing") });
     expect(missing.ok).toBe(false);
     if (missing.ok) return;

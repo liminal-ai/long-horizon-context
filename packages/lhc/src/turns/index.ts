@@ -10,8 +10,10 @@ import {
   type ErrorResult,
   type OpResult,
   resolveInstanceConfig,
+  resolveInstanceTokenEstimator,
   storageFailure,
 } from "../shared-tech/index.js";
+import type { TokenEstimator } from "../shared-tech/token-counting/index.js";
 import { enqueue, type WorkItemRecord } from "../shared-tech/work-queue/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import { type CompactChunkMaterial, compactChunkMaterialFromStoredMembers } from "./internal/chunk-recovery.js";
@@ -242,12 +244,17 @@ export function composeTurnPartText(
   turnId: string,
   range: { fromOrder: number; toOrder: number },
   trailer: string,
+  estimator: TokenEstimator,
 ): string {
   const messages = readMemberMessages(db, turnId, range);
   // A part is bounded-plan serving: composed under the cap, explicitly, and
   // raw by design — its unsmoothed prompt and tool results are the contract,
   // not a degraded state.
-  const { parts } = composeRenderingInput(messages, new Map(), { capForServing: true, rawByDesign: true });
+  const { parts } = composeRenderingInput(messages, new Map(), {
+    capForServing: true,
+    rawByDesign: true,
+    tokenEstimator: estimator,
+  });
   return composeStructuredTurnText(parts, turnId, trailer);
 }
 
@@ -264,14 +271,21 @@ export interface WholeTurnComposition {
 // cap, with no write, no floor write, no enqueue, no placement. `capped`
 // reports whether the cap changed anything. Null when the turn has no live
 // members.
-export function composeWholeTurnText(db: DatabaseSync, turnId: string): WholeTurnComposition | null {
+export function composeWholeTurnText(
+  db: DatabaseSync,
+  turnId: string,
+  estimator: TokenEstimator,
+): WholeTurnComposition | null {
   const messages = readMemberMessages(db, turnId);
   if (messages.length === 0) return null;
   const derivations = readMessageDerivationRows(
     db,
     messages.map((message) => message.messageId),
   );
-  const { parts, capped } = composeRenderingInput(messages, derivations, { capForServing: true });
+  const { parts, capped } = composeRenderingInput(messages, derivations, {
+    capForServing: true,
+    tokenEstimator: estimator,
+  });
   return { text: composeStructuredTurnText(parts, turnId), capped };
 }
 
@@ -287,7 +301,11 @@ export function readActiveTurnSteps(db: DatabaseSync): ActiveTurnSteps | null {
   const tokens = db
     .prepare(`SELECT COALESCE(SUM(token_estimate), 0) AS total FROM message WHERE turn_id = ? AND deleted_at IS NULL`)
     .get(turnId) as { total: number | bigint };
-  return { turnId, estimatedTokens: Number(tokens.total), edges: stepEdges(readStepMembers(db, turnId)) };
+  return {
+    turnId,
+    estimatedTokens: resolveInstanceTokenEstimator("turns.readActiveTurnSteps").weigh(Number(tokens.total)),
+    edges: stepEdges(readStepMembers(db, turnId)),
+  };
 }
 
 export interface TurnChunkStructure {

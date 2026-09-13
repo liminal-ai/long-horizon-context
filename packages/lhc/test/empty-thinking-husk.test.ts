@@ -24,7 +24,7 @@ async function newThread(sdk: Lhc): Promise<string> {
 
 beforeEach(async () => {
   store = tempStore();
-  sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
   filePath = await newThread(sdk);
 });
 afterEach(() => {

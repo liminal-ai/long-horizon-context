@@ -134,6 +134,7 @@ export async function derivedThreadFixture(
 
   const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: double,
     mode: "manual",
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
@@ -233,6 +234,7 @@ export async function derivedThreadFixture(
 export async function corruptedVariantThread(store: TempStore): Promise<{ filePath: string; sdk: Lhc }> {
   const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: double,
     mode: "manual",
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
@@ -366,6 +368,7 @@ export async function blockedSiblingThread(
 ): Promise<{ filePath: string; sdk: Lhc; blockedTurnId: string }> {
   const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: double,
     mode: "manual",
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },

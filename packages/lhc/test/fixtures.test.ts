@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { EventKind } from "../src/index.js";
 import { conversationTurn, eventBatch, openRaw, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, withEstimator } from "./fixtures/tokens.js";
 
 const ALL_KINDS: readonly EventKind[] = [
   "user_prompt",
@@ -261,7 +262,7 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
 describe("FC-0.1 (production seam): initLhc assembles with the double injected where production adapters go", () => {
   it("resolves config defaults centrally and carries the injected inference callbacks and mode", () => {
     const double = createInferenceCallbacksDouble();
-    const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
     expect(sdk.config.inferenceCallbacks).toBe(double);
     expect(sdk.config.mode).toBe("manual");
     expect(sdk.config.lease).toEqual({ durationMs: 120000 });
@@ -277,20 +278,31 @@ describe("FC-0.1 (production seam): initLhc assembles with the double injected w
   });
 
   it("background mode is a validated construction option (behavior lands in Story 1)", () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "background" });
+    const sdk = initLhc({
+      tokenFamily: "o200k",
+      inferenceCallbacks: createInferenceCallbacksDouble(),
+      mode: "background",
+    });
     expect(sdk.scheduler.mode).toBe("background");
     expect(() => sdk.scheduler.poke("th_x")).not.toThrow();
   });
 
   it("rejects malformed config at construction: bad mode, incomplete callbacks, bad policy values", () => {
     const double = createInferenceCallbacksDouble();
-    expect(() => initLhc({ inferenceCallbacks: double, mode: "later" as unknown as "manual" })).toThrow(/mode/);
+    expect(() =>
+      initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "later" as unknown as "manual" }),
+    ).toThrow(/mode/);
     const incomplete = { smoothPrompt: double.smoothPrompt.bind(double) };
-    expect(() => initLhc({ inferenceCallbacks: incomplete as unknown as InferenceCallbacks, mode: "manual" })).toThrow(
-      /missing operation/,
-    );
     expect(() =>
       initLhc({
+        tokenFamily: "o200k",
+        inferenceCallbacks: incomplete as unknown as InferenceCallbacks,
+        mode: "manual",
+      }),
+    ).toThrow(/missing operation/);
+    expect(() =>
+      initLhc({
+        tokenFamily: "o200k",
         inferenceCallbacks: double,
         mode: "manual",
         chunkPolicy: { targetProjectedTokens: 4400, maxProjectedTokens: 2200 },
@@ -397,7 +409,9 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
     }
     // The damage is live: intake refuses the file as corrupt, exactly as
     // Epic 01 defines the state.
-    const rejected = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]);
+    const rejected = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]),
+    );
     expect(rejected.ok).toBe(false);
     if (rejected.ok) return;
     expect(rejected.error.code).toBe("turn_state_corrupt");

@@ -4,7 +4,14 @@
 // populated open turn still closes and a new one opens.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, intakeStream, messages, turns } from "../src/index.js";
-import { createInferenceCallbacksDouble, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import {
+  createInferenceCallbacksDouble,
+  o200k,
+  type TempStore,
+  tempStore,
+  validEvent,
+  withEstimator,
+} from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -16,16 +23,18 @@ afterEach(() => {
 
 describe("user_prompt steer assertion", () => {
   it("a steer joins the open turn without a boundary; a plain prompt still closes and opens; the flag is validated", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const filePath = store.threadPath();
     expect((await sdk.threads.newThread({ filePath, registryPath: store.registryPath })).ok).toBe(true);
 
-    const sent = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "big task" } }),
-      validEvent("assistant_text", { payload: { text: "step 0", stepIndex: 0 } }),
-      validEvent("user_prompt", { payload: { text: "actually, focus on the tests", steer: true } }),
-      validEvent("assistant_text", { payload: { text: "step 1", stepIndex: 1 } }),
-    ]);
+    const sent = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "big task" } }),
+        validEvent("assistant_text", { payload: { text: "step 0", stepIndex: 0 } }),
+        validEvent("user_prompt", { payload: { text: "actually, focus on the tests", steer: true } }),
+        validEvent("assistant_text", { payload: { text: "step 1", stepIndex: 1 } }),
+      ]),
+    );
     expect(sent.ok).toBe(true);
     if (!sent.ok) return;
     expect(sent.value.turnTransitions).toEqual([]);
@@ -50,9 +59,9 @@ describe("user_prompt steer assertion", () => {
     });
 
     // A plain prompt is still a boundary.
-    const next = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "new task" } }),
-    ]);
+    const next = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt", { payload: { text: "new task" } })]),
+    );
     expect(next.ok && next.value.turnTransitions).toEqual([
       { action: "closed", turnId: "t1" },
       { action: "opened", turnId: "t2" },
@@ -68,7 +77,7 @@ describe("user_prompt steer assertion", () => {
       validEvent("user_prompt", { payload: { text: "x", steer: "yes" } as never }),
       validEvent("assistant_text", { payload: { text: "x", steer: true } as never }),
     ]) {
-      const result = await intakeStream.messageEvents({ filePath }, [bad]);
+      const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, [bad]));
       expect(result.ok).toBe(false);
       if (!result.ok) expect(result.error.code).toBe("invalid_event");
     }

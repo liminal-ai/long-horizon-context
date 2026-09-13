@@ -27,7 +27,7 @@ let sdk: Lhc;
 
 beforeEach(() => {
   store = tempStore();
-  sdk = initLhc({ inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "manual" });
+  sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "manual" });
 });
 
 afterEach(() => {
@@ -49,11 +49,7 @@ async function write(filePath: string, entry: LogEntry): Promise<void> {
 }
 
 function manualSdk(inferenceCallbacks: InferenceCallbacks): Lhc {
-  return initLhc({
-    inferenceCallbacks,
-    mode: "manual",
-    lease: { durationMs: 200 },
-  });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks, mode: "manual", lease: { durationMs: 200 } });
 }
 
 async function send(target: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<void> {
@@ -329,6 +325,7 @@ describe("Flow 5: Derivation Logging", () => {
 
     const double = createInferenceCallbacksDouble();
     const background = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: double,
       mode: "background",
       lease: { durationMs: 1000 },

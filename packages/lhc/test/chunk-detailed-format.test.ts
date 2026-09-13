@@ -3,7 +3,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type DrainReport,
   deterministicText,
-  estimateTokens,
   type InferenceCallbacks,
   type InferenceResult,
   initLhc,
@@ -22,6 +21,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -57,6 +57,7 @@ async function newThread(): Promise<string> {
 
 function sdkFor(inferenceCallbacks: InferenceCallbacks, overrides: Partial<SdkConfig> = {}): Lhc {
   return initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks,
     mode: "manual",
     lease: { durationMs: 200 },

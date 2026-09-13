@@ -11,6 +11,7 @@ import { intakeStream, messages, threadView } from "../../src/index.js";
 import { openDatabase } from "../../src/shared-tech/storage.js";
 import { listItems, type WorkOwner } from "../../src/shared-tech/work-queue/index.js";
 import { readDerivedForms } from "./threads.js";
+import { o200k, withEstimator } from "./tokens.js";
 
 export interface ObservableState {
   events: unknown;
@@ -33,20 +34,22 @@ function queuedFor(filePath: string, owner: WorkOwner) {
 }
 
 export async function observableState(filePath: string): Promise<ObservableState> {
-  const contextRead = await threadView.getLlmRequestContext({ filePath });
-  return {
-    events: await intakeStream.listEvents({ filePath }),
-    messages: await messages.list({ filePath }, { includeDeleted: true }),
-    messageWork: queuedFor(filePath, "messages"),
-    turnWork: queuedFor(filePath, "turns"),
-    viewStatus: await threadView.status({ filePath }),
-    modelContext: contextRead,
-    // The stored snapshot whole (Story 3): a forgotten view touch — config,
-    // arrangement, band rows, provenance — moves this even when model context output
-    // would not show it.
-    storedView: await threadView.describe({ filePath }),
-    derivations: readDerivedForms(filePath),
-  };
+  return withEstimator(o200k, async () => {
+    const contextRead = await threadView.getLlmRequestContext({ filePath });
+    return {
+      events: await intakeStream.listEvents({ filePath }),
+      messages: await messages.list({ filePath }, { includeDeleted: true }),
+      messageWork: queuedFor(filePath, "messages"),
+      turnWork: queuedFor(filePath, "turns"),
+      viewStatus: await threadView.status({ filePath }),
+      modelContext: contextRead,
+      // The stored snapshot whole (Story 3): a forgotten view touch — config,
+      // arrangement, band rows, provenance — moves this even when model context output
+      // would not show it.
+      storedView: await threadView.describe({ filePath }),
+      derivations: readDerivedForms(filePath),
+    };
+  });
 }
 
 // Run one operation under the before/after snapshot and return its result so

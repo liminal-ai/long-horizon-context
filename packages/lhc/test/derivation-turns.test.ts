@@ -18,7 +18,6 @@ import {
   deterministicText,
   type EnqueueInput,
   enqueue,
-  estimateTokens,
   type InferenceCallbacks,
   initLhc,
   type Lhc,
@@ -37,6 +36,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -57,6 +57,7 @@ async function newThread(): Promise<string> {
 
 function manualSdk(inferenceCallbacks: InferenceCallbacks, chunkPolicy?: SdkConfig["chunkPolicy"]): Lhc {
   const config: SdkConfig = {
+    tokenFamily: "o200k",
     inferenceCallbacks,
     mode: "manual",
     lease: { durationMs: 200 },

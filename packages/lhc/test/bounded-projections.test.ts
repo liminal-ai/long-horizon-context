@@ -62,7 +62,11 @@ describe("bounded archive projections", () => {
 
   beforeEach(async () => {
     store = tempStore();
-    sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    sdk = initLhc({
+      tokenFamily: "o200k",
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
     filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);

@@ -4,7 +4,15 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { countLiveItems, type InferenceCallbacks, initLhc, type Lhc, retrieval, threads, turns } from "../src/index.js";
-import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import {
+  createInferenceCallbacksDouble,
+  o200k,
+  openRaw,
+  type TempStore,
+  tempStore,
+  validEvent,
+  withEstimator,
+} from "./fixtures/index.js";
 
 let store: TempStore;
 let filePath: string;
@@ -19,7 +27,7 @@ beforeEach(async () => {
   if (!created.ok) throw new Error(`thread creation failed: ${created.error.reason}`);
   filePath = created.value.filePath;
   const callbacks: InferenceCallbacks = createInferenceCallbacksDouble();
-  sdk = initLhc({ mode: "manual", inferenceCallbacks: callbacks, lease: { durationMs: 200 } });
+  sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: callbacks, lease: { durationMs: 200 } });
 });
 afterEach(() => {
   store.cleanup();
@@ -96,7 +104,7 @@ describe("turns.backfillRenderingLabels", () => {
     expect(rewritten).toMatch(/<m\d+>/);
 
     // Retrieval now serves the stored rendering instead of re-composing.
-    const served = await retrieval.getTurns({ filePath }, ["t1"]);
+    const served = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"]));
     expect(served.ok).toBe(true);
     if (!served.ok) return;
     expect(served.value.served[0]!.source).toBe("stored");

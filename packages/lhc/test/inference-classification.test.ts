@@ -43,6 +43,7 @@ const PROBE_INPUT: ModelCallInput = {
 
 function inferenceSdk(call: ModelCall, timeoutMs?: number): Lhc {
   return initLhc({
+    tokenFamily: "o200k",
     inference: { call, assignments: validAssignments(), ...(timeoutMs === undefined ? {} : { timeoutMs }) },
     mode: "manual",
     chunkPolicy: CHUNK_POLICY,

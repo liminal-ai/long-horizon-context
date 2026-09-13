@@ -72,7 +72,7 @@ describe("content blocks: intake and serving", () => {
   let filePath: string;
   beforeEach(async () => {
     store = tempStore();
-    sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);

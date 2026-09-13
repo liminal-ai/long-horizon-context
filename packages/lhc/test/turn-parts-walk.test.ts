@@ -21,7 +21,7 @@ afterEach(() => {
 });
 
 function sdkFor(): Lhc {
-  return initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
 }
 
 async function newThread(sdk: Lhc): Promise<string> {

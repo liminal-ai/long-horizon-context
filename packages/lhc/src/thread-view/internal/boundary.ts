@@ -2,6 +2,7 @@
 // compact point's coordinate system; tool results at-or-behind it render short.
 // Compact resets it inside compact's own transaction.
 import type { DatabaseSync } from "node:sqlite";
+import { resolveInstanceTokenEstimator } from "../../shared-tech/index.js";
 
 // The singleton row is seeded at thread creation (position 0, everything full).
 // A missing row is a damaged thread file, surfaced as a throw for the
@@ -26,5 +27,5 @@ export function visibilityZoneTokens(db: DatabaseSync, position: number, compact
          AND source_event_order > ? AND source_event_order > ?`,
     )
     .get(position, compactPoint) as { zone: number | bigint };
-  return Number(row.zone);
+  return resolveInstanceTokenEstimator("threadView.status").weigh(Number(row.zone));
 }

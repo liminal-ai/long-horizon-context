@@ -29,6 +29,7 @@ import {
 } from "../src/thread-view/internal/compact-algorithm.js";
 import { walkArrangement } from "../src/thread-view/internal/walk.js";
 import { derivedThreadFixture, openRaw, poisonMessageBlockJson, type TempStore, tempStore } from "./fixtures/index.js";
+import { o200k } from "./fixtures/tokens.js";
 
 // Whatever the ambient environment selected: these tests set the selector
 // explicitly and put it back, so the file behaves the same either way.
@@ -51,7 +52,11 @@ afterEach(() => {
 // Full share large enough that the newest turns are the whole tail and the
 // oldest turns are never band candidates.
 const TAIL_ONLY_PARAMS = { lowerBound: 400, percentages: { full: 50, smooth: 50, detailed: 0, brief: 0 } };
-const BAND_PARAMS = { lowerBound: 900, percentages: { full: 20, smooth: 15, detailed: 5, brief: 60 } };
+const BAND_PARAMS = {
+  lowerBound: 900,
+  percentages: { full: 20, smooth: 15, detailed: 5, brief: 60 },
+  tokenEstimator: o200k,
+};
 
 async function compactWith(
   algorithm: "bounded" | "legacy",
@@ -101,7 +106,11 @@ describe("LIM-115: the bounded selector's load bound", () => {
          AND derivation_type IN ('turn_rendering', 'detailed_turn_compression')`,
       ).run();
       const transaction: DbReadTransaction = { db, filePath: fixture.filePath, threadId: "load-bound" };
-      const plan = createBoundedSelection(db, transaction, { includeChunkMaterials: true, signal: undefined });
+      const plan = createBoundedSelection(db, transaction, {
+        includeChunkMaterials: true,
+        signal: undefined,
+        tokenEstimator: o200k,
+      });
       const selection = walkArrangement(plan.source, BAND_PARAMS);
       const smooth = selection.entries.filter((entry) => entry.band === "smooth");
       expect(smooth.length).toBeGreaterThan(0);
@@ -137,7 +146,11 @@ describe("LIM-115: the bounded selector's load bound", () => {
         filePath: fixture.filePath,
         threadId: "measurement",
       };
-      const plan = createBoundedSelection(db, transaction, { includeChunkMaterials: true, signal: undefined });
+      const plan = createBoundedSelection(db, transaction, {
+        includeChunkMaterials: true,
+        signal: undefined,
+        tokenEstimator: o200k,
+      });
       const selection = walkArrangement(plan.source, BAND_PARAMS);
       expect(selection.entries.length).toBeGreaterThan(0);
       expect(plan.stats.turnExcerptHydrations).toBe(0);
@@ -159,7 +172,11 @@ describe("LIM-115: the bounded selector's load bound", () => {
     try {
       db.prepare(`DELETE FROM derivation WHERE subject_kind = 'chunk'`).run();
       const transaction: DbReadTransaction = { db, filePath: fixture.filePath, threadId: "measurement" };
-      const plan = createBoundedSelection(db, transaction, { includeChunkMaterials: true, signal: undefined });
+      const plan = createBoundedSelection(db, transaction, {
+        includeChunkMaterials: true,
+        signal: undefined,
+        tokenEstimator: o200k,
+      });
       const selection = walkArrangement(plan.source, BAND_PARAMS);
       const builtChunks = new Set(
         selection.entries.filter((entry) => entry.subjectKind === "chunk").map((entry) => entry.subjectId),
@@ -199,7 +216,7 @@ describe("LIM-115: the algorithm selector", () => {
 import { createInferenceCallbacksDouble } from ${JSON.stringify(join(fixturesRoot, "inference-callbacks-double.ts"))};
 import { DatabaseSync } from "node:sqlite";
 const filePath = process.argv[2];
-const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
 const created = await sdk.threads.newThread({ filePath, registryPath: filePath + ".registry" });
 if (!created.ok) throw new Error(created.error.reason);
 let counter = 0;

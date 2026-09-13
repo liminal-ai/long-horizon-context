@@ -7,8 +7,8 @@
 import { copyFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput, type ViewCompactParams } from "../src/index.js";
-import { estimateTokens } from "../src/shared-tech/token-counting/index.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 function sdkFor(): Lhc {
-  return initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
 }
 
 async function newThread(sdk: Lhc): Promise<string> {

@@ -5,6 +5,7 @@
 // owners' report surfaces in index.ts.
 import type { DatabaseSync } from "node:sqlite";
 import type { Band, RenderingPartKind, StoredView } from "../../shared-tech/index.js";
+import { resolveInstanceTokenEstimator } from "../../shared-tech/index.js";
 import { readBoundaryPosition } from "./boundary.js";
 
 // ── view snapshot (header + bands) ────────────────────────────────
@@ -244,7 +245,7 @@ export function tailTokenSum(db: DatabaseSync, compactPoint: number): number {
        WHERE deleted_at IS NULL AND source_event_order > ?`,
     )
     .get(compactPoint) as { total: number | bigint };
-  return Number(row.total);
+  return resolveInstanceTokenEstimator("threadView.status").weigh(Number(row.total));
 }
 
 // ── the atomic replace ───────────────────────────────────────────

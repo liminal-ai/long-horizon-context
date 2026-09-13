@@ -31,11 +31,11 @@ import {
   type ErrorResult,
   type HostMetadata,
   type OpResult,
+  resolveInstanceTokenEstimator,
   resolveInstanceViewConfig,
   storageFailure,
 } from "../shared-tech/index.js";
 import { writeLog } from "../shared-tech/logging/index.js";
-import { estimateTokens } from "../shared-tech/token-counting/index.js";
 import { openThreadDatabase, resolveThreadRef, type ThreadRef } from "../threads/index.js";
 import * as turnsDomain from "../turns/index.js";
 import { assembleView } from "./internal/assemble.js";
@@ -365,7 +365,7 @@ function readZoneToolResults(db: DatabaseSync, effectiveStart: number): ToolResu
     .all(effectiveStart) as unknown as Array<{ source_event_order: number | bigint; token_estimate: number | bigint }>;
   return rows.map((row) => ({
     sourceEventOrder: Number(row.source_event_order),
-    tokenEstimate: Number(row.token_estimate),
+    tokenEstimate: resolveInstanceTokenEstimator("threadView.prune").weigh(Number(row.token_estimate)),
   }));
 }
 
@@ -377,7 +377,7 @@ function tokensBehindBoundary(db: DatabaseSync, boundary: number, compactPoint: 
          AND source_event_order > ? AND source_event_order <= ?`,
     )
     .get(compactPoint, boundary) as { total: number | bigint };
-  return Number(row.total);
+  return resolveInstanceTokenEstimator("threadView.prune").weigh(Number(row.total));
 }
 
 function countPrunedToolResults(
@@ -834,10 +834,7 @@ export function readPreparedSourceState(
   };
 
   if (selectedTurns.length === 0) {
-    collect(
-      `m.source_event_order > ? OR m.turn_id IN (SELECT turn_id FROM chunk_member)`,
-      [compactPoint],
-    );
+    collect(`m.source_event_order > ? OR m.turn_id IN (SELECT turn_id FROM chunk_member)`, [compactPoint]);
   } else {
     collect(`m.source_event_order > ?`, [compactPoint]);
     for (let offset = 0; offset < selectedTurns.length; offset += selectedTurnBatchSize) {
@@ -1001,7 +998,9 @@ function buildPreparedFromArrangement(
     const entries = entriesByBand(band);
     if (entries.length === 0) return [];
     const renderedText = assembleBandText(entries.map((entry) => entry.text));
-    return [{ band, renderedText, tokenCount: estimateTokens(renderedText) }];
+    return [
+      { band, renderedText, tokenCount: resolveInstanceTokenEstimator("threadView.compact").estimate(renderedText) },
+    ];
   });
 
   const selectedSourceTurnIds = selectedSourceTurnIdsFromSelection(db, selection);
@@ -1154,6 +1153,12 @@ function assemblePreparedCompact(
 function logPreparedDiagnostics(db: DatabaseSync, filePath: string, prepared: PreparedCompact): void {
   const threadId = readThreadMetadata(db).threadId;
   const transaction: DbReadTransaction = { db, filePath, threadId };
+  writeLog(transaction, {
+    level: "info",
+    message: "compact summary",
+    subjectId: prepared.viewId,
+    reason: resolveInstanceTokenEstimator("threadView.compact").family,
+  });
   for (const warning of prepared.warnings) {
     writeLog(transaction, {
       level: "warning",
@@ -1300,6 +1305,7 @@ export async function installPreparedCompact(
         gaps: installed.gaps,
         warnings: installed.warnings,
         skippedRecords: installed.skippedRecords,
+        tokenFamily: resolveInstanceTokenEstimator("threadView.compact").family,
         renderedBands,
         firstKeptMessageId: installed.firstKeptMessageId,
         ...(installed.selection.parts !== undefined ? { parts: installed.selection.parts } : {}),

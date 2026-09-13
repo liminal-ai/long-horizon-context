@@ -18,6 +18,7 @@
 import type { DatabaseSync } from "node:sqlite";
 import * as messagesDomain from "../../messages/index.js";
 import type { Band, SettleConstruction, SkippedRecord } from "../../shared-tech/index.js";
+import { billedSignatureTokens, type TokenEstimator } from "../../shared-tech/token-counting/index.js";
 import * as turnsDomain from "../../turns/index.js";
 import type { CompactChunkMaterialSnapshot, DerivationSnapshot } from "./render.js";
 import { excerptLine } from "./render.js";
@@ -125,6 +126,7 @@ export interface SelectionConfig {
   newestClosedProtection?: number;
   /** Compact point must stay at or behind this event order (protected-pair tail). */
   compactPointUpperBound?: number;
+  tokenEstimator: TokenEstimator;
 }
 
 // Message kinds that can anchor a host session rebuild past the compact point.
@@ -144,7 +146,7 @@ export const PI_MAPPABLE_MESSAGE_KINDS = [
 
 // ── reads (the eager plan) ───────────────────────────────────────
 
-export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
+export function readSelectionInputs(db: DatabaseSync, estimator: TokenEstimator): SelectionInputs {
   // Message, turn, and chunk material comes from the owner domains, not direct
   // SQL against their tables (bad-code-log: domain-boundary leakage). The
   // owners return source-faithful structure — turns carry the deleted flag,
@@ -167,7 +169,7 @@ export function readSelectionInputs(db: DatabaseSync): SelectionInputs {
       messageId: record.messageId,
       order: record.sourceEventOrder,
       kind: record.kind,
-      tokenEstimate: record.tokenEstimate,
+      tokenEstimate: estimator.weighStored(record.tokenEstimate, billedSignatureTokens(estimator, record.blocks)),
       turnId,
       text: excerptLine(record.kind, record.blocks),
     });

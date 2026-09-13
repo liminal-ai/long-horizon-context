@@ -4,7 +4,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, initLhc, intakeStream, type Lhc, retrieval } from "../src/index.js";
 import { MAX_RETRIEVAL_IDS_PER_CALL } from "../src/retrieval/index.js";
-import { type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
 
 let store: TempStore;
 let sdk: Lhc;
@@ -12,16 +12,18 @@ let filePath: string;
 
 beforeEach(async () => {
   store = tempStore();
-  sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
   const path = store.threadPath();
   const created = await sdk.threads.newThread({ filePath: path, registryPath: store.registryPath });
   if (!created.ok) throw new Error(created.error.reason);
   filePath = path;
-  const sent = await intakeStream.messageEvents({ filePath }, [
-    validEvent("user_prompt", { payload: { text: "only question" } }),
-    validEvent("assistant_text", { payload: { text: "only answer" } }),
-    validEvent("turn_end"),
-  ]);
+  const sent = await withEstimator(o200k, () =>
+    intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "only question" } }),
+      validEvent("assistant_text", { payload: { text: "only answer" } }),
+      validEvent("turn_end"),
+    ]),
+  );
   if (!sent.ok) throw new Error(sent.error.reason);
   const drained = await sdk.work.drain({ filePath });
   if (!drained.ok) throw new Error(drained.error.reason);
@@ -33,7 +35,7 @@ afterEach(() => {
 describe("retrieval id cap", () => {
   it("refuses over-cap calls whole, naming the cap", async () => {
     const ids = Array.from({ length: MAX_RETRIEVAL_IDS_PER_CALL + 1 }, (_, i) => `t${i + 1}`);
-    const result = await retrieval.getTurns({ filePath }, ids);
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ids));
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.error.reason).toMatch(/too many ids/);
@@ -43,13 +45,13 @@ describe("retrieval id cap", () => {
 
   it("accepts exactly the cap of unique ids", async () => {
     const ids = Array.from({ length: MAX_RETRIEVAL_IDS_PER_CALL }, (_, i) => `t${i + 1}`);
-    const result = await retrieval.getTurns({ filePath }, ids);
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ids));
     expect(result.ok).toBe(true);
   });
 
   it("refuses oversized ids per-id as invalid, with the echo clamped", async () => {
     const monster = `t${"9".repeat(40_000)}`;
-    const result = await retrieval.getTurns({ filePath }, [monster, "t1"]);
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, [monster, "t1"]));
     expect(result.ok).toBe(true);
     if (result.ok) {
       const invalid = result.value.unserved.find((u) => u.reason === "invalid");
@@ -60,14 +62,16 @@ describe("retrieval id cap", () => {
   });
 
   it("clamps caller tokenBudget to the contract ceiling", async () => {
-    const result = await retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 10_000_000 });
+    const result = await withEstimator(o200k, () =>
+      retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 10_000_000 }),
+    );
     expect(result.ok).toBe(true);
     if (result.ok) expect(result.value.tokenBudget).toBeLessThanOrEqual(8_000);
   });
 
   it("counts deduped ids, not raw ids", async () => {
     const ids = Array.from({ length: MAX_RETRIEVAL_IDS_PER_CALL + 10 }, () => "t1");
-    const result = await retrieval.getTurns({ filePath }, ids);
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ids));
     expect(result.ok).toBe(true);
   });
 });

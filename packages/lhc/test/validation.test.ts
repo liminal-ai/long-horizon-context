@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type EventRecord, intakeStream, type MessageEventInput, type ThreadRef, threads } from "../src/index.js";
 import { conversationTurn, eventBatch, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, withEstimator } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -60,7 +61,7 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
     ];
 
     for (const { batch, reason } of cases) {
-      const result = await intakeStream.messageEvents({ filePath }, batch);
+      const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
       expect(result.ok).toBe(false);
       if (result.ok) continue;
       expect(result.error.errorClass).toBe("caller_error");
@@ -80,7 +81,7 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
       validEvent("assistant_thinking", { actor: "" }),
     ];
 
-    const result = await intakeStream.messageEvents({ filePath }, batch);
+    const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("invalid_event");
@@ -91,15 +92,17 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
 
   it("TC-4.3: after a rejection the thread reads back logically identical to its baseline", async () => {
     const filePath = await createThread();
-    const recorded = await intakeStream.messageEvents({ filePath }, conversationTurn());
+    const recorded = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, conversationTurn()));
     expect(recorded.ok).toBe(true);
     const baseline = await readBack(filePath);
     expect(baseline).toHaveLength(5);
 
-    const rejected = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      { ...validEvent("turn_end"), payload: { oops: 1 } } as unknown as MessageEventInput,
-    ]);
+    const rejected = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt"),
+        { ...validEvent("turn_end"), payload: { oops: 1 } } as unknown as MessageEventInput,
+      ]),
+    );
     expect(rejected.ok).toBe(false);
 
     // Logical equality at the read-back level (events at this story; the
@@ -110,9 +113,11 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
   it("TC-4.4 (caller/system legs): error classes separate; corruption leg is Story 4's", async () => {
     const filePath = await createThread();
 
-    const callerLeg = await intakeStream.messageEvents({ filePath }, [
-      { ...validEvent("user_prompt"), eventKind: "bogus" } as unknown as MessageEventInput,
-    ]);
+    const callerLeg = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        { ...validEvent("user_prompt"), eventKind: "bogus" } as unknown as MessageEventInput,
+      ]),
+    );
     expect(callerLeg.ok).toBe(false);
     if (callerLeg.ok) return;
     expect(callerLeg.error.errorClass).toBe("caller_error");
@@ -135,7 +140,7 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
   it("TC-4.5: a batch mixing new, duplicate, and invalid events is rejected whole", async () => {
     const filePath = await createThread();
     const original = eventBatch(["user_prompt", "assistant_text"]);
-    const recorded = await intakeStream.messageEvents({ filePath }, original);
+    const recorded = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, original));
     expect(recorded.ok).toBe(true);
     const baseline = await readBack(filePath);
     expect(baseline).toHaveLength(2);
@@ -145,7 +150,7 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
       original[0]!, // valid duplicate of a recorded event
       { ...validEvent("turn_end"), payload: { bad: true } } as unknown as MessageEventInput,
     ];
-    const rejected = await intakeStream.messageEvents({ filePath }, mixed);
+    const rejected = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, mixed));
     expect(rejected.ok).toBe(false);
     if (rejected.ok) return;
     expect(rejected.error.code).toBe("invalid_event");
@@ -158,29 +163,33 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
   it("strictness supplemental: unknown fields rejected at envelope, event, and payload levels", async () => {
     const filePath = await createThread();
 
-    const envelopeProbe = await intakeStream.messageEvents({ filePath, surprise: true } as unknown as ThreadRef, [
-      validEvent("user_prompt"),
-    ]);
+    const envelopeProbe = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath, surprise: true } as unknown as ThreadRef, [validEvent("user_prompt")]),
+    );
     expect(envelopeProbe.ok).toBe(false);
     if (envelopeProbe.ok) return;
     expect(envelopeProbe.error.code).toBe("invalid_event");
     expect(envelopeProbe.error.reason).toContain("envelope");
 
-    const eventProbe = await intakeStream.messageEvents({ filePath }, [
-      { ...validEvent("user_prompt"), surprise: true } as unknown as MessageEventInput,
-    ]);
+    const eventProbe = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        { ...validEvent("user_prompt"), surprise: true } as unknown as MessageEventInput,
+      ]),
+    );
     expect(eventProbe.ok).toBe(false);
     if (eventProbe.ok) return;
     expect(eventProbe.error.code).toBe("invalid_event");
     expect(eventProbe.error.reason).toContain("event");
     expect(eventProbe.error.reason).toContain("surprise");
 
-    const payloadProbe = await intakeStream.messageEvents({ filePath }, [
-      {
-        ...validEvent("user_prompt"),
-        payload: { text: "hello", surprise: true },
-      } as unknown as MessageEventInput,
-    ]);
+    const payloadProbe = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        {
+          ...validEvent("user_prompt"),
+          payload: { text: "hello", surprise: true },
+        } as unknown as MessageEventInput,
+      ]),
+    );
     expect(payloadProbe.ok).toBe(false);
     if (payloadProbe.ok) return;
     expect(payloadProbe.error.code).toBe("invalid_event");
@@ -193,13 +202,17 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
   it("strictness supplemental: empty actor and empty harness are rejected", async () => {
     const filePath = await createThread();
 
-    const emptyActor = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt", { actor: "" })]);
+    const emptyActor = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt", { actor: "" })]),
+    );
     expect(emptyActor.ok).toBe(false);
     if (emptyActor.ok) return;
     expect(emptyActor.error.code).toBe("invalid_event");
     expect(emptyActor.error.reason).toContain("actor");
 
-    const emptyHarness = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt", { harness: "" })]);
+    const emptyHarness = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt", { harness: "" })]),
+    );
     expect(emptyHarness.ok).toBe(false);
     if (emptyHarness.ok) return;
     expect(emptyHarness.error.code).toBe("invalid_event");

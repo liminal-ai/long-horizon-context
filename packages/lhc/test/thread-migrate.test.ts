@@ -21,6 +21,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { o200k, withEstimator } from "./fixtures/tokens.js";
 
 let store: TempStore;
 
@@ -122,11 +123,13 @@ async function fixturePoisonedTurnDerivationWorkItem(
     crashWindow?: boolean;
   } = {},
 ): Promise<void> {
-  const result = await intakeStream.messageEvents({ filePath }, [
-    validEvent("user_prompt", { payload: { text: "migration drain test" } }),
-    validEvent("assistant_text", { payload: { text: "migration answer" } }),
-    validEvent("turn_end"),
-  ]);
+  const result = await withEstimator(o200k, () =>
+    intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "migration drain test" } }),
+      validEvent("assistant_text", { payload: { text: "migration answer" } }),
+      validEvent("turn_end"),
+    ]),
+  );
   if (!result.ok) throw new Error(`fixture intake failed: ${result.error.reason}`);
 
   const db = new DatabaseSync(filePath);
@@ -188,11 +191,7 @@ function formOf(filePath: string, derivationType: string) {
 
 async function drainTurnDerivationsGreen(filePath: string): Promise<void> {
   const double = createInferenceCallbacksDouble();
-  const sdk = initLhc({
-    inferenceCallbacks: double,
-    mode: "manual",
-    lease: { durationMs: 200 },
-  });
+  const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual", lease: { durationMs: 200 } });
   const drain = await sdk.work.drain({ filePath });
   expect(drain.ok).toBe(true);
   if (!drain.ok) return;
@@ -412,7 +411,7 @@ describe("thread schema migration", () => {
       db.close();
     }
 
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const drained = await sdk.work.drain({ filePath });
     expect(drained.ok).toBe(true);
     if (!drained.ok) return;
@@ -495,11 +494,13 @@ describe("thread schema migration", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    const intake = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "v4 migration prompt" } }),
-      validEvent("assistant_text", { payload: { text: "v4 migration answer" } }),
-      validEvent("turn_end"),
-    ]);
+    const intake = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "v4 migration prompt" } }),
+        validEvent("assistant_text", { payload: { text: "v4 migration answer" } }),
+        validEvent("turn_end"),
+      ]),
+    );
     expect(intake.ok).toBe(true);
     if (!intake.ok) return;
 
@@ -836,11 +837,13 @@ describe("thread schema migration", () => {
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    const intake = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "v11 migration prompt" } }),
-      validEvent("assistant_text", { payload: { text: "v11 migration answer" } }),
-      validEvent("turn_end"),
-    ]);
+    const intake = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "v11 migration prompt" } }),
+        validEvent("assistant_text", { payload: { text: "v11 migration answer" } }),
+        validEvent("turn_end"),
+      ]),
+    );
     expect(intake.ok).toBe(true);
 
     const old = new DatabaseSync(filePath);
@@ -880,10 +883,12 @@ describe("thread schema migration", () => {
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    const intake = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "step-flavored v12" } }),
-      validEvent("turn_end"),
-    ]);
+    const intake = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "step-flavored v12" } }),
+        validEvent("turn_end"),
+      ]),
+    );
     expect(intake.ok).toBe(true);
     const old = new DatabaseSync(filePath);
     try {
@@ -912,10 +917,12 @@ describe("thread schema migration", () => {
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    const intake = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt", { payload: { text: "blob-flavored v12" } }),
-      validEvent("turn_end"),
-    ]);
+    const intake = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "blob-flavored v12" } }),
+        validEvent("turn_end"),
+      ]),
+    );
     expect(intake.ok).toBe(true);
     const old = new DatabaseSync(filePath);
     try {
@@ -932,7 +939,9 @@ describe("thread schema migration", () => {
     try {
       expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_13);
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blob'").get()).toBeDefined();
-      const messageCols = (db.prepare("PRAGMA table_info(message)").all() as Array<{ name: string }>).map((c) => c.name);
+      const messageCols = (db.prepare("PRAGMA table_info(message)").all() as Array<{ name: string }>).map(
+        (c) => c.name,
+      );
       expect(messageCols).toContain("step_index");
       const metaCols = (db.prepare("PRAGMA table_info(thread_metadata)").all() as Array<{ name: string }>).map(
         (c) => c.name,

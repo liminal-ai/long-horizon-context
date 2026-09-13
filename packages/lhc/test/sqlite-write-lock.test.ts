@@ -23,7 +23,7 @@ import {
   __writeLockMapSizeForTests,
   threadWriteLockKey,
 } from "../src/shared-tech/persist.js";
-import { type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const multiprocFixture = join(here, "fixtures/write-lock-multiproc-worker.ts");
@@ -35,7 +35,11 @@ describe("thread write lock identity", () => {
   let filePath: string;
   beforeEach(async () => {
     store = tempStore();
-    sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    sdk = initLhc({
+      tokenFamily: "o200k",
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
     filePath = store.threadPath();
     const created = await sdk.threads.newThread({
       filePath,
@@ -131,7 +135,7 @@ describe("thread write lock identity", () => {
 
     expect(__writeLockMapSizeForTests()).toBe(0);
 
-    const ret = await retrieval.getTurns({ filePath }, ["t1"], { surface: "after-throw" });
+    const ret = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"], { surface: "after-throw" }));
     expect(ret.ok).toBe(true);
     expect(__writeLockMapSizeForTests()).toBe(0);
   });
@@ -191,7 +195,7 @@ describe("thread write lock identity", () => {
     let fails = 0;
     for (let i = 0; i < 15; i += 1) {
       const [ret, cap] = await Promise.all([
-        retrieval.getTurns({ filePath: link }, ["t1"], { surface: `s${i}` }),
+        withEstimator(o200k, () => retrieval.getTurns({ filePath: link }, ["t1"], { surface: `s${i}` })),
         sdk.intakeStream.messageEvents({ filePath }, [
           validEvent("user_prompt", { payload: { text: `q${i}` } }),
           validEvent("assistant_text", { payload: { text: `a${i}` } }),
@@ -246,7 +250,7 @@ describe("thread write lock identity", () => {
       expect(`race-parent-r${i}-user`).not.toBe(`race-child-r${i}-user`);
     }
 
-    const impsBefore = await retrieval.listImpressions({ filePath });
+    const impsBefore = await withEstimator(o200k, () => retrieval.listImpressions({ filePath }));
     expect(impsBefore.ok).toBe(true);
     if (!impsBefore.ok) return;
     const nBefore = impsBefore.value.length;
@@ -305,7 +309,7 @@ describe("thread write lock identity", () => {
             await new Promise((r) => setTimeout(r, 5));
           }
           const [ret, cap] = await Promise.all([
-            retrieval.getTurns({ filePath }, ["t1"], { surface }),
+            withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"], { surface })),
             sdk.intakeStream.messageEvents({ filePath }, raceCaptureEvents("parent", i, `p-${i}`, `pa-${i}`)),
           ]);
           if (!ret.ok || !cap.ok) {
@@ -365,7 +369,7 @@ describe("thread write lock identity", () => {
     expect(new Set(childResult.surfaces).size).toBe(rounds);
 
     // Exact durable impression deltas: parent rounds + child rounds (each one retrieval).
-    const imps = await retrieval.listImpressions({ filePath });
+    const imps = await withEstimator(o200k, () => retrieval.listImpressions({ filePath }));
     expect(imps.ok).toBe(true);
     if (!imps.ok) return;
     expect(imps.value.length - nBefore).toBe(rounds * 2);

@@ -32,10 +32,7 @@ function freshStore(): TempStore {
 function buildSdk(assignments: unknown): () => unknown {
   const { call } = recordingCall(cannedResponses());
   return () =>
-    initLhc({
-      mode: "manual",
-      inference: { call, assignments },
-    } as unknown as SdkConfig);
+    initLhc({ tokenFamily: "o200k", mode: "manual", inference: { call, assignments } } as unknown as SdkConfig);
 }
 
 describe("TC-1.1: inferenceCallbacks XOR inference (AC-1.1)", () => {
@@ -43,6 +40,7 @@ describe("TC-1.1: inferenceCallbacks XOR inference (AC-1.1)", () => {
     const { call } = recordingCall(cannedResponses());
     const make = (): unknown =>
       initLhc({
+        tokenFamily: "o200k",
         mode: "manual",
         inferenceCallbacks: createInferenceCallbacksDouble(),
         inference: { call, assignments: validAssignments() },
@@ -52,7 +50,7 @@ describe("TC-1.1: inferenceCallbacks XOR inference (AC-1.1)", () => {
   });
 
   it("neither inferenceCallbacks nor inference is a TypeError naming the XOR rule", () => {
-    const make = (): unknown => initLhc({ mode: "manual" } as unknown as SdkConfig);
+    const make = (): unknown => initLhc({ tokenFamily: "o200k", mode: "manual" } as unknown as SdkConfig);
     expect(make).toThrow(TypeError);
     expect(make).toThrow(/exactly one of inferenceCallbacks or inference/);
   });
@@ -101,10 +99,7 @@ describe("TC-1.1: a complete valid config operates (AC-1.1, AC-1.3)", () => {
     const store = freshStore();
     const responses = cannedResponses();
     const { call, log } = recordingCall(responses);
-    const sdk = initLhc({
-      mode: "manual",
-      inference: { call, assignments: validAssignments() },
-    });
+    const sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inference: { call, assignments: validAssignments() } });
 
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({

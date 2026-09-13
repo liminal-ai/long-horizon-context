@@ -66,6 +66,7 @@ const THREE_BAND_PARAMS: ViewCompactParams = {
 
 function sdkFor(): Lhc {
   return initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: createInferenceCallbacksDouble(),
     mode: "manual",
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },

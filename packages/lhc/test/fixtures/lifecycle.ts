@@ -61,6 +61,7 @@ export const LIFECYCLE_PROFILE = {
 // so the deterministic leg and the real leg run THE SAME lifecycle.
 export function createLifecycleSdk(inference?: InferenceConfig, guards?: SdkConfig["guards"]): Lhc {
   return initLhc({
+    tokenFamily: "o200k",
     ...(inference !== undefined ? { inference } : { inferenceCallbacks: createDeterministicInferenceCallbacks() }),
     mode: "background",
     ...(guards === undefined ? {} : { guards }),

@@ -13,6 +13,7 @@
 import { existsSync, writeFileSync } from "node:fs";
 
 import { createDeterministicInferenceCallbacks, initLhc, type MessageEventInput, retrieval } from "../../src/index.js";
+import { o200k, withEstimator } from "./tokens.js";
 
 const filePath = process.argv[2];
 const rounds = Number(process.argv[3] ?? "20");
@@ -50,6 +51,7 @@ function raceCaptureEvents(side: "child", round: number, userText: string, asstT
 }
 
 const sdk = initLhc({
+  tokenFamily: "o200k",
   mode: "manual",
   inferenceCallbacks: createDeterministicInferenceCallbacks(),
 });
@@ -77,7 +79,7 @@ for (let i = 0; i < rounds; i += 1) {
     (async () => {
       const surface = `child-${i}`;
       const [ret, cap] = await Promise.all([
-        retrieval.getTurns({ filePath }, ["t1"], { surface }),
+        withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"], { surface })),
         sdk.intakeStream.messageEvents({ filePath }, raceCaptureEvents("child", i, `c-${i}`, `ca-${i}`)),
       ]);
       if (!ret.ok || !cap.ok) {

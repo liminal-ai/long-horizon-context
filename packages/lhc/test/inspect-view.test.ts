@@ -9,7 +9,6 @@
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  estimateTokens,
   type InferenceCallbacks,
   initLhc,
   type Lhc,
@@ -28,6 +27,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -157,7 +157,7 @@ async function degradedCompactedThread(): Promise<DerivedThreadFixture> {
 // A small never-compacted thread: two closed turns, fully drained.
 async function neverCompactedThread(): Promise<{ filePath: string; sdk: Lhc }> {
   const double = createInferenceCallbacksDouble();
-  const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+  const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(`fixture thread creation failed: ${created.error.reason}`);
@@ -263,6 +263,7 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
 describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity with a seeded boundary in the tail", () => {
   it("tail costs short forms short and total equals an independent context read re-measured", async () => {
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: createInferenceCallbacksDouble(),
       mode: "manual",
       view: { visibility: { maxTokens: 100, targetTokens: 60 } },
@@ -394,14 +395,14 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
       compressDetailedTurn: refuse,
       summarizeChunkBrief: refuse,
     };
-    const reader = initLhc({ inferenceCallbacks: throwing, mode: "manual" });
+    const reader = initLhc({ tokenFamily: "o200k", inferenceCallbacks: throwing, mode: "manual" });
     const viewed = await expectReadOnly(filePath, () => reader.inspect.view({ filePath }));
     const described = await expectReadOnly(filePath, () => reader.threadView.describe({ filePath }));
     expect(viewed.ok && described.ok).toBe(true);
   });
 
   it("inspect.view on a missing thread is thread_not_found, not a shape error", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const missing = await sdk.inspect.view({ filePath: store.threadPath("missing") });
     expect(missing.ok).toBe(false);
     if (missing.ok) return;

@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type BatchResult,
-  estimateTokens,
   type InferenceCallbacks,
   initLhc,
   type Lhc,
@@ -21,6 +20,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -46,12 +46,7 @@ async function newThread(): Promise<string> {
 }
 
 function sdkFor(inferenceCallbacks: InferenceCallbacks, config: Partial<Pick<SdkConfig, "guards">> = {}): Lhc {
-  return initLhc({
-    inferenceCallbacks,
-    mode: "manual",
-    lease: { durationMs: 200 },
-    ...config,
-  });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks, mode: "manual", lease: { durationMs: 200 }, ...config });
 }
 
 async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<BatchResult> {
@@ -239,6 +234,7 @@ describe("Story 3: detailed turn compression", () => {
   it("uses the tuned prompt as the default for model-call hosts", async () => {
     const host = recordingModelCall(tokenText(120));
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inference: { call: host.call },
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
@@ -294,6 +290,7 @@ describe("Story 3: detailed turn compression", () => {
       return Promise.resolve({ ok: true, text: "   " });
     };
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inference: { call },
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },

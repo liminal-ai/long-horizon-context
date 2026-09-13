@@ -96,7 +96,12 @@ export type CompactContinuationMarkerPayload = {
  * prompt opens a turn (closing a populated open one first).
  */
 export type UserPromptPayload = { text: string; steer?: boolean; blocks?: ApiBlock[] };
-export type ToolResultPayload = { toolCallId: string; content: string; isError?: boolean; blocks?: ApiBlock[] } & StepScoped;
+export type ToolResultPayload = {
+  toolCallId: string;
+  content: string;
+  isError?: boolean;
+  blocks?: ApiBlock[];
+} & StepScoped;
 export type ToolCallPayload = {
   toolCallId: string;
   toolName: string;

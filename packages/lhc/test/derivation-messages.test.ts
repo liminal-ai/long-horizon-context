@@ -46,11 +46,7 @@ async function newThread(): Promise<string> {
 }
 
 function manualSdk(inferenceCallbacks: InferenceCallbacks): Lhc {
-  return initLhc({
-    inferenceCallbacks,
-    mode: "manual",
-    lease: { durationMs: 200 },
-  });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks, mode: "manual", lease: { durationMs: 200 } });
 }
 
 async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<BatchResult> {

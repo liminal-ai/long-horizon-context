@@ -3,7 +3,16 @@
 // Stories 3-5 as those records exist).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type EventRecord, intakeStream, threads } from "../src/index.js";
-import { conversationTurn, eventBatch, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import {
+  conversationTurn,
+  eventBatch,
+  o200k,
+  openRaw,
+  type TempStore,
+  tempStore,
+  validEvent,
+  withEstimator,
+} from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -47,14 +56,14 @@ describe("Flow 5 (SDK): idempotent resend", () => {
   it("TC-5.1: resending a fully recorded batch skips everything and changes nothing", async () => {
     const filePath = await createThread();
     const batch = conversationTurn();
-    const first = await intakeStream.messageEvents({ filePath }, batch);
+    const first = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value.events.every((entry) => entry.outcome === "recorded")).toBe(true);
     expect(first.value.threadPosition.lastEventOrder).toBe(5);
     const baseline = await readBack(filePath);
 
-    const resend = await intakeStream.messageEvents({ filePath }, batch);
+    const resend = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(resend.ok).toBe(true);
     if (!resend.ok) return;
     expect(resend.value.events).toHaveLength(5);
@@ -71,11 +80,11 @@ describe("Flow 5 (SDK): idempotent resend", () => {
   it("TC-5.2: partial resend skips the old, records the new, and keeps the order dense", async () => {
     const filePath = await createThread();
     const old = eventBatch(["user_prompt", "assistant_text", "tool_call"]);
-    const first = await intakeStream.messageEvents({ filePath }, old);
+    const first = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, old));
     expect(first.ok).toBe(true);
 
     const fresh = [validEvent("tool_result"), validEvent("turn_end")];
-    const resend = await intakeStream.messageEvents({ filePath }, [...old, ...fresh]);
+    const resend = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, [...old, ...fresh]));
     expect(resend.ok).toBe(true);
     if (!resend.ok) return;
     expect(resend.value.events.map((entry) => entry.outcome)).toEqual([
@@ -98,8 +107,8 @@ describe("Flow 5 (SDK): idempotent resend", () => {
     const threadB = await createThread();
     const event = validEvent("user_prompt", { idempotencyKey: "shared-key-1" });
 
-    const inA = await intakeStream.messageEvents({ filePath: threadA }, [event]);
-    const inB = await intakeStream.messageEvents({ filePath: threadB }, [event]);
+    const inA = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath: threadA }, [event]));
+    const inB = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath: threadB }, [event]));
     expect(inA.ok).toBe(true);
     expect(inB.ok).toBe(true);
     if (!inA.ok || !inB.ok) return;
@@ -113,10 +122,10 @@ describe("Flow 5 (SDK): idempotent resend", () => {
   it("TC-5.4: skips are inert — no duplicate rows, no order numbers consumed, no transitions reported", async () => {
     const filePath = await createThread();
     const batch = eventBatch(["user_prompt", "turn_end"]);
-    const first = await intakeStream.messageEvents({ filePath }, batch);
+    const first = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(first.ok).toBe(true);
 
-    const resend = await intakeStream.messageEvents({ filePath }, batch);
+    const resend = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(resend.ok).toBe(true);
     if (!resend.ok) return;
     expect(resend.value.events.every((entry) => entry.outcome === "skipped")).toBe(true);
@@ -136,7 +145,9 @@ describe("Flow 5 (SDK): idempotent resend", () => {
     }
 
     // Skips consumed no order numbers: the next recorded event lands at 3.
-    const next = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]);
+    const next = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]),
+    );
     expect(next.ok).toBe(true);
     if (!next.ok) return;
     expect(next.value.threadPosition.lastEventOrder).toBe(3);
@@ -149,14 +160,14 @@ describe("Flow 5 (SDK): idempotent resend", () => {
       idempotencyKey: "key-K",
       payload: { text: "PAYLOAD-A-ORIGINAL" },
     });
-    const first = await intakeStream.messageEvents({ filePath }, [original]);
+    const first = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, [original]));
     expect(first.ok).toBe(true);
 
     const reused = validEvent("user_prompt", {
       idempotencyKey: "key-K",
       payload: { text: "PAYLOAD-B-MUST-VANISH" },
     });
-    const resend = await intakeStream.messageEvents({ filePath }, [reused]);
+    const resend = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, [reused]));
     expect(resend.ok).toBe(true);
     if (!resend.ok) return;
     expect(resend.value.events[0]).toEqual({

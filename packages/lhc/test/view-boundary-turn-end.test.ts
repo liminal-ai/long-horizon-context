@@ -20,7 +20,7 @@ afterEach(() => {
 });
 
 function visSdk(view: SdkViewConfig = { visibility: BUDGETS }): Lhc {
-  return initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual", view });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual", view });
 }
 
 async function newThread(sdk: Lhc): Promise<string> {

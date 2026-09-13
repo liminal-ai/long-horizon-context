@@ -28,6 +28,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { o200k, withEstimator } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -111,30 +112,34 @@ function seedHeldWriter(filePath: string, attemptId: string): void {
 }
 
 async function seedOpenAgenticTurn(filePath: string): Promise<void> {
-  const batch = await intakeStream.messageEvents({ filePath }, [
-    validEvent("user_prompt", { payload: { text: "continue the investigation with more context" } }),
-    validEvent("assistant_text", { payload: { text: "working on it with more detail ".repeat(20) } }),
-    validEvent("tool_call", {
-      payload: { toolCallId: "call-active-1", toolName: "read_file", arguments: { path: "x.txt" } },
-    }),
-    validEvent("tool_result", {
-      payload: { toolCallId: "call-active-1", content: "result body ".repeat(30), isError: false },
-    }),
-  ]);
+  const batch = await withEstimator(o200k, () =>
+    intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "continue the investigation with more context" } }),
+      validEvent("assistant_text", { payload: { text: "working on it with more detail ".repeat(20) } }),
+      validEvent("tool_call", {
+        payload: { toolCallId: "call-active-1", toolName: "read_file", arguments: { path: "x.txt" } },
+      }),
+      validEvent("tool_result", {
+        payload: { toolCallId: "call-active-1", content: "result body ".repeat(30), isError: false },
+      }),
+    ]),
+  );
   if (!batch.ok) throw new Error(batch.error.reason);
 }
 
 async function seedPendingToolTurn(filePath: string, toolCallId: string): Promise<void> {
-  const batch = await intakeStream.messageEvents({ filePath }, [
-    validEvent("user_prompt", { payload: { text: "use tools" } }),
-    validEvent("assistant_text", { payload: { text: "calling tool" } }),
-    validEvent("tool_call", {
-      payload: { toolCallId, toolName: "read_file", arguments: { path: "notes.txt" } },
-    }),
-    validEvent("tool_result", {
-      payload: { toolCallId, content: "tool result verbatim payload that must survive", isError: false },
-    }),
-  ]);
+  const batch = await withEstimator(o200k, () =>
+    intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "use tools" } }),
+      validEvent("assistant_text", { payload: { text: "calling tool" } }),
+      validEvent("tool_call", {
+        payload: { toolCallId, toolName: "read_file", arguments: { path: "notes.txt" } },
+      }),
+      validEvent("tool_result", {
+        payload: { toolCallId, content: "tool result verbatim payload that must survive", isError: false },
+      }),
+    ]),
+  );
   if (!batch.ok) throw new Error(batch.error.reason);
 }
 
@@ -179,20 +184,22 @@ describe("LIM-61 compact-continuation runtime", () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     const before = snapshotCanonical(fixture.filePath);
 
-    const below = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "below-1",
-        providerUsage: {
-          available: true,
-          inputTokens: 1000,
-          cacheCreationTokens: 0,
-          cacheReadTokens: 0,
-          total: 1000,
-          domain: "provider_reported_input",
-        },
-        postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
-      }),
+    const below = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "below-1",
+          providerUsage: {
+            available: true,
+            inputTokens: 1000,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            total: 1000,
+            domain: "provider_reported_input",
+          },
+          postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+        }),
+      ),
     );
     expect(below.ok).toBe(true);
     if (!below.ok) return;
@@ -200,12 +207,14 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(below.value.receipt.effects.some((e) => e.type === "claim_writer")).toBe(false);
     expect(snapshotCanonical(fixture.filePath)).toEqual(before);
 
-    const noUsage = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "no-usage-1",
-        providerUsage: { available: false, reason: "missing", domain: "provider_reported_input" },
-      }),
+    const noUsage = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "no-usage-1",
+          providerUsage: { available: false, reason: "missing", domain: "provider_reported_input" },
+        }),
+      ),
     );
     expect(noUsage.ok).toBe(true);
     if (!noUsage.ok) return;
@@ -216,9 +225,11 @@ describe("LIM-61 compact-continuation runtime", () => {
   it("normal completion creates no continuation turn", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     const before = snapshotCanonical(fixture.filePath);
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "complete-1", continuation: { kind: "none" } }),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "complete-1", continuation: { kind: "none" } }),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -240,9 +251,11 @@ describe("LIM-61 compact-continuation runtime", () => {
 
     // Incomplete capture: warn + continue. Capture feeds derivation quality,
     // not compact capability, so the seam still forces, markers and installs.
-    const capture = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "health-capture", captureComplete: false }),
+    const capture = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "health-capture", captureComplete: false }),
+      ),
     );
     expect(capture.ok).toBe(true);
     if (!capture.ok) return;
@@ -262,9 +275,11 @@ describe("LIM-61 compact-continuation runtime", () => {
     // Unproven provider identity: omit signed reasoning, compact anyway.
     await seedOpenAgenticTurn(fixture.filePath);
     const beforeIdentity = snapshotCanonical(fixture.filePath);
-    const identity = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "health-identity", providerIdentityValid: false }),
+    const identity = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "health-identity", providerIdentityValid: false }),
+      ),
     );
     expect(identity.ok).toBe(true);
     if (!identity.ok) return;
@@ -282,16 +297,18 @@ describe("LIM-61 compact-continuation runtime", () => {
     // but the next provider request is authorized — declining is not a stop.
     await seedPendingToolTurn(fixture.filePath, "call-bad-corr");
     const beforeTool = snapshotCanonical(fixture.filePath);
-    const corr = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "health-corr",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          protectedToolCallIds: ["call-bad-corr"],
-          correlationValid: false,
-        },
-      }),
+    const corr = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "health-corr",
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            protectedToolCallIds: ["call-bad-corr"],
+            correlationValid: false,
+          },
+        }),
+      ),
     );
     expect(corr.ok).toBe(true);
     if (!corr.ok) return;
@@ -305,16 +322,18 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(snapshotCanonical(fixture.filePath)).toEqual(beforeTool);
 
     // Durable pair missing despite host correlationValid: same decline.
-    const missing = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "health-pair-missing",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          protectedToolCallIds: ["call-does-not-exist"],
-          correlationValid: true,
-        },
-      }),
+    const missing = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "health-pair-missing",
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            protectedToolCallIds: ["call-does-not-exist"],
+            correlationValid: true,
+          },
+        }),
+      ),
     );
     expect(missing.ok).toBe(true);
     if (!missing.ok) return;
@@ -329,9 +348,11 @@ describe("LIM-61 compact-continuation runtime", () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
 
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "active-success-1" }),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "active-success-1" }),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -370,29 +391,33 @@ describe("LIM-61 compact-continuation runtime", () => {
   it("B2: completed boundary is not re-repaired on below-trigger seam", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
-    const first = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "complete-boundary-1" }),
+    const first = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "complete-boundary-1" }),
+      ),
     );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value.pendingBoundary).toBeNull();
     const viewAfter = snapshotCanonical(fixture.filePath);
 
-    const below = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "complete-boundary-below",
-        providerUsage: {
-          available: true,
-          inputTokens: 100,
-          cacheCreationTokens: 0,
-          cacheReadTokens: 0,
-          total: 100,
-          domain: "provider_reported_input",
-        },
-        postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
-      }),
+    const below = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "complete-boundary-below",
+          providerUsage: {
+            available: true,
+            inputTokens: 100,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            total: 100,
+            domain: "provider_reported_input",
+          },
+          postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+        }),
+      ),
     );
     expect(below.ok).toBe(true);
     if (!below.ok) return;
@@ -404,17 +429,15 @@ describe("LIM-61 compact-continuation runtime", () => {
   it("B2: completed attemptId replays without re-mutation", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
-    const first = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "replay-1" }),
+    const first = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation({ filePath: fixture.filePath }, baseFacts({ attemptId: "replay-1" })),
     );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     const after = snapshotCanonical(fixture.filePath);
 
-    const second = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "replay-1" }),
+    const second = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation({ filePath: fixture.filePath }, baseFacts({ attemptId: "replay-1" })),
     );
     expect(second.ok).toBe(true);
     if (!second.ok) return;
@@ -426,18 +449,22 @@ describe("LIM-61 compact-continuation runtime", () => {
   it("later above-trigger active work creates a distinct new boundary", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
-    const first = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "distinct-1" }),
+    const first = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "distinct-1" }),
+      ),
     );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     const tA = first.value.continuationTurnId!;
 
     await seedOpenAgenticTurn(fixture.filePath);
-    const second = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "distinct-2" }),
+    const second = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "distinct-2" }),
+      ),
     );
     expect(second.ok).toBe(true);
     if (!second.ok) return;
@@ -450,16 +477,18 @@ describe("LIM-61 compact-continuation runtime", () => {
     const toolCallId = "call-preserve-1";
     await seedPendingToolTurn(fixture.filePath, toolCallId);
 
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "tool-success-1",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          protectedToolCallIds: [toolCallId],
-          correlationValid: true,
-        },
-      }),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "tool-success-1",
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            protectedToolCallIds: [toolCallId],
+            correlationValid: true,
+          },
+        }),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -525,13 +554,15 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(interrupted.value.pendingBoundary?.status).toBe("pending");
     expect(interrupted.value.replayedTerminalAttempt).toBe(false);
 
-    const repaired = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "repair-boundary-1",
-        writerClaim: "lhc",
-        continuation: { kind: "active_non_tool" },
-      }),
+    const repaired = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "repair-boundary-1",
+          writerClaim: "lhc",
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
     );
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) return;
@@ -558,13 +589,15 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(interrupted.value.receipt.residual.markerPersisted).toBe(true);
     expect(interrupted.value.pendingBoundary?.markerPersisted).toBe(true);
 
-    const repaired = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "repair-marker-1",
-        writerClaim: "lhc",
-        continuation: { kind: "active_non_tool" },
-      }),
+    const repaired = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "repair-marker-1",
+          writerClaim: "lhc",
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
     );
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) return;
@@ -598,9 +631,11 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(claim.value.attemptId).toBe("crash-1");
 
     // Different attempt cannot steal (ownership conflict before writer claim).
-    const steal = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "crash-other", continuation: { kind: "active_non_tool" } }),
+    const steal = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "crash-other", continuation: { kind: "active_non_tool" } }),
+      ),
     );
     expect(steal.ok).toBe(false);
     if (steal.ok) return;
@@ -609,13 +644,15 @@ describe("LIM-61 compact-continuation runtime", () => {
     );
 
     // Resume with owning attemptId.
-    const resumed = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "crash-1",
-        writerClaim: "lhc",
-        continuation: { kind: "active_non_tool" },
-      }),
+    const resumed = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "crash-1",
+          writerClaim: "lhc",
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
     );
     expect(resumed.ok).toBe(true);
     if (!resumed.ok) return;
@@ -654,9 +691,11 @@ describe("LIM-61 compact-continuation runtime", () => {
     if (!prepared.ok) return;
 
     // Concurrent capture advances source state.
-    await intakeStream.messageEvents({ filePath: fixture.filePath }, [
-      validEvent("user_prompt", { payload: { text: "steering" } }),
-    ]);
+    await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath: fixture.filePath }, [
+        validEvent("user_prompt", { payload: { text: "steering" } }),
+      ]),
+    );
 
     const installed = await fixture.sdk.threadView.installPreparedCompact(
       { filePath: fixture.filePath },
@@ -825,13 +864,15 @@ describe("LIM-61 compact-continuation runtime", () => {
     if (!storedFail.ok) return;
     expect(storedFail.value?.terminal).toBe(false);
 
-    const repaired = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "repair-install-1",
-        writerClaim: "none",
-        continuation: { kind: "active_non_tool" },
-      }),
+    const repaired = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "repair-install-1",
+          writerClaim: "none",
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
     );
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) return;
@@ -863,12 +904,14 @@ describe("LIM-61 compact-continuation runtime", () => {
     if (!failed.ok) return;
     expect(failed.value.pendingBoundary?.status).toBe("failed_repairable");
 
-    const steal = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "thief-1",
-        continuation: { kind: "active_non_tool" },
-      }),
+    const steal = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "thief-1",
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
     );
     expect(steal.ok).toBe(false);
     if (steal.ok) return;
@@ -876,12 +919,14 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(steal.error.reason).toContain("owner-fail-1");
 
     // Owner can still resume.
-    const owner = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "owner-fail-1",
-        continuation: { kind: "active_non_tool" },
-      }),
+    const owner = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "owner-fail-1",
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
     );
     expect(owner.ok).toBe(true);
     if (!owner.ok) return;
@@ -907,13 +952,15 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(claim.value.claim).toBe("lhc");
     expect(claim.value.attemptId).toBe("force-gap-1");
 
-    const resumed = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "force-gap-1",
-        writerClaim: "lhc",
-        continuation: { kind: "active_non_tool" },
-      }),
+    const resumed = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "force-gap-1",
+          writerClaim: "lhc",
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
     );
     expect(resumed.ok).toBe(true);
     if (!resumed.ok) return;
@@ -932,17 +979,21 @@ describe("LIM-61 compact-continuation runtime", () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
 
-    const first = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "intent-replay-1" }),
+    const first = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "intent-replay-1" }),
+      ),
     );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     const after = snapshotCanonical(fixture.filePath);
 
-    const same = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "intent-replay-1" }),
+    const same = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "intent-replay-1" }),
+      ),
     );
     expect(same.ok).toBe(true);
     if (!same.ok) return;
@@ -950,12 +1001,14 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(same.value.receipt.outcome).toBe(first.value.receipt.outcome);
     expect(snapshotCanonical(fixture.filePath)).toEqual(after);
 
-    const different = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "intent-replay-1",
-        continuation: { kind: "none" },
-      }),
+    const different = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "intent-replay-1",
+          continuation: { kind: "none" },
+        }),
+      ),
     );
     expect(different.ok).toBe(false);
     if (different.ok) return;
@@ -974,16 +1027,18 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(interrupted.value.pendingBoundary?.status).toBe("pending");
     const cTurnId = interrupted.value.continuationTurnId!;
 
-    const skip = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "preskip-pending-1",
-        writerClaim: "lhc",
-        seam: {
-          ...SETTLED_SEAM,
-          insideTransportRetry: true,
-        },
-      }),
+    const skip = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "preskip-pending-1",
+          writerClaim: "lhc",
+          seam: {
+            ...SETTLED_SEAM,
+            insideTransportRetry: true,
+          },
+        }),
+      ),
     );
     expect(skip.ok).toBe(true);
     if (!skip.ok) return;
@@ -999,13 +1054,15 @@ describe("LIM-61 compact-continuation runtime", () => {
     if (!storedSkip.ok) return;
     expect(storedSkip.value?.terminal).toBe(false);
 
-    const repaired = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "preskip-pending-1",
-        writerClaim: "none",
-        continuation: { kind: "active_non_tool" },
-      }),
+    const repaired = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "preskip-pending-1",
+          writerClaim: "none",
+          continuation: { kind: "active_non_tool" },
+        }),
+      ),
     );
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) return;
@@ -1018,10 +1075,12 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(validateHostFacts(null)?.code).toBe("invalid_compact_continuation_input");
     expect(validateHostFacts({ attemptId: "" })?.code).toBe("invalid_compact_continuation_input");
     const fixture = await derivedThreadFixture(store, { failures: false });
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      // @ts-expect-error intentional invalid
-      { attemptId: "" },
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        // @ts-expect-error intentional invalid
+        { attemptId: "" },
+      ),
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -1035,9 +1094,11 @@ describe("LIM-61 compact-continuation runtime", () => {
 
     // No host ownership authority supplied: the SDK never steals. This attempt
     // is the loser, continues its current request, and mutates nothing.
-    const noAuthority = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "native-1", writerClaim: "native" }),
+    const noAuthority = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "native-1", writerClaim: "native" }),
+      ),
     );
     expect(noAuthority.ok).toBe(true);
     if (!noAuthority.ok) return;
@@ -1057,16 +1118,18 @@ describe("LIM-61 compact-continuation runtime", () => {
     // Host authority confirms no live owner: the stale row is reclaimed with a
     // receipt and the compact proceeds through to install.
     const seenByCheck: { threadId: string; attemptId: string }[] = [];
-    const reclaimed = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "native-reclaim", writerClaim: "native" }),
-      () => new Date(),
-      {
-        writerOwnershipCheck: (args) => {
-          seenByCheck.push(args);
-          return false; // no live owner holds this LHC thread
+    const reclaimed = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "native-reclaim", writerClaim: "native" }),
+        () => new Date(),
+        {
+          writerOwnershipCheck: (args) => {
+            seenByCheck.push(args);
+            return false; // no live owner holds this LHC thread
+          },
         },
-      },
+      ),
     );
     expect(reclaimed.ok).toBe(true);
     if (!reclaimed.ok) return;
@@ -1142,11 +1205,13 @@ describe("LIM-61 compact-continuation runtime", () => {
 
     // Session B is the loser: it sees a native row, asks the registry, and is
     // told a live owner holds the thread. It continues its current request.
-    const loser = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "session-b-attempt", writerClaim: "native" }),
-      () => new Date(),
-      { writerOwnershipCheck: (args) => sessionB.writerOwnershipCheck(args) },
+    const loser = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "session-b-attempt", writerClaim: "native" }),
+        () => new Date(),
+        { writerOwnershipCheck: (args) => sessionB.writerOwnershipCheck(args) },
+      ),
     );
     expect(loser.ok).toBe(true);
     if (!loser.ok) return;
@@ -1162,11 +1227,13 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(snapshotCanonical(fixture.filePath)).toEqual(before);
 
     // Session A owns the thread, so its own attempt is not blocked by the row.
-    const owner = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "session-a-attempt", writerClaim: "native" }),
-      () => new Date(),
-      { writerOwnershipCheck: (args) => sessionA.writerOwnershipCheck(args) },
+    const owner = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "session-a-attempt", writerClaim: "native" }),
+        () => new Date(),
+        { writerOwnershipCheck: (args) => sessionA.writerOwnershipCheck(args) },
+      ),
     );
     expect(owner.ok).toBe(true);
     if (!owner.ok) return;
@@ -1180,11 +1247,13 @@ describe("LIM-61 compact-continuation runtime", () => {
     sessionA.releaseThread(lhcThreadId);
     await seedOpenAgenticTurn(fixture.filePath);
     const beforeRetry = snapshotCanonical(fixture.filePath);
-    const retried = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "session-b-retry", writerClaim: "native" }),
-      () => new Date(),
-      { writerOwnershipCheck: (args) => sessionB.writerOwnershipCheck(args) },
+    const retried = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "session-b-retry", writerClaim: "native" }),
+        () => new Date(),
+        { writerOwnershipCheck: (args) => sessionB.writerOwnershipCheck(args) },
+      ),
     );
     expect(retried.ok).toBe(true);
     if (!retried.ok) return;
@@ -1196,9 +1265,8 @@ describe("LIM-61 compact-continuation runtime", () => {
   it("durable receipt and stage log are inspectable", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "inspect-1" }),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation({ filePath: fixture.filePath }, baseFacts({ attemptId: "inspect-1" })),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1220,14 +1288,16 @@ describe("LIM-61 compact-continuation runtime", () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
     const toolCallId = "call-preserve-X";
-    await intakeStream.messageEvents({ filePath: fixture.filePath }, [
-      validEvent("tool_call", {
-        payload: { toolCallId, toolName: "read_file", arguments: { path: "y.txt" } },
-      }),
-      validEvent("tool_result", {
-        payload: { toolCallId, content: "preserve body ".repeat(20), isError: false },
-      }),
-    ]);
+    await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath: fixture.filePath }, [
+        validEvent("tool_call", {
+          payload: { toolCallId, toolName: "read_file", arguments: { path: "y.txt" } },
+        }),
+        validEvent("tool_result", {
+          payload: { toolCallId, content: "preserve body ".repeat(20), isError: false },
+        }),
+      ]),
+    );
     const facts = baseFacts({
       attemptId: "identity-inspect-1",
       actor: "recovery-actor",
@@ -1324,14 +1394,16 @@ describe("LIM-61 compact-continuation runtime", () => {
       // (seedOpenAgenticTurn already has call-active-1; add matching pair via additional events below if needed.)
     });
     // Inject the preserve tool pair into the open turn so proof can succeed.
-    await intakeStream.messageEvents({ filePath: fixture.filePath }, [
-      validEvent("tool_call", {
-        payload: { toolCallId, toolName: "read_file", arguments: { path: "y.txt" } },
-      }),
-      validEvent("tool_result", {
-        payload: { toolCallId, content: "preserve body ".repeat(20), isError: false },
-      }),
-    ]);
+    await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath: fixture.filePath }, [
+        validEvent("tool_call", {
+          payload: { toolCallId, toolName: "read_file", arguments: { path: "y.txt" } },
+        }),
+        validEvent("tool_result", {
+          payload: { toolCallId, content: "preserve body ".repeat(20), isError: false },
+        }),
+      ]),
+    );
 
     const crashed = await runCCTest(fixture.filePath, preserveFacts, { failFinalizeAtRelease: true });
     expect(crashed.ok).toBe(false);
@@ -1375,7 +1447,9 @@ describe("LIM-61 compact-continuation runtime", () => {
       compact: { params: { lowerBound: 1 } },
     });
     // Without stored identity: conflict.
-    const conflict = await compactContinuation.runCompactContinuation({ filePath: fixture.filePath }, liveDrift);
+    const conflict = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation({ filePath: fixture.filePath }, liveDrift),
+    );
     expect(conflict.ok).toBe(false);
     if (conflict.ok) return;
     expect(conflict.error.code).toBe("compact_continuation_attempt_conflict");
@@ -1425,21 +1499,26 @@ describe("LIM-61 compact-continuation runtime", () => {
         domain: "source_labelled_estimate",
       },
     });
-    const recovered = await compactContinuation.runCompactContinuation({ filePath: fixture.filePath }, recoveredFacts);
+    const recovered = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation({ filePath: fixture.filePath }, recoveredFacts),
+    );
     expect(recovered.ok).toBe(true);
     if (!recovered.ok) return;
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "none", attemptId: null });
     // Fresh attempt id works after owner released.
     await seedOpenAgenticTurn(fixture.filePath);
-    const fresh = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "fresh-after-preserve-recovery", continuation: { kind: "active_non_tool" } }),
+    const fresh = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "fresh-after-preserve-recovery", continuation: { kind: "active_non_tool" } }),
+      ),
     );
     expect(fresh.ok).toBe(true);
   });
 
   it("SDK surface exposes compactContinuation on initLhc", async () => {
     const sdk: Lhc = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: createInferenceCallbacksDouble(),
       mode: "manual",
     });
@@ -1448,7 +1527,9 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(created.ok).toBe(true);
     if (!created.ok) return;
 
-    await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("assistant_text")]);
+    await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("assistant_text")]),
+    );
 
     const result = await sdk.compactContinuation.runCompactContinuation(
       { filePath },
@@ -1479,21 +1560,23 @@ describe("LIM-61 compact-continuation runtime", () => {
     // Quiet below-trigger re-entry releases owned claim and does not wedge.
     seedHeldWriter(fixture.filePath, "crashed-quiet");
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "lhc", attemptId: "crashed-quiet" });
-    const quiet = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "crashed-quiet",
-        writerClaim: "lhc",
-        providerUsage: {
-          available: true,
-          inputTokens: 100,
-          cacheCreationTokens: 0,
-          cacheReadTokens: 0,
-          total: 100,
-          domain: "provider_reported_input",
-        },
-        postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
-      }),
+    const quiet = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "crashed-quiet",
+          writerClaim: "lhc",
+          providerUsage: {
+            available: true,
+            inputTokens: 100,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            total: 100,
+            domain: "provider_reported_input",
+          },
+          postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+        }),
+      ),
     );
     expect(quiet.ok).toBe(true);
     if (!quiet.ok) return;
@@ -1503,13 +1586,15 @@ describe("LIM-61 compact-continuation runtime", () => {
 
     // Missing-usage path.
     seedHeldWriter(fixture.filePath, "crashed-missing");
-    const missing = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "crashed-missing",
-        writerClaim: "lhc",
-        providerUsage: { available: false, reason: "missing", domain: "provider_reported_input" },
-      }),
+    const missing = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "crashed-missing",
+          writerClaim: "lhc",
+          providerUsage: { available: false, reason: "missing", domain: "provider_reported_input" },
+        }),
+      ),
     );
     expect(missing.ok).toBe(true);
     if (!missing.ok) return;
@@ -1519,13 +1604,15 @@ describe("LIM-61 compact-continuation runtime", () => {
     // Degraded health on re-entry: warn + compact, then release. The reclaimed
     // claim is not a reason to stop, and it is never left held.
     seedHeldWriter(fixture.filePath, "crashed-health");
-    const health = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "crashed-health",
-        writerClaim: "lhc",
-        captureComplete: false,
-      }),
+    const health = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "crashed-health",
+          writerClaim: "lhc",
+          captureComplete: false,
+        }),
+      ),
     );
     expect(health.ok).toBe(true);
     if (!health.ok) return;
@@ -1538,17 +1625,19 @@ describe("LIM-61 compact-continuation runtime", () => {
 
     // A decline (unprovable protected pair) on a claim-only crash also releases.
     seedHeldWriter(fixture.filePath, "crashed-decline");
-    const declined = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "crashed-decline",
-        writerClaim: "lhc",
-        continuation: {
-          kind: "pending_correlated_tool_result",
-          protectedToolCallIds: ["call-not-in-record"],
-          correlationValid: true,
-        },
-      }),
+    const declined = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "crashed-decline",
+          writerClaim: "lhc",
+          continuation: {
+            kind: "pending_correlated_tool_result",
+            protectedToolCallIds: ["call-not-in-record"],
+            correlationValid: true,
+          },
+        }),
+      ),
     );
     expect(declined.ok).toBe(true);
     if (!declined.ok) return;
@@ -1560,29 +1649,33 @@ describe("LIM-61 compact-continuation runtime", () => {
 
     // Foreign attempt must not release another owner's claim.
     seedHeldWriter(fixture.filePath, "crashed-owner");
-    const foreign = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "other-fresh",
-        providerUsage: {
-          available: true,
-          inputTokens: 100,
-          cacheCreationTokens: 0,
-          cacheReadTokens: 0,
-          total: 100,
-          domain: "provider_reported_input",
-        },
-        postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
-      }),
+    const foreign = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "other-fresh",
+          providerUsage: {
+            available: true,
+            inputTokens: 100,
+            cacheCreationTokens: 0,
+            cacheReadTokens: 0,
+            total: 100,
+            domain: "provider_reported_input",
+          },
+          postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
+        }),
+      ),
     );
     expect(foreign.ok).toBe(true);
     if (!foreign.ok) return;
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "lhc", attemptId: "crashed-owner" });
 
     // Same-attempt mutating resume after claim-only crash succeeds and releases.
-    const resumed = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "crashed-owner", writerClaim: "lhc" }),
+    const resumed = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "crashed-owner", writerClaim: "lhc" }),
+      ),
     );
     expect(resumed.ok).toBe(true);
     if (!resumed.ok) return;
@@ -1591,9 +1684,11 @@ describe("LIM-61 compact-continuation runtime", () => {
 
     // Fresh attempt can claim after owner released.
     await seedOpenAgenticTurn(fixture.filePath);
-    const fresh = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "fresh-after-wedge" }),
+    const fresh = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "fresh-after-wedge" }),
+      ),
     );
     expect(fresh.ok).toBe(true);
     if (!fresh.ok) return;
@@ -1654,9 +1749,11 @@ describe("LIM-61 compact-continuation runtime", () => {
       expect(afterFail.viewId === before.viewId || afterFail.viewId !== null).toBe(true);
 
       // Successful retry without hook.
-      const recovered = await compactContinuation.runCompactContinuation(
-        { filePath: fixture.filePath },
-        baseFacts({ attemptId, writerClaim: "lhc" }),
+      const recovered = await withEstimator(o200k, () =>
+        compactContinuation.runCompactContinuation(
+          { filePath: fixture.filePath },
+          baseFacts({ attemptId, writerClaim: "lhc" }),
+        ),
       );
       expect(recovered.ok).toBe(true);
       if (!recovered.ok) return;
@@ -1686,63 +1783,73 @@ describe("LIM-61 compact-continuation runtime", () => {
     expect(failed.value.pendingBoundary?.status).toBe("failed_repairable");
 
     // Actor drift → conflict.
-    const actorDrift = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "identity-1", actor: "other-actor", writerClaim: "none" }),
+    const actorDrift = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "identity-1", actor: "other-actor", writerClaim: "none" }),
+      ),
     );
     expect(actorDrift.ok).toBe(false);
     if (actorDrift.ok) return;
     expect(actorDrift.error.code).toBe("compact_continuation_attempt_conflict");
 
     // Policy drift → conflict.
-    const policyDrift = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "identity-1",
-        policy: { upperTriggerTokens: 100000, lowerTargetTokens: 999999, hostCapability: "full_state_machine" },
-      }),
+    const policyDrift = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "identity-1",
+          policy: { upperTriggerTokens: 100000, lowerTargetTokens: 999999, hostCapability: "full_state_machine" },
+        }),
+      ),
     );
     expect(policyDrift.ok).toBe(false);
     if (policyDrift.ok) return;
     expect(policyDrift.error.code).toBe("compact_continuation_attempt_conflict");
 
     // Harness drift → conflict.
-    const harnessDrift = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "identity-1", harness: "other-harness" }),
+    const harnessDrift = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "identity-1", harness: "other-harness" }),
+      ),
     );
     expect(harnessDrift.ok).toBe(false);
     if (harnessDrift.ok) return;
     expect(harnessDrift.error.code).toBe("compact_continuation_attempt_conflict");
 
     // Continuation kind drift → conflict (identity includes kind).
-    const kindDrift = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "identity-1",
-        continuation: { kind: "pending_correlated_tool_result", protectedToolCallIds: ["x"], correlationValid: true },
-      }),
+    const kindDrift = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "identity-1",
+          continuation: { kind: "pending_correlated_tool_result", protectedToolCallIds: ["x"], correlationValid: true },
+        }),
+      ),
     );
     expect(kindDrift.ok).toBe(false);
     if (kindDrift.ok) return;
     expect(kindDrift.error.code).toBe("compact_continuation_attempt_conflict");
 
     // Posture drift (usage/seam epochs) accepted; stage log records posture snapshots.
-    const repaired = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({
-        attemptId: "identity-1",
-        writerClaim: "none",
-        providerUsage: {
-          available: true,
-          inputTokens: 91000,
-          cacheCreationTokens: 5000,
-          cacheReadTokens: 10000,
-          total: 106000,
-          domain: "provider_reported_input",
-        },
-        seam: { ...SETTLED_SEAM, inputEpochAtDecision: 2, inputEpochAtApply: 2 },
-      }),
+    const repaired = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({
+          attemptId: "identity-1",
+          writerClaim: "none",
+          providerUsage: {
+            available: true,
+            inputTokens: 91000,
+            cacheCreationTokens: 5000,
+            cacheReadTokens: 10000,
+            total: 106000,
+            domain: "provider_reported_input",
+          },
+          seam: { ...SETTLED_SEAM, inputEpochAtDecision: 2, inputEpochAtApply: 2 },
+        }),
+      ),
     );
     expect(repaired.ok).toBe(true);
     if (!repaired.ok) return;
@@ -1765,9 +1872,11 @@ describe("LIM-61 compact-continuation runtime", () => {
       ...baseFacts({ attemptId: "hooks-public-1" }),
       testHooks: { skipRealCompact: true },
     } as CompactContinuationHostFacts & { testHooks: { skipRealCompact: boolean } };
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      withHooks as CompactContinuationHostFacts,
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        withHooks as CompactContinuationHostFacts,
+      ),
     );
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -1780,9 +1889,11 @@ describe("LIM-61 compact-continuation runtime", () => {
   it("terminal replay repairs stale same-owner claim with recovery stages, receipt intact", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
-    const first = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "replay-repair-1" }),
+    const first = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "replay-repair-1" }),
+      ),
     );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
@@ -1800,9 +1911,11 @@ describe("LIM-61 compact-continuation runtime", () => {
     seedHeldWriter(fixture.filePath, "replay-repair-1");
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "lhc", attemptId: "replay-repair-1" });
 
-    const replay = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "replay-repair-1" }),
+    const replay = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "replay-repair-1" }),
+      ),
     );
     expect(replay.ok).toBe(true);
     if (!replay.ok) return;
@@ -1831,9 +1944,11 @@ describe("LIM-61 compact-continuation runtime", () => {
   it("M4: activated view records the source it was assembled from; the marker remains canonical and live", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture.filePath);
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      baseFacts({ attemptId: "source-state-1" }),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        baseFacts({ attemptId: "source-state-1" }),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -1939,7 +2054,7 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
         payload: { toolCallId: PROTECTED_ID, content: "protected verbatim payload", isError: false },
       }),
     );
-    const batch = await intakeStream.messageEvents({ filePath }, events);
+    const batch = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, events));
     if (!batch.ok) throw new Error(batch.error.reason);
   }
 
@@ -1986,9 +2101,11 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     // Preserve alone saves ~nothing (results are in the open tail), so projected
     // pressure stays above the threshold until the protected boundary prunes the
     // older unprotected bodies.
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      escalationFacts("escalate-install-1", 298000),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        escalationFacts("escalate-install-1", 298000),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -2052,9 +2169,11 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     // that is a diagnostic about the projection, not a gate — oversized
     // outgoing content is ours to truncate as a ladder rung, and the host's
     // exact body check is downstream.
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      escalationFacts("escalate-unsafe-1", 1000),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        escalationFacts("escalate-unsafe-1", 1000),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -2119,9 +2238,11 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedEscalationTurn(fixture.filePath);
 
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      escalationFacts("escalate-finalize-1", 298000),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        escalationFacts("escalate-finalize-1", 298000),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -2156,9 +2277,11 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
 
     // Replay of the same attempt is terminal and idempotent: no re-mutation.
     const before = snapshotCanonical(fixture.filePath);
-    const replay = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      escalationFacts("escalate-finalize-1", 298000),
+    const replay = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        escalationFacts("escalate-finalize-1", 298000),
+      ),
     );
     expect(replay.ok).toBe(true);
     if (!replay.ok) return;
@@ -2188,12 +2311,14 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
     expect(prepared.value.selection.compactPoint).toBeGreaterThan(storedPoint);
     expect(preview.value.proposedBoundary).toBeLessThan(prepared.value.selection.compactPoint);
 
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      (() => {
-        const { compact: _compact, ...rest } = escalationFacts("stale-boundary-clamp-1", 10_000_000);
-        return rest;
-      })(),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        (() => {
+          const { compact: _compact, ...rest } = escalationFacts("stale-boundary-clamp-1", 10_000_000);
+          return rest;
+        })(),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -2212,12 +2337,14 @@ describe("LIM-67 pending-tool protected escalation runtime", () => {
   it("protected pair stays in the full tail when compactPointUpperBound is the visibility boundary", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedEscalationTurn(fixture.filePath);
-    const result = await compactContinuation.runCompactContinuation(
-      { filePath: fixture.filePath },
-      (() => {
-        const { compact: _compact, ...rest } = escalationFacts("protected-tail-bound-1", 298000);
-        return rest;
-      })(),
+    const result = await withEstimator(o200k, () =>
+      compactContinuation.runCompactContinuation(
+        { filePath: fixture.filePath },
+        (() => {
+          const { compact: _compact, ...rest } = escalationFacts("protected-tail-bound-1", 298000);
+          return rest;
+        })(),
+      ),
     );
     expect(result.ok).toBe(true);
     if (!result.ok) return;

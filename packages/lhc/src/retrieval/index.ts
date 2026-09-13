@@ -11,8 +11,13 @@
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { OpResult } from "../shared-tech/errors.js";
-import { createDbReadTransaction, createDbWriteTransaction, storageFailure } from "../shared-tech/index.js";
-import { estimateTokens, sliceTokens, sliceTokensByteCapped } from "../shared-tech/token-counting/index.js";
+import {
+  createDbReadTransaction,
+  createDbWriteTransaction,
+  resolveInstanceTokenEstimator,
+  storageFailure,
+} from "../shared-tech/index.js";
+import type { TokenEstimator } from "../shared-tech/token-counting/index.js";
 import type { ThreadRef } from "../threads/index.js";
 import { composeRenderingInput, composeStructuredTurnText } from "../turns/internal/compose.js";
 import { readMemberMessages, readMessageDerivationRows, readTurnSource } from "../turns/internal/derivations.js";
@@ -39,7 +44,7 @@ export const MAX_RETRIEVAL_IDS_PER_CALL = 32;
 export const MAX_RETRIEVAL_OUTPUT_TOKENS = 22_000;
 
 export interface RetrievalOptions {
-  /** Per-call token budget over served item text (estimateTokens). */
+  /** Per-call token budget over served item text (TokenEstimator.estimate). */
   tokenBudget?: number;
   /** Optional per-call BYTE budget over served item text (UTF-8). Hosts
    *  whose runtimes enforce output limits in bytes (codex core truncates
@@ -165,6 +170,7 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
   tokenBudget: number,
   byteBudget: number,
   fromToken: number,
+  estimator: TokenEstimator,
 ): { served: T[]; unserved: UnservedEntity[]; totalTokens: number; impressions: ImpressionRow[] } {
   const served: T[] = [];
   const unserved: UnservedEntity[] = [];
@@ -196,8 +202,8 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
     // item slices only when enough budget remains to be worth reading.
     if (fromToken > 0 || remaining >= RETRIEVAL_SLICE_FLOOR) {
       const window = Number.isFinite(byteBudget)
-        ? sliceTokensByteCapped(item.text, fromToken, remaining, remainingBytes)
-        : sliceTokens(item.text, fromToken, remaining);
+        ? estimator.sliceTokensByteCapped(item.text, fromToken, remaining, remainingBytes)
+        : estimator.sliceTokens(item.text, fromToken, remaining);
       const servedTokens = window.toToken - window.fromToken;
       // Sub-floor serves under TOKEN pressure teach nothing — report
       // "budget" so the model re-pulls alone. But when the BYTE budget is
@@ -262,7 +268,7 @@ function resolveFromToken(options: RetrievalOptions | undefined): number {
   return from;
 }
 
-function turnCandidate(db: DatabaseSync, turnId: string): Candidate<RetrievedTurn> {
+function turnCandidate(db: DatabaseSync, turnId: string, estimator: TokenEstimator): Candidate<RetrievedTurn> {
   const source = readTurnSource(db, turnId);
   if (source === undefined) return { id: turnId, outcome: { kind: "unservable", reason: "not_found" } };
   if (source.deleted) return { id: turnId, outcome: { kind: "unservable", reason: "deleted" } };
@@ -280,7 +286,7 @@ function turnCandidate(db: DatabaseSync, turnId: string): Candidate<RetrievedTur
     storedContent.startsWith(`<${turnId}>\n`) &&
     storedContent.endsWith(`\n</${turnId}>`);
   if (storedHasTurnLabel) {
-    const tokens = estimateTokens(storedContent);
+    const tokens = estimator.estimate(storedContent);
     return {
       id: turnId,
       outcome: { kind: "servable", item: { turnId, text: storedContent, tokens, source: "stored" }, tokens },
@@ -296,7 +302,7 @@ function turnCandidate(db: DatabaseSync, turnId: string): Candidate<RetrievedTur
   );
   const { parts } = composeRenderingInput(members, derivations);
   const text = composeStructuredTurnText(parts, turnId);
-  const tokens = estimateTokens(text);
+  const tokens = estimator.estimate(text);
   return { id: turnId, outcome: { kind: "servable", item: { turnId, text, tokens, source: "composed" }, tokens } };
 }
 
@@ -348,7 +354,7 @@ function verbatimText(blocks: readonly BlockRow[]): string {
   return parts.join("\n");
 }
 
-function messageCandidate(db: DatabaseSync, messageId: string): Candidate<RetrievedMessage> {
+function messageCandidate(db: DatabaseSync, messageId: string, estimator: TokenEstimator): Candidate<RetrievedMessage> {
   const row = db
     .prepare(`SELECT message_id, turn_id, kind, deleted_at FROM message WHERE message_id = ?`)
     .get(messageId) as MessageRow | undefined;
@@ -359,7 +365,7 @@ function messageCandidate(db: DatabaseSync, messageId: string): Candidate<Retrie
     .prepare(`SELECT block_type, content FROM message_block WHERE message_id = ? ORDER BY block_index`)
     .all(messageId) as unknown as BlockRow[];
   const text = verbatimText(blocks);
-  const tokens = estimateTokens(text);
+  const tokens = estimator.estimate(text);
   return {
     id: messageId,
     outcome: {
@@ -376,7 +382,7 @@ export async function getTurns(
   turnIds: readonly string[],
   options?: RetrievalOptions,
 ): Promise<OpResult<RetrievalReceipt<RetrievedTurn>>> {
-  return retrieve(ref, turnIds, options, "get_turns", "turn", turnCandidate);
+  return retrieve(ref, turnIds, options, "get_turns", "turn", (db, id, estimator) => turnCandidate(db, id, estimator));
 }
 
 /** Verbatim messages by message id, in request order, under a whole-item budget. */
@@ -385,7 +391,9 @@ export async function getMessages(
   messageIds: readonly string[],
   options?: RetrievalOptions,
 ): Promise<OpResult<RetrievalReceipt<RetrievedMessage>>> {
-  return retrieve(ref, messageIds, options, "get_messages", "message", messageCandidate);
+  return retrieve(ref, messageIds, options, "get_messages", "message", (db, id, estimator) =>
+    messageCandidate(db, id, estimator),
+  );
 }
 
 async function retrieve<T extends { text: string; tokens: number; slice?: SliceReceipt }>(
@@ -394,7 +402,7 @@ async function retrieve<T extends { text: string; tokens: number; slice?: SliceR
   options: RetrievalOptions | undefined,
   defaultSurface: string,
   entityKind: "turn" | "message",
-  candidateOf: (db: DatabaseSync, id: string) => Candidate<T>,
+  candidateOf: (db: DatabaseSync, id: string, estimator: TokenEstimator) => Candidate<T>,
 ): Promise<OpResult<RetrievalReceipt<T>>> {
   let tokenBudget: number;
   let byteBudget: number;
@@ -423,12 +431,13 @@ async function retrieve<T extends { text: string; tokens: number; slice?: SliceR
     // Write transaction: the serve itself is a read, but every call logs
     // impressions — the durable usage record is part of the contract.
     return await createDbWriteTransaction(ref, (transaction) => {
+      const estimator = resolveInstanceTokenEstimator("retrieval");
       const candidates = dedupe(ids).map((id) =>
         RETRIEVAL_ID_PATTERN.test(id)
-          ? candidateOf(transaction.db, id)
+          ? candidateOf(transaction.db, id, estimator)
           : { id: clampIdEcho(id), outcome: { kind: "unservable", reason: "invalid" } as const },
       );
-      const walk = budgetWalk(candidates, entityKind, tokenBudget, byteBudget, fromToken);
+      const walk = budgetWalk(candidates, entityKind, tokenBudget, byteBudget, fromToken, estimator);
       writeImpressions(transaction.db, callId, surface, walk.impressions);
       return {
         callId,

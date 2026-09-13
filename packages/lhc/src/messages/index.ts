@@ -9,6 +9,7 @@ import {
   type ErrorResult,
   type OpResult,
   resolveInstanceConfig,
+  resolveInstanceTokenEstimator,
   storageFailure,
 } from "../shared-tech/index.js";
 import { enqueue, type WorkItemRecord, type WorkKind } from "../shared-tech/work-queue/index.js";
@@ -107,7 +108,7 @@ export function create(
   recordedEvent: RecordedEvent,
   turnId: string,
 ): MessageCreateResult {
-  const projected = projectEvent(recordedEvent);
+  const projected = projectEvent(recordedEvent, resolveInstanceTokenEstimator("messages.create"));
   if (projected === null) return { message: null, queuedWork: [] };
   const kind = recordedEvent.eventKind as Exclude<EventKind, "turn_end">;
   const messageId = `m${recordedEvent.eventOrder}`;
@@ -433,7 +434,7 @@ export async function edit(
           },
         };
       }
-      applyMessageEdit(transaction.db, edit.messageId, edit.content);
+      applyMessageEdit(transaction.db, edit.messageId, edit.content, resolveInstanceTokenEstimator("messages.edit"));
       const cascade = cascadeFromMessage(transaction, edit.messageId);
       return {
         ok: true,

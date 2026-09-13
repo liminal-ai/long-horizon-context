@@ -18,7 +18,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type DrainReport,
   deterministicText,
-  estimateTokens,
   type InferenceCallbacks,
   initLhc,
   type Lhc,
@@ -40,6 +39,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { estimateTokens, o200k, withEstimator } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -65,6 +65,7 @@ function manualSdk(
   overrides: Partial<Pick<SdkConfig, "chunkPolicy" | "clock" | "mode">> = {},
 ): Lhc {
   const config: SdkConfig = {
+    tokenFamily: "o200k",
     inferenceCallbacks,
     mode: overrides.mode ?? "manual",
     lease: { durationMs: 5000 },
@@ -139,7 +140,9 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     const sdk = manualSdk(double);
     const filePath = await readyTurnThread(sdk);
 
-    const result = await messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" });
+    const result = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" }),
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.changed).toEqual({ messageIds: ["m1"], turnIds: [] });
@@ -199,7 +202,9 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     db.close();
 
     const before = await snapshot(filePath);
-    const result = await messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" });
+    const result = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" }),
+    );
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("storage_failure");
@@ -250,7 +255,9 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
     );
     expect(before.every((form) => form.state === "ready")).toBe(true);
 
-    const result = await messages.edit({ filePath }, { messageId: "m1", content: "rewritten first prompt" });
+    const result = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m1", content: "rewritten first prompt" }),
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -309,7 +316,9 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
     // Edit while everything is ready: every dependent form leaves ready in
     // the edit's transaction, replacement items carry the new source version
     // in their ids and payloads, and nothing was queued to supersede.
-    const first = await messages.edit({ filePath }, { messageId: "m1", content: "first edit" });
+    const first = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m1", content: "first edit" }),
+    );
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value.superseded).toEqual([]);
@@ -324,7 +333,9 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
     // Second edit before any drain: the still-queued first wave is
     // supersede-deleted in the cascade transaction and reported; the queue
     // holds only the v3 replacements.
-    const second = await messages.edit({ filePath }, { messageId: "m1", content: "second edit" });
+    const second = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m1", content: "second edit" }),
+    );
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     expect([...second.value.superseded].sort()).toEqual(firstWaveIds);
@@ -370,7 +381,9 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
       "the old-content smoothing to be claimed and in-handler",
     );
 
-    const edited = await messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" });
+    const edited = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" }),
+    );
     expect(edited.ok).toBe(true);
     if (!edited.ok) return;
     // The still-queued turn derivation behind the claimed head was
@@ -424,14 +437,18 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     ]);
     const before = await snapshot(filePath);
 
-    const openTurn = await messages.edit({ filePath }, { messageId: "m3", content: "nope" });
+    const openTurn = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m3", content: "nope" }),
+    );
     expect(openTurn.ok).toBe(false);
     if (openTurn.ok) return;
     expect(openTurn.error.errorClass).toBe("caller_error");
     expect(openTurn.error.code).toBe("turn_open");
     expect(await snapshot(filePath)).toEqual(before);
 
-    const missing = await messages.edit({ filePath }, { messageId: "m99", content: "nope" });
+    const missing = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m99", content: "nope" }),
+    );
     expect(missing.ok).toBe(false);
     if (missing.ok) return;
     expect(missing.error.errorClass).toBe("caller_error");
@@ -445,7 +462,7 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = 'm1'`).run("2026-06-11T00:00:00.000Z");
     db.close();
     const afterStamp = await snapshot(filePath);
-    const deleted = await messages.edit({ filePath }, { messageId: "m1", content: "nope" });
+    const deleted = await withEstimator(o200k, () => messages.edit({ filePath }, { messageId: "m1", content: "nope" }));
     expect(deleted.ok).toBe(false);
     if (deleted.ok) return;
     expect(deleted.error.code).toBe("message_not_found");
@@ -463,7 +480,9 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     expect(m1?.turnId).toBe("t1");
 
     const before = await snapshot(filePath);
-    const openTurn = await messages.edit({ filePath }, { messageId: "m1", content: "nope" });
+    const openTurn = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m1", content: "nope" }),
+    );
     expect(openTurn.ok).toBe(false);
     if (openTurn.ok) return;
     expect(openTurn.error.errorClass).toBe("caller_error");
@@ -485,9 +504,8 @@ describe("background mode: edit-and-walk-away (production path)", () => {
     await sdk.drainSettled({ filePath });
     expect(readDerivedForms(filePath).every((form) => form.state === "ready")).toBe(true);
 
-    const result: OpResult<MutationResult> = await messages.edit(
-      { filePath },
-      { messageId: "m1", content: "edited prompt" },
+    const result: OpResult<MutationResult> = await withEstimator(o200k, () =>
+      messages.edit({ filePath }, { messageId: "m1", content: "edited prompt" }),
     );
     expect(result.ok).toBe(true);
     await sdk.drainSettled({ filePath });

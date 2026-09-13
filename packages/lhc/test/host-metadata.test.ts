@@ -3,7 +3,7 @@
 // indices; unsettledTurn comes from the installed view alone.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, threads, threadView } from "../src/index.js";
-import { openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, openRaw, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -21,7 +21,7 @@ async function createThread(): Promise<string> {
 }
 
 async function read(filePath: string) {
-  const result = await threadView.hostMetadata({ filePath });
+  const result = await withEstimator(o200k, () => threadView.hostMetadata({ filePath }));
   if (!result.ok) throw new Error(result.error.reason);
   return result.value;
 }
@@ -34,15 +34,17 @@ describe("threadView.hostMetadata", () => {
       unsettledTurn: null,
     });
 
-    const sent = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      validEvent("assistant_text", { payload: { text: "step zero", stepIndex: 0 } }),
-      validEvent("tool_call", { payload: { toolCallId: "a", toolName: "read", arguments: {}, stepIndex: 1 } }),
-      validEvent("tool_call", { payload: { toolCallId: "b", toolName: "read", arguments: {}, stepIndex: 1 } }),
-      validEvent("tool_result", { payload: { toolCallId: "b", content: "bb", stepIndex: 1 } }),
-      validEvent("tool_result", { payload: { toolCallId: "a", content: "aa", stepIndex: 1 } }),
-      validEvent("tool_call", { payload: { toolCallId: "c", toolName: "read", arguments: {}, stepIndex: 2 } }),
-    ]);
+    const sent = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt"),
+        validEvent("assistant_text", { payload: { text: "step zero", stepIndex: 0 } }),
+        validEvent("tool_call", { payload: { toolCallId: "a", toolName: "read", arguments: {}, stepIndex: 1 } }),
+        validEvent("tool_call", { payload: { toolCallId: "b", toolName: "read", arguments: {}, stepIndex: 1 } }),
+        validEvent("tool_result", { payload: { toolCallId: "b", content: "bb", stepIndex: 1 } }),
+        validEvent("tool_result", { payload: { toolCallId: "a", content: "aa", stepIndex: 1 } }),
+        validEvent("tool_call", { payload: { toolCallId: "c", toolName: "read", arguments: {}, stepIndex: 2 } }),
+      ]),
+    );
     expect(sent.ok).toBe(true);
     const db = openRaw(filePath);
     let storedSum: number;
@@ -60,7 +62,7 @@ describe("threadView.hostMetadata", () => {
     });
 
     // Closing the turn moves the active turn to the fresh empty one.
-    const closed = await intakeStream.messageEvents({ filePath }, [validEvent("turn_end")]);
+    const closed = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, [validEvent("turn_end")]));
     expect(closed.ok).toBe(true);
     expect((await read(filePath)).activeTurn).toEqual({
       turnId: "t2",
@@ -72,10 +74,12 @@ describe("threadView.hostMetadata", () => {
 
     // Exactly one complete step: splittable, but no admissible k — the one
     // complete step is the minimum verbatim tail, and 0 is not a split.
-    const one = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      validEvent("assistant_text", { payload: { text: "only step", stepIndex: 0 } }),
-    ]);
+    const one = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt"),
+        validEvent("assistant_text", { payload: { text: "only step", stepIndex: 0 } }),
+      ]),
+    );
     expect(one.ok).toBe(true);
     expect((await read(filePath)).activeTurn).toMatchObject({
       turnId: "t2",
@@ -87,12 +91,14 @@ describe("threadView.hostMetadata", () => {
 
   it("a NULL step index on any step-bearing member makes the turn not splittable with no admissible edge", async () => {
     const filePath = await createThread();
-    const sent = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      validEvent("assistant_text", { payload: { text: "stamped", stepIndex: 0 } }),
-      validEvent("assistant_text", { payload: { text: "unstamped" } }),
-      validEvent("assistant_text", { payload: { text: "stamped again", stepIndex: 1 } }),
-    ]);
+    const sent = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt"),
+        validEvent("assistant_text", { payload: { text: "stamped", stepIndex: 0 } }),
+        validEvent("assistant_text", { payload: { text: "unstamped" } }),
+        validEvent("assistant_text", { payload: { text: "stamped again", stepIndex: 1 } }),
+      ]),
+    );
     expect(sent.ok).toBe(true);
     expect((await read(filePath)).activeTurn).toMatchObject({
       turnId: "t1",
@@ -104,11 +110,13 @@ describe("threadView.hostMetadata", () => {
 
   it("derives the unsettled turn from the installed view's part entry, never from the record", async () => {
     const filePath = await createThread();
-    const sent = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      validEvent("assistant_text", { payload: { text: "a", stepIndex: 0 } }),
-      validEvent("turn_end"),
-    ]);
+    const sent = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt"),
+        validEvent("assistant_text", { payload: { text: "a", stepIndex: 0 } }),
+        validEvent("turn_end"),
+      ]),
+    );
     expect(sent.ok).toBe(true);
     const install = (arrangement: unknown): void => {
       const db = openRaw(filePath);

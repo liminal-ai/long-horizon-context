@@ -1,0 +1,82 @@
+{
+  "families": {
+    "o200k": {
+      "name": "tiktoken o200k_base",
+      "textWeight": 1.0,
+      "signatureCharsPerToken": 1.47,
+      "measured": "tiktoken o200k_base; signatureCharsPerToken is the o200k rate (unmeasured on the wire)"
+    },
+    "claude-2025": {
+      "name": "Claude 2025 tokenizer (Opus 4.6 / Sonnet 4.6 / Haiku 4.5)",
+      "textWeight": 1.17,
+      "signatureCharsPerToken": 5.74,
+      "measured": "2026-09-13 Anthropic count_tokens, claude-sonnet-4-6, baseline-subtracted; signatures measured on the wire"
+    },
+    "claude-2026": {
+      "name": "Claude 2026 tokenizer (Sonnet 5+)",
+      "textWeight": 1.55,
+      "signatureCharsPerToken": 5.74,
+      "measured": "2026-09-13 Anthropic count_tokens, claude-sonnet-5; matches 1.55 fitted from 67 live Reed rebuilds; signatures measured on the wire"
+    },
+    "grok": {
+      "name": "Grok 4.5/4.6 tokenizer",
+      "textWeight": 1.05,
+      "signatureCharsPerToken": 1.47,
+      "measured": "2026-09-13 xAI tokenize-text, grok-4.5 and grok-4.6; signatureCharsPerToken is the o200k rate (unmeasured on the wire)"
+    },
+    "gemini-4": {
+      "name": "Gemini 4 / Gemma 4 tokenizer",
+      "textWeight": 1.14,
+      "signatureCharsPerToken": 1.47,
+      "measured": "2026-09-13 OpenRouter billed usage, gemini-3.1-flash-lite / gemini-3.5-flash / gemma-4-26b; signatureCharsPerToken is the o200k rate (unmeasured on the wire)"
+    },
+    "qwen-3.5": {
+      "name": "Qwen 3.5 tokenizer",
+      "textWeight": 1.08,
+      "signatureCharsPerToken": 1.47,
+      "measured": "2026-09-13 HF Qwen/Qwen3.6-27B tokenizer.json; signatureCharsPerToken is the o200k rate (unmeasured on the wire)"
+    },
+    "glm-5": {
+      "name": "GLM-5 tokenizer",
+      "textWeight": 1.0,
+      "signatureCharsPerToken": 1.47,
+      "measured": "2026-09-13 HF zai-org/GLM-5 tokenizer.json; signatureCharsPerToken is the o200k rate (unmeasured on the wire)"
+    },
+    "kimi-k2": {
+      "name": "Kimi K2 tokenizer",
+      "textWeight": 0.99,
+      "signatureCharsPerToken": 1.47,
+      "measured": "2026-09-13 moonshotai/Kimi-K2-Instruct tiktoken.model; signatureCharsPerToken is the o200k rate (unmeasured on the wire)"
+    },
+    "deepseek-v4": {
+      "name": "DeepSeek V4 tokenizer",
+      "textWeight": 1.04,
+      "signatureCharsPerToken": 1.47,
+      "measured": "2026-09-13 HF deepseek-ai/DeepSeek-V4-Pro tokenizer.json; signatureCharsPerToken is the o200k rate (unmeasured on the wire)"
+    }
+  },
+  "models": [
+    { "match": "claude-opus-4-6", "family": "claude-2025" },
+    { "match": "claude-sonnet-4-6", "family": "claude-2025" },
+    { "match": "claude-haiku-4-5", "family": "claude-2025" },
+    { "match": "claude-", "family": "claude-2026" },
+    { "match": "grok-", "family": "grok" },
+    { "match": "gemini-", "family": "gemini-4" },
+    { "match": "gemma-", "family": "gemini-4" },
+    { "match": "qwen", "family": "qwen-3.5" },
+    { "match": "glm-", "family": "glm-5" },
+    { "match": "kimi", "family": "kimi-k2" },
+    { "match": "deepseek", "family": "deepseek-v4" },
+    { "match": "gpt-", "family": "o200k" },
+    { "match": "o1", "family": "o200k" },
+    { "match": "o3", "family": "o200k" },
+    { "match": "o4", "family": "o200k" },
+    { "match": "codex", "family": "o200k" }
+  ],
+  "providerFallback": {
+    "anthropic": "claude-2026",
+    "openai": "o200k",
+    "xai": "grok",
+    "google": "gemini-4"
+  }
+}

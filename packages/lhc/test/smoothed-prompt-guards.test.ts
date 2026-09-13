@@ -1,7 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
-  estimateTokens,
   initLhc,
   type Lhc,
   type ModelCall,
@@ -19,6 +18,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -56,6 +56,7 @@ function sdkWithModelCall(
   return {
     log: host.log,
     sdk: initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inference: { call: host.call },
       lease: { durationMs: 200 },
@@ -208,6 +209,7 @@ describe("smoothed_prompt guard config", () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inferenceCallbacks: double,
       lease: { durationMs: 200 },
@@ -227,6 +229,7 @@ describe("smoothed_prompt guard config", () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inferenceCallbacks: double,
       lease: { durationMs: 200 },
@@ -248,6 +251,7 @@ describe("smoothed_prompt guard config", () => {
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inferenceCallbacks: double,
       lease: { durationMs: 200 },

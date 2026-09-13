@@ -7,6 +7,7 @@ import {
   selectArrangement,
 } from "../src/thread-view/internal/select.js";
 import { openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k } from "./fixtures/tokens.js";
 
 let store: TempStore;
 
@@ -64,11 +65,16 @@ function compactPointAt(fullBudget: number): number {
   return selectArrangement(selectionInputs(MID_THREAD_TURNS, MID_THREAD_MESSAGES), {
     lowerBound: fullBudget,
     percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
+    tokenEstimator: o200k,
   }).compactPoint;
 }
 
 async function newSdk(): Promise<{ sdk: Lhc; filePath: string }> {
-  const sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  const sdk = initLhc({
+    tokenFamily: "o200k",
+    mode: "manual",
+    inferenceCallbacks: createDeterministicInferenceCallbacks(),
+  });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(created.error.reason);
@@ -144,6 +150,7 @@ describe("compact full-band boundary rounding", () => {
     const selection = selectArrangement(selectionInputs(MID_THREAD_TURNS, MID_THREAD_MESSAGES), {
       lowerBound: 60,
       percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
+      tokenEstimator: o200k,
       compactPointUpperBound: 3,
     });
     expect(selection.compactPoint).toBe(3);
@@ -155,6 +162,7 @@ describe("compact full-band boundary rounding", () => {
     const selection = selectArrangement(selectionInputs(MID_THREAD_TURNS, MID_THREAD_MESSAGES), {
       lowerBound: 60,
       percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
+      tokenEstimator: o200k,
       compactPointUpperBound: 5,
     });
     expect(selection.compactPoint).toBe(3);
@@ -185,6 +193,7 @@ describe("compact full-band boundary rounding", () => {
     const selection = selectArrangement(selectionInputs(turns, messages), {
       lowerBound: 40,
       percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
+      tokenEstimator: o200k,
     });
 
     expect(selection.compactPoint).toBe(6);
@@ -209,6 +218,7 @@ describe("compact full-band boundary rounding", () => {
     const selection = selectArrangement(selectionInputs(turns, messages), {
       lowerBound: 60,
       percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
+      tokenEstimator: o200k,
     });
 
     expect(selection.compactPoint).toBe(7);

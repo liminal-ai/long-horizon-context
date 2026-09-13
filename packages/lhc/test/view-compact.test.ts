@@ -28,6 +28,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { o200k } from "./fixtures/tokens.js";
 
 let store: TempStore;
 let fixture: DerivedThreadFixture;
@@ -169,7 +170,7 @@ async function contextMessages(sdk: Lhc, filePath: string): Promise<LlmRequestCo
 }
 
 async function openTailDanglingToolThread(intoStore: TempStore): Promise<{ sdk: Lhc; filePath: string }> {
-  const sdk = initLhc({ mode: "manual", inferenceCallbacks: createInferenceCallbacksDouble() });
+  const sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: createInferenceCallbacksDouble() });
   const filePath = intoStore.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: intoStore.registryPath });
   if (!created.ok) throw new Error(`thread creation failed: ${created.error.reason}`);
@@ -428,6 +429,7 @@ describe("architecture-risk: coverage edge accounting", () => {
     const selection = selectArrangement(inputs, {
       lowerBound: 1000,
       percentages: { full: 10, smooth: 10, detailed: 40, brief: 40 },
+      tokenEstimator: o200k,
     });
 
     expect(selection.compactPoint).toBe(50);
@@ -487,7 +489,11 @@ describe("architecture-risk: restart serves the snapshot (real-file durability)"
     if (!before.ok) return;
 
     // Not a same-process reread: a fresh SDK instance opens the file cold.
-    const fresh = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const fresh = initLhc({
+      tokenFamily: "o200k",
+      inferenceCallbacks: createInferenceCallbacksDouble(),
+      mode: "manual",
+    });
     const after = await fresh.threadView.getLlmRequestContext({ filePath: local.filePath });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
@@ -628,6 +634,7 @@ interface DegradedThread {
 async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread> {
   const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: double,
     mode: "manual",
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
@@ -749,7 +756,7 @@ describe("TC-2.7 (AC-2.5): irregular turn records compact best-effort; derived-o
     const corruptStore = tempStore();
     try {
       const double = createInferenceCallbacksDouble();
-      const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+      const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
       const filePath = corruptStore.threadPath();
       const created = await sdk.threads.newThread({
         filePath,
@@ -812,7 +819,7 @@ describe("TC-2.7 (AC-2.5): irregular turn records compact best-effort; derived-o
     const corruptStore = tempStore();
     try {
       const double = createInferenceCallbacksDouble();
-      const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+      const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
       const filePath = corruptStore.threadPath();
       const created = await sdk.threads.newThread({
         filePath,
@@ -850,7 +857,7 @@ describe("TC-2.7 (AC-2.5): irregular turn records compact best-effort; derived-o
     const corruptStore = tempStore();
     try {
       const double = createInferenceCallbacksDouble();
-      const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+      const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
       const filePath = corruptStore.threadPath();
       const created = await sdk.threads.newThread({
         filePath,
@@ -1016,7 +1023,7 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
 describe("install-time drift recomputes against fresh state", () => {
   async function driftStore(): Promise<{ store: TempStore; sdk: Lhc; filePath: string }> {
     const localStore = tempStore();
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const filePath = localStore.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: localStore.registryPath });
     if (!created.ok) throw new Error(created.error.reason);
@@ -1167,7 +1174,11 @@ describe("install-time drift recomputes against fresh state", () => {
   it("installs the derivations that finished after prepare, without new events", async () => {
     const localStore = tempStore();
     try {
-      const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+      const sdk = initLhc({
+        tokenFamily: "o200k",
+        inferenceCallbacks: createInferenceCallbacksDouble(),
+        mode: "manual",
+      });
       const filePath = localStore.threadPath();
       const created = await sdk.threads.newThread({ filePath, registryPath: localStore.registryPath });
       expect(created.ok).toBe(true);

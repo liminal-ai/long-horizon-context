@@ -3,7 +3,7 @@
 // the whole batch); reads run on a fresh handle per operation. Edit/delete
 // validation and row applies also live here: row-level mechanics, no policy.
 import type { DatabaseSync } from "node:sqlite";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
 import type { Block, MessageRecord } from "../index.js";
 
 export interface MessageRow {
@@ -110,7 +110,12 @@ export function markMessageDeleted(db: DatabaseSync, messageId: string, deletedA
 // field per block type that internal/project.ts wrote and counted — and the
 // token estimate re-stamps from the same estimator, so placement arithmetic
 // stays current after edits. Events are untouched; the log keeps the original.
-export function applyMessageEdit(db: DatabaseSync, messageId: string, content: string): void {
+export function applyMessageEdit(
+  db: DatabaseSync,
+  messageId: string,
+  content: string,
+  estimator: TokenEstimator,
+): void {
   const blocks = db
     .prepare(
       `SELECT block_index, block_type, content FROM message_block
@@ -122,7 +127,7 @@ export function applyMessageEdit(db: DatabaseSync, messageId: string, content: s
     content: string;
   }>;
   const update = db.prepare(`UPDATE message_block SET content = ? WHERE message_id = ? AND block_index = ?`);
-  let tokenEstimate = estimateTokens(content);
+  let tokenEstimate = estimator.rawCount(content);
   for (const block of blocks) {
     const parsed = JSON.parse(block.content) as Record<string, unknown>;
     switch (block.block_type) {
@@ -137,7 +142,7 @@ export function applyMessageEdit(db: DatabaseSync, messageId: string, content: s
         // verbatim as the new arguments value, mirroring projectEvent's
         // serialized-arguments estimate.
         parsed["arguments"] = content;
-        tokenEstimate = estimateTokens(JSON.stringify(content));
+        tokenEstimate = estimator.rawCount(JSON.stringify(content));
         break;
       case "model_change":
         parsed["newModel"] = content;

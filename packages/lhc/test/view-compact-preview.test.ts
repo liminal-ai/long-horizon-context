@@ -101,7 +101,11 @@ async function previewAndCompact(
 }
 
 async function newManualSdk(store: TempStore): Promise<{ sdk: Lhc; filePath: string }> {
-  const sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  const sdk = initLhc({
+    tokenFamily: "o200k",
+    mode: "manual",
+    inferenceCallbacks: createDeterministicInferenceCallbacks(),
+  });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(created.error.reason);
@@ -358,7 +362,11 @@ describe("previewCompact agreement with compact", () => {
 
   it("latest open turn with a dangling tool call previews ok and stays after compact point", async () => {
     const path = store.threadPath();
-    const localSdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    const localSdk = initLhc({
+      tokenFamily: "o200k",
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
     const created = await localSdk.threads.newThread({ filePath: path, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);
 
@@ -400,7 +408,11 @@ describe("previewCompact agreement with compact", () => {
 
   it("empty open turn proceeds to ok preview", async () => {
     const path = store.threadPath();
-    const localSdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    const localSdk = initLhc({
+      tokenFamily: "o200k",
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
     const created = await localSdk.threads.newThread({ filePath: path, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);
 
@@ -429,7 +441,11 @@ describe("previewCompact agreement with compact", () => {
   });
 
   it("background mode preview does not schedule drain with pending work", async () => {
-    const sdk = initLhc({ mode: "background", inferenceCallbacks: createInferenceCallbacksDouble() });
+    const sdk = initLhc({
+      tokenFamily: "o200k",
+      mode: "background",
+      inferenceCallbacks: createInferenceCallbacksDouble(),
+    });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);
@@ -450,6 +466,7 @@ describe("previewCompact agreement with compact", () => {
 describe("empty derived chunk recovery", () => {
   it("ignores consecutive all-tombstoned chunks in preview and drops them atomically with a replacement view", async () => {
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },

@@ -17,6 +17,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { o200k, withEstimator } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -146,10 +147,14 @@ describe("TC-2.8 / AC-2.7: capture gaps in health", () => {
       harness: "pi",
       payload: { text: "capture gap: 1 event(s) rejected - payload mismatch" },
     });
-    const recorded = await intakeStream.messageEvents({ filePath }, [gap]);
+    const recorded = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, [gap]));
     expect(recorded.ok).toBe(true);
 
-    const reader = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const reader = initLhc({
+      tokenFamily: "o200k",
+      inferenceCallbacks: createInferenceCallbacksDouble(),
+      mode: "manual",
+    });
     const report = healthValue(await expectReadOnly(filePath, () => reader.inspect.health({ filePath })));
     expect(report.owners).toContainEqual({
       owner: "capture",
@@ -251,6 +256,7 @@ describe("architecture risk: health is inference-callback-free and surface-compo
       throw new Error("inference callbacks must never be called by a read operation");
     };
     const reader = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: {
         smoothPrompt: refuse,
         summarizeToolResult: refuse,

@@ -23,13 +23,12 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import {
-  type DerivationReportEntry,
-  estimateTokens,
-  type LlmRequestContext,
-  type LlmRequestContextMessage,
-  type MutationResult,
-  type OpResult,
+import type {
+  DerivationReportEntry,
+  LlmRequestContext,
+  LlmRequestContextMessage,
+  MutationResult,
+  OpResult,
 } from "../src/index.js";
 import {
   DELETED_MESSAGE_TEXT,
@@ -40,6 +39,7 @@ import {
   type TempStore,
   tempStore,
 } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 let store: TempStore;
 let run: LifecycleRun;

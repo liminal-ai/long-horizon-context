@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { writeFileSync } from "node:fs";
 import { initLhc, estimateTokens } from "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/dist/index.js";
 const stub = async () => { throw new Error("stub"); };
-const sdk = initLhc({ mode: "manual", inferenceCallbacks: { smoothPrompt: stub, summarizeToolResult: stub, compressDetailedTurn: stub, summarizeChunkBrief: stub } });
+const sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: { smoothPrompt: stub, summarizeToolResult: stub, compressDetailedTurn: stub, summarizeChunkBrief: stub } });
 const ref = { threadId: "th_223371e0d9ed95bf" };
 const params = { lowerBound: 120_000, percentages: { full: 25, smooth: 35, detailed: 20, brief: 20 } };
 const preview = await sdk.threadView.previewCompact(ref, { params });

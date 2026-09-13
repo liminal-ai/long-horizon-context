@@ -34,7 +34,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { threads, threadView } from "../src/index.ts";
-import { estimateTokens } from "../src/shared-tech/token-counting/index.ts";
+import { TokenEstimator } from "../src/shared-tech/token-counting/index.ts";
 import { createBoundedSelection } from "../src/thread-view/internal/bounded-source.ts";
 import { eagerSelectionSource, readSelectionInputs } from "../src/thread-view/internal/select.ts";
 import { walkArrangement } from "../src/thread-view/internal/walk.ts";
@@ -54,6 +54,7 @@ const CHUNKS_WITHOUT_SUMMARIES = Number(process.env["LIM115_BARE_CHUNKS"] ?? "0"
 const TOOL_RESULT_BYTES = 6000;
 
 const PARAMS = { lowerBound: 60_000, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } };
+const MEASURE_ESTIMATOR = new TokenEstimator("o200k");
 
 type Plan = "bounded" | "legacy";
 type Phase = "select" | "prepare";
@@ -190,7 +191,7 @@ async function runChild(plan: Plan, phase: Phase, filePath: string): Promise<Chi
 
   // Warm the token estimator before the baseline so its tables are charged to
   // neither plan's measurement.
-  estimateTokens("warm the token estimator");
+  new TokenEstimator("o200k").estimate("warm the token estimator");
   const baselineRssMb = rssMb();
   let peak = baselineRssMb;
   const sampler = setInterval(() => {
@@ -221,11 +222,12 @@ async function runChild(plan: Plan, phase: Phase, filePath: string): Promise<Chi
           const bounded = createBoundedSelection(db, transaction, {
             includeChunkMaterials: true,
             signal: undefined,
+            tokenEstimator: MEASURE_ESTIMATOR,
           });
           source = bounded.source;
           stats = bounded.stats;
         } else {
-          const inputs = readSelectionInputs(db);
+          const inputs = readSelectionInputs(db, MEASURE_ESTIMATOR);
           const materials = new Map<string, ReturnType<typeof getChunkText>>();
           for (const chunk of inputs.chunks) {
             if (chunk.status !== "closed") continue;
@@ -239,7 +241,7 @@ async function runChild(plan: Plan, phase: Phase, filePath: string): Promise<Chi
         }
         const readMs = Math.round(performance.now() - readStarted);
         const walkStarted = performance.now();
-        const selection = walkArrangement(source, PARAMS);
+        const selection = walkArrangement(source, { ...PARAMS, tokenEstimator: MEASURE_ESTIMATOR });
         const walkMs = Math.round(performance.now() - walkStarted);
         result = {
           readMs,

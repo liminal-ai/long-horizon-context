@@ -7,15 +7,9 @@
 // prior drains; fallback composition is pure).
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import {
-  createDeterministicInferenceCallbacks,
-  estimateTokens,
-  initLhc,
-  intakeStream,
-  type Lhc,
-  retrieval,
-} from "../src/index.js";
-import { type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { createDeterministicInferenceCallbacks, initLhc, intakeStream, type Lhc, retrieval } from "../src/index.js";
+import { o200k, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 let store: TempStore;
 let sdk: Lhc;
@@ -29,7 +23,7 @@ async function newThread(): Promise<string> {
 }
 
 async function send(events: Parameters<typeof intakeStream.messageEvents>[1]): Promise<void> {
-  const result = await intakeStream.messageEvents({ filePath }, events);
+  const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, events));
   if (!result.ok) throw new Error(`intake failed: ${result.error.reason}`);
 }
 
@@ -40,7 +34,7 @@ async function drain(): Promise<void> {
 
 beforeEach(async () => {
   store = tempStore();
-  sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
   filePath = await newThread();
 });
 afterEach(() => {
@@ -84,7 +78,7 @@ describe("getTurns", () => {
     await seedTwoTurns();
     await drain();
 
-    const result = await retrieval.getTurns({ filePath }, ["t2", "t1"]);
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t2", "t1"]));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const receipt = result.value;
@@ -103,7 +97,7 @@ describe("getTurns", () => {
   it("composes a live fallback when the rendering derivation is not ready", async () => {
     await seedTwoTurns();
     // No drain: turn_rendering rows are pending.
-    const result = await retrieval.getTurns({ filePath }, ["t1"]);
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"]));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const turn = result.value.served[0]!;
@@ -125,7 +119,7 @@ describe("getTurns", () => {
       db.close();
     }
 
-    const result = await retrieval.getTurns({ filePath }, ["t1"]);
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"]));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const turn = result.value.served[0]!;
@@ -138,7 +132,7 @@ describe("getTurns", () => {
   it("reports unknown ids as not_found without charging the budget", async () => {
     await seedTwoTurns();
     await drain();
-    const result = await retrieval.getTurns({ filePath }, ["t99", "t1"]);
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t99", "t1"]));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.unserved).toEqual([{ id: "t99", reason: "not_found" }]);
@@ -148,14 +142,16 @@ describe("getTurns", () => {
   it('reports "budget" for the crossing item when too little budget remains to slice', async () => {
     await seedTwoTurns();
     await drain();
-    const full = await retrieval.getTurns({ filePath }, ["t1", "t2"]);
+    const full = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1", "t2"]));
     expect(full.ok).toBe(true);
     if (!full.ok) return;
     // Budget fits either fixture turn alone but not both; the leftover after
     // t1 is far below RETRIEVAL_SLICE_FLOOR, so t2 is refused, not slivered.
     const t2Tokens = full.value.served[1]!.tokens;
 
-    const partial = await retrieval.getTurns({ filePath }, ["t1", "t2"], { tokenBudget: t2Tokens });
+    const partial = await withEstimator(o200k, () =>
+      retrieval.getTurns({ filePath }, ["t1", "t2"], { tokenBudget: t2Tokens }),
+    );
     expect(partial.ok).toBe(true);
     if (!partial.ok) return;
     expect(partial.value.served.map((turn) => turn.turnId)).toEqual(["t1"]);
@@ -170,7 +166,7 @@ describe("getTurns", () => {
   it("slices an oversized turn to the budget with a continuation receipt", async () => {
     await seedBigTurn();
     await drain();
-    const result = await retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 500 });
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 500 }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const turn = result.value.served[0]!;
@@ -185,7 +181,7 @@ describe("getTurns", () => {
   it("fromToken continuation slices reassemble the full text", async () => {
     await seedBigTurn();
     await drain();
-    const whole = await retrieval.getTurns({ filePath }, ["t1"]);
+    const whole = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"]));
     expect(whole.ok).toBe(true);
     if (!whole.ok) return;
     const fullText = whole.value.served[0]!.text;
@@ -193,7 +189,9 @@ describe("getTurns", () => {
     let assembled = "";
     let from = 0;
     for (let hop = 0; hop < 20; hop += 1) {
-      const part = await retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 400, fromToken: from });
+      const part = await withEstimator(o200k, () =>
+        retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 400, fromToken: from }),
+      );
       expect(part.ok).toBe(true);
       if (!part.ok) return;
       const slice = part.value.served[0]!;
@@ -215,7 +213,9 @@ describe("getTurns", () => {
     await drain();
     // t1 is huge, t2 tiny. Budget 500: t1 slice fills the whole budget, t2
     // reports "budget" with its size instead of being silently starved.
-    const result = await retrieval.getTurns({ filePath }, ["t1", "t2"], { tokenBudget: 500 });
+    const result = await withEstimator(o200k, () =>
+      retrieval.getTurns({ filePath }, ["t1", "t2"], { tokenBudget: 500 }),
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.served).toHaveLength(1);
@@ -226,25 +226,25 @@ describe("getTurns", () => {
 
   it("rejects a negative or fractional fromToken", async () => {
     await seedTwoTurns();
-    const negative = await retrieval.getTurns({ filePath }, ["t1"], { fromToken: -1 });
+    const negative = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"], { fromToken: -1 }));
     expect(negative.ok).toBe(false);
-    const fractional = await retrieval.getTurns({ filePath }, ["t1"], { fromToken: 1.5 });
+    const fractional = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"], { fromToken: 1.5 }));
     expect(fractional.ok).toBe(false);
   });
 
   it("collapses duplicate ids to one serve", async () => {
     await seedTwoTurns();
     await drain();
-    const result = await retrieval.getTurns({ filePath }, ["t1", "t1"]);
+    const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1", "t1"]));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.served).toHaveLength(1);
   });
 
   it("rejects an empty id list and a non-positive budget", async () => {
-    const empty = await retrieval.getTurns({ filePath }, []);
+    const empty = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, []));
     expect(empty.ok).toBe(false);
-    const bad = await retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 0 });
+    const bad = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"], { tokenBudget: 0 }));
     expect(bad.ok).toBe(false);
   });
 });
@@ -260,7 +260,7 @@ describe("getMessages", () => {
     const callId = firstOf("tool_call").messageId;
     const resultId = firstOf("tool_result").messageId;
 
-    const result = await retrieval.getMessages({ filePath }, [promptId, callId, resultId]);
+    const result = await withEstimator(o200k, () => retrieval.getMessages({ filePath }, [promptId, callId, resultId]));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     const [prompt, call, toolResult] = result.value.served;
@@ -275,7 +275,7 @@ describe("getMessages", () => {
 
   it("reports unknown message ids as not_found", async () => {
     await seedTwoTurns();
-    const result = await retrieval.getMessages({ filePath }, ["m999"]);
+    const result = await withEstimator(o200k, () => retrieval.getMessages({ filePath }, ["m999"]));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.served).toEqual([]);
@@ -290,7 +290,9 @@ describe("getMessages", () => {
     // Fits the larger prompt alone but not both.
     const budget = estimateTokens("read the file please");
 
-    const result = await retrieval.getMessages({ filePath }, prompts, { tokenBudget: budget });
+    const result = await withEstimator(o200k, () =>
+      retrieval.getMessages({ filePath }, prompts, { tokenBudget: budget }),
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.served).toHaveLength(1);
@@ -313,7 +315,7 @@ describe("byteBudget", () => {
     const denseId = listed.value.find((r) => r.kind === "assistant_text")!.messageId;
 
     const byteBudget = 12_000;
-    const result = await retrieval.getMessages({ filePath }, [denseId], { byteBudget });
+    const result = await withEstimator(o200k, () => retrieval.getMessages({ filePath }, [denseId], { byteBudget }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.served).toHaveLength(1);
@@ -326,10 +328,12 @@ describe("byteBudget", () => {
     expect(served.slice!.toToken).toBeLessThan(served.slice!.totalTokens);
 
     // Continuation from the receipt serves the NEXT window, still byte-fit.
-    const next = await retrieval.getMessages({ filePath }, [denseId], {
-      byteBudget,
-      fromToken: served.slice!.toToken,
-    });
+    const next = await withEstimator(o200k, () =>
+      retrieval.getMessages({ filePath }, [denseId], {
+        byteBudget,
+        fromToken: served.slice!.toToken,
+      }),
+    );
     expect(next.ok).toBe(true);
     if (!next.ok) return;
     const nextServed = next.value.served[0]!;
@@ -354,10 +358,12 @@ describe("byteBudget", () => {
     let from = 0;
     let reassembled = "";
     for (let i = 0; i < 40 && reassembled.length < crabs.length; i += 1) {
-      const page = await retrieval.getMessages({ filePath }, [crabId], {
-        byteBudget: 1_001,
-        fromToken: from,
-      });
+      const page = await withEstimator(o200k, () =>
+        retrieval.getMessages({ filePath }, [crabId], {
+          byteBudget: 1_001,
+          fromToken: from,
+        }),
+      );
       expect(page.ok).toBe(true);
       if (!page.ok) return;
       const served = page.value.served[0]!;
@@ -390,7 +396,9 @@ describe("byteBudget", () => {
     if (!listed.ok) throw new Error("list failed");
     const denseId = listed.value.find((r) => r.kind === "assistant_text")!.messageId;
 
-    const result = await retrieval.getMessages({ filePath }, [denseId], { byteBudget: 8_000 });
+    const result = await withEstimator(o200k, () =>
+      retrieval.getMessages({ filePath }, [denseId], { byteBudget: 8_000 }),
+    );
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.served).toHaveLength(1);
@@ -406,12 +414,14 @@ describe("byteBudget", () => {
     if (!listed.ok) throw new Error("list failed");
     const promptId = listed.value.find((r) => r.kind === "user_prompt")!.messageId;
 
-    const whole = await retrieval.getMessages({ filePath }, [promptId], { byteBudget: 1_000_000 });
+    const whole = await withEstimator(o200k, () =>
+      retrieval.getMessages({ filePath }, [promptId], { byteBudget: 1_000_000 }),
+    );
     expect(whole.ok).toBe(true);
     if (!whole.ok) return;
     expect(whole.value.served[0]!.slice).toBeUndefined();
 
-    const bad = await retrieval.getMessages({ filePath }, [promptId], { byteBudget: 0 });
+    const bad = await withEstimator(o200k, () => retrieval.getMessages({ filePath }, [promptId], { byteBudget: 0 }));
     expect(bad.ok).toBe(false);
   });
 
@@ -427,7 +437,7 @@ describe("byteBudget", () => {
     if (!listed.ok) throw new Error("list failed");
     const ids = listed.value.filter((r) => r.kind === "assistant_text").map((r) => r.messageId);
 
-    const result = await retrieval.getMessages({ filePath }, ids, { byteBudget: 8_000 });
+    const result = await withEstimator(o200k, () => retrieval.getMessages({ filePath }, ids, { byteBudget: 8_000 }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     // The first item consumes most of the byte allowance as a slice; the
@@ -445,18 +455,20 @@ describe("impression log", () => {
   it("writes one row per requested id with served flags, sizes, and call correlation", async () => {
     await seedTwoTurns();
     await drain();
-    const first = await retrieval.getTurns({ filePath }, ["t1", "t99"]);
+    const first = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1", "t99"]));
     expect(first.ok).toBe(true);
     if (!first.ok) return;
 
     const listed = await sdk.messages.list({ filePath });
     if (!listed.ok) throw new Error("list failed");
     const promptId = listed.value.find((record) => record.kind === "user_prompt")!.messageId;
-    const second = await retrieval.getMessages({ filePath }, [promptId], { surface: "board" });
+    const second = await withEstimator(o200k, () =>
+      retrieval.getMessages({ filePath }, [promptId], { surface: "board" }),
+    );
     expect(second.ok).toBe(true);
     if (!second.ok) return;
 
-    const impressions = await retrieval.listImpressions({ filePath });
+    const impressions = await withEstimator(o200k, () => retrieval.listImpressions({ filePath }));
     expect(impressions.ok).toBe(true);
     if (!impressions.ok) return;
     expect(impressions.value).toHaveLength(3);
@@ -491,8 +503,8 @@ describe("impression log", () => {
     const before = await sdk.messages.list({ filePath });
     if (!before.ok) throw new Error("list failed");
 
-    await retrieval.getTurns({ filePath }, ["t1", "t2"]);
-    await retrieval.getMessages({ filePath }, [before.value[0]!.messageId]);
+    await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1", "t2"]));
+    await withEstimator(o200k, () => retrieval.getMessages({ filePath }, [before.value[0]!.messageId]));
 
     const after = await sdk.messages.list({ filePath });
     if (!after.ok) throw new Error("list failed");

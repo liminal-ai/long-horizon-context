@@ -12,7 +12,7 @@
 // the band what a full uncompressed body costs.
 import type { Band } from "../../shared-tech/index.js";
 import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "../../shared-tech/index.js";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
 import type { TailMessageRow } from "./snapshot.js";
 
 export interface AssembledContextMessage {
@@ -326,16 +326,16 @@ export function briefFallbackCapTokens(briefBandBudget: number): number {
 // with, so the entry's reported size is its true size: start from the body's
 // own chars-per-token ratio, then step down until the kept text plus its
 // terminal marker prices at or under the cap.
-function capFallbackBody(body: string, capTokens: number): string {
-  const bodyTokens = estimateTokens(body);
+function capFallbackBody(body: string, capTokens: number, estimator: TokenEstimator): string {
+  const bodyTokens = estimator.estimate(body);
   if (bodyTokens <= capTokens) return body;
   const marker = (dropped: number): string => `[compression failed: ~${dropped} tokens of content truncated]`;
   let keep = Math.floor((body.length / bodyTokens) * capTokens);
   for (;;) {
     const kept = body.slice(0, keep).trimEnd();
-    const dropped = Math.max(0, bodyTokens - estimateTokens(kept));
+    const dropped = Math.max(0, bodyTokens - estimator.estimate(kept));
     const capped = kept === "" ? marker(dropped) : `${kept}\n${marker(dropped)}`;
-    if (keep === 0 || estimateTokens(capped) <= capTokens) return capped;
+    if (keep === 0 || estimator.estimate(capped) <= capTokens) return capped;
     keep = Math.max(0, Math.min(keep - 1, Math.floor(keep * 0.9)));
   }
 }
@@ -347,6 +347,7 @@ export function resolveBriefRepresentation(
   chunkId: string,
   lookup: DerivationLookup,
   briefBandBudget: number,
+  estimator: TokenEstimator,
   materialLookup?: CompactChunkMaterialLookup,
 ): ResolvedRepresentation {
   const brief = lookup(chunkId, "chunk_summary_brief");
@@ -365,7 +366,7 @@ export function resolveBriefRepresentation(
   if (material?.kind === "concat") {
     return {
       derivationUsed: "stored_member_concat",
-      body: capFallbackBody(material.content, briefFallbackCapTokens(briefBandBudget)),
+      body: capFallbackBody(material.content, briefFallbackCapTokens(briefBandBudget), estimator),
       degraded: true,
       gap: false,
       degradedMarker: "brief-from-stored-members",

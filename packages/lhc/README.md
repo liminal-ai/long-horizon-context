@@ -493,6 +493,6 @@ Config mistakes at `initLhc` construction time **throw** `TypeError` (not return
 
 ## Token Counting
 
-All token estimates use `js-tiktoken` with the `o200k_base` tokenizer (GPT-4o encoding). The estimator ID `"js-tiktoken:o200k_base"` is stored in every thread file's metadata so the estimate basis is always known.
+Token estimates use `js-tiktoken` with the `o200k_base` tokenizer as the raw count, then apply a per-family weight so billed-token budgets match the provider. The estimator ID `"js-tiktoken:o200k_base"` is stored in every thread file's metadata so the raw-count basis is always known.
 
-Exported: `estimateTokens(text: string): number` and `TOKEN_ESTIMATOR_ID`.
+Exported: `TokenEstimator`, `resolveTokenFamily`, and `TOKEN_ESTIMATOR_ID`. `initLhc` requires `tokenFamily`.

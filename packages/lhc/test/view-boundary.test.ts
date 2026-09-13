@@ -27,7 +27,7 @@ afterEach(() => {
 });
 
 function visSdk(view: SdkViewConfig = { visibility: BUDGETS }, mode: "manual" | "background" = "manual"): Lhc {
-  return initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode, view });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode, view });
 }
 
 async function newThread(sdk: Lhc): Promise<string> {
@@ -159,6 +159,7 @@ describe("TC-4.2 (AC-4.1, AC-4.2): flipped renders — full-band boundary uses d
   it.skip("renders deterministic tool-result floors even when a ready summary exists", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: double,
       mode: "manual",
       view: { visibility: BUDGETS },

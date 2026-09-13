@@ -5,6 +5,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type EventRecord, intakeStream, type MessageRecord, messages, threads } from "../src/index.js";
 import { eventBatch, openRaw, setIntakeWalkHook, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, withEstimator } from "./fixtures/tokens.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -55,7 +56,7 @@ describe("Flow 2 (SDK): message materialization", () => {
       validEvent("turn_end"),
     ];
 
-    const result = await intakeStream.messageEvents({ filePath }, batch);
+    const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -141,8 +142,8 @@ describe("Flow 2 (SDK): message materialization", () => {
       }),
     ];
 
-    const inA = await intakeStream.messageEvents({ filePath: threadA }, buildBatch());
-    const inB = await intakeStream.messageEvents({ filePath: threadB }, buildBatch());
+    const inA = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath: threadA }, buildBatch()));
+    const inB = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath: threadB }, buildBatch()));
     expect(inA.ok).toBe(true);
     expect(inB.ok).toBe(true);
 
@@ -167,11 +168,13 @@ describe("Flow 2 (SDK): message materialization", () => {
     const bigContent = "tool output line δσπ 😀 — verbatim?\n".repeat(8000);
     expect(Buffer.byteLength(bigContent, "utf8")).toBeGreaterThan(300_000);
 
-    const result = await intakeStream.messageEvents({ filePath }, [
-      validEvent("tool_result", {
-        payload: { toolCallId: "big-1", content: bigContent, isError: false },
-      }),
-    ]);
+    const result = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("tool_result", {
+          payload: { toolCallId: "big-1", content: bigContent, isError: false },
+        }),
+      ]),
+    );
     expect(result.ok).toBe(true);
 
     const events = await readEvents(filePath);
@@ -195,7 +198,7 @@ describe("Flow 2 (SDK): message materialization", () => {
       validEvent("user_prompt", { actor: "user:lee", harness: "pi-extension/1.2" }),
       validEvent("assistant_text", { actor: "agent:claude", harness: "claude-code/2.0" }),
     ];
-    const result = await intakeStream.messageEvents({ filePath }, batch);
+    const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(result.ok).toBe(true);
 
     const events = await readEvents(filePath);
@@ -214,12 +217,12 @@ describe("Flow 2 (SDK): message materialization", () => {
   it("TC-5.4 (message clause): a skipped event creates no duplicate message (AC-5.4)", async () => {
     const filePath = await createThread();
     const batch = eventBatch(["user_prompt", "turn_end"]);
-    const first = await intakeStream.messageEvents({ filePath }, batch);
+    const first = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(first.ok).toBe(true);
     const baseline = await readMessages(filePath);
     expect(baseline).toHaveLength(1);
 
-    const resend = await intakeStream.messageEvents({ filePath }, batch);
+    const resend = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(resend.ok).toBe(true);
     if (!resend.ok) return;
     expect(resend.value.events.every((entry) => entry.outcome === "skipped")).toBe(true);
@@ -242,7 +245,9 @@ describe("Flow 2 (SDK): message materialization", () => {
 
   it("architecture-risk: an induced message materialization failure rejects the whole batch — no recorded events without messages", async () => {
     const filePath = await createThread();
-    const seeded = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]);
+    const seeded = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]),
+    );
     expect(seeded.ok).toBe(true);
     const baselineEvents = await readEvents(filePath);
     const baselineMessages = await readMessages(filePath);
@@ -255,7 +260,9 @@ describe("Flow 2 (SDK): message materialization", () => {
     setIntakeWalkHook((db, eventIndex) => {
       if (eventIndex === 0) db.exec("DROP TABLE message_block");
     });
-    const result = await intakeStream.messageEvents({ filePath }, eventBatch(["assistant_text", "assistant_thinking"]));
+    const result = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, eventBatch(["assistant_text", "assistant_thinking"])),
+    );
     setIntakeWalkHook(null);
     expect(result.ok).toBe(false);
     if (result.ok) return;

@@ -23,7 +23,6 @@
 // reported as a gap (SelectionResult.skipped) and covered_from runs to the
 // oldest INCLUDED entry, so coverage extends past the hole.
 import type { SettleConstruction } from "../../shared-tech/index.js";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
 import type { StepEdges } from "../../turns/internal/steps.js";
 import { DEFAULT_NEWEST_CLOSED_PROTECTION } from "./profiles.js";
 import {
@@ -112,6 +111,7 @@ function straddlingTurnStaysInFull(fullSideTokens: number, turnTokens: number): 
 
 export function walkArrangement(source: SelectionSource, config: SelectionConfig): SelectionResult {
   const { turns, chunks } = source;
+  const estimator = config.tokenEstimator;
   const lookup = (subjectId: string, derivationType: string): DerivationSnapshot | undefined =>
     source.derivation(subjectId, derivationType);
   const budget = (share: number): number => (config.lowerBound * share) / 100;
@@ -373,7 +373,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
       gap: rep.gap,
       startOrder: turnStartOrder(turn),
       text,
-      tokens: estimateTokens(text),
+      tokens: estimator.estimate(text),
     };
     if (rep.reason !== undefined) entry.reason = rep.reason;
     return entry;
@@ -385,7 +385,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
         ? resolveDetailedRepresentation(chunk.chunkId, lookup, () =>
             source.chunkMaterial(chunk.chunkId, "chunk_summary_detailed"),
           )
-        : resolveBriefRepresentation(chunk.chunkId, lookup, budget(config.percentages.brief), () =>
+        : resolveBriefRepresentation(chunk.chunkId, lookup, budget(config.percentages.brief), estimator, () =>
             source.chunkMaterial(chunk.chunkId, "chunk_summary_brief"),
           );
     const text = renderArrangementEntry("chunk", chunk.chunkId, rep, [], chunk.memberTurnIds);
@@ -402,7 +402,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
       gap: rep.gap,
       startOrder: memberStarts.length === 0 ? compactPoint : Math.min(...memberStarts),
       text,
-      tokens: estimateTokens(text),
+      tokens: estimator.estimate(text),
     };
     if (rep.reason !== undefined) entry.reason = rep.reason;
     return entry;
@@ -485,7 +485,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
         gap: false,
         startOrder: fromOrder,
         text,
-        tokens: estimateTokens(text),
+        tokens: estimator.estimate(text),
         part: range,
       });
       fromOrder = toOrder + 1;
@@ -659,7 +659,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
       gap: rep.gap,
       startOrder: turnStartOrder(turn),
       text,
-      tokens: estimateTokens(text),
+      tokens: estimator.estimate(text),
     };
     if (rep.reason !== undefined) entry.reason = rep.reason;
     return entry;

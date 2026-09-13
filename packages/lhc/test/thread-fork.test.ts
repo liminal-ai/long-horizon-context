@@ -10,12 +10,14 @@ import { main } from "../src/cli.js";
 import { initLhc, intakeStream, threads } from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
+  o200k,
   openRaw,
   setFormState,
   type TempStore,
   tempStore,
   threadWithClosedTurns,
   validEvent,
+  withEstimator,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -53,7 +55,7 @@ function metadataThreadId(path: string): string {
 }
 
 async function send(filePath: string, batch: Parameters<typeof intakeStream.messageEvents>[1]): Promise<void> {
-  const result = await intakeStream.messageEvents({ filePath }, batch);
+  const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
   if (!result.ok) throw new Error(`fixture batch failed: ${result.error.reason}`);
 }
 
@@ -287,13 +289,15 @@ describe("threads.writeIdentityNote", () => {
     });
     if (!copied.ok) throw new Error(copied.error.reason);
     const ref = { threadId: copied.value.threadId, registryPath: target.registry };
-    const noted = await threads.writeIdentityNote({
-      ref,
-      sourceThreadId: source.threadId,
-      sourceHome: "/home/x/.cc-lhc",
-      seat: "wren",
-      at: "2026-09-09T13:00:00.000Z",
-    });
+    const noted = await withEstimator(o200k, () =>
+      threads.writeIdentityNote({
+        ref,
+        sourceThreadId: source.threadId,
+        sourceHome: "/home/x/.cc-lhc",
+        seat: "wren",
+        at: "2026-09-09T13:00:00.000Z",
+      }),
+    );
     expect(noted.ok && noted.value.text).toBe(
       `[lhc fork] copied from ${source.threadId} (/home/x/.cc-lhc) on 2026-09-09T13:00:00.000Z, seat wren`,
     );
@@ -344,6 +348,7 @@ describe("threads.repairDerivations", () => {
   it("re-derives failed turn compressions through the instance; the bare call reports missing inference", async () => {
     const { filePath, turnIds } = await threadWithClosedTurns(store, 2);
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: createInferenceCallbacksDouble(),
       mode: "manual",
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
@@ -539,7 +544,7 @@ describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
   });
 
   it("handoff compact leaves no closed turn raw and keeps the identity note in the tail", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const source = await idleSource();
     const drainedSource = await sdk.work.drain({ filePath: source.filePath });
     if (!drainedSource.ok) throw new Error(drainedSource.error.reason);
@@ -552,7 +557,9 @@ describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
     });
     if (!copied.ok) throw new Error(copied.error.reason);
     const ref = { threadId: "th_handoff", registryPath: target.registry };
-    const noted = await threads.writeIdentityNote({ ref, sourceThreadId: source.threadId, seat: "wren" });
+    const noted = await withEstimator(o200k, () =>
+      threads.writeIdentityNote({ ref, sourceThreadId: source.threadId, seat: "wren" }),
+    );
     if (!noted.ok) throw new Error(noted.error.reason);
 
     const before = await sdk.threadView.getSessionThreadView(ref);
@@ -619,7 +626,19 @@ describe("lhc thread CLI", () => {
       expect(c.out.at(-1)).toBe(`th_cli ${join(target.threadsDir, "th_cli.sqlite")}\n`);
 
       const common = ["--home", target.home, "--thread-id", "th_cli"];
-      expect(await main(["thread", "note", ...common, "--from", source.threadId, "--seat", "wren"])).toBe(0);
+      expect(
+        await main([
+          "thread",
+          "note",
+          ...common,
+          "--from",
+          source.threadId,
+          "--seat",
+          "wren",
+          "--token-family",
+          "o200k",
+        ]),
+      ).toBe(0);
       expect(c.out.at(-1)).toMatch(/^\S+ \[lhc fork\] copied from th_[0-9a-f]+ on .*, seat wren\n$/);
 
       expect(await main(["thread", "bind", ...common, "--host", "claude-lhc", "--session-id", "S"])).toBe(0);
@@ -648,6 +667,23 @@ describe("lhc thread CLI", () => {
       expect(await main(["thread", "nope"])).toBe(1);
       expect(await main([])).toBe(0);
       expect(c.out.at(-1)).toContain("usage: lhc thread");
+      expect(c.out.at(-1)).toContain("--token-family");
+
+      expect(await main(["thread", "repair", "--home", target.home, "--thread-id", "th_cli"])).toBe(1);
+      expect(c.err.at(-1)).toMatch(/^usage: --token-family is required \(known: /);
+      expect(
+        await main([
+          "thread",
+          "repair",
+          "--home",
+          target.home,
+          "--thread-id",
+          "th_cli",
+          "--token-family",
+          "not-a-family",
+        ]),
+      ).toBe(1);
+      expect(c.err.at(-1)).toMatch(/^usage: --token-family not-a-family is not a known family \(known: /);
       expect(sourceHome).toBe(store.dir);
     } finally {
       c.restore();
@@ -679,6 +715,8 @@ describe("lhc thread CLI", () => {
         "--seat",
         "wren",
         "--no-repair",
+        "--token-family",
+        "o200k",
       ]);
       expect(c.err).toEqual([]);
       expect(rc).toBe(0);
@@ -709,6 +747,8 @@ describe("lhc thread CLI", () => {
         "--new-id",
         "th_mid",
         "--no-repair",
+        "--token-family",
+        "o200k",
       ]);
       expect(refused).toBe(2);
       expect(c.err.at(-1)).toMatch(/^mid_turn: /);
@@ -719,7 +759,7 @@ describe("lhc thread CLI", () => {
   });
 
   it("fork compacts across providers under handoff, honours --no-compact, and mints codex ids", async () => {
-    const sdk = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     const source = await idleSource();
     const drained = await sdk.work.drain({ filePath: source.filePath });
     if (!drained.ok) throw new Error(drained.error.reason);
@@ -736,6 +776,8 @@ describe("lhc thread CLI", () => {
         "--home",
         target.home,
         "--no-repair",
+        "--token-family",
+        "o200k",
         "--claude-bin",
         "/bin/false",
       ];

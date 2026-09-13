@@ -32,6 +32,7 @@ async function main(): Promise<void> {
 
   const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: double,
     mode: "manual",
     lease: { durationMs: config.leaseMs },

@@ -76,7 +76,11 @@ describe("thread file validation is WAL-aware", () => {
   // the Rust suite, where separate OS threads can be forced to overlap.
   it("validates after a truncating checkpoint with an append in flight, without a torn or false identity", async () => {
     const filePath = store.threadPath("checkpoint-race");
-    const sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    const sdk = initLhc({
+      tokenFamily: "o200k",
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    });
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
 

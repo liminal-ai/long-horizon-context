@@ -4,7 +4,7 @@
  */
 
 import type { DatabaseSync } from "node:sqlite";
-import { estimateTokens } from "../../shared-tech/token-counting/index.js";
+import { resolveInstanceTokenEstimator } from "../../shared-tech/index.js";
 import type { PreparedCompact } from "../../thread-view/index.js";
 import { assembleView } from "../../thread-view/internal/assemble.js";
 import { readBoundaryPosition } from "../../thread-view/internal/boundary.js";
@@ -66,9 +66,10 @@ export function assembleCandidateFromPrepared(
   const structuralIssues = validateSettledTailStructure(tailRows);
   if (messages.length === 0) structuralIssues.push("candidate has no messages");
 
-  const candidateTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+  const estimator = resolveInstanceTokenEstimator("compactContinuation.candidate");
+  const candidateTokens = messages.reduce((sum, m) => sum + estimator.estimate(m.content), 0);
   const current = assembleView(db);
-  const currentServedTokens = current.entries.reduce((sum, e) => sum + estimateTokens(e.message.content), 0);
+  const currentServedTokens = current.entries.reduce((sum, e) => sum + estimator.estimate(e.message.content), 0);
 
   const degraded = prepared.degraded.length > 0 || prepared.gaps.length > 0 || prepared.warnings.length > 0;
   const usefulReduction = candidateTokens < currentServedTokens;

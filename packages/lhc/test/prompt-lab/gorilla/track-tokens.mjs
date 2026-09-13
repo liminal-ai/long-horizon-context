@@ -2,7 +2,7 @@
 import { initLhc } from "/Users/leemoore/code/pi-long-horizon/liminal-context/packages/lhc/dist/index.js";
 
 const stub = async () => { throw new Error("no inference in tracker"); };
-const sdk = initLhc({
+const sdk = initLhc({ tokenFamily: "o200k",
   mode: "manual",
   inferenceCallbacks: {
     smoothPrompt: stub,

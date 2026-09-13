@@ -29,7 +29,7 @@ async function newThread(sdk: Lhc): Promise<string> {
 
 beforeEach(async () => {
   store = tempStore();
-  sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
   filePath = await newThread(sdk);
 });
 afterEach(() => {
@@ -296,6 +296,7 @@ describe("threadView.getSessionThreadView", () => {
 
   it("serves full tool-result content before compact even when the zone exceeds visibility max", async () => {
     const sdkWithBudgets = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       view: { visibility: { maxTokens: 10, targetTokens: 5 } },

@@ -17,7 +17,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, threads } from "../src/index.js";
 import { migrateThreadSchema } from "../src/shared-tech/thread-migrate.js";
 import { openThreadDatabase } from "../src/threads/internal/create.js";
-import { type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import { o200k, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
 
 let store: TempStore;
 
@@ -48,11 +48,13 @@ async function threadWithOneTurn(): Promise<string> {
   const filePath = store.threadPath();
   const created = await threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(created.error.reason);
-  const recorded = await intakeStream.messageEvents({ filePath }, [
-    validEvent("user_prompt", { payload: { text: "q" } }),
-    validEvent("assistant_text", { payload: { text: "a" } }),
-    validEvent("turn_end"),
-  ]);
+  const recorded = await withEstimator(o200k, () =>
+    intakeStream.messageEvents({ filePath }, [
+      validEvent("user_prompt", { payload: { text: "q" } }),
+      validEvent("assistant_text", { payload: { text: "a" } }),
+      validEvent("turn_end"),
+    ]),
+  );
   if (!recorded.ok) throw new Error(recorded.error.reason);
   return filePath;
 }

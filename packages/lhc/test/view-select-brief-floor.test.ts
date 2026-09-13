@@ -12,7 +12,6 @@
 // Selection is exercised through selectArrangement directly (pure over its
 // inputs); the floor is exercised through the ladder resolver it lives in.
 import { describe, expect, it } from "vitest";
-import { estimateTokens } from "../src/shared-tech/token-counting/index.js";
 import {
   briefFallbackCapTokens,
   type CompactChunkMaterialSnapshot,
@@ -26,10 +25,15 @@ import {
   type SelectionTurn,
   selectArrangement,
 } from "../src/thread-view/internal/select.js";
+import { estimateTokens, o200k } from "./fixtures/tokens.js";
 
 // full 250 (t8 alone), smooth 10 (t7 alone), detailed 40 (c6 alone as an
 // oversized loner), brief 700 for the remaining chunks c5…c1.
-const PARAMS = { lowerBound: 1000, percentages: { full: 25, smooth: 1, detailed: 4, brief: 70 } };
+const PARAMS = {
+  lowerBound: 1000,
+  percentages: { full: 25, smooth: 1, detailed: 4, brief: 70 },
+  tokenEstimator: o200k,
+};
 const BRIEF_BUDGET = 700;
 const CHUNK_IDS = ["c1", "c2", "c3", "c4", "c5", "c6"] as const;
 
@@ -158,7 +162,7 @@ describe("brief failure floor", () => {
   const lookup = (_subjectId: string, derivationType: string): DerivationSnapshot | undefined =>
     derivationType === "chunk_summary_brief" ? failedBrief : undefined;
   const fallback = (bandBudget: number) =>
-    resolveBriefRepresentation("c3", lookup, bandBudget, () => ({
+    resolveBriefRepresentation("c3", lookup, bandBudget, o200k, () => ({
       kind: "concat",
       content: OVERSIZED_BODY,
       reason: "failed_floor",
@@ -189,7 +193,7 @@ describe("brief failure floor", () => {
   it("never truncates a ready brief, however large", () => {
     const ready = (_subjectId: string, derivationType: string): DerivationSnapshot | undefined =>
       derivationType === "chunk_summary_brief" ? { state: "ready", content: OVERSIZED_BODY } : undefined;
-    const rep = resolveBriefRepresentation("c3", ready, 100);
+    const rep = resolveBriefRepresentation("c3", ready, 100, o200k);
     expect(rep.body).toBe(OVERSIZED_BODY);
     expect(rep.degraded).toBe(false);
     expect(rep.derivationUsed).toBe("chunk_summary_brief");

@@ -95,6 +95,7 @@ export async function assertRoutingThroughSdk(
     return call(input);
   };
   const sdk = initLhc({
+    tokenFamily: "o200k",
     inference: { call: logged, assignments },
     mode: "manual",
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },

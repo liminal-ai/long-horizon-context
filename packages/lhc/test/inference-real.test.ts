@@ -28,7 +28,7 @@ import type {
   MutationResult,
   OpResult,
 } from "../src/index.js";
-import { estimateTokens, initLhc } from "../src/index.js";
+import { initLhc } from "../src/index.js";
 import { truncateForFallback } from "../src/shared-tech/index.js";
 import {
   assertModelCallContract,
@@ -54,6 +54,7 @@ import {
   validAssignments,
   validEvent,
 } from "./fixtures/index.js";
+import { estimateTokens } from "./fixtures/tokens.js";
 
 // ── the suite-level guard: one resolution, one visible line ───────
 const integrationEnabled = process.env.LHC_RUN_INTEGRATION === "1";
@@ -276,6 +277,7 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     if (realKey === undefined) throw new Error("keyed leg started without a key");
     const recorded = recordRealCall(createOpenRouterCall(realKey, realModel));
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
       mode: "manual",
     });
@@ -325,6 +327,7 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     if (realKey === undefined) throw new Error("keyed leg started without a key");
     const recorded = recordRealCall(createOpenRouterCall(realKey, realModel));
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inference: { call: recorded.call, assignments: realAssignments(realModel), maxInputChars: 3000 },
       mode: "manual",
     });
@@ -379,6 +382,7 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     if (realKey === undefined) throw new Error("keyed leg started without a key");
     const recorded = recordRealCall(createOpenRouterCall(realKey, realModel));
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
       mode: "manual",
       guards: { detailedTurnCompression: { tinyTurnTokens: 500 } },
@@ -430,6 +434,7 @@ describe.runIf(keyed)("Epic 07 (keyed): real-inference guard and classifier seam
     if (realKey === undefined) throw new Error("keyed leg started without a key");
     const recorded = recordRealCall(createOpenRouterCall(realKey, realModel));
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
       mode: "manual",
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },

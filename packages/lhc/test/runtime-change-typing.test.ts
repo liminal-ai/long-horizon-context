@@ -27,6 +27,7 @@ async function newThread(): Promise<string> {
 
 function sdkFor(inferenceCallbacks: InferenceCallbacks): Lhc {
   return initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks,
     mode: "manual",
     lease: { durationMs: 200 },

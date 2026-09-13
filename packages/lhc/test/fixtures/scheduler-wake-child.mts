@@ -59,7 +59,7 @@ const filePath = join(dir, "t.sqlite");
 
 // 1. Queue real background work without processing it (manual mode).
 const manualDouble = createInferenceCallbacksDouble();
-const manual = initLhc({ mode: "manual", inferenceCallbacks: manualDouble });
+const manual = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: manualDouble });
 registerTestWorkHandlers(manual, manualDouble);
 const created = await threads.newThread({ filePath, registryPath: join(dir, "registry.sqlite") });
 if (!created.ok) {
@@ -81,7 +81,7 @@ claimHeadWorkItem(filePath, new Date(Date.now() + claimMs).toISOString());
 //    (running=true before touch returns), and the pass stops on the foreign
 //    claim ("in_flight"), arming the claim-expiry wake.
 const bgDouble = createInferenceCallbacksDouble();
-const bg = initLhc({ mode: "background", inferenceCallbacks: bgDouble });
+const bg = initLhc({ tokenFamily: "o200k", mode: "background", inferenceCallbacks: bgDouble });
 registerTestWorkHandlers(bg, bgDouble);
 const threadId = created.value.threadId;
 const opened = bg.threads.openThreadDatabase(filePath);

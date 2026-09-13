@@ -67,7 +67,9 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
       detailed_turn_compression: { provider: "p", model: "m", prompt: "detailed-turn-compression-v1" },
       chunk_summary_brief: { provider: "p", model: "m", prompt: "chunk-brief-v2" },
     };
-    expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).not.toThrow();
+    expect(() =>
+      initLhc({ tokenFamily: "o200k", mode: "manual", inference: { call: recordingCall().call, assignments } }),
+    ).not.toThrow();
   });
 
   it("constructs when deterministic types (turn_rendering, chunk_summary_detailed) are absent", () => {
@@ -75,6 +77,7 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
     // that carries only the four inference types is a valid production config.
     const { call } = recordingCall();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inference: {
         call,
@@ -109,7 +112,9 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
         targetMaxRatio: 0.2,
       },
     };
-    expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).not.toThrow();
+    expect(() =>
+      initLhc({ tokenFamily: "o200k", mode: "manual", inference: { call: recordingCall().call, assignments } }),
+    ).not.toThrow();
   });
 
   it("rejects detailed_turn_compression target aim outside min/max", () => {
@@ -123,9 +128,9 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
         targetMaxRatio: 0.65,
       },
     };
-    expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).toThrow(
-      /compressionTargets\.aimRatio must be between minRatio and maxRatio/,
-    );
+    expect(() =>
+      initLhc({ tokenFamily: "o200k", mode: "manual", inference: { call: recordingCall().call, assignments } }),
+    ).toThrow(/compressionTargets\.aimRatio must be between minRatio and maxRatio/);
   });
 
   it("rejects chunk_summary_brief target aim outside min/max", () => {
@@ -139,9 +144,9 @@ describe("TC-6.1a: per-derivation target ranges accepted (AC-6.1)", () => {
         targetMaxRatio: 0.2,
       },
     };
-    expect(() => initLhc({ mode: "manual", inference: { call: recordingCall().call, assignments } })).toThrow(
-      /briefTargets\.aimRatio must be between minRatio and maxRatio/,
-    );
+    expect(() =>
+      initLhc({ tokenFamily: "o200k", mode: "manual", inference: { call: recordingCall().call, assignments } }),
+    ).toThrow(/briefTargets\.aimRatio must be between minRatio and maxRatio/);
   });
 });
 
@@ -166,6 +171,7 @@ describe("TC-6.2a: missing guard config fills defaults (AC-6.2)", () => {
     const { call } = recordingCall();
     expect(() =>
       initLhc({
+        tokenFamily: "o200k",
         mode: "manual",
         inference: {
           call,
@@ -181,7 +187,7 @@ describe("TC-6.2a: missing guard config fills defaults (AC-6.2)", () => {
 describe("TC-6.4a: inference types resolve to a default provider lane and model (AC-6.4)", () => {
   it("with no explicit overrides, every inference op routes to the default codex / gpt-5.4-mini lane with thinking none", async () => {
     const { call, log } = recordingCall();
-    const sdk = initLhc({ mode: "manual", inference: { call } });
+    const sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inference: { call } });
     for (const op of INFERENCE_OPS) {
       await op.run(sdk);
     }
@@ -198,6 +204,7 @@ describe("partial assignment overrides merge defaults", () => {
   it("preserves thinking none when override omits thinking", async () => {
     const { call, log } = recordingCall();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inference: {
         call,
@@ -212,6 +219,7 @@ describe("partial assignment overrides merge defaults", () => {
 
   it("preserves detailed_turn_compression target ratios when override omits them", () => {
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inference: {
         call: recordingCall().call,
@@ -230,6 +238,7 @@ describe("partial assignment overrides merge defaults", () => {
   it("allows explicit thinking override", async () => {
     const { call, log } = recordingCall();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       mode: "manual",
       inference: {
         call,

@@ -8,7 +8,15 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, type MessageEventInput, messages, threads, turns, type WorkItemRecord } from "../src/index.js";
 import { listItems, type WorkOwner } from "../src/shared-tech/work-queue/index.js";
-import { openRaw, setIntakeClock, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
+import {
+  o200k,
+  openRaw,
+  setIntakeClock,
+  type TempStore,
+  tempStore,
+  validEvent,
+  withEstimator,
+} from "./fixtures/index.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -27,7 +35,7 @@ async function createThread(): Promise<string> {
 }
 
 async function send(filePath: string, batch: MessageEventInput[]) {
-  const result = await intakeStream.messageEvents({ filePath }, batch);
+  const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
   if (!result.ok) throw new Error(`fixture batch failed: ${result.error.reason}`);
   return result.value;
 }
@@ -303,10 +311,12 @@ describe("architecture-risk: durability and rollback over the complete record su
 
     // A valid prefix that would queue work, then one invalid event: the
     // batch must reject whole and queue nothing.
-    const rejected = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      { ...validEvent("user_prompt"), eventKind: "bogus" } as unknown as MessageEventInput,
-    ]);
+    const rejected = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt"),
+        { ...validEvent("user_prompt"), eventKind: "bogus" } as unknown as MessageEventInput,
+      ]),
+    );
     expect(rejected.ok).toBe(false);
     if (rejected.ok) return;
     expect(rejected.error.code).toBe("invalid_event");
@@ -438,10 +448,9 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
     setIntakeWalkHook((_db, eventIndex) => {
       if (eventIndex === 1) throw new Error("induced mid-walk failure after enqueue");
     });
-    const rejected = await intakeStream.messageEvents({ filePath }, [
-      validEvent("user_prompt"),
-      validEvent("assistant_text"),
-    ]);
+    const rejected = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("assistant_text")]),
+    );
     expect(rejected.ok).toBe(false);
 
     expect(rawWorkItemCount(filePath)).toBe(0);

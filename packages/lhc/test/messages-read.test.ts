@@ -18,6 +18,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { o200k, withEstimator } from "./fixtures/tokens.js";
 
 // Long enough that any view-form shortening would be visible: show must
 // return this verbatim (AC-3.2's record-not-view contract).
@@ -41,7 +42,7 @@ interface ReadFixture {
 // m6 prompt, m7 text (turn 2). Source event orders 1,2,3,4,6,7.
 async function readFixture(store: TempStore): Promise<ReadFixture> {
   const double = createInferenceCallbacksDouble();
-  const sdk = initLhc({ inferenceCallbacks: double, mode: "manual" });
+  const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({
     filePath,
@@ -100,13 +101,13 @@ function queuedFor(filePath: string, owner: WorkOwner) {
 // boundary/zone through status, derived-form rows, and the event log. A read
 // that mutates any of these fails the before/after deep-equal.
 async function observableState(filePath: string): Promise<Record<string, unknown>> {
-  return {
+  return withEstimator(o200k, async () => ({
     events: await intakeStream.listEvents({ filePath }),
     messageWork: queuedFor(filePath, "messages"),
     turnWork: queuedFor(filePath, "turns"),
     viewStatus: await threadView.status({ filePath }),
     derivations: readDerivedForms(filePath),
-  };
+  }));
 }
 
 let store: TempStore;
@@ -274,7 +275,11 @@ describe("architecture risk: reads are read-only and inference-callback-free (DD
 // rows. The background read-only proof needs the pending state the manual
 // read-only proof above cannot manufacture.
 async function pendingWorkThread(): Promise<string> {
-  const seeder = initLhc({ inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+  const seeder = initLhc({
+    tokenFamily: "o200k",
+    inferenceCallbacks: createInferenceCallbacksDouble(),
+    mode: "manual",
+  });
   const filePath = store.threadPath();
   const created = await seeder.threads.newThread({
     filePath,
@@ -327,7 +332,7 @@ describe("architecture risk: background reads schedule no catch-up drain (DD-6, 
     // list or show fired it. The touch-suppressed read scope is what stops it;
     // this is the production-path proof a manual-mode no-op seam cannot give.
     const bgDouble = createInferenceCallbacksDouble();
-    const bg = initLhc({ inferenceCallbacks: bgDouble, mode: "background" });
+    const bg = initLhc({ tokenFamily: "o200k", inferenceCallbacks: bgDouble, mode: "background" });
     const captured = bgDouble.captureInputs();
     const before = rawWorkAndForms(filePath);
 

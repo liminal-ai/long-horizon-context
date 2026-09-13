@@ -58,6 +58,7 @@ import {
 } from "./shared-tech/index.js";
 import * as loggingDomain from "./shared-tech/logging/index.js";
 import { DEFAULT_PROMPT_NAMES, PROMPT_REGISTRY } from "./shared-tech/prompts/index.js";
+import { TokenEstimator } from "./shared-tech/token-counting/index.js";
 import { mapWorkQHandlers, type WorkHandlerMap, type WorkKind } from "./shared-tech/work-queue/index.js";
 import * as threadViewDomain from "./thread-view/index.js";
 import { resolveViewConfig } from "./thread-view/index.js";
@@ -267,8 +268,20 @@ export {
   PROMPT_NAMES,
 } from "./shared-tech/prompts/index.js";
 export {
-  estimateTokens,
+  billedSignatureTokens,
+  FAMILIES_CATALOG,
+  type FamiliesFile,
+  type FamiliesOverlay,
+  type FamilySpec,
+  type ModelFamilyMatch,
+  mergeFamiliesCatalog,
+  type ResolvedTokenFamily,
+  resolveTokenFamily,
   TOKEN_ESTIMATOR_ID,
+  TokenEstimator,
+  type TokenFamily,
+  type TokenFamilySource,
+  type TokenSlice,
 } from "./shared-tech/token-counting/index.js";
 export {
   type ClaimedWorkItem,
@@ -657,6 +670,10 @@ export function initLhc(config: SdkConfig): Lhc {
     inferenceCallbacks = directCallbacks;
   }
 
+  if (typeof config.tokenFamily !== "string" || config.tokenFamily.trim() === "") {
+    throw new TypeError(`${INIT_CONFIG_PREFIX}: tokenFamily must be a non-empty string`);
+  }
+
   const resolved: ResolvedSdkConfig = {
     inferenceCallbacks,
     mode: config.mode,
@@ -674,6 +691,8 @@ export function initLhc(config: SdkConfig): Lhc {
     // Built-ins merged with user profiles by name; band sums and visibility
     // budgets validated, throwing with the violated setting named.
     view: resolveViewConfig(config.view),
+    tokenFamily: config.tokenFamily,
+    tokenEstimator: new TokenEstimator(config.tokenFamily, config.tokenFamilies),
   };
   requirePositive(resolved.guards.smoothedPrompt.maxInferenceTokens, "guards.smoothedPrompt.maxInferenceTokens");
   requirePositive(resolved.guards.smoothedPrompt.suspiciousOutputRatio, "guards.smoothedPrompt.suspiciousOutputRatio");
@@ -750,6 +769,7 @@ export function initLhc(config: SdkConfig): Lhc {
           touch: (filePath, db) => scheduler.touch(filePath, db),
           view: resolved.view,
           config: resolved,
+          tokenEstimator: resolved.tokenEstimator,
           drain: (filePath, opts) => runDrain(filePath, drainDeps, opts),
         }
       : {
@@ -757,6 +777,7 @@ export function initLhc(config: SdkConfig): Lhc {
           touch: () => {},
           view: resolved.view,
           config: resolved,
+          tokenEstimator: resolved.tokenEstimator,
           drain: (filePath, opts) => runDrain(filePath, drainDeps, opts),
         };
 

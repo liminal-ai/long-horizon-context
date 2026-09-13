@@ -66,6 +66,7 @@ import {
   appendStageLog,
   type BoundaryRow,
   claimLhcWriter,
+  deleteBoundary,
   findContinuationTurnFromForceKey,
   insertAttemptIntent,
   listBoundaries,
@@ -88,7 +89,6 @@ import {
   releaseLhcWriter,
   type StageName,
   type StoredCompactContinuationReceipt,
-  deleteBoundary,
   upsertBoundary,
   type WriterClaimRow,
 } from "./store.js";

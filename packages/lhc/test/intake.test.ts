@@ -7,12 +7,14 @@ import { type EventRecord, intakeStream, type MessageEventInput, threads } from 
 import {
   conversationTurn,
   eventBatch,
+  o200k,
   openRaw,
   setIntakeClock,
   setIntakeWalkHook,
   type TempStore,
   tempStore,
   validEvent,
+  withEstimator,
 } from "./fixtures/index.js";
 
 let store: TempStore;
@@ -44,13 +46,13 @@ describe("Flow 2 (SDK): event recording", () => {
     const batchOne = eventBatch(["user_prompt", "assistant_text", "tool_call"]);
     const batchTwo = eventBatch(["tool_result", "runtime_note", "turn_end"]);
 
-    const first = await intakeStream.messageEvents({ filePath }, batchOne);
+    const first = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batchOne));
     expect(first.ok).toBe(true);
     if (!first.ok) return;
     expect(first.value.events.map((e) => e.outcome)).toEqual(["recorded", "recorded", "recorded"]);
     expect(first.value.threadPosition.lastEventOrder).toBe(3);
 
-    const second = await intakeStream.messageEvents({ filePath }, batchTwo);
+    const second = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batchTwo));
     expect(second.ok).toBe(true);
     if (!second.ok) return;
     expect(second.value.threadPosition.lastEventOrder).toBe(6);
@@ -70,7 +72,7 @@ describe("Flow 2 (SDK): event recording", () => {
 
   it("TC-2.8: an empty batch is a caller error and records nothing", async () => {
     const filePath = await createThread();
-    const result = await intakeStream.messageEvents({ filePath }, []);
+    const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, []));
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.errorClass).toBe("caller_error");
@@ -98,11 +100,10 @@ describe("Flow 2 (SDK): event recording", () => {
     const pathB = await createThread();
 
     const batch = eventBatch(["user_prompt", "assistant_text", "tool_call", "turn_end"]);
-    const byId = await intakeStream.messageEvents(
-      { threadId: createdA.value.threadId, registryPath: store.registryPath },
-      batch,
+    const byId = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ threadId: createdA.value.threadId, registryPath: store.registryPath }, batch),
     );
-    const byPath = await intakeStream.messageEvents({ filePath: pathB }, batch);
+    const byPath = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath: pathB }, batch));
     expect(byId.ok).toBe(true);
     expect(byPath.ok).toBe(true);
     if (!byId.ok || !byPath.ok) return;
@@ -130,7 +131,7 @@ describe("Flow 2 (SDK): event recording", () => {
   it("architecture-risk: mid-walk failure rolls the whole batch back to baseline", async () => {
     const filePath = await createThread();
     const baselineBatch = eventBatch(["user_prompt", "assistant_text"]);
-    const recorded = await intakeStream.messageEvents({ filePath }, baselineBatch);
+    const recorded = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, baselineBatch));
     expect(recorded.ok).toBe(true);
     const baseline = await readBack(filePath);
     expect(baseline).toHaveLength(2);
@@ -140,7 +141,9 @@ describe("Flow 2 (SDK): event recording", () => {
     setIntakeWalkHook((db, eventIndex) => {
       if (eventIndex === 0) db.close();
     });
-    const result = await intakeStream.messageEvents({ filePath }, eventBatch(["tool_call", "tool_result", "turn_end"]));
+    const result = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, eventBatch(["tool_call", "tool_result", "turn_end"])),
+    );
     setIntakeWalkHook(null);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -156,7 +159,7 @@ describe("Flow 2 (SDK): event recording", () => {
     setIntakeWalkHook((db, eventIndex) => {
       if (eventIndex === 1) db.close();
     });
-    const result = await intakeStream.messageEvents({ filePath }, conversationTurn());
+    const result = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, conversationTurn()));
     setIntakeWalkHook(null);
     expect(result.ok).toBe(false);
     if (result.ok) return;
@@ -179,7 +182,7 @@ describe("Flow 2 (SDK): event recording", () => {
   it("architecture-risk: restart survival — reopen sees the identical record", async () => {
     const filePath = await createThread();
     const batch = conversationTurn();
-    const recorded = await intakeStream.messageEvents({ filePath }, batch);
+    const recorded = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(recorded.ok).toBe(true);
 
     // Every SDK operation opens and closes its own handle, so each read-back
@@ -208,9 +211,11 @@ describe("Flow 2 (SDK): event recording", () => {
       // If rejection touched the transaction path it would block on the held
       // lock and surface SQLITE_BUSY as storage_failure; pure validation
       // returns the caller error immediately instead.
-      const result = await intakeStream.messageEvents({ filePath }, [
-        { ...validEvent("user_prompt"), eventKind: "bogus" } as unknown as MessageEventInput,
-      ]);
+      const result = await withEstimator(o200k, () =>
+        intakeStream.messageEvents({ filePath }, [
+          { ...validEvent("user_prompt"), eventKind: "bogus" } as unknown as MessageEventInput,
+        ]),
+      );
       expect(result.ok).toBe(false);
       if (!result.ok) {
         expect(result.error.errorClass).toBe("caller_error");

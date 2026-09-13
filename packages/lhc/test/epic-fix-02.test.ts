@@ -65,11 +65,7 @@ async function newThread(name: string): Promise<string> {
 }
 
 function sdkFor(inferenceCallbacks: InferenceCallbacksDouble, mode: SdkConfig["mode"]): Lhc {
-  return initLhc({
-    inferenceCallbacks,
-    mode,
-    lease: { durationMs: 1000 },
-  });
+  return initLhc({ tokenFamily: "o200k", inferenceCallbacks, mode, lease: { durationMs: 1000 } });
 }
 
 function liveCount(filePath: string): number {

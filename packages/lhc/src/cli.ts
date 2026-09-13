@@ -7,7 +7,7 @@
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import { initLhc, type Lhc, threads } from "./sdk.js";
+import { FAMILIES_CATALOG, initLhc, type Lhc, threads } from "./sdk.js";
 import type { ErrorResult, OpResult } from "./shared-tech/index.js";
 import { claudeCliInferenceAssignments, createClaudeCliModelCall } from "./shared-tech/inference-claude-cli.js";
 import {
@@ -24,11 +24,11 @@ const HELP = `usage: lhc thread <verb> [flags]
 verbs
   copy    --source-home H --source-thread-id ID --home H2 [--new-id ID | --keep-id] [--file-name NAME] [--cwd DIR] [--title T] [--allow-mid-turn]
   bind    --home H --thread-id ID --host HOST --session-id SID
-  note    --home H --thread-id ID --from SOURCE_ID [--source-home H0] [--seat NAME]
+  note    --home H --thread-id ID --from SOURCE_ID --token-family SLUG [--source-home H0] [--seat NAME]
   health  --home H --thread-id ID [--json]
-  repair  --home H --thread-id ID [--limit N] [--rounds N] [--claude-bin PATH]
+  repair  --home H --thread-id ID --token-family SLUG [--limit N] [--rounds N] [--claude-bin PATH]
   export  --home H --thread-id ID [--out FILE]
-  fork    --source-home H --source-thread-id ID --source-host HOST0 --home H2 --host HOST [--session-id SID] [--new-id ID] [--cwd DIR] [--title T] [--seat NAME]
+  fork    --source-home H --source-thread-id ID --source-host HOST0 --home H2 --host HOST --token-family SLUG [--session-id SID] [--new-id ID] [--cwd DIR] [--title T] [--seat NAME]
           [--no-repair] [--limit N] [--rounds N] [--compact | --no-compact] [--compact-target TOKENS] [--claude-bin PATH]
 
 hosts: ${FORK_HOSTS.join(", ")}; source only: ${SOURCE_ONLY_HOSTS.join(", ")} (hermes keeps records per profile under
@@ -37,6 +37,7 @@ hosts: ${FORK_HOSTS.join(", ")}; source only: ${SOURCE_ONLY_HOSTS.join(", ")} (h
 fork order: copy, identity note, repair, compact, bind. It compacts under the "handoff" profile when the
 source and target hosts use different providers; --compact forces it, --no-compact suppresses it.
 codex-lhc keys the record by its rollout uuid (--new-id and --session-id are one value, minted when absent).
+--token-family is required for note, repair, and fork. Known slugs: ${Object.keys(FAMILIES_CATALOG.families).sort().join(", ")}.
 `;
 
 const REFUSAL_CODES = new Set([
@@ -142,10 +143,21 @@ function compactChoice(flags: Flags): ForkCompactChoice {
   return force ? "always" : suppress ? "never" : "auto";
 }
 
+function tokenFamilyOf(flags: Flags): string {
+  const slug = str(flags, "token-family");
+  const known = Object.keys(FAMILIES_CATALOG.families).sort().join(", ");
+  if (slug === undefined) throw new CliRefusal("usage", `--token-family is required (known: ${known})`);
+  if (!Object.hasOwn(FAMILIES_CATALOG.families, slug)) {
+    throw new CliRefusal("usage", `--token-family ${slug} is not a known family (known: ${known})`);
+  }
+  return slug;
+}
+
 function instance(flags: Flags): Lhc {
   const binary = str(flags, "claude-bin") ?? process.env.LHC_CLAUDE_BIN ?? join(homedir(), ".local", "bin", "claude");
   return initLhc({
     mode: "manual",
+    tokenFamily: tokenFamilyOf(flags),
     inference: {
       call: createClaudeCliModelCall({ binary, env: process.env }),
       assignments: claudeCliInferenceAssignments(),
@@ -194,7 +206,7 @@ async function note(flags: Flags): Promise<string> {
   const seat = str(flags, "seat");
   if (sourceHome !== undefined) input.sourceHome = sourceHome;
   if (seat !== undefined) input.seat = seat;
-  const receipt = unwrap(await threads.writeIdentityNote(input));
+  const receipt = unwrap(await instance(flags).threads.writeIdentityNote(input));
   return `${receipt.messageId} ${receipt.text}`;
 }
 
@@ -272,18 +284,19 @@ async function fork(flags: Flags): Promise<string> {
   const copied = unwrap(await threads.copyThread(copyInput));
   const ref: threads.ThreadRef = { threadId: copied.threadId, registryPath: registryOf(home) };
 
-  const noteInput: threads.IdentityNoteInput = { ref, sourceThreadId: copied.sourceThreadId };
-  const sourceHome = str(flags, "source-home");
-  const seat = str(flags, "seat");
-  if (sourceHome !== undefined) noteInput.sourceHome = sourceHome;
-  if (seat !== undefined) noteInput.seat = seat;
-  unwrap(await threads.writeIdentityNote(noteInput));
-
   let sdk: Lhc | undefined;
   const sdkOnce = (): Lhc => {
     sdk ??= instance(flags);
     return sdk;
   };
+
+  const noteInput: threads.IdentityNoteInput = { ref, sourceThreadId: copied.sourceThreadId };
+  const sourceHome = str(flags, "source-home");
+  const seat = str(flags, "seat");
+  if (sourceHome !== undefined) noteInput.sourceHome = sourceHome;
+  if (seat !== undefined) noteInput.seat = seat;
+  unwrap(await sdkOnce().threads.writeIdentityNote(noteInput));
+
   let repairText = "repaired=0 failed=0 deferred=0 remaining=skipped";
   if (flags.get("no-repair") !== true) {
     repairText = repairLine(await repair(flags, sdkOnce(), ref));

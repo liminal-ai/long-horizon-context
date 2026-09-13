@@ -37,6 +37,7 @@ afterAll(() => {
 
 function manualSdk(view?: Parameters<typeof initLhc>[0]["view"]): Lhc {
   return initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: createInferenceCallbacksDouble(),
     mode: "manual",
     ...(view === undefined ? {} : { view }),

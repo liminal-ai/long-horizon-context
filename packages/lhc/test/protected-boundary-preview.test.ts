@@ -23,6 +23,7 @@ afterEach(() => {
 
 function sdk(): Lhc {
   return initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: createInferenceCallbacksDouble(),
     mode: "manual",
     view: { visibility: { maxTokens: 500, targetTokens: 80 } },

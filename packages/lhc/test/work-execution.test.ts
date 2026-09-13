@@ -31,6 +31,7 @@ import {
   tempStore,
   validEvent,
 } from "./fixtures/index.js";
+import { o200k, withEstimator } from "./fixtures/tokens.js";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -77,6 +78,7 @@ function manualSdk(
   } = {},
 ): Lhc {
   const sdk = initLhc({
+    tokenFamily: "o200k",
     inferenceCallbacks: double,
     mode: "manual",
     clock: overrides.clock ?? (() => new Date()),
@@ -284,6 +286,7 @@ describe("TC-1.2 / AC-1.2: mid-drain queueing coalesces into at most one further
     const double = createInferenceCallbacksDouble();
     double.delayKind("prompt_smoothing", 100);
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: double,
       mode: "background",
       lease: { durationMs: 1000 },
@@ -314,6 +317,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
   it("an intake batch is processed with no drain call; drainSettled is the completion signal", async () => {
     const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: double,
       mode: "background",
       lease: { durationMs: 1000 },
@@ -337,6 +341,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
   it("sync derive queued behind an older head wakes the background scheduler", async () => {
     const double = createInferenceCallbacksDouble();
     const background = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: double,
       mode: "background",
       lease: { durationMs: 1000 },
@@ -394,12 +399,15 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     // Build the leftover state with no background scheduler installed: rows
     // accumulate exactly as a dead process would have left them.
     const { filePath } = await newThread();
-    const seeded = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("turn_end")]);
+    const seeded = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("turn_end")]),
+    );
     expect(seeded.ok).toBe(true);
     expect(liveCount(filePath)).toBe(2);
 
     const double = createInferenceCallbacksDouble();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: double,
       mode: "background",
       lease: { durationMs: 1000 },
@@ -430,7 +438,9 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
 
   it("first-touch catch-up fails an expired claimed head and drains the item behind it", async () => {
     const { filePath } = await newThread();
-    const seeded = await intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("turn_end")]);
+    const seeded = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("turn_end")]),
+    );
     expect(seeded.ok).toBe(true);
 
     const expiresAt = new Date(Date.now() + 35).toISOString();
@@ -444,6 +454,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: double,
       mode: "background",
       lease: { durationMs: 1000 },
@@ -609,6 +620,7 @@ describe("claim ownership fencing", () => {
   function deferredMessageSdk(now: { ms: number }) {
     type Scripted = { content: string; mismatchedWrite?: boolean };
     const sdk = initLhc({
+      tokenFamily: "o200k",
       inferenceCallbacks: createInferenceCallbacksDouble(),
       mode: "manual",
       clock: () => new Date(now.ms),
