@@ -52,6 +52,8 @@ describe("segment fold", () => {
   });
   test("threshold is half the full share; the end event is keyed to the wire line and marked completed", () => {
     expect(segmentThresholdTokens(60_000, 30)).toBe(9_000);
+    // #viewTarget is now lhcLowerBound. At a 150k bound the segment threshold is 22_500.
+    expect(segmentThresholdTokens(150_000, 30)).toBe(22_500);
     const end = segmentEndEvent("wire-uuid", "2026-09-08T00:00:00.000Z", "2026-09-08T00:01:00.000Z");
     expect(end.idempotencyKey).toBe("claude-lhc:wire-uuid:0:turn_end");
     expect(end.payload).toEqual({

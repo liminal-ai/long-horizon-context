@@ -51,7 +51,6 @@ import {
   type Lhc,
   type MessageEventInput,
   type ThreadRef,
-  type TurnRecord,
 } from "lhc";
 import { ToolBatch } from "./capture/batch.js";
 import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/mapper.js";
@@ -66,6 +65,13 @@ import { bindSession, createLhc, createThread, resolveSession, threadRef } from 
 import { writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
 import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
+import {
+  formatTokenFamilyLog,
+  isRealModelId,
+  laterModelObservation,
+  type ResolvedTokenFamily,
+  seedTokenFamilyFromStartModel,
+} from "./token-family.js";
 
 export interface SessionIO {
   emit(message: SDKMessage): void;
@@ -95,23 +101,10 @@ async function labelNativeSession(
   }
 }
 
-/** Provider-reported context (input + cache) at which an automatic compact runs when no `autoCompactWindow` is configured. */
-const DEFAULT_AUTO_COMPACT_TRIGGER = 150_000;
-/** LHC-token size the rebuilt view aims for, capped at a share of the auto-compact trigger so a compact clears the window. */
-const DEFAULT_VIEW_TARGET_TOKENS = 60_000;
 /** The full share of the "continuation" profile the rebuild compacts with (lhc thread-view/internal/profiles.ts). */
 const CONTINUATION_FULL_SHARE_PERCENT = 30;
-const VIEW_TARGET_TRIGGER_SHARE = 0.4;
 /** Longest a compact waits for queued derivations, so bands assemble from renderings rather than truncated excerpts. */
 const DERIVATION_WAIT_MS = 45_000;
-/** A view that would evict recorded turns is retried larger, up to this multiple of the target ... */
-const MAX_VIEW_TARGET_MULTIPLE = 4;
-/**
- * ... and never past this share of the trigger, so the rebuilt view plus the system prompt and
- * tool schemas (~26k tokens with the account's MCP connectors) stays under the trigger: the next
- * boundary after a swap cannot compact again at once.
- */
-const MAX_VIEW_RETRY_TRIGGER_SHARE = 0.7;
 const FALLBACK_CLAUDE_CODE_VERSION = "2.1.259";
 /** The stop reason the PostToolUse hook hands the CLI; it stays inside the stopped session. */
 const MID_TURN_STOP_REASON = "lhc mid-turn compact";
@@ -175,22 +168,46 @@ interface Generation {
   superseded: boolean;
 }
 
-/** The view size a compact aims for: a fixed target, never more than a share of the trigger it must clear. */
-export function viewTargetFor(autoCompactTrigger: number): number {
-  return Math.max(1, Math.min(DEFAULT_VIEW_TARGET_TOKENS, Math.floor(autoCompactTrigger * VIEW_TARGET_TRIGGER_SHARE)));
+function requireFiniteSetting(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(`${name} is required and must be a finite number`);
+  }
+  return value;
 }
 
 /**
- * Closed turns with recorded messages that a view no longer represents. The view's
- * coverage edge is the oldest message it still carries; a turn that closed at or before
- * that edge fell off the far side of the bands and the model would never see it again.
- * A thread that fits the full share has no bands, `coveredFrom` 0, and nothing evicted.
+ * Read the two host-owned compact numbers from forwarded settings and strip them
+ * so they never reach the child. t3code writes both; there is no sidecar default.
  */
-export function evictedTurns(turns: readonly TurnRecord[], coveredFrom: number): string[] {
-  return turns
-    .filter((turn) => turn.status === "closed" && turn.memberMessageIds.length > 0)
-    .filter((turn) => turn.closedAtEventOrder !== undefined && turn.closedAtEventOrder <= coveredFrom)
-    .map((turn) => turn.turnId);
+export function takeHostCompactSettings(settings: Record<string, unknown>): {
+  autoCompactTrigger: number;
+  lhcLowerBound: number;
+  childSettings: Record<string, unknown>;
+} {
+  const autoCompactTrigger = requireFiniteSetting(settings["autoCompactWindow"], "autoCompactWindow");
+  const lhcLowerBound = requireFiniteSetting(settings["lhcLowerBound"], "lhcLowerBound");
+  if (lhcLowerBound >= autoCompactTrigger) {
+    throw new Error("lhcLowerBound must be less than autoCompactWindow");
+  }
+  const childSettings = { ...settings };
+  delete childSettings["autoCompactWindow"];
+  delete childSettings["lhcLowerBound"];
+  return { autoCompactTrigger, lhcLowerBound, childSettings };
+}
+
+export function formatCompactRuntimeNote(args: {
+  trigger: CompactTrigger;
+  preTokens: number;
+  totalTokens: number;
+  lowerBound: number;
+  compactPoint: number;
+  coveredFrom: number;
+  degradedCount: number;
+  gapsCount: number;
+  bands: unknown;
+  family: ResolvedTokenFamily;
+}): string {
+  return `[lhc compact:${args.trigger}] provider context ${args.preTokens} tokens; rebuilt view ${args.totalTokens} tokens (target ${args.lowerBound}); compact point ${args.compactPoint}, covered from ${args.coveredFrom}; degraded ${args.degradedCount}, gaps ${args.gapsCount}; bands ${JSON.stringify(args.bands)}; family ${args.family.family} (${args.family.source})`;
 }
 
 export class ClaudeLhcSession {
@@ -227,10 +244,13 @@ export class ClaudeLhcSession {
   #permissionMode: PermissionMode | undefined;
   #maxThinkingTokens: number | null | undefined;
   #claudeCodeVersion = FALLBACK_CLAUDE_CODE_VERSION;
-  #autoCompactTrigger = DEFAULT_AUTO_COMPACT_TRIGGER;
+  #autoCompactTrigger = 0;
   /** Start option `lhc.forceRebuildFailure`: proof scripts only; see protocol.ts. */
   #forceRebuildFailure = false;
-  #viewTarget = DEFAULT_VIEW_TARGET_TOKENS;
+  /** Configured `lhcLowerBound`; also the budget `segmentThresholdTokens` tracks. */
+  #viewTarget = 0;
+  #tokenFamily: ResolvedTokenFamily = seedTokenFamilyFromStartModel("");
+  #lastModelId: string | null = null;
   #closed = false;
 
   constructor(io: SessionIO) {
@@ -247,17 +267,20 @@ export class ClaudeLhcSession {
     this.#forceRebuildFailure = sidecarOptions.forceRebuildFailure === true;
     if (this.#forceRebuildFailure) this.#io.log("start option lhc.forceRebuildFailure: every compact rebuild will fail (proof mode)");
     const settingsRecord = typeof settings === "object" && settings !== null ? { ...(settings as Record<string, unknown>) } : {};
-    if (typeof settingsRecord["autoCompactWindow"] === "number") this.#autoCompactTrigger = settingsRecord["autoCompactWindow"];
-    this.#viewTarget = viewTargetFor(this.#autoCompactTrigger);
-    delete settingsRecord["autoCompactWindow"]; // LHC owns compaction; the native meter setting never reaches the child
+    const compact = takeHostCompactSettings(settingsRecord);
+    this.#autoCompactTrigger = compact.autoCompactTrigger;
+    this.#viewTarget = compact.lhcLowerBound;
     this.#env = { ...((env as NodeJS.ProcessEnv | undefined) ?? process.env), DISABLE_AUTO_COMPACT: "1" };
-    this.#base = { ...rest, ...(Object.keys(settingsRecord).length > 0 ? { settings: settingsRecord } : {}) };
+    this.#base = { ...rest, ...(Object.keys(compact.childSettings).length > 0 ? { settings: compact.childSettings } : {}) };
     if (typeof rest["cwd"] === "string") this.#cwd = rest["cwd"];
     if (typeof rest["pathToClaudeCodeExecutable"] === "string") this.#claudeBin = rest["pathToClaudeCodeExecutable"];
     if (typeof rest["model"] === "string") this.#model = rest["model"];
     if (typeof rest["permissionMode"] === "string") this.#permissionMode = rest["permissionMode"] as PermissionMode;
     if (typeof rest["maxThinkingTokens"] === "number") this.#maxThinkingTokens = rest["maxThinkingTokens"];
-    this.#lhc = createLhc({ claudeBin: this.#claudeBin, env: this.#env });
+    this.#tokenFamily = seedTokenFamilyFromStartModel(rest["model"]);
+    this.#lastModelId = isRealModelId(rest["model"]) ? rest["model"] : null;
+    this.#io.log(formatTokenFamilyLog(this.#tokenFamily, rest["model"]));
+    this.#lhc = createLhc({ claudeBin: this.#claudeBin, env: this.#env, tokenFamily: this.#tokenFamily.family });
 
     if (typeof resume === "string" && resume !== "") {
       const threadId = await resolveSession(resume);
@@ -320,6 +343,7 @@ export class ClaudeLhcSession {
       case "setModel": {
         const model = typeof record["model"] === "string" ? record["model"] : undefined;
         this.#model = model;
+        this.#observeLaterModel(model);
         await gen.query.setModel(model);
         return undefined;
       }
@@ -501,10 +525,14 @@ export class ClaudeLhcSession {
       const pending = (message.mcp_servers ?? []).filter((server) => server.status === "pending").map((server) => server.name);
       if (pending.length > 0) this.#io.log(`init ${message.session_id}: ${message.tools.length} tool(s); ${pending.length} MCP server(s) still pending (${pending.join(", ")}), so usage reads low until they join the tool list`);
     }
-    if (message.type === "assistant" && message.parent_tool_use_id === null && !this.#turnOpen) {
-      // Output without a prompt of ours (a task notification the CLI answered): the turn is open.
-      this.#turnOpen = true;
-      this.#turnStartedAt = new Date().toISOString();
+    if (message.type === "assistant" && message.parent_tool_use_id === null) {
+      const inner = (message as { message?: { model?: unknown } }).message;
+      this.#observeLaterModel(inner?.model);
+      if (!this.#turnOpen) {
+        // Output without a prompt of ours (a task notification the CLI answered): the turn is open.
+        this.#turnOpen = true;
+        this.#turnStartedAt = new Date().toISOString();
+      }
     }
     this.#trackTools(message);
     if (this.#stopping !== null && (message.type === "user" || message.type === "result")) this.#io.log(`${stamp()} wire after stop: ${message.type}${message.type === "result" ? `/${message.subtype} terminal=${String((message as unknown as Record<string, unknown>)["terminal_reason"])}` : ""}`);
@@ -702,39 +730,28 @@ export class ClaudeLhcSession {
     } as unknown as SDKMessage;
   }
 
+  /** Log-only: a later real model id does not recreate the LHC SDK. */
+  #observeLaterModel(modelId: unknown): void {
+    const observed = laterModelObservation(this.#lastModelId, modelId, this.#tokenFamily);
+    if (observed === null) return;
+    this.#lastModelId = observed.modelId;
+    this.#io.log(observed.log);
+  }
+
   /** Waits for derivations, installs the compacted view, records the marker, and projects the view into a new generation. */
   async #rebuild(trigger: CompactTrigger, preTokens: number): Promise<{ next: Generation; postTokens: number }> {
     if (this.#forceRebuildFailure) throw new Error("rebuild failure forced by the start option lhc.forceRebuildFailure");
     await this.#awaitDerivations();
-    // A compact never makes the model forget what the record still holds. The view aims at a
-    // fixed target: a thread that fits the full share stays whole in the tail (no bands), a
-    // larger one lands its older turns in bands. If the installed view still evicted turns
-    // past the far edge of the bands, retry larger before accepting it.
-    let lowerBound = this.#viewTarget;
-    const retryCap = Math.max(this.#viewTarget, Math.min(this.#viewTarget * MAX_VIEW_TARGET_MULTIPLE, Math.floor(this.#autoCompactTrigger * MAX_VIEW_RETRY_TRIGGER_SHARE)));
-    let receipt: CompactReceipt;
-    for (;;) {
-      const opts = { profile: "continuation", params: { lowerBound } };
-      const preview = await this.#lhc.threadView.previewCompact(this.#thread, opts);
-      if (!preview.ok) throw new Error(`compact preview error: ${preview.error.reason}`);
-      if (preview.value.kind === "error") throw new Error(`compact blocked: ${preview.value.reason}`);
-      const installed = await this.#lhc.threadView.compact(this.#thread, opts);
-      if (!installed.ok) throw new Error(`compact error: ${installed.error.reason}`);
-      receipt = installed.value;
-      const turns = await this.#lhc.turns.listTurns(this.#thread);
-      if (!turns.ok) throw new Error(`LHC turns read failed: ${turns.error.reason}`);
-      const evicted = evictedTurns(turns.value, receipt.coveredFrom);
-      if (evicted.length === 0) break;
-      if (lowerBound >= retryCap) {
-        const warning = `[lhc compact:${trigger}] view at ${lowerBound} tokens (retry cap ${retryCap} for trigger ${this.#autoCompactTrigger}) still drops turns ${evicted.join(", ")} past the band edge; they remain in the record only`;
-        this.#io.log(warning);
-        await this.#lhc.logging.write(this.#thread, { level: "warning", message: warning }).catch(() => undefined);
-        break;
-      }
-      const larger = Math.min(lowerBound * 2, retryCap);
-      this.#io.log(`[lhc compact:${trigger}] view at ${lowerBound} tokens would drop turns ${evicted.join(", ")}; retrying at ${larger}`);
-      lowerBound = larger;
-    }
+    // Build the view once to the configured lower bound. Oldest-turn roll-off is
+    // core's normal compact behavior; this host does not retry larger.
+    const lowerBound = this.#viewTarget;
+    const opts = { profile: "continuation", params: { lowerBound } };
+    const preview = await this.#lhc.threadView.previewCompact(this.#thread, opts);
+    if (!preview.ok) throw new Error(`compact preview error: ${preview.error.reason}`);
+    if (preview.value.kind === "error") throw new Error(`compact blocked: ${preview.value.reason}`);
+    const installed = await this.#lhc.threadView.compact(this.#thread, opts);
+    if (!installed.ok) throw new Error(`compact error: ${installed.error.reason}`);
+    const receipt: CompactReceipt = installed.value;
 
     const continuationTurnId = await this.#openTurnId();
     await this.#intake([{
@@ -754,7 +771,18 @@ export class ClaudeLhcSession {
     // post_tokens is the rebuilt view the model reads next, as stock reports its summary's
     // size alone; the next assistant usage makes the meter exact.
     const postTokens = receipt.totalTokens;
-    const summary = `[lhc compact:${trigger}] provider context ${preTokens} tokens; rebuilt view ${receipt.totalTokens} tokens (target ${lowerBound}); compact point ${receipt.compactPoint}, covered from ${receipt.coveredFrom}; degraded ${receipt.degraded.length}, gaps ${receipt.gaps.length}; bands ${JSON.stringify(receipt.bands)}`;
+    const summary = formatCompactRuntimeNote({
+      trigger,
+      preTokens,
+      totalTokens: receipt.totalTokens,
+      lowerBound,
+      compactPoint: receipt.compactPoint,
+      coveredFrom: receipt.coveredFrom,
+      degradedCount: receipt.degraded.length,
+      gapsCount: receipt.gaps.length,
+      bands: receipt.bands,
+      family: this.#tokenFamily,
+    });
     this.#io.log(summary);
     await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
 

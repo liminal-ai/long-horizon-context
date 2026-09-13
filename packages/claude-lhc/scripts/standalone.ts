@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
-import { initLhc, createDeterministicInferenceCallbacks, threads, type Lhc } from "lhc";
+import { createDeterministicInferenceCallbacks, initLhc, type Lhc, resolveTokenFamily, threads } from "lhc";
 import { nativeMemoryDir } from "../src/nativeSessionFile.ts";
 import type { DriverFrame, SidecarFrame } from "../src/protocol.ts";
 
@@ -103,7 +103,7 @@ const baseOptions = (extra: Record<string, unknown>) => ({
   permissionMode: process.env.PERMISSION_MODE ?? "default",
   ...(process.env.PERMISSION_MODE === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
   includePartialMessages: true,
-  settings: { autoCompactWindow: 300000 }, env: process.env, additionalDirectories: [cwd], ...extra,
+  settings: { autoCompactWindow: 300000, lhcLowerBound: 180000 }, env: process.env, additionalDirectories: [cwd], ...extra,
 });
 
 log("LHC home", LHC_HOME, "cwd", cwd, "secret", SECRET);
@@ -200,7 +200,11 @@ log(`✓ generation ${latest.slice(0, 8)} Read ${memoryFile} and observed ${MEMO
 
 // LHC side.
 const registryPath = join(LHC_HOME, "registry.sqlite");
-const lhc: Lhc = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+const lhc: Lhc = initLhc({
+  mode: "manual",
+  inferenceCallbacks: createDeterministicInferenceCallbacks(),
+  tokenFamily: resolveTokenFamily(MODEL, "anthropic").family,
+});
 const r1 = await threads.resolveAlias({ alias: `t3code-lhc:${first}`, registryPath });
 const r2 = await threads.resolveAlias({ alias: `t3code-lhc:${second}`, registryPath });
 if (!r1.ok || !r2.ok) fail(`alias resolution failed: ${JSON.stringify([r1, r2])}`);

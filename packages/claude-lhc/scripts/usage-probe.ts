@@ -10,7 +10,7 @@ const N = Number(process.env.N ?? 4);
 for (let i = 1; i <= N; i++) {
   const cwd = mkdtempSync(join(tmpdir(), "usage-probe-"));
   const s = new Sidecar(`probe${i}`, LHC_HOME, true);
-  s.send({ type: "start", options: { cwd, model: "claude-sonnet-5", pathToClaudeCodeExecutable: "claude", systemPrompt: "You are a careful agent.", settingSources: [], tools: ["Read"], permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true, includePartialMessages: process.env.PARTIAL !== "0", env: process.env, ...(process.env.STRICT === "1" ? { strictMcpConfig: true, mcpServers: {} } : {}), sessionId: randomUUID(), settings: { autoCompactWindow: 300_000 } } });
+  s.send({ type: "start", options: { cwd, model: "claude-sonnet-5", pathToClaudeCodeExecutable: "claude", systemPrompt: "You are a careful agent.", settingSources: [], tools: ["Read"], permissionMode: "bypassPermissions", allowDangerouslySkipPermissions: true, includePartialMessages: process.env.PARTIAL !== "0", env: process.env, ...(process.env.STRICT === "1" ? { strictMcpConfig: true, mcpServers: {} } : {}), sessionId: randomUUID(), settings: { autoCompactWindow: 300_000, lhcLowerBound: 180_000 } } });
   const t = await s.turn("Reply with just the word: ready");
   const t2 = await s.turn("Reply with just the word: again");
   console.log(`── session ${i}: turn 1 context ${t.context}, turn 2 context ${t2.context}, cwd ${cwd}`);

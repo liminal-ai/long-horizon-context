@@ -50,12 +50,18 @@ export interface LhcInstanceOptions {
   /** Claude executable used for `claude -p` derivation calls. */
   claudeBin: string;
   env: NodeJS.ProcessEnv;
+  /** Tokenizer family slug; resolved by the session from the start-option model before construction. */
+  tokenFamily: string;
 }
 
 /** Background mode so derivations drain while the thread idles; `T3CODE_LHC_NO_INFERENCE=1` swaps in deterministic callbacks. */
 export function createLhc(options: LhcInstanceOptions): Lhc {
   if (process.env.T3CODE_LHC_NO_INFERENCE === "1") {
-    return initLhc({ mode: "background", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    return initLhc({
+      mode: "background",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+      tokenFamily: options.tokenFamily,
+    });
   }
   return initLhc({
     mode: "background",
@@ -64,6 +70,7 @@ export function createLhc(options: LhcInstanceOptions): Lhc {
       assignments: claudeCliInferenceAssignments(),
       timeoutMs: 90_000,
     },
+    tokenFamily: options.tokenFamily,
   });
 }
 

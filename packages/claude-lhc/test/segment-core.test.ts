@@ -17,7 +17,7 @@ const { HARNESS } = await import("../src/capture/mapper.ts");
 
 describe("segment end against core", () => {
   test("closes the canonical turn at the boundary; an immediate compact-style end on the fresh turn is a no-op", async () => {
-    const lhc = createLhc({ claudeBin: "claude", env: process.env });
+    const lhc = createLhc({ claudeBin: "claude", env: process.env, tokenFamily: "claude-2026" });
     try {
       const threadId = await createThread(home, home);
       const thread = threadRef(threadId, home);

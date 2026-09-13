@@ -30,7 +30,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { initLhc, createDeterministicInferenceCallbacks, threads, type Lhc } from "lhc";
+import { createDeterministicInferenceCallbacks, initLhc, type Lhc, resolveTokenFamily, threads } from "lhc";
 import { contextTokens, describe, fail, log, Sidecar, type Wire } from "./lib/sidecar.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -61,7 +61,11 @@ const baseOptions = (cwd: string, extra: Record<string, unknown>) => ({
 const bare = (m: Wire) => m["type"] !== "stream_event";
 
 const registryPath = join(LHC_HOME, "registry.sqlite");
-const lhc: Lhc = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+const lhc: Lhc = initLhc({
+  mode: "manual",
+  inferenceCallbacks: createDeterministicInferenceCallbacks(),
+  tokenFamily: resolveTokenFamily(MODEL, "anthropic").family,
+});
 const record: Record<string, unknown>[] = [];
 
 for (let pass = 1; pass <= PASSES; pass++) {
@@ -72,7 +76,7 @@ for (let pass = 1; pass <= PASSES; pass++) {
   for (const [i, v] of VALUES.entries()) writeFileSync(join(cwd, `value-${i + 1}.txt`), `VALUE_${i + 1}=${v}\n${filler(VALUE_CHARS, 11 + i)}\n`);
   const first = randomUUID();
   const a = new Sidecar(`p${pass}-A`, LHC_HOME, true);
-  a.send({ type: "start", options: baseOptions(cwd, { sessionId: first, settings: { autoCompactWindow: 300_000 } }) });
+  a.send({ type: "start", options: baseOptions(cwd, { sessionId: first, settings: { autoCompactWindow: 300_000, lhcLowerBound: 180_000 } }) });
   const ready = await a.settledReady();
   const B = ready.context;
   const t2 = await a.turn(`Use the Read tool on ${join(cwd, "sample.txt")}, then reply with just the word after SAMPLE=.`);
@@ -86,7 +90,8 @@ for (let pass = 1; pass <= PASSES; pass++) {
   await a.stop();
 
   const b = new Sidecar(`p${pass}-B`, LHC_HOME, false);
-  b.send({ type: "start", options: baseOptions(cwd, { resume: first, settings: { autoCompactWindow: trigger }, ...(FAIL_REBUILD ? { lhc: { forceRebuildFailure: true } } : {}) }) });
+  const lowerBound = Math.min(180_000, Math.max(1, Math.floor(trigger * 0.4)));
+  b.send({ type: "start", options: baseOptions(cwd, { resume: first, settings: { autoCompactWindow: trigger, lhcLowerBound: lowerBound < trigger ? lowerBound : Math.max(1, trigger - 1) }, ...(FAIL_REBUILD ? { lhc: { forceRebuildFailure: true } } : {}) }) });
   const warm = await b.settledReady();
   log(`task sidecar warmed up: settled context ${warm.context} after ${warm.tries} ready turn(s), ${warm.tools} tools (calibrated C1 ${C1}, trigger ${trigger})`);
   if (warm.context < C1 - 2_000 || warm.context > trigger - S) fail(`pass ${pass}: miscalibrated, not a seam failure: task sidecar's settled context ${warm.context} is outside [${C1 - 2_000}, ${trigger - S}]`);
