@@ -20,6 +20,7 @@ export function makeCompactReceipt(overrides: Partial<CompactReceipt> = {}): Com
     degraded: [],
     gaps: [],
     skippedRecords: [],
+    tokenFamily: "o200k",
     renderedBands: [
       { band: "brief" as Band, text: "brief band body" },
       { band: "detailed" as Band, text: "detailed band body" },

@@ -8,7 +8,7 @@ import type { MessageEventInput } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { makeAgentEnd, makeAssistantMessage, makeMessageEnd, makeUserMessage } from "../fixtures/synthetic.js";
 import { type TempStore, tempStore } from "../fixtures/thread.js";
-import { eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
+import { captureSdk, eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -62,7 +62,7 @@ describe("Story 2: graceful interrupt (TC-2.6)", () => {
     });
 
     // The interrupted turn closes at agent_end, and LHC opens the next empty turn.
-    const counts = await turnCounts(threadRef);
+    const counts = await turnCounts(captureSdk(), threadRef);
     expect(counts.closed).toBe(1);
     expect(counts.open).toBe(1);
   });

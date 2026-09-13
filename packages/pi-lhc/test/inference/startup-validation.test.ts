@@ -374,6 +374,7 @@ describe("Story 6: Startup Validation and Assignment Config", () => {
             assignments,
           },
           mode: "background",
+          tokenFamily: "o200k",
           guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
         };
 

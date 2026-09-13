@@ -40,6 +40,7 @@ import { pickThread, type ThreadChoice } from "./lifecycle/picker.js";
 import {
   clearPendingRehydrate,
   LHC_REHYDRATE_COMMAND,
+  peekPendingRehydrateModelPrefs,
   rehydratePiSessionFromLhc,
   setPendingRehydrate,
   takePendingRehydrateModelPrefs,
@@ -72,6 +73,14 @@ import type {
 import { type ContextHookState, type ContextServeOutcome, handleContext } from "./serving/context-hook.js";
 import { registerRetrievalTools } from "./serving/retrieval-tools.js";
 import type { LhcInstance } from "./shared/instance.js";
+import {
+  formatTokenFamilyLog,
+  isRealPiModel,
+  laterModelObservation,
+  type PiModelRef,
+  type ResolvedTokenFamily,
+  seedTokenFamilyFromPiModel,
+} from "./token-family.js";
 
 export {
   type CompactCancelCode,
@@ -142,6 +151,7 @@ export {
 export {
   clearPendingRehydrate,
   LHC_REHYDRATE_COMMAND,
+  peekPendingRehydrateModelPrefs,
   type RehydrateModelPrefs,
   rehydratePiSessionFromLhc,
   setPendingRehydrate,
@@ -151,6 +161,19 @@ export {
 export { durableThreadEntryOf, LHC_THREAD_ENTRY_TYPE } from "./lifecycle/thread-entry.js";
 export { applySessionThreadViewToSessionManager } from "./serving/context.js";
 export type { LhcInstance } from "./shared/instance.js";
+export {
+  formatTokenFamilyChangeLog,
+  formatTokenFamilyLog,
+  isRealModelId,
+  isRealPiModel,
+  laterModelObservation,
+  mapPiProviderToCore,
+  type PiModelRef,
+  type ResolvedTokenFamily,
+  resolveHostTokenFamily,
+  seedTokenFamilyFromPiModel,
+  seedTokenFamilyOrProviderFallback,
+} from "./token-family.js";
 
 /** Capture-bearing hooks from Epic 1 (observe + record). */
 export const EPIC_1_HOOKS = [
@@ -327,11 +350,17 @@ function readDurableThreadId(ctx: ExtensionContext): string | null {
   return null;
 }
 
+function modelForTokenFamily(ctx: ExtensionContext): { provider: string; id: string } | undefined {
+  if (ctx.model !== undefined) return ctx.model;
+  return peekPendingRehydrateModelPrefs()?.model ?? undefined;
+}
+
 /** The default SDK config injects the host ModelCall function that resolves
  *  provider/model through PI's registry and completes through pi-ai when
  *  available. Assignment config is merged over shipped defaults. */
 function defaultBuildSdkConfig(ctx: ExtensionContext, assignmentConfig: unknown = undefined): OpResult<SdkConfig> {
   const assignments = loadAssignmentsImpl(assignmentConfig);
+  const seeded = seedTokenFamilyFromPiModel(modelForTokenFamily(ctx));
 
   return {
     ok: true,
@@ -341,6 +370,7 @@ function defaultBuildSdkConfig(ctx: ExtensionContext, assignmentConfig: unknown 
         assignments,
       },
       mode: "background",
+      tokenFamily: seeded.family,
     },
   };
 }
@@ -414,6 +444,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   let compactPercentagesOverride: ReturnType<typeof parseCompactPercentages> | null = null;
   const modelCompactSettingsFor = (modelId: string | undefined) =>
     withCompactPercentages(resolveModelCompactSettings(modelId, modelCompactSettings), compactPercentagesOverride);
+  let seededTokenFamily: ResolvedTokenFamily = seedTokenFamilyFromPiModel(undefined);
+  let lastTokenFamilyModel: PiModelRef | null = null;
   // Connector-side auto-compact trigger state. In-flight prevents overlap;
   // last-attempt + growth guard prevents hammering a cancelling compact
   // (e.g. capture_incomplete) every turn at the same context size.
@@ -472,6 +504,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // thread and seeds it from the source thread.
   const onSessionStart: PiHookHandler<"session_start"> = async (event, ctx) => {
     compactDiagnostics.clear();
+    seededTokenFamily = seedTokenFamilyFromPiModel(undefined);
+    lastTokenFamilyModel = null;
     autoCompactInFlight = false;
     autoCompactLastAttemptTokens = null;
     compactedSinceSettleCheck = false;
@@ -647,6 +681,14 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     }
 
     state = createSessionState(resolved.value);
+    const seedModel = modelForTokenFamily(ctx);
+    seededTokenFamily = seedTokenFamilyFromPiModel(seedModel);
+    lastTokenFamilyModel = isRealPiModel(seedModel) ? { provider: seedModel.provider, id: seedModel.id } : null;
+    const seedLog = formatTokenFamilyLog(seededTokenFamily, seedModel);
+    if (ctx.hasUI) ctx.ui.notify(seedLog, "info");
+    if (instance !== null) {
+      await instance.sdk.logging.write(state.threadRef, { level: "info", message: seedLog });
+    }
     const durableEntry = durableThreadEntryOf(resolved.value);
     if (durableEntry !== null && readDurableThreadId(ctx) === null) {
       appendThreadEntry?.(durableEntry);
@@ -701,6 +743,8 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
     if (!result.ok) lastDiagnostic = diag("dispose_failed", result.error.reason);
     instance = null;
     captureSession = null;
+    seededTokenFamily = seedTokenFamilyFromPiModel(undefined);
+    lastTokenFamilyModel = null;
     compactDiagnostics.clear();
     contextHookState.lastAttemptTokens = null;
   };
@@ -911,6 +955,14 @@ export function createConnector(deps: ConnectorDeps = {}): Connector {
   // the current SessionEntry id is available synchronously.
   const onModelSelect: PiHookHandler<"model_select"> = async (event, ctx) => {
     if (instance === null || captureSession === null) return;
+    const observed = laterModelObservation(lastTokenFamilyModel, event.model, seededTokenFamily);
+    if (observed !== null) {
+      lastTokenFamilyModel = observed.model;
+      if (ctx.hasUI) ctx.ui.notify(observed.log, "info");
+      if (state !== null) {
+        await instance.sdk.logging.write(state.threadRef, { level: "info", message: observed.log });
+      }
+    }
     await flushPendingMessages(ctx);
     const sourceSeq = nextSourceSeq(captureSession);
     const entryId = latestRuntimeEntryId(

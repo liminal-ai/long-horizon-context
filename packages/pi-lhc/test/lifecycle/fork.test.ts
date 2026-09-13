@@ -229,7 +229,7 @@ describe("Story 4: fork as new thread", () => {
       startupValidationReporter: () => {},
       buildSdkConfig: () => ({
         ok: true,
-        value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: sdkMode },
+        value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: sdkMode, tokenFamily: "o200k" },
       }),
     });
 

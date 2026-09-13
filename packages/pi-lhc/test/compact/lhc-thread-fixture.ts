@@ -46,6 +46,7 @@ export async function buildCompactLhcFixture(store: TempStore): Promise<CompactL
   const sdk = initLhc({
     inferenceCallbacks: createDeterministicInferenceCallbacks(),
     mode: "manual",
+    tokenFamily: "o200k",
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     chunkPolicy: FIXTURE_CHUNK_POLICY,
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
@@ -67,7 +68,11 @@ export async function buildCompactLhcFixture(store: TempStore): Promise<CompactL
 }
 
 export async function buildAllFitsThread(store: TempStore): Promise<CompactLhcFixture> {
-  const sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  const sdk = initLhc({
+    mode: "manual",
+    inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    tokenFamily: "o200k",
+  });
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(created.error.reason);

@@ -1,5 +1,4 @@
-import type { ViewCompactParams } from "lhc";
-import { estimateTokens, type LlmRequestContextMessage, type OpResult, type SessionThreadView } from "lhc";
+import type { LlmRequestContextMessage, OpResult, SessionThreadView, TokenEstimator, ViewCompactParams } from "lhc";
 import type { SessionState } from "../lifecycle/state.js";
 import type {
   ExtensionContext,
@@ -52,8 +51,11 @@ function compactSignal(event: SessionBeforeCompactEvent): { aborted: boolean } {
   };
 }
 
-function servingContextTokens(messages: readonly LlmRequestContextMessage[]): number {
-  return messages.reduce((sum, message) => sum + estimateTokens(message.content.map((part) => part.text).join("")), 0);
+function servingContextTokens(messages: readonly LlmRequestContextMessage[], estimator: TokenEstimator): number {
+  return messages.reduce(
+    (sum, message) => sum + estimator.estimate(message.content.map((part) => part.text).join("")),
+    0,
+  );
 }
 
 function formatTokenThousands(tokens: number): string {
@@ -84,7 +86,7 @@ export async function handleSessionBeforeCompact(
     if (!contextOutcome.ok) {
       return await cancel("compact_error", contextOutcome.error.reason);
     }
-    const servingTokens = servingContextTokens(contextOutcome.value.messages);
+    const servingTokens = servingContextTokens(contextOutcome.value.messages, deps.instance.sdk.config.tokenEstimator);
     // The floor exists for one case: a human typing /compact on a tiny thread
     // where there is nothing to reclaim. Threshold and overflow compacts are
     // forced by context pressure — flooring them can wedge a session whose

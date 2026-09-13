@@ -153,6 +153,7 @@ describe("Story 2: idempotent re-delivery (TC-2.7, idempotency risk)", () => {
     const built = await initInstance(thread.threadRef, {
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
+      tokenFamily: "o200k",
     });
     expect(built.ok).toBe(true);
     if (!built.ok) return;

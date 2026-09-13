@@ -51,7 +51,11 @@ describe("session_before_tree guard", () => {
       newThreadFilePath: () => store.threadPath(),
       buildSdkConfig: () => ({
         ok: true,
-        value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" },
+        value: {
+          inferenceCallbacks: createDeterministicInferenceCallbacks(),
+          mode: "background",
+          tokenFamily: "o200k",
+        },
       }),
     });
     const notices: string[] = [];

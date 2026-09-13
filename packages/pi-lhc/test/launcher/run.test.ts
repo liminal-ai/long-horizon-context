@@ -160,6 +160,7 @@ describe("runPiLhcLauncher", () => {
       buildSdkConfig: () => ({
         inferenceCallbacks: createDeterministicInferenceCallbacks(),
         mode: "background",
+        tokenFamily: "o200k",
       }),
     });
 
@@ -183,6 +184,7 @@ describe("runPiLhcLauncher", () => {
       buildSdkConfig: () => ({
         inferenceCallbacks: createDeterministicInferenceCallbacks(),
         mode: "background",
+        tokenFamily: "o200k",
       }),
     });
 

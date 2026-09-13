@@ -23,7 +23,11 @@ describe("pi-lhc empty-tail splice after selector eviction", () => {
   });
 
   async function newThread() {
-    const sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    const sdk = initLhc({
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+      tokenFamily: "o200k",
+    });
     const filePath = store.threadPath();
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);

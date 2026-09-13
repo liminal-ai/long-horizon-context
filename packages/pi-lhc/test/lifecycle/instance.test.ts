@@ -7,7 +7,7 @@
 // yet, so events are written directly through the instance). Real temp
 // registry/thread throughout (the store is never mocked).
 import { existsSync } from "node:fs";
-import { createDeterministicInferenceCallbacks, inspect, type SdkConfig, type ThreadRef, threads } from "lhc";
+import { createDeterministicInferenceCallbacks, type SdkConfig, type ThreadRef, threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createConnector } from "../../src/index.js";
 import { disposeInstance, initInstance } from "../../src/lifecycle/instance.js";
@@ -25,7 +25,7 @@ afterEach(() => {
 });
 
 function backgroundConfig(): SdkConfig {
-  return { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" };
+  return { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background", tokenFamily: "o200k" };
 }
 
 function idOf(ref: ThreadRef): string {
@@ -63,7 +63,8 @@ describe("Story 1: instance lifecycle", () => {
     // fail-closed early return).
     const instance = connector.getInstance();
     expect(instance).not.toBeNull();
-    expect(instance?.sdk.config.mode).toBe("background");
+    if (instance === null) return;
+    expect(instance.sdk.config.mode).toBe("background");
 
     const state = connector.getState();
     expect(state).not.toBeNull();
@@ -87,7 +88,7 @@ describe("Story 1: instance lifecycle", () => {
     // Observe-only: the connector did not capture or drive the derivation queue
     // on start (capture is Story 2) — the instance only auto-drains in the
     // background, which has nothing to do here.
-    const overview = await inspect.overview(state.threadRef);
+    const overview = await instance.sdk.inspect.overview(state.threadRef);
     expect(overview.ok).toBe(true);
     if (overview.ok) expect(overview.value.events.count).toBe(0);
 
@@ -128,8 +129,12 @@ describe("Story 1: instance lifecycle", () => {
     expect(reattached.ok).toBe(true);
     if (!reattached.ok) return;
 
-    const overview = await inspect.overview(reattached.value);
+    const reader = await initInstance(reattached.value, backgroundConfig());
+    expect(reader.ok).toBe(true);
+    if (!reader.ok) return;
+    const overview = await reader.value.sdk.inspect.overview(reattached.value);
     expect(overview.ok).toBe(true);
     if (overview.ok) expect(overview.value.events.count).toBe(batch.length);
+    await disposeInstance(reader.value);
   });
 });

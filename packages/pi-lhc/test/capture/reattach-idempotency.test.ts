@@ -13,7 +13,7 @@ import { TurnAccumulator } from "../../src/capture/turn-accumulator.js";
 import { initInstance } from "../../src/lifecycle/instance.js";
 import { makeAgentEnd, makeAssistantMessage, makeMessageEnd, makeUserMessage } from "../fixtures/synthetic.js";
 import { makeTempThread, type TempStore, tempStore } from "../fixtures/thread.js";
-import { attachCapture, eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
+import { attachCapture, captureSdk, eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -55,7 +55,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
     const events = await eventsAfterShutdown(b);
     expect(userTexts(events)).toEqual(["first", "second after resume"]);
-    const counts = await turnCounts(b.threadRef);
+    const counts = await turnCounts(captureSdk(), b.threadRef);
     expect(counts.closed).toBe(2);
   });
 
@@ -72,7 +72,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
 
     const events = await eventsAfterShutdown(b);
     expect(userTexts(events)).toEqual(["first", "second after reload"]);
-    const counts = await turnCounts(b.threadRef);
+    const counts = await turnCounts(captureSdk(), b.threadRef);
     expect(counts.closed).toBe(2);
   });
 
@@ -90,12 +90,13 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const events = await eventsAfterShutdown(b);
     expect(kindsOf(events)).toEqual(["user_prompt", "turn_end"]);
     expect(userTexts(events)).toEqual(["first"]);
-    const counts = await turnCounts(b.threadRef);
+    const counts = await turnCounts(captureSdk(), b.threadRef);
     expect(counts.closed).toBe(1);
 
     const built = await initInstance(b.threadRef, {
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
+      tokenFamily: "o200k",
     });
     expect(built.ok).toBe(true);
     if (!built.ok) return;
@@ -153,7 +154,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     ]);
     expect(userTexts(events)).toEqual(["first", "second"]);
     // Two distinct closed turns, plus the next empty open turn.
-    const counts = await turnCounts(b.threadRef);
+    const counts = await turnCounts(captureSdk(), b.threadRef);
     expect(counts.closed).toBe(2);
     expect(counts.open).toBe(1);
   });
@@ -163,6 +164,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const built = await initInstance(thread.threadRef, {
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
+      tokenFamily: "o200k",
     });
     expect(built.ok).toBe(true);
     if (!built.ok) return;
@@ -210,7 +212,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
       expect.stringContaining("entry-repeat-1"),
       expect.stringContaining("entry-repeat-2"),
     ]);
-    const counts = await turnCounts(started.threadRef);
+    const counts = await turnCounts(captureSdk(), started.threadRef);
     expect(counts.closed).toBe(2);
   });
 
@@ -231,6 +233,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     const built = await initInstance(b.threadRef, {
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
+      tokenFamily: "o200k",
     });
     expect(built.ok).toBe(true);
     if (!built.ok) return;
@@ -288,7 +291,7 @@ describe("Story 2: existing-thread reattach idempotency (SV-001)", () => {
     expect(userTexts(events)).toEqual(["source-order replay"]);
     const promptKeys = events.filter((event) => event.eventKind === "user_prompt").map((event) => event.idempotencyKey);
     expect(promptKeys).toEqual([expect.stringContaining("message_end:sourceSeq:0")]);
-    const counts = await turnCounts(b.threadRef);
+    const counts = await turnCounts(captureSdk(), b.threadRef);
     expect(counts.closed).toBe(1);
   });
 });

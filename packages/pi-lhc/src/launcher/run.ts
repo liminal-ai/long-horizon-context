@@ -1,8 +1,10 @@
 import {
+  type Args,
   createAgentSessionRuntime,
   type ExtensionFactory,
   getAgentDir,
   InteractiveMode,
+  ModelRegistry,
   ModelRuntime,
   parseArgs,
   runPrintMode,
@@ -13,6 +15,7 @@ import { createDeterministicInferenceCallbacks, type SdkConfig } from "lhc";
 import activate from "../index.js";
 import { setLauncherOwnedStartup } from "../lifecycle/launcher-startup.js";
 import type { ThreadChoice } from "../lifecycle/picker.js";
+import { formatTokenFamilyLog, seedTokenFamilyOrProviderFallback } from "../token-family.js";
 import { preparePrintPrompt, readPipedStdin, resolveAppMode, toPrintOutputMode } from "./app-mode.js";
 import { printLauncherListModels } from "./list-models.js";
 import {
@@ -21,6 +24,7 @@ import {
   parseLauncherArgv,
   piSessionFlagsConflict,
 } from "./parse-args.js";
+import { resolveLauncherCliModel } from "./resolve-cli-model.js";
 import { createLauncherRuntimeFactory } from "./runtime-factory.js";
 import { prepareLhcLauncherStartup } from "./startup.js";
 import { unsupportedLauncherFlagError } from "./unsupported-flags.js";
@@ -54,6 +58,32 @@ function applyOfflineMode(offline: boolean | undefined): void {
   if (offline) {
     process.env.PI_OFFLINE = "1";
   }
+}
+
+async function resolveLaunchPiModel(parsed: Args): Promise<{ provider: string; id: string } | undefined> {
+  if (parsed.model === undefined) return undefined;
+  const modelRuntime = await ModelRuntime.create({
+    allowModelNetwork: false,
+    signal: AbortSignal.timeout(15_000),
+  });
+  const resolved = resolveLauncherCliModel(parsed, new ModelRegistry(modelRuntime));
+  if (resolved.model === undefined) return undefined;
+  return { provider: resolved.model.provider, id: resolved.model.id };
+}
+
+async function defaultLauncherSdkConfig(parsed: Args): Promise<SdkConfig> {
+  const launchModel = await resolveLaunchPiModel(parsed);
+  const seed = seedTokenFamilyOrProviderFallback(launchModel, parsed.provider);
+  if (seed.usedFallback) {
+    console.error(
+      `pi-lhc launcher token family fallback ${formatTokenFamilyLog(seed.resolved, { provider: parsed.provider ?? "", id: "" })} — no launch model; resolved with empty id`,
+    );
+  }
+  return {
+    inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    mode: "background",
+    tokenFamily: seed.resolved.family,
+  };
 }
 
 /**
@@ -131,10 +161,7 @@ export async function runPiLhcLauncher(argv: readonly string[], deps: RunPiLhcLa
     cwd,
     launchFlags,
     newThreadFilePath: deps.newThreadFilePath,
-    sdkConfig: deps.buildSdkConfig?.() ?? {
-      inferenceCallbacks: createDeterministicInferenceCallbacks(),
-      mode: "background",
-    },
+    sdkConfig: deps.buildSdkConfig?.() ?? (await defaultLauncherSdkConfig(parsed)),
     ...(deps.registryPath === undefined ? {} : { registryPath: deps.registryPath }),
     ...(deps.selectThread === undefined ? {} : { selectThread: deps.selectThread }),
   });

@@ -40,7 +40,11 @@ describe("launcher-owned connector handoff", () => {
       newThreadFilePath: () => store.threadPath(),
       buildSdkConfig: () => ({
         ok: true,
-        value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" },
+        value: {
+          inferenceCallbacks: createDeterministicInferenceCallbacks(),
+          mode: "background",
+          tokenFamily: "o200k",
+        },
       }),
       readLaunchFlags: () => ({
         ok: false,

@@ -199,6 +199,7 @@ describe("Story 2: corpus double-replay (idempotency architecture-risk)", () => 
     const built = await initInstance(thread.threadRef, {
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
+      tokenFamily: "o200k",
     });
     expect(built.ok).toBe(true);
     if (!built.ok) return;

@@ -93,7 +93,11 @@ describe("resume after compact", () => {
   });
 
   it("view snapshot survives reopen in a fresh SDK instance", async () => {
-    const reopened = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+    const reopened = initLhc({
+      mode: "manual",
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+      tokenFamily: "o200k",
+    });
     const described = await reopened.threadView.describe({ filePath: fixture.filePath });
     expect(described.ok).toBe(true);
     if (!described.ok) return;

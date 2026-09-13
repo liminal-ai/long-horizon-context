@@ -18,7 +18,7 @@ import {
   validEvent,
 } from "../fixtures/synthetic.js";
 import { type TempStore, tempStore } from "../fixtures/thread.js";
-import { eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
+import { captureSdk, eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -78,7 +78,7 @@ describe("Story 2: turn derivation — worked example (TC-2.2)", () => {
     expect(events.filter((event) => event.eventKind === "turn_end")).toHaveLength(1);
     expect(events.at(-1)?.eventKind).toBe("turn_end");
 
-    const counts = await turnCounts(threadRef);
+    const counts = await turnCounts(captureSdk(), threadRef);
     expect(counts.closed).toBe(1);
     expect(counts.open).toBe(1);
   });
@@ -113,7 +113,7 @@ describe("Story 2: turn derivation — source order, not turnIndex (TC-2.3)", ()
     expect(textOf(events[0]!)).toBe("first prompt");
     expect(textOf(events[3]!)).toBe("second prompt");
 
-    const counts = await turnCounts(threadRef);
+    const counts = await turnCounts(captureSdk(), threadRef);
     expect(counts.closed).toBe(2);
     expect(counts.open).toBe(1);
   });
@@ -158,7 +158,7 @@ describe("Story 2: turn derivation — hard-kill golden", () => {
     await connector.handlers.message_end(makeMessageEnd(makeUserMessage("dangling prompt")), ctx);
     await connector.getInstance()?.sdk.drainSettled(threadRef);
 
-    const counts = await turnCounts(threadRef);
+    const counts = await turnCounts(captureSdk(), threadRef);
     expect(counts.open).toBe(1);
     expect(counts.closed).toBe(0);
 

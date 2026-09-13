@@ -3,7 +3,14 @@
 // plain entry list the test appends to exactly as Pi persists (after the
 // message_end handlers return), and the context event's message list is a
 // deep copy of those entries' messages — Pi's own objects.
-import { createDeterministicInferenceCallbacks, messages, type ThreadRef, threadView, turns } from "lhc";
+import {
+  createDeterministicInferenceCallbacks,
+  messages,
+  type ThreadRef,
+  TokenEstimator,
+  threadView,
+  turns,
+} from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type Connector,
@@ -92,7 +99,7 @@ async function startedConnector(
     newThreadFilePath: () => store.threadPath(),
     buildSdkConfig: () => ({
       ok: true,
-      value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" },
+      value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background", tokenFamily: "o200k" },
     }),
     // A tiny trigger so a few kilotokens of tool output is pressure.
     compactSettingsConfig: [
@@ -117,6 +124,7 @@ async function startedConnector(
 }
 
 const t0 = FIXTURE_TIMESTAMP_MS;
+const o200k = new TokenEstimator("o200k");
 const usageOf = (contextTokens: number) =>
   zeroUsage({ input: contextTokens, output: 10, totalTokens: contextTokens + 10 });
 
@@ -148,15 +156,16 @@ describe("the context hook", () => {
       makeToolResult({ id: "c", content: "word ".repeat(100), timestamp: t0 + 2 }),
       makeAssistantMessage({ text: "gone", stopReason: "aborted", usage: usageOf(9000), timestamp: t0 + 3 }),
     ];
-    const pressure = estimateContextPressure(messages);
+    const pressure = estimateContextPressure(messages, o200k);
     expect(pressure).toBeGreaterThan(5010);
     expect(pressure).toBeLessThan(5010 + 400);
     // No usable usage anywhere: pressure is unknown, never a trigger.
-    expect(estimateContextPressure([makeUserMessage("hello there", t0)])).toBeNull();
+    expect(estimateContextPressure([makeUserMessage("hello there", t0)], o200k)).toBeNull();
     expect(
-      estimateContextPressure([
-        makeAssistantMessage({ text: "x", stopReason: "aborted", usage: usageOf(9000), timestamp: t0 }),
-      ]),
+      estimateContextPressure(
+        [makeAssistantMessage({ text: "x", stopReason: "aborted", usage: usageOf(9000), timestamp: t0 })],
+        o200k,
+      ),
     ).toBeNull();
   });
 
@@ -228,7 +237,8 @@ describe("the context hook", () => {
     expect(tail.some((m) => JSON.stringify(m).includes("[seam ·"))).toBe(false);
 
     // Provider input drops: the served list is smaller than the raw one.
-    const size = (list: readonly AgentMessage[]) => list.reduce((sum, m) => sum + estimateAgentMessageTokens(m), 0);
+    const size = (list: readonly AgentMessage[]) =>
+      list.reduce((sum, m) => sum + estimateAgentMessageTokens(m, o200k), 0);
     expect(size(messages)).toBeLessThan(size(event.messages));
 
     // AC-7.5 in Pi: the same pressure again (served-only, raw unchanged) does

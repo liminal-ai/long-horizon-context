@@ -1,5 +1,5 @@
 import type { SessionManager as PiSessionManager } from "@earendil-works/pi-coding-agent";
-import { createDeterministicInferenceCallbacks, intakeStream, type ThreadRef } from "lhc";
+import { createDeterministicInferenceCallbacks, type ThreadRef } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   clearPendingRehydrate,
@@ -33,7 +33,11 @@ function threadRef(threadId: string): ThreadRef {
 function captureConfig() {
   return {
     ok: true as const,
-    value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" as const },
+    value: {
+      inferenceCallbacks: createDeterministicInferenceCallbacks(),
+      mode: "background" as const,
+      tokenFamily: "o200k",
+    },
   };
 }
 
@@ -45,7 +49,10 @@ describe("rehydratePiSessionFromLhc", () => {
     const instance = await initInstance(ref, captureConfig().value);
     if (!instance.ok) throw new Error(instance.error.reason);
 
-    const captured = await intakeStream.messageEvents(ref, eventBatch(["user_prompt", "assistant_text"]));
+    const captured = await instance.value.sdk.intakeStream.messageEvents(
+      ref,
+      eventBatch(["user_prompt", "assistant_text"]),
+    );
     if (!captured.ok) throw new Error(captured.error.reason);
 
     const sessionManager = {

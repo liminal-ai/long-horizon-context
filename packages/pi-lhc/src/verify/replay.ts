@@ -4,21 +4,18 @@ import {
   type InferenceResult,
   type InspectOverview,
   initLhc,
-  inspect,
-  intakeStream,
   type MessageEventInput,
   type MessageRecord,
-  messages,
   type OpResult,
   type ThreadRef,
   type TurnRecord,
-  turns,
 } from "lhc";
 import { capture, captureGap } from "../capture/converter.js";
 import { type MapCtx, mapMessage } from "../capture/map-message.js";
 import { TurnAccumulator } from "../capture/turn-accumulator.js";
 import type { AgentMessage } from "../pi/types.js";
 import type { LhcInstance } from "../shared/instance.js";
+import { formatTokenFamilyLog, isRealModelId, seedTokenFamilyOrProviderFallback } from "../token-family.js";
 
 // Capture correctness is proven without serving anything to a model: a recorded
 // PI corpus replays through the real
@@ -77,13 +74,41 @@ function observeOnlyInferenceCallbacks(): InferenceCallbacks {
   };
 }
 
+/** First real assistant model on the captured PI session, else provider-only. */
+function firstSessionModel(corpus: Corpus): { provider: string; id: string } | undefined {
+  let providerOnly: { provider: string; id: string } | undefined;
+  for (const record of corpus.source) {
+    if (record.hook !== "message_end") continue;
+    if (record.message.role !== "assistant") continue;
+    const provider = record.message.provider;
+    const id = record.message.model;
+    if (isRealModelId(id)) return { provider, id };
+    if (providerOnly === undefined && provider !== "") {
+      providerOnly = { provider, id: "" };
+    }
+  }
+  return providerOnly;
+}
+
 /** Build a real background LHC instance against the temp thread. The converter
  *  writes through `instance.sdk.intakeStream`, and `dispose` drains settled so
  *  background derivations reach a terminal state before read-back — the same
  *  flush-on-dispose contract the lifecycle instance uses, rebuilt here because
  *  `verify` may not import `lifecycle` (boundary rule 3). */
-function buildReplayInstance(threadRef: ThreadRef): LhcInstance {
-  const sdk = initLhc({ inferenceCallbacks: observeOnlyInferenceCallbacks(), mode: "background" });
+function buildReplayInstance(threadRef: ThreadRef, corpus: Corpus): LhcInstance {
+  const sessionModel = firstSessionModel(corpus);
+  const concrete = sessionModel !== undefined && isRealModelId(sessionModel.id) ? sessionModel : undefined;
+  const seed = seedTokenFamilyOrProviderFallback(concrete, sessionModel?.provider);
+  if (seed.usedFallback) {
+    console.error(
+      `pi-lhc replay token family fallback ${formatTokenFamilyLog(seed.resolved, { provider: sessionModel?.provider ?? "", id: "" })} — session has no model; resolved with empty id`,
+    );
+  }
+  const sdk = initLhc({
+    inferenceCallbacks: observeOnlyInferenceCallbacks(),
+    mode: "background",
+    tokenFamily: seed.resolved.family,
+  });
   return {
     sdk,
     threadRef,
@@ -421,32 +446,37 @@ function compareReadback(
  *  overview/health off it. Deterministic: the same corpus yields the same
  *  recorded read-back every time. */
 export async function replayCorpus(corpus: Corpus, threadRef: ThreadRef): Promise<ReplayResult> {
-  const instance = buildReplayInstance(threadRef);
+  const instance = buildReplayInstance(threadRef, corpus);
   const problems: string[] = [];
+  let overview: OpResult<InspectOverview>;
+  let read: OpResult<EventRecord[]>;
+  let messageReadback: OpResult<MessageRecord[]>;
+  let turnReadback: OpResult<TurnRecord[]>;
   try {
     await driveCorpus(corpus, instance);
+    overview = await instance.sdk.inspect.overview(threadRef);
+    read = await instance.sdk.intakeStream.listEvents(threadRef);
+    messageReadback = await instance.sdk.messages.list(threadRef);
+    turnReadback = await instance.sdk.turns.listTurns(threadRef);
   } catch (cause) {
     problems.push(`replay threw before completion: ${detail(cause)}`);
-  } finally {
     await instance.dispose();
+    return { matches: false, diff: problems.join("\n") };
   }
+  await instance.dispose();
 
-  const read = await intakeStream.listEvents(threadRef);
   if (!read.ok) {
     return { matches: false, diff: [...problems, `listEvents failed: ${read.error.reason}`].join("\n") };
   }
-  const overview = await inspect.overview(threadRef);
   if (!overview.ok) {
     return { matches: false, diff: [...problems, `inspect.overview failed: ${overview.error.reason}`].join("\n") };
   }
-  const messageReadback = await messages.list(threadRef);
   if (!messageReadback.ok) {
     return {
       matches: false,
       diff: [...problems, `messages.list failed: ${messageReadback.error.reason}`].join("\n"),
     };
   }
-  const turnReadback = await turns.listTurns(threadRef);
   if (!turnReadback.ok) {
     return {
       matches: false,

@@ -10,7 +10,6 @@ import {
   createDeterministicInferenceCallbacks,
   type EventRecord,
   initLhc,
-  inspect,
   intakeStream,
   type MessageEventInput,
   type ThreadRef,
@@ -57,8 +56,20 @@ async function readBack(threadRef: ThreadRef): Promise<MessageEventInput[]> {
 
 /** A real background instance for inducing a Story-2 capture failure (the gap
  *  path does not call the provider, so the deterministic one is fine). */
+function inspectSdk() {
+  return initLhc({
+    inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    mode: "manual",
+    tokenFamily: "o200k",
+  });
+}
+
 function liveInstance(threadRef: ThreadRef): LhcInstance {
-  const sdk = initLhc({ inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" });
+  const sdk = initLhc({
+    inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    mode: "background",
+    tokenFamily: "o200k",
+  });
   return {
     sdk,
     threadRef,
@@ -133,7 +144,8 @@ describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)
     expect(await replayCorpus(corpus, thread.threadRef)).toEqual({ matches: true });
 
     // Counts + last recorded position, cross-checked against the event log.
-    const overview1 = await inspect.overview(thread.threadRef);
+    const reader = inspectSdk();
+    const overview1 = await reader.inspect.overview(thread.threadRef);
     expect(overview1.ok).toBe(true);
     if (!overview1.ok) return;
     const recorded = await intakeStream.listEvents(thread.threadRef);
@@ -165,7 +177,7 @@ describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)
       (form) => form.derivationType === "detailed_turn_compression",
     );
     expect(compression).toMatchObject({ state: "ready" });
-    const health1 = await inspect.health(thread.threadRef);
+    const health1 = await reader.inspect.health(thread.threadRef);
     expect(health1.ok).toBe(true);
     if (!health1.ok) return;
     expect(health1.value.failures.length).toBe(0);
@@ -185,7 +197,7 @@ describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)
     expect(gapResult.ok).toBe(false);
     await instance.dispose();
 
-    const health2 = await inspect.health(thread.threadRef);
+    const health2 = await reader.inspect.health(thread.threadRef);
     expect(health2.ok).toBe(true);
     if (!health2.ok) return;
     expect(health2.value.owners.some((owner) => owner.kind === "capture_gap" && owner.counts.failed > 0)).toBe(true);
@@ -193,7 +205,7 @@ describe("Story 3: inspect overview/health reflect the captured session (TC-6.3)
 
     // The gap note is itself a recorded event — the last recorded position
     // advances, proving the surface reflects new capture rather than a snapshot.
-    const overview2 = await inspect.overview(thread.threadRef);
+    const overview2 = await reader.inspect.overview(thread.threadRef);
     expect(overview2.ok).toBe(true);
     if (!overview2.ok) return;
     expect(overview2.value.events.count).toBe(corpus.expected.length + 1);

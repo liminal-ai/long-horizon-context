@@ -243,6 +243,7 @@ describe("Story 2: converter — failure isolation (TC-2.8, atomicity risk)", ()
     const built = await initInstance(thread.threadRef, {
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
+      tokenFamily: "o200k",
     });
     if (!built.ok) throw new Error(`instance init failed: ${built.error.reason}`);
     return built.value;

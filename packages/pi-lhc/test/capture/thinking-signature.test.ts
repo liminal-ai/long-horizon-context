@@ -73,6 +73,7 @@ describe("resume round-trip restores thinkingSignature onto PI session parts", (
   it("capture → getSessionThreadView → applySessionThreadView keeps signature and model identity", async () => {
     const sdk = initLhc({
       mode: "manual",
+      tokenFamily: "o200k",
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
     });
     const threadPath = store.threadPath();

@@ -61,7 +61,7 @@ async function startedConnector(): Promise<{ connector: Connector; ctx: AutoComp
     newThreadFilePath: () => store.threadPath(),
     buildSdkConfig: () => ({
       ok: true,
-      value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" },
+      value: { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background", tokenFamily: "o200k" },
     }),
   });
   const ctx = makeCtx({ tokens: 550_000 });

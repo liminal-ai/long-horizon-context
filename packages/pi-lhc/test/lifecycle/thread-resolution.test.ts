@@ -5,7 +5,7 @@
 // injected SDK config or selector) for AC-1.2/1.5/1.7. Real temp registry
 // throughout; reload identity is carried by durable PI session entries.
 
-import { createDeterministicInferenceCallbacks, inspect, type SdkConfig, type ThreadRef, threads } from "lhc";
+import { createDeterministicInferenceCallbacks, type SdkConfig, type ThreadRef, threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createConnector } from "../../src/index.js";
 import { disposeInstance, initInstance } from "../../src/lifecycle/instance.js";
@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 function backgroundConfig(): SdkConfig {
-  return { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background" };
+  return { inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "background", tokenFamily: "o200k" };
 }
 
 function idOf(ref: ThreadRef): string {
@@ -266,7 +266,7 @@ describe("Story 1: launch-driven thread resolution (resolver/picker)", () => {
       rebuilt.value.threadRef,
       eventBatch(["user_prompt", "assistant_text", "turn_end"]),
     );
-    const overview = await inspect.overview(reattached.value);
+    const overview = await rebuilt.value.sdk.inspect.overview(reattached.value);
     expect(overview.ok).toBe(true);
     if (overview.ok) expect(overview.value.events.count).toBe(6); // 3 before + 3 after
     await disposeInstance(rebuilt.value);

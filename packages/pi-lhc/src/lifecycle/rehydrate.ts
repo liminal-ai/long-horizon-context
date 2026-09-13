@@ -41,6 +41,11 @@ export function takePendingRehydrateModelPrefs(): RehydrateModelPrefs | null {
   return prefs;
 }
 
+/** Non-consuming read so SDK construction can seed a family before session_start applies prefs. */
+export function peekPendingRehydrateModelPrefs(): RehydrateModelPrefs | null {
+  return pendingModelPrefs;
+}
+
 /** Test seam: clear unconsumed rehydrate handoff. */
 export function clearPendingRehydrate(): void {
   pendingModelPrefs = null;

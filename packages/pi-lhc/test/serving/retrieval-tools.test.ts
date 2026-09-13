@@ -2,7 +2,7 @@
 // the content directly in the tool result (plain tool calling — no injection,
 // no board). Impressions accumulate in the thread db. The fake ExtensionAPI
 // only captures registrations — everything downstream is production code.
-import { createDeterministicInferenceCallbacks, initLhc, intakeStream, type Lhc, retrieval } from "lhc";
+import { createDeterministicInferenceCallbacks, initLhc, type Lhc, retrieval } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { ExtensionAPI, PiToolResult, PiToolSpec } from "../../src/pi/types.js";
 import {
@@ -39,7 +39,11 @@ function resultText(result: PiToolResult): string {
 
 beforeEach(async () => {
   store = tempStore();
-  sdk = initLhc({ mode: "manual", inferenceCallbacks: createDeterministicInferenceCallbacks() });
+  sdk = initLhc({
+    mode: "manual",
+    inferenceCallbacks: createDeterministicInferenceCallbacks(),
+    tokenFamily: "o200k",
+  });
   const thread = await makeTempThread(store);
   filePath = thread.filePath;
   tools = new Map();
@@ -54,7 +58,7 @@ beforeEach(async () => {
     getInstance: () => instance,
   });
 
-  const seeded = await intakeStream.messageEvents({ filePath }, [
+  const seeded = await sdk.intakeStream.messageEvents({ filePath }, [
     {
       eventKind: "user_prompt",
       idempotencyKey: "e1",
@@ -108,7 +112,7 @@ describe("get_turns", () => {
 
   it("serves an oversized turn as a head slice with a literal continuation call", async () => {
     const bigBody = Array.from({ length: 2000 }, (_, i) => `line ${i} of the very long log`).join("\n");
-    const seeded = await intakeStream.messageEvents({ filePath }, [
+    const seeded = await sdk.intakeStream.messageEvents({ filePath }, [
       {
         eventKind: "user_prompt",
         idempotencyKey: "big1",
@@ -141,7 +145,7 @@ describe("get_turns", () => {
 
   it("gives later ids budget receipts with retry instructions instead of starving them silently", async () => {
     const bigBody = Array.from({ length: 2000 }, (_, i) => `filler line ${i} with some words`).join("\n");
-    const seeded = await intakeStream.messageEvents({ filePath }, [
+    const seeded = await sdk.intakeStream.messageEvents({ filePath }, [
       {
         eventKind: "user_prompt",
         idempotencyKey: "mix1",

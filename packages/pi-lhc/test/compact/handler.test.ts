@@ -1,17 +1,5 @@
+import { type LlmRequestContext, type PreviewCompactOutcome, TokenEstimator } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("lhc", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("lhc")>();
-  return {
-    ...actual,
-    estimateTokens: (text: string) => {
-      if (text === "__above_threshold__") return 150_000;
-      return actual.estimateTokens(text);
-    },
-  };
-});
-
-import type { LlmRequestContext, PreviewCompactOutcome } from "lhc";
 import * as captureModule from "../../src/capture/converter.js";
 import {
   COMPACT_HOOKS,
@@ -126,9 +114,15 @@ function mockInstance(
     };
   });
 
+  const o200k = new TokenEstimator("o200k");
   return {
     instance: {
       sdk: {
+        config: {
+          tokenEstimator: {
+            estimate: (text: string) => (text === "__above_threshold__" ? 150_000 : o200k.estimate(text)),
+          },
+        },
         threadView: {
           previewCompact: previewSpy,
           compact: compactSpy,
@@ -547,7 +541,7 @@ describe("connector compact hooks", () => {
       newThreadFilePath: () => store.threadPath(),
       readLaunchFlags: () => ({ ok: true, value: {} }),
       startupValidationReporter: () => {},
-      buildSdkConfig: () => ({ ok: true, value: { mode: "manual" } }),
+      buildSdkConfig: () => ({ ok: true, value: { mode: "manual", tokenFamily: "o200k" } }),
     });
     const entries: SessionEntry[] = [];
     const pi = {

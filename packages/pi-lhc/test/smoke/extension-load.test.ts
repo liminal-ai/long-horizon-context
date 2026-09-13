@@ -195,7 +195,7 @@ describe("extension load + hook rail", () => {
     // covered in test/lifecycle/*.)
     const initResult = await initInstance(
       { filePath: "/tmp/pi-lhc-nonexistent-thread.sqlite" },
-      { mode: "background" },
+      { mode: "background", tokenFamily: "o200k" },
     );
     expect(initResult.ok).toBe(false);
     if (!initResult.ok) {

@@ -30,6 +30,7 @@ describe("export cert byte-diff (v5 host facts)", () => {
     const sdk = initLhc({
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "manual",
+      tokenFamily: "o200k",
     });
     const created = await threads.newThread({ filePath: threadPath, registryPath });
     expect(created.ok).toBe(true);

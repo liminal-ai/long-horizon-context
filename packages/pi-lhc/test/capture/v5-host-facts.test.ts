@@ -16,7 +16,7 @@ import {
   zeroUsage,
 } from "../fixtures/synthetic.js";
 import { makeTempThread, type TempStore, tempStore } from "../fixtures/thread.js";
-import { eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
+import { captureSdk, eventsAfterShutdown, kindsOf, startCapture, turnCounts } from "./support.js";
 
 let store: TempStore;
 beforeEach(() => {
@@ -206,7 +206,7 @@ describe("schema v5: hard-kill leaves turn open with NULL host facts", () => {
     await connector.handlers.message_end(makeMessageEnd(makeUserMessage("dangling prompt")), ctx);
     await connector.getInstance()?.sdk.drainSettled(threadRef);
 
-    const counts = await turnCounts(threadRef);
+    const counts = await turnCounts(captureSdk(), threadRef);
     expect(counts.open).toBe(1);
     expect(counts.closed).toBe(0);
 
@@ -261,6 +261,7 @@ describe("schema v5: idempotency keys ignore payload enrichment (R2)", () => {
     const built = await initInstance(thread.threadRef, {
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
+      tokenFamily: "o200k",
     });
     expect(built.ok).toBe(true);
     if (!built.ok) return;

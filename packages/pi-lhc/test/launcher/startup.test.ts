@@ -1,4 +1,4 @@
-import { createDeterministicInferenceCallbacks, intakeStream, type ThreadRef } from "lhc";
+import { createDeterministicInferenceCallbacks, type ThreadRef } from "lhc";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { LHC_THREAD_ENTRY_TYPE, prepareLhcLauncherStartup } from "../../src/index.js";
 import { eventBatch } from "../fixtures/synthetic.js";
@@ -25,10 +25,11 @@ describe("prepareLhcLauncherStartup", () => {
     const instance = await initInstance(ref, {
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
       mode: "background",
+      tokenFamily: "o200k",
     });
     if (!instance.ok) throw new Error(instance.error.reason);
 
-    const captured = await intakeStream.messageEvents(ref, eventBatch(["user_prompt"]));
+    const captured = await instance.value.sdk.intakeStream.messageEvents(ref, eventBatch(["user_prompt"]));
     if (!captured.ok) throw new Error(captured.error.reason);
     await instance.value.dispose();
 
@@ -40,6 +41,7 @@ describe("prepareLhcLauncherStartup", () => {
       sdkConfig: {
         inferenceCallbacks: createDeterministicInferenceCallbacks(),
         mode: "background",
+        tokenFamily: "o200k",
       },
     });
 

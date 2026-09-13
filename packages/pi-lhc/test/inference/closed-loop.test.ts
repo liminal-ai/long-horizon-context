@@ -107,6 +107,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
         assignments: assignments({ detailed_turn_compression: { model: "fail" } }),
       },
       mode: "background",
+      tokenFamily: "o200k",
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     };
 
@@ -188,6 +189,7 @@ describe("Story 5: Inference Host Routing — Closed Loop (TC-4.5)", () => {
         assignments: assignments({ smoothed_prompt: { model: "slow-smoothed" } }),
       },
       mode: "background",
+      tokenFamily: "o200k",
     };
 
     connector = createConnector({

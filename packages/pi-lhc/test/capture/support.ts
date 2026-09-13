@@ -7,8 +7,9 @@
 // SDK runs real against a temp SQLite thread with deterministic model-call text.
 import {
   type EventKind,
-  inspect,
+  initLhc,
   intakeStream,
+  type Lhc,
   type MessageEventInput,
   type OpResult,
   type SdkConfig,
@@ -75,6 +76,7 @@ export function captureConfig(): OpResult<SdkConfig> {
         assignments: defaultAssignments({ provider: "deterministic", id: "default" }),
       },
       mode: "background",
+      tokenFamily: "o200k",
     },
   };
 }
@@ -140,10 +142,20 @@ export function kindsOf(events: readonly MessageEventInput[]): EventKind[] {
   return events.map((event) => event.eventKind);
 }
 
+/** A reader SDK for durable inspect after the capture instance is disposed. */
+export function captureSdk(): Lhc {
+  const config = captureConfig();
+  if (!config.ok) throw new Error("captureConfig failed");
+  return initLhc(config.value);
+}
+
 /** Counts open/closed turns and total recorded events from the inspect
  *  overview (the real read-back surface, not a private query). */
-export async function turnCounts(threadRef: ThreadRef): Promise<{ open: number; closed: number; events: number }> {
-  const overview = await inspect.overview(threadRef);
+export async function turnCounts(
+  sdk: Lhc,
+  threadRef: ThreadRef,
+): Promise<{ open: number; closed: number; events: number }> {
+  const overview = await sdk.inspect.overview(threadRef);
   if (!overview.ok) throw new Error(`overview failed: ${overview.error.reason}`);
   return {
     open: overview.value.turns.open,

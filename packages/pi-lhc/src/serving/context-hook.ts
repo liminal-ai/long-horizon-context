@@ -18,7 +18,7 @@
 //      recovery as the backstop.
 //
 // Served-only durability (TC-7.2d): nothing here appends to the Pi session.
-import { estimateTokens, type OpResult, type SessionThreadView, type ViewCompactParams } from "lhc";
+import type { OpResult, SessionThreadView, TokenEstimator, ViewCompactParams } from "lhc";
 import { AUTO_COMPACT_RETRY_GROWTH_TOKENS, shouldTriggerModelCompact } from "../compact/model-profiles.js";
 import { mapFirstKeptToEntryId } from "../compact/result-mapping.js";
 import type { LhcSeedEntryMap } from "../compact/seed-entry-map.js";
@@ -69,17 +69,17 @@ function textOfParts(parts: unknown): string {
 }
 
 /** LHC's estimate for one Pi message object, whatever its role. */
-export function estimateAgentMessageTokens(message: AgentMessage): number {
+export function estimateAgentMessageTokens(message: AgentMessage, estimator: TokenEstimator): number {
   const record = message as unknown as Record<string, unknown>;
   // Pi's list carries roles beyond the capture mirror's union.
   switch (String(record["role"])) {
     case "bashExecution":
-      return estimateTokens(`${String(record["command"] ?? "")}\n${String(record["output"] ?? "")}`);
+      return estimator.estimate(`${String(record["command"] ?? "")}\n${String(record["output"] ?? "")}`);
     case "compactionSummary":
     case "branchSummary":
-      return estimateTokens(String(record["summary"] ?? ""));
+      return estimator.estimate(String(record["summary"] ?? ""));
     default:
-      return estimateTokens(textOfParts(record["content"]));
+      return estimator.estimate(textOfParts(record["content"]));
   }
 }
 
@@ -101,7 +101,7 @@ function providerContextTokens(message: AgentMessage): number | null {
  *  context tokens plus LHC estimates for every message after it. Null with
  *  no usable usage anywhere (a fresh session's first step, or only aborted /
  *  errored responses): pressure is unknown, and unknown never triggers. */
-export function estimateContextPressure(messages: readonly AgentMessage[]): number | null {
+export function estimateContextPressure(messages: readonly AgentMessage[], estimator: TokenEstimator): number | null {
   let lastUsageIndex = -1;
   let usage = 0;
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -115,7 +115,7 @@ export function estimateContextPressure(messages: readonly AgentMessage[]): numb
   if (lastUsageIndex < 0) return null;
   let since = 0;
   for (let index = lastUsageIndex + 1; index < messages.length; index += 1) {
-    since += estimateAgentMessageTokens(messages[index] as AgentMessage);
+    since += estimateAgentMessageTokens(messages[index] as AgentMessage, estimator);
   }
   return usage + since;
 }
@@ -173,7 +173,7 @@ export async function handleContext(
 
     // 2–3. Pressure and the mid-turn compact.
     let compacted = false;
-    const contextTokens = estimateContextPressure(event.messages);
+    const contextTokens = estimateContextPressure(event.messages, instance.sdk.config.tokenEstimator);
     if (
       contextTokens !== null &&
       shouldTriggerModelCompact({

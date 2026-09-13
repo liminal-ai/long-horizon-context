@@ -473,6 +473,7 @@ describe("Story 5: Inference Host Routing", () => {
             assignments: defaultAssignments({ provider: "openai-codex", id: "gpt-5.4" }),
           },
           mode: "manual",
+          tokenFamily: "o200k",
         });
         const created = await threads.newThread({
           filePath: store.threadPath(),
