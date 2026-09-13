@@ -30,6 +30,12 @@ export function defaultSessionTokenFamily(): ResolvedTokenFamily {
   return resolveTokenFamily("", CC_LHC_TOKEN_PROVIDER);
 }
 
+/** A model id the wire actually served. Claude Code stamps `<synthetic>` on
+ *  lines it fabricates locally (resume chrome, local command output); those
+ *  never change the family and never seed one. */
+export function isRealModelId(modelId: unknown): modelId is string {
+  return typeof modelId === "string" && modelId !== "" && !modelId.startsWith("<");
+}
 export function familyFromAssistantModel(modelId: string): ResolvedTokenFamily {
   return resolveTokenFamily(modelId, CC_LHC_TOKEN_PROVIDER);
 }
@@ -100,7 +106,7 @@ export function lastAssistantModelIdFromRecords(records: readonly AssistantModel
     const rec = records[i]!;
     if (rec.kind !== "assistant_text" && rec.kind !== "assistant_thinking") continue;
     const model = rec.blocks[0]?.content["model"];
-    if (typeof model === "string" && model !== "") return model;
+    if (isRealModelId(model)) return model;
   }
   return null;
 }
@@ -134,6 +140,7 @@ export function formatTokenFamilyChangeLog(
  * changed (the caller logs that; nothing else happens).
  */
 export function noteAssistantModel(state: SessionTokenFamilyState, modelId: string): boolean {
+  if (!isRealModelId(modelId)) return false;
   if (modelId === "" || state.modelId === modelId) return false;
   const previous = state.resolved;
   const resolved = familyFromAssistantModel(modelId);

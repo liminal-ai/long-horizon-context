@@ -86,6 +86,18 @@ describe("session token family from captured assistant model", () => {
     expect(formatTokenFamilyLabel(state)).toBe("claude-2026 (provider fallback)");
   });
 
+  it("ignores Claude Code's synthetic model id for re-resolution and record seeding", () => {
+    const state = createSessionTokenFamilyState({ modelId: "claude-opus-4-6", seedSource: "launch --model" });
+    expect(noteAssistantModel(state, "<synthetic>")).toBe(false);
+    expect(state.resolved.family).toBe("claude-2025");
+    expect(
+      lastAssistantModelIdFromRecords([
+        { kind: "assistant_text", blocks: [{ content: { model: "claude-opus-4-6" } }] },
+        { kind: "assistant_text", blocks: [{ content: { model: "<synthetic>" } }] },
+      ]),
+    ).toBe("claude-opus-4-6");
+  });
+
   it("re-resolves on a model change and reports it as one log line", () => {
     const state = createSessionTokenFamilyState();
     expect(noteAssistantModel(state, "claude-opus-4-6")).toBe(true);
