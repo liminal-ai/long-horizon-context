@@ -1421,16 +1421,31 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       stopped = true;
       abort.abort();
       if (watcher !== undefined) watcher.stop();
-      // Final flush and queue settlement may still degrade; closed is applied last.
-      await batchQueue;
+      // Each step reports its own failure by name and the next step still runs;
+      // closed is always applied last. stop() never throws.
+      const stopStep = async (step: string, run: () => Promise<void>): Promise<void> => {
+        try {
+          await run();
+        } catch (cause) {
+          logError(`cc-lhc capture stop (gen ${captureHealth.generation}): ${step} failed: ${detail(cause)}`);
+        }
+      };
+      // Final flush of captured lines into the record.
+      await stopStep("final flush", async () => {
+        await batchQueue;
+      });
       // Derivation work queued by this session's last records finishes on the
       // scheduler whether or not this capture is still open; stopping the tail
       // never waits on it. Only the pending count is read, for stats.
-      if (sdk !== undefined && threadRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
-        const overview = await sdk.inspect.overview(threadRef);
-        if (overview.ok) {
-          stats.derivationsPending = overview.value.derivation.pending;
-        }
+      const stopSdk = sdk;
+      const stopRef = threadRef;
+      if (stopSdk !== undefined && stopRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
+        await stopStep("pending-summary count for stats", async () => {
+          const overview = await stopSdk.inspect.overview(stopRef);
+          if (overview.ok) {
+            stats.derivationsPending = overview.value.derivation.pending;
+          }
+        });
       }
       // Terminal: no further phase transitions after stop() resolves.
       captureHealth = markCaptureClosed(captureHealth);

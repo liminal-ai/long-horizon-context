@@ -2953,9 +2953,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
     /**
      * Move the capture generation onto the rebuilt session, as part of the
-     * switch. The outgoing generation's final flush is fired and forgotten: its
+     * switch. The outgoing generation's stop is fired and forgotten: its
      * rollout file is never deleted, so anything it misses stays recoverable,
-     * and a drain that hangs or throws must never reach the live replacement.
+     * and a stop that hangs or throws must never reach the live replacement.
      */
     const switchCaptureToRebuilt = (request: HandoffRequest): { captureStarted: boolean; captureWarning?: string } => {
       const dying = captureSession;
@@ -2965,9 +2965,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const stats = dying?.stats ?? captureContinuation?.stats;
       const priorGeneration = dying?.getCaptureGeneration() ?? captureContinuation?.generation ?? 0;
       if (dying !== undefined) {
+        // stop() reports each failing step by name itself and never throws;
+        // this catch is the last resort for anything outside those steps.
         void dying.stop().catch((cause: unknown) => {
           wrapperLog.warn(
-            `cc-lhc handoff: old-generation capture drain failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+            `cc-lhc handoff: stopping the old capture after handoff failed: ${cause instanceof Error ? cause.message : String(cause)}`,
           );
         });
       }
