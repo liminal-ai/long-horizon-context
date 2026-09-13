@@ -2,18 +2,35 @@
 
 ## Overview
 
-Maintenance release on the shared LHC core. One accounting fix, two documentation
-additions, no schema change, no change to captured records or served views.
+Release on the shared LHC core: the token estimator becomes provider-aware, the
+context-window class feature is removed in favor of one built-in policy, three
+burn-in fixes, and two documentation additions. No schema change; records and
+served views are unchanged for the same input.
 
-- Thinking-signature bytes are now estimated at the provider's billed rate instead
-  of the text tokenizer's, so turn sizes, segment splits, and compact triggers stop
-  firing early on threads that carry reasoning signatures.
+- **Provider-aware token estimator.** One estimator per SDK instance with a required
+  tokenizer family. Stored estimates stay raw o200k; a measured per-family weight
+  applies on read (claude-2026 1.55, claude-2025 1.17, gemini-4 1.14, qwen-3.5 1.08,
+  grok 1.05, deepseek-v4 1.04, glm-5 1.00, o200k 1.00, kimi-k2 0.99). cc-lhc resolves
+  the family from the launch `--model`, else the resumed record's last assistant
+  model, else the Anthropic fallback, and prints it in receipts, the compact note,
+  and `/details`. CLI commands take `--token-family`. LHC commit `6dbe7ee8`.
+- **Context-window class removed.** The 200k policy, the status-line window observer,
+  its launch-settings injection, and every window/class surface are gone. One
+  built-in policy (180k target, 360k trigger, 50k minimum runway; cc-lhc assumes a
+  1M-window model), with the user, project, launch-flag, and `/bounds` override
+  chain unchanged. `268c816d`.
+- **Thinking-signature bytes at the billed rate**, per family, instead of the text
+  tokenizer's (the original 0.4.2 fix, now a family field). `5f181303`.
+- **Burn-in fixes:** the old generation drains through the initialised SDK instead
+  of the bare domain module (`62aec60d`); Claude Code's synthetic model id no longer
+  flips the tokenizer family each turn (`0b1eb9a2`); capture stop reports each failing
+  step by name and always closes (`c7e7d59e`).
 - Thinking replay after compact is documented with its prefix-check exposure and the
   one-line recovery.
 - The release standard is written down (`docs/releases/README.md`) and this is the
   first cc-lhc release cut under it.
 
-## The defect
+## The signature defect
 
 Reasoning signatures are base64 strings attached to thinking blocks. The estimator
 ran them through the o200k text tokenizer, which counts base64 at roughly 1.47
@@ -51,7 +68,7 @@ and the preserved-thinking doc. No behavior change in this release.
 
 - Thread schema unchanged (13). Records, bands, and served views are byte-identical
   to 0.4.1 for the same input; only the token estimate column changes on new writes.
-- LHC package: 919 tests passed, 31 skipped; production and test typecheck clean.
+- Package suites rerun green on `8f5c3276` (lhc, cc-lhc, claude-lhc, pi-lhc); workspace typecheck clean except `t3code-inject`, which only resolves its types from the main checkout and is untouched.
 - Six-platform build: run RUN_ID_TBD. Live turn on the shipped Linux artifact
   before publication: see "Source and artifacts".
 
@@ -84,13 +101,15 @@ captures only. Do not mix npm-owned and script-owned launchers on the same `PATH
   carry no summary by design; smooth-band zeroing on one very large exchange is
   still reachable and is expected to shrink with this estimator change, not yet
   re-measured.
-- The billed rate is a measured constant, not a value the API reports; re-derive if
-  Anthropic changes signature billing.
+- Family weights and signature rates are measured constants, not values the API
+  reports; re-derive if a provider changes its tokenizer or signature billing.
+- Removing the window class means a 200k-window Claude model gets the 1M policy
+  unless overridden; set `/bounds` or project config for such models.
 
 ## Source and artifacts
 
 - Previous release: [`cc-lhc-v0.4.1`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.1)
-- Source: LHC main `5f181303` (estimator), `c7d31155` (thinking note), `a61c2be6` (release standard)
+- Source: LHC main `8f5c3276` (estimator, window-class removal, burn-in fixes), `5f181303` (signature rate), `c7d31155` (thinking note), `a61c2be6` (release standard)
 - Build run: RUN_ID_TBD; npm package sha256 `SHA256_TBD`
 - Live turn on the shipped artifact: LIVE_TURN_TBD
 - Source comparison: [`cc-lhc-v0.4.1...cc-lhc-v0.4.2`](https://github.com/liminal-ai/long-horizon-context/compare/cc-lhc-v0.4.1...cc-lhc-v0.4.2)
