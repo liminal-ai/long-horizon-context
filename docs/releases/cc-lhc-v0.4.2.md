@@ -85,7 +85,7 @@ and the preserved-thinking doc. No behavior change in this release.
 - Thread schema unchanged (13). Records, bands, and served views are byte-identical
   to 0.4.1 for the same input; only the token estimate column changes on new writes.
 - Package suites rerun green on `8f5c3276` (lhc, cc-lhc, claude-lhc, pi-lhc); workspace typecheck clean except `t3code-inject`, which only resolves its types from the main checkout and is untouched.
-- Six-platform build: run RUN_ID_TBD. Live turn on the shipped Linux artifact
+- Six-platform build: run 35360589771. Live turn on the shipped Linux artifact
   before publication: see "Source and artifacts".
 
 ## Install or upgrade
@@ -126,8 +126,8 @@ captures only. Do not mix npm-owned and script-owned launchers on the same `PATH
 
 - Previous release: [`cc-lhc-v0.4.1`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.1)
 - Source: LHC main `8f5c3276` (estimator, window-class removal, burn-in fixes), `5f181303` (signature rate), `c7d31155` (thinking note), `a61c2be6` (release standard)
-- Build run: RUN_ID_TBD; npm package sha256 `SHA256_TBD`
-- Live turn on the shipped artifact: LIVE_TURN_TBD
+- Build run: 35360589771; npm package sha256 `e191b455aadaed10a1274030522a8b843b3510223a3648189d93049e68b6d38f`
+- Live turn on the shipped artifact: 2026-09-18 ~15:45Z, cc-lhc 0.4.2 from the CI npm package installed to a scratch prefix, scratch CC_LHC_HOME, one-shot prompt answered correctly; capture wrote record `65c123b5` (3 events, 1 segment end); wrapper log: family claude-2026 (provider fallback)
 - Source comparison: [`cc-lhc-v0.4.1...cc-lhc-v0.4.2`](https://github.com/liminal-ai/long-horizon-context/compare/cc-lhc-v0.4.1...cc-lhc-v0.4.2)
 - Release tag: [`cc-lhc-v0.4.2`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.2)
 - Checksums: [`SHA256SUMS`](https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.2/SHA256SUMS)

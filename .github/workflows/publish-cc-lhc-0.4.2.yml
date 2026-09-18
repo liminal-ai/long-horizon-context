@@ -30,14 +30,14 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           mkdir release
-          gh run download RUN_ID_TBD \
+          gh run download 35360589771 \
             --repo "$GITHUB_REPOSITORY" \
             --name cc-lhc-npm-package \
             --dir release
 
       - name: Verify exact publication artifact
         run: |
-          echo "SHA256_TBD  release/cc-lhc-0.4.2.tgz" | sha256sum --check --strict
+          echo "e191b455aadaed10a1274030522a8b843b3510223a3648189d93049e68b6d38f  release/cc-lhc-0.4.2.tgz" | sha256sum --check --strict
           test "$(tar -xOf release/cc-lhc-0.4.2.tgz package/package.json | node -pe 'const p=JSON.parse(require("fs").readFileSync(0,"utf8")); `${p.name}@${p.version}`')" = "cc-lhc@0.4.2"
 
       - name: Confirm npm identity and version availability
