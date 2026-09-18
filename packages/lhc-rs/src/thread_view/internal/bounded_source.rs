@@ -1,5 +1,7 @@
 //! Metadata-first Smart Compact source, ported from `bounded-source.ts`.
 
+use crate::shared_tech::token_counting::family::weigh_tokens;
+
 use std::collections::{HashMap, HashSet};
 
 use indexmap::IndexMap;
@@ -231,7 +233,7 @@ pub fn create_bounded_selection<'a>(
                 TurnMessageAggregate {
                     min_order: required_i64(&row, "min_order"),
                     max_order: required_i64(&row, "max_order"),
-                    tokens: required_i64(&row, "tokens"),
+                    tokens: weigh_tokens(required_i64(&row, "tokens")),
                     count: required_i64(&row, "n"),
                 },
             )
@@ -352,7 +354,7 @@ impl SelectionSource for BoundedSelectionSource<'_> {
             for row in &rows {
                 self.stats.compact_point_rows_scanned += 1;
                 let order = required_i64(row, "o");
-                sum += required_i64(row, "tok");
+                sum += weigh_tokens(required_i64(row, "tok"));
                 if sum as f64 >= budget {
                     return Some((order, required_str(row, "turn_id")));
                 }
@@ -384,7 +386,7 @@ impl SelectionSource for BoundedSelectionSource<'_> {
                AND m.source_event_order > ?"
             ))
             .get_params(&[SqlParam::from(order)])
-            .map(|row| required_i64(&row, "total"))
+            .map(|row| weigh_tokens(required_i64(&row, "total")))
             .unwrap_or(0)
     }
 

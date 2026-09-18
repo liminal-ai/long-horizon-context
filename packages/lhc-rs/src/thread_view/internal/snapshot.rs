@@ -6,6 +6,8 @@
 //! to thread-view internals; status derivation counting still goes through the
 //! owners' report surfaces in index.ts.
 
+use crate::shared_tech::token_counting::family::weigh_tokens;
+
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
@@ -316,7 +318,7 @@ pub fn read_view_snapshot(db: &Db) -> Option<ViewSnapshot> {
             Some(ViewSnapshotBand {
                 band,
                 rendered_text: map_required_str(row, "rendered_text"),
-                token_count: map_required_i64(row, "token_count"),
+                token_count: weigh_tokens(map_required_i64(row, "token_count")),
             })
         })
         .collect();
@@ -516,7 +518,7 @@ pub fn tail_token_sum(db: &Db, compact_point: i64) -> i64 {
         .prepare(SQL_TAIL_TOKEN_SUM)
         .get_params(&[SqlParam::from(compact_point)])
         .unwrap_or_else(|| panic!("tail token sum row missing"));
-    map_required_i64(&row, "total")
+    weigh_tokens(map_required_i64(&row, "total"))
 }
 
 // ── the atomic replace ───────────────────────────────────────────

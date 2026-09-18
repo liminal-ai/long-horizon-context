@@ -22,7 +22,7 @@ use crate::shared_tech::derivation::{DerivationState, RenderingPartKind};
 use crate::shared_tech::js_json::{
     js_json_stringify, js_len, js_slice, js_string_nullish, js_trim_end,
 };
-use crate::shared_tech::token_counting::estimate_tokens;
+use crate::shared_tech::token_counting::family::estimate_budget_tokens;
 use crate::shared_tech::tool_result_rendering::{FALLBACK_TRUNCATION_LIMIT, truncate_for_fallback};
 use crate::shared_tech::view::{Band, ViewSubjectKind};
 
@@ -605,7 +605,7 @@ pub fn brief_fallback_cap_tokens(brief_band_budget: f64) -> f64 {
 /// [`js_len`] / [`js_slice`], and `trimEnd` is [`js_trim_end`] — the loop must
 /// step identically to the TS reference on every input.
 fn cap_fallback_body(body: &str, cap_tokens: f64) -> String {
-    let body_tokens = estimate_tokens(body);
+    let body_tokens = estimate_budget_tokens(body);
     if (body_tokens as f64) <= cap_tokens {
         return body.to_string();
     }
@@ -616,13 +616,13 @@ fn cap_fallback_body(body: &str, cap_tokens: f64) -> String {
         (((js_len(body) as f64) / (body_tokens as f64)) * cap_tokens).floor() as i64;
     loop {
         let kept = js_trim_end(&js_slice(body, 0, Some(keep))).to_string();
-        let dropped = (body_tokens - estimate_tokens(&kept)).max(0);
+        let dropped = (body_tokens - estimate_budget_tokens(&kept)).max(0);
         let capped = if kept.is_empty() {
             marker(dropped)
         } else {
             format!("{kept}{LITERAL_COMPRESSION_FAILED_JOIN}{}", marker(dropped))
         };
-        if keep == 0 || (estimate_tokens(&capped) as f64) <= cap_tokens {
+        if keep == 0 || (estimate_budget_tokens(&capped) as f64) <= cap_tokens {
             return capped;
         }
         keep = (keep - 1).min((keep as f64 * 0.9).floor() as i64).max(0);

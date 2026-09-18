@@ -77,10 +77,11 @@ fn read_live_tool_results_after(db: &Db, effective_start: i64) -> Vec<ToolResult
                     .and_then(|v| v.as_i64())
                     .unwrap_or(0),
                 tool_call_id,
-                token_estimate: row
-                    .get("token_estimate")
-                    .and_then(|v| v.as_i64())
-                    .unwrap_or(0),
+                token_estimate: crate::shared_tech::token_counting::family::weigh_tokens(
+                    row.get("token_estimate")
+                        .and_then(|v| v.as_i64())
+                        .unwrap_or(0),
+                ),
             }
         })
         .collect()

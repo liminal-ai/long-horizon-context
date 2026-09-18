@@ -840,6 +840,23 @@ pub struct Lhc {
 }
 
 impl Lhc {
+    /// Select the active serving model for subsequent budget reads. Stored raw
+    /// estimates and operations already in flight remain unchanged. `grok-`
+    /// models use 1.05; other models use 1.00. This is the serving model, not
+    /// the compression model. Status, selection, compact receipts, host pressure
+    /// and inspect load costs use weighted budgets. Message/derivation records,
+    /// `describe` stored band counts, provider usage and token slices remain raw.
+    /// Below-SDK domain calls retain the o200k default.
+    pub fn set_model(&self, model: &str) {
+        *self
+            .thread_view
+            .seam
+            .token_family
+            .write()
+            .unwrap_or_else(|e| e.into_inner()) =
+            crate::shared_tech::token_counting::family::TokenFamily::for_model(model);
+    }
+
     pub async fn drain_settled(&self, ref_: ThreadRef) {
         let resolved_ref = threads::resolve_thread_ref(ref_).await;
         let OpResult::Ok { value } = resolved_ref else {
@@ -1411,6 +1428,7 @@ pub fn init_lhc(config: SdkConfig) -> Lhc {
             let poke_scheduler = scheduler.shared_handle();
             let touch_scheduler = scheduler.shared_handle();
             Arc::new(InstanceSeam {
+                token_family: Default::default(),
                 poke: Box::new(move |thread_id| poke_scheduler.poke(thread_id)),
                 touch: Box::new(move |file_path, db| touch_scheduler.touch(file_path, db)),
                 view: Some(resolved.view.clone()),
@@ -1418,6 +1436,7 @@ pub fn init_lhc(config: SdkConfig) -> Lhc {
             })
         }
         SdkMode::Manual => Arc::new(InstanceSeam {
+            token_family: Default::default(),
             poke: Box::new(|_thread_id| {}),
             touch: Box::new(|_file_path, _db| {}),
             view: Some(resolved.view.clone()),
@@ -1453,4 +1472,12 @@ pub fn init_lhc(config: SdkConfig) -> Lhc {
         work,
         work_registration,
     }
+}
+
+/// Initialize budget accounting for the active serving model.
+/// `init_lhc` remains the raw o200k-compatible default.
+pub fn init_lhc_for_model(config: SdkConfig, model: &str) -> Lhc {
+    let sdk = init_lhc(config);
+    sdk.set_model(model);
+    sdk
 }

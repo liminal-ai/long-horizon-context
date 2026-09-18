@@ -5,6 +5,8 @@
 //! thread shape falls out of this one composition path: absent pieces normalize
 //! to zeros/nulls, no shape-specific branch.
 
+use crate::shared_tech::token_counting::family::weigh_tokens;
+
 use indexmap::IndexMap;
 
 use crate::intake_stream;
@@ -111,7 +113,7 @@ pub async fn compose_overview(ref_: ThreadRef) -> OpResult<InspectOverview> {
         // TS: messageSection.byKind[record.kind] = (… ?? 0) + 1
         let kind = record.kind.as_str().to_string();
         *message_section.by_kind.entry(kind).or_insert(0) += 1;
-        message_section.visible_tokens += record.token_estimate;
+        message_section.visible_tokens += weigh_tokens(record.token_estimate);
     }
 
     let turn_list = match turns::list_turns(ref_.clone()).await {

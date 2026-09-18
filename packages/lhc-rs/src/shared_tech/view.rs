@@ -606,6 +606,7 @@ pub struct ViewStatusVisibility {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ViewStatus {
+    /// Serving-model weighted sum of the raw tail estimates.
     pub tail_tokens: i64,
     /// From configured compactThreshold (TS `number`, may be fractional).
     pub threshold: f64,

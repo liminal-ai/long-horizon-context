@@ -13,7 +13,7 @@ use crate::shared_tech::inspect::{
     ViewContentsTail,
 };
 use crate::shared_tech::js_json::js_string_of_number;
-use crate::shared_tech::token_counting::estimate_tokens;
+use crate::shared_tech::token_counting::family::estimate_budget_tokens;
 use crate::shared_tech::view::{Band, LlmRequestContextMessage};
 use crate::thread_view;
 use crate::threads::ThreadRef;
@@ -41,7 +41,7 @@ fn message_text(message: &LlmRequestContextMessage) -> String {
 fn measured_tokens(messages: &[LlmRequestContextMessage]) -> i64 {
     messages
         .iter()
-        .map(|message| estimate_tokens(&message_text(message)))
+        .map(|message| estimate_budget_tokens(&message_text(message)))
         .sum()
 }
 
