@@ -9,6 +9,8 @@
 
 pub mod internal;
 
+use crate::shared_tech::token_counting::family::weigh_tokens;
+
 use std::panic::{AssertUnwindSafe, panic_any};
 use std::path::Path;
 
@@ -523,7 +525,7 @@ pub fn read_turn_steps(db: &Db, turn_id: &str) -> StepEdges {
 }
 
 /// The open turn's step facts for a host pressure decision (turn parts,
-/// AC-7.1): identity, the sum of stored member estimates, and the step edges
+/// AC-7.1): identity, the serving-model weighted sum of raw member estimates, and the step edges
 /// read from host-supplied step indices. Deterministic, inference-free, no
 /// writes. None only when the record holds no open turn (a damaged thread;
 /// the state machine otherwise keeps exactly one).
@@ -547,7 +549,7 @@ pub fn read_active_turn_steps(db: &Db) -> Option<ActiveTurnSteps> {
     Some(ActiveTurnSteps {
         edges: read_turn_steps(db, &turn_id),
         turn_id,
-        estimated_tokens,
+        estimated_tokens: weigh_tokens(estimated_tokens),
     })
 }
 

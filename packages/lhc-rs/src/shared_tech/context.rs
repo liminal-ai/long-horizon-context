@@ -7,8 +7,9 @@
 //!
 //! TS uses `AsyncLocalStorage`; Rust counterpart is `tokio::task_local`.
 
+use super::token_counting::family::TokenFamily;
 use std::cell::RefCell;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 use super::derivation::ResolvedSdkConfig;
 use super::storage::Db;
@@ -22,6 +23,7 @@ type ThreadTouchFn = Arc<dyn Fn(&str, &Db) + Send + Sync>;
 
 /// Per-SDK-instance delivery seam.
 pub struct InstanceSeam {
+    pub(crate) token_family: RwLock<TokenFamily>,
     pub poke: SchedulerPoke,
     pub touch: ThreadTouch,
     /// The instance's resolved view config rides the same seam the poke does, so
@@ -48,6 +50,7 @@ tokio::task_local! {
     /// [`run_with_instance_seam`] clears the flag (TS `AsyncLocalStorage.run`
     /// replaces the store; nested seams restore normal touch).
     static TOUCH_SUPPRESSED: bool;
+    static TOKEN_FAMILY: TokenFamily;
 }
 
 // Below-SDK default seam (former module-global poke/touch slots).
@@ -88,8 +91,12 @@ pub async fn run_with_instance_seam<T>(
     seam: Arc<InstanceSeam>,
     operation: impl Future<Output = T>,
 ) -> T {
-    TOUCH_SUPPRESSED
-        .scope(false, SEAM_STORE.scope(Some(seam), operation))
+    let family = *seam.token_family.read().unwrap_or_else(|e| e.into_inner());
+    TOKEN_FAMILY
+        .scope(
+            family,
+            TOUCH_SUPPRESSED.scope(false, SEAM_STORE.scope(Some(seam), operation)),
+        )
         .await
 }
 
@@ -105,7 +112,10 @@ pub(crate) fn run_with_instance_seam_sync<T>(
     seam: Arc<InstanceSeam>,
     operation: impl FnOnce() -> T,
 ) -> T {
-    TOUCH_SUPPRESSED.sync_scope(false, || SEAM_STORE.sync_scope(Some(seam), operation))
+    let family = *seam.token_family.read().unwrap_or_else(|e| e.into_inner());
+    TOKEN_FAMILY.sync_scope(family, || {
+        TOUCH_SUPPRESSED.sync_scope(false, || SEAM_STORE.sync_scope(Some(seam), operation))
+    })
 }
 
 pub fn set_scheduler_poke(poke: Option<SchedulerPoke>) {
@@ -164,6 +174,7 @@ pub async fn run_with_thread_touch_suppressed<T>(operation: impl Future<Output =
         }
         None => {
             let fallback = Arc::new(InstanceSeam {
+                token_family: RwLock::default(),
                 poke: Box::new(|thread_id| {
                     if let Some(poke) = clone_scheduler_poke() {
                         poke(thread_id);
@@ -195,4 +206,9 @@ pub fn fire_thread_touch(file_path: &str, db: &Db) {
     if let Some(touch) = clone_thread_touch() {
         touch(file_path, db);
     }
+}
+
+/// One immutable family snapshot for an SDK operation; direct calls use o200k.
+pub(crate) fn resolve_token_family() -> TokenFamily {
+    TOKEN_FAMILY.try_with(|family| *family).unwrap_or_default()
 }

@@ -158,7 +158,7 @@ pub struct ViewContentsTail {
 #[serde(rename_all = "camelCase")]
 pub struct ViewContentsLoadCost {
     /// loadCost totals what model context serves now: band and tail tokens are
-    /// both measured over served messages with the shared estimator, so equality
+    /// both measured over served messages with the serving-model weight, so equality
     /// with an independent context read is structural. The stored per-band counts
     /// stay reported above; they price the snapshot bytes without the served
     /// band-marker header, so they are describe's truth, not the serving cost.

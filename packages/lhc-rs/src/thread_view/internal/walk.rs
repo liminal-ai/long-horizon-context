@@ -10,7 +10,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::shared_tech::derivation::DerivationState;
-use crate::shared_tech::token_counting::estimate_tokens;
+use crate::shared_tech::token_counting::family::estimate_budget_tokens;
 use crate::shared_tech::view::{
     Band, PartRange, ProtectedRepresentation, ProtectedTurn, ReceiptPart, SettleConstruction,
     SettledTurn, SplitPoint, ViewSubjectKind,
@@ -337,7 +337,7 @@ fn build_turn_entry(
         gap: rep.gap,
         reason: rep.reason,
         start_order: turn_start_order(source, turn),
-        tokens: estimate_tokens(&text),
+        tokens: estimate_budget_tokens(&text),
         text,
         part: None,
     }
@@ -398,7 +398,7 @@ fn build_chunk_entry(
         gap: rep.gap,
         reason: rep.reason,
         start_order: member_starts.into_iter().min().unwrap_or(compact_point),
-        tokens: estimate_tokens(&text),
+        tokens: estimate_budget_tokens(&text),
         text,
         part: None,
     })
@@ -557,7 +557,7 @@ fn build_coverage_entry(
         gap: rep.gap,
         reason: rep.reason,
         start_order: turn_start_order(source, turn),
-        tokens: estimate_tokens(&text),
+        tokens: estimate_budget_tokens(&text),
         text,
         part: None,
     }
@@ -857,7 +857,7 @@ pub fn walk_arrangement(
                 gap: false,
                 reason: None,
                 start_order: from_order,
-                tokens: estimate_tokens(&text),
+                tokens: estimate_budget_tokens(&text),
                 text,
                 part: Some(*range),
             });

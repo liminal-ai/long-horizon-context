@@ -14,7 +14,7 @@
 //! Tie-breakers: inclusion thresholds are <=; walks are newest-first everywhere;
 //! chunk coverage is decided by the chunk's newest
 //! member turn. Entry costs are the tokens of the rendered entry text itself,
-//! so the budgeted tokens are the stored tokens — no second estimate.
+//! so budget inputs weigh the stored raw tokens once, without retokenizing.
 //!
 //! Band crossing: smooth and detailed stop at the first entry that does not
 //! fit and hand the remainder down to the next band ([`BandCrossing::Stop`]).
@@ -41,7 +41,7 @@ use super::render::{
 use crate::messages::read_live_messages;
 use crate::shared_tech::derivation::DerivationState;
 use crate::shared_tech::storage::Db;
-use crate::shared_tech::token_counting::estimate_tokens;
+use crate::shared_tech::token_counting::family::estimate_budget_tokens;
 use crate::shared_tech::view::{
     Band, PartRange, ProtectedTurn, ReceiptPart, SettledTurn, SkippedRecord, SplitPoint,
     ViewProfilePercentages, ViewSubjectKind,
@@ -348,7 +348,9 @@ pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorrup
             message_id: record.message_id,
             order: record.source_event_order,
             kind: record.kind.as_str().to_string(),
-            token_estimate: record.token_estimate,
+            token_estimate: crate::shared_tech::token_counting::family::weigh_tokens(
+                record.token_estimate,
+            ),
             turn_id,
             text: excerpt_line(record.kind.as_str(), &blocks),
         });
@@ -703,7 +705,7 @@ fn build_turn_entry(
         gap: rep.gap,
         reason: rep.reason,
         start_order: turn_start_order(turn, messages_by_turn),
-        tokens: estimate_tokens(&text),
+        tokens: estimate_budget_tokens(&text),
         text,
         part: None,
     }
@@ -762,7 +764,7 @@ fn build_chunk_entry(
         gap: rep.gap,
         reason: rep.reason,
         start_order,
-        tokens: estimate_tokens(&text),
+        tokens: estimate_budget_tokens(&text),
         text,
         part: None,
     }
@@ -930,7 +932,7 @@ fn build_coverage_entry(
         gap: rep.gap,
         reason: rep.reason,
         start_order: turn_start_order(turn, messages_by_turn),
-        tokens: estimate_tokens(&text),
+        tokens: estimate_budget_tokens(&text),
         text,
         part: None,
     }

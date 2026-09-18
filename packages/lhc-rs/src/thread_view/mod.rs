@@ -11,6 +11,8 @@
 
 pub mod internal;
 
+use crate::shared_tech::token_counting::family::weigh_tokens;
+
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
@@ -670,7 +672,7 @@ fn read_zone_tool_results(db: &Db, effective_start: i64) -> Vec<ToolResultZoneRo
         .into_iter()
         .map(|row| ToolResultZoneRow {
             source_event_order: map_required_i64(&row, "source_event_order"),
-            token_estimate: map_required_i64(&row, "token_estimate"),
+            token_estimate: weigh_tokens(map_required_i64(&row, "token_estimate")),
         })
         .collect()
 }
@@ -680,7 +682,7 @@ fn tokens_behind_boundary(db: &Db, boundary: i64, compact_point: i64) -> i64 {
         .prepare(SQL_TOKENS_BEHIND_BOUNDARY)
         .get_params(&[SqlParam::from(compact_point), SqlParam::from(boundary)]);
     match row {
-        Some(row) => map_required_i64(&row, "total"),
+        Some(row) => weigh_tokens(map_required_i64(&row, "total")),
         None => 0,
     }
 }
@@ -2104,7 +2106,7 @@ pub async fn install_prepared_compact(
             let stored = installed.bands.iter().find(|row| row.band == band);
             let stats = CompactBandStats {
                 entries: entries_by_band(&installed.selection.entries, band).len() as i64,
-                tokens: stored.map(|s| s.token_count).unwrap_or(0),
+                tokens: stored.map(|s| weigh_tokens(s.token_count)).unwrap_or(0),
             };
             match band {
                 Band::Brief => brief = stats,

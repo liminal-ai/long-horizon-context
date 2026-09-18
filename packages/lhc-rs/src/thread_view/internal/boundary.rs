@@ -4,6 +4,7 @@
 //! compact point's coordinate system; tool results at-or-behind it render short.
 //! Compact resets it inside compact's own transaction.
 
+use crate::shared_tech::token_counting::family::weigh_tokens;
 use serde_json::Value;
 
 use super::exact_i64::f64_to_exact_i64;
@@ -60,7 +61,7 @@ pub fn visibility_zone_tokens(db: &Db, position: i64, compact_point: i64) -> i64
         .get_params(&[SqlParam::from(position), SqlParam::from(compact_point)]);
     // COALESCE always yields a row under node:sqlite / our adapter.
     match row {
-        Some(row) => map_required_i64(&row, "zone"),
+        Some(row) => weigh_tokens(map_required_i64(&row, "zone")),
         None => 0,
     }
 }
