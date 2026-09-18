@@ -30,31 +30,47 @@ served views are unchanged for the same input.
 - The release standard is written down (`docs/releases/README.md`) and this is the
   first cc-lhc release cut under it.
 
-## The signature defect
+## The defect
 
-Reasoning signatures are base64 strings attached to thinking blocks. The estimator
-ran them through the o200k text tokenizer, which counts base64 at roughly 1.47
-characters per token. The API bills them far lower.
+The estimator counted every string with one text tokenizer (o200k) and one rate.
+Two things were wrong with that. Reasoning signatures, base64 strings on thinking
+blocks, tokenize at about 1.47 characters per token in o200k while the provider
+bills them far lower: Alder's live comparison of 2026-09-07 on the CC-LHC steward
+thread put 18 signature-only thinking blocks at 33,714 estimated against 8,637
+billed (ratio 3.90). And Claude text itself bills above o200k: 67 live Reed
+requests fitted 1.55 billed tokens per o200k token, and the Anthropic count
+endpoint reproduced 1.551 on the campaign's passages.
 
-Reproduction on the pre-fix build (cc-lhc 0.4.1, LHC `c7d31155`), Alder's live
-comparison of 2026-09-07 on the CC-LHC steward thread: 18 thinking blocks with no
-visible text and 1.4k–4k-character signatures were estimated at 33,714 tokens where
-the provider billed 8,637 (ratio 3.90). Reed re-measured the tokenizer rate on 300
-live Fable signatures (672,884 chars, 458,756 o200k tokens, 1.467 chars/token),
-giving 5.73 chars per billed token; 5.74 is used.
-
-Effect before the fix: a thread's estimated size ran high by the signature volume in
-its tail, so turn segmentation and compact triggers fired earlier than the budget
-intended and the live tail was thinner than configured.
+Effect before the fix: a thread's estimated size ran high on signatures and low on
+Claude text, so segment splits and compact triggers fired off-budget and the live
+tail was not the configured size.
 
 ## Highlights
 
-### Signatures estimated at the billed rate
+### Provider-aware token estimator
 
-`estimateSignatureTokens` in `packages/lhc/src/shared-tech/token-counting` counts
-signature characters at 5.74 per token; the message projector uses it for the
-signature part of a thinking message and the text tokenizer for the visible text.
-Rate documented in source with its derivation. LHC commit `5f181303`.
+`packages/lhc/src/shared-tech/token-counting` now builds one `TokenEstimator` per SDK
+instance from a required tokenizer family. Stored estimates stay raw o200k; the
+family's weight applies on read, and signatures are counted at the family's own
+characters-per-token rate. Measured weights (billed / o200k): o200k 1.00,
+claude-2026 1.55, claude-2025 1.17, grok 1.05, qwen-3.5 1.08, glm-5 1.00,
+kimi-k2 0.99, deepseek-v4 1.04, gemini-4 1.14. Method and passages:
+`docs/token-estimator/` (LHC commit `6dbe7ee8`).
+
+### Family resolved from the model, context-window class removed
+
+cc-lhc resolves the family from the launch `--model`, else the resumed record's last
+assistant model, else the Anthropic fallback, and re-resolves from each captured
+reply; Claude Code's synthetic model id is ignored. The family and its source print
+in receipts, the compact note, and `/details`. The 200k/1M context-window class
+feature and its status-line probe are gone: one built-in policy (LHC commits
+`268c816d`, `0b1eb9a2`).
+
+### Burn-in fixes
+
+The capture stop path now drains the old generation through the initialised SDK
+(every compact handoff had logged a spurious drain failure), and it reports each
+failing step by name and always writes the closed marker (`62aec60d`, `c7e7d59e`).
 
 ### Thinking replay after compact, documented
 
