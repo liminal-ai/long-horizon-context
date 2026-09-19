@@ -49,6 +49,13 @@ jobs:
           status="$(curl --silent --show-error --output /tmp/cc-lhc-registry.json --write-out '%{http_code}' https://registry.npmjs.org/cc-lhc/0.4.2)"
           test "$status" = "404"
 
+      - name: Diagnose token capability (no publish)
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUB_CCLHC }}
+        run: |
+          echo "tfa mode: $(npm profile get --json 2>/dev/null | node -pe 'JSON.parse(require("fs").readFileSync(0,"utf8")).tfa' 2>/dev/null || echo unavailable)"
+          echo "package access:"; npm access list packages liminalbuilder --json 2>&1 | head -40
+          echo "cc-lhc collaborators:"; npm access list collaborators cc-lhc --json 2>&1 | head -20
       - name: Publish cc-lhc 0.4.2
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_PUB_CCLHC }}
