@@ -177,6 +177,39 @@ function parseOwner(raw: string): StoredOwner | null {
   }
 }
 
+/** A dead owner's lease that acquisition removed before claiming the thread. */
+export interface ReclaimedThreadOwnerLease {
+  threadId: string;
+  deadPid: number;
+  leasePath: string;
+  reason: "not_found" | "identity_mismatch";
+}
+
+export type ThreadOwnerLiveness = "none" | "live" | "dead" | "indeterminate";
+
+/**
+ * Read-only liveness of a thread's current lease holder, for callers that must
+ * not touch files an owner may be using. Never reclaims or deletes. A lease
+ * that cannot be read or parsed is indeterminate, never absent.
+ */
+export function probeThreadOwner(
+  threadId: string,
+  options: { home?: string; readIdentity?: ProbeProcessIdentity } = {},
+): ThreadOwnerLiveness {
+  const path = threadOwnerPath(threadId, options.home ?? ccLhcHome());
+  let raw: string;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch (cause) {
+    return (cause as NodeJS.ErrnoException).code === "ENOENT" ? "none" : "indeterminate";
+  }
+  const owner = parseOwner(raw);
+  if (owner === null || owner.threadId !== threadId) return "indeterminate";
+  const live = (options.readIdentity ?? probeProcessIdentityNative)(owner.processIdentity.pid);
+  if (live.ok) return identitiesEqual(owner.processIdentity, live.identity) ? "live" : "dead";
+  return live.code === "not_found" ? "dead" : "indeterminate";
+}
+
 function isExists(cause: unknown): boolean {
   return typeof cause === "object" && cause !== null && (cause as NodeJS.ErrnoException).code === "EEXIST";
 }
@@ -188,6 +221,8 @@ export function acquireThreadOwner(
     pid?: number;
     readIdentity?: ProbeProcessIdentity;
     token?: string;
+    /** Told once per dead owner's lease this acquisition reclaimed. */
+    onReclaim?: (reclaimed: ReclaimedThreadOwnerLease) => void;
   } = {},
 ): ThreadOwnerLease {
   const home = options.home ?? ccLhcHome();
@@ -292,6 +327,12 @@ export function acquireThreadOwner(
           } catch {
             // Already gone; the next loop iteration re-claims atomically.
           }
+          options.onReclaim?.({
+            threadId,
+            deadPid: existing.processIdentity.pid,
+            leasePath: path,
+            reason: live.ok ? "identity_mismatch" : "not_found",
+          });
         }
       }
       throw new ThreadOwnershipConflictError(threadId, null);

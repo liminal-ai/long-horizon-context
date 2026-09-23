@@ -15,7 +15,16 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  renameSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 
 import { ccLhcHome } from "../intake/paths.js";
@@ -220,6 +229,39 @@ export function writeDescriptor(
   publishAtomic(path, serialize(next), io);
 }
 
+export type DescriptorOwnerStatus =
+  | { status: "live" }
+  /** Kernel-proven: owner not found, or the pid now names another incarnation. */
+  | { status: "gone"; reason: string }
+  /** Liveness could not be established — never grounds to treat as stale. */
+  | { status: "indeterminate"; reason: string };
+
+/**
+ * The descriptor owner check: exact stored identity against the live probe.
+ * `gone` is proof the owner exited (or its pid was reused); anything the probe
+ * cannot establish is `indeterminate`, and callers must fail closed on it.
+ */
+export function probeDescriptorOwner(
+  storedIdentity: ProcessIdentity,
+  io: Pick<DescriptorIo, "readProcessIdentity">,
+): DescriptorOwnerStatus {
+  const current = io.readProcessIdentity(storedIdentity.pid);
+  if (!current.ok) {
+    if (current.code === "not_found") {
+      return { status: "gone", reason: "descriptor stale: owner process not found (exited or never existed)" };
+    }
+    // Indeterminate is not proof of staleness — refuse without claiming stale.
+    return {
+      status: "indeterminate",
+      reason: `descriptor refused: cannot establish current OS process identity (fail closed): ${current.message}`,
+    };
+  }
+  if (!identitiesEqual(storedIdentity, current.identity)) {
+    return { status: "gone", reason: "descriptor stale: process identity mismatch (pid reuse or forged identity)" };
+  }
+  return { status: "live" };
+}
+
 export type LoadDescriptorResult = { ok: true; descriptor: RuntimeDescriptorV1 } | { ok: false; reason: string };
 
 const STATES: ReadonlySet<string> = new Set(["opening", "ready", "degraded", "closed"]);
@@ -284,26 +326,8 @@ export function loadDescriptor(path: string, io: DescriptorIo = defaultDescripto
   // Owner check for any non-closed state that could still enable retrieval.
   // Closed is never ready for retrieval; allow inspect after owner death.
   if (obj.state === "ready" || obj.state === "opening" || obj.state === "degraded") {
-    const current = io.readProcessIdentity(storedIdentity.pid);
-    if (!current.ok) {
-      if (current.code === "not_found") {
-        return {
-          ok: false,
-          reason: "descriptor stale: owner process not found (exited or never existed)",
-        };
-      }
-      // Indeterminate is not proof of staleness — refuse without claiming stale.
-      return {
-        ok: false,
-        reason: `descriptor refused: cannot establish current OS process identity (fail closed): ${current.message}`,
-      };
-    }
-    if (!identitiesEqual(storedIdentity, current.identity)) {
-      return {
-        ok: false,
-        reason: "descriptor stale: process identity mismatch (pid reuse or forged identity)",
-      };
-    }
+    const owner = probeDescriptorOwner(storedIdentity, io);
+    if (owner.status !== "live") return { ok: false, reason: owner.reason };
   }
 
   const desc: RuntimeDescriptorV1 = {
@@ -509,4 +533,82 @@ export function closeAndRemove(
   io: DescriptorIo = defaultDescriptorIo(),
 ): RevocationResult {
   return revokeCapability(path, current, "closed", undefined, io);
+}
+
+export interface StaleDescriptorSweep {
+  /** Descriptors whose owner the probe proved gone; deleted. */
+  removed: string[];
+  /** Owner live — kept. */
+  keptLive: number;
+  /** Owner liveness unknown, or the descriptor unreadable/malformed — kept. */
+  keptIndeterminate: number;
+  /** Proven stale but the delete itself failed — left in place. */
+  failed: string[];
+  /** Session ids named by kept (live or indeterminate) descriptors. */
+  keptSessionIds: Set<string>;
+}
+
+/**
+ * Launch-time sweep of `$CC_LHC_HOME/runtime/*.json`. A killed wrapper (or a
+ * killed handoff candidate) never runs closeAndRemove, so its descriptor
+ * lingers after `loadDescriptor` already rejects it as stale. Delete exactly
+ * those whose owner `probeDescriptorOwner` proves gone; keep live and
+ * indeterminate ones, and anything this sweep cannot parse.
+ */
+export function sweepStaleRuntimeDescriptors(
+  home: string = ccLhcHome(),
+  io: DescriptorIo = defaultDescriptorIo(),
+  listDir: (dir: string) => string[] = (dir) => readdirSync(dir),
+): StaleDescriptorSweep {
+  const result: StaleDescriptorSweep = {
+    removed: [],
+    keptLive: 0,
+    keptIndeterminate: 0,
+    failed: [],
+    keptSessionIds: new Set(),
+  };
+  const dir = runtimeDir(home);
+  let names: string[];
+  try {
+    names = listDir(dir);
+  } catch {
+    return result;
+  }
+  for (const name of names) {
+    // Dotfiles are in-flight publishAtomic temps, never descriptors.
+    if (name.startsWith(".") || !name.endsWith(".json")) continue;
+    const path = join(dir, name);
+    let obj: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(io.readFile(path));
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
+      obj = parsed as Record<string, unknown>;
+    } catch {
+      result.keptIndeterminate += 1;
+      continue;
+    }
+    const keep = (kind: "live" | "indeterminate"): void => {
+      if (kind === "live") result.keptLive += 1;
+      else result.keptIndeterminate += 1;
+      if (typeof obj.sessionId === "string" && obj.sessionId !== "") result.keptSessionIds.add(obj.sessionId);
+    };
+    const storedIdentity = parseStoredProcessIdentity(obj.processIdentity);
+    if (storedIdentity === null || storedIdentity.pid !== obj.wrapperPid) {
+      keep("indeterminate");
+      continue;
+    }
+    const owner = probeDescriptorOwner(storedIdentity, io);
+    if (owner.status !== "gone") {
+      keep(owner.status);
+      continue;
+    }
+    try {
+      io.unlink(path);
+      result.removed.push(path);
+    } catch {
+      if (io.exists(path)) result.failed.push(path);
+      else result.removed.push(path);
+    }
+  }
+  return result;
 }

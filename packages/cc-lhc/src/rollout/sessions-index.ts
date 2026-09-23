@@ -174,6 +174,35 @@ export async function appendSessionsIndexEntry(input: AppendIndexInput, deps: Ro
   await renameFn(tempPath, indexPath);
 }
 
+/**
+ * Drop every entry for one session id from a project's sessions-index.json.
+ * Same load (with one-time .bak) and temp+rename publish as the append path.
+ * Returns how many entries were removed; a missing index is 0. Throws
+ * SESSIONS_INDEX_UNREADABLE_MESSAGE on an unparseable index (never rewritten).
+ */
+export async function removeSessionsIndexEntry(
+  projectDir: string,
+  sessionId: string,
+  deps: RolloutWriteDeps = {},
+): Promise<number> {
+  const { writeFileFn, renameFn, tempPathFn, accessFn } = { ...defaultDeps(), ...deps };
+  try {
+    await accessFn(join(projectDir, "sessions-index.json"));
+  } catch {
+    return 0;
+  }
+  const loaded = await loadSessionsIndexForAppend(projectDir, deps);
+  if (!Array.isArray(loaded.index.entries)) throw new Error(SESSIONS_INDEX_UNREADABLE_MESSAGE);
+  const kept = loaded.index.entries.filter((entry) => entry.sessionId !== sessionId);
+  const removed = loaded.index.entries.length - kept.length;
+  if (removed === 0) return 0;
+  const serialized = JSON.stringify({ ...loaded.index, entries: kept }, null, 2);
+  const tempPath = tempPathFn(loaded.indexPath);
+  await writeFileFn(tempPath, serialized, "utf8");
+  await renameFn(tempPath, loaded.indexPath);
+  return removed;
+}
+
 export function rolloutPathForSession(projectsRoot: string, cwd: string, sessionId: string): string {
   return join(projectsRoot, encodeProjectPath(cwd), `${sessionId}.jsonl`);
 }

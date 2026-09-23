@@ -28,7 +28,7 @@ describe("coherent snapshot watcher", () => {
     watcher = undefined;
   });
 
-  it("initial complete line + partial: reject, zero emissions; later completion still zero", async () => {
+  it("initial complete line + partial: ready with the complete line; completion ingests the partial", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-snap-partial-"));
     const path = join(dir, "s.jsonl");
     writeFileSync(
@@ -44,12 +44,12 @@ describe("coherent snapshot watcher", () => {
         emissions.push(...em);
       },
     });
-    await expect(watcher.initialCatchUp).rejects.toThrow(/unterminated initial partial/);
-    expect(emissions).toHaveLength(0);
-    expect(watcher.isTerminal?.()).toBe(true);
+    await watcher.initialCatchUp;
+    expect(emissions.map((e) => (e.kind === "line" ? e.item.uuid : e.kind))).toEqual(["complete"]);
+    expect(watcher.isTerminal?.()).toBe(false);
     appendFileSync(path, ',"message":{"role":"user","content":"late"}}\n');
     await sleep(150);
-    expect(emissions).toHaveLength(0);
+    expect(emissions.map((e) => (e.kind === "line" ? e.item.uuid : e.kind))).toEqual(["complete", "partial"]);
   });
 
   it("mutation after candidate copy before commit: no delivery, no mutated baseline", async () => {

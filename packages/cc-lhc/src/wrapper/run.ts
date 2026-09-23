@@ -139,6 +139,7 @@ import {
 } from "./handoff-receipt-store.js";
 import { createInputDebugLogger } from "./input-debug.js";
 import { mergeLaunchSettings, readSettingsFileOrNull } from "./launch-settings.js";
+import { runLaunchSweep } from "./launch-sweep.js";
 import { consumeLegacyHandoffState } from "./legacy-handoff-state.js";
 import {
   clampPanelViewport,
@@ -186,6 +187,7 @@ import {
   formatSurvivalRelaunchNotice,
   NONVIABLE_SWAPS_BEFORE_ALARM,
 } from "./replacement-nonviability.js";
+import { repairResumedTranscript } from "./resume-repair.js";
 import {
   formatAutoDeferredSummary,
   formatAutoGuardBusyDetail,
@@ -861,6 +863,16 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
             "discarded from launch selection",
         );
       }
+      await runLaunchSweep({
+        home: ccLhcHome(),
+        cwd: process.cwd(),
+        registryPath,
+        lineageDbPath: defaultLineageDbPath(),
+        log: wrapperLog,
+        ...(descriptorIo === undefined ? {} : { descriptorIo }),
+      });
+      const { sessionId } = expectedSession;
+      repairResumedTranscript({ sessionId, cwd: process.cwd(), home: ccLhcHome(), log: wrapperLog, stderr });
 
       // Durable handoff state from a pre-rewrite build is consumed once, here:
       // under the thread lease, and never before it. The recovery directory and

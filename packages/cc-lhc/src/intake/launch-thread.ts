@@ -67,7 +67,16 @@ export async function openLaunchThread(input: OpenLaunchThreadInput): Promise<Op
     createThread: input.createThread,
   });
 
-  const lease = acquireThreadOwner(bound.threadId, input.home === undefined ? {} : { home: input.home });
+  const lease = acquireThreadOwner(bound.threadId, {
+    ...(input.home === undefined ? {} : { home: input.home }),
+    // Reported, never silent: a reclaim means a previous wrapper died owning
+    // this thread.
+    onReclaim: (reclaimed) =>
+      log(
+        `cc-lhc: reclaimed thread-owner lease for thread ${reclaimed.threadId} from dead owner ` +
+          `pid ${reclaimed.deadPid} (${reclaimed.reason}); lease ${reclaimed.leasePath}`,
+      ),
+  });
   log(`cc-lhc owns thread ${bound.threadId} (lease ${lease.path})`);
 
   try {
