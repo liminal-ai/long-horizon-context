@@ -24,6 +24,8 @@
  * (`terminal_reason: hook_stopped`) never reaches the driver: it sees one turn with a
  * compact_boundary in the middle and one result, from the new session.
  */
+
+import { randomUUID } from "node:crypto";
 import {
   type HookJSONOutput,
   type Options,
@@ -39,14 +41,13 @@ import {
   type SDKUserMessage,
   type UserDialogResult,
 } from "@anthropic-ai/claude-agent-sdk";
-import { randomUUID } from "node:crypto";
 import {
   COMPACT_CONTINUATION_MARKER_ACTION,
   COMPACT_CONTINUATION_MARKER_CAUSE,
   COMPACT_CONTINUATION_MARKER_KIND,
-  compactContinuationMarkerIdempotencyKey,
-  type CompactReceipt,
   CONTEXT_COMPACT_CONTINUE_REASON,
+  type CompactReceipt,
+  compactContinuationMarkerIdempotencyKey,
   killClaudeCliInferenceChildren,
   type Lhc,
   type MessageEventInput,
@@ -83,16 +84,29 @@ export interface SessionIO {
   log(line: string): void;
 }
 
+/**
+ * Claude Code's environment: the host's SDK `env` option when it passes one,
+ * else the sidecar's own. The t3code driver sets T3CODE_THREAD_ID on the
+ * sidecar process, not in that option, so it is carried over here; without it
+ * `lhc-agent` inside a claude-lhc seat cannot resolve its sender.
+ */
+export function claudeChildEnv(
+  wireEnv: NodeJS.ProcessEnv | undefined,
+  sidecarEnv: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const threadId = sidecarEnv.T3CODE_THREAD_ID;
+  return {
+    ...(wireEnv ?? sidecarEnv),
+    ...(threadId !== undefined && wireEnv?.T3CODE_THREAD_ID === undefined ? { T3CODE_THREAD_ID: threadId } : {}),
+    DISABLE_AUTO_COMPACT: "1",
+  };
+}
+
 export function nativeLhcTitle(threadId: string): string {
   return `[LHC] ${threadId}`;
 }
 
-async function labelNativeSession(
-  sessionId: string,
-  title: string,
-  cwd: string,
-  io: SessionIO,
-): Promise<void> {
+async function labelNativeSession(sessionId: string, title: string, cwd: string, io: SessionIO): Promise<void> {
   try {
     await renameSession(sessionId, title, { dir: cwd });
   } catch (cause) {
@@ -262,16 +276,31 @@ export class ClaudeLhcSession {
   }
 
   async start(wire: WireOptions): Promise<void> {
-    const { resume, sessionId, canUseTool: _c, onUserDialog: _d, sessionStore: _s, settings, env, lhc, ...rest } = wire as Record<string, unknown>;
+    const {
+      resume,
+      sessionId,
+      canUseTool: _c,
+      onUserDialog: _d,
+      sessionStore: _s,
+      settings,
+      env,
+      lhc,
+      ...rest
+    } = wire as Record<string, unknown>;
     const sidecarOptions = (typeof lhc === "object" && lhc !== null ? lhc : {}) as SidecarOptions;
     this.#forceRebuildFailure = sidecarOptions.forceRebuildFailure === true;
-    if (this.#forceRebuildFailure) this.#io.log("start option lhc.forceRebuildFailure: every compact rebuild will fail (proof mode)");
-    const settingsRecord = typeof settings === "object" && settings !== null ? { ...(settings as Record<string, unknown>) } : {};
+    if (this.#forceRebuildFailure)
+      this.#io.log("start option lhc.forceRebuildFailure: every compact rebuild will fail (proof mode)");
+    const settingsRecord =
+      typeof settings === "object" && settings !== null ? { ...(settings as Record<string, unknown>) } : {};
     const compact = takeHostCompactSettings(settingsRecord);
     this.#autoCompactTrigger = compact.autoCompactTrigger;
     this.#viewTarget = compact.lhcLowerBound;
-    this.#env = { ...((env as NodeJS.ProcessEnv | undefined) ?? process.env), DISABLE_AUTO_COMPACT: "1" };
-    this.#base = { ...rest, ...(Object.keys(compact.childSettings).length > 0 ? { settings: compact.childSettings } : {}) };
+    this.#env = claudeChildEnv(env as NodeJS.ProcessEnv | undefined);
+    this.#base = {
+      ...rest,
+      ...(Object.keys(compact.childSettings).length > 0 ? { settings: compact.childSettings } : {}),
+    };
     if (typeof rest["cwd"] === "string") this.#cwd = rest["cwd"];
     if (typeof rest["pathToClaudeCodeExecutable"] === "string") this.#claudeBin = rest["pathToClaudeCodeExecutable"];
     if (typeof rest["model"] === "string") this.#model = rest["model"];
@@ -397,7 +426,11 @@ export class ClaudeLhcSession {
         const { signal, ...rest } = callbackOptions;
         this.#pendingApprovals += 1;
         try {
-          return (await this.#io.request("canUseTool", { toolName, input: toolInput, ...rest }, signal)) as PermissionResult;
+          return (await this.#io.request(
+            "canUseTool",
+            { toolName, input: toolInput, ...rest },
+            signal,
+          )) as PermissionResult;
         } finally {
           this.#pendingApprovals -= 1;
         }
@@ -407,8 +440,12 @@ export class ClaudeLhcSession {
       hooks: {
         ...((this.#base as Options).hooks ?? {}),
         PostToolUse: [{ hooks: [async (hookInput) => this.#onPostToolUse(gen, hookInput as PostToolUseHookInput)] }],
-        PostToolUseFailure: [{ hooks: [async (hookInput) => this.#onPostToolUseFailure(gen, hookInput as PostToolUseFailureHookInput)] }],
-        PostToolBatch: [{ hooks: [async (hookInput) => this.#onPostToolBatch(gen, hookInput as PostToolBatchHookInput)] }],
+        PostToolUseFailure: [
+          { hooks: [async (hookInput) => this.#onPostToolUseFailure(gen, hookInput as PostToolUseFailureHookInput)] },
+        ],
+        PostToolBatch: [
+          { hooks: [async (hookInput) => this.#onPostToolBatch(gen, hookInput as PostToolBatchHookInput)] },
+        ],
       },
       ...extra,
     };
@@ -447,42 +484,63 @@ export class ClaudeLhcSession {
     if (trigger === null) return proceed;
     const unsettled = this.#batch.unsettled();
     if (unsettled.length > 0) {
-      this.#io.log(`${stamp()} compact (${trigger}) due mid-turn; PostToolUse ${hookInput.tool_name} ${hookInput.tool_use_id} is not a safe boundary: ${unsettled.length} of ${this.#batch.size} tool call(s) in the batch unsettled (${unsettled.join(", ")})`);
+      this.#io.log(
+        `${stamp()} compact (${trigger}) due mid-turn; PostToolUse ${hookInput.tool_name} ${hookInput.tool_use_id} is not a safe boundary: ${unsettled.length} of ${this.#batch.size} tool call(s) in the batch unsettled (${unsettled.join(", ")})`,
+      );
       return proceed;
     }
     this.#stopping = trigger;
     this.#swap = { stoppedAt: Date.now(), sessionId: "" };
     if (this.#pendingCompact === trigger) this.#pendingCompact = null;
-    this.#io.log(`${stamp()} compact (${trigger}) due mid-turn; stopping generation ${gen.sessionId} at the safe boundary after PostToolUse ${hookInput.tool_name} ${hookInput.tool_use_id} (batch of ${this.#batch.size} settled)`);
+    this.#io.log(
+      `${stamp()} compact (${trigger}) due mid-turn; stopping generation ${gen.sessionId} at the safe boundary after PostToolUse ${hookInput.tool_name} ${hookInput.tool_use_id} (batch of ${this.#batch.size} settled)`,
+    );
     return { continue: false, suppressOutput: true, stopReason: MID_TURN_STOP_REASON };
   }
 
   /** Fires once per batch after every tool in it ran; logged so the seam's timing is on record. Never stops anything. */
   #onPostToolBatch(gen: Generation | null, hookInput: PostToolBatchHookInput): HookJSONOutput {
-    if (gen !== null && gen === this.#gen && hookInput.agent_id === undefined && (this.#stopping !== null || this.#midTurnDue() !== null)) {
-      this.#io.log(`${stamp()} PostToolBatch: ${hookInput.tool_calls.length} tool call(s) ${hookInput.tool_calls.map((c) => c.tool_use_id).join(", ")}${this.#stopping !== null ? " (stop already requested)" : ""}`);
+    if (
+      gen !== null &&
+      gen === this.#gen &&
+      hookInput.agent_id === undefined &&
+      (this.#stopping !== null || this.#midTurnDue() !== null)
+    ) {
+      this.#io.log(
+        `${stamp()} PostToolBatch: ${hookInput.tool_calls.length} tool call(s) ${hookInput.tool_calls.map((c) => c.tool_use_id).join(", ")}${this.#stopping !== null ? " (stop already requested)" : ""}`,
+      );
     }
     return { continue: true };
   }
 
   /** A failed tool still settles its slot in the batch; the stop waits for a PostToolUse. */
   #onPostToolUseFailure(gen: Generation | null, hookInput: PostToolUseFailureHookInput): HookJSONOutput {
-    if (gen !== null && gen === this.#gen && hookInput.agent_id === undefined) this.#batch.settle(hookInput.tool_use_id);
+    if (gen !== null && gen === this.#gen && hookInput.agent_id === undefined)
+      this.#batch.settle(hookInput.tool_use_id);
     return { continue: true };
   }
 
   /** Feeds the wire to the batch tracker and tallies the turn's tool calls by name. */
   #trackTools(message: SDKMessage): void {
-    for (const name of this.#batch.observe(message)) this.#turnToolCalls.set(name, (this.#turnToolCalls.get(name) ?? 0) + 1);
+    for (const name of this.#batch.observe(message))
+      this.#turnToolCalls.set(name, (this.#turnToolCalls.get(name) ?? 0) + 1);
   }
 
   /** The input that resumes the task in the new generation. A runtime note in LHC, never a prompt. */
   #continuationNote(): SDKUserMessage {
     const total = [...this.#turnToolCalls.values()].reduce((a, b) => a + b, 0);
     const byName = [...this.#turnToolCalls.entries()].map(([name, n]) => `${name} ×${n}`).join(", ");
-    const done = total === 0 ? "the work already done in this turn is" : `the ${total} tool call${total === 1 ? "" : "s"} already made in this turn (${byName}) and their results are`;
+    const done =
+      total === 0
+        ? "the work already done in this turn is"
+        : `the ${total} tool call${total === 1 ? "" : "s"} already made in this turn (${byName}) and their results are`;
     const body = `[runtime note] Context was compacted in the middle of this turn. The turn is still in progress: ${done} recorded above, up to the compact continuation marker. Continue the task from exactly that point. Do not repeat a completed step, do not start over, and do not wait for a new user message.`;
-    return { type: "user", message: { role: "user", content: [{ type: "text", text: body }] }, parent_tool_use_id: null, session_id: "" } as SDKUserMessage;
+    return {
+      type: "user",
+      message: { role: "user", content: [{ type: "text", text: body }] },
+      parent_tool_use_id: null,
+      session_id: "",
+    } as SDKUserMessage;
   }
 
   async #pump(gen: Generation): Promise<void> {
@@ -499,10 +557,20 @@ export class ClaudeLhcSession {
       if (gen.superseded || this.#closed) return;
       const reason = cause instanceof Error ? cause.message : String(cause);
       if (this.#turnOpen) {
-        await this.#intake([{
-          eventKind: "turn_end", idempotencyKey: `claude-lhc:${randomUUID()}:0:turn_end`, actor: "system", harness: HARNESS,
-          payload: { outcome: "aborted", outcomeReason: reason.slice(0, 200), ...(this.#turnStartedAt ? { startedAt: this.#turnStartedAt } : {}), endedAt: new Date().toISOString() },
-        }]).catch(() => undefined);
+        await this.#intake([
+          {
+            eventKind: "turn_end",
+            idempotencyKey: `claude-lhc:${randomUUID()}:0:turn_end`,
+            actor: "system",
+            harness: HARNESS,
+            payload: {
+              outcome: "aborted",
+              outcomeReason: reason.slice(0, 200),
+              ...(this.#turnStartedAt ? { startedAt: this.#turnStartedAt } : {}),
+              endedAt: new Date().toISOString(),
+            },
+          },
+        ]).catch(() => undefined);
         this.#turnOpen = false;
       }
       resetSegmentFold(this.#segmentFold);
@@ -513,7 +581,9 @@ export class ClaudeLhcSession {
   async #onMessage(message: SDKMessage): Promise<void> {
     if (this.#swap !== null && this.#swap.sessionId !== "" && message.session_id === this.#swap.sessionId) {
       // The measure the brief asks for: hook stop → first message of the new session on the wire.
-      this.#io.log(`${stamp()} swap complete: first message (${message.type}${"subtype" in message ? `/${String(message.subtype)}` : ""}) of generation ${message.session_id} ${Date.now() - this.#swap.stoppedAt} ms after the hook stop`);
+      this.#io.log(
+        `${stamp()} swap complete: first message (${message.type}${"subtype" in message ? `/${String(message.subtype)}` : ""}) of generation ${message.session_id} ${Date.now() - this.#swap.stoppedAt} ms after the hook stop`,
+      );
       this.#swap = null;
     }
     if (message.type === "system" && message.subtype === "init") {
@@ -522,8 +592,13 @@ export class ClaudeLhcSession {
       // connect asynchronously; a call made before they do carries no schemas for them, so its
       // usage reads low by that block (measured ~24k tokens for 52 tools). Real for that call,
       // and the next call reads them: worth a log line, not a correction.
-      const pending = (message.mcp_servers ?? []).filter((server) => server.status === "pending").map((server) => server.name);
-      if (pending.length > 0) this.#io.log(`init ${message.session_id}: ${message.tools.length} tool(s); ${pending.length} MCP server(s) still pending (${pending.join(", ")}), so usage reads low until they join the tool list`);
+      const pending = (message.mcp_servers ?? [])
+        .filter((server) => server.status === "pending")
+        .map((server) => server.name);
+      if (pending.length > 0)
+        this.#io.log(
+          `init ${message.session_id}: ${message.tools.length} tool(s); ${pending.length} MCP server(s) still pending (${pending.join(", ")}), so usage reads low until they join the tool list`,
+        );
     }
     if (message.type === "assistant" && message.parent_tool_use_id === null) {
       const inner = (message as { message?: { model?: unknown } }).message;
@@ -535,7 +610,10 @@ export class ClaudeLhcSession {
       }
     }
     this.#trackTools(message);
-    if (this.#stopping !== null && (message.type === "user" || message.type === "result")) this.#io.log(`${stamp()} wire after stop: ${message.type}${message.type === "result" ? `/${message.subtype} terminal=${String((message as unknown as Record<string, unknown>)["terminal_reason"])}` : ""}`);
+    if (this.#stopping !== null && (message.type === "user" || message.type === "result"))
+      this.#io.log(
+        `${stamp()} wire after stop: ${message.type}${message.type === "result" ? `/${message.subtype} terminal=${String((message as unknown as Record<string, unknown>)["terminal_reason"])}` : ""}`,
+      );
     if (message.type === "result") {
       const stopped = (message as unknown as Record<string, unknown>)["terminal_reason"] === HOOK_STOPPED;
       const trigger = this.#stopping;
@@ -546,7 +624,10 @@ export class ClaudeLhcSession {
         await this.#compactMidTurn(trigger);
         return;
       }
-      if (trigger !== null) this.#io.log(`mid-turn stop requested but the result came back ${message.subtype}/${String((message as unknown as Record<string, unknown>)["terminal_reason"])}; treating it as the turn end`);
+      if (trigger !== null)
+        this.#io.log(
+          `mid-turn stop requested but the result came back ${message.subtype}/${String((message as unknown as Record<string, unknown>)["terminal_reason"])}; treating it as the turn end`,
+        );
       this.#turnToolCalls.clear();
       this.#midTurnFailed = false;
     }
@@ -619,10 +700,15 @@ export class ClaudeLhcSession {
     if (!turns.ok) throw new Error(`LHC turns read failed: ${turns.error.reason}`);
     const open = turns.value.find((turn) => turn.status === "open");
     if (open === undefined || open.memberMessageIds.length === 0) return;
-    await this.#intake([{
-      eventKind: "turn_end", idempotencyKey: `claude-lhc:settle:${open.turnId}:turn_end`, actor: "system", harness: HARNESS,
-      payload: { outcome: "aborted", outcomeReason: reason, endedAt: new Date().toISOString() },
-    }]);
+    await this.#intake([
+      {
+        eventKind: "turn_end",
+        idempotencyKey: `claude-lhc:settle:${open.turnId}:turn_end`,
+        actor: "system",
+        harness: HARNESS,
+        payload: { outcome: "aborted", outcomeReason: reason, endedAt: new Date().toISOString() },
+      },
+    ]);
   }
 
   async #openTurnId(): Promise<string> {
@@ -658,10 +744,15 @@ export class ClaudeLhcSession {
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
       this.#io.log(`compact (${trigger}) failed: ${reason}`);
-      await this.#lhc.logging.write(this.#thread, { level: "warning", message: `[lhc compact:${trigger}] failed: ${reason}` }).catch(() => undefined);
-      this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }));
+      await this.#lhc.logging
+        .write(this.#thread, { level: "warning", message: `[lhc compact:${trigger}] failed: ${reason}` })
+        .catch(() => undefined);
+      this.#emitSynthetic(
+        this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }),
+      );
       if (heldResult !== undefined) this.#io.emit(heldResult);
-      else if (trigger === "manual") this.#emitSynthetic(this.#syntheticResult(previous.sessionId, startedAt, `LHC compact failed: ${reason}`));
+      else if (trigger === "manual")
+        this.#emitSynthetic(this.#syntheticResult(previous.sessionId, startedAt, `LHC compact failed: ${reason}`));
     } finally {
       this.#compacting = false;
     }
@@ -687,22 +778,39 @@ export class ClaudeLhcSession {
     let target: Generation = previous;
     try {
       const openTurn = await this.#openTurnId();
-      await this.#intake([{
-        eventKind: "turn_end", idempotencyKey: `claude-lhc:midturn:${openTurn}:turn_end`, actor: "system", harness: HARNESS,
-        payload: { outcomeReason: CONTEXT_COMPACT_CONTINUE_REASON, ...(this.#turnStartedAt ? { startedAt: this.#turnStartedAt } : {}), endedAt: new Date().toISOString() },
-      }]);
+      await this.#intake([
+        {
+          eventKind: "turn_end",
+          idempotencyKey: `claude-lhc:midturn:${openTurn}:turn_end`,
+          actor: "system",
+          harness: HARNESS,
+          payload: {
+            outcomeReason: CONTEXT_COMPACT_CONTINUE_REASON,
+            ...(this.#turnStartedAt ? { startedAt: this.#turnStartedAt } : {}),
+            endedAt: new Date().toISOString(),
+          },
+        },
+      ]);
       const { next, postTokens } = await this.#rebuild(trigger, preTokens);
       target = next;
       this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
       this.#emitSynthetic(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
       this.#lastContextTokens = 0;
       if (this.#swap !== null) this.#swap.sessionId = next.sessionId;
-      this.#io.log(`${stamp()} mid-turn compact (${trigger}) swapped ${previous.sessionId} → ${next.sessionId}; rebuild took ${Date.now() - startedAt} ms; continuing the turn there`);
+      this.#io.log(
+        `${stamp()} mid-turn compact (${trigger}) swapped ${previous.sessionId} → ${next.sessionId}; rebuild took ${Date.now() - startedAt} ms; continuing the turn there`,
+      );
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
-      this.#io.log(`mid-turn compact (${trigger}) failed: ${reason}; continuing the turn in generation ${previous.sessionId} uncompacted`);
-      await this.#lhc.logging.write(this.#thread, { level: "warning", message: `[lhc compact:${trigger}] mid-turn failed: ${reason}` }).catch(() => undefined);
-      this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }));
+      this.#io.log(
+        `mid-turn compact (${trigger}) failed: ${reason}; continuing the turn in generation ${previous.sessionId} uncompacted`,
+      );
+      await this.#lhc.logging
+        .write(this.#thread, { level: "warning", message: `[lhc compact:${trigger}] mid-turn failed: ${reason}` })
+        .catch(() => undefined);
+      this.#emitSynthetic(
+        this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }),
+      );
       this.#midTurnFailed = true;
       this.#swap = null;
     } finally {
@@ -716,15 +824,27 @@ export class ClaudeLhcSession {
 
   async #replayHeld(): Promise<void> {
     const held = this.#heldPrompts.splice(0);
-    if (held.length > 0) this.#io.log(`replaying ${held.length} held prompt(s) into generation ${this.#gen?.sessionId}`);
+    if (held.length > 0)
+      this.#io.log(`replaying ${held.length} held prompt(s) into generation ${this.#gen?.sessionId}`);
     for (const message of held) await this.pushUser(message);
   }
 
-  #compactBoundary(trigger: CompactTrigger, preTokens: number, postTokens: number, startedAt: number, sessionId: string): SDKMessage {
+  #compactBoundary(
+    trigger: CompactTrigger,
+    preTokens: number,
+    postTokens: number,
+    startedAt: number,
+    sessionId: string,
+  ): SDKMessage {
     return {
       type: "system",
       subtype: "compact_boundary",
-      compact_metadata: { trigger, pre_tokens: preTokens, post_tokens: postTokens, duration_ms: Date.now() - startedAt },
+      compact_metadata: {
+        trigger,
+        pre_tokens: preTokens,
+        post_tokens: postTokens,
+        duration_ms: Date.now() - startedAt,
+      },
       uuid: randomUUID(),
       session_id: sessionId,
     } as unknown as SDKMessage;
@@ -740,7 +860,8 @@ export class ClaudeLhcSession {
 
   /** Waits for derivations, installs the compacted view, records the marker, and projects the view into a new generation. */
   async #rebuild(trigger: CompactTrigger, preTokens: number): Promise<{ next: Generation; postTokens: number }> {
-    if (this.#forceRebuildFailure) throw new Error("rebuild failure forced by the start option lhc.forceRebuildFailure");
+    if (this.#forceRebuildFailure)
+      throw new Error("rebuild failure forced by the start option lhc.forceRebuildFailure");
     await this.#awaitDerivations();
     // Build the view once to the configured lower bound. Oldest-turn roll-off is
     // core's normal compact behavior; this host does not retry larger.
@@ -754,20 +875,22 @@ export class ClaudeLhcSession {
     const receipt: CompactReceipt = installed.value;
 
     const continuationTurnId = await this.#openTurnId();
-    await this.#intake([{
-      eventKind: "compact_continuation_marker",
-      idempotencyKey: compactContinuationMarkerIdempotencyKey(continuationTurnId),
-      actor: "system",
-      harness: HARNESS,
-      payload: {
-        kind: COMPACT_CONTINUATION_MARKER_KIND,
-        continuationTurnId,
-        cause: COMPACT_CONTINUATION_MARKER_CAUSE,
-        action: COMPACT_CONTINUATION_MARKER_ACTION,
-        newUserRequest: false,
-        waitForUser: false,
+    await this.#intake([
+      {
+        eventKind: "compact_continuation_marker",
+        idempotencyKey: compactContinuationMarkerIdempotencyKey(continuationTurnId),
+        actor: "system",
+        harness: HARNESS,
+        payload: {
+          kind: COMPACT_CONTINUATION_MARKER_KIND,
+          continuationTurnId,
+          cause: COMPACT_CONTINUATION_MARKER_CAUSE,
+          action: COMPACT_CONTINUATION_MARKER_ACTION,
+          newUserRequest: false,
+          waitForUser: false,
+        },
       },
-    }]);
+    ]);
     // post_tokens is the rebuilt view the model reads next, as stock reports its summary's
     // size alone; the next assistant usage makes the meter exact.
     const postTokens = receipt.totalTokens;
@@ -797,7 +920,9 @@ export class ClaudeLhcSession {
       const status = await this.#lhc.threadView.status(this.#thread);
       if (!status.ok || status.value.derivation.pending === 0) return;
       if (Date.now() >= deadline) {
-        this.#io.log(`compact: ${status.value.derivation.pending} derivations still pending after ${DERIVATION_WAIT_MS} ms; assembling from what is ready`);
+        this.#io.log(
+          `compact: ${status.value.derivation.pending} derivations still pending after ${DERIVATION_WAIT_MS} ms; assembling from what is ready`,
+        );
         return;
       }
       await new Promise<void>((resolve) => setTimeout(resolve, 250));
