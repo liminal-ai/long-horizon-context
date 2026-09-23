@@ -38,7 +38,7 @@ import {
   resolveLaunchThread,
   unacceptedSwapArtifacts,
 } from "../../src/intake/thread-alias.js";
-import { unlinkedRebuildGuidance } from "../../src/intake/unlinked-rebuild.js";
+import { identifyUnlinkedRebuild, unlinkedRebuildGuidance } from "../../src/intake/unlinked-rebuild.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
@@ -130,15 +130,23 @@ const VIEW: SessionThreadView = {
 } as unknown as SessionThreadView;
 
 /** A rebuilt transcript exactly as Smart Compact writes it, with no record. */
-async function writeUnrecordedRebuild(f: Fixture, sessionId: string): Promise<string> {
+async function writeUnrecordedRebuild(f: Fixture, sessionId: string, view: SessionThreadView = VIEW): Promise<string> {
   const written = await actualWriteRebuiltRollout({
-    view: VIEW,
+    view,
     cwd: f.cwd,
     newSessionId: sessionId,
     projectsRoot: f.projectsRoot,
     receipt: { text: "[lhc compact:auto] trigger context 508k; rebuilt LHC view 247k (240k target)." },
   });
   return written.rolloutPath;
+}
+
+/** Every replay signature the rebuilt transcript's lines produce (what the matcher counts). */
+function capturedSignaturesAll(path: string): string[] {
+  return readFileSync(path, "utf8")
+    .split("\n")
+    .filter((line) => line.trim() !== "")
+    .flatMap((line, index) => signaturesForRolloutLine(JSON.parse(line) as RolloutLineItem, index));
 }
 
 /** The replay signatures capture recorded for the turns the rebuild replays. */
@@ -620,6 +628,72 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
       await session?.stop();
       opened.lease.release();
     }
+  });
+
+  it("common replayed text an unrelated thread shares is not ownership (Alder's aged-signatures case)", async () => {
+    const f = fixture("common-text");
+    await seedThread(f, "th_actual_a");
+    await seedThread(f, "th_unrelated_b", "77777777-7777-4777-8777-777777777777", OTHER_CURRENT);
+    const text = (t: string) => [{ type: "text", text: t }];
+    const view = {
+      threadId: "th_actual_a",
+      entries: [
+        { role: "user", content: "[context · smooth]\nearlier work summarized", sourceMessages: [] },
+        { role: "user", content: "continue", sourceMessages: [] },
+        { role: "assistant", content: text("Done."), sourceMessages: [] },
+        { role: "user", content: "rename the quasar module to pulsar", sourceMessages: [] },
+        { role: "assistant", content: text("Renamed quasar to pulsar in 3 files."), sourceMessages: [] },
+        { role: "user", content: "and bump the pulsar changelog", sourceMessages: [] },
+        { role: "assistant", content: text("Changelog bumped to 2.4.0."), sourceMessages: [] },
+      ],
+    } as unknown as SessionThreadView;
+    const path = await writeUnrecordedRebuild(f, ORPHAN, view);
+    utimesSync(path, now - 60, now - 60);
+    const lines = readFileSync(path, "utf8")
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .map((line) => JSON.parse(line) as RolloutLineItem);
+    const common = lines.flatMap((line, index) => {
+      const body = JSON.stringify(line.message ?? "");
+      return body.includes('"continue"') || body.includes('"Done."') ? signaturesForRolloutLine(line, index) : [];
+    });
+    expect(common.length).toBeGreaterThan(0);
+    // A's bounded window has aged the replayed turns out; B holds only the common lines.
+    appendThreadSignatures(f.lineageDbPath, "th_actual_a", ["a-later-1", "a-later-2"]);
+    appendThreadSignatures(f.lineageDbPath, "th_unrelated_b", [...common, "b-own-1"]);
+
+    const identified = await identifyUnlinkedRebuild({ rolloutPath: path, lineageDbPath: f.lineageDbPath });
+    expect(identified).toEqual({ kind: "unidentified", candidateThreadIds: [] });
+
+    const { opened } = await continueLaunch(f, async () => "th_orphan_new");
+    try {
+      expect(opened.threadId).not.toBe("th_unrelated_b");
+      expect(opened.createdAtLaunch).toBe(true);
+    } finally {
+      opened.lease.release();
+    }
+  });
+
+  it("links only when the top thread holds at least half of the signatures and strictly leads", async () => {
+    const f = fixture("majority");
+    const path = await writeUnrecordedRebuild(f, ORPHAN);
+    const all = [...new Set(capturedSignaturesAll(path))];
+    const half = Math.ceil(all.length / 2);
+    appendThreadSignatures(f.lineageDbPath, "th_half", all.slice(0, half));
+    appendThreadSignatures(f.lineageDbPath, "th_less", all.slice(0, half - 1));
+    expect(await identifyUnlinkedRebuild({ rolloutPath: path, lineageDbPath: f.lineageDbPath })).toMatchObject({
+      kind: "linked",
+      threadId: "th_half",
+    });
+
+    const g = fixture("minority");
+    const pathG = await writeUnrecordedRebuild(g, ORPHAN);
+    const allG = [...new Set(capturedSignaturesAll(pathG))];
+    appendThreadSignatures(g.lineageDbPath, "th_top", allG.slice(0, Math.ceil(allG.length / 2) - 1));
+    expect(await identifyUnlinkedRebuild({ rolloutPath: pathG, lineageDbPath: g.lineageDbPath })).toEqual({
+      kind: "unidentified",
+      candidateThreadIds: [],
+    });
   });
 
   it("guidance names the single identified session exactly, and says how to pick one otherwise", () => {

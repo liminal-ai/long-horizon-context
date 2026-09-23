@@ -8,7 +8,12 @@
  * rebuild prefix — the synthetic assistant message ids the rebuild writes
  * (`msg_` + the line uuid) or its trailing `[lhc compact|prune:…]` receipt —
  * and linked back to its thread through the thread's recorded replay
- * signatures, which the prefix's replayed turns reproduce.
+ * signatures, which the prefix's replayed turns reproduce. A link needs a
+ * clear match: the top thread holds at least half of the transcript's
+ * distinct signatures and strictly more than any other thread. Common text
+ * ("continue", "Done.") can make an unrelated thread the top scorer when the
+ * owner's bounded signature window has aged those lines out, so a bare
+ * ranking is never taken as ownership.
  *
  * Only a transcript recognized as rebuilt is ever looked up; any other unknown
  * session is left to the ordinary new-thread path.
@@ -21,8 +26,12 @@ import { type LineageDbDeps, threadsMatchingSignatures } from "./lineage-db.js";
 import { signaturesForRolloutLine } from "./replay-dedupe.js";
 
 export type UnlinkedRebuild =
-  | { kind: "linked"; threadId: string; matches: number }
-  /** Rebuilt, but no single thread is identified; `candidates` tie or are empty. */
+  | { kind: "linked"; threadId: string; matches: number; signatures: number }
+  /**
+   * Rebuilt, but no thread is a clear match. `candidateThreadIds` are the
+   * threads tied at the top that each match at least half of the signatures;
+   * empty when none does.
+   */
   | { kind: "unidentified"; candidateThreadIds: string[] };
 
 const SYNTHETIC_MESSAGE_ID = /^msg_[0-9a-f]{32}$/;
@@ -100,14 +109,16 @@ export async function identifyUnlinkedRebuild(input: {
   } catch {
     ranked = [];
   }
+  const distinct = new Set(signatures).size;
+  const covers = (row: { matches: number }): boolean => row.matches * 2 >= distinct;
   const [top, second] = ranked;
-  if (top !== undefined && (second === undefined || top.matches > second.matches)) {
-    return { kind: "linked", threadId: top.threadId, matches: top.matches };
+  if (top !== undefined && covers(top) && (second === undefined || top.matches > second.matches)) {
+    return { kind: "linked", threadId: top.threadId, matches: top.matches, signatures: distinct };
   }
   const best = top?.matches ?? 0;
   return {
     kind: "unidentified",
-    candidateThreadIds: ranked.filter((row) => row.matches === best).map((row) => row.threadId),
+    candidateThreadIds: ranked.filter((row) => row.matches === best && covers(row)).map((row) => row.threadId),
   };
 }
 
