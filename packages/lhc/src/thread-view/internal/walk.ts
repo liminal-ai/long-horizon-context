@@ -19,9 +19,10 @@
 // An entry too large for its band's remaining budget stops smooth and detailed
 // (the rest cascades to the next band's candidates) but only skips in brief:
 // brief is the last band, and one unrepresentable entry may not end the walk
-// over everything older. A skipped subject renders no band text; it is
+// over everything older. A skipped subject renders no entry of its own; it is
 // reported as a gap (SelectionResult.skipped) and covered_from runs to the
-// oldest INCLUDED entry, so coverage extends past the hole.
+// oldest INCLUDED entry, so coverage extends past the hole — which the view
+// marks with a gap-marker line naming the turns it leaves out.
 import type { SettleConstruction } from "../../shared-tech/index.js";
 import type { StepEdges } from "../../turns/internal/steps.js";
 import { DEFAULT_NEWEST_CLOSED_PROTECTION } from "./profiles.js";
@@ -435,15 +436,19 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     // A band keeps its first candidate even over budget — except a band whose
     // share the precedence cascade consumed entirely, which stays empty.
     admitFirst = true,
+    // Entries the band already holds from an earlier fill over other
+    // candidates: their tokens are spent, and the band is not empty.
+    prior: readonly ArrangementEntry[] = [],
   ): { included: ArrangementEntry[]; rest: T[]; skipped: ArrangementEntry[] } {
     if (!admitFirst && bandBudget <= 0) return { included: [], rest: [...candidates], skipped: [] };
     const included: ArrangementEntry[] = [];
     const passedOver: Array<{ entry: ArrangementEntry; includedBefore: number }> = [];
     const reportable = (): ArrangementEntry[] =>
       passedOver.filter((candidate) => candidate.includedBefore < included.length).map((candidate) => candidate.entry);
-    let sum = 0;
+    const held = (): number => prior.length + included.length;
+    let sum = prior.reduce((total, entry) => total + entry.tokens, 0);
     for (let i = 0; i < candidates.length; i += 1) {
-      if (crossing === "skip" && included.length > 0 && sum >= bandBudget) {
+      if (crossing === "skip" && held() > 0 && sum >= bandBudget) {
         return { included, rest: candidates.slice(i) as T[], skipped: reportable() };
       }
       const entry = build(candidates[i] as T);
@@ -452,7 +457,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
         sum += entry.tokens;
         continue;
       }
-      if (included.length === 0) {
+      if (held() === 0) {
         included.push(entry);
         sum += entry.tokens;
         if (crossing === "stop") return { included, rest: candidates.slice(i + 1) as T[], skipped: [] };
@@ -547,19 +552,32 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // point and be older than the smooth band's oldest included turn.
   // A chunk holding the still-unsettled transition turn is not a band
   // candidate until that turn settles.
+  //
+  // A closed chunk that is not a candidate but straddles that edge (F6) —
+  // some members in smooth or the tail, some older than smooth — cannot
+  // render as a chunk. Its banded members older than the smooth band's
+  // oldest included turn are collected here and placed per-turn below, in
+  // whatever detailed/brief budget the chunks leave unused.
   const unsettledClosedTurnId = partsPlan !== null && partsPlan.turn.status === "closed" ? partsPlan.turn.turnId : null;
-  const chunkCandidates = chunks
-    .filter((chunk) => chunk.status === "closed")
-    .filter((chunk) => unsettledClosedTurnId === null || !chunk.memberTurnIds.includes(unsettledClosedTurnId))
-    .filter((chunk) => {
-      const liveMembers = chunk.memberTurnIds
-        .map((turnId) => turnsById.get(turnId))
-        .filter((turn): turn is SelectionTurn => turn !== undefined);
-      if (liveMembers.length === 0) return false; // fully tombstoned membership
-      const newestMember = liveMembers.reduce((newest, turn) => (turn.turnOrder > newest.turnOrder ? turn : newest));
-      return bandedTurnIds.has(newestMember.turnId) && newestMember.turnOrder < oldestSmoothOrder;
-    })
-    .reverse(); // newest-first
+  const chunkCandidates: SelectionChunk[] = [];
+  const straddlingMembers: SelectionTurn[] = [];
+  for (const chunk of chunks) {
+    if (chunk.status !== "closed") continue;
+    if (unsettledClosedTurnId !== null && chunk.memberTurnIds.includes(unsettledClosedTurnId)) continue;
+    const liveMembers = chunk.memberTurnIds
+      .map((turnId) => turnsById.get(turnId))
+      .filter((turn): turn is SelectionTurn => turn !== undefined);
+    if (liveMembers.length === 0) continue; // fully tombstoned membership
+    const newestMember = liveMembers.reduce((newest, turn) => (turn.turnOrder > newest.turnOrder ? turn : newest));
+    if (bandedTurnIds.has(newestMember.turnId) && newestMember.turnOrder < oldestSmoothOrder) {
+      chunkCandidates.push(chunk);
+      continue;
+    }
+    for (const turn of liveMembers) {
+      if (bandedTurnIds.has(turn.turnId) && turn.turnOrder < oldestSmoothOrder) straddlingMembers.push(turn);
+    }
+  }
+  chunkCandidates.reverse(); // newest-first
 
   // Rule 3 — detailed: same fill rule against its share.
   const detailed = fillBand(
@@ -612,6 +630,44 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     }
   }
 
+  // Straddling-chunk members (F6) the coverage machinery below cannot reach:
+  // older than every selected entry, so nothing older anchors them. They take
+  // the detailed/brief budget the chunks left unused, per turn, newest-first,
+  // on the same fill rule — stop in detailed, skip in brief — rendered from
+  // the detailed-turn ladder the coverage entries use. A member newer than
+  // the oldest selected entry is left to the coverage machinery, as before.
+  const orphanedMembers = straddlingMembers
+    .filter((turn) => turn.turnOrder < oldestSelectedTurnOrder && !coveredTurnIds.has(turn.turnId))
+    .sort((a, b) => b.turnOrder - a.turnOrder);
+  if (orphanedMembers.length > 0) {
+    const detailedTurns = fillBand(
+      orphanedMembers,
+      detailedBudget,
+      (turn) => buildCoverageEntry(turn, "detailed"),
+      "stop",
+      !cascading,
+      detailed.included,
+    );
+    const briefTurns = fillBand(
+      detailedTurns.rest,
+      briefBudget,
+      (turn) => buildCoverageEntry(turn, "brief"),
+      "skip",
+      !cascading,
+      brief.included,
+    );
+    detailed.included.push(...detailedTurns.included);
+    brief.included.push(...briefTurns.included);
+    brief.skipped.push(...briefTurns.skipped);
+    for (const entry of [...detailedTurns.included, ...briefTurns.included, ...briefTurns.skipped]) {
+      coveredTurnIds.add(entry.subjectId);
+    }
+    for (const entry of [...detailedTurns.included, ...briefTurns.included]) {
+      const turn = turnsById.get(entry.subjectId);
+      if (turn !== undefined) oldestSelectedTurnOrder = Math.min(oldestSelectedTurnOrder, turn.turnOrder);
+    }
+  }
+
   function readyContent(derivation: DerivationSnapshot | undefined): string | null {
     return derivation?.state === "ready" && typeof derivation.content === "string" ? derivation.content : null;
   }
@@ -620,7 +676,10 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     return derivation === undefined ? "missing" : derivation.state;
   }
 
-  function buildCoverageEntry(turn: SelectionTurn): ArrangementEntry {
+  // A closed turn's detailed-ladder entry (detailed_turn_compression →
+  // pre_detailed_assembly → gap): the coverage entry, and a straddling chunk's
+  // elder member placed per-turn in detailed or brief.
+  function buildCoverageEntry(turn: SelectionTurn, band: "detailed" | "brief" = "detailed"): ArrangementEntry {
     const compression = lookup(turn.turnId, "detailed_turn_compression");
     const assembly = lookup(turn.turnId, "pre_detailed_assembly");
     const compressionContent = readyContent(compression);
@@ -651,7 +710,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
             };
     const text = renderArrangementEntry("turn", turn.turnId, rep, []);
     const entry: ArrangementEntry = {
-      band: "detailed",
+      band,
       subjectKind: "turn",
       subjectId: turn.turnId,
       derivationUsed: rep.derivationUsed,
@@ -669,7 +728,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     .filter((turn) => turn.turnOrder >= oldestSelectedTurnOrder && !coveredTurnIds.has(turn.turnId))
     .map((turn) => buildCoverageEntry(turn));
 
-  const entries: ArrangementEntry[] = [
+  let entries: ArrangementEntry[] = [
     ...brief.included.sort(byRecordOrder),
     ...[...detailed.included, ...coverageGaps].sort(byRecordOrder),
     ...smooth.included.sort(byRecordOrder),
@@ -679,6 +738,61 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // the window is a hole in coverage that already extends past it, so it
   // neither moves the edge nor ends it.
   const coveredFrom = entries.length === 0 ? compactPoint : Math.min(...entries.map((entry) => entry.startOrder));
+
+  // Gap markers (F6): a banded turn newer than the coverage edge that no
+  // entry represents — for whatever reason — gets a rendered line in the
+  // view, one per contiguous run, so the hole is visible to the reader and
+  // not only in gaps_json. A marker is a gap entry (gap: true), so it lands in
+  // gaps_json through the ordinary gap-entry path. It sits in the band of its
+  // nearest older entry and is not priced against any share.
+  const representedTurnIds = new Set<string>();
+  for (const entry of entries) {
+    if (entry.subjectKind === "turn") representedTurnIds.add(entry.subjectId);
+    else for (const turnId of chunksById.get(entry.subjectId)?.memberTurnIds ?? []) representedTurnIds.add(turnId);
+  }
+  const unrepresentedRuns: SelectionTurn[][] = [];
+  let run: SelectionTurn[] = [];
+  for (const turn of bandedTurns) {
+    if (turnStartOrder(turn) >= coveredFrom && !representedTurnIds.has(turn.turnId)) {
+      run.push(turn);
+      continue;
+    }
+    if (run.length > 0) unrepresentedRuns.push(run);
+    run = [];
+  }
+  if (run.length > 0) unrepresentedRuns.push(run);
+  if (unrepresentedRuns.length > 0) {
+    const markers = unrepresentedRuns.map((turnsInRun): ArrangementEntry => {
+      const first = turnsInRun[0] as SelectionTurn;
+      const last = turnsInRun[turnsInRun.length - 1] as SelectionTurn;
+      const label = first === last ? `turn ${first.turnId}` : `turns ${first.turnId}–${last.turnId}`;
+      const reason = `${label} not in view; use get-turns`;
+      const startOrder = turnStartOrder(first);
+      const olderNeighbor = entries
+        .filter((entry) => entry.startOrder < startOrder)
+        .reduce<ArrangementEntry | undefined>(
+          (newest, entry) => (newest === undefined || entry.startOrder > newest.startOrder ? entry : newest),
+          undefined,
+        );
+      const text = `[${reason}]`;
+      return {
+        band: olderNeighbor?.band ?? "brief",
+        subjectKind: "turn",
+        subjectId: first === last ? first.turnId : `${first.turnId}–${last.turnId}`,
+        derivationUsed: "gap",
+        degraded: false,
+        gap: true,
+        reason,
+        startOrder,
+        text,
+        tokens: estimator.estimate(text),
+      };
+    });
+    const withMarkers = [...entries, ...markers];
+    entries = (["brief", "detailed", "smooth"] as const).flatMap((band) =>
+      withMarkers.filter((entry) => entry.band === band).sort(byRecordOrder),
+    );
+  }
 
   const skipped: SkippedSubject[] = brief.skipped.map((entry) => ({
     band: entry.band,
