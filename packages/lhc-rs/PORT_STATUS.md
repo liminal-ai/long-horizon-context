@@ -2803,3 +2803,31 @@ Open item carried to the host adapters: the Grok adapter (grok-lhc-host)
 maps ACP image / image-read content to intake blocks and serves them back as
 Grok content types — tracked in the grok-build-lhc fork, not here.
 
+## TS drift (2026-09-23): F6 straddling-chunk members — NOT ported (sanctioned parity exception)
+
+`packages/lhc` is intentionally ahead of the port on the band walk
+(`thread-view/internal/walk.ts`, beads `long-horizon-context-dth`, gorilla
+F6). The TS core now covers straddling-chunk members; Rust does not yet.
+Porting is deferred and tracked by `long-horizon-context-5ow`
+(`src/thread_view/internal/select.rs`, `walk.rs`).
+
+- **Straddling-chunk members**: a closed chunk that is not a band candidate
+  because its newest member is in smooth or the tail places its banded
+  members older than the smooth band's oldest included turn per-turn
+  (`detailed_turn_compression` → `pre_detailed_assembly` → gap ladder) in the
+  detailed/brief budget the chunks left unused. The fill rules are unchanged:
+  stop in detailed, skip in brief. `covered_from` moves back to cover them.
+  Rust still drops them.
+- **Gap markers**: every banded turn after `covered_from` that no entry
+  represents gets one gap entry per contiguous run. The entry's text is
+  `[turns tA–tB not in view; use get-turns]` (`[turn tA …]` for a single turn),
+  it has `derivationUsed: "gap"`, and it lands in `gaps_json` through the
+  ordinary gap-entry path. Today such holes are brief-skipped subjects, so
+  TS views that have them gain these entries. Rust does not render the
+  markers.
+
+Audits and TS/Rust differential runs must not flag either difference as a
+Rust regression. Arrangements, `covered_from`, `gaps_json`, and band text
+diverge only on threads with a straddling chunk or a brief skip. Every other
+layout is byte-identical, and the selection goldens G1–G3 are unchanged.
+
