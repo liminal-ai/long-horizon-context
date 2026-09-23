@@ -1696,3 +1696,145 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
     await rig.finish();
   }, 20_000);
 });
+
+describe("F5 continue once after a too-long rejection (gorilla, long-horizon-context-tak)", () => {
+  const savedHome = process.env.CC_LHC_HOME;
+  beforeEach(() => {
+    mocks.registerLineage.mockClear();
+    mocks.captureFactory = null;
+    const home = mkdtempSync(join(tmpdir(), "cc-lhc-f5-home-"));
+    dirs.push(home);
+    process.env.CC_LHC_HOME = home;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    mocks.captureFactory = null;
+    if (savedHome === undefined) delete process.env.CC_LHC_HOME;
+    else process.env.CC_LHC_HOME = savedHome;
+    for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  /** Claude answered the turn with the exact `Prompt is too long` rejection; pressure stays far below the trigger. */
+  const rejectedTurn = (n: number): LifecycleSignal[] => [
+    { kind: "turn_opened", reason: "user_prompt" },
+    { kind: "sampling_observed", samplingId: `req:rejected-${n}`, contextLimitRejected: true },
+    { kind: "turn_settled", reason: "end_turn" },
+  ];
+
+  function startRig() {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-f5-"));
+    dirs.push(dir);
+    const spawned: FakePty[] = [];
+    const sdk = sdkForCapture();
+    const sinks: Array<(signals: readonly LifecycleSignal[]) => void> = [];
+    let rebuiltCount = 0;
+    vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
+      rebuiltCount += 1;
+      const id = `12345678-1234-1234-1234-${String(rebuiltCount).padStart(12, "0")}`;
+      const path = join(dir, `${id}.jsonl`);
+      writeFileSync(path, '{"line":1}\n');
+      return {
+        sessionId: id,
+        rolloutPath: path,
+        lineCount: 1,
+        expectedReintakeLines: 1,
+        replayedPrefixLines: 0,
+        prefixBoundary: {
+          kind: "verified",
+          lineCount: 0,
+          byteLength: 0,
+          sha256: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        },
+        totalByteLength: 11,
+      };
+    });
+    mocks.captureFactory = (opts) => {
+      const isRebuilt = opts.knownRolloutPath !== undefined;
+      const sessionId = isRebuilt ? (opts.expectedSession?.sessionId ?? "rebuilt") : "old-session";
+      const path = isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl";
+      const session = scriptedCaptureSession(opts, sdk, sessionId, path, sinks.length + 1);
+      if (opts.onLifecycle !== undefined) sinks.push(opts.onLifecycle);
+      return session;
+    };
+    const results: HandoffResult[] = [];
+    const runPromise = run([], {
+      claudeBin: "fake-claude",
+      spawnPty: ((_file: string, args: string[]) => {
+        const fake = makeFakePty(8600 + spawned.length, `child${spawned.length}`, args, true);
+        spawned.push(fake);
+        return fake as never;
+      }) as never,
+      stdin: fakeStream(),
+      stdout: fakeStream() as never,
+      stderr: fakeStream() as never,
+      noInference: true,
+      resolvedContextPolicy: POLICY as never,
+      governorReceiptDbPath: join(dir, "cc-lhc.sqlite"),
+      rejectionContinueDelayMs: 10,
+      onHandoffResult: (result) => {
+        results.push(result);
+      },
+      handoffTimeouts: {
+        sigtermGraceMs: 500,
+        sigkillWaitMs: 300,
+        captureReadyTimeoutMs: 2_000,
+        childLivenessTimeoutMs: 3_000,
+        childStableWindowMs: 100,
+      },
+    });
+    const continues = (pty: FakePty) =>
+      pty.writes.filter((w) => w.startsWith("[runtime note] cc-lhc: your previous turn"));
+    const finish = async () => {
+      spawned[spawned.length - 1]!.fireExit(0);
+      await runPromise;
+    };
+    return { spawned, sinks, results, continues, finish };
+  }
+
+  it("a rejection-triggered compaction submits one labelled continue to the replacement, then Enter", async () => {
+    const rig = startRig();
+    await waitFor(() => rig.sinks.length === 1, "capture lifecycle sink");
+    rig.sinks[0]!(BOUND_SIGNALS);
+    rig.sinks[0]!(rejectedTurn(1));
+    await waitFor(() => rig.results.length === 1, "handoff after the rejection");
+    expect(rig.results[0]!.kind).toBe("success");
+    const replacement = rig.spawned[1]!;
+    await waitFor(() => replacement.writes.includes("\r"), "continue submitted");
+    expect(rig.continues(replacement)).toHaveLength(1);
+    expect(rig.continues(replacement)[0]).toMatch(/Prompt is too long.*continuing that turn once/);
+    expect(replacement.writes.indexOf("\r")).toBeGreaterThan(
+      replacement.writes.indexOf(rig.continues(replacement)[0]!),
+    );
+    // The old child never received it.
+    expect(rig.continues(rig.spawned[0]!)).toHaveLength(0);
+    await rig.finish();
+  }, 20_000);
+
+  it("a second rejection of the continued turn compacts again but sends no second continue", async () => {
+    const rig = startRig();
+    await waitFor(() => rig.sinks.length === 1, "capture lifecycle sink");
+    rig.sinks[0]!(BOUND_SIGNALS);
+    rig.sinks[0]!(rejectedTurn(1));
+    await waitFor(() => rig.spawned[1]?.writes.includes("\r") === true, "first continue");
+    await waitFor(() => rig.sinks.length >= 2, "replacement capture");
+    rig.sinks[rig.sinks.length - 1]!(rejectedTurn(2));
+    await waitFor(() => rig.results.length === 2, "second handoff");
+    await new Promise((r) => setTimeout(r, 200));
+    const all = rig.spawned.flatMap((pty) => rig.continues(pty));
+    expect(all).toHaveLength(1);
+    expect(rig.spawned[2]!.writes).not.toContain("\r");
+    await rig.finish();
+  }, 20_000);
+
+  it("an ordinary threshold compaction sends no continue", async () => {
+    const rig = startRig();
+    await waitFor(() => rig.sinks.length === 1, "capture lifecycle sink");
+    rig.sinks[0]!(BOUND_SIGNALS);
+    rig.sinks[0]!(ESTIMATE_CROSS_SIGNALS);
+    await waitFor(() => rig.results.length === 1, "threshold handoff");
+    await new Promise((r) => setTimeout(r, 200));
+    expect(rig.spawned.flatMap((pty) => rig.continues(pty))).toHaveLength(0);
+    expect(rig.spawned[1]!.writes).not.toContain("\r");
+    await rig.finish();
+  }, 20_000);
+});

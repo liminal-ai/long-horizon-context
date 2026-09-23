@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 import { exactProcessControl } from "cc-lhc-native";
@@ -176,6 +177,11 @@ import {
 } from "./panel-wording.js";
 import { type PlainChildSpawn, spawnPlainChild } from "./plain-child.js";
 import {
+  completedToolCallsInLastTurn,
+  REJECTED_AGAIN_NOTICE_LINES,
+  rejectionContinueNote,
+} from "./rejection-continue.js";
+import {
   formatReplacementNonviabilityAlarm,
   formatSurvivalRelaunchNotice,
   NONVIABLE_SWAPS_BEFORE_ALARM,
@@ -257,9 +263,15 @@ export type PtySpawn = typeof defaultSpawn;
  */
 export type ForceWrapperExit = (code: number) => void;
 
+/** F5: let the replacement's TUI settle before typing the continue, then submit it. */
+const REJECTION_CONTINUE_DELAY_MS = 1_000;
+const REJECTION_CONTINUE_ENTER_DELAY_MS = 300;
+
 export type RunOptions = {
   claudeBin?: string;
   spawnPty?: PtySpawn;
+  /** Test seam: wait before submitting the F5 continue (default REJECTION_CONTINUE_DELAY_MS). */
+  rejectionContinueDelayMs?: number;
   /** Test seam: the plain-process spawn used for one-shot (`-p`) launches. */
   spawnPlain?: PlainChildSpawn;
   stdin?: NodeJS.ReadStream;
@@ -1425,6 +1437,12 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   } | null = null;
   /** Detached manual handoff receipts shown once on the next panel open. */
   let pendingPanelNotices: string[] = [];
+  /**
+   * F5: one continue has been submitted after a rejection-triggered compaction
+   * and no turn has since settled without a rejection. A second rejection then
+   * gets a notice, not another continue.
+   */
+  let rejectionContinueSent = false;
   /** Smallest settled provider context seen: the observed Claude host overhead floor. */
   let minObservedProviderTotal: number | null = null;
   /** One auto operation scheduled/coalesced at a time. */
@@ -1434,6 +1452,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     frozenTriggerTokens: number | null;
     receiptId: string;
     liveAsyncWork: readonly OpenAsyncWork[];
+    /** The seam compacted because Claude rejected the turn as too long (F5). */
+    afterRejection?: boolean;
   }) => Promise<void> = async () => {};
 
   const triggerFatalRevocation = (reason: string): void => {
@@ -1684,6 +1704,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     record: import("../governor/index.js").GovernorObserveRecord,
     liveAsyncWork: readonly OpenAsyncWork[] = [],
   ): void => {
+    // A turn that settled without a too-long rejection ends the continued task.
+    const afterRejection = governorState.contextLimitRejected;
+    if (!afterRejection) rejectionContinueSent = false;
     const persisted = persistGovernorObserve(record);
 
     if (persisted !== null && !persisted.inserted) {
@@ -1795,7 +1818,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       const frozenTriggerTokens = record.pressure.nextRequestPressureTokens;
       autoOperationScheduled = true;
       setImmediate(() => {
-        void runAutoOperation({ frozenTriggerTokens, receiptId, liveAsyncWork }).finally(() => {
+        void runAutoOperation({ frozenTriggerTokens, receiptId, liveAsyncWork, afterRejection }).finally(() => {
           autoOperationScheduled = false;
         });
       });
@@ -3511,8 +3534,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       frozenTriggerTokens: number | null;
       receiptId: string;
       liveAsyncWork: readonly OpenAsyncWork[];
+      afterRejection?: boolean;
     }): Promise<void> => {
       const { frozenTriggerTokens, receiptId, liveAsyncWork } = args;
+      let continueFrom: string | null = null;
       // Test seam: allow race injection before early gates (handoff / exiting).
       // forceExitedForAuto is local so we do not strand the real process-exit flag.
       let forceExitedForAuto = false;
@@ -3630,7 +3655,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           attachGovernorHandoffOutcome(receiptId, mutationOutcome, { mutationBegan: true });
           return;
         }
-        await performHandoff(outcome.handoff, receiptId);
+        const handoff = await performHandoff(outcome.handoff, receiptId);
+        if (args.afterRejection === true && handoff.kind === "success") continueFrom = outcome.handoff.oldSessionId;
       } catch (cause) {
         wrapperLog.warn(formatAutoThrew(cause instanceof Error ? cause.message : String(cause)));
         attachGovernorHandoffOutcome(
@@ -3646,6 +3672,40 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         governorState = setGovernorOperationInFlight(governorState, false);
         commandGuard.release();
       }
+      if (continueFrom !== null) await continueAfterRejection(continueFrom);
+    };
+
+    /**
+     * F5: after a compaction triggered by a too-long rejection, submit one
+     * `[runtime note]` continue to the replacement (intake records the label as
+     * a runtime note, not a user prompt). A second rejection before any turn
+     * settles cleanly gets a notice instead of another continue.
+     */
+    const continueAfterRejection = async (oldSessionId: string): Promise<void> => {
+      if (rejectionContinueSent) {
+        wrapperLog.warn("cc-lhc: rejected as too long again after the automatic continue; not continuing again");
+        raiseActionable({ kind: "possible_undelivered_input", lines: REJECTED_AGAIN_NOTICE_LINES });
+        return;
+      }
+      rejectionContinueSent = true;
+      let completed: string[] = [];
+      try {
+        const oldRollout = await findExpectedSessionFileOnce(process.cwd(), oldSessionId);
+        if (oldRollout !== null) completed = completedToolCallsInLastTurn(await readFile(oldRollout, "utf8"));
+      } catch (cause) {
+        wrapperLog.warn(`cc-lhc: rejected turn's tool calls unreadable: ${detailOf(cause)}`);
+      }
+      const note = rejectionContinueNote(completed);
+      const delayMs = options.rejectionContinueDelayMs ?? REJECTION_CONTINUE_DELAY_MS;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, delayMs));
+      if (exited || handoffInProgress) return;
+      wrapperLog.info(
+        `cc-lhc: continuing the turn rejected as too long, once (${completed.length} completed tool call(s) listed)`,
+      );
+      const target = currentPty;
+      target.write(note);
+      await new Promise((resolveEnter) => setTimeout(resolveEnter, REJECTION_CONTINUE_ENTER_DELAY_MS));
+      if (!exited && currentPty === target) target.write("\r");
     };
 
     /**
