@@ -18,13 +18,15 @@ import { threads } from "lhc";
 import {
   clearPendingCurrentSession,
   type LineageDbDeps,
+  lookupSessionLineage,
+  markSessionAccepted,
   readPendingCurrentSession,
   recordPendingCurrentSession,
   supersedePendingCurrentSession,
   type ThreadSessionRow,
-  threadForLegacySession,
   threadSessionRows,
 } from "./lineage-db.js";
+import { identifyUnlinkedRebuild } from "./unlinked-rebuild.js";
 
 /** Qualifier for every Claude Code session alias in the shared registry. */
 export const CLAUDE_ALIAS_HOST = "claude-code";
@@ -69,12 +71,20 @@ export interface LaunchThreadLookup {
   registryPath: string;
   lineageDbPath: string;
   lineageDeps?: LineageDbDeps;
+  /**
+   * The asked-for session's transcript, when known. Read only on a miss in
+   * both the registry and host lineage, to recognize a rebuilt transcript
+   * from an interrupted compaction that predates its lineage record.
+   */
+  rolloutPath?: string;
   log?: (message: string) => void;
 }
 
 /**
  * The thread this launch alias belongs to, or null when no thread has ever
- * held it. The answer authorizes the owner-lock key and NOTHING else: which
+ * held it. A rebuilt session that was never accepted resolves to the thread it
+ * was rebuilt for — never to a new thread, and never as that thread's current
+ * session — so the launch lands on the thread's current session. The answer authorizes the owner-lock key and NOTHING else: which
  * session the launch lands on is re-read under the acquired lock, because the
  * current pointer can advance between this read and the lock.
  */
@@ -85,7 +95,33 @@ export async function resolveLaunchThread(lookup: LaunchThreadLookup): Promise<s
   if (resolved.ok) return resolved.value.threadId;
   if (resolved.error.code !== "alias_not_found") unavailable(resolved.error.reason);
 
-  const imported = await importLegacyLineage(lookup);
+  const log = lookup.log ?? (() => {});
+  const entry = lookupSessionLineage(lookup.lineageDbPath, lookup.sessionId, lookup.lineageDeps);
+  if (entry === undefined) {
+    if (lookup.rolloutPath === undefined) return null;
+    const unlinked = await identifyUnlinkedRebuild({
+      rolloutPath: lookup.rolloutPath,
+      lineageDbPath: lookup.lineageDbPath,
+      ...(lookup.lineageDeps === undefined ? {} : { lineageDeps: lookup.lineageDeps }),
+    });
+    if (unlinked?.kind !== "linked") return null;
+    log(
+      `cc-lhc: ${lookup.sessionId} is a rebuilt transcript from an interrupted compaction of thread ` +
+        `${unlinked.threadId} (identified by its rebuild prefix); it was never accepted`,
+    );
+    return unlinked.threadId;
+  }
+  if (!entry.accepted) {
+    log(`cc-lhc: ${lookup.sessionId} is a rebuilt session of thread ${entry.threadId} that was never accepted`);
+    const current = await threads.currentAlias({ threadId: entry.threadId, registryPath });
+    if (!current.ok) unavailable(current.error.reason);
+    // A thread the registry already tracks keeps its own current pointer; one it
+    // has never seen is imported from its ACCEPTED sessions only.
+    if (current.value.currentAlias !== null) return entry.threadId;
+    return (await importLegacyLineage(lookup, entry.threadId)) ?? entry.threadId;
+  }
+
+  const imported = await importLegacyLineage(lookup, entry.threadId);
   if (imported === null) return null;
 
   // Read the alias back through the registry: if a concurrent importer bound
@@ -134,12 +170,12 @@ export async function bindLaunchThread(
  * reads legacy lineage for thread identity again once the alias is registered,
  * and a registry binding that already exists always wins.
  */
-async function importLegacyLineage(lookup: LaunchThreadLookup): Promise<string | null> {
+async function importLegacyLineage(lookup: LaunchThreadLookup, legacyThreadId: string): Promise<string | null> {
   const log = lookup.log ?? (() => {});
-  const legacyThreadId = threadForLegacySession(lookup.lineageDbPath, lookup.sessionId, lookup.lineageDeps);
-  if (legacyThreadId === undefined) return null;
-
-  const rows = threadSessionRows(lookup.lineageDbPath, legacyThreadId, lookup.lineageDeps);
+  // A rebuilt session never accepted is neither an alias nor ever current.
+  const rows = threadSessionRows(lookup.lineageDbPath, legacyThreadId, lookup.lineageDeps).filter(
+    (row) => row.accepted,
+  );
   if (rows.length === 0) return null;
   const current = rows[rows.length - 1]!;
   log(
@@ -154,9 +190,7 @@ async function importLegacyLineage(lookup: LaunchThreadLookup): Promise<string |
       registryPath: lookup.registryPath,
     };
     const bound =
-      row === current
-        ? await threads.registerCurrentAlias(registration)
-        : await threads.registerAlias(registration);
+      row === current ? await threads.registerCurrentAlias(registration) : await threads.registerAlias(registration);
     if (bound.ok) continue;
     if (bound.error.code === "alias_bound_to_other_thread") {
       // The registry already knows this session's thread. Legacy storage never
@@ -232,6 +266,13 @@ export async function recordSwapAcceptance(input: {
   log?: (message: string) => void;
 }): Promise<SwapAcceptance> {
   const log = input.log ?? (() => {});
+  // The swap is accepted whatever the registry says next: a rebuilt session
+  // reserved as not yet accepted is promoted here.
+  try {
+    markSessionAccepted(input.lineageDbPath, input.sessionId, input.lineageDeps);
+  } catch (cause) {
+    log(`cc-lhc: accepted session ${input.sessionId} not promoted in host lineage: ${detail(cause)}`);
+  }
   const advanced = await acceptCurrentSession(input);
   if (advanced.ok) {
     try {
@@ -400,8 +441,11 @@ export interface UnacceptedSwapArtifact {
 /**
  * Rebuilt sessions this thread reserved but never accepted — a swap that was
  * interrupted between writing the replacement rollout and the wrapper
- * observing the replacement live. The current pointer is the acceptance fact,
- * so anything bound after it was never accepted.
+ * observing the replacement live, or one whose handoff failed. A session
+ * recorded as not yet accepted is one wherever it sorts; a rebuilt session
+ * bound after the current pointer (the acceptance fact) was never accepted
+ * either. Neither is ever treated as current, and one whose file was never
+ * written is reported the same way — nothing here reads the file.
  *
  * A stale reserved file is never activated. The launch discards it from session
  * selection (the file stays on disk, untouched and unread) and lands on the
@@ -428,9 +472,11 @@ export function unacceptedSwapArtifacts(input: {
     return [];
   }
   const currentIndex = rows.findIndex((row: ThreadSessionRow) => row.sessionId === input.currentSessionId);
-  if (currentIndex === -1) return [];
   return rows
-    .slice(currentIndex + 1)
-    .filter((row) => row.prefix.kind === "verified")
+    .filter(
+      (row, index) =>
+        row.sessionId !== input.currentSessionId &&
+        (!row.accepted || (currentIndex !== -1 && index > currentIndex && row.prefix.kind === "verified")),
+    )
     .map((row) => ({ sessionId: row.sessionId, updatedAt: row.updatedAt }));
 }

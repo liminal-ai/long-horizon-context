@@ -11,8 +11,15 @@
  *
  * Conservative: every question the sweep cannot answer keeps the file. The
  * verdict is one small function (`abandonedRebuildVerdict`) over injectable
- * facts, so additional records (e.g. a "not yet accepted" marker) slot in as
- * one more check.
+ * facts.
+ *
+ * A rebuilt session reserved as NOT YET ACCEPTED (recorded before its file is
+ * written) is among the rebuilt sessions swept. It is neither the thread's
+ * current session nor its pending acceptance (`cc_pending_current_session`
+ * holds only swaps already accepted), so it is moved aside exactly when its
+ * handoff is dead — no live or indeterminate thread owner, no live descriptor —
+ * and it is older than the viability window. While its handoff's owner is live
+ * it is kept. A reservation whose file was never written has nothing to move.
  */
 
 import { copyFileSync, existsSync, lstatSync, mkdirSync, renameSync, unlinkSync } from "node:fs";

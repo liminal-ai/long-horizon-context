@@ -36,6 +36,12 @@ export interface OpenLaunchThreadInput {
   /** cc-lhc state root holding the owners directory. */
   home?: string;
   lineageDeps?: LineageDbDeps;
+  /**
+   * The asked-for session's transcript. Lets a rebuilt transcript from an
+   * interrupted compaction that predates its lineage record resolve to its
+   * thread by its rebuild prefix.
+   */
+  rolloutPath?: string;
   createThread: () => Promise<string>;
   log?: (message: string) => void;
 }
@@ -63,6 +69,7 @@ export async function openLaunchThread(input: OpenLaunchThreadInput): Promise<Op
     registryPath: input.registryPath,
     lineageDbPath: input.lineageDbPath,
     ...(input.lineageDeps === undefined ? {} : { lineageDeps: input.lineageDeps }),
+    ...(input.rolloutPath === undefined ? {} : { rolloutPath: input.rolloutPath }),
     log,
     createThread: input.createThread,
   });

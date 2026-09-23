@@ -94,7 +94,9 @@ import {
   type SegmentEndReason,
   segmentEndEvent,
 } from "./segment-fold.js";
+import { claudeSessionIdFromAlias } from "./thread-alias.js";
 import { classifyTurnSignal } from "./turn-signal.js";
+import { identifyUnlinkedRebuild, unlinkedRebuildGuidance } from "./unlinked-rebuild.js";
 
 const DEFAULT_INFERENCE_TIMEOUT_MS = 60_000;
 export const CAPTURE_DEGRADED_REFUSAL = "capture degraded — mutation refused until restart/reconciliation";
@@ -1232,6 +1234,28 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       let watcherStartOffset = 0;
       if (resolvedPrefix.kind === "unknown") {
         degradeAndEmit("prefix_boundary:unknown_provenance");
+        // A rebuilt transcript from an interrupted compaction cannot be fixed by
+        // another compaction (it is refused here); the exact next step is to
+        // resume the conversation it was rebuilt from.
+        const unlinked = await identifyUnlinkedRebuild({
+          rolloutPath: filePath,
+          lineageDbPath,
+          ...(deps.lineageDeps === undefined ? {} : { lineageDeps: deps.lineageDeps }),
+        });
+        if (unlinked !== null) {
+          const threadIds = unlinked.kind === "linked" ? [unlinked.threadId] : unlinked.candidateThreadIds;
+          const targets: string[] = [];
+          for (const candidate of threadIds) {
+            const current = await threads.currentAlias({ threadId: candidate, registryPath });
+            const target =
+              current.ok && current.value.currentAlias !== null
+                ? claudeSessionIdFromAlias(current.value.currentAlias)
+                : null;
+            if (target !== null && target !== rolloutSessionId) targets.push(target);
+          }
+          logError(unlinkedRebuildGuidance(rolloutSessionId, targets));
+          return;
+        }
         logError(
           "cc-lhc: unknown prefix provenance — capture refused; " +
             "reconcile by re-running /smart-compact or /smart-prune (verified boundary) or " +

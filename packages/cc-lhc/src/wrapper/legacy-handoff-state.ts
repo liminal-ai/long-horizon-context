@@ -122,7 +122,8 @@ function ownedSessions(input: ConsumeLegacyHandoffStateInput): Set<string> {
   const owned = new Set<string>(input.knownSessionIds ?? []);
   try {
     for (const row of threadSessionRows(input.lineageDbPath, input.threadId, input.lineageDeps)) {
-      owned.add(row.sessionId);
+      // A rebuilt session never accepted was never this thread's to hand off.
+      if (row.accepted) owned.add(row.sessionId);
     }
   } catch {
     // Host-local lineage that cannot be read narrows what this launch can

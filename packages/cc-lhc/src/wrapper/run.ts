@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { readFile } from "node:fs/promises";
+import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn as defaultSpawn, type IPty } from "@lydell/node-pty";
 import { exactProcessControl } from "cc-lhc-native";
@@ -88,7 +89,11 @@ import {
 import type { LifecycleSignal } from "../observation/types.js";
 import { injectRetrievalGuidance } from "../retrieval/guidance.js";
 import { findExpectedSessionFileOnce } from "../rollout/discover.js";
-import { type ExpectedSession, expectedSessionFromExplicitId } from "../rollout/expected-session.js";
+import {
+  type ExpectedSession,
+  expectedSessionFromExplicitId,
+  rolloutPathForExpectedSession,
+} from "../rollout/expected-session.js";
 import { applyClaudeRuntimeSettings, type ClaudeRuntimeSettings } from "../rollout/runtime-settings.js";
 import { statRolloutFile } from "../rollout/stat-file.js";
 import {
@@ -844,6 +849,11 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         expectedSession,
         registryPath,
         lineageDbPath: defaultLineageDbPath(),
+        rolloutPath: rolloutPathForExpectedSession(
+          join(homedir(), ".claude", "projects"),
+          process.cwd(),
+          expectedSession.sessionId,
+        ),
         log: (message) => wrapperLog.info(message),
         createThread: async () => {
           const created = await createCaptureThread(process.cwd(), registryPath);
@@ -1208,10 +1218,13 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
 
     const rebuilt = outcome.handoff.rebuilt;
+    // Still unaccepted: the one-shot rebuild is accepted only once Claude is
+    // observed taking the prompt on it (recordSwapAcceptance promotes it).
     const lineage = await registerRebuiltSessionLineage({
       newSessionId: rebuilt.sessionId,
       threadId: outcome.handoff.threadId,
       prefixBoundary: rebuilt.prefixBoundary,
+      accepted: false,
       lineageDbPath: defaultLineageDbPath(),
       logError: (message) => wrapperLog.warn(message),
     });

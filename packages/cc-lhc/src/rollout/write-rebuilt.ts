@@ -5,10 +5,7 @@ import { join } from "node:path";
 
 import type { SessionThreadView } from "lhc";
 
-import {
-  computeVerifiedPrefixBoundary,
-  type PrefixBoundaryVerified,
-} from "../intake/prefix-boundary.js";
+import { computeVerifiedPrefixBoundary, type PrefixBoundaryVerified } from "../intake/prefix-boundary.js";
 import { encodeProjectPath } from "./discover.js";
 import {
   buildRolloutLines,
@@ -43,6 +40,18 @@ export interface WriteRebuiltRolloutInput {
    * wrapper logs/recovery artifacts, not here.
    */
   receipt?: { text: string };
+  /**
+   * Runs after the session id, path and prefix fence are known and BEFORE any
+   * byte of the file is written — where the caller records the rebuilt session
+   * against its thread as not yet accepted. A throw aborts the write.
+   */
+  beforeWrite?: (reservation: RebuiltRolloutReservation) => Promise<void>;
+}
+
+export interface RebuiltRolloutReservation {
+  sessionId: string;
+  rolloutPath: string;
+  prefixBoundary: PrefixBoundaryVerified;
 }
 
 export interface WriteRebuiltRolloutResult {
@@ -101,12 +110,20 @@ export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Prom
   if (input.receipt !== undefined) {
     const lastUuid = lines.length > 0 ? lines[lines.length - 1]!.line.uuid : null;
     lines.push(
-      runtimeNoteRolloutLine(input.receipt.text, newSessionId, envelope, typeof lastUuid === "string" ? lastUuid : null),
+      runtimeNoteRolloutLine(
+        input.receipt.text,
+        newSessionId,
+        envelope,
+        typeof lastUuid === "string" ? lastUuid : null,
+      ),
     );
   }
   const serialized = serializeRolloutLines(lines);
   const rolloutPath = rolloutPathForSession(projectsRoot, input.cwd, newSessionId);
 
+  if (input.beforeWrite !== undefined) {
+    await input.beforeWrite({ sessionId: newSessionId, rolloutPath, prefixBoundary });
+  }
   await writeRolloutFileFsync(rolloutPath, serialized, deps);
   await appendSessionsIndexEntry(
     {

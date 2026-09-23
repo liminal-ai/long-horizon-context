@@ -27,6 +27,12 @@ export interface LineageSessionEntry {
    * must inspect `prefix.kind` — do not treat this alone as a trust decision.
    */
   replayedPrefixLines: number;
+  /**
+   * False for a rebuilt session recorded before its file was written and not
+   * yet promoted at the switch. An unaccepted session belongs to its thread
+   * but is never the thread's current session.
+   */
+  accepted: boolean;
 }
 
 /** One session binding of a thread, with its host-local prefix proof. */
@@ -34,6 +40,8 @@ export interface ThreadSessionRow {
   sessionId: string;
   updatedAt: string;
   prefix: PrefixBoundary;
+  /** See {@link LineageSessionEntry.accepted}. */
+  accepted: boolean;
 }
 
 export interface RecordSessionThreadOptions {
@@ -48,6 +56,13 @@ export interface RecordSessionThreadOptions {
    * Count-only registration is rejected for skip trust; prefer full boundary.
    */
   replayedPrefixLines?: number;
+  /**
+   * Only with `prefix`: false records a rebuilt session as not yet accepted
+   * (written before its file exists); true or omitted records it accepted,
+   * which is how a reserved rebuild is promoted at the switch. An ordinary
+   * rebind never changes acceptance.
+   */
+  accepted?: boolean;
 }
 
 export interface LineageDbDeps {
@@ -123,6 +138,11 @@ function initLineageSchema(db: DatabaseSync): void {
       replayed_prefix_sha256 TEXT
     )
   `);
+
+  // Pre-F2 rows were all recorded at (or after) acceptance: default accepted.
+  if (!tableHasColumn(db, "cc_session_lineage", "rebuild_unaccepted")) {
+    db.exec("ALTER TABLE cc_session_lineage ADD COLUMN rebuild_unaccepted INTEGER NOT NULL DEFAULT 0");
+  }
 
   // Pre-review-3: only thread_id/updated_at
   if (!tableHasColumn(db, "cc_session_lineage", "replayed_prefix_lines")) {
@@ -286,6 +306,7 @@ function detailCause(cause: unknown): string {
 function rowToEntry(row: {
   thread_id: string;
   updated_at: string;
+  rebuild_unaccepted?: number | null;
   prefix_provenance?: string | null;
   replayed_prefix_lines?: number | null;
   replayed_prefix_bytes?: number | null;
@@ -297,6 +318,7 @@ function rowToEntry(row: {
     updatedAt: row.updated_at,
     prefix,
     replayedPrefixLines: prefix.kind === "verified" ? prefix.lineCount : 0,
+    accepted: row.rebuild_unaccepted !== 1,
   };
 }
 
@@ -354,7 +376,7 @@ export function lookupSessionLineage(
   withLineageDb(dbPath, deps, (db) => {
     const row = db
       .prepare(
-        `SELECT thread_id, updated_at, prefix_provenance,
+        `SELECT thread_id, updated_at, prefix_provenance, rebuild_unaccepted,
                 replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256
          FROM cc_session_lineage WHERE rollout_session_id = ?`,
       )
@@ -363,6 +385,7 @@ export function lookupSessionLineage(
           thread_id: string;
           updated_at: string;
           prefix_provenance: string;
+          rebuild_unaccepted: number | null;
           replayed_prefix_lines: number | null;
           replayed_prefix_bytes: number | null;
           replayed_prefix_sha256: string | null;
@@ -396,7 +419,7 @@ export function threadSessionRows(dbPath: string, threadId: string, deps: Lineag
   withLineageDb(dbPath, deps, (db) => {
     const raw = db
       .prepare(
-        `SELECT rollout_session_id, thread_id, updated_at, prefix_provenance,
+        `SELECT rollout_session_id, thread_id, updated_at, prefix_provenance, rebuild_unaccepted,
                 replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256
          FROM cc_session_lineage WHERE thread_id = ? ORDER BY updated_at, rowid`,
       )
@@ -405,13 +428,19 @@ export function threadSessionRows(dbPath: string, threadId: string, deps: Lineag
       thread_id: string;
       updated_at: string;
       prefix_provenance: string;
+      rebuild_unaccepted: number | null;
       replayed_prefix_lines: number | null;
       replayed_prefix_bytes: number | null;
       replayed_prefix_sha256: string | null;
     }>;
     for (const row of raw) {
       const entry = rowToEntry(row);
-      rows.push({ sessionId: row.rollout_session_id, updatedAt: entry.updatedAt, prefix: entry.prefix });
+      rows.push({
+        sessionId: row.rollout_session_id,
+        updatedAt: entry.updatedAt,
+        prefix: entry.prefix,
+        accepted: entry.accepted,
+      });
     }
   });
   return rows;
@@ -425,12 +454,12 @@ export function threadSessionRows(dbPath: string, threadId: string, deps: Lineag
 export function rebuiltSessionRows(
   dbPath: string,
   deps: LineageDbDeps = {},
-): Array<{ sessionId: string; threadId: string; updatedAt: string }> {
-  const rows: Array<{ sessionId: string; threadId: string; updatedAt: string }> = [];
+): Array<{ sessionId: string; threadId: string; updatedAt: string; accepted: boolean }> {
+  const rows: Array<{ sessionId: string; threadId: string; updatedAt: string; accepted: boolean }> = [];
   withLineageDb(dbPath, deps, (db) => {
     const raw = db
       .prepare(
-        `SELECT rollout_session_id, thread_id, updated_at, prefix_provenance,
+        `SELECT rollout_session_id, thread_id, updated_at, prefix_provenance, rebuild_unaccepted,
                 replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256
          FROM cc_session_lineage WHERE prefix_provenance = 'verified' ORDER BY updated_at, rowid`,
       )
@@ -439,6 +468,7 @@ export function rebuiltSessionRows(
       thread_id: string;
       updated_at: string;
       prefix_provenance: string;
+      rebuild_unaccepted: number | null;
       replayed_prefix_lines: number | null;
       replayed_prefix_bytes: number | null;
       replayed_prefix_sha256: string | null;
@@ -446,10 +476,25 @@ export function rebuiltSessionRows(
     for (const row of raw) {
       const entry = rowToEntry(row);
       if (entry.prefix.kind !== "verified") continue;
-      rows.push({ sessionId: row.rollout_session_id, threadId: row.thread_id, updatedAt: entry.updatedAt });
+      rows.push({
+        sessionId: row.rollout_session_id,
+        threadId: row.thread_id,
+        updatedAt: entry.updatedAt,
+        accepted: entry.accepted,
+      });
     }
   });
   return rows;
+}
+
+/**
+ * Promote a rebuilt session recorded as not yet accepted. A no-op for a session
+ * that is already accepted or has no row.
+ */
+export function markSessionAccepted(dbPath: string, sessionId: string, deps: LineageDbDeps = {}): void {
+  withLineageDb(dbPath, deps, (db) => {
+    db.prepare("UPDATE cc_session_lineage SET rebuild_unaccepted = 0 WHERE rollout_session_id = ?").run(sessionId);
+  });
 }
 
 /** A swap accepted by this host whose registry pointer has not caught up. */
@@ -546,6 +591,7 @@ export function recordSessionThread(
   const { nowFn } = { ...defaultDeps(), ...deps };
   // Prefer explicit PrefixBoundary; count-only is stored as unknown (not trusted skip).
   let setPrefix = false;
+  const unaccepted = options.accepted === false ? 1 : 0;
   let cols = prefixToColumns(prefixBoundaryNone());
   if (options.prefix !== undefined) {
     setPrefix = true;
@@ -569,16 +615,27 @@ export function recordSessionThread(
         db.prepare(
           `INSERT INTO cc_session_lineage (
              rollout_session_id, thread_id, updated_at,
-             prefix_provenance, replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256
-           ) VALUES (?, ?, ?, ?, ?, ?, ?)
+             prefix_provenance, replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256,
+             rebuild_unaccepted
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(rollout_session_id) DO UPDATE SET
              thread_id = excluded.thread_id,
              updated_at = excluded.updated_at,
+             rebuild_unaccepted = excluded.rebuild_unaccepted,
              prefix_provenance = excluded.prefix_provenance,
              replayed_prefix_lines = excluded.replayed_prefix_lines,
              replayed_prefix_bytes = excluded.replayed_prefix_bytes,
              replayed_prefix_sha256 = excluded.replayed_prefix_sha256`,
-        ).run(sessionId, threadId, nowFn().toISOString(), cols.provenance, cols.lines, cols.bytes, cols.sha256);
+        ).run(
+          sessionId,
+          threadId,
+          nowFn().toISOString(),
+          cols.provenance,
+          cols.lines,
+          cols.bytes,
+          cols.sha256,
+          unaccepted,
+        );
       } else {
         // Ordinary rebind: update an existing row's thread binding only.
         // Do NOT insert a missing target as known-none (that poisons later resume).
@@ -647,6 +704,37 @@ export function appendThreadSignatures(
       throw cause;
     }
   });
+}
+
+/**
+ * Threads whose recorded replay signatures overlap the given ones, most
+ * overlapping first. Read only to link a rebuilt transcript that predates its
+ * own lineage record back to the thread it was rebuilt from.
+ */
+export function threadsMatchingSignatures(
+  dbPath: string,
+  signatures: readonly string[],
+  deps: LineageDbDeps = {},
+): Array<{ threadId: string; matches: number }> {
+  const unique = [...new Set(signatures)];
+  const counts = new Map<string, number>();
+  if (unique.length === 0) return [];
+  withLineageDb(dbPath, deps, (db) => {
+    const CHUNK = 400;
+    for (let start = 0; start < unique.length; start += CHUNK) {
+      const chunk = unique.slice(start, start + CHUNK);
+      const rows = db
+        .prepare(
+          `SELECT thread_id, COUNT(*) AS matches FROM cc_thread_signatures
+           WHERE signature IN (${chunk.map(() => "?").join(", ")}) GROUP BY thread_id`,
+        )
+        .all(...chunk) as Array<{ thread_id: string; matches: number }>;
+      for (const row of rows) counts.set(row.thread_id, (counts.get(row.thread_id) ?? 0) + Number(row.matches));
+    }
+  });
+  return [...counts.entries()]
+    .map(([threadId, matches]) => ({ threadId, matches }))
+    .sort((a, b) => b.matches - a.matches || a.threadId.localeCompare(b.threadId));
 }
 
 export function loadThreadSignatures(dbPath: string, threadId: string, deps: LineageDbDeps = {}): string[] {

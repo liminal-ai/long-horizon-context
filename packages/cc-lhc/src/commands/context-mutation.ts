@@ -12,8 +12,9 @@
  * snapshot wrong, so nothing mid-construction may cancel the work.
  *
  * This module owns no processes: no child lifecycle, no descriptor writes, no
- * lineage persistence, no respawn. It returns a HandoffRequest for the wrapper
- * lifecycle manager.
+ * respawn. Its one lineage write is the not-yet-accepted reservation of the
+ * rebuilt session, made before the file exists (acceptance happens at the
+ * switch). It returns a HandoffRequest for the wrapper lifecycle manager.
  */
 
 import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
@@ -31,7 +32,7 @@ import {
 } from "../wrapper/terminology.js";
 import { formatCarryoverNote, formatContinuityNote, freezeLiveAsyncWork } from "./continuity-note.js";
 import { CAPTURE_DEGRADED_REFUSAL, type LhcCommandRuntime, TURN_OPEN_REFUSAL } from "./dispatch.js";
-import { threadIdFromRef } from "./rebuild-receipt.js";
+import { reserveRebuiltSessionLineage, threadIdFromRef } from "./rebuild-receipt.js";
 
 /**
  * How many times the rebuilt rollout is written before the operation gives up
@@ -374,6 +375,21 @@ export async function runContextMutation(
         cwd: runtime.cwd,
         ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
         receipt: { text: durableReceipt },
+        // Recorded against the thread, unaccepted, before the file exists: a
+        // kill between the write and the switch leaves a transcript the next
+        // launch maps back to this thread's current session. A failed record
+        // does not stop the write — an unrecorded rebuilt transcript is still
+        // recognized by its rebuild prefix at launch.
+        beforeWrite: async (reservation) => {
+          await reserveRebuiltSessionLineage({
+            newSessionId: reservation.sessionId,
+            threadId,
+            prefixBoundary: reservation.prefixBoundary,
+            ...(runtime.lineageDbPath === undefined ? {} : { lineageDbPath: runtime.lineageDbPath }),
+            ...(runtime.lineageDeps === undefined ? {} : { lineageDeps: runtime.lineageDeps }),
+            ...(runtime.logLineageError === undefined ? {} : { logError: runtime.logLineageError }),
+          });
+        },
       });
       return {
         kind: "rebuilt",
