@@ -25,7 +25,10 @@ afterAll(() => {
   for (const dir of temps.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-const manifest = { name: "cc-lhc", version: "0.4.2" };
+const manifest = {
+  name: "cc-lhc",
+  version: JSON.parse(readFileSync(join(here, "..", "package.json"), "utf8")).version as string,
+};
 
 describe("verifyBuildIdentity binds a stamp to explicit accepted input", () => {
   it("passes only unavailable identity without an accepted SHA, and only the exact SHA with one", () => {
