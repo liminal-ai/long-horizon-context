@@ -15,6 +15,31 @@ restart and every compact mints a fresh native session id from that view.
 - `src/inference/claudeCli.ts` — derivations through `claude -p --no-session-persistence`.
 - `bin/claude-lhc` — convenience wrapper (`exec node dist/sidecar.js`). T3 spawns `process.execPath` with the compiled JS entry.
 
+## Install
+
+t3code-lhc installs the sidecar from npm; nothing in this repo needs building:
+
+```sh
+npm install claude-lhc@0.1.0
+```
+
+Point t3code at the compiled entry with `CLAUDE_LHC_SIDECAR=<prefix>/node_modules/claude-lhc/dist/sidecar.js`
+(t3code-lhc's setup script does this). Node 24.3 or later. The package bundles the `lhc` core; it
+is not published separately.
+
+## Configuration
+
+- **Claude home:** the same login and settings as Claude Code (`CLAUDE_CONFIG_DIR`, else `~/.claude`).
+- **LHC home:** `~/.t3code-lhc`, or `T3CODE_LHC_HOME`.
+- **Compact settings** (the t3code Claude LHC instance form; both required, provider-billed tokens):
+  `autoCompactWindow` (compact trigger) and `lhcLowerBound` (rebuilt view size), with the lower bound
+  below the trigger.
+- **`T3CODE_LHC_NO_INFERENCE=1`:** skip summary derivations (tests and previews).
+- **`T3CODE_THREAD_ID`:** set by the t3code driver and passed through to Claude Code, so `lhc-agent`
+  in a seat resolves its sender without `--from`.
+
+## Build from source
+
 Build (required; `dist/` is not in git):
 
 ```sh
@@ -33,3 +58,10 @@ accounts, reject that shape with a prefix-mismatch 400 on the first request afte
 compact. Older accounts accept it today. If a thread hits that 400, set the arm to `omit`
 and rebuild the sidecar; no data is lost.
 Reference: https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
+
+## Publishing
+
+`node scripts/assemble-npm-package.mjs --source-sha <commit>` writes `build/claude-lhc-npm`
+(dist, bin, README, LICENSE, and the `lhc` core bundled under node_modules); `npm pack` it for
+the tarball. `.github/workflows/publish-claude-lhc-<version>.yml` rebuilds that tarball from the
+pinned commit, checks its sha256 against the reviewed hash, and publishes it (dispatch only).

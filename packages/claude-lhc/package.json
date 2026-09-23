@@ -11,7 +11,8 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json --noEmit",
     "test": "vitest run",
-    "standalone": "node --import tsx scripts/standalone.ts"
+    "standalone": "node --import tsx scripts/standalone.ts",
+    "assemble:npm": "node scripts/assemble-npm-package.mjs"
   },
   "engines": {
     "node": ">=24.3.0"
