@@ -60,6 +60,7 @@ describe("TC-2.5a one active item", () => {
           },
           continuation: { kind: "send_message", agentId: "agent-1" },
           transition: "resumed",
+          relaunch: null,
         },
       ],
     });

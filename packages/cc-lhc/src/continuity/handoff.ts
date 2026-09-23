@@ -148,7 +148,12 @@ export function invokeCarryover(
         result = { launchId: item.launchId, kind: "rearmed" };
         break;
       case "monitor_relaunch": {
-        if (item.relaunch !== null) {
+        // A relaunch the wrapper made for an earlier generation carries as is;
+        // this generation's own relaunch keeps its exactly-once fence below.
+        if (
+          item.relaunch !== null &&
+          item.relaunch.outputPath !== relaunchOutputPath(ports.monitorOutputDir, item.launchId, snapshot.generation)
+        ) {
           result = {
             launchId: item.launchId,
             kind: "relaunch_carried",

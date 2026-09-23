@@ -64,6 +64,7 @@ function alive(pid: number): boolean {
 const OWNED_COPY_MODE = process.platform === "win32" ? 0o666 : 0o600;
 
 const pids: ReapTarget[] = [];
+const PROCESS_GONE = (pid: number) => ({ ok: false as const, code: "not_found" as const, message: `pid ${pid} gone` });
 afterEach(async () => {
   await reapProcesses(pids);
 });
@@ -171,8 +172,10 @@ function seed() {
   const copies = () =>
     existsSync(resultCopyDir(continuityDir)) ? readdirSync(resultCopyDir(continuityDir)).sort() : [];
   const logs: string[] = [];
+  // These cases model the relaunched Monitor's process as already ended: a
+  // live one keeps its fence (F4b), which the TC-2.10b case checks first.
   const clean = (ports: Parameters<typeof cleanupThread>[3] = {}) =>
-    cleanupThread(store, T, continuityDir, { log: (m) => logs.push(m), ...ports });
+    cleanupThread(store, T, continuityDir, { log: (m) => logs.push(m), probeIdentity: PROCESS_GONE, ...ports });
   const otherState = () => ({
     items: store.listItems(OTHER),
     gen: store.getGeneration(OTHER, 1),
@@ -285,8 +288,16 @@ describe("cleanup of finished carried work", () => {
     // Monitor and wakeup finish (the process itself is still there — cleanup never signals it).
     s.finish(LAUNCH_IDS.monitor, "stopped");
     s.finish(LAUNCH_IDS.scheduled_wakeup);
+    // F4b: while that process is live, its fence and tracking stay.
+    report = s.clean({ probeIdentity: probeProcessIdentityNative });
+    expect(report.retained).toEqual([
+      expect.objectContaining({ launchId: LAUNCH_IDS.monitor, reason: "relaunch_process_live" }),
+    ]);
+    expect(report.removed).toEqual([LAUNCH_IDS.scheduled_wakeup]);
+    expect(existsSync(s.fence)).toBe(true);
+    // Once it is gone (modelled), the fence goes after its copy is durable.
     report = s.clean();
-    expect(report.removed.sort()).toEqual([LAUNCH_IDS.monitor, LAUNCH_IDS.scheduled_wakeup].sort());
+    expect(report.removed).toEqual([LAUNCH_IDS.monitor]);
     expect(report.retained).toEqual([]);
     expect(report.copied).toHaveLength(1);
     const copy = report.copied[0]!;
@@ -369,7 +380,7 @@ describe("cleanup of finished carried work", () => {
         throw new Error("database is locked");
       },
     };
-    report = cleanupThread(refusing, T, s.continuityDir, { log: (m) => s.logs.push(m) });
+    report = cleanupThread(refusing, T, s.continuityDir, { log: (m) => s.logs.push(m), probeIdentity: PROCESS_GONE });
     expect(report.retained).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ launchId: LAUNCH_IDS.monitor, reason: "result_update_failed" }),
