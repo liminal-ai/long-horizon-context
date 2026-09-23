@@ -36,8 +36,10 @@ describe("run: one-shot on an unlinked rebuilt transcript", () => {
 
   beforeEach(() => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-unlinked-home-"));
-    const lhcHome = mkdtempSync(join(tmpdir(), "cc-lhc-unlinked-lhc-"));
-    dirs.push(home, lhcHome);
+    // Inside the fake profile: on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile.
+    const lhcHome = join(home, ".cc-lhc");
+    mkdirSync(lhcHome);
+    dirs.push(home);
     // os.homedir() reads USERPROFILE on Windows and HOME elsewhere.
     process.env.HOME = home;
     process.env.USERPROFILE = home;
