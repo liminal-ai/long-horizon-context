@@ -36,6 +36,8 @@ export type UnlinkedRebuild =
 
 const SYNTHETIC_MESSAGE_ID = /^msg_[0-9a-f]{32}$/;
 const RECEIPT_NOTE = /^\[runtime note\] \[lhc (compact|prune):/;
+/** Lines the rebuild writes itself (summary bands, runtime notes): no thread ever recorded them. */
+const SYNTHESIZED_USER_TEXT = /^\[(context · [a-z]+\]\n|runtime note\] )/;
 
 function parseLines(content: string): RolloutLineItem[] {
   const items: RolloutLineItem[] = [];
@@ -54,6 +56,24 @@ function parseLines(content: string): RolloutLineItem[] {
 function messageOf(item: RolloutLineItem): Record<string, unknown> | undefined {
   const message = (item as { message?: unknown }).message;
   return typeof message === "object" && message !== null ? (message as Record<string, unknown>) : undefined;
+}
+
+function isSynthesized(item: RolloutLineItem): boolean {
+  if (item.type !== "user") return false;
+  const content = messageOf(item)?.content;
+  const text =
+    typeof content === "string"
+      ? content
+      : Array.isArray(content)
+        ? content
+            .map((block) =>
+              typeof block === "object" && block !== null && typeof (block as { text?: unknown }).text === "string"
+                ? (block as { text: string }).text
+                : "",
+            )
+            .join("")
+        : "";
+  return SYNTHESIZED_USER_TEXT.test(text);
 }
 
 /** True when the lines carry the rebuild prefix's own fingerprint. */
@@ -95,8 +115,12 @@ export async function identifyUnlinkedRebuild(input: {
   const items = parseLines(content);
   if (!hasRebuildPrefix(items)) return null;
 
+  // The replay signatures: only lines the rebuild replayed from the thread
+  // can match its record, so the synthesized band and note lines are left out
+  // of both the lookup and the half-threshold denominator.
   const signatures: string[] = [];
   for (const [index, item] of items.entries()) {
+    if (isSynthesized(item)) continue;
     try {
       signatures.push(...signaturesForRolloutLine(item, index));
     } catch {

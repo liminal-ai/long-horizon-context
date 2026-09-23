@@ -141,12 +141,18 @@ async function writeUnrecordedRebuild(f: Fixture, sessionId: string, view: Sessi
   return written.rolloutPath;
 }
 
-/** Every replay signature the rebuilt transcript's lines produce (what the matcher counts). */
+/** The replay signatures the matcher counts: every line but the synthesized band and note lines. */
 function capturedSignaturesAll(path: string): string[] {
   return readFileSync(path, "utf8")
     .split("\n")
     .filter((line) => line.trim() !== "")
-    .flatMap((line, index) => signaturesForRolloutLine(JSON.parse(line) as RolloutLineItem, index));
+    .flatMap((line, index) => {
+      const item = JSON.parse(line) as RolloutLineItem;
+      const content = (item as { message?: { content?: unknown } }).message?.content;
+      if (item.type === "user" && typeof content === "string" && /^\[(context · |runtime note\])/.test(content))
+        return [];
+      return signaturesForRolloutLine(item, index);
+    });
 }
 
 /** The replay signatures capture recorded for the turns the rebuild replays. */
