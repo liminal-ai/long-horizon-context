@@ -16,9 +16,11 @@ import {
 import type { ResolvedSdkConfig } from "./derivation.js";
 import {
   applyDerivationTerminalFailure,
+  CLAIM_EXPIRED_REPEATEDLY,
   DerivationCompletionError,
   type DurableWorkDispatcher,
   type DurableWorkOperation,
+  failRepeatedlyExpiredClaim,
 } from "./durable-work/index.js";
 import { type ErrorResult, type OpResult, storageFailure } from "./errors.js";
 import {
@@ -135,16 +137,12 @@ export async function drainOpenDb(
     }
     const item = claim.item;
     if (claim.outcome === "expired") {
-      // The claim's process exited mid-run: back to the queue, and the next
-      // loop claims and runs it. Only past the cap does it fail as before.
+      // The claim's process crashed or was killed mid-run: back to the queue,
+      // and the next loop claims and runs it. A second expiry in a row fails it.
       const requeue = requeueExpiredClaim(db, item, clock().toISOString());
-      if (requeue.outcome !== "exhausted") continue;
-      const reason = "claim_expired";
-      const terminal = applyDerivationTerminalFailure(
-        db,
-        { ...item, workItemId: item.workItemId },
-        { reason, state: "failed", now: clock().toISOString(), metadata: { expiredClaims: requeue.expiredClaims } },
-      );
+      if (requeue.outcome !== "repeated") continue;
+      const reason = CLAIM_EXPIRED_REPEATEDLY;
+      const terminal = failRepeatedlyExpiredClaim(db, item, clock().toISOString());
       if (terminal !== "lost_lease") {
         logDerivationExecution(identity, db, item.derivations, "terminal_failed", { reason });
       }

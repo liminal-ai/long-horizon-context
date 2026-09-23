@@ -17,14 +17,16 @@ import type {
 import {
   applyDerivationSuccess,
   applyDerivationTerminalFailure,
+  CLAIM_EXPIRED_REPEATEDLY,
   createPostCommitHookSet,
   DerivationCompletionError,
   type DurableWorkDispatchResult,
+  failRepeatedlyExpiredClaim,
   resolveInstancePoke,
   runWorkHandler,
 } from "../../shared-tech/index.js";
 import { appendDerivationLog, type LogEntry, writeLog } from "../../shared-tech/logging/index.js";
-
+import { claimParams, noteClaimDone, OWNED_CLAIM_SQL } from "../../shared-tech/work-queue/claim-fence.js";
 import {
   createOrClaimImmediateWorkItem,
   type EnqueueDerivationTarget,
@@ -614,20 +616,19 @@ export const turnWorkHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> 
 
 function deferClaimedTurnWork(
   db: DatabaseSync,
-  item: { workItemId: string },
+  item: { workItemId: string; claimAttempt?: number },
   onDeferred: (transaction: { db: DatabaseSync; onCommit: (fn: () => void) => void }) => void,
 ): boolean {
   const postCommitHook = createPostCommitHookSet();
+  noteClaimDone(db, item);
   db.exec("BEGIN IMMEDIATE;");
   try {
-    const owned = db
-      .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
-      .get(item.workItemId);
+    const owned = db.prepare(`SELECT 1 FROM work_item WHERE ${OWNED_CLAIM_SQL}`).get(...claimParams(item));
     if (owned === undefined) {
       db.exec("COMMIT;");
       return false;
     }
-    db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'`).run(item.workItemId);
+    db.prepare(`DELETE FROM work_item WHERE ${OWNED_CLAIM_SQL}`).run(...claimParams(item));
     onDeferred({ db, onCommit: postCommitHook.add });
     db.exec("COMMIT;");
     postCommitHook.flush();
@@ -727,22 +728,17 @@ export async function deriveTurnOwnedInOpenDb(
     if (claim.outcome === "expired") {
       // Same rule as the drain: requeue, and the scheduler runs it.
       const requeue = requeueExpiredClaim(db, claim.item, config.clock().toISOString());
-      if (requeue.outcome !== "exhausted") {
+      if (requeue.outcome !== "repeated") {
         pokeThreadScheduler(db);
         return workInFlight(kind, sourceRef, sourceVersion);
       }
-      applyDerivationTerminalFailure(
+      failRepeatedlyExpiredClaim(
         db,
-        { sourceVersion, derivations, workItemId: claim.item.workItemId },
-        {
-          reason: "claim_expired",
-          state: "failed",
-          now: config.clock().toISOString(),
-          metadata: { expiredClaims: requeue.expiredClaims },
-        },
+        { sourceVersion, derivations, workItemId: claim.item.workItemId, claimAttempt: claim.item.claimAttempt },
+        config.clock().toISOString(),
       );
       pokeThreadScheduler(db);
-      return failed({ errorClass: "system_error", code: "provider_failure", reason: "claim_expired" });
+      return failed({ errorClass: "system_error", code: "provider_failure", reason: CLAIM_EXPIRED_REPEATEDLY });
     }
     if (claim.outcome === "queued") pokeThreadScheduler(db);
     return workInFlight(kind, sourceRef, sourceVersion);
@@ -756,6 +752,7 @@ export async function deriveTurnOwnedInOpenDb(
     sourceVersion,
     derivations,
     workItemId: claim.item.workItemId,
+    ...(claim.item.claimAttempt === undefined ? {} : { claimAttempt: claim.item.claimAttempt }),
   };
   if (outcome.ok) {
     try {
@@ -782,7 +779,7 @@ export async function deriveTurnOwnedInOpenDb(
     return { outcome: "derived", sourceVersion };
   }
   if ("deferred" in outcome) {
-    const deferred = deferClaimedTurnWork(db, { workItemId: claim.item.workItemId }, outcome.onDeferred);
+    const deferred = deferClaimedTurnWork(db, claim.item, outcome.onDeferred);
     if (!deferred) return workInFlight(kind, sourceRef, sourceVersion);
     pokeThreadScheduler(db);
     return workInFlight(kind, sourceRef, sourceVersion);
@@ -821,6 +818,7 @@ export async function dispatchTurnOwnedWork(
     kind: WorkKind;
     sourceRef: WorkSourceRef;
     sourceVersion: number;
+    claimAttempt?: number;
     derivations: readonly EnqueueDerivationTarget[];
   },
 ): Promise<DurableWorkDispatchResult> {
@@ -845,6 +843,7 @@ export async function dispatchTurnOwnedWork(
         sourceVersion: item.sourceVersion,
         derivations: item.derivations,
         workItemId: item.workItemId,
+        ...(item.claimAttempt === undefined ? {} : { claimAttempt: item.claimAttempt }),
       },
       outcome.derivations ?? [],
       run.config.clock().toISOString(),

@@ -110,16 +110,15 @@ function setChunkSummaryState(
   chunkId: string,
   derivationType: "chunk_summary_detailed" | "chunk_summary_brief",
   state: "pending" | "ready" | "failed" | "blocked",
-  opts: { content?: string; reason?: string; metadata?: string } = {},
+  opts: { content?: string; reason?: string } = {},
 ): void {
   execSql(
     filePath,
-    `UPDATE derivation SET state = ?, content = ?, reason = ?, metadata = ?
+    `UPDATE derivation SET state = ?, content = ?, reason = ?
      WHERE subject_kind = 'chunk' AND subject_id = ? AND derivation_type = ?`,
     state,
     opts.content ?? null,
     opts.reason ?? null,
-    opts.metadata ?? null,
     chunkId,
     derivationType,
   );
@@ -242,14 +241,12 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
-    // A claim_expired failure that exhausted its retries (metadata set), so the
-    // open-time requeue of legacy failures leaves it alone.
+    // A repeated expiry (not plain claim_expired, which the open-time repair requeues).
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "failed", {
-      reason: "claim_expired",
-      metadata: JSON.stringify({ expiredClaims: 3 }),
+      reason: "claim_expired_repeatedly",
     });
     setChunkSummaryState(filePath, "c1", "chunk_summary_brief", "blocked", {
-      reason: "source_damaged: chunk c1 chunk_summary_detailed is failed: claim_expired",
+      reason: "source_damaged: chunk c1 chunk_summary_detailed is failed: claim_expired_repeatedly",
     });
     deleteWorkFor(filePath, "chunk_summary_detailed", "c1");
     deleteWorkFor(filePath, "chunk_summary_brief", "c1");
@@ -270,7 +267,7 @@ describe("Story 4: chunk derivation and compact recovery", () => {
       band: "detailed",
       subjectId: "c1",
       derivationType: "chunk_summary_detailed",
-      reason: "failed_floor: claim_expired",
+      reason: "failed_floor: claim_expired_repeatedly",
     });
     expect(compacted.value.degraded).toContainEqual({
       band: "detailed",

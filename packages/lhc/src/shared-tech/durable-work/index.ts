@@ -7,8 +7,10 @@ import type {
   ResolvedSdkConfig,
   SubjectKind,
 } from "../derivation.js";
+import { writeLog } from "../logging/index.js";
 import { createPostCommitHookSet } from "../persist.js";
 import { databasePathFor } from "../storage.js";
+import { noteClaimDone, OWNED_CLAIM_SQL } from "../work-queue/claim-fence.js";
 import type { EnqueueDerivationTarget, WorkKind, WorkSourceRef } from "../work-queue/index.js";
 
 export type DurableWorkOperation =
@@ -23,7 +25,8 @@ interface DerivationAttemptBase {
   derivations: readonly EnqueueDerivationTarget[];
 }
 
-export type DerivationAttempt = DerivationAttemptBase & { workItemId?: string };
+// claimAttempt names which claim of the row this attempt holds (work-queue/claim-fence.ts).
+export type DerivationAttempt = DerivationAttemptBase & { workItemId?: string; claimAttempt?: number | undefined };
 
 export type DurableWorkDispatchResult =
   | { disposition: "done" | "stale_discarded" | "lost_lease" }
@@ -37,6 +40,7 @@ export type DurableWorkDispatcher = (
     kind: string;
     sourceRef: WorkSourceRef;
     sourceVersion: number;
+    claimAttempt?: number;
     derivations: readonly EnqueueDerivationTarget[];
     operation: DurableWorkOperation;
   },
@@ -138,9 +142,10 @@ export function applyDerivationSuccess(
   db.exec("BEGIN IMMEDIATE;");
   try {
     if (attempt.workItemId !== undefined) {
+      noteClaimDone(db, { workItemId: attempt.workItemId, claimAttempt: attempt.claimAttempt });
       const owned = db
-        .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
-        .get(attempt.workItemId);
+        .prepare(`SELECT 1 FROM work_item WHERE ${OWNED_CLAIM_SQL}`)
+        .get(attempt.workItemId, attempt.claimAttempt ?? null);
       if (owned === undefined) {
         db.exec("COMMIT;");
         return "lost_lease";
@@ -184,7 +189,10 @@ export function applyDerivationSuccess(
       onApplied({ db, onCommit: postCommitHook.add });
     }
     if (attempt.workItemId !== undefined) {
-      db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'`).run(attempt.workItemId);
+      db.prepare(`DELETE FROM work_item WHERE ${OWNED_CLAIM_SQL}`).run(
+        attempt.workItemId,
+        attempt.claimAttempt ?? null,
+      );
     }
     db.exec("COMMIT;");
     postCommitHook.flush();
@@ -195,17 +203,50 @@ export function applyDerivationSuccess(
   }
 }
 
+// A claim that expired twice in a row (requeueExpiredClaim "repeated"): its
+// process crashed or was killed both times, so something beyond an ordinary
+// exit is wrong. Fail it and say so in the thread log; it is not requeued.
+export const CLAIM_EXPIRED_REPEATEDLY = "claim_expired_repeatedly";
+
+export function failRepeatedlyExpiredClaim(
+  db: DatabaseSync,
+  attempt: DerivationAttempt,
+  now: string,
+): "done" | "lost_lease" {
+  const result = applyDerivationTerminalFailure(db, attempt, {
+    reason: CLAIM_EXPIRED_REPEATEDLY,
+    state: "failed",
+    now,
+  });
+  if (result === "done") {
+    for (const target of attempt.derivations) {
+      writeLog(
+        { db, threadId: "", filePath: databasePathFor(db) ?? "" },
+        {
+          level: "warning",
+          message: `${target.derivationType} for ${target.subjectKind} ${target.subjectId} failed: its claim expired twice in a row (the process crashed or was killed both times); not requeued`,
+          derivationType: target.derivationType,
+          subjectId: target.subjectId,
+          reason: CLAIM_EXPIRED_REPEATEDLY,
+        },
+      );
+    }
+  }
+  return result;
+}
+
 export function applyDerivationTerminalFailure(
   db: DatabaseSync,
   attempt: DerivationAttempt,
-  failure: { reason: string; state: "failed" | "blocked"; now: string; metadata?: Record<string, unknown> },
+  failure: { reason: string; state: "failed" | "blocked"; now: string },
 ): "done" | "lost_lease" {
   db.exec("BEGIN IMMEDIATE;");
   try {
     if (attempt.workItemId !== undefined) {
+      noteClaimDone(db, { workItemId: attempt.workItemId, claimAttempt: attempt.claimAttempt });
       const owned = db
-        .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
-        .get(attempt.workItemId);
+        .prepare(`SELECT 1 FROM work_item WHERE ${OWNED_CLAIM_SQL}`)
+        .get(attempt.workItemId, attempt.claimAttempt ?? null);
       if (owned === undefined) {
         db.exec("COMMIT;");
         return "lost_lease";
@@ -213,7 +254,7 @@ export function applyDerivationTerminalFailure(
     }
     const update = db.prepare(
       `UPDATE derivation
-       SET state = ?, content = NULL, reason = ?, metadata = ?, gaps = NULL, derived_at = ?
+       SET state = ?, content = NULL, reason = ?, metadata = NULL, gaps = NULL, derived_at = ?
        WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ? AND source_version = ?`,
     );
     let hits = 0;
@@ -222,7 +263,6 @@ export function applyDerivationTerminalFailure(
       const changed = update.run(
         failure.state,
         failure.reason,
-        failure.metadata === undefined ? null : JSON.stringify(failure.metadata),
         failure.now,
         target.subjectKind,
         target.subjectId,
@@ -245,7 +285,10 @@ export function applyDerivationTerminalFailure(
       );
     }
     if (attempt.workItemId !== undefined) {
-      db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'`).run(attempt.workItemId);
+      db.prepare(`DELETE FROM work_item WHERE ${OWNED_CLAIM_SQL}`).run(
+        attempt.workItemId,
+        attempt.claimAttempt ?? null,
+      );
     }
     db.exec("COMMIT;");
     return "done";

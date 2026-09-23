@@ -22,7 +22,7 @@ import {
   setThreadTouch,
   threads,
 } from "../src/index.js";
-import { MAX_EXPIRED_CLAIMS } from "../src/shared-tech/work-queue/index.js";
+import { applyDerivationTerminalFailure } from "../src/shared-tech/durable-work/index.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
@@ -652,6 +652,7 @@ describe("claim ownership fencing", () => {
                 sourceVersion: item.sourceVersion,
                 derivations: item.derivations,
                 workItemId: item.workItemId,
+                claimAttempt: item.claimAttempt,
               },
               writes,
               run.clock().toISOString(),
@@ -689,33 +690,102 @@ describe("claim ownership fencing", () => {
     expect(liveCount(filePath)).toBe(0);
   });
 
-  it("each expiry requeues it until MAX_EXPIRED_CLAIMS; the next expiry fails it with the count recorded", async () => {
+  it("an old holder returning before its retry cannot complete the retry's claim", async () => {
     const now = { ms: Date.parse("2026-06-10T12:00:00.000Z") };
     const { sdk, runs } = deferredMessageSdk(now);
     const { filePath } = await newThread();
     await send(sdk, filePath, [validEvent("user_prompt")]);
 
-    // Every holder is abandoned mid-run (its process "exits"); the next drain finds the claim expired.
-    const abandoned: Array<Promise<unknown>> = [drain(sdk, filePath)];
-    for (let attempt = 1; attempt <= MAX_EXPIRED_CLAIMS; attempt += 1) {
-      await until(() => runs.length === attempt, `run ${attempt}`);
-      now.ms += 100;
-      abandoned.push(drain(sdk, filePath));
+    const olderDrain = drain(sdk, filePath);
+    await until(() => runs.length === 1, "older claim");
+    now.ms += 100;
+    const retryDrain = drain(sdk, filePath);
+    await until(() => runs.length === 2, "retry claim");
+
+    // The old holder returns a well-formed result while the retry still runs.
+    runs[0]?.resolve({ content: "stale completion" });
+    expect((await olderDrain).ran[0]).toMatchObject({ disposition: "lost_lease" });
+    expect(liveCount(filePath)).toBe(1);
+
+    runs[1]?.resolve({ content: "retry completion" });
+    expect((await retryDrain).ran).toEqual([expect.objectContaining({ disposition: "done" })]);
+    const form = readDerivedForms(filePath).find((entry) => entry.derivationType === "smoothed_prompt");
+    expect(form).toMatchObject({ state: "ready", content: "retry completion" });
+    expect(liveCount(filePath)).toBe(0);
+  });
+
+  it("an old holder's terminal failure cannot fail the retry's claim", async () => {
+    const now = { ms: Date.parse("2026-06-10T12:00:00.000Z") };
+    const { sdk, runs } = deferredMessageSdk(now);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    const olderDrain = drain(sdk, filePath);
+    await until(() => runs.length === 1, "older claim");
+    now.ms += 100;
+    const retryDrain = drain(sdk, filePath);
+    await until(() => runs.length === 2, "retry claim");
+
+    const old = runs[0]!.item as unknown as { workItemId: string; claimAttempt?: number };
+    const retry = runs[1]!.item as unknown as { claimAttempt?: number };
+    expect(old.claimAttempt).toBe(1);
+    expect(retry.claimAttempt).toBe(2);
+    const raw = openRaw(filePath);
+    try {
+      const failure = applyDerivationTerminalFailure(
+        raw,
+        {
+          sourceVersion: 1,
+          derivations: [{ subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" }],
+          workItemId: old.workItemId,
+          claimAttempt: old.claimAttempt,
+        },
+        { reason: "old provider timed out", state: "failed", now: new Date(now.ms).toISOString() },
+      );
+      expect(failure).toBe("lost_lease");
+    } finally {
+      raw.close();
     }
-    await until(() => runs.length === MAX_EXPIRED_CLAIMS + 1, "last run");
+
+    runs[1]?.resolve({ content: "healthy retry completion" });
+    expect((await retryDrain).ran).toEqual([expect.objectContaining({ disposition: "done" })]);
+    runs[0]?.resolve({ content: "stale completion" });
+    expect((await olderDrain).ran[0]).toMatchObject({ disposition: "lost_lease" });
+    const form = readDerivedForms(filePath).find((entry) => entry.derivationType === "smoothed_prompt");
+    expect(form).toMatchObject({ state: "ready", content: "healthy retry completion" });
+  });
+
+  it("a second consecutive expiry fails it with claim_expired_repeatedly and logs a warning", async () => {
+    const now = { ms: Date.parse("2026-06-10T12:00:00.000Z") };
+    const { sdk, runs } = deferredMessageSdk(now);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    // Both holders are abandoned mid-run (their processes "crash").
+    const first = drain(sdk, filePath);
+    await until(() => runs.length === 1, "first run");
+    now.ms += 100;
+    const second = drain(sdk, filePath);
+    await until(() => runs.length === 2, "rerun after the first expiry");
     now.ms += 100;
     const final = await drain(sdk, filePath);
-    expect(final.ran).toEqual([expect.objectContaining({ disposition: "failed_terminal", reason: "claim_expired" })]);
-    expect(runs).toHaveLength(MAX_EXPIRED_CLAIMS + 1);
+    expect(final.ran).toEqual([
+      expect.objectContaining({ disposition: "failed_terminal", reason: "claim_expired_repeatedly" }),
+    ]);
+    expect(runs).toHaveLength(2);
     const form = readDerivedForms(filePath).find((entry) => entry.derivationType === "smoothed_prompt");
-    expect(form).toMatchObject({
-      state: "failed",
-      reason: "claim_expired",
-      metadata: { expiredClaims: MAX_EXPIRED_CLAIMS },
-    });
+    expect(form).toMatchObject({ state: "failed", reason: "claim_expired_repeatedly" });
     expect(liveCount(filePath)).toBe(0);
+    const db = openRaw(filePath);
+    try {
+      expect(
+        db.prepare(`SELECT level, subject_id, reason FROM log WHERE reason = 'claim_expired_repeatedly'`).all(),
+      ).toEqual([{ level: "warning", subject_id: "m1", reason: "claim_expired_repeatedly" }]);
+    } finally {
+      db.close();
+    }
     for (const run of runs) run.resolve({ content: "late" });
-    await Promise.all(abandoned);
+    await Promise.all([first, second]);
   });
 });
 
@@ -732,6 +802,7 @@ describe("completion exactness", () => {
               sourceVersion: item.sourceVersion,
               derivations: item.derivations,
               workItemId: item.workItemId,
+              claimAttempt: item.claimAttempt,
             },
             [
               {
@@ -849,6 +920,7 @@ describe("completion exactness", () => {
               sourceVersion: item.sourceVersion,
               derivations: item.derivations,
               workItemId: item.workItemId,
+              claimAttempt: item.claimAttempt,
             },
             [
               {
@@ -899,6 +971,7 @@ describe("completion exactness", () => {
               sourceVersion: item.sourceVersion,
               derivations: item.derivations,
               workItemId: item.workItemId,
+              claimAttempt: item.claimAttempt,
             },
             [
               {

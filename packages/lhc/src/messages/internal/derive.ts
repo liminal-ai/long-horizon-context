@@ -237,6 +237,7 @@ export async function dispatchMessageDeriveWork(
   item: {
     workItemId: string;
     sourceVersion: number;
+    claimAttempt?: number;
     derivations: readonly EnqueueDerivationTarget[];
   },
 ): Promise<DurableWorkDispatchResult> {
@@ -269,6 +270,7 @@ export async function dispatchMessageDeriveWork(
         sourceVersion: item.sourceVersion,
         derivations: item.derivations,
         workItemId: item.workItemId,
+        ...(item.claimAttempt === undefined ? {} : { claimAttempt: item.claimAttempt }),
       },
       outcome.derivations ?? [],
       run.config.clock().toISOString(),

@@ -9,6 +9,7 @@ import type { CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler } f
 import type { DurableWorkOperation } from "../durable-work/index.js";
 import { assertExactDerivationWrites, DerivationCompletionError, operationIntent } from "../durable-work/index.js";
 import { createPostCommitHookSet, type DbWriteTransaction } from "../persist.js";
+import { claimParams, noteClaimDone, noteClaimHeld, OWNED_CLAIM_SQL, TAKE_CLAIM_SET_SQL } from "./claim-fence.js";
 
 export type WorkOwner = "messages" | "turns";
 export type WorkKind =
@@ -265,7 +266,7 @@ export function createOrClaimImmediateWorkItem(
       const claimed = db
         .prepare(
           `UPDATE work_item
-           SET status = 'claimed', claimed_at = ?, claim_expires_at = ?
+           SET ${TAKE_CLAIM_SET_SQL}
            WHERE work_item_id = ? AND status = 'queued'
            RETURNING work_item_id, owner, kind, source_ref, queued_at, payload`,
         )
@@ -276,6 +277,7 @@ export function createOrClaimImmediateWorkItem(
       }
       const item = toClaimedItem(claimed);
       db.exec("COMMIT;");
+      noteClaimHeld(db, item);
       return { outcome: "claimed", item };
     }
 
@@ -290,7 +292,7 @@ export function createOrClaimImmediateWorkItem(
     const claimed = db
       .prepare(
         `UPDATE work_item
-         SET status = 'claimed', claimed_at = ?, claim_expires_at = ?
+         SET ${TAKE_CLAIM_SET_SQL}
          WHERE work_item_id = ? AND status = 'queued'
          RETURNING work_item_id, owner, kind, source_ref, queued_at, payload`,
       )
@@ -300,6 +302,7 @@ export function createOrClaimImmediateWorkItem(
     }
     const claimedItem = toClaimedItem(claimed);
     db.exec("COMMIT;");
+    noteClaimHeld(db, claimedItem);
     return { outcome: "claimed", item: claimedItem };
   } catch (cause) {
     db.exec("ROLLBACK;");
@@ -331,6 +334,8 @@ export interface ClaimedWorkItem {
   sourceRef: WorkSourceRef;
   queuedAt: string;
   sourceVersion: number;
+  /** Which claim of this row the holder took (claim-fence.ts); absent on pre-counter rows. */
+  claimAttempt?: number;
   operation?: DurableWorkOperation;
   derivations: EnqueueDerivationTarget[];
 }
@@ -352,7 +357,8 @@ interface RawClaimRow {
 
 interface WorkPayload {
   sourceVersion?: number;
-  expiredClaims?: number;
+  claimExpired?: boolean;
+  claimAttempt?: number;
   operation?: DurableWorkOperation;
   derivations?: EnqueueDerivationTarget[];
 }
@@ -377,17 +383,17 @@ function toClaimedItem(row: RawClaimRow): ClaimedWorkItem {
     sourceRef,
     queuedAt: row.queued_at,
     sourceVersion: payload.sourceVersion ?? 1,
+    ...(payload.claimAttempt === undefined ? {} : { claimAttempt: payload.claimAttempt }),
     ...(operation === undefined ? {} : { operation }),
     derivations: payload.derivations ?? [],
   };
 }
 
-export function deleteClaimedItem(db: DatabaseSync, item: { workItemId: string }): boolean {
+export function deleteClaimedItem(db: DatabaseSync, item: { workItemId: string; claimAttempt?: number }): boolean {
+  noteClaimDone(db, item);
   db.exec("BEGIN IMMEDIATE;");
   try {
-    const deleted = db
-      .prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
-      .run(item.workItemId);
+    const deleted = db.prepare(`DELETE FROM work_item WHERE ${OWNED_CLAIM_SQL}`).run(...claimParams(item));
     db.exec("COMMIT;");
     return Number(deleted.changes) > 0;
   } catch (cause) {
@@ -396,44 +402,42 @@ export function deleteClaimedItem(db: DatabaseSync, item: { workItemId: string }
   }
 }
 
-// How many times one item's claim may expire before it fails. A claim expires
-// whenever its process exits mid-run (every one-shot, any kill), so an expiry
-// is a retry, not a verdict on the work.
-export const MAX_EXPIRED_CLAIMS = 3;
-
-// An expired claim goes back to the queue in place (same row, so it stays the
-// head) with its expiry count in the payload. "exhausted" once the count
-// would pass MAX_EXPIRED_CLAIMS: the caller fails it as before. "lost" when
-// the row is no longer an expired claim (another opener got there first).
+// A clean exit hands its claims back (claim-fence.ts), so an expired claim
+// means its process crashed or was killed. The first expiry goes back to the
+// queue in place (same row, so it stays the head) and marks the payload
+// claimExpired; a clean hand-back clears the mark. "repeated" when the claim
+// expires again with the mark still set: two crashes in a row on one job, so
+// the caller fails it (CLAIM_EXPIRED_REPEATEDLY) instead of requeueing. "lost"
+// when the row is no longer this expired claim (another opener got there first).
 export function requeueExpiredClaim(
   db: DatabaseSync,
-  item: { workItemId: string },
+  item: { workItemId: string; claimAttempt?: number },
   now: string,
-): { outcome: "requeued" | "exhausted"; expiredClaims: number } | { outcome: "lost" } {
+): { outcome: "requeued" | "repeated" | "lost" } {
+  noteClaimDone(db, item);
   db.exec("BEGIN IMMEDIATE;");
   try {
     const row = db
-      .prepare(
-        `SELECT work_item_id, payload, claim_expires_at FROM work_item WHERE work_item_id = ? AND status = 'claimed'`,
-      )
-      .get(item.workItemId) as { work_item_id: string; payload: string; claim_expires_at: string | null } | undefined;
+      .prepare(`SELECT work_item_id, payload, claim_expires_at FROM work_item WHERE ${OWNED_CLAIM_SQL}`)
+      .get(...claimParams(item)) as
+      | { work_item_id: string; payload: string; claim_expires_at: string | null }
+      | undefined;
     const expiry = Date.parse(row?.claim_expires_at ?? "");
     if (row === undefined || (Number.isFinite(expiry) && expiry > Date.parse(now))) {
       db.exec("COMMIT;");
       return { outcome: "lost" };
     }
     const payload = parseWorkPayload(row);
-    const expiredClaims = (payload.expiredClaims ?? 0) + 1;
-    if (expiredClaims > MAX_EXPIRED_CLAIMS) {
+    if (payload.claimExpired === true) {
       db.exec("COMMIT;");
-      return { outcome: "exhausted", expiredClaims: expiredClaims - 1 };
+      return { outcome: "repeated" };
     }
     db.prepare(
       `UPDATE work_item SET status = 'queued', claimed_at = NULL, claim_expires_at = NULL, payload = ?
        WHERE work_item_id = ?`,
-    ).run(JSON.stringify({ ...payload, expiredClaims }), row.work_item_id);
+    ).run(JSON.stringify({ ...payload, claimExpired: true }), row.work_item_id);
     db.exec("COMMIT;");
-    return { outcome: "requeued", expiredClaims };
+    return { outcome: "requeued" };
   } catch (cause) {
     db.exec("ROLLBACK;");
     throw cause;
@@ -472,7 +476,7 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
     const claimed = db
       .prepare(
         `UPDATE work_item
-         SET status = 'claimed', claimed_at = ?, claim_expires_at = ?
+         SET ${TAKE_CLAIM_SET_SQL}
          WHERE work_item_id = ? AND status = 'queued'
          RETURNING work_item_id, owner, kind, source_ref, queued_at, payload`,
       )
@@ -480,6 +484,7 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
     if (claimed === undefined) throw new Error(`failed to claim queued work item ${head.work_item_id}`);
     const item = toClaimedItem(claimed);
     db.exec("COMMIT;");
+    noteClaimHeld(db, item);
     return { outcome: "claimed", item };
   } catch (cause) {
     db.exec("ROLLBACK;");
@@ -503,9 +508,8 @@ export function complete(
   const postCommitHook = createPostCommitHookSet();
   db.exec("BEGIN IMMEDIATE;");
   try {
-    const owned = db
-      .prepare(`SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'`)
-      .get(item.workItemId);
+    noteClaimDone(db, item);
+    const owned = db.prepare(`SELECT 1 FROM work_item WHERE ${OWNED_CLAIM_SQL}`).get(...claimParams(item));
     if (owned === undefined) {
       db.exec("COMMIT;");
       return "lost_lease";
@@ -546,7 +550,7 @@ export function complete(
     if (!stale && onApplied !== undefined) {
       onApplied({ db, onCommit: postCommitHook.add });
     }
-    db.prepare(`DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'`).run(item.workItemId);
+    db.prepare(`DELETE FROM work_item WHERE ${OWNED_CLAIM_SQL}`).run(...claimParams(item));
     db.exec("COMMIT;");
     postCommitHook.flush();
     return stale ? "stale_discarded" : "done";

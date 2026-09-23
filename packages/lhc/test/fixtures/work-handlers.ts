@@ -224,6 +224,7 @@ export function testWorkDispatchers(
             sourceVersion: item.sourceVersion,
             derivations: item.derivations,
             workItemId: item.workItemId,
+            claimAttempt: item.claimAttempt,
           },
           outcome.derivations ?? [],
           run.clock().toISOString(),

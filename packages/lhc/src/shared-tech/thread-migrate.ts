@@ -474,11 +474,11 @@ function runQueuedTurnDerivationMigration(db: DatabaseSync): void {
 // with reason claim_expired and deleted the item, so every one-shot exit or
 // kill mid-derivation left a permanent gap. Requeue each such failure once:
 // derivation back to pending at its version, one queued item per (kind,
-// source) like the original enqueue. A capped failure written since then
-// carries metadata ({expiredClaims}) and is left alone, so this never repeats.
+// source) like the original enqueue. Nothing writes plain claim_expired any
+// more (a repeated expiry is claim_expired_repeatedly), so this never repeats.
 // No schema bump: an older reader still opens the thread.
 const CLAIM_EXPIRED_LEGACY_SQL = `SELECT subject_kind, subject_id, derivation_type, source_version
-       FROM derivation WHERE state = 'failed' AND reason = 'claim_expired' AND metadata IS NULL
+       FROM derivation WHERE state = 'failed' AND reason = 'claim_expired'
        ORDER BY rowid`;
 
 const DERIVATION_WORK_KIND: Readonly<

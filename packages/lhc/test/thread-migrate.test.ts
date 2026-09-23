@@ -979,7 +979,7 @@ describe("thread schema migration", () => {
     expect(opened.error.reason).toMatch(/unresolved boundaries|migration/i);
   });
 
-  it("requeues pre-fix claim_expired failures once on open; capped failures stay failed", async () => {
+  it("requeues pre-fix claim_expired failures once on open; repeated expiries stay failed", async () => {
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
@@ -994,8 +994,8 @@ describe("thread schema migration", () => {
     expect(intake.ok).toBe(true);
     await drainTurnDerivationsGreen(filePath);
 
-    // What the old drain left: failed claim_expired, metadata NULL, item deleted.
-    // The smoothed prompt carries the new rule's cap metadata and must not move.
+    // What the old drain left: failed claim_expired, item deleted. The smoothed
+    // prompt failed under the new rule (claim_expired_repeatedly) and must not move.
     const db = new DatabaseSync(filePath);
     try {
       db.prepare(
@@ -1003,9 +1003,9 @@ describe("thread schema migration", () => {
          WHERE subject_id = 't1' AND derivation_type = 'detailed_turn_compression'`,
       ).run();
       db.prepare(
-        `UPDATE derivation SET state = 'failed', content = NULL, reason = 'claim_expired', metadata = ?
+        `UPDATE derivation SET state = 'failed', content = NULL, reason = 'claim_expired_repeatedly'
          WHERE subject_id = 'm1' AND derivation_type = 'smoothed_prompt'`,
-      ).run(JSON.stringify({ expiredClaims: 3 }));
+      ).run();
       expect((db.prepare(`SELECT count(*) AS n FROM work_item`).get() as { n: number }).n).toBe(0);
     } finally {
       db.close();
@@ -1029,7 +1029,7 @@ describe("thread schema migration", () => {
     expect(drained.ok).toBe(true);
     expect(formOf(filePath, "detailed_turn_compression")).toMatchObject({ state: "ready" });
     const prompt = readDerivedForms(filePath).find((form) => form.derivationType === "smoothed_prompt");
-    expect(prompt).toMatchObject({ state: "failed", reason: "claim_expired" });
+    expect(prompt).toMatchObject({ state: "failed", reason: "claim_expired_repeatedly" });
 
     // A second open finds nothing left to requeue.
     const reopened = openThreadDatabase(filePath);
