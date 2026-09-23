@@ -3703,9 +3703,16 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
           { mutationBegan: true },
         );
       } finally {
-        releaseInputOwnership();
+        // F5: a continue is about to be submitted, so the input fence and the
+        // operation guard stay held until its Enter is written
+        // (continueAfterRejection releases both); bytes typed meanwhile are
+        // dropped and trigger the resend notice.
+        const continuing = continueFrom !== null && !rejectionContinueSent;
         governorState = setGovernorOperationInFlight(governorState, false);
-        commandGuard.release();
+        if (!continuing) {
+          releaseInputOwnership();
+          commandGuard.release();
+        }
       }
       if (continueFrom !== null) await continueAfterRejection(continueFrom);
     };
@@ -3723,6 +3730,16 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         return;
       }
       rejectionContinueSent = true;
+      try {
+        await submitRejectionContinue(oldSessionId);
+      } finally {
+        releaseInputOwnership();
+        commandGuard.release();
+      }
+    };
+
+    /** Types the F5 note and its Enter while the input fence is still closed. */
+    const submitRejectionContinue = async (oldSessionId: string): Promise<void> => {
       let completed: string[] = [];
       try {
         const oldRollout = await findExpectedSessionFileOnce(process.cwd(), oldSessionId);

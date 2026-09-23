@@ -21,6 +21,7 @@ import type { LifecycleSignal } from "../../src/observation/types.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 import { emptyCaptureStats } from "../../src/stats.js";
+import { firstLoadMarkerPath, markShown, ONBOARDING_VERSION } from "../../src/wrapper/first-load.js";
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { run } from "../../src/wrapper/run.js";
 
@@ -190,6 +191,15 @@ function scriptedCaptureSession(
     }),
     stop: vi.fn(async () => {}),
   } as unknown as CaptureSession;
+}
+
+function ttyStream(): NodeJS.ReadStream & NodeJS.WriteStream {
+  const stream = new PassThrough() as unknown as NodeJS.ReadStream & NodeJS.WriteStream;
+  Object.defineProperty(stream, "isTTY", { value: true, configurable: true });
+  Object.defineProperty(stream, "columns", { value: 100, configurable: true });
+  Object.defineProperty(stream, "rows", { value: 30, configurable: true });
+  (stream as unknown as { setRawMode: (on: boolean) => void }).setRawMode = () => {};
+  return stream;
 }
 
 function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
@@ -1721,7 +1731,7 @@ describe("F5 continue once after a too-long rejection (gorilla, long-horizon-con
     { kind: "turn_settled", reason: "end_turn" },
   ];
 
-  function startRig() {
+  function startRig(continueDelayMs = 10, tty = false) {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-f5-"));
     dirs.push(dir);
     const spawned: FakePty[] = [];
@@ -1757,6 +1767,14 @@ describe("F5 continue once after a too-long rejection (gorilla, long-horizon-con
       return session;
     };
     const results: HandoffResult[] = [];
+    // A TTY stdin lets actionable notices open the Control Panel on screen;
+    // onboarding is marked shown so the panel is closed at launch.
+    if (tty) markShown(firstLoadMarkerPath(process.env.CC_LHC_HOME!), ONBOARDING_VERSION);
+    const stdin = tty ? ttyStream() : fakeStream();
+    const stdout = tty ? ttyStream() : fakeStream();
+    const screen: string[] = [];
+    stdout.on("data", (chunk: Buffer) => screen.push(chunk.toString("utf8")));
+    const logLines: string[] = [];
     const runPromise = run([], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
@@ -1764,13 +1782,19 @@ describe("F5 continue once after a too-long rejection (gorilla, long-horizon-con
         spawned.push(fake);
         return fake as never;
       }) as never,
-      stdin: fakeStream(),
-      stdout: fakeStream() as never,
+      stdin,
+      stdout: stdout as never,
       stderr: fakeStream() as never,
       noInference: true,
       resolvedContextPolicy: POLICY as never,
       governorReceiptDbPath: join(dir, "cc-lhc.sqlite"),
-      rejectionContinueDelayMs: 10,
+      rejectionContinueDelayMs: continueDelayMs,
+      wrapperLog: {
+        info: (m: string) => logLines.push(m),
+        warn: (m: string) => logLines.push(m),
+        warningCount: () => 0,
+        path: "/tmp/fake.log",
+      } as never,
       onHandoffResult: (result) => {
         results.push(result);
       },
@@ -1788,7 +1812,7 @@ describe("F5 continue once after a too-long rejection (gorilla, long-horizon-con
       spawned[spawned.length - 1]!.fireExit(0);
       await runPromise;
     };
-    return { spawned, sinks, results, continues, finish };
+    return { spawned, sinks, results, continues, finish, stdin, screen, logLines };
   }
 
   it("a rejection-triggered compaction submits one labelled continue to the replacement, then Enter", async () => {
@@ -1807,6 +1831,10 @@ describe("F5 continue once after a too-long rejection (gorilla, long-horizon-con
     );
     // The old child never received it.
     expect(rig.continues(rig.spawned[0]!)).toHaveLength(0);
+    // The fence reopens after the Enter: typing reaches the replacement again.
+    rig.stdin.write("z");
+    await waitFor(() => replacement.writes.some((w) => String(w) === "z"), "input forwarded after the continue");
+    expect(rig.logLines.some((l) => l.includes("typed-ahead byte(s)"))).toBe(false);
     await rig.finish();
   }, 20_000);
 
@@ -1823,6 +1851,45 @@ describe("F5 continue once after a too-long rejection (gorilla, long-horizon-con
     const all = rig.spawned.flatMap((pty) => rig.continues(pty));
     expect(all).toHaveLength(1);
     expect(rig.spawned[2]!.writes).not.toContain("\r");
+    await rig.finish();
+  }, 20_000);
+
+  it("typing in the wait before the continue is dropped, never fused with the note, and raises the resend notice", async () => {
+    const rig = startRig(400, true);
+    await waitFor(() => rig.sinks.length === 1, "capture lifecycle sink");
+    rig.sinks[0]!(BOUND_SIGNALS);
+    rig.sinks[0]!(rejectedTurn(1));
+    await waitFor(() => rig.results.length === 1, "handoff after the rejection");
+    const replacement = rig.spawned[1]!;
+    rig.stdin.write("draft in the 1s window");
+    await waitFor(() => replacement.writes.includes("\r"), "continue submitted");
+    const note = rig.continues(replacement)[0]!;
+    expect(replacement.writes).toEqual([note, "\r"]);
+    expect(replacement.writes.join("")).not.toContain("draft");
+    await waitFor(() => rig.logLines.some((l) => l.includes("typed-ahead byte(s) during compaction")), "drop logged");
+    await waitFor(
+      () => rig.screen.join("").includes("input typed during compaction was not delivered"),
+      "resend notice shown",
+    );
+    await rig.finish();
+  }, 20_000);
+
+  it("typing between the note and its Enter is dropped too", async () => {
+    const rig = startRig(10, true);
+    await waitFor(() => rig.sinks.length === 1, "capture lifecycle sink");
+    rig.sinks[0]!(BOUND_SIGNALS);
+    rig.sinks[0]!(rejectedTurn(1));
+    await waitFor(() => rig.results.length === 1, "handoff after the rejection");
+    const replacement = rig.spawned[1]!;
+    await waitFor(() => rig.continues(replacement).length === 1, "note written");
+    expect(replacement.writes).not.toContain("\r");
+    rig.stdin.write("typed in the 300ms window");
+    await waitFor(() => replacement.writes.includes("\r"), "continue submitted");
+    expect(replacement.writes).toEqual([rig.continues(replacement)[0]!, "\r"]);
+    await waitFor(
+      () => rig.screen.join("").includes("input typed during compaction was not delivered"),
+      "resend notice shown",
+    );
     await rig.finish();
   }, 20_000);
 
