@@ -91,6 +91,8 @@ export type InvocationResult =
   | { launchId: string; kind: "adopted" | "manifest" | "rearmed" }
   | { launchId: string; kind: "relaunched"; pid: number; outputPath: string }
   | { launchId: string; kind: "already_relaunched"; outputPath: string }
+  /** A relaunch the wrapper made in an earlier generation, carried as is. */
+  | { launchId: string; kind: "relaunch_carried"; pid: number | null; outputPath: string }
   | { launchId: string; kind: "failed"; reason: string };
 
 export interface CarryoverTransfer {
@@ -146,6 +148,15 @@ export function invokeCarryover(
         result = { launchId: item.launchId, kind: "rearmed" };
         break;
       case "monitor_relaunch": {
+        if (item.relaunch !== null) {
+          result = {
+            launchId: item.launchId,
+            kind: "relaunch_carried",
+            pid: item.relaunch.process?.pid ?? null,
+            outputPath: item.relaunch.outputPath,
+          };
+          break;
+        }
         if (generationClosed) {
           const outputPath = relaunchOutputPath(ports.monitorOutputDir, item.launchId, snapshot.generation);
           result =
@@ -255,6 +266,10 @@ function describeInvocation(
       return `${head} restarted once (generation ${generation}, pid ${result.pid})`;
     case "already_relaunched":
       return `${head} already restarted for generation ${generation}; not repeated`;
+    case "relaunch_carried":
+      return `${head} carried as is (the wrapper's own relaunch${
+        result.pid === null ? "" : `, pid ${result.pid}`
+      }; generation ${generation})`;
     case "failed":
       // A closed generation's readback mutates nothing: no terminal was
       // recorded on this call, so the log must not claim one was.

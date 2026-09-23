@@ -16,6 +16,7 @@ import {
   parseAgentFinalResult,
   stopRelaunchedMonitors,
 } from "../../src/continuity/carried-results.js";
+import { cleanupThread } from "../../src/continuity/cleanup.js";
 import { deliveredResultKeys } from "../../src/continuity/delivery.js";
 import { invokeCarryover } from "../../src/continuity/handoff.js";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
@@ -146,7 +147,17 @@ function session(opts: { monitorCommand: string; transcript: string }) {
   };
   const tasks = (argv: string[]) =>
     executeTasks(["tasks", ...argv], { env, descriptorPath: descPath, continuityDbPath: dbPath });
-  return { root, store, dbPath, transcriptPath, pid: relaunched.pid, outputPath: relaunched.outputPath, prompt, tasks };
+  return {
+    root,
+    store,
+    dbPath,
+    transcriptPath,
+    monitorOutputDir,
+    pid: relaunched.pid,
+    outputPath: relaunched.outputPath,
+    prompt,
+    tasks,
+  };
 }
 
 function hookRecord(context: string): RolloutLineItem {
@@ -348,5 +359,82 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
     expect(signalled).toEqual([]);
     expect(kept.kept).toHaveLength(1);
     expect(itemOf(indeterminate.store, LAUNCH_IDS.monitor).state).toBe("active");
+  });
+});
+
+describe("F4b a relaunched Monitor across a second Smart Compact", () => {
+  /** A later compaction: the new rollout holds no Monitor tool_use (the wrapper made the relaunch). */
+  function compactAgain(s: ReturnType<typeof session>, generationNow: number) {
+    const rolloutPath = join(s.root, "projects", "-x", "session-new.jsonl");
+    writeFileSync(rolloutPath, "");
+    const context = { platform: process.platform, sourceRolloutPath: rolloutPath, statPath: statPathReal };
+    const qualified = qualifyActiveItems(s.store, T, context, generationNow);
+    const snap = snapshotContinuity(s.store, { threadId: T, oldSessionId: "new", nowMs: generationNow + 1 });
+    if (!snap.ok) throw new Error(snap.reason);
+    const transfer = invokeCarryover(
+      s.store,
+      snap.snapshot,
+      { monitorOutputDir: s.monitorOutputDir, cwd: s.root, log: () => {} },
+      generationNow + 2,
+    );
+    return { qualified, transfer };
+  }
+  const events = (context: string) =>
+    context
+      .split("\n")
+      .filter((l) => l.startsWith("event "))
+      .map((l) => l.split(" · ").at(-1));
+
+  it("carries as is: later events are delivered once, the process is stopped at exit, nothing is left", async () => {
+    const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
+    appendFileSync(s.outputPath, "tick 1\n");
+    // The first prompt settles the carried agent and delivers the first event.
+    expect(events(s.prompt())).toEqual(["tick 1"]);
+
+    const { qualified, transfer } = compactAgain(s, 10_000);
+    expect(qualified.terminalized).toEqual([]);
+    expect(qualified.refused).toEqual([]);
+    expect(transfer.results).toEqual([
+      { launchId: LAUNCH_IDS.monitor, kind: "relaunch_carried", pid: s.pid, outputPath: s.outputPath },
+    ]);
+    expect(itemOf(s.store, LAUNCH_IDS.monitor).state).toBe("active");
+    process.kill(s.pid, 0); // still the one relaunched process, never respawned
+
+    appendFileSync(s.outputPath, "tick 2\ntick 3\n");
+    expect(events(s.prompt())).toEqual(["tick 2", "tick 3"]);
+    expect(events(s.prompt())).toEqual([]);
+
+    expect(stopRelaunchedMonitors(s.store, T).stopped).toEqual([{ launchId: LAUNCH_IDS.monitor, pid: s.pid }]);
+    await waitGone(s.pid);
+    expect(itemOf(s.store, LAUNCH_IDS.monitor)).toMatchObject({ state: "terminal", terminal: { outcome: "stopped" } });
+    const cleaned = cleanupThread(s.store, T, s.monitorOutputDir);
+    expect(cleaned.retained).toEqual([]);
+    expect(cleaned.fencesRemoved).toContain(s.outputPath);
+    expect(s.store.getItem(T, LAUNCH_IDS.monitor)).toBeNull();
+  });
+
+  it("a terminal record over a live relaunch never leaks it: exit stops it, cleanup keeps its fence until it is gone", async () => {
+    const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
+    s.prompt();
+    // The 0.4.3 soak state: recorded failed while the relaunched process kept running.
+    s.store.recordTerminal({
+      threadId: T,
+      launchId: LAUNCH_IDS.monitor,
+      outcome: "failed",
+      evidence: "monitor relaunch unavailable: launch_not_found",
+      nowMs: 20_000,
+    });
+    const early = cleanupThread(s.store, T, s.monitorOutputDir);
+    expect(early.retained).toEqual([
+      expect.objectContaining({ launchId: LAUNCH_IDS.monitor, reason: "relaunch_process_live" }),
+    ]);
+    expect(s.store.getItem(T, LAUNCH_IDS.monitor)).not.toBeNull();
+
+    expect(stopRelaunchedMonitors(s.store, T).stopped).toEqual([{ launchId: LAUNCH_IDS.monitor, pid: s.pid }]);
+    await waitGone(s.pid);
+    // Its terminal record stands; only the process was stopped.
+    expect(itemOf(s.store, LAUNCH_IDS.monitor).terminal).toMatchObject({ outcome: "failed" });
+    expect(cleanupThread(s.store, T, s.monitorOutputDir).retained).toEqual([]);
+    expect(s.store.getItem(T, LAUNCH_IDS.monitor)).toBeNull();
   });
 });

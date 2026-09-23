@@ -28,7 +28,8 @@ import {
   writeSync,
 } from "node:fs";
 import { join } from "node:path";
-
+import { probeProcessIdentityNative } from "../runtime/native-identity.js";
+import type { ProbeProcessIdentity } from "../runtime/process-identity.js";
 import { type AdapterContext, isRefusal, sameIdentity, statPathReal, verifyOutputFile } from "./adapters.js";
 import { OUTPUT_MAX_BYTES_CEILING, ownedOutputOf } from "./manage.js";
 import type { ContinuityStore, ResultArtifact } from "./store.js";
@@ -42,7 +43,8 @@ export type CleanupRefusal =
   | "identity_changed"
   | "identity_unverifiable"
   | "copy_failed"
-  | "result_update_failed";
+  | "result_update_failed"
+  | "relaunch_process_live";
 
 export interface CleanupPorts {
   platform?: NodeJS.Platform;
@@ -50,6 +52,8 @@ export interface CleanupPorts {
   readFileIdentity?: AdapterContext["readFileIdentity"];
   /** Test seam: the bounded copy writer. */
   copyBounded?: typeof copyBounded;
+  /** Test seam: the process identity probe for a relaunched Monitor. */
+  probeIdentity?: ProbeProcessIdentity;
   log?: (message: string) => void;
 }
 
@@ -180,6 +184,19 @@ export function cleanupThread(
     if (item.state !== "terminal") {
       report.preserved.push(item.launchId);
       continue;
+    }
+    // A relaunched Monitor still running keeps its fence and tracking: its
+    // process writes there, and the session-end stop needs the record.
+    const proc = item.relaunch?.process;
+    if (proc != null) {
+      const probed = (ports.probeIdentity ?? probeProcessIdentityNative)(proc.pid);
+      const gone = !probed.ok
+        ? probed.code === "not_found"
+        : probed.identity.bootId !== proc.bootId || probed.identity.starttime !== proc.starttime;
+      if (!gone) {
+        retain(item.launchId, "relaunch_process_live", `relaunched process pid ${proc.pid} is still running`);
+        continue;
+      }
     }
     if (item.generation > 0) {
       const result = store.getResult(threadId, item.launchId);

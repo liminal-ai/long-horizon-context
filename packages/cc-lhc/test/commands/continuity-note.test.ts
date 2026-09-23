@@ -454,6 +454,7 @@ describe("formatCarryoverNote: one short count line", () => {
         },
         continuation: { kind: "send_message", agentId: "agent-1" },
         transition: "resumed",
+        relaunch: null,
       },
       {
         launchId: "workflow:wf-task-1:toolu_wf",
@@ -477,6 +478,7 @@ describe("formatCarryoverNote: one short count line", () => {
           scriptPath: `${home}/s/workflows/scripts/deploy-wf_run-1.js`,
         },
         transition: "resumed",
+        relaunch: null,
       },
       {
         launchId: "background_shell:shell-1:toolu_sh",
@@ -491,6 +493,7 @@ describe("formatCarryoverNote: one short count line", () => {
         verifiedIdentity: { kind: "posix_output", path: shellOut, dev: "1", ino: "2" },
         continuation: { kind: "parent_output_read", path: shellOut },
         transition: "adopted",
+        relaunch: null,
       },
       {
         launchId: "monitor:mon-1:toolu_mon",
@@ -505,6 +508,7 @@ describe("formatCarryoverNote: one short count line", () => {
         verifiedIdentity: { kind: "monitor_launch", toolUseId: "toolu_mon", rolloutPath: `${home}/s.jsonl` },
         continuation: { kind: "monitor_relaunch", toolUseId: "toolu_mon", rolloutPath: `${home}/s.jsonl` },
         transition: "restarted",
+        relaunch: null,
       },
       {
         launchId: "scheduled_wakeup:toolu_wake:toolu_wake",
@@ -519,6 +523,7 @@ describe("formatCarryoverNote: one short count line", () => {
         verifiedIdentity: { kind: "scheduled_time", toolUseId: "toolu_wake", scheduledForMs: WAKE_AT },
         continuation: { kind: "rearm_at", scheduledForMs: WAKE_AT },
         transition: "rearmed",
+        relaunch: null,
       },
     ];
     return { threadId: "th_x", generation: 1, oldSessionId: "old-session", createdAtMs: 0, items };

@@ -28,6 +28,7 @@ import {
   type ContinuityTransition,
   continuationMechanismOf,
   type QualifiedCarryMode,
+  type RelaunchRecord,
   type TerminalEvidence,
   transitionOf,
   type VerifiedIdentity,
@@ -52,6 +53,8 @@ export interface CarriedItem {
   continuation: ContinuationMechanism;
   /** Truthful transition the mechanism produces; a relaunched Monitor is `restarted`, never adopted. */
   transition: ContinuityTransition;
+  /** The wrapper's own relaunch of this item, once one exists: carried as is, never re-resolved. */
+  relaunch: RelaunchRecord | null;
 }
 
 export interface TerminalSinceSnapshot {
@@ -118,6 +121,7 @@ function carried(item: ContinuityItem): CarriedItem {
     verifiedIdentity: item.verifiedIdentity,
     continuation: continuationMechanismOf(item.verifiedIdentity),
     transition: transitionOf(continuationMechanismOf(item.verifiedIdentity)),
+    relaunch: item.relaunch,
   };
 }
 

@@ -404,6 +404,28 @@ export function qualifyActiveItems(
   const outcome: QualificationOutcome = { terminalized: [], qualified: [], refused: [] };
   for (const item of store.listItems(threadId)) {
     if (item.state === "terminal") continue;
+    if (item.family === "monitor" && item.relaunch !== null && item.verifiedIdentity !== null) {
+      // F4: the wrapper already relaunched this Monitor and owns its process
+      // and output. The current rollout never holds that launch (the wrapper
+      // made it, not Claude), so it is not resolved again: it carries as is,
+      // still read through its fence and stopped by its recorded identity.
+      store.setCarryMode({
+        threadId,
+        launchId: item.launchId,
+        carryMode: "reconstruct",
+        operations: item.operations,
+        verifiedIdentity: item.verifiedIdentity,
+        nowMs,
+      });
+      if (item.state === "unknown") store.setVerified({ threadId, launchId: item.launchId, verified: true, nowMs });
+      outcome.qualified.push({
+        launchId: item.launchId,
+        family: item.family,
+        carryMode: "reconstruct",
+        continuation: continuationMechanismOf(item.verifiedIdentity),
+      });
+      continue;
+    }
     if (item.family === "monitor") {
       const shell = context.relaunchShell ?? resolveRelaunchShell(context.platform);
       const resolved: MonitorLaunchResolution = shell.ok

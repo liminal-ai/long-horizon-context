@@ -2409,15 +2409,23 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         } else {
           try {
             // F4: a relaunched Monitor must not outlive the session (identity-gated stop).
-            stopRelaunchedMonitors(continuityStore, boundThreadId, {
+            const stoppedMonitors = stopRelaunchedMonitors(continuityStore, boundThreadId, {
               probeIdentity: probeProcessIdentity,
               log: (message) => wrapperLog.info(message),
-            });
+            }).stopped;
+            // Give the signalled processes a moment to go, so cleanup can retire
+            // their fences now rather than keep them for a later session.
+            const deadline = Date.now() + 1_000;
+            const alive = (proc: { pid: number }): boolean => probeProcessIdentity(proc.pid).ok;
+            while (stoppedMonitors.some(alive) && Date.now() < deadline) {
+              await new Promise((resolve) => setTimeout(resolve, 25));
+            }
           } catch (cause) {
             wrapperLog.warn(`cc-lhc continuity: relaunched monitor stop failed: ${String(cause)}`);
           }
           try {
             cleanupThread(continuityStore, boundThreadId, monitorOutputDir, {
+              probeIdentity: probeProcessIdentity,
               log: (message) => wrapperLog.info(message),
             });
           } catch (cause) {

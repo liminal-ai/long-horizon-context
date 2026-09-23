@@ -438,9 +438,15 @@ export function stopRelaunchedMonitors(
   const signal = ports.signal ?? signalRelaunched;
   const now = ports.nowMs ?? Date.now;
   for (const item of store.listItems(threadId)) {
-    if (item.family !== "monitor" || item.state !== "active" || item.relaunch?.process == null) continue;
+    if (item.family !== "monitor" || item.relaunch?.process == null) continue;
     const proc = item.relaunch.process;
+    // A terminal record does not prove the process ended (a Monitor recorded
+    // failed while its relaunch kept running): it is stopped all the same,
+    // identity-gated, and its terminal record is left as it is.
+    const terminal = item.state === "terminal";
+    if (item.state !== "active" && !terminal) continue;
     const fate = processFate(probe, proc);
+    if (terminal && fate === "gone") continue;
     if (fate === "indeterminate") {
       report.kept.push({ launchId: item.launchId, reason: `pid ${proc.pid} identity indeterminate; not signalled` });
       ports.log?.(`cc-lhc continuity: relaunched monitor ${item.launchId} pid ${proc.pid} indeterminate; not stopped`);
@@ -465,13 +471,15 @@ export function stopRelaunchedMonitors(
       );
       continue;
     }
-    store.recordTerminal({
-      threadId,
-      launchId: item.launchId,
-      outcome: "stopped",
-      evidence: `stopped at session end (pid ${proc.pid})`,
-      nowMs: now(),
-    });
+    if (!terminal) {
+      store.recordTerminal({
+        threadId,
+        launchId: item.launchId,
+        outcome: "stopped",
+        evidence: `stopped at session end (pid ${proc.pid})`,
+        nowMs: now(),
+      });
+    }
     report.stopped.push({ launchId: item.launchId, pid: proc.pid });
     ports.log?.(`cc-lhc continuity: relaunched monitor ${item.launchId} pid ${proc.pid} stopped at session end`);
   }
