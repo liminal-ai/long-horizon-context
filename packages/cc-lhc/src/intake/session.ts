@@ -94,7 +94,6 @@ import {
   type SegmentEndReason,
   segmentEndEvent,
 } from "./segment-fold.js";
-import { claudeSessionIdFromAlias } from "./thread-alias.js";
 import { classifyTurnSignal } from "./turn-signal.js";
 import { identifyUnlinkedRebuild, possibleResumeTargets, unlinkedRebuildGuidance } from "./unlinked-rebuild.js";
 
