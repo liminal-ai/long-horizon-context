@@ -9,7 +9,14 @@ import { defaultRolloutBindIo, type RolloutBindIo } from "../retrieval/rollout-b
 import { bindReadyDescriptor, writeAll } from "../retrieval/service.js";
 import type { DescriptorIo } from "../runtime/descriptor.js";
 import { defaultDescriptorIo } from "../runtime/descriptor.js";
-import { formatResultContext } from "./delivery.js";
+import {
+  carriedResultDetails,
+  continuityDirOf,
+  pendingMonitorEvents,
+  type SettleCarriedDeps,
+  settleCarriedWork,
+} from "./carried-results.js";
+import { eventKeysOf, formatResultContext, MAX_EVENTS_PER_PROMPT } from "./delivery.js";
 import { DEFAULT_OUTPUT_MAX_BYTES, itemStatus, type ManagePorts, readItemOutput, stopItem } from "./manage.js";
 import { type ContinuityStore, openContinuityStore } from "./store.js";
 import { type ReconcileDeps, reconcileAdoptedShells } from "./task-process.js";
@@ -39,6 +46,10 @@ export interface TasksHookDeps {
   openStore?: (path: string) => ContinuityStore;
   /** Reconciliation seams (tests); production probes the real process. */
   reconcile?: ReconcileDeps;
+  /** Subagent/Monitor settlement seams (tests); production reads the real transcript and process. */
+  carried?: Partial<SettleCarriedDeps>;
+  /** Output-read seams for relaunched-Monitor events (tests). */
+  manage?: ManagePorts;
 }
 
 export type TasksHookResult =
@@ -76,14 +87,23 @@ export function executeTasksHook(payloadText: string, deps: TasksHookDeps = {}):
   });
   if (!bound.ok) return { ok: false, reason: bound.reason };
   const threadId = bound.descriptor.threadId as string;
-  const store = (deps.openStore ?? openContinuityStore)(deps.continuityDbPath ?? defaultLineageDbPath());
+  const dbPath = deps.continuityDbPath ?? defaultLineageDbPath();
+  const store = (deps.openStore ?? openContinuityStore)(dbPath);
   try {
     // LIM-149: the real user prompt is the delivery seam — settle any adopted
     // shell whose kernel-proven exit happened since, so its durable result is
     // in this very hook's pending set (no polling anywhere).
     reconcileAdoptedShells(store, threadId, deps.reconcile ?? {});
+    // F4: carried subagents and relaunched Monitors settle here too — the
+    // subagent from its saved transcript, the Monitor from its exact process.
+    settleCarriedWork(store, threadId, { continuityDir: continuityDirOf(dbPath), ...deps.carried });
     const pending = store.listPendingResults(threadId);
-    return { ok: true, additionalContext: formatResultContext(pending), keys: pending.map((r) => r.launchId) };
+    const events = pendingMonitorEvents(store, threadId, deps.manage ?? {}, MAX_EVENTS_PER_PROMPT + 1);
+    return {
+      ok: true,
+      additionalContext: formatResultContext(pending, { details: carriedResultDetails(pending), events }),
+      keys: [...pending.map((r) => r.launchId), ...eventKeysOf(events)],
+    };
   } finally {
     store.close();
   }

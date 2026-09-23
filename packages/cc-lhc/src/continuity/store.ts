@@ -123,6 +123,30 @@ export function relaunchKey(launchId: string, generation: number): string {
   return `${launchId}#${generation}`;
 }
 
+/**
+ * Delivery key for one relaunched-Monitor event line (F4): the item's launch
+ * id and the byte offset just past that line in the relaunch output. Observing
+ * it in the rollout advances the item's delivered offset; it never names a
+ * result, so it can never mark one delivered.
+ */
+export const EVENT_KEY_PREFIX = "event:";
+
+export function eventDeliveryKey(launchId: string, endOffset: number): string {
+  return `${EVENT_KEY_PREFIX}${launchId}@${endOffset}`;
+}
+
+export function parseEventDeliveryKey(key: string): { launchId: string; endOffset: number } | null {
+  if (!key.startsWith(EVENT_KEY_PREFIX)) return null;
+  const body = key.slice(EVENT_KEY_PREFIX.length);
+  const at = body.lastIndexOf("@");
+  if (at <= 0) return null;
+  const digits = body.slice(at + 1);
+  if (!/^\d+$/.test(digits)) return null;
+  const endOffset = Number(digits);
+  if (!Number.isSafeInteger(endOffset) || endOffset <= 0) return null;
+  return { launchId: body.slice(0, at), endOffset };
+}
+
 /** The one mechanism a verified identity supports. */
 export function continuationMechanismOf(identity: VerifiedIdentity): ContinuationMechanism {
   switch (identity.kind) {
@@ -326,6 +350,8 @@ export interface ContinuityStore {
     nowMs: number;
   }): ContinuityItem | null;
   getItem(threadId: string, launchId: string): ContinuityItem | null;
+  /** Bytes of a relaunched item's output already delivered as events (0 when none, or no such item). */
+  deliveredEventOffset(threadId: string, launchId: string): number;
   /** The durable terminal result of one carried item, if it has one. */
   getResult(threadId: string, launchId: string): CarriedResult | null;
   /** Undelivered terminal results of carried items, oldest first. Reading changes nothing. */
@@ -333,6 +359,8 @@ export interface ContinuityStore {
   /**
    * Mark exactly these result keys delivered, if they are pending results of
    * this thread; unknown, foreign, and already-delivered keys change nothing.
+   * An event key (`eventDeliveryKey`) advances its relaunched item's delivered
+   * event offset instead — monotonic, never backwards.
    * Returns the keys that transitioned now (idempotent on re-observation).
    */
   markDelivered(input: { threadId: string; launchIds: readonly string[]; nowMs: number }): string[];
@@ -479,6 +507,9 @@ function initSchema(db: DatabaseSync): void {
     if (!tableHasColumn(db, "cc_continuity_items", column)) {
       db.exec(`ALTER TABLE cc_continuity_items ADD COLUMN ${column} TEXT`);
     }
+  }
+  if (!tableHasColumn(db, "cc_continuity_items", "events_delivered_offset")) {
+    db.exec("ALTER TABLE cc_continuity_items ADD COLUMN events_delivered_offset INTEGER");
   }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_cc_continuity_items_thread_state
@@ -908,6 +939,12 @@ export function openContinuityStore(
   const deleteItemRow = db.prepare(
     "DELETE FROM cc_continuity_items WHERE thread_id = ? AND launch_id = ? AND state = 'terminal'",
   );
+  const selectEventOffset = db.prepare(
+    "SELECT events_delivered_offset AS n FROM cc_continuity_items WHERE thread_id = ? AND launch_id = ?",
+  );
+  const advanceEventOffset = db.prepare(
+    "UPDATE cc_continuity_items SET events_delivered_offset = ? WHERE thread_id = ? AND launch_id = ? AND relaunch_json IS NOT NULL AND COALESCE(events_delivered_offset, 0) < ?",
+  );
   const countItems = db.prepare("SELECT count(*) AS n FROM cc_continuity_items WHERE thread_id = ?");
   const deleteGenerations = db.prepare("DELETE FROM cc_continuity_generations WHERE thread_id = ?");
   const selectPendingResults = db.prepare(
@@ -1076,6 +1113,11 @@ export function openContinuityStore(
       return mustGet(input.threadId, input.launchId);
     },
     getItem,
+    deliveredEventOffset(threadId, launchId) {
+      const row = selectEventOffset.get(threadId, launchId) as { n: number | null } | undefined;
+      const n = row?.n ?? 0;
+      return Number.isSafeInteger(n) && n > 0 ? n : 0;
+    },
     getResult(threadId, launchId) {
       const row = selectResult.get(threadId, launchId) as ResultRow | undefined;
       return row === undefined ? null : parseResult(row);
@@ -1111,6 +1153,12 @@ export function openContinuityStore(
     markDelivered(input) {
       const delivered: string[] = [];
       for (const launchId of new Set(input.launchIds)) {
+        const event = parseEventDeliveryKey(launchId);
+        if (event !== null) {
+          const advanced = advanceEventOffset.run(event.endOffset, input.threadId, event.launchId, event.endOffset);
+          if (Number(advanced.changes) === 1) delivered.push(launchId);
+          continue;
+        }
         const result = deliverResult.run(input.nowMs, input.threadId, launchId);
         if (Number(result.changes) === 1) delivered.push(launchId);
       }
