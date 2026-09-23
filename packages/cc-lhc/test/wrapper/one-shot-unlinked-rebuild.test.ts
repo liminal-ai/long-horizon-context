@@ -33,6 +33,11 @@ describe("run: one-shot on an unlinked rebuilt transcript", () => {
     CC_LHC_HOME: process.env.CC_LHC_HOME,
   };
   const dirs: string[] = [];
+  // run() opens its receipt/continuity stores on this DB and, on the refusal's
+  // early return, leaves them to process exit (cli.ts exits right after run()).
+  // Kept outside the fake home so Windows can still remove the home; this
+  // directory is removed best effort once the test process has let go of it.
+  let storeDir = "";
 
   beforeEach(() => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-unlinked-home-"));
@@ -40,6 +45,7 @@ describe("run: one-shot on an unlinked rebuilt transcript", () => {
     const lhcHome = join(home, ".cc-lhc");
     mkdirSync(lhcHome);
     dirs.push(home);
+    storeDir = mkdtempSync(join(tmpdir(), "cc-lhc-unlinked-stores-"));
     // os.homedir() reads USERPROFILE on Windows and HOME elsewhere.
     process.env.HOME = home;
     process.env.USERPROFILE = home;
@@ -60,6 +66,11 @@ describe("run: one-shot on an unlinked rebuilt transcript", () => {
       else process.env[key] = value;
     }
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    try {
+      rmSync(storeDir, { recursive: true, force: true });
+    } catch {
+      // Windows: still open in this process (see storeDir above).
+    }
   });
 
   it("prints the guidance on stderr and exits non-zero without launching Claude", async () => {
@@ -81,6 +92,7 @@ describe("run: one-shot on an unlinked rebuilt transcript", () => {
       stdout: stdout as never,
       stderr: stderr as never,
       noInference: true,
+      governorReceiptDbPath: join(storeDir, "stores.sqlite"),
     });
 
     expect(code).toBe(2);
