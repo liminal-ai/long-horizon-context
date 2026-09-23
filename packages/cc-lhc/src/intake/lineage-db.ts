@@ -417,6 +417,41 @@ export function threadSessionRows(dbPath: string, threadId: string, deps: Lineag
   return rows;
 }
 
+/**
+ * Every rebuilt session this host registered: a session is rebuilt exactly
+ * when its lineage row carries a verified rebuilt-prefix fence (written only
+ * by registerRebuiltSessionLineage). Sessions Claude created carry none/unknown.
+ */
+export function rebuiltSessionRows(
+  dbPath: string,
+  deps: LineageDbDeps = {},
+): Array<{ sessionId: string; threadId: string; updatedAt: string }> {
+  const rows: Array<{ sessionId: string; threadId: string; updatedAt: string }> = [];
+  withLineageDb(dbPath, deps, (db) => {
+    const raw = db
+      .prepare(
+        `SELECT rollout_session_id, thread_id, updated_at, prefix_provenance,
+                replayed_prefix_lines, replayed_prefix_bytes, replayed_prefix_sha256
+         FROM cc_session_lineage WHERE prefix_provenance = 'verified' ORDER BY updated_at, rowid`,
+      )
+      .all() as Array<{
+      rollout_session_id: string;
+      thread_id: string;
+      updated_at: string;
+      prefix_provenance: string;
+      replayed_prefix_lines: number | null;
+      replayed_prefix_bytes: number | null;
+      replayed_prefix_sha256: string | null;
+    }>;
+    for (const row of raw) {
+      const entry = rowToEntry(row);
+      if (entry.prefix.kind !== "verified") continue;
+      rows.push({ sessionId: row.rollout_session_id, threadId: row.thread_id, updatedAt: entry.updatedAt });
+    }
+  });
+  return rows;
+}
+
 /** A swap accepted by this host whose registry pointer has not caught up. */
 export interface PendingCurrentSession {
   threadId: string;
