@@ -305,7 +305,10 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
 
     // The relaunched process exits: a trailing unterminated line is final now, and the item closes.
     appendFileSync(s.outputPath, "watch ended");
-    process.kill(s.pid, "SIGTERM");
+    // Through the reaper: it stops the whole tree and waits for every process in it.
+    // A bare kill of the pid ends only Git Bash on Windows; its `sleep` child keeps
+    // the output file open and the temp dir cannot be removed (CI run 35920735874).
+    await reapProcesses(pids.splice(pids.findIndex((t) => t.pid === s.pid), 1));
     await waitGone(s.pid);
     const last = s.prompt();
     expect(events(last).map((l) => l.split(" · ").at(-1))).toEqual(["watch ended"]);
