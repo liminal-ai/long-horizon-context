@@ -131,8 +131,8 @@ Without `--apply` it is a dry run. It honours `CC_LHC_HOME` and `CLAUDE_CONFIG_D
 
 - Previous release: [`cc-lhc-v0.4.2`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.2)
 - Source: LHC main (release cut on `f8674b79`)
-- Build run: _pending_; npm package sha256 _pending_
-- Live turn on the shipped artifact: _pending_
+- Build run: [35934122985](https://github.com/liminal-ai/long-horizon-context/actions/runs/35934122985) on `0b52cafc`, 11/11 jobs green; npm package sha256 `8935da3ba714cd32429c0b8e5d5360e39be8c63adf3e79c16aefe8db9e67a3cc`
+- Live turn on the shipped artifact: the npm package installed into a scratch prefix reported `cc-lhc 0.4.3` / source `0b52cafc`; a real `-p` one-shot returned exactly its reply (rc 0, no CR/escape bytes) and a piped-stdin one-shot returned its reply (rc 0)
 - Source comparison: [`cc-lhc-v0.4.2...cc-lhc-v0.4.3`](https://github.com/liminal-ai/long-horizon-context/compare/cc-lhc-v0.4.2...cc-lhc-v0.4.3)
 - Release tag: [`cc-lhc-v0.4.3`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.3)
 - Checksums: [`SHA256SUMS`](https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.3/SHA256SUMS)
