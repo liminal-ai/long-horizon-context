@@ -78,8 +78,8 @@ jobs:
           cache: pnpm
 
       - name: Read cc-lhc release version
-        shell: bash
-        run: echo "CC_LHC_VERSION=$(node -p "require('./packages/cc-lhc/package.json').version")" >> "$GITHUB_ENV"
+        # Node, not a forced shell: the same line runs under bash and PowerShell.
+        run: node -e "require('fs').appendFileSync(process.env.GITHUB_ENV, 'CC_LHC_VERSION=' + require('./packages/cc-lhc/package.json').version + '\n')"
 
       - name: Install workspace (frozen)
         run: pnpm install --frozen-lockfile
