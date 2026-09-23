@@ -8,8 +8,13 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
+import { candidateVersionFromArgv } from "./lib/candidate-version.mjs";
+
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
-const candidateRoot = resolve(process.argv[2] ?? join(packageRoot, "..", "..", "build", "cc-lhc-npm"));
+const smokeArgv = process.argv.slice(2);
+const candidateArg = smokeArgv.find((arg, index) => !arg.startsWith("--") && smokeArgv[index - 1] !== "--version");
+const candidateRoot = resolve(candidateArg ?? join(packageRoot, "..", "..", "build", "cc-lhc-npm"));
+const expectedVersion = candidateVersionFromArgv(smokeArgv);
 const npmCliCandidates = [
   process.env.npm_execpath,
   join(dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js"),
@@ -54,7 +59,7 @@ function runInstalledCli(executable, args) {
 const manifest = JSON.parse(readFileSync(join(candidateRoot, "package.json"), "utf8"));
 if (
   manifest.name !== "cc-lhc" ||
-  manifest.version !== "0.4.2" ||
+  manifest.version !== expectedVersion ||
   manifest.private === true ||
   manifest.license !== "MIT" ||
   manifest.publishConfig?.access !== "public"

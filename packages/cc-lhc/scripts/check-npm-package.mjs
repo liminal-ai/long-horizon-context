@@ -3,7 +3,7 @@
 /**
  * Validate an assembled cc-lhc npm package before npm pack/install.
  *
- *   node scripts/check-npm-package.mjs [ROOT] [--source-sha SHA]
+ *   node scripts/check-npm-package.mjs [ROOT] [--source-sha SHA] [--version V]
  *
  * The build identity is bound to the caller's accepted source SHA: a stamped
  * SHA passes only when it equals `--source-sha`; without an accepted SHA only
@@ -14,17 +14,22 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 import { sourceShaFromArgv, verifyBuildIdentity } from "./lib/build-identity.mjs";
+import { candidateVersionFromArgv } from "./lib/candidate-version.mjs";
 
 const argv = process.argv.slice(2);
-const positional = argv.filter((arg, index) => !arg.startsWith("--") && argv[index - 1] !== "--source-sha");
+const positional = argv.filter(
+  (arg, index) => !arg.startsWith("--") && argv[index - 1] !== "--source-sha" && argv[index - 1] !== "--version",
+);
 const root = resolve(positional[0] ?? "build/cc-lhc-npm");
 function fail(message) {
   console.error(`cc-lhc npm check: ${message}`);
   process.exitCode = 1;
 }
 let acceptedSourceSha;
+let expectedVersion;
 try {
   acceptedSourceSha = sourceShaFromArgv(argv);
+  expectedVersion = candidateVersionFromArgv(argv);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
   process.exit();
@@ -37,7 +42,7 @@ required("package.json");
 if (process.exitCode) process.exit();
 const manifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
 if (manifest.name !== "cc-lhc") fail("manifest name must be cc-lhc");
-if (manifest.version !== "0.4.2") fail("manifest version must be 0.4.2");
+if (manifest.version !== expectedVersion) fail(`manifest version must be ${expectedVersion}`);
 if (manifest.private === true) fail("release package must not be private");
 if (manifest.license !== "MIT") fail("release package must use MIT");
 if (manifest.publishConfig?.access !== "public") fail("release package must declare public access");

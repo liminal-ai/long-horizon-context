@@ -7,6 +7,8 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statS
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { candidateVersionFromArgv } from "./lib/candidate-version.mjs";
+
 const scriptRoot = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(scriptRoot, "..", "..", "..");
 
@@ -25,7 +27,7 @@ function argValue(flag) {
   return value;
 }
 
-const valuedFlags = new Set(["--package-root", "--target", "--out", "--source-commit"]);
+const valuedFlags = new Set(["--package-root", "--target", "--out", "--source-commit", "--version"]);
 const unknown = process.argv.slice(2).filter((arg, index, args) => {
   if (index > 0 && valuedFlags.has(args[index - 1])) return false;
   return !valuedFlags.has(arg);
@@ -40,9 +42,15 @@ const currentTarget = `${process.platform}-${process.arch}`;
 if (target !== currentTarget) fail(`target ${target} must be assembled on ${currentTarget}`);
 if (!existsSync(join(packageRoot, "package.json"))) fail(`package root is missing package.json: ${packageRoot}`);
 
+let expectedVersion;
+try {
+  expectedVersion = candidateVersionFromArgv(process.argv.slice(2));
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
 const packageManifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8"));
-if (packageManifest.name !== "cc-lhc" || packageManifest.version !== "0.4.2") {
-  fail("package root does not contain the approved cc-lhc@0.4.2 candidate");
+if (packageManifest.name !== "cc-lhc" || packageManifest.version !== expectedVersion) {
+  fail(`package root does not contain the approved cc-lhc@${expectedVersion} candidate`);
 }
 if (JSON.stringify(packageManifest.ccLhcPackage?.targets) !== JSON.stringify([target])) {
   fail(`package candidate must contain only target ${target}`);

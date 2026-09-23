@@ -6,6 +6,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+import { candidateVersionFromArgv } from "./lib/candidate-version.mjs";
+
 function fail(message, result) {
   console.error(`cc-lhc standalone check: ${message}`);
   if (result?.stdout) process.stderr.write(result.stdout);
@@ -13,11 +15,18 @@ function fail(message, result) {
   process.exit(1);
 }
 
-const root = resolve(process.argv[2] ?? "");
+const argv = process.argv.slice(2);
+const root = resolve(argv.find((arg, index) => !arg.startsWith("--") && argv[index - 1] !== "--version") ?? "");
+let expectedVersion;
+try {
+  expectedVersion = candidateVersionFromArgv(argv);
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
 if (!root || !existsSync(join(root, "release-manifest.json"))) fail(`bundle is missing: ${root}`);
 const manifest = JSON.parse(readFileSync(join(root, "release-manifest.json"), "utf8"));
 const expectedTarget = `${process.platform}-${process.arch}`;
-if (manifest.schemaVersion !== 1 || manifest.product !== "cc-lhc" || manifest.version !== "0.4.2") {
+if (manifest.schemaVersion !== 1 || manifest.product !== "cc-lhc" || manifest.version !== expectedVersion) {
   fail("release manifest has an unexpected identity");
 }
 if (manifest.target !== expectedTarget) fail(`bundle target ${manifest.target} does not match ${expectedTarget}`);

@@ -17,6 +17,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { sourceShaFromArgv, writeBuildIdentity } from "./lib/build-identity.mjs";
+import { candidateVersionFromArgv } from "./lib/candidate-version.mjs";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 const repoRoot = resolve(packageRoot, "..", "..");
@@ -47,7 +48,12 @@ if (unknown.length > 0) fail(`unknown arguments: ${unknown.join(", ")}`);
 
 const outputRoot = resolve(argValue("--out") ?? join(repoRoot, "build", "cc-lhc-npm"));
 const packageName = argValue("--name") ?? "cc-lhc";
-const version = argValue("--version") ?? "0.4.2";
+let version;
+try {
+  version = candidateVersionFromArgv(process.argv.slice(2));
+} catch (error) {
+  fail(error instanceof Error ? error.message : String(error));
+}
 const targetMode = argValue("--targets") ?? "all";
 const nativeBundleRoot = resolve(argValue("--native-bundle") ?? nativeRoot);
 // The candidate's accepted source identity, supplied explicitly; absent means
@@ -60,9 +66,6 @@ try {
 }
 if (!/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName)) {
   fail(`invalid npm package name ${JSON.stringify(packageName)}`);
-}
-if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) {
-  fail(`invalid candidate version ${JSON.stringify(version)}`);
 }
 if (targetMode !== "all" && targetMode !== "current") {
   fail(`--targets must be all or current, got ${JSON.stringify(targetMode)}`);
