@@ -110,15 +110,16 @@ function setChunkSummaryState(
   chunkId: string,
   derivationType: "chunk_summary_detailed" | "chunk_summary_brief",
   state: "pending" | "ready" | "failed" | "blocked",
-  opts: { content?: string; reason?: string } = {},
+  opts: { content?: string; reason?: string; metadata?: string } = {},
 ): void {
   execSql(
     filePath,
-    `UPDATE derivation SET state = ?, content = ?, reason = ? 
+    `UPDATE derivation SET state = ?, content = ?, reason = ?, metadata = ?
      WHERE subject_kind = 'chunk' AND subject_id = ? AND derivation_type = ?`,
     state,
     opts.content ?? null,
     opts.reason ?? null,
+    opts.metadata ?? null,
     chunkId,
     derivationType,
   );
@@ -241,8 +242,11 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
+    // A claim_expired failure that exhausted its retries (metadata set), so the
+    // open-time requeue of legacy failures leaves it alone.
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "failed", {
       reason: "claim_expired",
+      metadata: JSON.stringify({ expiredClaims: 3 }),
     });
     setChunkSummaryState(filePath, "c1", "chunk_summary_brief", "blocked", {
       reason: "source_damaged: chunk c1 chunk_summary_detailed is failed: claim_expired",

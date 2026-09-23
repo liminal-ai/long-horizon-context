@@ -198,7 +198,7 @@ export function applyDerivationSuccess(
 export function applyDerivationTerminalFailure(
   db: DatabaseSync,
   attempt: DerivationAttempt,
-  failure: { reason: string; state: "failed" | "blocked"; now: string },
+  failure: { reason: string; state: "failed" | "blocked"; now: string; metadata?: Record<string, unknown> },
 ): "done" | "lost_lease" {
   db.exec("BEGIN IMMEDIATE;");
   try {
@@ -213,7 +213,7 @@ export function applyDerivationTerminalFailure(
     }
     const update = db.prepare(
       `UPDATE derivation
-       SET state = ?, content = NULL, reason = ?, metadata = NULL, gaps = NULL, derived_at = ?
+       SET state = ?, content = NULL, reason = ?, metadata = ?, gaps = NULL, derived_at = ?
        WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ? AND source_version = ?`,
     );
     let hits = 0;
@@ -222,6 +222,7 @@ export function applyDerivationTerminalFailure(
       const changed = update.run(
         failure.state,
         failure.reason,
+        failure.metadata === undefined ? null : JSON.stringify(failure.metadata),
         failure.now,
         target.subjectKind,
         target.subjectId,

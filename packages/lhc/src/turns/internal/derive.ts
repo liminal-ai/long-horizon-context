@@ -31,6 +31,7 @@ import {
   enqueue,
   hasLiveItem,
   type ImmediateDerivationBoundary,
+  requeueExpiredClaim,
   type WorkKind,
   type WorkSourceRef,
 } from "../../shared-tech/work-queue/index.js";
@@ -724,10 +725,21 @@ export async function deriveTurnOwnedInOpenDb(
   );
   if (claim.outcome !== "claimed") {
     if (claim.outcome === "expired") {
+      // Same rule as the drain: requeue, and the scheduler runs it.
+      const requeue = requeueExpiredClaim(db, claim.item, config.clock().toISOString());
+      if (requeue.outcome !== "exhausted") {
+        pokeThreadScheduler(db);
+        return workInFlight(kind, sourceRef, sourceVersion);
+      }
       applyDerivationTerminalFailure(
         db,
         { sourceVersion, derivations, workItemId: claim.item.workItemId },
-        { reason: "claim_expired", state: "failed", now: config.clock().toISOString() },
+        {
+          reason: "claim_expired",
+          state: "failed",
+          now: config.clock().toISOString(),
+          metadata: { expiredClaims: requeue.expiredClaims },
+        },
       );
       pokeThreadScheduler(db);
       return failed({ errorClass: "system_error", code: "provider_failure", reason: "claim_expired" });

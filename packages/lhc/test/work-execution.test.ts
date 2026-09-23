@@ -22,6 +22,7 @@ import {
   setThreadTouch,
   threads,
 } from "../src/index.js";
+import { MAX_EXPIRED_CLAIMS } from "../src/shared-tech/work-queue/index.js";
 import {
   createInferenceCallbacksDouble,
   openRaw,
@@ -436,7 +437,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     expect(states).toEqual(["ready", "ready", "ready", "ready"]);
   });
 
-  it("first-touch catch-up fails an expired claimed head and drains the item behind it", async () => {
+  it("first-touch catch-up requeues an expired claimed head, runs it, and drains the item behind it", async () => {
     const { filePath } = await newThread();
     const seeded = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("turn_end")]),
@@ -469,9 +470,9 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
 
     await sdk.drainSettled({ filePath });
 
-    expect(captured.filter((entry) => entry.op === "smoothPrompt")).toHaveLength(0);
+    expect(captured.filter((entry) => entry.op === "smoothPrompt")).toHaveLength(1);
     expect(readDerivedForms(filePath).map((f) => `${f.subjectId}/${f.derivationType}/${f.state}`)).toEqual([
-      "m1/smoothed_prompt/failed",
+      "m1/smoothed_prompt/ready",
       "t1/detailed_turn_compression/ready",
       "t1/pre_detailed_assembly/ready",
       "t1/turn_rendering/ready",
@@ -482,7 +483,7 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
   it.each([
     { label: "null", claimExpiresAt: null },
     { label: "invalid", claimExpiresAt: "not-a-date" },
-  ])("a claimed head with $label claim_expires_at is failed immediately", async ({ claimExpiresAt }) => {
+  ])("a claimed head with $label claim_expires_at is requeued and run", async ({ claimExpiresAt }) => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const { filePath } = await newThread();
@@ -493,16 +494,12 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
 
     const report = await drain(sdk, filePath);
     expect(report.ran).toEqual([
-      expect.objectContaining({
-        workItemId: "w-m1-prompt_smoothing-v1",
-        disposition: "failed_terminal",
-        reason: "claim_expired",
-      }),
+      expect.objectContaining({ workItemId: "w-m1-prompt_smoothing-v1", disposition: "done" }),
     ]);
     expect(report.stoppedBecause).toBe("empty");
     expect(report.claimExpiresAt).toBeUndefined();
     expect(liveCount(filePath)).toBe(0);
-    expect(readDerivedForms(filePath)[0]).toMatchObject({ state: "failed", reason: "claim_expired" });
+    expect(readDerivedForms(filePath)[0]).toMatchObject({ state: "ready" });
   });
 });
 
@@ -667,7 +664,7 @@ describe("claim ownership fencing", () => {
     return { sdk, runs };
   }
 
-  it("an expired claim is failed without rerunning it, and its late completion cannot write", async () => {
+  it("an expired claim is requeued and rerun, and the old holder's later completion is lost", async () => {
     const now = { ms: Date.parse("2026-06-10T12:00:00.000Z") };
     const { sdk, runs } = deferredMessageSdk(now);
     const { filePath } = await newThread();
@@ -677,19 +674,48 @@ describe("claim ownership fencing", () => {
     await until(() => runs.length === 1, "older claim");
 
     now.ms += 100;
-    const cleanupReport = await drain(sdk, filePath);
-    expect(cleanupReport.ran).toEqual([
-      expect.objectContaining({ disposition: "failed_terminal", reason: "claim_expired" }),
-    ]);
-    expect(runs).toHaveLength(1);
+    const cleanupDrain = drain(sdk, filePath);
+    await until(() => runs.length === 2, "rerun after requeue");
+    runs[1]?.resolve({ content: "rerun completion" });
+    const cleanupReport = await cleanupDrain;
+    expect(cleanupReport.ran).toEqual([expect.objectContaining({ disposition: "done" })]);
 
     runs[0]?.resolve({ content: "stale completion", mismatchedWrite: true });
     const olderReport = await olderDrain;
     expect(olderReport.ran[0]).toMatchObject({ disposition: "lost_lease" });
 
     const form = readDerivedForms(filePath).find((entry) => entry.derivationType === "smoothed_prompt");
-    expect(form).toMatchObject({ state: "failed", reason: "claim_expired" });
+    expect(form).toMatchObject({ state: "ready", content: "rerun completion" });
     expect(liveCount(filePath)).toBe(0);
+  });
+
+  it("each expiry requeues it until MAX_EXPIRED_CLAIMS; the next expiry fails it with the count recorded", async () => {
+    const now = { ms: Date.parse("2026-06-10T12:00:00.000Z") };
+    const { sdk, runs } = deferredMessageSdk(now);
+    const { filePath } = await newThread();
+    await send(sdk, filePath, [validEvent("user_prompt")]);
+
+    // Every holder is abandoned mid-run (its process "exits"); the next drain finds the claim expired.
+    const abandoned: Array<Promise<unknown>> = [drain(sdk, filePath)];
+    for (let attempt = 1; attempt <= MAX_EXPIRED_CLAIMS; attempt += 1) {
+      await until(() => runs.length === attempt, `run ${attempt}`);
+      now.ms += 100;
+      abandoned.push(drain(sdk, filePath));
+    }
+    await until(() => runs.length === MAX_EXPIRED_CLAIMS + 1, "last run");
+    now.ms += 100;
+    const final = await drain(sdk, filePath);
+    expect(final.ran).toEqual([expect.objectContaining({ disposition: "failed_terminal", reason: "claim_expired" })]);
+    expect(runs).toHaveLength(MAX_EXPIRED_CLAIMS + 1);
+    const form = readDerivedForms(filePath).find((entry) => entry.derivationType === "smoothed_prompt");
+    expect(form).toMatchObject({
+      state: "failed",
+      reason: "claim_expired",
+      metadata: { expiredClaims: MAX_EXPIRED_CLAIMS },
+    });
+    expect(liveCount(filePath)).toBe(0);
+    for (const run of runs) run.resolve({ content: "late" });
+    await Promise.all(abandoned);
   });
 });
 

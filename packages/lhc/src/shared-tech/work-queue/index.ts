@@ -352,6 +352,7 @@ interface RawClaimRow {
 
 interface WorkPayload {
   sourceVersion?: number;
+  expiredClaims?: number;
   operation?: DurableWorkOperation;
   derivations?: EnqueueDerivationTarget[];
 }
@@ -395,9 +396,53 @@ export function deleteClaimedItem(db: DatabaseSync, item: { workItemId: string }
   }
 }
 
+// How many times one item's claim may expire before it fails. A claim expires
+// whenever its process exits mid-run (every one-shot, any kill), so an expiry
+// is a retry, not a verdict on the work.
+export const MAX_EXPIRED_CLAIMS = 3;
+
+// An expired claim goes back to the queue in place (same row, so it stays the
+// head) with its expiry count in the payload. "exhausted" once the count
+// would pass MAX_EXPIRED_CLAIMS: the caller fails it as before. "lost" when
+// the row is no longer an expired claim (another opener got there first).
+export function requeueExpiredClaim(
+  db: DatabaseSync,
+  item: { workItemId: string },
+  now: string,
+): { outcome: "requeued" | "exhausted"; expiredClaims: number } | { outcome: "lost" } {
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    const row = db
+      .prepare(
+        `SELECT work_item_id, payload, claim_expires_at FROM work_item WHERE work_item_id = ? AND status = 'claimed'`,
+      )
+      .get(item.workItemId) as { work_item_id: string; payload: string; claim_expires_at: string | null } | undefined;
+    const expiry = Date.parse(row?.claim_expires_at ?? "");
+    if (row === undefined || (Number.isFinite(expiry) && expiry > Date.parse(now))) {
+      db.exec("COMMIT;");
+      return { outcome: "lost" };
+    }
+    const payload = parseWorkPayload(row);
+    const expiredClaims = (payload.expiredClaims ?? 0) + 1;
+    if (expiredClaims > MAX_EXPIRED_CLAIMS) {
+      db.exec("COMMIT;");
+      return { outcome: "exhausted", expiredClaims: expiredClaims - 1 };
+    }
+    db.prepare(
+      `UPDATE work_item SET status = 'queued', claimed_at = NULL, claim_expires_at = NULL, payload = ?
+       WHERE work_item_id = ?`,
+    ).run(JSON.stringify({ ...payload, expiredClaims }), row.work_item_id);
+    db.exec("COMMIT;");
+    return { outcome: "requeued", expiredClaims };
+  } catch (cause) {
+    db.exec("ROLLBACK;");
+    throw cause;
+  }
+}
+
 // Head-first, never skip-ahead: the claim decision is made against the oldest
 // live row only. A queued head is claimed once. An expired claim is returned
-// as dead work so the drain can fail it without running the handler again.
+// so the caller can requeue it (requeueExpiredClaim) or, past the cap, fail it.
 export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number): ClaimOutcome {
   const expiresAt = new Date(Date.parse(now) + leaseDurationMs).toISOString();
   db.exec("BEGIN IMMEDIATE;");

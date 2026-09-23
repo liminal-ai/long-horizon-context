@@ -30,6 +30,7 @@ import {
   type ClaimedWorkItem,
   claimNext,
   countLiveItems,
+  requeueExpiredClaim,
   type WorkKind,
   type WorkSourceRef,
 } from "./work-queue/index.js";
@@ -134,11 +135,15 @@ export async function drainOpenDb(
     }
     const item = claim.item;
     if (claim.outcome === "expired") {
+      // The claim's process exited mid-run: back to the queue, and the next
+      // loop claims and runs it. Only past the cap does it fail as before.
+      const requeue = requeueExpiredClaim(db, item, clock().toISOString());
+      if (requeue.outcome !== "exhausted") continue;
       const reason = "claim_expired";
       const terminal = applyDerivationTerminalFailure(
         db,
         { ...item, workItemId: item.workItemId },
-        { reason, state: "failed", now: clock().toISOString() },
+        { reason, state: "failed", now: clock().toISOString(), metadata: { expiredClaims: requeue.expiredClaims } },
       );
       if (terminal !== "lost_lease") {
         logDerivationExecution(identity, db, item.derivations, "terminal_failed", { reason });

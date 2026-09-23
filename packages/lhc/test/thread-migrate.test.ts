@@ -373,7 +373,7 @@ describe("thread schema migration", () => {
     await drainTurnDerivationsGreen(filePath);
   });
 
-  it("normalizes a claimed old-shape item, then fails its expired lease without rerunning it", async () => {
+  it("normalizes a claimed old-shape item, then requeues its expired lease and runs it", async () => {
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
@@ -416,14 +416,10 @@ describe("thread schema migration", () => {
     expect(drained.ok).toBe(true);
     if (!drained.ok) return;
     expect(drained.value.ran).toContainEqual(
-      expect.objectContaining({
-        workItemId: "w-t1-turn_derivation-v1",
-        disposition: "failed_terminal",
-        reason: "claim_expired",
-      }),
+      expect.objectContaining({ workItemId: "w-t1-turn_derivation-v1", disposition: "done" }),
     );
-    expect(formOf(filePath, "turn_rendering")).toMatchObject({ state: "failed", reason: "claim_expired" });
-    expect(formOf(filePath, "pre_detailed_assembly")).toMatchObject({ state: "failed", reason: "claim_expired" });
+    expect(formOf(filePath, "turn_rendering")).toMatchObject({ state: "ready" });
+    expect(formOf(filePath, "pre_detailed_assembly")).toMatchObject({ state: "ready" });
   });
 
   it("heals a crash-window partial normalization on reopen (new-shape payload, missing assembly row)", async () => {
@@ -981,5 +977,68 @@ describe("thread schema migration", () => {
     if (opened.ok) return;
     expect(opened.error.code).toBe("storage_failure");
     expect(opened.error.reason).toMatch(/unresolved boundaries|migration/i);
+  });
+
+  it("requeues pre-fix claim_expired failures once on open; capped failures stay failed", async () => {
+    const filePath = store.threadPath();
+    const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+    expect(created.ok).toBe(true);
+    if (!created.ok) return;
+    const intake = await withEstimator(o200k, () =>
+      intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: "requeue prompt" } }),
+        validEvent("assistant_text", { payload: { text: "requeue answer" } }),
+        validEvent("turn_end"),
+      ]),
+    );
+    expect(intake.ok).toBe(true);
+    await drainTurnDerivationsGreen(filePath);
+
+    // What the old drain left: failed claim_expired, metadata NULL, item deleted.
+    // The smoothed prompt carries the new rule's cap metadata and must not move.
+    const db = new DatabaseSync(filePath);
+    try {
+      db.prepare(
+        `UPDATE derivation SET state = 'failed', content = NULL, reason = 'claim_expired', metadata = NULL
+         WHERE subject_id = 't1' AND derivation_type = 'detailed_turn_compression'`,
+      ).run();
+      db.prepare(
+        `UPDATE derivation SET state = 'failed', content = NULL, reason = 'claim_expired', metadata = ?
+         WHERE subject_id = 'm1' AND derivation_type = 'smoothed_prompt'`,
+      ).run(JSON.stringify({ expiredClaims: 3 }));
+      expect((db.prepare(`SELECT count(*) AS n FROM work_item`).get() as { n: number }).n).toBe(0);
+    } finally {
+      db.close();
+    }
+
+    const opened = openThreadDatabase(filePath);
+    expect(opened.ok).toBe(true);
+    if (!opened.ok) return;
+    try {
+      const items = opened.value.prepare(`SELECT kind, source_ref, status FROM work_item`).all();
+      expect(items).toEqual([
+        { kind: "detailed_turn_compression", source_ref: JSON.stringify({ turnId: "t1" }), status: "queued" },
+      ]);
+    } finally {
+      opened.value.close();
+    }
+    expect(formOf(filePath, "detailed_turn_compression")).toMatchObject({ state: "pending" });
+
+    const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
+    const drained = await sdk.work.drain({ filePath });
+    expect(drained.ok).toBe(true);
+    expect(formOf(filePath, "detailed_turn_compression")).toMatchObject({ state: "ready" });
+    const prompt = readDerivedForms(filePath).find((form) => form.derivationType === "smoothed_prompt");
+    expect(prompt).toMatchObject({ state: "failed", reason: "claim_expired" });
+
+    // A second open finds nothing left to requeue.
+    const reopened = openThreadDatabase(filePath);
+    expect(reopened.ok).toBe(true);
+    if (!reopened.ok) return;
+    try {
+      expect((reopened.value.prepare(`SELECT count(*) AS n FROM work_item`).get() as { n: number }).n).toBe(0);
+    } finally {
+      reopened.value.close();
+    }
   });
 });

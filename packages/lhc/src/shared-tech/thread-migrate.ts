@@ -470,6 +470,101 @@ function runQueuedTurnDerivationMigration(db: DatabaseSync): void {
   }
 }
 
+// Before claim expiry became a retry, an expired claim failed its derivations
+// with reason claim_expired and deleted the item, so every one-shot exit or
+// kill mid-derivation left a permanent gap. Requeue each such failure once:
+// derivation back to pending at its version, one queued item per (kind,
+// source) like the original enqueue. A capped failure written since then
+// carries metadata ({expiredClaims}) and is left alone, so this never repeats.
+// No schema bump: an older reader still opens the thread.
+const CLAIM_EXPIRED_LEGACY_SQL = `SELECT subject_kind, subject_id, derivation_type, source_version
+       FROM derivation WHERE state = 'failed' AND reason = 'claim_expired' AND metadata IS NULL
+       ORDER BY rowid`;
+
+const DERIVATION_WORK_KIND: Readonly<
+  Record<string, { kind: string; sourceRefKey: "messageId" | "turnId" | "chunkId" }>
+> = {
+  smoothed_prompt: { kind: "prompt_smoothing", sourceRefKey: "messageId" },
+  tool_result_summary: { kind: "tool_result_summary", sourceRefKey: "messageId" },
+  turn_rendering: { kind: "turn_derivation", sourceRefKey: "turnId" },
+  pre_detailed_assembly: { kind: "turn_derivation", sourceRefKey: "turnId" },
+  detailed_turn_compression: { kind: "detailed_turn_compression", sourceRefKey: "turnId" },
+  chunk_summary_detailed: { kind: "chunk_summary_detailed", sourceRefKey: "chunkId" },
+  chunk_summary_brief: { kind: "chunk_summary_brief", sourceRefKey: "chunkId" },
+};
+
+const WORK_OWNER: Readonly<Record<string, string>> = {
+  prompt_smoothing: "messages",
+  tool_result_summary: "messages",
+};
+
+function requeueLegacyClaimExpired(db: DatabaseSync, now: string): number {
+  const rows = db.prepare(CLAIM_EXPIRED_LEGACY_SQL).all() as Array<{
+    subject_kind: string;
+    subject_id: string;
+    derivation_type: string;
+    source_version: number | bigint;
+  }>;
+  const setPending = db.prepare(
+    `UPDATE derivation SET state = 'pending', content = NULL, reason = NULL, metadata = NULL, gaps = NULL, derived_at = NULL
+     WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?`,
+  );
+  const insertItem = db.prepare(
+    `INSERT OR IGNORE INTO work_item (work_item_id, owner, kind, source_ref, status, queued_at, payload)
+     VALUES (?, ?, ?, ?, 'queued', ?, ?)`,
+  );
+  const items = new Map<
+    string,
+    { kind: string; sourceRef: Record<string, string>; sourceVersion: number; derivations: unknown[] }
+  >();
+  let requeued = 0;
+  for (const row of rows) {
+    const work = DERIVATION_WORK_KIND[row.derivation_type];
+    if (work === undefined) continue;
+    const sourceVersion = Number(row.source_version);
+    const workItemId = `w-${row.subject_id}-${work.kind}-v${sourceVersion}`;
+    const entry = items.get(workItemId) ?? {
+      kind: work.kind,
+      sourceRef: { [work.sourceRefKey]: row.subject_id },
+      sourceVersion,
+      derivations: [],
+    };
+    entry.derivations.push({
+      subjectKind: row.subject_kind,
+      subjectId: row.subject_id,
+      derivationType: row.derivation_type,
+    });
+    items.set(workItemId, entry);
+    setPending.run(row.subject_kind, row.subject_id, row.derivation_type);
+    requeued += 1;
+  }
+  for (const [workItemId, item] of items) {
+    insertItem.run(
+      workItemId,
+      WORK_OWNER[item.kind] ?? "turns",
+      item.kind,
+      JSON.stringify(item.sourceRef),
+      now,
+      JSON.stringify({ sourceVersion: item.sourceVersion, derivations: item.derivations }),
+    );
+  }
+  return requeued;
+}
+
+// Same probe-then-lock shape as the queued turn_derivation repair: an open with
+// nothing to requeue never takes a write lock.
+function runClaimExpiredRequeue(db: DatabaseSync): void {
+  if (db.prepare(`${CLAIM_EXPIRED_LEGACY_SQL} LIMIT 1`).get() === undefined) return;
+  db.exec("BEGIN IMMEDIATE;");
+  try {
+    requeueLegacyClaimExpired(db, new Date().toISOString());
+    db.exec("COMMIT;");
+  } catch (cause) {
+    db.exec("ROLLBACK;");
+    throw cause;
+  }
+}
+
 function migrateOneShotWorkQueue(db: DatabaseSync): void {
   db.exec("DROP INDEX idx_work_item_queue;");
   db.exec("ALTER TABLE work_item DROP COLUMN attempts;");
@@ -519,6 +614,7 @@ export function migrateThreadSchema(db: DatabaseSync): void {
   let version = getSchemaVersion(db);
   if (version >= CURRENT_THREAD_SCHEMA_VERSION) {
     runQueuedTurnDerivationMigration(db);
+    runClaimExpiredRequeue(db);
     return;
   }
   if (version < THREAD_SCHEMA_VERSION_1) {
@@ -585,6 +681,7 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     db.exec("ROLLBACK;");
     throw cause;
   }
+  runClaimExpiredRequeue(db);
 }
 
 export function isSupportedThreadSchemaVersion(version: number): boolean {
