@@ -879,6 +879,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         cwd: process.cwd(),
         registryPath,
         lineageDbPath: defaultLineageDbPath(),
+        ownThreadId: opened.threadId,
         log: wrapperLog,
         ...(descriptorIo === undefined ? {} : { descriptorIo }),
       });

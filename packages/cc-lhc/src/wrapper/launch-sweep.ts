@@ -30,6 +30,14 @@ export interface LaunchSweepInput {
   cwd: string;
   registryPath: string;
   lineageDbPath: string;
+  /**
+   * The thread whose lease this launch holds. Its owner probe reads this
+   * launch itself, which is not an in-flight handoff: the lease is exclusive,
+   * so no other process can be mid-swap on that thread, and its abandoned
+   * rebuilds are this launch's to move aside. Other threads' owners are probed
+   * as usual.
+   */
+  ownThreadId?: string;
   log: { info(message: string): void; warn(message: string): void };
   projectsRoot?: string;
   descriptorIo?: DescriptorIo;
@@ -72,10 +80,12 @@ async function sweepRebuilds(
       ...(input.minAgeMs === undefined ? {} : { minAgeMs: input.minAgeMs }),
       descriptorSessionIds,
       ownerOf: (threadId) =>
-        probeThreadOwner(threadId, {
-          home: input.home,
-          ...(readIdentity === undefined ? {} : { readIdentity }),
-        }),
+        threadId === input.ownThreadId
+          ? "none"
+          : probeThreadOwner(threadId, {
+              home: input.home,
+              ...(readIdentity === undefined ? {} : { readIdentity }),
+            }),
       aliasKnowledge: async (sessionId) => {
         const resolved = await threads.resolveAlias({ alias: claudeSessionAlias(sessionId), registryPath });
         if (resolved.ok) return "known";

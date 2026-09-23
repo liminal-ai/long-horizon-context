@@ -47,7 +47,7 @@ import { threadOwnerPath } from "../../src/runtime/thread-owner.js";
 import { executeHandoff, type HandoffPorts } from "../../src/wrapper/handoff.js";
 import { runLaunchSweep } from "../../src/wrapper/launch-sweep.js";
 import { consumeLegacyHandoffState } from "../../src/wrapper/legacy-handoff-state.js";
-import { aliveResult, notFoundResult, syntheticIdentity } from "../helpers/identity.js";
+import { aliveResult, notFoundResult, selfIdentity, syntheticIdentity } from "../helpers/identity.js";
 
 const actualWriteRebuiltRollout = writeRebuilt.writeRebuiltRollout;
 
@@ -761,5 +761,70 @@ describe("F3 launch sweep and an unaccepted reservation", () => {
       kept: [{ sessionId: ORPHAN, reason: "thread owner live" }],
     });
     expect(existsSync(join(live.projectDir, `${ORPHAN}.jsonl`))).toBe(true);
+  });
+
+  it("a recovery launch of the crashed thread moves its own abandoned rebuild aside (real launch order)", async () => {
+    const hourAgo = Date.now() / 1000 - 3600;
+    const f = fixture("sweep-own");
+    await seedThread(f, "th_crashed");
+    await seedThread(f, "th_busy", "77777777-7777-4777-8777-777777777777", OTHER_CURRENT);
+    // The crashed wrapper's handoff reserved and wrote a rebuild an hour ago, then died holding its lease.
+    await reserveRebuiltSessionLineage({
+      newSessionId: ORPHAN,
+      threadId: "th_crashed",
+      prefixBoundary: VERIFIED,
+      lineageDbPath: f.lineageDbPath,
+    });
+    writeTranscript(f, ORPHAN, hourAgo);
+    writeTranscript(f, CURRENT, Date.now() / 1000 - 300);
+    writeLease(f, "th_crashed", DEAD);
+    // Another thread's old rebuild whose owner is live stays protected.
+    const busyOrphan = "99999999-9999-4999-8999-999999999999";
+    await reserveRebuiltSessionLineage({
+      newSessionId: busyOrphan,
+      threadId: "th_busy",
+      prefixBoundary: VERIFIED,
+      lineageDbPath: f.lineageDbPath,
+    });
+    writeTranscript(f, busyOrphan, hourAgo);
+    writeLease(f, "th_busy", LIVE);
+
+    // The launch order in run(): take the thread's lease (reclaiming the dead one), then sweep.
+    const plan = await resolveLaunchSession(["--resume", CURRENT], {
+      cwd: f.cwd,
+      discoverDeps: { projectsRoot: f.projectsRoot },
+    });
+    const opened = await openLaunchThread({
+      expectedSession: plan.expected,
+      registryPath: f.registryPath,
+      lineageDbPath: f.lineageDbPath,
+      rolloutPath: join(f.projectDir, `${CURRENT}.jsonl`),
+      home: f.home,
+      createThread: () => Promise.reject(new Error("must not create")),
+      log: () => {},
+    });
+    try {
+      expect(opened.threadId).toBe("th_crashed");
+      const liveProbe: ProbeProcessIdentity = (pid) =>
+        pid === LIVE.pid ? aliveResult(LIVE) : pid === process.pid ? aliveResult(selfIdentity()) : notFoundResult(pid);
+      const swept = await runLaunchSweep({
+        home: f.home,
+        cwd: f.cwd,
+        registryPath: f.registryPath,
+        lineageDbPath: f.lineageDbPath,
+        projectsRoot: f.projectsRoot,
+        ownThreadId: opened.threadId,
+        readIdentity: liveProbe,
+        log: { info: () => {}, warn: () => {} },
+      });
+      expect(swept?.rebuilds).toMatchObject({
+        moved: [expect.objectContaining({ sessionId: ORPHAN })],
+        kept: expect.arrayContaining([{ sessionId: busyOrphan, reason: "thread owner live" }]),
+      });
+      expect(existsSync(join(f.projectDir, `${ORPHAN}.jsonl`))).toBe(false);
+      expect(existsSync(join(f.projectDir, `${busyOrphan}.jsonl`))).toBe(true);
+    } finally {
+      opened.lease.release();
+    }
   });
 });
