@@ -79,6 +79,11 @@ function copyName(launchId: string): string {
   return `${safe}.${digest}.output`;
 }
 
+/** The owned result copy path for one launch id (also where a subagent's saved final text is kept). */
+export function resultCopyPath(continuityDir: string, launchId: string): string {
+  return join(resultCopyDir(continuityDir), copyName(launchId));
+}
+
 /**
  * Copy at most `maxBytes` of `source` into `target`, created 0600, fsynced,
  * and renamed into place; the source is only read.
@@ -196,7 +201,7 @@ export function cleanupThread(
           retain(item.launchId, "identity_changed", `${owned.path} is no longer the file this item wrote`);
           continue;
         }
-        const target = join(resultCopyDir(continuityDir), copyName(item.launchId));
+        const target = resultCopyPath(continuityDir, item.launchId);
         let made: { bytes: number; truncated: boolean };
         try {
           made = copy(owned.path, target, RESULT_COPY_MAX_BYTES);

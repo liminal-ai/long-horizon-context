@@ -13,6 +13,7 @@ import {
 import { type DispatchOutcome, dispatchLhcCommand, type LhcCommandRuntime } from "../commands/dispatch.js";
 import { registerRebuiltSessionLineage, threadIdFromRef } from "../commands/rebuild-receipt.js";
 import { qualifyActiveItems, statPathReal } from "../continuity/adapters.js";
+import { stopRelaunchedMonitors } from "../continuity/carried-results.js";
 import { cleanupThread } from "../continuity/cleanup.js";
 import { defaultResultHookCommand, RESULT_HOOK_TIMEOUT_SECONDS } from "../continuity/delivery.js";
 
@@ -2376,6 +2377,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         if (boundThreadId === "") {
           wrapperLog.info("cc-lhc continuity cleanup: no bound thread; nothing cleaned up");
         } else {
+          try {
+            // F4: a relaunched Monitor must not outlive the session (identity-gated stop).
+            stopRelaunchedMonitors(continuityStore, boundThreadId, {
+              probeIdentity: probeProcessIdentity,
+              log: (message) => wrapperLog.info(message),
+            });
+          } catch (cause) {
+            wrapperLog.warn(`cc-lhc continuity: relaunched monitor stop failed: ${String(cause)}`);
+          }
           try {
             cleanupThread(continuityStore, boundThreadId, monitorOutputDir, {
               log: (message) => wrapperLog.info(message),

@@ -773,8 +773,8 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     };
     const userSettingsPath = join(mkdtempSync(join(tmpdir(), "cc-lhc-user-settings-")), "settings.json");
     writeFileSync(userSettingsPath, JSON.stringify({ hooks: userHooks, theme: "dark" }));
-    const rig = await launch({}, ["--settings", userSettingsPath]);
-    rig.feed(fiveFamilyLaunch(rig.paths));
+    const rig = await launch({ monitorCommand: LONG_MONITOR_COMMAND }, ["--settings", userSettingsPath]);
+    rig.feed(fiveFamilyLaunch(rig.paths, LONG_MONITOR_COMMAND));
     await storeHas(rig.dbPath, ALL_IDS);
     rig.lifecycle(TRIGGER_SIGNALS);
     await waitFor(() => rig.results.length === 1, "handoff result");
@@ -1031,7 +1031,7 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     await rig.finish();
   }, 20_000);
 
-  it("TC-2.9b/2.7c restart: a fresh wrapper bound to the same session reopens the record, seeds carried work, keeps the live relaunched Monitor, and delivers pending results once", async () => {
+  it("TC-2.9b/2.7c restart: a fresh wrapper bound to the same session reopens the record, seeds carried work, and delivers pending results once; wrapper 1's exit stopped its relaunched Monitor (F4)", async () => {
     // ---- wrapper 1: carry five families, relaunch a long-lived Monitor, one result while idle ----
     const first = await launch({ monitorCommand: LONG_MONITOR_COMMAND });
     first.feed(fiveFamilyLaunch(first.paths, LONG_MONITOR_COMMAND));
@@ -1068,10 +1068,23 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
         nowMs: 3,
       });
     });
-    // End wrapper 1 cleanly: the replacement child exits; the database, the fence file, and the relaunched process stay.
+    // End wrapper 1 cleanly: the replacement child exits; the database stays. F4: the relaunched Monitor is the
+    // wrapper's own detached process and does not outlive the session — stopped (identity-gated) and recorded.
     expect(await first.finish()).toBeTypeOf("number");
     expect(existsSync(first.dbPath)).toBe(true);
-    expect(() => process.kill(relaunch.process!.pid, 0)).not.toThrow();
+    await waitFor(() => {
+      try {
+        process.kill(relaunch.process!.pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    }, "relaunched process stopped at wrapper 1 exit");
+    expect(withStore(first.dbPath, (store) => store.getResult(T, LAUNCH_IDS.monitor))).toMatchObject({
+      outcome: "stopped",
+      evidence: `stopped at session end (pid ${relaunch.process!.pid})`,
+      delivery: "pending",
+    });
     const rebuiltPath = join(first.home, `${REBUILT_ID}.jsonl`);
     // The wrapper log appends asynchronously: let wrapper 1's own lines land before slicing.
     await waitFor(
@@ -1088,20 +1101,24 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     });
     const log2 = () => wrapperLog(first).slice(logBefore);
     expect(second.spawned).toHaveLength(1);
-    // The main capture of the new wrapper was seeded from the record: the four still-open carried items, nothing foreign.
+    // The main capture of the new wrapper was seeded from the record: the three still-open carried items, nothing foreign.
     expect(second.seeds).toHaveLength(1);
-    const remaining = ALL_IDS.filter((id) => id !== LAUNCH_IDS.agent);
+    const remaining = ALL_IDS.filter((id) => id !== LAUNCH_IDS.agent && id !== LAUNCH_IDS.monitor);
     expect(second.seeds[0]!.map((w) => `${w.family}:${w.key}`).sort()).toEqual(
       remaining.map((id) => id.slice(0, id.lastIndexOf(":"))).sort(),
     );
-    // Single authority, untouched by the restart: the open items, the generation, the relaunch record, and the
-    // result are exactly as wrapper 1 left them. Wrapper 1's orderly exit cleaned up the finished agent's tracking
-    // (AC-2.10); its durable result stayed and still answers.
+    // Single authority, untouched by the restart: the open items, the generation, and the results are exactly as
+    // wrapper 1 left them. Wrapper 1's orderly exit cleaned up the finished agent's and the stopped Monitor's
+    // tracking (AC-2.10); their durable results stayed and still answer.
     withStore(first.dbPath, (store) => {
-      expect(store.listItems(T)).toEqual(before.items.filter((item) => item.launchId !== LAUNCH_IDS.agent));
+      expect(store.listItems(T)).toEqual(
+        before.items.filter((item) => item.launchId !== LAUNCH_IDS.agent && item.launchId !== LAUNCH_IDS.monitor),
+      );
       expect(store.getGeneration(T, 1)).toEqual(before.generation);
-      expect(store.listPendingResults(T)).toEqual(before.results);
-      expect(store.getItem(T, LAUNCH_IDS.monitor)!.relaunch).toEqual(relaunch);
+      expect(store.listPendingResults(T).map((r) => r.launchId)).toEqual([
+        ...before.results.map((r) => r.launchId),
+        LAUNCH_IDS.monitor,
+      ]);
     });
     const cleaned = await runTasks(second.spawned[0]!.env, REBUILT_ID, ["status", LAUNCH_IDS.agent]);
     expect(cleaned.out).toMatch(/state: terminal/);
@@ -1111,14 +1128,13 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(log2().match(/restarted once|generation \d+ closed|adopted|re-armed/g) ?? []).toEqual([]);
     expect(second.sdk.threadView.compact).not.toHaveBeenCalled();
 
-    // The relaunched Monitor is the same logical item, with its process and output, through the new wrapper's binding.
+    // The stopped Monitor answers through the new wrapper's binding from its durable result and owned output copy.
     const env = second.spawned[0]!.env;
     const status = await runTasks(env, REBUILT_ID, ["status", LAUNCH_IDS.monitor]);
     expect(status.code).toBe(0);
-    expect(status.out).toMatch(/state: active/);
-    expect(status.out).toMatch(/process: live/);
-    expect(status.out).toMatch(/operations: status, output, stop/);
-    expect(status.out).toMatch(/identity: verified/);
+    expect(status.out).toMatch(/state: terminal/);
+    expect(status.out).toMatch(/tracking: cleaned up; durable result only/);
+    expect(status.out).toMatch(/terminal: stopped/);
     const output = await runTasks(env, REBUILT_ID, ["output", LAUNCH_IDS.monitor]);
     expect(output.out).toContain("relaunched-once-XyZ");
     // Foreign thread: not seeded, not reported.
@@ -1129,13 +1145,14 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
 
     // New terminal evidence in the bound session closes the seeded item once; duplicates add nothing.
     second.feed([notification({ taskIds: ["shell-1"], status: "failed" })]);
-    await waitFor(() => withStore(first.dbPath, (store) => store.listPendingResults(T).length === 2), "second result");
+    await waitFor(() => withStore(first.dbPath, (store) => store.listPendingResults(T).length === 3), "second result");
     second.feed([notification({ taskIds: ["shell-1"], status: "failed" })]);
     second.feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
     withStore(first.dbPath, (store) => {
-      expect(store.listItems(T)).toHaveLength(4);
+      expect(store.listItems(T)).toHaveLength(3);
       expect(store.listPendingResults(T).map((r) => [r.launchId, r.outcome])).toEqual([
         [LAUNCH_IDS.agent, "completed"],
+        [LAUNCH_IDS.monitor, "stopped"],
         [LAUNCH_IDS.background_shell, "failed"],
       ]);
     });
@@ -1147,35 +1164,21 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       .additionalContext;
     expect(context).toContain(`result ${LAUNCH_IDS.agent} ·`);
     expect(context).toContain(`result ${LAUNCH_IDS.background_shell} ·`);
+    expect(context).toContain(`result ${LAUNCH_IDS.monitor} · monitor · monitor "CI watch" (mon-1) · stopped`);
     second.feed([hookContextRecord(context)]);
     await waitFor(() => withStore(first.dbPath, (store) => store.listPendingResults(T).length === 0), "delivered");
     const resultsOf = () =>
       withStore(first.dbPath, (store) =>
-        [LAUNCH_IDS.agent, LAUNCH_IDS.background_shell].map((id) => store.getResult(T, id)),
+        [LAUNCH_IDS.agent, LAUNCH_IDS.background_shell, LAUNCH_IDS.monitor].map((id) => store.getResult(T, id)),
       );
     const delivered = resultsOf();
     second.feed([hookContextRecord(context)]);
     expect(resultsOf()).toEqual(delivered);
     expect((await runHook(env, REBUILT_ID, rebuiltPath)).out).toBe("");
 
-    // Management still targets the exact relaunched identity: stop it through the new wrapper.
+    // Nothing is left to stop: the Monitor's tracking is gone with its process.
     const stop = await runTasks(env, REBUILT_ID, ["stop", LAUNCH_IDS.monitor]);
-    expect(stop.code).toBe(0);
-    await waitFor(() => {
-      try {
-        process.kill(relaunch.process!.pid, 0);
-        return false;
-      } catch {
-        return true;
-      }
-    }, "relaunched process gone");
-    withStore(first.dbPath, (store) => {
-      expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({
-        state: "terminal",
-        terminal: { outcome: "stopped" },
-      });
-      expect(store.listPendingResults(T).map((r) => r.launchId)).toEqual([LAUNCH_IDS.monitor]);
-    });
+    expect(stop.code).not.toBe(0);
     expect(second.spawned[0]!.writes).toEqual([]);
     await second.finish();
   }, 30_000);

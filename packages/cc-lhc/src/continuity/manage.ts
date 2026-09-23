@@ -261,10 +261,9 @@ export function readItemOutput(
 ): OutputResult {
   const item = store.getItem(threadId, launchId);
   const valid = validRange(range);
-  if (item === null) {
-    // After cleanup only the CC-LHC-owned copy remains; it is the parent's own file.
-    const result = store.getResult(threadId, launchId);
-    if (result === null) return refuse("unknown_item", `no carried item ${launchId} in this session's record`);
+  // The CC-LHC-owned copy is the parent's own file: what remains after
+  // cleanup, and where a carried subagent's saved final text is kept (F4).
+  const readOwnedCopy = (result: CarriedResult): OutputResult => {
     if (result.artifact?.kind !== "owned_copy") {
       return refuse("unsupported", `${result.family} ${launchId} left no parent-readable output`);
     }
@@ -274,8 +273,15 @@ export function readItemOutput(
       return refuse("identity_missing", `${launchId} owned result copy is gone: ${result.artifact.path}`);
     }
     return readBounded(result.artifact.path, valid.offset, valid.maxBytes);
+  };
+  if (item === null) {
+    const result = store.getResult(threadId, launchId);
+    if (result === null) return refuse("unknown_item", `no carried item ${launchId} in this session's record`);
+    return readOwnedCopy(result);
   }
   if (!item.operations.includes("output")) {
+    const result = store.getResult(threadId, launchId);
+    if (result?.artifact?.kind === "owned_copy") return readOwnedCopy(result);
     return refuse("unsupported", `${item.family} ${launchId} offers no parent-readable output`);
   }
   const artifact = ownedArtifact(item);
