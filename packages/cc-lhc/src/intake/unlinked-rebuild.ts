@@ -7,32 +7,37 @@
  * then picks it as the newest transcript. Such a file is recognized by its
  * rebuild prefix — the synthetic assistant message ids the rebuild writes
  * (`msg_` + the line uuid) or its trailing `[lhc compact|prune:…]` receipt —
- * and linked back to its thread through the thread's recorded replay
- * signatures, which the prefix's replayed turns reproduce. A link needs a
- * clear match: the top thread holds at least half of the transcript's
- * distinct signatures and strictly more than any other thread. Common text
- * ("continue", "Done.") can make an unrelated thread the top scorer when the
- * owner's bounded signature window has aged those lines out, so a bare
- * ranking is never taken as ownership.
+ * never linked to a thread from its content: the only evidence would be replay
+ * signatures, and a short replayed tail of common text ("continue", "Done.")
+ * can match an unrelated thread completely once the owner's bounded window has
+ * aged those lines out. The operator gets guidance instead: pick the
+ * conversation with `cc-lhc --resume`, with signature-matched threads listed
+ * only as possible matches. Rebuilds written with a reservation record resolve
+ * through that record (thread-alias), never through here.
  *
  * Only a transcript recognized as rebuilt is ever looked up; any other unknown
  * session is left to the ordinary new-thread path.
  */
 
 import { readFile } from "node:fs/promises";
-
+import { threads } from "lhc";
 import type { RolloutLineItem } from "../rollout/types.js";
-import { type LineageDbDeps, threadsMatchingSignatures } from "./lineage-db.js";
-import { signaturesForRolloutLine } from "./replay-dedupe.js";
 
-export type UnlinkedRebuild =
-  | { kind: "linked"; threadId: string; matches: number; signatures: number }
-  /**
-   * Rebuilt, but no thread is a clear match. `candidateThreadIds` are the
-   * threads tied at the top that each match at least half of the signatures;
-   * empty when none does.
-   */
-  | { kind: "unidentified"; candidateThreadIds: string[] };
+import { type LineageDbDeps, lookupSessionLineage, threadsMatchingSignatures } from "./lineage-db.js";
+import { signaturesForRolloutLine } from "./replay-dedupe.js";
+import { claudeSessionIdFromAlias } from "./thread-alias.js";
+
+/**
+ * A rebuilt transcript no record links to a thread. `possibleThreadIds` share
+ * replayed lines with it, best first; they are hints for the operator, never
+ * an answer.
+ */
+export interface UnlinkedRebuild {
+  possibleThreadIds: string[];
+}
+
+/** How many signature-matched threads the guidance lists at most. */
+const MAX_POSSIBLE_MATCHES = 3;
 
 const SYNTHETIC_MESSAGE_ID = /^msg_[0-9a-f]{32}$/;
 const RECEIPT_NOTE = /^\[runtime note\] \[lhc (compact|prune):/;
@@ -133,37 +138,72 @@ export async function identifyUnlinkedRebuild(input: {
   } catch {
     ranked = [];
   }
-  const distinct = new Set(signatures).size;
-  const covers = (row: { matches: number }): boolean => row.matches * 2 >= distinct;
-  const [top, second] = ranked;
-  if (top !== undefined && covers(top) && (second === undefined || top.matches > second.matches)) {
-    return { kind: "linked", threadId: top.threadId, matches: top.matches, signatures: distinct };
-  }
-  const best = top?.matches ?? 0;
   return {
-    kind: "unidentified",
-    candidateThreadIds: ranked.filter((row) => row.matches === best && covers(row)).map((row) => row.threadId),
+    possibleThreadIds: ranked
+      .filter((row) => row.matches > 0)
+      .slice(0, MAX_POSSIBLE_MATCHES)
+      .map((row) => row.threadId),
   };
 }
 
 /**
- * The exact next step for a rebuilt transcript cc-lhc cannot link to a thread.
- * `resumeTargets` are the current sessions of the candidate threads.
+ * What to do with a rebuilt transcript cc-lhc cannot link to a thread.
+ * `possibleTargets` are the current sessions of signature-matched threads.
  */
-export function unlinkedRebuildGuidance(sessionId: string, resumeTargets: readonly string[]): string {
+export function unlinkedRebuildGuidance(sessionId: string, possibleTargets: readonly string[]): string {
   const head =
-    `cc-lhc: session ${sessionId} is a Smart Compact rebuilt transcript from an interrupted compaction and ` +
-    "was never linked to its thread; capture is off for it.";
-  if (resumeTargets.length === 1) {
-    return `${head} Continue the conversation with: cc-lhc --resume ${resumeTargets[0]}`;
+    `cc-lhc: session ${sessionId} is a Smart Compact rebuilt transcript from an interrupted compaction that ` +
+    "cc-lhc cannot link to a thread; capture is off for it. Continue the conversation it was compacted from: " +
+    "run cc-lhc --resume with no id and pick it.";
+  if (possibleTargets.length === 0) return head;
+  return `${head} Possible matches (shared text only, unverified): ${possibleTargets
+    .map((target) => `cc-lhc --resume ${target}`)
+    .join(" | ")}`;
+}
+
+/** Current sessions of the possible threads, minus `exclude`. */
+export async function possibleResumeTargets(
+  threadIds: readonly string[],
+  registryPath: string,
+  exclude: string,
+): Promise<string[]> {
+  const targets: string[] = [];
+  for (const threadId of threadIds) {
+    const current = await threads.currentAlias({ threadId, registryPath });
+    const target =
+      current.ok && current.value.currentAlias !== null ? claudeSessionIdFromAlias(current.value.currentAlias) : null;
+    if (target !== null && target !== exclude) targets.push(target);
   }
-  if (resumeTargets.length > 1) {
-    return `${head} Continue the conversation with one of: ${resumeTargets
-      .map((target) => `cc-lhc --resume ${target}`)
-      .join(" | ")}`;
+  return targets;
+}
+
+/**
+ * Guidance when a launch names a rebuilt transcript no record links to its
+ * thread: no lineage row, or only the row an earlier launch of it wrote with
+ * unknown prefix provenance (a new, uncaptured thread). Null for any other
+ * session. A one-shot prints it and exits rather than running Claude on a
+ * transcript whose capture would be refused.
+ */
+export async function unlinkedRebuildLaunchGuidance(input: {
+  sessionId: string;
+  rolloutPath: string;
+  registryPath: string;
+  lineageDbPath: string;
+  lineageDeps?: LineageDbDeps;
+}): Promise<string | null> {
+  let recorded: ReturnType<typeof lookupSessionLineage>;
+  try {
+    recorded = lookupSessionLineage(input.lineageDbPath, input.sessionId, input.lineageDeps);
+  } catch {
+    return null;
   }
-  return (
-    `${head} Continue the conversation it was compacted from with: cc-lhc --resume <that session's id> ` +
-    "(run cc-lhc --resume with no id to pick it)"
-  );
+  if (recorded !== undefined && recorded.prefix.kind !== "unknown") return null;
+  const unlinked = await identifyUnlinkedRebuild({
+    rolloutPath: input.rolloutPath,
+    lineageDbPath: input.lineageDbPath,
+    ...(input.lineageDeps === undefined ? {} : { lineageDeps: input.lineageDeps }),
+  });
+  if (unlinked === null) return null;
+  const targets = await possibleResumeTargets(unlinked.possibleThreadIds, input.registryPath, input.sessionId);
+  return unlinkedRebuildGuidance(input.sessionId, targets);
 }

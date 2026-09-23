@@ -78,6 +78,7 @@ import {
   startCaptureSession,
 } from "../intake/session.js";
 import { type LaunchThreadBinding, recordSwapAcceptance } from "../intake/thread-alias.js";
+import { unlinkedRebuildLaunchGuidance } from "../intake/unlinked-rebuild.js";
 import type { OpenAsyncWork } from "../observation/async-work.js";
 import { preLaunchEstimate } from "../observation/estimate.js";
 import {
@@ -845,15 +846,30 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // session it lands on is the one that thread currently accepts, read
       // under the acquired lock.
       const registryPath = defaultRegistryPath();
+      const launchRolloutPath = rolloutPathForExpectedSession(
+        join(homedir(), ".claude", "projects"),
+        process.cwd(),
+        expectedSession.sessionId,
+      );
+      if (launchForm === "one_shot") {
+        // A one-shot has no screen for the capture refusal: print the guidance
+        // and exit instead of running Claude on a transcript cc-lhc cannot link.
+        const guidance = await unlinkedRebuildLaunchGuidance({
+          sessionId: expectedSession.sessionId,
+          rolloutPath: launchRolloutPath,
+          registryPath,
+          lineageDbPath: defaultLineageDbPath(),
+        });
+        if (guidance !== null) {
+          wrapperLog.warn(guidance);
+          stderr.write(`${guidance}\n`);
+          return 2;
+        }
+      }
       const opened = await openLaunchThread({
         expectedSession,
         registryPath,
         lineageDbPath: defaultLineageDbPath(),
-        rolloutPath: rolloutPathForExpectedSession(
-          join(homedir(), ".claude", "projects"),
-          process.cwd(),
-          expectedSession.sessionId,
-        ),
         log: (message) => wrapperLog.info(message),
         createThread: async () => {
           const created = await createCaptureThread(process.cwd(), registryPath);

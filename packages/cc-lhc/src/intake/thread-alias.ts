@@ -26,7 +26,6 @@ import {
   type ThreadSessionRow,
   threadSessionRows,
 } from "./lineage-db.js";
-import { identifyUnlinkedRebuild } from "./unlinked-rebuild.js";
 
 /** Qualifier for every Claude Code session alias in the shared registry. */
 export const CLAUDE_ALIAS_HOST = "claude-code";
@@ -71,12 +70,6 @@ export interface LaunchThreadLookup {
   registryPath: string;
   lineageDbPath: string;
   lineageDeps?: LineageDbDeps;
-  /**
-   * The asked-for session's transcript, when known. Read only on a miss in
-   * both the registry and host lineage, to recognize a rebuilt transcript
-   * from an interrupted compaction that predates its lineage record.
-   */
-  rolloutPath?: string;
   log?: (message: string) => void;
 }
 
@@ -97,20 +90,10 @@ export async function resolveLaunchThread(lookup: LaunchThreadLookup): Promise<s
 
   const log = lookup.log ?? (() => {});
   const entry = lookupSessionLineage(lookup.lineageDbPath, lookup.sessionId, lookup.lineageDeps);
-  if (entry === undefined) {
-    if (lookup.rolloutPath === undefined) return null;
-    const unlinked = await identifyUnlinkedRebuild({
-      rolloutPath: lookup.rolloutPath,
-      lineageDbPath: lookup.lineageDbPath,
-      ...(lookup.lineageDeps === undefined ? {} : { lineageDeps: lookup.lineageDeps }),
-    });
-    if (unlinked?.kind !== "linked") return null;
-    log(
-      `cc-lhc: ${lookup.sessionId} is a rebuilt transcript from an interrupted compaction of thread ` +
-        `${unlinked.threadId} (identified by its rebuild prefix); it was never accepted`,
-    );
-    return unlinked.threadId;
-  }
+  // No record: a pre-fix rebuilt transcript is never bound to a thread from
+  // its content (unlinked-rebuild.ts); it opens as a new, uncaptured session
+  // whose capture refusal carries the guidance.
+  if (entry === undefined) return null;
   if (!entry.accepted) {
     log(`cc-lhc: ${lookup.sessionId} is a rebuilt session of thread ${entry.threadId} that was never accepted`);
     const current = await threads.currentAlias({ threadId: entry.threadId, registryPath });

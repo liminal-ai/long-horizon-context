@@ -10,7 +10,8 @@
  */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { Lhc, SessionThreadView, ThreadRef } from "lhc";
 import { describe, expect, it, vi } from "vitest";
@@ -38,7 +39,11 @@ import {
   resolveLaunchThread,
   unacceptedSwapArtifacts,
 } from "../../src/intake/thread-alias.js";
-import { identifyUnlinkedRebuild, unlinkedRebuildGuidance } from "../../src/intake/unlinked-rebuild.js";
+import {
+  identifyUnlinkedRebuild,
+  unlinkedRebuildGuidance,
+  unlinkedRebuildLaunchGuidance,
+} from "../../src/intake/unlinked-rebuild.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
@@ -55,6 +60,13 @@ const OLD = "11111111-1111-4111-8111-111111111111";
 const CURRENT = "22222222-2222-4222-8222-222222222222";
 const ORPHAN = "33333333-3333-4333-8333-333333333333";
 const OTHER_CURRENT = "44444444-4444-4444-8444-444444444444";
+/** Alder's re-review counterexample, unchanged (ALDER-REREVIEW-043.md). */
+const ALDER_FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/alder-043-short-tail-orphan.jsonl");
+const ALDER_ORPHAN = "11111111-1111-4111-8111-111111111111";
+const ALDER_B_SIGNATURES = [
+  "7e3af9d1d0129ff782e097d54f659e50c830318997c669c8e72762a7f428a7c4",
+  "ba1a1cc30c8df3501d24c76f710ecf0981164d92d8b3e38e7f1d90fd6178ed00",
+];
 const VERIFIED: PrefixBoundaryVerified = { kind: "verified", lineCount: 2, byteLength: 40, sha256: "cd".repeat(32) };
 
 interface Fixture {
@@ -139,20 +151,6 @@ async function writeUnrecordedRebuild(f: Fixture, sessionId: string, view: Sessi
     receipt: { text: "[lhc compact:auto] trigger context 508k; rebuilt LHC view 247k (240k target)." },
   });
   return written.rolloutPath;
-}
-
-/** The replay signatures the matcher counts: every line but the synthesized band and note lines. */
-function capturedSignaturesAll(path: string): string[] {
-  return readFileSync(path, "utf8")
-    .split("\n")
-    .filter((line) => line.trim() !== "")
-    .flatMap((line, index) => {
-      const item = JSON.parse(line) as RolloutLineItem;
-      const content = (item as { message?: { content?: unknown } }).message?.content;
-      if (item.type === "user" && typeof content === "string" && /^\[(context · |runtime note\])/.test(content))
-        return [];
-      return signaturesForRolloutLine(item, index);
-    });
 }
 
 /** The replay signatures capture recorded for the turns the rebuild replays. */
@@ -474,7 +472,6 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
       expectedSession: plan.expected,
       registryPath: f.registryPath,
       lineageDbPath: f.lineageDbPath,
-      rolloutPath: join(f.projectDir, `${plan.expected.sessionId}.jsonl`),
       home: f.home,
       createThread,
       log: (m) => logs.push(m),
@@ -538,7 +535,6 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
       expectedSession: { sessionId: ORPHAN, source: "explicit_resume" },
       registryPath: f.registryPath,
       lineageDbPath: f.lineageDbPath,
-      rolloutPath: join(f.projectDir, `${ORPHAN}.jsonl`),
       home: f.home,
       createThread: mustNotCreate,
     });
@@ -559,25 +555,25 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
     expect(swept?.rebuilds).toMatchObject({ moved: [], failed: [] });
   });
 
-  it("a pre-fix orphan (no record) resolves to its thread by its rebuild prefix", async () => {
+  it("a pre-fix orphan (no record) is never bound to a thread by its content, even a full match", async () => {
     const f = fixture("prefix");
     await seedThread(f, "th_mine");
-    await seedThread(f, "th_other", "77777777-7777-4777-8777-777777777777", OTHER_CURRENT);
     writeTranscript(f, CURRENT, now - 300);
     const path = await writeUnrecordedRebuild(f, ORPHAN);
     utimesSync(path, now - 60, now - 60);
     appendThreadSignatures(f.lineageDbPath, "th_mine", capturedSignatures(path));
-    appendThreadSignatures(f.lineageDbPath, "th_other", ["unrelated-signature"]);
 
-    const { opened, logs } = await continueLaunch(f);
+    const { opened } = await continueLaunch(f, async () => "th_orphan_new");
     try {
-      expect(opened.threadId).toBe("th_mine");
-      expect(opened.createdAtLaunch).toBe(false);
-      expect(opened.expectedSession).toEqual({ sessionId: CURRENT, source: "current_alias" });
-      expect(logs.some((m) => m.includes("identified by its rebuild prefix"))).toBe(true);
+      expect(opened.threadId).toBe("th_orphan_new");
+      expect(opened.createdAtLaunch).toBe(true);
+      expect(opened.expectedSession.sessionId).toBe(ORPHAN);
     } finally {
       opened.lease.release();
     }
+    expect(await identifyUnlinkedRebuild({ rolloutPath: path, lineageDbPath: f.lineageDbPath })).toEqual({
+      possibleThreadIds: ["th_mine"],
+    });
   });
 
   it("an ordinary unknown session still opens a new thread", async () => {
@@ -594,7 +590,7 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
     }
   });
 
-  it("a pre-fix orphan whose thread cannot be identified prints the exact --resume command", async () => {
+  it("a pre-fix orphan's capture refusal gives the picker and lists matched threads only as possible", async () => {
     const f = fixture("unidentified");
     await seedThread(f, "th_a");
     await seedThread(f, "th_b", "77777777-7777-4777-8777-777777777777", OTHER_CURRENT);
@@ -627,6 +623,8 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
       }
       const guidance = errors.find((m) => m.includes("--resume"));
       expect(guidance).toBeDefined();
+      expect(guidance).toContain("run cc-lhc --resume with no id and pick it");
+      expect(guidance).toContain("Possible matches (shared text only, unverified)");
       expect(guidance).toContain(`cc-lhc --resume ${CURRENT}`);
       expect(guidance).toContain(`cc-lhc --resume ${OTHER_CURRENT}`);
       expect(errors.join("\n")).not.toContain("/smart-compact");
@@ -636,78 +634,91 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
     }
   });
 
-  it("common replayed text an unrelated thread shares is not ownership (Alder's aged-signatures case)", async () => {
-    const f = fixture("common-text");
-    await seedThread(f, "th_actual_a");
-    await seedThread(f, "th_unrelated_b", "77777777-7777-4777-8777-777777777777", OTHER_CURRENT);
-    const text = (t: string) => [{ type: "text", text: t }];
-    const view = {
-      threadId: "th_actual_a",
-      entries: [
-        { role: "user", content: "[context · smooth]\nearlier work summarized", sourceMessages: [] },
-        { role: "user", content: "continue", sourceMessages: [] },
-        { role: "assistant", content: text("Done."), sourceMessages: [] },
-        { role: "user", content: "rename the quasar module to pulsar", sourceMessages: [] },
-        { role: "assistant", content: text("Renamed quasar to pulsar in 3 files."), sourceMessages: [] },
-        { role: "user", content: "and bump the pulsar changelog", sourceMessages: [] },
-        { role: "assistant", content: text("Changelog bumped to 2.4.0."), sourceMessages: [] },
-      ],
-    } as unknown as SessionThreadView;
-    const path = await writeUnrecordedRebuild(f, ORPHAN, view);
+  it("Alder's short-tail orphan (2 replayed lines, both common text) is not bound to the thread that holds them", async () => {
+    const f = fixture("alder-short-tail");
+    const A_FIRST = "55555555-5555-4555-8555-555555555555";
+    const A_CURRENT = "66666666-6666-4666-8666-666666666666";
+    await seedThread(f, "th_actual_A", A_FIRST, A_CURRENT);
+    await seedThread(f, "th_unrelated_B", "77777777-7777-4777-8777-777777777777", OTHER_CURRENT);
+    const path = join(f.projectDir, `${ALDER_ORPHAN}.jsonl`);
+    writeFileSync(path, readFileSync(ALDER_FIXTURE));
     utimesSync(path, now - 60, now - 60);
-    const lines = readFileSync(path, "utf8")
-      .split("\n")
-      .filter((line) => line.trim() !== "")
-      .map((line) => JSON.parse(line) as RolloutLineItem);
-    const common = lines.flatMap((line, index) => {
-      const body = JSON.stringify(line.message ?? "");
-      return body.includes('"continue"') || body.includes('"Done."') ? signaturesForRolloutLine(line, index) : [];
+    // Alder's lineage: A's bounded window has aged the tail out; B holds exactly the two replayed lines.
+    appendThreadSignatures(
+      f.lineageDbPath,
+      "th_actual_A",
+      Array.from({ length: 20 }, (_, n) => `later-A-${n + 1}`),
+    );
+    appendThreadSignatures(f.lineageDbPath, "th_unrelated_B", ALDER_B_SIGNATURES);
+
+    // B matches 2 of 2: the old rules linked it. It is only a possible match now.
+    expect(await identifyUnlinkedRebuild({ rolloutPath: path, lineageDbPath: f.lineageDbPath })).toEqual({
+      possibleThreadIds: ["th_unrelated_B"],
     });
-    expect(common.length).toBeGreaterThan(0);
-    // A's bounded window has aged the replayed turns out; B holds only the common lines.
-    appendThreadSignatures(f.lineageDbPath, "th_actual_a", ["a-later-1", "a-later-2"]);
-    appendThreadSignatures(f.lineageDbPath, "th_unrelated_b", [...common, "b-own-1"]);
-
-    const identified = await identifyUnlinkedRebuild({ rolloutPath: path, lineageDbPath: f.lineageDbPath });
-    expect(identified).toEqual({ kind: "unidentified", candidateThreadIds: [] });
-
     const { opened } = await continueLaunch(f, async () => "th_orphan_new");
     try {
-      expect(opened.threadId).not.toBe("th_unrelated_b");
-      expect(opened.createdAtLaunch).toBe(true);
+      expect(opened.threadId).toBe("th_orphan_new");
+      expect(opened.expectedSession.sessionId).toBe(ALDER_ORPHAN);
     } finally {
       opened.lease.release();
     }
-  });
 
-  it("links only when the top thread holds at least half of the signatures and strictly leads", async () => {
-    const f = fixture("majority");
-    const path = await writeUnrecordedRebuild(f, ORPHAN);
-    const all = [...new Set(capturedSignaturesAll(path))];
-    const half = Math.ceil(all.length / 2);
-    appendThreadSignatures(f.lineageDbPath, "th_half", all.slice(0, half));
-    appendThreadSignatures(f.lineageDbPath, "th_less", all.slice(0, half - 1));
-    expect(await identifyUnlinkedRebuild({ rolloutPath: path, lineageDbPath: f.lineageDbPath })).toMatchObject({
-      kind: "linked",
-      threadId: "th_half",
+    const guidance = await unlinkedRebuildLaunchGuidance({
+      sessionId: ALDER_ORPHAN,
+      rolloutPath: path,
+      registryPath: f.registryPath,
+      lineageDbPath: f.lineageDbPath,
     });
-
-    const g = fixture("minority");
-    const pathG = await writeUnrecordedRebuild(g, ORPHAN);
-    const allG = [...new Set(capturedSignaturesAll(pathG))];
-    appendThreadSignatures(g.lineageDbPath, "th_top", allG.slice(0, Math.ceil(allG.length / 2) - 1));
-    expect(await identifyUnlinkedRebuild({ rolloutPath: pathG, lineageDbPath: g.lineageDbPath })).toEqual({
-      kind: "unidentified",
-      candidateThreadIds: [],
-    });
-  });
-
-  it("guidance names the single identified session exactly, and says how to pick one otherwise", () => {
-    expect(unlinkedRebuildGuidance(ORPHAN, [CURRENT])).toContain(
-      `Continue the conversation with: cc-lhc --resume ${CURRENT}`,
+    expect(guidance).toBe(
+      `cc-lhc: session ${ALDER_ORPHAN} is a Smart Compact rebuilt transcript from an interrupted compaction that ` +
+        "cc-lhc cannot link to a thread; capture is off for it. Continue the conversation it was compacted from: " +
+        "run cc-lhc --resume with no id and pick it. " +
+        `Possible matches (shared text only, unverified): cc-lhc --resume ${OTHER_CURRENT}`,
     );
-    expect(unlinkedRebuildGuidance(ORPHAN, [])).toContain("cc-lhc --resume with no id");
-    expect(unlinkedRebuildGuidance(ORPHAN, [])).not.toContain("/smart-compact");
+  });
+
+  it("launch guidance is only for a rebuilt transcript nothing links; a recorded or ordinary session gets none", async () => {
+    const f = fixture("launch-guidance");
+    await seedThread(f, "th_known");
+    const orphan = await writeUnrecordedRebuild(f, ORPHAN);
+    const args = { registryPath: f.registryPath, lineageDbPath: f.lineageDbPath };
+    expect(await unlinkedRebuildLaunchGuidance({ ...args, sessionId: ORPHAN, rolloutPath: orphan })).toContain(
+      "cannot link to a thread",
+    );
+    expect(await unlinkedRebuildLaunchGuidance({ ...args, sessionId: ORPHAN, rolloutPath: orphan })).not.toContain(
+      "Possible matches",
+    );
+    // A captured session (the thread's own current one) is not an orphan.
+    const current = writeTranscript(f, CURRENT, now - 300);
+    expect(await unlinkedRebuildLaunchGuidance({ ...args, sessionId: CURRENT, rolloutPath: current })).toBeNull();
+    // An unaccepted reservation resolves through its record, not guidance.
+    await reserveRebuiltSessionLineage({
+      newSessionId: ORPHAN,
+      threadId: "th_known",
+      prefixBoundary: VERIFIED,
+      lineageDbPath: f.lineageDbPath,
+    });
+    expect(await unlinkedRebuildLaunchGuidance({ ...args, sessionId: ORPHAN, rolloutPath: orphan })).toBeNull();
+    // An ordinary unknown session (no rebuild prefix) is not an orphan either.
+    const plain = join(f.projectDir, "88888888-8888-4888-8888-888888888888.jsonl");
+    writeFileSync(plain, `${JSON.stringify({ type: "user", uuid: "u1", message: { role: "user", content: "hi" } })}\n`);
+    expect(
+      await unlinkedRebuildLaunchGuidance({
+        ...args,
+        sessionId: "88888888-8888-4888-8888-888888888888",
+        rolloutPath: plain,
+      }),
+    ).toBeNull();
+  });
+
+  it("guidance never presents a possible match as the answer", () => {
+    const none = unlinkedRebuildGuidance(ORPHAN, []);
+    expect(none).toContain("run cc-lhc --resume with no id and pick it");
+    expect(none).not.toContain("Possible matches");
+    expect(none).not.toContain("/smart-compact");
+    const one = unlinkedRebuildGuidance(ORPHAN, [CURRENT]);
+    expect(one).toContain(`Possible matches (shared text only, unverified): cc-lhc --resume ${CURRENT}`);
+    expect(one).not.toContain("Continue the conversation with:");
   });
 });
 
@@ -804,7 +815,6 @@ describe("F3 launch sweep and an unaccepted reservation", () => {
       expectedSession: plan.expected,
       registryPath: f.registryPath,
       lineageDbPath: f.lineageDbPath,
-      rolloutPath: join(f.projectDir, `${CURRENT}.jsonl`),
       home: f.home,
       createThread: () => Promise.reject(new Error("must not create")),
       log: () => {},
