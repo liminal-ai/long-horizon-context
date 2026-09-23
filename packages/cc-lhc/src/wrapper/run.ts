@@ -180,6 +180,7 @@ import {
   formatSurvivalRelaunchNotice,
   NONVIABLE_SWAPS_BEFORE_ALARM,
 } from "./replacement-nonviability.js";
+import { repairResumedTranscript } from "./resume-repair.js";
 import {
   formatAutoDeferredSummary,
   formatAutoGuardBusyDetail,
@@ -851,6 +852,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
         log: wrapperLog,
         ...(descriptorIo === undefined ? {} : { descriptorIo }),
       });
+      const { sessionId } = expectedSession;
+      repairResumedTranscript({ sessionId, cwd: process.cwd(), home: ccLhcHome(), log: wrapperLog, stderr });
 
       // Durable handoff state from a pre-rewrite build is consumed once, here:
       // under the thread lease, and never before it. The recovery directory and

@@ -269,7 +269,7 @@ describe("watcher continuity (exact consumed digest)", () => {
     expect(lines).not.toContain("LURE3");
   });
 
-  it("unterminated initial content is terminal: append later yields zero emissions", async () => {
+  it("unterminated initial content waits: completion later is ingested", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-partial-init-"));
     const path = join(dir, "s.jsonl");
     writeFileSync(path, '{"type":"user","uuid":"partial"'); // no newline
@@ -281,11 +281,12 @@ describe("watcher continuity (exact consumed digest)", () => {
         emissions.push(...em);
       },
     });
-    await expect(watcher.initialCatchUp).rejects.toThrow(/unterminated initial partial/);
-    expect(watcher.isTerminal?.()).toBe(true);
+    await watcher.initialCatchUp;
+    expect(emissions).toHaveLength(0);
+    expect(watcher.isTerminal?.()).toBe(false);
     appendFileSync(path, ',"message":{"role":"user","content":"late"}}\n');
     await sleep(150);
-    expect(emissions).toHaveLength(0);
+    expect(emissions.map((e) => (e.kind === "line" ? e.item.uuid : e.kind))).toEqual(["partial"]);
   });
 
   it("positive short reads eventually complete successfully", async () => {

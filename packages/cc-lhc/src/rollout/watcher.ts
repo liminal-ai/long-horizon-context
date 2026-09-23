@@ -205,7 +205,8 @@ function sha256(buf: Buffer): string {
  * 3. Capture post-read metadata; if changed, bounded retry or reject
  * 4. Prove candidate[0, oldOffset) matches prior consumed digest
  * 5. Derive suffix + new digest from those exact candidate bytes
- * 6. Initial: validate full parse + trailing newline before commit/onBatch
+ * 6. Initial: validate every complete line before commit/onBatch; an
+ *    unterminated last line is held as partial until its newline arrives
  * 7. Commit offset/digest/meta, then deliver
  *
  * Idle polls with unchanged metadata skip work. fs.watch marks continuity dirty
@@ -453,8 +454,8 @@ export function watchRolloutFile(
   };
 
   /**
-   * Parse a complete snapshot text for initial delivery. Requires trailing
-   * newline on non-empty content. Returns emissions or a rejection reason.
+   * Parse the complete-lines portion of the initial snapshot. Callers pass
+   * text ending at a newline (the unterminated tail is held back as partial). Returns emissions or a rejection reason.
    * Does not touch global partial/offset.
    */
   const parseCompleteSnapshot = (
@@ -627,19 +628,33 @@ export function watchRolloutFile(
       }
 
       if (isInitial) {
-        // Validate complete initial candidate (including final newline) before
-        // any commit or onBatch.
-        const fullText = candidate.toString("utf8");
+        // Validate every complete initial line before any commit or onBatch.
+        // An unterminated last line is not-yet-complete data (a writer caught
+        // mid-append, or a torn tail the launch repair could not touch): it is
+        // held as the live partial and ingested when its newline arrives —
+        // never grounds to fail initial catch-up. It must lie in the suffix;
+        // an unterminated already-consumed prefix still fails closed.
+        const completeEnd = candidate.lastIndexOf(0x0a) + 1;
+        if (completeEnd < snapshotEnd && completeEnd < oldOffset) {
+          return { fail: "unterminated initial partial line", kind: "initial" };
+        }
+        const fullText = candidate.subarray(0, completeEnd).toString("utf8");
         const parsed = parseCompleteSnapshot(fullText, oldOffset);
         if (!parsed.ok) {
           return { fail: parsed.reason, kind: "initial" };
         }
+        const tail = enforcePartialCap(
+          candidate.subarray(completeEnd).toString("utf8"),
+          maxPartialBytes,
+          options.onBufferCap,
+        );
+        if (tail.capBreach !== null) parsed.emissions.push(tail.capBreach);
         // Commit then deliver.
         offset = snapshotEnd;
         consumedDigest = newDigest;
         lastMeta = pre;
         continuityDirty = false;
-        partial = "";
+        partial = tail.partial;
         if (parsed.emissions.length === 0) {
           finishInitialOk();
         } else {
