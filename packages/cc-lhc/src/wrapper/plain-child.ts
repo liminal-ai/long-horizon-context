@@ -16,6 +16,10 @@
  *  - elsewhere, or without setpriv: a small detached watchdog polls the wrapper
  *    and sends SIGHUP (then SIGKILL after WATCHDOG_KILL_AFTER_MS) once it is gone.
  *
+ * Windows has no SIGHUP (libuv answers ENOSYS for it) and no process groups, so
+ * termination there is what closing the ConPTY did: `taskkill /T /F` on Claude's
+ * process tree, from `kill()` and from the watchdog alike.
+ *
  * The returned handle implements the part of node-pty's `IPty` the wrapper
  * uses for a routed child (pid, onData, onExit, kill, write, resize); data and
  * resize are no-ops because the child writes to the terminal directly.
@@ -48,6 +52,10 @@ const timer = setInterval(() => {
   if (!alive(child)) process.exit(0);
   if (alive(wrapper)) return;
   clearInterval(timer);
+  if (process.platform === "win32") {
+    try { require("node:child_process").spawnSync("taskkill", ["/PID", String(child), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); } catch {}
+    process.exit(0);
+  }
   try { process.kill(child, "${PARENT_DEATH_SIGNAL}"); } catch {}
   const deadline = Date.now() + killAfter;
   setInterval(() => {
@@ -138,6 +146,20 @@ export const spawnPlainChild: PlainChildSpawn = (file, args, options) => {
       return { dispose: () => {} };
     },
     kill: (signal?: string) => {
+      if (platform === "win32") {
+        // No SIGHUP and no process groups: close the tree, as the ConPTY did.
+        // (Inline rather than child-termination's helper: this module stays
+        // free of relative imports so the real-process tests can run it as is.)
+        try {
+          spawn("taskkill", ["/PID", String(pid), "/T", "/F"], { windowsHide: true, stdio: "ignore" }).on(
+            "error",
+            () => {},
+          );
+        } catch {
+          // Nothing more to try; the watchdog still covers wrapper death.
+        }
+        return;
+      }
       child.kill((signal ?? "SIGHUP") as NodeJS.Signals);
     },
     write: () => {},

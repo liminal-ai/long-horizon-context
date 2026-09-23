@@ -7,10 +7,10 @@
 
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { findSetpriv, spawnPlainChild, WATCHDOG_SOURCE } from "../../src/wrapper/plain-child.js";
@@ -58,7 +58,8 @@ function writeParentScript(dir: string, childArgs: string[], mode: "default" | "
   const script = join(dir, `parent-${mode}.mts`);
   writeFileSync(
     script,
-    `import { spawnPlainChild } from ${JSON.stringify(MODULE)};
+    // A file URL: Windows ESM rejects a bare absolute path as an import specifier.
+    `import { spawnPlainChild } from ${JSON.stringify(pathToFileURL(MODULE).href)};
 const h = spawnPlainChild(process.execPath, ${JSON.stringify(childArgs)}, {
   cwd: process.cwd(), env: process.env,
   ${mode === "watchdog" ? "setprivPath: null," : ""}
@@ -121,6 +122,24 @@ describe("spawnPlainChild: launch shape", () => {
     expect(couplings).toEqual(["watchdog"]);
   });
 
+  it("win32: kill() closes Claude's process tree with taskkill /T /F (no SIGHUP there)", () => {
+    const rec = recordingSpawn();
+    const handle = spawnPlainChild("claude", ["-p", "hi"], {
+      cwd: "/tmp",
+      env: {},
+      platform: "win32",
+      spawn: rec.spawn,
+      wrapperPid: 777,
+    });
+    handle.kill();
+    handle.kill("SIGTERM");
+    const taskkills = rec.calls.filter((c) => c.program === "taskkill");
+    expect(taskkills.map((c) => c.args)).toEqual([
+      ["/PID", "4001", "/T", "/F"],
+      ["/PID", "4001", "/T", "/F"],
+    ]);
+  });
+
   it("Linux without setpriv falls back to the watchdog", () => {
     const rec = recordingSpawn();
     spawnPlainChild("claude", [], { cwd: "/tmp", env: {}, platform: "linux", setprivPath: null, spawn: rec.spawn });
@@ -138,7 +157,9 @@ describe("spawnPlainChild: real processes", () => {
     const idle = spawnPlainChild(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: tmpdir(), env });
     const exited = new Promise<{ exitCode: number; signal?: number }>((r) => idle.onExit(r));
     idle.kill("SIGTERM");
-    expect((await exited).signal).toBe(15);
+    // Windows closes the tree with taskkill /F, which ends it with exit code 1 and no signal.
+    if (process.platform === "win32") expect(await exited).toEqual({ exitCode: 1 });
+    else expect((await exited).signal).toBe(15);
   });
 
   it("piped stdin reaches the child and its stdout comes back byte-for-byte (no CRLF, no escapes)", () => {
@@ -170,4 +191,28 @@ describe("spawnPlainChild: real processes", () => {
     parent.kill("SIGKILL");
     expect(await waitUntil(() => !alive(childPid), 8_000)).toBe(true);
   }, 30_000);
+
+  it.skipIf(process.platform === "win32")(
+    "the watchdog's Windows branch runs taskkill /T /F on the child once the wrapper is gone",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "plain-child-wd-"));
+      // A stand-in taskkill on PATH that records its argv and kills the named pid.
+      const log = join(dir, "taskkill.log");
+      const fake = join(dir, "taskkill");
+      writeFileSync(fake, `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\nkill -9 "$2"\n`, { mode: 0o755 });
+      const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
+      spawned.push(child);
+      const gone = spawn(process.execPath, ["-e", "0"], { stdio: "ignore" });
+      await new Promise((r) => gone.once("exit", r));
+      const forced = `Object.defineProperty(process, "platform", { value: "win32" });\n${WATCHDOG_SOURCE}`;
+      const watchdog = spawn(process.execPath, ["-e", forced, String(gone.pid), String(child.pid)], {
+        stdio: "ignore",
+        env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ""}` },
+      });
+      spawned.push(watchdog);
+      expect(await waitUntil(() => !alive(child.pid!), 8_000)).toBe(true);
+      expect(readFileSync(log, "utf8").trim()).toBe(`/PID ${child.pid} /T /F`);
+    },
+    20_000,
+  );
 });

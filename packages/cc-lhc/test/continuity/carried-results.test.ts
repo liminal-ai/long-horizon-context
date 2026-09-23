@@ -36,9 +36,12 @@ const T = "th_f4";
 const SESSION = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const dirs: string[] = [];
 const pids: ReapTarget[] = [];
+const stores: ContinuityStore[] = [];
 afterEach(async () => {
   await reapProcesses(pids);
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  // Windows refuses to remove a tree while the SQLite file is still open.
+  for (const store of stores.splice(0)) store.close();
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 /** Claude Code 2.1.x subagent transcript records (shapes from real `subagents/agent-<id>.jsonl` files). */
@@ -109,6 +112,7 @@ function session(opts: { monitorCommand: string; transcript: string }) {
   writeFileSync(rolloutPath, `${monitorLines.map((l) => JSON.stringify(l)).join("\n")}\n`);
   const dbPath = join(root, "cc-lhc.sqlite");
   const store = openContinuityStore(dbPath);
+  stores.push(store);
   let now = 1_000;
   const observer = createContinuityObserver({ store, threadId: T, nowFn: () => (now += 1) });
   for (const line of [...LAUNCHES.agent.lines({ tasksDir, sessionDir }), ...monitorLines]) observer.observeLine(line);

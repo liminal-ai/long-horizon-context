@@ -27,14 +27,20 @@ function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
 }
 
 describe("run: one-shot on an unlinked rebuilt transcript", () => {
-  const saved = { HOME: process.env.HOME, CC_LHC_HOME: process.env.CC_LHC_HOME };
+  const saved = {
+    HOME: process.env.HOME,
+    USERPROFILE: process.env.USERPROFILE,
+    CC_LHC_HOME: process.env.CC_LHC_HOME,
+  };
   const dirs: string[] = [];
 
   beforeEach(() => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-unlinked-home-"));
     const lhcHome = mkdtempSync(join(tmpdir(), "cc-lhc-unlinked-lhc-"));
     dirs.push(home, lhcHome);
+    // os.homedir() reads USERPROFILE on Windows and HOME elsewhere.
     process.env.HOME = home;
+    process.env.USERPROFILE = home;
     process.env.CC_LHC_HOME = lhcHome;
     const projectDir = join(home, ".claude", "projects", encodeProjectPath(process.cwd()));
     mkdirSync(projectDir, { recursive: true });
@@ -51,7 +57,7 @@ describe("run: one-shot on an unlinked rebuilt transcript", () => {
       if (value === undefined) delete process.env[key];
       else process.env[key] = value;
     }
-    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
   it("prints the guidance on stderr and exits non-zero without launching Claude", async () => {
