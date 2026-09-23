@@ -174,6 +174,7 @@ import {
   formatRetrievalStateRow,
   toPanelWording,
 } from "./panel-wording.js";
+import { type PlainChildSpawn, spawnPlainChild } from "./plain-child.js";
 import {
   formatReplacementNonviabilityAlarm,
   formatSurvivalRelaunchNotice,
@@ -259,6 +260,8 @@ export type ForceWrapperExit = (code: number) => void;
 export type RunOptions = {
   claudeBin?: string;
   spawnPty?: PtySpawn;
+  /** Test seam: the plain-process spawn used for one-shot (`-p`) launches. */
+  spawnPlain?: PlainChildSpawn;
   stdin?: NodeJS.ReadStream;
   stdout?: NodeJS.WriteStream;
   stderr?: NodeJS.WriteStream;
@@ -397,6 +400,10 @@ function restoreTerminal(stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream): 
 export async function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const claudeBin = options.claudeBin ?? resolveClaudeBin();
   const spawnPty = options.spawnPty ?? defaultSpawn;
+  // A test that injects the pty seam gets its fake for one-shot children too.
+  const spawnPlain =
+    options.spawnPlain ??
+    (options.spawnPty !== undefined ? (options.spawnPty as unknown as PlainChildSpawn) : spawnPlainChild);
   const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
@@ -1345,15 +1352,26 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     childEnv[RUNTIME_DESCRIPTOR_ENV] = runtimeDescriptorPath;
   }
 
+  // A one-shot runs Claude as a plain process with the wrapper's own stdio
+  // (plain-child.ts): no panel, no input routing, no mid-turn handoff.
+  const plainChild = launchForm === "one_shot";
   let currentPty: IPty;
   try {
-    currentPty = spawnPty(claudeBin, childArgv, {
-      name: TERM_NAME,
-      cols,
-      rows,
-      cwd: process.cwd(),
-      env: childEnv,
-    });
+    currentPty = plainChild
+      ? spawnPlain(claudeBin, childArgv, {
+          cwd: process.cwd(),
+          env: childEnv,
+          onCoupling: (coupling) => {
+            wrapperLog.info(`cc-lhc one-shot: Claude runs as a plain process (parent-death coupling: ${coupling})`);
+          },
+        })
+      : spawnPty(claudeBin, childArgv, {
+          name: TERM_NAME,
+          cols,
+          rows,
+          cwd: process.cwd(),
+          env: childEnv,
+        });
   } catch (cause) {
     // Spawn failed after descriptor create → revoke opening descriptor.
     if (runtimeDescriptorPath !== undefined) {
@@ -1445,7 +1463,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       // best effort
     }
     try {
-      restoreTerminal(stdin, stdout);
+      if (!plainChild) restoreTerminal(stdin, stdout);
     } catch {
       // best effort
     }
@@ -1934,7 +1952,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
   const cleanup = (): void => {
     altScreen.leave();
-    restoreTerminal(stdin, stdout);
+    // A plain one-shot child owned the terminal itself; nothing to restore.
+    if (!plainChild) restoreTerminal(stdin, stdout);
     process.removeListener("SIGUSR1", onSigusr1);
     cleanupDescriptor();
     releaseThreadOwner();
@@ -1942,7 +1961,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
 
   process.on("exit", cleanup);
 
-  if (stdin.isTTY) {
+  if (stdin.isTTY && !plainChild) {
     stdin.setRawMode(true);
   }
 
@@ -3638,7 +3657,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const openPanelFor = (rows: readonly string[]): boolean => {
       if (inputState.mode === "passthrough") {
         pendingPanelNotices = [...pendingPanelNotices, ...rows];
-        if (!stdin.isTTY) return false;
+        if (!stdin.isTTY || plainChild) return false;
         // The same transition the reopen key makes, so the panel opens exactly as it does on demand.
         const opened = processInputChunk(Buffer.from([leaderByte]), inputState);
         inputState = opened.state;
@@ -3670,7 +3689,7 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     };
     // Onboarding is for an interactive terminal: without a TTY nothing is
     // shown or marked, and only actionable guidance waits in the panel.
-    if (startup.open && !stdin.isTTY) {
+    if (startup.open && (!stdin.isTTY || plainChild)) {
       pendingPanelNotices = [...pendingPanelNotices, ...actionableGuidanceRows(startupActionable)];
     } else if (startup.open && openPanelFor(startup.rows)) {
       if (startup.firstLoad) {
@@ -3686,6 +3705,8 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     }
 
     attachChild(currentPty, expectedSession?.sessionId ?? "", true);
+    // A plain one-shot child reads stdin itself; the wrapper must not consume it.
+    if (plainChild) return;
     stdin.on("data", forwardInput);
     // stdin ending/erroring has no wrapper lifecycle of its own (the child
     // and capture run on) — but with no input left there is no keypress to

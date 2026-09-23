@@ -363,6 +363,8 @@ function transcriptSampling(totalTokens: number): LifecycleSignal[] {
 }
 
 interface OneShotHarness {
+  /** The stdin handed to run(); a one-shot must never attach a reader to it. */
+  stdin: NodeJS.ReadStream;
   spawned: FakePty[];
   captureCalls: CaptureSessionDeps[];
   /** Lifecycle sink of the capture generation bound to the launched session. */
@@ -506,6 +508,7 @@ describe("run: one-shot pre-launch compaction", () => {
       return session;
     };
 
+    const stdin = fakeStream();
     const runPromise = run(input.argv ?? ["-p", input.prompt, "--resume", RESUMED_ID], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
@@ -519,7 +522,7 @@ describe("run: one-shot pre-launch compaction", () => {
         input.onSpawn?.(fake, spawned.length - 1);
         return fake as never;
       }) as never,
-      stdin: fakeStream(),
+      stdin,
       stdout: fakeStream() as never,
       stderr: fakeStream() as never,
       noInference: true,
@@ -531,6 +534,7 @@ describe("run: one-shot pre-launch compaction", () => {
 
     return {
       harness: {
+        stdin,
         spawned,
         captureCalls,
         launchedSink: () => sinks.get(REBUILT_ID) ?? sinks.get(RESUMED_ID),
@@ -569,6 +573,9 @@ describe("run: one-shot pre-launch compaction", () => {
     expect(harness.captureCalls[1]!.prefixBoundary).toMatchObject({ kind: "verified", lineCount: 2 });
     expect(harness.captureCalls[1]!.suppressBindLineageRecord).toBe(true);
     expect(mocks.registerLineage).toHaveBeenCalledOnce();
+
+    // F1+F8: the one-shot child reads stdin itself; the wrapper never consumes it.
+    expect(harness.stdin.listenerCount("data")).toBe(0);
 
     harness.spawned[0]!.fireExit(0);
     await runPromise;
