@@ -39,7 +39,7 @@ import { probeProcessIdentityNative } from "../runtime/native-identity.js";
 import type { ProbeProcessIdentity } from "../runtime/process-identity.js";
 import { RESULT_COPY_MAX_BYTES, resultCopyPath } from "./cleanup.js";
 import { MAX_DETAIL_CHARS, type MonitorEventLine } from "./delivery.js";
-import { type ManagePorts, readItemOutput, signalRelaunched } from "./manage.js";
+import { type ManagePorts, readItemOutput, signalRelaunched, stillRunningAfterFailedSignal } from "./manage.js";
 import type { CarriedResult, ContinuityItem, ContinuityStore } from "./store.js";
 
 /** The continuity directory beside a lineage database (the wrapper's `monitorOutputDir`). */
@@ -464,7 +464,9 @@ export function stopRelaunchedMonitors(
       continue;
     }
     const signalled = signal(proc.pid, ports.platform ?? process.platform);
-    if (!signalled.ok) {
+    // The same rule as `cc-lhc tasks stop` (long-horizon-context-bnk): a failed
+    // signal keeps the Monitor only while the exact process still runs.
+    if (!signalled.ok && stillRunningAfterFailedSignal(probe, proc)) {
       report.kept.push({ launchId: item.launchId, reason: signalled.reason });
       ports.log?.(
         `cc-lhc continuity: relaunched monitor ${item.launchId} pid ${proc.pid} not stopped: ${signalled.reason}`,

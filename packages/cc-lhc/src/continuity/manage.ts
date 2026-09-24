@@ -327,6 +327,30 @@ export function signalRelaunched(pid: number, platform: NodeJS.Platform): { ok: 
   }
 }
 
+/**
+ * After a failed stop signal: is the exact process still running? taskkill /T
+ * exits non-zero when one process in the tree is already gone or cannot be
+ * terminated, even though the root was killed, and a forced termination can
+ * outlast taskkill's own exit by a moment. So the process is re-probed for up
+ * to `waitMs`: gone or a different incarnation means the stop took effect.
+ * A probe that cannot tell counts as still running.
+ */
+export function stillRunningAfterFailedSignal(
+  probe: ProbeProcessIdentity,
+  proc: { pid: number; bootId: string; starttime: string },
+  waitMs = 1_000,
+): boolean {
+  const deadline = Date.now() + waitMs;
+  for (;;) {
+    const after = probe(proc.pid);
+    const running = !after.ok
+      ? after.code !== "not_found"
+      : after.identity.bootId === proc.bootId && after.identity.starttime === proc.starttime;
+    if (!running || Date.now() >= deadline) return running;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+}
+
 export function stopItem(
   store: ContinuityStore,
   threadId: string,
@@ -354,12 +378,8 @@ export function stopItem(
   // taskkill /T exits non-zero when one process in the tree is already gone or
   // cannot be terminated, even though the root was killed; re-verify before
   // telling the caller nothing was stopped.
-  if (!signalled.ok) {
-    const after = (ports.probeIdentity ?? probeProcessIdentityNative)(proc.pid);
-    const stillRunning = !after.ok
-      ? after.code !== "not_found"
-      : after.identity.bootId === proc.bootId && after.identity.starttime === proc.starttime;
-    if (stillRunning) return refuse("signal_failed", signalled.reason);
+  if (!signalled.ok && stillRunningAfterFailedSignal(ports.probeIdentity ?? probeProcessIdentityNative, proc)) {
+    return refuse("signal_failed", signalled.reason);
   }
   store.recordTerminal({
     threadId,

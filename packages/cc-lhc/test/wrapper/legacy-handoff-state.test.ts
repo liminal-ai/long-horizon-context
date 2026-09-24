@@ -130,7 +130,7 @@ function attemptPayload(threadId: string | undefined, sessions: { old: string; r
 }
 
 afterEach(() => {
-  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 });
 
 describe("state this thread owns", () => {
@@ -412,7 +412,19 @@ describe("two wrappers consuming at once, each on its own thread lease", () => {
       writeFileSync(join(paths.home, "consume-go"), "go");
       await Promise.all(done);
     } finally {
-      for (const child of children) child.kill("SIGKILL");
+      // Wait for the workers to be gone, not just signalled: on Windows a
+      // killed worker's SQLite handles outlive kill() for a moment, and the
+      // temp home cannot be removed while they are open (CI 35941944288).
+      await Promise.all(
+        children.map(
+          (child) =>
+            new Promise<void>((resolve) => {
+              if (child.exitCode !== null || child.signalCode !== null) return resolve();
+              child.once("exit", () => resolve());
+              child.kill("SIGKILL");
+            }),
+        ),
+      );
     }
 
     // Each consumed exactly its own one journal and one row.

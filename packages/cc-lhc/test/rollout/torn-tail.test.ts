@@ -2,9 +2,8 @@ import { type ChildProcess, spawn } from "node:child_process";
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
+import { createProcessControl } from "cc-lhc-native";
 import { afterEach, describe, expect, it } from "vitest";
-
 import { observeWatcherEmission } from "../../src/observation/observe.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import { repairTornTranscriptTail } from "../../src/rollout/torn-tail.js";
@@ -50,6 +49,14 @@ function sink() {
     stderr: { write: (chunk: string) => err.push(chunk) },
   };
 }
+
+// The real holder check. The suite-wide CC_LHC_IDENTITY_ADDON stub answers
+// `listFileHolders` as unsupported, so on Windows the check must load the
+// compiled addon with the override removed (`env: {}`), as the other
+// real-addon suites do; Linux and macOS never reach the addon.
+const realControl = createProcessControl({ env: {} });
+const realFindHolders = (path: string) =>
+  findFileHolders(path, { nativeHolders: (target) => realControl.listFileHolders(target) });
 
 describe("pre-launch torn-tail repair", () => {
   let watcher: RolloutWatcher | undefined;
@@ -138,9 +145,10 @@ describe("pre-launch torn-tail repair", () => {
       path: f.path,
       sessionId: "s-torn",
       home: f.home,
-      findHolders: (path) => findFileHolders(path),
+      findHolders: realFindHolders,
     });
-    expect(repair.kind).toBe("fragment_trimmed");
+    // The whole result, so a refusal prints its reason.
+    expect(repair).toMatchObject({ kind: "fragment_trimmed" });
     expect(readFileSync(f.path, "utf8")).toBe(line("a"));
   });
 
@@ -186,10 +194,10 @@ describe("pre-launch torn-tail repair", () => {
         projectsRoot: f.projectsRoot,
         log: out.logger,
         stderr: out.stderr,
-        findHolders: (path) => findFileHolders(path),
+        findHolders: realFindHolders,
       });
 
-      expect(repair.kind).toBe("held_open");
+      expect(repair).toMatchObject({ kind: "held_open" });
       if (repair.kind !== "held_open") return;
       expect(repair.holders.map((h) => h.pid)).toContain(holder.pid);
       expect(readFileSync(f.path, "utf8")).toBe(content);

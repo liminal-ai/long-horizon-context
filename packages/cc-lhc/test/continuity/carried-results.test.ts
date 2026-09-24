@@ -308,7 +308,12 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
     // Through the reaper: it stops the whole tree and waits for every process in it.
     // A bare kill of the pid ends only Git Bash on Windows; its `sleep` child keeps
     // the output file open and the temp dir cannot be removed (CI run 35920735874).
-    await reapProcesses(pids.splice(pids.findIndex((t) => t.pid === s.pid), 1));
+    await reapProcesses(
+      pids.splice(
+        pids.findIndex((t) => t.pid === s.pid),
+        1,
+      ),
+    );
     await waitGone(s.pid);
     const last = s.prompt();
     expect(events(last).map((l) => l.split(" · ").at(-1))).toEqual(["watch ended"]);
@@ -318,6 +323,35 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
       terminal: { outcome: "completed" },
     });
     expect(s.prompt()).not.toContain(LAUNCH_IDS.monitor);
+  });
+
+  it("a failed stop signal keeps the Monitor only while the exact process still runs (win32 taskkill /T)", () => {
+    // taskkill /T /F exits non-zero when one process in the tree is already
+    // gone, though the root was killed (CI 35941944288, win32-x64).
+    const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
+    const item = itemOf(s.store, LAUNCH_IDS.monitor);
+    const proc = item.relaunch!.process!;
+    const live = { ok: true as const, identity: { pid: proc.pid, bootId: proc.bootId, starttime: proc.starttime } };
+    const failed = () => ({ ok: false as const, reason: "ERROR: The process with PID 1 could not be terminated." });
+
+    const kept = stopRelaunchedMonitors(s.store, T, { signal: failed, probeIdentity: () => live });
+    expect(kept.stopped).toEqual([]);
+    expect(kept.kept).toEqual([{ launchId: LAUNCH_IDS.monitor, reason: failed().reason }]);
+    expect(itemOf(s.store, LAUNCH_IDS.monitor).state).toBe("active");
+
+    // The root did die: the first probe (before signalling) sees it live, the re-probe does not.
+    let probes = 0;
+    const stopped = stopRelaunchedMonitors(s.store, T, {
+      signal: failed,
+      probeIdentity: () =>
+        probes++ === 0 ? live : { ok: false as const, code: "not_found" as const, message: "no such process" },
+    });
+    expect(stopped).toEqual({
+      stopped: [{ launchId: LAUNCH_IDS.monitor, pid: proc.pid }],
+      alreadyExited: [],
+      kept: [],
+    });
+    expect(itemOf(s.store, LAUNCH_IDS.monitor)).toMatchObject({ state: "terminal", terminal: { outcome: "stopped" } });
   });
 
   it("the hook never marks events delivered by itself; an unobserved batch is offered again", () => {
@@ -333,7 +367,8 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
   it("session end stops the live relaunched Monitor, identity-gated, and records it stopped", async () => {
     const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
     const report = stopRelaunchedMonitors(s.store, T);
-    expect(report.stopped).toEqual([{ launchId: LAUNCH_IDS.monitor, pid: s.pid }]);
+    // The whole report, so a kept Monitor prints why.
+    expect(report).toEqual({ stopped: [{ launchId: LAUNCH_IDS.monitor, pid: s.pid }], alreadyExited: [], kept: [] });
     await waitGone(s.pid);
     expect(itemOf(s.store, LAUNCH_IDS.monitor)).toMatchObject({
       state: "terminal",
