@@ -48,7 +48,6 @@ import {
   CONTEXT_COMPACT_CONTINUE_REASON,
   type CompactReceipt,
   compactContinuationMarkerIdempotencyKey,
-  killClaudeCliInferenceChildren,
   type Lhc,
   type MessageEventInput,
   type ThreadRef,
@@ -66,6 +65,8 @@ import { bindSession, createLhc, createThread, resolveSession, threadRef } from 
 import { writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
 import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
+import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
+import { abortSummaryWorkers } from "./summaryWorker.js";
 import {
   formatTokenFamilyLog,
   isRealModelId,
@@ -407,7 +408,7 @@ export class ClaudeLhcSession {
       gen.input.end();
       gen.query.close();
     }
-    killClaudeCliInferenceChildren();
+    abortSummaryWorkers();
   }
 
   // ── generations ────────────────────────────────────────────────
@@ -422,7 +423,16 @@ export class ClaudeLhcSession {
       ...(typeof this.#maxThinkingTokens === "number" ? { maxThinkingTokens: this.#maxThinkingTokens } : {}),
       env: this.#env,
       pathToClaudeCodeExecutable: this.#claudeBin,
+      // History retrieval (retrieval.ts), merged with the MCP servers and
+      // allowed tools the host passed, never replacing them.
+      mcpServers: {
+        ...((this.#base as Options).mcpServers ?? {}),
+        [RETRIEVAL_SERVER_NAME]: createRetrievalServer(this.#lhc, () => this.#thread),
+      },
+      allowedTools: [...((this.#base as Options).allowedTools ?? []), ...RETRIEVAL_TOOL_NAMES],
       canUseTool: async (toolName, toolInput, callbackOptions) => {
+        // Read-only history retrieval never asks the host for approval.
+        if (RETRIEVAL_TOOL_NAMES.includes(toolName)) return { behavior: "allow", updatedInput: toolInput };
         const { signal, ...rest } = callbackOptions;
         this.#pendingApprovals += 1;
         try {

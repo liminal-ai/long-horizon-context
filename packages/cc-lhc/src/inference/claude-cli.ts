@@ -1,13 +1,20 @@
 import { type ChildProcess, type SpawnOptions, spawn } from "node:child_process";
 
-import type { ModelCall, ModelCallFailureKind, ModelCallInput, ModelCallResult } from "lhc";
+import {
+  type ModelCall,
+  type ModelCallFailureKind,
+  type ModelCallInput,
+  type ModelCallResult,
+  summaryWorkerBinary,
+  summaryWorkerCliLaunch,
+  summaryWorkerRequest,
+} from "lhc";
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
 
 const DEFAULT_TIMEOUT_MS = 60_000;
 const DEFAULT_CONCURRENCY = 3;
 const STDERR_EXCERPT_MAX = 500;
-const DEFAULT_SYSTEM_PROMPT = "You are a text processor. Follow the user instruction exactly.";
 export const SLOT_TIMEOUT_MESSAGE = "timed out waiting for inference slot";
 
 const liveChildren = new Set<ChildProcess>();
@@ -31,19 +38,6 @@ function excerpt(text: string, max = STDERR_EXCERPT_MAX): string {
   const trimmed = text.trim();
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max)}…`;
-}
-
-function partitionMessages(messages: ModelCallInput["messages"]): { systemPrompt: string; userBody: string } {
-  const systemParts: string[] = [];
-  const userParts: string[] = [];
-  for (const message of messages) {
-    if (message.role === "system") systemParts.push(message.content);
-    else userParts.push(message.content);
-  }
-  return {
-    systemPrompt: systemParts.length > 0 ? systemParts.join("\n\n") : DEFAULT_SYSTEM_PROMPT,
-    userBody: userParts.join("\n\n"),
-  };
 }
 
 export function classifyStderr(stderr: string): ModelCallFailureKind {
@@ -125,11 +119,8 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
     }
 
     const remainingMs = timeoutMs - elapsed;
-    const { systemPrompt, userBody } = partitionMessages(input.messages);
-    // --no-session-persistence: derivation subprocess sessions must never
-    // land in the project directory as rollout files — they would pollute the
-    // wrapper resume picker and session attribution (verified in 2.1.226).
-    const args = ["-p", "--no-session-persistence", "--model", input.model, "--system-prompt", systemPrompt];
+    // Lee's prompt as the system prompt; the template's text (its own system text first) on stdin.
+    const { user: userBody } = summaryWorkerRequest(input.messages);
 
     return new Promise<ModelCallResult>((resolve) => {
       let stdout = "";
@@ -142,15 +133,27 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
         settled = true;
         if (timer !== undefined) clearTimeout(timer);
         if (child !== undefined) liveChildren.delete(child);
+        launch?.removeCwd();
         release();
         resolve(result);
       };
 
       let timer: NodeJS.Timeout | undefined;
+      let launch: ReturnType<typeof summaryWorkerCliLaunch> | undefined;
 
       try {
-        const spawnOptions: SpawnOptions = { stdio: ["pipe", "pipe", "pipe"] };
-        child = spawnFn(binary(), args, spawnOptions);
+        // --no-session-persistence (derivation sessions must never land in the
+        // project directory as rollout files: they would pollute the wrapper
+        // resume picker and session attribution, verified in 2.1.226), no
+        // framing, tools or extra turns, in an empty scratch dir.
+        launch = summaryWorkerCliLaunch({
+          model: input.model,
+          env: process.env,
+          scratchPrefix: "cc-lhc-summary-",
+        });
+        const spawnOptions: SpawnOptions = { stdio: ["pipe", "pipe", "pipe"], cwd: launch.cwd, env: launch.env };
+        // An explicit relative binary resolves from our cwd, not the scratch dir.
+        child = spawnFn(summaryWorkerBinary(binary()), launch.args, spawnOptions);
       } catch (cause) {
         const code = typeof cause === "object" && cause !== null ? (cause as NodeJS.ErrnoException).code : undefined;
         if (code === "ENOENT") {
@@ -222,8 +225,11 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
           finish({ ok: false, kind: "other", message: excerpt(`stdin delivery failed: ${stdinFailure}`) });
           return;
         }
-        const kind = classifyStderr(stderr);
-        const base = stderr === "" ? `exit code ${String(code)}` : stderr;
+        // `claude -p` reports some failures (e.g. "Not logged in") on stdout
+        // with an empty stderr; classify whichever carries the reason.
+        const detail = stderr.trim() !== "" ? stderr : stdout.trim();
+        const kind = classifyStderr(detail);
+        const base = detail === "" ? `exit code ${String(code)}` : detail;
         const message = stderr === "" && stdinFailure !== undefined ? `${base}; stdin: ${stdinFailure}` : base;
         finish({ ok: false, kind, message: excerpt(message) });
       });

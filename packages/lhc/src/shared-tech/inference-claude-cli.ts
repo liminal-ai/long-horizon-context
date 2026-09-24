@@ -7,9 +7,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { ModelAssignment, ModelCall, ModelCallFailureKind, ModelCallResult } from "./inference-types.js";
 import { DEFAULT_PROMPT_NAMES } from "./prompts/index.js";
+import { summaryWorkerBinary, summaryWorkerCliLaunch, summaryWorkerRequest } from "./summary-worker.js";
 
 const PROVIDER = "claude-cli";
-const DEFAULT_SYSTEM_PROMPT = "You are a text processor. Follow the user instruction exactly.";
 const MAX_CONCURRENCY = 3;
 
 export function claudeCliInferenceAssignments(): Record<string, ModelAssignment> {
@@ -72,6 +72,8 @@ export function createClaudeCliModelCall(deps: {
   timeoutMs?: number;
 }): ModelCall {
   const timeoutMs = deps.timeoutMs ?? 90_000;
+  // Resolved now, against the caller's cwd: the child runs in a scratch dir.
+  const binary = summaryWorkerBinary(deps.binary);
   let running = 0;
   const waiters: Array<() => void> = [];
   const acquire = async (): Promise<() => void> => {
@@ -82,36 +84,43 @@ export function createClaudeCliModelCall(deps: {
       waiters.shift()?.();
     };
   };
-  // Derivation children must not inherit a session's transcript dir or
-  // interfere with an interactive child; the env is the caller's.
-  const childEnv = { ...deps.env, DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
 
   return async (input): Promise<ModelCallResult> => {
     if (input.provider !== PROVIDER) {
       return { ok: false, kind: "invalid_request", message: `unsupported inference provider "${input.provider}"` };
     }
+    // Lee's prompt as the system prompt; the template's text on stdin.
+    const { user } = summaryWorkerRequest(input.messages);
     const release = await acquire();
-    const system =
-      input.messages
-        .filter((m) => m.role === "system")
-        .map((m) => m.content)
-        .join("\n\n") || DEFAULT_SYSTEM_PROMPT;
-    const user = input.messages
-      .filter((m) => m.role === "user")
-      .map((m) => m.content)
-      .join("\n\n");
-    const args = ["-p", "--no-session-persistence", "--model", input.model, "--system-prompt", system];
+    let launch: ReturnType<typeof summaryWorkerCliLaunch>;
+    try {
+      // No framing, tools or extra turns, in an empty scratch dir (summary-worker.ts).
+      launch = summaryWorkerCliLaunch({ model: input.model, env: deps.env });
+    } catch (cause) {
+      // Setup failed (no temp space, unreadable settings): the slot goes back.
+      release();
+      return {
+        ok: false,
+        kind: "other",
+        message: (cause instanceof Error ? cause.message : String(cause)).slice(0, 500),
+      };
+    }
     return new Promise<ModelCallResult>((resolve) => {
       let stdout = "";
       let stderr = "";
       let settled = false;
-      const child = spawn(deps.binary, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
+      const child = spawn(binary, launch.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: launch.env,
+        cwd: launch.cwd,
+      });
       live.add(child);
       const finish = (result: ModelCallResult): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         live.delete(child);
+        launch.removeCwd();
         release();
         resolve(result);
       };
@@ -135,7 +144,10 @@ export function createClaudeCliModelCall(deps: {
           finish({ ok: true, text: stdout });
           return;
         }
-        finish({ ok: false, kind: classifyStderr(stderr), message: (stderr || `exit code ${code}`).slice(0, 500) });
+        // `claude -p` reports some failures (e.g. "Not logged in") on stdout
+        // with an empty stderr; classify whichever carries the reason.
+        const detail = stderr.trim() !== "" ? stderr : stdout.trim();
+        finish({ ok: false, kind: classifyStderr(detail), message: (detail || `exit code ${code}`).slice(0, 500) });
       });
     });
   };

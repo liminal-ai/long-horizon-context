@@ -5,6 +5,7 @@ export * as messages from "./messages/index.js";
 export * as retrieval from "./retrieval/index.js";
 export * from "./shared-tech/inference-claude-cli.js";
 export * as logging from "./shared-tech/logging/index.js";
+export * from "./shared-tech/summary-worker.js";
 export * as threadView from "./thread-view/index.js";
 export * as threads from "./threads/index.js";
 export * as turns from "./turns/index.js";
