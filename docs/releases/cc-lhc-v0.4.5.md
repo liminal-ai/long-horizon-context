@@ -70,6 +70,10 @@ Install as usual (install script or `npm install --global cc-lhc@0.4.5`).
   `/checkpoint`, `/undo`, or pressing Esc twice) rewinds Claude's own
   conversation, but LHC keeps the rewound turns, and they can come back into
   the conversation at the next compaction.
+- **A helper interrupted a second time gets no notice.** If a helper was
+  already resumed once and a later compaction interrupts it again, its
+  conversation is still carried into the new session and `SendMessage(<id>)`
+  still resumes it, but Claude isn't told it was interrupted.
 - **Helper agents of special kinds** (in their own worktree, forked, remote, or
   team peers) are copied the same way, but resuming them after a compaction has
   been tested only for ordinary helpers.
