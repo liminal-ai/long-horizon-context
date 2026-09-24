@@ -1,0 +1,70 @@
+name: publish-claude-lhc-0.1.1
+
+# Dispatch only. Rebuilds the reviewed claude-lhc 0.1.1 tarball from its pinned
+# source commit, refuses unless the bytes match the reviewed sha256, then
+# publishes it. The package has no native parts, so there is no platform matrix.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-claude-lhc-0.1.1
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: 6fde014633ae2349caf260687369ac67b3d1f231
+  TARBALL_SHA256: d8c0a6eceb8924bdb3190c09aa32524687599bb0445ea0d37b6ce62681a5b791
+
+jobs:
+  publish:
+    name: publish-reviewed-tarball
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout pinned source
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ env.SOURCE_SHA }}
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install build Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          registry-url: https://registry.npmjs.org
+
+      - name: Install lhc and claude-lhc (frozen)
+        run: pnpm install --frozen-lockfile --filter lhc --filter claude-lhc
+
+      - name: Build and assemble
+        run: |
+          pnpm --filter lhc run build
+          pnpm --filter claude-lhc run build
+          node packages/claude-lhc/scripts/assemble-npm-package.mjs --version 0.1.1 --source-sha "$SOURCE_SHA"
+          mkdir release
+          (cd release && npm pack ../build/claude-lhc-npm)
+
+      - name: Verify exact publication artifact
+        run: |
+          echo "$TARBALL_SHA256  release/claude-lhc-0.1.1.tgz" | sha256sum --check --strict
+          test "$(tar -xOf release/claude-lhc-0.1.1.tgz package/package.json | node -pe 'const p=JSON.parse(require("fs").readFileSync(0,"utf8")); `${p.name}@${p.version}`')" = "claude-lhc@0.1.1"
+
+      - name: Confirm npm identity and version availability
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUB_CCLHC }}
+        run: |
+          test -n "$NODE_AUTH_TOKEN"
+          test "$(npm whoami)" = "liminalbuilder"
+          status="$(curl --silent --show-error --output /tmp/claude-lhc-registry.json --write-out '%{http_code}' https://registry.npmjs.org/claude-lhc/0.1.1)"
+          test "$status" = "404"
+
+      - name: Publish claude-lhc 0.1.1
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_PUB_CCLHC }}
+        run: npm publish ./release/claude-lhc-0.1.1.tgz --access public --tag latest
