@@ -872,7 +872,7 @@ impl Lhc {
     /// Hand still-held claims on one thread database back to the queue (f5h).
     /// Hosts call this when that thread closes or unloads. Other databases'
     /// in-flight claims stay held. Bounded; does not wait on inference.
-    /// Best-effort: never panics on Codex's unwind profile.
+    /// Best-effort: sqlite failures are logged and skipped; never panics.
     pub fn release_held_claims_for(&self, path: &str) -> i64 {
         crate::shared_tech::work_queue::release_held_claims_for(path)
     }
@@ -880,8 +880,8 @@ impl Lhc {
     /// Hand every still-held claim back to the queue (f5h). Process-wide: hosts
     /// invoke this once at coordinated process shutdown after stopping claim
     /// admission and settling or cancelling workers, not on one thread's
-    /// close. Bounded; does not wait on inference. Best-effort: never panics
-    /// on Codex's unwind profile.
+    /// close. Bounded; does not wait on inference. Best-effort: sqlite
+    /// failures are logged and remaining databases continue; never panics.
     pub fn release_held_claims(&self) -> i64 {
         crate::shared_tech::work_queue::release_held_claims()
     }

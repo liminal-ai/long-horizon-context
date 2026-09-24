@@ -1,10 +1,10 @@
 //! Clean-exit hand-back: scoped per database, never panics.
 //!
-//! Alder's P2 at d2dbc055: a concurrent writer made UPDATE SQLITE_BUSY, and
-//! `release_held_claims` unwound out of the SDK shutdown call. TS catches per
-//! file and closes in `finally`. These tests use [`release_held_claims_for`]
-//! and their own database so they run in parallel. The process-wide
-//! release-all case lives in `alder_handback_release_all.rs`.
+//! Alder's P2 at d2dbc055: a concurrent writer made UPDATE SQLITE_BUSY.
+//! Hand-back uses fallible storage and must return without panicking, leaving
+//! the locked claim claimed. These tests use [`release_held_claims_for`] and
+//! their own database so they run in parallel. The process-wide release-all
+//! case lives in `alder_handback_release_all.rs`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -71,15 +71,11 @@ fn clean_exit_handback_is_best_effort_under_writer_contention() {
         },
     );
     db.exec("BEGIN IMMEDIATE;");
-    let result = std::panic::catch_unwind(|| release_held_claims_for(&path));
+    assert_eq!(release_held_claims_for(&path), 0);
     db.exec("ROLLBACK;");
     assert_eq!(status(&db, "w1"), "claimed");
     db.close();
     std::fs::remove_file(&path).unwrap();
-    assert!(
-        result.is_ok(),
-        "best-effort handback must return rather than panic on SQLITE_BUSY"
-    );
 }
 
 #[test]

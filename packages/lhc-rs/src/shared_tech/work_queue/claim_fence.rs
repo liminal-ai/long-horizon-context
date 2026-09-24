@@ -10,14 +10,14 @@
 //! in-flight claims. TS keeps exit-only `releaseHeldClaims` (cc-lhc is one
 //! thread per process). Fencing and the two-expiry policy are unchanged.
 //!
-//! `catch_unwind` around sqlite is for Codex's unwind profile. Grok builds
-//! with `panic=abort` and must not treat this as a non-panicking path.
+//! Hand-back sqlite uses crate-private fallible storage (`open_database_for_handback`,
+//! `exec_fallible` / `prepare_fallible` / `run_fallible` / `close_fallible`),
+//! not the panicking adapter and not `catch_unwind`.
 
 use std::collections::HashMap;
-use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
 
-use super::super::storage::{Db, SqlParam, open_database};
+use super::super::storage::{Db, SqlParam, open_database_for_handback};
 
 /// WHERE clause naming one claim attempt; bind with [`claim_params`].
 pub const OWNED_CLAIM_SQL: &str =
@@ -98,14 +98,6 @@ pub fn note_claim_done(db: &Db, claim: &ClaimAttempt) {
     }
 }
 
-fn panic_detail(payload: Box<dyn std::any::Any + Send>) -> String {
-    payload
-        .downcast_ref::<String>()
-        .cloned()
-        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
-        .unwrap_or_else(|| "non-string panic".to_string())
-}
-
 fn warn_handback(path: &str, detail: &str) {
     eprintln!("lhc: release_held_claims failed for {path}: {detail} (claim left to expire)");
 }
@@ -114,52 +106,51 @@ fn release_taken_claims(path: &str, list: Vec<(String, Option<i64>)>) -> i64 {
     if list.is_empty() || !std::path::Path::new(path).exists() {
         return 0;
     }
-    let db = match catch_unwind(AssertUnwindSafe(|| open_database(path))) {
-        Ok(crate::shared_tech::errors::OpResult::Ok { value }) => value,
-        Ok(crate::shared_tech::errors::OpResult::Err { error }) => {
-            warn_handback(path, &error.reason);
-            return 0;
-        }
-        Err(payload) => {
-            warn_handback(path, &panic_detail(payload));
+    let db = match open_database_for_handback(path) {
+        Ok(db) => db,
+        Err(detail) => {
+            warn_handback(path, &detail);
             return 0;
         }
     };
-    let work = catch_unwind(AssertUnwindSafe(|| {
-        db.exec("PRAGMA busy_timeout = 2000;");
-        let sql = format!(
-            "UPDATE work_item SET status = 'queued', claimed_at = NULL, claim_expires_at = NULL,
-               payload = json_remove(payload, '$.claimExpired')
-             WHERE {OWNED_CLAIM_SQL}"
-        );
-        let mut n = 0i64;
-        for (work_item_id, claim_attempt) in list {
-            n += db
-                .prepare(&sql)
-                .run(&claim_params(&ClaimAttempt {
-                    work_item_id,
-                    claim_attempt,
-                }))
-                .changes;
-        }
-        n
-    }));
-    let released = match work {
+    let released = match release_claims_on_db(&db, list) {
         Ok(n) => n,
-        Err(payload) => {
-            warn_handback(path, &panic_detail(payload));
+        Err(detail) => {
+            warn_handback(path, &detail);
             0
         }
     };
-    let _ = catch_unwind(AssertUnwindSafe(|| db.close()));
+    if let Err(detail) = db.close_fallible() {
+        warn_handback(path, &detail);
+    }
     released
+}
+
+fn release_claims_on_db(db: &Db, list: Vec<(String, Option<i64>)>) -> Result<i64, String> {
+    db.exec_fallible("PRAGMA busy_timeout = 2000;")?;
+    let sql = format!(
+        "UPDATE work_item SET status = 'queued', claimed_at = NULL, claim_expires_at = NULL,
+           payload = json_remove(payload, '$.claimExpired')
+         WHERE {OWNED_CLAIM_SQL}"
+    );
+    let stmt = db.prepare_fallible(&sql)?;
+    let mut n = 0i64;
+    for (work_item_id, claim_attempt) in list {
+        n += stmt
+            .run_fallible(&claim_params(&ClaimAttempt {
+                work_item_id,
+                claim_attempt,
+            }))?
+            .changes;
+    }
+    Ok(n)
 }
 
 /// Hand claims held on one thread database back to the queue. Fenced to the
 /// attempt. Hosts call this when that thread closes or unloads; other
 /// databases' in-flight claims stay held. Best effort: a failure is logged,
 /// the connection is closed, and the unsuccessful claim is left to expire.
-/// Never panics on Codex's unwind profile.
+/// Never panics: sqlite failures are logged and skipped.
 pub fn release_held_claims_for(path: &str) -> i64 {
     if path.is_empty() {
         return 0;
@@ -188,8 +179,8 @@ pub fn release_held_claims_for(path: &str) -> i64 {
 /// after stopping claim admission and settling or cancelling workers, not
 /// on a single thread's close. Best effort per database: a failure is
 /// logged, the connection is closed, remaining databases continue, and the
-/// unsuccessful claim is left to expire as before. Never panics on Codex's
-/// unwind profile.
+/// unsuccessful claim is left to expire as before. Never panics: sqlite
+/// failures are logged and remaining databases continue.
 pub fn release_held_claims() -> i64 {
     let claims = {
         let mut guard = held_map();

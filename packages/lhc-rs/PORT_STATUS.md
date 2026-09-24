@@ -26,8 +26,9 @@ Rust-only additions (no TS counterpart):
   database (Codex: many threads per process; call on thread close/unload).
   `release_held_claims()` remains process-wide shutdown. TS keeps exit-only
   `releaseHeldClaims` (cc-lhc is one thread per process). Fencing and the
-  two-expiry policy are unchanged. `catch_unwind` around sqlite is Codex
-  unwind-only; Grok `panic=abort` must not rely on it.
+  two-expiry policy are unchanged. Hand-back sqlite uses crate-private
+  fallible storage (open/pragma/prepare/run/close) and does not panic or
+  `catch_unwind`; Grok `panic=abort` can use this path.
 
 Wave 0 rulings (court of record — extend, don't reshape):
 - TS `foo/index.ts` → `src/foo/mod.rs`; internal dirs keep their tree.

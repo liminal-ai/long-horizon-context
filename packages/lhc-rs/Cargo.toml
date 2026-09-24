@@ -49,3 +49,9 @@ tiktoken-rs = "0.12.0"
 pretty_assertions = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 trybuild = "1"
+
+# Qualification only: hand-back abort-profile probe. Does not change the
+# crate's default unwind panic strategy.
+[profile.abort-probe]
+inherits = "dev"
+panic = "abort"

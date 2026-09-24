@@ -1,7 +1,7 @@
-//! Process-wide `release_held_claims` continues after one database fails.
+//! SQLITE_BUSY hand-back under a panic=abort build.
 //!
-//! Own binary so `guard.take()` cannot steal claims registered by the scoped
-//! tests in `alder_handback.rs`.
+//! Invoked by `handback_abort.rs` via `cargo test --profile abort-probe`.
+//! Do not use catch_unwind here: abort cannot catch it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -15,7 +15,7 @@ static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
 fn temp_path(label: &str) -> String {
     std::env::temp_dir()
         .join(format!(
-            "lhc-handback-all-{}-{}-{}.sqlite",
+            "lhc-handback-abort-{}-{}-{}.sqlite",
             label,
             std::process::id(),
             TEMP_SEQ.fetch_add(1, Ordering::Relaxed)
@@ -56,9 +56,9 @@ fn status(db: &Db, work_item_id: &str) -> String {
 }
 
 #[test]
-fn handback_releases_a_second_database_after_the_first_fails() {
-    let busy_path = temp_path("a-busy");
-    let free_path = temp_path("b-free");
+fn probe_busy_handback_releases_the_other_database() {
+    let busy_path = temp_path("busy");
+    let free_path = temp_path("free");
     let busy = open(&busy_path);
     let free = open(&free_path);
     seed_claimed(&busy, "w-busy", r#"{"claimAttempt":1}"#);
@@ -78,8 +78,9 @@ fn handback_releases_a_second_database_after_the_first_fails() {
         },
     );
     busy.exec("BEGIN IMMEDIATE;");
-    assert_eq!(release_held_claims(), 1);
+    let released = release_held_claims();
     busy.exec("ROLLBACK;");
+    assert_eq!(released, 1);
     assert_eq!(status(&busy, "w-busy"), "claimed");
     assert_eq!(status(&free, "w-free"), "queued");
     busy.close();

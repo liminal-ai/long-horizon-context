@@ -229,6 +229,19 @@ impl PreparedStatement<'_> {
             last_insert_rowid,
         }
     }
+
+    /// Hand-back only: same as [`Self::run`] without panicking.
+    pub(crate) fn run_fallible(&self, params: &[SqlParam]) -> Result<StatementRunResult, String> {
+        let conn = self.db.lock();
+        let changes = conn
+            .execute(&self.sql, params_from_iter(params.iter()))
+            .map_err(|err| err.to_string())? as i64;
+        let last_insert_rowid = conn.last_insert_rowid();
+        Ok(StatementRunResult {
+            changes,
+            last_insert_rowid,
+        })
+    }
 }
 
 impl Db {
@@ -271,6 +284,47 @@ impl Db {
             panic!("{err}");
         }
     }
+
+    /// Hand-back only: same as [`Self::exec`] without panicking.
+    pub(crate) fn exec_fallible(&self, sql: &str) -> Result<(), String> {
+        self.lock()
+            .execute_batch(sql)
+            .map_err(|err| err.to_string())
+    }
+
+    /// Hand-back only: same as [`Self::prepare`] without panicking.
+    pub(crate) fn prepare_fallible(&self, sql: &str) -> Result<PreparedStatement<'_>, String> {
+        {
+            let conn = self.lock();
+            let _stmt = conn.prepare(sql).map_err(|err| err.to_string())?;
+        }
+        Ok(PreparedStatement {
+            db: self,
+            sql: sql.to_string(),
+        })
+    }
+
+    /// Hand-back only: same as [`Self::close`] without panicking.
+    pub(crate) fn close_fallible(self) -> Result<(), String> {
+        let Db { conn, path: _ } = self;
+        let conn = conn
+            .into_inner()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match conn.close() {
+            Ok(()) => Ok(()),
+            Err((_conn, err)) => Err(err.to_string()),
+        }
+    }
+}
+
+/// Hand-back only: open without the panicking [`open_database`] pragma path.
+/// Callers apply `PRAGMA busy_timeout` via [`Db::exec_fallible`].
+pub(crate) fn open_database_for_handback(path: &str) -> Result<Db, String> {
+    let conn = Connection::open(path).map_err(|err| err.to_string())?;
+    Ok(Db {
+        conn: std::sync::Mutex::new(conn),
+        path: path.to_string(),
+    })
 }
 
 fn sqlite_value_to_json(value: rusqlite::types::Value) -> serde_json::Value {
