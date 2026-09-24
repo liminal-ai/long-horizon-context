@@ -82,13 +82,16 @@
  *
  *   bindChildToWrapperJob(pid) — put a child the wrapper just spawned into
  *     one process-wide job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and
- *     no silent breakaway (only an explicit CREATE_BREAKAWAY_FROM_JOB leaves),
- *     whose only handle this process holds (not inheritable).
+ *     no breakaway of any kind (nothing may leave the job, deliberately or
+ *     not), whose only handle this process holds (not inheritable).
  *     When the wrapper exits or is killed the handle closes and Windows ends
  *     every process still in the job: the child and every descendant it
  *     spawned after the call, even when the child itself exited first. The
  *     job nests under libuv's own (which allows silent breakaway, which is how
  *     tool processes escaped); the immediate job's breakaway rule governs.
+ *     Breakaway must stay off: Git Bash (MSYS2) starts every child with
+ *     CREATE_BREAKAWAY_FROM_JOB whenever its job allows it, so with
+ *     BREAKAWAY_OK every program Claude's Bash tool ran left the job.
  *     Result { ok: true, pid } or a failure with "invalid_pid" | "not_found" |
  *     "access_denied" | "native_error" | "unsupported".
  *
@@ -1093,10 +1096,11 @@ static pc_status bind_child_to_wrapper_job(int64_t pid, char *message, size_t ml
     }
     JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
     memset(&limits, 0, sizeof(limits));
-    /* BREAKAWAY_OK, not SILENT_BREAKAWAY_OK: a child that explicitly asks for
-     * CREATE_BREAKAWAY_FROM_JOB (a deliberate daemon) may leave, rather than
-     * have its CreateProcess fail; every ordinary child stays in the job. */
-    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    /* No BREAKAWAY_OK and no SILENT_BREAKAWAY_OK: nothing may leave the job.
+     * Git Bash asks for CREATE_BREAKAWAY_FROM_JOB on every child whenever the
+     * job allows it, so BREAKAWAY_OK let every tool it ran escape; without it
+     * Git Bash starts them normally, inside the job. */
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
     if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
       DWORD err = GetLastError();
       CloseHandle(job);

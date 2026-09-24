@@ -6,8 +6,8 @@
  * real proof of the libproc/sysctl and ntdll/Restart Manager paths.
  */
 
-import { type ChildProcess, spawn } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -444,4 +444,165 @@ describe.runIf(addonLoad.ok && process.platform === "win32")("win32 kill-on-clos
     const free = control.listFileHolders(path);
     expect(free).toMatchObject({ ok: true, holders: [], sharingViolation: false });
   }, 30_000);
+});
+
+// Windows 0.4.4 report: programs run by Claude's Bash tool outlived a killed
+// wrapper. Git Bash (MSYS2) starts every child with CREATE_BREAKAWAY_FROM_JOB
+// whenever its job allows breakaway, and the 0.4.4 job had BREAKAWAY_OK, so a
+// node started through Git Bash left the job. GitHub's Windows runners have
+// Git Bash at this path.
+const GIT_BASH = "C:\\Program Files\\Git\\bin\\bash.exe";
+
+/** A stand-in Claude: starts a node tool through Git Bash, as Claude's Bash tool does; the tool writes its pid to `dir/tool.pid`. */
+function writeClaudeSim(dir: string): string {
+  const sim = join(dir, "claude-sim.js");
+  const fwd = dir.replace(/\\/g, "/");
+  writeFileSync(
+    sim,
+    `const { spawn } = require("node:child_process");
+const tool = ${JSON.stringify(`"${process.execPath.replace(/\\/g, "/")}" -e "require('fs').writeFileSync('${fwd}/tool.pid', String(process.pid)); setInterval(() => {}, 1000)"`)};
+setTimeout(() => spawn(${JSON.stringify(GIT_BASH)}, ["-c", tool], { stdio: "ignore" }), 300);
+setInterval(() => {}, 1000);
+`,
+  );
+  return sim;
+}
+
+function readToolPid(dir: string): number | null {
+  try {
+    const text = readFileSync(join(dir, "tool.pid"), "utf8").trim();
+    return text === "" ? null : Number(text);
+  } catch {
+    return null;
+  }
+}
+
+describe.runIf(addonLoad.ok && process.platform === "win32")("win32 job and Git Bash", () => {
+  const started: ChildProcess[] = [];
+  const orphans: number[] = [];
+  afterEach(() => {
+    for (const p of started.splice(0)) p.kill();
+    for (const pid of orphans.splice(0)) {
+      try {
+        process.kill(pid);
+      } catch {
+        // gone
+      }
+    }
+  });
+
+  it("Git Bash is where the runner is expected to have it", () => {
+    expect(existsSync(GIT_BASH)).toBe(true);
+  });
+
+  it.runIf(existsSync(GIT_BASH))(
+    "bound: a node tool started through Git Bash dies with the killed wrapper",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "cc-lhc-native-gitbash-"));
+      const sim = writeClaudeSim(dir);
+      const script = `
+        const m = { exports: {} };
+        process.dlopen(m, process.argv[1]);
+        const c = require("node:child_process").spawn(process.execPath, [process.argv[2]], { stdio: "ignore" });
+        process.stdout.write("BOUND " + JSON.stringify(m.exports.bindChildToWrapperJob(c.pid)) + "\\n");
+        setInterval(() => {}, 1000);
+      `;
+      const wrapper = spawn(process.execPath, ["-e", script, resolveAddonArtifact().path, sim], {
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      started.push(wrapper);
+      let out = "";
+      wrapper.stdout!.on("data", (d: Buffer) => {
+        out += d.toString();
+      });
+      const tool = await until(
+        () => readToolPid(dir),
+        (pid) => pid !== null,
+        20_000,
+      );
+      const bound = /BOUND (.*)\n/.exec(out)?.[1];
+      const observed: Record<string, unknown> = {
+        bound: bound === undefined ? null : (JSON.parse(bound) as unknown),
+        toolStarted: tool !== null,
+        toolAliveBeforeKill: tool !== null && alive(tool),
+      };
+      if (tool !== null) orphans.push(tool);
+      wrapper.kill();
+      observed.toolAliveAfterWrapperKill = tool !== null && !(await untilTrue(() => !alive(tool), 10_000));
+      expect(observed).toEqual({
+        bound: expect.objectContaining({ ok: true }),
+        toolStarted: true,
+        toolAliveBeforeKill: true,
+        toolAliveAfterWrapperKill: false,
+      });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    },
+    60_000,
+  );
+
+  // Control, independent of the addon: a job made in PowerShell with 0.4.4's
+  // flags (KILL_ON_JOB_CLOSE | BREAKAWAY_OK) lets the Git Bash tool escape and
+  // survive the job's close; the same job without BREAKAWAY_OK keeps it in and
+  // ends it. This is the behavior the fix depends on, checked on the runner.
+  it.runIf(existsSync(GIT_BASH))(
+    "control: Git Bash's tool leaves a job with BREAKAWAY_OK and stays in one without it",
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), "cc-lhc-native-gitbash-ctl-"));
+      const results: Record<string, unknown> = {};
+      for (const [name, flags] of [
+        ["breakawayOk", 0x2000 | 0x800],
+        ["noBreakaway", 0x2000],
+      ] as const) {
+        const variant = join(dir, name);
+        mkdirSync(variant);
+        const sim = writeClaudeSim(variant);
+        const ps = `
+$ErrorActionPreference = "Stop"
+Add-Type -TypeDefinition @"
+using System; using System.Runtime.InteropServices;
+public static class JP {
+  [StructLayout(LayoutKind.Sequential)] public struct BASIC { public long a; public long b; public uint LimitFlags; public UIntPtr c; public UIntPtr d; public uint e; public UIntPtr f; public uint g; public uint h; }
+  [StructLayout(LayoutKind.Sequential)] public struct IOC { public ulong a,b,c,d,e,f; }
+  [StructLayout(LayoutKind.Sequential)] public struct EXT { public BASIC Basic; public IOC Io; public UIntPtr a; public UIntPtr b; public UIntPtr c; public UIntPtr d; }
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern IntPtr CreateJobObjectW(IntPtr a, string n);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool SetInformationJobObject(IntPtr j, int cls, ref EXT i, int len);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool AssignProcessToJobObject(IntPtr j, IntPtr p);
+  [DllImport("kernel32.dll")] public static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern bool IsProcessInJob(IntPtr p, IntPtr j, out bool r);
+  [DllImport("kernel32.dll", SetLastError=true)] public static extern IntPtr OpenProcess(uint acc, bool inh, int pid);
+  public static IntPtr MakeJob(uint flags) { IntPtr j = CreateJobObjectW(IntPtr.Zero, null); EXT e = new EXT(); e.Basic.LimitFlags = flags; if (!SetInformationJobObject(j, 9, ref e, Marshal.SizeOf(typeof(EXT)))) throw new Exception("SetInformationJobObject " + Marshal.GetLastWin32Error()); return j; }
+  public static string InJob(int pid, IntPtr j) { IntPtr h = OpenProcess(0x1000, false, pid); if (h == IntPtr.Zero) return "cannot-open"; bool r; bool ok = IsProcessInJob(h, j, out r); CloseHandle(h); return ok ? r.ToString() : "err"; }
+}
+"@
+$job = [JP]::MakeJob([uint32]${flags})
+$sim = Start-Process -FilePath ${JSON.stringify(process.execPath)} -ArgumentList '"${sim}"' -PassThru -WindowStyle Hidden
+$assigned = [JP]::AssignProcessToJobObject($job, $sim.Handle)
+$tool = $null
+for ($i = 0; $i -lt 80; $i++) { Start-Sleep -Milliseconds 250; if (Test-Path "${variant}\\tool.pid") { $t = Get-Content "${variant}\\tool.pid"; if ($t) { $tool = [int]$t; break } } }
+$inJob = if ($tool) { [JP]::InJob($tool, $job) } else { "no-tool" }
+[JP]::CloseHandle($job) | Out-Null
+Start-Sleep -Seconds 3
+$after = if ($tool) { if (Get-Process -Id $tool -ErrorAction SilentlyContinue) { "alive" } else { "gone" } } else { "n/a" }
+foreach ($p in @($sim.Id, $tool)) { if ($p) { Stop-Process -Id $p -Force -ErrorAction SilentlyContinue } }
+[ordered]@{ assigned = $assigned; toolInJob = $inJob; toolAfterClose = $after } | ConvertTo-Json -Compress
+`;
+        const r = spawnSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", ps], {
+          encoding: "utf8",
+          timeout: 60_000,
+        });
+        const line = r.stdout.trim().split(/\r?\n/).pop() ?? "";
+        try {
+          results[name] = JSON.parse(line) as unknown;
+        } catch {
+          results[name] = { unparsed: line, stderr: r.stderr.slice(0, 2000), status: r.status };
+        }
+      }
+      expect(results).toEqual({
+        breakawayOk: { assigned: true, toolInJob: "False", toolAfterClose: "alive" },
+        noBreakaway: { assigned: true, toolInJob: "True", toolAfterClose: "gone" },
+      });
+      rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+    },
+    150_000,
+  );
 });
