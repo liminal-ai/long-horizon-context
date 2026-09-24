@@ -102,9 +102,9 @@ Pin `0.1.0` again (or `npm install claude-lhc@0.1.0`). No other step.
 
 ## Source and artifacts
 
-- Source commit: PENDING (set when the tarball is cut).
+- Source commit: `3f59edf0`.
 - npm: [`claude-lhc@0.1.1`](https://www.npmjs.com/package/claude-lhc/v/0.1.1),
-  tarball sha256 PENDING
+  tarball sha256 `d130960b2f339760e50fbf1c43093730752f5879f1dfc28293baa17dcabd17aa`
 - Fix commits: `3a7a8e6e`, `1adc6077` (earliest turns); `19b689cd`,
   `c45d0c20`, `62a6ead5` (history tools); `202d7486`, `d5bc5108`, `9f4e7c78`,
   `6d6e8009`, `64cda7f0` (summary worker).

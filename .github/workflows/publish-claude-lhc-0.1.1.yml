@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SOURCE_SHA: 66e8c4aa2a6ad078196273ddb1d349205f1aaa58
-  TARBALL_SHA256: 8eb9163266ac03930f89f29694e77d333c06a1d25b914fcc3035506dfb3effaa
+  SOURCE_SHA: 3f59edf09db47261fd5771ae6acc494c1a788ee6
+  TARBALL_SHA256: d130960b2f339760e50fbf1c43093730752f5879f1dfc28293baa17dcabd17aa
 
 jobs:
   publish:
