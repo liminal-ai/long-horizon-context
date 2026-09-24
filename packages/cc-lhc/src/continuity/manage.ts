@@ -350,7 +350,17 @@ export function stopItem(
     return refuse("process_identity_changed", `pid ${proc.pid} is now a different process; nothing signalled`);
   }
   const signalled = (ports.signal ?? signalRelaunched)(proc.pid, ports.platform ?? process.platform);
-  if (!signalled.ok) return refuse("signal_failed", signalled.reason);
+  // A failed signal is a refusal only while the exact process still runs.
+  // taskkill /T exits non-zero when one process in the tree is already gone or
+  // cannot be terminated, even though the root was killed; re-verify before
+  // telling the caller nothing was stopped.
+  if (!signalled.ok) {
+    const after = (ports.probeIdentity ?? probeProcessIdentityNative)(proc.pid);
+    const stillRunning = !after.ok
+      ? after.code !== "not_found"
+      : after.identity.bootId === proc.bootId && after.identity.starttime === proc.starttime;
+    if (stillRunning) return refuse("signal_failed", signalled.reason);
+  }
   store.recordTerminal({
     threadId,
     launchId,

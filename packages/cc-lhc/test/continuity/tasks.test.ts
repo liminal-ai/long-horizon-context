@@ -200,11 +200,10 @@ describe("TC-2.6c stop carried work", () => {
       reason: expect.stringContaining("unsupported"),
     });
     const stopped = s.tasks(["stop", LAUNCH_IDS.monitor]);
-    // Whole result, so a refusal reports its reason rather than a bare false.
-    expect(stopped).toMatchObject({
-      ok: true,
-      stdout: `stopped ${LAUNCH_IDS.monitor} (pid ${pid}); recorded as stopped`,
-    });
+    // Compare the reason on a refusal, so a failure prints why (toMatchObject omits it).
+    expect(stopped.ok ? stopped.stdout : `refused: ${stopped.reason}`).toBe(
+      `stopped ${LAUNCH_IDS.monitor} (pid ${pid}); recorded as stopped`,
+    );
     const deadline = Date.now() + 5_000;
     let gone = false;
     while (Date.now() < deadline && !gone) {
@@ -282,6 +281,30 @@ describe("TC-2.6d stale identity", () => {
     expect(unknown).toMatchObject({ ok: false, reason: "identity_unverifiable" });
     expect(signals).toEqual([]);
     expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({ state: "active" });
+    store.close();
+  });
+
+  it("a failed signal refuses only while the exact process still runs", () => {
+    const s = session("sleep 30");
+    if (s.relaunched?.kind !== "relaunched") throw new Error("no relaunch");
+    const store = openContinuityStore(s.dbPath);
+    const recorded = store.getItem(T, LAUNCH_IDS.monitor)?.relaunch?.process;
+    if (!recorded) throw new Error("no process identity recorded");
+    const live = { ok: true as const, identity: { ...recorded } };
+    const failedSignal = () => ({ ok: false as const, reason: "ERROR: child could not be terminated" });
+    // Still the same live process after the failed signal: refused, item stays active.
+    const refused = stopItem(store, T, LAUNCH_IDS.monitor, { signal: failedSignal, probeIdentity: () => live });
+    expect(refused).toMatchObject({ ok: false, reason: "signal_failed" });
+    expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({ state: "active" });
+    // Gone after the failed signal (the root was killed, a child was already gone): stopped.
+    let probes = 0;
+    const stopped = stopItem(store, T, LAUNCH_IDS.monitor, {
+      signal: failedSignal,
+      probeIdentity: () =>
+        probes++ === 0 ? live : { ok: false as const, code: "not_found" as const, message: "gone" },
+    });
+    expect(stopped).toMatchObject({ ok: true, pid: recorded.pid });
+    expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({ state: "terminal", terminal: { outcome: "stopped" } });
     store.close();
   });
 
