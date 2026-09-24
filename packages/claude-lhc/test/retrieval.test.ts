@@ -77,7 +77,7 @@ describe("retrieval server", () => {
     expect(tools.find((t) => t.name === "get_turns")!.description).toContain("not in view; use get-turns");
   });
 
-  test("get_turns returns the verbatim turn inside the historical envelope; receipts outside it", async () => {
+  test("get_turns returns the turn as its history renders it, inside the historical envelope; receipts outside it", async () => {
     const ref = await thread([
       ["the tide gauge read 7.31 m", "noted: 7.31 m"],
       ["second question", "second answer"],
@@ -238,6 +238,15 @@ describe("session wiring", () => {
     expect(options.allowedTools).toEqual(["Read", "mcp__lhc__get_turns", "mcp__lhc__get_messages"]);
   });
 
+  test("a host MCP server named like ours is refused at start, never silently replaced", async () => {
+    const host = { type: "http", url: "http://127.0.0.1:2/mcp" };
+    await expect(startSession([], { mcpServers: { lhc: host } })).rejects.toThrow(
+      "start option mcpServers.lhc is reserved for claude-lhc's history tools (mcp__lhc__get_turns, mcp__lhc__get_messages)",
+    );
+    await expect(startSession([], { mcpServers: { "t3-code": host, lhc: host } })).rejects.toThrow(/reserved/);
+    expect(captured.some((o) => o.mcpServers?.lhc?.url === host.url)).toBe(false);
+  });
+
   test("get_turns / get_messages are allowed without an approval request; other tools still ask the host", async () => {
     const requests: string[] = [];
     await startSession(requests);
@@ -278,5 +287,11 @@ describe("session wiring", () => {
     const client = new Client({ name: "test", version: "0" });
     await client.connect(clientSide);
     expect(await callText(client, "get_turns", { ids: ["t1"] })).toContain("OTTER-LANTERN-77");
+    // get_turns serves the rendered turn (smoothed prompts, summarized tool output), never claimed verbatim.
+    const { tools } = await client.listTools();
+    const getTurns = tools.find((t) => t.name === "get_turns")!.description!;
+    expect(getTurns).not.toContain("verbatim");
+    expect(getTurns).toContain("smoothed");
+    expect(getTurns).toContain("For the exact original content of a message, use get_messages.");
   });
 });

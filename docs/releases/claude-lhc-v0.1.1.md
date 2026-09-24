@@ -19,8 +19,10 @@ Upgrade if you run Claude LHC threads long enough to be compacted.
   `turns tA–tB not in view; use get-turns`. Until now a Claude LHC session had
   no tool to follow that marker, so the model could only guess at anything the
   summaries left out. Every session now has two tools:
-  - `get_turns` returns past turns by id (`t12`), as recorded, with each
-    message tagged by its id.
+  - `get_turns` returns past turns by id (`t12`) as they appear in the
+    thread's history, with each message tagged by its id. It is not verbatim:
+    a prompt may come back smoothed and tool output summarized, where those
+    are ready.
   - `get_messages` returns the exact original content of past messages by id
     (`m340`), including tool input and output.
 
@@ -30,7 +32,10 @@ Upgrade if you run Claude LHC threads long enough to be compacted.
   marked as history, so the model reads old prompts and instructions as records
   rather than acting on them. The tools only read, and they never ask for
   approval, whatever the thread's permission mode. They work across
-  compactions and restarts, and sit alongside t3code's own tools.
+  compactions and restarts, and sit alongside t3code's own tools. Their MCP
+  server is named `lhc`; a session started with another MCP server of that
+  name now fails to start with an error saying so, instead of losing that
+  server.
 - **The summary worker could act on what it was summarizing.** Summaries are
   written by a separate background Claude run over earlier turns, and those
   turns are full of instructions like "fix the validator" or "add tests". The

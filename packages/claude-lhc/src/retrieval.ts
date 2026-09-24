@@ -148,7 +148,9 @@ export async function runRetrieval(
 }
 
 const TURNS_DESCRIPTION =
-  "Retrieve past turns of this conversation by turn id, verbatim from its durable record. " +
+  "Retrieve past turns of this conversation by turn id, as they appear in its history: a " +
+  "user prompt may be a smoothed version and tool output may be a summary where one is " +
+  "ready. For the exact original content of a message, use get_messages. " +
   "Use it whenever the context says `[turns tA–tB not in view; use get-turns]`, or a summary " +
   "(<turns>…</turns>, <tN>…</tN>) is not detailed enough: pass the turn ids, e.g. " +
   '["t12","t13"] (for a range tA–tB, list the ids you need). Each returned turn tags its ' +
