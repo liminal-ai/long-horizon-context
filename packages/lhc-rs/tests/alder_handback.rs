@@ -4,6 +4,7 @@
 //! `release_held_claims` unwound out of the SDK shutdown call, skipping
 //! remaining databases. TS catches per file and closes in `finally`.
 
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lhc::shared_tech::errors::OpResult;
@@ -12,6 +13,15 @@ use lhc::shared_tech::work_queue::{ClaimAttempt, note_claim_held, release_held_c
 use pretty_assertions::assert_eq;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
+/// `release_held_claims` is process-wide. Serialize register/release so parallel
+/// tests in this binary cannot steal one another's held claims.
+static HANDBACK: Mutex<()> = Mutex::new(());
+
+fn lock_handback() -> std::sync::MutexGuard<'static, ()> {
+    HANDBACK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn temp_path(label: &str) -> String {
     std::env::temp_dir()
@@ -58,6 +68,7 @@ fn status(db: &Db, work_item_id: &str) -> String {
 
 #[test]
 fn clean_exit_handback_is_best_effort_under_writer_contention() {
+    let _guard = lock_handback();
     let path = temp_path("busy");
     let db = open(&path);
     seed_claimed(&db, "w1", r#"{"claimAttempt":1}"#);
@@ -82,6 +93,7 @@ fn clean_exit_handback_is_best_effort_under_writer_contention() {
 
 #[test]
 fn handback_clears_expiry_but_does_not_release_a_newer_holder() {
+    let _guard = lock_handback();
     let path = temp_path("healthy");
     let db = open(&path);
     db.exec(
@@ -120,6 +132,7 @@ fn handback_clears_expiry_but_does_not_release_a_newer_holder() {
 
 #[test]
 fn handback_releases_a_second_database_after_the_first_fails() {
+    let _guard = lock_handback();
     let busy_path = temp_path("a-busy");
     let free_path = temp_path("b-free");
     let busy = open(&busy_path);
