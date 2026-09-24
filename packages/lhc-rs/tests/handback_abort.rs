@@ -1,7 +1,6 @@
-//! Builds the SQLITE_BUSY two-database hand-back case with panic=abort.
-//!
-//! The probe is a separate integration-test binary so this harness does not
-//! itself compile with abort.
+//! Builds and runs the SQLITE_BUSY two-database case as a real executable
+//! with panic=abort. `cargo test --profile abort-probe` does not honor abort
+//! for libtest, so the child is an example, not a #[test].
 
 use std::path::Path;
 use std::process::Command;
@@ -13,30 +12,33 @@ fn abort_profile_busy_handback_does_not_abort_and_releases_the_other_database() 
     let cargo = env!("CARGO");
     let output = Command::new(cargo)
         .args([
-            "test",
+            "run",
             "--offline",
             "--manifest-path",
             manifest.to_str().expect("manifest utf-8"),
             "--profile",
             "abort-probe",
-            "--test",
+            "--example",
             "handback_abort_probe",
-            "--",
-            "--exact",
-            "probe_busy_handback_releases_the_other_database",
         ])
         .env("CARGO_TARGET_DIR", &target)
         .output()
-        .expect("spawn abort-probe cargo test");
+        .expect("spawn abort-probe example");
     let stdout = String::from_utf8_lossy(&output.stdout);
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
-        "panic=abort hand-back subprocess must exit 0 (no abort); status={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
+        "panic=abort hand-back executable must exit 0 (no abort); status={:?}\nstdout:\n{stdout}\nstderr:\n{stderr}",
         output.status
     );
     assert!(
-        stdout.contains("probe_busy_handback_releases_the_other_database") && stdout.contains("ok"),
-        "abort-probe must run the SQLITE_BUSY case; stdout:\n{stdout}\nstderr:\n{stderr}"
+        stdout.contains("panic=abort"),
+        "executable must report cfg!(panic = \"abort\"); stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("released=1")
+            && stdout.contains("busy=claimed")
+            && stdout.contains("free=queued"),
+        "SQLITE_BUSY must skip the locked DB and release the other; stdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
