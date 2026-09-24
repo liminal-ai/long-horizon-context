@@ -1,27 +1,19 @@
-//! Clean-exit hand-back: best-effort per database, never panics.
+//! Clean-exit hand-back: scoped per database, never panics.
 //!
 //! Alder's P2 at d2dbc055: a concurrent writer made UPDATE SQLITE_BUSY, and
-//! `release_held_claims` unwound out of the SDK shutdown call, skipping
-//! remaining databases. TS catches per file and closes in `finally`.
+//! `release_held_claims` unwound out of the SDK shutdown call. TS catches per
+//! file and closes in `finally`. These tests use [`release_held_claims_for`]
+//! and their own database so they run in parallel. The process-wide
+//! release-all case lives in `alder_handback_release_all.rs`.
 
-use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use lhc::shared_tech::errors::OpResult;
 use lhc::shared_tech::storage::{Db, open_database};
-use lhc::shared_tech::work_queue::{ClaimAttempt, note_claim_held, release_held_claims};
+use lhc::shared_tech::work_queue::{ClaimAttempt, note_claim_held, release_held_claims_for};
 use pretty_assertions::assert_eq;
 
 static TEMP_SEQ: AtomicU64 = AtomicU64::new(0);
-/// `release_held_claims` is process-wide. Serialize register/release so parallel
-/// tests in this binary cannot steal one another's held claims.
-static HANDBACK: Mutex<()> = Mutex::new(());
-
-fn lock_handback() -> std::sync::MutexGuard<'static, ()> {
-    HANDBACK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
 
 fn temp_path(label: &str) -> String {
     std::env::temp_dir()
@@ -68,7 +60,6 @@ fn status(db: &Db, work_item_id: &str) -> String {
 
 #[test]
 fn clean_exit_handback_is_best_effort_under_writer_contention() {
-    let _guard = lock_handback();
     let path = temp_path("busy");
     let db = open(&path);
     seed_claimed(&db, "w1", r#"{"claimAttempt":1}"#);
@@ -80,7 +71,7 @@ fn clean_exit_handback_is_best_effort_under_writer_contention() {
         },
     );
     db.exec("BEGIN IMMEDIATE;");
-    let result = std::panic::catch_unwind(release_held_claims);
+    let result = std::panic::catch_unwind(|| release_held_claims_for(&path));
     db.exec("ROLLBACK;");
     assert_eq!(status(&db, "w1"), "claimed");
     db.close();
@@ -93,7 +84,6 @@ fn clean_exit_handback_is_best_effort_under_writer_contention() {
 
 #[test]
 fn handback_clears_expiry_but_does_not_release_a_newer_holder() {
-    let _guard = lock_handback();
     let path = temp_path("healthy");
     let db = open(&path);
     db.exec(
@@ -117,7 +107,7 @@ fn handback_clears_expiry_but_does_not_release_a_newer_holder() {
             },
         );
     }
-    assert_eq!(release_held_claims(), 1);
+    assert_eq!(release_held_claims_for(&path), 1);
     assert_eq!(status(&db, "owned"), "queued");
     assert_eq!(
         db.prepare("SELECT json_extract(payload, '$.claimExpired') AS expired FROM work_item WHERE work_item_id='owned'")
@@ -131,40 +121,34 @@ fn handback_clears_expiry_but_does_not_release_a_newer_holder() {
 }
 
 #[test]
-fn handback_releases_a_second_database_after_the_first_fails() {
-    let _guard = lock_handback();
-    let busy_path = temp_path("a-busy");
-    let free_path = temp_path("b-free");
-    let busy = open(&busy_path);
-    let free = open(&free_path);
-    seed_claimed(&busy, "w-busy", r#"{"claimAttempt":1}"#);
-    seed_claimed(&free, "w-free", r#"{"claimAttempt":1}"#);
+fn scoped_handback_does_not_release_another_database() {
+    let kept_path = temp_path("kept");
+    let released_path = temp_path("released");
+    let kept = open(&kept_path);
+    let released = open(&released_path);
+    seed_claimed(&kept, "w-kept", r#"{"claimAttempt":1}"#);
+    seed_claimed(&released, "w-released", r#"{"claimAttempt":1}"#);
     note_claim_held(
-        &busy,
+        &kept,
         &ClaimAttempt {
-            work_item_id: "w-busy".into(),
+            work_item_id: "w-kept".into(),
             claim_attempt: Some(1),
         },
     );
     note_claim_held(
-        &free,
+        &released,
         &ClaimAttempt {
-            work_item_id: "w-free".into(),
+            work_item_id: "w-released".into(),
             claim_attempt: Some(1),
         },
     );
-    busy.exec("BEGIN IMMEDIATE;");
-    let result = std::panic::catch_unwind(release_held_claims);
-    busy.exec("ROLLBACK;");
-    assert!(
-        result.is_ok(),
-        "handback must not panic when one database is locked"
-    );
-    assert_eq!(result.unwrap(), 1);
-    assert_eq!(status(&busy, "w-busy"), "claimed");
-    assert_eq!(status(&free, "w-free"), "queued");
-    busy.close();
-    free.close();
-    std::fs::remove_file(&busy_path).unwrap();
-    std::fs::remove_file(&free_path).unwrap();
+    assert_eq!(release_held_claims_for(&released_path), 1);
+    assert_eq!(status(&released, "w-released"), "queued");
+    assert_eq!(status(&kept, "w-kept"), "claimed");
+    assert_eq!(release_held_claims_for(&kept_path), 1);
+    assert_eq!(status(&kept, "w-kept"), "queued");
+    kept.close();
+    released.close();
+    std::fs::remove_file(&kept_path).unwrap();
+    std::fs::remove_file(&released_path).unwrap();
 }

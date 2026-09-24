@@ -25,7 +25,7 @@ use super::storage::{Db, SqlParam};
 pub mod claim_fence;
 pub use claim_fence::{
     ClaimAttempt, OWNED_CLAIM_SQL, TAKE_CLAIM_SET_SQL, claim_params, note_claim_done,
-    note_claim_held, release_held_claims,
+    note_claim_held, release_held_claims, release_held_claims_for,
 };
 
 /// TS `WorkHandlerMap` = `Partial<Record<WorkKind, WorkHandler>>`.

@@ -22,6 +22,12 @@ Rust-only additions (no TS counterpart):
   persisted/hashed bytes.
 - `fixtures/js-json-cases.jsonl`, `fixtures/prompt-renders.json` — committed
   node-oracle fixtures (regenerate via scripts/, only deliberately).
+- f5h clean-exit: Rust adds `release_held_claims_for(path)` for one thread
+  database (Codex: many threads per process; call on thread close/unload).
+  `release_held_claims()` remains process-wide shutdown. TS keeps exit-only
+  `releaseHeldClaims` (cc-lhc is one thread per process). Fencing and the
+  two-expiry policy are unchanged. `catch_unwind` around sqlite is Codex
+  unwind-only; Grok `panic=abort` must not rely on it.
 
 Wave 0 rulings (court of record — extend, don't reshape):
 - TS `foo/index.ts` → `src/foo/mod.rs`; internal dirs keep their tree.
