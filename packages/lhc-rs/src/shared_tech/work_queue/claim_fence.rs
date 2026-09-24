@@ -4,6 +4,7 @@
 //! Node `process.once("exit")` is not used; hosts call [`release_held_claims`].
 
 use std::collections::HashMap;
+use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::Mutex;
 
 use super::super::storage::{Db, SqlParam, open_database};
@@ -87,8 +88,23 @@ pub fn note_claim_done(db: &Db, claim: &ClaimAttempt) {
     }
 }
 
+fn panic_detail(payload: Box<dyn std::any::Any + Send>) -> String {
+    payload
+        .downcast_ref::<String>()
+        .cloned()
+        .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+        .unwrap_or_else(|| "non-string panic".to_string())
+}
+
+fn warn_handback(path: &str, detail: &str) {
+    eprintln!("lhc: release_held_claims failed for {path}: {detail} (claim left to expire)");
+}
+
 /// Hand every still-held claim back to the queue. Fenced to the attempt.
-/// Best effort: a failure leaves the claim to expire as before.
+/// Process-wide: hosts invoke this once at coordinated process shutdown,
+/// not on a single thread's close. Best effort per database: a failure
+/// is logged, the connection is closed, remaining databases continue,
+/// and the unsuccessful claim is left to expire as before. Never panics.
 pub fn release_held_claims() -> i64 {
     let claims = {
         let mut guard = held_map();
@@ -106,25 +122,41 @@ pub fn release_held_claims() -> i64 {
         if !std::path::Path::new(&path).exists() {
             continue;
         }
-        let db = match open_database(&path) {
-            crate::shared_tech::errors::OpResult::Ok { value } => value,
-            crate::shared_tech::errors::OpResult::Err { .. } => continue,
+        let db = match catch_unwind(AssertUnwindSafe(|| open_database(&path))) {
+            Ok(crate::shared_tech::errors::OpResult::Ok { value }) => value,
+            Ok(crate::shared_tech::errors::OpResult::Err { error }) => {
+                warn_handback(&path, &error.reason);
+                continue;
+            }
+            Err(payload) => {
+                warn_handback(&path, &panic_detail(payload));
+                continue;
+            }
         };
-        db.exec("PRAGMA busy_timeout = 2000;");
-        let sql = format!(
-            "UPDATE work_item SET status = 'queued', claimed_at = NULL, claim_expires_at = NULL,
-               payload = json_remove(payload, '$.claimExpired')
-             WHERE {OWNED_CLAIM_SQL}"
-        );
-        for (work_item_id, claim_attempt) in list {
-            let params = ClaimAttempt {
-                work_item_id,
-                claim_attempt,
-            };
-            let changed = db.prepare(&sql).run(&claim_params(&params));
-            released += changed.changes;
+        let work = catch_unwind(AssertUnwindSafe(|| {
+            db.exec("PRAGMA busy_timeout = 2000;");
+            let sql = format!(
+                "UPDATE work_item SET status = 'queued', claimed_at = NULL, claim_expires_at = NULL,
+                   payload = json_remove(payload, '$.claimExpired')
+                 WHERE {OWNED_CLAIM_SQL}"
+            );
+            let mut n = 0i64;
+            for (work_item_id, claim_attempt) in list {
+                n += db
+                    .prepare(&sql)
+                    .run(&claim_params(&ClaimAttempt {
+                        work_item_id,
+                        claim_attempt,
+                    }))
+                    .changes;
+            }
+            n
+        }));
+        match work {
+            Ok(n) => released += n,
+            Err(payload) => warn_handback(&path, &panic_detail(payload)),
         }
-        db.close();
+        let _ = catch_unwind(AssertUnwindSafe(|| db.close()));
     }
     released
 }

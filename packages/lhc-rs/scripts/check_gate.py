@@ -12,7 +12,7 @@ Rust-adapted):
              final mode (crate-wide real todo count == 0): every non-ignored
              cargo ok is a pass. A nonempty allowlist in final mode is a
              GATE FAIL (transitional list retired). Target then is exactly
-             864 passed / 0 notimpl / 15 ignored / 0 wrong / 0 suspicious.
+             867 passed / 0 notimpl / 15 ignored / 0 wrong / 0 suspicious.
   ignored    #[ignore] tests, reported for the ledger
   suspicious transitional: cargo ok not on the exact-name allowlist
 
@@ -944,10 +944,10 @@ def classify() -> int:
         # two v12-flavor → v13 migration tests (2) → 846.
         # f5h + F6 (2026-09-24): view_select_f6 9, work_execution fencing 3,
         # thread_migrate claim_expired requeue 1, plus previously uncounted
-        # tree drift measured at 864.
+        # tree drift measured at 864. Alder P2 hand-back tests (3) → 867.
         # Keep this exact-count ledger in lockstep with cargo --features test-util.
         if (
-            len(buckets["passed"]) != 864
+            len(buckets["passed"]) != 867
             or len(buckets["notimpl"]) != 0
             or len(buckets["ignored"]) != 15
             or len(buckets["wrong"]) != 0
@@ -955,7 +955,7 @@ def classify() -> int:
         ):
             print(
                 "GATE FAIL: final mode requires "
-                "passed=864 notimpl=0 ignored=15 wrong=0 suspicious=0"
+                "passed=867 notimpl=0 ignored=15 wrong=0 suspicious=0"
             )
             return 1
     print("GATE PASS")

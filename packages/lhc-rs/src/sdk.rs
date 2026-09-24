@@ -868,8 +868,10 @@ impl Lhc {
         self.scheduler.drain_settled(&thread_id).await;
     }
 
-    /// Hand still-held claims back to the queue (f5h). Hosts invoke this on
-    /// clean shutdown; it is bounded and does not wait on inference.
+    /// Hand still-held claims back to the queue (f5h). Process-wide: hosts
+    /// invoke this once at coordinated process shutdown after stopping claim
+    /// admission and settling or cancelling workers, not on one thread's
+    /// close. Bounded; does not wait on inference. Best-effort: never panics.
     pub fn release_held_claims(&self) -> i64 {
         crate::shared_tech::work_queue::release_held_claims()
     }
