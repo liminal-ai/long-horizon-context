@@ -136,7 +136,10 @@ npm install --global cc-lhc@0.4.4
   managers). cc-lhc then falls back to closing Claude's tree only while Claude is
   still running, as in 0.4.3, and logs it.
 - **Claude exiting when the wrapper is killed** is covered by tests in CI on all
-  six platforms, and has been checked by hand on Linux only.
+  six platforms. On 0.4.4 it has been checked by hand on Linux only. The 0.4.3
+  stress tests on macOS and Windows checked it by hand and found the two bugs
+  this release fixes (Claude outliving a killed wrapper on macOS, and tool
+  processes left running on Windows).
 - Killing only the Claude process (not the wrapper) can leave its tool processes
   running outside Windows. 0.4.3 behaves the same.
 - A hard kill or crash can still leave a summary to be retried by the next process.
@@ -146,10 +149,10 @@ npm install --global cc-lhc@0.4.4
 ## How this release was tested
 
 - Every fix was reproduced on 0.4.3 first:
-  - the tool processes left running on Windows: a stress test of 0.4.3 on Windows
-    ARM (2 of 2 runs);
+  - the tool processes left running on Windows: a hands-on stress test of 0.4.3
+    on Windows ARM;
   - Claude outliving a killed wrapper, the missing earliest turns and the README
-    table: a stress test of 0.4.3 on macOS (2 of 2 runs for the watchdog);
+    table: a hands-on stress test of 0.4.3 on macOS;
   - the monitor stop and Windows file ids: CI runs
     [35936716413](https://github.com/liminal-ai/long-horizon-context/actions/runs/35936716413)
     and
