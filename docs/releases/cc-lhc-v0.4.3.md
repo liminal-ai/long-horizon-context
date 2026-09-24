@@ -1,139 +1,195 @@
 # cc-lhc v0.4.3
 
-## Overview
+## Summary
 
-A reliability release from the 0.4.2 gorilla test (interactive and one-shot, on
-Claude Code 2.1.280), plus two core queue fixes found in the soak. No thread schema
-change (13). cc-lhc's own lineage database gains one column (`rebuild_unaccepted`);
-see "Rollback to 0.4.2" before going back.
+A bug-fix release. It fixes one-shot (`-p`) output and piped input, recovery after
+a crash or kill during Smart Compact, background work carried across a compaction,
+and two problems in the shared LHC core that left older turns out of the model's
+view. There are no configuration changes. Upgrading is in place; going back to
+0.4.2 needs one extra step (see "Rolling back to 0.4.2").
 
-- **One-shot (`-p`) runs Claude as a plain process** (F1, F8). Stdout is Claude's own
-  bytes: no pty warnings, CRLF or cursor escapes, so `--output-format json` parses,
-  and a prompt piped on stdin reaches Claude. The child dies with the wrapper
-  (parent-death signal on Linux, a watchdog elsewhere). `848d2272`, Windows `89a6900c`.
-- **A kill during Smart Compact no longer strands the session** (F2). The rebuild is
-  recorded as unaccepted before its transcript is written, and a launch that finds
-  one resolves it back to its thread. A record-less rebuild from an older build is
-  never auto-linked; the launch lists `cc-lhc --resume` choices, and `-p` prints
-  them on stderr and exits 2 instead of exiting 13 silently (mjm). `ba7ef020`,
-  `85869155`, `a5c2c995`, `02e5ab6f`.
-- **Launch sweep** removes dead owners' runtime descriptors and moves abandoned
-  rebuilds aside, and no longer mistakes its own lease for a live owner (F3).
-  `cd5315b6`, `d2c49ff0`.
-- **Carried background work reports back after Smart Compact** (F4, F4b). A carried
-  subagent interrupted at handoff is reported killed with a resume offer; a
-  relaunched Monitor's events are delivered once each, it survives later compactions
-  as the same process, and it is stopped at session end. `c01d9524`, `c5819a8d`,
-  `e823218d`.
-- **A too-long rejection continues once** (F5). After Claude rejects a request as too
-  long and cc-lhc compacts, it resubmits a labelled continue that names the tool
-  calls already run; typing in that window is held and a resend notice shown.
-  Never in `-p`. `1a1cc7bb`, `4e5c7dbb`.
-- **No silent turn loss in the served view** (F6, all hosts on the core). A chunk
-  straddling the smooth band now covers its older members, and any turn no band
-  represents gets a gap marker. `8b76c31c`.
-- **Torn transcript tails are repaired** (F7). A partial last line is trimmed (saved
-  under `torn-lines/`) or completed before resume, only when no other process has the
-  file open; the live watcher waits on a partial line instead of degrading. `ed0034b1`.
-- **Expired derivation claims are retried, not failed** (f5h, all hosts on the core).
-  A claim whose process died mid-derivation goes back to the queue. A clean exit hands
-  its claims back, so ordinary one-shot exits never count. Each claim is fenced to its
-  attempt, so a slow old holder cannot complete or fail its retry. A second expiry in a
-  row fails the derivation as `claim_expired_repeatedly` with a warning in the thread
-  log. On open, existing `claim_expired` failures are requeued once. `9eb57849`,
-  `afc18110`.
-- **Release scripts read the version** from `--version` or `package.json` (bvb).
-  `f8674b79`.
+Upgrade if you run cc-lhc from scripts or relays with `-p`, run long sessions that
+use background agents or monitors, or have seen a session stop capturing after a
+crash.
 
-## The defects, and where each was reproduced
+## Behavior changes to know before upgrading
 
-Per the release standard, each fix was reproduced on the pre-fix build:
+- **`-p` output is now exactly Claude's.** The one-shot child no longer runs in a
+  terminal emulator. Stdout carries only Claude's reply, with no CRLF line endings,
+  cursor codes or merged warnings, so `--output-format json` and `stream-json`
+  parse. Warnings, including cc-lhc's capture summary line, go to stderr. If you
+  parsed combined output before, read stdout and stderr separately now.
+- **`-p` reads piped stdin.** `echo "..." | cc-lhc -p` now reaches Claude, as with
+  `claude -p`. Also as with `claude -p`, if stdin is a pipe that never sends data,
+  Claude waits about 3 seconds and prints a warning; add `< /dev/null` to skip the
+  wait.
+- **`-p` refuses an unlinked orphan with exit code 2.** See "Recovery after a crash
+  or kill" below.
+- **One automatic continue after a too-long rejection** (interactive sessions only).
+  If the API rejects a turn as too long, cc-lhc compacts and then sends one message
+  marked `[runtime note]`, asking Claude to continue and listing the tool calls that
+  already ran. Anything you type in the moment before that message is dropped, with
+  the usual "please resend" notice. If the continued turn is rejected again, cc-lhc
+  stops and tells you to split the task. `-p` never auto-continues.
+- **The model may see `turns tA–tB not in view; use get-turns`** in its context.
+  This marks older turns that are not shown, so the model knows to retrieve them
+  instead of assuming they never happened.
+- **New folders under `~/.cc-lhc`:** `torn-lines/` (repaired transcript fragments)
+  and `abandoned-rebuilds/` (rebuilt transcripts from interrupted compactions).
+  Both keep files for inspection; nothing is deleted outright.
 
-- F1–F8: gorilla report on cc-lhc 0.4.2 (2026-09-23), findings table and sections
-  1–7; F1 3/3, F2 2/2 tree kills, F3 one descriptor per kill, F4 1/1, F5 1/1, F6
-  deterministic (views v71, v80), F7 deterministic (simulated torn line), F8 2/2.
-  Build and per-fix repros against the candidate: `BUILD-043.md` (campaign
-  cc-lhc-gorilla-20260923).
-- F4b: Alder's soak on 0.4.3-local.1, a relaunched Monitor failing re-qualification
-  (`launch_not_found`) at the second compaction and outliving the session.
-- f5h: Alder's soak one-shot series (10 `claim_expired`, 5/7 recall misses) and the
-  t3code steward's live thread (227 `claim_expired` failures, 81 view gaps); on a copy
-  of that store the fix requeued all 227 and a drain completed them. Alder's
-  old-holder counterexamples (success and failure) failed before the fence.
-- Windows: CI run 35915132917 (12 failures per Windows target, one a product defect:
-  one-shot kill and parent-death relied on SIGHUP).
-- mjm, bvb: hit while qualifying the fixes and building 0.4.3-local.1/.2.
+## Fixes
 
-## Compatibility and validation
+### One-shot mode (`-p`)
 
-- Thread schema unchanged (13). cc-lhc's lineage DB adds `rebuild_unaccepted`
-  (migrated on first 0.4.3 launch). Work-item payloads gain `claimAttempt` and
-  `claimExpired` keys; older builds ignore them.
-- Package suites green on `f8674b79`: lhc 948, cc-lhc 1408, claude-lhc 58; typecheck
-  and biome clean. Native addon source unchanged since 0.4.2.
-- Soak: 0.4.3-local.1 (`b11b8e7a`) from 2026-09-23T19:59Z and 0.4.3-local.2
-  (`9b0290b2`) from 23:09Z on the live box, with Alder's soak and reviews.
-- Six-platform build and the live turn on the shipped artifact: see "Source and
-  artifacts".
+- Output was mixed with terminal codes and stderr, and JSON output did not parse.
+  Fixed as described above.
+- Piped stdin never reached Claude. Fixed.
+- If the wrapper is killed, Claude now exits with it. On Linux this uses the
+  kernel's parent-death signal; on macOS and Windows a watchdog closes Claude and
+  its tool processes within about a quarter second, forcing it after 5 seconds. On
+  Windows, Ctrl-C and terminate signals also now close Claude's whole process tree;
+  before, they could leave Claude running.
 
-## Install or upgrade
+### Recovery after a crash or kill
 
-Install on Linux or macOS from the checksum-verified GitHub release:
+- **Killed during Smart Compact.** Killing the whole process tree between writing
+  the rebuilt transcript and switching to it left an orphaned transcript.
+  `cc-lhc -c` then opened it as a new session with capture off, cut off from the
+  thread's history. Now the rebuilt session is recorded against its thread before
+  its file is written, so the next launch (`-c` or `--resume`) returns to the right
+  session and sets the unused rebuild aside.
+- **Orphans left by 0.4.2 or earlier** have no such record. cc-lhc no longer guesses
+  their thread from shared text. It prints the `cc-lhc --resume` picker command and
+  lists threads that share text as unverified possible matches. With `-p` it prints
+  this on stderr and exits 2 without starting Claude; before, it exited 13 with no
+  output.
+- **Torn last transcript line.** A crash mid-write could leave the transcript's last
+  line incomplete, which permanently stopped capture, retrieval and compaction for
+  that session until the file was hand-edited. Before resuming, cc-lhc now trims the
+  fragment (saving it under `~/.cc-lhc/torn-lines/`), or adds the missing newline if
+  the fragment is a complete record. It only does this when no other process has the
+  file open. The live capture watcher also waits on an incomplete last line instead
+  of stopping.
+- **Stale runtime files.** Killed sessions left files under `~/.cc-lhc/runtime/`.
+  Launch now removes those whose owning process is gone, and moves abandoned rebuilt
+  transcripts aside.
+
+### Background work across a compaction
+
+- **Background agents.** An agent still running when Smart Compact switched
+  sessions stopped with the old session, and nothing said so. Now, on your next
+  prompt, cc-lhc reports its final result if it had finished, or tells Claude it was
+  interrupted and can be resumed with `SendMessage(<id>)`.
+- **Monitors.** cc-lhc restarts a running monitor after a compaction, but its events
+  never reached the session, and after a second compaction it was marked failed
+  while still running and outlived the session. Now its events are delivered once
+  each on your next prompt, it keeps running as the same process through later
+  compactions, and it is stopped when the session ends.
+
+### Shared LHC core
+
+These fixes are in the TypeScript core and also ship in the `claude-lhc` 0.1.0
+sidecar. They are not yet in the Rust port used by codex-lhc and grok-lhc.
+
+- **Older turns silently missing from the view.** When a summary covered some turns
+  already shown in full and some older ones, the view left out the summary and the
+  older turns entirely, with no marker, even with budget to spare. The summary now
+  covers the turns not otherwise shown, and any turn still not represented gets the
+  gap marker above.
+- **Summaries lost when a process exits.** Summaries of older turns are made in the
+  background. If the process exited while making one (every `-p` run, and any kill),
+  the next process marked that summary permanently failed, and the turn stayed a gap
+  in the view. Now a process hands unfinished work back when it exits cleanly, and
+  work left by a crash or kill is retried. A second crash on the same item marks it
+  failed as `claim_expired_repeatedly`, with a warning in the thread log. Summaries
+  that earlier versions marked failed this way are retried once the next time the
+  thread is opened, so existing gaps fill in over the following runs.
+
+## Upgrading
 
 ```sh
+# Linux or macOS
 curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.3/install.sh | sh
 ```
 
-Windows (PowerShell):
-
 ```powershell
+# Windows
 irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.3/install.ps1 | iex
 ```
 
-npm:
-
 ```sh
+# npm
 npm install --global cc-lhc@0.4.3
 ```
 
-Upgrading in place keeps records and config. Running sessions keep their version
-until they exit. Do not mix npm-owned and script-owned launchers on the same `PATH`.
+- Records, threads and configuration are kept. The first 0.4.3 launch adds one
+  column to `~/.cc-lhc/cc-lhc.sqlite`; thread databases are unchanged.
+- Sessions already running stay on their old version until they exit.
+- Use one install method per machine: don't put npm-installed and script-installed
+  `cc-lhc` on the same `PATH`.
 
-## Rollback to 0.4.2
+## Rolling back to 0.4.2
 
-0.4.2 ignores `rebuild_unaccepted`. If a launch names a session it has no alias for,
-it re-imports that thread's lineage and promotes the newest row, which after an
-interrupted 0.4.3 Smart Compact can be a rebuild that was never accepted. So after
-switching back to 0.4.2, run once (Python 3; it ships as a release asset and in
-`packages/cc-lhc/scripts/`):
+0.4.2 doesn't know about the "not yet accepted" record 0.4.3 writes before a
+rebuild. After an interrupted 0.4.3 compaction, a 0.4.2 launch can make that unused
+rebuild the thread's current session, which is the orphan problem above. After
+switching back to 0.4.2, run this once (Python 3):
 
 ```sh
 curl -fsSLO https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.3/rollback-unaccepted.py
+python3 rollback-unaccepted.py           # dry run: shows what it would change
 python3 rollback-unaccepted.py --apply
 ```
 
-It deletes unaccepted lineage rows, moves their transcripts to
-`~/.cc-lhc/abandoned-rebuilds/`, and skips threads whose owner is still running.
-Without `--apply` it is a dry run. It honours `CC_LHC_HOME` and `CLAUDE_CONFIG_DIR`. 0.4.2's drain also fails an expired claim as
-`claim_expired` again; a later 0.4.3 open requeues those once.
+It removes the unaccepted records, moves their transcripts to
+`~/.cc-lhc/abandoned-rebuilds/`, and skips threads whose session is still running.
+It honours `CC_LHC_HOME` and `CLAUDE_CONFIG_DIR`. The script is also in the source at
+`packages/cc-lhc/scripts/rollback-unaccepted.py`.
 
 ## Known limitations
 
-- A record-less rebuilt orphan from 0.4.2 or earlier is not linked automatically;
-  pick the thread with `cc-lhc --resume` as the guidance shows.
-- The claim hand-back runs on process exit: SIGKILL or a hard crash still leaves a
-  claim to expire (and a second in a row fails it).
-- Unchanged from 0.4.2: tool-only middle segments of a split turn carry no summary by
-  design; family weights are measured constants.
-- Not covered by the gorilla test: disk-full, multi-hour sessions, native `/compact`.
+- **Windows:** the torn-line repair does not run, because cc-lhc cannot check there
+  whether another process has the transcript open. A torn last line on Windows
+  still stops capture for that session, as in 0.4.2.
+- **Claude exiting when the wrapper is killed** is covered by tests in CI on macOS
+  and Windows, but has only been checked by hand on Linux.
+- Killing only the Claude process (not the wrapper) can leave its tool processes
+  running. 0.4.2 behaves the same.
+- A hard kill or crash can still leave a summary to be retried by the next process.
+- Not tested: full disk, sessions longer than about 90 minutes, and Claude's own
+  `/compact` typed mid-session (it runs Claude's native compaction instead of Smart
+  Compact).
+
+## How this release was tested
+
+- Every fix was reproduced on 0.4.2 first, as the release standard requires:
+  - one-shot output, stdin, crash recovery, background work, too-long rejection,
+    missing turns and torn lines: an interactive and one-shot stress test of 0.4.2
+    on Claude Code 2.1.280 (2026-09-23);
+  - the monitor across a second compaction, and summaries lost at exit: a soak of
+    the first 0.4.3 build (a 92-minute interactive session and 56 consecutive
+    one-shots), plus a long-running one-shot thread where 227 summaries had failed
+    this way;
+  - the Windows signal problem: CI run
+    [35915132917](https://github.com/liminal-ai/long-horizon-context/actions/runs/35915132917).
+- Each fix was reviewed independently, with a test that fails without the fix.
+- The build for the released commit passed the full cc-lhc suite on all six
+  platforms: run
+  [35934122985](https://github.com/liminal-ai/long-horizon-context/actions/runs/35934122985)
+  on `0b52cafc`.
+- Live turn on the shipped package: installed from the CI npm package into a scratch
+  folder, `--lhc-version` reported 0.4.3 / `0b52cafc`, and a real `-p` turn and a
+  piped-stdin turn each returned exactly the expected reply.
 
 ## Source and artifacts
 
-- Previous release: [`cc-lhc-v0.4.2`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.2)
-- Source: LHC main (release cut on `f8674b79`)
-- Build run: [35934122985](https://github.com/liminal-ai/long-horizon-context/actions/runs/35934122985) on `0b52cafc`, 11/11 jobs green; npm package sha256 `8935da3ba714cd32429c0b8e5d5360e39be8c63adf3e79c16aefe8db9e67a3cc`
-- Live turn on the shipped artifact: the npm package installed into a scratch prefix reported `cc-lhc 0.4.3` / source `0b52cafc`; a real `-p` one-shot returned exactly its reply (rc 0, no CR/escape bytes) and a piped-stdin one-shot returned its reply (rc 0)
-- Source comparison: [`cc-lhc-v0.4.2...cc-lhc-v0.4.3`](https://github.com/liminal-ai/long-horizon-context/compare/cc-lhc-v0.4.2...cc-lhc-v0.4.3)
-- Release tag: [`cc-lhc-v0.4.3`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.3)
+- Release tag: [`cc-lhc-v0.4.3`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.3) (`0b52cafc`)
+- Changes since 0.4.2: [`cc-lhc-v0.4.2...cc-lhc-v0.4.3`](https://github.com/liminal-ai/long-horizon-context/compare/cc-lhc-v0.4.2...cc-lhc-v0.4.3)
 - Checksums: [`SHA256SUMS`](https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.3/SHA256SUMS)
-- npm: [`cc-lhc@0.4.3`](https://www.npmjs.com/package/cc-lhc/v/0.4.3)
+- npm: [`cc-lhc@0.4.3`](https://www.npmjs.com/package/cc-lhc/v/0.4.3), tarball sha256 `8935da3ba714cd32429c0b8e5d5360e39be8c63adf3e79c16aefe8db9e67a3cc`
+- Previous release: [`cc-lhc-v0.4.2`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.2)
+- Fix commits: one-shot `848d2272`, `89a6900c`; crash recovery `ba7ef020`,
+  `02e5ab6f`, `ed0034b1`, `cd5315b6`, `d2c49ff0`; background work `c01d9524`,
+  `c5819a8d`, `e823218d`; too-long continue `1a1cc7bb`, `4e5c7dbb`; core `8b76c31c`,
+  `9eb57849`, `afc18110`.

@@ -1,7 +1,8 @@
 # cc-lhc
 
 `cc-lhc` is the production Claude Code host for Long Horizon Context. It wraps
-the closed `claude` CLI in a PTY, captures Claude's rollout JSONL into an LHC
+the closed `claude` CLI (in a PTY for interactive sessions, as a plain child
+process for `-p` one-shots), captures Claude's rollout JSONL into an LHC
 thread, runs derivation inference through isolated `claude -p` subprocesses,
 and rebuilds Claude's session when the served thread view changes — swapping the
 child mid-session for an interactive launch, and running Smart Compact before launch for a
@@ -55,6 +56,29 @@ cc-lhc --lhc-help
 The package includes prebuilt native identity addons for all supported
 targets. A supported client does not need a C++ compiler or `node-gyp`.
 
+## Upgrading and rolling back
+
+Upgrade by re-running the installer or `npm install --global cc-lhc@<version>`.
+Records, threads and configuration are kept, and sessions already running stay
+on their old version until they exit. Use one install method per machine. What
+changed in each version, and anything to do before upgrading, is in
+[`docs/releases/`](../../docs/releases/).
+
+Rolling back from 0.4.3 or later to 0.4.2 needs one extra step. 0.4.3 records a
+rebuilt session as not yet accepted before writing it, and 0.4.2 ignores that
+record, so after an interrupted Smart Compact a 0.4.2 launch can switch the
+thread onto the unused rebuild. After switching back to 0.4.2, run once
+(Python 3; a release asset, and `scripts/rollback-unaccepted.py` in the source):
+
+```sh
+python3 rollback-unaccepted.py           # dry run
+python3 rollback-unaccepted.py --apply
+```
+
+It removes the unaccepted records, moves their transcripts to
+`~/.cc-lhc/abandoned-rebuilds/`, and skips threads whose session is still
+running. It honours `CC_LHC_HOME` and `CLAUDE_CONFIG_DIR`.
+
 ## Start and help
 
 ```text
@@ -94,7 +118,10 @@ lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
 - **Retrieval.** Claude can invoke `get-turns` and `get-messages` through Bash.
   A wrapper-owned runtime descriptor binds each invocation to the exact live
   session and LHC thread. Stale ownership, malformed state, and session
-  mismatch fail closed before archive access or impression writes.
+  mismatch fail closed before archive access or impression writes. When the
+  served view leaves out older turns, it says so with a `turns tA–tB not in
+  view; use get-turns` line, so Claude retrieves them instead of assuming they
+  never happened.
 - **Capability-limited context governance (LIM-64).** Provider-reported input
   usage is authoritative and includes input + cache creation + cache read.
   Predicted next-request pressure adds a **source-labelled** estimate for
@@ -123,31 +150,33 @@ lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
   the moment Smart Compact owns the settled session, bytes bound for Claude are
   dropped rather than delivered — never buffered, never replayed — and one line
   says *input typed during compaction was not delivered — please resend*.
-- **Live background work is not killed silently.** A swap replaces the Claude
-  child, so anything that child was still running asynchronously dies with it:
-  background agents, workflows, background shell commands, monitors, and a
-  pending `ScheduleWakeup`. The wrapper derives that open set from the same
-  rollout it already reads. A launch acknowledgement opens one item, and only
-  for the launcher that was actually called; only matching terminal evidence
-  (`completed`, `failed`, `killed`, `stopped`, or an explicit `TaskStop`) closes
-  it. Monitor events are progress and close nothing, and neither does elapsed
-  time — a wakeup past its moment stays open until a later call supersedes it or
-  stops it. When automatic Smart Compact comes due at a settled seam with an
-  operator at the terminal and work still open, the panel names what the swap
-  would kill and asks *before* anything durable is written. Only an explicit
-  **y** proceeds, into the ordinary receipt-and-swap path exactly once — and
-  only if the session still looks the way it did when the question was asked.
-  A turn that opened behind the panel, background work that *started* there and
-  was never on the list, or a settle there that put the session back under the
-  trigger all skip the seam; work that *finished* there does not, because
-  killing fewer than listed is what was agreed to. When the swap does run it
-  runs against the reading taken at the keypress, not the one that raised the
-  question. Anything
-  else — n, Esc, a stray key, a closed terminal, a prompt that could not be
-  drawn — skips that seam alone and records nothing at all, so the next eligible
-  seam asks again while the work is still running. With an empty set, no
-  terminal (one-shot launches included), or a seam that is not otherwise
-   eligible, the Smart Compact path is exactly what it was.
+- **Background work is carried across Smart Compact.** A swap replaces the
+  Claude child; work that child started asynchronously is carried into the
+  replacement rather than killed:
+  - Background shell commands keep running as their own processes, and their
+    results are delivered on the next prompt.
+  - Workflows and a pending `ScheduleWakeup` continue from a manifest in the
+    rebuilt rollout.
+  - Monitors are relaunched by the wrapper. Their events are delivered once
+    each on the next prompt, they stay the same process through later
+    compactions, and they are stopped when the session ends. A monitor that
+    cannot be relaunched is recorded as failed.
+  - A background agent runs inside the old Claude process and cannot survive
+    the swap. On the next prompt cc-lhc reports its final result if it had
+    finished; otherwise it tells Claude the agent was interrupted and can be
+    resumed with `SendMessage(<id>)`.
+
+  The wrapper derives the open set from the rollout it already reads: a launch
+  acknowledgement opens an item, and only matching terminal evidence
+  (`completed`, `failed`, `killed`, `stopped`, or an explicit `TaskStop`)
+  closes it. If an open item has no way to be carried, that seam is skipped and
+  the current session kept.
+- **A too-long rejection continues once.** If the API rejects a turn as too
+  long (for example many PDF pages read as images in one turn), cc-lhc compacts
+  at the next settled seam and then sends one message marked `[runtime note]`,
+  asking Claude to continue and naming the tool calls that already ran. Input
+  typed in that moment is dropped with the usual resend notice. A second
+  rejection stops with a note to split the task. One-shots never auto-continue.
 - **Spawn-first handoff.** On an interactive launch, Smart Compact/prune
   rebuild a new rollout, then spawn `claude --resume <new-id>` **off-route** — a
   real child owning no terminal, no stdin, and no capture generation. Once it has
@@ -176,6 +205,16 @@ lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
   lease back; a launch that fails before then keeps the old pointer, and nothing
   is ever resent automatically. A turn that grows past the trigger while it runs
   finishes and the next invocation runs Smart Compact.
+
+  A one-shot runs Claude as a plain child process, not in a PTY. Claude
+  inherits the wrapper's stdin, stdout and stderr, so the reply, exit code,
+  `--output-format json`/`stream-json` and piped stdin behave as with
+  `claude -p`, including Claude's own ~3 second wait and warning when stdin is
+  a pipe that sends nothing (add `< /dev/null`). cc-lhc's own lines go to
+  stderr. Claude is tied to the wrapper's lifetime: on Linux through
+  `setpriv --pdeathsig`, elsewhere through a watchdog; on Windows the whole
+  process tree is closed with `taskkill /T /F`. A second one-shot on a thread
+  that is already running exits 2 without queuing.
 - **When replacements repeatedly will not run.** Each nonviable swap costs the
   session nothing and is retried at the next settled seam. After a bounded
   number of them, two things happen instead of another quiet retry, and both
@@ -200,6 +239,32 @@ lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
   be written is recorded host-side with the pointer it observed, and reconciled
   into the registry at the next launch under the lease — repairing only that
   exact predecessor, so a later successful acceptance is never rolled back.
+
+## Recovery after a crash or kill
+
+- **Killed during Smart Compact.** The rebuilt session is recorded against its
+  thread as not yet accepted before its transcript is written. If the whole
+  process tree dies before the switch, the next launch (`-c` or `--resume`)
+  returns to the thread's accepted session and moves the unused rebuild to
+  `~/.cc-lhc/abandoned-rebuilds/`.
+- **Orphans from 0.4.2 or earlier** have no such record and are not linked by
+  guesswork. The launch prints `cc-lhc --resume` (the picker) and lists threads
+  that share text with the orphan as unverified possible matches. A one-shot
+  prints this on stderr and exits 2 before starting Claude.
+- **Torn last transcript line.** Before resuming, cc-lhc checks the session
+  file's last line. An incomplete fragment is saved under
+  `~/.cc-lhc/torn-lines/` and trimmed; a complete record missing only its
+  newline gets the newline. This runs only when no other process has the file
+  open (checked through `/proc` on Linux and `lsof` on macOS); on Windows,
+  where that check is unavailable, the file is left alone. The live watcher
+  waits on an incomplete last line rather than stopping capture. Corruption
+  earlier in the file still stops capture for that session.
+- **Stale runtime files.** Launch removes runtime descriptors whose owning
+  process is gone.
+- **Interrupted background summaries.** A process that exits cleanly hands its
+  unfinished summary work back; work left by a crash or kill is retried by the
+  next process, and a second crash on the same item marks it failed
+  (`claim_expired_repeatedly`, with a warning in the thread log).
 
 ## Retrieval and migration commands
 
@@ -324,7 +389,10 @@ environment surface.
 | `cc-lhc.sqlite` | Host-local session detail (rollout paths, prefix proof, replay signatures, pending-acceptance recovery) and durable governor receipts (`cc_governor_receipts`) |
 | `threads/<uuid>.sqlite` | Per-thread LHC record, derivations, views, and impressions |
 | `owners/*.json` | Exclusive thread-ownership leases (keyed by thread hash) |
-| `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600 on POSIX; on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile, so these inherit the profile's default ACLs — no POSIX modes and no bespoke DACL there) |
+| `runtime/*.json` | Per-wrapper retrieval capability descriptors (mode 0600 on POSIX; on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile, so these inherit the profile's default ACLs — no POSIX modes and no bespoke DACL there); stale ones are removed at launch |
+| `continuity/` | Output of relaunched monitors and saved results of carried background work |
+| `torn-lines/` | Fragments trimmed from torn transcript tails before resume |
+| `abandoned-rebuilds/<cwd>/` | Rebuilt transcripts from interrupted Smart Compacts, moved out of Claude's projects folder |
 | `recovery/*` | Only pre-rewrite artifacts, cleared at launch by the thread that owns them |
 | `wrapper.log` | Append-only wrapper diagnostics (no rotation yet) |
 
