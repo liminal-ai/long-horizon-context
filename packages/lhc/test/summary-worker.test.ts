@@ -8,8 +8,8 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
-import { createClaudeCliModelCall } from "../src/shared-tech/inference-claude-cli.ts";
-import { toolResultV2 } from "../src/shared-tech/prompts/tool-result-v2.ts";
+import { createClaudeCliModelCall } from "../src/shared-tech/inference-claude-cli.js";
+import { toolResultV2 } from "../src/shared-tech/prompts/tool-result-v2.js";
 import {
   SUMMARY_WORKER_CLI_ARGS,
   SUMMARY_WORKER_SYSTEM_PROMPT,
@@ -18,7 +18,7 @@ import {
   summaryWorkerCliLaunch,
   summaryWorkerConfigDir,
   summaryWorkerRequest,
-} from "../src/shared-tech/summary-worker.ts";
+} from "../src/shared-tech/summary-worker.js";
 
 let dir = "";
 beforeEach(() => {
