@@ -180,7 +180,7 @@ describe("fetch-prebuild: subprocess probe-report validation (full portable-iden
   const goodProbe = { ok: true, pid: 4242, bootId: "boot-uuid-0799", starttime: "119880620" };
   const goodFileProbe = { ok: true, path: "/tmp/x.node", volumeId: "66306", fileId: "ino:1234" };
   const goodReport = {
-    contract: 3,
+    contract: 4,
     platform: process.platform,
     pid: 4242,
     probe: goodProbe,
@@ -206,7 +206,7 @@ describe("fetch-prebuild: subprocess probe-report validation (full portable-iden
     ["non-object report", "nope", /not an object/],
     ["wrong contract version", { ...goodReport, contract: 2 }, /contract version 2/],
     [
-      "contract-3 export missing",
+      "contract-4 export missing",
       { ...goodReport, exports: ["readProcessIdentity", "readFileIdentity"] },
       /export pauseProcess/,
     ],

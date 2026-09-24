@@ -52,7 +52,7 @@ export function resolveReleaseSource({ argvBaseUrl, argvTag, env = {}, config = 
  * a downloaded addon, BEFORE it may replace the installed one. Mirrors the
  * full portable-identity contract enforced by the loader
  * (packages/cc-lhc-native/src/identity.ts, file-identity.ts): identity
- * contract version 3, addon compiled for this platform, every contract-3
+ * contract version 4, addon compiled for this platform, every contract-4
  * function export present, a complete identity
  * for the probing process — ok true, the exact probed pid echoed back, a
  * bootId of at least 8 characters, and a nonempty digits-only starttime
@@ -68,14 +68,16 @@ export const PREBUILD_FUNCTION_EXPORTS = [
   "resumeProcess",
   "readChildExit",
   "findChildHoldingFile",
+  "bindChildToWrapperJob",
+  "listFileHolders",
 ];
 
 export function validateProbeReport(report, platform) {
   if (report === null || typeof report !== "object" || Array.isArray(report)) {
     return { ok: false, reason: `probe report is not an object: ${JSON.stringify(report)}` };
   }
-  if (report.contract !== 3) {
-    return { ok: false, reason: `contract version ${String(report.contract)}, need 3` };
+  if (report.contract !== 4) {
+    return { ok: false, reason: `contract version ${String(report.contract)}, need 4` };
   }
   const exportsList = Array.isArray(report.exports) ? report.exports : [];
   for (const name of PREBUILD_FUNCTION_EXPORTS) {

@@ -23,7 +23,14 @@
  *
  * Windows has no SIGHUP (libuv answers ENOSYS for it) and no process groups, so
  * termination there is what closing the ConPTY did: `taskkill /T /F` on Claude's
- * process tree, from `kill()` and from the watchdog alike.
+ * process tree, from `kill()` and from the watchdog alike. That alone is not
+ * enough: Claude exits by itself once the wrapper is gone, and Windows does
+ * not end orphaned children, so its tool processes (shells, conhost, node)
+ * outlived a killed wrapper (Windows ARM gorilla report, 2/2). So on Windows
+ * Claude is also bound to a kill-on-close job object whose only handle the
+ * wrapper holds (`bindToWrapperJob`, the native addon): when the wrapper exits
+ * or dies, Windows ends every process in the job, whether or not Claude
+ * exited first. The watchdog still runs, as the fallback when binding fails.
  *
  * The returned handle implements the part of node-pty's `IPty` the wrapper
  * uses for a routed child (pid, onData, onExit, kill, write, resize); data and
@@ -82,7 +89,7 @@ const timer = setInterval(() => {
 }, poll);
 `;
 
-export type ParentDeathCoupling = "pdeathsig" | "watchdog";
+export type ParentDeathCoupling = "pdeathsig" | "watchdog" | "job";
 
 export interface PlainChildOptions {
   cwd: string;
@@ -94,8 +101,14 @@ export interface PlainChildOptions {
   setprivPath?: string | null;
   /** Test seam: the wrapper pid the watchdog watches. */
   wrapperPid?: number;
-  /** Notified once with the coupling actually in force. */
-  onCoupling?: (coupling: ParentDeathCoupling) => void;
+  /**
+   * Windows: put Claude (and so every process it spawns afterwards) in the
+   * wrapper's kill-on-close job. Injected, so this module stays free of the
+   * native addon; absent, Windows falls back to the watchdog alone.
+   */
+  bindToWrapperJob?: (pid: number) => { ok: true } | { ok: false; reason: string };
+  /** Notified once with the coupling actually in force (and why a job bind failed). */
+  onCoupling?: (coupling: ParentDeathCoupling, detail?: string) => void;
 }
 
 export type PlainChildSpawn = (file: string, args: string[], options: PlainChildOptions) => IPty;
@@ -128,6 +141,16 @@ export const spawnPlainChild: PlainChildSpawn = (file, args, options) => {
   }
   const pid = child.pid;
 
+  // Bind before anything else: a descendant Claude spawns before this call
+  // is outside the job (Claude takes far longer than this to start a tool).
+  let jobDetail: string | undefined;
+  let jobBound = false;
+  if (platform === "win32" && options.bindToWrapperJob !== undefined) {
+    const bound = options.bindToWrapperJob(pid);
+    if (bound.ok) jobBound = true;
+    else jobDetail = `job bind failed: ${bound.reason}`;
+  }
+
   if (setpriv !== null) {
     options.onCoupling?.("pdeathsig");
   } else {
@@ -148,7 +171,7 @@ export const spawnPlainChild: PlainChildSpawn = (file, args, options) => {
     // Neither the watchdog nor its pipe may keep the wrapper's event loop alive.
     (watchdog.stdin as { unref?: () => void } | null)?.unref?.();
     watchdog.unref();
-    options.onCoupling?.("watchdog");
+    options.onCoupling?.(jobBound ? "job" : "watchdog", jobDetail);
   }
 
   const exitListeners: ExitListener[] = [];

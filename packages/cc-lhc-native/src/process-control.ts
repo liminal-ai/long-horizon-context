@@ -13,6 +13,14 @@
  *                               signaled), gated on the recorded starttime
  *   findChildHoldingFile      — which direct child of a pid holds a file open
  *
+ * Contract 4, Windows only ("unsupported" elsewhere):
+ *
+ *   bindChildToWrapperJob     — tie a just-spawned child and every descendant
+ *                               it spawns to this process's lifetime (a
+ *                               kill-on-close job object)
+ *   listFileHolders           — every process holding a file open, plus
+ *                               whether a share-none open is refused
+ *
  * Every target is a child the wrapper spawned; callers gate on exact identity
  * before calling. Failures are results, never throws, so callers fail closed.
  */
@@ -33,6 +41,7 @@ export type ProcessControlFailureCode =
   | "identity_changed"
   | "access_denied"
   | "native_error"
+  | "unsupported"
   | "unsupported_platform"
   | "addon_unavailable";
 
@@ -51,11 +60,23 @@ export type FindChildHoldingFileResult =
   | { ok: true; parentPid: number; path: string; pid: number | null; matches: number; detail?: string }
   | ProcessControlFailure;
 
+export type FileHoldersNativeResult =
+  | {
+      ok: true;
+      path: string;
+      holders: { pid: number; name: string }[];
+      truncated: boolean;
+      sharingViolation: boolean;
+    }
+  | ProcessControlFailure;
+
 export interface ProcessControl {
   pause(pid: number): ControlResult;
   resume(pid: number): ControlResult;
   readChildExit(pid: number, starttime: string): ReadChildExitResult;
   findChildHoldingFile(parentPid: number, path: string): FindChildHoldingFileResult;
+  bindChildToWrapperJob(pid: number): ControlResult;
+  listFileHolders(path: string): FileHoldersNativeResult;
 }
 
 const NATIVE_FAILURE_CODES: ReadonlySet<string> = new Set([
@@ -65,6 +86,7 @@ const NATIVE_FAILURE_CODES: ReadonlySet<string> = new Set([
   "identity_changed",
   "access_denied",
   "native_error",
+  "unsupported",
 ]);
 
 function failure(code: ProcessControlFailureCode, message: string): ProcessControlFailure {
@@ -141,6 +163,33 @@ export function normalizeHolderResult(raw: unknown, parentPid: number, path: str
       return failure("native_error", "addon returned an invalid holder pid");
     }
     return { ok: true, parentPid, path, pid: obj.pid, matches: 1, ...detail };
+  }
+  if (obj.ok === false) return nativeFailure(obj);
+  return failure("native_error", "addon result missing ok discriminant");
+}
+
+/** Validate a listFileHolders result; fail closed on any malformed shape. */
+export function normalizeFileHoldersResult(raw: unknown, path: string): FileHoldersNativeResult {
+  const obj = asObject(raw);
+  if (obj === null) return failure("native_error", "addon returned a non-object result");
+  if (obj.ok === true) {
+    if (obj.path !== path) return failure("native_error", "addon echoed a mismatched path");
+    if (
+      !Array.isArray(obj.holders) ||
+      typeof obj.truncated !== "boolean" ||
+      typeof obj.sharingViolation !== "boolean"
+    ) {
+      return failure("native_error", "addon returned a malformed holder list");
+    }
+    const holders: { pid: number; name: string }[] = [];
+    for (const entry of obj.holders) {
+      const holder = asObject(entry);
+      if (holder === null || !validPid(holder.pid) || typeof holder.name !== "string") {
+        return failure("native_error", "addon returned a malformed holder");
+      }
+      holders.push({ pid: holder.pid, name: holder.name });
+    }
+    return { ok: true, path, holders, truncated: obj.truncated, sharingViolation: obj.sharingViolation };
   }
   if (obj.ok === false) return nativeFailure(obj);
   return failure("native_error", "addon result missing ok discriminant");
@@ -226,6 +275,26 @@ export function createProcessControl(seams: LoaderSeams = {}): ProcessControl {
       return call(
         (a) => a.findChildHoldingFile(parentPid, path),
         (raw) => normalizeHolderResult(raw, parentPid, path),
+        (f) => f,
+      );
+    },
+    bindChildToWrapperJob(pid) {
+      return (
+        pidGuard(pid) ??
+        call(
+          (a) => a.bindChildToWrapperJob(pid),
+          (raw) => normalizeControlResult(raw, pid),
+          (f) => f,
+        )
+      );
+    },
+    listFileHolders(path) {
+      if (typeof path !== "string" || path === "" || path.includes("\0")) {
+        return failure("invalid_path", "path must be a non-empty string without NUL");
+      }
+      return call(
+        (a) => a.listFileHolders(path),
+        (raw) => normalizeFileHoldersResult(raw, path),
         (f) => f,
       );
     },

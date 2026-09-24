@@ -34,7 +34,7 @@ import {
 } from "./targets.js";
 
 export const IDENTITY_ADDON_ENV = "CC_LHC_IDENTITY_ADDON";
-export const IDENTITY_CONTRACT_VERSION = 3;
+export const IDENTITY_CONTRACT_VERSION = 4;
 
 export class UnsupportedPlatformTargetError extends Error {
   constructor(
@@ -74,9 +74,11 @@ export interface NativeIdentityAddon {
   resumeProcess(pid: number): unknown;
   readChildExit(pid: number, starttime: string): unknown;
   findChildHoldingFile(parentPid: number, path: string): unknown;
+  bindChildToWrapperJob(pid: number): unknown;
+  listFileHolders(path: string): unknown;
 }
 
-/** Every export a contract-3 addon must present as a function. */
+/** Every export a contract-4 addon must present as a function. */
 export const ADDON_FUNCTION_EXPORTS = [
   "readProcessIdentity",
   "readFileIdentity",
@@ -84,6 +86,8 @@ export const ADDON_FUNCTION_EXPORTS = [
   "resumeProcess",
   "readChildExit",
   "findChildHoldingFile",
+  "bindChildToWrapperJob",
+  "listFileHolders",
 ] as const;
 
 /** Deterministic seams; every field defaults to the production value. */

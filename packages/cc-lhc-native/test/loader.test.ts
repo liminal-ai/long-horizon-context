@@ -111,6 +111,8 @@ const CONTROL_STUBS = {
   resumeProcess: () => ({ ok: false, code: "not_found", message: "stub" }),
   readChildExit: () => ({ ok: false, code: "not_found", message: "stub" }),
   findChildHoldingFile: () => ({ ok: false, code: "not_found", message: "stub" }),
+  bindChildToWrapperJob: () => ({ ok: false, code: "unsupported", message: "stub" }),
+  listFileHolders: () => ({ ok: false, code: "unsupported", message: "stub" }),
 };
 
 describe("loadIdentityAddon contract validation", () => {
@@ -125,6 +127,13 @@ describe("loadIdentityAddon contract validation", () => {
   it("rejects an addon that predates supervised-child control (contract 2, no control exports)", () => {
     const { pauseProcess: _p, resumeProcess: _r, readChildExit: _e, findChildHoldingFile: _f, ...legacy } = goodAddon;
     expect(() => loadIdentityAddon(seams({ existing: [devBuild], loadAddon: () => legacy }))).toThrow(/pauseProcess/);
+  });
+
+  it("rejects a contract-3 addon (no process-tree job or file-holder list)", () => {
+    const { bindChildToWrapperJob: _b, listFileHolders: _l, ...legacy } = goodAddon;
+    expect(() =>
+      loadIdentityAddon(seams({ existing: [devBuild], loadAddon: () => ({ ...legacy, identityContractVersion: 3 }) })),
+    ).toThrow(/bindChildToWrapperJob/);
   });
 
   it("rejects an addon that predates file identity (no readFileIdentity export)", () => {

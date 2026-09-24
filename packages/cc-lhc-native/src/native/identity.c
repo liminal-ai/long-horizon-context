@@ -76,6 +76,29 @@
  *     single matching child or null when zero or several match, or a failure
  *     with "invalid_pid" | "invalid_path" | "not_found" | "access_denied" |
  *     "native_error".
+ *
+ * Contract 4 adds two Windows-only calls (elsewhere they answer
+ * "unsupported"; Linux/macOS have their own mechanisms in the TS layer):
+ *
+ *   bindChildToWrapperJob(pid) — put a child the wrapper just spawned into
+ *     one process-wide job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and
+ *     no silent breakaway (only an explicit CREATE_BREAKAWAY_FROM_JOB leaves),
+ *     whose only handle this process holds (not inheritable).
+ *     When the wrapper exits or is killed the handle closes and Windows ends
+ *     every process still in the job: the child and every descendant it
+ *     spawned after the call, even when the child itself exited first. The
+ *     job nests under libuv's own (which allows silent breakaway, which is how
+ *     tool processes escaped); the immediate job's breakaway rule governs.
+ *     Result { ok: true, pid } or a failure with "invalid_pid" | "not_found" |
+ *     "access_denied" | "native_error" | "unsupported".
+ *
+ *   listFileHolders(path) — every process holding the file open, system-wide,
+ *     from the Restart Manager, plus whether an exclusive (share-none) open of
+ *     the path is refused with a sharing violation — which catches a holder
+ *     the Restart Manager does not list. Result { ok: true, path, holders:
+ *     [{ pid, name }], truncated, sharingViolation } or a failure with
+ *     "invalid_path" | "not_found" | "access_denied" | "native_error" |
+ *     "unsupported".
  */
 
 #include <node_api.h>
@@ -120,7 +143,8 @@ typedef enum {
   PC_NOT_FOUND = 1,
   PC_ACCESS_DENIED = 2,
   PC_NATIVE_ERROR = 3,
-  PC_IDENTITY_CHANGED = 4
+  PC_IDENTITY_CHANGED = 4,
+  PC_UNSUPPORTED = 5
 } pc_status;
 
 typedef enum { CHILD_RUNNING = 0, CHILD_EXITED = 1, CHILD_SIGNALED = 2 } child_state;
@@ -137,6 +161,21 @@ typedef struct {
   int matches;   /* how many direct children hold the file */
   char message[256];
 } holder_result;
+
+#define FILE_HOLDERS_MAX 64
+
+typedef struct {
+  long long pid;
+  char name[260]; /* UTF-8 application name, "?" when unknown */
+} file_holder;
+
+typedef struct {
+  file_holder holders[FILE_HOLDERS_MAX];
+  int count;
+  int truncated;         /* more holders than FILE_HOLDERS_MAX */
+  int sharing_violation; /* an exclusive open of the path was refused */
+  char message[256];
+} file_holders_result;
 
 #if defined(__linux__)
 
@@ -1037,6 +1076,158 @@ static pc_status find_child_holding_file(int64_t parent, const char *path, holde
   return result;
 }
 
+/* One job per wrapper process, created on first use and never closed: its
+ * handle closing at process exit (or death) is the whole mechanism. */
+static HANDLE g_tree_job = NULL;
+
+static pc_status bind_child_to_wrapper_job(int64_t pid, char *message, size_t mlen) {
+  if (pid > (int64_t)MAXDWORD) {
+    snprintf(message, mlen, "pid exceeds platform range");
+    return PC_NOT_FOUND;
+  }
+  if (g_tree_job == NULL) {
+    HANDLE job = CreateJobObjectW(NULL, NULL);
+    if (job == NULL) {
+      snprintf(message, mlen, "CreateJobObjectW failed (error %lu)", (unsigned long)GetLastError());
+      return PC_NATIVE_ERROR;
+    }
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits;
+    memset(&limits, 0, sizeof(limits));
+    /* BREAKAWAY_OK, not SILENT_BREAKAWAY_OK: a child that explicitly asks for
+     * CREATE_BREAKAWAY_FROM_JOB (a deliberate daemon) may leave, rather than
+     * have its CreateProcess fail; every ordinary child stays in the job. */
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_BREAKAWAY_OK;
+    if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits))) {
+      DWORD err = GetLastError();
+      CloseHandle(job);
+      snprintf(message, mlen, "SetInformationJobObject failed (error %lu)", (unsigned long)err);
+      return PC_NATIVE_ERROR;
+    }
+    g_tree_job = job;
+  }
+  HANDLE h = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, (DWORD)pid);
+  if (h == NULL) {
+    return win32_open_failure(GetLastError(), "OpenProcess", message, mlen);
+  }
+  BOOL assigned = AssignProcessToJobObject(g_tree_job, h);
+  DWORD err = assigned ? 0 : GetLastError();
+  CloseHandle(h);
+  if (!assigned) {
+    snprintf(message, mlen, "AssignProcessToJobObject failed (error %lu)", (unsigned long)err);
+    return PC_NATIVE_ERROR;
+  }
+  return PC_OK;
+}
+
+static pc_status list_file_holders(const char *path, file_holders_result *out) {
+  out->count = 0;
+  out->truncated = 0;
+  out->sharing_violation = 0;
+  int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, NULL, 0);
+  if (wlen <= 0) {
+    snprintf(out->message, sizeof(out->message), "path is not valid UTF-8");
+    return PC_NATIVE_ERROR;
+  }
+  WCHAR *wpath = (WCHAR *)malloc(sizeof(WCHAR) * (size_t)wlen);
+  if (wpath == NULL) {
+    snprintf(out->message, sizeof(out->message), "cannot allocate path buffer");
+    return PC_NATIVE_ERROR;
+  }
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, path, -1, wpath, wlen);
+  DWORD attrs = GetFileAttributesW(wpath);
+  if (attrs == INVALID_FILE_ATTRIBUTES) {
+    DWORD err = GetLastError();
+    free(wpath);
+    if (err == ERROR_FILE_NOT_FOUND || err == ERROR_PATH_NOT_FOUND || err == ERROR_INVALID_NAME) {
+      snprintf(out->message, sizeof(out->message), "no such file");
+      return PC_NOT_FOUND;
+    }
+    if (err == ERROR_ACCESS_DENIED) {
+      snprintf(out->message, sizeof(out->message), "access denied");
+      return PC_ACCESS_DENIED;
+    }
+    snprintf(out->message, sizeof(out->message), "GetFileAttributesW failed (error %lu)", (unsigned long)err);
+    return PC_NATIVE_ERROR;
+  }
+
+  DWORD session = 0;
+  WCHAR key[CCH_RM_SESSION_KEY + 1];
+  memset(key, 0, sizeof(key));
+  if (RmStartSession(&session, 0, key) != ERROR_SUCCESS) {
+    free(wpath);
+    snprintf(out->message, sizeof(out->message), "RmStartSession failed");
+    return PC_NATIVE_ERROR;
+  }
+  LPCWSTR files[1];
+  files[0] = wpath;
+  pc_status result = PC_OK;
+  if (RmRegisterResources(session, 1, files, 0, NULL, 0, NULL) != ERROR_SUCCESS) {
+    snprintf(out->message, sizeof(out->message), "RmRegisterResources failed");
+    result = PC_NATIVE_ERROR;
+  } else {
+    UINT needed = 0;
+    UINT count = 0;
+    DWORD reason = 0;
+    DWORD rc = RmGetList(session, &needed, &count, NULL, &reason);
+    if (rc == ERROR_MORE_DATA && needed > 0) {
+      RM_PROCESS_INFO *infos = (RM_PROCESS_INFO *)malloc(sizeof(RM_PROCESS_INFO) * (size_t)needed);
+      if (infos == NULL) {
+        snprintf(out->message, sizeof(out->message), "cannot allocate holder list");
+        result = PC_NATIVE_ERROR;
+      } else {
+        count = needed;
+        rc = RmGetList(session, &needed, &count, infos, &reason);
+        if (rc != ERROR_SUCCESS) {
+          /* Includes a holder appearing between the two calls: fail closed. */
+          snprintf(out->message, sizeof(out->message), "RmGetList failed (error %lu)", (unsigned long)rc);
+          result = PC_NATIVE_ERROR;
+        } else {
+          for (UINT i = 0; i < count; i++) {
+            if (out->count >= FILE_HOLDERS_MAX) {
+              out->truncated = 1;
+              break;
+            }
+            file_holder *h = &out->holders[out->count++];
+            h->pid = (long long)infos[i].Process.dwProcessId;
+            if (WideCharToMultiByte(CP_UTF8, 0, infos[i].strAppName, -1, h->name, (int)sizeof(h->name), NULL,
+                                    NULL) <= 0 ||
+                h->name[0] == '\0') {
+              snprintf(h->name, sizeof(h->name), "?");
+            }
+          }
+        }
+        free(infos);
+      }
+    } else if (rc != ERROR_SUCCESS) {
+      snprintf(out->message, sizeof(out->message), "RmGetList failed (error %lu)", (unsigned long)rc);
+      result = PC_NATIVE_ERROR;
+    }
+  }
+  RmEndSession(session);
+
+  if (result == PC_OK) {
+    /* Share-none open: refused while any handle to the file is open. Held
+     * for no longer than the call. */
+    HANDLE f = CreateFileW(wpath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    if (f == INVALID_HANDLE_VALUE) {
+      DWORD err = GetLastError();
+      if (err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION) {
+        out->sharing_violation = 1;
+      } else if (err == ERROR_ACCESS_DENIED) {
+        snprintf(out->message, sizeof(out->message), "exclusive open: access denied");
+        result = PC_ACCESS_DENIED;
+      } else {
+        snprintf(out->message, sizeof(out->message), "exclusive open failed (error %lu)", (unsigned long)err);
+        result = PC_NATIVE_ERROR;
+      }
+    } else {
+      CloseHandle(f);
+    }
+  }
+  free(wpath);
+  return result;
+}
+
 #else
 #error "cc-lhc-native identity addon: unsupported platform"
 #endif
@@ -1092,13 +1283,28 @@ static fid_status read_file_identity(const char *path, file_id_result *out) {
   return FID_OK;
 }
 
+/* Contract 4's Windows-only calls. Linux couples a child's death to the
+ * wrapper with PR_SET_PDEATHSIG and macOS with a watchdog (TS layer), and the
+ * TS layer lists file holders from /proc or lsof. */
+static pc_status bind_child_to_wrapper_job(int64_t pid, char *message, size_t mlen) {
+  (void)pid;
+  snprintf(message, mlen, "process-tree jobs are Windows-only");
+  return PC_UNSUPPORTED;
+}
+
+static pc_status list_file_holders(const char *path, file_holders_result *out) {
+  (void)path;
+  snprintf(out->message, sizeof(out->message), "listFileHolders is Windows-only");
+  return PC_UNSUPPORTED;
+}
+
 #endif
 
 /* ------------------------------------------------------------------------- */
 /* Node-API glue                                                             */
 /* ------------------------------------------------------------------------- */
 
-#define IDENTITY_CONTRACT_VERSION 3
+#define IDENTITY_CONTRACT_VERSION 4
 #define MAX_FILE_PATH_UTF8 32768
 
 static napi_value make_string(napi_env env, const char *s) {
@@ -1246,6 +1452,7 @@ static const char *pc_code(pc_status s) {
   return s == PC_NOT_FOUND          ? "not_found"
          : s == PC_ACCESS_DENIED    ? "access_denied"
          : s == PC_IDENTITY_CHANGED ? "identity_changed"
+         : s == PC_UNSUPPORTED      ? "unsupported"
                                     : "native_error";
 }
 
@@ -1446,6 +1653,106 @@ static napi_value FindChildHoldingFile(napi_env env, napi_callback_info info) {
   return obj;
 }
 
+static napi_value BindChildToWrapperJob(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc < 1) {
+    napi_throw_type_error(env, NULL, "bindChildToWrapperJob(pid) requires a pid");
+    return NULL;
+  }
+  int64_t pid = 0;
+  napi_value failure = NULL;
+  if (!read_pid_arg(env, argv[0], "bindChildToWrapperJob(pid)", &pid, &failure)) {
+    return failure;
+  }
+  char message[256];
+  message[0] = '\0';
+  pc_status s = bind_child_to_wrapper_job(pid, message, sizeof(message));
+  if (s != PC_OK) return make_failure(env, pc_code(s), message);
+  napi_value obj = NULL;
+  return ok_with_pid(env, pid, &obj);
+}
+
+static napi_value ListFileHolders(napi_env env, napi_callback_info info) {
+  size_t argc = 1;
+  napi_value argv[1];
+  if (napi_get_cb_info(env, info, &argc, argv, NULL, NULL) != napi_ok || argc < 1) {
+    napi_throw_type_error(env, NULL, "listFileHolders(path) requires a path");
+    return NULL;
+  }
+  napi_valuetype type;
+  if (napi_typeof(env, argv[0], &type) != napi_ok || type != napi_string) {
+    napi_throw_type_error(env, NULL, "listFileHolders(path): path must be a string");
+    return NULL;
+  }
+  size_t len = 0;
+  if (napi_get_value_string_utf8(env, argv[0], NULL, 0, &len) != napi_ok) {
+    napi_throw_error(env, NULL, "cc-lhc identity: cannot read path length");
+    return NULL;
+  }
+  if (len == 0 || len >= MAX_FILE_PATH_UTF8) {
+    return make_failure(env, "invalid_path", "path must be a non-empty string under 32768 bytes");
+  }
+  char *path = (char *)malloc(len + 1);
+  file_holders_result *r = (file_holders_result *)calloc(1, sizeof(file_holders_result));
+  if (path == NULL || r == NULL) {
+    free(path);
+    free(r);
+    napi_throw_error(env, NULL, "cc-lhc identity: cannot allocate");
+    return NULL;
+  }
+  size_t copied = 0;
+  if (napi_get_value_string_utf8(env, argv[0], path, len + 1, &copied) != napi_ok) {
+    free(path);
+    free(r);
+    napi_throw_error(env, NULL, "cc-lhc identity: cannot read path");
+    return NULL;
+  }
+  if (strlen(path) != len) {
+    free(path);
+    free(r);
+    return make_failure(env, "invalid_path", "path must not contain NUL");
+  }
+  pc_status s = list_file_holders(path, r);
+  if (s != PC_OK) {
+    napi_value f = make_failure(env, pc_code(s), r->message);
+    free(path);
+    free(r);
+    return f;
+  }
+  napi_value obj = NULL;
+  napi_value ok_v = NULL;
+  napi_value list = NULL;
+  napi_value truncated_v = NULL;
+  napi_value sharing_v = NULL;
+  napi_value path_v = make_string(env, path);
+  free(path);
+  int built = napi_create_object(env, &obj) == napi_ok && napi_get_boolean(env, true, &ok_v) == napi_ok &&
+              path_v != NULL && napi_create_array_with_length(env, (size_t)r->count, &list) == napi_ok &&
+              napi_get_boolean(env, r->truncated != 0, &truncated_v) == napi_ok &&
+              napi_get_boolean(env, r->sharing_violation != 0, &sharing_v) == napi_ok;
+  for (int i = 0; built && i < r->count; i++) {
+    napi_value entry = NULL;
+    napi_value pid_v = NULL;
+    napi_value name_v = make_string(env, r->holders[i].name);
+    built = napi_create_object(env, &entry) == napi_ok &&
+            napi_create_int64(env, r->holders[i].pid, &pid_v) == napi_ok && name_v != NULL &&
+            napi_set_named_property(env, entry, "pid", pid_v) == napi_ok &&
+            napi_set_named_property(env, entry, "name", name_v) == napi_ok &&
+            napi_set_element(env, list, (uint32_t)i, entry) == napi_ok;
+  }
+  free(r);
+  if (!built || napi_set_named_property(env, obj, "ok", ok_v) != napi_ok ||
+      napi_set_named_property(env, obj, "path", path_v) != napi_ok ||
+      napi_set_named_property(env, obj, "holders", list) != napi_ok ||
+      napi_set_named_property(env, obj, "truncated", truncated_v) != napi_ok ||
+      napi_set_named_property(env, obj, "sharingViolation", sharing_v) != napi_ok) {
+    napi_throw_error(env, NULL, "cc-lhc identity: cannot allocate file holders result");
+    return NULL;
+  }
+  return obj;
+}
+
 static int register_fn(napi_env env, napi_value exports, const char *name, napi_callback cb) {
   napi_value fn = NULL;
   if (napi_create_function(env, name, NAPI_AUTO_LENGTH, cb, NULL, &fn) != napi_ok ||
@@ -1462,7 +1769,9 @@ NAPI_MODULE_INIT() {
   if (!register_fn(env, exports, "pauseProcess", PauseProcess) ||
       !register_fn(env, exports, "resumeProcess", ResumeProcess) ||
       !register_fn(env, exports, "readChildExit", ReadChildExit) ||
-      !register_fn(env, exports, "findChildHoldingFile", FindChildHoldingFile)) {
+      !register_fn(env, exports, "findChildHoldingFile", FindChildHoldingFile) ||
+      !register_fn(env, exports, "bindChildToWrapperJob", BindChildToWrapperJob) ||
+      !register_fn(env, exports, "listFileHolders", ListFileHolders)) {
     return NULL;
   }
   napi_value fn = NULL;

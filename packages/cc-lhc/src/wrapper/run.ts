@@ -1416,8 +1416,15 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
       ? spawnPlain(claudeBin, childArgv, {
           cwd: process.cwd(),
           env: childEnv,
-          onCoupling: (coupling) => {
-            wrapperLog.info(`cc-lhc one-shot: Claude runs as a plain process (parent-death coupling: ${coupling})`);
+          bindToWrapperJob: (pid) => {
+            const bound = exactProcessControl().bindChildToWrapperJob(pid);
+            return bound.ok ? { ok: true } : { ok: false, reason: `${bound.code}: ${bound.message}` };
+          },
+          onCoupling: (coupling, detail) => {
+            wrapperLog.info(
+              `cc-lhc one-shot: Claude runs as a plain process (parent-death coupling: ${coupling})` +
+                (detail === undefined ? "" : `; ${detail}`),
+            );
           },
         })
       : spawnPty(claudeBin, childArgv, {

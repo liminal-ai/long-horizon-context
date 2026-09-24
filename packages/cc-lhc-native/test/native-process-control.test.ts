@@ -18,8 +18,10 @@ import {
   loadIdentityAddon,
   normalizeChildExitResult,
   normalizeControlResult,
+  normalizeFileHoldersResult,
   normalizeHolderResult,
   readExactProcessIdentity,
+  resolveAddonArtifact,
 } from "../src/index.js";
 
 const requireAddon = process.env.CC_LHC_NATIVE_REQUIRE_ADDON === "1";
@@ -113,6 +115,34 @@ describe("normalizers fail closed", () => {
         code: "native_error",
       });
     }
+  });
+
+  it("file holder results", () => {
+    const good = {
+      ok: true,
+      path: "/f",
+      holders: [{ pid: 7, name: "a.exe" }],
+      truncated: false,
+      sharingViolation: true,
+    };
+    expect(normalizeFileHoldersResult(good, "/f")).toEqual(good);
+    expect(normalizeFileHoldersResult({ ...good, path: "/g" }, "/f")).toMatchObject({
+      ok: false,
+      code: "native_error",
+    });
+    expect(normalizeFileHoldersResult({ ...good, holders: [{ pid: 0, name: "x" }] }, "/f")).toMatchObject({
+      ok: false,
+      code: "native_error",
+    });
+    expect(normalizeFileHoldersResult({ ...good, sharingViolation: 1 }, "/f")).toMatchObject({
+      ok: false,
+      code: "native_error",
+    });
+    expect(normalizeFileHoldersResult({ ok: false, code: "unsupported", message: "m" }, "/f")).toEqual({
+      ok: false,
+      code: "unsupported",
+      message: "m",
+    });
   });
 
   it("guards arguments before touching the addon", () => {
@@ -277,4 +307,117 @@ real("supervised-child control against real children", () => {
     expect(control.pause(2_147_483_000)).toMatchObject({ ok: false });
     expect(control.readChildExit(2_147_483_000, "1")).toMatchObject({ ok: false });
   });
+});
+
+const alive = (pid: number): boolean => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+describe.runIf(addonLoad.ok && process.platform !== "win32")("contract 4 off Windows", () => {
+  it("bindChildToWrapperJob and listFileHolders answer unsupported", () => {
+    const control = exactProcessControl();
+    expect(control.bindChildToWrapperJob(process.pid)).toMatchObject({ ok: false, code: "unsupported" });
+    expect(control.listFileHolders(__filename_for_holders())).toMatchObject({ ok: false, code: "unsupported" });
+  });
+});
+
+function __filename_for_holders(): string {
+  const path = join(mkdtempSync(join(tmpdir(), "cc-lhc-native-holders-")), "f.txt");
+  writeFileSync(path, "x");
+  return path;
+}
+
+// Windows ARM gorilla report: a killed wrapper left Claude's tool processes
+// running because Claude exited on its own and nothing closed its tree. A
+// stand-in wrapper W spawns C, binds it, C spawns G and then exits first; W
+// is then killed. G must die with W's job handle. Without the bind, G lives
+// (the control run), which is what makes the bound run meaningful.
+async function untilTrue(check: () => boolean, ms: number): Promise<boolean> {
+  return until(check, (value) => value, ms);
+}
+
+describe.runIf(addonLoad.ok && process.platform === "win32")("win32 kill-on-close job", () => {
+  const started: ChildProcess[] = [];
+  const orphans: number[] = [];
+  afterEach(() => {
+    for (const p of started.splice(0)) p.kill();
+    for (const pid of orphans.splice(0)) {
+      try {
+        process.kill(pid);
+      } catch {
+        // gone
+      }
+    }
+  });
+
+  async function run(bind: boolean): Promise<{ bound: unknown; grandchild: number; wrapper: ChildProcess }> {
+    const addonPath = resolveAddonArtifact().path;
+    const inner = `const g = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); process.stdout.write("G " + g.pid + "\\n"); setTimeout(() => process.exit(0), 700);`;
+    const script = `
+      const m = { exports: {} };
+      process.dlopen(m, process.argv[1]);
+      const c = require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify("__INNER__")}], { stdio: ["ignore", "pipe", "ignore"] });
+      const bound = process.argv[2] === "bind" ? m.exports.bindChildToWrapperJob(c.pid) : null;
+      process.stdout.write("BOUND " + JSON.stringify(bound) + "\\n");
+      c.stdout.on("data", (d) => process.stdout.write(String(d)));
+      c.on("exit", () => process.stdout.write("CEXIT\\n"));
+      setInterval(() => {}, 1000);
+    `.replace(JSON.stringify("__INNER__"), JSON.stringify(inner));
+    const wrapper = spawn(process.execPath, ["-e", script, addonPath, bind ? "bind" : "nobind"], {
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    started.push(wrapper);
+    let out = "";
+    wrapper.stdout!.on("data", (d: Buffer) => {
+      out += d.toString();
+    });
+    expect(await untilTrue(() => /BOUND .*\n/.test(out) && /G \d+/.test(out) && out.includes("CEXIT"), 15_000)).toBe(
+      true,
+    );
+    const grandchild = Number(/G (\d+)/.exec(out)![1]);
+    orphans.push(grandchild);
+    const bound = JSON.parse(/BOUND (.*)\n/.exec(out)![1]!) as unknown;
+    return { bound, grandchild, wrapper };
+  }
+
+  it("a descendant outlives its exited parent and a killed wrapper when unbound (control)", async () => {
+    const { grandchild, wrapper } = await run(false);
+    expect(alive(grandchild)).toBe(true);
+    wrapper.kill();
+    await new Promise((r) => setTimeout(r, 1_500));
+    expect(alive(grandchild)).toBe(true);
+  }, 30_000);
+
+  it("bound: the descendant dies with the killed wrapper even though its parent exited first", async () => {
+    const { bound, grandchild, wrapper } = await run(true);
+    expect(bound).toMatchObject({ ok: true });
+    expect(alive(grandchild)).toBe(true);
+    wrapper.kill();
+    expect(await untilTrue(() => !alive(grandchild), 10_000)).toBe(true);
+  }, 30_000);
+
+  it("listFileHolders names a process holding the file, and none once it exits", async () => {
+    const path = __filename_for_holders();
+    const holder = spawn(
+      process.execPath,
+      ["-e", `require("fs").openSync(${JSON.stringify(path)}, "a"); console.log("open"); setInterval(() => {}, 1000);`],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    started.push(holder);
+    await new Promise<void>((resolve) => holder.stdout!.once("data", () => resolve()));
+    const control = exactProcessControl();
+    const held = control.listFileHolders(path);
+    expect(held).toMatchObject({ ok: true, sharingViolation: true });
+    if (!held.ok) return;
+    expect(held.holders.map((h) => h.pid)).toContain(holder.pid);
+    holder.kill();
+    expect(await untilTrue(() => !alive(holder.pid!), 5_000)).toBe(true);
+    const free = control.listFileHolders(path);
+    expect(free).toMatchObject({ ok: true, holders: [], sharingViolation: false });
+  }, 30_000);
 });

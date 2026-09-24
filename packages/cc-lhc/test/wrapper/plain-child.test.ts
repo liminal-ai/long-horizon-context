@@ -140,6 +140,57 @@ describe("spawnPlainChild: launch shape", () => {
     ]);
   });
 
+  it("win32: binds Claude to the wrapper's kill-on-close job before anything else; the watchdog still runs", () => {
+    const rec = recordingSpawn();
+    const bound: number[] = [];
+    const couplings: [string, string | undefined][] = [];
+    spawnPlainChild("claude", ["-p", "hi"], {
+      cwd: "/tmp",
+      env: {},
+      platform: "win32",
+      spawn: rec.spawn,
+      wrapperPid: 777,
+      bindToWrapperJob: (pid) => {
+        bound.push(pid);
+        // Claude is spawned, the watchdog not yet.
+        expect(rec.calls).toHaveLength(1);
+        return { ok: true };
+      },
+      onCoupling: (c, detail) => couplings.push([c, detail]),
+    });
+    expect(bound).toEqual([4001]);
+    expect(rec.calls[1]!.args).toEqual(["-e", WATCHDOG_SOURCE, "777", "4001", "pipe"]);
+    expect(couplings).toEqual([["job", undefined]]);
+  });
+
+  it("win32: a failed job bind falls back to the watchdog and says why; other platforms never bind", () => {
+    const rec = recordingSpawn();
+    const couplings: [string, string | undefined][] = [];
+    spawnPlainChild("claude", [], {
+      cwd: "/tmp",
+      env: {},
+      platform: "win32",
+      spawn: rec.spawn,
+      bindToWrapperJob: () => ({ ok: false, reason: "native_error: AssignProcessToJobObject failed (error 5)" }),
+      onCoupling: (c, detail) => couplings.push([c, detail]),
+    });
+    expect(couplings).toEqual([
+      ["watchdog", "job bind failed: native_error: AssignProcessToJobObject failed (error 5)"],
+    ]);
+    let called = false;
+    spawnPlainChild("claude", [], {
+      cwd: "/tmp",
+      env: {},
+      platform: "darwin",
+      spawn: recordingSpawn().spawn,
+      bindToWrapperJob: () => {
+        called = true;
+        return { ok: true };
+      },
+    });
+    expect(called).toBe(false);
+  });
+
   it("Linux without setpriv falls back to the watchdog", () => {
     const rec = recordingSpawn();
     spawnPlainChild("claude", [], { cwd: "/tmp", env: {}, platform: "linux", setprivPath: null, spawn: rec.spawn });

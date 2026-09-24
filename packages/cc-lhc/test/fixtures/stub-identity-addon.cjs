@@ -27,7 +27,7 @@ function syntheticStarttime(pid) {
 
 module.exports = {
   platform: process.platform,
-  identityContractVersion: 3,
+  identityContractVersion: 4,
   stubBootId: STUB_BOOT_ID,
   syntheticStarttime,
   readProcessIdentity(pid) {
@@ -87,6 +87,12 @@ module.exports = {
   },
   findChildHoldingFile(parentPid, path) {
     return { ok: true, parentPid, path, pid: null, matches: 0 };
+  },
+  bindChildToWrapperJob() {
+    return { ok: false, code: "unsupported", message: "stub has no process-tree job" };
+  },
+  listFileHolders() {
+    return { ok: false, code: "unsupported", message: "stub has no holder list" };
   },
 };
 
