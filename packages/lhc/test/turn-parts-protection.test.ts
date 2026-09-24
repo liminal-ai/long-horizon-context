@@ -238,10 +238,13 @@ describe("Flow 5: newest closed turn protected by placement", () => {
     expect(receipt.value.tailTokens).toBe(445);
     // Overrun 333 over the full share of 111: smooth (111) and detailed (111)
     // are consumed and stay empty; brief keeps 2 tokens of share and may admit
-    // its first entry — the one-entry slack.
+    // its first entry — the one-entry slack. The turns the cascade leaves out
+    // are named by gap-marker lines, which are not priced against a share.
     expect(receipt.value.bands.smooth.entries).toBe(0);
     expect(receipt.value.bands.detailed.entries).toBe(0);
-    expect(receipt.value.bands.brief.entries).toBeLessThanOrEqual(1);
+    const markers = receipt.value.gaps.filter((gap) => gap.reason.endsWith("not in view; use get-turns"));
+    expect(markers.length).toBeGreaterThan(0);
+    expect(receipt.value.bands.brief.entries - markers.length).toBeLessThanOrEqual(1);
     const slack = Math.max(0, ...receipt.value.renderedBands.map((b) => estimateTokens(b.text)));
     expect(receipt.value.totalTokens).toBeLessThanOrEqual(447 + slack);
     expect(receipt.value.totalTokens).toBeLessThan(784);

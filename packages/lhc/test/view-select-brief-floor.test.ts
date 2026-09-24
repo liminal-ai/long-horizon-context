@@ -230,6 +230,8 @@ function straddleInputs(options: {
   count: number;
   chunks: ReadonlyArray<readonly string[]>;
   compressions: Record<string, number>;
+  /** Status of the newest chunk; the older ones are always closed. */
+  newestChunkStatus?: "open" | "closed";
 }): SelectionInputs {
   const turns: SelectionTurn[] = Array.from({ length: options.count }, (_, index) => ({
     turnId: `t${index + 1}`,
@@ -249,7 +251,7 @@ function straddleInputs(options: {
   const chunks: SelectionChunk[] = options.chunks.map((memberTurnIds, index) => ({
     chunkId: `c${index + 1}`,
     chunkOrder: index + 1,
-    status: "closed",
+    status: index === options.chunks.length - 1 ? (options.newestChunkStatus ?? "closed") : "closed",
     memberTurnIds: [...memberTurnIds],
   }));
   const derivations = new Map<string, DerivationSnapshot>();
@@ -354,6 +356,58 @@ describe("F6: a closed chunk straddling the smooth band's oldest turn", () => {
     ];
     expect(gaps.map((gap) => `${gap.band}:${gap.subjectId}`)).toEqual(["brief:t2–t3", "brief:t3", "brief:t2"]);
     expect(gaps[0]?.reason).toBe("turns t2–t3 not in view; use get-turns");
+  });
+
+  it("a first chunk still open: its turns older than smooth take the elder bands from ready turn compressions", () => {
+    // The macOS gorilla shape: c1 = t1…t6 still open, so there is no chunk
+    // summary at all. t6 is the tail, t3…t5 fill smooth, and t1–t2 (with
+    // ready turn compressions holding the planted facts) used to leave the
+    // view with empty elder bands, covered_from at t3 and no gap.
+    const selection = selectArrangement(
+      straddleInputs({
+        count: 6,
+        chunks: [["t1", "t2", "t3", "t4", "t5", "t6"]],
+        compressions: { t1: 20, t2: 20 },
+        newestChunkStatus: "open",
+      }),
+      STRADDLE_PARAMS,
+    );
+
+    expect(selection.compactPoint).toBe(50);
+    expect(layout(selection)).toEqual([
+      "detailed:t1:detailed_turn_compression",
+      "detailed:t2:detailed_turn_compression",
+      "smooth:t3:turn_rendering",
+      "smooth:t4:turn_rendering",
+      "smooth:t5:turn_rendering",
+    ]);
+    expect(selection.entries[0]?.text).toBe(body("compressed-t1", 20));
+    expect(selection.coveredFrom).toBe(1);
+    expect(selection.entries.filter((entry) => entry.gap)).toEqual([]);
+  });
+
+  it("leading turns that no band can hold get a gap marker, and covered_from stays at represented material", () => {
+    // Same open chunk, but t1–t2 have no compression or assembly ready and
+    // the elder shares are zero: nothing represents them, so the view names
+    // them with one marker instead of dropping them silently.
+    const selection = selectArrangement(
+      straddleInputs({
+        count: 6,
+        chunks: [["t1", "t2", "t3", "t4", "t5", "t6"]],
+        compressions: {},
+        newestChunkStatus: "open",
+      }),
+      { ...STRADDLE_PARAMS, percentages: { full: 25, smooth: 30, detailed: 0, brief: 0 } },
+    );
+
+    expect(layout(selection)).toEqual([
+      "brief:t1–t2:gap",
+      "smooth:t3:turn_rendering",
+      "smooth:t4:turn_rendering",
+      "smooth:t5:turn_rendering",
+    ]);
+    expect(selection.entries[0]?.text).toBe("[turns t1–t2 not in view; use get-turns]");
+    expect(selection.coveredFrom).toBe(21);
   });
 
   it("leaves a non-straddling layout exactly as it was", () => {

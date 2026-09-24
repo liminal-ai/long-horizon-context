@@ -553,14 +553,12 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // A chunk holding the still-unsettled transition turn is not a band
   // candidate until that turn settles.
   //
-  // A closed chunk that is not a candidate but straddles that edge (F6) —
-  // some members in smooth or the tail, some older than smooth — cannot
-  // render as a chunk. Its banded members older than the smooth band's
-  // oldest included turn are collected here and placed per-turn below, in
-  // whatever detailed/brief budget the chunks leave unused.
+  // A banded turn older than smooth that no chunk candidate holds — a member
+  // of a closed chunk straddling that edge (F6), or of a chunk still open, or
+  // of none yet — cannot render as a chunk. Such turns are placed per-turn
+  // below, in whatever detailed/brief budget the chunks leave unused.
   const unsettledClosedTurnId = partsPlan !== null && partsPlan.turn.status === "closed" ? partsPlan.turn.turnId : null;
   const chunkCandidates: SelectionChunk[] = [];
-  const straddlingMembers: SelectionTurn[] = [];
   for (const chunk of chunks) {
     if (chunk.status !== "closed") continue;
     if (unsettledClosedTurnId !== null && chunk.memberTurnIds.includes(unsettledClosedTurnId)) continue;
@@ -571,12 +569,12 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     const newestMember = liveMembers.reduce((newest, turn) => (turn.turnOrder > newest.turnOrder ? turn : newest));
     if (bandedTurnIds.has(newestMember.turnId) && newestMember.turnOrder < oldestSmoothOrder) {
       chunkCandidates.push(chunk);
-      continue;
-    }
-    for (const turn of liveMembers) {
-      if (bandedTurnIds.has(turn.turnId) && turn.turnOrder < oldestSmoothOrder) straddlingMembers.push(turn);
     }
   }
+  const chunkCandidateTurnIds = new Set(chunkCandidates.flatMap((chunk) => chunk.memberTurnIds));
+  const elderTurns = bandedTurns.filter(
+    (turn) => turn.turnOrder < oldestSmoothOrder && !chunkCandidateTurnIds.has(turn.turnId),
+  );
   chunkCandidates.reverse(); // newest-first
 
   // Rule 3 — detailed: same fill rule against its share.
@@ -630,14 +628,24 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     }
   }
 
-  // Straddling-chunk members (F6) the coverage machinery below cannot reach:
-  // older than every selected entry, so nothing older anchors them. They take
-  // the detailed/brief budget the chunks left unused, per turn, newest-first,
-  // on the same fill rule — stop in detailed, skip in brief — rendered from
-  // the detailed-turn ladder the coverage entries use. A member newer than
-  // the oldest selected entry is left to the coverage machinery, as before.
-  const orphanedMembers = straddlingMembers
-    .filter((turn) => turn.turnOrder < oldestSelectedTurnOrder && !coveredTurnIds.has(turn.turnId))
+  // Elder turns (F6) the coverage machinery below cannot reach: older than
+  // every selected entry, so nothing older anchors them. The usual shape is a
+  // thread whose first chunk is still open: without this, the elder bands
+  // stay empty and those turns silently leave the view. They take the
+  // detailed/brief budget the chunks left unused, per turn, newest-first, on
+  // the same fill rule — stop in detailed, skip in brief — rendered from the
+  // detailed-turn ladder the coverage entries use. A turn newer than the
+  // oldest selected entry is left to the coverage machinery, as before. Only
+  // a turn with ready material is a candidate: one with none would spend the
+  // share on an empty entry, and is named by a gap marker below instead.
+  const hasReadyTurnSummary = (turn: SelectionTurn): boolean =>
+    readyContent(lookup(turn.turnId, "detailed_turn_compression")) !== null ||
+    readyContent(lookup(turn.turnId, "pre_detailed_assembly")) !== null;
+  const orphanedMembers = elderTurns
+    .filter(
+      (turn) =>
+        turn.turnOrder < oldestSelectedTurnOrder && !coveredTurnIds.has(turn.turnId) && hasReadyTurnSummary(turn),
+    )
     .sort((a, b) => b.turnOrder - a.turnOrder);
   if (orphanedMembers.length > 0) {
     const detailedTurns = fillBand(
@@ -739,10 +747,11 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // neither moves the edge nor ends it.
   const coveredFrom = entries.length === 0 ? compactPoint : Math.min(...entries.map((entry) => entry.startOrder));
 
-  // Gap markers (F6): a banded turn newer than the coverage edge that no
-  // entry represents — for whatever reason — gets a rendered line in the
-  // view, one per contiguous run, so the hole is visible to the reader and
-  // not only in gaps_json. A marker is a gap entry (gap: true), so it lands in
+  // Gap markers (F6): a banded turn that no entry represents — for whatever
+  // reason, including the leading turns older than the coverage edge —
+  // gets a rendered line in the view, one per contiguous run, so the hole is
+  // visible to the reader and not only in gaps_json. Markers do not move the
+  // coverage edge: it stays the oldest represented material. A marker is a gap entry (gap: true), so it lands in
   // gaps_json through the ordinary gap-entry path. It sits in the band of its
   // nearest older entry and is not priced against any share.
   const representedTurnIds = new Set<string>();
@@ -753,7 +762,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   const unrepresentedRuns: SelectionTurn[][] = [];
   let run: SelectionTurn[] = [];
   for (const turn of bandedTurns) {
-    if (turnStartOrder(turn) >= coveredFrom && !representedTurnIds.has(turn.turnId)) {
+    if (!representedTurnIds.has(turn.turnId)) {
       run.push(turn);
       continue;
     }

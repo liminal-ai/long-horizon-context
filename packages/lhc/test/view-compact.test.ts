@@ -466,16 +466,17 @@ describe("architecture-risk: coverage edge accounting", () => {
     // The compact point lands at t10's close, so c3, c2, and c1 are all
     // chunk candidates; c3 takes detailed (loner), the brief share holds c2
     // alone, and c1 remains after the chunk budgets. c1's member turns are
-    // older than the oldest selected subject, so covered_from reports the
-    // window boundary instead of emitting noisy gaps for out-of-window turns.
+    // older than the oldest selected subject: covered_from stays at the
+    // oldest represented material, and the left-out turns get one gap-marker
+    // line so the reader can see the hole (F6: leading turns included).
     expect(receipt.value.compactPoint).toBe(56);
     expect(receipt.value.coveredFrom).toBe(13);
     expect(receipt.value.bands.detailed.entries).toBe(1);
-    expect(receipt.value.bands.brief.entries).toBe(1);
-    expect(receipt.value.gaps).toEqual([]);
-
-    expect(receipt.value.bands.detailed.entries).toBe(1);
-    expect(receipt.value.bands.brief.entries).toBe(1);
+    // c2's brief plus the marker for c1's turns.
+    expect(receipt.value.bands.brief.entries).toBe(2);
+    expect(receipt.value.gaps).toHaveLength(1);
+    expect(receipt.value.gaps[0]?.band).toBe("brief");
+    expect(receipt.value.gaps[0]?.reason).toMatch(/^turns? t1.* not in view; use get-turns$/);
   });
 });
 
