@@ -10,6 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 
 import {
   computeVerifiedPrefixBoundary,
+  identitiesEqual,
   openContinuityHandle,
   verifyPrefixBoundaryOnHandle,
 } from "../../src/intake/prefix-boundary.js";
@@ -66,6 +67,21 @@ describe("watcher continuity (exact consumed digest)", () => {
     expect(lines).toContain("live1");
   });
 
+  it("file identity is exact: bigint ids from the handle, and ids above 2^53 one apart differ", () => {
+    const dir = mkdtempSync(join(tmpdir(), "cc-lhc-cont-exact-"));
+    const path = join(dir, "s.jsonl");
+    writeFileSync(path, "");
+    const handle = openContinuityHandle(path);
+    expect(typeof handle.identity.ino).toBe("bigint");
+    expect(typeof handle.identity.dev).toBe("bigint");
+    handle.close();
+    // A Windows file id with sequence number 0x40 in its high bits.
+    const high = (0x40n << 48n) | 0x1234n;
+    expect(Number(high) === Number(high + 1n)).toBe(true); // a number cannot tell them apart
+    expect(identitiesEqual({ dev: 1n, ino: high }, { dev: 1n, ino: high + 1n })).toBe(false);
+    expect(identitiesEqual({ dev: 1n, ino: high }, { dev: 1, ino: high })).toBe(true);
+  });
+
   it("path replacement after proof degrades and does not ingest lure", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-cont-replace-"));
     const path = join(dir, "s.jsonl");
@@ -85,10 +101,14 @@ describe("watcher continuity (exact consumed digest)", () => {
     const seamSwap = process.platform === "win32";
     let pathSwapped = false;
     const swappedIo: Partial<WatcherIo> = {
+      // Exact (bigint) ids, as the watcher reads them: a Windows file id is
+      // often above 2^53, where a number's `ino + 1` rounds back to `ino` and
+      // the swap never happened (win32 CI timeouts, runs 35919557989 and
+      // 35939290681).
       lstat: (p) => {
-        const st = lstatSync(p);
+        const st = lstatSync(p, { bigint: true });
         if (!pathSwapped) return { dev: st.dev, ino: st.ino };
-        return { dev: st.dev, ino: typeof st.ino === "bigint" ? st.ino + 1n : st.ino + 1 };
+        return { dev: st.dev, ino: st.ino + 1n };
       },
     };
 

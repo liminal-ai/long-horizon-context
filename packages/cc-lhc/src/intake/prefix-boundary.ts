@@ -11,7 +11,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { type BigIntStats, closeSync, fstatSync, openSync, readSync } from "node:fs";
 
 export type PrefixProvenanceKind = "none" | "unknown" | "verified";
 
@@ -75,12 +75,7 @@ export function isCanonicalNoneRow(row: {
 }
 
 export function isSafeNonNegativeInteger(value: unknown): value is number {
-  return (
-    typeof value === "number" &&
-    Number.isInteger(value) &&
-    value >= 0 &&
-    value <= Number.MAX_SAFE_INTEGER
-  );
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
 }
 
 export function isValidSha256Hex(value: unknown): value is string {
@@ -91,11 +86,7 @@ export function isValidSha256Hex(value: unknown): value is string {
  * Validate stored verified metadata without clamping/normalization.
  * Invalid or inconsistent rows become unknown (caller maps that way).
  */
-export function parseStoredVerifiedPrefix(
-  lines: unknown,
-  bytes: unknown,
-  sha: unknown,
-): PrefixBoundaryVerified | null {
+export function parseStoredVerifiedPrefix(lines: unknown, bytes: unknown, sha: unknown): PrefixBoundaryVerified | null {
   if (!isSafeNonNegativeInteger(lines) || !isSafeNonNegativeInteger(bytes)) {
     return null;
   }
@@ -114,10 +105,7 @@ export function parseStoredVerifiedPrefix(
  * Build a verified boundary from the exact serialized prefix string that will
  * (or did) occupy the leading bytes of the rebuilt rollout file.
  */
-export function computeVerifiedPrefixBoundary(
-  prefixSerialized: string,
-  lineCount: number,
-): PrefixBoundaryVerified {
+export function computeVerifiedPrefixBoundary(prefixSerialized: string, lineCount: number): PrefixBoundaryVerified {
   if (!isSafeNonNegativeInteger(lineCount)) {
     throw new Error(`computeVerifiedPrefixBoundary: invalid lineCount ${String(lineCount)}`);
   }
@@ -130,11 +118,13 @@ export function computeVerifiedPrefixBoundary(
   };
 }
 
-export type PrefixVerifyResult =
-  | { ok: true; boundary: PrefixBoundaryVerified }
-  | { ok: false; reason: string };
+export type PrefixVerifyResult = { ok: true; boundary: PrefixBoundaryVerified } | { ok: false; reason: string };
 
-/** Open file identity for continuity across proof and watch. */
+/**
+ * Open file identity for continuity across proof and watch. Read with bigint
+ * stats: a Windows file id carries a sequence number in its high bits, so it
+ * routinely exceeds 2^53 and a number would round distinct files together.
+ */
 export interface RolloutFileIdentity {
   dev: number | bigint;
   ino: number | bigint;
@@ -155,7 +145,7 @@ export interface ContinuityHandle {
 export function openContinuityHandle(filePath: string): ContinuityHandle {
   const fd = openSync(filePath, "r");
   try {
-    const st = fstatSync(fd);
+    const st = fstatSync(fd, { bigint: true });
     let closed = false;
     return {
       fd,
@@ -182,12 +172,12 @@ export function openContinuityHandle(filePath: string): ContinuityHandle {
 }
 
 export function identityOfFd(fd: number): RolloutFileIdentity & { size: number } {
-  const st = fstatSync(fd);
-  return { dev: st.dev, ino: st.ino, size: st.size };
+  const st = fstatSync(fd, { bigint: true });
+  return { dev: st.dev, ino: st.ino, size: Number(st.size) };
 }
 
 export function identitiesEqual(a: RolloutFileIdentity, b: RolloutFileIdentity): boolean {
-  return a.dev === b.dev && a.ino === b.ino;
+  return BigInt(a.dev) === BigInt(b.dev) && BigInt(a.ino) === BigInt(b.ino);
 }
 
 /**
@@ -206,11 +196,7 @@ export function digestConsumedRegion(fd: number, consumedEnd: number): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
 
-export function verifyConsumedRegionDigest(
-  fd: number,
-  consumedEnd: number,
-  expectedSha256: string,
-): boolean {
+export function verifyConsumedRegionDigest(fd: number, consumedEnd: number, expectedSha256: string): boolean {
   try {
     return digestConsumedRegion(fd, consumedEnd) === expectedSha256;
   } catch {
@@ -234,9 +220,9 @@ export function verifyPrefixBoundaryOnHandle(
     return { ok: false, reason: "prefix_boundary:invalid_stored_boundary" };
   }
 
-  let st: ReturnType<typeof fstatSync>;
+  let st: BigIntStats;
   try {
-    st = fstatSync(handle.fd);
+    st = fstatSync(handle.fd, { bigint: true });
   } catch (cause) {
     const message = cause instanceof Error ? cause.message : String(cause);
     return { ok: false, reason: `prefix_boundary:stat_failed:${message}` };
@@ -304,10 +290,7 @@ export function verifyPrefixBoundaryOnHandle(
 /**
  * Path-based verify for unit tests; production capture uses ContinuityHandle.
  */
-export function verifyPrefixBoundaryOnDisk(
-  filePath: string,
-  boundary: PrefixBoundaryVerified,
-): PrefixVerifyResult {
+export function verifyPrefixBoundaryOnDisk(filePath: string, boundary: PrefixBoundaryVerified): PrefixVerifyResult {
   let handle: ContinuityHandle;
   try {
     handle = openContinuityHandle(filePath);
@@ -342,15 +325,11 @@ export function splitSerializedPrefix(
   if (prefixLineCount <= 0) {
     return { prefixSerialized: "", suffixSerialized: fullSerialized };
   }
-  const withoutFinal = fullSerialized.endsWith("\n")
-    ? fullSerialized.slice(0, -1)
-    : fullSerialized;
+  const withoutFinal = fullSerialized.endsWith("\n") ? fullSerialized.slice(0, -1) : fullSerialized;
   const allLines = withoutFinal === "" ? [] : withoutFinal.split("\n");
   const prefixLines = allLines.slice(0, prefixLineCount);
   const suffixLines = allLines.slice(prefixLineCount);
-  const prefixSerialized =
-    prefixLines.length === 0 ? "" : `${prefixLines.join("\n")}\n`;
-  const suffixSerialized =
-    suffixLines.length === 0 ? "" : `${suffixLines.join("\n")}\n`;
+  const prefixSerialized = prefixLines.length === 0 ? "" : `${prefixLines.join("\n")}\n`;
+  const suffixSerialized = suffixLines.length === 0 ? "" : `${suffixLines.join("\n")}\n`;
   return { prefixSerialized, suffixSerialized };
 }

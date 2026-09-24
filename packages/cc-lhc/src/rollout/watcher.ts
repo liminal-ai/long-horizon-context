@@ -1,13 +1,5 @@
-import {
-  closeSync,
-  fstatSync,
-  type FSWatcher,
-  lstatSync,
-  openSync,
-  readSync,
-  watch,
-} from "node:fs";
 import { createHash } from "node:crypto";
+import { closeSync, type FSWatcher, fstatSync, lstatSync, openSync, readSync, watch } from "node:fs";
 
 import {
   type ContinuityHandle,
@@ -101,10 +93,7 @@ export function resolveInitialConsumedDigest(
 ): { ok: true; digest: string } | { ok: false; reason: string } {
   const offset = Math.max(0, startOffset);
   if (offset === 0) {
-    if (
-      expectedConsumedDigest !== undefined &&
-      expectedConsumedDigest !== EMPTY_PREFIX_SHA256
-    ) {
+    if (expectedConsumedDigest !== undefined && expectedConsumedDigest !== EMPTY_PREFIX_SHA256) {
       return {
         ok: false,
         reason: `startOffset=0 requires empty digest or omit; got ${expectedConsumedDigest.slice(0, 16)}…`,
@@ -163,18 +152,19 @@ function detail(cause: unknown): string {
 
 function defaultIo(): WatcherIo {
   return {
+    // Exact (bigint) dev/ino: see RolloutFileIdentity.
     fstat: (fd) => {
-      const st = fstatSync(fd);
+      const st = fstatSync(fd, { bigint: true });
       return {
-        size: st.size,
+        size: Number(st.size),
         dev: st.dev,
         ino: st.ino,
-        mtimeMs: st.mtimeMs,
-        ctimeMs: st.ctimeMs,
+        mtimeMs: Number(st.mtimeNs) / 1e6,
+        ctimeMs: Number(st.ctimeNs) / 1e6,
       };
     },
     lstat: (path) => {
-      const st = lstatSync(path);
+      const st = lstatSync(path, { bigint: true });
       return { dev: st.dev, ino: st.ino };
     },
     read: (fd, buffer, offset, length, position) => readSync(fd, buffer, offset, length, position),
@@ -183,13 +173,7 @@ function defaultIo(): WatcherIo {
 }
 
 function metaEqual(a: FileMeta, b: FileMeta): boolean {
-  return (
-    a.size === b.size &&
-    a.mtimeMs === b.mtimeMs &&
-    a.ctimeMs === b.ctimeMs &&
-    a.dev === b.dev &&
-    a.ino === b.ino
-  );
+  return a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs && identitiesEqual(a, b);
 }
 
 function sha256(buf: Buffer): string {
@@ -219,9 +203,7 @@ export function watchRolloutFile(
   maybeOptions?: WatchRolloutOptions,
 ): RolloutWatcher {
   const options: WatchRolloutOptions =
-    typeof filePathOrOptions === "string"
-      ? { ...maybeOptions!, filePath: filePathOrOptions }
-      : filePathOrOptions;
+    typeof filePathOrOptions === "string" ? { ...maybeOptions!, filePath: filePathOrOptions } : filePathOrOptions;
 
   const pollMs = options.pollMs ?? POLL_MS;
   const maxPartialBytes = options.maxPartialBytes ?? MAX_PARTIAL_BYTES;
@@ -285,10 +267,7 @@ export function watchRolloutFile(
     }
   };
 
-  const terminate = (
-    kind: "initial" | "shrink" | "continuity" | "runtime",
-    message: string,
-  ): void => {
+  const terminate = (kind: "initial" | "shrink" | "continuity" | "runtime", message: string): void => {
     if (invalidated && kind !== "initial") return;
     invalidated = true;
     partial = "";
@@ -483,9 +462,7 @@ export function watchRolloutFile(
     // Also validate prefix lines parse if present (full file integrity).
     if (suffixFrom > 0) {
       const prefixText = fullText.slice(0, fullText.length - suffixText.length);
-      const prefixLines = prefixText.endsWith("\n")
-        ? prefixText.slice(0, -1).split("\n")
-        : prefixText.split("\n");
+      const prefixLines = prefixText.endsWith("\n") ? prefixText.slice(0, -1).split("\n") : prefixText.split("\n");
       for (const line of prefixLines) {
         if (line.length === 0) continue;
         try {
@@ -502,9 +479,7 @@ export function watchRolloutFile(
    * Live (post-initial) suffix parse may leave a trailing partial in local
    * state until the next growth completes it.
    */
-  const parseLiveSuffix = (
-    suffixText: string,
-  ): { emissions: WatcherEmission[]; nextPartial: string } => {
+  const parseLiveSuffix = (suffixText: string): { emissions: WatcherEmission[]; nextPartial: string } => {
     const combined = partial + suffixText;
     const lines = combined.split("\n");
     const nextPartial = lines.pop() ?? "";
@@ -552,13 +527,7 @@ export function watchRolloutFile(
       }
 
       // Idle: unchanged metadata and not dirty from fs.watch → skip.
-      if (
-        !isInitial &&
-        !continuityDirty &&
-        lastMeta !== undefined &&
-        metaEqual(pre, lastMeta) &&
-        pre.size === offset
-      ) {
+      if (!isInitial && !continuityDirty && lastMeta !== undefined && metaEqual(pre, lastMeta) && pre.size === offset) {
         return "idle";
       }
 
@@ -568,7 +537,7 @@ export function watchRolloutFile(
       if (!readResult.ok) {
         return { fail: readResult.reason, kind: isInitial ? "initial" : "runtime" };
       }
-      let candidate = readResult.chunk;
+      const candidate = readResult.chunk;
 
       // Test seam: mutate after copy, before post-check / commit.
       options.afterCandidateRead?.({ bytes: candidate, snapshotEnd });
