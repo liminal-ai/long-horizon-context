@@ -55,7 +55,7 @@ afterEach(() => {
 });
 
 describe("createClaudeCliModelCall", () => {
-  it("writes user content to stdin and maps success stdout", async () => {
+  it("keeps Lee's system prompt; a template's system text goes to stdin ahead of its user text", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-cli-"));
     const stdinFile = join(dir, "stdin.json");
     const harness = fakeCall({ CC_LHC_FAKE_MODE: "stdin-file", CC_LHC_FAKE_STDIN_FILE: stdinFile });
@@ -77,8 +77,8 @@ describe("createClaudeCliModelCall", () => {
       systemPrompt: string;
       model: string;
     };
-    expect(captured.stdin).toBe("User A\n\nUser B");
-    expect(captured.systemPrompt).toBe("System A");
+    expect(captured.stdin).toBe("System A\n\nUser A\n\nUser B");
+    expect(captured.systemPrompt).toBe(WORKER_SYSTEM_PROMPT);
     expect(captured.model).toBe("sonnet");
   });
 
@@ -102,6 +102,28 @@ describe("createClaudeCliModelCall", () => {
     expect(seen).toHaveLength(1);
     expect(seen[0]).toContain("--no-session-persistence");
     expect(seen[0]![0]).toBe("-p");
+  });
+
+  it("resolves an explicit relative claude binary from our cwd, since the child runs in a scratch dir", async () => {
+    const commands: string[] = [];
+    const run = (bin: string) =>
+      createClaudeCliModelCall({
+        binary: () => bin,
+        spawnFn: ((...spawnArgs: Parameters<typeof spawn>) => {
+          commands.push(String(spawnArgs[0]));
+          return spawn(process.execPath, [FIXTURE_BIN, ...(spawnArgs[1] ?? [])], spawnArgs[2]);
+        }) as typeof spawn,
+      })(baseInput);
+    const priorMode = process.env.CC_LHC_FAKE_MODE;
+    process.env.CC_LHC_FAKE_MODE = "ok";
+    try {
+      await run("./bin/claude");
+      await run("claude");
+    } finally {
+      if (priorMode === undefined) delete process.env.CC_LHC_FAKE_MODE;
+      else process.env.CC_LHC_FAKE_MODE = priorMode;
+    }
+    expect(commands).toEqual([join(process.cwd(), "bin", "claude"), "claude"]);
   });
 
   it("uses default system prompt when none provided", async () => {

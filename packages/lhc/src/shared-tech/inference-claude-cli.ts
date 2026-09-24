@@ -7,7 +7,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { ModelAssignment, ModelCall, ModelCallFailureKind, ModelCallResult } from "./inference-types.js";
 import { DEFAULT_PROMPT_NAMES } from "./prompts/index.js";
-import { SUMMARY_WORKER_SYSTEM_PROMPT, summaryWorkerCliLaunch } from "./summary-worker.js";
+import { summaryWorkerBinary, summaryWorkerCliLaunch, summaryWorkerRequest } from "./summary-worker.js";
 
 const PROVIDER = "claude-cli";
 const MAX_CONCURRENCY = 3;
@@ -72,6 +72,8 @@ export function createClaudeCliModelCall(deps: {
   timeoutMs?: number;
 }): ModelCall {
   const timeoutMs = deps.timeoutMs ?? 90_000;
+  // Resolved now, against the caller's cwd: the child runs in a scratch dir.
+  const binary = summaryWorkerBinary(deps.binary);
   let running = 0;
   const waiters: Array<() => void> = [];
   const acquire = async (): Promise<() => void> => {
@@ -87,23 +89,27 @@ export function createClaudeCliModelCall(deps: {
     if (input.provider !== PROVIDER) {
       return { ok: false, kind: "invalid_request", message: `unsupported inference provider "${input.provider}"` };
     }
+    // Lee's prompt as the system prompt; the template's text on stdin.
+    const { user } = summaryWorkerRequest(input.messages);
     const release = await acquire();
-    const system =
-      input.messages
-        .filter((m) => m.role === "system")
-        .map((m) => m.content)
-        .join("\n\n") || SUMMARY_WORKER_SYSTEM_PROMPT;
-    const user = input.messages
-      .filter((m) => m.role === "user")
-      .map((m) => m.content)
-      .join("\n\n");
-    // No framing, tools or extra turns, in an empty scratch dir (summary-worker.ts).
-    const launch = summaryWorkerCliLaunch({ model: input.model, systemPrompt: system, env: deps.env });
+    let launch: ReturnType<typeof summaryWorkerCliLaunch>;
+    try {
+      // No framing, tools or extra turns, in an empty scratch dir (summary-worker.ts).
+      launch = summaryWorkerCliLaunch({ model: input.model, env: deps.env });
+    } catch (cause) {
+      // Setup failed (no temp space, unreadable settings): the slot goes back.
+      release();
+      return {
+        ok: false,
+        kind: "other",
+        message: (cause instanceof Error ? cause.message : String(cause)).slice(0, 500),
+      };
+    }
     return new Promise<ModelCallResult>((resolve) => {
       let stdout = "";
       let stderr = "";
       let settled = false;
-      const child = spawn(deps.binary, launch.args, {
+      const child = spawn(binary, launch.args, {
         stdio: ["pipe", "pipe", "pipe"],
         env: launch.env,
         cwd: launch.cwd,

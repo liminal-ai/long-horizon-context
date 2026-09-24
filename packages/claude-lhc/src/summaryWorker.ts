@@ -12,9 +12,10 @@ import {
   type ModelCall,
   type ModelCallFailureKind,
   type ModelCallResult,
-  SUMMARY_WORKER_SYSTEM_PROMPT,
   summaryWorkerAuthSettings,
+  summaryWorkerBinary,
   summaryWorkerEnv,
+  summaryWorkerRequest,
   summaryWorkerScratchDir,
 } from "lhc";
 
@@ -84,6 +85,8 @@ export function createSummaryWorkerModelCall(deps: {
   const timeoutMs = deps.timeoutMs ?? 90_000;
   const run = deps.run ?? query;
   const env = summaryWorkerEnv(deps.env);
+  // Resolved now, against the caller's cwd: the query runs in a scratch dir.
+  const claudeBin = summaryWorkerBinary(deps.claudeBin);
   let running = 0;
   const waiters: Array<() => void> = [];
   const acquire = async (): Promise<() => void> => {
@@ -99,36 +102,33 @@ export function createSummaryWorkerModelCall(deps: {
     if (input.provider !== SUMMARY_WORKER_PROVIDER) {
       return { ok: false, kind: "invalid_request", message: `unsupported inference provider "${input.provider}"` };
     }
+    // Lee's prompt as the system prompt; the template's own system text leads the prompt.
+    const { systemPrompt, user } = summaryWorkerRequest(input.messages);
     const release = await acquire();
-    const system =
-      input.messages
-        .filter((m) => m.role === "system")
-        .map((m) => m.content)
-        .join("\n\n") || SUMMARY_WORKER_SYSTEM_PROMPT;
-    const user = input.messages
-      .filter((m) => m.role === "user")
-      .map((m) => m.content)
-      .join("\n\n");
-    const scratch = summaryWorkerScratchDir("claude-lhc-summary-");
+    let scratch: ReturnType<typeof summaryWorkerScratchDir> | undefined;
     const abortController = new AbortController();
-    live.add(abortController);
     let timedOut = false;
-    const timer = setTimeout(() => {
-      timedOut = true;
-      abortController.abort();
-    }, timeoutMs);
+    let timer: NodeJS.Timeout | undefined;
     try {
+      // Setup inside the try: a failure here still releases the slot.
+      scratch = summaryWorkerScratchDir("claude-lhc-summary-");
+      const authSettings = summaryWorkerAuthSettings(env) as Settings | null;
+      live.add(abortController);
+      timer = setTimeout(() => {
+        timedOut = true;
+        abortController.abort();
+      }, timeoutMs);
       let result: Extract<SDKMessage, { type: "result" }> | null = null;
       const q = run({
         prompt: user,
         options: summaryWorkerOptions({
-          claudeBin: deps.claudeBin,
+          claudeBin,
           env,
           model: input.model,
-          systemPrompt: system,
+          systemPrompt,
           cwd: scratch.cwd,
           abortController,
-          authSettings: summaryWorkerAuthSettings(env) as Settings | null,
+          authSettings,
         }),
       });
       for await (const message of q) if (message.type === "result") result = message;
@@ -143,9 +143,9 @@ export function createSummaryWorkerModelCall(deps: {
       const message = cause instanceof Error ? cause.message : String(cause);
       return { ok: false, kind: classify(message), message: message.slice(0, 500) };
     } finally {
-      clearTimeout(timer);
+      if (timer !== undefined) clearTimeout(timer);
       live.delete(abortController);
-      scratch.remove();
+      scratch?.remove();
       release();
     }
   };

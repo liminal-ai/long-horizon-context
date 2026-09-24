@@ -5,8 +5,9 @@ import {
   type ModelCallFailureKind,
   type ModelCallInput,
   type ModelCallResult,
-  SUMMARY_WORKER_SYSTEM_PROMPT,
+  summaryWorkerBinary,
   summaryWorkerCliLaunch,
+  summaryWorkerRequest,
 } from "lhc";
 
 import { resolveClaudeBin } from "../shared/claude-bin.js";
@@ -37,19 +38,6 @@ function excerpt(text: string, max = STDERR_EXCERPT_MAX): string {
   const trimmed = text.trim();
   if (trimmed.length <= max) return trimmed;
   return `${trimmed.slice(0, max)}…`;
-}
-
-function partitionMessages(messages: ModelCallInput["messages"]): { systemPrompt: string; userBody: string } {
-  const systemParts: string[] = [];
-  const userParts: string[] = [];
-  for (const message of messages) {
-    if (message.role === "system") systemParts.push(message.content);
-    else userParts.push(message.content);
-  }
-  return {
-    systemPrompt: systemParts.length > 0 ? systemParts.join("\n\n") : SUMMARY_WORKER_SYSTEM_PROMPT,
-    userBody: userParts.join("\n\n"),
-  };
 }
 
 export function classifyStderr(stderr: string): ModelCallFailureKind {
@@ -131,7 +119,8 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
     }
 
     const remainingMs = timeoutMs - elapsed;
-    const { systemPrompt, userBody } = partitionMessages(input.messages);
+    // Lee's prompt as the system prompt; the template's text (its own system text first) on stdin.
+    const { user: userBody } = summaryWorkerRequest(input.messages);
 
     return new Promise<ModelCallResult>((resolve) => {
       let stdout = "";
@@ -159,12 +148,12 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
         // framing, tools or extra turns, in an empty scratch dir.
         launch = summaryWorkerCliLaunch({
           model: input.model,
-          systemPrompt,
           env: process.env,
           scratchPrefix: "cc-lhc-summary-",
         });
         const spawnOptions: SpawnOptions = { stdio: ["pipe", "pipe", "pipe"], cwd: launch.cwd, env: launch.env };
-        child = spawnFn(binary(), launch.args, spawnOptions);
+        // An explicit relative binary resolves from our cwd, not the scratch dir.
+        child = spawnFn(summaryWorkerBinary(binary()), launch.args, spawnOptions);
       } catch (cause) {
         const code = typeof cause === "object" && cause !== null ? (cause as NodeJS.ErrnoException).code : undefined;
         if (code === "ENOENT") {

@@ -3,7 +3,7 @@
  * Code's framing (no settings files, tools, MCP, skills; one turn; empty cwd),
  * Lee's system prompt, and only the auth part of the user's settings.
  */
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, query } from "@anthropic-ai/claude-agent-sdk";
@@ -73,7 +73,7 @@ describe("summary worker", () => {
     expect(existsSync(options.cwd!)).toBe(false);
   });
 
-  test("uses Lee's system prompt, 504 bytes, unless the template sends its own", async () => {
+  test("always uses Lee's system prompt, 504 bytes; a template's system text leads the prompt", async () => {
     expect(Buffer.byteLength(SUMMARY_WORKER_SYSTEM_PROMPT)).toBe(504);
     expect(SUMMARY_WORKER_SYSTEM_PROMPT.startsWith("Your role is to smooth or summarize conversation excerpts")).toBe(
       true,
@@ -90,7 +90,8 @@ describe("summary worker", () => {
         { role: "user", content: "raw" },
       ]),
     );
-    expect(seen[0]!.options.systemPrompt).toBe("Summarize this tool response.");
+    expect(seen[0]!.options.systemPrompt).toBe(SUMMARY_WORKER_SYSTEM_PROMPT);
+    expect(seen[0]!.prompt).toBe("Summarize this tool response.\n\nraw");
   });
 
   test("carries only the auth part of the user's settings", async () => {
@@ -158,6 +159,62 @@ describe("summary worker", () => {
       run: hang,
     })(input([{ role: "user", content: "x" }]));
     expect(result).toMatchObject({ ok: false, kind: "timeout" });
+  });
+
+  test("auth settings come from the session env's home, not this process's", async () => {
+    const childHome = join(config, "child-home");
+    mkdirSync(join(childHome, ".claude"), { recursive: true });
+    writeFileSync(join(childHome, ".claude", "settings.json"), JSON.stringify({ apiKeyHelper: "/child/key" }));
+    const seen: Seen[] = [];
+    await createSummaryWorkerModelCall({ claudeBin: "c", env: { HOME: childHome }, run: fakeQuery(seen, ok) })(
+      input([{ role: "user", content: "x" }]),
+    );
+    expect(seen[0]!.options.settings).toEqual({ apiKeyHelper: "/child/key" });
+    expect(seen[0]!.options.env).toMatchObject({ HOME: childHome });
+  });
+
+  test("a failed scratch setup returns a failure and gives its slot back", async () => {
+    const seen: Seen[] = [];
+    const call = createSummaryWorkerModelCall({
+      claudeBin: "c",
+      env: { CLAUDE_CONFIG_DIR: config },
+      run: fakeQuery(seen, ok),
+    });
+    const priorTmp = process.env.TMPDIR;
+    process.env.TMPDIR = join(config, "no-such-tmp");
+    try {
+      for (let i = 0; i < 4; i += 1) {
+        expect(await call(input([{ role: "user", content: "x" }]))).toMatchObject({
+          ok: false,
+          message: expect.stringContaining("ENOENT"),
+        });
+      }
+    } finally {
+      if (priorTmp === undefined) delete process.env.TMPDIR;
+      else process.env.TMPDIR = priorTmp;
+    }
+    const after = await Promise.race([
+      call(input([{ role: "user", content: "x" }])),
+      new Promise((r) => setTimeout(() => r("stuck"), 5_000)),
+    ]);
+    expect(after).toEqual({ ok: true, text: "the smoothed prompt" });
+    expect(seen).toHaveLength(1);
+  });
+
+  test("an explicit relative claude binary is resolved from the caller's cwd", async () => {
+    const seen: Seen[] = [];
+    await createSummaryWorkerModelCall({
+      claudeBin: "./bin/claude",
+      env: { CLAUDE_CONFIG_DIR: config },
+      run: fakeQuery(seen, ok),
+    })(input([{ role: "user", content: "x" }]));
+    expect(seen[0]!.options.pathToClaudeCodeExecutable).toBe(join(process.cwd(), "bin", "claude"));
+    await createSummaryWorkerModelCall({
+      claudeBin: "claude",
+      env: { CLAUDE_CONFIG_DIR: config },
+      run: fakeQuery(seen, ok),
+    })(input([{ role: "user", content: "x" }]));
+    expect(seen[1]!.options.pathToClaudeCodeExecutable).toBe("claude");
   });
 
   test("serves the core's derivation assignments under its own provider, model unchanged", () => {
