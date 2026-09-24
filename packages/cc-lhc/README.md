@@ -163,8 +163,11 @@ lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
     cannot be relaunched is recorded as failed.
   - A background agent runs inside the old Claude process and cannot survive
     the swap. On the next prompt cc-lhc reports its final result if it had
-    finished; otherwise it tells Claude the agent was interrupted and can be
-    resumed with `SendMessage(<id>)`.
+    finished. Otherwise it copies the agent's saved conversation into the new
+    session's folder (where Claude looks for it) and tells Claude the agent
+    was interrupted and can be resumed with `SendMessage(<id>)`; if the copy
+    fails, it says the agent has to be started again. Agents are copied
+    forward at every compaction, so they stay resumable after later ones.
 
   The wrapper derives the open set from the rollout it already reads: a launch
   acknowledgement opens an item, and only matching terminal evidence
