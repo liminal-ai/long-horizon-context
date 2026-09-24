@@ -305,14 +305,14 @@ modifyOtherKeys, and Windows Terminal win32 input events.
 
 | Command | Effect |
 | --- | --- |
-| `/status` | Capture, retrieval, context-policy, and last-action status |
+| `/status` | Capture, retrieval, and context-policy status |
 | `/stats` | Current capture counters |
 | `/smart-compact` | Smart Compact and controlled child handoff |
 | `/smart-prune [tokens]` | Advance the visibility boundary and hand off if changed |
 | `/export` | Write rollout and served-view transcript dumps |
 | `/bounds <target> <trigger>` | Change Smart Compact target/trigger for this wrapper lifetime |
 | `/allocation` | Select Default, Balanced, or Historical for this wrapper lifetime |
-| `/details` | Show retrieval state, configuration sources, and Claude native Compact status |
+| `/details` | Show retrieval state, configuration sources, Claude native Compact status, the running operation, and the last action |
 | `/help` | List every panel command and its scope |
 | `/introduction` | Explain LHC, fidelity bands, and Smart Compact |
 
