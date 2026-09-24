@@ -69,7 +69,7 @@ use super::store::select_open_turn_ids;
 
 const SQL_SELECT_THREAD_ID: &str = r#"SELECT thread_id FROM thread_metadata WHERE id = 1"#;
 
-const SQL_SELECT_CLAIMED_WORK_ITEM: &str = crate::shared_tech::work_queue::OWNED_CLAIM_SQL;
+const SQL_SELECT_CLAIMED_WORK_ITEM: &str = "SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND json_extract(payload, '$.claimAttempt') IS ?";
 
 const SQL_DELETE_CLAIMED_WORK_ITEM: &str = "DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND json_extract(payload, '$.claimAttempt') IS ?";
 

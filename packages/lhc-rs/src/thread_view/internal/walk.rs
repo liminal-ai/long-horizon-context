@@ -1136,7 +1136,9 @@ pub fn walk_arrangement(
         Turn(SelectionTurn),
         Run(Vec<SelectionTurn>),
     }
-    let mut marker_subject_ids: HashSet<String> = HashSet::new();
+    // Run-marker subject_id → member turn ids. Object identity in TS
+    // (`markerMembers`); subject ids are unique for these entries.
+    let mut marker_members: HashMap<String, Vec<String>> = HashMap::new();
     if !orphaned_members.is_empty() {
         let mut candidates: Vec<ElderCandidate> = Vec::new();
         for turn in orphaned_members {
@@ -1157,7 +1159,10 @@ pub fn walk_arrangement(
                     let mut ascending = run.clone();
                     ascending.reverse();
                     let entry = gap_marker_entry(source, &ascending, band);
-                    marker_subject_ids.insert(entry.subject_id.clone());
+                    marker_members.insert(
+                        entry.subject_id.clone(),
+                        ascending.iter().map(|turn| turn.turn_id.clone()).collect(),
+                    );
                     Ok(entry)
                 }
             }
@@ -1186,14 +1191,14 @@ pub fn walk_arrangement(
             brief_turns
                 .skipped
                 .into_iter()
-                .filter(|entry| !marker_subject_ids.contains(&entry.subject_id)),
+                .filter(|entry| !marker_members.contains_key(&entry.subject_id)),
         );
         for entry in detailed_turns
             .included
             .iter()
             .chain(brief_turns.included.iter())
         {
-            if marker_subject_ids.contains(&entry.subject_id) {
+            if marker_members.contains_key(&entry.subject_id) {
                 continue;
             }
             if let Some(turn) = turns_by_id.get(&entry.subject_id) {
@@ -1219,18 +1224,78 @@ pub fn walk_arrangement(
     detailed_entries.sort_by_key(|entry| entry.start_order);
     let mut smooth_entries = smooth.included;
     smooth_entries.sort_by_key(|entry| entry.start_order);
-    let entries: Vec<ArrangementEntry> = brief_entries
+    let mut entries: Vec<ArrangementEntry> = brief_entries
         .into_iter()
         .chain(detailed_entries)
         .chain(smooth_entries)
         .collect();
-    // The coverage edge is the oldest INCLUDED entry: a skipped subject inside
-    // the window is a hole in coverage that already extends past it.
+    // The coverage edge is the oldest INCLUDED material: a skipped subject
+    // inside the window is a hole that already extends past it. Run markers
+    // name holes, not material — they do not move the edge.
     let covered_from = entries
         .iter()
+        .filter(|entry| !marker_members.contains_key(&entry.subject_id))
         .map(|entry| entry.start_order)
         .min()
         .unwrap_or(compact_point);
+
+    // Gap markers (F6): a banded turn that no entry represents — including
+    // leading turns older than the coverage edge, and elder-fill candidates
+    // the cascade left unbudgeted — gets one rendered line per contiguous
+    // run. Unbudgeted: not priced against any share. Sits in the band of its
+    // nearest older entry (brief when there is none).
+    let mut represented_turn_ids: HashSet<String> = HashSet::new();
+    for entry in &entries {
+        if let Some(members) = marker_members.get(&entry.subject_id) {
+            represented_turn_ids.extend(members.iter().cloned());
+        } else if entry.subject_kind == ViewSubjectKind::Turn {
+            represented_turn_ids.insert(entry.subject_id.clone());
+        } else if let Some(chunk) = chunks_by_id.get(&entry.subject_id) {
+            represented_turn_ids.extend(chunk.member_turn_ids.iter().cloned());
+        }
+    }
+    let mut unrepresented_runs: Vec<Vec<SelectionTurn>> = Vec::new();
+    let mut run: Vec<SelectionTurn> = Vec::new();
+    for turn in &banded_turns {
+        if !represented_turn_ids.contains(&turn.turn_id) {
+            run.push(turn.clone());
+            continue;
+        }
+        if !run.is_empty() {
+            unrepresented_runs.push(std::mem::take(&mut run));
+        }
+    }
+    if !run.is_empty() {
+        unrepresented_runs.push(run);
+    }
+    if !unrepresented_runs.is_empty() {
+        let mut markers = Vec::new();
+        for turns_in_run in &unrepresented_runs {
+            let start_order = turn_start_order(source, &turns_in_run[0]);
+            let band = entries
+                .iter()
+                .filter(|entry| entry.start_order < start_order)
+                .max_by_key(|entry| entry.start_order)
+                .map(|entry| entry.band)
+                .unwrap_or(Band::Brief);
+            markers.push(gap_marker_entry(source, turns_in_run, band));
+        }
+        let mut with_markers = entries;
+        with_markers.extend(markers);
+        entries = [Band::Brief, Band::Detailed, Band::Smooth]
+            .into_iter()
+            .flat_map(|band| {
+                let mut band_entries: Vec<ArrangementEntry> = with_markers
+                    .iter()
+                    .filter(|entry| entry.band == band)
+                    .cloned()
+                    .collect();
+                band_entries.sort_by_key(|entry| entry.start_order);
+                band_entries
+            })
+            .collect();
+    }
+
     let skipped = brief
         .skipped
         .into_iter()
