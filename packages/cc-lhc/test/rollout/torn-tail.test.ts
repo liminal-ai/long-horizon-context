@@ -131,7 +131,39 @@ describe("pre-launch torn-tail repair", () => {
     });
   });
 
-  it.skipIf(process.platform !== "linux" && process.platform !== "darwin")(
+  it("an unheld torn transcript is repaired through the real holder check (our own read handle never counts)", () => {
+    const content = `${line("a")}{"torn`;
+    const f = fixture("unheld", content);
+    const repair = repairTornTranscriptTail({
+      path: f.path,
+      sessionId: "s-torn",
+      home: f.home,
+      findHolders: (path) => findFileHolders(path),
+    });
+    expect(repair.kind).toBe("fragment_trimmed");
+    expect(readFileSync(f.path, "utf8")).toBe(line("a"));
+  });
+
+  it("a transcript that changes during the holder check is left untouched", () => {
+    const content = `${line("a")}{"torn`;
+    const f = fixture("changed", content);
+    const repair = repairTornTranscriptTail({
+      path: f.path,
+      sessionId: "s-torn",
+      home: f.home,
+      findHolders: (path) => {
+        appendFileSync(path, 'more"}');
+        return { ok: true, holders: [] };
+      },
+    });
+    expect(repair).toMatchObject({
+      kind: "holder_check_unavailable",
+      reason: "transcript changed during the holder check",
+    });
+    expect(readFileSync(f.path, "utf8")).toBe(`${content}more"}`);
+  });
+
+  it.skipIf(process.platform !== "linux" && process.platform !== "darwin" && process.platform !== "win32")(
     "transcript held open by another process: untouched and the holder named",
     async () => {
       const content = `${line("a")}{"torn`;

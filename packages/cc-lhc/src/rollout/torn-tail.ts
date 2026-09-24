@@ -98,6 +98,34 @@ export function repairTornTranscriptTail(input: RepairTornTailInput): TornTailRe
   } catch {
     return { kind: "missing" };
   }
+  // Read with our own handle, and close it before asking who holds the file:
+  // on Windows the holder check includes a share-none open, which our own
+  // open handle would refuse.
+  let size: number;
+  let end: number;
+  let fragment: Buffer;
+  try {
+    const fd = openSync(input.path, "r");
+    try {
+      size = fstatSync(fd).size;
+      end = completeEnd(fd, size);
+      fragment = end === size ? Buffer.alloc(0) : readRange(fd, end, size);
+    } finally {
+      closeSync(fd);
+    }
+  } catch (cause) {
+    return { kind: "failed", reason: `open failed: ${cause instanceof Error ? cause.message : String(cause)}` };
+  }
+  if (end === size) return { kind: "clean" };
+
+  const holders = (input.findHolders ?? findFileHolders)(input.path);
+  if (!holders.ok) {
+    return { kind: "holder_check_unavailable", fragmentBytes: fragment.byteLength, reason: holders.reason };
+  }
+  if (holders.holders.length > 0) {
+    return { kind: "held_open", fragmentBytes: fragment.byteLength, holders: holders.holders };
+  }
+
   let fd: number;
   try {
     fd = openSync(input.path, "r+");
@@ -105,17 +133,13 @@ export function repairTornTranscriptTail(input: RepairTornTailInput): TornTailRe
     return { kind: "failed", reason: `open failed: ${cause instanceof Error ? cause.message : String(cause)}` };
   }
   try {
-    const size = fstatSync(fd).size;
-    const end = completeEnd(fd, size);
-    if (end === size) return { kind: "clean" };
-    const fragment = readRange(fd, end, size);
-
-    const holders = (input.findHolders ?? findFileHolders)(input.path);
-    if (!holders.ok) {
-      return { kind: "holder_check_unavailable", fragmentBytes: fragment.byteLength, reason: holders.reason };
-    }
-    if (holders.holders.length > 0) {
-      return { kind: "held_open", fragmentBytes: fragment.byteLength, holders: holders.holders };
+    // Anything written between the read and here means someone holds it after all.
+    if (fstatSync(fd).size !== size || !readRange(fd, end, size).equals(fragment)) {
+      return {
+        kind: "holder_check_unavailable",
+        fragmentBytes: fragment.byteLength,
+        reason: "transcript changed during the holder check",
+      };
     }
 
     if (isCompleteRecord(fragment)) {

@@ -255,8 +255,9 @@ lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
   file's last line. An incomplete fragment is saved under
   `~/.cc-lhc/torn-lines/` and trimmed; a complete record missing only its
   newline gets the newline. This runs only when no other process has the file
-  open (checked through `/proc` on Linux and `lsof` on macOS); on Windows,
-  where that check is unavailable, the file is left alone. The live watcher
+  open (checked through `/proc` on Linux, `lsof` on macOS, and the Restart
+  Manager plus an exclusive-open probe on Windows); when the check cannot
+  prove the file unheld, the file is left alone. The live watcher
   waits on an incomplete last line rather than stopping capture. Corruption
   earlier in the file still stops capture for that session.
 - **Stale runtime files.** Launch removes runtime descriptors whose owning
