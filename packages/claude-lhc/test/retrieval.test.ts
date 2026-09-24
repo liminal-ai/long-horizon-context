@@ -68,13 +68,13 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("retrieval server", () => {
-  test("lists get_turns and get_messages, read-only, with descriptions that answer the gap marker", async () => {
+  test("lists get_turns and get_messages, read-only, described as on the other hosts", async () => {
     const ref = await thread([["q", "a"]]);
     const client = await connect(() => ref);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(["get_messages", "get_turns"]);
     for (const t of tools) expect(t.annotations?.readOnlyHint).toBe(true);
-    expect(tools.find((t) => t.name === "get_turns")!.description).toContain("not in view; use get-turns");
+    expect(tools.find((t) => t.name === "get_turns")!.description).toContain("(the <tNNN> tags in compressed history)");
   });
 
   test("get_turns returns the turn as its history renders it, inside the historical envelope; receipts outside it", async () => {
@@ -287,11 +287,12 @@ describe("session wiring", () => {
     const client = new Client({ name: "test", version: "0" });
     await client.connect(clientSide);
     expect(await callText(client, "get_turns", { ids: ["t1"] })).toContain("OTTER-LANTERN-77");
-    // get_turns serves the rendered turn (smoothed prompts, summarized tool output), never claimed verbatim.
+    // Same wording as pi-lhc and codex-lhc: get_turns serves renderings, get_messages the verbatim record.
     const { tools } = await client.listTools();
-    const getTurns = tools.find((t) => t.name === "get_turns")!.description!;
-    expect(getTurns).not.toContain("verbatim");
-    expect(getTurns).toContain("smoothed");
-    expect(getTurns).toContain("For the exact original content of a message, use get_messages.");
+    const describe = (name: string) => tools.find((t) => t.name === name)!.description!;
+    expect(describe("get_turns")).toMatch(/^Fetch full renderings of past conversation turns by turn id/);
+    expect(describe("get_turns")).not.toContain("verbatim");
+    expect(describe("get_messages")).toMatch(/^Fetch the exact original content of past messages by message id/);
+    expect(describe("get_messages")).toContain("Returns the verbatim record as it existed then");
   });
 });

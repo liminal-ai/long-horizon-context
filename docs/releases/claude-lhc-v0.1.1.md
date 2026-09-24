@@ -19,12 +19,12 @@ Upgrade if you run Claude LHC threads long enough to be compacted.
   `turns tA–tB not in view; use get-turns`. Until now a Claude LHC session had
   no tool to follow that marker, so the model could only guess at anything the
   summaries left out. Every session now has two tools:
-  - `get_turns` returns past turns by id (`t12`) as they appear in the
-    thread's history, with each message tagged by its id. It is not verbatim:
-    a prompt may come back smoothed and tool output summarized, where those
-    are ready.
-  - `get_messages` returns the exact original content of past messages by id
-    (`m340`), including tool input and output.
+  - `get_turns` fetches full renderings of past conversation turns by turn
+    id (`t12`), with each message tagged by its id. A rendering is not the
+    verbatim record: a prompt may appear smoothed and tool output summarized.
+  - `get_messages` fetches the exact original content of past messages by
+    message id (`m340`): the verbatim record as it existed then, including
+    tool input and output.
 
   Both return at most about 8,000 tokens per call. A longer item arrives as its
   first part with the exact call for the next part. Ids that don't exist, were
