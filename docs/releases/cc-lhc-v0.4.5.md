@@ -104,5 +104,6 @@ Install as usual (install script or `npm install --global cc-lhc@0.4.5`).
 ## Source and artifacts
 
 - Previous release: [`cc-lhc-v0.4.4`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.4)
-- Fix commits: summary worker `8a02859f`, `818a6c0b`, `fe0bbf6d`, `db1cf8e0`;
-  helper resume `2e4a146f`; Windows job `8a900344`.
+- Fix commits: summary worker `d203b68e`, `d5bc5108`, `9f4e7c78`, `6d6e8009`
+  (shared with claude-lhc 0.1.1); helper resume `7f11891e`; Windows job
+  `22aee835`.
