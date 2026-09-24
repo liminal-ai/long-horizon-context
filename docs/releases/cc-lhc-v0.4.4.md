@@ -132,6 +132,11 @@ npm install --global cc-lhc@0.4.4
 - **Windows torn-line repair** is skipped, as a safe refusal, when Windows can't
   report which processes hold the file. A torn line is then left as it is and
   capture stays stopped for that session, as in 0.4.3.
+- **On Windows, one tool process can still outlive a killed wrapper.** In a
+  hands-on test of 0.4.4 on Windows ARM, killing the wrapper during a Node tool
+  run left that Node process running (2 of 2 tries), although the job was set up
+  and Claude and the shell ended. A normal `/exit` is not affected. This is under
+  investigation; stop the leftover process by hand if you kill a wrapper.
 - **Windows job setup can fail** (for example under some sandboxes or process
   managers). cc-lhc then falls back to closing Claude's tree only while Claude is
   still running, as in 0.4.3, and logs it.
