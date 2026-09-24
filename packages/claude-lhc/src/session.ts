@@ -48,7 +48,6 @@ import {
   CONTEXT_COMPACT_CONTINUE_REASON,
   type CompactReceipt,
   compactContinuationMarkerIdempotencyKey,
-  killClaudeCliInferenceChildren,
   type Lhc,
   type MessageEventInput,
   type ThreadRef,
@@ -67,6 +66,7 @@ import { writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
 import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
+import { abortSummaryWorkers } from "./summaryWorker.js";
 import {
   formatTokenFamilyLog,
   isRealModelId,
@@ -408,7 +408,7 @@ export class ClaudeLhcSession {
       gen.input.end();
       gen.query.close();
     }
-    killClaudeCliInferenceChildren();
+    abortSummaryWorkers();
   }
 
   // ── generations ────────────────────────────────────────────────

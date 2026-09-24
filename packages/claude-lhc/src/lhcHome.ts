@@ -10,15 +10,8 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
-import {
-  claudeCliInferenceAssignments,
-  createClaudeCliModelCall,
-  createDeterministicInferenceCallbacks,
-  initLhc,
-  type Lhc,
-  type ThreadRef,
-  threads,
-} from "lhc";
+import { createDeterministicInferenceCallbacks, initLhc, type Lhc, type ThreadRef, threads } from "lhc";
+import { createSummaryWorkerModelCall, summaryWorkerAssignments } from "./summaryWorker.js";
 
 export const ALIAS_HOST = "t3code-lhc";
 
@@ -66,8 +59,8 @@ export function createLhc(options: LhcInstanceOptions): Lhc {
   return initLhc({
     mode: "background",
     inference: {
-      call: createClaudeCliModelCall({ binary: options.claudeBin, env: options.env }),
-      assignments: claudeCliInferenceAssignments(),
+      call: createSummaryWorkerModelCall({ claudeBin: options.claudeBin, env: options.env }),
+      assignments: summaryWorkerAssignments(),
       timeoutMs: 90_000,
     },
     tokenFamily: options.tokenFamily,
