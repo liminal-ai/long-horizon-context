@@ -196,6 +196,7 @@ fn attempt_from_item(item: &ClaimedWorkItem) -> DerivationAttempt {
         source_version: item.source_version,
         derivations: item.derivations.clone(),
         work_item_id: Some(item.work_item_id.clone()),
+        claim_attempt: item.claim_attempt,
     }
 }
 
@@ -383,15 +384,22 @@ pub async fn drain_open_db(
                 break;
             }
             ClaimOutcome::Expired { item } => {
-                let reason = "claim_expired".to_string();
-                let terminal = apply_derivation_terminal_failure(
+                let requeue = crate::shared_tech::work_queue::requeue_expired_claim(
+                    db,
+                    &crate::shared_tech::work_queue::ClaimAttempt {
+                        work_item_id: item.work_item_id.clone(),
+                        claim_attempt: item.claim_attempt,
+                    },
+                    &system_time_to_iso(clock()),
+                );
+                if requeue != crate::shared_tech::work_queue::RequeueExpiredOutcome::Repeated {
+                    continue;
+                }
+                let reason = crate::shared_tech::durable_work::CLAIM_EXPIRED_REPEATEDLY.to_string();
+                let terminal = crate::shared_tech::durable_work::fail_repeatedly_expired_claim(
                     db,
                     &attempt_from_item(&item),
-                    &DerivationTerminalFailure {
-                        reason: reason.clone(),
-                        state: DerivationTerminalState::Failed,
-                        now: system_time_to_iso(clock()),
-                    },
+                    &system_time_to_iso(clock()),
                 );
                 if terminal != ApplyDerivationTerminalDisposition::LostLease {
                     let mut payload = DerivationLogPayload::new();
@@ -468,6 +476,7 @@ pub async fn drain_open_db(
                     kind: item.kind.clone(),
                     source_ref: item.source_ref.clone(),
                     source_version: item.source_version,
+                    claim_attempt: item.claim_attempt,
                     derivations: item.derivations.clone(),
                     operation,
                 };

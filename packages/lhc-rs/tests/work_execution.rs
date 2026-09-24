@@ -1236,6 +1236,7 @@ fn resolve_deferred(pending: DeferredRun, scripted: Scripted) {
     let disposition = apply_derivation_success(
         &db,
         &DerivationAttempt {
+            claim_attempt: None,
             source_version: pending.item.source_version,
             derivations: pending.item.derivations.clone(),
             work_item_id: Some(pending.item.work_item_id.clone()),
@@ -1324,6 +1325,7 @@ fn turn_derive_partial_dispatcher() -> DurableWorkDispatcher {
             let disposition = apply_derivation_success(
                 &db,
                 &DerivationAttempt {
+                    claim_attempt: None,
                     source_version: item.source_version,
                     derivations: item.derivations.clone(),
                     work_item_id: Some(item.work_item_id.clone()),
@@ -1567,6 +1569,7 @@ async fn an_extra_handler_write_target_fails_closed_before_any_completion_write_
             let disposition = apply_derivation_success(
                 &db,
                 &DerivationAttempt {
+                    claim_attempt: None,
                     source_version: item.source_version,
                     derivations: item.derivations.clone(),
                     work_item_id: Some(item.work_item_id.clone()),

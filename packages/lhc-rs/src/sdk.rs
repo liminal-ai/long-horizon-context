@@ -111,7 +111,7 @@ pub use crate::shared_tech::view::{
 pub use crate::shared_tech::work_queue::{
     ClaimedWorkItem, EnqueueDerivationTarget, EnqueueInput, QueueDetailRow, WorkHandlerMap,
     WorkItemRecord, WorkKind, WorkOwner, WorkSourceRef, count_live_items, enqueue,
-    map_work_q_handlers, queue_detail, supersede_queued, work_kind_registry,
+    map_work_q_handlers, queue_detail, release_held_claims, supersede_queued, work_kind_registry,
 };
 /// Thread-view config constants only — `MaterializeResult` stays on `thread_view`
 /// (sdk.ts materialize uses an anonymous return shape; no named type export).
@@ -867,6 +867,12 @@ impl Lhc {
         };
         self.scheduler.drain_settled(&thread_id).await;
     }
+
+    /// Hand still-held claims back to the queue (f5h). Hosts invoke this on
+    /// clean shutdown; it is bounded and does not wait on inference.
+    pub fn release_held_claims(&self) -> i64 {
+        crate::shared_tech::work_queue::release_held_claims()
+    }
 }
 
 // ── Work-handler lookup / testing registration ───────────────────────
@@ -1197,6 +1203,7 @@ fn turn_owned_dispatcher(kind: WorkKind) -> DurableWorkDispatcher {
                     kind,
                     source_ref: item.source_ref,
                     source_version: item.source_version,
+                    claim_attempt: item.claim_attempt,
                     derivations: item.derivations,
                 },
             )
@@ -1350,6 +1357,7 @@ pub fn init_lhc(config: SdkConfig) -> Lhc {
                     &DispatchMessageDeriveWorkItem {
                         work_item_id: item.work_item_id,
                         source_version: item.source_version,
+                        claim_attempt: item.claim_attempt,
                         derivations: item.derivations,
                     },
                 )

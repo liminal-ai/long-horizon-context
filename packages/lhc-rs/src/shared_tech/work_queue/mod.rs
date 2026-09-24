@@ -22,6 +22,12 @@ use super::js_json::{js_json_stringify, js_json_stringify_of};
 use super::persist::{DbWriteTransaction, create_post_commit_hook_set};
 use super::storage::{Db, SqlParam};
 
+pub mod claim_fence;
+pub use claim_fence::{
+    ClaimAttempt, OWNED_CLAIM_SQL, TAKE_CLAIM_SET_SQL, claim_params, note_claim_done,
+    note_claim_held, release_held_claims,
+};
+
 /// TS `WorkHandlerMap` = `Partial<Record<WorkKind, WorkHandler>>`.
 /// Insertion-ordered (matches JS object key order when iterating registrations).
 pub type WorkHandlerMap = IndexMap<WorkKind, WorkHandler>;
@@ -767,12 +773,12 @@ pub fn create_or_claim_immediate_work_item(
                 };
             }
             let claimed = db
-                .prepare(
+                .prepare(&format!(
                     "UPDATE work_item
-                     SET status = 'claimed', claimed_at = ?, claim_expires_at = ?
+                     SET {TAKE_CLAIM_SET_SQL}
                      WHERE work_item_id = ? AND status = 'queued'
-                     RETURNING work_item_id, owner, kind, source_ref, queued_at, payload",
-                )
+                     RETURNING work_item_id, owner, kind, source_ref, queued_at, payload"
+                ))
                 .get_params(&[
                     SqlParam::from(claim_timing.now.as_str()),
                     SqlParam::from(claim_expires_at.as_str()),
@@ -786,6 +792,7 @@ pub fn create_or_claim_immediate_work_item(
             }
             let item = to_claimed_item(raw_claim_row_from_map(&claimed.unwrap()));
             db.exec("COMMIT;");
+            note_claim_held(db, &claim_attempt_of(&item));
             return ImmediateClaimOutcome::Claimed { item };
         }
 
@@ -811,12 +818,12 @@ pub fn create_or_claim_immediate_work_item(
         upsert_pending();
 
         let claimed = db
-            .prepare(
+            .prepare(&format!(
                 "UPDATE work_item
-                 SET status = 'claimed', claimed_at = ?, claim_expires_at = ?
+                 SET {TAKE_CLAIM_SET_SQL}
                  WHERE work_item_id = ? AND status = 'queued'
-                 RETURNING work_item_id, owner, kind, source_ref, queued_at, payload",
-            )
+                 RETURNING work_item_id, owner, kind, source_ref, queued_at, payload"
+            ))
             .get_params(&[
                 SqlParam::from(claim_timing.now.as_str()),
                 SqlParam::from(claim_expires_at.as_str()),
@@ -827,6 +834,7 @@ pub fn create_or_claim_immediate_work_item(
         };
         let claimed_item = to_claimed_item(raw_claim_row_from_map(&claimed));
         db.exec("COMMIT;");
+        note_claim_held(db, &claim_attempt_of(&claimed_item));
         ImmediateClaimOutcome::Claimed { item: claimed_item }
     }));
     match result {
@@ -861,6 +869,8 @@ pub struct ClaimedWorkItem {
     pub queued_at: String,
     pub source_version: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_attempt: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub operation: Option<DurableWorkOperation>,
     pub derivations: Vec<EnqueueDerivationTarget>,
 }
@@ -889,6 +899,10 @@ struct RawClaimRow {
 struct WorkPayload {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     source_version: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claim_expired: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    claim_attempt: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     operation: Option<DurableWorkOperation>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -924,8 +938,72 @@ fn to_claimed_item(row: RawClaimRow) -> ClaimedWorkItem {
         source_ref,
         queued_at: row.queued_at,
         source_version: payload.source_version.unwrap_or(1),
+        claim_attempt: payload.claim_attempt,
         operation,
         derivations: payload.derivations.unwrap_or_default(),
+    }
+}
+
+fn claim_attempt_of(item: &ClaimedWorkItem) -> ClaimAttempt {
+    ClaimAttempt {
+        work_item_id: item.work_item_id.clone(),
+        claim_attempt: item.claim_attempt,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequeueExpiredOutcome {
+    Requeued,
+    Repeated,
+    Lost,
+}
+
+pub fn requeue_expired_claim(db: &Db, item: &ClaimAttempt, now: &str) -> RequeueExpiredOutcome {
+    note_claim_done(db, item);
+    db.exec("BEGIN IMMEDIATE;");
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let row = db
+            .prepare(&format!(
+                "SELECT work_item_id, payload, claim_expires_at FROM work_item WHERE {OWNED_CLAIM_SQL}"
+            ))
+            .get_params(&claim_params(item));
+        let Some(row) = row else {
+            db.exec("COMMIT;");
+            return RequeueExpiredOutcome::Lost;
+        };
+        let claim_expires_at = map_optional_str(&row, "claim_expires_at").unwrap_or_default();
+        if !claim_expires_at.is_empty() && !lease_is_expired(&claim_expires_at, now) {
+            db.exec("COMMIT;");
+            return RequeueExpiredOutcome::Lost;
+        }
+        let payload_raw = map_required_str(&row, "payload");
+        let mut payload: serde_json::Value =
+            serde_json::from_str(&payload_raw).unwrap_or_else(|err| panic!("{err}"));
+        if payload.get("claimExpired").and_then(|v| v.as_bool()) == Some(true) {
+            db.exec("COMMIT;");
+            return RequeueExpiredOutcome::Repeated;
+        }
+        if let Some(obj) = payload.as_object_mut() {
+            obj.insert("claimExpired".into(), serde_json::Value::Bool(true));
+        }
+        let work_item_id = map_required_str(&row, "work_item_id");
+        db.prepare(
+            "UPDATE work_item SET status = 'queued', claimed_at = NULL, claim_expires_at = NULL, payload = ?
+             WHERE work_item_id = ?",
+        )
+        .run(&[
+            SqlParam::from(js_json_stringify(&payload)),
+            SqlParam::from(work_item_id.as_str()),
+        ]);
+        db.exec("COMMIT;");
+        RequeueExpiredOutcome::Requeued
+    }));
+    match result {
+        Ok(outcome) => outcome,
+        Err(cause) => {
+            db.exec("ROLLBACK;");
+            resume_unwind(cause);
+        }
     }
 }
 
@@ -933,14 +1011,21 @@ fn to_claimed_item(row: RawClaimRow) -> ClaimedWorkItem {
 #[serde(rename_all = "camelCase")]
 pub struct DeleteClaimedItem {
     pub work_item_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub claim_attempt: Option<i64>,
 }
 
 pub fn delete_claimed_item(db: &Db, item: &DeleteClaimedItem) -> bool {
+    let claim = ClaimAttempt {
+        work_item_id: item.work_item_id.clone(),
+        claim_attempt: item.claim_attempt,
+    };
+    note_claim_done(db, &claim);
     db.exec("BEGIN IMMEDIATE;");
     let result = catch_unwind(AssertUnwindSafe(|| {
         let deleted = db
-            .prepare("DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'")
-            .run(&[SqlParam::from(item.work_item_id.as_str())]);
+            .prepare(&format!("DELETE FROM work_item WHERE {OWNED_CLAIM_SQL}"))
+            .run(&claim_params(&claim));
         db.exec("COMMIT;");
         deleted.changes > 0
     }));
@@ -982,12 +1067,12 @@ pub fn claim_next(db: &Db, now: &str, lease_duration_ms: i64) -> ClaimOutcome {
             };
         }
         let claimed = db
-            .prepare(
+            .prepare(&format!(
                 "UPDATE work_item
-                 SET status = 'claimed', claimed_at = ?, claim_expires_at = ?
+                 SET {TAKE_CLAIM_SET_SQL}
                  WHERE work_item_id = ? AND status = 'queued'
-                 RETURNING work_item_id, owner, kind, source_ref, queued_at, payload",
-            )
+                 RETURNING work_item_id, owner, kind, source_ref, queued_at, payload"
+            ))
             .get_params(&[
                 SqlParam::from(now),
                 SqlParam::from(expires_at.as_str()),
@@ -998,6 +1083,7 @@ pub fn claim_next(db: &Db, now: &str, lease_duration_ms: i64) -> ClaimOutcome {
         };
         let item = to_claimed_item(raw_claim_row_from_map(&claimed));
         db.exec("COMMIT;");
+        note_claim_held(db, &claim_attempt_of(&item));
         ClaimOutcome::Claimed { item }
     }));
     match result {
@@ -1038,9 +1124,10 @@ pub fn complete(
     let post_commit_hook = create_post_commit_hook_set();
     db.exec("BEGIN IMMEDIATE;");
     let result = catch_unwind(AssertUnwindSafe(move || {
+        note_claim_done(db, &claim_attempt_of(item));
         let owned = db
-            .prepare("SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'")
-            .get_params(&[SqlParam::from(item.work_item_id.as_str())]);
+            .prepare(&format!("SELECT 1 FROM work_item WHERE {OWNED_CLAIM_SQL}"))
+            .get_params(&claim_params(&claim_attempt_of(item)));
         if owned.is_none() {
             db.exec("COMMIT;");
             return CompleteDisposition::LostLease;
@@ -1102,8 +1189,8 @@ pub fn complete(
                 });
             }
         }
-        db.prepare("DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'")
-            .run(&[SqlParam::from(item.work_item_id.as_str())]);
+        db.prepare(&format!("DELETE FROM work_item WHERE {OWNED_CLAIM_SQL}"))
+            .run(&claim_params(&claim_attempt_of(item)));
         db.exec("COMMIT;");
         flush();
         if stale {

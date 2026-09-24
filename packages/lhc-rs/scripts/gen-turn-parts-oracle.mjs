@@ -129,7 +129,11 @@ const splitParams = (lowerBound) => ({
 });
 
 const tmp = mkdtempSync(join(tmpdir(), "lhc-turn-parts-oracle-"));
-const sdk = initLhc({ inferenceCallbacks: createDeterministicInferenceCallbacks(), mode: "manual" });
+const sdk = initLhc({
+  inferenceCallbacks: createDeterministicInferenceCallbacks(),
+  mode: "manual",
+  tokenFamily: "o200k",
+});
 const scenarios = [];
 
 async function scenario(name, script) {

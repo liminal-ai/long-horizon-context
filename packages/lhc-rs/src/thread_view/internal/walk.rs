@@ -425,6 +425,7 @@ fn fill_band<T, F>(
     band_budget: f64,
     crossing: BandCrossing,
     admit_first: bool,
+    prior: &[ArrangementEntry],
     mut build: F,
 ) -> Result<FillBandResult<T>, CompactStoppedError>
 where
@@ -440,9 +441,11 @@ where
     }
     let mut included = Vec::new();
     let mut passed_over: Vec<(ArrangementEntry, usize)> = Vec::new();
-    let mut sum = 0_i64;
+    let mut sum: i64 = prior.iter().map(|entry| entry.tokens).sum();
+    let held = |included_len: usize| prior.len() + included_len;
     for (index, candidate) in candidates.iter().enumerate() {
-        if crossing == BandCrossing::Skip && !included.is_empty() && (sum as f64) >= band_budget {
+        if crossing == BandCrossing::Skip && held(included.len()) > 0 && (sum as f64) >= band_budget
+        {
             let skipped = passed_over
                 .into_iter()
                 .filter(|(_, before)| *before < included.len())
@@ -460,7 +463,7 @@ where
             included.push(entry);
             continue;
         }
-        if included.is_empty() {
+        if held(included.len()) == 0 {
             sum += entry.tokens;
             included.push(entry);
             if crossing == BandCrossing::Stop {
@@ -509,6 +512,7 @@ fn ready_content(row: Option<&DerivationSnapshot>) -> Option<String> {
 fn build_coverage_entry(
     source: &mut dyn SelectionSource,
     turn: &SelectionTurn,
+    band: Band,
 ) -> ArrangementEntry {
     let compression = source.derivation(&turn.turn_id, "detailed_turn_compression");
     let assembly = source.derivation(&turn.turn_id, "pre_detailed_assembly");
@@ -549,7 +553,7 @@ fn build_coverage_entry(
     };
     let text = render_arrangement_entry(ViewSubjectKind::Turn, &turn.turn_id, &rep, &[], &[]);
     ArrangementEntry {
-        band: Band::Detailed,
+        band,
         subject_kind: ViewSubjectKind::Turn,
         subject_id: turn.turn_id.clone(),
         derivation_used: rep.derivation_used,
@@ -557,6 +561,39 @@ fn build_coverage_entry(
         gap: rep.gap,
         reason: rep.reason,
         start_order: turn_start_order(source, turn),
+        tokens: estimate_budget_tokens(&text),
+        text,
+        part: None,
+    }
+}
+
+fn gap_marker_entry(
+    source: &mut dyn SelectionSource,
+    turns_in_run: &[SelectionTurn],
+    band: Band,
+) -> ArrangementEntry {
+    let first = &turns_in_run[0];
+    let last = &turns_in_run[turns_in_run.len() - 1];
+    let label = if first.turn_id == last.turn_id {
+        format!("turn {}", first.turn_id)
+    } else {
+        format!("turns {}–{}", first.turn_id, last.turn_id)
+    };
+    let reason = format!("{label} not in view; use get-turns");
+    let text = format!("[{reason}]");
+    ArrangementEntry {
+        band,
+        subject_kind: ViewSubjectKind::Turn,
+        subject_id: if first.turn_id == last.turn_id {
+            first.turn_id.clone()
+        } else {
+            format!("{}–{}", first.turn_id, last.turn_id)
+        },
+        derivation_used: "gap".into(),
+        degraded: false,
+        gap: true,
+        reason: Some(reason),
+        start_order: turn_start_order(source, first),
         tokens: estimate_budget_tokens(&text),
         text,
         part: None,
@@ -923,6 +960,7 @@ pub fn walk_arrangement(
         smooth_budget,
         BandCrossing::Stop,
         !cascading,
+        &[],
         |turn| Ok(build_turn_entry(source, &policy, turn, &mut settled_record)),
     )?;
     smooth.included.extend(mandatory_entries);
@@ -971,13 +1009,26 @@ pub fn walk_arrangement(
         .rev()
         .cloned()
         .collect();
+    let chunk_candidate_turn_ids: HashSet<String> = chunk_candidates
+        .iter()
+        .flat_map(|chunk| chunk.member_turn_ids.iter().cloned())
+        .collect();
+    let elder_turns: Vec<SelectionTurn> = banded_turns
+        .iter()
+        .filter(|turn| {
+            turn.turn_order < oldest_smooth_order
+                && !chunk_candidate_turn_ids.contains(&turn.turn_id)
+        })
+        .cloned()
+        .collect();
     let brief_share = budget(config, config.percentages.brief);
     // Rule 3 — detailed: same fill rule against its share.
-    let detailed = fill_band(
+    let mut detailed = fill_band(
         &chunk_candidates,
         detailed_budget,
         BandCrossing::Stop,
         !cascading,
+        &[],
         |chunk| {
             build_chunk_entry(
                 source,
@@ -992,11 +1043,12 @@ pub fn walk_arrangement(
     // Rule 4 — brief: the remaining chunks, same fill rule against its share,
     // skipping (not stopping at) entries too large for the remaining budget —
     // this is the last band, so a stop here would drop every older chunk.
-    let brief = fill_band(
+    let mut brief = fill_band(
         &detailed.rest,
         brief_budget,
         BandCrossing::Skip,
         !cascading,
+        &[],
         |chunk| {
             build_chunk_entry(
                 source,
@@ -1052,12 +1104,111 @@ pub fn walk_arrangement(
             }
         }
     }
+
+    let mut has_ready_turn_summary = |turn: &SelectionTurn| {
+        ready_content(
+            source
+                .derivation(&turn.turn_id, "detailed_turn_compression")
+                .as_ref(),
+        )
+        .is_some()
+            || ready_content(
+                source
+                    .derivation(&turn.turn_id, "pre_detailed_assembly")
+                    .as_ref(),
+            )
+            .is_some()
+    };
+    let mut orphaned_members: Vec<SelectionTurn> = elder_turns
+        .into_iter()
+        .filter(|turn| {
+            turn.turn_order < oldest_selected_turn_order
+                && !covered_turn_ids.contains(&turn.turn_id)
+        })
+        .collect();
+    orphaned_members.sort_by_key(|turn| std::cmp::Reverse(turn.turn_order));
+    let settled_elder_turn_ids: HashSet<String> = orphaned_members
+        .iter()
+        .map(|turn| turn.turn_id.clone())
+        .collect();
+    #[derive(Clone)]
+    enum ElderCandidate {
+        Turn(SelectionTurn),
+        Run(Vec<SelectionTurn>),
+    }
+    let mut marker_subject_ids: HashSet<String> = HashSet::new();
+    if !orphaned_members.is_empty() {
+        let mut candidates: Vec<ElderCandidate> = Vec::new();
+        for turn in orphaned_members {
+            if has_ready_turn_summary(&turn) {
+                candidates.push(ElderCandidate::Turn(turn));
+            } else if let Some(ElderCandidate::Run(run)) = candidates.last_mut() {
+                run.push(turn);
+            } else {
+                candidates.push(ElderCandidate::Run(vec![turn]));
+            }
+        }
+        let mut build_elder = |candidate: &ElderCandidate,
+                               band: Band|
+         -> Result<ArrangementEntry, CompactStoppedError> {
+            match candidate {
+                ElderCandidate::Turn(turn) => Ok(build_coverage_entry(source, turn, band)),
+                ElderCandidate::Run(run) => {
+                    let mut ascending = run.clone();
+                    ascending.reverse();
+                    let entry = gap_marker_entry(source, &ascending, band);
+                    marker_subject_ids.insert(entry.subject_id.clone());
+                    Ok(entry)
+                }
+            }
+        };
+        let detailed_turns = fill_band(
+            &candidates,
+            detailed_budget,
+            BandCrossing::Stop,
+            !cascading,
+            &detailed.included,
+            |candidate| build_elder(candidate, Band::Detailed),
+        )?;
+        let brief_turns = fill_band(
+            &detailed_turns.rest,
+            brief_budget,
+            BandCrossing::Skip,
+            !cascading,
+            &brief.included,
+            |candidate| build_elder(candidate, Band::Brief),
+        )?;
+        detailed
+            .included
+            .extend(detailed_turns.included.iter().cloned());
+        brief.included.extend(brief_turns.included.iter().cloned());
+        brief.skipped.extend(
+            brief_turns
+                .skipped
+                .into_iter()
+                .filter(|entry| !marker_subject_ids.contains(&entry.subject_id)),
+        );
+        for entry in detailed_turns
+            .included
+            .iter()
+            .chain(brief_turns.included.iter())
+        {
+            if marker_subject_ids.contains(&entry.subject_id) {
+                continue;
+            }
+            if let Some(turn) = turns_by_id.get(&entry.subject_id) {
+                oldest_selected_turn_order = oldest_selected_turn_order.min(turn.turn_order);
+            }
+        }
+    }
+
     let mut coverage_gaps = Vec::new();
     for turn in &banded_turns {
         if turn.turn_order >= oldest_selected_turn_order
             && !covered_turn_ids.contains(&turn.turn_id)
+            && !settled_elder_turn_ids.contains(&turn.turn_id)
         {
-            coverage_gaps.push(build_coverage_entry(source, turn));
+            coverage_gaps.push(build_coverage_entry(source, turn, Band::Detailed));
         }
     }
 
