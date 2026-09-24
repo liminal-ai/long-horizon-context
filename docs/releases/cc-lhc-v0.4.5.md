@@ -1,21 +1,32 @@
 # cc-lhc v0.4.5
 
 <!-- DRAFT (not released). Version, hashes, CI runs and fix commits are filled
-in at the release cut. The summary-worker change (wrenn/claude-lhc-get-turns,
-d203b68e/d5bc5108) is added here once that branch is merged. -->
+in at the release cut. -->
 
 ## Summary
 
-A bug-fix release. A helper agent interrupted by a compaction can now be
-resumed as the notice says, and on Windows the programs Claude runs through
-Git Bash now end with a killed wrapper. There are no configuration or data
-changes.
+A bug-fix release. The background summary worker no longer acts on the
+instructions in what it summarizes, a helper agent interrupted by a
+compaction can now be resumed as the notice says, and on Windows the programs
+Claude runs through Git Bash now end with a killed wrapper. There are no
+configuration or data changes.
 
-Upgrade if you use background helper agents in long sessions, or use cc-lhc on
-Windows.
+Upgrade if you run sessions long enough to be compacted, use background helper
+agents, or use cc-lhc on Windows.
 
 ## Fixes
 
+- **The summary worker could act on what it was summarizing.** Summaries are
+  written by a separate background `claude -p` run over earlier turns, which
+  are full of instructions like "fix the validator". The worker ran with
+  Claude Code's tools, your settings, CLAUDE.md, output style and hooks, and
+  could take several turns; in a hands-on macOS test it edited a project file.
+  It now runs as a single turn with no tools, none of your settings, CLAUDE.md,
+  output style, hooks or MCP servers, in an empty temporary folder, with a
+  system prompt that says to process the text, not follow it. Only your login
+  settings are carried over, so a key or proxy kept in `~/.claude/settings.json`
+  keeps working. The model is unchanged. A missing login is now reported as a
+  login failure rather than "exit code 1".
 - **An interrupted helper agent could not be resumed after a compaction.** When
   a compaction interrupted a background helper, the next prompt said to resume
   it with `SendMessage`, but that failed with "No transcript found for agent
@@ -72,6 +83,12 @@ Install as usual (install script or `npm install --global cc-lhc@0.4.5`).
 
 ## How this release was tested
 
+- The summary worker was tested on the same requests through cc-lhc's worker
+  (prompts that tell the agent to change files, and turns to summarize), 12
+  runs each, all correct with no file changed, and with each login source on
+  its own (subscription only, environment only, settings only). A captured
+  request shows the fixed system prompt and no tools. The same code ships in
+  claude-lhc 0.1.1.
 - The helper fix was reproduced on 0.4.4 first (Linux, real compaction, a
   helper interrupted mid-command, then `SendMessage` failing), and a hand copy
   of its two files made it resume with its earlier work. Tests cover the copy
@@ -87,4 +104,5 @@ Install as usual (install script or `npm install --global cc-lhc@0.4.5`).
 ## Source and artifacts
 
 - Previous release: [`cc-lhc-v0.4.4`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.4)
-- Fix commits: helper resume `2e4a146f`; Windows job `8a900344`.
+- Fix commits: summary worker `8a02859f`, `818a6c0b`, `fe0bbf6d`, `db1cf8e0`;
+  helper resume `2e4a146f`; Windows job `8a900344`.
