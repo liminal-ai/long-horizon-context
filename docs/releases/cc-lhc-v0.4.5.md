@@ -1,18 +1,15 @@
 # cc-lhc v0.4.5
 
-<!-- DRAFT (not released). Version, hashes, CI runs and fix commits are filled
-in at the release cut. -->
-
 ## Summary
 
 A bug-fix release. The background summary worker no longer acts on the
-instructions in what it summarizes, a helper agent interrupted by a
+instructions in what it summarizes, a subagent interrupted by a
 compaction can now be resumed as the notice says, and on Windows the programs
 Claude runs through Git Bash now end with a killed wrapper. There are no
 configuration or data changes.
 
-Upgrade if you run sessions long enough to be compacted, use background helper
-agents, or use cc-lhc on Windows.
+Upgrade if you run sessions long enough to be compacted, use background
+subagents, or use cc-lhc on Windows.
 
 ## Fixes
 
@@ -27,16 +24,16 @@ agents, or use cc-lhc on Windows.
   settings are carried over, so a key or proxy kept in `~/.claude/settings.json`
   keeps working. The model is unchanged. A missing login is now reported as a
   login failure rather than "exit code 1".
-- **An interrupted helper agent could not be resumed after a compaction.** When
-  a compaction interrupted a background helper, the next prompt said to resume
+- **An interrupted subagent could not be resumed after a compaction.** When
+  a compaction interrupted a background subagent, the next prompt said to resume
   it with `SendMessage`, but that failed with "No transcript found for agent
-  ID". Claude looks for a helper's saved conversation only in the current
+  ID". Claude looks for a subagent's saved conversation only in the current
   session's folder, and after a compaction the session is a new one. Now the
-  helper's saved conversation and its settings are copied into the new
+  subagent's saved conversation and its settings are copied into the new
   session's folder first, and the notice offers `SendMessage` only once that
-  copy is in place; the resumed helper continues with what it had done so far.
-  If the copy fails, the notice says the helper was interrupted and has to be
-  started again. This is repeated at every compaction, so a helper stays
+  copy is in place; the resumed subagent continues with what it had done so far.
+  If the copy fails, the notice says the subagent was interrupted and has to be
+  started again. This is repeated at every compaction, so a subagent stays
   resumable after later ones too. The originals are left where they were.
 - **On Windows, programs run through Git Bash outlived a killed wrapper.**
   0.4.4 put Claude and its tools in a Windows job that ends them all when the
@@ -49,11 +46,24 @@ agents, or use cc-lhc on Windows.
 
 ## Upgrading
 
-Install as usual (install script or `npm install --global cc-lhc@0.4.5`).
+```sh
+# Linux or macOS
+curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.5/install.sh | sh
+```
+
+```powershell
+# Windows
+irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.5/install.ps1 | iex
+```
+
+```sh
+# npm
+npm install --global cc-lhc@0.4.5
+```
 
 ## Rolling back
 
-- **To 0.4.4:** install 0.4.4 again. No other step. Helper transcripts already
+- **To 0.4.4:** install 0.4.4 again. No other step. Subagent transcripts already
   copied into a session's folder stay there and do no harm; 0.4.4 just stops
   copying them at later compactions.
 - **To 0.4.3 or 0.4.2:** as described in the 0.4.4 notes.
@@ -61,22 +71,27 @@ Install as usual (install script or `npm install --global cc-lhc@0.4.5`).
 ## Known limitations
 
 - **Background results that finish at the moment of a compaction can be
-  missed.** In one Windows test, a background command and a helper agent
+  missed.** In one Windows test, a background command and a subagent
   finished about a tenth of a second before the session switched, and the new
   session never mentioned either result. Seen once. The results themselves are
-  kept: the command's output and the helper's finished conversation can still
+  kept: the command's output and the subagent's finished conversation can still
   be read afterwards.
+- **A subagent's interrupted command can keep running.** When a compaction
+  happens while a subagent is running a command and a background shell is
+  also running, the subagent's command keeps running after the handoff. The
+  resumed subagent is told the command didn't run, so if it runs it again, two
+  copies can run at once. Seen once in a hands-on test.
 - **Rewinding isn't supported with LHC yet.** Claude Code's `/rewind` (also
   `/checkpoint`, `/undo`, or pressing Esc twice) rewinds Claude's own
   conversation, but LHC keeps the rewound turns, and they can come back into
   the conversation at the next compaction.
-- **A helper interrupted a second time gets no notice.** If a helper was
+- **A subagent interrupted a second time gets no notice.** If a subagent was
   already resumed once and a later compaction interrupts it again, its
   conversation is still carried into the new session and `SendMessage(<id>)`
   still resumes it, but Claude isn't told it was interrupted.
-- **Helper agents of special kinds** (in their own worktree, forked, remote, or
+- **Subagents of special kinds** (in their own worktree, forked, remote, or
   team peers) are copied the same way, but resuming them after a compaction has
-  been tested only for ordinary helpers.
+  been tested only for ordinary subagents.
 - **Windows job setup can fail** (for example under some sandboxes or process
   managers). cc-lhc then falls back to closing Claude's tree only while Claude
   is still running, as in 0.4.3, and logs it.
@@ -93,21 +108,29 @@ Install as usual (install script or `npm install --global cc-lhc@0.4.5`).
   its own (subscription only, environment only, settings only). A captured
   request shows the fixed system prompt and no tools. The same code ships in
   claude-lhc 0.1.1.
-- The helper fix was reproduced on 0.4.4 first (Linux, real compaction, a
-  helper interrupted mid-command, then `SendMessage` failing), and a hand copy
+- The subagent fix was reproduced on 0.4.4 first (Linux, real compaction, a
+  subagent interrupted mid-command, then `SendMessage` failing), and a hand copy
   of its two files made it resume with its earlier work. Tests cover the copy
   order, a failed or partial copy (no resume offer), a leftover from a crash,
-  a helper already resumed in the new session (kept, not overwritten), and
-  carrying helpers forward over two compactions. Each fails without its part
+  a subagent already resumed in the new session (kept, not overwritten), and
+  carrying subagents forward over two compactions. Each fails without its part
   of the fix.
 - The Windows fix was reproduced on Windows 11 x64 with 0.4.4's job settings.
   CI on Windows starts Node through Git Bash inside the job, kills the wrapper,
   and checks the Node process ends; a control job with 0.4.4's settings shows
-  it escaping.
+  it escaping. Both ran and passed on Windows x64 and ARM64.
+- The subagent fix was also tested live on Linux across two real compactions
+  in a row: each time the subagent was interrupted mid-command, `SendMessage`
+  resumed it in the new session with what it had done so far and no repeated
+  tool calls; the same steps on 0.4.4 fail with "No transcript found".
+- An independent hands-on release test on Linux passed everything except the
+  interrupted-command case listed under known limitations.
+- The full suites passed on all six platforms: run
+  [36054449263](https://github.com/liminal-ai/long-horizon-context/actions/runs/36054449263).
 
 ## Source and artifacts
 
 - Previous release: [`cc-lhc-v0.4.4`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.4)
 - Fix commits: summary worker `d203b68e`, `d5bc5108`, `9f4e7c78`, `6d6e8009`
-  (shared with claude-lhc 0.1.1); helper resume `7f11891e`; Windows job
-  `22aee835`.
+  (shared with claude-lhc 0.1.1); subagent resume `96efe111`; Windows job
+  `597f8f95`.
