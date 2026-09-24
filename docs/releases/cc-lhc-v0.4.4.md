@@ -5,7 +5,7 @@
 A bug-fix release, mostly for macOS and Windows. It makes sure Claude's tool
 processes end when the wrapper is killed, turns on the torn-line repair on
 Windows, fixes a Windows file-identity bug, fixes monitor stops that were wrongly
-reported as refused, and fixes two problems in the shared LHC core that hid the
+reported as refused, and fixes a problem in the shared LHC core that hid the
 earliest turns of a session from the model. There are no configuration or data
 changes. Upgrading is in place, and going back to 0.4.3 is a plain version switch.
 
@@ -22,9 +22,11 @@ compacted.
   killed wrapper, start them outside the session instead.
 - **The torn-line repair now runs on Windows.** See "Recovery after a crash" below.
   It uses the same `~/.cc-lhc/torn-lines/` folder as on Linux and macOS.
-- **The model may see fewer, larger gap markers.** Consecutive older turns that
-  are not shown are now one marker, `turns tA–tB not in view; use get-turns`,
-  instead of one line per turn.
+- **The model sees more of the start of a session.** Older turns whose summaries
+  are ready now appear in the view when there is room, and turns that still
+  aren't shown, including the earliest ones, are marked with
+  `turns tA–tB not in view; use get-turns`. Before, turns older than everything
+  in the view could be missing with no marker at all.
 - **The native addon is updated.** Installs from the release scripts or npm
   include prebuilt binaries for all six platforms; nothing to do. If you build
   cc-lhc from source, rebuild the native addon too: 0.4.4 refuses an addon built
@@ -72,8 +74,8 @@ compacted.
 
 ### Shared LHC core
 
-These fixes are in the TypeScript core and also ship in the `claude-lhc` 0.1.1
-sidecar. They are not yet in the Rust port used by codex-lhc and grok-lhc.
+This fix is in the TypeScript core and also ships in the `claude-lhc` 0.1.1
+sidecar. It is not yet in the Rust port used by codex-lhc and grok-lhc.
 
 - **The earliest turns could vanish from the view.** Turns older than everything
   else in the view got no gap marker, and if their summaries were ready but not
@@ -81,11 +83,8 @@ sidecar. They are not yet in the Rust port used by codex-lhc and grok-lhc.
   it could not see facts from the start of the session, and after a later
   compaction could state wrong ones. Now older turns with a ready summary are
   shown when the budget allows, and every turn that still isn't shown, including
-  the earliest ones, is covered by a gap marker.
-- **Gap markers counted per turn.** Each missing turn got its own marker line, not
-  counted against the view's budget, so a long run of missing turns could push the
-  view well past its size. A run of consecutive missing turns is now one marker,
-  counted like any other entry.
+  the earliest ones, is covered by a gap marker. Each run of consecutive missing
+  turns is one marker, counted against the view's size like any other entry.
 
 ### Other
 
@@ -157,8 +156,9 @@ npm install --global cc-lhc@0.4.4
     [35936716413](https://github.com/liminal-ai/long-horizon-context/actions/runs/35936716413)
     and
     [35939290681](https://github.com/liminal-ai/long-horizon-context/actions/runs/35939290681);
-  - the per-turn gap markers: an independent review's reproduction at 30 and 1000
-    turns.
+  - database and log files left open after an early exit: CI run
+    [35919557989](https://github.com/liminal-ai/long-horizon-context/actions/runs/35919557989)
+    (Windows could not delete a test's state folder).
 - Each fix has a test that fails without it. The Windows job is tested with a
   child that starts a grandchild, exits first, and then has its wrapper killed; the
   grandchild must end. A control run without the job shows the grandchild
