@@ -89,9 +89,12 @@ Pin `0.1.0` again (or `npm install claude-lhc@0.1.0`). No other step.
 - The summary worker was tested on six requests (four prompts to smooth,
   including three that tell the agent to change files, and two turns to
   summarize), 12 runs each: 72 of 72 correct, and no file changed. The same
-  setup went through the other summary types on real turns (24 of 24), and on
-  a subscription login, a key kept only in settings, and environment
-  variables.
+  setup went through the other summary types on real turns (24 of 24). A
+  captured request shows the worker's system prompt is always the fixed one
+  and the request carries no tools. Login was checked with each source on its
+  own: a subscription login only, environment variables only, a key kept only
+  in settings, and settings found through the home folder; with none of
+  them, the worker reports a login failure and nothing else is used.
 - The core and claude-lhc test suites pass, and the fix was reviewed
   independently.
 - The package builds byte-identical from two clean checkouts (Node 24.18.0,
@@ -99,10 +102,11 @@ Pin `0.1.0` again (or `npm install claude-lhc@0.1.0`). No other step.
 
 ## Source and artifacts
 
-- Source commit: `66e8c4aa`.
+- Source commit: PENDING (set when the tarball is cut).
 - npm: [`claude-lhc@0.1.1`](https://www.npmjs.com/package/claude-lhc/v/0.1.1),
-  tarball sha256 `8eb9163266ac03930f89f29694e77d333c06a1d25b914fcc3035506dfb3effaa`
-- Fix commits: `3a7a8e6e`, `1adc6077` (earliest turns); `19b689cd` (history
-  tools); `202d7486`, `d5bc5108` (summary worker).
+  tarball sha256 PENDING
+- Fix commits: `3a7a8e6e`, `1adc6077` (earliest turns); `19b689cd`,
+  `c45d0c20`, `62a6ead5` (history tools); `202d7486`, `d5bc5108`, `9f4e7c78`,
+  `6d6e8009`, `64cda7f0` (summary worker).
 - Previous: `claude-lhc@0.1.0`, the first npm release (the summary-retry fix, and
   the t3code thread id passed through to Claude's shells).
