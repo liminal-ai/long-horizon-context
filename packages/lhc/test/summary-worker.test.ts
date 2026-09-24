@@ -193,8 +193,10 @@ describe("summary worker", () => {
       env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, "none") },
     });
     const input = { provider: "claude-cli", model: "sonnet", messages: [{ role: "user" as const, content: "x" }] };
-    const priorTmp = process.env.TMPDIR;
-    process.env.TMPDIR = join(dir, "no-such-tmp");
+    // os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
+    const tmpVars = ["TMPDIR", "TEMP", "TMP"] as const;
+    const priorTmp = tmpVars.map((k) => process.env[k]);
+    for (const k of tmpVars) process.env[k] = join(dir, "no-such-tmp");
     try {
       for (let i = 0; i < 4; i += 1) {
         expect(await call(input)).toMatchObject({
@@ -204,8 +206,11 @@ describe("summary worker", () => {
         });
       }
     } finally {
-      if (priorTmp === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = priorTmp;
+      tmpVars.forEach((k, i) => {
+        const prior = priorTmp[i];
+        if (prior === undefined) delete process.env[k];
+        else process.env[k] = prior;
+      });
     }
     // All three slots are free again: this call runs rather than waiting forever.
     const after = await Promise.race([call(input), new Promise((r) => setTimeout(() => r("stuck"), 10_000))]);

@@ -167,9 +167,11 @@ describe("summary worker", () => {
     mkdirSync(join(childHome, ".claude"), { recursive: true });
     writeFileSync(join(childHome, ".claude", "settings.json"), JSON.stringify({ apiKeyHelper: "/child/key" }));
     const seen: Seen[] = [];
-    await createSummaryWorkerModelCall({ claudeBin: "c", env: { HOME: childHome }, run: fakeQuery(seen, ok) })(
-      input([{ role: "user", content: "x" }]),
-    );
+    await createSummaryWorkerModelCall({
+      claudeBin: "c",
+      env: { HOME: childHome, USERPROFILE: childHome },
+      run: fakeQuery(seen, ok),
+    })(input([{ role: "user", content: "x" }]));
     expect(seen[0]!.options.settings).toEqual({ apiKeyHelper: "/child/key" });
     expect(seen[0]!.options.env).toMatchObject({ HOME: childHome });
   });
@@ -181,8 +183,10 @@ describe("summary worker", () => {
       env: { CLAUDE_CONFIG_DIR: config },
       run: fakeQuery(seen, ok),
     });
-    const priorTmp = process.env.TMPDIR;
-    process.env.TMPDIR = join(config, "no-such-tmp");
+    // os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
+    const tmpVars = ["TMPDIR", "TEMP", "TMP"] as const;
+    const priorTmp = tmpVars.map((k) => process.env[k]);
+    for (const k of tmpVars) process.env[k] = join(config, "no-such-tmp");
     try {
       for (let i = 0; i < 4; i += 1) {
         expect(await call(input([{ role: "user", content: "x" }]))).toMatchObject({
@@ -191,8 +195,11 @@ describe("summary worker", () => {
         });
       }
     } finally {
-      if (priorTmp === undefined) delete process.env.TMPDIR;
-      else process.env.TMPDIR = priorTmp;
+      tmpVars.forEach((k, i) => {
+        const prior = priorTmp[i];
+        if (prior === undefined) delete process.env[k];
+        else process.env[k] = prior;
+      });
     }
     const after = await Promise.race([
       call(input([{ role: "user", content: "x" }])),
