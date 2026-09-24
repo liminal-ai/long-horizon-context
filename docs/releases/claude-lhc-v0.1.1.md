@@ -97,9 +97,9 @@ Pin `0.1.0` again (or `npm install claude-lhc@0.1.0`). No other step.
 
 ## Source and artifacts
 
-- Source commit: PENDING (filled in at the release cut).
+- Source commit: `66e8c4aa`.
 - npm: [`claude-lhc@0.1.1`](https://www.npmjs.com/package/claude-lhc/v/0.1.1),
-  tarball sha256 PENDING
+  tarball sha256 `8eb9163266ac03930f89f29694e77d333c06a1d25b914fcc3035506dfb3effaa`
 - Fix commits: `3a7a8e6e`, `1adc6077` (earliest turns); `19b689cd` (history
   tools); `202d7486`, `d5bc5108` (summary worker).
 - Previous: `claude-lhc@0.1.0`, the first npm release (the summary-retry fix, and
