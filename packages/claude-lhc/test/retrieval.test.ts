@@ -241,15 +241,6 @@ describe("session wiring", () => {
     expect(options.allowedTools).toEqual(["Read", "mcp__lhc__get_turns", "mcp__lhc__get_messages"]);
   });
 
-  test("a host MCP server named like ours is refused at start, never silently replaced", async () => {
-    const host = { type: "http", url: "http://127.0.0.1:2/mcp" };
-    await expect(startSession([], { mcpServers: { lhc: host } })).rejects.toThrow(
-      "start option mcpServers.lhc is reserved for claude-lhc's history tools (mcp__lhc__get_turns, mcp__lhc__get_messages)",
-    );
-    await expect(startSession([], { mcpServers: { "t3-code": host, lhc: host } })).rejects.toThrow(/reserved/);
-    expect(captured.some((o) => o.mcpServers?.lhc?.url === host.url)).toBe(false);
-  });
-
   test("get_turns / get_messages are allowed without an approval request; other tools still ask the host", async () => {
     const requests: string[] = [];
     await startSession(requests);

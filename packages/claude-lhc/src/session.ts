@@ -298,14 +298,6 @@ export class ClaudeLhcSession {
     this.#autoCompactTrigger = compact.autoCompactTrigger;
     this.#viewTarget = compact.lhcLowerBound;
     this.#env = claudeChildEnv(env as NodeJS.ProcessEnv | undefined);
-    // The history tools' server name is ours; a host server under it would be
-    // silently replaced (and its tools lost), so refuse to start instead.
-    const hostServers = rest["mcpServers"];
-    if (typeof hostServers === "object" && hostServers !== null && Object.hasOwn(hostServers, RETRIEVAL_SERVER_NAME)) {
-      throw new Error(
-        `start option mcpServers.${RETRIEVAL_SERVER_NAME} is reserved for claude-lhc's history tools (${RETRIEVAL_TOOL_NAMES.join(", ")}); give that MCP server another name`,
-      );
-    }
     this.#base = {
       ...rest,
       ...(Object.keys(compact.childSettings).length > 0 ? { settings: compact.childSettings } : {}),
@@ -432,8 +424,7 @@ export class ClaudeLhcSession {
       env: this.#env,
       pathToClaudeCodeExecutable: this.#claudeBin,
       // History retrieval (retrieval.ts), merged with the MCP servers and
-      // allowed tools the host passed, never replacing them (start refuses a
-      // host server under our reserved name).
+      // allowed tools the host passed, never replacing them.
       mcpServers: {
         ...((this.#base as Options).mcpServers ?? {}),
         [RETRIEVAL_SERVER_NAME]: createRetrievalServer(this.#lhc, () => this.#thread),

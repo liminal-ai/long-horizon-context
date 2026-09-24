@@ -32,10 +32,7 @@ Upgrade if you run Claude LHC threads long enough to be compacted.
   marked as history, so the model reads old prompts and instructions as records
   rather than acting on them. The tools only read, and they never ask for
   approval, whatever the thread's permission mode. They work across
-  compactions and restarts, and sit alongside t3code's own tools. Their MCP
-  server is named `lhc`; a session started with another MCP server of that
-  name now fails to start with an error saying so, instead of losing that
-  server.
+  compactions and restarts, and sit alongside t3code's own tools.
 - **The summary worker could act on what it was summarizing.** Summaries are
   written by a separate background Claude run over earlier turns, and those
   turns are full of instructions like "fix the validator" or "add tests". The
