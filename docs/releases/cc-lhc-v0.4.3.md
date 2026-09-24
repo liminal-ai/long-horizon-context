@@ -151,7 +151,8 @@ It honours `CC_LHC_HOME` and `CLAUDE_CONFIG_DIR`. The script is also in the sour
 
 - **Windows:** the torn-line repair does not run, because cc-lhc cannot check there
   whether another process has the transcript open. A torn last line on Windows
-  still stops capture for that session, as in 0.4.2.
+  still stops capture for that session, as in 0.4.2. Fixed in 0.4.4: the repair
+  now runs on Windows when no other process holds the file.
 - **Claude exiting when the wrapper is killed** is covered by tests in CI on macOS
   and Windows, but has only been checked by hand on Linux.
 - Killing only the Claude process (not the wrapper) can leave its tool processes
