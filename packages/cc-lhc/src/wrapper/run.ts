@@ -418,7 +418,35 @@ function restoreTerminal(stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream): 
   }
 }
 
+/**
+ * run() owns three SQLite stores on the lineage database and a log file. The
+ * orderly exit closes the stores; every other way out of run() (a refused
+ * launch, a guidance exit, a startup failure, a throw) must close them too,
+ * or the database stays open for the life of the process. cli.ts exits right
+ * after run(), but an in-process caller (tests, embedders) would keep the file
+ * held, and on Windows an open handle stops the home from being removed.
+ */
 export async function run(argv: string[], options: RunOptions = {}): Promise<number> {
+  const closers: Array<() => void | Promise<void>> = [];
+  try {
+    return await runWithStores(argv, options, closers);
+  } finally {
+    // Last registered, first closed (the log drain, registered first, runs last).
+    for (const close of closers.reverse()) {
+      try {
+        await close();
+      } catch {
+        // best effort
+      }
+    }
+  }
+}
+
+async function runWithStores(
+  argv: string[],
+  options: RunOptions,
+  closers: Array<() => void | Promise<void>>,
+): Promise<number> {
   const claudeBin = options.claudeBin ?? resolveClaudeBin();
   const spawnPty = options.spawnPty ?? defaultSpawn;
   // A test that injects the pty seam gets its fake for one-shot children too.
@@ -445,6 +473,9 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   // While the child owns the terminal, diagnostics go to the wrapper log
   // (surface (c)); `status` reports the warning count so nothing is lost.
   const wrapperLog = options.wrapperLog ?? createWrapperLog();
+  // Registered first, so it runs after the store closers: no append is still
+  // holding wrapper.log when run() returns.
+  closers.push(() => wrapperLog.drain?.());
 
   /** Launch-time anomaly notices: recorded, never a refusal (R11 posture, R12). */
   const startupAnomalyNotices: string[] = [];
@@ -517,6 +548,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const opened = openGovernorReceiptStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
     governorReceiptStore =
       options.governorReceiptStoreHook !== undefined ? options.governorReceiptStoreHook(opened) : opened;
+    closers.push(() => {
+      governorReceiptStore?.close();
+      governorReceiptStore = null;
+    });
   } catch (cause) {
     wrapperLog.warn(
       `cc-lhc governor receipt store unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -527,6 +562,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
     const opened = openHandoffReceiptStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
     handoffReceiptStore =
       options.handoffReceiptStoreHook !== undefined ? options.handoffReceiptStoreHook(opened) : opened;
+    closers.push(() => {
+      handoffReceiptStore?.close();
+      handoffReceiptStore = null;
+    });
   } catch (cause) {
     wrapperLog.warn(
       `cc-lhc handoff receipt store unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -603,6 +642,10 @@ export async function run(argv: string[], options: RunOptions = {}): Promise<num
   };
   try {
     continuityStore = openContinuityStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
+    closers.push(() => {
+      continuityStore?.close();
+      continuityStore = null;
+    });
   } catch (cause) {
     const detail = cause instanceof Error ? cause.message : String(cause);
     wrapperLog.warn(`cc-lhc continuity store unavailable: ${detail}`);

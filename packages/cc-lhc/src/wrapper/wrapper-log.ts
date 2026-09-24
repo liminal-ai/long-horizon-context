@@ -38,6 +38,11 @@ export interface WrapperLog {
   /** Logged like info, and counted — `status` reports the durable warn-line count. */
   warn(message: string): void;
   warningCount(): number;
+  /**
+   * Settles once every append issued so far has finished and closed the file.
+   * run() awaits it before returning, so no write still holds wrapper.log.
+   */
+  drain?(): Promise<void>;
 }
 
 export function createWrapperLog(path: string = defaultWrapperLogPath()): WrapperLog {
@@ -49,12 +54,15 @@ export function createWrapperLog(path: string = defaultWrapperLogPath()): Wrappe
   } catch {
     // Appends below fail silently too — logging must never take the wrapper down.
   }
+  const pending = new Set<Promise<void>>();
   const append = (level: "info" | "warn", message: string): void => {
-    void appendFile(path, `${new Date().toISOString()} [${level}] ${message}\n`)
+    const write = appendFile(path, `${new Date().toISOString()} [${level}] ${message}\n`)
       .then(() => {
         if (level === "warn") currentRunWarnings += 1;
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => pending.delete(write));
+    pending.add(write);
   };
   return {
     path,
@@ -66,6 +74,9 @@ export function createWrapperLog(path: string = defaultWrapperLogPath()): Wrappe
     },
     warningCount(): number {
       return currentRunWarnings;
+    },
+    async drain(): Promise<void> {
+      while (pending.size > 0) await Promise.allSettled([...pending]);
     },
   };
 }
