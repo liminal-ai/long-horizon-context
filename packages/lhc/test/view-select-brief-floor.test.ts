@@ -386,10 +386,11 @@ describe("F6: a closed chunk straddling the smooth band's oldest turn", () => {
     expect(selection.entries.filter((entry) => entry.gap)).toEqual([]);
   });
 
-  it("leading turns that no band can hold get a gap marker, and covered_from stays at represented material", () => {
+  it("leading turns with no material get one run marker, and covered_from stays at represented material", () => {
     // Same open chunk, but t1–t2 have no compression or assembly ready and
     // the elder shares are zero: nothing represents them, so the view names
-    // them with one marker instead of dropping them silently.
+    // them with one marker (a band's first entry is admitted over budget, so
+    // it lands in detailed) instead of dropping them silently.
     const selection = selectArrangement(
       straddleInputs({
         count: 6,
@@ -401,13 +402,94 @@ describe("F6: a closed chunk straddling the smooth band's oldest turn", () => {
     );
 
     expect(layout(selection)).toEqual([
-      "brief:t1–t2:gap",
+      "detailed:t1–t2:gap",
       "smooth:t3:turn_rendering",
       "smooth:t4:turn_rendering",
       "smooth:t5:turn_rendering",
     ]);
     expect(selection.entries[0]?.text).toBe("[turns t1–t2 not in view; use get-turns]");
     expect(selection.coveredFrom).toBe(21);
+  });
+
+  // Alder's review of the first cut (ALDER-REVIEW-044-A): selecting an old
+  // ready t1 lowered the oldest selected turn to 1, and the unbudgeted
+  // coverage pass then emitted a ~32-token "unavailable" entry for every
+  // missing turn between t1 and smooth — 1101 tokens against a 1000 target at
+  // 30 turns, 995 entries / 32141 tokens at 1000. A missing interval is one
+  // run marker, priced against the band, whatever the backlog.
+  it.each([30, 1000])("long open chunk with only the oldest summary ready stays budgeted (%i turns)", (count) => {
+    const selection = selectArrangement(
+      straddleInputs({
+        count,
+        chunks: [Array.from({ length: count }, (_, i) => `t${i + 1}`)],
+        compressions: { t1: 20 },
+        newestChunkStatus: "open",
+      }),
+      STRADDLE_PARAMS,
+    );
+    const total = selection.entries.reduce((sum, entry) => sum + entry.tokens, 0);
+    expect(total).toBeLessThan(1000);
+    const n = count - 1; // t{n} is the tail; smooth holds the three before it
+    expect(layout(selection)).toEqual([
+      "detailed:t1:detailed_turn_compression",
+      `detailed:t2–t${n - 3}:gap`,
+      `smooth:t${n - 2}:turn_rendering`,
+      `smooth:t${n - 1}:turn_rendering`,
+      `smooth:t${n}:turn_rendering`,
+    ]);
+    expect(selection.entries[1]?.text).toBe(`[turns t2–t${n - 3} not in view; use get-turns]`);
+    expect(selection.coveredFrom).toBe(1);
+  });
+
+  it("mixed ready and missing elder turns: one marker per missing run, entries for ready turns, all budgeted", () => {
+    // t1, t4 and t8 ready; t2–t3 and t5–t7 missing; t9…t11 smooth, t12 tail.
+    const selection = selectArrangement(
+      straddleInputs({
+        count: 12,
+        chunks: [Array.from({ length: 12 }, (_, i) => `t${i + 1}`)],
+        compressions: { t1: 20, t4: 20, t8: 20 },
+        newestChunkStatus: "open",
+      }),
+      STRADDLE_PARAMS,
+    );
+    expect(layout(selection)).toEqual([
+      "detailed:t1:detailed_turn_compression",
+      "detailed:t2–t3:gap",
+      "detailed:t4:detailed_turn_compression",
+      "detailed:t5–t7:gap",
+      "detailed:t8:detailed_turn_compression",
+      "smooth:t9:turn_rendering",
+      "smooth:t10:turn_rendering",
+      "smooth:t11:turn_rendering",
+    ]);
+    const detailedTokens = selection.entries
+      .filter((entry) => entry.band === "detailed")
+      .reduce((sum, entry) => sum + entry.tokens, 0);
+    expect(detailedTokens).toBeLessThanOrEqual(200);
+    expect(selection.coveredFrom).toBe(1);
+  });
+
+  it("an elder backlog larger than the shares leaves one leading marker, never a line per turn", () => {
+    // 301 ready 40-token compressions behind an open chunk (t302…t304 smooth,
+    // t305 tail): detailed (200) and brief (250) fill newest-first, and
+    // everything older is one marker.
+    const count = 305;
+    const compressions = Object.fromEntries(Array.from({ length: 301 }, (_, i) => [`t${i + 1}`, 40]));
+    const selection = selectArrangement(
+      straddleInputs({
+        count,
+        chunks: [Array.from({ length: count }, (_, i) => `t${i + 1}`)],
+        compressions,
+        newestChunkStatus: "open",
+      }),
+      STRADDLE_PARAMS,
+    );
+    const gaps = selection.entries.filter((entry) => entry.gap);
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]?.text).toMatch(/^\[turns t1–t\d+ not in view; use get-turns\]$/);
+    expect(selection.entries.length).toBeLessThan(20);
+    const total = selection.entries.reduce((sum, entry) => sum + entry.tokens, 0);
+    expect(total).toBeLessThan(1000);
   });
 
   it("leaves a non-straddling layout exactly as it was", () => {
