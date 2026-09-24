@@ -130,6 +130,11 @@ npm install --global cc-lhc@0.4.5
 
 ## Source and artifacts
 
+- Release tag: [`cc-lhc-v0.4.5`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.5) (`4594f397`)
+- Changes since 0.4.4: [`cc-lhc-v0.4.4...cc-lhc-v0.4.5`](https://github.com/liminal-ai/long-horizon-context/compare/cc-lhc-v0.4.4...cc-lhc-v0.4.5)
+- Checksums: [`SHA256SUMS`](https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.5/SHA256SUMS)
+- npm: [`cc-lhc@0.4.5`](https://www.npmjs.com/package/cc-lhc/v/0.4.5), tarball sha256 `23dd501dede047d8b361f74605dde52f2f0c4df887103afdd164f3203dae3aca`
+- Release build: run [36072809856](https://github.com/liminal-ai/long-horizon-context/actions/runs/36072809856)
 - Previous release: [`cc-lhc-v0.4.4`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.4)
 - Fix commits: summary worker `d203b68e`, `d5bc5108`, `9f4e7c78`, `6d6e8009`
   (shared with claude-lhc 0.1.1); subagent resume `96efe111`; Windows job
