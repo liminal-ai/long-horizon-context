@@ -99,6 +99,12 @@ if (mode === "auth") {
   process.exit(1);
 }
 
+// What claude -p 2.1.281 does with no login: the reason on stdout, stderr empty.
+if (mode === "auth-stdout") {
+  process.stdout.write("Not logged in · Please run /login\n");
+  process.exit(1);
+}
+
 if (mode === "rate_limit") {
   console.error("429 rate limit exceeded");
   process.exit(1);

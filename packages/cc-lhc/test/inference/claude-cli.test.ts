@@ -201,6 +201,13 @@ describe("createClaudeCliModelCall", () => {
     expect(result).toEqual({ ok: false, kind: "auth", message: expect.stringContaining("OAuth") });
   });
 
+  it("classifies a no-login reported on stdout with empty stderr as auth", async () => {
+    const harness = fakeCall({ CC_LHC_FAKE_MODE: "auth-stdout" });
+    const result = await harness.call(baseInput);
+    harness.restore();
+    expect(result).toEqual({ ok: false, kind: "auth", message: "Not logged in · Please run /login" });
+  });
+
   it("classifies rate-limit stderr", async () => {
     const harness = fakeCall({ CC_LHC_FAKE_MODE: "rate_limit" });
     const result = await harness.call(baseInput);

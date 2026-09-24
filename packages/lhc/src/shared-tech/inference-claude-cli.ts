@@ -144,7 +144,10 @@ export function createClaudeCliModelCall(deps: {
           finish({ ok: true, text: stdout });
           return;
         }
-        finish({ ok: false, kind: classifyStderr(stderr), message: (stderr || `exit code ${code}`).slice(0, 500) });
+        // `claude -p` reports some failures (e.g. "Not logged in") on stdout
+        // with an empty stderr; classify whichever carries the reason.
+        const detail = stderr.trim() !== "" ? stderr : stdout.trim();
+        finish({ ok: false, kind: classifyStderr(detail), message: (detail || `exit code ${code}`).slice(0, 500) });
       });
     });
   };

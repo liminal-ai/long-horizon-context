@@ -225,8 +225,11 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
           finish({ ok: false, kind: "other", message: excerpt(`stdin delivery failed: ${stdinFailure}`) });
           return;
         }
-        const kind = classifyStderr(stderr);
-        const base = stderr === "" ? `exit code ${String(code)}` : stderr;
+        // `claude -p` reports some failures (e.g. "Not logged in") on stdout
+        // with an empty stderr; classify whichever carries the reason.
+        const detail = stderr.trim() !== "" ? stderr : stdout.trim();
+        const kind = classifyStderr(detail);
+        const base = detail === "" ? `exit code ${String(code)}` : detail;
         const message = stderr === "" && stdinFailure !== undefined ? `${base}; stdin: ${stdinFailure}` : base;
         finish({ ok: false, kind, message: excerpt(message) });
       });

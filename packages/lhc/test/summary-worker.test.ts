@@ -212,6 +212,22 @@ describe("summary worker", () => {
     expect(after).toEqual({ ok: true, text: "ok" });
   });
 
+  test("a no-login reported on stdout with empty stderr is an auth failure", async () => {
+    const bin = join(dir, "claude-nologin");
+    writeFileSync(
+      bin,
+      `#!${process.execPath}\nprocess.stdin.resume();\nprocess.stdin.on("end", () => { process.stdout.write("Not logged in · Please run /login\\n"); process.exit(1); });\n`,
+    );
+    chmodSync(bin, 0o755);
+    const call = createClaudeCliModelCall({
+      binary: bin,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, "none") },
+    });
+    expect(await call({ provider: "claude-cli", model: "sonnet", messages: [{ role: "user", content: "x" }] })).toEqual(
+      { ok: false, kind: "auth", message: "Not logged in · Please run /login" },
+    );
+  });
+
   test("an explicit relative --claude-bin resolves from the caller's cwd; bare names stay PATH lookups", async () => {
     expect(summaryWorkerBinary("claude", "/work")).toBe("claude");
     expect(summaryWorkerBinary("./bin/claude", "/work")).toBe("/work/bin/claude");
