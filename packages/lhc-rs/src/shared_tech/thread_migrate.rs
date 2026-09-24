@@ -735,6 +735,7 @@ pub fn migrate_thread_schema(db: &Db) {
     };
     if version >= CURRENT_THREAD_SCHEMA_VERSION {
         run_queued_turn_derivation_migration(db);
+        run_claim_expired_requeue(db);
         return;
     }
     if version < THREAD_SCHEMA_VERSION_1 {
@@ -804,6 +805,136 @@ pub fn migrate_thread_schema(db: &Db) {
         db.exec(&format!(
             "PRAGMA user_version = {CURRENT_THREAD_SCHEMA_VERSION};"
         ));
+    })) {
+        Ok(()) => db.exec("COMMIT;"),
+        Err(payload) => {
+            db.exec("ROLLBACK;");
+            std::panic::resume_unwind(payload);
+        }
+    }
+    run_claim_expired_requeue(db);
+}
+
+const CLAIM_EXPIRED_LEGACY_SQL: &str =
+    "SELECT subject_kind, subject_id, derivation_type, source_version
+       FROM derivation WHERE state = 'failed' AND reason = 'claim_expired'
+       ORDER BY rowid";
+
+fn derivation_work_kind(derivation_type: &str) -> Option<(&'static str, &'static str)> {
+    Some(match derivation_type {
+        "smoothed_prompt" => ("prompt_smoothing", "messageId"),
+        "tool_result_summary" => ("tool_result_summary", "messageId"),
+        "turn_rendering" | "pre_detailed_assembly" => ("turn_derivation", "turnId"),
+        "detailed_turn_compression" => ("detailed_turn_compression", "turnId"),
+        "chunk_summary_detailed" => ("chunk_summary_detailed", "chunkId"),
+        "chunk_summary_brief" => ("chunk_summary_brief", "chunkId"),
+        _ => return None,
+    })
+}
+
+fn work_owner_for_kind(kind: &str) -> &'static str {
+    match kind {
+        "prompt_smoothing" | "tool_result_summary" => "messages",
+        _ => "turns",
+    }
+}
+
+fn requeue_legacy_claim_expired(db: &Db, now: &str) -> i64 {
+    let rows = db.prepare(CLAIM_EXPIRED_LEGACY_SQL).all(&[]);
+    let mut items: indexmap::IndexMap<
+        String,
+        (String, serde_json::Value, i64, Vec<EnqueueDerivationTarget>),
+    > = indexmap::IndexMap::new();
+    let mut requeued = 0i64;
+    for row in rows {
+        let derivation_type = row
+            .get("derivation_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let Some((kind, source_key)) = derivation_work_kind(&derivation_type) else {
+            continue;
+        };
+        let subject_kind = row
+            .get("subject_kind")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let subject_id = row
+            .get("subject_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let source_version = row
+            .get("source_version")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(1);
+        let subject_kind_enum = match subject_kind.as_str() {
+            "message" => SubjectKind::Message,
+            "turn" => SubjectKind::Turn,
+            "chunk" => SubjectKind::Chunk,
+            _ => continue,
+        };
+        let work_item_id = format!("w-{subject_id}-{kind}-v{source_version}");
+        let entry = items.entry(work_item_id.clone()).or_insert_with(|| {
+            (
+                kind.to_string(),
+                serde_json::json!({ source_key: subject_id.clone() }),
+                source_version,
+                Vec::new(),
+            )
+        });
+        entry.3.push(EnqueueDerivationTarget {
+            subject_kind: subject_kind_enum,
+            subject_id: subject_id.clone(),
+            derivation_type: derivation_type.clone(),
+        });
+        db.prepare(
+            "UPDATE derivation SET state = 'pending', content = NULL, reason = NULL, metadata = NULL, gaps = NULL, derived_at = NULL
+             WHERE subject_kind = ? AND subject_id = ? AND derivation_type = ?",
+        )
+        .run(&[
+            SqlParam::from(subject_kind.as_str()),
+            SqlParam::from(subject_id.as_str()),
+            SqlParam::from(derivation_type.as_str()),
+        ]);
+        requeued += 1;
+    }
+    for (work_item_id, (kind, source_ref, source_version, derivations)) in items {
+        let payload = serde_json::json!({
+            "sourceVersion": source_version,
+            "derivations": derivations,
+        });
+        db.prepare(
+            "INSERT OR IGNORE INTO work_item (work_item_id, owner, kind, source_ref, status, queued_at, payload)
+             VALUES (?, ?, ?, ?, 'queued', ?, ?)",
+        )
+        .run(&[
+            SqlParam::from(work_item_id.as_str()),
+            SqlParam::from(work_owner_for_kind(&kind)),
+            SqlParam::from(kind.as_str()),
+            SqlParam::from(js_json_stringify_of(&source_ref).expect("source_ref")),
+            SqlParam::from(now),
+            SqlParam::from(js_json_stringify_of(&payload).expect("payload")),
+        ]);
+    }
+    requeued
+}
+
+fn run_claim_expired_requeue(db: &Db) {
+    if db
+        .prepare(&format!("{CLAIM_EXPIRED_LEGACY_SQL} LIMIT 1"))
+        .get()
+        .is_none()
+    {
+        return;
+    }
+    db.exec("BEGIN IMMEDIATE;");
+    match catch_unwind(AssertUnwindSafe(|| {
+        requeue_legacy_claim_expired(
+            db,
+            &super::time::system_time_to_iso(std::time::SystemTime::now()),
+        );
     })) {
         Ok(()) => db.exec("COMMIT;"),
         Err(payload) => {

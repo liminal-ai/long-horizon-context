@@ -16,8 +16,12 @@ use super::derivation::{
 };
 use super::errors::OpResult;
 use super::js_json::{js_json_stringify, js_json_stringify_of};
-use super::persist::create_post_commit_hook_set;
+use super::logging::{LogEntry, LogLevel, write_log};
+use super::persist::{DbReadTransaction, DbTransaction, create_post_commit_hook_set};
 use super::storage::{Db, SqlParam, open_database};
+use super::work_queue::claim_fence::{
+    ClaimAttempt, OWNED_CLAIM_SQL, claim_params, note_claim_done,
+};
 use super::work_queue::{EnqueueDerivationTarget, WorkKind, WorkSourceRef};
 
 /// TS `DurableWorkOperation` — internally tagged on `operation`, camelCase fields.
@@ -85,6 +89,7 @@ pub struct DerivationAttempt {
     pub source_version: i64,
     pub derivations: Vec<EnqueueDerivationTarget>,
     pub work_item_id: Option<String>,
+    pub claim_attempt: Option<i64>,
 }
 
 /// TS `DurableWorkDispatchResult` — discriminated on `disposition`.
@@ -125,6 +130,7 @@ pub struct DurableWorkDispatcherItem {
     pub kind: String,
     pub source_ref: WorkSourceRef,
     pub source_version: i64,
+    pub claim_attempt: Option<i64>,
     pub derivations: Vec<EnqueueDerivationTarget>,
     pub operation: DurableWorkOperation,
 }
@@ -362,9 +368,14 @@ pub fn apply_derivation_success(
     db.exec("BEGIN IMMEDIATE;");
     let result = catch_unwind(AssertUnwindSafe(move || {
         if let Some(work_item_id) = attempt.work_item_id.as_deref() {
+            let claim = ClaimAttempt {
+                work_item_id: work_item_id.to_string(),
+                claim_attempt: attempt.claim_attempt,
+            };
+            note_claim_done(db, &claim);
             let owned = db
-                .prepare("SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'")
-                .get_params(&[SqlParam::from(work_item_id)]);
+                .prepare(&format!("SELECT 1 FROM work_item WHERE {OWNED_CLAIM_SQL}"))
+                .get_params(&claim_params(&claim));
             if owned.is_none() {
                 db.exec("COMMIT;");
                 return ApplyDerivationSuccessDisposition::LostLease;
@@ -435,8 +446,12 @@ pub fn apply_derivation_success(
             }
         }
         if let Some(work_item_id) = attempt.work_item_id.as_deref() {
-            db.prepare("DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'")
-                .run(&[SqlParam::from(work_item_id)]);
+            let claim = ClaimAttempt {
+                work_item_id: work_item_id.to_string(),
+                claim_attempt: attempt.claim_attempt,
+            };
+            db.prepare(&format!("DELETE FROM work_item WHERE {OWNED_CLAIM_SQL}"))
+                .run(&claim_params(&claim));
         }
         db.exec("COMMIT;");
         flush();
@@ -503,9 +518,14 @@ pub fn apply_derivation_terminal_failure(
     db.exec("BEGIN IMMEDIATE;");
     let result = catch_unwind(AssertUnwindSafe(|| {
         if let Some(work_item_id) = attempt.work_item_id.as_deref() {
+            let claim = ClaimAttempt {
+                work_item_id: work_item_id.to_string(),
+                claim_attempt: attempt.claim_attempt,
+            };
+            note_claim_done(db, &claim);
             let owned = db
-                .prepare("SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'")
-                .get_params(&[SqlParam::from(work_item_id)]);
+                .prepare(&format!("SELECT 1 FROM work_item WHERE {OWNED_CLAIM_SQL}"))
+                .get_params(&claim_params(&claim));
             if owned.is_none() {
                 db.exec("COMMIT;");
                 return ApplyDerivationTerminalDisposition::LostLease;
@@ -550,8 +570,12 @@ pub fn apply_derivation_terminal_failure(
             )));
         }
         if let Some(work_item_id) = attempt.work_item_id.as_deref() {
-            db.prepare("DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'")
-                .run(&[SqlParam::from(work_item_id)]);
+            let claim = ClaimAttempt {
+                work_item_id: work_item_id.to_string(),
+                claim_attempt: attempt.claim_attempt,
+            };
+            db.prepare(&format!("DELETE FROM work_item WHERE {OWNED_CLAIM_SQL}"))
+                .run(&claim_params(&claim));
         }
         db.exec("COMMIT;");
         ApplyDerivationTerminalDisposition::Done
@@ -563,6 +587,50 @@ pub fn apply_derivation_terminal_failure(
             resume_unwind(cause);
         }
     }
+}
+
+pub const CLAIM_EXPIRED_REPEATEDLY: &str = "claim_expired_repeatedly";
+
+pub fn fail_repeatedly_expired_claim(
+    db: &Db,
+    attempt: &DerivationAttempt,
+    now: &str,
+) -> ApplyDerivationTerminalDisposition {
+    let result = apply_derivation_terminal_failure(
+        db,
+        attempt,
+        &DerivationTerminalFailure {
+            reason: CLAIM_EXPIRED_REPEATEDLY.to_string(),
+            state: DerivationTerminalState::Failed,
+            now: now.to_string(),
+        },
+    );
+    if result == ApplyDerivationTerminalDisposition::Done {
+        let txn = DbReadTransaction {
+            db,
+            thread_id: String::new(),
+            file_path: db.path().to_string(),
+        };
+        for target in &attempt.derivations {
+            write_log(
+                DbTransaction::Read(&txn),
+                &LogEntry {
+                    level: LogLevel::Warning,
+                    message: format!(
+                        "{} for {} {} failed: its claim expired twice in a row (the process crashed or was killed both times); not requeued",
+                        target.derivation_type.as_str(),
+                        target.subject_kind.as_str(),
+                        target.subject_id
+                    ),
+                    derivation_type: Some(target.derivation_type.as_str().to_string()),
+                    subject_id: Some(target.subject_id.clone()),
+                    reason: Some(CLAIM_EXPIRED_REPEATEDLY.to_string()),
+                    floor_used: None,
+                },
+            );
+        }
+    }
+    result
 }
 
 /// TS handler item for `runWorkHandler` (sourceRef as Record at the call boundary).

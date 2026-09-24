@@ -22,6 +22,13 @@ Rust-only additions (no TS counterpart):
   persisted/hashed bytes.
 - `fixtures/js-json-cases.jsonl`, `fixtures/prompt-renders.json` — committed
   node-oracle fixtures (regenerate via scripts/, only deliberately).
+- f5h clean-exit: Rust adds `release_held_claims_for(path)` for one thread
+  database (Codex: many threads per process; call on thread close/unload).
+  `release_held_claims()` remains process-wide shutdown. TS keeps exit-only
+  `releaseHeldClaims` (cc-lhc is one thread per process). Fencing and the
+  two-expiry policy are unchanged. Hand-back sqlite uses crate-private
+  fallible storage (open/pragma/prepare/run/close) and does not panic or
+  `catch_unwind`; Grok `panic=abort` can use this path.
 
 Wave 0 rulings (court of record — extend, don't reshape):
 - TS `foo/index.ts` → `src/foo/mod.rs`; internal dirs keep their tree.
@@ -2803,31 +2810,26 @@ Open item carried to the host adapters: the Grok adapter (grok-lhc-host)
 maps ACP image / image-read content to intake blocks and serves them back as
 Grok content types — tracked in the grok-build-lhc fork, not here.
 
-## TS drift (2026-09-23): F6 straddling-chunk members — NOT ported (sanctioned parity exception)
+## TS drift (2026-09-24): F6 straddling-chunk members — ported in walk.rs
 
-`packages/lhc` is intentionally ahead of the port on the band walk
-(`thread-view/internal/walk.ts`, beads `long-horizon-context-dth`, gorilla
-F6). The TS core now covers straddling-chunk members; Rust does not yet.
-Porting is deferred and tracked by `long-horizon-context-5ow`
-(`src/thread_view/internal/select.rs`, `walk.rs`).
+`walk_arrangement` (both compact plans) now matches TS `walk.ts` at
+`8b76c31c` + `3a7a8e6e` + `1adc6077`. The leftover `select_arrangement`
+copy in `select.rs` is pre-F6 and is only used by G1–G3 / brief-floor
+incident tests; those layouts do not straddle.
 
-- **Straddling-chunk members**: a closed chunk that is not a band candidate
-  because its newest member is in smooth or the tail places its banded
-  members older than the smooth band's oldest included turn per-turn
-  (`detailed_turn_compression` → `pre_detailed_assembly` → gap ladder) in the
-  detailed/brief budget the chunks left unused. The fill rules are unchanged:
-  stop in detailed, skip in brief. `covered_from` moves back to cover them.
-  Rust still drops them.
-- **Gap markers**: every banded turn after `covered_from` that no entry
-  represents gets one gap entry per contiguous run. The entry's text is
-  `[turns tA–tB not in view; use get-turns]` (`[turn tA …]` for a single turn),
-  it has `derivationUsed: "gap"`, and it lands in `gaps_json` through the
-  ordinary gap-entry path. Today such holes are brief-skipped subjects, so
-  TS views that have them gain these entries. Rust does not render the
-  markers.
-
-Audits and TS/Rust differential runs must not flag either difference as a
-Rust regression. Arrangements, `covered_from`, `gaps_json`, and band text
-diverge only on threads with a straddling chunk or a brief skip. Every other
-layout is byte-identical, and the selection goldens G1–G3 are unchanged.
+- **Straddling-chunk members / open-chunk elders**: turns older than
+  smooth that no chunk candidate holds fill unused detailed/brief budget
+  from ready turn summaries (stop in detailed, skip in brief). A
+  contiguous run with no ready material is one budgeted gap marker.
+  Those turns are settled so the unbudgeted coverage pass does not
+  re-reach them.
+- **Gap markers**: remaining unrepresented banded turns get one
+  unbudgeted `[turns tA–tB not in view; use get-turns]` line per run
+  (`[turn tA …]` for a single turn), in the band of the nearest older
+  entry (brief when there is none). Run markers do not move
+  `covered_from`.
+- **Parity**: `tests/turn_parts_oracle.rs` (19 compacts, including
+  `close_lazy_settle_split#7`) and `tests/view_select_f6.rs` (TS
+  brief-floor F6 cases, including 30-/1000-turn sparse-ready and the
+  301-turn backlog). G1–G3 unchanged.
 

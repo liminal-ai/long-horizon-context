@@ -296,10 +296,17 @@ async fn m1_the_served_view_stays_within_the_bound_overrun_cascades_smooth_detai
     assert_eq!(receipt.tail_tokens, 445);
     // Overrun 333 over the full share of 111: smooth (111) and detailed (111)
     // are consumed and stay empty; brief keeps 2 tokens of share and may admit
-    // its first entry — the one-entry slack.
+    // its first entry — the one-entry slack. The turns the cascade leaves out
+    // are named by gap-marker lines, which are not priced against a share.
     assert_eq!(receipt.bands.smooth.entries, 0);
     assert_eq!(receipt.bands.detailed.entries, 0);
-    assert!(receipt.bands.brief.entries <= 1);
+    let markers = receipt
+        .gaps
+        .iter()
+        .filter(|gap| gap.reason.ends_with("not in view; use get-turns"))
+        .count();
+    assert!(markers > 0);
+    assert!(receipt.bands.brief.entries - markers as i64 <= 1);
     assert!(receipt.total_tokens <= 447 + slack(&receipt));
     assert!(receipt.total_tokens < 784);
     store.cleanup();

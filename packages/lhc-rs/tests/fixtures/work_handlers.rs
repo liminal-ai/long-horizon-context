@@ -537,6 +537,7 @@ fn wrap(kind: WorkKind, handlers: Arc<WorkHandlerMap>) -> DurableWorkDispatcher 
                                 source_version: item.source_version,
                                 derivations: item.derivations.clone(),
                                 work_item_id: Some(item.work_item_id.clone()),
+                                claim_attempt: item.claim_attempt,
                             },
                             &writes,
                             &derived_at,

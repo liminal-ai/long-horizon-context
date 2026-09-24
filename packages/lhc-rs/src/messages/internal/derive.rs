@@ -566,6 +566,7 @@ pub fn write_message_derivation_floor_in_thread(
 pub struct DispatchMessageDeriveWorkItem {
     pub work_item_id: String,
     pub source_version: i64,
+    pub claim_attempt: Option<i64>,
     pub derivations: Vec<EnqueueDerivationTarget>,
 }
 
@@ -632,6 +633,7 @@ pub async fn dispatch_message_derive_work(
                     source_version: item.source_version,
                     derivations: item.derivations.clone(),
                     work_item_id: Some(item.work_item_id.clone()),
+                    claim_attempt: item.claim_attempt,
                 },
                 &derivations.unwrap_or_default(),
                 &derived_at,

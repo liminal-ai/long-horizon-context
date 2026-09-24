@@ -74,10 +74,10 @@ pub use sdk::{
     create_db_write_transaction, create_deterministic_inference_callbacks,
     decide_compact_continuation, deterministic_outcomes_suffix, deterministic_text, enqueue,
     estimate_tokens, init_lhc, init_lhc_for_model, lookup_work_dispatcher, lookup_work_handler,
-    map_work_q_handlers, query_log, queue_detail, register_testing_work, set_scheduler_poke,
-    set_thread_touch, supersede_queued, validate_compact_continuation_decision,
-    validate_compact_continuation_input, validate_compact_continuation_receipt, work_kind_registry,
-    write_log,
+    map_work_q_handlers, query_log, queue_detail, register_testing_work, release_held_claims,
+    release_held_claims_for, set_scheduler_poke, set_thread_touch, supersede_queued,
+    validate_compact_continuation_decision, validate_compact_continuation_input,
+    validate_compact_continuation_receipt, work_kind_registry, write_log,
 };
 
 // Retrieval domain types (TS `export * as retrieval` + named shapes used by hosts/tests).

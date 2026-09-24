@@ -563,7 +563,7 @@ async fn normalizes_queued_old_shape_turn_derivation_items_and_drains_cleanly_en
 }
 
 #[tokio::test]
-async fn normalizes_a_claimed_old_shape_item_then_fails_its_expired_lease_without_rerunning_it() {
+async fn normalizes_a_claimed_old_shape_item_then_requeues_its_expired_lease_and_runs_it() {
     let store = temp_store();
     let file_path = store.thread_path(None);
     let file_path_str = file_path.to_string_lossy().into_owned();
@@ -650,22 +650,13 @@ async fn normalizes_a_claimed_old_shape_item_then_fails_its_expired_lease_withou
     if let OpResult::Ok { value } = drained {
         assert!(value.ran.iter().any(|entry| {
             entry.work_item_id == "w-t1-turn_derivation-v1"
-                && entry.disposition == DrainDisposition::FailedTerminal
-                && entry.reason.as_deref() == Some("claim_expired")
+                && entry.disposition == DrainDisposition::Done
         }));
     }
     let rendering = form_of(&file_path_str, "turn_rendering");
-    assert_eq!(rendering.as_ref().map(|f| f.state.as_str()), Some("failed"));
-    assert_eq!(
-        rendering.and_then(|f| f.reason),
-        Some("claim_expired".into())
-    );
+    assert_eq!(rendering.as_ref().map(|f| f.state.as_str()), Some("ready"));
     let assembly = form_of(&file_path_str, "pre_detailed_assembly");
-    assert_eq!(assembly.as_ref().map(|f| f.state.as_str()), Some("failed"));
-    assert_eq!(
-        assembly.and_then(|f| f.reason),
-        Some("claim_expired".into())
-    );
+    assert_eq!(assembly.as_ref().map(|f| f.state.as_str()), Some("ready"));
     store.cleanup();
 }
 
@@ -1376,6 +1367,145 @@ async fn migrates_a_blob_flavored_v12_file_to_v13_by_adding_the_turn_parts_colum
         panic!("production open must migrate a blob-flavored v12 file");
     };
     assert_v13_with_both(&db, 1);
+    db.close();
+    store.cleanup();
+}
+
+#[tokio::test]
+async fn requeues_pre_fix_claim_expired_failures_once_on_open_repeated_expiries_stay_failed() {
+    let store = temp_store();
+    let file_path = store.thread_path(None);
+    let file_path_str = file_path.to_string_lossy().into_owned();
+    let created = threads::new_thread(NewThreadInput {
+        file_path: file_path_str.clone(),
+        title: None,
+        cwd: None,
+        registry_path: Some(store.registry_path.to_string_lossy().into_owned()),
+    })
+    .await;
+    assert!(created.is_ok());
+    if !created.is_ok() {
+        store.cleanup();
+        return;
+    }
+
+    let intake = intake_stream::message_events(
+        ThreadRef::file_path(&file_path_str),
+        &[
+            valid_event(
+                kind::USER_PROMPT,
+                UserPromptOverrides {
+                    payload: Some(UserPromptPayload {
+                        text: "requeue prompt".into(),
+                    }),
+                    ..Default::default()
+                },
+            ),
+            valid_event(
+                kind::ASSISTANT_TEXT,
+                AssistantTextOverrides {
+                    payload: Some(AssistantTextPayload::new("requeue answer")),
+                    ..Default::default()
+                },
+            ),
+            valid_event(kind::TURN_END, TurnEndOverrides::default()),
+        ],
+    )
+    .await;
+    assert!(intake.is_ok());
+    drain_turn_derivations_green(&file_path_str).await;
+
+    let db = open_raw(&file_path_str);
+    db.prepare(
+        "UPDATE derivation SET state = 'failed', content = NULL, reason = 'claim_expired', metadata = NULL
+         WHERE subject_id = 't1' AND derivation_type = 'detailed_turn_compression'",
+    )
+    .run(&[]);
+    db.prepare(
+        "UPDATE derivation SET state = 'failed', content = NULL, reason = 'claim_expired_repeatedly'
+         WHERE subject_id = 'm1' AND derivation_type = 'smoothed_prompt'",
+    )
+    .run(&[]);
+    let work_count = db
+        .prepare("SELECT count(*) AS n FROM work_item")
+        .get()
+        .and_then(|row| row.get("n").and_then(|v| v.as_i64()));
+    assert_eq!(work_count, Some(0));
+    db.close();
+
+    let opened = open_thread_database(&file_path_str);
+    assert!(opened.is_ok());
+    let OpResult::Ok { value: db } = opened else {
+        store.cleanup();
+        return;
+    };
+    let items = db
+        .prepare("SELECT kind, source_ref, status FROM work_item")
+        .all(&[]);
+    assert_eq!(items.len(), 1);
+    assert_eq!(
+        items[0].get("kind").and_then(|v| v.as_str()),
+        Some("detailed_turn_compression")
+    );
+    let expected_source_ref = js_json_stringify(&serde_json::json!({"turnId": "t1"}));
+    assert_eq!(
+        items[0].get("source_ref").and_then(|v| v.as_str()),
+        Some(expected_source_ref.as_str())
+    );
+    assert_eq!(
+        items[0].get("status").and_then(|v| v.as_str()),
+        Some("queued")
+    );
+    db.close();
+    assert_eq!(
+        form_of(&file_path_str, "detailed_turn_compression")
+            .as_ref()
+            .map(|f| f.state.as_str()),
+        Some("pending")
+    );
+
+    let sdk = init_lhc(SdkConfig {
+        inference_callbacks: Some(create_inference_callbacks_double().to_callbacks()),
+        inference: None,
+        mode: SdkMode::Manual,
+        clock: None,
+        guards: None,
+        tool_result: None,
+        lease: None,
+        chunk_policy: None,
+        view: None,
+    });
+    let drained = sdk
+        .work
+        .drain(ThreadRef::file_path(&file_path_str), None)
+        .await;
+    assert!(drained.is_ok());
+    assert_eq!(
+        form_of(&file_path_str, "detailed_turn_compression")
+            .as_ref()
+            .map(|f| f.state.as_str()),
+        Some("ready")
+    );
+    let prompt = read_derived_forms(&file_path_str)
+        .into_iter()
+        .find(|form| form.derivation_type == "smoothed_prompt");
+    assert_eq!(prompt.as_ref().map(|f| f.state.as_str()), Some("failed"));
+    assert_eq!(
+        prompt.and_then(|f| f.reason),
+        Some("claim_expired_repeatedly".into())
+    );
+
+    let reopened = open_thread_database(&file_path_str);
+    assert!(reopened.is_ok());
+    let OpResult::Ok { value: db } = reopened else {
+        store.cleanup();
+        return;
+    };
+    let leftover = db
+        .prepare("SELECT count(*) AS n FROM work_item")
+        .get()
+        .and_then(|row| row.get("n").and_then(|v| v.as_i64()));
+    assert_eq!(leftover, Some(0));
     db.close();
     store.cleanup();
 }

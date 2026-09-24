@@ -44,7 +44,7 @@ use crate::shared_tech::persist::{
     DbReadTransaction, DbTransaction, DbWriteTransaction, PostCommitHook, PostCommitHookSet,
     create_post_commit_hook_set,
 };
-use crate::shared_tech::storage::{Db, SqlParam};
+use crate::shared_tech::storage::Db;
 use crate::shared_tech::token_counting::estimate_tokens;
 use crate::shared_tech::work_queue::{
     ClaimTiming, EnqueueDerivationTarget, EnqueueInput, ImmediateClaimInput, ImmediateClaimOutcome,
@@ -69,11 +69,9 @@ use super::store::select_open_turn_ids;
 
 const SQL_SELECT_THREAD_ID: &str = r#"SELECT thread_id FROM thread_metadata WHERE id = 1"#;
 
-const SQL_SELECT_CLAIMED_WORK_ITEM: &str =
-    r#"SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed'"#;
+const SQL_SELECT_CLAIMED_WORK_ITEM: &str = "SELECT 1 FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND json_extract(payload, '$.claimAttempt') IS ?";
 
-const SQL_DELETE_CLAIMED_WORK_ITEM: &str =
-    r#"DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed'"#;
+const SQL_DELETE_CLAIMED_WORK_ITEM: &str = "DELETE FROM work_item WHERE work_item_id = ? AND status = 'claimed' AND json_extract(payload, '$.claimAttempt') IS ?";
 
 /// TS `db.exec("BEGIN IMMEDIATE;")` — module-local transaction literal.
 const SQL_BEGIN_IMMEDIATE: &str = "BEGIN IMMEDIATE;";
@@ -1268,6 +1266,7 @@ pub static TURN_WORK_HANDLERS: LazyLock<WorkHandlerMap> = LazyLock::new(|| {
 /// TS `deferClaimedTurnWork` item: `{ workItemId: string }`.
 struct DeferClaimedItem {
     work_item_id: String,
+    claim_attempt: Option<i64>,
 }
 
 /// TS deferred txn narrow shape: `{ db, onCommit }`.
@@ -1285,15 +1284,20 @@ fn defer_claimed_turn_work(
     let PostCommitHookSet { add, flush } = create_post_commit_hook_set();
     db.exec(SQL_BEGIN_IMMEDIATE);
     let result = catch_unwind(AssertUnwindSafe(move || {
+        let claim = crate::shared_tech::work_queue::ClaimAttempt {
+            work_item_id: item.work_item_id.clone(),
+            claim_attempt: item.claim_attempt,
+        };
+        crate::shared_tech::work_queue::note_claim_done(db, &claim);
         let owned = db
             .prepare(SQL_SELECT_CLAIMED_WORK_ITEM)
-            .get_params(&[SqlParam::from(item.work_item_id.as_str())]);
+            .get_params(&crate::shared_tech::work_queue::claim_params(&claim));
         if owned.is_none() {
             db.exec(SQL_COMMIT);
             return false;
         }
         db.prepare(SQL_DELETE_CLAIMED_WORK_ITEM)
-            .run(&[SqlParam::from(item.work_item_id.as_str())]);
+            .run(&crate::shared_tech::work_queue::claim_params(&claim));
         on_deferred(DeferTransaction { db, on_commit: add });
         db.exec(SQL_COMMIT);
         flush();
@@ -1465,24 +1469,33 @@ pub async fn derive_turn_owned_in_open_db(
     let claim_item = match claim {
         ImmediateClaimOutcome::Claimed { item } => item,
         ImmediateClaimOutcome::Expired { item } => {
-            apply_derivation_terminal_failure(
+            let requeue = crate::shared_tech::work_queue::requeue_expired_claim(
+                db,
+                &crate::shared_tech::work_queue::ClaimAttempt {
+                    work_item_id: item.work_item_id.clone(),
+                    claim_attempt: item.claim_attempt,
+                },
+                &system_time_to_iso((config.clock)()),
+            );
+            if requeue != crate::shared_tech::work_queue::RequeueExpiredOutcome::Repeated {
+                poke_thread_scheduler(db);
+                return work_in_flight(kind, source_ref, source_version);
+            }
+            crate::shared_tech::durable_work::fail_repeatedly_expired_claim(
                 db,
                 &DerivationAttempt {
                     source_version,
                     derivations: derivations.to_vec(),
-                    work_item_id: Some(item.work_item_id),
+                    work_item_id: Some(item.work_item_id.clone()),
+                    claim_attempt: item.claim_attempt,
                 },
-                &DerivationTerminalFailure {
-                    reason: "claim_expired".into(),
-                    state: DerivationTerminalState::Failed,
-                    now: system_time_to_iso((config.clock)()),
-                },
+                &system_time_to_iso((config.clock)()),
             );
             poke_thread_scheduler(db);
             return failed(ErrorResult {
                 error_class: ErrorClass::SystemError,
                 code: ErrorCode::ProviderFailure,
-                reason: "claim_expired".into(),
+                reason: crate::shared_tech::durable_work::CLAIM_EXPIRED_REPEATEDLY.into(),
                 event_index: None,
             });
         }
@@ -1511,6 +1524,7 @@ pub async fn derive_turn_owned_in_open_db(
         source_version,
         derivations: derivations.to_vec(),
         work_item_id: Some(claim_item.work_item_id.clone()),
+        claim_attempt: claim_item.claim_attempt,
     };
     match outcome {
         HandlerOutcome::Ok {
@@ -1535,6 +1549,7 @@ pub async fn derive_turn_owned_in_open_db(
                 db,
                 &DeferClaimedItem {
                     work_item_id: claim_item.work_item_id,
+                    claim_attempt: claim_item.claim_attempt,
                 },
                 Box::new(move |tx| {
                     on_deferred(CompletionTx {
@@ -1610,6 +1625,7 @@ pub struct DispatchTurnOwnedWorkItem {
     pub kind: WorkKind,
     pub source_ref: WorkSourceRef,
     pub source_version: i64,
+    pub claim_attempt: Option<i64>,
     pub derivations: Vec<EnqueueDerivationTarget>,
 }
 
@@ -1651,6 +1667,7 @@ pub async fn dispatch_turn_owned_work(
                     source_version: item.source_version,
                     derivations: item.derivations.clone(),
                     work_item_id: Some(item.work_item_id.clone()),
+                    claim_attempt: item.claim_attempt,
                 },
                 &derivations.unwrap_or_default(),
                 &derived_at,
@@ -1673,6 +1690,7 @@ pub async fn dispatch_turn_owned_work(
                 &db,
                 &DeferClaimedItem {
                     work_item_id: item.work_item_id.clone(),
+                    claim_attempt: item.claim_attempt,
                 },
                 Box::new(move |tx| {
                     on_deferred(CompletionTx {

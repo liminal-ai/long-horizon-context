@@ -345,7 +345,7 @@ async fn compacts_claim_expired_chunk_summary_detailed_through_degraded_fallback
         "chunk_summary_detailed",
         DerivationState::Failed,
         None,
-        Some("claim_expired"),
+        Some("claim_expired_repeatedly"),
     );
     set_chunk_summary_state(
         &file_path,
@@ -353,7 +353,7 @@ async fn compacts_claim_expired_chunk_summary_detailed_through_degraded_fallback
         "chunk_summary_brief",
         DerivationState::Blocked,
         None,
-        Some("source_damaged: chunk c1 chunk_summary_detailed is failed: claim_expired"),
+        Some("source_damaged: chunk c1 chunk_summary_detailed is failed: claim_expired_repeatedly"),
     );
     delete_work_for(&file_path, "chunk_summary_detailed", "c1");
     delete_work_for(&file_path, "chunk_summary_brief", "c1");
@@ -380,7 +380,7 @@ async fn compacts_claim_expired_chunk_summary_detailed_through_degraded_fallback
         band: Band::Detailed,
         subject_id: "c1".into(),
         derivation_type: CompactWarningDerivationType::ChunkSummaryDetailed,
-        reason: "failed_floor: claim_expired".into(),
+        reason: "failed_floor: claim_expired_repeatedly".into(),
     }));
     assert!(value.degraded.iter().any(|entry| {
         entry.band == Band::Detailed

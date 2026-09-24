@@ -7,7 +7,8 @@
 //! exclusion, CLI parity) live in cli-process-work (not ported here).
 //!
 //! `it.each` for null/invalid claim_expires_at expands to two distinct
-//! `#[tokio::test]` functions.
+//! `#[tokio::test]` functions. First expiry requeues; the second consecutive
+//! expiry fails as `claim_expired_repeatedly`.
 
 mod fixtures;
 
@@ -30,9 +31,10 @@ use lhc::shared_tech::derivation::{
     SmoothPromptInput, SubjectKind, SummarizeChunkBriefInput,
 };
 use lhc::shared_tech::durable_work::{
-    ApplyDerivationSuccessDisposition, DerivationAttempt, DurableWorkDispatchResult,
+    ApplyDerivationSuccessDisposition, ApplyDerivationTerminalDisposition, DerivationAttempt,
+    DerivationTerminalFailure, DerivationTerminalState, DurableWorkDispatchResult,
     DurableWorkDispatcher, DurableWorkDispatcherItem, DurableWorkOperationName,
-    DurableWorkSettledDisposition, apply_derivation_success,
+    DurableWorkSettledDisposition, apply_derivation_success, apply_derivation_terminal_failure,
 };
 use lhc::shared_tech::errors::{ErrorClass, ErrorCode, OpResult};
 use lhc::shared_tech::inference_types::{DerivationGuards, DetailedTurnCompressionGuards};
@@ -851,7 +853,8 @@ async fn reopening_a_thread_with_leftover_queued_rows_recovers_them_when_the_pro
 }
 
 #[tokio::test]
-async fn first_touch_catch_up_fails_an_expired_claimed_head_and_drains_the_item_behind_it() {
+async fn first_touch_catch_up_requeues_an_expired_claimed_head_runs_it_and_drains_the_item_behind_it()
+ {
     let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let (_thread_id, file_path) = new_thread(&store).await;
@@ -915,7 +918,7 @@ async fn first_touch_catch_up_fails_an_expired_claimed_head_and_drains_the_item_
             .into_iter()
             .filter(|e| e.op == InferenceCallbackOpName::SmoothPrompt)
             .count(),
-        0
+        1
     );
     assert_eq!(
         read_derived_forms(&file_path)
@@ -928,7 +931,7 @@ async fn first_touch_catch_up_fails_an_expired_claimed_head_and_drains_the_item_
             ))
             .collect::<Vec<_>>(),
         vec![
-            "m1/smoothed_prompt/failed".to_string(),
+            "m1/smoothed_prompt/ready".to_string(),
             "t1/detailed_turn_compression/ready".to_string(),
             "t1/pre_detailed_assembly/ready".to_string(),
             "t1/turn_rendering/ready".to_string(),
@@ -940,18 +943,18 @@ async fn first_touch_catch_up_fails_an_expired_claimed_head_and_drains_the_item_
 }
 
 #[tokio::test]
-async fn a_claimed_head_with_null_claim_expires_at_is_failed_immediately() {
+async fn a_claimed_head_with_null_claim_expires_at_is_requeued_and_run() {
     let _seam_guard = WorkSeamGuard::acquire();
-    claimed_head_with_claim_expires_at_is_failed_immediately(None).await;
+    claimed_head_with_claim_expires_at_is_requeued_and_run(None).await;
 }
 
 #[tokio::test]
-async fn a_claimed_head_with_invalid_claim_expires_at_is_failed_immediately() {
+async fn a_claimed_head_with_invalid_claim_expires_at_is_requeued_and_run() {
     let _seam_guard = WorkSeamGuard::acquire();
-    claimed_head_with_claim_expires_at_is_failed_immediately(Some("not-a-date")).await;
+    claimed_head_with_claim_expires_at_is_requeued_and_run(Some("not-a-date")).await;
 }
 
-async fn claimed_head_with_claim_expires_at_is_failed_immediately(claim_expires_at: Option<&str>) {
+async fn claimed_head_with_claim_expires_at_is_requeued_and_run(claim_expires_at: Option<&str>) {
     let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let double = create_inference_callbacks_double();
@@ -970,15 +973,13 @@ async fn claimed_head_with_claim_expires_at_is_failed_immediately(claim_expires_
     let report = drain(&sdk, &file_path, None).await;
     assert_eq!(report.ran.len(), 1);
     assert_eq!(report.ran[0].work_item_id, "w-m1-prompt_smoothing-v1");
-    assert_eq!(report.ran[0].disposition, DrainDisposition::FailedTerminal);
-    assert_eq!(report.ran[0].reason.as_deref(), Some("claim_expired"));
+    assert_eq!(report.ran[0].disposition, DrainDisposition::Done);
     assert_eq!(report.stopped_because, DrainStoppedBecause::Empty);
     assert_eq!(report.claim_expires_at, None);
     assert_eq!(live_count(&file_path), 0);
     let forms = read_derived_forms(&file_path);
     assert_eq!(forms.len(), 1);
-    assert_eq!(forms[0].state, DerivationState::Failed);
-    assert_eq!(forms[0].reason.as_deref(), Some("claim_expired"));
+    assert_eq!(forms[0].state, DerivationState::Ready);
     store.cleanup();
 }
 
@@ -1236,6 +1237,7 @@ fn resolve_deferred(pending: DeferredRun, scripted: Scripted) {
     let disposition = apply_derivation_success(
         &db,
         &DerivationAttempt {
+            claim_attempt: pending.item.claim_attempt,
             source_version: pending.item.source_version,
             derivations: pending.item.derivations.clone(),
             work_item_id: Some(pending.item.work_item_id.clone()),
@@ -1250,7 +1252,7 @@ fn resolve_deferred(pending: DeferredRun, scripted: Scripted) {
 }
 
 #[tokio::test]
-async fn an_expired_claim_is_failed_without_rerunning_it_and_its_late_completion_cannot_write() {
+async fn an_expired_claim_is_requeued_and_rerun_and_the_old_holders_later_completion_is_lost() {
     let _seam_guard = WorkSeamGuard::acquire();
     let store = temp_store();
     let now_ms = Arc::new(Mutex::new(FIXED_INSTANT_MS));
@@ -1277,17 +1279,32 @@ async fn an_expired_claim_is_failed_without_rerunning_it_and_its_late_completion
     }
 
     *now_ms.lock().expect("now") += 100;
-    let cleanup_report = drain(&sdk, &file_path, None).await;
+    let cleanup_fut = drain(&sdk, &file_path, None);
+    tokio::pin!(cleanup_fut);
+    let start = std::time::Instant::now();
+    while runs.lock().expect("runs").len() != 2 {
+        if start.elapsed().as_millis() > 3000 {
+            panic!("timed out waiting for rerun after requeue");
+        }
+        tokio::select! {
+            _ = &mut cleanup_fut => panic!("cleanup drain finished before rerun claim"),
+            _ = sleep_ms(5) => {}
+        }
+    }
+    let retry = {
+        let mut guard = runs.lock().expect("runs");
+        guard.remove(1)
+    };
+    resolve_deferred(
+        retry,
+        Scripted {
+            content: "rerun completion".into(),
+            mismatched_write: false,
+        },
+    );
+    let cleanup_report = cleanup_fut.await;
     assert_eq!(cleanup_report.ran.len(), 1);
-    assert_eq!(
-        cleanup_report.ran[0].disposition,
-        DrainDisposition::FailedTerminal
-    );
-    assert_eq!(
-        cleanup_report.ran[0].reason.as_deref(),
-        Some("claim_expired")
-    );
-    assert_eq!(runs.lock().expect("runs").len(), 1);
+    assert_eq!(cleanup_report.ran[0].disposition, DrainDisposition::Done);
 
     let pending = runs.lock().expect("runs").pop().expect("pending");
     resolve_deferred(
@@ -1305,9 +1322,284 @@ async fn an_expired_claim_is_failed_without_rerunning_it_and_its_late_completion
         .into_iter()
         .find(|e| e.derivation_type == "smoothed_prompt")
         .expect("form");
-    assert_eq!(form.state, DerivationState::Failed);
-    assert_eq!(form.reason.as_deref(), Some("claim_expired"));
+    assert_eq!(form.state, DerivationState::Ready);
+    assert_eq!(form.content.as_deref(), Some("rerun completion"));
     assert_eq!(live_count(&file_path), 0);
+    store.cleanup();
+}
+
+#[tokio::test]
+async fn an_old_holder_returning_before_its_retry_cannot_complete_the_retry_s_claim() {
+    let _seam_guard = WorkSeamGuard::acquire();
+    let store = temp_store();
+    let now_ms = Arc::new(Mutex::new(FIXED_INSTANT_MS));
+    let (sdk, runs) = deferred_message_sdk(Arc::clone(&now_ms));
+    let (_thread_id, file_path) = new_thread(&store).await;
+    send(
+        &sdk,
+        &file_path,
+        &[valid_event_for_kind(EventKind::UserPrompt)],
+    )
+    .await;
+
+    let older_fut = drain(&sdk, &file_path, None);
+    tokio::pin!(older_fut);
+    let start = std::time::Instant::now();
+    while runs.lock().expect("runs").len() != 1 {
+        if start.elapsed().as_millis() > 3000 {
+            panic!("timed out waiting for older claim");
+        }
+        tokio::select! {
+            _ = &mut older_fut => panic!("older drain finished before claim"),
+            _ = sleep_ms(5) => {}
+        }
+    }
+
+    *now_ms.lock().expect("now") += 100;
+    let retry_fut = drain(&sdk, &file_path, None);
+    tokio::pin!(retry_fut);
+    let start = std::time::Instant::now();
+    while runs.lock().expect("runs").len() != 2 {
+        if start.elapsed().as_millis() > 3000 {
+            panic!("timed out waiting for retry claim");
+        }
+        tokio::select! {
+            _ = &mut retry_fut => panic!("retry drain finished before claim"),
+            _ = sleep_ms(5) => {}
+        }
+    }
+
+    let older = {
+        let mut guard = runs.lock().expect("runs");
+        guard.remove(0)
+    };
+    resolve_deferred(
+        older,
+        Scripted {
+            content: "stale completion".into(),
+            mismatched_write: false,
+        },
+    );
+    let older_report = older_fut.await;
+    assert_eq!(older_report.ran[0].disposition, DrainDisposition::LostLease);
+    assert_eq!(live_count(&file_path), 1);
+
+    let retry = runs.lock().expect("runs").pop().expect("retry");
+    resolve_deferred(
+        retry,
+        Scripted {
+            content: "retry completion".into(),
+            mismatched_write: false,
+        },
+    );
+    let retry_report = retry_fut.await;
+    assert_eq!(retry_report.ran.len(), 1);
+    assert_eq!(retry_report.ran[0].disposition, DrainDisposition::Done);
+    let form = read_derived_forms(&file_path)
+        .into_iter()
+        .find(|e| e.derivation_type == "smoothed_prompt")
+        .expect("form");
+    assert_eq!(form.state, DerivationState::Ready);
+    assert_eq!(form.content.as_deref(), Some("retry completion"));
+    assert_eq!(live_count(&file_path), 0);
+    store.cleanup();
+}
+
+#[tokio::test]
+async fn an_old_holders_terminal_failure_cannot_fail_the_retry_s_claim() {
+    let _seam_guard = WorkSeamGuard::acquire();
+    let store = temp_store();
+    let now_ms = Arc::new(Mutex::new(FIXED_INSTANT_MS));
+    let (sdk, runs) = deferred_message_sdk(Arc::clone(&now_ms));
+    let (_thread_id, file_path) = new_thread(&store).await;
+    send(
+        &sdk,
+        &file_path,
+        &[valid_event_for_kind(EventKind::UserPrompt)],
+    )
+    .await;
+
+    let older_fut = drain(&sdk, &file_path, None);
+    tokio::pin!(older_fut);
+    let start = std::time::Instant::now();
+    while runs.lock().expect("runs").len() != 1 {
+        if start.elapsed().as_millis() > 3000 {
+            panic!("timed out waiting for older claim");
+        }
+        tokio::select! {
+            _ = &mut older_fut => panic!("older drain finished before claim"),
+            _ = sleep_ms(5) => {}
+        }
+    }
+
+    *now_ms.lock().expect("now") += 100;
+    let retry_fut = drain(&sdk, &file_path, None);
+    tokio::pin!(retry_fut);
+    let start = std::time::Instant::now();
+    while runs.lock().expect("runs").len() != 2 {
+        if start.elapsed().as_millis() > 3000 {
+            panic!("timed out waiting for retry claim");
+        }
+        tokio::select! {
+            _ = &mut retry_fut => panic!("retry drain finished before claim"),
+            _ = sleep_ms(5) => {}
+        }
+    }
+
+    let (old_item, retry_attempt) = {
+        let guard = runs.lock().expect("runs");
+        (guard[0].item.clone(), guard[1].item.claim_attempt)
+    };
+    assert_eq!(old_item.claim_attempt, Some(1));
+    assert_eq!(retry_attempt, Some(2));
+    let db = open_raw(&file_path);
+    let failure = apply_derivation_terminal_failure(
+        &db,
+        &DerivationAttempt {
+            claim_attempt: old_item.claim_attempt,
+            source_version: old_item.source_version,
+            derivations: old_item.derivations.clone(),
+            work_item_id: Some(old_item.work_item_id.clone()),
+        },
+        &DerivationTerminalFailure {
+            reason: "old provider timed out".into(),
+            state: DerivationTerminalState::Failed,
+            now: iso_from_unix_millis(*now_ms.lock().expect("now")),
+        },
+    );
+    db.close();
+    assert_eq!(failure, ApplyDerivationTerminalDisposition::LostLease);
+
+    let retry = {
+        let mut guard = runs.lock().expect("runs");
+        guard.remove(1)
+    };
+    resolve_deferred(
+        retry,
+        Scripted {
+            content: "healthy retry completion".into(),
+            mismatched_write: false,
+        },
+    );
+    let retry_report = retry_fut.await;
+    assert_eq!(retry_report.ran.len(), 1);
+    assert_eq!(retry_report.ran[0].disposition, DrainDisposition::Done);
+
+    let older = runs.lock().expect("runs").pop().expect("older");
+    resolve_deferred(
+        older,
+        Scripted {
+            content: "stale completion".into(),
+            mismatched_write: false,
+        },
+    );
+    let older_report = older_fut.await;
+    assert_eq!(older_report.ran[0].disposition, DrainDisposition::LostLease);
+    let form = read_derived_forms(&file_path)
+        .into_iter()
+        .find(|e| e.derivation_type == "smoothed_prompt")
+        .expect("form");
+    assert_eq!(form.state, DerivationState::Ready);
+    assert_eq!(form.content.as_deref(), Some("healthy retry completion"));
+    store.cleanup();
+}
+
+#[tokio::test]
+async fn a_second_consecutive_expiry_fails_it_with_claim_expired_repeatedly_and_logs_a_warning() {
+    let _seam_guard = WorkSeamGuard::acquire();
+    let store = temp_store();
+    let now_ms = Arc::new(Mutex::new(FIXED_INSTANT_MS));
+    let (sdk, runs) = deferred_message_sdk(Arc::clone(&now_ms));
+    let (_thread_id, file_path) = new_thread(&store).await;
+    send(
+        &sdk,
+        &file_path,
+        &[valid_event_for_kind(EventKind::UserPrompt)],
+    )
+    .await;
+
+    let first_fut = drain(&sdk, &file_path, None);
+    tokio::pin!(first_fut);
+    let start = std::time::Instant::now();
+    while runs.lock().expect("runs").len() != 1 {
+        if start.elapsed().as_millis() > 3000 {
+            panic!("timed out waiting for first run");
+        }
+        tokio::select! {
+            _ = &mut first_fut => panic!("first drain finished before claim"),
+            _ = sleep_ms(5) => {}
+        }
+    }
+
+    *now_ms.lock().expect("now") += 100;
+    let second_fut = drain(&sdk, &file_path, None);
+    tokio::pin!(second_fut);
+    let start = std::time::Instant::now();
+    while runs.lock().expect("runs").len() != 2 {
+        if start.elapsed().as_millis() > 3000 {
+            panic!("timed out waiting for rerun after the first expiry");
+        }
+        tokio::select! {
+            _ = &mut second_fut => panic!("second drain finished before rerun claim"),
+            _ = sleep_ms(5) => {}
+        }
+    }
+
+    *now_ms.lock().expect("now") += 100;
+    let final_report = drain(&sdk, &file_path, None).await;
+    assert_eq!(final_report.ran.len(), 1);
+    assert_eq!(
+        final_report.ran[0].disposition,
+        DrainDisposition::FailedTerminal
+    );
+    assert_eq!(
+        final_report.ran[0].reason.as_deref(),
+        Some("claim_expired_repeatedly")
+    );
+    assert_eq!(runs.lock().expect("runs").len(), 2);
+    let form = read_derived_forms(&file_path)
+        .into_iter()
+        .find(|e| e.derivation_type == "smoothed_prompt")
+        .expect("form");
+    assert_eq!(form.state, DerivationState::Failed);
+    assert_eq!(form.reason.as_deref(), Some("claim_expired_repeatedly"));
+    assert_eq!(live_count(&file_path), 0);
+    let db = open_raw(&file_path);
+    let logs = db
+        .prepare(
+            "SELECT level, subject_id, reason FROM log WHERE reason = 'claim_expired_repeatedly'",
+        )
+        .all(&[]);
+    db.close();
+    assert_eq!(logs.len(), 1);
+    assert_eq!(
+        logs[0].get("level").and_then(|v| v.as_str()),
+        Some("warning")
+    );
+    assert_eq!(
+        logs[0].get("subject_id").and_then(|v| v.as_str()),
+        Some("m1")
+    );
+    assert_eq!(
+        logs[0].get("reason").and_then(|v| v.as_str()),
+        Some("claim_expired_repeatedly")
+    );
+
+    let pending: Vec<DeferredRun> = {
+        let mut guard = runs.lock().expect("runs");
+        guard.drain(..).collect()
+    };
+    for run in pending {
+        resolve_deferred(
+            run,
+            Scripted {
+                content: "late".into(),
+                mismatched_write: false,
+            },
+        );
+    }
+    let _ = first_fut.await;
+    let _ = second_fut.await;
     store.cleanup();
 }
 
@@ -1324,6 +1616,7 @@ fn turn_derive_partial_dispatcher() -> DurableWorkDispatcher {
             let disposition = apply_derivation_success(
                 &db,
                 &DerivationAttempt {
+                    claim_attempt: item.claim_attempt,
                     source_version: item.source_version,
                     derivations: item.derivations.clone(),
                     work_item_id: Some(item.work_item_id.clone()),
@@ -1567,6 +1860,7 @@ async fn an_extra_handler_write_target_fails_closed_before_any_completion_write_
             let disposition = apply_derivation_success(
                 &db,
                 &DerivationAttempt {
+                    claim_attempt: item.claim_attempt,
                     source_version: item.source_version,
                     derivations: item.derivations.clone(),
                     work_item_id: Some(item.work_item_id.clone()),

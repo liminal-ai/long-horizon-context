@@ -1185,11 +1185,24 @@ async fn closed_turns_below_the_coverage_edge_remain_outside_the_represented_win
         return;
     };
 
+    // The compact point lands at t10's close, so c3, c2, and c1 are all
+    // chunk candidates; c3 takes detailed (loner), the brief share holds c2
+    // alone, and c1 remains after the chunk budgets. c1's member turns are
+    // older than the oldest selected subject: covered_from stays at the
+    // oldest represented material, and the left-out turns get one gap-marker
+    // line so the reader can see the hole (F6: leading turns included).
     assert_eq!(value.compact_point, 56);
     assert_eq!(value.covered_from, 13);
     assert_eq!(value.bands.detailed.entries, 1);
-    assert_eq!(value.bands.brief.entries, 1);
-    assert!(value.gaps.is_empty());
+    assert_eq!(value.bands.brief.entries, 2);
+    assert_eq!(value.gaps.len(), 1);
+    assert_eq!(value.gaps[0].band, Band::Brief);
+    assert!(
+        value.gaps[0].reason.contains("t1")
+            && value.gaps[0].reason.ends_with("not in view; use get-turns"),
+        "unexpected gap reason {}",
+        value.gaps[0].reason
+    );
 }
 
 // ── architecture-risk: restart ───────────────────────────────────────
