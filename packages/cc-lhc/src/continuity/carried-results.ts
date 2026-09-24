@@ -12,8 +12,11 @@
  *    not a synthetic API error) closes the item `completed` and its text is
  *    kept as a CC-LHC-owned copy (served by `cc-lhc tasks output <key>`);
  *    anything else — no final message, unreadable, unknown shape — closes it
- *    `killed` with the SendMessage resume notice. The old host is never kept
- *    running for it.
+ *    `killed`. Its transcript and metadata are first copied into the current
+ *    session's folder (helper-transfer.ts), since Claude resumes a helper
+ *    only from there; the notice offers SendMessage only when that copy
+ *    succeeded, and otherwise says to start the helper again. The old host is
+ *    never kept running for it.
  *  - Monitor: every line it wrote to its relaunch output is offered once as an
  *    event (delivered when the rollout shows it, advancing a byte offset); the
  *    item closes `completed` once its recorded exact process identity is
@@ -39,6 +42,7 @@ import { probeProcessIdentityNative } from "../runtime/native-identity.js";
 import type { ProbeProcessIdentity } from "../runtime/process-identity.js";
 import { RESULT_COPY_MAX_BYTES, resultCopyPath } from "./cleanup.js";
 import { MAX_DETAIL_CHARS, type MonitorEventLine } from "./delivery.js";
+import { type HelperTransfer, subagentsDirOf, sweepPartialCopies, transferHelper } from "./helper-transfer.js";
 import { type ManagePorts, readItemOutput, signalRelaunched, stillRunningAfterFailedSignal } from "./manage.js";
 import type { CarriedResult, ContinuityItem, ContinuityStore } from "./store.js";
 
@@ -47,9 +51,14 @@ export function continuityDirOf(dbPath: string): string {
   return join(dirname(dbPath), "continuity");
 }
 
-/** The notice a carried subagent without a final result is delivered with. */
+/** The notice a carried subagent without a final result is delivered with, once its transcript is in this session. */
 export function interruptedNotice(agentId: string): string {
   return `subagent ${agentId} was interrupted by the compaction; resume it with SendMessage(${agentId})`;
+}
+
+/** The notice when its transcript could not be brought into this session: it cannot be resumed. */
+export function interruptedRestartNotice(agentId: string, reason: string): string {
+  return `subagent ${agentId} was interrupted by the compaction and cannot be resumed here (${reason}); start it again if its work is still needed`;
 }
 
 const INTERRUPTED_PREFIX = "subagent ";
@@ -205,10 +214,13 @@ export interface SettleCarriedDeps {
   writeText?: (target: string, text: string) => { bytes: number; truncated: boolean };
   probeIdentity?: ProbeProcessIdentity;
   nowMs?: () => number;
+  /** The current (replacement) session's folder, from the hook's transcript path; unknown means no resume offer. */
+  sessionDir?: string;
+  transfer?: (input: { agentId: string; fromDir: string; toDir: string }) => HelperTransfer;
 }
 
 export interface SettleCarriedReport {
-  agents: Array<{ launchId: string; outcome: "completed" | "killed"; reason?: string }>;
+  agents: Array<{ launchId: string; outcome: "completed" | "killed"; reason?: string; resumable?: boolean }>;
   monitorsExited: string[];
 }
 
@@ -286,15 +298,31 @@ export function settleCarriedWork(
         if (closed?.applied === true) report.agents.push({ launchId: item.launchId, outcome: "completed" });
         continue;
       }
+      // Resumable only from the current session's folder: copy it there
+      // first, and offer SendMessage only when the copy is in place.
+      let moved: HelperTransfer;
+      if (deps.sessionDir === undefined) {
+        moved = { ok: false, agentId: identity.agentId, reason: "the current session folder is unknown" };
+      } else {
+        const toDir = subagentsDirOf(deps.sessionDir);
+        sweepPartialCopies(toDir);
+        moved = (deps.transfer ?? transferHelper)({
+          agentId: identity.agentId,
+          fromDir: dirname(identity.path),
+          toDir,
+        });
+      }
       const closed = store.recordTerminal({
         threadId,
         launchId: item.launchId,
         outcome: "killed",
-        evidence: interruptedNotice(identity.agentId),
+        evidence: moved.ok
+          ? interruptedNotice(identity.agentId)
+          : interruptedRestartNotice(identity.agentId, moved.reason),
         nowMs: now(),
       });
       if (closed?.applied === true) {
-        report.agents.push({ launchId: item.launchId, outcome: "killed", reason: final.reason });
+        report.agents.push({ launchId: item.launchId, outcome: "killed", reason: final.reason, resumable: moved.ok });
       }
       continue;
     }

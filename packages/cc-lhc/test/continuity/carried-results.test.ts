@@ -5,7 +5,16 @@
  * hook binding through a ready descriptor; delivery is acknowledged only the
  * way the wrapper does it — from the rollout's hook_additional_context record.
  */
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -13,12 +22,15 @@ import { afterEach, describe, expect, it } from "vitest";
 import { qualifyActiveItems, statPathReal } from "../../src/continuity/adapters.js";
 import {
   interruptedNotice,
+  interruptedRestartNotice,
   parseAgentFinalResult,
+  settleCarriedWork,
   stopRelaunchedMonitors,
 } from "../../src/continuity/carried-results.js";
 import { cleanupThread } from "../../src/continuity/cleanup.js";
 import { deliveredResultKeys } from "../../src/continuity/delivery.js";
 import { invokeCarryover } from "../../src/continuity/handoff.js";
+import { carryHelpersFromPreviousSession } from "../../src/continuity/helper-transfer.js";
 import { createContinuityObserver } from "../../src/continuity/observe.js";
 import { snapshotContinuity } from "../../src/continuity/snapshot.js";
 import { type ContinuityStore, openContinuityStore } from "../../src/continuity/store.js";
@@ -103,7 +115,11 @@ function session(opts: { monitorCommand: string; transcript: string }) {
   mkdirSync(join(sessionDir, "subagents"), { recursive: true });
   mkdirSync(tasksDir, { recursive: true });
   const transcriptPath = join(sessionDir, "subagents", "agent-agent-1.jsonl");
+  const metaPath = join(sessionDir, "subagents", "agent-agent-1.meta.json");
   writeFileSync(transcriptPath, "");
+  writeFileSync(metaPath, JSON.stringify({ agentType: "general-purpose", description: "reviewer" }));
+  // The replacement session's folder, as Claude names it: <projectDir>/<sessionId>.
+  const newSessionDir = join(root, "projects", "-x", SESSION);
   const rolloutPath = `${sessionDir}.jsonl`;
   const monitorLines = [
     toolUse("toolu_mon", "Monitor", { command: opts.monitorCommand, description: "CI watch" }),
@@ -118,7 +134,7 @@ function session(opts: { monitorCommand: string; transcript: string }) {
   for (const line of [...LAUNCHES.agent.lines({ tasksDir, sessionDir }), ...monitorLines]) observer.observeLine(line);
   const context = { platform: process.platform, sourceRolloutPath: rolloutPath, statPath: statPathReal };
   expect(qualifyActiveItems(store, T, context, 2_000).refused).toEqual([]);
-  const snap = snapshotContinuity(store, { threadId: T, oldSessionId: "old", nowMs: 3_000 });
+  const snap = snapshotContinuity(store, { threadId: T, oldSessionId: "session-old", nowMs: 3_000 });
   if (!snap.ok) throw new Error(snap.reason);
   const monitorOutputDir = join(root, "continuity");
   const transfer = invokeCarryover(store, snap.snapshot, { monitorOutputDir, cwd: root, log: () => {} }, 4_000);
@@ -137,7 +153,12 @@ function session(opts: { monitorCommand: string; transcript: string }) {
     rolloutPath,
   });
   const env = { ...process.env, CLAUDE_CODE_SESSION_ID: SESSION };
-  const payload = JSON.stringify({ session_id: SESSION, hook_event_name: "UserPromptSubmit", prompt: "next" });
+  const payload = JSON.stringify({
+    session_id: SESSION,
+    transcript_path: `${newSessionDir}.jsonl`,
+    hook_event_name: "UserPromptSubmit",
+    prompt: "next",
+  });
   /** One real prompt: the hook answers; the wrapper's capture path acknowledges what the rollout recorded. */
   const prompt = (observed = true): string => {
     const hook = executeTasksHook(payload, { env, descriptorPath: descPath, continuityDbPath: dbPath });
@@ -156,6 +177,8 @@ function session(opts: { monitorCommand: string; transcript: string }) {
     store,
     dbPath,
     transcriptPath,
+    metaPath,
+    newSessionDir,
     monitorOutputDir,
     pid: relaunched.pid,
     outputPath: relaunched.outputPath,
@@ -254,7 +277,7 @@ describe("F4 carried subagent: settled on the next prompt from its saved transcr
 
     const gone = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
     rmSync(gone.transcriptPath);
-    expect(agentLines(gone.prompt())[1]).toBe(`  ${interruptedNotice("agent-1")}`);
+    expect(agentLines(gone.prompt())[1]).toBe(`  ${interruptedRestartNotice("agent-1", "its transcript is missing")}`);
   });
 
   it("undelivered context (hook ran, rollout never recorded it) is offered again, and settles nothing twice", () => {
@@ -264,6 +287,155 @@ describe("F4 carried subagent: settled on the next prompt from its saved transcr
     expect(s.store.getResult(T, LAUNCH_IDS.agent)?.delivery).toBe("pending");
     expect(agentLines(s.prompt())).toEqual(first);
     expect(agentLines(s.prompt())).toEqual([]);
+  });
+});
+
+describe("0.4.5 interrupted helper: its transcript moves into the replacement session before the resume offer", () => {
+  const newCopy = (s: { newSessionDir: string }, name: string) => join(s.newSessionDir, "subagents", name);
+
+  it("copies transcript and metadata unchanged into the current session, originals kept, then offers SendMessage", () => {
+    const s = session({ monitorCommand: "sleep 30", transcript: UNFINISHED_TRANSCRIPT });
+    expect(existsSync(newCopy(s, "agent-agent-1.jsonl"))).toBe(false);
+    expect(agentLines(s.prompt())[1]).toBe(`  ${interruptedNotice("agent-1")}`);
+    expect(readFileSync(newCopy(s, "agent-agent-1.jsonl"), "utf8")).toBe(UNFINISHED_TRANSCRIPT);
+    expect(readFileSync(newCopy(s, "agent-agent-1.meta.json"), "utf8")).toBe(readFileSync(s.metaPath, "utf8"));
+    expect(readFileSync(s.transcriptPath, "utf8")).toBe(UNFINISHED_TRANSCRIPT);
+    expect(readdirSync(join(s.newSessionDir, "subagents")).filter((n) => n.startsWith("."))).toEqual([]);
+  });
+
+  it("a failed copy never offers SendMessage: the notice says to start it again", () => {
+    const s = session({ monitorCommand: "sleep 30", transcript: UNFINISHED_TRANSCRIPT });
+    // The destination folder cannot be created: a file stands where it would go.
+    mkdirSync(s.newSessionDir, { recursive: true });
+    writeFileSync(join(s.newSessionDir, "subagents"), "not a folder");
+    const [, detail] = agentLines(s.prompt());
+    expect(detail).toMatch(
+      /^ {2}subagent agent-1 was interrupted by the compaction and cannot be resumed here \(its transcript could not be copied \(E[A-Z]+\)\); start it again/,
+    );
+    expect(detail).not.toContain("SendMessage");
+    expect(itemOf(s.store, LAUNCH_IDS.agent).terminal?.outcome).toBe("killed");
+  });
+
+  it("a copy that fails partway leaves no transcript and no partial file, and no resume offer", () => {
+    const s = session({ monitorCommand: "sleep 30", transcript: UNFINISHED_TRANSCRIPT });
+    // The metadata copies; the transcript cannot be read (a folder in its place).
+    rmSync(s.transcriptPath);
+    mkdirSync(s.transcriptPath);
+    const [, detail] = agentLines(s.prompt());
+    expect(detail).toContain("cannot be resumed here (its transcript could not be copied");
+    const names = readdirSync(join(s.newSessionDir, "subagents"));
+    expect(names).not.toContain("agent-agent-1.jsonl");
+    expect(names.filter((n) => n.startsWith("."))).toEqual([]);
+  });
+
+  it("a crash's leftover partial copy is swept and never looks resumable", () => {
+    const s = session({ monitorCommand: "sleep 30", transcript: UNFINISHED_TRANSCRIPT });
+    const dir = join(s.newSessionDir, "subagents");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, ".agent-agent-1.jsonl.cc-lhc-partial-99-1"), "torn");
+    expect(agentLines(s.prompt())[1]).toBe(`  ${interruptedNotice("agent-1")}`);
+    expect(readdirSync(dir).sort()).toEqual(["agent-agent-1.jsonl", "agent-agent-1.meta.json"]);
+  });
+
+  it("never overwrites a helper already in the current session (resumed there): it is kept and offered", () => {
+    const s = session({ monitorCommand: "sleep 30", transcript: UNFINISHED_TRANSCRIPT });
+    const dir = join(s.newSessionDir, "subagents");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "agent-agent-1.jsonl"), "resumed here\n");
+    expect(agentLines(s.prompt())[1]).toBe(`  ${interruptedNotice("agent-1")}`);
+    expect(readFileSync(join(dir, "agent-agent-1.jsonl"), "utf8")).toBe("resumed here\n");
+  });
+
+  it("an unknown current session (no transcript path) never offers SendMessage", () => {
+    const s = session({ monitorCommand: "sleep 30", transcript: UNFINISHED_TRANSCRIPT });
+    const settled = settleCarriedWork(s.store, T, { continuityDir: join(s.root, "continuity") });
+    expect(settled.agents).toEqual([expect.objectContaining({ outcome: "killed", resumable: false })]);
+    expect(itemOf(s.store, LAUNCH_IDS.agent).terminal?.evidence).toBe(
+      interruptedRestartNotice("agent-1", "the current session folder is unknown"),
+    );
+  });
+});
+
+describe("0.4.5 helpers stay resumable after every compaction", () => {
+  function sessions() {
+    const root = mkdtempSync(join(tmpdir(), "cc-lhc-helpers-"));
+    dirs.push(root);
+    const project = join(root, "projects", "-x");
+    const store = openContinuityStore(join(root, "cc-lhc.sqlite"));
+    stores.push(store);
+    const helper = (sessionId: string, agentId: string, text: string) => {
+      const dir = join(project, sessionId, "subagents");
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, `agent-${agentId}.jsonl`), text);
+      writeFileSync(join(dir, `agent-${agentId}.meta.json`), `{"agentType":"general-purpose"}`);
+    };
+    const handoff = (oldSessionId: string, close = true) => {
+      const g = store.allocateGeneration({ threadId: T, oldSessionId, launchIds: [], nowMs: Date.now() });
+      if (close)
+        store.setGenerationState({ threadId: T, generation: g.generation, state: "closed", nowMs: Date.now() });
+      return g.generation;
+    };
+    return { root, project, store, helper, handoff, dir: (id: string) => join(project, id) };
+  }
+
+  it("each compaction carries the previous session's helpers forward, A → B → C, keeping existing copies", () => {
+    const t = sessions();
+    t.helper("A", "h1", "h1 transcript\n");
+    t.handoff("A");
+    expect(carryHelpersFromPreviousSession(t.store, T, t.dir("B"))).toMatchObject({
+      results: [{ ok: true, agentId: "h1", status: "copied" }],
+    });
+    // Resumed in B: its transcript there grows; a new helper h2 starts in B.
+    appendFileSync(join(t.dir("B"), "subagents", "agent-h1.jsonl"), "resumed in B\n");
+    t.helper("B", "h2", "h2 transcript\n");
+    t.handoff("B");
+    const carried = carryHelpersFromPreviousSession(t.store, T, t.dir("C"));
+    expect(carried).toMatchObject({
+      results: [
+        { ok: true, agentId: "h1", status: "copied" },
+        { ok: true, agentId: "h2", status: "copied" },
+      ],
+    });
+    expect(readFileSync(join(t.dir("C"), "subagents", "agent-h1.jsonl"), "utf8")).toBe("h1 transcript\nresumed in B\n");
+    expect(existsSync(join(t.dir("C"), "subagents", "agent-h2.meta.json"))).toBe(true);
+    // Running it again (every prompt) changes nothing.
+    appendFileSync(join(t.dir("C"), "subagents", "agent-h1.jsonl"), "resumed in C\n");
+    expect(carryHelpersFromPreviousSession(t.store, T, t.dir("C"))).toMatchObject({
+      results: [
+        { ok: true, agentId: "h1", status: "present" },
+        { ok: true, agentId: "h2", status: "present" },
+      ],
+    });
+    expect(readFileSync(join(t.dir("C"), "subagents", "agent-h1.jsonl"), "utf8")).toContain("resumed in C");
+  });
+
+  it("copies nothing until the handoff closed, nor while the old Claude still runs unpaused", () => {
+    const t = sessions();
+    t.helper("A", "h1", "x\n");
+    const g = t.handoff("A", false);
+    expect(carryHelpersFromPreviousSession(t.store, T, t.dir("B"))).toEqual({ skipped: "handoff not complete" });
+    t.store.setGenerationState({ threadId: T, generation: g, state: "closed", nowMs: Date.now() });
+    const host = { pid: 1, bootId: "b", starttime: "1", retainedAtMs: 1 };
+    t.store.setRetainedHost({ threadId: T, generation: g, host, nowMs: Date.now() });
+    expect(carryHelpersFromPreviousSession(t.store, T, t.dir("B"))).toEqual({
+      skipped: "previous session still running",
+    });
+    expect(existsSync(join(t.dir("B"), "subagents"))).toBe(false);
+    // Paused (a mixed carryover): it can no longer write, so its helpers move.
+    t.store.clearRetainedHost({ threadId: T, generation: g, nowMs: Date.now() });
+    t.store.setRetainedHost({ threadId: T, generation: g, host: { ...host, frozen: true }, nowMs: Date.now() });
+    expect(carryHelpersFromPreviousSession(t.store, T, t.dir("B"))).toMatchObject({
+      results: [{ ok: true, agentId: "h1", status: "copied" }],
+    });
+    // Or stopped since (its retained-host record cleared): likewise.
+    t.helper("A", "h2", "y\n");
+    t.store.clearRetainedHost({ threadId: T, generation: g, nowMs: Date.now() });
+    expect(carryHelpersFromPreviousSession(t.store, T, t.dir("B"))).toMatchObject({
+      results: [
+        { ok: true, agentId: "h1", status: "present" },
+        { ok: true, agentId: "h2", status: "copied" },
+      ],
+    });
   });
 });
 

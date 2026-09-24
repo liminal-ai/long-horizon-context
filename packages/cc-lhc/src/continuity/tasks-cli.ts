@@ -17,6 +17,7 @@ import {
   settleCarriedWork,
 } from "./carried-results.js";
 import { eventKeysOf, formatResultContext, MAX_EVENTS_PER_PROMPT } from "./delivery.js";
+import { carryHelpersFromPreviousSession, sessionDirOfTranscript } from "./helper-transfer.js";
 import { DEFAULT_OUTPUT_MAX_BYTES, itemStatus, type ManagePorts, readItemOutput, stopItem } from "./manage.js";
 import { type ContinuityStore, openContinuityStore } from "./store.js";
 import { type ReconcileDeps, reconcileAdoptedShells } from "./task-process.js";
@@ -58,9 +59,10 @@ export type TasksHookResult =
 
 /**
  * Answer one UserPromptSubmit payload. Binds through the wrapper's descriptor
- * (the payload's own session id must match it); lists the bound thread's
- * pending results; never writes — running the hook is not delivery. Any
- * refusal yields no context and never blocks the prompt.
+ * (the payload's own session id must match it); settles carried work, copies
+ * helper transcripts into the current session, and lists the bound thread's
+ * pending results; never marks anything delivered — running the hook is not
+ * delivery. Any refusal yields no context and never blocks the prompt.
  */
 export function executeTasksHook(payloadText: string, deps: TasksHookDeps = {}): TasksHookResult {
   let payload: unknown;
@@ -94,9 +96,22 @@ export function executeTasksHook(payloadText: string, deps: TasksHookDeps = {}):
     // shell whose kernel-proven exit happened since, so its durable result is
     // in this very hook's pending set (no polling anywhere).
     reconcileAdoptedShells(store, threadId, deps.reconcile ?? {});
+    // 0.4.5: Claude resumes a helper only from the current session's folder,
+    // so the previous session's helper transcripts are copied here first (the
+    // old host is stopped or paused by now), keeping every helper resumable
+    // after each compaction.
+    const sessionDir =
+      typeof p.transcript_path === "string" && p.transcript_path !== ""
+        ? sessionDirOfTranscript(p.transcript_path)
+        : undefined;
+    if (sessionDir !== undefined) carryHelpersFromPreviousSession(store, threadId, sessionDir);
     // F4: carried subagents and relaunched Monitors settle here too — the
     // subagent from its saved transcript, the Monitor from its exact process.
-    settleCarriedWork(store, threadId, { continuityDir: continuityDirOf(dbPath), ...deps.carried });
+    settleCarriedWork(store, threadId, {
+      continuityDir: continuityDirOf(dbPath),
+      ...(sessionDir === undefined ? {} : { sessionDir }),
+      ...deps.carried,
+    });
     const pending = store.listPendingResults(threadId);
     const events = pendingMonitorEvents(store, threadId, deps.manage ?? {}, MAX_EVENTS_PER_PROMPT + 1);
     return {
