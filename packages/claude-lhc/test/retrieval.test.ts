@@ -68,13 +68,16 @@ beforeEach(() => {
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
 describe("retrieval server", () => {
-  test("lists get_turns and get_messages, read-only, described as on the other hosts", async () => {
+  test("lists get_turns and get_messages, read-only, described as on the other hosts plus the gap-marker pointer", async () => {
     const ref = await thread([["q", "a"]]);
     const client = await connect(() => ref);
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(["get_messages", "get_turns"]);
     for (const t of tools) expect(t.annotations?.readOnlyHint).toBe(true);
     expect(tools.find((t) => t.name === "get_turns")!.description).toContain("(the <tNNN> tags in compressed history)");
+    expect(tools.find((t) => t.name === "get_turns")!.description).toContain(
+      "Use it whenever the context says `[turns tA–tB not in view; use get-turns]`",
+    );
   });
 
   test("get_turns returns the turn as its history renders it, inside the historical envelope; receipts outside it", async () => {
