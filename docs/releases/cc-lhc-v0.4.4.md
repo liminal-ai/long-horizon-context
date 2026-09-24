@@ -74,8 +74,9 @@ compacted.
 
 ### Shared LHC core
 
-This fix is in the TypeScript core and also ships in the `claude-lhc` 0.1.1
-sidecar. It is not yet in the Rust port used by codex-lhc and grok-lhc.
+This fix is in the TypeScript core. It also ships in the `claude-lhc` 0.1.1
+sidecar, which is published separately. It is not yet in the Rust port used by
+codex-lhc and grok-lhc.
 
 - **The earliest turns could vanish from the view.** Turns older than everything
   else in the view got no gap marker, and if their summaries were ready but not
@@ -170,11 +171,11 @@ npm install --global cc-lhc@0.4.4
 
 ## Source and artifacts
 
-- Release tag: `cc-lhc-v0.4.4`
+- Release tag: [`cc-lhc-v0.4.4`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.4) (`9204183c`)
 - Changes since 0.4.3: [`cc-lhc-v0.4.3...cc-lhc-v0.4.4`](https://github.com/liminal-ai/long-horizon-context/compare/cc-lhc-v0.4.3...cc-lhc-v0.4.4)
 - Checksums: [`SHA256SUMS`](https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.4/SHA256SUMS)
-- npm: [`cc-lhc@0.4.4`](https://www.npmjs.com/package/cc-lhc/v/0.4.4)
-- Sidecar: [`claude-lhc@0.1.1`](https://www.npmjs.com/package/claude-lhc/v/0.1.1), built from the same commit
+- npm: [`cc-lhc@0.4.4`](https://www.npmjs.com/package/cc-lhc/v/0.4.4), tarball sha256 `003a2e1c82dfe5c859aa0486ab166465d009e41d9658a1eb221be4476282ab07`
+- Sidecar: the core fix also ships in `claude-lhc` 0.1.1, published separately
 - Previous release: [`cc-lhc-v0.4.3`](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.3)
 - Fix commits: killing the wrapper `577a7049`, `75f5c2e1`, `3b6314a7`; crash
   recovery `7aecb2c0`, `0b759cd9`; monitors `be8cb0b2`, `b945e8bf`; core
