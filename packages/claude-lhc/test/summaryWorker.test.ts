@@ -63,6 +63,7 @@ describe("summary worker", () => {
       mcpServers: {},
       strictMcpConfig: true,
       maxTurns: 1,
+      thinking: { type: "adaptive", display: "omitted" },
       persistSession: false,
       model: "sonnet",
       pathToClaudeCodeExecutable: "/bin/claude",

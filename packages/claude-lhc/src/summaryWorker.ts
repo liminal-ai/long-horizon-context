@@ -52,6 +52,9 @@ export function summaryWorkerOptions(deps: {
     mcpServers: {},
     strictMcpConfig: true,
     maxTurns: 1,
+    // What `claude -p` sends (captured): adaptive thinking, display omitted.
+    // The SDK otherwise sends no display, and the two lanes' requests differ.
+    thinking: { type: "adaptive", display: "omitted" },
     persistSession: false,
     cwd: deps.cwd,
     env: deps.env,
