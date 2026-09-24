@@ -1119,6 +1119,28 @@ static pc_status bind_child_to_wrapper_job(int64_t pid, char *message, size_t ml
   return PC_OK;
 }
 
+/* The Restart Manager can still name a process that has exited (seen on
+ * win32-arm64: listed after its exit, while a share-none open already
+ * succeeded). An exited process holds nothing, so it is dropped — but only
+ * when that is provable: its pid no longer opens, its process object is
+ * signaled, or the pid now belongs to a process born at another time than
+ * the one the Restart Manager saw. A holder we cannot inspect stays listed. */
+static int holder_has_exited(const RM_UNIQUE_PROCESS *p) {
+  HANDLE h = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, p->dwProcessId);
+  if (h == NULL) return GetLastError() == ERROR_INVALID_PARAMETER;
+  int exited = WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
+  if (!exited) {
+    FILETIME created, exitTime, kernel, user;
+    if (GetProcessTimes(h, &created, &exitTime, &kernel, &user) &&
+        (created.dwLowDateTime != p->ProcessStartTime.dwLowDateTime ||
+         created.dwHighDateTime != p->ProcessStartTime.dwHighDateTime)) {
+      exited = 1;
+    }
+  }
+  CloseHandle(h);
+  return exited;
+}
+
 static pc_status list_file_holders(const char *path, file_holders_result *out) {
   out->count = 0;
   out->truncated = 0;
@@ -1183,6 +1205,7 @@ static pc_status list_file_holders(const char *path, file_holders_result *out) {
           result = PC_NATIVE_ERROR;
         } else {
           for (UINT i = 0; i < count; i++) {
+            if (holder_has_exited(&infos[i].Process)) continue;
             if (out->count >= FILE_HOLDERS_MAX) {
               out->truncated = 1;
               break;

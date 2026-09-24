@@ -337,6 +337,13 @@ function __filename_for_holders(): string {
 // stand-in wrapper W spawns C, binds it, C spawns G and then exits first; W
 // is then killed. G must die with W's job handle. Without the bind, G lives
 // (the control run), which is what makes the bound run meaningful.
+//
+// G is spawned detached. libuv assigns a non-detached child to its own
+// kill-on-close job, so such a G dies the moment C exits whatever W does (the
+// harness sanity test shows it) and could prove nothing. Tools that outlive
+// their parent, as in the report, are the ones outside that job; a detached
+// libuv child is, and libuv never asks for CREATE_BREAKAWAY_FROM_JOB, so it
+// stays in any job C inherited from W — which is what the bind relies on.
 async function untilTrue(check: () => boolean, ms: number): Promise<boolean> {
   return until(check, (value) => value, ms);
 }
@@ -355,9 +362,14 @@ describe.runIf(addonLoad.ok && process.platform === "win32")("win32 kill-on-clos
     }
   });
 
-  async function run(bind: boolean): Promise<{ bound: unknown; grandchild: number; wrapper: ChildProcess }> {
+  type Observed = { bound: unknown; gAliveAfterCExit: boolean; gAliveAfterWrapperKill?: boolean };
+
+  async function run(
+    bind: boolean,
+    detachG: boolean,
+  ): Promise<{ observed: Observed; grandchild: number; wrapper: ChildProcess }> {
     const addonPath = resolveAddonArtifact().path;
-    const inner = `const g = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" }); process.stdout.write("G " + g.pid + "\\n"); setTimeout(() => process.exit(0), 700);`;
+    const inner = `const g = require("node:child_process").spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore", detached: ${String(detachG)} }); process.stdout.write("G " + g.pid + "\\n"); setTimeout(() => process.exit(0), 700);`;
     const script = `
       const m = { exports: {} };
       process.dlopen(m, process.argv[1]);
@@ -376,29 +388,41 @@ describe.runIf(addonLoad.ok && process.platform === "win32")("win32 kill-on-clos
     wrapper.stdout!.on("data", (d: Buffer) => {
       out += d.toString();
     });
-    expect(await untilTrue(() => /BOUND .*\n/.test(out) && /G \d+/.test(out) && out.includes("CEXIT"), 15_000)).toBe(
-      true,
+    const complete = await untilTrue(
+      () => /BOUND .*\n/.test(out) && /G \d+/.test(out) && out.includes("CEXIT"),
+      15_000,
     );
+    expect({ complete, out }).toMatchObject({ complete: true });
     const grandchild = Number(/G (\d+)/.exec(out)![1]);
     orphans.push(grandchild);
     const bound = JSON.parse(/BOUND (.*)\n/.exec(out)![1]!) as unknown;
-    return { bound, grandchild, wrapper };
+    // Give a job-driven kill of G, if any, time to land before looking.
+    await new Promise((r) => setTimeout(r, 500));
+    return { observed: { bound, gAliveAfterCExit: alive(grandchild) }, grandchild, wrapper };
   }
 
+  it("harness sanity: a non-detached descendant dies with its parent's own libuv job", async () => {
+    const { observed } = await run(false, false);
+    expect(observed).toEqual({ bound: null, gAliveAfterCExit: false });
+  }, 30_000);
+
   it("a descendant outlives its exited parent and a killed wrapper when unbound (control)", async () => {
-    const { grandchild, wrapper } = await run(false);
-    expect(alive(grandchild)).toBe(true);
+    const { observed, grandchild, wrapper } = await run(false, true);
     wrapper.kill();
     await new Promise((r) => setTimeout(r, 1_500));
-    expect(alive(grandchild)).toBe(true);
+    observed.gAliveAfterWrapperKill = alive(grandchild);
+    expect(observed).toEqual({ bound: null, gAliveAfterCExit: true, gAliveAfterWrapperKill: true });
   }, 30_000);
 
   it("bound: the descendant dies with the killed wrapper even though its parent exited first", async () => {
-    const { bound, grandchild, wrapper } = await run(true);
-    expect(bound).toMatchObject({ ok: true });
-    expect(alive(grandchild)).toBe(true);
+    const { observed, grandchild, wrapper } = await run(true, true);
     wrapper.kill();
-    expect(await untilTrue(() => !alive(grandchild), 10_000)).toBe(true);
+    observed.gAliveAfterWrapperKill = !(await untilTrue(() => !alive(grandchild), 10_000));
+    expect(observed).toEqual({
+      bound: expect.objectContaining({ ok: true }),
+      gAliveAfterCExit: true,
+      gAliveAfterWrapperKill: false,
+    });
   }, 30_000);
 
   it("listFileHolders names a process holding the file, and none once it exits", async () => {
