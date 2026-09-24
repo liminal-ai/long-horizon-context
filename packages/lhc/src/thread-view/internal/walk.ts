@@ -632,26 +632,43 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // every selected entry, so nothing older anchors them. The usual shape is a
   // thread whose first chunk is still open: without this, the elder bands
   // stay empty and those turns silently leave the view. They take the
-  // detailed/brief budget the chunks left unused, per turn, newest-first, on
-  // the same fill rule — stop in detailed, skip in brief — rendered from the
-  // detailed-turn ladder the coverage entries use. A turn newer than the
-  // oldest selected entry is left to the coverage machinery, as before. Only
-  // a turn with ready material is a candidate: one with none would spend the
-  // share on an empty entry, and is named by a gap marker below instead.
+  // detailed/brief budget the chunks left unused, newest-first, on the same
+  // fill rule — stop in detailed, skip in brief. A turn with ready material
+  // is one entry from the detailed-turn ladder; a contiguous run of turns
+  // with none is ONE candidate, the run's gap marker, priced like any entry.
+  // So the elder fill never emits a line per missing turn, and the lines it
+  // does emit are bounded by the budget, not by the backlog. These turns are
+  // then settled: the unbudgeted coverage pass below never re-reaches them.
+  // A turn newer than the oldest selected entry is left to it, as before.
   const hasReadyTurnSummary = (turn: SelectionTurn): boolean =>
     readyContent(lookup(turn.turnId, "detailed_turn_compression")) !== null ||
     readyContent(lookup(turn.turnId, "pre_detailed_assembly")) !== null;
   const orphanedMembers = elderTurns
-    .filter(
-      (turn) =>
-        turn.turnOrder < oldestSelectedTurnOrder && !coveredTurnIds.has(turn.turnId) && hasReadyTurnSummary(turn),
-    )
+    .filter((turn) => turn.turnOrder < oldestSelectedTurnOrder && !coveredTurnIds.has(turn.turnId))
     .sort((a, b) => b.turnOrder - a.turnOrder);
+  const settledElderTurnIds = new Set(orphanedMembers.map((turn) => turn.turnId));
+  // Members a run marker stands for (its subject id names the run, not a turn).
+  const markerMembers = new Map<ArrangementEntry, readonly SelectionTurn[]>();
   if (orphanedMembers.length > 0) {
+    type ElderCandidate = { turn: SelectionTurn } | { run: SelectionTurn[] };
+    const candidates: ElderCandidate[] = [];
+    for (const turn of orphanedMembers) {
+      const last = candidates.at(-1);
+      if (hasReadyTurnSummary(turn)) candidates.push({ turn });
+      else if (last !== undefined && "run" in last) last.run.push(turn);
+      else candidates.push({ run: [turn] });
+    }
+    const buildElder = (candidate: ElderCandidate, band: "detailed" | "brief"): ArrangementEntry => {
+      if ("turn" in candidate) return buildCoverageEntry(candidate.turn, band);
+      const ascending = [...candidate.run].reverse();
+      const entry = gapMarkerEntry(ascending, band);
+      markerMembers.set(entry, ascending);
+      return entry;
+    };
     const detailedTurns = fillBand(
-      orphanedMembers,
+      candidates,
       detailedBudget,
-      (turn) => buildCoverageEntry(turn, "detailed"),
+      (candidate) => buildElder(candidate, "detailed"),
       "stop",
       !cascading,
       detailed.included,
@@ -659,21 +676,40 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     const briefTurns = fillBand(
       detailedTurns.rest,
       briefBudget,
-      (turn) => buildCoverageEntry(turn, "brief"),
+      (candidate) => buildElder(candidate, "brief"),
       "skip",
       !cascading,
       brief.included,
     );
     detailed.included.push(...detailedTurns.included);
     brief.included.push(...briefTurns.included);
-    brief.skipped.push(...briefTurns.skipped);
-    for (const entry of [...detailedTurns.included, ...briefTurns.included, ...briefTurns.skipped]) {
-      coveredTurnIds.add(entry.subjectId);
-    }
+    brief.skipped.push(...briefTurns.skipped.filter((entry) => !markerMembers.has(entry)));
     for (const entry of [...detailedTurns.included, ...briefTurns.included]) {
-      const turn = turnsById.get(entry.subjectId);
+      const turn = markerMembers.has(entry) ? undefined : turnsById.get(entry.subjectId);
       if (turn !== undefined) oldestSelectedTurnOrder = Math.min(oldestSelectedTurnOrder, turn.turnOrder);
     }
+  }
+
+  // One line naming a contiguous run of turns (ascending) that no entry
+  // represents: "[turns tA–tB not in view; use get-turns]".
+  function gapMarkerEntry(turnsInRun: readonly SelectionTurn[], band: ArrangementEntry["band"]): ArrangementEntry {
+    const first = turnsInRun[0] as SelectionTurn;
+    const last = turnsInRun[turnsInRun.length - 1] as SelectionTurn;
+    const label = first === last ? `turn ${first.turnId}` : `turns ${first.turnId}–${last.turnId}`;
+    const reason = `${label} not in view; use get-turns`;
+    const text = `[${reason}]`;
+    return {
+      band,
+      subjectKind: "turn",
+      subjectId: first === last ? first.turnId : `${first.turnId}–${last.turnId}`,
+      derivationUsed: "gap",
+      degraded: false,
+      gap: true,
+      reason,
+      startOrder: turnStartOrder(first),
+      text,
+      tokens: estimator.estimate(text),
+    };
   }
 
   function readyContent(derivation: DerivationSnapshot | undefined): string | null {
@@ -733,7 +769,12 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   }
 
   const coverageGaps = bandedTurns
-    .filter((turn) => turn.turnOrder >= oldestSelectedTurnOrder && !coveredTurnIds.has(turn.turnId))
+    .filter(
+      (turn) =>
+        turn.turnOrder >= oldestSelectedTurnOrder &&
+        !coveredTurnIds.has(turn.turnId) &&
+        !settledElderTurnIds.has(turn.turnId),
+    )
     .map((turn) => buildCoverageEntry(turn));
 
   let entries: ArrangementEntry[] = [
@@ -745,7 +786,10 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // The coverage edge is the oldest INCLUDED entry: a skipped subject inside
   // the window is a hole in coverage that already extends past it, so it
   // neither moves the edge nor ends it.
-  const coveredFrom = entries.length === 0 ? compactPoint : Math.min(...entries.map((entry) => entry.startOrder));
+  // Run markers name holes, not material: they do not move the edge.
+  const materialEntries = entries.filter((entry) => !markerMembers.has(entry));
+  const coveredFrom =
+    materialEntries.length === 0 ? compactPoint : Math.min(...materialEntries.map((entry) => entry.startOrder));
 
   // Gap markers (F6): a banded turn that no entry represents — for whatever
   // reason, including the leading turns older than the coverage edge —
@@ -756,7 +800,9 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   // nearest older entry and is not priced against any share.
   const representedTurnIds = new Set<string>();
   for (const entry of entries) {
-    if (entry.subjectKind === "turn") representedTurnIds.add(entry.subjectId);
+    const members = markerMembers.get(entry);
+    if (members !== undefined) for (const turn of members) representedTurnIds.add(turn.turnId);
+    else if (entry.subjectKind === "turn") representedTurnIds.add(entry.subjectId);
     else for (const turnId of chunksById.get(entry.subjectId)?.memberTurnIds ?? []) representedTurnIds.add(turnId);
   }
   const unrepresentedRuns: SelectionTurn[][] = [];
@@ -772,30 +818,14 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   if (run.length > 0) unrepresentedRuns.push(run);
   if (unrepresentedRuns.length > 0) {
     const markers = unrepresentedRuns.map((turnsInRun): ArrangementEntry => {
-      const first = turnsInRun[0] as SelectionTurn;
-      const last = turnsInRun[turnsInRun.length - 1] as SelectionTurn;
-      const label = first === last ? `turn ${first.turnId}` : `turns ${first.turnId}–${last.turnId}`;
-      const reason = `${label} not in view; use get-turns`;
-      const startOrder = turnStartOrder(first);
+      const startOrder = turnStartOrder(turnsInRun[0] as SelectionTurn);
       const olderNeighbor = entries
         .filter((entry) => entry.startOrder < startOrder)
         .reduce<ArrangementEntry | undefined>(
           (newest, entry) => (newest === undefined || entry.startOrder > newest.startOrder ? entry : newest),
           undefined,
         );
-      const text = `[${reason}]`;
-      return {
-        band: olderNeighbor?.band ?? "brief",
-        subjectKind: "turn",
-        subjectId: first === last ? first.turnId : `${first.turnId}–${last.turnId}`,
-        derivationUsed: "gap",
-        degraded: false,
-        gap: true,
-        reason,
-        startOrder,
-        text,
-        tokens: estimator.estimate(text),
-      };
+      return gapMarkerEntry(turnsInRun, olderNeighbor?.band ?? "brief");
     });
     const withMarkers = [...entries, ...markers];
     entries = (["brief", "detailed", "smooth"] as const).flatMap((band) =>
