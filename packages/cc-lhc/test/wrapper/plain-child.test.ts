@@ -117,8 +117,8 @@ describe("spawnPlainChild: launch shape", () => {
     expect(rec.calls[0]!.program).toBe("claude");
     expect(rec.calls[0]!.options.stdio).toBe("inherit");
     expect(rec.calls[1]!.program).toBe(process.execPath);
-    expect(rec.calls[1]!.args).toEqual(["-e", WATCHDOG_SOURCE, "777", "4001"]);
-    expect(rec.calls[1]!.options).toMatchObject({ detached: true, stdio: "ignore" });
+    expect(rec.calls[1]!.args).toEqual(["-e", WATCHDOG_SOURCE, "777", "4001", "pipe"]);
+    expect(rec.calls[1]!.options).toMatchObject({ detached: true, stdio: ["pipe", "ignore", "ignore"] });
     expect(couplings).toEqual(["watchdog"]);
   });
 
@@ -191,6 +191,39 @@ describe("spawnPlainChild: real processes", () => {
     parent.kill("SIGKILL");
     expect(await waitUntil(() => !alive(childPid), 8_000)).toBe(true);
   }, 30_000);
+
+  // macOS gorilla report: a SIGKILLed wrapper whose own parent has not reaped
+  // it is a zombie, and kill(pid, 0) still succeeds on it, so a pid-polling
+  // watchdog left Claude running. The parent here is `sleep`, which never
+  // reaps; the watchdog must act on the wrapper's pipe closing instead.
+  it.skipIf(process.platform === "win32")(
+    "a SIGKILLed wrapper whose parent never reaps it (a zombie) still leaves no child running (watchdog)",
+    async () => {
+      const dir = mkdtempSync(join(tmpdir(), "plain-child-zombie-"));
+      const script = writeParentScript(dir, ["-e", "setInterval(() => {}, 1000)"], "watchdog");
+      const parent = spawn(
+        "/bin/sh",
+        ["-c", '"$0" "$1" & echo "WRAPPER $!" >&2; exec sleep 60', process.execPath, script],
+        { stdio: ["ignore", "ignore", "pipe"] },
+      );
+      spawned.push(parent);
+      let err = "";
+      parent.stderr!.on("data", (d: Buffer) => {
+        err += d.toString();
+      });
+      expect(await waitUntil(() => /CHILD \d+/.test(err) && /WRAPPER \d+/.test(err), 10_000)).toBe(true);
+      const childPid = Number(/CHILD (\d+)/.exec(err)![1]);
+      const wrapperPid = Number(/WRAPPER (\d+)/.exec(err)![1]);
+      expect(alive(childPid)).toBe(true);
+
+      process.kill(wrapperPid, "SIGKILL");
+      // The wrapper is now an unreaped zombie: the pid still answers kill(0).
+      await new Promise((r) => setTimeout(r, 300));
+      expect(alive(wrapperPid)).toBe(true);
+      expect(await waitUntil(() => !alive(childPid), 8_000)).toBe(true);
+    },
+    30_000,
+  );
 
   it.skipIf(process.platform === "win32")(
     "the watchdog's Windows branch runs taskkill /T /F on the child once the wrapper is gone",

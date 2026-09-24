@@ -13,8 +13,13 @@
  * A plain child keeps running instead, writing the thread with no lease holder.
  * So parent death is coupled explicitly, with the same signal:
  *  - Linux: `setpriv --pdeathsig HUP` execs Claude with PR_SET_PDEATHSIG set.
- *  - elsewhere, or without setpriv: a small detached watchdog polls the wrapper
- *    and sends SIGHUP (then SIGKILL after WATCHDOG_KILL_AFTER_MS) once it is gone.
+ *  - elsewhere, or without setpriv: a small detached watchdog sends SIGHUP
+ *    (then SIGKILL after WATCHDOG_KILL_AFTER_MS) once the wrapper is gone. It
+ *    learns that from a pipe only the wrapper holds open: the kernel closes it
+ *    when the wrapper dies, however it dies, so EOF on the watchdog's stdin is
+ *    the signal. Polling the wrapper pid alone cannot see that death while the
+ *    wrapper's own parent has not reaped it: `kill(pid, 0)` succeeds on a
+ *    zombie (macOS gorilla report: 2/2 delayed-reap trials left Claude running).
  *
  * Windows has no SIGHUP (libuv answers ENOSYS for it) and no process groups, so
  * termination there is what closing the ConPTY did: `taskkill /T /F` on Claude's
@@ -40,17 +45,27 @@ export const WATCHDOG_KILL_AFTER_MS = 5_000;
 const SETPRIV_CANDIDATES = ["/usr/bin/setpriv", "/bin/setpriv"];
 
 /**
- * The watchdog body, run as `node -e WATCHDOG_SOURCE <wrapperPid> <childPid>`.
- * It exits as soon as the child is gone, so it never signals a reused pid for
- * longer than one poll interval.
+ * The watchdog body, run as `node -e WATCHDOG_SOURCE <wrapperPid> <childPid> [pipe]`.
+ * With `pipe`, its stdin is the wrapper's end of a pipe and EOF there means the
+ * wrapper is gone; the pid poll stays as a second trigger. It exits as soon as
+ * the child is gone, so it never signals a reused pid for longer than one poll
+ * interval.
  */
 export const WATCHDOG_SOURCE = `
-const [wrapper, child] = process.argv.slice(1).map(Number);
+const [wrapper, child] = process.argv.slice(1, 3).map(Number);
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 const poll = ${WATCHDOG_POLL_MS}, killAfter = ${WATCHDOG_KILL_AFTER_MS};
+let wrapperGone = false;
+if (process.argv[3] === "pipe") {
+  const gone = () => { wrapperGone = true; };
+  process.stdin.on("data", () => {});
+  process.stdin.on("end", gone);
+  process.stdin.on("close", gone);
+  process.stdin.on("error", gone);
+}
 const timer = setInterval(() => {
   if (!alive(child)) process.exit(0);
-  if (alive(wrapper)) return;
+  if (!wrapperGone && alive(wrapper)) return;
   clearInterval(timer);
   if (process.platform === "win32") {
     try { require("node:child_process").spawnSync("taskkill", ["/PID", String(child), "/T", "/F"], { windowsHide: true, stdio: "ignore" }); } catch {}
@@ -116,15 +131,22 @@ export const spawnPlainChild: PlainChildSpawn = (file, args, options) => {
   if (setpriv !== null) {
     options.onCoupling?.("pdeathsig");
   } else {
+    // The watchdog's stdin is a pipe whose write end only this process holds
+    // (node opens it close-on-exec, and Claude was spawned before it). Nothing
+    // is ever written; the end closing is the wrapper-death signal.
     const watchdog = spawn(
       process.execPath,
-      ["-e", WATCHDOG_SOURCE, String(options.wrapperPid ?? process.pid), String(pid)],
+      ["-e", WATCHDOG_SOURCE, String(options.wrapperPid ?? process.pid), String(pid), "pipe"],
       {
-        stdio: "ignore",
+        stdio: ["pipe", "ignore", "ignore"],
         detached: true,
         windowsHide: true,
       },
     );
+    watchdog.on("error", () => {});
+    watchdog.stdin?.on("error", () => {});
+    // Neither the watchdog nor its pipe may keep the wrapper's event loop alive.
+    (watchdog.stdin as { unref?: () => void } | null)?.unref?.();
     watchdog.unref();
     options.onCoupling?.("watchdog");
   }
