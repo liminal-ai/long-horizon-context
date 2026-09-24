@@ -5,6 +5,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  summaryWorkerAuthSettings as userAuthSettings,
+  SUMMARY_WORKER_CLI_ARGS as WORKER_ARGS,
+  SUMMARY_WORKER_SYSTEM_PROMPT as WORKER_SYSTEM_PROMPT,
+} from "lhc";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -13,9 +18,6 @@ import {
   createConcurrencyLimiter,
   killAllInferenceChildren,
   SLOT_TIMEOUT_MESSAGE,
-  userAuthSettings,
-  WORKER_ARGS,
-  WORKER_SYSTEM_PROMPT,
 } from "../../src/inference/claude-cli.js";
 
 const FIXTURE_BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "fake-claude.mjs");

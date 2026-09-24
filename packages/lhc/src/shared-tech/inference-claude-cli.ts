@@ -7,9 +7,9 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { ModelAssignment, ModelCall, ModelCallFailureKind, ModelCallResult } from "./inference-types.js";
 import { DEFAULT_PROMPT_NAMES } from "./prompts/index.js";
+import { SUMMARY_WORKER_SYSTEM_PROMPT, summaryWorkerCliLaunch } from "./summary-worker.js";
 
 const PROVIDER = "claude-cli";
-const DEFAULT_SYSTEM_PROMPT = "You are a text processor. Follow the user instruction exactly.";
 const MAX_CONCURRENCY = 3;
 
 export function claudeCliInferenceAssignments(): Record<string, ModelAssignment> {
@@ -82,9 +82,6 @@ export function createClaudeCliModelCall(deps: {
       waiters.shift()?.();
     };
   };
-  // Derivation children must not inherit a session's transcript dir or
-  // interfere with an interactive child; the env is the caller's.
-  const childEnv = { ...deps.env, DISABLE_AUTO_COMPACT: "1", CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1" };
 
   return async (input): Promise<ModelCallResult> => {
     if (input.provider !== PROVIDER) {
@@ -95,23 +92,29 @@ export function createClaudeCliModelCall(deps: {
       input.messages
         .filter((m) => m.role === "system")
         .map((m) => m.content)
-        .join("\n\n") || DEFAULT_SYSTEM_PROMPT;
+        .join("\n\n") || SUMMARY_WORKER_SYSTEM_PROMPT;
     const user = input.messages
       .filter((m) => m.role === "user")
       .map((m) => m.content)
       .join("\n\n");
-    const args = ["-p", "--no-session-persistence", "--model", input.model, "--system-prompt", system];
+    // No framing, tools or extra turns, in an empty scratch dir (summary-worker.ts).
+    const launch = summaryWorkerCliLaunch({ model: input.model, systemPrompt: system, env: deps.env });
     return new Promise<ModelCallResult>((resolve) => {
       let stdout = "";
       let stderr = "";
       let settled = false;
-      const child = spawn(deps.binary, args, { stdio: ["pipe", "pipe", "pipe"], env: childEnv });
+      const child = spawn(deps.binary, launch.args, {
+        stdio: ["pipe", "pipe", "pipe"],
+        env: launch.env,
+        cwd: launch.cwd,
+      });
       live.add(child);
       const finish = (result: ModelCallResult): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         live.delete(child);
+        launch.removeCwd();
         release();
         resolve(result);
       };

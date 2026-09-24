@@ -7,13 +7,12 @@ import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, query } from "@anthropic-ai/claude-agent-sdk";
+import { SUMMARY_WORKER_SYSTEM_PROMPT, summaryWorkerAuthSettings as userAuthSettings } from "lhc";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   createSummaryWorkerModelCall,
   SUMMARY_WORKER_PROVIDER,
-  SUMMARY_WORKER_SYSTEM_PROMPT,
   summaryWorkerAssignments,
-  userAuthSettings,
 } from "../src/summaryWorker.ts";
 
 let config = "";
