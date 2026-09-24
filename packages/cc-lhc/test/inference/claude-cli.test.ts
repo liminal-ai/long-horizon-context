@@ -1,6 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,9 @@ import {
   createConcurrencyLimiter,
   killAllInferenceChildren,
   SLOT_TIMEOUT_MESSAGE,
+  userAuthSettings,
+  WORKER_ARGS,
+  WORKER_SYSTEM_PROMPT,
 } from "../../src/inference/claude-cli.js";
 
 const FIXTURE_BIN = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "fake-claude.mjs");
@@ -106,7 +109,65 @@ describe("createClaudeCliModelCall", () => {
     await harness.call(baseInput);
     harness.restore();
     const captured = JSON.parse(readFileSync(stdinFile, "utf8")) as { systemPrompt: string };
-    expect(captured.systemPrompt).toBe("You are a text processor. Follow the user instruction exactly.");
+    expect(captured.systemPrompt).toBe(WORKER_SYSTEM_PROMPT);
+    expect(Buffer.byteLength(WORKER_SYSTEM_PROMPT)).toBe(504);
+    expect(WORKER_SYSTEM_PROMPT.startsWith("Your role is to smooth or summarize conversation excerpts")).toBe(true);
+  });
+
+  it("runs with no settings files, tools, MCP or extra turns, in an empty scratch directory removed afterwards", async () => {
+    const config = mkdtempSync(join(tmpdir(), "cc-lhc-cli-cfg-"));
+    const seen: Array<{ args: string[]; cwd: string; entries: string[]; env: NodeJS.ProcessEnv | undefined }> = [];
+    const call = createClaudeCliModelCall({
+      binary: () => process.execPath,
+      spawnFn: ((...spawnArgs: Parameters<typeof spawn>) => {
+        const cwd = String(spawnArgs[2]?.cwd);
+        seen.push({ args: [...(spawnArgs[1] ?? [])], cwd, entries: readdirSync(cwd), env: spawnArgs[2]?.env });
+        return spawn(process.execPath, [FIXTURE_BIN, ...(spawnArgs[1] ?? [])], spawnArgs[2]);
+      }) as typeof spawn,
+    });
+    const prior = { mode: process.env.CC_LHC_FAKE_MODE, config: process.env.CLAUDE_CONFIG_DIR };
+    process.env.CC_LHC_FAKE_MODE = "ok";
+    process.env.CLAUDE_CONFIG_DIR = config;
+    try {
+      await call(baseInput);
+    } finally {
+      if (prior.mode === undefined) delete process.env.CC_LHC_FAKE_MODE;
+      else process.env.CC_LHC_FAKE_MODE = prior.mode;
+      if (prior.config === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+      else process.env.CLAUDE_CONFIG_DIR = prior.config;
+    }
+    expect(WORKER_ARGS).toEqual(["--setting-sources", "", "--tools", "", "--strict-mcp-config", "--max-turns", "1"]);
+    expect(seen[0]!.args.slice(0, 2 + WORKER_ARGS.length)).toEqual(["-p", "--no-session-persistence", ...WORKER_ARGS]);
+    expect(seen[0]!.args).not.toContain("--settings");
+    expect(seen[0]!.entries).toEqual([]);
+    expect(seen[0]!.env).toMatchObject({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1", CLAUDE_CONFIG_DIR: config });
+    expect(existsSync(seen[0]!.cwd)).toBe(false);
+  });
+
+  it("carries only the auth part of the user's settings into --settings", () => {
+    const config = mkdtempSync(join(tmpdir(), "cc-lhc-cli-cfg-"));
+    expect(userAuthSettings({ CLAUDE_CONFIG_DIR: config })).toBeNull();
+    writeFileSync(
+      join(config, "settings.json"),
+      JSON.stringify({
+        env: {
+          ANTHROPIC_BASE_URL: "http://proxy",
+          ANTHROPIC_AUTH_TOKEN: "tok",
+          ANTHROPIC_DEFAULT_SONNET_MODEL: "x",
+          FOO: "1",
+        },
+        apiKeyHelper: "/bin/key",
+        outputStyle: "Explanatory",
+        permissions: { allow: ["Edit"] },
+        hooks: { Stop: [] },
+      }),
+    );
+    expect(userAuthSettings({ CLAUDE_CONFIG_DIR: config })).toEqual({
+      env: { ANTHROPIC_BASE_URL: "http://proxy", ANTHROPIC_AUTH_TOKEN: "tok" },
+      apiKeyHelper: "/bin/key",
+    });
+    writeFileSync(join(config, "settings.json"), JSON.stringify({ env: { FOO: "1" }, outputStyle: "x" }));
+    expect(userAuthSettings({ CLAUDE_CONFIG_DIR: config })).toBeNull();
   });
 
   it("classifies auth stderr", async () => {
