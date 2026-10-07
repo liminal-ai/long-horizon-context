@@ -14,4 +14,4 @@ Ignore:
 - Style, naming, formatting, import order, lint-level issues (CI handles these).
 - Vendored/generated paths: `.repos/**`, `third-party/**`, `vendor/**`, `**/dist/**`, `**/build/**`, `**/*.gen.ts`, `**/_generated/**`, lockfiles.
 
-Format: one comment per distinct bug; include a concrete failing scenario. No praise, no summaries of what the PR does.
+Format: one comment per distinct bug, starting with its severity tag `[P0]`, `[P1]` or `[P2]` (see `.github/REVIEW_RULES.md`); include a concrete failing scenario. No praise, no summaries of what the PR does.
