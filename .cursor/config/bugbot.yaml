@@ -10,4 +10,4 @@ prSummary:
   mode: disabled            # Copilot already posts an overview; avoid 4 summaries
   riskScore: false
 autofix:
-  mode: disabled            # can only lower the dashboard setting; keep agents in control of fixes
+  mode: existingBranch      # allow autofix commits on the PR branch when enabled in dashboard

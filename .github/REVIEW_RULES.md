@@ -1,12 +1,11 @@
-# AI review rules (shared by all four reviewers)
+# AI review rules (shared by our AI reviewers)
 
-Four bots review PRs here. Each one has a lane. Stay in your lane and don't repeat a finding that another bot has already posted.
+AI reviewers run on PRs here. Each one has a lane. Stay in your lane and don't repeat a finding that another bot has already posted.
 
 | Bot | Lane | Volume cap |
 |---|---|---|
 | Copilot (Lite) | Fast first pass: obvious bugs, typos in logic, API misuse, conventions from `AGENTS.md` | ≤5 inline |
 | Cursor Bugbot | Primary bug-finder: logic errors, edge cases, regressions, broken invariants | Bugbot default |
-| Claude (Opus 5.5) | Security, secrets/PII in logs, auth, concurrency/races, data integrity, cross-module contracts | ≤5 inline + 1 summary |
 | Codex (GPT-6.1 Sol) | P0/P1 correctness only, plus missing tests for changed behavior | 1 comment, ≤5 items |
 
 Rules for every reviewer:
