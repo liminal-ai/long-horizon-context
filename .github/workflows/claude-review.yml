@@ -24,19 +24,20 @@ concurrency:
 jobs:
   review:
     # Once per PR when it's ready; re-run by adding the `ai-rereview` label.
-    # Skip forks (no secrets) and opt-outs; also skip cleanly when the secret is missing.
+    # Skip forks and opt-outs. Secret gating is handled at step-level via env mapping.
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !contains(github.event.pull_request.labels.*.name, 'skip-ai-review') &&
-      (github.event.action != 'labeled' || github.event.label.name == 'ai-rereview') &&
-      secrets.ANTHROPIC_API_KEY != ''
+      (github.event.action != 'labeled' || github.event.label.name == 'ai-rereview')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
       contents: read
       pull-requests: write
       id-token: write   # lets the already-installed Claude GitHub App mint its token
+    env:
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - name: Checkout (recursive submodules)
         uses: actions/checkout@v4
@@ -45,9 +46,11 @@ jobs:
           fetch-depth: 1
 
       # Optional: give Copilot/Bugbot a head start so their comments exist to dedupe against.
-      - run: sleep 240
+      - if: env.ANTHROPIC_API_KEY != ''
+        run: sleep 240
 
       - name: Claude review
+        if: env.ANTHROPIC_API_KEY != ''
         uses: anthropics/claude-code-action@6fed3ca145920b639991cb756090506e1bcaf515  # v1.0.245
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -69,3 +72,7 @@ jobs:
             --model claude-opus-5-5
             --max-turns 30
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/comments:*)"
+
+      - name: Skip (ANTHROPIC_API_KEY not set)
+        if: env.ANTHROPIC_API_KEY == ''
+        run: echo "ANTHROPIC_API_KEY not set; skipping Claude review."

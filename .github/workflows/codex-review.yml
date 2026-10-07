@@ -24,18 +24,19 @@ concurrency:
 jobs:
   codex:
     # Once per PR when it's ready; re-run by adding the `ai-rereview` label.
-    # Skip forks and opt-outs; skip when the secret is missing.
+    # Skip forks and opt-outs. Secret gating is handled at step-level via env mapping.
     if: >-
       github.event.pull_request.draft == false &&
       github.event.pull_request.head.repo.full_name == github.repository &&
       !contains(github.event.pull_request.labels.*.name, 'skip-ai-review') &&
-      (github.event.action != 'labeled' || github.event.label.name == 'ai-rereview') &&
-      secrets.OPENAI_API_KEY != ''
+      (github.event.action != 'labeled' || github.event.label.name == 'ai-rereview')
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:
       contents: read
       pull-requests: read
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     outputs:
       final_message: ${{ steps.run_codex.outputs.final-message }}
     steps:
@@ -52,6 +53,7 @@ jobs:
         run: git fetch --no-tags origin "$PR_BASE_REF" "+refs/pull/$PR_NUMBER/head"
 
       - name: Wait for faster bots, then snapshot their comments (for dedupe)
+        if: env.OPENAI_API_KEY != ''
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -64,6 +66,7 @@ jobs:
 
       - name: Run Codex
         id: run_codex
+        if: env.OPENAI_API_KEY != ''
         uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675  # v1.13
         with:
           openai-api-key: ${{ secrets.OPENAI_API_KEY }}
@@ -78,6 +81,10 @@ jobs:
             Already flagged by other bots (do NOT repeat): see .ai-review/prior-comments.txt
             Output Markdown: at most 5 items, each "**[P0|P1] title**: path:line, failure scenario, fix".
             If there is nothing at P0/P1 that isn't already flagged, output exactly: NO_FINDINGS
+
+      - name: Skip (OPENAI_API_KEY not set)
+        if: env.OPENAI_API_KEY == ''
+        run: echo "OPENAI_API_KEY not set; skipping Codex review."
 
   post:
     needs: codex
