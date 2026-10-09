@@ -33,11 +33,11 @@ After writing a memory file, add a one-line pointer in `memory/MEMORY.md` (`- [T
 
 Before saving, check for an existing file that already covers it — update rather than duplicate; delete memories that turn out to be wrong. Don't save what the repo already records (code structure, past fixes, git history) or what only matters to the current conversation.
 
-## Code Review Rules
+## Codex review guidelines
 
 Codex connector (chatgpt-codex-connector[bot]) reads guidelines from this file:
 
 - Report only P0/P1 correctness bugs and missing tests for changed behavior. No style or nits.
 - Start each finding with exactly `[P0]` or `[P1]`. Never cap P0s.
-- Don't repeat findings that Copilot, Bugbot or Claude already posted.
+- Don't repeat findings that Copilot or Bugbot already posted.
 - Follow `.github/REVIEW_RULES.md` and `.liminal/standards/LOCAL.md` if present.

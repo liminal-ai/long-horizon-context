@@ -8,6 +8,7 @@ Focus:
 - Error handling that swallows failures or leaves state half-written (write then persist then rollback).
 - Timer/scheduling bugs (e.g. `setTimeout` delays > 2^31-1 ms clamp to 1 ms), retry loops without bounds.
 - Secrets, tokens, or URLs that contain credentials reaching logs or error messages.
+- Concurrency and races: lost or duplicated effects, check-then-act windows, unsynchronized shared state.
 - LHC-specific: compaction/prune invariants, context-loss across resume, and atomicity of persisted cursor flips. Prefer findings with concrete replay or test hooks.
 
 Ignore:
