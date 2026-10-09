@@ -6,7 +6,7 @@ AI reviewers run on PRs here. Each one has a lane. Stay in your lane and don't r
 |---|---|---|
 | Copilot (Lite) | Fast first pass: obvious bugs, typos in logic, API misuse, conventions from `AGENTS.md` | ≤5 inline |
 | Cursor Bugbot | Primary bug-finder: logic errors, edge cases, regressions, broken invariants, secrets or credentials in logs, concurrency and races | Bugbot default |
-| Codex (GPT-6.1 Sol) | P0/P1 correctness only, plus missing tests for changed behavior | 1 comment, ≤5 items |
+| Codex (GPT-6.1 Sol) | P0/P1 correctness only, plus missing tests for changed behavior | 1 comment; at most 5 P1 items, P0s never capped |
 | Macroscope | Not installed on this repo yet. `.macroscope/approvability.md` takes effect once it is. | n/a |
 
 Auth and cross-module contracts have no dedicated bot lane here.
@@ -14,7 +14,7 @@ Auth and cross-module contracts have no dedicated bot lane here.
 Rules for every reviewer:
 - Report only issues you'd block a merge on, or that will clearly cause a bug or incident. Skip style, naming, formatting, and lint (CI covers those).
 - Before you comment, read the PR's existing review comments. If someone already flagged the issue, skip it, or reply in that thread only to add new evidence.
-- **Start every finding with its severity tag:** `[P0]`, `[P1]` or `[P2]`. Never post nits. review-gate reads this tag (RG-5, advisory; not yet wired on this repo), and untagged findings count as non-blocking.
+- **Start every finding with its severity tag:** `[P0]`, `[P1]` or `[P2]` (except Copilot, whose findings stay untagged and non-blocking). Never post nits. review-gate reads this tag (RG-5, advisory; not yet wired on this repo), and untagged findings count as non-blocking.
   - `[P0]` blocks merge: data loss or corruption, a security, auth or secret exposure, a broken wire contract, a crash on a main path, an irreversible side effect.
   - `[P1]` fix before merge, or the author records why not: a correctness bug in the changed behavior, a race, an idempotency or ordering bug, a behavior change with no test.
   - `[P2]` fix or file a follow-up: weak error handling, a perf risk, dead code, a test that mirrors the implementation.
