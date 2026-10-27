@@ -249,6 +249,11 @@ function reapProbe(pid: number): { bootId: string; starttime: string } | null {
   }
 }
 
+/** Whether the reaper can signal at all: the real compiled addon loaded and read this process. */
+export function hasRealAddonForReap(): boolean {
+  return reapProbe(process.pid) !== null;
+}
+
 /** Track a pid for reaping, snapshotting its exact identity at spawn time. */
 export function trackForReap(list: ReapTarget[], pid: number): void {
   list.push({ pid, identity: reapProbe(pid) });
@@ -261,8 +266,9 @@ export function trackForReap(list: ReapTarget[], pid: number): void {
  * ever signalled when its exact identity still matches the track-time
  * snapshot — a reused pid names a stranger and is left alone. A target whose
  * identity could not be read at track time fails closed: it is never
- * signalled (a bare pid cannot witness reuse); the reap only waits out its
- * natural exit so handles still release when the process is short-lived.
+ * signalled (a bare pid cannot witness reuse). On Windows the reap still
+ * waits out a natural exit so handles release; elsewhere unlinking the temp
+ * tree needs no wait, so the target is left to expire on its own.
  */
 export async function reapProcesses(targets: ReapTarget[], capMs = 4_000): Promise<void> {
   const alive = (pid: number): boolean => {
@@ -276,6 +282,7 @@ export async function reapProcesses(targets: ReapTarget[], capMs = 4_000): Promi
   for (const target of targets.splice(0)) {
     const { pid } = target;
     if (target.identity === null) {
+      if (process.platform !== "win32") continue;
       const deadline = Date.now() + capMs;
       while (alive(pid) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 25));
       continue;
