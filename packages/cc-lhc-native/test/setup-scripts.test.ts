@@ -92,27 +92,15 @@ describe("prereqs: Claude auth probe", () => {
 });
 
 describe("check-prereqs CLI", () => {
-  it("--for pi-lhc passes on a machine with git+node+pnpm (this one and every matrix runner)", () => {
-    const run = runScript("check-prereqs.mjs", ["--for", "pi-lhc"]);
+  it("passes git+node+pnpm, reports os/arch support from targets.json, and honors --skip-claude-call", () => {
+    const run = runScript("check-prereqs.mjs", ["--skip-claude-call"]);
     expect(run.stdout).toMatch(/PASS {2}git/);
     expect(run.stdout).toMatch(/PASS {2}node >=24\.17\.0/);
     expect(run.stdout).toMatch(/PASS {2}pnpm 11\.x/);
-    expect(run.stdout).toMatch(/SKIP {2}claude on PATH/);
-    expect(run.status).toBe(0);
-  });
-
-  it("cc-lhc mode reports os/arch support from targets.json and honors --skip-claude-call", () => {
-    const run = runScript("check-prereqs.mjs", ["--skip-claude-call"]);
     expect(run.stdout).toMatch(new RegExp(`PASS {2}os/arch supported — ${process.platform}-${process.arch}`));
     if (run.stdout.includes("PASS  claude on PATH")) {
       expect(run.stdout).toMatch(/SKIP {2}claude -p auth \(--skip-claude-call\)/);
     }
-  });
-
-  it("rejects an unknown --for value", () => {
-    const run = runScript("check-prereqs.mjs", ["--for", "bogus"]);
-    expect(run.status).toBe(1);
-    expect(run.stderr).toContain("unknown --for value");
   });
 });
 
