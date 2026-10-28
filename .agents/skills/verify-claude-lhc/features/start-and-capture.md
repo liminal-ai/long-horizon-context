@@ -36,12 +36,12 @@ id>`, no `error` frame, stdin close exits 0. Outcome half: the isolated
 `threads/*.sqlite`.
 
 The capture half of a real turn needs the model and is **live only**:
-`pnpm --filter claude-lhc standalone` (turn 1 reads a seeded `notes.txt`
+`packages/claude-lhc/scripts/standalone.ts` (turn 1 reads a seeded `notes.txt`
 and must answer with its secret word, with >= 1 observed tool call).
-`drive.mjs turn` never runs a live turn. Without `CLAUDE_LHC_LIVE=1` it
-prints SKIP and names `scripts/standalone.ts`; with it, it prints FAIL and
-names the `standalone` command. Give the live run its own
-`T3CODE_LHC_HOME` (see the skill's Live turn section).
+Run it as `CLAUDE_LHC_LIVE=1 drive.mjs turn`, which runs standalone under
+a throwaway `HOME`/`CLAUDE_CONFIG_DIR`/`T3CODE_LHC_HOME` with env-only
+auth, and SKIPs when no env credential is set (see the skill's Live turn
+section). Without `CLAUDE_LHC_LIVE=1` it prints SKIP.
 
 ## Gotchas
 

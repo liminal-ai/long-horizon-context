@@ -32,7 +32,16 @@ else
 fi
 
 note "isolation: drives set T3CODE_LHC_HOME, CLAUDE_CONFIG_DIR, cwd to fresh tmp dirs and T3CODE_LHC_NO_INFERENCE=1"
-note "real homes untouched by deterministic drives (default LHC home ~/.t3code-lhc, Claude home ~/.claude)"
+note "live turn (CLAUDE_LHC_LIVE=1 drive.mjs turn) also sets HOME and TMPDIR under its scratch; real homes untouched (~/.t3code-lhc, ~/.claude)"
+live_auth=""
+for v in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN; do
+  [ -n "${!v:-}" ] && { live_auth="$v"; break; }
+done
+if [ -n "$live_auth" ]; then
+  note "live turn auth: env $live_auth (throwaway config holds no login)"
+else
+  note "live turn auth: none in env; the live turn will SKIP (export ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN, or ANTHROPIC_AUTH_TOKEN)"
+fi
 
 if [ "$fail" -eq 0 ]; then
   echo "VERIFY-CLAUDE-LHC doctor: PASS worth driving"

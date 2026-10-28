@@ -2,7 +2,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -108,6 +108,8 @@ const userFrame = (text) => ({
 const threadIdFrom = (s) => /created thread (\S+)|resumed thread (\S+)/.exec(s.stderr.join("\n"))?.slice(1).find(Boolean);
 
 function assert(cond, reason) { if (!cond) throw new Error(reason); }
+
+const LIVE_AUTH_VARS = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"];
 
 async function seedCompacted(scratch, evidenceDir) {
   const sid1 = randomUUID();
@@ -215,11 +217,43 @@ const drives = {
     } finally { scratch.cleanup(); }
   },
 
-  async turn() {
+  async turn(evidenceDir) {
     if (process.env.CLAUDE_LHC_LIVE !== "1") {
-      return { skip: "needs a real model turn; set CLAUDE_LHC_LIVE=1 and use packages/claude-lhc/scripts/standalone.ts (real CLAUDE_CONFIG_DIR login, isolated T3CODE_LHC_HOME)" };
+      return { skip: "needs a real model turn; set CLAUDE_LHC_LIVE=1 to run packages/claude-lhc/scripts/standalone.ts under a throwaway HOME/CLAUDE_CONFIG_DIR" };
     }
-    throw new Error("live turn is driven by packages/claude-lhc/scripts/standalone.ts, not reimplemented here; run: pnpm --filter claude-lhc standalone");
+    const auth = LIVE_AUTH_VARS.find((v) => process.env[v]);
+    if (!auth) {
+      return { skip: `no isolated auth: export one of ${LIVE_AUTH_VARS.join(", ")} for the run; the live turn never uses the real Claude login` };
+    }
+    const scratch = new Scratch("live");
+    const home = join(scratch.dir, "home");
+    mkdirSync(home, { recursive: true });
+    const realKeyPrefix = scratch.dir.replace(/[^a-zA-Z0-9]/g, "-");
+    const realProjects = join(homedir(), ".claude", "projects");
+    try {
+      const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: scratch.claudeHome, T3CODE_LHC_HOME: scratch.lhcHome, TMPDIR: scratch.cwd, DISABLE_AUTOUPDATER: "1" };
+      delete env.T3CODE_LHC_NO_INFERENCE;
+      const child = spawn(process.execPath, ["--import", "tsx", "scripts/standalone.ts"], { cwd: join(REPO, "packages/claude-lhc"), env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (c) => { stdout += c; });
+      child.stderr.on("data", (c) => { stderr += c; });
+      const code = await new Promise((r) => {
+        const timer = setTimeout(() => { process.kill(-child.pid, "SIGKILL"); r("timeout"); }, 15 * 60_000);
+        child.on("exit", (c) => { clearTimeout(timer); r(c); });
+      });
+      // standalone exits on failure without stopping its sidecar; reap the group so no claude child writes into scratch after cleanup.
+      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "standalone.stdout.log"), stdout);
+      writeFileSync(join(evidenceDir, "standalone.stderr.log"), stderr);
+      const leaked = existsSync(realProjects) ? readdirSync(realProjects).filter((d) => d.startsWith(realKeyPrefix)) : [];
+      assert(leaked.length === 0, `ISOLATION BREACH: ${leaked.join(", ")} written under ${realProjects}`);
+      assert(code === 0 && stdout.includes("RESULT: PASS"), `standalone exit=${code}: ${stdout.trim().split("\n").at(-1) ?? "(no stdout)"}`);
+      const projected = scratch.projectedFiles();
+      assert(projected.length > 0, "no native session files under the throwaway CLAUDE_CONFIG_DIR");
+      return `standalone RESULT: PASS auth=${auth} nativeFiles=${projected.length} under throwaway CLAUDE_CONFIG_DIR; real ~/.claude/projects untouched for this cwd`;
+    } finally { scratch.cleanup(); }
   },
 };
 
