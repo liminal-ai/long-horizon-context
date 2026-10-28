@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// Thread round trip: create, append, drain, compact, serve. Isolated temp home.
-// Flags: --keep (leave temp home in place and print its path), --home DIR (reuse).
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -36,7 +34,6 @@ try {
   if (!served.includes("investigate area") && !served.includes("findings for area")) fail("serve after compact lost seeded content");
   console.log(`served ${after.messages.length} messages after compact`);
 
-  // CLI leg against the same home: health must accept the thread the SDK made.
   const health = execFileSync("node", [LHC_BIN, "thread", "health", "--home", store.home, "--thread-id", threadId], { encoding: "utf8" });
   console.log(`cli health: ${health.trim().slice(0, 200)}`);
 

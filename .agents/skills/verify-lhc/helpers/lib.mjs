@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "..", "..");
 export const LHC_DIST = join(REPO_ROOT, "packages", "lhc", "dist", "index.js");
 export const LHC_BIN = join(REPO_ROOT, "packages", "lhc", "bin", "lhc");
+export const SEED_TURNS = 6;
 
 export function fail(message) {
   console.error(`FAIL: ${message}`);
@@ -53,9 +54,7 @@ export function event(kind, payload) {
   return { eventKind: kind, idempotencyKey: `verify-lhc-${keyCounter}`, actor: "verify-lhc", harness: "verify-lhc", payload };
 }
 
-// Six closed turns: enough history for compact to install a view and for
-// retrieval to serve both early and late ids.
-export function seededEvents(turns = 6) {
+export function seededEvents(turns = SEED_TURNS) {
   const events = [];
   for (let t = 1; t <= turns; t += 1) {
     events.push(event("user_prompt", { text: `turn ${t}: investigate area ${t} please` }));
@@ -69,7 +68,7 @@ export function seededEvents(turns = 6) {
   return events;
 }
 
-export async function seedThread(sdk, store, turns = 6) {
+export async function seedThread(sdk, store, turns = SEED_TURNS) {
   const filePath = store.threadPath();
   const created = unwrap(await sdk.threads.newThread({ filePath, registryPath: store.registryPath, title: "verify-lhc seed" }), "newThread");
   unwrap(await sdk.intakeStream.messageEvents({ filePath }, seededEvents(turns)), "messageEvents");

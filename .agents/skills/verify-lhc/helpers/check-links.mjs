@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// Link check: every relative markdown link and helpers/ path named in the
-// skill and feature files must exist on disk.
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

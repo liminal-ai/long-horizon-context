@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// Retrieval drive: seed, drain, then getTurns + getMessages must return seeded text.
 import { fail, makeSdk, seedThread, tempHome, unwrap } from "./lib.mjs";
 
 const store = tempHome();

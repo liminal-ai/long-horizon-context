@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-// Read-only worth-driving check: node version, built dist, CLI help, SDK import.
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { LHC_BIN, LHC_DIST, fail, loadSdk } from "./lib.mjs";
