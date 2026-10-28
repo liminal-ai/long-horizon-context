@@ -1,6 +1,4 @@
 import { retrieval } from "lhc";
-
-import type { RetrievalOp } from "./parse.js";
 import {
   assembleEnvelope,
   messageSection,
@@ -8,9 +6,9 @@ import {
   recallOpen,
   sliceFooter,
   turnSection,
-  unservedLine,
   type UnservedLike,
 } from "./format.js";
+import type { RetrievalOp } from "./parse.js";
 
 const MAX_RETRIEVAL_IDS_PER_CALL = retrieval.MAX_RETRIEVAL_IDS_PER_CALL;
 

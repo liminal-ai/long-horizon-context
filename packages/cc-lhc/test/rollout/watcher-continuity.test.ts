@@ -1,4 +1,4 @@
-import { appendFileSync, lstatSync, mkdtempSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdtempSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -327,7 +327,7 @@ describe("watcher continuity (exact consumed digest)", () => {
     let call = 0;
     const realRead = (await import("node:fs")).readSync;
     const io: Partial<WatcherIo> = {
-      read: (fd, buffer, offset, length, position) => {
+      read: (fd, buffer, offset, _length, position) => {
         call += 1;
         if (call === 1) return realRead(fd, buffer, offset, 1, position);
         return 0;

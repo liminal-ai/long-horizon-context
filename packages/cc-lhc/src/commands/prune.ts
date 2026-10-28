@@ -1,5 +1,5 @@
-import { runContextMutation, type ContextMutationPlan } from "./context-mutation.js";
 import { BUILTIN_CONTEXT_POLICY } from "../governor/config.js";
+import { type ContextMutationPlan, runContextMutation } from "./context-mutation.js";
 import type { DispatchOutcome, LhcCommandRuntime } from "./dispatch.js";
 
 function parseTargetTokens(commandLine: string): number | undefined {

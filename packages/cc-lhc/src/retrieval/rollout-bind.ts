@@ -1,5 +1,5 @@
-import { basename } from "node:path";
 import { lstatSync, readFileSync } from "node:fs";
+import { basename } from "node:path";
 
 import { attributeLineSession } from "../rollout/expected-session.js";
 import type { RuntimeDescriptorV1 } from "../runtime/descriptor.js";

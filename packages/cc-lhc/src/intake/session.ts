@@ -3,7 +3,6 @@ import { basename } from "node:path";
 import {
   createDeterministicInferenceCallbacks,
   initLhc,
-  inspect,
   type Lhc,
   type MessageEventInput,
   type OpResult,

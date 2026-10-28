@@ -344,7 +344,7 @@ describe("TC-3.1b Run Smart Prune", () => {
     expect(executed(parsed.actions)).toEqual([target === undefined ? "/lhc-prune" : `/lhc-prune ${target}`]);
     const compact = vi.fn();
     const previewCompact = vi.fn();
-    const prune = vi.fn(async (_ref: unknown, opts: { targetTokens?: number } = {}) => ({
+    const prune = vi.fn(async (_ref: unknown, _opts: { targetTokens?: number } = {}) => ({
       ok: true,
       value: {
         previousBoundary: 3,

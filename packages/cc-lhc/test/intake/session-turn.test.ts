@@ -1,7 +1,7 @@
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import type { Lhc, ThreadRef } from "lhc";
+import type { Lhc } from "lhc";
 import { describe, expect, it } from "vitest";
 import { type CaptureSession, startCaptureSession } from "../../src/intake/session.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";

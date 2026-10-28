@@ -1,8 +1,8 @@
 import {
+  allocationById,
+  BAND_ALLOCATIONS,
   type BandAllocation,
   type BandAllocationId,
-  BAND_ALLOCATIONS,
-  allocationById,
 } from "../governor/band-allocation.js";
 
 export interface PresetPresentation {

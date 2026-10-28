@@ -635,10 +635,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const stdin = fakeStream();
     const stdout = fakeStream();
     const stderr = fakeStream();
-    let terminalOutput = "";
-    (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
-      terminalOutput += chunk.toString("utf8");
-    });
+    (stdout as unknown as NodeJS.ReadableStream).resume();
 
     const runPromise = run(["--effort", "medium", "--permission-mode", "manual"], {
       claudeBin: "fake-claude",

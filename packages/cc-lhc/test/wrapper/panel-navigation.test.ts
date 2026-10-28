@@ -26,7 +26,7 @@ import {
   PANEL_TITLE,
 } from "../../src/wrapper/panel-commands.js";
 import { run } from "../../src/wrapper/run.js";
-import { drawnRows, panelText } from "../helpers/panel-text.js";
+import { cursorRows, drawnRows, panelText } from "../helpers/panel-text.js";
 
 const LEADER = Buffer.from([DEFAULT_LEADER_BYTE]);
 
@@ -222,9 +222,9 @@ describe("TC-1.5a Small Home remains operable", () => {
       const drawn = drawnRows(out, 20, 5);
       expect(drawn.length).toBeLessThanOrEqual(5);
       for (const line of drawn) expect(line.length).toBeLessThanOrEqual(20);
-      const cursorRows = [...out.matchAll(/\x1b\[(\d+);\d+H/g)].map((m) => Number.parseInt(m[1]!, 10));
-      expect(cursorRows.length).toBeGreaterThan(0);
-      for (const row of cursorRows) {
+      const rowsMoved = cursorRows(out);
+      expect(rowsMoved.length).toBeGreaterThan(0);
+      for (const row of rowsMoved) {
         expect(row).toBeGreaterThanOrEqual(1);
         expect(row).toBeLessThanOrEqual(5);
       }

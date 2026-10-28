@@ -1,6 +1,6 @@
 import { readdir, stat } from "node:fs/promises";
-import { basename, join } from "node:path";
 import { homedir } from "node:os";
+import { basename, join } from "node:path";
 
 import { attributeLineSession, rolloutPathForExpectedSession } from "./expected-session.js";
 import type { RolloutLineItem } from "./types.js";
