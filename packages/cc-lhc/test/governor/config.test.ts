@@ -25,9 +25,9 @@ function loadWithProject(contents: string) {
 }
 
 describe("built-in policy", () => {
-  it("is 180k target, 360k trigger, 50k minimum runway", () => {
+  it("is 120k target, 700k trigger, 50k minimum runway", () => {
     const p = BUILTIN_CONTEXT_POLICY;
-    expect([p.lowerBoundTokens, p.upperBoundTokens, p.minRunwayTokens]).toEqual([180_000, 360_000, 50_000]);
+    expect([p.lowerBoundTokens, p.upperBoundTokens, p.minRunwayTokens]).toEqual([120_000, 700_000, 50_000]);
     expect(p.profile).toBe("default");
     expect(p.pruneEnabled).toBe(false);
   });
@@ -46,14 +46,14 @@ describe("built-in policy", () => {
     );
   });
 
-  it("a headless load with no observation step resolves 180k/360k", () => {
+  it("a headless load with no observation step resolves the built-in bounds", () => {
     const resolved = loadContextPolicy({
       cwd: tmpdir(),
       userConfigPath: join(tmpdir(), "cc-lhc-none-user.json"),
       projectConfigPath: join(tmpdir(), "cc-lhc-none-project.json"),
     });
-    expect(resolved.policy.lowerBoundTokens).toBe(180_000);
-    expect(resolved.policy.upperBoundTokens).toBe(360_000);
+    expect(resolved.policy.lowerBoundTokens).toBe(BUILTIN_CONTEXT_POLICY.lowerBoundTokens);
+    expect(resolved.policy.upperBoundTokens).toBe(BUILTIN_CONTEXT_POLICY.upperBoundTokens);
     expect(resolved.policy.minRunwayTokens).toBe(50_000);
     expect(resolved.fallbacks).toEqual([]);
   });
@@ -162,7 +162,7 @@ describe("invalid configuration falls back per field to the built-in (TC-1.5c)",
 
   it("a malformed field names the field and its source and takes the built-in for it alone", () => {
     const resolved = loadWithProject(JSON.stringify({ lowerBoundTokens: "big", upperBoundTokens: 400_000 }));
-    expect(resolved.policy.lowerBoundTokens).toBe(180_000);
+    expect(resolved.policy.lowerBoundTokens).toBe(BUILTIN_CONTEXT_POLICY.lowerBoundTokens);
     expect(resolved.sources.lowerBoundTokens).toBe("builtin");
     expect(resolved.policy.upperBoundTokens).toBe(400_000);
     expect(resolved.sources.upperBoundTokens).toBe("project");
@@ -173,8 +173,8 @@ describe("invalid configuration falls back per field to the built-in (TC-1.5c)",
 
   it("incoherent bounds revert only the configured field, to the built-in", () => {
     const resolved = loadWithProject(JSON.stringify({ upperBoundTokens: 100_000 }));
-    expect(resolved.policy.upperBoundTokens).toBe(360_000);
-    expect(resolved.policy.lowerBoundTokens).toBe(180_000);
+    expect(resolved.policy.upperBoundTokens).toBe(BUILTIN_CONTEXT_POLICY.upperBoundTokens);
+    expect(resolved.policy.lowerBoundTokens).toBe(BUILTIN_CONTEXT_POLICY.lowerBoundTokens);
     expect(validateContextPolicy(resolved.policy)).toEqual([]);
     const fallback = resolved.fallbacks.find((f) => f.field === "upperBoundTokens");
     expect(fallback?.origin).toContain("project config");

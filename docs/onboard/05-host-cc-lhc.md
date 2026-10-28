@@ -190,8 +190,8 @@ Current code built-ins (see `packages/cc-lhc/src/governor/config.ts`) are:
 | Setting | Default |
 | --- | ---: |
 | automatic compact | on |
-| compact target (lower) | 180,000 tokens (LHC rendered-history domain) |
-| trigger (upper) | 360,000 tokens (provider-reported input domain) |
+| compact target (lower) | 120,000 tokens (LHC rendered-history domain) |
+| trigger (upper) | 700,000 tokens (provider-reported input domain) |
 | minimum runway | 50,000 tokens |
 | LHC profile | product preset `default` (core profile `continuation`); presets are `default`, `balanced`, `historical` |
 | automatic prune | off |
@@ -212,7 +212,7 @@ differ (or coincidentally be equal), and no fixed ratio or direction between
 them is assumed or reported.
 
 One input decides an automatic compact: measured pressure against the trigger
-(built-in 360k; cc-lhc assumes a 1M-window model). Smart Compact cannot be turned off. Everything else the wrapper knows — capture health,
+(built-in 700k; cc-lhc assumes a 1M-window model). Smart Compact cannot be turned off. Everything else the wrapper knows — capture health,
 descriptor readiness, receipt storage, typed-ahead input — is diagnostics with
 no blocking authority. Threshold crossing during an **open** agentic turn is
 classified and written as a durable receipt with `wouldMutate=false` — Claude
@@ -235,7 +235,7 @@ against an in-memory receipt id with a loud warning rather than not running.
 The control panel's `bounds` and `allocation` edits apply only to the current
 wrapper lifetime. Nothing stops automatic compact; explicit bounds keep their
 precedence over the built-in defaults. Override the single built-in policy
-(180k/360k/50k) through user config, project config, launch flags, or `/bounds`.
+(120k/700k/50k) through user config, project config, launch flags, or `/bounds`.
 
 **What this host cannot do (v1, by design):** Codex-style in-place mid-agentic-
 turn continuation, synthetic tool-tail preservation, forced

@@ -1,7 +1,7 @@
 # Smart Compact
 
-Smart Compact shrinks a thread toward the 180k target when measured
-context pressure crosses the 360k trigger, rebuilds Claude's session,
+Smart Compact shrinks a thread toward the 120k target when measured
+context pressure crosses the 700k trigger, rebuilds Claude's session,
 and hands off spawn-first so a working session exists at every moment.
 It is always active and cannot be turned off. On a one-shot seat it runs
 before launch on the next invocation.

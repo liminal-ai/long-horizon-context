@@ -56,7 +56,7 @@ and `Gotchas`.
 - [Rebuild into a new session](./rebuild.md) — a thread is rebuilt into a
   fresh Claude session that continues the same work (`rollout write`,
   `--resume`, forward alias resolution).
-- [Smart Compact](./smart-compact.md) — automatic at the 360k trigger,
+- [Smart Compact](./smart-compact.md) — automatic at the 700k trigger,
   manual via the panel, and pre-launch on one-shot seats; spawn-first
   handoff and carried background work.
 - [Control panel](./control-panel.md) — Ctrl-`]` panel: `/status`,

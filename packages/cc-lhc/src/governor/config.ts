@@ -14,8 +14,8 @@ import type {
 } from "./types.js";
 
 export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
-  lowerBoundTokens: 180_000,
-  upperBoundTokens: 360_000,
+  lowerBoundTokens: 120_000,
+  upperBoundTokens: 700_000,
   profile: "default",
   pruneEnabled: false,
   pruneThresholdTokens: null,
