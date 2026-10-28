@@ -438,7 +438,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   let captureHealth: CaptureGenerationState = createCaptureGeneration(genSeed);
   let runtimeSettings: ClaudeRuntimeSettings = {};
   const chain = createRolloutChain();
-  let rewindFloor: number | undefined;
+  let lastEventOrderAtBind: number | undefined;
 
   const publishLifecycle = (signals: readonly LifecycleSignal[]): void => {
     if (userOnLifecycle === undefined || signals.length === 0) return;
@@ -512,8 +512,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     return true;
   };
 
-  // A rewind past every live keyed record (the session root, or a rebuilt
-  // prefix whose lines carry no capture keys) keeps what the thread held at bind.
   const resolveRewindAnchor = async (sdkRef: Lhc, ref: ThreadRef, keptUuid: string | null): Promise<number | null> => {
     for (const uuid of liveAncestry(chain, keptUuid)) {
       let keepThrough = -1;
@@ -533,7 +531,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       } while (cursor !== null);
       if (keepThrough >= 0) return keepThrough;
     }
-    return rewindFloor ?? null;
+    return lastEventOrderAtBind ?? null;
   };
 
   const appendRewindRollback = async (
@@ -1149,7 +1147,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       if (sdk !== undefined && threadRef !== undefined) {
         try {
           const frontier = await sdk.intakeStream.threadFrontier(threadRef);
-          if (frontier.ok) rewindFloor = frontier.value.lastEventOrder;
+          if (frontier.ok) lastEventOrderAtBind = frontier.value.lastEventOrder;
         } catch (cause) {
           logError(`cc-lhc rewind: thread frontier unreadable: ${detail(cause)}`);
         }

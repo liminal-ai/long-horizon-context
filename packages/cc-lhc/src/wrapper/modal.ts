@@ -66,17 +66,11 @@ export type EscapeTracking =
 
 export type InputMode = "passthrough" | "modal" | "executing" | "notifier";
 
-/**
- * Native lifecycle commands that move the conversation off the session file
- * cc-lhc is bound to. `/branch` joined on Claude Code 2.1.310, where the next
- * prompt lands only in the new session file. `/rewind` is not listed: it keeps
- * the file, and capture records its parent hop as a rollback.
- */
-export const HAZARDOUS_COMMANDS = ["/resume", "/clear", "/compact", "/branch"] as const;
+export const SESSION_SWITCHING_COMMANDS = ["/resume", "/clear", "/compact", "/branch"] as const;
 
 export function matchHazardousCommand(line: string): string | null {
   const trimmed = line.trim();
-  for (const command of HAZARDOUS_COMMANDS) {
+  for (const command of SESSION_SWITCHING_COMMANDS) {
     if (trimmed === command || trimmed.startsWith(`${command} `)) return command;
   }
   return null;

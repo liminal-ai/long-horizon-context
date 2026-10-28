@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# User-only: the replies and `rollout write` output. Outcome: the Claude transcript
-# keeps both branches, wrapper.log records the rewind, and a forced rebuild of the
-# served view holds the kept branch only. Exit 3 means this build has no rewind capture.
 set -u
 . "$(dirname "$0")/lib.sh"
 make_isolation

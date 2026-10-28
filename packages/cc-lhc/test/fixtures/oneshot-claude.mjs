@@ -38,7 +38,7 @@ mkdirSync(dirname(file), { recursive: true });
 
 // Claude chains a resumed prompt to the last record. After /rewind with
 // Restore conversation, the next prompt instead names the parent of the
-// prompt it replaced; ONESHOT_CLAUDE_REWIND=1 writes that shape.
+// prompt it replaced.
 const chained = existsSync(file)
   ? readFileSync(file, "utf8")
       .split("\n")
