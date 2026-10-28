@@ -1,6 +1,6 @@
 ---
 name: verify-claude-lhc
-description: "Drive packages/claude-lhc (the Claude Code sidecar for t3code) over its JSONL stdio protocol and prove capture, compact, and projection. Use when verifying a claude-lhc change: start, turn, compact, restart/projection, or rollback-shaped start."
+description: "Drive packages/claude-lhc (the Claude Code sidecar for t3code) over its JSONL stdio protocol and prove capture, compact, projection, and host rollback. Use when verifying a claude-lhc change: start, turn, compact, restart/projection, rollback-shaped start, or host rollback."
 ---
 
 # Verify claude-lhc
@@ -92,13 +92,20 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `restart` | seed, stop, `start{resume: gen2}` | stderr `resumed thread ... via <gen2> as generation <gen3>`, exit 0 | projected `<gen3>.jsonl` exists with lines; thread count unchanged (the "you see" bar: restarts onto its own projected file, one thread) |
 | `resume-superseded-alias` | seed, stop, `start{resume: gen1}` (superseded alias) | same-thread resume line via the old alias, fresh generation, exit 0 | 1 thread, new projected file. Observed semantics: any alias resumes the **current** served view — not gen1-era history; see [rollback-shaped-start.md](features/rollback-shaped-start.md) |
 | `resume-unknown` | `start{resume: <random>}` | one `error` frame: `no LHC thread holds the Claude session ...`, exit 1 | zero thread files created |
+| `resume-empty` | start, stop, `start{resume: gen1}` on a thread with 0 served entries | stderr `(fresh native session)`, exit 0 | no projected file, 1 thread |
+| `rollback` | seeded KEEP + REMOVED turns, `start{resume: gen1, resumeSessionAt: <KEEP uuid>}` | stderr `rollback to <uuid>: kept through event N`, exit 0 | projected file keeps KEEP, drops REMOVED; 1 thread |
+| `rollback-unknown-anchor` | same seed, `resumeSessionAt: <never captured>` | stderr `rollback to <uuid> skipped: ...`, exit 0 | projected file unchanged (KEEP and REMOVED) |
+| `rollback-compact` | 12 heavy turns, `/compact`, rollback behind the compact point, `/compact`, restart | stderr `[lhc compact:auto]` at the rollback start | none of the 3 projected files carries removed text |
+| `thread-start` | seeded thread, `start{sessionId: <fresh>}`, `start{resume: gen1}`, `start{sessionId: gen1}` | new thread, old alias resumes the old thread, reused id gets one `error` frame and exit 1 | 2 threads |
+| `rollback-live` | two real turns, rollback to the first, one more turn (live only) | continued answer names KEEP-ALPHA only, turn succeeds | frames + `answer.txt` |
 | `turn` | real tool turn + recall | reply text answers from seeded files (live only) | LHC events/aliases via `scripts/standalone.ts` |
 
 Feature files (user POV, harness steps, gotchas):
 [start-and-capture.md](features/start-and-capture.md),
 [compact.md](features/compact.md),
 [restart-projection.md](features/restart-projection.md),
-[rollback-shaped-start.md](features/rollback-shaped-start.md). Index:
+[rollback-shaped-start.md](features/rollback-shaped-start.md),
+[host-rollback.md](features/host-rollback.md). Index:
 [features/README.md](features/README.md).
 
 User-only vs outcome, per the proof standard: a user-only check gets only
@@ -122,20 +129,22 @@ pnpm --filter claude-lhc standalone   # prints RESULT: PASS
 `drive.mjs turn` without `CLAUDE_LHC_LIVE=1` prints SKIP naming this path.
 Never report the live turn as passed from a deterministic run.
 
-### Rollback-shaped start (PA prototype method)
+`CLAUDE_LHC_LIVE=1 drive.mjs rollback-live` is the one live drive the
+harness runs itself. It isolates `CLAUDE_CONFIG_DIR` and takes auth from
+env, so it needs `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`.
 
-Method: after a compact mints gen2, start a new sidecar with
-`resume: <gen1>` — the superseded alias — instead of the current one.
-The plan's prototype evidence file
-`.pstack/runs/lhc-catchup-plan/proof/proto-rollback-t3-observe.json` was
-not readable in the lane worktree where this skill was seeded (no
-`.pstack/` tree), so the drive re-derives the observation from current
-code: `session.ts` resolves **any** alias to its thread, settles any open
-turn, and starts a projected generation from the thread's current served
-view. The drive asserts exactly that and prints the observation in its
-PASS line instead of hiding it. If the prototype file reappears, diff its
-recorded resume behavior against this drive's evidence before trusting
-either.
+### Rollback (PA prototype replay)
+
+PA (`.pstack/runs/lhc-catchup-plan/proof/proto-rollback-t3-observe.json`
+in the main checkout) showed that a T3 rollback start projected the removed
+turn and forwarded the host's `resumeSessionAt`. The `rollback` drive
+replays that start against real capture keys. To run any drive against
+another build (trunk, a base branch), set
+`CLAUDE_LHC_SIDECAR=<checkout>/packages/claude-lhc/dist/sidecar.js`. Trunk
+before U11 fails every rollback drive on its own observation. A superseded
+alias with no `resumeSessionAt` still resolves to the current served view
+(`resume-superseded-alias`). See
+[host-rollback.md](features/host-rollback.md).
 
 ## Evidence
 
@@ -182,9 +191,10 @@ All executable, all runnable from a clean shell (paths resolve from the
 script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
-- `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|turn|all>`;
+- `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|resume-empty|rollback|rollback-unknown-anchor|rollback-compact|thread-start|turn|rollback-live|all>`;
   env `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
-  `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn gate).
+  `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (live gate), `CLAUDE_LHC_SIDECAR`
+  (drive another build's `dist/sidecar.js`).
 - `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <dir>...`.
 - `check-links.mjs` — frontmatter, required sections, feature-file H2s,
   relative links, helper executability. `check-links.mjs` (no args);
@@ -192,14 +202,3 @@ script, not the cwd):
 
 Package gates beside the drives: `pnpm --filter claude-lhc test` and
 `pnpm --filter claude-lhc typecheck`.
-
-### Known observation (seeded 2026-10-27)
-
-Resuming an **empty** thread (start-only, never compacted, 0 served
-entries) projects a 0-line native file; the Claude runtime then errors
-`No conversation found with session ID: ...` and the sidecar exits 1,
-although alias resolution and the single-thread store are correct. The
-seeded `restart`/`resume-superseded-alias` drives therefore resume a compacted thread
-(>= 1 served entry), which exits 0. Recorded in
-[restart-projection.md](features/restart-projection.md) Gotchas — do not
-"fix" the drive to hide it; it is current-code behavior to observe.

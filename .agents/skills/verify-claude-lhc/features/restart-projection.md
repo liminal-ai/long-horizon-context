@@ -11,6 +11,9 @@
   latest is current. Restarting never forks the store.
 - `start{resume: <unknown id>}`: one `error` frame
   (`no LHC thread holds the Claude session ...`), exit 1, nothing created.
+- A thread with 0 served entries projects nothing. The sidecar starts the
+  generation as a fresh native session (`sessionId`, no `resume`), writes
+  no file, and logs `(fresh native session)`.
 
 ## How to get to it (user POV)
 
@@ -26,6 +29,7 @@ dead process's memory.
 ```sh
 .agents/skills/verify-claude-lhc/drive.mjs restart
 .agents/skills/verify-claude-lhc/drive.mjs resume-unknown
+.agents/skills/verify-claude-lhc/drive.mjs resume-empty
 ```
 
 The `restart` drive seeds start + `/compact` (so the view is non-empty),
@@ -37,14 +41,9 @@ line — the session restarted onto its own projected file — and
 
 ## Gotchas
 
-- Resuming a thread with **0 served entries** (start-only, never
-  compacted) projects a 0-line file; the Claude runtime then errors
-  `No conversation found with session ID: ...` (an
-  `error_during_execution` result plus an `error` frame) and the sidecar
-  exits 1 — even though alias resolution, projection, and the
-  single-thread store are all correct. Seeded drives resume a compacted
-  thread; do not "fix" the empty case by weakening the drive — it is
-  observed current-code behavior (2026-10-27).
+- Before U11, resuming a thread with 0 served entries projected a 0-line
+  file, the Claude runtime errored `No conversation found with session
+  ID: ...`, and the sidecar exited 1. `resume-empty` pins the fix.
 - The projected file may gain lines after the Claude child touches it
   (seeded runs observed 1 projected line → 5 file lines). Assert
   existence/projection from the sidecar log line, not an exact line count.

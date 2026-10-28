@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../../..");
-const ENTRY = join(REPO, "packages/claude-lhc/dist/sidecar.js");
+const ENTRY = resolve(process.env.CLAUDE_LHC_SIDECAR ?? join(REPO, "packages/claude-lhc/dist/sidecar.js"));
+const DIST = dirname(ENTRY);
 const EVIDENCE = process.env.VERIFY_CLAUDE_LHC_EVIDENCE ?? mkdtempSync(join(tmpdir(), "verify-claude-lhc-evidence-"));
 mkdirSync(EVIDENCE, { recursive: true });
 
@@ -29,6 +30,10 @@ class Scratch {
     const root = join(this.claudeHome, "projects");
     if (!existsSync(root)) return [];
     return readdirSync(root, { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl"));
+  }
+  projected(sessionId) {
+    const file = this.projectedFiles().find((f) => f.includes(sessionId));
+    return file === undefined ? null : readFileSync(join(this.claudeHome, "projects", file), "utf8");
   }
   cleanup() {
     if (process.env.VERIFY_KEEP_SCRATCH !== "1") rmSync(this.dir, { recursive: true, force: true });
@@ -105,6 +110,7 @@ const userFrame = (text) => ({
   type: "user",
   message: { type: "user", message: { role: "user", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "" },
 });
+const generationFrom = (s) => /as generation (\S+)/.exec(s.stderr.join("\n"))?.[1];
 const threadIdFrom = (s) => /created thread (\S+)|resumed thread (\S+)/.exec(s.stderr.join("\n"))?.slice(1).find(Boolean);
 
 function assert(cond, reason) { if (!cond) throw new Error(reason); }
@@ -123,6 +129,67 @@ async function seedCompacted(scratch, evidenceDir) {
   s.saveEvidence(evidenceDir);
   assert(code === 0, `seed sidecar exited ${code}`);
   return { sid1, sid2, seed: s };
+}
+
+async function seedCaptured(scratch, turns) {
+  process.env.T3CODE_LHC_NO_INFERENCE = "1";
+  const home = await import(join(DIST, "lhcHome.js"));
+  const mapper = await import(join(DIST, "capture/mapper.js"));
+  const gen1 = randomUUID();
+  const threadId = await home.createThread(scratch.cwd, scratch.lhcHome);
+  await home.bindSession(threadId, gen1, scratch.lhcHome);
+  const ref = home.threadRef(threadId, scratch.lhcHome);
+  const lhc = home.createLhc({ claudeBin: "claude", env: {}, tokenFamily: "claude-2026" });
+  const anchors = [];
+  for (const [prompt, answer] of turns) {
+    const uuid = randomUUID();
+    const events = [
+      ...mapper.mapPrompt(userFrame(prompt).message, randomUUID(), false),
+      ...mapper.mapSdkMessage({ type: "assistant", uuid, parent_tool_use_id: null, session_id: gen1, message: { id: `msg_${uuid}`, model: "claude-sonnet-5", role: "assistant", content: [{ type: "text", text: answer }] } }).events,
+      ...mapper.mapSdkMessage({ type: "result", subtype: "success", is_error: false, uuid: randomUUID(), session_id: gen1 }).events,
+    ];
+    const sent = await lhc.intakeStream.messageEvents(ref, events);
+    assert(sent.ok, `seed intake refused: ${sent.ok ? "" : sent.error.reason}`);
+    anchors.push(uuid);
+  }
+  await lhc.drainSettled(ref);
+  return { gen1, threadId, anchors };
+}
+
+const PA_TURNS = [["KEEP-TURN prompt one", "KEEP-TURN answer one"], ["REMOVED-TURN prompt two", "REMOVED-TURN answer two"]];
+const FILLER = " filler".repeat(400);
+
+async function startAndStop(scratch, label, options, evidenceDir) {
+  const s = new Sidecar(scratch, label);
+  s.send({ type: "start", options: baseOptions(scratch, options) });
+  await s.waitFor(() => s.logHas("resumed thread") || s.logHas("created thread"), `${label} start log line`);
+  const code = await s.stop();
+  s.saveEvidence(evidenceDir);
+  assert(code === 0, `${label} sidecar exited ${code}`);
+  return { s, gen: generationFrom(s) };
+}
+
+async function compactOnce(scratch, label, options, evidenceDir) {
+  const s = new Sidecar(scratch, label);
+  s.send({ type: "start", options: baseOptions(scratch, options) });
+  await s.waitFor(() => s.logHas("resumed thread"), `${label} resumed-thread log line`);
+  s.send(userFrame("/compact"));
+  await s.waitFor(() => s.msgs().some((m) => m.type === "result"), `${label} compact result frame`);
+  const boundary = s.msgs().find((m) => m.type === "system" && m.subtype === "compact_boundary");
+  const code = await s.stop();
+  s.saveEvidence(evidenceDir);
+  assert(code === 0, `${label} sidecar exited ${code}`);
+  assert(boundary, `${label}: no compact_boundary after /compact`);
+  return { s, gen: generationFrom(s), compacted: boundary.session_id };
+}
+
+async function liveTurn(s, text) {
+  const before = s.msgs().length;
+  s.send(userFrame(text));
+  await s.waitFor(() => s.msgs().slice(before).some((m) => m.type === "result"), `result for "${text}"`, 180_000);
+  const turn = s.msgs().slice(before);
+  const assistants = turn.filter((m) => m.type === "assistant" && m.parent_tool_use_id === null);
+  return { result: turn.find((m) => m.type === "result"), lastAssistantUuid: assistants.at(-1)?.uuid };
 }
 
 const drives = {
@@ -214,6 +281,135 @@ const drives = {
     } finally { scratch.cleanup(); }
   },
 
+  async rollback(evidenceDir) {
+    const scratch = new Scratch("rollback");
+    try {
+      const { gen1, threadId, anchors } = await seedCaptured(scratch, PA_TURNS);
+      const { s, gen } = await startAndStop(scratch, "rollback", { resume: gen1, resumeSessionAt: anchors[0] }, evidenceDir);
+      const projected = scratch.projected(gen) ?? "";
+      writeFileSync(join(evidenceDir, "projected.jsonl"), projected);
+      assert(projected.includes("KEEP-TURN answer one"), "projected file lost the kept turn");
+      assert(!projected.includes("REMOVED-TURN"), "projected file still carries the removed turn: the host rollback was ignored");
+      assert(s.logHas(`rollback to ${anchors[0]}: kept through event`), "no rollback log line");
+      assert(scratch.threads().length === 1, "rollback forked the store");
+      return `resume:gen1 resumeSessionAt:keep-anchor -> thread ${threadId} gen=${gen.slice(0, 8)} projected keep=yes removed=no threads=1`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async "rollback-unknown-anchor"(evidenceDir) {
+    const scratch = new Scratch("rollback-unknown-anchor");
+    try {
+      const { gen1 } = await seedCaptured(scratch, PA_TURNS);
+      const unknown = randomUUID();
+      const { s, gen } = await startAndStop(scratch, "rollback-unknown-anchor", { resume: gen1, resumeSessionAt: unknown }, evidenceDir);
+      const projected = scratch.projected(gen) ?? "";
+      assert(s.logHas(`rollback to ${unknown} skipped: no captured event carries that message uuid`), "no skipped-anchor log line");
+      assert(projected.includes("KEEP-TURN") && projected.includes("REMOVED-TURN"), "an unknown anchor changed the projected view");
+      return `resumeSessionAt:${unknown.slice(0, 8)} (never captured) -> logged skip, current view projected (keep=yes removed=yes), exit=0`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async "rollback-compact"(evidenceDir) {
+    const scratch = new Scratch("rollback-compact");
+    try {
+      const turns = [
+        ...Array.from({ length: 8 }, (_, i) => [`KEEP-TURN prompt ${i}${FILLER}`, `KEEP-TURN answer ${i}${FILLER}`]),
+        ...Array.from({ length: 4 }, (_, i) => [`REMOVED-TURN prompt ${i}${FILLER}`, `REMOVED-TURN answer ${i}${FILLER}`]),
+      ];
+      const { gen1, anchors } = await seedCaptured(scratch, turns);
+      const small = { settings: { autoCompactWindow: 2000, lhcLowerBound: 1000 } };
+      const seed = await compactOnce(scratch, "seed-compact", { ...small, resume: gen1 }, evidenceDir);
+      const rolled = new Sidecar(scratch, "rollback-start");
+      rolled.send({ type: "start", options: baseOptions(scratch, { ...small, resume: seed.compacted, resumeSessionAt: anchors[1] }) });
+      await rolled.waitFor(() => rolled.logHas("resumed thread"), "rollback resumed-thread log line");
+      const genAfterRollback = generationFrom(rolled);
+      rolled.send(userFrame("/compact"));
+      await rolled.waitFor(() => rolled.msgs().some((m) => m.type === "result"), "post-rollback compact result");
+      const genAfterCompact = rolled.msgs().find((m) => m.type === "system" && m.subtype === "compact_boundary")?.session_id;
+      assert((await rolled.stop()) === 0, "rollback sidecar did not exit 0");
+      rolled.saveEvidence(evidenceDir);
+      assert(rolled.logHas("[lhc compact:auto]"), "the rollback behind the compact point did not compact before projecting");
+      assert(genAfterCompact, "no compact_boundary after the post-rollback /compact");
+      const { gen: genAfterRestart } = await startAndStop(scratch, "restart", { ...small, resume: genAfterCompact }, evidenceDir);
+      const checks = { rollback: genAfterRollback, compact: genAfterCompact, restart: genAfterRestart };
+      for (const [step, gen] of Object.entries(checks)) {
+        const projected = scratch.projected(gen);
+        assert(projected !== null, `no projected file after ${step}`);
+        writeFileSync(join(evidenceDir, `${step}.projected.jsonl`), projected);
+        assert(!projected.includes("REMOVED-TURN"), `removed text came back after ${step}`);
+        assert(!projected.includes("KEEP-TURN answer 2"), `text past the anchor came back after ${step}`);
+      }
+      return "rollback behind the compact point -> compact at start, /compact, restart; removed text absent from all 3 projected files";
+    } finally { scratch.cleanup(); }
+  },
+
+  async "thread-start"(evidenceDir) {
+    const scratch = new Scratch("thread-start");
+    try {
+      const { gen1, threadId } = await seedCaptured(scratch, PA_TURNS);
+      const fresh = randomUUID();
+      const started = await startAndStop(scratch, "fresh-start", { sessionId: fresh }, evidenceDir);
+      const newThread = threadIdFrom(started.s);
+      assert(newThread && newThread !== threadId, "a fresh session id did not open a new thread");
+      const old = await startAndStop(scratch, "old-alias", { resume: gen1 }, evidenceDir);
+      assert(old.s.logHas(`resumed thread ${threadId} via ${gen1}`), "the old thread is no longer reachable by its alias");
+      const reused = new Sidecar(scratch, "reused-id");
+      reused.send({ type: "start", options: baseOptions(scratch, { sessionId: gen1 }) });
+      const code = await reused.exited;
+      reused.saveEvidence(evidenceDir);
+      assert(code === 1, `reused id: expected exit 1, got ${code}`);
+      assert(reused.error?.includes(`already names LHC thread ${threadId}`), `reused id: unexpected error ${reused.error}`);
+      assert(scratch.threads().length === 2, `expected 2 threads, got ${scratch.threads().length}`);
+      return `fresh id -> new thread ${newThread}; old alias -> ${threadId}; reused id refused (exit 1); threads=2`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async "resume-empty"(evidenceDir) {
+    const scratch = new Scratch("resume-empty");
+    try {
+      const sid = randomUUID();
+      await startAndStop(scratch, "seed", { sessionId: sid }, evidenceDir);
+      const { s, gen } = await startAndStop(scratch, "resume-empty", { resume: sid }, evidenceDir);
+      assert(s.logHas("(fresh native session)"), "an empty thread was not started as a fresh native session");
+      assert(scratch.projected(gen) === null, "an empty projected file was written");
+      assert(scratch.threads().length === 1, "resume-empty created a second thread");
+      return `empty thread resumed as fresh native session gen=${gen.slice(0, 8)} exit=0 threads=1`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async "rollback-live"(evidenceDir) {
+    if (process.env.CLAUDE_LHC_LIVE !== "1") return { skip: "needs real model turns; set CLAUDE_LHC_LIVE=1 (isolated CLAUDE_CONFIG_DIR, auth from env)" };
+    const scratch = new Scratch("rollback-live");
+    try {
+      const gen1 = randomUUID();
+      const first = new Sidecar(scratch, "turns");
+      first.send({ type: "start", options: baseOptions(scratch, { sessionId: gen1 }) });
+      await first.waitFor(() => first.logHas(`as generation ${gen1}`), "created-thread log line");
+      const kept = await liveTurn(first, "Remember the codeword KEEP-ALPHA. Reply with just OK.");
+      const removed = await liveTurn(first, "Remember the second codeword REMOVED-BRAVO. Reply with just OK.");
+      assert((await first.stop()) === 0, "turn sidecar did not exit 0");
+      first.saveEvidence(evidenceDir);
+      assert(kept.result?.subtype === "success" && removed.result?.subtype === "success", "a seed turn failed");
+      assert(kept.lastAssistantUuid, "no assistant uuid on the kept turn");
+      const after = new Sidecar(scratch, "after-rollback");
+      after.send({ type: "start", options: baseOptions(scratch, { resume: gen1, resumeSessionAt: kept.lastAssistantUuid }) });
+      let ask;
+      try {
+        await after.waitFor(() => after.logHas("resumed thread"), "resumed-thread log line");
+        ask = await liveTurn(after, "List every codeword in capitals that appears earlier in this conversation, comma separated, nothing else.");
+        assert((await after.stop()) === 0, "rollback sidecar did not exit 0");
+      } finally {
+        after.saveEvidence(evidenceDir);
+      }
+      const answer = String(ask.result?.result ?? "");
+      writeFileSync(join(evidenceDir, "answer.txt"), `${JSON.stringify(ask.result, null, 2)}\n`);
+      assert(ask.result?.subtype === "success" && ask.result.is_error !== true, `the continued turn failed: ${JSON.stringify(ask.result?.errors ?? answer)}`);
+      assert(answer.includes("KEEP-ALPHA"), `the continued answer lost the kept turn: ${answer}`);
+      assert(!answer.includes("REMOVED-BRAVO"), `the continued answer knows the removed turn: ${answer}`);
+      return `rolled back to ${kept.lastAssistantUuid.slice(0, 8)}; continued answer "${answer.trim()}"`;
+    } finally { scratch.cleanup(); }
+  },
+
   async turn() {
     if (process.env.CLAUDE_LHC_LIVE !== "1") {
       return { skip: "needs a real model turn; set CLAUDE_LHC_LIVE=1 and use packages/claude-lhc/scripts/standalone.ts (real CLAUDE_CONFIG_DIR login, isolated T3CODE_LHC_HOME)" };
@@ -228,7 +424,10 @@ async function main() {
     process.exit(1);
   }
   const which = process.argv[2] ?? "all";
-  const names = which === "all" ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "turn"] : [which];
+  const names =
+    which === "all"
+      ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "rollback", "rollback-unknown-anchor", "rollback-compact", "thread-start", "turn", "rollback-live"]
+      : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;
   for (const name of names) {

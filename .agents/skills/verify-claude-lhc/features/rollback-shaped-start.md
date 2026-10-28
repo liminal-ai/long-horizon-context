@@ -35,18 +35,14 @@ fresh generation, still exactly one thread file. The PASS line prints the
 observation (`current served view, not gen1-era history`) so a lane
 screenshot cannot hide it.
 
-Prototype provenance: the plan cites
-`.pstack/runs/lhc-catchup-plan/proof/proto-rollback-t3-observe.json`.
-That file was not present in the worktree that seeded this skill, so the
-observation above is re-derived from current code
-(`session.ts` start/resume branch + `#startProjectedGeneration`) and from
-this drive's own evidence frames. If the prototype file is restored,
-compare its recorded resume behavior with this drive before citing it.
+A real host rollback also sends `resumeSessionAt`. That path is
+[host-rollback.md](host-rollback.md).
 
 ## Gotchas
 
 - Do not describe this as rollback support. It is alias resolution with a
-  stale name; the served view is not versioned by alias.
+  stale name; the served view is not versioned by alias. Rollback is the
+  `resumeSessionAt` path in [host-rollback.md](host-rollback.md).
 - The fresh generation becomes the thread's **current** alias
   (`registerCurrentAlias`). A driver still holding gen2 can also resume
   afterward — aliases accumulate, none is revoked by a rollback-shaped
