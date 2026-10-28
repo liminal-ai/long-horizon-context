@@ -59,6 +59,20 @@ A host launches one sidecar per Claude session and speaks the wire in `src/proto
   carries into every session the sidecar opens after a compact or rollback. The `lhc` retrieval
   server joins every set under its own name; a host server named `lhc` is dropped. Needs
   claude-lhc 0.2.0 or later.
+- **Model and compaction windows:** a `req` with method `setModel` and params
+  `{ model, settings? }` switches the model. When `settings` carries `autoCompactWindow` and
+  `lhcLowerBound`, the sidecar compacts against those windows from then on, under the same rule
+  as the start frame. Invalid windows refuse the request before the model changes. Without
+  `settings`, the windows stay. Needs claude-lhc 0.2.0 or later.
+- **Flag settings:** a `req` with method `applyFlagSettings` and params `{ settings }` merges into
+  the live session's flag settings, like `Query.applyFlagSettings`: top-level keys merge, and
+  `null` clears a key. Effort (`effortLevel`) and fast mode (`fastMode`) change this way. The
+  merged settings apply again to every session the sidecar opens after a compact. Without that,
+  the new session falls back to the start frame's `effort`. Needs claude-lhc 0.2.0 or later.
+- **Tasks:** a `req` with method `stopTask` and params `{ taskId }`, or `backgroundTasks` and
+  params `{ toolUseId? }`, goes to the live session like the SDK method of the same name.
+  `backgroundTasks` answers the SDK's boolean, which is false only when `toolUseId` names no
+  foreground task. Needs claude-lhc 0.2.0 or later.
 - **Close:** closing stdin ends the session; the sidecar exits 0.
 
 ## Configuration
