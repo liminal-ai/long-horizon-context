@@ -1,5 +1,3 @@
-// Which wire messages carry usage on a fresh session's first turn? Runs N fresh sessions, prints every
-// assistant / stream message_start with model, id, and usage, plus what the sidecar's meter would read.
 import { randomUUID } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

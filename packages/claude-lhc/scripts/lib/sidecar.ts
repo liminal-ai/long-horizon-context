@@ -1,4 +1,3 @@
-// Drives one claude-lhc sidecar over its JSONL protocol (shared by the standalone proofs).
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { dirname, resolve } from "node:path";
@@ -12,7 +11,6 @@ export type Wire = Record<string, unknown>;
 export function fail(reason: string): never { console.log(`RESULT: FAIL — ${reason}`); process.exit(1); }
 export const log = (...parts: unknown[]) => console.error(`[${new Date().toISOString().slice(11, 23)}]`, ...parts);
 
-/** input + cache creation + cache read of an assistant message's usage: the provider's context reading. */
 export function contextTokens(m: Wire): number | undefined {
   const usage = (m["message"] as { usage?: Record<string, unknown> } | undefined)?.usage;
   if (usage === undefined) return undefined;
@@ -46,7 +44,6 @@ export function describe(m: Wire): string {
 export class Sidecar {
   child: ChildProcess;
   messages: Wire[] = [];
-  /** Arrival time of each message, ms since epoch (parallel to `messages`). */
   arrivedAt: number[] = [];
   requests: Wire[] = [];
   stderr: string[] = [];
@@ -93,17 +90,11 @@ export class Sidecar {
   prompt(text: string) {
     this.send({ type: "user", message: { type: "user", message: { role: "user", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "" } as never });
   }
-  /** MCP servers the turn's init reported as still pending: its first call's usage lacks their schemas. */
   static pendingMcp(wire: Wire[]): string[] {
     const init = wire.filter((m) => m["type"] === "system" && m["subtype"] === "init").at(-1);
     const servers = (init?.["mcp_servers"] as Array<{ name: string; status: string }> | undefined) ?? [];
     return servers.filter((s) => s.status === "pending").map((s) => s.name);
   }
-  /**
-   * A "ready" turn repeated until the tool list is final: no MCP server pending and the same tool
-   * count on two consecutive turns (the first init of a session can report an empty server list
-   * with the connectors' tools still absent). The last reading is the settled baseline.
-   */
   async settledReady(maxTries = 6): Promise<{ context: number; tries: number; tools: number }> {
     let previousTools = -1;
     for (let i = 1; ; i++) {
@@ -120,7 +111,6 @@ export class Sidecar {
       previousTools = tools;
     }
   }
-  /** Sends a prompt and waits for the next `result`; returns the wire slice for the turn. */
   async turn(text: string, timeoutMs = 240_000): Promise<{ text: string; wire: Wire[]; result: Wire; context: number }> {
     const from = this.messages.length;
     this.prompt(text);

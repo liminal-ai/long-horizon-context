@@ -1,30 +1,3 @@
-/**
- * Mid-turn compact proof, no t3code: a tool-heavy turn crosses the trigger before it ends,
- * the sidecar stops the query at a safe tool boundary (a parallel batch of three), rebuilds,
- * and the task finishes in a new session. PASSES (default 3) passes, each its own thread:
- *   sidecar A: "ready" (baseline B) → Read of a sample file (S per read) → Read of a big filler
- *              file (turn 3, closed; context C1) → stop
- *   sidecar B: resume with autoCompactWindow = C1 + 400 + 1.5·S, then the task:
- *              read value-1, value-2 one per response; value-3,4,5 in ONE response (parallel);
- *              value-6 alone; answer with six lines.
- *   The trigger is crossed by the assistant message that issues the parallel batch, so the
- *   seam must fall after all three of its results.
- * Checks per pass: six tool calls once each in order; every batch result on the wire before the
- * boundary; status→boundary order; exactly one result, from the new session; the six values
- * correct; LHC has the forced boundary turn, the marker, and the continuation as a runtime
- * note (not a prompt). Writes cp-midturn/pass-N.wire.log and cp-midturn/record.json.
- * PARTIAL=0 turns includePartialMessages off (t3code runs with it on, the default here).
- * FAIL_REBUILD=1 forces the rebuild to throw after the hook stop (start option lhc.forceRebuildFailure
- * on the task sidecar): the expectation flips to no boundary, status failed, the task finishing in the
- * stopped generation, still one result.
- *
- * Calibration: the account's MCP connectors join the tool list asynchronously (~24k tokens of
- * schemas), so a call made before they connect reads low. The baseline is a "ready" turn repeated
- * until the init reports no pending server; the task sidecar warms up the same way and its
- * settled context must sit between the calibrated C1 and trigger − S, else the pass fails as
- * miscalibrated rather than as a seam failure.
- * Exit 0 on pass. T3CODE_LHC_HOME defaults to <builder dir>/home/t3code-lhc.
- */
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -115,7 +88,6 @@ for (let pass = 1; pass <= PASSES; pass++) {
   writeFileSync(join(OUT, `pass-${pass}.wire.log`), wireAll.map((m, i) => bare(m) ? `${String(wire.indexOf(m)).padStart(3)} +${String(wireTimes[i]! - t0).padStart(6)}ms ${describe(m)}` : null).filter((l) => l !== null).join("\n") + "\n");
   writeFileSync(join(OUT, `pass-${pass}.sidecar.log`), b.stderr.join("\n") + "\n");
 
-  // ── checks
   const calls = wire.filter((m) => m["type"] === "assistant").flatMap((m, _i) => ((m["message"] as { content: Wire[] }).content).filter((c) => c["type"] === "tool_use").map((c) => ({ id: String(c["id"]), path: String((c["input"] as Wire)["file_path"]), at: wire.indexOf(m), sid: String(m["session_id"]), msg: String((m["message"] as { id?: string }).id ?? "") })));
   const order = calls.map((c) => Number(/value-(\d)\.txt$/.exec(c.path)?.[1] ?? 0));
   const results = wire.filter((m) => m["type"] === "result");
@@ -145,7 +117,6 @@ for (let pass = 1; pass <= PASSES; pass++) {
   if (FAIL_REBUILD) {
     const oldSid = String(wire.find((m) => m["type"] === "assistant")?.["session_id"]);
     if (boundaryAt >= 0) fail(`pass ${pass}: a compact_boundary appeared although the rebuild was forced to fail`);
-    // One mid-turn try, then the turn-end path's one try: two compacting/failed pairs, no more.
     if (statuses.filter((s) => s.endsWith(":compacting")).length !== 2 || statuses.filter((s) => s.endsWith(":null:failed")).length !== 2) fail(`pass ${pass}: status sequence ${JSON.stringify(statuses)}, expected exactly two compacting→failed pairs (mid-turn once, turn end once)`);
     if (results.length !== 1) fail(`pass ${pass}: ${results.length} results on the wire, expected 1`);
     if (results[0]!["session_id"] !== oldSid || results[0]!["is_error"] === true) fail(`pass ${pass}: result ${JSON.stringify(summary.results)} is not the stopped session's success`);
@@ -165,7 +136,6 @@ for (let pass = 1; pass <= PASSES; pass++) {
   log(`✓ pass ${pass}: 6 reads once each, batch of 3 resolved before the boundary at ${boundaryAt}, one result on ${newSid.slice(0, 8)}, answer correct`);
   }
 
-  // ── LHC side
   const r = await threads.resolveAlias({ alias: `t3code-lhc:${first}`, registryPath });
   if (!r.ok) fail("alias resolution failed");
   const ref = { threadId: r.value.threadId, registryPath };

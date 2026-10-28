@@ -1,7 +1,3 @@
-// Spike 2: resume an unknown session id from a hand-built projection.
-//   MODE=store  -> Options.sessionStore.load() serves the projection
-//   MODE=file   -> projection written to CLAUDE_CONFIG_DIR/projects/<enc cwd>/<N>.jsonl
-// Checks: load() consulted? synthetic assistant frame after trailing user line? memory of the secret?
 import { query, type SDKUserMessage, type SessionStore } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";

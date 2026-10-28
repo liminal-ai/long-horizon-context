@@ -1,20 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Assemble the publishable claude-lhc npm package.
- *
- * Same shape as cc-lhc's assembler: the private workspace `lhc` core is
- * bundled under node_modules (bundledDependencies), so the tarball never
- * names an unpublished package and `lhc` is not published on its own.
- * Third-party runtime dependencies stay ordinary npm dependencies.
- *
- *   node packages/claude-lhc/scripts/assemble-npm-package.mjs \
- *     [--out build/claude-lhc-npm] [--version 0.1.0] [--source-sha <40-hex>]
- *
- * Requires `pnpm --filter lhc build && pnpm --filter claude-lhc build` first.
- * Then `npm pack <out>` produces claude-lhc-<version>.tgz.
- */
-
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -62,7 +47,6 @@ requirePath(join(lhcRoot, "dist", "index.js"), "lhc dist");
 rmSync(outputRoot, { recursive: true, force: true });
 mkdirSync(join(outputRoot, "bin"), { recursive: true });
 
-// Compiled JS only: declaration files and source maps are not a runtime need.
 const jsOnly = (source) => !/\.(?:d\.ts|d\.ts\.map|js\.map)$/.test(source);
 cpSync(join(packageRoot, "dist"), join(outputRoot, "dist"), { recursive: true, filter: jsOnly });
 cpSync(join(packageRoot, "bin", "claude-lhc.js"), join(outputRoot, "bin", "claude-lhc.js"));

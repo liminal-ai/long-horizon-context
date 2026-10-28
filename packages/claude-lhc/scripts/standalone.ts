@@ -1,14 +1,3 @@
-/**
- * Standalone proof, no t3code: drives the sidecar over its JSONL protocol.
- *   1. start a fresh session; one tool turn (read notes.txt → secret word)
- *   2. /compact → compact_boundary + result; LHC has a view; both session ids alias the thread
- *   2b. a /compact deferred to a turn end; a prompt sent while that compact runs is answered
- *   2c. a unique token at the disposable project's native memory path; after the
- *       generation swap, an observed Read of that same file (not transcript recall)
- *   3. stop the sidecar; start a new one with resume: <latest session id>
- *   4. one no-tools turn that must recall the secret
- * Exit 0 on pass. T3CODE_LHC_HOME defaults to <builder dir>/home/t3code-lhc.
- */
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
@@ -60,7 +49,6 @@ class Sidecar {
         log(`  ← ${m["type"]}${sub} sid=${String(m["session_id"]).slice(0, 8)} ${detail}`);
       } else if (frame.type === "req") {
         this.requests.push(frame as unknown as Record<string, unknown>);
-        // Approve everything (the smoke runs full-access; this exercises the wire anyway).
         this.send({ type: "res", id: frame.id, ok: true, value: frame.method === "canUseTool" ? { behavior: "allow", updatedInput: (frame.params as any).input } : {} });
       } else if (frame.type === "error") {
         this.error = frame.message;
@@ -98,8 +86,6 @@ class Sidecar {
 const baseOptions = (extra: Record<string, unknown>) => ({
   cwd, model: MODEL, pathToClaudeCodeExecutable: "claude",
   systemPrompt: { type: "preset", preset: "claude_code" }, settingSources: ["user", "project", "local"],
-  // "default" so tool approvals cross the wire as canUseTool requests (the script allows them);
-  // PERMISSION_MODE=bypassPermissions mirrors the smoke client's full-access threads.
   permissionMode: process.env.PERMISSION_MODE ?? "default",
   ...(process.env.PERMISSION_MODE === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
   includePartialMessages: true,
@@ -110,7 +96,6 @@ log("LHC home", LHC_HOME, "cwd", cwd, "secret", SECRET);
 const first = randomUUID();
 const a = new Sidecar("sidecar-1");
 a.send({ type: "start", options: baseOptions({ sessionId: first }) });
-// The SDK spawns the child when the first prompt is pulled, so system/init arrives with turn 1.
 const t1 = await a.turn("Read notes.txt in this directory and tell me the secret word. Be brief.");
 const initSid = String(a.messages.find((m) => m["subtype"] === "init")?.["session_id"]);
 if (initSid !== first) fail(`init session ${initSid} != requested ${first}`);
@@ -130,7 +115,6 @@ const boundary = a.messages.slice(beforeCompact).find((m) => m["type"] === "syst
 if (!boundary) fail("no compact_boundary after /compact");
 const second = String(boundary["session_id"]);
 if (second === first) fail("compact did not mint a new session id");
-// Native order around a compaction: status compacting → status null (compact_result) → boundary → result.
 const seq = a.messages.slice(beforeCompact).map((m) =>
   m["type"] === "system" && m["subtype"] === "status" ? `status:${m["status"] ?? "null"}${m["compact_result"] ? ":" + m["compact_result"] : ""}`
   : m["type"] === "system" && m["subtype"] === "compact_boundary" ? "boundary"
@@ -152,10 +136,6 @@ if (!existsSync(memoryFile) || !readFileSync(memoryFile, "utf8").includes(MEMORY
 }
 log(`✓ native project memory file ${memoryFile}`);
 
-// ── 2b. a prompt pushed mid-compact is held and answered by the new generation.
-// The compact runs at the turn end (a /compact that arrived while the turn was open), so it
-// runs inside the SDK pump, not the wire's serial queue: the next prompt reaches the session
-// while the swap is in flight.
 const mark = a.messages.length;
 a.prompt("Read notes.txt with the Read tool, then reply with only the secret word.");
 await a.waitFor(() => a.messages.slice(mark).some((m) => m["type"] === "assistant"), 120_000, "turn open for deferred compact");
@@ -198,7 +178,6 @@ if (!existsSync(memoryFile) || !readFileSync(memoryFile, "utf8").includes(MEMORY
 }
 log(`✓ generation ${latest.slice(0, 8)} Read ${memoryFile} and observed ${MEMORY_TOKEN}`);
 
-// LHC side.
 const registryPath = join(LHC_HOME, "registry.sqlite");
 const lhc: Lhc = initLhc({
   mode: "manual",

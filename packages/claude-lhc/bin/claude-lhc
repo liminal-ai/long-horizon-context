@@ -1,6 +1,4 @@
 #!/bin/sh
-# Convenience wrapper for humans/PATH. T3 spawns `process.execPath` with
-# dist/sidecar.js (or bin/claude-lhc.js) — never this script.
 set -eu
 here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 exec "${NODE:-node}" "$here/../dist/sidecar.js" "$@"
