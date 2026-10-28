@@ -2,22 +2,20 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mapPrompt, mapSdkMessage } from "../src/capture/mapper.ts";
 import { createLhc, resolveSession, threadRef } from "../src/lhcHome.ts";
 import { nativeSessionPath } from "../src/nativeSessionFile.ts";
 import { ClaudeLhcSession } from "../src/session.ts";
 
-// biome-ignore lint/suspicious/noExplicitAny: SDK query options are checked structurally below
-type LooseOptions = Record<string, any>;
-const opened: LooseOptions[] = [];
+const opened: Options[] = [];
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const real = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
   return {
     ...real,
     renameSession: async () => {},
-    query: ({ options }: { options: LooseOptions }) => {
+    query: ({ options }: { options: Options }) => {
       opened.push(options);
       const never = new Promise<IteratorResult<never>>(() => {});
       return {
@@ -124,7 +122,8 @@ async function captureTurn(threadId: string, prompt: string, answer: string): Pr
   return uuid;
 }
 
-function projectedText(options: LooseOptions): string {
+function projectedText(options: Options): string {
+  if (options.resume === undefined) throw new Error("the generation did not resume a projected file");
   const path = nativeSessionPath({ sessionId: options.resume, cwd: dir, env: { CLAUDE_CONFIG_DIR: claudeHome } });
   return readFileSync(path, "utf8");
 }
@@ -266,7 +265,7 @@ describe("thread start", () => {
 
     expect(session.threadId).toBe(threadId);
     expect(options).not.toHaveProperty("resume");
-    expect(typeof options.sessionId).toBe("string");
+    if (options.sessionId === undefined) throw new Error("the generation has no session id");
     const path = nativeSessionPath({ sessionId: options.sessionId, cwd: dir, env: { CLAUDE_CONFIG_DIR: claudeHome } });
     expect(existsSync(path)).toBe(false);
     expect(await resolveSession(options.sessionId)).toBe(threadId);
