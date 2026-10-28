@@ -37,7 +37,7 @@ Build once from the repo root (order matters: `cc-lhc` type-checks against
 `cc-lhc-native`'s dist, and every real launch needs the native addon):
 
 ```sh
-pnpm install --frozen-lockfile   # needs vendor/pi submodule initialized
+pnpm install --frozen-lockfile
 pnpm --filter lhc run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native

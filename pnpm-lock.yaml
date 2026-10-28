@@ -5,12 +5,6 @@ settings:
   excludeLinksFromLockfile: false
 
 overrides:
-  '@earendil-works/pi-ai': file:./vendor/pi/packages/ai
-  '@earendil-works/pi-agent-core': file:./vendor/pi/packages/agent
-  '@earendil-works/pi-tui': file:./vendor/pi/packages/tui
-  '@earendil-works/pi-protocol': file:./vendor/pi/packages/protocol
-  '@earendil-works/pi-client': file:./vendor/pi/packages/client
-  '@earendil-works/pi-telemetry': file:./vendor/pi/packages/telemetry
   '@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-arm64': '-'
   '@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-darwin-x64': '-'
   '@anthropic-ai/claude-agent-sdk>@anthropic-ai/claude-agent-sdk-linux-arm64': '-'

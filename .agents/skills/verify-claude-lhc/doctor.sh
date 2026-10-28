@@ -18,7 +18,7 @@ ENTRY="$REPO/packages/claude-lhc/dist/sidecar.js"
 if [ -f "$ENTRY" ]; then
   note "built sidecar present: packages/claude-lhc/dist/sidecar.js"
 else
-  bad "packages/claude-lhc/dist/sidecar.js missing; build: git submodule update --init vendor/pi && pnpm install --frozen-lockfile && pnpm --filter lhc build && pnpm --filter claude-lhc build"
+  bad "packages/claude-lhc/dist/sidecar.js missing; build: pnpm install --frozen-lockfile && pnpm --filter lhc build && pnpm --filter claude-lhc build"
 fi
 
 for f in packages/claude-lhc/src/protocol.ts packages/claude-lhc/src/session.ts packages/claude-lhc/src/sidecar.ts; do

@@ -81,10 +81,6 @@ describe("matrix ↔ targets.json", () => {
 });
 
 describe("pinned toolchain and required steps", () => {
-  it("checks out recursive submodules in every job", () => {
-    expect(workflow.match(/submodules: recursive/g)?.length).toBe(3);
-  });
-
   it("pins current-runtime action majors (Node 24) so Node 20 deprecation warnings cannot return", () => {
     const REQUIRED_ACTION_MAJORS: Record<string, number> = {
       "actions/checkout": 7,

@@ -21,9 +21,7 @@ Interview facts, from the code:
 
 - Surface: JSONL stdio sidecar (`node packages/claude-lhc/dist/sidecar.js`,
   or `bin/claude-lhc.js`). No port, no server.
-- Run: build first (`dist/` is not in git). A fresh worktree also needs
-  `git submodule update --init vendor/pi` or `pnpm install` fails on
-  `vendor/pi/packages/agent`.
+- Run: build first (`dist/` is not in git).
 - Drive: spawn the sidecar, write frames, read frames. `canUseTool` /
   `onUserDialog` arrive as sidecar `req` frames and must be answered.
 - Observe: stdout frames, stderr log lines (`[claude-lhc] ...`), the LHC
@@ -39,7 +37,6 @@ Interview facts, from the code:
 From the repo root of a clean checkout:
 
 ```sh
-git submodule update --init vendor/pi
 pnpm install --frozen-lockfile
 pnpm --filter lhc build && pnpm --filter claude-lhc build
 ```

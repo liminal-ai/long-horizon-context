@@ -1,3 +1,0 @@
-[submodule "vendor/pi"]
-	path = vendor/pi
-	url = https://github.com/earendil-works/pi.git

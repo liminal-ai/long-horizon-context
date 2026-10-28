@@ -204,7 +204,7 @@ This is higher than the packaged cc-lhc runtime floor because the complete
 workspace also builds the SDK, ports, and tests.
 
 ```sh
-git clone --recursive https://github.com/liminal-ai/long-horizon-context.git
+git clone https://github.com/liminal-ai/long-horizon-context.git
 cd long-horizon-context
 pnpm install --frozen-lockfile
 pnpm build

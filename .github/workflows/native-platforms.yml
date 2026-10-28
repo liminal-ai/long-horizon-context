@@ -61,10 +61,8 @@ jobs:
             runner: windows-11-arm
             consumer_node: 24.15.0
     steps:
-      - name: Checkout (recursive submodules)
+      - name: Checkout
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
 
       - name: Install pnpm 11.8.0
         uses: pnpm/action-setup@v6
@@ -255,10 +253,8 @@ jobs:
           - target: win32-x64
             runner: blacksmith-2vcpu-windows-2025
     steps:
-      - name: Checkout (recursive submodules)
+      - name: Checkout
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
 
       - name: Install pnpm 11.8.0
         uses: pnpm/action-setup@v6
@@ -308,10 +304,8 @@ jobs:
     needs: native
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout (recursive submodules)
+      - name: Checkout
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
 
       - name: Install pnpm 11.8.0
         uses: pnpm/action-setup@v6
