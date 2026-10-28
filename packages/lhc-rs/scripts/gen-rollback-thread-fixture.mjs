@@ -49,9 +49,7 @@ try {
   unwrap(await sdk.intakeStream.messageEvents(ref, turn("KEPT")));
   unwrap(await sdk.intakeStream.messageEvents(ref, turn("ROLLED_BACK")));
   unwrap(
-    await sdk.intakeStream.messageEvents(ref, [
-      event("rollback", { keepThroughEventOrder: 3, reason: "host rewind" }),
-    ]),
+    await sdk.intakeStream.messageEvents(ref, [event("rollback", { keepThroughEventOrder: 3, reason: "host rewind" })]),
   );
   unwrap(await sdk.work.drain(ref));
   rmSync(out, { force: true });
