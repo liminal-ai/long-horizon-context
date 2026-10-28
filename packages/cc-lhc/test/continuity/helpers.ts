@@ -55,7 +55,7 @@ export const DEFAULT_PATHS: LaunchPaths = {
   sessionDir: "/nonexistent/projects/-x/session-old",
 };
 
-export const WAKEUP_AT_MS = 1_800_000_000_000;
+const WAKEUP_AT_MS = 1_800_000_000_000;
 
 export const LAUNCHES = {
   agent: {
@@ -145,7 +145,7 @@ export function allLaunchLines(p: LaunchPaths = DEFAULT_PATHS): RolloutLineItem[
   ];
 }
 
-export type QualifiableFamily = keyof typeof LAUNCH_IDS;
+type QualifiableFamily = keyof typeof LAUNCH_IDS;
 export const QUALIFIED: Record<QualifiableFamily, QualifiedCarryMode> = {
   agent: "reconstruct",
   workflow: "reconstruct",
@@ -154,7 +154,7 @@ export const QUALIFIED: Record<QualifiableFamily, QualifiedCarryMode> = {
   scheduled_wakeup: "rearm",
 };
 
-export function isQualifiableFamily(family: string): family is QualifiableFamily {
+function isQualifiableFamily(family: string): family is QualifiableFamily {
   return family in QUALIFIED;
 }
 

@@ -19,7 +19,7 @@ import {
   processIdentityJson,
 } from "../../../src/runtime/process-identity.js";
 
-export type ProofStatus = "proved" | "candidate_failed" | "unproved";
+type ProofStatus = "proved" | "candidate_failed" | "unproved";
 
 export interface Proof {
   id: string;
@@ -27,9 +27,9 @@ export interface Proof {
   detail: string;
 }
 
-export type AffiliationSource = "linux_proc_stat" | "darwin_python_getsid" | "unavailable";
+type AffiliationSource = "linux_proc_stat" | "darwin_python_getsid" | "unavailable";
 
-export interface Affiliation {
+interface Affiliation {
   pid: number;
   ppid: number | null;
   pgrp: number | null;

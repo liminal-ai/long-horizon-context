@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-export const tsxCliPath: string = createRequire(join(here, "../../../lhc/node_modules/tsx/package.json")).resolve(
+const tsxCliPath: string = createRequire(join(here, "../../../lhc/node_modules/tsx/package.json")).resolve(
   "tsx/cli",
 );
 
