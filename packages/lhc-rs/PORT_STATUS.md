@@ -13,8 +13,8 @@ classified/cargo-reported **493**, passed **40**, notimpl **438**, ignored
 fixture rows are reconciled; only the two recorded live-network artifacts are
 excluded. Phase 2 behavior (seven waves, the larger remaining part) and Phase
 3 Grok Build integration (approximately three chunks) remain; nothing runs
-yet, and only Phase 3 delivers LHC inside Grok Build. Phase 2 is governed by
-`docs/lhc-rs-port/phase2-brief.md`.
+yet, and only Phase 3 delivers LHC inside Grok Build. Phase 2 was governed by a worklog brief removed after the port landed;
+git history retains it.
 
 Rust-only additions (no TS counterpart):
 - `src/shared_tech/js_json.rs` — REAL in Wave 0 (JS string/JSON parity; the
@@ -2390,7 +2390,7 @@ names retired for classification; exact `481/0/15/0/0` required).
 
 **Ignores:** 15, mapped 1:1 to TS `it.skip` (unchanged set).
 
-**Report:** `docs/lhc-rs-port/phase2-impl-wave7-report.md`.
+**Report:** the phase-2 wave-7 implementation report (port worklog, removed after landing).
 
 **Immutable:** root `cc-lhc-*.txt` preserved; no golden regeneration; tests /
 assertions / oracles untouched except implementing pre-existing fixture
@@ -2401,7 +2401,7 @@ assertions / oracles untouched except implementing pre-existing fixture
 Sol/Fable-facing fidelity gaps closed on the uncommitted Wave 7 tree
 (baseline Wave 6 `a0434bc`). Still **not certified**. No commit/push.
 
-**Repairs (evidence in `docs/lhc-rs-port/phase2-impl-wave7-report.md`):**
+**Repairs (evidence in the phase-2 wave-7 implementation report (port worklog, removed after landing)):**
 
 1. **Frozen public surface** — `run_with_instance_seam_sync` → `pub(crate)`;
    removed public `Scheduler: Clone`; added `pub(crate) fn shared_handle`
@@ -2438,7 +2438,7 @@ Sol/Fable-facing fidelity gaps closed on the uncommitted Wave 7 tree
 
 Focused follow-up before dual Wave 7 review. Still **not certified**. No
 commit/push. Evidence detail:
-`docs/lhc-rs-port/phase2-impl-wave7-report.md` § Repair-r2.
+the phase-2 wave-7 implementation report (port worklog, removed after landing) § Repair-r2.
 
 1. **Drain-runner private + panic containment** — `run_protocol` /
    `process_main` file-private; async `catch_unwind` over whole
@@ -2472,7 +2472,7 @@ proving the narrow example wrapper in an isolated copy.
 `examples/drain_runner.rs` + fixture-crate-only `pub(crate) process_main`.
 Real-target evidence on `cargo build --example drain_runner` (not
 in-module harness) recorded in
-`docs/lhc-rs-port/phase2-impl-wave7-report.md` § Repair-r3.
+the phase-2 wave-7 implementation report (port worklog, removed after landing) § Repair-r3.
 
 **Final changed-scope certification:** Sol `20260725-064346-dd2ff2`
 **PASS** and Copilot-Fable `20260725-064246-0cae89` **PASS** on the actual

@@ -292,7 +292,7 @@ fn selection_chunk_status(status: TurnStatus) -> SelectionChunkStatus {
 
 pub fn read_selection_inputs(db: &Db) -> Result<SelectionInputs, CanonicalCorruptionError> {
     // Message, turn, and chunk material comes from the owner domains, not direct
-    // SQL against their tables (bad-code-log: domain-boundary leakage). The
+    // SQL against their tables (known domain-boundary leakage). The
     // owners return source-faithful structure — turns carry the deleted flag,
     // chunks carry raw membership — so thread-view keeps ownership of the
     // source-state corruption policy below. The derivation and event-aggregate

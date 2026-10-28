@@ -148,7 +148,7 @@ export const PI_MAPPABLE_MESSAGE_KINDS = [
 
 export function readSelectionInputs(db: DatabaseSync, estimator: TokenEstimator): SelectionInputs {
   // Message, turn, and chunk material comes from the owner domains, not direct
-  // SQL against their tables (bad-code-log: domain-boundary leakage). The
+  // SQL against their tables (known domain-boundary leakage). The
   // owners return source-faithful structure — turns carry the deleted flag,
   // chunks carry raw membership — so thread-view decides for itself what the
   // walk can place. The derivation and event-aggregate reads stay here as

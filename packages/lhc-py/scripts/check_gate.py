@@ -383,7 +383,7 @@ def run_pytest(
 def _git_receipt() -> list[str]:
     lines: list[str] = []
     repo_root = ROOT.parent.parent if ROOT.parent.name == "packages" else ROOT
-    path_scope = ["packages/lhc-py", "docs/worklog/py-wave"]
+    path_scope = ["packages/lhc-py"]
     try:
         head = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -404,7 +404,7 @@ def _git_receipt() -> list[str]:
             check=False,
         )
         if stat.returncode == 0:
-            body = (stat.stdout or "").strip() or "(clean under packages/lhc-py docs/worklog/py-wave)"
+            body = (stat.stdout or "").strip() or "(clean under packages/lhc-py)"
             lines.append(f"git diff --stat (path-scoped): {body}")
         else:
             lines.append("git diff: (unavailable)")
@@ -425,7 +425,7 @@ def _git_receipt() -> list[str]:
             else:
                 lines.append(
                     "git status --porcelain (path-scoped): "
-                    "(clean under packages/lhc-py docs/worklog/py-wave)"
+                    "(clean under packages/lhc-py)"
                 )
         else:
             lines.append("git status --porcelain: (unavailable)")

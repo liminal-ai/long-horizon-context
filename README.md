@@ -75,13 +75,18 @@ contains every later feature from another port.
 | Codex CLI | Native Rust integration in the maintained [`codex-lhc`](https://github.com/liminal-ai/codex-lhc) fork | Fork release |
 | Grok Build | Native Rust integration in the maintained [`grok-build-lhc`](https://github.com/liminal-ai/grok-build-lhc) fork | Fork release |
 | Claude Code | [`cc-lhc`](packages/cc-lhc), a closed-host PTY wrapper | Public npm package and GitHub bundles |
+| Claude Code (in t3code) | [`claude-lhc`](packages/claude-lhc), an Agent SDK sidecar that records into LHC and projects native sessions from the served view | Public npm package, installed by t3code-lhc |
 | Hermes Agent | Native Python integration in the maintained [`hermes-lhc`](https://github.com/liminal-ai/hermes-lhc) fork using `context.engine: lhc` | Fork installation |
 | t3code | Native integration in the external maintained [`liminal-ai/t3code`](https://github.com/liminal-ai/t3code) fork | External fork; [`packages/t3code-lhc`](packages/t3code-lhc) contains documentation only |
 
 Hosts do not have identical capabilities. The integration surface determines
 how each host captures events, exposes retrieval, and replaces its working
-context. See [host integrations](docs/host-integrations.md) for the capability
-and maintenance boundaries.
+context. The three attachment patterns (extension, native fork, wrapper or
+sidecar) and the fork-maintenance discipline are summarized in
+[core concepts](docs/onboard/01-core-concepts.md). Each fork's own `FORK.md`
+is canonical for its sync drill. The Claude Code hosts have their own docs:
+[cc-lhc](docs/onboard/05-host-cc-lhc.md) and
+[claude-lhc](docs/onboard/06-host-claude-lhc.md).
 
 ## Install cc-lhc
 
@@ -116,13 +121,13 @@ platform. They do not invoke npm or a native compiler on the client.
 Linux or macOS:
 
 ```sh
-curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.2/install.sh | sh
+curl -fsSL https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.5/install.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.2/install.ps1 | iex
+irm https://github.com/liminal-ai/long-horizon-context/releases/download/cc-lhc-v0.4.5/install.ps1 | iex
 ```
 
 Update a script-owned installation by running the installer from the desired
@@ -132,7 +137,9 @@ removing the old launcher; otherwise two `cc-lhc` commands can exist on
 `PATH`.
 
 Release assets and checksums are on the
-[`cc-lhc-v0.4.2` release](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.2).
+[`cc-lhc-v0.4.5` release](https://github.com/liminal-ai/long-horizon-context/releases/tag/cc-lhc-v0.4.5).
+Release notes for every published release live in
+[`docs/releases`](docs/releases).
 
 ### Use
 
@@ -160,9 +167,10 @@ Claude Code is closed source, so cc-lhc keeps explicit boundaries. In-app
 `cc-lhc --continue`. Rebuilt session files omit signed thinking when exact
 stored and live request identity cannot be proven.
 
-The retained whole-product certification evidence is for Claude Code 2.1.226.
-It is evidence for that artifact, not a guarantee for every future Claude Code
-release. See the [cc-lhc README](packages/cc-lhc/README.md) for current policy,
+The retained whole-product certification evidence covers Claude Code 2.1.226
+(whole product) and 2.1.235 (the forward-only compact path).
+It is evidence for those artifacts, not a guarantee for every future Claude
+Code release. See the [cc-lhc README](packages/cc-lhc/README.md) for current policy,
 recovery, configuration, verification, and compatibility details.
 
 ## Use the TypeScript SDK
@@ -177,12 +185,16 @@ contains these domains:
 - `turns`
 - `retrieval`
 - `threadView`
+- `compactContinuation`
 - `inspect`
 - `logging`
 - `work`
 
-The host supplies a `ModelCall` function or the four inference callbacks. All
-thread state is stored in per-thread SQLite files through `node:sqlite`.
+The host supplies a `ModelCall` function plus model assignments, or the four
+inference callbacks directly, and names a tokenizer family. All thread state
+is stored in per-thread SQLite files through `node:sqlite`. A thin
+`lhc thread` command line ships with the SDK for copying, binding, health
+checks, repair, export, and cross-host forks of existing threads.
 
 See the [SDK README](packages/lhc/README.md) for initialization, types, domain
 operations, derivation behavior, retrieval receipts, smart compact, prune, and
@@ -246,13 +258,11 @@ The cc-lhc standalone setup does not build PI.
 
 - [Core concepts](docs/onboard/01-core-concepts.md)
 - [Domain design](docs/onboard/02-domain-design.md)
-- [Decision brief](docs/onboard/03-decisions-brief.md)
-- [PI host](docs/onboard/04-host-pi-lhc.md)
 - [cc-lhc host](docs/onboard/05-host-cc-lhc.md)
-- [Host integrations and fork maintenance](docs/host-integrations.md)
+- [claude-lhc host](docs/onboard/06-host-claude-lhc.md)
 - [Project lexicon](docs/lexicon.md)
-- [Decision registry](docs/decision-registry.md)
 - [Ethical framework](docs/ethical-framework.md)
+- [Release notes](docs/releases)
 
 ## License
 
