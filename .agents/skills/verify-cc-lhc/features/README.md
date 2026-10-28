@@ -37,7 +37,7 @@ matching feature file as the recipe. Harness: the helpers in
 - Pair a user-only check (terminal + help text only) with an outcome
   check (stored state the user cannot see) for every drive.
 - Record the feature file and entry point with every artifact in
-  `${VERIFY_CC_LHC_EVIDENCE:-/tmp/verify-cc-lhc-evidence}`.
+  `${VERIFY_CC_LHC_EVIDENCE:-<run>/proof}`.
 - A drive that cannot run (no live Claude login, seam stands down)
   reports `SKIP:` with the exact reason. Never report it as verified
   through a different path.

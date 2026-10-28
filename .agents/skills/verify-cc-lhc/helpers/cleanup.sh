@@ -6,11 +6,7 @@ cleanup_tmux
 REMOVED=0
 if [ -f "$EVIDENCE_DIR/iso-homes.txt" ]; then
   while IFS= read -r iso; do
-    case "$iso" in
-      /tmp/verify-cc-lhc-home-*|"${TMPDIR:-/tmp}"/verify-cc-lhc-home-*)
-        [ -d "$iso" ] && { rm -rf "$iso"; REMOVED=$((REMOVED + 1)); } ;;
-      *) echo "REFUSED to remove unrecorded-path shape: $iso" >&2 ;;
-    esac
+    [ -d "$iso" ] && remove_iso_home "$iso" && REMOVED=$((REMOVED + 1))
   done <"$EVIDENCE_DIR/iso-homes.txt"
   : >"$EVIDENCE_DIR/iso-homes.txt"
 fi

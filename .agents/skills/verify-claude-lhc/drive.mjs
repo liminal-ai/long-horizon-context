@@ -1,8 +1,8 @@
 #!/usr/bin/env node
-import { spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath } from "node:url";
@@ -10,12 +10,23 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../../..");
 const ENTRY = join(REPO, "packages/claude-lhc/dist/sidecar.js");
-const EVIDENCE = process.env.VERIFY_CLAUDE_LHC_EVIDENCE ?? mkdtempSync(join(tmpdir(), "verify-claude-lhc-evidence-"));
+const MAIN = (() => {
+  try {
+    return execFileSync("git", ["-C", REPO, "worktree", "list", "--porcelain"], { encoding: "utf8" }).match(/^worktree (.+)$/m)[1];
+  } catch {
+    return REPO;
+  }
+})();
+const RUN = process.env.VERIFY_RUN_DIR ?? join(MAIN, ".pstack/runs/verify-claude-lhc");
+const SCRATCH_ROOT = join(RUN, "scratch");
+mkdirSync(SCRATCH_ROOT, { recursive: true });
+mkdirSync(join(RUN, "proof"), { recursive: true });
+const EVIDENCE = process.env.VERIFY_CLAUDE_LHC_EVIDENCE ?? mkdtempSync(join(RUN, "proof", "evidence-"));
 mkdirSync(EVIDENCE, { recursive: true });
 
 class Scratch {
   constructor(label) {
-    this.dir = mkdtempSync(join(tmpdir(), `verify-claude-lhc-${label}-`));
+    this.dir = mkdtempSync(join(SCRATCH_ROOT, `verify-claude-lhc-${label}-`));
     this.lhcHome = join(this.dir, "t3code-lhc");
     this.claudeHome = join(this.dir, "claude-home");
     this.cwd = join(this.dir, "cwd");
@@ -31,7 +42,8 @@ class Scratch {
     return readdirSync(root, { recursive: true }).map(String).filter((f) => f.endsWith(".jsonl"));
   }
   cleanup() {
-    if (process.env.VERIFY_KEEP_SCRATCH !== "1") rmSync(this.dir, { recursive: true, force: true });
+    if (process.env.VERIFY_KEEP_SCRATCH === "1") console.log(`VERIFY-CLAUDE-LHC kept scratch: ${this.dir}`);
+    else rmSync(this.dir, { recursive: true, force: true });
   }
 }
 

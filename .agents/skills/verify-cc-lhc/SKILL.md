@@ -97,7 +97,7 @@ fixture and grades that the rebuilt lines carry its `version`.
 Live-Claude drives (credentials required; not seeded): to prove a real
 interactive session, Smart Compact handoff, or the control panel, launch
 the built wrapper in tmux with `HOME`, `CC_LHC_HOME`, `CLAUDE_CONFIG_DIR`
-all under a fresh temp dir, complete Claude login **inside that throwaway
+all under a fresh dir in `<run>/scratch/` (see Evidence), complete Claude login **inside that throwaway
 config only**, then drive per [features/smart-compact.md](features/smart-compact.md)
 and [features/control-panel.md](features/control-panel.md). If throwaway
 login is unavailable, record the drive as skipped with that reason. Do
@@ -105,7 +105,10 @@ not copy or read the operator's real Claude config to get credentials.
 
 ## Evidence
 
-Evidence dir: `${VERIFY_CC_LHC_EVIDENCE:-/tmp/verify-cc-lhc-evidence}`.
+Run folder `<run>` is `$VERIFY_RUN_DIR`, default `.pstack/runs/verify-cc-lhc`
+in the main checkout (the first entry of `git worktree list`; `.pstack/` is
+git-ignored). Throwaway HOMEs go in `<run>/scratch/`; nothing goes to
+`/tmp`. Evidence dir: `${VERIFY_CC_LHC_EVIDENCE:-<run>/proof}`.
 Every drive appends `PASS:`/`FAIL:`/`SKIP:` lines to `results.txt`, saves
 its command log (`capture.log`, `rebuild.log`, …), its tmux pane capture
 (`<drive>-pane.txt`, the terminal transcript), the ISO `wrapper.log`, and
@@ -138,8 +141,9 @@ Proof standards:
 
 Kills only the tmux session the current helper started (tracked by exact
 session name, never by process-name pattern) and removes throwaway HOMEs
-recorded in `evidence/iso-homes.txt`. It refuses recorded paths that do
-not match the temp-HOME shape. Evidence survives cleanup at the evidence
+recorded in `iso-homes.txt` in the evidence dir. It refuses any path that
+is not a `verify-cc-lhc-home-*` dir under `<run>/scratch/`. Remove a HOME
+through this helper, never a raw `rm`. Evidence survives cleanup at the evidence
 dir above — confirm `results.txt` and the pane captures still exist after
 cleanup before reporting a drive done.
 
@@ -149,7 +153,7 @@ All under `.agents/skills/verify-cc-lhc/helpers/`, all executable:
 
 | Helper | Invocation | Purpose |
 | --- | --- | --- |
-| `helpers/lib.sh` | sourced by the others | Isolation, tmux drive, PASS/FAIL bookkeeping |
+| `helpers/lib.sh` | sourced by the others | Run folder, isolation, guarded HOME removal, tmux drive, PASS/FAIL bookkeeping |
 | `helpers/doctor.sh` | `helpers/doctor.sh` | Read-only worth-driving check |
 | `helpers/drive-help.sh` | `helpers/drive-help.sh` | Help/version/unknown-flag drive |
 | `helpers/drive-capture.sh` | `helpers/drive-capture.sh` | Scripted session capture drive |

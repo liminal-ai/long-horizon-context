@@ -90,7 +90,7 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `restart` | seed, stop, `start{resume: gen2}` | stderr `resumed thread ... via <gen2> as generation <gen3>`, exit 0 | projected `<gen3>.jsonl` exists with lines; thread count unchanged (the "you see" bar: restarts onto its own projected file, one thread) |
 | `resume-superseded-alias` | seed, stop, `start{resume: gen1}` (superseded alias) | same-thread resume line via the old alias, fresh generation, exit 0 | 1 thread, new projected file. Observed semantics: any alias resumes the **current** served view — not gen1-era history; see [rollback-shaped-start.md](features/rollback-shaped-start.md) |
 | `resume-unknown` | `start{resume: <random>}` | one `error` frame: `no LHC thread holds the Claude session ...`, exit 1 | zero thread files created |
-| `turn` | real tool turn + recall via `scripts/standalone.ts` (live only, `CLAUDE_LHC_LIVE=1`) | standalone `RESULT: PASS` | native files only under the throwaway `CLAUDE_CONFIG_DIR`, none under real `~/.claude/projects` |
+| `turn` | real tool turn + recall via `scripts/standalone.ts` (live only, `CLAUDE_LHC_LIVE=1`) | standalone `RESULT: PASS` | native files only under the throwaway `CLAUDE_CONFIG_DIR`, none under real `~/.claude/projects`. Fails intermittently; see Known failure below |
 
 Feature files (user POV, harness steps, gotchas):
 [start-and-capture.md](features/start-and-capture.md),
@@ -120,7 +120,8 @@ CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs turn
 
 The drive makes one fresh scratch dir and runs standalone with `HOME`,
 `CLAUDE_CONFIG_DIR`, `T3CODE_LHC_HOME` and `TMPDIR` (so the standalone cwd)
-all inside it. Auth comes from env only: one of `ANTHROPIC_API_KEY`,
+all inside it. The scratch dir sits in the main checkout's run folder (see
+Evidence), so the live Claude also reads the repo's `CLAUDE.md` chain. Auth comes from env only: one of `ANTHROPIC_API_KEY`,
 `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), or
 `ANTHROPIC_AUTH_TOKEN` with its `ANTHROPIC_BASE_URL`. The throwaway
 config holds no login, and the drive never reads or copies the real
@@ -136,14 +137,25 @@ shell: it writes into the real Claude home, and without
 `T3CODE_LHC_HOME` into `../home/t3code-lhc` outside the checkout.
 Never report the live turn as passed from a deterministic run.
 
-Observed 2026-10-28: one of two live runs failed with `timeout waiting
-for results for the compacted turn and the held prompt`. After the
-mid-turn `/compact` swap, the continued turn and the replayed held prompt
-produced one result instead of two. The rerun passed. Later the same day
-both isolated runs (`drive.mjs turn`) failed the same way, with every
-earlier step passing, so it is now an open finding in the mid-turn
-swap and held-prompt replay, not a flake. Report it as a live FAIL; do not
-weaken standalone's two-result wait to pass it.
+### Known failure: lost reply after a mid-turn `/compact`
+
+Until the product bug is fixed, the live `turn` drive intermittently
+FAILs with `timeout waiting for results for the compacted turn and the
+held prompt`. After the mid-turn `/compact` swap, the continued turn and
+the replayed held prompt produce one `result` frame where standalone
+waits for two; every earlier step passes. Record so far, all on
+2026-10-28: 3 of 5 live runs failed this way, both isolated `drive.mjs
+turn` runs before scratch moved out of `/tmp` among them; the one run
+after the move passed. It has not been bisected against the claude-lhc
+cleanup (PR #20).
+
+- Report a live FAIL with that message as this known failure, by name,
+  and still as FAIL. Never as PASS or SKIP.
+- Any other live FAIL is a new finding.
+- One live PASS does not show the bug is gone.
+- Do not weaken standalone's two-result wait to pass it.
+- Delete this entry in the PR that fixes the bug, with repeated passing
+  live `turn` runs as its proof.
 
 ### Rollback-shaped start (PA prototype method)
 
@@ -160,7 +172,11 @@ prototype record agrees; see
 
 ## Evidence
 
-Default evidence dir is a fresh tmp dir printed as
+Run folder `<run>` is `$VERIFY_RUN_DIR`, default
+`.pstack/runs/verify-claude-lhc` in the main checkout (the first entry of
+`git worktree list`; `.pstack/` is git-ignored). Scratch homes go in
+`<run>/scratch/`; nothing goes to `/tmp`. Default evidence dir is a fresh
+`<run>/proof/evidence-*` dir printed as
 `VERIFY-CLAUDE-LHC evidence: <dir>` (override with
 `VERIFY_CLAUDE_LHC_EVIDENCE=<dir>`). Per drive it holds
 `<drive>/<label>.frames.jsonl` (every stdout frame) and
@@ -182,15 +198,16 @@ exist in the evidence dir — a cleanup that eats the proof fails the run.
 
 ## Cleanup
 
-Drives self-clean their scratch homes unless `VERIFY_KEEP_SCRATCH=1`.
-To remove kept scratch afterwards:
+Drives self-clean their scratch homes unless `VERIFY_KEEP_SCRATCH=1`,
+which prints each kept dir as `VERIFY-CLAUDE-LHC kept scratch: <dir>`.
+Remove kept scratch with the helper, never a raw `rm`:
 
 ```sh
-.agents/skills/verify-claude-lhc/cleanup.sh /tmp/verify-claude-lhc-restart-XXXX
+.agents/skills/verify-claude-lhc/cleanup.sh <run>/scratch/verify-claude-lhc-restart-XXXX
 ```
 
-It refuses anything that is not a `verify-claude-lhc-*` dir under the tmp
-root, and never touches the evidence dir. Sidecars are stopped by closing
+It refuses anything that is not a `verify-claude-lhc-*` dir under
+`<run>/scratch/`, and never touches the evidence dir. Sidecars are stopped by closing
 stdin (the harness owns every process it started); never kill by process
 name — a user's real sidecar may share it. Note the one non-isolated
 artifact: `labelNativeSession` may log a harmless `native title ... failed`
@@ -204,7 +221,7 @@ script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
 - `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|turn|all>`;
-  env `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
+  env `VERIFY_RUN_DIR`, `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn runs the isolated live
   standalone instead of SKIP).
 - `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <dir>...`.

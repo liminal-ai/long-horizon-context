@@ -5,8 +5,11 @@ REPO_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
 CC_LHC_BIN_JS="$REPO_ROOT/packages/cc-lhc/dist/bin.js"
 STANDIN="$REPO_ROOT/packages/cc-lhc/test/fixtures/oneshot-claude.mjs"
 
-EVIDENCE_DIR="${VERIFY_CC_LHC_EVIDENCE:-/tmp/verify-cc-lhc-evidence}"
-mkdir -p "$EVIDENCE_DIR"
+MAIN_CHECKOUT="$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+RUN_DIR="${VERIFY_RUN_DIR:-${MAIN_CHECKOUT:-$REPO_ROOT}/.pstack/runs/verify-cc-lhc}"
+EVIDENCE_DIR="${VERIFY_CC_LHC_EVIDENCE:-$RUN_DIR/proof}"
+mkdir -p "$EVIDENCE_DIR" "$RUN_DIR/scratch"
+SCRATCH_DIR="$(cd "$RUN_DIR/scratch" && pwd -P)"
 
 SKIP_RC=3
 FAILURES=0
@@ -16,7 +19,7 @@ skip() { echo "SKIP: $*"; echo "SKIP: $*" >>"$EVIDENCE_DIR/results.txt"; }
 note() { echo "NOTE: $*"; }
 
 make_isolation() {
-  ISO_HOME="$(mktemp -d "${TMPDIR:-/tmp}/verify-cc-lhc-home-XXXXXX")"
+  ISO_HOME="$(mktemp -d "$SCRATCH_DIR/verify-cc-lhc-home-XXXXXX")"
   mkdir -p "$ISO_HOME/work" "$ISO_HOME/.claude"
   export VERIFY_CC_LHC_ISOLATED=1
   export ISO_HOME
@@ -33,6 +36,15 @@ require_isolation() {
       if [ "$ISO_HOME" = "$HOME" ]; then
         echo "REFUSED: ISO_HOME is the operator HOME" >&2; exit 2
       fi ;;
+  esac
+}
+
+remove_iso_home() {
+  local resolved
+  resolved="$(cd "$1" 2>/dev/null && pwd -P)" || return 0
+  case "$resolved" in
+    "$SCRATCH_DIR"/verify-cc-lhc-home-*) rm -rf -- "$resolved" ;;
+    *) echo "REFUSED to remove $1 (not a verify-cc-lhc-home-* dir under $SCRATCH_DIR)" >&2; return 1 ;;
   esac
 }
 
