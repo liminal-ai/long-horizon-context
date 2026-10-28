@@ -3,7 +3,7 @@
 - Forge: GitHub via `gh` (no `origin` CLI in this repo). The merge gate squash-merges, its default; trunk history is squash commits.
 - Open PRs ready, never draft. Stack children target their parent branch.
 - Before the PR-facing push: `pnpm run lint` and `pnpm run typecheck` pass at the repo root, hooks on.
-- CI `pr-checks` jobs `lhc`, `claude-lhc`, and `cc-lhc` pass at the head.
+- CI `pr-checks` jobs `root` (root lint and typecheck), `lhc`, `claude-lhc`, and `cc-lhc` pass at the head.
 - Run `/deslop` before each commit and `/no-comments` before review.
 - Review bots and their lanes are in `.github/REVIEW_RULES.md`. Triage every Bugbot, Codex, and security-reviewer comment before code-ready; fix it or dismiss it with a concrete reason. The gate refuses a head with an open review thread or without a Codex review.
 - A verdict drives the change through the verify skill for each package it touches: `verify-lhc` for `packages/lhc`, `verify-claude-lhc` for `packages/claude-lhc`, `verify-cc-lhc` for `packages/cc-lhc` and `packages/cc-lhc-native`. Tests alone do not verify. When the PR declares a plan (`pstack-plan:`), the verdict lists every verify box of its section.

@@ -67,8 +67,12 @@ Preconditions:
   replayed. A drive that types through a compact must expect the
   one-line resend notice.
 - Bounds must satisfy upper > lower and upper − lower ≥ runway. An
-  incoherent launch override falls back to the built-in 120k/700k/50k
-  policy, logs the fallback, and the launch continues. A live `/bounds`
+  incoherent launch override resets only the configured fields in each
+  violated rule to their built-in values (120k lower, 700k upper, 50k
+  runway), logs one fallback receipt per reset field, and the launch
+  continues (`settleCoherence` in `packages/cc-lhc/src/governor/config.ts`).
+  Other configured fields keep their values: lower 10, upper 5, runway 1
+  resolves to 120000/700000/1 with two receipts. A live `/bounds`
   edit that fails the check is rejected and leaves the policy unchanged.
   Tiny bounds are a verification forcing function, not a supported user
   configuration.
