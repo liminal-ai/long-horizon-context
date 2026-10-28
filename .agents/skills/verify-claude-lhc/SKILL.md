@@ -1,6 +1,6 @@
 ---
 name: verify-claude-lhc
-description: "Drive packages/claude-lhc (the Claude Code sidecar for t3code) over its JSONL stdio protocol and prove capture, compact, projection, host rollback, and MCP servers. Use when verifying a claude-lhc change: start, turn, compact, restart/projection, rollback-shaped start, host rollback, or setMcpServers."
+description: "Drive packages/claude-lhc (the Claude Code sidecar for t3code) over its JSONL stdio protocol and prove capture, compact, projection, host rollback, MCP servers, and session controls. Use when verifying a claude-lhc change: start, turn, compact, restart/projection, rollback-shaped start, host rollback, setMcpServers, or applyFlagSettings/stopTask/backgroundTasks/setModel."
 ---
 
 # Verify claude-lhc
@@ -101,6 +101,7 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `rollback-live` | two real turns, rollback to the first, one more turn (live only) | continued answer names KEEP-ALPHA only, turn succeeds | frames + `answer.txt` |
 | `start-mcp` | `start{mcpServers}` + one real turn (live only) | the turn's `system/init` lists the start-frame tool and both retrieval tools | `tools.json`, diffed between trunk and head |
 | `late-mcp` | `start{mcpServers}`, `req setMcpServers`, a real turn, `/compact`, a real turn, a second `setMcpServers` (live only) | `res` reports the server added; both turns list the start tool, the late tool, and retrieval; the second set removes the late server only | frames + `tools.json` with both `res` values and their latency |
+| `live-controls` | `start{effort: high}`, a Bash effort turn, `req applyFlagSettings {effortLevel: low}`, the same turn, `/compact`, the same turn, `req setModel {settings}`, `req backgroundTasks`, `req stopTask` (live only) | the three turns see effort `high`, `low`, `low`; `backgroundTasks` for an unknown tool use answers `false`; `stopTask` is not refused | frames + `controls.json` with the effort values and every `res` |
 | `turn` | real tool turn + recall | reply text answers from seeded files (live only) | LHC events/aliases via `scripts/standalone.ts` |
 
 Feature files (user POV, harness steps, gotchas):
@@ -109,7 +110,8 @@ Feature files (user POV, harness steps, gotchas):
 [restart-projection.md](features/restart-projection.md),
 [rollback-shaped-start.md](features/rollback-shaped-start.md),
 [host-rollback.md](features/host-rollback.md),
-[mcp-servers.md](features/mcp-servers.md). Index:
+[mcp-servers.md](features/mcp-servers.md),
+[controls.md](features/controls.md). Index:
 [features/README.md](features/README.md).
 
 User-only vs outcome, per the proof standard: a user-only check gets only
@@ -133,8 +135,8 @@ pnpm --filter claude-lhc standalone   # prints RESULT: PASS
 `drive.mjs turn` without `CLAUDE_LHC_LIVE=1` prints SKIP naming this path.
 Never report the live turn as passed from a deterministic run.
 
-`CLAUDE_LHC_LIVE=1 drive.mjs rollback-live`, `start-mcp`, and `late-mcp`
-are the live drives the harness runs itself. Each isolates `CLAUDE_CONFIG_DIR` and takes auth from
+`CLAUDE_LHC_LIVE=1 drive.mjs rollback-live`, `start-mcp`, `late-mcp`, and
+`live-controls` are the live drives the harness runs itself. Each isolates `CLAUDE_CONFIG_DIR` and takes auth from
 env, so each needs `ANTHROPIC_AUTH_TOKEN` or `ANTHROPIC_API_KEY`.
 
 ### Rollback (PA prototype replay)
@@ -195,7 +197,7 @@ All executable, all runnable from a clean shell (paths resolve from the
 script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
-- `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|resume-empty|rollback|rollback-unknown-anchor|rollback-synthetic-anchor|rollback-compact|thread-start|turn|rollback-live|start-mcp|late-mcp|all>`;
+- `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|resume-empty|rollback|rollback-unknown-anchor|rollback-synthetic-anchor|rollback-compact|thread-start|turn|rollback-live|start-mcp|late-mcp|live-controls|all>`;
   env `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (live gate), `CLAUDE_LHC_SIDECAR`
   (drive another build's `dist/sidecar.js`).

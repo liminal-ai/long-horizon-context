@@ -219,6 +219,18 @@ const mcpToolsOf = (turn) => {
   return init.tools.filter((t) => t.startsWith("mcp__")).sort();
 };
 const RETRIEVAL_TOOLS = ["mcp__lhc__get_messages", "mcp__lhc__get_turns"];
+const EFFORT_ASK = "Run exactly this Bash command and reply with its output only: echo EFFORT=$CLAUDE_EFFORT";
+const effortOf = (turn) => {
+  for (const m of turn.messages) {
+    if (m.type !== "user" || !Array.isArray(m.message?.content)) continue;
+    for (const block of m.message.content) {
+      const text = typeof block.content === "string" ? block.content : (block.content ?? []).map((c) => c.text ?? "").join("");
+      const found = /EFFORT=(\w*)/.exec(text);
+      if (block.type === "tool_result" && found) return found[1];
+    }
+  }
+  return null;
+};
 const LIVE_GATE = "needs a real model turn; set CLAUDE_LHC_LIVE=1 (isolated CLAUDE_CONFIG_DIR, auth from env)";
 
 async function liveTurn(s, text) {
@@ -501,6 +513,43 @@ const drives = {
     } finally { start.close(); late.close(); other.close(); scratch.cleanup(); }
   },
 
+  async "live-controls"(evidenceDir) {
+    if (process.env.CLAUDE_LHC_LIVE !== "1") return { skip: LIVE_GATE };
+    const scratch = new Scratch("live-controls");
+    try {
+      const s = new Sidecar(scratch, "live-controls");
+      const model = process.env.MODEL ?? "claude-sonnet-5";
+      s.send({ type: "start", options: baseOptions(scratch, { sessionId: randomUUID(), effort: "high" }) });
+      const atStart = await liveTurn(s, EFFORT_ASK);
+      const applied = await s.request("applyFlagSettings", { settings: { effortLevel: "low" } });
+      const afterApply = await liveTurn(s, EFFORT_ASK);
+      const compacted = await liveTurn(s, "/compact");
+      const afterCompact = await liveTurn(s, EFFORT_ASK);
+      const refit = await s.request("setModel", { model, settings: { autoCompactWindow: 250000, lhcLowerBound: 150000 } });
+      const background = await s.request("backgroundTasks", { toolUseId: "toolu_verify_none" });
+      let stopTask;
+      try {
+        stopTask = { ok: true, ...(await s.request("stopTask", { taskId: "verify-no-such-task" })) };
+      } catch (cause) {
+        stopTask = { ok: false, error: String(cause) };
+      }
+      assert((await s.stop()) === 0, "live-controls sidecar did not exit 0");
+      s.saveEvidence(evidenceDir);
+      const effort = { atStart: effortOf(atStart), afterApply: effortOf(afterApply), afterCompact: effortOf(afterCompact) };
+      writeFileSync(join(evidenceDir, "controls.json"), `${JSON.stringify({ effort, applied, refit, background, stopTask }, null, 2)}\n`);
+      for (const turn of [atStart, afterApply, afterCompact]) assert(turn.result?.subtype === "success", `a turn failed: ${JSON.stringify(turn.result)}`);
+      assert(effort.atStart === "high", `the start effort did not reach Bash: ${JSON.stringify(effort)}`);
+      assert(effort.afterApply === "low", `applyFlagSettings did not change the live effort: ${JSON.stringify(effort)}`);
+      const boundary = compacted.messages.find((m) => m.type === "system" && m.subtype === "compact_boundary");
+      assert(boundary && afterCompact.result?.session_id === boundary.session_id, "the turn after /compact did not run in the new generation");
+      assert(effort.afterCompact === "low", `the new generation lost the applied effort: ${JSON.stringify(effort)}`);
+      assert(s.logHas("compact at 250000 tokens, view target 150000"), "setModel did not refit the compaction windows");
+      assert(background.value === false, `backgroundTasks for an unknown tool use answered ${JSON.stringify(background.value)}`);
+      assert(stopTask.ok || !stopTask.error.includes("unknown control"), `stopTask was not forwarded: ${stopTask.error}`);
+      return `effort ${effort.atStart} → ${effort.afterApply} after applyFlagSettings (${applied.ms.toFixed(0)} ms) → ${effort.afterCompact} in generation ${boundary.session_id.slice(0, 8)}; setModel refit in ${refit.ms.toFixed(0)} ms; backgroundTasks(unknown)=false; stopTask(unknown) ${stopTask.ok ? "ok" : stopTask.error}`;
+    } finally { scratch.cleanup(); }
+  },
+
   async "rollback-live"(evidenceDir) {
     if (process.env.CLAUDE_LHC_LIVE !== "1") return { skip: LIVE_GATE };
     const scratch = new Scratch("rollback-live");
@@ -550,7 +599,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "rollback", "rollback-unknown-anchor", "rollback-synthetic-anchor", "rollback-compact", "thread-start", "turn", "rollback-live", "start-mcp", "late-mcp"]
+      ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "rollback", "rollback-unknown-anchor", "rollback-synthetic-anchor", "rollback-compact", "thread-start", "turn", "rollback-live", "start-mcp", "late-mcp", "live-controls"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;
