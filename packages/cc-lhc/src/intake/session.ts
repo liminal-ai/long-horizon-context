@@ -530,10 +530,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     return orders;
   };
 
-  // Every event this native session records is keyed under one of its records,
-  // so the thread held exactly what sits below its first one when the session
-  // bound. That survives a capture restart, which rebinds at a later frontier.
-  const sessionBoundary = async (sdkRef: Lhc, ref: ThreadRef): Promise<number | null> => {
+  const orderHeldAtSessionBind = async (sdkRef: Lhc, ref: ThreadRef): Promise<number | null> => {
     for (const [uuid, entry] of chain.parents) {
       if (!entry.live) continue;
       const orders = await recordedOrders(sdkRef, ref, uuid);
@@ -554,7 +551,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       if (orders === null) return null;
       if (orders.length > 0) return Math.max(...orders);
     }
-    return sessionBoundary(sdkRef, ref);
+    return orderHeldAtSessionBind(sdkRef, ref);
   };
 
   const appendRewindRollback = async (
