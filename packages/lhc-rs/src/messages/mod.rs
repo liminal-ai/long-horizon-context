@@ -249,7 +249,7 @@ fn message_kind_from_event(kind: EventKind) -> MessageKind {
         EventKind::ToolCall => MessageKind::ToolCall,
         EventKind::ToolResult => MessageKind::ToolResult,
         EventKind::CompactContinuationMarker => MessageKind::CompactContinuationMarker,
-        EventKind::TurnEnd => panic!("turn_end has no message kind"),
+        EventKind::TurnEnd | EventKind::Rollback => panic!("{} has no message kind", kind.as_str()),
     }
 }
 
@@ -299,7 +299,8 @@ pub fn create(
         | EventRecord::ToolCall { .. }
         | EventRecord::ToolResult { .. }
         | EventRecord::CompactContinuationMarker { .. }
-        | EventRecord::TurnEnd { .. } => None,
+        | EventRecord::TurnEnd { .. }
+        | EventRecord::Rollback { .. } => None,
     };
     // The host-supplied step index rides the four step-bearing kinds only
     // (schema v12); every other kind stores NULL.
@@ -313,7 +314,8 @@ pub fn create(
         | EventRecord::ModelChange { .. }
         | EventRecord::ThinkingLevelChange { .. }
         | EventRecord::CompactContinuationMarker { .. }
-        | EventRecord::TurnEnd { .. } => None,
+        | EventRecord::TurnEnd { .. }
+        | EventRecord::Rollback { .. } => None,
     };
     insert_message(
         transaction.db,
@@ -364,7 +366,12 @@ pub fn create(
             kind,
             tool_call_id: None,
         },
-        EventKind::TurnEnd => panic!("turn_end has no message kind"),
+        EventKind::TurnEnd | EventKind::Rollback => {
+            panic!(
+                "{} has no message kind",
+                recorded_event.event_kind().as_str()
+            )
+        }
     };
     let queued_work = queue_message_work(transaction, Some(&message));
     MessageCreateResult {

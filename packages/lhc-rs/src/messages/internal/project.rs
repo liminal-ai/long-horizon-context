@@ -256,6 +256,6 @@ pub fn project_event(event: &RecordedEvent) -> Option<ProjectedMessage> {
                 token_estimate: estimate_tokens(&model_facing),
             })
         }
-        EventRecord::TurnEnd { .. } => None,
+        EventRecord::TurnEnd { .. } | EventRecord::Rollback { .. } => None,
     }
 }
