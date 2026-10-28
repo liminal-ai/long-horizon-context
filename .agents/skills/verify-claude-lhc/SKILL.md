@@ -113,26 +113,39 @@ model, with an isolated `T3CODE_LHC_HOME` but the real Claude login
 product behavior being proved):
 
 ```sh
-pnpm --filter claude-lhc standalone   # prints RESULT: PASS
+T3CODE_LHC_HOME="$(mktemp -d /tmp/verify-claude-lhc-live-XXXXXX)" \
+  pnpm --filter claude-lhc standalone   # prints RESULT: PASS
 ```
 
-`drive.mjs turn` without `CLAUDE_LHC_LIVE=1` prints SKIP naming this path.
-Never report the live turn as passed from a deterministic run.
+Set `T3CODE_LHC_HOME` as shown. Without it the script writes to
+`../home/t3code-lhc` relative to the checkout root, outside the repo. It also leaves
+a `/tmp/claude-lhc-standalone-*` cwd and the matching
+`~/.claude/projects/-tmp-claude-lhc-standalone-*` directory; remove those
+exact paths after the run.
+
+`drive.mjs turn` never runs the live turn: without `CLAUDE_LHC_LIVE=1` it
+prints SKIP naming this path, and with it, it prints FAIL naming the
+command above. Never report the live turn as passed from a deterministic
+run.
+
+Observed 2026-10-28: one of two live runs failed with `timeout waiting
+for results for the compacted turn and the held prompt`. After the
+mid-turn `/compact` swap, the continued turn and the replayed held prompt
+produced one result instead of two. The rerun passed. Treat one such
+failure as a flake to rerun, and two in a row as a finding.
 
 ### Rollback-shaped start (PA prototype method)
 
 Method: after a compact mints gen2, start a new sidecar with
 `resume: <gen1>` — the superseded alias — instead of the current one.
-The plan's prototype evidence file
-`.pstack/runs/lhc-catchup-plan/proof/proto-rollback-t3-observe.json` was
-not readable in the lane worktree where this skill was seeded (no
-`.pstack/` tree), so the drive re-derives the observation from current
-code: `session.ts` resolves **any** alias to its thread, settles any open
-turn, and starts a projected generation from the thread's current served
-view. The drive asserts exactly that and prints the observation in its
-PASS line instead of hiding it. If the prototype file reappears, diff its
-recorded resume behavior against this drive's evidence before trusting
-either.
+`session.ts` resolves **any** alias to its thread, closes an open turn
+that has messages, and starts a projected generation from the thread's
+current served view. The drive asserts the alias identity, fresh
+generation, single thread, and projected file; the served-view sentence
+in its PASS line is a reading of the code. claude-lhc never sends the
+core `rollback` intake event, so a host rewind is not honored. The plan's
+prototype record agrees; see
+[rollback-shaped-start.md](features/rollback-shaped-start.md).
 
 ## Evidence
 
@@ -181,7 +194,8 @@ script, not the cwd):
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
 - `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|turn|all>`;
   env `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
-  `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn gate).
+  `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn prints FAIL naming the live
+  command instead of SKIP).
 - `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <dir>...`.
 - `check-links.mjs` — frontmatter, required sections, feature-file H2s,
   relative links, helper executability. `check-links.mjs` (no args);

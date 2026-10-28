@@ -175,6 +175,7 @@ const drives = {
       assert(s.logHas(`via ${sid2}`), "resume did not go through the gen2 alias");
       assert(scratch.projectedFiles().some((f) => f.includes(gen3)), `no projected file for gen3 ${gen3}`);
       const lines = readFileSync(join(scratch.claudeHome, "projects", scratch.projectedFiles().find((f) => f.includes(gen3))), "utf8").trim().split("\n").filter(Boolean).length;
+      assert(lines >= 1, `projected file for gen3 ${gen3} is empty`);
       assert(scratch.threads().length === before, "restart created a second thread");
       return `resumed via gen2 as gen3=${gen3.slice(0, 8)} projectedLines>=1(file lines=${lines}) threads=${before} exit=0`;
     } finally { scratch.cleanup(); }
