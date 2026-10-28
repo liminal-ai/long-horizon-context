@@ -20,12 +20,13 @@ const MAIN = (() => {
 const RUN = process.env.VERIFY_RUN_DIR ?? join(MAIN, ".pstack/runs/verify-claude-lhc");
 const SCRATCH_ROOT = process.env.VERIFY_SCRATCH_ROOT ?? join(process.env.XDG_STATE_HOME || join(homedir(), ".local/state"), "verify-claude-lhc/scratch");
 mkdirSync(SCRATCH_ROOT, { recursive: true });
-for (let d = realpathSync(SCRATCH_ROOT); d !== dirname(d); d = dirname(d)) {
+for (let d = realpathSync(SCRATCH_ROOT); ; d = dirname(d)) {
   const found = ["CLAUDE.md", "AGENTS.md"].map((f) => join(d, f)).find(existsSync);
   if (found) {
     console.log(`VERIFY-CLAUDE-LHC preflight: FAIL scratch root ${SCRATCH_ROOT} sits under ${found}; Claude would load it from the session cwd. Set VERIFY_SCRATCH_ROOT outside any repo.`);
     process.exit(1);
   }
+  if (d === dirname(d)) break;
 }
 mkdirSync(join(RUN, "proof"), { recursive: true });
 const EVIDENCE = process.env.VERIFY_CLAUDE_LHC_EVIDENCE ?? mkdtempSync(join(RUN, "proof", "evidence-"));
