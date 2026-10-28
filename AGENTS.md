@@ -1,12 +1,5 @@
 # Agent instructions
 
-## Issue tracking
-
-This project tracks work in the Linear project long-horizon-context (P-LH-14, team LH), not in markdown TODO lists.
-
-- Beads retired on 2026-10-27. The last export is in git history at 5262b595 (`.beads/issues.jsonl`).
-- Do not use bd or recreate `.beads/`.
-
 ## Persistent memory
 
 You have a persistent file-based memory at `memory/` in this repo. It works exactly like the Claude Code memory system you are trained on, relocated here because this harness does not provide one.
