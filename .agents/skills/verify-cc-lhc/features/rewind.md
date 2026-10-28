@@ -12,6 +12,8 @@ view and every rebuild from it serve the kept branch only.
   as its parent, and capture records one rollback before that prompt.
 - `rewind-served` — the served view and a forced rebuild drop the
   discarded turns and keep every turn before and after.
+- `rewind-root` — a rewind to before a session's first prompt, sent after
+  a capture restart, hides every turn that session captured.
 - `rewind-trunk` — a build without rewind capture serves both branches.
   The drive reports that as `UNSUPPORTED` (exit 3).
 
@@ -41,7 +43,12 @@ Preconditions:
   0. Outcome: the transcript still holds `REWIND-DROP-3`, `wrapper.log`
   has a `cc-lhc rewind:` line, and the forced rebuild holds
   `REWIND-KEEP-1`, `REWIND-KEEP-2`, and `REWIND-NEW-4` but not
-  `REWIND-DROP-3`. Pass line: `VERIFY-CC-LHC rewind: PASS`.
+  `REWIND-DROP-3`. Then it starts a fresh session with
+  `REWIND-ROOT-DROP-5` and resumes it in a new capture process with
+  `REWIND-ROOT-NEW-6` under `ONESHOT_CLAUDE_REWIND=1`, whose parent is
+  `null`. Outcome: `wrapper.log` has `returns to the session root`, and a
+  forced rebuild of that thread holds `REWIND-ROOT-NEW-6` but not
+  `REWIND-ROOT-DROP-5`. Pass line: `VERIFY-CC-LHC rewind: PASS`.
 - **Trunk comparison.** Run this skill's drive against another build with
   `VERIFY_CC_LHC_BIN_JS=<that checkout>/packages/cc-lhc/dist/bin.js`.
   A build without rewind capture serves `REWIND-DROP-3` and prints
@@ -61,10 +68,14 @@ Preconditions:
   transcript.
 - If the user exits Claude before the next prompt, the rewind never
   reaches disk and the old branch returns. No rollback is expected then.
-- A rewind into a rebuilt prefix (turns from before the last Smart
-  Compact) keeps everything the thread held at bind, because rebuilt
-  lines carry no capture keys. Only turns captured after the rebuild are
-  hidden.
+- A rewind to the session root, or into a rebuilt prefix (turns from
+  before the last Smart Compact), keeps what the thread held below the
+  session's first captured event. Rebuilt lines carry no capture keys, so
+  only turns captured after the rebuild are hidden. A capture restart
+  does not move that boundary.
+- The stand-in exits as soon as it writes, before a fresh session binds.
+  The root step sets `ONESHOT_CLAUDE_LINGER_MS` so it stays up long
+  enough.
 - Summarize from here, Summarize up to here, and code-only restore are
   unmeasured. Do not claim them from this drive.
 - `/branch` moves the conversation to a new session file. The wrapper's

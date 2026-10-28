@@ -19,10 +19,10 @@ RC="$(run_in_tmux rewind-write "$EVIDENCE_DIR/rewind-write.log" \
 pass "precondition: seeded thread $THREAD_ID rebuilt into session $SID"
 
 turn() {
-  local name="$1" prompt="$2" extra="${3:-}"
+  local name="$1" prompt="$2" extra="${3:-}" launch="${4:---resume $SID}"
   local rc
   rc="$(run_in_tmux "rewind-$name" "$EVIDENCE_DIR/rewind-$name.log" \
-    "$extra $ENV node '$CC_LHC_BIN_JS' --lhc-no-inference --resume $SID -p '$prompt'")" || rc=124
+    "$extra $ENV node '$CC_LHC_BIN_JS' --lhc-no-inference $launch -p '$prompt'")" || rc=124
   [ "$rc" = "0" ] && grep -qx ok "$EVIDENCE_DIR/rewind-$name.log" \
     && pass "$name: reply 'ok' for '$prompt'" || fail "$name rc=$rc (see rewind-$name.log)"
 }
@@ -45,13 +45,18 @@ if grep -q "cc-lhc rewind:" "$EVIDENCE_DIR/rewind-wrapper.log"; then
 fi
 grep -q "capture degraded" "$EVIDENCE_DIR/rewind-wrapper.log" && fail "capture degraded (see rewind-wrapper.log)"
 
-REBUILT_SID="$(new_uuid)"
-RC="$(run_in_tmux rewind-rebuild "$EVIDENCE_DIR/rewind-rebuild.log" \
-  "$ENV node '$CC_LHC_BIN_JS' rollout write --thread-id $THREAD_ID --session-id $REBUILT_SID --token-family claude-2026 --cwd '$ISO_HOME/work' --envelope-from '$ENVELOPE'")" || RC=124
-REBUILT="$(find "$ISO_HOME/.claude/projects" -name "$REBUILT_SID.jsonl" | head -1)"
-[ "$RC" = "0" ] && [ -n "$REBUILT" ] && pass "forced rebuild wrote session $REBUILT_SID" \
-  || { fail "forced rebuild rc=$RC"; finish rewind; exit 1; }
-cp "$REBUILT" "$EVIDENCE_DIR/rewind-rebuilt.jsonl"
+rebuild() {
+  local name="$1" thread="$2" sid rc
+  sid="$(new_uuid)"
+  rc="$(run_in_tmux "rewind-$name" "$EVIDENCE_DIR/rewind-$name.log" \
+    "$ENV node '$CC_LHC_BIN_JS' rollout write --thread-id $thread --session-id $sid --token-family claude-2026 --cwd '$ISO_HOME/work' --envelope-from '$ENVELOPE'")" || rc=124
+  REBUILT="$(find "$ISO_HOME/.claude/projects" -name "$sid.jsonl" | head -1)"
+  [ "$rc" = "0" ] && [ -n "$REBUILT" ] && pass "forced rebuild of $thread wrote session $sid" \
+    || { fail "forced rebuild of $thread rc=$rc"; finish rewind; exit 1; }
+  cp "$REBUILT" "$EVIDENCE_DIR/rewind-$name.jsonl"
+}
+
+rebuild rebuild "$THREAD_ID"
 
 echo "served view after the rewind (rebuilt session, in order):"
 for marker in "$KEEP_SEED" "$KEEP_LIVE" "$DROP" "$NEW"; do
@@ -70,4 +75,22 @@ if grep -q "$DROP" "$REBUILT"; then
 else
   pass "rebuild holds no discarded text"
 fi
+
+ROOT_SID="$(new_uuid)"
+ROOT_DROP="REWIND-ROOT-DROP-5"
+ROOT_NEW="REWIND-ROOT-NEW-6"
+turn root-first "$ROOT_DROP first prompt of a fresh session" "ONESHOT_CLAUDE_LINGER_MS=2000" "--session-id $ROOT_SID"
+ROOT_THREAD="$(grep -o "new thread th_[0-9a-f]* for fresh session $ROOT_SID" "$ISO_HOME/.cc-lhc/wrapper.log" | awk '{print $3}' | tail -1)"
+[ -n "$ROOT_THREAD" ] && pass "fresh session $ROOT_SID bound thread $ROOT_THREAD" \
+  || { fail "fresh session $ROOT_SID bound no thread"; finish rewind; exit 1; }
+turn root-new "$ROOT_NEW prompt after rewinding to the root" "ONESHOT_CLAUDE_REWIND=1" "--resume $ROOT_SID"
+cp "$ISO_HOME/.cc-lhc/wrapper.log" "$EVIDENCE_DIR/rewind-wrapper.log" 2>/dev/null || true
+grep -q "returns to the session root" "$EVIDENCE_DIR/rewind-wrapper.log" \
+  && pass "resumed capture recorded the root rewind: $(grep -o 'returns to the session root.*' "$EVIDENCE_DIR/rewind-wrapper.log" | tail -1)" \
+  || fail "resumed capture logged no root rewind"
+rebuild root-rebuild "$ROOT_THREAD"
+grep -q "$ROOT_NEW" "$REBUILT" && pass "root rebuild keeps $ROOT_NEW" || fail "root rebuild lost $ROOT_NEW"
+grep -q "$ROOT_DROP" "$REBUILT" && fail "root rebuild still serves discarded $ROOT_DROP" \
+  || pass "root rebuild holds no text from before the root rewind"
+
 finish rewind

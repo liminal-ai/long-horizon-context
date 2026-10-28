@@ -76,4 +76,6 @@ const lines = [
 ];
 appendFileSync(file, `${lines.map((l) => JSON.stringify(l)).join("\n")}\n`);
 process.stdout.write("ok\n");
-process.exit(0);
+// A fresh session binds only once the wrapper sees its transcript, and real
+// Claude stays up long enough for that.
+setTimeout(() => process.exit(0), Number(process.env.ONESHOT_CLAUDE_LINGER_MS ?? 0));
