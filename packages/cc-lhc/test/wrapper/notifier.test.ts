@@ -50,8 +50,9 @@ describe("hazardous-command matcher", () => {
     expect(matchHazardousCommand("/compactor")).toBeNull();
     expect(matchHazardousCommand("/help")).toBeNull();
     expect(matchHazardousCommand("say /clear please")).toBeNull();
+    expect(matchHazardousCommand("/branch")).toBe("/branch");
+    expect(matchHazardousCommand("/branch try-other-approach")).toBe("/branch");
     expect(matchHazardousCommand("/rewind")).toBeNull();
-    expect(matchHazardousCommand("/branch")).toBeNull();
   });
 });
 

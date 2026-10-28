@@ -67,12 +67,12 @@ export type EscapeTracking =
 export type InputMode = "passthrough" | "modal" | "executing" | "notifier";
 
 /**
- * Hazardous native lifecycle commands verified in Claude Code 2.1.226 that
- * invalidate cc-lhc's session binding when run in-app. `/rewind` and `/branch`
- * are deliberately NOT listed: no live fixture proves the supported binary
- * exposes them as binding-invalidating straight-line commands.
+ * Native lifecycle commands that move the conversation off the session file
+ * cc-lhc is bound to. `/branch` joined on Claude Code 2.1.310, where the next
+ * prompt lands only in the new session file. `/rewind` is not listed: it keeps
+ * the file, and capture records its parent hop as a rollback.
  */
-export const HAZARDOUS_COMMANDS = ["/resume", "/clear", "/compact"] as const;
+export const HAZARDOUS_COMMANDS = ["/resume", "/clear", "/compact", "/branch"] as const;
 
 export function matchHazardousCommand(line: string): string | null {
   const trimmed = line.trim();
