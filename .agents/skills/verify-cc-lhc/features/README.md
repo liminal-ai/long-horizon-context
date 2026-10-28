@@ -59,5 +59,8 @@ and `Gotchas`.
 - [Smart Compact](./smart-compact.md) — automatic at the 700k trigger,
   manual via the panel, and pre-launch on one-shot seats; spawn-first
   handoff and carried background work.
+- [Claude rewind](./rewind.md) — a `/rewind` with Restore conversation
+  becomes an LHC rollback, so the served view and rebuilds keep only the
+  kept branch.
 - [Control panel](./control-panel.md) — Ctrl-`]` panel: `/status`,
   `/stats`, `/bounds`, `/smart-compact`, `/export`, `/help`.

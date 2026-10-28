@@ -4,7 +4,7 @@ set -u
 
 START=$SECONDS
 FAILED=0
-for drive in doctor drive-help drive-capture drive-rebuild drive-smart-compact; do
+for drive in doctor drive-help drive-capture drive-rebuild drive-smart-compact drive-rewind; do
   T0=$SECONDS
   echo "=== $drive ==="
   "$SKILL_DIR/helpers/$drive.sh"; RC=$?

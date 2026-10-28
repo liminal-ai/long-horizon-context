@@ -2,7 +2,7 @@
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
-CC_LHC_BIN_JS="$REPO_ROOT/packages/cc-lhc/dist/bin.js"
+CC_LHC_BIN_JS="${VERIFY_CC_LHC_BIN_JS:-$REPO_ROOT/packages/cc-lhc/dist/bin.js}"
 STANDIN="$REPO_ROOT/packages/cc-lhc/test/fixtures/oneshot-claude.mjs"
 
 EVIDENCE_DIR="${VERIFY_CC_LHC_EVIDENCE:-/tmp/verify-cc-lhc-evidence}"

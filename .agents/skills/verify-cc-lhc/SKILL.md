@@ -24,6 +24,8 @@ Isolation facts, from the code (read them before driving):
   and `XDG_CONFIG_HOME` under it so a real `claude` child stays isolated,
   and unset `CC_LHC_RUNTIME_DESCRIPTOR` (a live-session capability; never
   set it manually).
+- `VERIFY_CC_LHC_BIN_JS` overrides the wrapper under test (default: this
+  checkout's `packages/cc-lhc/dist/bin.js`), for trunk comparisons.
 - `CC_LHC_CLAUDE_BIN` overrides the child binary. Seeded drives point it at
   the repo's stand-in, `packages/cc-lhc/test/fixtures/oneshot-claude.mjs` —
   the production boundary where cc-lhc already isolates the closed binary.
@@ -82,10 +84,11 @@ Seeded drives (each prints `VERIFY-CC-LHC <name>: PASS`):
 .agents/skills/verify-cc-lhc/helpers/drive-capture.sh       # scripted session capture (-p, stand-in Claude)
 .agents/skills/verify-cc-lhc/helpers/drive-rebuild.sh       # rollout write -> --resume the rebuilt session
 .agents/skills/verify-cc-lhc/helpers/drive-smart-compact.sh # forced-bounds one-shot Smart Compact (may SKIP, exit 3)
+.agents/skills/verify-cc-lhc/helpers/drive-rewind.sh        # rewind hop -> rollback; forced rebuild keeps the kept branch only
 .agents/skills/verify-cc-lhc/helpers/run-seeded-drives.sh   # all of the above, timed; 10-minute budget together
 ```
 
-`drive-rebuild.sh` and `drive-smart-compact.sh` seed their precondition
+`drive-rebuild.sh`, `drive-smart-compact.sh`, and `drive-rewind.sh` seed their precondition
 with `helpers/seed-thread.mjs` (an LHC thread with two settled turns,
 seeded the same way `test/commands/rollout-write.test.ts` does). Seeding
 is a precondition, never proof; the drive itself is the real CLI surface.
@@ -153,6 +156,7 @@ All under `.agents/skills/verify-cc-lhc/helpers/`, all executable:
 | `helpers/drive-capture.sh` | `helpers/drive-capture.sh` | Scripted session capture drive |
 | `helpers/drive-rebuild.sh` | `helpers/drive-rebuild.sh` | Rebuild + resume drive |
 | `helpers/drive-smart-compact.sh` | `helpers/drive-smart-compact.sh` | Forced-bounds Smart Compact drive (exit 3 = SKIP with reason) |
+| `helpers/drive-rewind.sh` | `helpers/drive-rewind.sh` | Rewind capture drive (exit 3 = UNSUPPORTED build) |
 | `helpers/seed-thread.mjs` | `node helpers/seed-thread.mjs <repoRoot> <ccLhcHome> <workDir> <codeword>` | Seed precondition thread via built `lhc` SDK |
 | `helpers/run-seeded-drives.sh` | `helpers/run-seeded-drives.sh` | All seeded drives timed, then cleanup |
 | `helpers/cleanup.sh` | `helpers/cleanup.sh` | Remove recorded temp HOMEs; keep evidence |
@@ -160,5 +164,5 @@ All under `.agents/skills/verify-cc-lhc/helpers/`, all executable:
 
 Feature map: [features/README.md](features/README.md) indexes
 [capture](features/capture.md), [rebuild](features/rebuild.md),
-[Smart Compact](features/smart-compact.md), and the
+[Smart Compact](features/smart-compact.md), [Claude rewind](features/rewind.md), and the
 [control panel](features/control-panel.md).
