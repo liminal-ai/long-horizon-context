@@ -1,11 +1,4 @@
-/**
- * The summary worker: every LHC derivation (smoothing, tool-result summaries,
- * turn compression, chunk briefs) runs as one Agent SDK query, the same way
- * the sidecar runs its sessions, not through a separate `claude -p` lane.
- * What the query gets (Lee's prompt, none of Claude Code's framing, no tools,
- * one turn, an empty scratch dir, only the auth part of the user's settings)
- * is shared with the `claude -p` workers: lhc's shared-tech/summary-worker.ts.
- */ import { type Options, query, type SDKMessage, type Settings } from "@anthropic-ai/claude-agent-sdk";
+import { type Options, query, type SDKMessage, type Settings } from "@anthropic-ai/claude-agent-sdk";
 import {
   claudeCliInferenceAssignments,
   type ModelAssignment,
@@ -23,7 +16,6 @@ export const SUMMARY_WORKER_PROVIDER = "claude-lhc-sdk";
 
 const MAX_CONCURRENCY = 3;
 
-/** The core's derivation assignments (sonnet, default templates), served by this worker. */
 export function summaryWorkerAssignments(): Record<string, ModelAssignment> {
   return Object.fromEntries(
     Object.entries(claudeCliInferenceAssignments()).map(([kind, a]) => [
@@ -33,7 +25,6 @@ export function summaryWorkerAssignments(): Record<string, ModelAssignment> {
   );
 }
 
-/** The query options for one derivation; exported so tests can pin them. */
 export function summaryWorkerOptions(deps: {
   claudeBin: string;
   env: NodeJS.ProcessEnv;
@@ -73,7 +64,6 @@ function classify(text: string): ModelCallFailureKind {
 
 const live = new Set<AbortController>();
 
-/** Abort every in-flight derivation (session teardown). */
 export function abortSummaryWorkers(): void {
   for (const controller of live) controller.abort();
   live.clear();
@@ -88,7 +78,6 @@ export function createSummaryWorkerModelCall(deps: {
   const timeoutMs = deps.timeoutMs ?? 90_000;
   const run = deps.run ?? query;
   const env = summaryWorkerEnv(deps.env);
-  // Resolved now, against the caller's cwd: the query runs in a scratch dir.
   const claudeBin = summaryWorkerBinary(deps.claudeBin);
   let running = 0;
   const waiters: Array<() => void> = [];
@@ -105,7 +94,6 @@ export function createSummaryWorkerModelCall(deps: {
     if (input.provider !== SUMMARY_WORKER_PROVIDER) {
       return { ok: false, kind: "invalid_request", message: `unsupported inference provider "${input.provider}"` };
     }
-    // Lee's prompt as the system prompt; the template's own system text leads the prompt.
     const { systemPrompt, user } = summaryWorkerRequest(input.messages);
     const release = await acquire();
     let scratch: ReturnType<typeof summaryWorkerScratchDir> | undefined;
@@ -113,7 +101,6 @@ export function createSummaryWorkerModelCall(deps: {
     let timedOut = false;
     let timer: NodeJS.Timeout | undefined;
     try {
-      // Setup inside the try: a failure here still releases the slot.
       scratch = summaryWorkerScratchDir("claude-lhc-summary-");
       const authSettings = summaryWorkerAuthSettings(env) as Settings | null;
       live.add(abortController);

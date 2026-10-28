@@ -1,25 +1,3 @@
-/**
- * Native Claude Agent SDK wire messages → LHC intake events.
- *
- * Pure: messages in, events out. Rules follow cc-lhc's calibrated rollout mapper
- * (one event per content block in native order, block-indexed idempotency keys,
- * verbatim provider usage, opaque thinking signatures, subagent sidechains
- * skipped) applied to the SDK stream instead of the file.
- *
- * Content blocks beyond text (images, documents, redacted thinking, server-side
- * tool blocks) ride verbatim: a prompt or tool result that carries any non-text
- * block sends the whole native content array as `blocks` (LHC moves the bytes to
- * its blob table and keeps the block shape); `redacted_thinking` and
- * `server_tool_use` ride as `block` on their thinking / tool_call event; the
- * server-side *_tool_result blocks inside an assistant message are tool_result
- * events carrying the block, paired by tool_use_id like any other result.
- *
- * The user's prompt is not mapped from the wire: the session records it at the
- * moment it hands the prompt to the SDK (see `mapPrompt`), which is the model-visible
- * seam; the SDK does not echo it back. Wire `user` frames are therefore tool results
- * or text the CLI injected itself (task notifications, hook output), which is recorded
- * as a runtime note so it never opens a turn. Replays on resume are skipped.
- */
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ApiBlock, MessageEventInput } from "lhc";
 
@@ -58,7 +36,6 @@ const SERVER_RESULT_TYPES = new Set([
   "tool_search_tool_result",
 ]);
 
-/** The native content array when any block is not text; undefined for text-only content. */
 function nonTextBlocks(content: unknown): ApiBlock[] | undefined {
   const parts = blocks(content).filter((b): b is ApiBlock => typeof b["type"] === "string");
   return parts.some((b) => b.type !== "text") ? parts : undefined;
@@ -83,24 +60,16 @@ function text(kind: "user_prompt" | "assistant_text" | "assistant_thinking" | "r
   return { eventKind: kind, idempotencyKey: key, actor, harness: HARNESS, payload: { text: body, ...extra } } as MessageEventInput;
 }
 
-/** Text of a prompt: its text blocks joined. Attached images and documents ride as `blocks`. */
 export function promptText(message: SDKUserMessage): string {
   return joinedText(message.message.content);
 }
 
-/** `/compact [args]` as the whole prompt → the manual compact command. */
 export function compactCommand(message: SDKUserMessage): { args: string } | null {
   const body = promptText(message).trim();
   if (body !== "/compact" && !body.startsWith("/compact ")) return null;
   return { args: body.slice("/compact".length).trim() };
 }
 
-/**
- * The prompt the session is about to hand the SDK. A machine prompt (task
- * notification, re-served runtime note) is a runtime note; a prompt landing in an
- * open turn is a steer and joins that turn as a labelled runtime note (main LHC has
- * no user_steer kind); anything else is the user's prompt.
- */
 export function mapPrompt(message: SDKUserMessage, uuid: string, turnOpen: boolean): MessageEventInput[] {
   const body = promptText(message);
   if (body === "" && nonTextBlocks(message.message.content) === undefined) return [];
@@ -117,9 +86,7 @@ export function mapPrompt(message: SDKUserMessage, uuid: string, turnOpen: boole
 
 export interface MapResult {
   events: MessageEventInput[];
-  /** True when this message ends the agentic turn (SDK `result`). */
   turnEnd: boolean;
-  /** Provider-reported input context (input + cache creation + cache read) when the message carries usage. */
   contextTokens?: number;
 }
 
@@ -136,7 +103,7 @@ export function mapSdkMessage(message: SDKMessage, turnStartedAt: string | undef
   const uuid = typeof m["uuid"] === "string" ? m["uuid"] : undefined;
 
   if (message.type === "assistant") {
-    if (message.parent_tool_use_id !== null) return none; // subagent sidechain
+    if (message.parent_tool_use_id !== null) return none;
     const inner = message.message as unknown as Record<string, unknown>;
     const model = typeof inner["model"] === "string" ? inner["model"] : undefined;
     if (model === SYNTHETIC_MODEL) return none;
@@ -186,8 +153,6 @@ export function mapSdkMessage(message: SDKMessage, turnStartedAt: string | undef
     const id = uuid ?? `user:${Date.now()}`;
     for (const [index, block] of blocks(message.message.content).entries()) {
       if (block["type"] === "tool_result") {
-        // A result carrying images or documents (Read on a PNG or PDF) sends the
-        // native content array; text-only results stay a string.
         const attached = nonTextBlocks(block["content"]);
         events.push({
           eventKind: "tool_result", idempotencyKey: idempotencyKey(id, index, "tool_result"), actor: "tool", harness: HARNESS,

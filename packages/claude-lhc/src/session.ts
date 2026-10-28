@@ -1,30 +1,3 @@
-/**
- * One t3code thread as the sidecar runs it: an LHC thread and a succession of Claude
- * Agent SDK generations. Exactly one generation is live; it is the only thing the
- * user's prompts go to and the only source of forwarded messages.
- *
- * Capture precedes publication: every native message is recorded into LHC before it
- * is forwarded to the driver, and every prompt is recorded at the moment the SDK
- * pulls it (the model-visible seam).
- *
- * Generations change in two cases, both projections of the LHC served view into a
- * native session file under the effective Claude home, then resume by UUID
- * (the new id becomes the thread's current alias):
- *   - restart: `start` with `resume: <any alias of the thread>`;
- *   - compact: manual (`/compact` prompt) or auto (provider-reported context over the
- *     trigger). `threadView.compact` installs the view, a continuation marker starts the
- *     next turn, and the old generation is closed once the new one exists.
- *
- * A compact that falls due while a turn is open does not wait for the turn to end: the
- * next safe tool boundary stops the live query (PostToolUse `continue: false`, after
- * every tool_use of the current assistant message has its result), LHC closes the turn
- * on the contract's canonical `context_compact_continue` boundary, the view is rebuilt
- * and projected into a new generation, and a continuation input (recorded as a runtime
- * note, never a prompt) resumes the task there. The stopped query's own result
- * (`terminal_reason: hook_stopped`) never reaches the driver: it sees one turn with a
- * compact_boundary in the middle and one result, from the new session.
- */
-
 import { randomUUID } from "node:crypto";
 import {
   type HookJSONOutput,
@@ -78,19 +51,11 @@ import {
 export interface SessionIO {
   emit(message: SDKMessage): void;
   request(method: SidecarRequestMethod, params: unknown, signal: AbortSignal): Promise<unknown>;
-  /** The live generation's stream ended on its own: the session is over. */
   end(): void;
-  /** Unrecoverable: report to the driver and stop. */
   fail(message: string): void;
   log(line: string): void;
 }
 
-/**
- * Claude Code's environment: the host's SDK `env` option when it passes one,
- * else the sidecar's own. The t3code driver sets T3CODE_THREAD_ID on the
- * sidecar process, not in that option, so it is carried over here; without it
- * `lhc-agent` inside a claude-lhc seat cannot resolve its sender.
- */
 export function claudeChildEnv(
   wireEnv: NodeJS.ProcessEnv | undefined,
   sidecarEnv: NodeJS.ProcessEnv = process.env,
@@ -116,14 +81,10 @@ async function labelNativeSession(sessionId: string, title: string, cwd: string,
   }
 }
 
-/** The full share of the "continuation" profile the rebuild compacts with (lhc thread-view/internal/profiles.ts). */
 const CONTINUATION_FULL_SHARE_PERCENT = 30;
-/** Longest a compact waits for queued derivations, so bands assemble from renderings rather than truncated excerpts. */
 const DERIVATION_WAIT_MS = 45_000;
 const FALLBACK_CLAUDE_CODE_VERSION = "2.1.259";
-/** The stop reason the PostToolUse hook hands the CLI; it stays inside the stopped session. */
 const MID_TURN_STOP_REASON = "lhc mid-turn compact";
-/** The SDK result's terminal_reason when a hook stopped the query. */
 const HOOK_STOPPED = "hook_stopped";
 
 type CompactTrigger = "manual" | "auto";
@@ -134,7 +95,6 @@ interface QueuedPrompt {
   before?: () => Promise<void>;
 }
 
-/** The prompt stream one generation reads. `before` runs after the SDK asks for the item and before it gets it. */
 class InputQueue implements AsyncIterable<SDKUserMessage> {
   readonly #items: QueuedPrompt[] = [];
   #wake: (() => void) | null = null;
@@ -150,7 +110,6 @@ class InputQueue implements AsyncIterable<SDKUserMessage> {
     this.#wake?.();
   }
 
-  /** Ends the queue and hands back whatever the SDK never asked for. */
   drain(): QueuedPrompt[] {
     const leftover = this.#items.splice(0);
     this.end();
@@ -190,10 +149,6 @@ function requireFiniteSetting(value: unknown, name: string): number {
   return value;
 }
 
-/**
- * Read the two host-owned compact numbers from forwarded settings and strip them
- * so they never reach the child. t3code writes both; there is no sidecar default.
- */
 export function takeHostCompactSettings(settings: Record<string, unknown>): {
   autoCompactTrigger: number;
   lhcLowerBound: number;
@@ -241,28 +196,19 @@ export class ClaudeLhcSession {
   #pendingApprovals = 0;
   #pendingCompact: CompactTrigger | null = null;
   #compacting = false;
-  /** The current assistant message's tool calls on the main thread and which have their result. */
   #batch = new ToolBatch();
-  /** Tool calls seen so far in the open turn, by tool name; the continuation note names them. */
   #turnToolCalls = new Map<string, number>();
-  /** Outstanding tool calls of the open canonical turn; a clean result past the threshold ends it (capture/segment-fold.ts). */
   #segmentFold = createSegmentFoldState();
-  /** Set by the PostToolUse hook when it stopped the live query for a mid-turn compact. */
   #stopping: CompactTrigger | null = null;
-  /** A mid-turn compact failed in the open turn: no second try before the turn ends (the turn-end path tries once more). */
   #midTurnFailed = false;
-  /** When the hook stopped the query (ms epoch) and the generation whose first wire message ends the swap measurement. */
   #swap: { stoppedAt: number; sessionId: string } | null = null;
-  /** Prompts that arrived while a compact swap was running; replayed into the new generation. */
   #heldPrompts: SDKUserMessage[] = [];
   #model: string | undefined;
   #permissionMode: PermissionMode | undefined;
   #maxThinkingTokens: number | null | undefined;
   #claudeCodeVersion = FALLBACK_CLAUDE_CODE_VERSION;
   #autoCompactTrigger = 0;
-  /** Start option `lhc.forceRebuildFailure`: proof scripts only; see protocol.ts. */
   #forceRebuildFailure = false;
-  /** Configured `lhcLowerBound`; also the budget `segmentThresholdTokens` tracks. */
   #viewTarget = 0;
   #tokenFamily: ResolvedTokenFamily = seedTokenFamilyFromStartModel("");
   #lastModelId: string | null = null;
@@ -337,14 +283,11 @@ export class ClaudeLhcSession {
   async pushUser(message: SDKUserMessage): Promise<void> {
     if (this.#closed) return;
     if (compactCommand(message) !== null) {
-      // In an open turn the next safe tool boundary takes it (see #onPostToolUse); a turn
-      // that ends without one runs it at the turn end as before.
       if (this.#turnOpen || this.#compacting) this.#pendingCompact = "manual";
       else await this.#compact("manual");
       return;
     }
     if (this.#compacting) {
-      // The live generation is about to be superseded; queueing there would drop the prompt.
       this.#heldPrompts.push(message);
       this.#io.log(`holding a prompt during compact (${this.#heldPrompts.length} held)`);
       return;
@@ -411,8 +354,6 @@ export class ClaudeLhcSession {
     abortSummaryWorkers();
   }
 
-  // ── generations ────────────────────────────────────────────────
-
   #startGeneration(sessionId: string, extra: Partial<Options>): Generation {
     const input = new InputQueue();
     let gen: Generation | null = null;
@@ -423,15 +364,12 @@ export class ClaudeLhcSession {
       ...(typeof this.#maxThinkingTokens === "number" ? { maxThinkingTokens: this.#maxThinkingTokens } : {}),
       env: this.#env,
       pathToClaudeCodeExecutable: this.#claudeBin,
-      // History retrieval (retrieval.ts), merged with the MCP servers and
-      // allowed tools the host passed, never replacing them.
       mcpServers: {
         ...((this.#base as Options).mcpServers ?? {}),
         [RETRIEVAL_SERVER_NAME]: createRetrievalServer(this.#lhc, () => this.#thread),
       },
       allowedTools: [...((this.#base as Options).allowedTools ?? []), ...RETRIEVAL_TOOL_NAMES],
       canUseTool: async (toolName, toolInput, callbackOptions) => {
-        // Read-only history retrieval never asks the host for approval.
         if (RETRIEVAL_TOOL_NAMES.includes(toolName)) return { behavior: "allow", updatedInput: toolInput };
         const { signal, ...rest } = callbackOptions;
         this.#pendingApprovals += 1;
@@ -465,27 +403,12 @@ export class ClaudeLhcSession {
     return gen;
   }
 
-  // ── mid-turn seam ──────────────────────────────────────────────
-
-  /** A compact is due in the open turn: a pended `/compact`, or provider context over the trigger. */
   #midTurnDue(): CompactTrigger | null {
     if (this.#compacting || this.#stopping !== null || this.#closed || this.#midTurnFailed) return null;
     if (this.#pendingCompact !== null) return this.#pendingCompact;
     return this.#lastContextTokens >= this.#autoCompactTrigger ? "auto" : null;
   }
 
-  /**
-   * PostToolUse fires per tool with the tool's result already in hand, before that result
-   * is on the wire. With parallel tool calls, stopping at the first one must not strand
-   * its siblings, so the stop waits for the boundary at which every tool_use of the
-   * current assistant message is settled. The batch is known from the stream events
-   * (content_block_start, all blocks before any tool runs) when the driver asks for
-   * partial messages; without them the CLI emits each tool_use only as it runs that tool,
-   * and the count sees one — the CLI still drains the batch before honouring the stop
-   * (measured: scripts/midturn.ts), so the seam lands after the batch either way.
-   * Subagent tool calls never stop anything: the Task call that owns them is the
-   * main-thread boundary.
-   */
   #onPostToolUse(gen: Generation | null, hookInput: PostToolUseHookInput): HookJSONOutput {
     const proceed: HookJSONOutput = { continue: true };
     if (gen === null || gen.superseded || gen !== this.#gen || hookInput.agent_id !== undefined) return proceed;
@@ -508,7 +431,6 @@ export class ClaudeLhcSession {
     return { continue: false, suppressOutput: true, stopReason: MID_TURN_STOP_REASON };
   }
 
-  /** Fires once per batch after every tool in it ran; logged so the seam's timing is on record. Never stops anything. */
   #onPostToolBatch(gen: Generation | null, hookInput: PostToolBatchHookInput): HookJSONOutput {
     if (
       gen !== null &&
@@ -523,20 +445,17 @@ export class ClaudeLhcSession {
     return { continue: true };
   }
 
-  /** A failed tool still settles its slot in the batch; the stop waits for a PostToolUse. */
   #onPostToolUseFailure(gen: Generation | null, hookInput: PostToolUseFailureHookInput): HookJSONOutput {
     if (gen !== null && gen === this.#gen && hookInput.agent_id === undefined)
       this.#batch.settle(hookInput.tool_use_id);
     return { continue: true };
   }
 
-  /** Feeds the wire to the batch tracker and tallies the turn's tool calls by name. */
   #trackTools(message: SDKMessage): void {
     for (const name of this.#batch.observe(message))
       this.#turnToolCalls.set(name, (this.#turnToolCalls.get(name) ?? 0) + 1);
   }
 
-  /** The input that resumes the task in the new generation. A runtime note in LHC, never a prompt. */
   #continuationNote(): SDKUserMessage {
     const total = [...this.#turnToolCalls.values()].reduce((a, b) => a + b, 0);
     const byName = [...this.#turnToolCalls.entries()].map(([name, n]) => `${name} ×${n}`).join(", ");
@@ -590,7 +509,6 @@ export class ClaudeLhcSession {
 
   async #onMessage(message: SDKMessage): Promise<void> {
     if (this.#swap !== null && this.#swap.sessionId !== "" && message.session_id === this.#swap.sessionId) {
-      // The measure the brief asks for: hook stop → first message of the new session on the wire.
       this.#io.log(
         `${stamp()} swap complete: first message (${message.type}${"subtype" in message ? `/${String(message.subtype)}` : ""}) of generation ${message.session_id} ${Date.now() - this.#swap.stoppedAt} ms after the hook stop`,
       );
@@ -598,10 +516,6 @@ export class ClaudeLhcSession {
     }
     if (message.type === "system" && message.subtype === "init") {
       this.#claudeCodeVersion = message.claude_code_version;
-      // The CLI sends an init per turn with the tool list as it stands. Account MCP connectors
-      // connect asynchronously; a call made before they do carries no schemas for them, so its
-      // usage reads low by that block (measured ~24k tokens for 52 tools). Real for that call,
-      // and the next call reads them: worth a log line, not a correction.
       const pending = (message.mcp_servers ?? [])
         .filter((server) => server.status === "pending")
         .map((server) => server.name);
@@ -614,7 +528,6 @@ export class ClaudeLhcSession {
       const inner = (message as { message?: { model?: unknown } }).message;
       this.#observeLaterModel(inner?.model);
       if (!this.#turnOpen) {
-        // Output without a prompt of ours (a task notification the CLI answered): the turn is open.
         this.#turnOpen = true;
         this.#turnStartedAt = new Date().toISOString();
       }
@@ -630,7 +543,6 @@ export class ClaudeLhcSession {
       this.#stopping = null;
       this.#batch.clear();
       if (trigger !== null && stopped) {
-        // The seam: the stopped query's result is not the turn's end and never goes out.
         await this.#compactMidTurn(trigger);
         return;
       }
@@ -652,20 +564,11 @@ export class ClaudeLhcSession {
     }
     this.#turnOpen = false;
     this.#turnStartedAt = undefined;
-    // A compact due at this turn end runs before the turn's result goes out, so the driver
-    // sees native order: status compacting, status cleared, compact_boundary, then the result.
     const trigger = this.#dueCompact();
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
   }
 
-  /**
-   * Size-based canonical turn end at a safe tool boundary (capture/segment-fold.ts). The fold
-   * observes every message; the end is appended only in an open turn with no compact in flight
-   * and no hook stop pending (that seam belongs to the mid-turn compact), once the open turn's
-   * estimate reaches half the full share. The native turn runs on; the next canonical turn
-   * opens prompt-less and starts its timing here.
-   */
   async #maybeSegment(message: SDKMessage, events: readonly MessageEventInput[]): Promise<void> {
     const candidate = foldSegmentEvents(this.#segmentFold, events);
     if (candidate === null || !this.#turnOpen || this.#compacting || this.#stopping !== null) return;
@@ -696,15 +599,12 @@ export class ClaudeLhcSession {
     return this.#lastContextTokens >= this.#autoCompactTrigger ? "auto" : null;
   }
 
-  // ── LHC ────────────────────────────────────────────────────────
-
   async #intake(events: readonly MessageEventInput[]): Promise<void> {
     if (events.length === 0) return;
     const result = await this.#lhc.intakeStream.messageEvents(this.#thread, events);
     if (!result.ok) throw new Error(`LHC intake refused: ${result.error.code}: ${result.error.reason}`);
   }
 
-  /** A restart over a turn the previous process never closed: close it as aborted so the view is coherent. */
   async #settleOpenTurn(reason: string): Promise<void> {
     const turns = await this.#lhc.turns.listTurns(this.#thread);
     if (!turns.ok) throw new Error(`LHC turns read failed: ${turns.error.reason}`);
@@ -729,11 +629,6 @@ export class ClaudeLhcSession {
     return open.turnId;
   }
 
-  /**
-   * Rebuilds the view and swaps generations. `heldResult` is the turn's own `result` when the
-   * compact runs at a turn end: it is forwarded after the boundary, on the new session id.
-   * Without one (a `/compact` sent between turns) a synthetic result closes the compact turn.
-   */
   async #compact(trigger: CompactTrigger, heldResult?: SDKMessage): Promise<void> {
     if (this.#gen === null || this.#compacting) {
       if (heldResult !== undefined) this.#io.emit(heldResult);
@@ -769,15 +664,6 @@ export class ClaudeLhcSession {
     await this.#replayHeld();
   }
 
-  /**
-   * The mid-turn seam, entered when the stopped query's `hook_stopped` result arrives (so
-   * the tool result at the stop point is already recorded — the wire carried it before
-   * the result). LHC closes the turn on the contract's canonical boundary, the view is
-   * rebuilt into a new generation, and the continuation note resumes the task there. The
-   * driver's turn stays open throughout: it sees status, boundary, then more tool cards
-   * and the one result. If the rebuild fails the note goes to the stopped generation
-   * instead, so the task still finishes, uncompacted.
-   */
   async #compactMidTurn(trigger: CompactTrigger): Promise<void> {
     const previous = this.#gen;
     if (previous === null) return;
@@ -860,7 +746,6 @@ export class ClaudeLhcSession {
     } as unknown as SDKMessage;
   }
 
-  /** Log-only: a later real model id does not recreate the LHC SDK. */
   #observeLaterModel(modelId: unknown): void {
     const observed = laterModelObservation(this.#lastModelId, modelId, this.#tokenFamily);
     if (observed === null) return;
@@ -868,13 +753,10 @@ export class ClaudeLhcSession {
     this.#io.log(observed.log);
   }
 
-  /** Waits for derivations, installs the compacted view, records the marker, and projects the view into a new generation. */
   async #rebuild(trigger: CompactTrigger, preTokens: number): Promise<{ next: Generation; postTokens: number }> {
     if (this.#forceRebuildFailure)
       throw new Error("rebuild failure forced by the start option lhc.forceRebuildFailure");
     await this.#awaitDerivations();
-    // Build the view once to the configured lower bound. Oldest-turn roll-off is
-    // core's normal compact behavior; this host does not retry larger.
     const lowerBound = this.#viewTarget;
     const opts = { profile: "continuation", params: { lowerBound } };
     const preview = await this.#lhc.threadView.previewCompact(this.#thread, opts);
@@ -901,8 +783,6 @@ export class ClaudeLhcSession {
         },
       },
     ]);
-    // post_tokens is the rebuilt view the model reads next, as stock reports its summary's
-    // size alone; the next assistant usage makes the meter exact.
     const postTokens = receipt.totalTokens;
     const summary = formatCompactRuntimeNote({
       trigger,
@@ -923,7 +803,6 @@ export class ClaudeLhcSession {
     return { next, postTokens };
   }
 
-  /** Lets queued derivations finish (bounded) so the bands are built from renderings, not the truncated excerpt fallback. */
   async #awaitDerivations(): Promise<void> {
     const deadline = Date.now() + DERIVATION_WAIT_MS;
     for (;;) {
@@ -939,16 +818,10 @@ export class ClaudeLhcSession {
     }
   }
 
-  /** Child cwd the native CLI uses: options.cwd when set, otherwise this process. */
   #childCwd(): string {
     return this.#cwd;
   }
 
-  /**
-   * Projects the served view into a native session file, then binds the alias and
-   * resumes by UUID. The write finishes before bindSession/query so a failure
-   * creates no alias and leaves the old generation in place.
-   */
   async #startProjectedGeneration(): Promise<Generation> {
     const view = await this.#lhc.threadView.getSessionThreadView(this.#thread);
     if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);
@@ -987,7 +860,6 @@ export class ClaudeLhcSession {
     this.#io.emit(message);
   }
 
-  /** Native's `system/status` around a compaction: `compacting` at the start, `null` with the outcome at the end. */
   #syntheticStatus(sessionId: string, status: "compacting" | null, outcome: Record<string, unknown> = {}): SDKMessage {
     return {
       type: "system",
