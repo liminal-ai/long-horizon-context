@@ -2,6 +2,8 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -47,6 +49,8 @@ class Sidecar {
     this.stderr = [];
     this.error = null;
     this.waiters = [];
+    this.replies = new Map();
+    this.nextId = 0;
     this.child = spawn(process.execPath, [ENTRY], {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
@@ -62,6 +66,7 @@ class Sidecar {
       const frame = JSON.parse(l);
       this.frames.push(frame);
       if (frame.type === "error") this.error = frame.message;
+      if (frame.type === "res") this.replies.set(frame.id, frame);
       if (frame.type === "req") {
         this.send({ type: "res", id: frame.id, ok: true, value: frame.method === "canUseTool" ? { behavior: "allow", updatedInput: frame.params?.input } : {} });
       }
@@ -78,6 +83,15 @@ class Sidecar {
       if (Date.now() > deadline) throw new Error(`timeout waiting for ${what}`);
       await new Promise((r) => { this.waiters.push(r); setTimeout(r, 500); });
     }
+  }
+  async request(method, params) {
+    const id = ++this.nextId;
+    const sentAt = performance.now();
+    this.send({ type: "req", id, method, params });
+    await this.waitFor(() => this.replies.has(id), `res to ${method}`);
+    const reply = this.replies.get(id);
+    if (!reply.ok) throw new Error(`${method} refused: ${reply.error}`);
+    return { value: reply.value, ms: performance.now() - sentAt };
   }
   msgs() { return this.frames.filter((f) => f.type === "msg").map((f) => f.message); }
   logHas(text) { return this.stderr.some((l) => l.includes(text)); }
@@ -183,13 +197,37 @@ async function compactOnce(scratch, label, options, evidenceDir) {
   return { s, gen: generationFrom(s), compacted: boundary.session_id };
 }
 
+async function startEchoMcp(name) {
+  const require = createRequire(join(REPO, "packages/claude-lhc/package.json"));
+  const { McpServer } = await import(require.resolve("@modelcontextprotocol/sdk/server/mcp.js"));
+  const { StreamableHTTPServerTransport } = await import(require.resolve("@modelcontextprotocol/sdk/server/streamableHttp.js"));
+  const http = createServer(async (request, response) => {
+    const server = new McpServer({ name, version: "1.0.0" });
+    server.tool("ping", "Reply pong", async () => ({ content: [{ type: "text", text: `pong from ${name}` }] }));
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    response.on("close", () => { transport.close(); server.close(); });
+    await server.connect(transport);
+    await transport.handleRequest(request, response);
+  });
+  await new Promise((r) => http.listen(0, "127.0.0.1", r));
+  return { config: { type: "http", url: `http://127.0.0.1:${http.address().port}/mcp` }, close: () => http.close() };
+}
+
+const mcpToolsOf = (turn) => {
+  const init = turn.messages.find((m) => m.type === "system" && m.subtype === "init");
+  assert(init, "the turn carried no system/init message");
+  return init.tools.filter((t) => t.startsWith("mcp__")).sort();
+};
+const RETRIEVAL_TOOLS = ["mcp__lhc__get_messages", "mcp__lhc__get_turns"];
+const LIVE_GATE = "needs a real model turn; set CLAUDE_LHC_LIVE=1 (isolated CLAUDE_CONFIG_DIR, auth from env)";
+
 async function liveTurn(s, text) {
   const before = s.msgs().length;
   s.send(userFrame(text));
   await s.waitFor(() => s.msgs().slice(before).some((m) => m.type === "result"), `result for "${text}"`, 180_000);
   const turn = s.msgs().slice(before);
   const assistants = turn.filter((m) => m.type === "assistant" && m.parent_tool_use_id === null);
-  return { result: turn.find((m) => m.type === "result"), lastAssistantUuid: assistants.at(-1)?.uuid };
+  return { messages: turn, result: turn.find((m) => m.type === "result"), lastAssistantUuid: assistants.at(-1)?.uuid };
 }
 
 const drives = {
@@ -412,8 +450,59 @@ const drives = {
     } finally { scratch.cleanup(); }
   },
 
+  async "start-mcp"(evidenceDir) {
+    if (process.env.CLAUDE_LHC_LIVE !== "1") return { skip: LIVE_GATE };
+    const scratch = new Scratch("start-mcp");
+    const echo = await startEchoMcp("echo");
+    try {
+      const s = new Sidecar(scratch, "start-mcp");
+      s.send({ type: "start", options: baseOptions(scratch, { sessionId: randomUUID(), mcpServers: { echo: echo.config } }) });
+      await s.waitFor(() => s.logHas("created thread"), "created-thread log line");
+      const turn = await liveTurn(s, "Reply with just OK.");
+      assert((await s.stop()) === 0, "start-mcp sidecar did not exit 0");
+      s.saveEvidence(evidenceDir);
+      const tools = mcpToolsOf(turn);
+      writeFileSync(join(evidenceDir, "tools.json"), `${JSON.stringify(tools, null, 2)}\n`);
+      assert(turn.result?.subtype === "success", `the turn failed: ${JSON.stringify(turn.result)}`);
+      for (const tool of ["mcp__echo__ping", ...RETRIEVAL_TOOLS]) assert(tools.includes(tool), `the turn lacks ${tool}: ${tools.join(", ")}`);
+      return `start-frame MCP tools in the turn: ${tools.join(", ")}`;
+    } finally { echo.close(); scratch.cleanup(); }
+  },
+
+  async "late-mcp"(evidenceDir) {
+    if (process.env.CLAUDE_LHC_LIVE !== "1") return { skip: LIVE_GATE };
+    const scratch = new Scratch("late-mcp");
+    const start = await startEchoMcp("start");
+    const late = await startEchoMcp("late");
+    const other = await startEchoMcp("other");
+    try {
+      const s = new Sidecar(scratch, "late-mcp");
+      s.send({ type: "start", options: baseOptions(scratch, { sessionId: randomUUID(), mcpServers: { start: start.config } }) });
+      const first = await s.request("setMcpServers", { servers: { late: late.config } });
+      assert(first.value.added.includes("late") && Object.keys(first.value.errors).length === 0, `first set: ${JSON.stringify(first.value)}`);
+      const turn = await liveTurn(s, "Reply with just OK.");
+      const tools = mcpToolsOf(turn);
+      const compacted = await liveTurn(s, "/compact");
+      const afterCompact = await liveTurn(s, "Reply with just OK again.");
+      const compactTools = mcpToolsOf(afterCompact);
+      const second = await s.request("setMcpServers", { servers: { other: other.config } });
+      assert((await s.stop()) === 0, "late-mcp sidecar did not exit 0");
+      s.saveEvidence(evidenceDir);
+      writeFileSync(join(evidenceDir, "tools.json"), `${JSON.stringify({ tools, compactTools, first, second }, null, 2)}\n`);
+      assert(turn.result?.subtype === "success", `the turn failed: ${JSON.stringify(turn.result)}`);
+      for (const tool of ["mcp__start__ping", "mcp__late__ping", ...RETRIEVAL_TOOLS]) assert(tools.includes(tool), `the turn lacks ${tool}: ${tools.join(", ")}`);
+      const boundary = compacted.messages.find((m) => m.type === "system" && m.subtype === "compact_boundary");
+      assert(boundary, "/compact emitted no compact_boundary");
+      assert(afterCompact.result?.session_id === boundary.session_id, "the turn after /compact did not run in the new generation");
+      assert(JSON.stringify(compactTools) === JSON.stringify(tools), `the new generation lost the late set: ${compactTools.join(", ")}`);
+      assert(second.value.added.includes("other") && second.value.removed.includes("late"), `the second set did not replace the first: ${JSON.stringify(second.value)}`);
+      assert(!second.value.removed.includes("lhc") && !second.value.removed.includes("start"), `the second set removed a server it does not own: ${JSON.stringify(second.value)}`);
+      return `late set applied in ${first.ms.toFixed(0)} ms; turn tools: ${tools.join(", ")}; same tools after /compact in generation ${boundary.session_id.slice(0, 8)}; second set ${JSON.stringify(second.value)} in ${second.ms.toFixed(0)} ms`;
+    } finally { start.close(); late.close(); other.close(); scratch.cleanup(); }
+  },
+
   async "rollback-live"(evidenceDir) {
-    if (process.env.CLAUDE_LHC_LIVE !== "1") return { skip: "needs real model turns; set CLAUDE_LHC_LIVE=1 (isolated CLAUDE_CONFIG_DIR, auth from env)" };
+    if (process.env.CLAUDE_LHC_LIVE !== "1") return { skip: LIVE_GATE };
     const scratch = new Scratch("rollback-live");
     try {
       const gen1 = randomUUID();
@@ -461,7 +550,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "rollback", "rollback-unknown-anchor", "rollback-synthetic-anchor", "rollback-compact", "thread-start", "turn", "rollback-live"]
+      ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "rollback", "rollback-unknown-anchor", "rollback-synthetic-anchor", "rollback-compact", "thread-start", "turn", "rollback-live", "start-mcp", "late-mcp"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;

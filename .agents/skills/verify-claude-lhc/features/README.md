@@ -12,6 +12,7 @@ convenient entry point is incomplete when this map lists others.
 | [Restart and projection](restart-projection.md) | `restart`, `resume-unknown`, `resume-empty` | `start{resume}` restarts onto the thread's own projected file as a fresh generation; unknown ids fail clean |
 | [Rollback-shaped start](rollback-shaped-start.md) | `resume-superseded-alias` | `start{resume: <superseded alias>}` resolves to the same thread and current served view — observed, not assumed |
 | [Host rollback](host-rollback.md) | `rollback`, `rollback-unknown-anchor`, `rollback-synthetic-anchor`, `rollback-compact`, `thread-start` (+ live `rollback-live`) | `start{resume, resumeSessionAt}` records a core rollback before projecting; removed text stays out through compact and restart; thread start opens a new thread |
+| [MCP servers](mcp-servers.md) | live `start-mcp`, `late-mcp` | start-frame servers match trunk; a `setMcpServers` request after start adds the host tools beside retrieval and replaces the previous set |
 
 Run everything seeded: `../drive.mjs all` (from this directory:
 `../drive.mjs all`; from repo root:
