@@ -26,7 +26,7 @@ import {
   type ThreadRef,
 } from "lhc";
 import { ToolBatch } from "./capture/batch.js";
-import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/mapper.js";
+import { compactCommand, HARNESS, mapPrompt, mapSdkMessage, messageKeyPrefix } from "./capture/mapper.js";
 import {
   createSegmentFoldState,
   foldSegmentEvents,
@@ -224,6 +224,7 @@ export class ClaudeLhcSession {
   async start(wire: WireOptions): Promise<void> {
     const {
       resume,
+      resumeSessionAt,
       sessionId,
       canUseTool: _c,
       onUserDialog: _d,
@@ -263,7 +264,10 @@ export class ClaudeLhcSession {
       this.#threadId = threadId;
       this.#thread = threadRef(threadId);
       await this.#settleOpenTurn("session restarted");
-      await this.#startProjectedGeneration();
+      const keptTail =
+        typeof resumeSessionAt === "string" && resumeSessionAt !== "" ? await this.#rollBack(resumeSessionAt) : null;
+      if (keptTail !== null && keptTail >= this.#autoCompactTrigger) await this.#compactAfterRollback(keptTail);
+      else await this.#startProjectedGeneration();
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);
       return;
     }
@@ -597,6 +601,50 @@ export class ClaudeLhcSession {
     if (events.length === 0) return;
     const result = await this.#lhc.intakeStream.messageEvents(this.#thread, events);
     if (!result.ok) throw new Error(`LHC intake refused: ${result.error.code}: ${result.error.reason}`);
+  }
+
+  async #rollBack(anchorUuid: string): Promise<number | null> {
+    const startedAt = performance.now();
+    const keys = await this.#lhc.intakeStream.listEventKeysByPrefix(this.#thread, {
+      prefix: messageKeyPrefix(anchorUuid),
+    });
+    if (!keys.ok) throw new Error(`LHC anchor lookup failed: ${keys.error.reason}`);
+    if (keys.value.keys.length === 0) {
+      const note = `rollback to ${anchorUuid} skipped: no captured event carries that message uuid; projecting the current view`;
+      this.#io.log(note);
+      await this.#lhc.logging.write(this.#thread, { level: "warning", message: note }).catch(() => undefined);
+      return null;
+    }
+    const keepThroughEventOrder = Math.max(...keys.value.keys.map((key) => key.eventOrder));
+    const resolvedMs = performance.now() - startedAt;
+    await this.#intake([
+      {
+        eventKind: "rollback",
+        idempotencyKey: `claude-lhc:rollback:${randomUUID()}`,
+        actor: "system",
+        harness: HARNESS,
+        payload: { keepThroughEventOrder, reason: `host resumeSessionAt ${anchorUuid}` },
+      },
+    ]);
+    const status = await this.#lhc.threadView.status(this.#thread);
+    if (!status.ok) throw new Error(`LHC view status failed: ${status.error.reason}`);
+    this.#io.log(
+      `rollback to ${anchorUuid}: kept through event ${keepThroughEventOrder} (anchor resolved in ${resolvedMs.toFixed(1)} ms); served tail ${status.value.tailTokens} tokens`,
+    );
+    return status.value.tailTokens;
+  }
+
+  async #compactAfterRollback(tailTokens: number): Promise<void> {
+    try {
+      await this.#rebuild("auto", tailTokens);
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      this.#io.log(`compact after rollback failed: ${reason}; projecting the uncompacted view`);
+      await this.#lhc.logging
+        .write(this.#thread, { level: "warning", message: `[lhc compact:auto] after rollback failed: ${reason}` })
+        .catch(() => undefined);
+      await this.#startProjectedGeneration();
+    }
   }
 
   async #settleOpenTurn(reason: string): Promise<void> {

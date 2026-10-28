@@ -13,8 +13,12 @@ export interface AssistantProvenance {
 }
 export const CLAUDE_PROVENANCE: AssistantProvenance = { provider: "anthropic", api: "messages" };
 
+export function messageKeyPrefix(uuid: string): string {
+  return `claude-lhc:${uuid}:`;
+}
+
 export function idempotencyKey(uuid: string, blockIndex: number, kind: string): string {
-  return `claude-lhc:${uuid}:${blockIndex}:${kind}`;
+  return `${messageKeyPrefix(uuid)}${blockIndex}:${kind}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
