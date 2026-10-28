@@ -15,10 +15,8 @@ jobs:
     name: lhc
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout (recursive submodules)
+      - name: Checkout
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
 
       - name: Install pnpm 11.8.0
         uses: pnpm/action-setup@v6
@@ -44,10 +42,8 @@ jobs:
     name: claude-lhc
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout (recursive submodules)
+      - name: Checkout
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
 
       - name: Install pnpm 11.8.0
         uses: pnpm/action-setup@v6
@@ -76,10 +72,8 @@ jobs:
     name: cc-lhc
     runs-on: ubuntu-24.04
     steps:
-      - name: Checkout (recursive submodules)
+      - name: Checkout
         uses: actions/checkout@v7
-        with:
-          submodules: recursive
 
       - name: Install pnpm 11.8.0
         uses: pnpm/action-setup@v6

@@ -25,7 +25,7 @@ pnpm --filter lhc run build
 node .agents/skills/verify-lhc/helpers/doctor.mjs
 ```
 
-`--filter lhc` matters: a full workspace install also resolves `vendor/pi` overrides for sibling packages and can fail on checkouts without the vendored tree. Launch reaches a usable state from an empty data dir because every drive creates its own temp home; there is no server to start and no port to wait on. Ready line: `verify-lhc doctor: PASS`.
+Launch reaches a usable state from an empty data dir because every drive creates its own temp home; there is no server to start and no port to wait on. Ready line: `verify-lhc doctor: PASS`.
 
 ## Doctor
 

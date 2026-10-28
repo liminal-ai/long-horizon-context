@@ -10,8 +10,8 @@ requested id writes one impression row. Retrieval never mutates record
 content; the only write is the impression log.
 
 Public options are snake_case (Fable ruling). Historical-envelope formatting
-lives in :mod:`lhc.retrieval.format` (SDK-owned; pin wording from pi-lhc
-serving tools, assembly placement per SDK/Rust R6).
+lives in :mod:`lhc.retrieval.format` (SDK-owned; assembly placement per
+SDK/Rust R6).
 """
 
 from __future__ import annotations

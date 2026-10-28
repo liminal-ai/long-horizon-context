@@ -1,6 +1,6 @@
 # Setup: cc-lhc standalone
 
-Audience: an AI coding agent (or a person) building cc-lhc from a source checkout on a machine that has Claude Code and will NOT use PI. Published npm and complete-bundle installation paths are in the root README. Supported platforms are exactly the six native targets in `packages/cc-lhc-native/targets.json`: Linux (x64, arm64), macOS (x64, arm64), and Windows (x64, arm64) — native Windows, no WSL required. Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
+Audience: an AI coding agent (or a person) building cc-lhc from a source checkout on a machine that has Claude Code. Published npm and complete-bundle installation paths are in the root README. Supported platforms are exactly the six native targets in `packages/cc-lhc-native/targets.json`: Linux (x64, arm64), macOS (x64, arm64), and Windows (x64, arm64) — native Windows, no WSL required. Follow the steps in order. Each step has a verification — do not continue past a failed verification; report what failed instead.
 
 > Kickoff lives in the repo README ("Install cc-lhc"). Everything below assumes the agent is reading this file inside a completed clone. Commands are written for a POSIX shell. The plain `git`/`node`/`pnpm` invocations work verbatim in PowerShell and cmd as well; the one place the syntax genuinely differs (setting an environment variable for a single command) gives explicit POSIX, PowerShell, and cmd forms.
 >
@@ -8,13 +8,7 @@ Audience: an AI coding agent (or a person) building cc-lhc from a source checkou
 
 ## Step 1: Clone
 
-If you are reading this, the clone likely already happened — confirm it was recursive:
-
-```bash
-git submodule status   # must list vendor/pi with a SHA, not be empty
-```
-
-If empty or you cloned without `--recursive`: `git submodule update --init`. The `vendor/pi` submodule is never built for cc-lhc, but its directories must exist for the workspace install to resolve.
+If you are reading this, the clone already happened.
 
 cc-lhc is a PTY wrapper around Claude Code that records sessions into a durable local store (`~/.cc-lhc/`), adds a ctrl-] command panel inside Claude Code (status, stats, compact, prune, export, auto, bounds), runs background summarization through `claude -p`, and performs wrapper-controlled context handoff when the served context outgrows its bounds. The wrapper boundary, precisely: inside a running session it never alters Claude Code's own behavior — every byte between your terminal and Claude Code passes through unchanged, except the ctrl-] leader byte (which the wrapper consumes to open its panel). What the wrapper does own is the session lifecycle around Claude Code: it selects the session id at launch, consumes the `--lhc-*` flag namespace, and at a confirmed turn boundary a compact may terminate the `claude` child and respawn `claude --resume <new-id>` to hand off context.
 
@@ -40,8 +34,6 @@ pnpm --config.verify-deps-before-run=false --filter lhc run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc run build
 ```
-
-Do not run the root `pnpm build` — it builds every package including PI-dependent ones you don't need.
 
 ## Step 4: Build the native identity addon
 
@@ -114,7 +106,6 @@ If ctrl-] does not open the command panel, capture a debug log — POSIX: `CC_LH
 ```bash
 cd <repo>
 git pull
-git submodule update --init
 pnpm install --frozen-lockfile
 pnpm --config.verify-deps-before-run=false --filter lhc run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build
