@@ -81,7 +81,7 @@ describe("A-8: partial-id resolve", () => {
   it("an unresolvable id fails thread_not_found, never a silent match", async () => {
     await create();
     const missing = await threads.resolve({
-      threadId: "th_zzzzzzzzzzzzzzzz", // 'z' is not in the hex id alphabet
+      threadId: "th_zzzzzzzzzzzzzzzz",
       registryPath: store.registryPath,
     });
     expect(missing.ok).toBe(false);

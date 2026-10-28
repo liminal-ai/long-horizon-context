@@ -170,7 +170,7 @@ describe("LIM-67 protected boundary preview", () => {
     if (!prepared2.ok) return;
     const drifted = await lhc.threadView.installPreparedCompact({ filePath }, prepared2.value, {
       visibilityBoundary: preview.value.proposedBoundary + 1,
-      expectedPreviousBoundary: prevBoundary, // stale: the first install already advanced it
+      expectedPreviousBoundary: prevBoundary,
     });
     expect(drifted.ok).toBe(true);
     if (!drifted.ok) return;

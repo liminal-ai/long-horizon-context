@@ -133,7 +133,7 @@ describe("TC-3.1 / AC-3.1: listing order, fields, and bounds", () => {
       [{ limit: 3 }, ["m1", "m2", "m3"]],
       [{ from: 2, limit: 2 }, ["m2", "m3"]],
       [{ from: 4, to: 4 }, ["m4"]],
-      [{ from: 5, to: 5 }, []], // the turn_end order: an event, never a message
+      [{ from: 5, to: 5 }, []],
     ];
     for (const [opts, expected] of windows) {
       expect(idsOf(await messages.list({ filePath }, opts))).toEqual(expected);

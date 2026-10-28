@@ -140,7 +140,7 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
 
     const mixed = [
       validEvent("tool_call"),
-      original[0]!, // valid duplicate of a recorded event
+      original[0]!,
       { ...validEvent("turn_end"), payload: { bad: true } } as unknown as MessageEventInput,
     ];
     const rejected = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, mixed));

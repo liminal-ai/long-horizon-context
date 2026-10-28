@@ -135,7 +135,7 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
     await send(filePath, [original]);
 
     const result = await send(filePath, [
-      original, // duplicate: skipped
+      original,
       validEvent("assistant_text"),
       validEvent("turn_end"),
     ]);
