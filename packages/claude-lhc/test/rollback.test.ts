@@ -1,22 +1,24 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mapPrompt, mapSdkMessage } from "../src/capture/mapper.ts";
 import { createLhc, resolveSession, threadRef } from "../src/lhcHome.ts";
-import { nativeSessionPath } from "../src/nativeSessionFile.ts";
+import { nativeProjectDir, nativeSessionPath } from "../src/nativeSessionFile.ts";
 import { ClaudeLhcSession } from "../src/session.ts";
 
 const opened: Options[] = [];
+const fed: AsyncIterable<SDKUserMessage>[] = [];
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const real = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
   return {
     ...real,
     renameSession: async () => {},
-    query: ({ options }: { options: Options }) => {
+    query: ({ prompt, options }: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => {
       opened.push(options);
+      fed.push(prompt);
       const never = new Promise<IteratorResult<never>>(() => {});
       return {
         [Symbol.asyncIterator]() {
@@ -34,6 +36,7 @@ let claudeHome: string;
 const saved = { home: process.env.T3CODE_LHC_HOME, noInf: process.env.T3CODE_LHC_NO_INFERENCE };
 beforeEach(() => {
   opened.length = 0;
+  fed.length = 0;
   dir = mkdtempSync(join(tmpdir(), "claude-lhc-rollback-"));
   claudeHome = join(dir, "claude-home");
   process.env.T3CODE_LHC_HOME = join(dir, "lhc-home");
@@ -97,11 +100,11 @@ const toolResultMessage = (toolUseId: string, text: string): SDKMessage =>
     message: { role: "user", content: [{ type: "tool_result", tool_use_id: toolUseId, content: text }] },
   }) as unknown as SDKMessage;
 
-const resultMessage = (): SDKMessage =>
+const resultMessage = (isError = false): SDKMessage =>
   ({
     type: "result",
     subtype: "success",
-    is_error: false,
+    is_error: isError,
     uuid: randomUUID(),
     session_id: "",
   }) as unknown as SDKMessage;
@@ -132,6 +135,29 @@ async function servedText(threadId: string): Promise<string> {
   const view = await lhc().threadView.getSessionThreadView(threadRef(threadId));
   if (!view.ok) throw new Error(view.error.reason);
   return JSON.stringify(view.value.entries);
+}
+
+const nativeEnv = () => ({ CLAUDE_CONFIG_DIR: claudeHome });
+const nativeFiles = () => readdirSync(nativeProjectDir({ cwd: dir, env: nativeEnv() }), { recursive: true }).map(String);
+
+type NativeLine = { uuid: string; type: "user" | "assistant" | "attachment"; text?: string; model?: string };
+
+function appendNative(sessionId: string, lines: NativeLine[], path = nativeSessionPath({ sessionId, cwd: dir, env: nativeEnv() })) {
+  mkdirSync(dirname(path), { recursive: true });
+  const existing = existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean) : [];
+  let parentUuid: string | null = existing.length === 0 ? null : JSON.parse(existing.at(-1)!).uuid;
+  const body = lines.map(({ uuid, type, text, model }) => {
+    const message = type === "attachment" ? undefined : { role: type, content: [{ type: "text", text }], ...(model ? { model } : {}) };
+    const line = JSON.stringify({ parentUuid, isSidechain: false, type, uuid, sessionId, ...(message ? { message } : {}) });
+    parentUuid = uuid;
+    return line;
+  });
+  appendFileSync(path, `${body.join("\n")}\n`);
+}
+
+async function intake(threadId: string, events: ReturnType<typeof mapPrompt>): Promise<void> {
+  const sent = await lhc().intakeStream.messageEvents(threadRef(threadId), events);
+  if (!sent.ok) throw new Error(sent.error.reason);
 }
 
 async function seedThread(): Promise<{ gen1: string; threadId: string }> {
@@ -178,19 +204,106 @@ describe("host rollback on resume", () => {
     expect(projected).not.toContain("REMOVED");
   });
 
-  test("an anchor no captured event carries projects the current view with a logged reason", async () => {
+  test("a synthetic notice anchor keeps through its turn's prompt across compact and restart", async () => {
+    const { gen1, threadId } = await seedThread();
+    await captureTurn(threadId, "KEEP-PROMPT", "KEEP-ANSWER");
+    const live = await startSession({ resume: gen1 });
+    const liveGen = live.options.resume!;
+    const promptUuid = randomUUID();
+    await live.session.pushUser({ ...userMessage("FAILED-PROMPT"), uuid: promptUuid });
+    await fed.at(-1)![Symbol.asyncIterator]().next();
+    await intake(threadId, mapSdkMessage(resultMessage(true), undefined).events);
+    await live.session.close();
+    const removed = await captureTurn(threadId, "REMOVED-PROMPT", "REMOVED-ANSWER");
+    const synthetic = randomUUID();
+    appendNative(liveGen, [
+      { uuid: promptUuid, type: "user", text: "FAILED-PROMPT" },
+      { uuid: randomUUID(), type: "attachment" },
+      { uuid: synthetic, type: "assistant", text: "API Error: 401", model: "<synthetic>" },
+      { uuid: randomUUID(), type: "user", text: "REMOVED-PROMPT" },
+      { uuid: removed, type: "assistant", text: "REMOVED-ANSWER" },
+    ]);
+
+    const { session, logs, options } = await startSession({ resume: gen1, resumeSessionAt: synthetic });
+
+    expect(options).not.toHaveProperty("resumeSessionAt");
+    const projected = projectedText(options);
+    expect(projected).toContain("KEEP-ANSWER");
+    expect(projected).toContain("FAILED-PROMPT");
+    expect(projected).not.toContain("REMOVED");
+    expect(await servedText(threadId)).not.toContain("REMOVED");
+    expect(logs.some((line) => line.includes(`at nearest captured ancestor ${promptUuid}`))).toBe(true);
+
+    await session.pushUser(userMessage("/compact"));
+    const compacted = opened.at(-1)!;
+    expect(projectedText(compacted)).not.toContain("REMOVED");
+    await session.close();
+    const restarted = await startSession({ resume: compacted.resume });
+    expect(projectedText(restarted.options)).not.toContain("REMOVED");
+    expect(await servedText(threadId)).not.toContain("REMOVED");
+  });
+
+  test("a synthetic notice after an uncaptured prompt keeps through the last real assistant message", async () => {
+    const { gen1, threadId } = await seedThread();
+    const kept = await captureTurn(threadId, "KEEP-PROMPT", "KEEP-ANSWER");
+    await intake(threadId, [
+      ...mapPrompt(userMessage("FAILED-PROMPT"), randomUUID(), false),
+      ...mapSdkMessage(resultMessage(true), undefined).events,
+    ]);
+    const removed = await captureTurn(threadId, "REMOVED-PROMPT", "REMOVED-ANSWER");
+    const synthetic = randomUUID();
+    appendNative(gen1, [
+      { uuid: randomUUID(), type: "user", text: "KEEP-PROMPT" },
+      { uuid: kept, type: "assistant", text: "KEEP-ANSWER" },
+      { uuid: randomUUID(), type: "user", text: "FAILED-PROMPT" },
+      { uuid: synthetic, type: "assistant", text: "API Error: 401", model: "<synthetic>" },
+      { uuid: randomUUID(), type: "user", text: "REMOVED-PROMPT" },
+      { uuid: removed, type: "assistant", text: "REMOVED-ANSWER" },
+    ]);
+
+    const { logs, options } = await startSession({ resume: gen1, resumeSessionAt: synthetic });
+
+    const projected = projectedText(options);
+    expect(projected).toContain("KEEP-ANSWER");
+    expect(projected).not.toContain("FAILED-PROMPT");
+    expect(projected).not.toContain("REMOVED");
+    expect(logs.some((line) => line.includes(`at nearest captured ancestor ${kept}`))).toBe(true);
+  });
+
+  test("a subagent anchor with no captured ancestor refuses the start before anything reaches the CLI", async () => {
+    const { gen1, threadId } = await seedThread();
+    const kept = await captureTurn(threadId, "KEEP-PROMPT", "KEEP-ANSWER");
+    const removed = await captureTurn(threadId, "REMOVED-PROMPT", "REMOVED-ANSWER");
+    appendNative(gen1, [
+      { uuid: randomUUID(), type: "user", text: "KEEP-PROMPT" },
+      { uuid: kept, type: "assistant", text: "KEEP-ANSWER" },
+      { uuid: randomUUID(), type: "user", text: "REMOVED-PROMPT" },
+      { uuid: removed, type: "assistant", text: "REMOVED-ANSWER" },
+    ]);
+    const subagent = randomUUID();
+    const sidechain = join(nativeProjectDir({ cwd: dir, env: nativeEnv() }), gen1, "subagents", "agent-a1.jsonl");
+    appendNative(gen1, [{ uuid: subagent, type: "assistant", text: "SUBAGENT-ANSWER" }], sidechain);
+    const files = nativeFiles();
+    const queries = opened.length;
+
+    await expect(startSession({ resume: gen1, resumeSessionAt: subagent })).rejects.toThrow(
+      `rollback to ${subagent} refused`,
+    );
+    expect(opened.length).toBe(queries);
+    expect(nativeFiles()).toEqual(files);
+  });
+
+  test("an anchor no native transcript carries refuses the start before anything reaches the CLI", async () => {
     const { gen1, threadId } = await seedThread();
     await captureTurn(threadId, "FIRST-PROMPT", "FIRST-ANSWER");
     await captureTurn(threadId, "SECOND-PROMPT", "SECOND-ANSWER");
     const unknown = randomUUID();
+    const queries = opened.length;
 
-    const { logs, options } = await startSession({ resume: gen1, resumeSessionAt: unknown });
-
-    expect(options).not.toHaveProperty("resumeSessionAt");
-    expect(projectedText(options)).toContain("SECOND-ANSWER");
-    expect(logs).toContain(
-      `rollback to ${unknown} skipped: no captured event carries that message uuid; projecting the current view`,
+    await expect(startSession({ resume: gen1, resumeSessionAt: unknown })).rejects.toThrow(
+      `rollback to ${unknown} refused`,
     );
+    expect(opened.length).toBe(queries);
   });
 
   test("a rollback that leaves the served tail past the compact trigger compacts before projecting", async () => {

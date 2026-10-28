@@ -35,7 +35,7 @@ import {
   segmentThresholdTokens,
 } from "./capture/segment-fold.js";
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
-import { writeProjectedSession } from "./nativeSessionFile.js";
+import { nativeAncestors, writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
 import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
@@ -265,7 +265,7 @@ export class ClaudeLhcSession {
       this.#thread = threadRef(threadId);
       await this.#settleOpenTurn("session restarted");
       const keptTail =
-        typeof resumeSessionAt === "string" && resumeSessionAt !== "" ? await this.#rollBack(resumeSessionAt) : null;
+        typeof resumeSessionAt === "string" && resumeSessionAt !== "" ? await this.#rollBack(resumeSessionAt, resume) : null;
       if (keptTail !== null && keptTail >= this.#autoCompactTrigger) await this.#compactAfterRollback(keptTail);
       else await this.#startProjectedGeneration();
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);
@@ -302,7 +302,8 @@ export class ClaudeLhcSession {
     }
     const gen = this.#gen;
     if (gen === null) throw new Error("no live generation");
-    const uuid = randomUUID();
+    // The CLI writes the prompt line under the host's uuid; capturing under it lets a rollback walk resolve it.
+    const uuid = message.uuid ?? randomUUID();
     gen.input.push({
       message,
       before: async () => {
@@ -608,19 +609,22 @@ export class ClaudeLhcSession {
     if (!result.ok) throw new Error(`LHC intake refused: ${result.error.code}: ${result.error.reason}`);
   }
 
-  async #rollBack(anchorUuid: string): Promise<number | null> {
+  async #rollBack(anchorUuid: string, resumed: string): Promise<number> {
     const startedAt = performance.now();
-    const keys = await this.#lhc.intakeStream.listEventKeysByPrefix(this.#thread, {
-      prefix: messageKeyPrefix(anchorUuid),
-    });
-    if (!keys.ok) throw new Error(`LHC anchor lookup failed: ${keys.error.reason}`);
-    if (keys.value.keys.length === 0) {
-      const note = `rollback to ${anchorUuid} skipped: no captured event carries that message uuid; projecting the current view`;
-      this.#io.log(note);
-      await this.#lhc.logging.write(this.#thread, { level: "warning", message: note }).catch(() => undefined);
-      return null;
+    let via = anchorUuid;
+    let keepThroughEventOrder = await this.#capturedThrough(anchorUuid);
+    if (keepThroughEventOrder === null) {
+      const ancestors = await nativeAncestors({ uuid: anchorUuid, sessionId: resumed, cwd: this.#cwd, env: this.#env });
+      for (const uuid of ancestors) {
+        keepThroughEventOrder = await this.#capturedThrough(uuid);
+        via = uuid;
+        if (keepThroughEventOrder !== null) break;
+      }
     }
-    const keepThroughEventOrder = Math.max(...keys.value.keys.map((key) => key.eventOrder));
+    if (keepThroughEventOrder === null)
+      throw new Error(
+        `rollback to ${anchorUuid} refused: no captured event carries that message or any ancestor in its native transcript`,
+      );
     const resolvedMs = performance.now() - startedAt;
     await this.#intake([
       {
@@ -634,9 +638,15 @@ export class ClaudeLhcSession {
     const status = await this.#lhc.threadView.status(this.#thread);
     if (!status.ok) throw new Error(`LHC view status failed: ${status.error.reason}`);
     this.#io.log(
-      `rollback to ${anchorUuid}: kept through event ${keepThroughEventOrder} (anchor resolved in ${resolvedMs.toFixed(1)} ms); served tail ${status.value.tailTokens} tokens`,
+      `rollback to ${anchorUuid}: kept through event ${keepThroughEventOrder}${via === anchorUuid ? "" : ` at nearest captured ancestor ${via}`} (anchor resolved in ${resolvedMs.toFixed(1)} ms); served tail ${status.value.tailTokens} tokens`,
     );
     return status.value.tailTokens;
+  }
+
+  async #capturedThrough(uuid: string): Promise<number | null> {
+    const keys = await this.#lhc.intakeStream.listEventKeysByPrefix(this.#thread, { prefix: messageKeyPrefix(uuid) });
+    if (!keys.ok) throw new Error(`LHC anchor lookup failed: ${keys.error.reason}`);
+    return keys.value.keys.length === 0 ? null : Math.max(...keys.value.keys.map((key) => key.eventOrder));
   }
 
   async #compactAfterRollback(tailTokens: number): Promise<void> {
