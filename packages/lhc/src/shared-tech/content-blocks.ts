@@ -1,19 +1,5 @@
-// Anthropic Messages API content blocks inside LHC. Every block type the API
-// defines is held faithfully; the only rewrite is that binary or opaque
-// payload strings (base64 image and PDF bytes, redacted-thinking data, web
-// search encrypted content) leave the JSON and live in the thread's blob table,
-// keyed by content hash. The block keeps the API's shape and names; the payload
-// field holds a reference `{ $blob, bytes }` in place of the string. Text never
-// carries base64: not in the event payload, not in a message block, not in a
-// band, not in a served view unless the caller asks for the block back inlined.
-//
-// Pure module: no database. Callers extract blobs at intake and inline them at
-// serving through the two small functions here.
 import { createHash } from "node:crypto";
 
-/** Block type names, as the API spells them. Text-shaped types are stored as
- *  JSON verbatim (no blob); blob-bearing types have their payload paths
- *  extracted. */
 export const API_BLOCK_TYPES = [
   "text",
   "image",
@@ -38,8 +24,8 @@ export type ApiBlockType = (typeof API_BLOCK_TYPES)[number];
 export type ApiBlock = Record<string, unknown> & { type: string };
 
 export interface BlobRef {
-  $blob: string; // "sha256:<hex>"
-  bytes: number; // decoded byte length
+  $blob: string;
+  bytes: number;
 }
 
 export interface ExtractedBlob {
@@ -69,14 +55,10 @@ function blobRefFor(data: Uint8Array): { ref: BlobRef; sha256: string } {
   return { ref: { $blob: `sha256:${sha256}`, bytes: data.byteLength }, sha256 };
 }
 
-// ── extraction (intake) ──────────────────────────────────────────
-
 interface Sink {
   blobs: ExtractedBlob[];
 }
 
-/** A `{type:"base64", media_type, data}` source: data leaves as a blob. Other
- *  source types (url, text, content) are text-shaped or nested. */
 function extractSource(source: unknown, sink: Sink): unknown {
   if (!isPlainRecord(source)) return source;
   if (source["type"] === "base64" && typeof source["data"] === "string") {
@@ -104,8 +86,6 @@ function extractOpaque(block: Record<string, unknown>, key: string, sink: Sink):
   return { ...block, [key]: ref };
 }
 
-/** One block, blob payloads extracted, everything else verbatim. Unknown
- *  shapes pass through untouched (a newer API type is still a record). */
 function extractBlock(value: unknown, sink: Sink): unknown {
   if (!isPlainRecord(value)) return value;
   switch (value["type"]) {
@@ -130,7 +110,6 @@ function extractBlock(value: unknown, sink: Sink): unknown {
           }
         : value;
     case "web_fetch_tool_result":
-      // content is a web_fetch block whose `content` is a document block.
       return isPlainRecord(value["content"]) && isPlainRecord(value["content"]["content"])
         ? { ...value, content: { ...value["content"], content: extractBlock(value["content"]["content"], sink) } }
         : value;
@@ -144,14 +123,11 @@ export interface ExtractResult {
   blobs: ExtractedBlob[];
 }
 
-/** Blocks with their binary/opaque payloads replaced by blob references. */
 export function extractBlobs(blocks: readonly unknown[]): ExtractResult {
   const sink: Sink = { blobs: [] };
   const out = blocks.map((block) => extractBlock(block, sink) as ApiBlock);
   return { blocks: out, blobs: sink.blobs };
 }
-
-// ── inlining (serving) ───────────────────────────────────────────
 
 export type BlobLoader = (sha256: string) => Uint8Array | undefined;
 
@@ -164,17 +140,12 @@ function inlineValue(value: unknown, load: BlobLoader, encoding: "base64" | "utf
   return value;
 }
 
-/** The block as the API shaped it, blob payloads back in place. A blob that
- *  is missing from the store leaves its reference in place rather than
- *  inventing bytes. */
 export function inlineBlobs(block: unknown, load: BlobLoader): unknown {
   if (Array.isArray(block)) return block.map((inner) => inlineBlobs(inner, load));
   if (!isPlainRecord(block)) return block;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(block)) {
     if (isBlobRef(value)) {
-      // base64 sources come back as base64; opaque strings (redacted thinking
-      // data, encrypted search content) were stored as their utf8 bytes.
       const encoding = key === "data" && block["type"] === "base64" ? "base64" : "utf8";
       out[key] = inlineValue(value, load, encoding);
     } else if (isPlainRecord(value) || Array.isArray(value)) {
@@ -185,8 +156,6 @@ export function inlineBlobs(block: unknown, load: BlobLoader): unknown {
   }
   return out;
 }
-
-// ── text-shaped rendering (bands, derivations, retrieval) ────────
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -209,11 +178,6 @@ function sourceDescription(source: unknown): string {
   return "";
 }
 
-/**
- * What the model needs to know that the block existed, not its content: the
- * API type, media type, size, and a title when the block has one. Text-shaped
- * blocks render their text. Tool-result nesting renders each inner block.
- */
 export function placeholderText(block: unknown): string {
   if (!isPlainRecord(block)) return "";
   switch (block["type"]) {
@@ -264,24 +228,16 @@ export function placeholderText(block: unknown): string {
       return Array.isArray(content) ? content.map(placeholderText).join("\n") : "";
     }
     default:
-      // code_execution_tool_result and friends are text-shaped JSON; anything
-      // newer is at least made visible.
       return JSON.stringify(block);
   }
 }
 
-/** True when the block carries (or carried) a blob payload. */
 export function hasBlobPayload(block: unknown): boolean {
   if (Array.isArray(block)) return block.some(hasBlobPayload);
   if (!isPlainRecord(block)) return false;
   return Object.values(block).some((value) => isBlobRef(value) || hasBlobPayload(value));
 }
 
-/**
- * Rough context cost of a block the text estimator cannot see. Images: the
- * API's ceiling for one image (~1,600 tokens at 1568px); PDFs: ~2,000 tokens
- * per page at ~50 KB a page, floor one page. Measured, not calibrated.
- */
 export function blobTokenEstimate(block: unknown): number {
   if (!isPlainRecord(block)) return 0;
   const source = block["source"];

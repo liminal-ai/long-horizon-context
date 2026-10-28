@@ -1,10 +1,3 @@
-// Retrieval ops (drill-down layer): getTurns serves tagged turn renderings by
-// turn id; getMessages serves verbatim message content by message id. Both
-// enforce an in-order token budget: the item crossing the budget is served as
-// an exact token slice with a continuation receipt (fromToken), later items
-// get explicit "budget" receipts, and every requested id writes one impression
-// row. Deterministic — no inference in any path (stored renderings come from
-// prior drains; fallback composition is pure).
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, initLhc, intakeStream, type Lhc, retrieval } from "../src/index.js";
@@ -41,9 +34,6 @@ afterEach(() => {
   store.cleanup();
 });
 
-/** One closed turn whose rendering is large enough to force slicing. The bulk
- *  rides assistant text because renderings keep model output whole while tool
- *  results get truncated. */
 async function seedBigTurn(): Promise<void> {
   const bigBody = Array.from({ length: 400 }, (_, i) => `line ${i}: the quick brown fox jumps over the lazy dog`).join(
     "\n",
@@ -55,7 +45,6 @@ async function seedBigTurn(): Promise<void> {
   ]);
 }
 
-/** Two closed turns: t1 (prompt/answer) and t2 (prompt, tool run, answer). */
 async function seedTwoTurns(): Promise<void> {
   await send([
     validEvent("user_prompt", { payload: { text: "first question" } }),
@@ -89,14 +78,12 @@ describe("getTurns", () => {
     expect(t2.text).toContain("<t2>");
     expect(t2.text).toContain("</t2>");
     expect(t2.text).toContain("read the file please");
-    // Message tags inside the rendering are the get_messages handles.
     expect(t2.text).toMatch(/<m\d+>/);
     expect(receipt.totalTokens).toBe(receipt.served.reduce((sum, turn) => sum + turn.tokens, 0));
   });
 
   it("composes a live fallback when the rendering derivation is not ready", async () => {
     await seedTwoTurns();
-    // No drain: turn_rendering rows are pending.
     const result = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"]));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -145,8 +132,6 @@ describe("getTurns", () => {
     const full = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1", "t2"]));
     expect(full.ok).toBe(true);
     if (!full.ok) return;
-    // Budget fits either fixture turn alone but not both; the leftover after
-    // t1 is far below RETRIEVAL_SLICE_FLOOR, so t2 is refused, not slivered.
     const t2Tokens = full.value.served[1]!.tokens;
 
     const partial = await withEstimator(o200k, () =>
@@ -211,8 +196,6 @@ describe("getTurns", () => {
       validEvent("turn_end"),
     ]);
     await drain();
-    // t1 is huge, t2 tiny. Budget 500: t1 slice fills the whole budget, t2
-    // reports "budget" with its size instead of being silently starved.
     const result = await withEstimator(o200k, () =>
       retrieval.getTurns({ filePath }, ["t1", "t2"], { tokenBudget: 500 }),
     );
@@ -287,7 +270,6 @@ describe("getMessages", () => {
     const listed = await sdk.messages.list({ filePath });
     if (!listed.ok) throw new Error("list failed");
     const prompts = listed.value.filter((record) => record.kind === "user_prompt").map((r) => r.messageId);
-    // Fits the larger prompt alone but not both.
     const budget = estimateTokens("read the file please");
 
     const result = await withEstimator(o200k, () =>
@@ -302,8 +284,6 @@ describe("getMessages", () => {
 
 describe("byteBudget", () => {
   it("slices token-cheap byte-heavy content to fit the byte allowance", async () => {
-    // Long '=' runs: BPE packs many bytes per token, so a token budget alone
-    // cannot bound bytes — the codex-core truncation hazard.
     const dense = `${"=".repeat(80)}\n`.repeat(1_500);
     await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt", { payload: { text: "dump" } }),
@@ -321,13 +301,11 @@ describe("byteBudget", () => {
     expect(result.value.served).toHaveLength(1);
     const served = result.value.served[0]!;
     expect(Buffer.byteLength(served.text, "utf8")).toBeLessThanOrEqual(byteBudget);
-    // Receipt stays token-denominated and continues correctly.
     expect(served.slice).toBeDefined();
     expect(served.slice!.fromToken).toBe(0);
     expect(served.slice!.toToken).toBe(served.tokens);
     expect(served.slice!.toToken).toBeLessThan(served.slice!.totalTokens);
 
-    // Continuation from the receipt serves the NEXT window, still byte-fit.
     const next = await withEstimator(o200k, () =>
       retrieval.getMessages({ filePath }, [denseId], {
         byteBudget,
@@ -342,9 +320,6 @@ describe("byteBudget", () => {
   });
 
   it("multi-byte content never splits a char at the slice tail", async () => {
-    // Each crab is 4 UTF-8 bytes and >1 token; byte caps that land inside a
-    // char must shrink to the clean boundary — no U+FFFD, no mid-char
-    // continuation offset (round-5 finding 1).
     const crabs = `${"\u{1F980}".repeat(20)}\n`.repeat(200);
     await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt", { payload: { text: "dump" } }),
@@ -382,10 +357,6 @@ describe("byteBudget", () => {
   });
 
   it("byte-dense content stays retrievable when bytes bind below the token floor", async () => {
-    // 400k '=' is thousands of bytes but few o200k tokens: the byte-fit
-    // window sits under the 256-token floor. Byte-bound serves must not be
-    // refused as slivers — that would make the content permanently
-    // unretrievable (round-5 finding 2).
     const dense = `${"=".repeat(80)}\n`.repeat(900);
     await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt", { payload: { text: "dump" } }),
@@ -440,10 +411,6 @@ describe("byteBudget", () => {
     const result = await withEstimator(o200k, () => retrieval.getMessages({ filePath }, ids, { byteBudget: 8_000 }));
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    // The first item consumes most of the byte allowance as a slice; the
-    // second gets the byte-bound remainder — small, but served with a
-    // continuation receipt (byte-bound serves are exempt from the sliver
-    // floor: re-pulling alone cannot yield more bytes).
     expect(result.value.served).toHaveLength(2);
     expect(result.value.served[1]!.slice).toBeDefined();
     const servedBytes = result.value.served.reduce((sum, item) => sum + Buffer.byteLength(item.text, "utf8"), 0);

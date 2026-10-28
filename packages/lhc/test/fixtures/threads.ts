@@ -1,9 +1,3 @@
-// Thread builders for Epic 02 (test plan §Test Substrate). All built through
-// real intake; the multi-state and damaged-source builders then apply the
-// sanctioned below-SDK writes for states the SDK cannot yet produce (drain
-// and handlers land in Stories 1–3) — Story 0 proves read-back of what the
-// builders wrote; Stories 2/4 confirm the states arise for real
-// (coverage.md cross-story debt).
 import { DatabaseSync } from "node:sqlite";
 import {
   type DependencyGap,
@@ -33,8 +27,6 @@ async function send(filePath: string, batch: readonly MessageEventInput[]): Prom
   if (!result.ok) throw new Error(`fixture batch failed: ${result.error.reason}`);
 }
 
-// n closed turns, each prompt + assistant text + explicit end. Turn ids are
-// deterministic (t1..tn) per the turn store's id scheme.
 export async function threadWithClosedTurns(
   store: TempStore,
   n: number,
@@ -52,8 +44,6 @@ export async function threadWithClosedTurns(
   return { filePath, turnIds };
 }
 
-// One closed turn containing a tool run: call + result pair by default;
-// error and missing-result variants per the epic's outcome vocabulary.
 export async function threadWithToolRun(
   store: TempStore,
   opts: { isError?: boolean; missingResult?: boolean; resultContent?: string } = {},
@@ -80,8 +70,6 @@ export async function threadWithToolRun(
   await send(filePath, batch);
   return { filePath, turnId: "t1" };
 }
-
-// ── chunk read-back (Story 3): raw rows for boundary assertions ──
 
 export interface ChunkSnapshot {
   chunks: Array<{
@@ -137,8 +125,6 @@ export function readChunks(filePath: string): ChunkSnapshot {
   }
 }
 
-// ── derivation read-back and the sanctioned state writer ───────
-
 interface RawFormRow {
   subject_kind: string;
   subject_id: string;
@@ -184,10 +170,6 @@ export function readDerivedForms(filePath: string): Derivation[] {
   }
 }
 
-// Below-SDK state writer, sanctioned like corrupt.ts: ready/failed/blocked
-// are unreachable through the SDK until the drain (Story 1) and handlers
-// (Stories 2–3) land. UPDATE-only on purpose — the pending row exists from
-// enqueue, mirroring the production completion contract.
 export function setFormState(
   filePath: string,
   target: { subjectKind: SubjectKind; subjectId: string; derivationType: DerivationType },
@@ -227,8 +209,6 @@ export function setFormState(
   }
 }
 
-// ── multi-state thread: every form state in one file ─────────────
-
 export interface MultiStateClaim {
   subjectKind: SubjectKind;
   subjectId: string;
@@ -238,8 +218,6 @@ export interface MultiStateClaim {
 
 export async function multiStateThread(store: TempStore): Promise<{ filePath: string; expected: MultiStateClaim[] }> {
   const filePath = await newThreadFile(store);
-  // Turn 1: prompt + tool run; turn 2: prompt. Intake's enqueue leaves every
-  // form pending; the writes below move a subset into the other three states.
   await send(filePath, [
     validEvent("user_prompt", { payload: { text: "first prompt" } }),
     validEvent("assistant_text", { payload: { text: "working on it" } }),
@@ -259,8 +237,6 @@ export async function multiStateThread(store: TempStore): Promise<{ filePath: st
     { subjectKind: "message", subjectId: "m1", derivationType: "smoothed_prompt" },
     { state: "ready", content: "smoothed(fixture:first prompt)", derivedAt },
   );
-  // Tool-activity outcome lives in machine-readable metadata, never inside
-  // model-authored content (FC-0.3).
   setFormState(
     filePath,
     { subjectKind: "message", subjectId: "m4", derivationType: "tool_result_summary" },
@@ -295,15 +271,8 @@ export async function multiStateThread(store: TempStore): Promise<{ filePath: st
   };
 }
 
-// ── damaged-source thread (Epic 01 corruption definition) ────────
-
-// A closed turn with its turn_derivation work queued, then the Epic 01
-// two-open-turns corruption — the damage a turn handler must find and the
-// intake pipeline refuses (turn_state_corrupt).
 export async function damagedSourceThread(store: TempStore): Promise<{ filePath: string; turnId: string }> {
   const { filePath, turnIds } = await threadWithClosedTurns(store, 1);
-  // Open a second turn through real intake; the corruption writer then adds
-  // another open row — two open turns, the Epic 01 invariant violation.
   await send(filePath, [validEvent("user_prompt", { payload: { text: "left open" } })]);
   corruptTwoOpenTurns(filePath);
   const turnId = turnIds[0];
@@ -311,14 +280,6 @@ export async function damagedSourceThread(store: TempStore): Promise<{ filePath:
   return { filePath, turnId };
 }
 
-// ── fallback-rendering thread (TC-3.2's state, shared) ─────────────
-
-// TC-3.2's fallback-rendering state as one shared builder (coverage.md
-// cross-story debt: TC-4.4 consumes this exact scenario; don't rebuild it by
-// hand). Expects a manual-mode SDK:
-// scripts the prompt's smoothing to fail, then drains — the smoothing lands
-// failed (its work row deleted) and the
-// turn rendering lands ready from the raw floor.
 export const GAPPED_SMOOTHING_REASON = "provider_failure: scripted smoothing failure";
 
 export async function gappedRenderingThread(

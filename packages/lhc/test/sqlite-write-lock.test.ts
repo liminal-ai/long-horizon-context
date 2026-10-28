@@ -1,8 +1,3 @@
-/**
- * Write-lock identity keying, refuse-on-no-stat, cleanup after throw, real FIFO,
- * symlink alias. Separate-process same-file race uses tsx fixture.
- */
-
 import { spawn } from "node:child_process";
 import { linkSync, mkdtempSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -74,7 +69,6 @@ describe("thread write lock identity", () => {
     try {
       linkSync(filePath, hl);
     } catch {
-      // some FS disallow hardlinks
       return;
     }
     expect(threadWriteLockKey(hl)).toBe(threadWriteLockKey(filePath));
@@ -93,13 +87,10 @@ describe("thread write lock identity", () => {
     }
     expect(__writeLockMapSizeForTests()).toBe(0);
 
-    // Identity key is ino-based, never the raw path string.
     const key = threadWriteLockKey(filePath);
     expect(key).toMatch(/^ino:/);
     expect(key).not.toBe(filePath);
 
-    // Force stat failure while the file still exists → storage_failure OpResult,
-    // callback never runs, map empty. No raw-path lock key fallback.
     __setStatSyncForTests(() => {
       throw Object.assign(new Error("EIO: forced stat failure"), { code: "EIO" });
     });
@@ -122,7 +113,6 @@ describe("thread write lock identity", () => {
       __setStatSyncForTests(undefined);
     }
     expect(__writeLockMapSizeForTests()).toBe(0);
-    // After restore, identity works again
     expect(threadWriteLockKey(filePath)).toMatch(/^ino:/);
   });
 
@@ -166,7 +156,6 @@ describe("thread write lock identity", () => {
           return idx;
         }),
       );
-      // Chain each waiter onto the mutex before enqueuing the next.
       await new Promise((r) => setImmediate(r));
     }
 
@@ -245,7 +234,6 @@ describe("thread write lock identity", () => {
       ];
     };
 
-    // Mutation assertion: parent/child keys must not collide.
     for (let i = 0; i < rounds; i += 1) {
       expect(`race-parent-r${i}-user`).not.toBe(`race-child-r${i}-user`);
     }
@@ -259,10 +247,8 @@ describe("thread write lock identity", () => {
     const eventsBeforeRow = dbPre.prepare(`SELECT COUNT(*) AS c FROM event`).get() as { c: number } | undefined;
     const eventsBefore = Number(eventsBeforeRow?.c ?? 0);
     dbPre.close();
-    // Seed is 3 events (user, assistant, turn_end).
     expect(eventsBefore).toBe(3);
 
-    // Pre-release: go must not exist yet (barrier not released).
     expect(existsSync(goPath)).toBe(false);
 
     const child = spawn(tsxBin, [multiprocFixture, filePath, String(rounds), outPath, readyPath, goPath], {
@@ -280,7 +266,6 @@ describe("thread write lock identity", () => {
       stdout += c.toString();
     });
 
-    // Wait for child READY (imports + SDK done) before releasing either side.
     const readyStart = Date.now();
     while (!existsSync(readyPath)) {
       if (Date.now() - readyStart > 15_000) {
@@ -290,10 +275,8 @@ describe("thread write lock identity", () => {
       await new Promise((r) => setTimeout(r, 10));
     }
     expect(readFileSync(readyPath, "utf8")).toMatch(/^READY/);
-    // Still no go — parent must not have started races yet.
     expect(existsSync(goPath)).toBe(false);
 
-    // Prepare parent jobs but do not start them until simultaneous release.
     let parentFails = 0;
     let parentLocked = 0;
     let parentSuccess = 0;
@@ -304,7 +287,6 @@ describe("thread write lock identity", () => {
       const surface = `parent-${i}`;
       parentJobs.push(
         (async () => {
-          // Wait for go barrier (same release step as child).
           while (!existsSync(goPath)) {
             await new Promise((r) => setTimeout(r, 5));
           }
@@ -335,7 +317,6 @@ describe("thread write lock identity", () => {
       );
     }
 
-    // Simultaneous release: both parent waiters and child see go at this step.
     writeFileSync(goPath, "GO\n", "utf8");
 
     const [exitCode] = await Promise.all([
@@ -368,7 +349,6 @@ describe("thread write lock identity", () => {
     expect(childResult.surfaces).toHaveLength(rounds);
     expect(new Set(childResult.surfaces).size).toBe(rounds);
 
-    // Exact durable impression deltas: parent rounds + child rounds (each one retrieval).
     const imps = await withEstimator(o200k, () => retrieval.listImpressions({ filePath }));
     expect(imps.ok).toBe(true);
     if (!imps.ok) return;
@@ -381,7 +361,6 @@ describe("thread write lock identity", () => {
     expect(new Set(parentDelta.map((r) => r.surface)).size).toBe(rounds);
     expect(new Set(childDelta.map((r) => r.surface)).size).toBe(rounds);
 
-    // Exact durable event delta: seed 3 + 2 sides × rounds × 3 events.
     const dbPost = new DatabaseSync(filePath, { readOnly: true });
     const eventsAfterRow = dbPost.prepare(`SELECT COUNT(*) AS c FROM event`).get() as { c: number } | undefined;
     const eventsAfter = Number(eventsAfterRow?.c ?? 0);

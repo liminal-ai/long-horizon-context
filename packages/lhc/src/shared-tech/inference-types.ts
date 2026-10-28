@@ -1,11 +1,3 @@
-// Inference boundary vocabulary: the one function a host supplies, its
-// structured result shapes, and the config that arrives at initLhc as the
-// alternative to direct inference callback injection. LHC treats provider/model
-// strings as host routing keys; the host's ModelCall implementation is the only
-// code that interprets them.
-
-/** The one function a host supplies. Single-turn completion; provider/model
- *  are host routing keys the host's implementation interprets. */
 export type ModelCall = (input: ModelCallInput) => Promise<ModelCallResult>;
 
 export interface ModelCallInput {
@@ -19,17 +11,11 @@ export type ModelCallResult =
   | {
       ok: true;
       text: string;
-      /** When the host routes dynamically (live model switches, provider
-       *  fallback), these report what actually served the call. LHC records
-       *  them as provenance when present; absent means the assignment's
-       *  provider/model served as configured. */
       actualProvider?: string;
       actualModel?: string;
     }
   | { ok: false; kind: ModelCallFailureKind; message: string };
 
-/** `empty_output` is adapter-generated; hosts never return it.
- *  Thrown exceptions classify as `other`. */
 export type ModelCallFailureKind =
   | "rate_limit"
   | "timeout"
@@ -39,29 +25,26 @@ export type ModelCallFailureKind =
   | "auth"
   | "invalid_request";
 
-// ModelAssignment includes target ranges for compression types.
 export interface ModelAssignment {
   provider: string;
   model: string;
-  prompt: string; // must name a PROMPT_REGISTRY entry
-  // Optional target range for compression derivations.
+  prompt: string;
   targetMinRatio?: number;
   targetMaxRatio?: number;
   targetAimRatio?: number;
-  thinking?: "none" | "minimal" | "medium" | "high"; // optional thinking level
+  thinking?: "none" | "minimal" | "medium" | "high";
 }
 
-// DerivationGuards config for operational limits.
 export interface DerivationGuards {
   smoothedPrompt?: {
-    maxInferenceTokens?: number; // default 700
-    suspiciousOutputRatio?: number; // default 0.15
+    maxInferenceTokens?: number;
+    suspiciousOutputRatio?: number;
   };
   toolResultSummary?: {
-    timeoutMs?: number; // default 60_000
+    timeoutMs?: number;
   };
   detailedTurnCompression?: {
-    tinyTurnTokens?: number; // default 80
+    tinyTurnTokens?: number;
   };
 }
 
@@ -78,18 +61,13 @@ export interface ResolvedDerivationGuards {
   };
 }
 
-/** SdkConfig.inference: the alternative to SdkConfig.inferenceCallbacks. */
 export interface InferenceConfig {
   call: ModelCall;
-  // Partial by design: inference derivation types the host omits are filled
-  // from DEFAULT_INFERENCE_ASSIGNMENTS; deterministic types are optional.
-  // Unknown keys are rejected at construction.
   assignments?: Record<string, ModelAssignment>;
-  timeoutMs?: number; // default 60_000
-  maxInputChars?: number; // default 200_000
+  timeoutMs?: number;
+  maxInputChars?: number;
 }
 
-/** InferenceConfig after initLhc validation: every optional filled. */
 export interface ResolvedInferenceConfig {
   call: ModelCall;
   assignments: Record<string, ModelAssignment>;
@@ -98,17 +76,12 @@ export interface ResolvedInferenceConfig {
   maxInputChars: number;
 }
 
-// Default guard values: documented operational limits applied when the host
-// omits a guard. Centralized so construction and tests share one source of
-// truth for the defaults.
 export const DEFAULT_GUARDS: ResolvedDerivationGuards = {
   smoothedPrompt: { maxInferenceTokens: 700, suspiciousOutputRatio: 0.15 },
   toolResultSummary: { timeoutMs: 60_000 },
   detailedTurnCompression: { tinyTurnTokens: 80 },
 };
 
-// Fill a DerivationGuards with defaults for every omitted value. A pure
-// function: no defaults drift between construction and the values tests pin.
 export function resolveGuards(guards?: DerivationGuards): ResolvedDerivationGuards {
   const g = guards ?? {};
   return {

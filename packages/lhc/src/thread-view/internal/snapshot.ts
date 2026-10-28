@@ -1,14 +1,7 @@
-// Stored view snapshot reads and the one atomic compact writer. This module
-// reads the snapshot header and bands, the live tail messages after the compact
-// point, and the tail token sum. Direct record/derivation reads are contained
-// to thread-view internals; status derivation counting still goes through the
-// owners' report surfaces in index.ts.
 import type { DatabaseSync } from "node:sqlite";
 import type { Band, RenderingPartKind, StoredView } from "../../shared-tech/index.js";
 import { resolveInstanceTokenEstimator } from "../../shared-tech/index.js";
 import { readBoundaryPosition } from "./boundary.js";
-
-// ── view snapshot (header + bands) ────────────────────────────────
 
 export interface ViewSnapshot {
   viewId: string;
@@ -17,8 +10,6 @@ export interface ViewSnapshot {
   coveredFrom: number;
   gapCount: number;
   degradedCount: number;
-  // Non-empty bands in gradient order (brief → detailed → smooth), the order
-  // the serving assembly prepends them in.
   bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
 }
 
@@ -33,10 +24,6 @@ interface RawViewRow {
 
 const BAND_GRADIENT_ORDER: readonly Band[] = ["brief", "detailed", "smooth"];
 
-// null means no view exists (never compacted): the whole record renders as tail
-// from event 1 through the same serving assembly path, snapshot-absent rather
-// than a separate branch.
-/** One blob's bytes by content hash; undefined when the store never held it. */
 export function readBlob(db: DatabaseSync, sha256: string): Uint8Array | undefined {
   const row = db.prepare("SELECT data FROM blob WHERE sha256 = ?").get(sha256) as { data: Uint8Array } | undefined;
   return row?.data;
@@ -76,9 +63,6 @@ export function readViewSnapshot(db: DatabaseSync): ViewSnapshot | null {
   };
 }
 
-// The full stored row for `describe`: everything compact wrote, parsed
-// verbatim. Arrangement, gaps, config, source-state provenance, and per-band
-// stored token counts are read from the snapshot, never recomputed.
 export function readStoredView(db: DatabaseSync): StoredView | null {
   const header = db
     .prepare(
@@ -123,11 +107,6 @@ export function readStoredView(db: DatabaseSync): StoredView | null {
   };
 }
 
-// Turn parts: the installed view's transition turn — the one turn served as
-// parts — with its part ranges in served order. Null when every served turn
-// is whole (or no view exists). The one reader of "has this thread served
-// parts" for the walk, the host metadata surface, and mechanism exclusivity.
-/** One part's step range, in host step indices. */
 export interface PartRange {
   fromStep: number;
   toStep: number;
@@ -138,8 +117,6 @@ export interface InstalledTransition {
   parts: PartRange[];
 }
 
-// The durable mechanism fact: when this thread first installed a view serving
-// parts, or null if it never has. Outlives the parts themselves.
 export function readPartsActivation(db: DatabaseSync): string | null {
   const row = db.prepare(`SELECT parts_activated_at FROM thread_metadata WHERE id = 1`).get() as
     | { parts_activated_at: string | null }
@@ -161,22 +138,15 @@ export function readInstalledTransition(db: DatabaseSync): InstalledTransition |
   };
 }
 
-// ── tail record reads ─────────────────────────────────────────────
-
 export interface TailMessageRow {
   messageId: string;
   sourceEventOrder: number;
   idempotencyKey: string | null;
   kind: RenderingPartKind;
-  // The source event's recorded_at: materialize's entry timestamp. Generated
-  // fields derive from record times, never write-time clocks.
   recordedAt: string;
   blocks: Array<{ blockType: string; content: Record<string, unknown> }>;
 }
 
-// Live messages after the compact point in record order, with their projected
-// blocks. The deleted-read filter is applied here so a deleted message never
-// reaches rendering.
 export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMessageRow[] {
   const messageRows = db
     .prepare(
@@ -223,9 +193,6 @@ export function readTailMessages(db: DatabaseSync, compactPoint: number): TailMe
   }));
 }
 
-// The thread's identity row: materialize's header source. The header id derives
-// from thread id + view created-at; a never-compacted thread's header uses the
-// thread's created-at.
 export function readThreadMetadata(db: DatabaseSync): { threadId: string; createdAt: string } {
   const row = db.prepare(`SELECT thread_id, created_at FROM thread_metadata WHERE id = 1`).get() as
     | { thread_id: string; created_at: string }
@@ -236,8 +203,6 @@ export function readThreadMetadata(db: DatabaseSync): { threadId: string; create
   return { threadId: row.thread_id, createdAt: row.created_at };
 }
 
-// The tail's token sum for status: every live message after the compact point,
-// all kinds. This is the same population the serving assembly renders as tail.
 export function tailTokenSum(db: DatabaseSync, compactPoint: number): number {
   const row = db
     .prepare(
@@ -247,8 +212,6 @@ export function tailTokenSum(db: DatabaseSync, compactPoint: number): number {
     .get(compactPoint) as { total: number | bigint };
   return resolveInstanceTokenEstimator("threadView.status").weigh(Number(row.total));
 }
-
-// ── the atomic replace ───────────────────────────────────────────
 
 export interface ViewReplaceInput {
   viewId: string;
@@ -261,36 +224,10 @@ export interface ViewReplaceInput {
   gapsJson: string;
   sourceStateJson: string;
   bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
-  /**
-   * True when the arrangement carries a part entry. The first such install
-   * records the thread's mechanism choice durably, in this same transaction:
-   * once a thread has served parts it never takes the forced-boundary path,
-   * whether or not the parts are still in the installed snapshot.
-   */
   servesParts?: boolean;
-  /**
-   * Visibility boundary written in the same transaction as the view replace.
-   * Omitted: compactPoint (compact's boundary reset). A proposed advance is
-   * resolved forward against durable state inside this transaction — never
-   * behind the current boundary, never behind the compact point — so a
-   * proposal computed against state that has since moved lands on the nearest
-   * legal position instead of failing the install.
-   */
   visibilityBoundary?: number;
 }
 
-// Compact's one transaction: delete the singleton view row (the FK cascade
-// drops its bands), insert the new header and bands, and reset the boundary
-// to the compact point. All inside one BEGIN IMMEDIATE, so a crash anywhere
-// rolls the whole replace back and the previous view keeps serving. Compact is
-// the writer of view rows and the boundary reset on compact.
-/**
- * Replace the serving view under one BEGIN IMMEDIATE.
- * `resolveInput` runs inside that transaction and produces what gets written,
- * so an installer that has to read durable state first — to see whether the
- * snapshot it was handed still describes the thread — observes and writes
- * under the same lock. There is no window between the two.
- */
 export function replaceViewSnapshot(db: DatabaseSync, resolveInput: () => ViewReplaceInput): void {
   db.exec("BEGIN IMMEDIATE;");
   try {

@@ -1,10 +1,3 @@
-// Empty thinking husks (bu9): Anthropic models with omitted thinking display
-// emit assistant_thinking blocks with empty text. The two serving exits used
-// to disagree — getLlmRequestContext rendered a standalone "[thinking]" husk
-// while getSessionThreadView emitted an empty thinking part — so session
-// exports diverged and resume wasn't byte-exact on fable-class models. Both
-// exits now skip empty-text unsigned thinking rows at serve time; capture is
-// untouched (the row stays in the record).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc } from "../src/index.js";
 import { isEmptyThinkingHusk } from "../src/thread-view/internal/render.js";

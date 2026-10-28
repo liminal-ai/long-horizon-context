@@ -1,9 +1,3 @@
-/**
- * The `claude -p --no-session-persistence` inference lane: no rollout file is
- * written for a derivation call, bounded concurrency, one timeout per call,
- * Sonnet for every derivation kind. Moved here from claude-lhc so the SDK's
- * own CLI can run repairs; hosts keep using it through the same export.
- */
 import { type ChildProcess, spawn } from "node:child_process";
 import type { ModelAssignment, ModelCall, ModelCallFailureKind, ModelCallResult } from "./inference-types.js";
 import { DEFAULT_PROMPT_NAMES } from "./prompts/index.js";
@@ -72,7 +66,6 @@ export function createClaudeCliModelCall(deps: {
   timeoutMs?: number;
 }): ModelCall {
   const timeoutMs = deps.timeoutMs ?? 90_000;
-  // Resolved now, against the caller's cwd: the child runs in a scratch dir.
   const binary = summaryWorkerBinary(deps.binary);
   let running = 0;
   const waiters: Array<() => void> = [];
@@ -89,15 +82,12 @@ export function createClaudeCliModelCall(deps: {
     if (input.provider !== PROVIDER) {
       return { ok: false, kind: "invalid_request", message: `unsupported inference provider "${input.provider}"` };
     }
-    // Lee's prompt as the system prompt; the template's text on stdin.
     const { user } = summaryWorkerRequest(input.messages);
     const release = await acquire();
     let launch: ReturnType<typeof summaryWorkerCliLaunch>;
     try {
-      // No framing, tools or extra turns, in an empty scratch dir (summary-worker.ts).
       launch = summaryWorkerCliLaunch({ model: input.model, env: deps.env });
     } catch (cause) {
-      // Setup failed (no temp space, unreadable settings): the slot goes back.
       release();
       return {
         ok: false,
@@ -144,8 +134,6 @@ export function createClaudeCliModelCall(deps: {
           finish({ ok: true, text: stdout });
           return;
         }
-        // `claude -p` reports some failures (e.g. "Not logged in") on stdout
-        // with an empty stderr; classify whichever carries the reason.
         const detail = stderr.trim() !== "" ? stderr : stdout.trim();
         finish({ ok: false, kind: classifyStderr(detail), message: (detail || `exit code ${code}`).slice(0, 500) });
       });

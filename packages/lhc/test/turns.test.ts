@@ -1,9 +1,3 @@
-// Story 4 (Flow 3): turn boundaries through the production walk. TC-3.1
-// through TC-3.8 (the work-item halves of TC-3.3/TC-3.6 are Story 5's named
-// debt), TC-4.4's three-way class assertion, TC-5.4's no-transition clause
-// re-asserted now that turns exist, and the corruption rung of the rollback
-// ladder. Everything enters through the SDK (the CLI surface retired with Epic 05
-// Story 1).
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -45,8 +39,6 @@ async function readTurns(filePath: string): Promise<TurnRecord[]> {
   return result.value;
 }
 
-// Full logical read-back across every record kind this story owns — the
-// rollback ladder's corruption rung compares this whole, not just the error.
 async function readBack(filePath: string) {
   const [events, projected, turnRecords] = await Promise.all([
     intakeStream.listEvents({ filePath }),
@@ -94,7 +86,6 @@ describe("Flow 3 (SDK): turn boundaries", () => {
       },
     ]);
 
-    // Membership is also visible on the members themselves.
     const projected = await messages.list({ filePath });
     expect(projected.ok).toBe(true);
     if (!projected.ok) return;
@@ -223,9 +214,7 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     await send(filePath, [validEvent("user_prompt"), validEvent("assistant_text"), validEvent("turn_end")]);
     const closedBefore = (await readTurns(filePath))[0]!;
 
-    // Post-close, pre-prompt: the message belongs to the open empty turn.
     await send(filePath, [validEvent("assistant_text")]);
-    // A new prompt closes that non-empty turn and opens t3.
     await send(filePath, [validEvent("user_prompt")]);
 
     const projected = await messages.list({ filePath });
@@ -234,8 +223,6 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(projected.value.map((message) => message.turnId)).toEqual(["t1", "t1", "t2", "t3"]);
 
     const turnRecords = await readTurns(filePath);
-    // Frozenness is behavioral: the closed turn's full record — members
-    // included — is identical after the later activity.
     expect(turnRecords[0]).toEqual(closedBefore);
     expect(turnRecords[1]).toEqual({
       turnId: "t2",
@@ -279,7 +266,6 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     await send(implicitPath, [validEvent("user_prompt"), validEvent("assistant_text")]);
     const implicitClose = await send(implicitPath, [validEvent("user_prompt")]);
 
-    // Both paths close t1 at event order 3 with the same frozen membership.
     expect(explicitClose.turnTransitions[0]).toEqual({ action: "closed", turnId: "t1" });
     expect(implicitClose.turnTransitions[0]).toEqual({ action: "closed", turnId: "t1" });
     const explicitT1 = (await readTurns(explicitPath))[0];
@@ -292,8 +278,6 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     await send(filePath, [validEvent("user_prompt"), validEvent("assistant_text")]);
     corruptTwoOpenTurns(filePath);
 
-    // Baseline captured after the corruption: the failed batch must add
-    // nothing on top of it — full read-back diff, not just the error code.
     const baseline = await readBack(filePath);
 
     const failed = await withEstimator(o200k, () =>
@@ -304,9 +288,6 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     expect(failed.error.errorClass).toBe("state_corruption");
     expect(failed.error.code).toBe("turn_state_corrupt");
 
-    // The check fired at state load, before any event was processed: no
-    // partial walk preceded detection (architecture-risk timing assertion,
-    // the rollback ladder's corruption rung).
     expect(await readBack(filePath)).toEqual(baseline);
   });
 
@@ -339,7 +320,6 @@ describe("Flow 3 (SDK): turn boundaries", () => {
       validEvent("turn_end"),
     ]);
 
-    // Transitions in occurrence order, per event inside the walk.
     expect(result.turnTransitions).toEqual([
       { action: "closed", turnId: "t1" },
       { action: "opened", turnId: "t2" },
@@ -411,11 +391,9 @@ describe("Flow 3 (SDK): turn boundaries", () => {
     const prompt = validEvent("user_prompt");
     const end = validEvent("turn_end");
     await send(filePath, [prompt, validEvent("assistant_text"), end]);
-    await send(filePath, [validEvent("user_prompt")]); // t2 now open
+    await send(filePath, [validEvent("user_prompt")]);
     const baseline = await readBack(filePath);
 
-    // A resent prompt cannot re-close a turn; a resent turn_end cannot close
-    // whatever happens to be open now.
     const resend = await send(filePath, [prompt, end]);
     expect(resend.events.map((entry) => entry.outcome)).toEqual(["skipped", "skipped"]);
     expect(resend.turnTransitions).toEqual([]);
@@ -425,7 +403,6 @@ describe("Flow 3 (SDK): turn boundaries", () => {
 
 describe("TC-4.4: three error classes, asserted against each other (AC-4.7)", () => {
   it("validation, corruption, and storage failures carry three distinct classes with stable codes", async () => {
-    // Caller leg: a malformed event.
     const callerPath = await createThread();
     const callerLeg = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath: callerPath }, [
@@ -437,7 +414,6 @@ describe("TC-4.4: three error classes, asserted against each other (AC-4.7)", ()
     expect(callerLeg.error.errorClass).toBe("caller_error");
     expect(callerLeg.error.code).toBe("invalid_event");
 
-    // Corruption leg: the two-open-turns fixture.
     const corruptPath = await createThread();
     await send(corruptPath, [validEvent("user_prompt")]);
     corruptTwoOpenTurns(corruptPath);
@@ -449,7 +425,6 @@ describe("TC-4.4: three error classes, asserted against each other (AC-4.7)", ()
     expect(corruptionLeg.error.errorClass).toBe("state_corruption");
     expect(corruptionLeg.error.code).toBe("turn_state_corrupt");
 
-    // System leg: registry creation under a path whose parent is a file.
     const blocker = join(store.dir, "blocker-file");
     writeFileSync(blocker, "regular file standing where a directory must be");
     const systemLeg = await threads.newThread({
@@ -461,8 +436,6 @@ describe("TC-4.4: three error classes, asserted against each other (AC-4.7)", ()
     expect(systemLeg.error.errorClass).toBe("system_error");
     expect(systemLeg.error.code).toBe("storage_failure");
 
-    // The three classes compared against each other, not pattern-matched
-    // individually.
     const classes = new Set([callerLeg.error.errorClass, corruptionLeg.error.errorClass, systemLeg.error.errorClass]);
     expect(classes.size).toBe(3);
   });

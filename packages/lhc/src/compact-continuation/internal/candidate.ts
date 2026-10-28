@@ -1,8 +1,3 @@
-/**
- * Candidate serving-view material facts for compact-continuation.
- * Uses the same tail/band renderers as model-serving assembly.
- */
-
 import type { DatabaseSync } from "node:sqlite";
 import { resolveInstanceTokenEstimator } from "../../shared-tech/index.js";
 import type { PreparedCompact } from "../../thread-view/index.js";
@@ -18,7 +13,6 @@ import {
 import { readTailMessages, type TailMessageRow } from "../../thread-view/internal/snapshot.js";
 
 export type CandidateAssembly = {
-  /** Same string-role entries getLlmRequestContext serves. */
   messages: Array<{ role: "user" | "assistant"; content: string }>;
   candidateTokens: number;
   currentServedTokens: number;
@@ -32,10 +26,6 @@ export type CandidateAssembly = {
   };
 };
 
-/**
- * Assemble a candidate LHC request from prepared bands + current eligible tail
- * using the same renderers as assembleView / getLlmRequestContext.
- */
 export function assembleCandidateFromPrepared(
   db: DatabaseSync,
   prepared: PreparedCompact,
@@ -91,10 +81,6 @@ export function assembleCandidateFromPrepared(
   };
 }
 
-/**
- * At a settled seam the open tail must not leave orphaned tool calls or results.
- * Validates call→result and result→call multiplicity/order/readable payloads.
- */
 export function validateSettledTailStructure(tailRows: readonly TailMessageRow[]): string[] {
   const issues: string[] = [];
   const calls = new Map<string, { order: number; count: number }>();
@@ -136,7 +122,6 @@ export function validateSettledTailStructure(tailRows: readonly TailMessageRow[]
     if (call.count > 1) issues.push(`duplicate tool_call ${id}`);
     const result = results.get(id);
     if (result === undefined) {
-      // Settled seam must not leave open tool calls without results.
       issues.push(`unresolved tool_call ${id} at settled seam`);
     } else if (call.order >= result.order) {
       issues.push(`tool_call ${id} does not precede its result`);

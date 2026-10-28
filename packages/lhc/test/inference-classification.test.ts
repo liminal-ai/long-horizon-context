@@ -1,6 +1,3 @@
-// Model-call failures preserve stable reason classes. safeCall contains thrown
-// host exceptions as `other` and races the adapter-owned timeout as `timeout`,
-// so host behavior cannot crash a drain.
 import { afterEach, describe, expect, it } from "vitest";
 import { type Derivation, type DrainReport, initLhc, type Lhc } from "../src/index.js";
 import { safeCall } from "../src/shared-tech/classify.js";
@@ -30,9 +27,6 @@ function freshStore(): TempStore {
   return store;
 }
 
-// Tiny target (the adapter-suite pattern): each placed turn crosses it, so
-// turn 1's chunk closes during the multi-kind drain and the two chunk-summary
-// kinds run too.
 const CHUNK_POLICY = { targetProjectedTokens: 5, maxProjectedTokens: 4400 };
 
 const PROBE_INPUT: ModelCallInput = {
@@ -51,8 +45,6 @@ function inferenceSdk(call: ModelCall, timeoutMs?: number): Lhc {
   });
 }
 
-// One prompt, no turn_end: exactly one work item (prompt_smoothing) queues,
-// so a scripted call's entries map one-to-one onto smoothing attempts.
 async function seedSmoothingOnly(sdk: Lhc, store: TempStore): Promise<string> {
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -64,7 +56,6 @@ async function seedSmoothingOnly(sdk: Lhc, store: TempStore): Promise<string> {
   return filePath;
 }
 
-// Drains to empty and hands back both the report and the derivations.
 async function drainNormally(sdk: Lhc, filePath: string): Promise<{ report: DrainReport; derivations: Derivation[] }> {
   const drained = await sdk.work.drain({ filePath });
   expect(drained.ok).toBe(true);
@@ -133,7 +124,6 @@ describe("TC-3.2: thrown exceptions and timeouts are contained; no host behavior
     const { derivations: forms } = await drainNormally(sdk, filePath);
     const smoothed = forms.find((form) => form.derivationType === "smoothed_prompt");
     expect(smoothed?.state).toBe("ready");
-    // The drain continued past the hanging lane: the turn's forms landed.
     expect(forms.find((form) => form.derivationType === "turn_rendering")?.state).toBe("ready");
     expect(forms.find((form) => form.derivationType === "detailed_turn_compression")?.state).toBe("ready");
   });

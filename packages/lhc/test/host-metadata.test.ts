@@ -1,6 +1,3 @@
-// Host metadata surface (turn parts, AC-7.1): the pressure-decision reads.
-// activeTurn comes from the record's open turn and its host-supplied step
-// indices; unsettledTurn comes from the installed view alone.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, threads, threadView } from "../src/index.js";
 import { o200k, openRaw, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
@@ -61,7 +58,6 @@ describe("threadView.hostMetadata", () => {
       unsettledTurn: null,
     });
 
-    // Closing the turn moves the active turn to the fresh empty one.
     const closed = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, [validEvent("turn_end")]));
     expect(closed.ok).toBe(true);
     expect((await read(filePath)).activeTurn).toEqual({
@@ -72,8 +68,6 @@ describe("threadView.hostMetadata", () => {
       splittable: false,
     });
 
-    // Exactly one complete step: splittable, but no admissible k — the one
-    // complete step is the minimum verbatim tail, and 0 is not a split.
     const one = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt"),

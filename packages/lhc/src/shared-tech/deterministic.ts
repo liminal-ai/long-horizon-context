@@ -1,8 +1,3 @@
-// Deterministic inference callbacks: marked, input-derived output for every seam
-// operation — `<marker>(<digest>:<prefix>)` where digest and prefix are pure
-// functions of the input. The test double reuses these helpers so in-process
-// and spawned runs produce byte-identical artifacts. It is selectable only by
-// explicit construction — never a production default.
 import type {
   InferenceCallbacks,
   InferenceResult,
@@ -26,8 +21,6 @@ export const DETERMINISTIC_MARKERS: Record<DeterministicOpName, string> = {
   summarizeChunkBrief: "brief",
 };
 
-// FNV-1a 32-bit over the canonical input JSON: stable, dependency-free, and
-// input-sensitive enough that distinct inputs mark distinct outputs.
 export function deterministicDigest(input: unknown): string {
   const text = JSON.stringify(input);
   let hash = 0x811c9dc5;

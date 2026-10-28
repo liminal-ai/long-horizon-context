@@ -1,6 +1,3 @@
-// Story 0 / TC-5.1c: previewCompact shares computeArrangement with compact;
-// compactPoint agrees exactly; preview is read-only.
-
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -146,7 +143,6 @@ describe("preview exactness golden cases (fixed expected compactPoint)", () => {
 
     expect(previewResult.compactPoint).toBe(0);
     expect(previewResult.wouldProduceBands).toBe(false);
-    // Point 0: anchor is the thread's first mappable message, not null.
     expect(previewResult.firstKeptMessageId).toBe("m1");
     expect(compact.value.compactPoint).toBe(0);
     expect(compact.value.firstKeptMessageId).toBe("m1");
@@ -244,7 +240,6 @@ describe("previewCompact agreement with compact", () => {
     if (preview.value.kind !== "ok") return;
     expect(preview.value.preview.compactPoint).toBe(0);
     expect(preview.value.preview.wouldProduceBands).toBe(false);
-    // Point 0 still anchors on the first mappable message.
     expect(preview.value.preview.firstKeptMessageId).toBe("m1");
 
     const second = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: ALL_FITS_PARAMS });
@@ -326,7 +321,6 @@ describe("previewCompact agreement with compact", () => {
       if (second.preview.value.kind !== "ok") continue;
       expect(second.compact.ok, scenario.label).toBe(true);
       if (!second.compact.ok) continue;
-      // Same params re-compact always writes; point is free to stay or move.
       expect(second.preview.value.preview.compactPoint, scenario.label).toBe(second.compact.value.compactPoint);
     }
   });
@@ -512,7 +506,6 @@ describe("empty derived chunk recovery", () => {
     expect(preview.ok).toBe(true);
     if (!preview.ok) return;
     expect(preview.value.kind).toBe("ok");
-    // Preview is read-only: physical cleanup waits for compact's view-replace transaction.
     const afterPreview = openRaw(filePath);
     try {
       expect(

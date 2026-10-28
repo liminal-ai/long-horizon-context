@@ -1,8 +1,3 @@
-/**
- * Registry alias map (R15 / LIM-93): one thread accumulates many opaque host
- * session aliases; exactly one of them is current. Any alias resolves to the
- * thread and to the alias that thread currently accepts.
- */
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { threads } from "../src/index.js";
@@ -44,7 +39,6 @@ describe("registry alias registration", () => {
     expect(resolved.ok).toBe(true);
     if (resolved.ok) {
       expect(resolved.value.threadId).toBe(threadId);
-      // Registration alone never advances the pointer.
       expect(resolved.value.currentAlias).toBeNull();
     }
   });
@@ -107,7 +101,6 @@ describe("registry current-alias pointer", () => {
       if (advanced.ok) expect(advanced.value.currentAlias).toBe(generation);
     }
 
-    // Entry through the oldest alias lands on the thread and its current alias.
     const viaOldest = await threads.resolveAlias({ alias: generations[0]!, registryPath: store.registryPath });
     expect(viaOldest.ok).toBe(true);
     if (viaOldest.ok) {
@@ -140,8 +133,6 @@ describe("registry current-alias pointer", () => {
     if (current.ok) expect(current.value).toEqual({ threadId, currentAlias: null });
   });
 
-  // The pointer invariant is a schema constraint, so it holds against any
-  // writer of the registry file — not only against these APIs.
   it("the registry itself refuses a current pointer naming another thread's alias", async () => {
     await threads.registerCurrentAlias({ alias: alias("a-own"), threadId: THREAD_A, registryPath: store.registryPath });
     await threads.registerCurrentAlias({ alias: alias("b-own"), threadId: THREAD_B, registryPath: store.registryPath });

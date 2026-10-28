@@ -1,14 +1,3 @@
-// Epic 03 Story 2: selection goldens G1–G4 (architecture-risk). Exact
-// arrangements against committed JSON (test/goldens/) — the only guard that
-// catches tie-breaker drift (≤ vs <, newest-first ordering, newest-member
-// chunk coverage) that replay-on-the-same-engine cannot. Each case runs a
-// REAL compact through the SDK surface and compares the stored arrangement,
-// compact point, covered_from, and gaps verbatim against the golden.
-//
-// Goldens are immutable once committed: an implementation that disagrees
-// with one is wrong until the design rule is shown wrong (deviation process,
-// never a golden edit). Regeneration instructions: test/goldens/README.md
-// (GOLDEN_DUMP=1 prints actuals).
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -97,7 +86,6 @@ async function runGolden(golden: Golden): Promise<StoredView> {
   if (process.env["GOLDEN_DUMP"] === "1") {
     console.log(`${golden.case}\n${JSON.stringify(stored, null, 2)}`);
   }
-  // Receipt and stored row agree (one selection, two reports).
   expect(receipt.value.compactPoint).toBe(stored.compactPoint);
   expect(receipt.value.coveredFrom).toBe(stored.coveredFrom);
   return stored;
@@ -130,9 +118,6 @@ describe("selection goldens G1–G4 (committed JSON, exact arrangements)", () =>
     const golden = loadGolden("g3-oversized-loner.json");
     const stored = await runGolden(golden);
     expectMatches(stored, golden);
-    // The loner condition itself: exactly one non-gap smooth entry, and the
-    // smooth budget (250 × 4% = 10) is smaller than any turn entry could
-    // render. Coverage gaps are added after the budget fill.
     expect(
       stored.arrangement.filter((entry) => entry.band === "smooth" && entry.derivationUsed !== "gap"),
     ).toHaveLength(1);

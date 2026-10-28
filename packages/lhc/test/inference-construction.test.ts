@@ -1,10 +1,3 @@
-// Epic 05 Story 2 — TC-1.1 (AC-1.1, AC-1.3): the construction matrix.
-// Construction is where every config mistake dies: inferenceCallbacks XOR inference,
-// all seven kinds present (parameterized over the exported DERIVATION_TYPES set so
-// a new kind fails the matrix automatically), no unknown kind keys, every
-// prompt name known, non-empty provider/model strings — each a TypeError
-// naming the violated rule, with no partial construction. A complete valid
-// config does not merely construct: a seeded drain lands a form ready.
 import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type ModelAssignment, type SdkConfig } from "../src/index.js";
 import {

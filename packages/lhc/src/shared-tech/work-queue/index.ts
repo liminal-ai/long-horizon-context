@@ -1,9 +1,3 @@
-// Durable work-item mechanics: recording, ordered listing, and the enqueue
-// wrapper that makes scheduling structural. The util is domain-blind: it
-// knows item mechanics (owner, kind, sourceRef), while each owning domain
-// supplies the derivation targets and handler meaning. Writes run on the
-// caller's handle inside the ambient transaction, so items commit or roll back
-// with the change that caused them.
 import type { DatabaseSync } from "node:sqlite";
 import type { CompletionTx, HandlerDerivationWrite, SubjectKind, WorkHandler } from "../derivation.js";
 import type { DurableWorkOperation } from "../durable-work/index.js";
@@ -22,8 +16,6 @@ export type WorkKind =
 export type WorkSourceRef = { messageId: string } | { turnId: string } | { chunkId: string };
 export type WorkHandlerMap = Partial<Record<WorkKind, WorkHandler>>;
 
-// Mechanical metadata only; what a kind means stays with the owning domain's
-// handler.
 export const WORK_KIND_REGISTRY: Readonly<
   Record<WorkKind, { owner: WorkOwner; sourceRefKey: "messageId" | "turnId" | "chunkId" }>
 > = {
@@ -35,9 +27,6 @@ export const WORK_KIND_REGISTRY: Readonly<
   chunk_summary_brief: { owner: "turns", sourceRefKey: "chunkId" },
 };
 
-// SDK construction wiring for durable work dispatch. Domains own their
-// handler tables; shared-tech owns merging those tables into the queue's
-// dispatch map and refusing duplicate kind claims.
 export function mapWorkQHandlers(handlerGroups: ReadonlyArray<Readonly<WorkHandlerMap>>): WorkHandlerMap {
   const map: WorkHandlerMap = {};
   for (const handlers of handlerGroups) {
@@ -56,14 +45,10 @@ export interface WorkItemRecord {
   owner: WorkOwner;
   kind: WorkKind;
   sourceRef: WorkSourceRef;
-  status: "queued"; // the only status written before a drain claims it
+  status: "queued";
   queuedAt: string;
 }
 
-// The derivations an enqueue is scheduling work toward; the owning domain
-// names them (the util stays meaning-blind). Stored in the row's payload so
-// the drain's failure paths can land the derivation's failed/blocked state
-// without asking any domain what a kind means.
 export interface EnqueueDerivationTarget {
   subjectKind: SubjectKind;
   subjectId: string;
@@ -75,8 +60,8 @@ export interface WorkItemInput {
   kind: WorkKind;
   sourceRef: WorkSourceRef;
   operation?: DurableWorkOperation;
-  sourceVersion?: number; // defaults to 1 — first version of a fresh source
-  derivations?: readonly EnqueueDerivationTarget[]; // carried in payload for the drain's terminal paths
+  sourceVersion?: number;
+  derivations?: readonly EnqueueDerivationTarget[];
 }
 
 function sourceIdOf(sourceRef: WorkSourceRef): string {
@@ -89,9 +74,6 @@ function targetKey(target: Pick<EnqueueDerivationTarget, "subjectKind" | "subjec
   return `${target.subjectKind}/${target.subjectId}/${target.derivationType}`;
 }
 
-// Deterministic id scoped to source version: re-queueing the same kind for
-// the same source at the same version is the same id, while a post-mutation
-// replacement at the next version never collides with older in-flight work.
 export function recordItem(db: DatabaseSync, input: WorkItemInput, queuedAt: string): WorkItemRecord {
   const sourceVersion = input.sourceVersion ?? 1;
   const workItemId = `w-${sourceIdOf(input.sourceRef)}-${input.kind}-v${sourceVersion}`;
@@ -138,11 +120,6 @@ export type ImmediateClaimOutcome =
   | { outcome: "queued"; workItemId: string }
   | { outcome: "in_flight"; workItemId: string };
 
-// The one way work is scheduled: the work row, the derivation's `pending`
-// state row, and the scheduler poke all ride the ambient transaction. They
-// commit together or vanish together. Enqueue is the *only* place a
-// derivation row is created (completion is UPDATE-only); re-enqueueing
-// resets an existing row to pending at the enqueued source version.
 export function enqueue(transaction: DbWriteTransaction, input: EnqueueInput): WorkItemRecord {
   const item = recordItem(transaction.db, input, transaction.clock().toISOString());
   const sourceVersion = input.sourceVersion ?? 1;
@@ -318,15 +295,6 @@ interface RawWorkItemRow {
   queued_at: string;
 }
 
-// ── claim mechanics ───────────────────────────────────────────────
-// All pure SQL against the caller's open handle, domain-blind. Claim,
-// completion, and failure each own one short BEGIN IMMEDIATE; the handler in
-// between runs with no open transaction.
-
-// The claimed row as the drain holds it: mechanical fields plus the payload's
-// source version and derivation targets. `kind` is a plain string here — a raw row
-// with an unregistered kind must still be claimable so the drain can land it
-// failed_terminal instead of skipping it.
 export interface ClaimedWorkItem {
   workItemId: string;
   owner: WorkOwner;
@@ -334,7 +302,6 @@ export interface ClaimedWorkItem {
   sourceRef: WorkSourceRef;
   queuedAt: string;
   sourceVersion: number;
-  /** Which claim of this row the holder took (claim-fence.ts); absent on pre-counter rows. */
   claimAttempt?: number;
   operation?: DurableWorkOperation;
   derivations: EnqueueDerivationTarget[];
@@ -402,13 +369,6 @@ export function deleteClaimedItem(db: DatabaseSync, item: { workItemId: string; 
   }
 }
 
-// A clean exit hands its claims back (claim-fence.ts), so an expired claim
-// means its process crashed or was killed. The first expiry goes back to the
-// queue in place (same row, so it stays the head) and marks the payload
-// claimExpired; a clean hand-back clears the mark. "repeated" when the claim
-// expires again with the mark still set: two crashes in a row on one job, so
-// the caller fails it (CLAIM_EXPIRED_REPEATEDLY) instead of requeueing. "lost"
-// when the row is no longer this expired claim (another opener got there first).
 export function requeueExpiredClaim(
   db: DatabaseSync,
   item: { workItemId: string; claimAttempt?: number },
@@ -444,9 +404,6 @@ export function requeueExpiredClaim(
   }
 }
 
-// Head-first, never skip-ahead: the claim decision is made against the oldest
-// live row only. A queued head is claimed once. An expired claim is returned
-// so the caller can requeue it (requeueExpiredClaim) or, past the cap, fail it.
 export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number): ClaimOutcome {
   const expiresAt = new Date(Date.parse(now) + leaseDurationMs).toISOString();
   db.exec("BEGIN IMMEDIATE;");
@@ -492,12 +449,6 @@ export function claimNext(db: DatabaseSync, now: string, leaseDurationMs: number
   }
 }
 
-// Completion writes derivations and deletes the item row in one short
-// transaction. UPDATE-only, never upsert: enqueue created the pending row, and
-// completions for older source versions are discarded as stale. The optional
-// onApplied hook runs after successful writes inside the same transaction, so
-// follow-on chunk placement and summary enqueues commit or roll back with the
-// completion.
 export function complete(
   db: DatabaseSync,
   item: ClaimedWorkItem,
@@ -560,10 +511,6 @@ export function complete(
   }
 }
 
-// Delete still-queued items for the given (kind, sourceRef) targets, returning
-// the deleted ids for mutation results. Runs inside the caller's ambient
-// transaction. Claimed items are deliberately left alone: source-version
-// checks discard their stale completions.
 export function supersedeQueued(
   db: DatabaseSync,
   targets: ReadonlyArray<{ kind: WorkKind; sourceRef: WorkSourceRef }>,
@@ -582,10 +529,6 @@ export function supersedeQueued(
   return ids;
 }
 
-// Is there a live item, queued or in flight, for this kind and source at this
-// source version? Runs inside the caller's repair transaction so the check and
-// enqueue commit together. Version-scoped on purpose: older claimed work is
-// already fenced by source version and must not block repair.
 export function hasLiveItem(
   db: DatabaseSync,
   kind: WorkKind,
@@ -603,7 +546,6 @@ export function hasLiveItem(
   return row !== undefined;
 }
 
-// Live items left in the queue; used by drain reporting and owner repair reports.
 export function countLiveItems(db: DatabaseSync): number {
   const row = db
     .prepare(`SELECT COUNT(*) AS n FROM work_item WHERE status IN ('queued', 'claimed')`)
@@ -623,8 +565,6 @@ export interface QueueDetailRow {
   sourceVersion: number;
 }
 
-// Mechanical detail of every live row in queue order. Owner reports join this
-// against derivations; tests use it for lease assertions.
 export function queueDetail(db: DatabaseSync): QueueDetailRow[] {
   const rows = db
     .prepare(
@@ -656,8 +596,6 @@ export function queueDetail(db: DatabaseSync): QueueDetailRow[] {
   });
 }
 
-// Listing in queue order (insertion order within the walk); each owning
-// domain lists only its own items.
 export function listItems(db: DatabaseSync, owner: WorkOwner): WorkItemRecord[] {
   const rows = db
     .prepare(

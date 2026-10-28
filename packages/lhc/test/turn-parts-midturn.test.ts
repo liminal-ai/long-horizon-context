@@ -1,8 +1,3 @@
-// Turn parts — the mid-turn entry point and mechanism exclusivity (epic
-// Flow 7, core side: AC-7.3 / TC-7.3a,b and AC-7.4 / TC-7.4a). Not a third
-// algorithm state: midTurnCompact is the ordinary prepare → install compact
-// behind two typed refusals. Exclusivity is per thread, both directions, and
-// the forced-boundary runtime's compact-point clamp never meets a parts thread.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type CompactContinuationHostFacts,
@@ -64,8 +59,6 @@ function step(stepIndex: number, label: string): MessageEventInput[] {
   ];
 }
 
-// A thread under mid-turn pressure: one closed turn, then an open stamped
-// turn of three complete steps.
 async function pressuredThread(sdk: Lhc): Promise<string> {
   const filePath = await newThread(sdk);
   await send(sdk, filePath, [
@@ -199,7 +192,6 @@ describe("midTurnCompact: seam assertion (AC-7.4 core side)", () => {
     expect(!absent.ok && absent.error.code).toBe("unsettled_capture_seam");
     expect(canonical(filePath)).toEqual(before);
 
-    // Settled: the same receipt the ordinary compact API yields — parts and all.
     const preview = await sdk.threadView.previewCompact({ filePath }, { params: p });
     const served = await sdk.threadView.midTurnCompact({ filePath }, { seam: SETTLED_SEAM, params: p });
     expect(served.ok).toBe(true);
@@ -241,8 +233,6 @@ describe("mechanism exclusivity per thread (AC-7.3)", () => {
     const activated = readActivation(filePath);
     expect(activated).not.toBeNull();
 
-    // t2 closes and t3 opens. Once t3 fills the full share, t2 settles and
-    // the new snapshot carries no part at all.
     await send(sdk, filePath, [validEvent("turn_end")]);
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "next" } }), ...step(0, "golf")]);
     const db = openRaw(filePath);
@@ -258,7 +248,6 @@ describe("mechanism exclusivity per thread (AC-7.3)", () => {
     expect(described.ok && described.value?.arrangement.every((e) => e.part === undefined)).toBe(true);
     const meta = await sdk.threadView.hostMetadata({ filePath });
     expect(meta.ok && meta.value.unsettledTurn).toBeNull();
-    // Settle did not touch the durable fact.
     expect(readActivation(filePath)).toBe(activated);
 
     const before = canonical(filePath);
@@ -274,14 +263,12 @@ describe("mechanism exclusivity per thread (AC-7.3)", () => {
   it("a forced-boundary thread is never served parts: mid-turn compact refuses typed, and the ordinary compact walks without a parts source", async () => {
     const sdk = sdkFor();
     const filePath = await pressuredThread(sdk);
-    // Take the forced-boundary path first (real runtime, real boundary row).
     const forced = await runCompactContinuationForTests({ filePath }, continuationFacts("attempt-forced"));
     expect(forced.ok).toBe(true);
     if (!forced.ok) return;
     expect(forced.value.receipt.continuation.opened).toBe(true);
     expect(canonical(filePath).boundaries).toBe(1);
 
-    // New stamped pressure on the continuation turn (t3), tight budget.
     await send(sdk, filePath, [...step(0, "golf"), ...step(1, "hotel"), ...step(2, "india")]);
     const p = params(tokensAfterStep(filePath, "t3", 0) * 2);
     const before = canonical(filePath);

@@ -1,7 +1,3 @@
-// Thinking-signature capture (resume fidelity on fable-class models):
-// assistant_thinking may carry an opaque provider signature. Capture stores it
-// verbatim; session-view round-trips it as thinkingSignature; the text LLM
-// path still skips signature-only blocks (no place to put the token).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, initLhc, intakeStream, type Lhc, messages } from "../src/index.js";
 import { o200k, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";

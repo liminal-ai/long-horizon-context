@@ -1,7 +1,3 @@
-/**
- * LIM-60: compact-continuation contract + parity fixtures.
- * Pure whole-seam oracle — no thread I/O. Runtime stages are LIM-61.
- */
 import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -41,7 +37,6 @@ import {
 
 const fixturesRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "fixtures", "compact-continuation", "v2");
 
-/** Closed fixture vocabulary: validateCompactContinuationInput expectation. */
 const INPUT_VALIDATION_VALUES = ["accept", "reject"] as const;
 type InputValidation = (typeof INPUT_VALIDATION_VALUES)[number];
 
@@ -215,10 +210,8 @@ describe("compact-continuation contract surface", () => {
     expect(COMPACT_CONTINUATION_REFUSE_CODES).not.toContain("not_at_settled_seam");
     expect(COMPACT_CONTINUATION_SKIP_CODES).toContain("transport_retry");
     expect(COMPACT_CONTINUATION_SKIP_CODES).toContain("not_at_settled_seam");
-    // CX-S5 / R1: input epoch drift is diagnostic only — it is not a skip code.
     expect(COMPACT_CONTINUATION_SKIP_CODES).not.toContain("input_epoch_changed");
     expect(COMPACT_CONTINUATION_TRANSITION_ORDER).not.toContain("input_epoch");
-    // CX-S5: the refuse set is empty; the vocabulary stays only for old receipts.
     expect(COMPACT_CONTINUATION_REACHABLE_REFUSE_CODES).toEqual([]);
     expect(COMPACT_CONTINUATION_OUTCOME_KINDS).toContain("decline_to_ordinary_compact");
     expect(COMPACT_CONTINUATION_OUTCOME_KINDS).toContain("retry_compact");
@@ -254,7 +247,6 @@ describe("compact-continuation contract surface", () => {
     expect(COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX).toBe("lhc.compact_continuation:");
     expect(compactContinuationMarkerIdempotencyKey("t3")).toBe("lhc.compact_continuation:t3");
     expect(COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE).toMatch(/per-variant closed structs/);
-    // Component input types are exported for LIM-61 / lhc-rs consumers (type-level pin).
     const _seam = null as CompactContinuationSeam | null;
     const _usage = null as ProviderUsageAuthority | null;
     const _work = null as WorkContinuation | null;
@@ -302,8 +294,6 @@ describe("compact-continuation parity fixtures", () => {
       expect(fixture.inputValidation, "fixture/manifest inputValidation must agree").toBe(entry.inputValidation);
 
       const inputCheck = validateCompactContinuationInput(fixture.input);
-      // Branch on first-class inputValidation only — never on coverage-tag strings.
-      // Rejected inputs may still carry total-oracle expected for direct typed callers.
       if (fixture.inputValidation === "reject") {
         expect(inputCheck.ok, "fixture must remain input-invalid").toBe(false);
       } else {
@@ -427,7 +417,6 @@ describe("compact-continuation decision invariants", () => {
       markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: false,
-      // The boundary stays repairable; the session is never held hostage to it.
       nextProviderRequestAllowed: true,
     });
     const types = actual.effects.map((e) => e.type);
@@ -493,13 +482,11 @@ describe("compact-continuation decision invariants", () => {
         contractVersion: "0.9.0",
       }),
     );
-    // Degrade by feature omission: no partial parse, no guessing, no stop.
     expect(actual.outcome).toBe("decline_to_ordinary_compact");
     expect(actual.receipt.refused).toBe(false);
     expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["unsupported_contract_version_omitted"]);
     expect(actual.receipt.reasonCode).toContain("0.9.0");
     expect(actual.receipt.contractVersion).toBe(COMPACT_CONTINUATION_CONTRACT_VERSION);
-    // The pending boundary is discarded without ever being interpreted.
     const discard = actual.effects.find((e) => e.type === "discard_pending_boundary");
     expect(discard).toMatchObject({ continuationTurnId: null });
     expect(actual.receipt.residual).toMatchObject({
@@ -508,7 +495,6 @@ describe("compact-continuation decision invariants", () => {
       continuationTurnOpened: false,
       continuationTurnId: null,
       priorServingViewIntact: true,
-      // The host's ordinary compact runs on canonical turns; nothing strands.
       nextProviderRequestAllowed: true,
     });
     expect(actual.effects.map((e) => e.type)).not.toContain("compact");
@@ -526,7 +512,6 @@ describe("compact-continuation decision invariants", () => {
       },
     } as never);
     expect(actual.outcome).toBe("decline_to_ordinary_compact");
-    // Nothing from the unknown-version boundary leaks into the receipt.
     expect(JSON.stringify(actual)).not.toContain("t7");
     expect(actual.receipt.residual.markerPersisted).toBe(false);
     expect(actual.receipt.protectedToolCallIds).toEqual([]);
@@ -618,8 +603,6 @@ describe("compact-continuation decision invariants", () => {
     const v = validateCompactContinuationInput(bad);
     expect(v.ok).toBe(false);
   });
-
-  // ── Independent behavioral probes (not regenerated-fixture-only) ─────────
 
   it("install failure wins over no-reduction on continue-turn", () => {
     const actual = decideCompactContinuation(
@@ -758,8 +741,6 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    // Work is complete, so the fresh evaluation closes normally. The discard is
-    // recorded, the boundary is not treated as applied, and nothing stops.
     expect(actual.outcome).toBe("normal_complete");
     expect(actual.receipt.refused).toBe(false);
     expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["pending_boundary_discarded"]);
@@ -940,8 +921,6 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    // The oracle never invents a continuation turn id, and it never stops:
-    // the host's ordinary settled-seam compact takes the canonical turns.
     expect(actual.outcome).toBe("decline_to_ordinary_compact");
     expect(actual.receipt.refused).toBe(false);
     expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["continuation_boundary_unavailable"]);
@@ -970,7 +949,6 @@ describe("compact-continuation decision invariants", () => {
         }),
       ),
     );
-    // Turn-record validation is core LHC's own job, not a compact precondition.
     expect(actual.outcome).toBe("compact_continue_turn");
     expect(actual.receipt.refused).toBe(false);
     expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["open_turn_invariant_unverified"]);
@@ -1039,7 +1017,6 @@ describe("compact-continuation decision invariants", () => {
     expect(actual.receipt.warnings.map((w) => w.code)).toEqual(["capture_incomplete"]);
     expect(actual.receipt.residual.writerReleased).toBe(true);
     const types = actual.effects.map((e) => e.type);
-    // Detected first, done second: the warning leads, then the claim.
     expect(types[0]).toBe("warn");
     expect(types[1]).toBe("claim_writer");
     expect(types.indexOf("claim_writer")).toBeLessThan(types.indexOf("release_writer"));
@@ -1212,8 +1189,6 @@ describe("marker identity per forced boundary", () => {
         }),
       ),
     );
-    // forced_boundary_state_legality runs before writer_claim: the discard and
-    // its warning lead the effect list even though a native row is also present.
     const types = actual.effects.map((e) => e.type);
     expect(types[0]).toBe("discard_pending_boundary");
     expect(actual.receipt.warnings.map((w) => w.code)).toEqual([
@@ -1221,8 +1196,6 @@ describe("marker identity per forced boundary", () => {
       "writer_owned_elsewhere",
     ]);
     expect(actual.receipt.residual.pendingBoundaryDiscarded).toBe(true);
-    // No host ownership authority was supplied, so the row is treated as live
-    // and this attempt continues its current request rather than stealing it.
     expect(actual.outcome).toBe("continue_current_body");
     expect(actual.receipt.residual.nextProviderRequestAllowed).toBe(true);
     expect(actual.receipt.refused).toBe(false);
@@ -1250,7 +1223,6 @@ describe("marker identity per forced boundary", () => {
         forcedThisSeam: true,
         markerAlreadyPersisted: true,
       },
-      // Also present so legality precedence over writer_claim is pinned.
       invariants: {
         captureComplete: true,
         providerIdentityValid: true,
@@ -1269,9 +1241,6 @@ describe("marker identity per forced boundary", () => {
       ),
     ).toBe(true);
 
-    // The total evaluator keeps the real boundary (discarding it would orphan an
-    // open continuation turn), refuses to trust the contradictory marker claim,
-    // and continues — even for direct typed callers that skip as*.
     const actual = decideCompactContinuation(raw as ReturnType<typeof asCompactContinuationInput>);
     expect(actual.outcome).toBe("continue_current_body");
     expect(actual.receipt.refused).toBe(false);
@@ -1284,7 +1253,6 @@ describe("marker identity per forced boundary", () => {
       forcedContinuationBoundaryApplied: true,
       continuationTurnOpened: true,
       continuationTurnId: "t2",
-      // The untrusted claim is never OR'd back into residual truth.
       markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: false,
@@ -1298,7 +1266,6 @@ describe("marker identity per forced boundary", () => {
       sameAgenticTurnPreserved: false,
     });
     expect(actual.receipt.turnEndReason).toBe(CONTEXT_COMPACT_CONTINUE_REASON);
-    // Receipt/decision remain validator-clean even though input is illegal.
     expect(validateCompactContinuationDecision(actual).ok).toBe(true);
     expect(validateCompactContinuationReceipt(actual.receipt).ok).toBe(true);
   });

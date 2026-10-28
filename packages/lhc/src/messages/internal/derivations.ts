@@ -1,9 +1,3 @@
-// Message-domain reads for derivation: a handler can read its source message
-// and call-id pair, nothing more. Pair lookup is one indexed query by call id,
-// never a block scan, drain-time sweep, or read-time join. Completion writes
-// ride the work-queue util's version-checked `complete`; no write path lives
-// here. Read-back returns stored message-owned derivation rows as stored, never
-// re-derived on read.
 import type { DatabaseSync } from "node:sqlite";
 import type {
   DependencyGap,
@@ -53,15 +47,6 @@ interface RawDerivationRow {
   derived_at: string | null;
 }
 
-// Every message-owned derivation row, grouped by message id — the derivation
-// read-back joined onto message reads. Rows come back exactly as the queue
-// landed them: state, content, reason, mechanically stamped metadata; nothing
-// is derived at read time.
-//
-// messageIds, when provided, scopes the read to just those subjects so a
-// bounded list loads only its window's derivations, never every message-owned
-// derivation in the thread. Omitted — the report-surface path that already
-// reads its own scope — reads all message-owned derivation rows as before.
 export function readMessageDerivations(db: DatabaseSync, messageIds?: readonly string[]): Map<string, Derivation[]> {
   const byMessage = new Map<string, Derivation[]>();
   if (messageIds !== undefined && messageIds.length === 0) return byMessage;
@@ -108,8 +93,6 @@ export function readMessageDerivations(db: DatabaseSync, messageIds?: readonly s
   return byMessage;
 }
 
-// One derivation row by exact key — the requeue operation's refusal read (missing
-// row, blocked state, current source version). State returned as stored.
 export function readMessageDerivationRow(
   db: DatabaseSync,
   messageId: string,
@@ -132,11 +115,6 @@ export function readMessageDerivationRow(
   return view;
 }
 
-// The message owner's report is one query: message-owned derivation rows LEFT
-// JOINed with the live work_item still targeting each derivation at its current
-// source version, if any. Terminal outcomes already live on derivation rows. No
-// N+1, no in-memory assembly beyond row mapping. The derivation_type→kind CASE
-// is the owner's own queue-site mapping (MESSAGE_WORK_DERIVATIONS) inverted.
 export function reportMessageDerivations(
   db: DatabaseSync,
   opts: { notReady?: boolean; messageId?: string } = {},
@@ -147,7 +125,6 @@ export function reportMessageDerivations(
     conditions.push("df.subject_id = ?");
     params.push(opts.messageId);
   }
-  // notReady is exact set equality by construction: every state but ready.
   if (opts.notReady === true) conditions.push("df.state <> 'ready'");
   const rows = db
     .prepare(
@@ -167,11 +144,6 @@ export function reportMessageDerivations(
   return rows.map((row) => reportEntryFromRow("message", row));
 }
 
-// The call-id pairing reads. Earliest-recorded block wins if a call id were
-// ever repeated; in a valid record the pair is unique. Deleted messages
-// are excluded: composition inputs and derivation reads never see deleted
-// records, so a tool_call whose paired result has been deleted reads no pair
-// and derives outcome `unknown` — never the dead result's outcome.
 function findPairedBlock(
   db: DatabaseSync,
   blockType: "tool_call" | "tool_result",

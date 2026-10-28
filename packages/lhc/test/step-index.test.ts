@@ -1,8 +1,3 @@
-// Schema v12 step index (turn parts, F2): the wire accepts an optional
-// non-negative integer on the four step-bearing kinds, storage keeps it
-// verbatim, stepEdges reads step structure from it and refuses to split on
-// NULL or inconsistent indices, and the open turn's step edges are structure
-// for compact drift detection.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, type MessageEventInput, messages, threads } from "../src/index.js";
 import { readPreparedSourceState } from "../src/thread-view/index.js";
@@ -115,9 +110,6 @@ describe("stepEdges", () => {
       stepEdges([m("m1", "assistant_text", 0), m("m2", "tool_call", 0, "a"), m("m3", "tool_result", 1, "a")]),
     ).toMatchObject({ splittable: false, complete: 0, lastEdge: null });
     expect(stepEdges([m("m1", "user_prompt", null)])).toMatchObject({ splittable: false, steps: [], lastEdge: null });
-    // Step coordinates: the first step is 0 and each new step advances by
-    // exactly one. An offset start and a gap both fail closed; repeated
-    // members inside a step (m2/m3 above) remain valid.
     expect(stepEdges([m("m1", "assistant_text", 1), m("m2", "assistant_text", 2)])).toMatchObject({
       splittable: false,
       steps: [expect.objectContaining({ index: 1 }), expect.objectContaining({ index: 2 })],

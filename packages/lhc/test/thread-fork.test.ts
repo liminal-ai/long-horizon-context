@@ -1,6 +1,3 @@
-// Fork operations (threads domain): copy with rekey and idle refusal, host
-// binding table, identity note, neutral history export, derivation repair,
-// and the thin `lhc thread` CLI over them.
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -59,7 +56,6 @@ async function send(filePath: string, batch: Parameters<typeof intakeStream.mess
   if (!result.ok) throw new Error(`fixture batch failed: ${result.error.reason}`);
 }
 
-// Two closed turns with a tool run and thinking, then an empty open turn: idle.
 async function idleSource(): Promise<{ filePath: string; threadId: string }> {
   const filePath = store.threadPath();
   const created = await threads.newThread({ filePath, registryPath: store.registryPath, title: "src", cwd: "/w" });
@@ -116,7 +112,6 @@ describe("threads.copyThread", () => {
     const resolved = await threads.resolve({ threadId: source.threadId, registryPath: target.registry });
     expect(resolved.ok).toBe(false);
 
-    // Without overrides, a registry-sourced copy inherits the source row's title and cwd.
     const inherited = await threads.copyThread({
       source: { threadId: source.threadId, registryPath: store.registryPath },
       filePath: join(target.threadsDir, "inherited.sqlite"),
@@ -190,7 +185,6 @@ describe("threads.copyThread", () => {
     });
     expect(allowed.ok).toBe(true);
 
-    // An idle record carrying only a runtime note in its open turn is still idle.
     const source = await idleSource();
     await send(source.filePath, [validEvent("runtime_note", { payload: { text: "[lhc compact:auto] ..." } })]);
     const idle = await threads.copyThread({
@@ -225,14 +219,12 @@ describe("threads.hostBinding / bindHost", () => {
       ok: true,
       value: { kind: "file", fileName: "grok-g1.sqlite" },
     });
-    // grok's encoder keeps `_`; codex's does not (each mirrors its Rust host).
     expect(threads.hostBinding("grok", "a.b_c/d")).toEqual({
       ok: true,
       value: { kind: "file", fileName: "grok-a%2Eb_c%2Fd.sqlite" },
     });
     const missing = threads.hostBinding("cc-lhc");
     expect(!missing.ok && missing.error.code).toBe("invalid_thread_alias");
-    // hermes: file named after the session verbatim, no encoder, unsafe names refused.
     expect(threads.hostBinding("hermes", "20260810_130535_bc6de9dc")).toEqual({
       ok: true,
       value: { kind: "file", fileName: "20260810_130535_bc6de9dc.sqlite" },
@@ -353,8 +345,6 @@ describe("threads.repairDerivations", () => {
       mode: "manual",
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
     });
-    // Intake queued the turns' derivation work. Repair drains it before its
-    // first pass, so nothing is failed or deferred and the turns come out ready.
     const carried = await sdk.threads.repairDerivations({ ref: { filePath } });
     expect(carried.ok && carried.value.turns).toEqual({ attempted: 0, repaired: 0, failed: 0, deferred: 0 });
     const idle = await sdk.work.drain({ filePath }, { maxItems: 25 });
@@ -401,8 +391,6 @@ function userVersion(path: string): number {
   }
 }
 
-// The registry exactly as lhc-rs creates it: one `threads` table, no
-// user_version, no alias tables.
 function rustRegistry(dir: string): string {
   mkdirSync(dir, { recursive: true });
   const path = join(dir, "registry.sqlite");
@@ -481,8 +469,6 @@ describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
   });
 
   it("a copy lands at the thread schema the Rust hosts accept (P3)", async () => {
-    // The vendored lhc-rs pins 13. The day the SDK moves ahead, this fails
-    // here instead of at a codex or grok host's open.
     expect(threads.FILE_HOST_THREAD_SCHEMA_VERSION).toBe(threads.RUST_HOST_THREAD_SCHEMA_VERSION);
     const source = await idleSource();
     const target = targetHome();
@@ -574,8 +560,6 @@ describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
     expect(compacted.value.profile).toBe("handoff");
     expect(compacted.value.config.full).toBe(0);
     expect(compacted.value.config.newestClosedProtection).toBe(0);
-    // "full" is the verbatim share, not a band: with it at zero every closed
-    // turn lands in a text band and only the open turn (the note) is tail.
     expect(
       compacted.value.bands.smooth.entries +
         compacted.value.bands.detailed.entries +
@@ -661,7 +645,6 @@ describe("lhc thread CLI", () => {
 
       expect(await main(["thread", "copy", "--home", target.home])).toBe(1);
       expect(c.err.at(-1)).toMatch(/^usage: /);
-      // hermes is a source only: refused as a bind or fork target before any work.
       expect(await main(["thread", "bind", ...common, "--host", "hermes", "--session-id", "h"])).toBe(1);
       expect(c.err.at(-1)).toMatch(/^usage: host hermes is a source only/);
       expect(await main(["thread", "nope"])).toBe(1);
@@ -728,7 +711,6 @@ describe("lhc thread CLI", () => {
       const history = await threads.exportHistory({ threadId: "th_forked", registryPath: target.registry });
       expect(history.ok && history.value.turns.at(-1)?.messages.map((m) => m.kind)).toEqual(["runtime_note"]);
 
-      // A mid-turn source refuses the whole fork with exit 2 and no file.
       const midPath = store.threadPath();
       const created = await threads.newThread({ filePath: midPath, registryPath: store.registryPath });
       if (!created.ok) throw new Error(created.error.reason);
@@ -766,8 +748,6 @@ describe("lhc thread CLI", () => {
     const target = targetHome();
     const c = capture();
     try {
-      // The claude binary must never be reached: derivations are ready and
-      // repair is off, so the compact runs on stored material alone.
       const common = [
         "thread",
         "fork",
@@ -836,7 +816,6 @@ describe("lhc thread CLI", () => {
       expect(forced).toBe(0);
       expect(c.out.at(-1)).toMatch(/ compact=[1-9]\d* \(forced\)\n$/);
 
-      // hermes as a source: its own provider, so the fork compacts under handoff; as a target it is refused.
       const hermes = await main([
         ...common,
         "--source-host",
@@ -853,7 +832,6 @@ describe("lhc thread CLI", () => {
       expect(await main([...common, "--source-host", "cc-lhc", "--host", "hermes", "--session-id", "h"])).toBe(1);
       expect(c.err.at(-1)).toMatch(/^usage: host hermes is a source only/);
 
-      // codex: no ids given, one uuid names the thread, the session, and the file.
       const codex = await main([...common, "--source-host", "cc-lhc", "--host", "codex-lhc"]);
       expect(codex).toBe(0);
       const line = c.out.at(-1) as string;

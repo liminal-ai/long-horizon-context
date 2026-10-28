@@ -1,4 +1,3 @@
-// Item 29: manual tool-result prune via the visibility boundary.
 import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput, type SdkViewConfig } from "../src/index.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";

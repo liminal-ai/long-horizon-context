@@ -33,21 +33,17 @@ describe("prepared-source selected-turn batching", () => {
         const batched = readPreparedSourceState(db, compactPoint, { selectedSourceTurnIds: overLimit });
         expect(batched.tailDigest).toBe(small.tailDigest);
 
-        // Kills a no-global-reorder mutant: the same union arrives from
-        // different batches but must hash in canonical message/block order.
         const shuffled = [...overLimit].reverse();
         expect(readPreparedSourceState(db, compactPoint, { selectedSourceTurnIds: shuffled }).tailDigest).toBe(
           small.tailDigest,
         );
 
-        // Kills a no-dedup mutant: repeated selected IDs cannot duplicate rows.
         expect(
           readPreparedSourceState(db, compactPoint, {
             selectedSourceTurnIds: [...overLimit, ...actualTurnIds],
           }).tailDigest,
         ).toBe(small.tailDigest);
 
-        // Kills a dropped-batch mutant: omitting an actual selected source is visible.
         expect(
           readPreparedSourceState(db, compactPoint, {
             selectedSourceTurnIds: overLimit.filter((turnId) => turnId !== actualTurnIds[0]),

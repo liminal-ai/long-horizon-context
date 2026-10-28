@@ -1,15 +1,3 @@
-/**
- * Separate-process writer for same-file race regression.
- * Invoked via: tsx write-lock-multiproc-worker.ts <filePath> <rounds> <outJson> <readyPath> <goPath>
- *
- * Barrier protocol:
- * 1. Child finishes imports + SDK init, then writes READY to readyPath.
- * 2. Child waits until goPath exists.
- * 3. Parent waits for READY, prepares its own jobs, writes goPath, then both race.
- *
- * Capture events use globally distinct idempotency keys (side+round+slot),
- * never process-local fixture counters.
- */
 import { existsSync, writeFileSync } from "node:fs";
 
 import { createDeterministicInferenceCallbacks, initLhc, type MessageEventInput, retrieval } from "../../src/index.js";
@@ -56,7 +44,6 @@ const sdk = initLhc({
   inferenceCallbacks: createDeterministicInferenceCallbacks(),
 });
 
-// Child finished setup — signal READY, then wait for simultaneous release.
 writeFileSync(readyPath, `READY pid=${process.pid}\n`, "utf8");
 const waitStart = Date.now();
 while (!existsSync(goPath)) {

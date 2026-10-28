@@ -1,7 +1,3 @@
-// Turn parts, Flow 7 — the host's steer assertion on user_prompt. A steering
-// prompt (steer: true) inside a run in progress joins the open turn; it is
-// never a boundary, so the task's turn identity survives a steer. Absent, a
-// populated open turn still closes and a new one opens.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, intakeStream, messages, turns } from "../src/index.js";
 import {
@@ -49,7 +45,6 @@ describe("user_prompt steer assertion", () => {
     const steer = listed.ok ? listed.value[2] : undefined;
     expect(steer?.blocks[0]?.content).toEqual({ text: "actually, focus on the tests", steer: true });
 
-    // Steps stay consistent around the steer; the turn is still splittable.
     const meta = await sdk.threadView.hostMetadata({ filePath });
     expect(meta.ok && meta.value.activeTurn).toMatchObject({
       turnId: "t1",
@@ -58,7 +53,6 @@ describe("user_prompt steer assertion", () => {
       splittable: true,
     });
 
-    // A plain prompt is still a boundary.
     const next = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath }, [validEvent("user_prompt", { payload: { text: "new task" } })]),
     );
@@ -72,7 +66,6 @@ describe("user_prompt steer assertion", () => {
       ["t2", "open"],
     ]);
 
-    // Closed validation: steer must be a boolean; no other kind takes it.
     for (const bad of [
       validEvent("user_prompt", { payload: { text: "x", steer: "yes" } as never }),
       validEvent("assistant_text", { payload: { text: "x", steer: true } as never }),

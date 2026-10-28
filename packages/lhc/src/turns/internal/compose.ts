@@ -1,14 +1,3 @@
-// Rendering composition: message-level derivations become ordered
-// RenderingParts for deterministic turn rendering, with fallbacks and gap
-// records where a derivation is not ready. The function stays pure:
-// `(messages, derivations) -> { parts, gaps }` with no DB handle, inference,
-// or clock in the signature.
-//
-// Tool activity stays in message order and groups into maximal runs. A run
-// becomes one RenderingPart whose header names tools, call count, and per-call
-// mechanical outcomes. Prompts and assistant text break a run; thinking and
-// runtime notes do not. Runs are never reordered.
-
 import { cleanPrompt } from "../../messages/index.js";
 import {
   type DependencyGap,
@@ -23,25 +12,10 @@ import {
 } from "../../shared-tech/index.js";
 import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
 
-// F1 — the bounded per-message construction cap. A served construction never
-// spends more than this on one message: a giant message keeps a head and a
-// tail around a marked elision that names the exact-retrieval address (`m…`).
-// A serving-time option of the bounded plan only, applied here while message
-// identity and body are still structured (never over serialized text, whose
-// bodies may contain tag-shaped bytes). Composition is uncapped by default:
-// stored turn_rendering rows, compression/assembly inputs, floors, and
-// retrieval renderings keep every byte; the bounded walk requests the cap
-// explicitly for parts and in-walk whole constructions. Never the verbatim
-// tail, never canonical.
 export const CONSTRUCTION_MESSAGE_CAP_TOKENS = 2000;
 
 export interface ComposeOptions {
-  // Bounded-plan serving: cap each message's construction text.
   capForServing?: boolean;
-  // A part renders the unsmoothed prompt and raw tool results by contract
-  // (AC-1.4): absent message derivations are not fallbacks there, so no
-  // [fallback] annotation, gap, or recovery is produced. Durable outputs
-  // never set this.
   rawByDesign?: boolean;
   tokenEstimator?: TokenEstimator;
 }
@@ -52,8 +26,6 @@ export function capForConstruction(text: string, messageId: string, estimator: T
   const charsPerToken = text.length / total;
   const marker = (elided: number): string =>
     `[… ${elided} tokens elided at construction — exact content: ${messageId} …]`;
-  // Head takes two thirds of the kept budget, tail one third; shrink until the
-  // kept text plus its marker prices at or under the cap.
   let keep = Math.floor(charsPerToken * CONSTRUCTION_MESSAGE_CAP_TOKENS);
   for (;;) {
     const headChars = Math.floor((keep * 2) / 3);
@@ -67,8 +39,6 @@ export function capForConstruction(text: string, messageId: string, estimator: T
   }
 }
 
-// The member message as the composer sees it: kind plus projected blocks,
-// verbatim from the record (already deleted-filtered by the caller's read).
 export interface ComposeMessage {
   messageId: string;
   kind: RenderingPartKind;
@@ -76,8 +46,6 @@ export interface ComposeMessage {
   blocks: Array<{ blockType: string; content: Record<string, unknown> }>;
 }
 
-// One message-owned derivation row as composition input; keyed by the caller as
-// `${messageId}/${derivation}`.
 export interface ComposeDerivationRow {
   state: DerivationState;
   content?: string;
@@ -94,7 +62,6 @@ export interface CompositionInput {
   parts: RenderingPart[];
   gaps: DependencyGap[];
   recoveries: RecoveryReceipt[];
-  // Bounded serving only: whether the cap elided any message's construction.
   capped: boolean;
 }
 
@@ -142,8 +109,6 @@ function truncateForRendering(text: string, tokenEstimate: number): string {
   return `${text.slice(0, FALLBACK_TRUNCATION_LIMIT)}… [truncated — ${tokenEstimate} tok total]`;
 }
 
-// Mechanical outcome from the record alone: a tool call's outcome comes from
-// its paired result among the turn's messages.
 function recordOutcomes(messages: readonly ComposeMessage[]): Map<string, boolean> {
   const byCallId = new Map<string, boolean>();
   for (const message of messages) {
@@ -163,13 +128,10 @@ function outcomeFromRecord(resultByCallId: Map<string, boolean>, callId: unknown
 }
 
 interface PartPlan {
-  derivation?: string; // the message-level derivation this kind composes from, if any
+  derivation?: string;
   fallbackText: (message: ComposeMessage) => string;
 }
 
-// Fallback rules: prompt -> cleaned text; tool call -> recorded args; tool
-// result -> deterministic truncation; text/thinking/note -> raw, no
-// derivation to fall back from and therefore never a gap.
 const PART_PLANS: Record<RenderingPartKind, PartPlan> = {
   user_prompt: { derivation: "smoothed_prompt", fallbackText: promptFallbackText },
   assistant_text: { fallbackText: textOf },
@@ -218,27 +180,18 @@ function readyText(message: ComposeMessage, derivedText: string): string {
     : derivedText;
 }
 
-// One per-message atom before grouping: its composed part plus the structural
-// facts the run-grouping reads. Tool atoms fold into runs; prompts and
-// assistant text break runs; thinking and runtime notes are transparent —
-// interior ones fold into the surrounding run's account, edge ones stand alone.
 interface ComposeAtom {
   part: RenderingPart;
   isTool: boolean;
-  isBreak: boolean; // user_prompt | assistant_text — ends a run
-  toolName?: string; // tool_call only
-  toolCallId?: string; // tool_call | tool_result
+  isBreak: boolean;
+  toolName?: string;
+  toolCallId?: string;
 }
 
 const RUN_BREAK_KINDS: ReadonlySet<RenderingPartKind> = new Set(["user_prompt", "assistant_text"]);
 const TOOL_KINDS: ReadonlySet<RenderingPartKind> = new Set(["tool_call", "tool_result"]);
 const DIALOG_KINDS: ReadonlySet<RenderingPartKind> = new Set(["user_prompt", "assistant_text"]);
 
-// One message → its composed part (ready derivation verbatim, else raw/truncated
-// fallback) plus a gap when a derivable derivation was not ready. Gaps stay
-// per-message — precise to the source record — regardless of run grouping
-// The caller lands gaps on the rendering and they hold until an explicit
-// rebuild recomposes from current states.
 function buildAtom(
   message: ComposeMessage,
   derivations: ReadonlyMap<string, ComposeDerivationRow>,
@@ -252,8 +205,6 @@ function buildAtom(
       : derivations.get(composeDerivationKey(message.messageId, plan.derivation));
   const ready = derivation !== undefined && derivation.state === "ready" && derivation.content !== undefined;
   const block = message.blocks[0]?.content ?? {};
-  // The uncapped text is what a recovery floor writes back; only bounded
-  // serving renders the capped construction.
   const text = ready ? readyText(message, derivation.content as string) : plan.fallbackText(message);
   const served =
     options.capForServing === true
@@ -318,10 +269,6 @@ function buildAtom(
 
 const RUN_OUTCOME_ORDER: readonly ToolOutcome[] = ["succeeded", "failed", "unknown"];
 
-// The run's per-invocation outcome tally: each call counted once, plus any
-// result whose paired call sits outside this run (a cross-turn pair). Mixed
-// outcomes stay explicit; the run-level outcome is failed if any failed, else
-// unknown if any unknown, else succeeded.
 function tallyRun(members: readonly ComposeAtom[]): {
   counts: Record<ToolOutcome, number>;
   outcome: ToolOutcome;
@@ -350,7 +297,6 @@ function runTallyText(counts: Record<ToolOutcome, number>): string {
   return segs.length > 0 ? segs.join(", ") : "no outcomes";
 }
 
-/** Short XML wrap: tag name is the entity id (`m12`, `t3`). */
 export function wrapEntityXml(entityId: string, body: string): string {
   return `<${entityId}>\n${body}\n</${entityId}>`;
 }
@@ -359,9 +305,6 @@ function wrapMessageLineXml(messageId: string, line: string): string {
   return `<${messageId}>${line}</${messageId}>`;
 }
 
-// One RenderingPart for a maximal tool run: a run-level header over member
-// accounts in record order, each tool member stating its own outcome. Each
-// member line is tagged with its message id so smooth history can address it.
 function composeRun(members: readonly ComposeAtom[]): RenderingPart {
   const { counts, outcome, callCount, toolNames } = tallyRun(members);
   const tools = toolNames.length > 0 ? toolNames.join(", ") : "tools";
@@ -385,10 +328,6 @@ function composeRun(members: readonly ComposeAtom[]): RenderingPart {
   };
 }
 
-// Compose the ordered RenderingParts. Per-message atoms build first
-// (derivations verbatim or fallbacks, per-message gaps); then maximal runs of
-// consecutive tool activity fold into one run part each with prompts/assistant
-// text breaking runs and thinking/runtime notes transparent to them.
 export function composeRenderingInput(
   messages: readonly ComposeMessage[],
   derivations: ReadonlyMap<string, ComposeDerivationRow>,
@@ -411,16 +350,12 @@ export function composeRenderingInput(
   let i = 0;
   while (i < atoms.length) {
     const atom = atoms[i];
-    if (atom === undefined) break; // i < length keeps this unreachable
+    if (atom === undefined) break;
     if (!atom.isTool) {
-      parts.push(atom.part); // prompt, assistant text, or an edge thinking/note
+      parts.push(atom.part);
       i += 1;
       continue;
     }
-    // A maximal run starting at this tool atom: extend over following tool
-    // atoms and interior transparent atoms (thinking/notes), stopping at the
-    // next break (prompt/assistant text) or the turn's end. Transparent atoms
-    // trailing the last tool atom stand alone, not folded into the run.
     let j = i;
     let lastToolIdx = i;
     for (let next = atoms[j + 1]; next !== undefined && !next.isBreak; next = atoms[j + 1]) {
@@ -484,12 +419,8 @@ function renderingPartLabel(kind: RenderingPartKind): string {
   }
 }
 
-/** Smooth-band turn_rendering text: turn wrap + per-message tags. Not used for
- *  pre_detailed_assembly (compression stays untagged). */
 export function composeStructuredTurnText(parts: readonly RenderingPart[], turnId: string, trailer?: string): string {
   const inner = parts
-    // Empty thinking has no usable representation in a text band. Leaving it
-    // here bypasses the serving-exit tail filters once the turn is compacted.
     .filter((part) => part.kind !== "assistant_thinking" || part.text.trim() !== "")
     .map((part) => {
       const annotations = [
@@ -498,7 +429,6 @@ export function composeStructuredTurnText(parts: readonly RenderingPart[], turnI
       ].filter((annotation): annotation is string => annotation !== undefined);
       const suffix = annotations.length === 0 ? "" : ` [${annotations.join("; ")}]`;
       const header = `${renderingPartLabel(part.kind)}${suffix}`;
-      // Tool runs already tag each member line; other parts wrap the whole body.
       const body =
         part.memberMessageIds !== undefined && part.memberMessageIds.length > 0
           ? part.text
@@ -509,14 +439,11 @@ export function composeStructuredTurnText(parts: readonly RenderingPart[], turnI
   return wrapEntityXml(turnId, trailer === undefined ? inner : `${inner}\n\n${trailer}`);
 }
 
-/** Chunk band header: member turn ids the model can request later. */
 export function formatTurnRangeHeader(turnIds: readonly string[]): string {
   if (turnIds.length === 0) return "";
   return `<turns>${turnIds.join(" ")}</turns>`;
 }
 
-// Dialog-register assembly for detailed-band compression: user prompts
-// (smoothed where ready) and assistant text only, in record order.
 export function composePreDetailedAssembly(
   messages: readonly ComposeMessage[],
   derivations: ReadonlyMap<string, ComposeDerivationRow>,

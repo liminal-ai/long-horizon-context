@@ -1,11 +1,3 @@
-// Epic 05 Story 3 — TC-2.1 (AC-2.1, AC-2.2, AC-2.5) and TC-2.3 (AC-2.4): the
-// real adapter behind the unchanged Epic 02 seam. A seeded thread drains all
-// seven kinds to ready with the fake host's canned content; the same seeding
-// drained under deterministic inference callbacks proves the handlers unchanged
-// (equivalence, AC-2.1). The canned text for the tool lanes deliberately
-// claims the wrong outcome — the stamped outcome must come from the record,
-// never model prose (architecture risk: adapter parses model output).
-// Empty or whitespace-only success text is a failure, never a ready form.
 import { afterEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, type Derivation, initLhc, type Lhc } from "../src/index.js";
 import type { ModelCall, ModelCallInput } from "../src/shared-tech/inference-types.js";
@@ -34,25 +26,16 @@ function freshStore(): TempStore {
   return store;
 }
 
-// Tiny target: each placed turn crosses it, so turn 1's chunk closes during
-// the drain and the two chunk-summary kinds run too.
 const CHUNK_POLICY = { targetProjectedTokens: 5, maxProjectedTokens: 4400 };
 
 const MARKER_PATTERN = /^(smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\(/;
 
-// The adversarial canned set: the tool lanes' text claims failure while the
-// record's tool result carries isError: false. A stored outcome agreeing
-// with this prose would prove the adapter (or a handler) parsed model output
-// for mechanical facts.
 function adversarialResponses(): Record<DerivationType, string> {
   const responses = cannedResponses();
   responses.tool_result_summary = "error: the tool produced nothing and the run failed";
   return responses;
 }
 
-// Turn 1 carries a clean tool run (smoothing, both tool summaries, rendering,
-// compression); turn 2 exists so turn 1's chunk closes under the tiny target
-// policy and both chunk summaries enqueue.
 async function seedSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -89,8 +72,6 @@ async function drainAll(sdk: Lhc, filePath: string): Promise<Derivation[]> {
   return readDerivedForms(filePath);
 }
 
-// One prompt, no turn_end: exactly one work item (prompt_smoothing) queues,
-// so a scripted call's entries map one-to-one onto smoothing attempts.
 async function seedSmoothingOnly(sdk: Lhc, store: TempStore): Promise<string> {
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
@@ -128,8 +109,6 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     for (const kind of INFERENCE_DERIVATION_TYPES) {
       const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       for (const form of ready) {
-        // Content is the canned response, shaped — and provenance is the
-        // assignment's three config-known strings, never authored from text.
         expect(form.content).toBe(responses[kind]);
         expect(form.metadata?.provenance).toEqual({
           provider: assignments[kind].provider,
@@ -146,8 +125,6 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     const { sdk } = inferenceSdk(call);
     const forms = await drainAll(sdk, await seedSevenKinds(sdk, freshStore()));
 
-    // The record's tool result has isError: false, so the tool-result summary
-    // must stamp "succeeded" even though its landed content claims failure.
     const form = forms.find((row) => row.derivationType === "tool_result_summary" && row.state === "ready");
     expect(form?.metadata?.outcome).toBe("succeeded");
     expect(form?.content).toContain("failed");
@@ -172,9 +149,6 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
     });
     const deterministicForms = await drainAll(deterministicSdk, await seedSevenKinds(deterministicSdk, freshStore()));
 
-    // Same handler code, same record: the same form rows, subjects, and
-    // states land through both inference paths (message/turn/chunk ids are
-    // deterministic functions of the event order).
     const rowKey = (derivation: Derivation): string =>
       `${derivation.subjectKind}|${derivation.subjectId}|${derivation.derivationType}|${derivation.state}`;
     expect(deterministicForms.map(rowKey).sort()).toEqual(adapterForms.map(rowKey).sort());
@@ -184,7 +158,6 @@ describe("TC-2.1: seven kinds land ready through the adapter (AC-2.1, AC-2.2, AC
       if (INFERENCE_DERIVATION_TYPES.includes(form.derivationType as (typeof INFERENCE_DERIVATION_TYPES)[number])) {
         expect(form.content).toMatch(MARKER_PATTERN);
       }
-      // Deterministic inference callbacks never set provenance (AC-2.5).
       expect(form.metadata?.provenance).toBeUndefined();
     }
     for (const form of adapterForms) {

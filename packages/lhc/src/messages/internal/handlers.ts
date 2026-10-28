@@ -1,9 +1,3 @@
-// Message-level derivation handlers share one shape: read the source message,
-// optionally join its call-id pair, and return derivation content through
-// HandlerOutcome. The drain's completion transaction does the version-checked
-// UPDATE-only write, so stale or deleted sources discard here exactly as
-// everywhere else. Tool-activity outcomes come from outcome.ts, never inference
-// text, and land in derivation metadata apart from content.
 import type {
   HandlerDerivationWrite,
   HandlerOutcome,
@@ -24,11 +18,6 @@ import { cleanPrompt } from "./smoothing.js";
 
 const FORCE_TOOL_RESULT_SUMMARY_FALLBACK = true;
 
-// A handler that cannot read its source coherently has found source damage:
-// terminal, derivation blocked with the reason (never a retry loop against a
-// record that cannot improve). A *deleted* source never reaches this — its
-// derivation row is gone and the completion write would discard — so a miss here
-// is genuine corruption.
 function sourceDamaged(reason: string): HandlerOutcome {
   return { ok: false, blocked: true, reason: `source_damaged: ${reason}` };
 }
@@ -60,10 +49,6 @@ export interface SmoothedPromptDerivation {
   warningLog?: LogEntry;
 }
 
-// Harness marker prompts ("[Request interrupted by user]") are machine text:
-// smoothing inference returns empty output on them, burning retries for a
-// verbatim fallback. A prompt whose entire trimmed content is one short
-// bracketed marker stores its cleaned text directly instead.
 const MARKER_PROMPT_PATTERN = /^\[[^\]]{1,80}\]$/;
 
 export function isMarkerPrompt(text: string): boolean {
@@ -260,9 +245,6 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
   }
   const toolCallId = block["toolCallId"];
   const pairedCall = typeof toolCallId === "string" ? findPairedToolCall(run.openDb(), toolCallId) : undefined;
-  // The summary abbreviates; the full result content stays untouched in the
-  // record. Nothing here writes back to message_block. The result is tool
-  // activity, so its outcome is stamped from its own isError flag.
   const toolOutcome = deriveToolOutcome({ isError: block["isError"] === true });
   const derived = await deriveToolResultSummary(run, loaded.messageId, {
     toolName: pairedCall?.toolName ?? "unknown_tool",
@@ -316,8 +298,6 @@ const toolResultSummaryHandler: WorkHandler = async (run, item) => {
   return handlerOutcome;
 };
 
-// The domain's handler table is merged into the SDK dispatch map at
-// construction. Turn-owned kinds stay with the turns domain.
 export const messageWorkHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {
   prompt_smoothing: smoothPromptHandler,
   tool_result_summary: toolResultSummaryHandler,

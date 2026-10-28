@@ -1,12 +1,3 @@
-/**
- * LIM-133: live, WAL-aware thread-file validation.
- *
- * TypeScript is the canonical reference the Rust port must match exactly:
- * validation opens the live file read-only (so uncheckpointed WAL frames are
- * visible), never copies or hashes the database, and classifies every invalid
- * candidate as caller-vs-storage in one fixed taxonomy.
- */
-
 import { closeSync, mkdirSync, openSync, readdirSync, readSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -16,9 +7,6 @@ import { openDatabase } from "../src/shared-tech/storage.js";
 import { createThreadFile, generateThreadId, openThreadDatabase } from "../src/threads/internal/create.js";
 import { type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
-// SQLite's user_version lives at byte offset 60 of the main database file
-// header (4 bytes, big endian). Reading it straight off disk proves what the
-// main file alone says, with no SQLite connection involved.
 function mainFileUserVersion(filePath: string): number {
   const fd = openSync(filePath, "r");
   try {
@@ -44,22 +32,16 @@ describe("thread file validation is WAL-aware", () => {
     const filePath = store.threadPath("wal-only");
     createThreadFile(filePath, generateThreadId(), new Date().toISOString());
 
-    // Push the main file back to "not an lhc thread file" and checkpoint that
-    // state into the main database.
     const reset = openDatabase(filePath);
     reset.exec("PRAGMA user_version = 0;");
     reset.close();
     expect(mainFileUserVersion(filePath)).toBe(0);
 
-    // Restore the marker on a connection that never checkpoints, and hold it
-    // open so the change stays in the WAL only.
     const walOnly = openDatabase(filePath);
     walOnly.exec("PRAGMA wal_autocheckpoint = 0;");
     walOnly.exec("PRAGMA user_version = 13;");
     try {
-      // The main file still says "no lhc schema version" ...
       expect(mainFileUserVersion(filePath)).toBe(0);
-      // ... but validation reads the live database, WAL included.
       const opened = openThreadDatabase(filePath);
       expect(opened.ok).toBe(true);
       if (opened.ok) opened.value.close();
@@ -68,12 +50,6 @@ describe("thread file validation is WAL-aware", () => {
     }
   });
 
-  // Node runs node:sqlite synchronously on one thread, so the append below
-  // cannot execute its SQLite work while the checkpoint and validation run in
-  // the same turn: the append is initiated and left in flight, the WAL is
-  // truncated, and validation reads the file in that state. This is sequence
-  // and interleaving coverage; the genuine simultaneous-overlap proof lives in
-  // the Rust suite, where separate OS threads can be forced to overlap.
   it("validates after a truncating checkpoint with an append in flight, without a torn or false identity", async () => {
     const filePath = store.threadPath("checkpoint-race");
     const sdk = initLhc({
@@ -110,7 +86,6 @@ describe("thread file validation is WAL-aware", () => {
     if (opened.ok) opened.value.close();
 
     const entries = readdirSync(store.dir);
-    // Only the database and its sanctioned SQLite sidecars.
     for (const entry of entries) {
       expect(entry).toMatch(/^(no-copies\.sqlite(-wal|-shm)?|registry\.sqlite(-wal|-shm)?)$/);
     }
@@ -215,8 +190,6 @@ describe("journal mode promotion happens once", () => {
     );
     first.close();
 
-    // Subsequent opens read the mode and skip the write form; the file stays
-    // WAL and concurrent openers keep succeeding.
     for (let i = 0; i < 5; i += 1) {
       const again = openDatabase(filePath);
       expect((again.prepare("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode.toLowerCase()).toBe(

@@ -1,10 +1,3 @@
-// PI session format conformance (TC-5.3/TC-5.5): the required shapes are
-// DERIVED from the structure-trimmed real PI session fixture at runtime,
-// never restated from the design — the fixture's job is to catch the design
-// being wrong about PI, which a design-derived checker could not
-// (provenance: pi-session-structure.provenance.md). Checks are
-// structure-level: header line shape, entry shape, parentId chain, message
-// encoding.
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -43,20 +36,10 @@ function fail(where: string, expected: string, actual: unknown): never {
   throw new Error(`pi-session conformance violation at ${where}: expected ${expected}, got ${JSON.stringify(actual)}`);
 }
 
-// Validates a materialized file's structure against the real-PI fixture:
-//  - header: same key set as the fixture's header, same value types,
-//    type === "session"
-//  - every entry: type === "message" with exactly the key set the fixture's
-//    message entries carry ({type, id, parentId, timestamp, message})
-//  - parentId chain: first entry null, every later entry chained to the
-//    previous entry's id; ids unique
-//  - message encoding: role + content present; content an array of text
-//    blocks shaped like the fixture's ({type: "text", text: string})
 export function assertPiSessionConformance(materializedText: string): void {
   const fixture = loadPiSessionFixture();
   const file = parseJsonl(materializedText, "materialized session");
 
-  // Header shape derived from the fixture header.
   if (file.header["type"] !== "session") fail("header.type", '"session"', file.header["type"]);
   if (keySet(file.header) !== keySet(fixture.header)) {
     fail("header keys", keySet(fixture.header), keySet(file.header));
@@ -67,7 +50,6 @@ export function assertPiSessionConformance(materializedText: string): void {
     }
   }
 
-  // Entry shape derived from the fixture's message entries.
   const fixtureMessages = fixture.entries.filter((entry) => entry["type"] === "message");
   const referenceEntry = fixtureMessages[0];
   if (referenceEntry === undefined) {

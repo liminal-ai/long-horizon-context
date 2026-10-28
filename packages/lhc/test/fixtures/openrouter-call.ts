@@ -1,14 +1,3 @@
-// The real host (DD-13, AC-4.1): a test-owned ModelCall over OpenRouter's
-// OpenAI-compatible chat-completions endpoint using plain fetch — test code,
-// never production LHC transport. It exists to prove the injected-function
-// contract is sufficient against a real endpoint: the same AC-1.2 shape the
-// scripted fakes implement, exercised by the same seam-conformance helpers.
-//
-// Key resolution and the suite's ran/not-ran accounting also live here so the
-// run/not-run state is one fact reported once (Flow 4): the suite-level guard
-// in inference-real.test.ts calls resolveRealSuiteEnv exactly once at module
-// load and emits exactly one visible line — absence of the key can never look
-// like a pass.
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -16,14 +5,8 @@ import type { ModelCall, ModelCallFailureKind, ModelCallResult } from "../../src
 
 export const OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions";
 
-// The suite's cheap default lane; OPENROUTER_MODEL overrides it for dial-in
-// experiments without touching test code.
 export const DEFAULT_OPENROUTER_MODEL = "openai/gpt-5.4-mini";
 
-// The guard's one fact: ran (with the key and the model lane the run will
-// use) or not-ran (with reason). The shapes share no fields, so a not-ran
-// record can never be mistaken for a keyed resolution by any structural
-// check (AC-4.1's "absence of the key can never produce a silent pass").
 export type RealSuiteEnv = { key: string; model: string } | { notRan: string };
 
 export function loadLocalLhcEnv(): Record<string, string> {
@@ -57,11 +40,6 @@ export function resolveRealSuiteEnv(env: Record<string, string | undefined>): Re
   };
 }
 
-// ── suite-level accounting (AC-4.1) ───────────────────────────────
-//
-// One visible line per resolution, written straight to the runner's stdout
-// (not through a logger a reporter could swallow). The emission log lets the
-// always-run guard test assert "exactly one ran/not-ran line" as data.
 const emissions: string[] = [];
 
 export function emitRealSuiteAccounting(env: RealSuiteEnv): string {
@@ -75,10 +53,6 @@ export function realSuiteAccountingEmissions(): readonly string[] {
   return emissions;
 }
 
-// ── the real ModelCall (AC-1.2 over a real endpoint) ──────────────
-
-// OpenRouter failure mapping (story §Technical Notes): auth-shaped statuses
-// are terminal-classified by LHC, the rest fall where the table says.
 function failureKindForStatus(status: number): ModelCallFailureKind {
   if (status === 401 || status === 403) return "auth";
   if (status === 429) return "rate_limit";
@@ -90,8 +64,6 @@ function failure(kind: ModelCallFailureKind, message: string): ModelCallResult {
   return { ok: false, kind, message };
 }
 
-// The assistant text out of an OpenAI-compatible completion payload, or
-// undefined when the body is not the shape the endpoint documents.
 function extractAssistantText(payload: unknown): string | undefined {
   if (typeof payload !== "object" || payload === null) return undefined;
   const choices = (payload as { choices?: unknown }).choices;
@@ -104,13 +76,6 @@ function extractAssistantText(payload: unknown): string | undefined {
   return typeof content === "string" ? content : undefined;
 }
 
-// createOpenRouterCall(key, defaultModel) implements the ModelCall contract
-// over plain fetch. Host-side interpretation of the opaque routing keys
-// (AC-1.2 grants this): OpenRouter takes one model slug, so a `model` string
-// that already names a slug (contains "/") routes as-is and anything else —
-// including conformance-probe placeholders — falls to the suite's default
-// model. The provider string is carried but not consulted: this host has
-// exactly one lane behind it.
 export function createOpenRouterCall(key: string, defaultModel: string): ModelCall {
   return async (input) => {
     const slug = input.model.includes("/") ? input.model : defaultModel;
@@ -141,8 +106,6 @@ export function createOpenRouterCall(key: string, defaultModel: string): ModelCa
     if (text === undefined) {
       return failure("other", "response carried no assistant text");
     }
-    // Empty/whitespace text crosses the boundary as a success: empty_output
-    // is adapter-generated (AC-2.4); hosts never return it.
     return { ok: true, text };
   };
 }

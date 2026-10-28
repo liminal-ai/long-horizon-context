@@ -1,20 +1,3 @@
-// The bounded execution plan: the same walk, fed from turn/message metadata
-// aggregates instead of hydrated records.
-//
-// What it reads up front is bounded by structure, never by conversation
-// length: turn rows, chunk rows and membership, one derivation row per subject
-// with its state but not its content, and one aggregate row per turn
-// (oldest/newest live message order, token sum, count). The compact point
-// comes off a newest-first keyset page over message metadata, so it reads the
-// tail it is measuring and stops — not the whole record.
-//
-// What it reads on demand is bounded by the walk: a turn's excerpt only when
-// both stored smooth rungs are unusable, a chunk's stored-member material only
-// when its summary derivation is unusable, a derivation's content only when
-// the rung that renders it is reached. A historical candidate the walk passes
-// over is never hydrated, so an unreadable or oversized block on one costs
-// nothing — the arrangement is the same either way, because the eager plan
-// omits blocked material too.
 import type { DatabaseSync } from "node:sqlite";
 import { hasForcedBoundaryHistory } from "../../compact-continuation/internal/store.js";
 import type { DbReadTransaction, SkippedRecord } from "../../shared-tech/index.js";
@@ -27,7 +10,6 @@ import { orphanedMessageSkip, shapeChunks, shapeTurns } from "./selection-struct
 import { readInstalledTransition } from "./snapshot.js";
 import type { PartsSource, SelectionSource } from "./walk.js";
 
-/** Raised when the caller's abort signal trips inside an on-demand read. */
 export class CompactStoppedError extends Error {
   constructor(readonly detail: string) {
     super(detail);
@@ -35,22 +17,12 @@ export class CompactStoppedError extends Error {
   }
 }
 
-/**
- * What the plan actually loaded, for the load-bound proof and the mature-thread
- * measurements. Not part of any receipt or public contract.
- */
 export interface BoundedSelectionStats {
-  /** Statements executed through this source, eager reads included. */
   queries: number;
-  /** Message-metadata rows the compact-point keyset walk consumed. */
   compactPointRowsScanned: number;
-  /** Turns whose raw messages were hydrated for a smooth excerpt. */
   turnExcerptHydrations: number;
-  /** message_block rows read (excerpts only — chunk material reads its own). */
   messageBlockRowsRead: number;
-  /** Chunks whose stored-member material was resolved. */
   chunkMaterialResolutions: number;
-  /** Derivation rows whose content column was read back. */
   derivationContentReads: number;
 }
 
@@ -74,13 +46,8 @@ interface DerivationIndexEntry {
   sourceVersion: number;
 }
 
-// Enough rows per page that the full band's tail resolves in one or two reads,
-// small enough that the bound holds on a record of any length.
 const COMPACT_POINT_PAGE_SIZE = 512;
 
-// Live and placeable: the message is not deleted, its source event still
-// exists, and its turn resolves to a live turn. This is exactly the population
-// the eager plan's message list holds after its orphan filter.
 const PLACEABLE_MESSAGE_FROM = `FROM message m
        JOIN event e ON e.event_order = m.source_event_order
        JOIN turns t ON t.turn_id = m.turn_id AND t.deleted_at IS NULL
@@ -109,14 +76,10 @@ export function createBoundedSelection(
   };
   const estimator = opts.tokenEstimator;
 
-  // ── structure: bounded by turn and chunk counts ────────────────
   const structure = counted(() => turnsDomain.readTurnChunkStructure(db));
   const shaped = shapeTurns(structure);
   const skippedRecords: SkippedRecord[] = [];
 
-  // Orphans first, then dangling members: the eager plan reports them in that
-  // order because it reads messages before chunks, and the receipt's
-  // skippedRecords order is observable.
   const orphanRows = counted(
     () =>
       db
@@ -134,7 +97,6 @@ export function createBoundedSelection(
 
   const { chunks, emptyChunkIds } = shapeChunks(structure, shaped, skippedRecords);
 
-  // ── message metadata: one aggregate row per turn ───────────────
   const aggregateRows = counted(
     () =>
       db
@@ -165,10 +127,6 @@ export function createBoundedSelection(
     ]),
   );
 
-  // ── derivation index: state without content ────────────────────
-  // Same unordered scan the eager plan runs, minus the content column, so the
-  // derivation counts land in the same key order — they are stored verbatim in
-  // the view's source_state_json.
   const derivationRows = counted(
     () =>
       db
@@ -211,8 +169,6 @@ export function createBoundedSelection(
       },
   );
 
-  // ── on-demand reads ───────────────────────────────────────────
-
   const stopped = (): boolean => opts.signal?.aborted === true;
 
   const derivationSnapshots = new Map<string, DerivationSnapshot | undefined>();
@@ -223,9 +179,6 @@ export function createBoundedSelection(
     let snapshot: DerivationSnapshot | undefined;
     if (entry !== undefined) {
       snapshot = { state: entry.state, sourceVersion: entry.sourceVersion };
-      // Content is read back only for the state the ladders can use. Every
-      // rung that reads `content` first requires state === "ready"; a stored
-      // body behind any other state is never rendered, so it is never loaded.
       if (entry.state === "ready" && !entry.contentNull) {
         const row = counted(
           () =>
@@ -253,8 +206,6 @@ export function createBoundedSelection(
       excerpts.set(turnId, null);
       return null;
     }
-    // Bounded by the turn's own event-order span, so the read rides the
-    // source_event_order index rather than scanning the message table.
     const messageRows = counted(
       () =>
         db
@@ -271,7 +222,6 @@ export function createBoundedSelection(
           kind: string;
         }>,
     );
-    // excerptLine reads the first block only, so only the first block loads.
     const firstBlock = db.prepare(
       `SELECT block_type, content FROM message_block WHERE message_id = ? ORDER BY block_index LIMIT 1`,
     );
@@ -299,18 +249,11 @@ export function createBoundedSelection(
     const material = turnsDomain.getChunkText(transaction, chunkId, derivationType);
     stats.queries += 1;
     stats.chunkMaterialResolutions += 1;
-    // Stored members that cannot be read are not a reason to stop: leaving
-    // the material out drops the entry to the band ladder's gap, which the
-    // receipt names. The eager plan omits blocked material the same way.
     const resolved = material.kind === "blocked" ? undefined : material;
     materials.set(key, resolved);
     return resolved;
   }
 
-  // ── turn parts: the installed transition turn and the step/construction
-  // reads the walk asks for only when it splits or settles. A thread on the
-  // forced-boundary path has no parts source at all (AC-7.3 exclusivity):
-  // it walks exactly as before this mechanism existed. ─────────────
   const installed = counted(() => readInstalledTransition(db));
   const forcedBoundaryThread = counted(() => hasForcedBoundaryHistory(db));
   const stepsByTurn = new Map<string, ReturnType<typeof turnsDomain.readTurnSteps>>();
@@ -328,8 +271,6 @@ export function createBoundedSelection(
         },
         partText: (turnId, range, trailer) =>
           counted(() => turnsDomain.composeTurnPartText(db, turnId, range, trailer, estimator)),
-        // Composed once per walk per turn: the walk asks for it to settle, to
-        // protect, and to serve a ready stored rendering under the cap.
         wholeTurnText(turnId) {
           const cached = wholeTexts.get(turnId);
           if (cached !== undefined) return cached;

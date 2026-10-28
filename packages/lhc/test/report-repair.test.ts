@@ -1,12 +1,3 @@
-// Story 4 (Epic 02): derivation state, report, and repair — Flow 4. The
-// four-state lifecycle proven on forms the pipeline landed for real
-// (TC-4.1), exact owner scoping and the
-// exact not-ready set (TC-4.3), explicit re-queue through the owning
-// surfaces landing ready with the failure cleared (TC-4.4, background mode
-// proving the poke), requeue idempotency against live work (TC-4.5), the
-// blocked-source path with its refusal carrying the stored damage reason
-// (TC-4.6, architecture risk), and degrade-don't-block reads with every
-// non-ready state present at once (TC-4.7, architecture risk).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type BatchResult,
@@ -125,12 +116,6 @@ async function reportOf(
   return result.value;
 }
 
-// ── the mixed-state thread: every form state landed for real ─────
-// Three prompt turns through real intake; the double fails the first
-// prompt's smoothing (failed), the below-SDK corruption blocks both turn
-// derivations, maxItems leaves the third prompt's smoothing untouched
-// (pending with a live queued item), and the second prompt smooths clean
-// (ready). No below-SDK state writes — the pipeline produced every state.
 const MIXED_FAILED_REASON = "provider_failure: scripted failure";
 
 async function mixedStateThread(): Promise<{
@@ -181,7 +166,6 @@ describe("TC-4.1 / AC-4.1: every landed form reads back in exactly one of the fo
     expect(entryOf(turnEntries, "t1", "turn_rendering")?.state).toBe("blocked");
     expect(entryOf(turnEntries, "t1", "turn_rendering")?.reason).toContain("source_damaged");
 
-    // Exactly one of the four states on every row, both owners.
     for (const entry of [...messageEntries, ...turnEntries]) {
       expect(["pending", "ready", "failed", "blocked"]).toContain(entry.state);
     }
@@ -209,7 +193,6 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
       ["t2", "turn_rendering", "blocked"],
     ]);
 
-    // notReady: exactly the non-ready set — m2's ready row drops, nothing else.
     const notReadyMessages = await reportOf(sdk, filePath, "messages", { notReady: true });
     expect(notReadyMessages.map((entry) => [entry.subjectId, entry.state])).toEqual([
       ["m1", "failed"],
@@ -219,7 +202,6 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
     expect(notReadyTurns).toHaveLength(4);
     expect(notReadyTurns.every((entry) => entry.state === "blocked")).toBe(true);
 
-    // Subject filters scope to exactly the named subject's forms.
     const oneMessage = await sdk.messages.report({ filePath }, { messageId: "m1" });
     expect(oneMessage.ok && oneMessage.value.map((entry) => entry.subjectId)).toEqual(["m1"]);
     const oneTurn = await sdk.turns.report({ filePath }, { turnId: "t2" });
@@ -228,8 +210,6 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
 
   it("chunk summaries report under the turns owner, never under messages", async () => {
     const double = createInferenceCallbacksDouble();
-    // Policy 1/1: every turn's compression meets max, so each turn closes its
-    // own chunk immediately and both summary kinds queue and run.
     const sdk = manualSdk(double, {
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
     });
@@ -264,12 +244,10 @@ describe("TC-4.3 / AC-4.3: owner scoping is exact and notReady is exact set equa
       ["c2", "chunk_summary_brief", "failed"],
     ]);
 
-    // Cross-owner leakage check, both directions.
     const messageEntries = await reportOf(sdk, filePath, "messages");
     expect(messageEntries.every((entry) => entry.subjectKind === "message")).toBe(true);
     expect(turnEntries.some((entry) => entry.subjectKind === "message")).toBe(false);
 
-    // The chunk filter scopes to exactly the named chunk's summary forms.
     const oneChunk = await sdk.turns.report({ filePath }, { chunkId: "c2" });
     expect(oneChunk.ok && oneChunk.value.map((entry) => [entry.subjectId, entry.derivationType])).toEqual([
       ["c2", "chunk_summary_brief"],
@@ -284,8 +262,6 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     const sdk = manualSdk(double);
     const { filePath, messageId } = await gappedRenderingThread(store, sdk, double);
 
-    // The failed item's row is gone, which is what
-    // lets the deterministic id insert below without collision.
     expect(liveCount(filePath)).toBe(0);
     const before = formOf(filePath, messageId, "smoothed_prompt");
     expect(before?.state).toBe("failed");
@@ -302,7 +278,6 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     expect(repaired?.state).toBe("ready");
     expect(repaired?.sourceVersion).toBe(2);
     expect(repaired?.content).toContain("smoothed(");
-    // No failure residue remains.
     expect(repaired?.reason).toBeUndefined();
     expect(repaired?.metadata).toMatchObject({
       inferenceAttempted: true,
@@ -323,11 +298,9 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     const { filePath, messageId, turnId } = await gappedRenderingThread(store, sdk, double);
     const beforeRepair = formOf(filePath, turnId, "turn_rendering");
 
-    // Repair the dependency first (now healthy), then rebuild the composition.
     const repairSmoothing = await sdk.messages.derive({ filePath }, [messageId]);
     expect(repairSmoothing.ok).toBe(true);
     expect(formOf(filePath, messageId, "smoothed_prompt")?.state).toBe("ready");
-    // No auto-cascade: the rendering row is still exactly the fallback-composed row.
     expect(formOf(filePath, turnId, "turn_rendering")).toEqual(beforeRepair);
 
     const rebuild = await sdk.turns.deriveTurn({ filePath }, turnId);
@@ -339,7 +312,6 @@ describe("TC-4.4 / AC-4.4: derive through the owning surface lands the derivatio
     expect(rebuilt?.state).toBe("ready");
     expect(rebuilt?.sourceVersion).toBe(2);
     expect(rebuilt?.gaps).toBeUndefined();
-    // Both turn derivations ride the one work item: the compression rebuilt too.
     expect(formOf(filePath, turnId, "detailed_turn_compression")).toMatchObject({
       state: "ready",
       sourceVersion: 2,
@@ -362,7 +334,6 @@ describe("TC-4.5 / AC-4.5: derive returns one result per message id", () => {
     ]);
     expect(formOf(filePath, messageId, "smoothed_prompt")?.state).toBe("ready");
     expect(rawDetail(filePath)).toEqual([]);
-    // One row per form by key — derive left no duplicate artifacts behind.
     const smoothings = readDerivedForms(filePath).filter(
       (form) => form.subjectId === messageId && form.derivationType === "smoothed_prompt",
     );
@@ -409,8 +380,6 @@ describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the 
     const { filePath, turnId } = await damagedSourceThread(store);
 
     const report = await drain(sdk, filePath);
-    // Truth-table shape: the blocked item reports failed_terminal and its row
-    // is deleted; the drain continued past it to the later smoothing.
     expect(report.ran.map((entry) => [entry.workItemId, entry.disposition])).toEqual([
       ["w-m1-prompt_smoothing-v1", "done"],
       ["w-t1-turn_derivation-v1", "failed_terminal"],
@@ -426,14 +395,12 @@ describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the 
     expect(formOf(filePath, turnId, "pre_detailed_assembly")?.state).toBe("blocked");
     expect(formOf(filePath, turnId, "detailed_turn_compression")).toBeUndefined();
 
-    // The report surfaces the blocked rows with their reasons.
     const notReady = await reportOf(sdk, filePath, "turns", { notReady: true });
     expect(notReady.map((entry) => [entry.subjectId, entry.derivationType, entry.state])).toEqual([
       ["t1", "pre_detailed_assembly", "blocked"],
       ["t1", "turn_rendering", "blocked"],
     ]);
 
-    // The refusal carries the form's stored reason — not a generic string.
     const refused = await sdk.turns.deriveTurn({ filePath }, turnId);
     expect(refused.ok).toBe(true);
     if (!refused.ok) return;
@@ -447,7 +414,6 @@ describe("TC-4.6 / AC-4.6 (architecture risk): source damage lands blocked, the 
       },
     });
 
-    // Refused means refused: nothing queued, nothing changed.
     expect(liveCount(filePath)).toBe(0);
     expect(formOf(filePath, turnId, "turn_rendering")).toEqual(rendering);
   });
@@ -471,8 +437,6 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
     const turnsRead = await sdk.turns.listTurns({ filePath });
     expect(turnsRead.ok).toBe(true);
     if (!turnsRead.ok) return;
-    // Full records back, including the corrupt extra open turn — the read
-    // reports what is stored and never errors over incomplete derivation.
     expect(turnsRead.value.map((record) => record.turnId)).toEqual(["t1", "t2", "t3", "t4"]);
     expect(turnsRead.value[0]).toMatchObject({
       turnId: "t1",
@@ -480,9 +444,6 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
       memberMessageIds: ["m1"],
     });
 
-    // Turn form states ride the turn read directly (ruling 012): both
-    // closed turns carry their blocked forms; the open turns have no rows
-    // and no key — mirroring the message read's contract.
     const turnFormStates = new Map(
       turnsRead.value.map((record) => [
         record.turnId,
@@ -545,8 +506,6 @@ describe("TC-4.7 / AC-4.7 (architecture risk): reads degrade, never block", () =
         ["chunk_summary_detailed", "ready"],
       ],
     ]);
-    // The failed summary's read carries its stored reason — degraded, not
-    // blocking, and never an error.
     const failedBrief = chunksRead.value[1]?.derivations?.find((form) => form.derivationType === "chunk_summary_brief");
     expect(failedBrief?.reason).toBe("provider_failure: scripted brief failure");
   });

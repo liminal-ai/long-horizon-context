@@ -1,11 +1,3 @@
-// Selected-thread label backfill: rewrite stored turn_rendering derivations
-// whose content predates stable <tN>/<mN> labels, by re-running the same pure
-// composition retrieval's live fallback uses. No inference, no work items, no
-// chunk placement, no floor writes, no canonical-record change — the only
-// mutation is the turn_rendering row's content and derived_at. Source version
-// is unchanged because the sources did not change; only the rendering recipe
-// did.
-
 import type { DatabaseSync } from "node:sqlite";
 
 import { composeRenderingInput, composeStructuredTurnText } from "./compose.js";
@@ -13,10 +5,8 @@ import { readMemberMessages, readMessageDerivationRows, readTurnDerivationRow } 
 
 export interface RenderingLabelBackfillReceipt {
   turnsExamined: number;
-  /** Turn ids whose stored rendering was rewritten with labels. */
   relabeled: string[];
   alreadyLabeled: number;
-  /** Not-ready/missing renderings are reported, never repaired here. */
   skipped: Array<{ turnId: string; reason: string }>;
   dryRun: boolean;
 }
@@ -56,8 +46,6 @@ export function backfillRenderingLabelsInOpenDb(
       receipt.skipped.push({ turnId, reason: `rendering_${row.state}` });
       continue;
     }
-    // Same predicate retrieval uses to accept a stored rendering: the backfill
-    // rewrites exactly the set retrieval would otherwise re-compose per pull.
     const content = row.content ?? "";
     if (content.startsWith(`<${turnId}>\n`) && content.endsWith(`\n</${turnId}>`)) {
       receipt.alreadyLabeled += 1;

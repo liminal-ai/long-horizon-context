@@ -70,15 +70,11 @@ function formOf(filePath: string, subjectId: string, derivationType: string) {
   );
 }
 
-// turn_rendering is deterministic (AC-6.3): the rendering is the joined part
-// texts, stored as the turn_rendering derivation. The composition tests read
-// it back here instead of capturing a model call.
 function renderingContent(filePath: string): string {
   return readDerivedForms(filePath).find((form) => form.derivationType === "turn_rendering")?.content ?? "";
 }
 
 function stripEntityXml(body: string): string {
-  // Block wrap: <mN>\n…\n</mN>. Tool-run lines: <mN>…</mN> on each line.
   const block = body.match(/^<m\d+>\n([\s\S]*)\n<\/m\d+>$/);
   if (block?.[1] !== undefined) return block[1];
   return body.replace(/<\/m\d+>/g, "").replace(/<m\d+>/g, "");
@@ -86,7 +82,6 @@ function stripEntityXml(body: string): string {
 
 function renderingBodies(filePath: string): string[] {
   let content = renderingContent(filePath);
-  // Drop the outer <tN>…</tN> wrap added for addressable smooth history.
   content = content.replace(/^<t\d+>\n/, "").replace(/\n<\/t\d+>$/, "");
   return content.split("\n\n").map((part) => stripEntityXml(part.split("\n").slice(1).join("\n")));
 }
@@ -118,7 +113,6 @@ describe("Story 3: turn construction recovery cascade", () => {
     await drain(sdk, filePath);
 
     const smoothed = formOf(filePath, "m1", "smoothed_prompt")?.content;
-    // turn_rendering is deterministic; its first segment is the ready smoothed prompt.
     expect(renderingBodies(filePath)[0]).toBe(smoothed);
 
     const logs = await sdk.logging.query({ filePath }, { reason: "not_ready" });
@@ -142,8 +136,6 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    // The rendering falls back to the prompt floor (smoothed not ready), so its
-    // first segment is the deterministic floor text.
     expect(renderingBodies(filePath)[0]).toBe("pending prompt because I asked");
     expect(formOf(filePath, "m1", "smoothed_prompt")).toMatchObject({
       state: "ready",
@@ -290,8 +282,6 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    // turn_rendering is the parts' text joined in record order; thinking and
-    // runtime notes render verbatim, in position, between the answer texts.
     const smoothed = formOf(filePath, "m1", "smoothed_prompt")?.content;
     expect(renderingBodies(filePath)).toEqual([
       smoothed,
@@ -503,9 +493,6 @@ describe("Story 3: turn construction recovery cascade", () => {
 
     await drain(sdk, filePath);
 
-    // The rendering carries the prompt floor, the tool run (call args + result
-    // floor), and the assistant text — verifying the composed content without
-    // an inference-callback capture (turn_rendering is deterministic, AC-6.3).
     const rendering = renderingContent(filePath);
     expect(rendering).toContain("multi fallback because I asked");
     expect(rendering).toContain('read_file({"path":"multi.txt"})');

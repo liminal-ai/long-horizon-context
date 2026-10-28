@@ -1,20 +1,3 @@
-// Band selection: the record/derivation reads and the walk's eager execution
-// plan. Three parts, deliberately split:
-//
-//   - readSelectionInputs: the eager reads — every live message with its
-//     blocks, every derivation with its content — before any transaction
-//     opens. A record the walk cannot place — a message or a chunk member
-//     whose turn does not resolve to a live turn — is skipped and reported,
-//     never refused. Its raw row is left exactly as it is.
-//   - eagerSelectionSource: those inputs behind the walk's source contract.
-//     Every answer is already in memory, so nothing the walk asks for costs a
-//     read.
-//   - selectArrangement: the walk over that source. Same inputs, same
-//     arrangement: no DB handle, no clock, no inference.
-//
-// This is the algorithm the LHC_COMPACT_ALGORITHM escape hatch selects. The
-// default plan reads metadata aggregates and hydrates only what the walk
-// visits; see bounded-source.ts. Both run the same walk (walk.ts).
 import type { DatabaseSync } from "node:sqlite";
 import * as messagesDomain from "../../messages/index.js";
 import type { Band, SettleConstruction, SkippedRecord } from "../../shared-tech/index.js";
@@ -27,11 +10,11 @@ import { type SelectionSource, walkArrangement } from "./walk.js";
 
 export interface SelectionMessage {
   messageId: string;
-  order: number; // source_event_order
+  order: number;
   kind: string;
   tokenEstimate: number;
   turnId: string;
-  text: string; // excerpt/note line (render.excerptLine)
+  text: string;
 }
 
 export interface SelectionTurn {
@@ -46,32 +29,23 @@ export interface SelectionChunk {
   chunkId: string;
   chunkOrder: number;
   status: "open" | "closed";
-  memberTurnIds: string[]; // member order
+  memberTurnIds: string[];
 }
 
-/** The two chunk summary derivations the detailed and brief ladders resolve. */
 export type ChunkSummaryType = "chunk_summary_detailed" | "chunk_summary_brief";
 
 export interface SelectionInputs {
-  messages: SelectionMessage[]; // live only, ascending order
-  turns: SelectionTurn[]; // ascending turnOrder
-  chunks: SelectionChunk[]; // ascending chunkOrder
-  derivations: Map<string, DerivationSnapshot>; // `${subjectId}/${derivationType}` (turn/chunk subjects)
+  messages: SelectionMessage[];
+  turns: SelectionTurn[];
+  chunks: SelectionChunk[];
+  derivations: Map<string, DerivationSnapshot>;
   compactChunkMaterials?: Map<string, CompactChunkMaterialSnapshot>;
   maxEventOrder: number;
-  derivationCounts: Record<string, Record<string, number>>; // derivation type → state → count
-  // Derived chunks whose stored members are all legitimate tombstoned turns.
-  // Preview ignores them; compact removes them with the replacement view.
+  derivationCounts: Record<string, Record<string, number>>;
   emptyChunkIds?: string[];
-  // Records the walk passed over because their turn does not resolve.
   skippedRecords: SkippedRecord[];
 }
 
-/**
- * What compact carries out of selection besides the arrangement itself: the
- * source-state provenance the receipt and the stored view record. Both
- * execution plans produce it.
- */
 export interface ArrangementSourceState {
   emptyChunkIds?: readonly string[];
   maxEventOrder: number;
@@ -86,17 +60,13 @@ export interface ArrangementEntry {
   derivationUsed: string;
   degraded: boolean;
   gap: boolean;
-  reason?: string; // gap entries
-  startOrder: number; // oldest event order the entry represents (notes included)
-  text: string; // rendered entry text (the band stores this verbatim)
+  reason?: string;
+  startOrder: number;
+  text: string;
   tokens: number;
-  // Turn parts: the step range this entry renders (part entries only).
   part?: { fromStep: number; toStep: number };
 }
 
-// A candidate the last band's walk passed over because it did not fit while
-// older candidates still did: no band text, but a gap the receipt and
-// gaps_json name — subject, band, and the size that did not fit.
 export interface SkippedSubject {
   band: Band;
   subjectId: string;
@@ -107,13 +77,9 @@ export interface SkippedSubject {
 export interface SelectionResult {
   compactPoint: number;
   coveredFrom: number;
-  // Gradient order (brief → detailed → smooth), oldest-first within band —
-  // the order the bands render and the arrangement persists.
   entries: ArrangementEntry[];
   skipped: SkippedSubject[];
-  // Turn parts (absent when no turn is split): what the receipt records.
   parts?: Array<{ turnId: string; fromStep: number; toStep: number }>;
-  // stepIndex: the host step index of the last part's toStep (not ordinal k).
   splitPoint?: { turnId: string; stepIndex: number };
   settled?: { turnId: string; construction: SettleConstruction };
   protectedTurn?: { turnId: string; representation: "full" | "whole_rendering" };
@@ -122,17 +88,11 @@ export interface SelectionResult {
 export interface SelectionConfig {
   lowerBound: number;
   percentages: { full: number; smooth: number; detailed: number; brief: number };
-  /** Newest-closed-turn protection fraction (Flow 5); the profile default when absent. */
   newestClosedProtection?: number;
-  /** Compact point must stay at or behind this event order (protected-pair tail). */
   compactPointUpperBound?: number;
   tokenEstimator: TokenEstimator;
 }
 
-// Message kinds that can anchor a host session rebuild past the compact point.
-// Excludes runtime_note (and any future non-mappable kinds). Shared with the
-// first-kept-message lookup in compact-compute so "empty tail" means the same
-// thing in both places.
 export const PI_MAPPABLE_MESSAGE_KINDS = [
   "user_prompt",
   "assistant_text",
@@ -144,15 +104,7 @@ export const PI_MAPPABLE_MESSAGE_KINDS = [
   "compact_continuation_marker",
 ] as const;
 
-// ── reads (the eager plan) ───────────────────────────────────────
-
 export function readSelectionInputs(db: DatabaseSync, estimator: TokenEstimator): SelectionInputs {
-  // Message, turn, and chunk material comes from the owner domains, not direct
-  // SQL against their tables (known domain-boundary leakage). The
-  // owners return source-faithful structure — turns carry the deleted flag,
-  // chunks carry raw membership — so thread-view decides for itself what the
-  // walk can place. The derivation and event-aggregate reads stay here as
-  // thread-view's own selection inputs.
   const structure = turnsDomain.readTurnChunkStructure(db);
   const shaped = shapeTurns(structure);
   const turns = shaped.turns;
@@ -223,9 +175,6 @@ export function readSelectionInputs(db: DatabaseSync, estimator: TokenEstimator)
   };
 }
 
-// ── the eager source ─────────────────────────────────────────────
-
-/** The read inputs behind the walk's source contract: every answer already in memory. */
 export function eagerSelectionSource(inputs: SelectionInputs): SelectionSource {
   const { messages } = inputs;
   const messagesByTurn = new Map<string, SelectionMessage[]>();
@@ -265,7 +214,6 @@ export function eagerSelectionSource(inputs: SelectionInputs): SelectionSource {
   };
 }
 
-/** The eager plan's entry point: pure over its inputs, same inputs same arrangement. */
 export function selectArrangement(inputs: SelectionInputs, config: SelectionConfig): SelectionResult {
   return walkArrangement(eagerSelectionSource(inputs), config);
 }

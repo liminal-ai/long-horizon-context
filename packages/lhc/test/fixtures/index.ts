@@ -37,9 +37,6 @@ const defaultPayloads: { [K in EventKind]: () => EventByKind<K>["payload"] } = {
   turn_end: () => ({}),
 };
 
-// Returns the discriminated MessageEventInput member for its kind, so a
-// kind/payload mismatch in test code is a compile error — building an invalid
-// pairing requires an explicit cast at the call site.
 export function validEvent<K extends EventKind>(
   kind: K,
   overrides: Partial<Omit<EventByKind<K>, "eventKind">> = {},
@@ -52,10 +49,6 @@ export function validEvent<K extends EventKind>(
     harness: "fixture-harness",
     payload: defaultPayloads[kind](),
   };
-  // The fields are built per-kind above (payload is typed EventByKind<K>["payload"]),
-  // but TS can't reduce a structural spread to the deferred Extract<…, { eventKind: K }>,
-  // so the final reconciliation goes through unknown. Call-site safety lives in the
-  // parameter types, not this assertion.
   return { ...base, ...overrides } as unknown as EventByKind<K>;
 }
 
@@ -88,8 +81,6 @@ export function tempStore(): TempStore {
   };
 }
 
-// Direct node:sqlite handle for below-SDK assertions. Read-only use by
-// convention; fixtures/corrupt.ts is the one sanctioned writer.
 export function openRaw(path: string): DatabaseSync {
   return openDatabase(path);
 }

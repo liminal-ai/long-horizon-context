@@ -1,35 +1,3 @@
-/**
- * Staged compact-continuation runtime (LIM-61 P1 lifecycle).
- *
- * Normative order at a settled seam:
- * 1. Validate host facts (closed).
- * 2. Attempt-intent fingerprint (before mutation); terminal replay requires match.
- * 3. Seam eligibility (skip — no claim; nonterminal if pending owned).
- * 4. Pending-boundary ownership + force-intent reconcile (no silent steal).
- * 5. Writer posture: a native/conflict row is resolved by host ownership
- *    authority — reclaim the stale row when no live owner holds this LHC thread,
- *    otherwise continue this attempt's current request.
- * 6. Health facts (capture/identity/open-turn) are carried into the receipt as
- *    warnings; an unprovable protected pair set declines into the ordinary
- *    settled-seam compact. Neither stops the seam.
- * 7. Provider usage / pressure / continuation branch.
- * 8. Claim writer only when a compact path will mutate.
- * 9. Force intent → turn_end → boundary materialize → compact → marker → install.
- * 10. Atomic receipt + boundary status + writer release (terminal only when complete).
- *
- * ## CX-S5: no stop in the compact path
- *
- * Input-epoch drift is diagnostic only. Incomplete capture, unproven provider
- * identity, an unverified open-turn invariant, an unsafe projected runway and an
- * unprovable provider request all warn and proceed. A failed compact or install
- * is bounded retry (`compactAttemptIndex` counts prior failures for this attempt
- * against `policy.compactRetryBudget`) and then continues on the current body.
- *
- * Crash recovery: re-enter with the same attemptId; resume from durable
- * boundary/force-intent/stage state. Completed attemptId replays stored terminal
- * receipt only when intent matches.
- */
-
 import { createHash } from "node:crypto";
 import type { MessageEventInput } from "../../intake-stream/index.js";
 import * as intakeStream from "../../intake-stream/index.js";
@@ -95,104 +63,47 @@ import {
 import { proveProtectedToolPairSet } from "./tool-pair.js";
 import { validateHostFacts } from "./validate-host.js";
 
-// ── Host input ──────────────────────────────────────────────────────────────
-
-/**
- * Public host facts for compact-continuation. Closed validation rejects
- * unknown fields including `testHooks` — fault injection is internal-only
- * via `runCompactContinuationForTests`.
- */
 export type CompactContinuationHostFacts = {
-  /**
-   * Stable attempt key. Repair reuses the same id. A completed attemptId
-   * replays the stored terminal receipt without re-mutation when identity matches.
-   */
   attemptId: string;
   seam: CompactContinuationSeam;
   providerUsage: ProviderUsageAuthority;
   postMeasurementEstimate: PostMeasurementEstimate;
   policy: CompactContinuationPolicy;
   continuation: WorkContinuation;
-  /**
-   * Host writer posture at seam entry. Informational for the oracle; durable
-   * claim ownership is always re-read from storage and never released based on
-   * host `writerClaim` alone. A `native`/`conflict` row is resolved by
-   * `CompactContinuationRunOptions.writerOwnershipCheck`, never by refusing.
-   */
   writerClaim: WriterClaim;
   captureComplete: boolean;
   providerIdentityValid: boolean;
-  /** Optional; ignored when it contradicts durable single-open-turn state. */
   singleOpenTurn?: boolean;
   actor: string;
   harness: string;
   compact?: { profile?: string; params?: ViewCompactParams };
 };
 
-/** Test-only fault injection. Not part of the public host-facts surface. */
 export type CompactContinuationTestHooks = {
   forceCompactStructurallyValid?: boolean;
   forceInstallSucceeds?: boolean;
   forceUsefulReduction?: boolean;
   forceCanProduceValidProviderRequest?: boolean;
   forceDerivationsMissingOrFailed?: boolean;
-  /** Skip real compact write (material still from hooks). Test-only. */
   skipRealCompact?: boolean;
   failInstallBeforeWrite?: boolean;
   interruptAfterBoundary?: boolean;
-  /**
-   * After marker event commits and boundary marker_persisted is written.
-   * Models crash after durable marker status update, before install.
-   */
   interruptAfterMarker?: boolean;
-  /**
-   * After canonical marker event commits, **before** boundary
-   * marker_persisted/last_stage update. Models the marker→status crash gap.
-   */
   interruptAfterMarkerEvent?: boolean;
-  /**
-   * After messageEvents(turn_end) returns, before boundary materialization.
-   * Leaves force_intent durable and writer held for resume reconcile.
-   */
   interruptAfterTurnEndCommit?: boolean;
-  /** Fail the atomic receipt+release transaction (pre-txn). */
   failFinalizeWrite?: boolean;
-  /** Fail only the receipt write (finalize aborts pre-txn). */
   failReceiptWrite?: boolean;
-  /** Throw inside finalize txn after persistReceipt, before release. */
   failFinalizeAfterReceipt?: boolean;
-  /** Throw at release inside finalize txn. */
   failFinalizeAtRelease?: boolean;
-  /**
-   * After releaseLhcWriter succeeds and stage log is written, before COMMIT.
-   * Proves rollback restores prior writer claim after a successful release update.
-   */
   failFinalizeAfterReleaseBeforeCommit?: boolean;
 };
 
-/**
- * Host ownership authority for a `native`/`conflict` writer row (R23-S8).
- *
- * The registry lives **host-side** — a process-global map keyed by LHC
- * `thread_id`, because two sessions or aliases can map to the same thread and
- * would otherwise hold two independent per-session flags. The SDK never owns
- * that registry; it only asks whether a live owner still holds the thread.
- *
- * Return `true` when a live owner holds it (this attempt is the loser and
- * continues its current request), `false` when the row is stale from a dead
- * owner (reclaim proceeds). When no check is supplied the SDK assumes a live
- * owner and never reclaims.
- */
 export type CompactContinuationWriterOwnershipCheck = (args: {
-  /** Canonical LHC thread id the writer row belongs to. */
   threadId: string;
-  /** Attempt asking for the row. */
   attemptId: string;
 }) => boolean | Promise<boolean>;
 
-/** Internal run options. Production callers use runCompactContinuation. */
 export type CompactContinuationRunOptions = {
-  /** Host ownership authority for stale-writer-row reclaim. */
   writerOwnershipCheck?: CompactContinuationWriterOwnershipCheck;
   testHooks?: CompactContinuationTestHooks;
 };
@@ -206,14 +117,8 @@ export type CompactContinuationRunResult = {
   compactReceipt: CompactReceipt | null;
   nextProviderRequestAllowed: boolean;
   refuseReceiptFidelityDescribes: "installed_view_only";
-  /**
-   * True when this attempt reclaimed a stale `native`/`conflict` writer row
-   * after host ownership authority confirmed no live owner held the thread.
-   */
   reclaimedStaleWriterRow: boolean;
-  /** True when this call returned a previously stored terminal receipt. */
   replayedTerminalAttempt: boolean;
-  /** Inspectable pending boundary, if any, after this call. */
   pendingBoundary: BoundaryRow | null;
 };
 
@@ -232,7 +137,6 @@ function attemptConflict(attemptId: string, ownerAttemptId: string, reason: stri
   );
 }
 
-/** Canonical LHC thread id for host-side writer-ownership lookups. */
 function readCanonicalThreadId(db: { prepare: (sql: string) => { get: () => unknown } }): string {
   const row = db.prepare("SELECT thread_id FROM thread_metadata WHERE id = 1").get() as
     | { thread_id: string }
@@ -294,15 +198,6 @@ function applyMaterialHooks(
   };
 }
 
-/**
- * Oracle invariants for a mutating compact path. Health facts are carried
- * through as-is so incomplete capture / unproven identity / an unverified
- * open-turn invariant land on the receipt as warnings instead of vanishing.
- *
- * A reclaimed stale writer row is reported as its original `native`/`conflict`
- * posture plus the `no_live_owner` authority, so the receipt records the
- * reclaim + warning ahead of this attempt's own `claim_writer`.
- */
 function compactPathInvariants(
   facts: CompactContinuationHostFacts,
   singleOpenTurn: boolean,
@@ -461,10 +356,6 @@ function turnEndEvent(facts: CompactContinuationHostFacts, attemptId: string): M
   };
 }
 
-/**
- * Pending repair boundary from durable status table (not marker presence alone).
- * Complete boundaries are ordinary turns and do not force repair.
- */
 function pendingBoundaryAsForced(pending: BoundaryRow | null): ForcedContinuationBoundary {
   if (pending === null) return { applied: false };
   if (pending.status !== "pending" && pending.status !== "failed_repairable") {
@@ -478,7 +369,6 @@ function pendingBoundaryAsForced(pending: BoundaryRow | null): ForcedContinuatio
   };
 }
 
-/** Stable JSON with sorted object keys (arrays keep order). */
 function stableStringify(value: unknown): string {
   if (value === null || typeof value !== "object") {
     return JSON.stringify(value);
@@ -491,14 +381,6 @@ function stableStringify(value: unknown): string {
   return `{${keys.map((k) => `${JSON.stringify(k)}:${stableStringify(obj[k])}`).join(",")}}`;
 }
 
-/**
- * Immutable operation identity — must match on every replay/resume.
- * Drift returns compact_continuation_attempt_conflict before mutation.
- *
- * Includes: contract version, attempt id, actor/harness, continuation kind +
- * toolCallId (correlationValid is posture), policy, compact profile/params.
- * Excludes seam flags/epochs, usage, estimate, capture/identity, writer posture.
- */
 export function computeOperationIdentity(facts: CompactContinuationHostFacts): Record<string, unknown> {
   const continuationIdentity: Record<string, unknown> =
     facts.continuation.kind === "pending_correlated_tool_result"
@@ -518,10 +400,6 @@ export function computeOperationIdentity(facts: CompactContinuationHostFacts): R
   };
 }
 
-/**
- * Mutable retry posture — may change across same-attempt repair entries.
- * Appended to the stage log per invocation; never silently retained as identity.
- */
 export function computeRetryPosture(
   facts: CompactContinuationHostFacts,
   durableWriter: WriterClaimRow,
@@ -543,7 +421,6 @@ export function computeRetryPosture(
   };
 }
 
-/** @deprecated Use computeOperationIdentity. Kept as alias for call sites/tests. */
 export function computeAttemptIntent(facts: CompactContinuationHostFacts): Record<string, unknown> {
   return computeOperationIdentity(facts);
 }
@@ -560,14 +437,6 @@ export function hashRecord(value: Record<string, unknown>): { hash: string; json
   return { hash, json };
 }
 
-/**
- * Parsed immutable operation identity from a durable attempt-intent row.
- *
- * Read-only recovery surface: hosts re-enter claim-only / same-attempt repair
- * with these fields so the intent hash matches. Mutable posture (seam, usage,
- * estimate, capture, writer claim host assertion, correlationValid) is not
- * stored here and must be rebuilt fresh.
- */
 export type StoredOperationIdentity = {
   contractVersion: string;
   attemptId: string;
@@ -579,9 +448,7 @@ export type StoredOperationIdentity = {
     | { kind: "pending_correlated_tool_result"; protectedToolCallIds: string[] };
   policy: CompactContinuationPolicy;
   compact?: { profile?: string; params?: ViewCompactParams };
-  /** Stored sha256 of intent_json (identity bytes as written). */
   intentHash: string;
-  /** Raw stored intent JSON (stable-stringified identity). */
   intentJson: string;
   createdAt: string;
 };
@@ -602,10 +469,6 @@ function requireFiniteNumber(obj: Record<string, unknown>, key: string, ctx: str
   return v;
 }
 
-/**
- * Fail-fast parse of a stored attempt-intent row into operation identity.
- * Never synthesizes missing fields; throws with a storage-corruption detail.
- */
 export function parseStoredOperationIdentity(row: AttemptRow): StoredOperationIdentity {
   let parsed: unknown;
   try {
@@ -713,8 +576,6 @@ export function parseStoredOperationIdentity(row: AttemptRow): StoredOperationId
     compact = out;
   }
 
-  // Integrity: intent_hash must be sha256 of the stored intent_json bytes.
-  // Do not re-serialize parsed fields (float/key drift would false-fail).
   const recomputed = createHash("sha256").update(row.intentJson).digest("hex");
   if (recomputed !== row.intentHash) {
     throw new Error(
@@ -736,11 +597,6 @@ export function parseStoredOperationIdentity(row: AttemptRow): StoredOperationId
   };
 }
 
-/**
- * Read-only inspection: load and parse the durable attempt-intent / operation
- * identity for `attemptId`. Returns `null` when no row exists. Corrupt JSON or
- * incomplete identity fails as `storage_failure` — never synthesizes or clears.
- */
 export async function getCompactContinuationAttemptIntent(
   ref: ThreadRef,
   attemptId: string,
@@ -778,12 +634,6 @@ async function stageLog(
   return { ok: true, value: true };
 }
 
-/**
- * Atomic receipt persist + optional boundary update + optional writer release.
- * Catches transaction exceptions and returns storageFailure — never throws out
- * of runCompactContinuation. Supports mid-txn fault hooks. Never ignores
- * release failures. Does not terminalize while an owned writer remains held.
- */
 async function finalizeAttempt(
   ref: ThreadRef,
   facts: CompactContinuationHostFacts,
@@ -799,15 +649,10 @@ async function finalizeAttempt(
       forcedAt: string;
       completedAt?: string | null;
     };
-    /**
-     * Discard this attempt's boundary bookkeeping row (R23-S9/S10 budget
-     * exhaustion). Mutually exclusive with `boundaryUpdate`.
-     */
     boundaryDiscard?: { continuationTurnId: string };
     forcedBoundaryThisAttempt: boolean;
     continuationTurnId: string | null;
     compactReceipt: CompactReceipt | null;
-    /** This attempt reclaimed a stale native/conflict writer row (R23-S8). */
     reclaimedStaleWriterRow?: boolean;
   },
   clock: () => Date,
@@ -818,8 +663,6 @@ async function finalizeAttempt(
       return storageFailure("compact-continuation finalize write failed (test injection)");
     }
 
-    // Never terminalize while this attempt still holds the durable writer and
-    // is not releasing it in this same transaction.
     let terminal = opts.terminal;
     if (terminal && !opts.releaseWriter) {
       const held = await createDbReadTransaction(ref, (tx) => readWriterClaim(tx.db));
@@ -829,10 +672,6 @@ async function finalizeAttempt(
       }
     }
 
-    // Align residual writerReleased with the actual release action when we will
-    // release (oracle may already say true; keep consistent). When we release,
-    // residual must report released. When we do not, and we still hold the claim,
-    // force residual.writerReleased false so receipts stay truthful.
     let decisionForPersist = decision;
     if (opts.releaseWriter) {
       if (decision.receipt.residual.writerReleased !== true) {
@@ -933,7 +772,6 @@ async function finalizeAttempt(
   }
 }
 
-/** Best-effort release of this attempt's durable writer claim; never ignores failure. */
 async function releaseOwnWriterIfHeld(ref: ThreadRef, attemptId: string, clock: () => Date): Promise<OpResult<true>> {
   const rel = await createDbWriteTransaction(
     ref,
@@ -946,7 +784,6 @@ async function releaseOwnWriterIfHeld(ref: ThreadRef, attemptId: string, clock: 
         }
         appendStageLog(tx.db, attemptId, "writer_released", clock().toISOString());
       }
-      // Never release another attempt's claim.
       return true as const;
     },
     clock,
@@ -955,12 +792,6 @@ async function releaseOwnWriterIfHeld(ref: ThreadRef, attemptId: string, clock: 
   return { ok: true, value: true };
 }
 
-/**
- * Public entry: closed validation rejects testHooks; no fault injection surface.
- *
- * `opts.writerOwnershipCheck` is the host's ownership authority for a stale
- * `native`/`conflict` writer row. Without it the SDK never reclaims.
- */
 export async function runCompactContinuation(
   ref: ThreadRef,
   facts: CompactContinuationHostFacts,
@@ -970,10 +801,6 @@ export async function runCompactContinuation(
   return runCompactContinuationInner(ref, facts, clock, undefined, opts.writerOwnershipCheck);
 }
 
-/**
- * Test-only entry: same runtime with optional fault hooks.
- * Exported only via sanctioned test-fixtures / internal path — not public SDK types.
- */
 export async function runCompactContinuationForTests(
   ref: ThreadRef,
   facts: CompactContinuationHostFacts,
@@ -984,9 +811,6 @@ export async function runCompactContinuationForTests(
   return runCompactContinuationInner(ref, facts, clock, hooks, writerOwnershipCheck);
 }
 
-/**
- * Run one compact-continuation attempt against thread state.
- */
 async function runCompactContinuationInner(
   ref: ThreadRef,
   facts: CompactContinuationHostFacts,
@@ -994,18 +818,12 @@ async function runCompactContinuationInner(
   hooks: CompactContinuationTestHooks | undefined,
   writerOwnershipCheck?: CompactContinuationWriterOwnershipCheck,
 ): Promise<OpResult<CompactContinuationRunResult>> {
-  // ── Closed host-fact validation before any I/O ──────────────────────────
   const inputIssue = validateHostFacts(facts);
   if (inputIssue !== undefined) return { ok: false, error: inputIssue };
 
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
 
-  // ── Per-thread mechanism exclusivity (turn parts, AC-7.3 / TC-7.3b) ────
-  // A thread that has ever installed a view serving parts never takes the
-  // forced-boundary path: the fact is durable (thread_metadata, written in the
-  // first parts install's transaction), so it outlives settle. Typed, before
-  // replay, claim, or any write.
   const activated = await createDbReadTransaction(ref, (tx) => readPartsActivation(tx.db));
   if (!activated.ok) return activated;
   if (activated.value !== null) {
@@ -1018,7 +836,6 @@ async function runCompactContinuationInner(
   const identity = computeOperationIdentity(facts);
   const { intentHash, intentJson } = hashAttemptIntent(identity);
 
-  // ── Terminal attempt replay (matching identity only) ────────────────────
   const existing = await createDbReadTransaction(ref, (tx) => readReceiptByAttemptId(tx.db, facts.attemptId));
   if (!existing.ok) return existing;
   if (existing.value?.terminal) {
@@ -1036,7 +853,6 @@ async function runCompactContinuationInner(
         `attemptId ${facts.attemptId} already completed with a different operation identity`,
       );
     }
-    // Repair stale same-owner writer claim left after a prior terminal path.
     const writerRepair = await createDbWriteTransaction(
       ref,
       (tx) => {
@@ -1079,9 +895,6 @@ async function runCompactContinuationInner(
     };
   }
 
-  // ── Pre-seam / durable state (read-only) ────────────────────────────────
-  // Input-epoch drift is diagnostic only (CX-S5 / R1): settled history is not
-  // invalidated by input that arrived later in the turn.
   const preSkip = facts.seam.insideTransportRetry || !isAtSeam(facts.seam);
 
   const openRead = await createDbReadTransaction(ref, (tx) => {
@@ -1102,7 +915,6 @@ async function runCompactContinuationInner(
   const forceIntent = stateRead.value.forceIntent;
   const durableWriter = stateRead.value.writer;
 
-  // ── Ownership: foreign pending/failed_repairable cannot be stolen ───────
   if (pendingBoundary !== null && pendingBoundary.attemptId !== facts.attemptId) {
     return attemptConflict(
       facts.attemptId,
@@ -1111,9 +923,6 @@ async function runCompactContinuationInner(
     );
   }
 
-  // ── Register immutable operation identity before further mutation ───────
-  // Identity drift always conflicts (including nonterminal repair). Posture
-  // (seam/usage/health) may change and is recorded per entry below.
   const intentWrite = await createDbWriteTransaction(
     ref,
     (tx) => insertAttemptIntent(tx.db, facts.attemptId, intentHash, intentJson, clock().toISOString()),
@@ -1128,7 +937,6 @@ async function runCompactContinuationInner(
     );
   }
 
-  // Append retry posture snapshot for this invocation (append-only audit).
   const posture = computeRetryPosture(facts, durableWriter);
   const { hash: postureHash, json: postureJson } = hashRecord(posture);
   const postureWrite = await createDbWriteTransaction(
@@ -1144,10 +952,6 @@ async function runCompactContinuationInner(
   );
   if (!postureWrite.ok) return postureWrite;
 
-  // ── Force crash-gap reconcile on any entry ──────────────────────────────
-  // If force intent exists (intent/applied) and no pending boundary, recover
-  // the continuation turn from the durable turn_end key without re-forcing
-  // when the turn already exists.
   if (
     forceIntent !== null &&
     (forceIntent.status === "intent" || forceIntent.status === "applied") &&
@@ -1185,16 +989,12 @@ async function runCompactContinuationInner(
       if (!pending.ok) return pending;
       pendingBoundary = pending.value;
     }
-    // If no turn yet, same attempt will re-send idempotent turn_end on force path.
   }
 
   const forcedFromPending = pendingBoundaryAsForced(pendingBoundary);
   const ownsPending = pendingBoundary !== null && pendingBoundary.attemptId === facts.attemptId;
 
-  // ── Pre-seam skips ──────────────────────────────────────────────────────
   if (preSkip) {
-    // Release durable claim owned by this attempt — never another attempt's.
-    // Quiet/skip paths must not leave a claim-only wedge.
     const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
     const oracleWriter: WriterClaim = ownsWriter ? "lhc" : "none";
     const decision = decideCompactContinuation(
@@ -1210,8 +1010,6 @@ async function runCompactContinuationInner(
         emptyMaterial(),
       ),
     );
-    // Pending owned by this attempt: nonterminal so later settled repair can proceed.
-    // Terminal only when no pending AND writer is released (or was not held).
     return await finalizeAttempt(
       ref,
       facts,
@@ -1228,25 +1026,17 @@ async function runCompactContinuationInner(
     );
   }
 
-  // ── Settled seam: stale native/conflict row under host authority ─────────
-  // A row claiming the thread for someone else is never a stop. The host's
-  // ownership registry (process-global, keyed by LHC thread id) decides: reclaim
-  // a stale row from a dead owner, otherwise this attempt is the loser and
-  // continues its current request.
   let reclaimedStaleWriterRow = false;
   if (facts.writerClaim === "native" || facts.writerClaim === "conflict") {
     let liveOwner = true;
     let authoritySupplied = false;
     if (writerOwnershipCheck !== undefined) {
       authoritySupplied = true;
-      // Canonical LHC thread id — the only key that stays stable across two
-      // sessions or aliases pointing at the same thread.
       const threadIdRead = await createDbReadTransaction(ref, (tx) => readCanonicalThreadId(tx.db));
       if (!threadIdRead.ok) return threadIdRead;
       try {
         liveOwner = (await writerOwnershipCheck({ threadId: threadIdRead.value, attemptId: facts.attemptId })) === true;
       } catch (cause) {
-        // An authority that cannot answer is not authority to steal.
         liveOwner = true;
         const authLog = await stageLog(ref, facts.attemptId, "recovery_maintenance", clock, {
           action: "writer_ownership_check_failed",
@@ -1257,8 +1047,6 @@ async function runCompactContinuationInner(
       }
     }
     if (liveOwner) {
-      // Loser: release only a claim this attempt owns, mutate nothing else, and
-      // let the session continue its current request.
       const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
       const decision = decideCompactContinuation(
         buildOracleInput(
@@ -1298,7 +1086,6 @@ async function runCompactContinuationInner(
     if (!reclaimLog.ok) return reclaimLog;
   }
 
-  // Durable protected-pair-set proof for pending-tool path (host correlation insufficient).
   let toolPairOk = true;
   if (facts.continuation.kind === "pending_correlated_tool_result") {
     if (facts.continuation.correlationValid) {
@@ -1317,11 +1104,6 @@ async function runCompactContinuationInner(
     }
   }
 
-  // Unusable applied-boundary + wrong continuation kind (repair path only).
-  // The oracle discards the boundary and starts the seam fresh (R23-S12). The
-  // durable boundary row is left inspectable and repairable — the decision is
-  // nonterminal — because the continuation turn it names really was opened.
-  // v2: pending_correlated_tool_result is legal with applied boundary (protected escalation).
   if (
     forcedFromPending.applied &&
     facts.continuation.kind !== "active_non_tool" &&
@@ -1347,7 +1129,6 @@ async function runCompactContinuationInner(
       decision,
       {
         releaseWriter: ownsWriter,
-        // Keep nonterminal when boundary still needs repair.
         terminal: !ownsPending,
         forcedBoundaryThisAttempt: false,
         continuationTurnId: decision.receipt.residual.continuationTurnId,
@@ -1358,19 +1139,11 @@ async function runCompactContinuationInner(
     );
   }
 
-  // Capture / identity / open-turn health no longer gates the seam: those facts
-  // travel with the oracle input and surface as receipt warnings. Only an
-  // unprovable protected pair set changes the route — the pair cannot be
-  // protected through compact, so this seam declines into the host's ordinary
-  // settled-seam compact on canonical state and mutates nothing.
   if (!toolPairOk) {
     const cont =
       facts.continuation.kind === "pending_correlated_tool_result"
         ? { ...facts.continuation, correlationValid: false }
         : facts.continuation;
-    // When a pending boundary is owned and repairable, keep the claim for resume.
-    // When this is a claim-only crash (no pending boundary), release so quiet/
-    // decline re-entry does not wedge the writer.
     const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
     const releaseWriter = ownsWriter && !ownsPending;
     const oracleWriter: WriterClaim = ownsWriter ? "lhc" : "none";
@@ -1393,7 +1166,6 @@ async function runCompactContinuationInner(
       decision,
       {
         releaseWriter,
-        // Declining is terminal only when no pending boundary for this attempt.
         terminal: !ownsPending,
         forcedBoundaryThisAttempt: false,
         continuationTurnId: decision.receipt.residual.continuationTurnId,
@@ -1404,13 +1176,9 @@ async function runCompactContinuationInner(
     );
   }
 
-  // ── Pressure / branch (no claim yet) ────────────────────────────────────
   const pressure = pressureAtOrAbove(facts);
-  // Repair pending boundary always takes continue-turn path regardless of pressure.
-  // let so pending-tool path can escalate to continue-turn mid-attempt.
   let needsContinueTurn =
     forcedFromPending.applied || (pressure === true && facts.continuation.kind === "active_non_tool");
-  // Protected-escalation repair: pending boundary + pending tool set also continues.
   if (forcedFromPending.applied && facts.continuation.kind === "pending_correlated_tool_result" && toolPairOk) {
     needsContinueTurn = true;
   }
@@ -1420,9 +1188,6 @@ async function runCompactContinuationInner(
     facts.continuation.kind === "pending_correlated_tool_result" &&
     toolPairOk;
 
-  // No-compact quiet paths: never claim a new writer; release owned claim-only
-  // crash wedges so fresh attempts can proceed. With a pending owned boundary,
-  // keep the claim for resume (nonterminal).
   if (!needsContinueTurn && !needsPreserveTool) {
     const ownsWriter = durableWriter.claim === "lhc" && durableWriter.attemptId === facts.attemptId;
     const releaseWriter = ownsWriter && !ownsPending;
@@ -1446,7 +1211,6 @@ async function runCompactContinuationInner(
       decision,
       {
         releaseWriter,
-        // Quiet outcomes are terminal only with no pending owned boundary.
         terminal: !ownsPending,
         forcedBoundaryThisAttempt: false,
         continuationTurnId: null,
@@ -1457,7 +1221,6 @@ async function runCompactContinuationInner(
     );
   }
 
-  // ── Claim writer only for compact paths ─────────────────────────────────
   const claimResult = await createDbWriteTransaction(
     ref,
     (tx) => {
@@ -1479,9 +1242,6 @@ async function runCompactContinuationInner(
     );
   }
 
-  // Bounded retry index: 1 + the number of compact/install failures already
-  // recorded for this attempt identity. `policy.compactRetryBudget` bounds it;
-  // exhaustion continues on the current body rather than stopping.
   const priorStages = await createDbReadTransaction(ref, (tx) => listStageLog(tx.db, facts.attemptId));
   if (!priorStages.ok) return priorStages;
   const priorAttemptFailures = priorStages.value.filter(
@@ -1498,7 +1258,6 @@ async function runCompactContinuationInner(
   let markerPersistedDurable = pendingBoundary?.markerPersisted ?? false;
 
   try {
-    // ── Pending-tool prepare/evaluate (may escalate to continue-turn) ─────
     let pendingEscalated = false;
     let proposedVisibilityBoundary: number | null = null;
     let visibilityBoundaryBefore: number | null = null;
@@ -1508,7 +1267,6 @@ async function runCompactContinuationInner(
         : [];
 
     if (needsPreserveTool && !needsContinueTurn && hooks?.skipRealCompact !== true) {
-      // 1) Prepare ordinary preserve candidate without installing.
       const prepOpts: { profile?: string; params?: ViewCompactParams } = {};
       if (facts.compact?.profile !== undefined) prepOpts.profile = facts.compact.profile;
       if (facts.compact?.params !== undefined) prepOpts.params = facts.compact.params;
@@ -1526,20 +1284,14 @@ async function runCompactContinuationInner(
         const preserveUseful = cand0.value.material.usefulReduction;
         const preserveSafe = proj0.safe === true;
         if (preserveUseful && preserveSafe && cand0.value.material.compactStructurallyValid) {
-          // Normal preserve path: keep prepared for install below.
-          // Fall through with needsPreserveTool; material filled in prepare section.
         } else {
-          // Escalate before any preserve install: force boundary + protected prune.
           pendingEscalated = true;
-          // Flip into continue-turn flow for force/marker; continuation kind stays pending set.
-          // Force path uses needsContinueTurn — set local flag.
           needsContinueTurn = true;
           needsPreserveTool = false;
         }
       }
     }
 
-    // ── Force boundary if fresh continue-turn ─────────────────────────────
     if (needsContinueTurn && !forcedFromPending.applied) {
       const openCheck = await createDbReadTransaction(ref, (tx) => {
         const ids = readOpenTurnIds(tx.db);
@@ -1583,7 +1335,6 @@ async function runCompactContinuationInner(
 
       const turnEndKey = turnEndIdempotencyKey(facts.attemptId);
 
-      // If turn already exists from a prior force, materialize boundary only.
       const existingTurn = await createDbReadTransaction(ref, (tx) =>
         findContinuationTurnFromForceKey(tx.db, turnEndKey),
       );
@@ -1639,7 +1390,6 @@ async function runCompactContinuationInner(
           return boundWrite;
         }
       } else {
-        // 1. Durable force intent before turn_end commit.
         const intentRec = await createDbWriteTransaction(
           ref,
           (tx) => {
@@ -1656,7 +1406,6 @@ async function runCompactContinuationInner(
           return intentRec;
         }
 
-        // 2. Canonical turn_end (idempotent by attempt key).
         const forceBatch = await intakeStream.messageEvents(ref, [turnEndEvent(facts, facts.attemptId)]);
         if (!forceBatch.ok) {
           const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
@@ -1671,7 +1420,6 @@ async function runCompactContinuationInner(
           );
         }
 
-        // Crash gap: after turn_end commit, before boundary materialization.
         if (hooks?.interruptAfterTurnEndCommit === true) {
           const gapLog = await stageLog(ref, facts.attemptId, "interrupted", clock, {
             after: "turn_end_commit",
@@ -1699,7 +1447,6 @@ async function runCompactContinuationInner(
               },
             ),
           );
-          // Writer stays held; force_intent remains; next resume reconciles one boundary.
           const pending = await createDbReadTransaction(ref, (tx) => readPendingBoundary(tx.db));
           if (!pending.ok) return pending;
           return {
@@ -1714,7 +1461,6 @@ async function runCompactContinuationInner(
           };
         }
 
-        // 3. Materialize boundary from opened turn id.
         const opened = forceBatch.value.turnTransitions.find((t) => t.action === "opened");
         const openedFromKey = await createDbReadTransaction(ref, (tx) =>
           findContinuationTurnFromForceKey(tx.db, turnEndKey),
@@ -1754,7 +1500,6 @@ async function runCompactContinuationInner(
               lastStage: "force_turn_end",
               forcedAt: boundaryForcedAt,
             });
-            // 4. Mark force intent applied/reconciled with continuation turn id.
             markForceIntentApplied(tx.db, facts.attemptId, continuationTurnId!);
             appendStageLog(tx.db, facts.attemptId, "force_turn_end", boundaryForcedAt, {
               continuationTurnId,
@@ -1815,7 +1560,6 @@ async function runCompactContinuationInner(
       markerPersistedDurable = forcedFromPending.markerAlreadyPersisted;
     }
 
-    // ── Protected visibility boundary (escalated pending only) ────────────
     let maximalPruneInsufficient = false;
     let boundaryWalkTargetLimited = false;
     if (
@@ -1839,7 +1583,6 @@ async function runCompactContinuationInner(
       boundaryWalkTargetLimited = threshold !== undefined;
     }
 
-    // ── Compact prepare + candidate material ──────────────────────────────
     let prepared: threadView.PreparedCompact | null = null;
 
     if (hooks?.skipRealCompact === true) {
@@ -1892,9 +1635,6 @@ async function runCompactContinuationInner(
           }),
           hooks,
         );
-        // Escalated candidate unsafe at the target-limited walk: before any
-        // refuse, apply maximal eligible pruning once (story: refuse only when
-        // maximal eligible pruning still cannot produce safe runway).
         if (
           escalated &&
           material.projectedPressureSafe === false &&
@@ -1946,17 +1686,9 @@ async function runCompactContinuationInner(
             }
           }
         }
-        // Pressure formula is authoritative. When the projected pressure is
-        // provably safe, the zone-proxy insufficiency flag is advisory noise —
-        // clear it so oracle classification matches the installed reality.
         if (escalated && material.projectedPressureSafe === true && material.maximalPruneInsufficient) {
           material = { ...material, maximalPruneInsufficient: false };
         }
-        // CX-S5 / R24: an unsafe projected runway after maximal eligible pruning
-        // is a diagnostic, not a gate. The relief still installs and the oracle
-        // records `unsafe_runway_projection`. Oversized outgoing content is ours
-        // to truncate as a ladder rung, and the host's exact body check is
-        // downstream. maximalPruneInsufficient stays proven for the receipt.
         if (
           escalated &&
           (material.projectedPressureSafe === false ||
@@ -1980,12 +1712,6 @@ async function runCompactContinuationInner(
       }
     }
 
-    // ── Marker before install (continue-turn only, when structure valid) ──
-    // Skipped when the attempt already resolved not to install (prepared
-    // cleared, e.g. unsafe-runway refuse): a marker persisted on a certain
-    // refuse would contradict the receipt residual. Repair reasserts by key.
-    // An unprovable provider request never blocks the marker or the install
-    // (R21): the best available body is sent and the provider decides.
     if (
       needsContinueTurn &&
       forcedContinuationBoundary.applied === true &&
@@ -2010,8 +1736,6 @@ async function runCompactContinuationInner(
         }
       }
 
-      // Crash gap: marker event durable, boundary.marker_persisted not yet updated.
-      // Resume detects marker by idempotency key, reconciles status, no second marker.
       if (hooks?.interruptAfterMarkerEvent === true) {
         const gapLog = await stageLog(ref, facts.attemptId, "interrupted", clock, {
           after: "marker_event_commit",
@@ -2039,7 +1763,6 @@ async function runCompactContinuationInner(
               applied: true,
               continuationTurnId: cTurnId,
               forcedThisSeam: forcedBoundaryThisAttempt,
-              // Boundary row may still say marker false; residual presence is true in record.
               markerAlreadyPersisted: already.value,
             },
             material,
@@ -2083,13 +1806,8 @@ async function runCompactContinuationInner(
         return markWrite;
       }
 
-      // Re-evaluate candidate after marker lands so model-visible structure includes it.
-      // Do not silently keep pre-marker material when re-assembly fails.
       if (prepared !== null && hooks?.skipRealCompact !== true) {
         const candidate2 = await createDbReadTransaction(ref, (tx) =>
-          // Same boundary override as the pre-marker assembly: dropping it here
-          // would recompute escalated savings against full bodies and misreport
-          // an installed-safe candidate as unsafe.
           assembleCandidateFromPrepared(tx.db, prepared!, facts.policy.lowerTargetTokens, {
             ...(proposedVisibilityBoundary !== null ? { boundaryPositionOverride: proposedVisibilityBoundary } : {}),
           }),
@@ -2156,7 +1874,6 @@ async function runCompactContinuationInner(
       }
     }
 
-    // ── Install ───────────────────────────────────────────────────────────
     const canAttemptInstall =
       material.compactStructurallyValid && (prepared !== null || hooks?.skipRealCompact === true);
 
@@ -2245,7 +1962,6 @@ async function runCompactContinuationInner(
       }
     }
 
-    // Final oracle boundary input.
     let finalBoundary: ForcedContinuationBoundary = { applied: false };
     if (needsContinueTurn && forcedContinuationBoundary.applied) {
       const cTurnId = forcedContinuationBoundary.continuationTurnId;
@@ -2273,10 +1989,6 @@ async function runCompactContinuationInner(
       }),
     );
 
-    // Boundary completion vs failed_repairable (nonterminal until repair succeeds).
-    // compact_preserve_tool_escalated is an installed success like the rest:
-    // omitting it finalized a successfully installed escalation as
-    // failed_repairable / compact_failed, contradicting its own receipt.
     const successOutcomes = new Set([
       "compact_continue_turn",
       "degraded_compact",
@@ -2310,7 +2022,6 @@ async function runCompactContinuationInner(
 
     if (finalBoundary.applied) {
       if (successOutcomes.has(decision.outcome) && material.installSucceeds) {
-        // Successful installed outcomes — terminal + complete boundary.
         finalizeOpts.terminal = true;
         finalizeOpts.boundaryUpdate = {
           continuationTurnId: finalBoundary.continuationTurnId,
@@ -2321,20 +2032,6 @@ async function runCompactContinuationInner(
           completedAt: clock().toISOString(),
         };
       } else {
-        // Install/compact fail after force.
-        // compact_failed: candidate structure invalid (never reached a valid install).
-        // install_failed: valid candidate reached install and install failed.
-        // A structurally valid candidate that reached install and failed is an
-        // install failure; anything earlier is a compact failure.
-        //
-        // Bounded retry, never a stop — but bounded means bounded (R23-S9/S10):
-        // while the oracle still authorizes retry the boundary stays
-        // failed_repairable and the attempt is nonterminal; once the budget is
-        // exhausted (continue_current_body / compact_retry_budget_exhausted)
-        // the attempt terminalizes so the same attempt replays without
-        // mutating, and its speculative boundary bookkeeping is discarded so a
-        // fresh attempt starts clean. Canonical turn/marker bytes and the
-        // terminal receipt stay; nextProviderRequestAllowed remains true.
         const failStage: StageName =
           material.compactStructurallyValid && material.installSucceeds === false ? "install_failed" : "compact_failed";
         if (decision.receipt.retry.retryAuthorized) {
@@ -2367,7 +2064,6 @@ async function runCompactContinuationInner(
 
     return await finalizeAttempt(ref, facts, decision, finalizeOpts, clock, hooks);
   } catch (cause) {
-    // Never silently drop release failure.
     try {
       const rel = await releaseOwnWriterIfHeld(ref, facts.attemptId, clock);
       if (!rel.ok) {
@@ -2383,8 +2079,6 @@ async function runCompactContinuationInner(
     return storageFailure(`compact-continuation failed: ${detail(cause)}`);
   }
 }
-
-// ── Inspection surfaces ─────────────────────────────────────────────────────
 
 export async function getCompactContinuationReceipt(
   ref: ThreadRef,
@@ -2458,11 +2152,6 @@ export async function listCompactContinuationStages(
   }
 }
 
-/**
- * Provider-neutral host validation acknowledgment after successful core install.
- * Does not roll back core view/boundary. Blocks next provider request until ok
- * when status is awaiting/failed. LHC never validates the host provider body.
- */
 export async function recordCompactContinuationHostValidation(
   ref: ThreadRef,
   attemptId: string,

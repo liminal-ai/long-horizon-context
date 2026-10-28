@@ -1,13 +1,3 @@
-/**
- * LIM-133: bounded archive projections.
- *
- * listEvents stays the explicit full-archive read. threadFrontier,
- * eventKeyPrefixCounts and listEventKeysByPrefix are the bounded surfaces:
- * constant or O(caller input) rows, indexed non-payload columns only, and
- * closed contracts for duplicate/overlapping prefixes, invalid caps/cursors
- * and cap exhaustion.
- */
-
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   createDeterministicInferenceCallbacks,
@@ -34,13 +24,10 @@ function keyedNote(key: string): MessageEventInput {
   return validEvent("runtime_note", { idempotencyKey: key, payload: { text: key } });
 }
 
-// exactOptionalPropertyTypes: an absent cursor must be omitted, not undefined.
 function pageQuery(prefix: string, limit: number, cursor?: string): intakeStream.EventKeyPageQuery {
   return cursor === undefined ? { prefix, limit } : { prefix, limit, cursor };
 }
 
-// "v1:<frontier>:<traversed>:<lastKey>" — split so a test can tamper with one
-// field of an otherwise authentic, server-issued cursor.
 function cursorParts(cursor: string): { frontier: string; traversed: string; lastKey: string } {
   const [version, frontier, traversed, ...rest] = cursor.split(":");
   expect(version).toBe("v1");
@@ -101,7 +88,6 @@ describe("bounded archive projections", () => {
       expect(after.value.lastRecordedAt).not.toBeNull();
       expect(after.value.threadId).toBe(empty.value.threadId);
       expect(after.value.createdAt).toBe(empty.value.createdAt);
-      // Same field set regardless of archive size: nothing here is a list.
       expect(Object.keys(after.value).sort()).toEqual([
         "createdAt",
         "lastEventOrder",
@@ -136,7 +122,6 @@ describe("bounded archive projections", () => {
         expect(sql).not.toMatch(/payload/);
         expect(sql).not.toMatch(/COUNT\(/i);
       }
-      // The only event statement is a single newest row.
       expect(FRONTIER_LAST_EVENT_SQL).toMatch(/ORDER BY event_order DESC LIMIT 1$/);
     });
   });
@@ -164,7 +149,6 @@ describe("bounded archive projections", () => {
       expect(result.value).toEqual([
         { prefix: "codex:s1:", exists: true, count: 2 },
         { prefix: "missing:", exists: false, count: 0 },
-        // Overlap is independent: keys under codex:s1: are counted again here.
         { prefix: "codex:", exists: true, count: 3 },
       ]);
       expect(result.value.length).toBeLessThanOrEqual(4);
@@ -188,7 +172,6 @@ describe("bounded archive projections", () => {
     it("matches the exact prefix boundary, not a looser range", async () => {
       const recorded = await sdk.intakeStream.messageEvents({ filePath }, [keyedNote("codex;z")]);
       expect(recorded.ok).toBe(true);
-      // ';' is the byte immediately after ':' — the upper bound must exclude it.
       const result = await sdk.intakeStream.eventKeyPrefixCounts({ filePath }, ["codex:"]);
       expect(result.ok).toBe(true);
       if (!result.ok) return;
@@ -269,11 +252,6 @@ describe("bounded archive projections", () => {
       const issued = first.value.cursor;
       expect(first.value.keys[9]?.idempotencyKey).toBe("legacy:009");
 
-      // A key sorting after everything this walk could still return. The
-      // cursor's own rank arithmetic is untouched by it, so nothing but exact
-      // frontier equality can catch it: a check that only refused a cursor
-      // *ahead* of the frontier would continue the walk here and quietly
-      // absorb a row that was not in it.
       const later = await sdk.intakeStream.messageEvents({ filePath }, [keyedNote("legacy:900")]);
       expect(later.ok).toBe(true);
 
@@ -287,8 +265,6 @@ describe("bounded archive projections", () => {
       expect(afterLater.error.code).toBe("invalid_bounds");
       expect(afterLater.error.reason).toContain("does not match the thread frontier");
 
-      // A key sorting before the cursor's last returned key: equally stale,
-      // and refused rather than silently skipped over.
       const earlier = await sdk.intakeStream.messageEvents({ filePath }, [keyedNote("legacy:0055")]);
       expect(earlier.ok).toBe(true);
 
@@ -301,9 +277,6 @@ describe("bounded archive projections", () => {
       expect(afterEarlier.error.code).toBe("invalid_bounds");
       expect(afterEarlier.error.reason).toContain("does not match the thread frontier");
 
-      // Visible degradation, not lost rows: a fresh walk — itself paged over
-      // none but server-issued cursors — returns the original keys plus both
-      // appends in exact key order.
       const seen: string[] = [];
       let cursor: string | undefined;
       let complete = false;
@@ -324,8 +297,6 @@ describe("bounded archive projections", () => {
           "legacy:900",
         ].sort(),
       );
-      // Byte order, not arrival order: the earlier append lands between
-      // legacy:005 and legacy:006, the later one at the very end.
       expect(seen[6]).toBe("legacy:0055");
       expect(seen[seen.length - 1]).toBe("legacy:900");
     });
@@ -341,18 +312,12 @@ describe("bounded archive projections", () => {
       for (const sql of PAGE_SQL_SHAPES) {
         expect(sql).not.toMatch(/payload/);
         expect(sql).toMatch(/LIMIT \?/);
-        // No order filter: it would let post-cursor appends interleave into
-        // the key range and be examined past the row LIMIT.
         expect(sql).not.toMatch(/event_order <= \?/);
       }
-      // The cursor witness is indexed, non-payload, order-filter-free and
-      // hard-limited to the total lookup cap: it never counts the whole
-      // history and never examines more entries than the cap.
       expect(KEY_CURSOR_WITNESS_SQL).not.toMatch(/payload/);
       expect(KEY_CURSOR_WITNESS_SQL).not.toMatch(/event_order/);
       expect(KEY_CURSOR_WITNESS_SQL.match(/LIMIT \?/g)).toHaveLength(1);
       expect(KEY_CURSOR_WITNESS_LIMIT).toBe(LEGACY_KEY_TOTAL_LOOKUP_CAP);
-      // The frontier probe is one index-endpoint row, not a count.
       expect(KEY_WALK_FRONTIER_SQL).not.toMatch(/payload/);
       expect(KEY_WALK_FRONTIER_SQL).not.toMatch(/COUNT\(/i);
       expect(KEY_WALK_FRONTIER_SQL).toMatch(/ORDER BY event_order DESC LIMIT 1$/);
@@ -386,25 +351,20 @@ describe("bounded archive projections", () => {
       for (const cursor of [
         "",
         "abc",
-        // Pre-version grammar and wrong versions.
         "3:legacy:001",
         "1:5:legacy:001",
         "v0:5:1:legacy:001",
         "v2:5:1:legacy:001",
-        // Missing fields.
         "v1:legacy:001",
         "v1:5:legacy:001",
-        // Non-decimal, signed and exponent forms in either integer field.
         "v1:x:1:legacy:001",
         "v1:5:x:legacy:001",
         "v1:-1:1:legacy:001",
         "v1:5:-1:legacy:001",
         "v1:1e3:1:legacy:001",
         "v1:5:1e3:legacy:001",
-        // Traversed outside 1..cap.
         "v1:5:0:legacy:001",
         `v1:5:${LEGACY_KEY_TOTAL_LOOKUP_CAP + 1}:legacy:001`,
-        // First unsafe integer, and an overflowing one, in either field.
         "v1:9007199254740992:1:legacy:001",
         "v1:5:9007199254740992:legacy:001",
         "v1:99999999999999999999:1:legacy:001",
@@ -428,8 +388,6 @@ describe("bounded archive projections", () => {
       expect(first.ok).toBe(true);
       if (!first.ok || first.value.cursor === null) throw new Error("expected a continuation");
 
-      // Same authentic frontier and count, a key that was never recorded: the
-      // continuation must refuse rather than resume past the missing key.
       const forged = retamper(first.value.cursor, { lastKey: "legacy:250" });
       const result = await sdk.intakeStream.listEventKeysByPrefix({ filePath }, { prefix: "legacy:", cursor: forged });
       expect(result.ok).toBe(false);
@@ -454,7 +412,6 @@ describe("bounded archive projections", () => {
         if (!result.ok) expect(result.error.code).toBe("invalid_bounds");
       }
 
-      // The untouched cursor still works, so the refusals are about the count.
       const honest = await sdk.intakeStream.listEventKeysByPrefix(
         { filePath },
         { prefix: "legacy:", cursor: authentic },
@@ -468,8 +425,6 @@ describe("bounded archive projections", () => {
       if (!first.ok || first.value.cursor === null) throw new Error("expected a continuation");
       expect(cursorParts(first.value.cursor).frontier).toBe(String(total));
 
-      // Ahead of the archive and behind it are the same refusal: only exact
-      // equality continues a walk.
       for (const frontier of ["999999", "1"]) {
         const result = await sdk.intakeStream.listEventKeysByPrefix(
           { filePath },
@@ -504,9 +459,6 @@ describe("bounded archive projections", () => {
   });
 
   describe("total lookup cap at its exact boundary", () => {
-    // Seeded through the public intake API and walked with none but
-    // server-issued cursors: the cap is proven by real rows, not by a
-    // hand-written count no walk could ever have emitted.
     async function seedKeys(from: number, toExclusive: number): Promise<void> {
       for (let base = from; base < toExclusive; base += 250) {
         const events = Array.from({ length: Math.min(250, toExclusive - base) }, (_, i) =>
@@ -541,7 +493,6 @@ describe("bounded archive projections", () => {
       expect(exact.capExhausted).toBe(false);
       expect(exact.cursor).toBeNull();
 
-      // One more matching row: the walk must stop after the cap and say so.
       await seedKeys(LEGACY_KEY_TOTAL_LOOKUP_CAP, LEGACY_KEY_TOTAL_LOOKUP_CAP + 1);
       const over = await walk();
       expect(over.seen.length).toBe(LEGACY_KEY_TOTAL_LOOKUP_CAP);
@@ -550,8 +501,6 @@ describe("bounded archive projections", () => {
       expect(over.cursor).toBeNull();
       expect(over.seen).not.toContain(`cap:${String(LEGACY_KEY_TOTAL_LOOKUP_CAP).padStart(4, "0")}`);
 
-      // A cursor pointing past the cap — authentic frontier, real key, rank
-      // 2001 — is refused rather than resumed: no walk may reach that row.
       const firstPage = await sdk.intakeStream.listEventKeysByPrefix(
         { filePath },
         { prefix: "cap:", limit: LEGACY_KEY_PAGE_LIMIT },

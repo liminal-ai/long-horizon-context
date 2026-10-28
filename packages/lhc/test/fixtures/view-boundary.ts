@@ -1,18 +1,12 @@
-// Scripted turns for visibility-boundary intake and rendering tests.
 import type { Lhc, MessageEventInput } from "../../src/index.js";
 import { validEvent } from "./index.js";
 
-// "tok" tokenizes to exactly one o200k token, joined or leading-space alike,
-// so a content of n joined "tok" words carries token_estimate n — the same
-// hand-derivable unit the boundary goldens use.
 export function boundaryTokens(n: number): string {
   return Array<string>(n).fill("tok").join(" ");
 }
 
 let boundaryCallCounter = 0;
 
-// One tool run: call + result with the given token count. If sent while a
-// turn is open, current intake stamps it with that turn.
 export function boundaryToolRun(resultTokens: number): MessageEventInput[] {
   boundaryCallCounter += 1;
   const toolCallId = `call-tb-${boundaryCallCounter}`;
@@ -30,8 +24,6 @@ export function boundaryToolRun(resultTokens: number): MessageEventInput[] {
   ];
 }
 
-// One scripted turn's worth of tool results, sized in tokens. `close: false`
-// leaves the turn open (mid-turn legs).
 export interface TurnedToolResultsSpec {
   results: readonly number[];
   close?: boolean;
@@ -47,7 +39,6 @@ export function turnedToolResultEvents(turns: readonly TurnedToolResultsSpec[]):
   return events;
 }
 
-// Seed scripted turns through intake.
 export async function seedTurnedToolResults(
   sdk: Lhc,
   filePath: string,

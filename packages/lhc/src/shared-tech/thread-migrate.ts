@@ -20,11 +20,6 @@ const NEW_DERIVATION_TYPE = "detailed_turn_compression";
 const OLD_PROMPT_NAME = "smooth-turn-compression-v1";
 const NEW_PROMPT_NAME = "detailed-turn-compression-v1";
 
-/** Schema v12: content blobs — the binary/opaque payloads of API content
- *  blocks (image and PDF bytes, redacted-thinking data, encrypted search
- *  content), keyed by content hash and referenced from message blocks and
- *  event payloads as `{ $blob: "sha256:…", bytes }`. Shared by fresh create
- *  and the 12→13 migration. */
 export function blobSchemaStatements(): string[] {
   return [
     `CREATE TABLE IF NOT EXISTS blob (
@@ -37,9 +32,6 @@ export function blobSchemaStatements(): string[] {
   ];
 }
 
-/** Schema v6: retrieval impression log — one row per requested entity per
- *  retrieval call (get_turns / get_messages). Idempotent statements shared by
- *  fresh create and the 5→6 migration. */
 export function retrievalImpressionSchemaStatements(): string[] {
   return [
     `CREATE TABLE IF NOT EXISTS retrieval_impression (
@@ -75,11 +67,6 @@ export function derivationLogSchemaStatements(): string[] {
   ];
 }
 
-/**
- * Schema v7: compact-continuation writer claim + durable transition receipts.
- * Receipts are inspectable and not ordinary conversation history.
- * Used by 6→7 migration only (v7 receipt shape lacks terminal flag).
- */
 export function compactContinuationSchemaStatements(): string[] {
   return [
     `CREATE TABLE IF NOT EXISTS compact_continuation_writer (
@@ -106,11 +93,6 @@ export function compactContinuationSchemaStatements(): string[] {
   ];
 }
 
-/**
- * Current (v10) compact-continuation tables for fresh create.
- * Writer + boundary + stage log + terminal receipts + attempt identity + force intent.
- * At most one unresolved boundary (partial unique index).
- */
 export function compactContinuationCurrentSchemaStatements(): string[] {
   return [
     `CREATE TABLE IF NOT EXISTS compact_continuation_writer (
@@ -132,7 +114,6 @@ export function compactContinuationCurrentSchemaStatements(): string[] {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_compact_continuation_boundary_status
        ON compact_continuation_boundary (status);`,
-    // At most one pending/failed_repairable boundary per thread.
     `CREATE UNIQUE INDEX IF NOT EXISTS idx_compact_continuation_boundary_one_unresolved
        ON compact_continuation_boundary ((1))
        WHERE status IN ('pending', 'failed_repairable');`,
@@ -159,7 +140,6 @@ export function compactContinuationCurrentSchemaStatements(): string[] {
     );`,
     `CREATE INDEX IF NOT EXISTS idx_compact_continuation_receipt_recorded
        ON compact_continuation_receipt (recorded_at DESC);`,
-    // intent_hash/intent_json store immutable operation identity (not retry posture).
     `CREATE TABLE IF NOT EXISTS compact_continuation_attempt (
       attempt_id TEXT PRIMARY KEY,
       intent_hash TEXT NOT NULL,
@@ -173,8 +153,6 @@ export function compactContinuationCurrentSchemaStatements(): string[] {
       continuation_turn_id TEXT,
       recorded_at TEXT NOT NULL
     );`,
-    // v11: post-core-install host validation (provider-neutral). Core never
-    // claims the host body was validated inside LHC.
     `CREATE TABLE IF NOT EXISTS compact_continuation_host_validation (
       attempt_id TEXT PRIMARY KEY,
       status TEXT NOT NULL CHECK (status IN ('awaiting', 'ok', 'failed')),
@@ -205,7 +183,6 @@ function migrateCompactContinuationV9(db: DatabaseSync): void {
   );
 }
 
-/** v10→v11: host validation status for post-core-install body acknowledgment. */
 function migrateCompactContinuationV11(db: DatabaseSync): void {
   db.exec(
     `CREATE TABLE IF NOT EXISTS compact_continuation_host_validation (
@@ -218,7 +195,6 @@ function migrateCompactContinuationV11(db: DatabaseSync): void {
   );
 }
 
-/** v9→v10: enforce at most one unresolved compact-continuation boundary. */
 function migrateCompactContinuationV10(db: DatabaseSync): void {
   const unresolved = db
     .prepare(
@@ -267,7 +243,6 @@ function migrateCompactContinuationV8(db: DatabaseSync): void {
     `CREATE INDEX IF NOT EXISTS idx_compact_continuation_stage_attempt
        ON compact_continuation_stage_log (attempt_id, log_id);`,
   );
-  // Rebuild receipt table with terminal column.
   db.exec(
     `CREATE TABLE compact_continuation_receipt_v8 (
       attempt_id TEXT PRIMARY KEY,
@@ -377,21 +352,10 @@ function migratedTurnDerivationTargets(turnId: string): Array<{
   ];
 }
 
-// Candidate rows for the pre-rewire turn_derivation repair: only queued and
-// claimed items of that kind can still carry a pre-rewire payload.
 const QUEUED_TURN_DERIVATION_CANDIDATES_SQL = `SELECT work_item_id, source_ref, payload
        FROM work_item
        WHERE kind = 'turn_derivation' AND status IN ('queued', 'claimed')`;
 
-// Pre-rewire turn_derivation items scheduled compression inside the same handler;
-// rewrite their derivations payload and seed pre_detailed_assembly so item 1 can
-// complete and enqueue compression. Idempotent — safe on every open.
-//
-// One scan serves both modes so the read-only predicate and the mutating pass
-// can never diverge: "probe" stops at the first row that needs repair and
-// writes nothing; "apply" repairs every such row. Both read the same rows in
-// the same order, so a malformed payload/source_ref fails identically either
-// way (JSON.parse throws, as it always has).
 function scanQueuedTurnDerivationRepairs(db: DatabaseSync, mode: "probe" | "apply"): boolean {
   const rows = db.prepare(QUEUED_TURN_DERIVATION_CANDIDATES_SQL).all() as Array<{
     work_item_id: string;
@@ -446,16 +410,10 @@ function migrateQueuedTurnDerivationWorkItems(db: DatabaseSync): void {
   scanQueuedTurnDerivationRepairs(db, "apply");
 }
 
-/** Read-only: does any queued/claimed legacy row still need the repair? */
 function queuedTurnDerivationRepairPending(db: DatabaseSync): boolean {
   return scanQueuedTurnDerivationRepairs(db, "probe");
 }
 
-// Current-schema open is the hot path: it must not take a write lock just to
-// discover there is nothing to repair. The read-only predicate decides, and
-// the same predicate runs again inside BEGIN IMMEDIATE so a concurrent opener
-// that repaired the same rows between probe and lock cannot cause duplicate
-// work (the repair itself is idempotent; the recheck keeps it write-free).
 function runQueuedTurnDerivationMigration(db: DatabaseSync): void {
   if (!queuedTurnDerivationRepairPending(db)) return;
   db.exec("BEGIN IMMEDIATE;");
@@ -470,13 +428,6 @@ function runQueuedTurnDerivationMigration(db: DatabaseSync): void {
   }
 }
 
-// Before claim expiry became a retry, an expired claim failed its derivations
-// with reason claim_expired and deleted the item, so every one-shot exit or
-// kill mid-derivation left a permanent gap. Requeue each such failure once:
-// derivation back to pending at its version, one queued item per (kind,
-// source) like the original enqueue. Nothing writes plain claim_expired any
-// more (a repeated expiry is claim_expired_repeatedly), so this never repeats.
-// No schema bump: an older reader still opens the thread.
 const CLAIM_EXPIRED_LEGACY_SQL = `SELECT subject_kind, subject_id, derivation_type, source_version
        FROM derivation WHERE state = 'failed' AND reason = 'claim_expired'
        ORDER BY rowid`;
@@ -551,8 +502,6 @@ function requeueLegacyClaimExpired(db: DatabaseSync, now: string): number {
   return requeued;
 }
 
-// Same probe-then-lock shape as the queued turn_derivation repair: an open with
-// nothing to requeue never takes a write lock.
 function runClaimExpiredRequeue(db: DatabaseSync): void {
   if (db.prepare(`${CLAIM_EXPIRED_LEGACY_SQL} LIMIT 1`).get() === undefined) return;
   db.exec("BEGIN IMMEDIATE;");
@@ -574,8 +523,6 @@ function migrateOneShotWorkQueue(db: DatabaseSync): void {
   db.exec("CREATE INDEX idx_work_item_queue ON work_item (status);");
 }
 
-// v4→v5: host-observed turn outcome/timing and per-call provider usage.
-// Nullable columns only; no backfill — pre-v5 facts were never recorded.
 function migrateTurnHostFacts(db: DatabaseSync): void {
   db.exec(`ALTER TABLE turns ADD COLUMN outcome TEXT CHECK (outcome IN ('completed', 'aborted') OR outcome IS NULL);`);
   db.exec(`ALTER TABLE turns ADD COLUMN outcome_reason TEXT;`);
@@ -584,27 +531,15 @@ function migrateTurnHostFacts(db: DatabaseSync): void {
   db.exec(`ALTER TABLE message ADD COLUMN provider_usage TEXT;`);
 }
 
-// v11→v12: turn parts. Host-supplied step index on messages (F2) — nullable,
-// no backfill: NULL means the host never reported a step edge, and a turn with
-// any NULL step index is never split — and the per-thread parts-activated
-// fact on thread_metadata (AC-7.3 exclusivity). Guarded so a crash-window
-// reopen or a simulated-old file that already carries a column migrates
-// cleanly.
 function migrateTurnParts(db: DatabaseSync): void {
   const columns = (table: string): string[] =>
     (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
   if (!columns("message").includes("step_index")) db.exec(`ALTER TABLE message ADD COLUMN step_index INTEGER;`);
-  // The durable per-thread mechanism fact: set once, in the transaction that
-  // installs the first view serving parts; never cleared (AC-7.3).
   if (!columns("thread_metadata").includes("parts_activated_at")) {
     db.exec(`ALTER TABLE thread_metadata ADD COLUMN parts_activated_at TEXT;`);
   }
 }
 
-// v12→v13: content blobs. Two v12 flavors exist in the wild: the released
-// turn-parts v12 (step_index, no blob table) and a short-lived blob-flavored
-// v12 (blob table, no step_index). Both halves are idempotent so either
-// flavor converges at 13 with both.
 function migrateContentBlobsV13(db: DatabaseSync): void {
   for (const statement of blobSchemaStatements()) db.exec(statement);
   migrateTurnParts(db);

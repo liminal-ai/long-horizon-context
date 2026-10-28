@@ -1,8 +1,3 @@
-// Health composition joins owners' report surfaces into state counts,
-// actionable failure detail, a repair preview, and live queue visibility.
-// Message/turn derivation health comes from DerivationReportEntry rows; capture
-// gaps come from durable source-event markers recorded by capture.
-
 import * as intakeStream from "../../intake-stream/index.js";
 import * as messages from "../../messages/index.js";
 import type { DerivationReportEntry, HealthReport, OpResult } from "../../shared-tech/index.js";
@@ -86,8 +81,6 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
         case "failed":
           row.counts.failed += 1;
           failures.push(failureOf(owner, entry));
-          // The preview is exactly the failed-and-not-blocked set: blocked is
-          // a distinct state, so failed entries ARE the requeue targets.
           repairPreview.push({
             owner,
             subjectKind: entry.subjectKind,
@@ -100,11 +93,6 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
           failures.push(failureOf(owner, entry));
           break;
       }
-      // Live queue visibility, per report entry: every pending entry rides a
-      // live item, so queued + claimed here equals pending above by
-      // construction. Counts are per derivation-report entry:
-      // one work item may back multiple entries, so a raw work-item count would
-      // break that identity.
       if (entry.queue !== undefined) {
         if (entry.queue.status === "queued") queue.queued += 1;
         else queue.claimed += 1;
@@ -112,8 +100,6 @@ export async function composeHealth(ref: ThreadRef): Promise<OpResult<HealthRepo
     }
   }
 
-  // Deterministic order: messages before turns, kinds alphabetical within
-  // an owner — repeated reads with no writes between are deep-equal.
   const owners = [...countsByOwnerKind.values()].sort((a, b) =>
     a.owner === b.owner ? a.kind.localeCompare(b.kind) : a.owner.localeCompare(b.owner),
   );

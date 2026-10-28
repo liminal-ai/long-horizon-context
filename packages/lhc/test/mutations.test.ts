@@ -1,19 +1,3 @@
-// Story 5 (Epic 02): messages.edit and the mutation cascade — Flow 5's edit
-// half. One synchronous transaction carries the content change, the token
-// re-stamp, and the full dependent-chain clear-and-requeue (TC-5.1), with
-// induced-failure atomicity proving a failing cascade step rolls back the
-// content change too (architecture risk). Cascade reach is proven in both
-// directions — exactly the chain cleared, everything outside it byte-stable
-// including source versions (TC-5.2, architecture risk). Post-return no
-// pre-edit derivation is ready and replacements sit queued at the new source
-// version, with superseded queued ids reported and their rows gone (TC-5.3).
-// TC-5.4 is the epic's named architecture-risk test: a claimed pre-edit item
-// held across the edit by the delayed double completes after the post-edit
-// rebuild is queued, discards on the source-version mismatch as
-// stale_discarded, and the post-edit artifact stands. Refusals (open turn,
-// missing id, deleted target through the filtered view) change nothing
-// (TC-5.5). The CLI parity leg of TC-5.6 lives in
-// cli-process-mutations.test.ts (process suite).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type DrainReport,
@@ -104,8 +88,6 @@ function unwrap<T>(result: OpResult<T>): T {
   return result.value;
 }
 
-// One closed prompt+answer turn (m1 prompt, t1), drained ready. Under the
-// default chunk policy t1's chunk stays open, so no chunk summary rows exist.
 async function readyTurnThread(sdk: Lhc): Promise<string> {
   const filePath = await newThread();
   await send(sdk, filePath, [
@@ -117,7 +99,6 @@ async function readyTurnThread(sdk: Lhc): Promise<string> {
   return filePath;
 }
 
-// The full mutation read-back surface in one snapshot: record, forms, queue.
 async function snapshot(filePath: string): Promise<unknown> {
   return {
     messages: unwrap(await messages.list({ filePath })),
@@ -147,8 +128,6 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     if (!result.ok) return;
     expect(result.value.changed).toEqual({ messageIds: ["m1"], turnIds: [] });
     expect(result.value.dropped).toEqual([]);
-    // The chain above m1: its own smoothing and t1's two forms. t1's chunk is
-    // still open — no summary rows exist, so none are named.
     expect(result.value.cleared.map(clearKey).sort()).toEqual(
       [
         "message/m1/smoothed_prompt",
@@ -164,14 +143,10 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     ]);
     expect(result.value.superseded).toEqual([]);
 
-    // Synchronous, before any drain: content, blocks, and the re-stamped
-    // estimate read back changed.
     const m1 = unwrap(await messages.list({ filePath })).find((record) => record.messageId === "m1");
     expect(m1?.blocks).toEqual([{ blockType: "text", content: { text: "edited prompt" } }]);
     expect(m1?.tokenEstimate).toBe(estimateTokens("edited prompt"));
 
-    // The queued rebuilds run through the normal drain and derive from the
-    // edited content.
     await drain(sdk, filePath);
     const smoothing = readDerivedForms(filePath).find(
       (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
@@ -185,10 +160,6 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     const sdk = manualSdk(double);
     const filePath = await readyTurnThread(sdk);
 
-    // Plant a claimed row at the exact id the cascade's replacement enqueue
-    // will insert. Supersede only deletes queued rows, so the insert hits a
-    // primary-key conflict mid-cascade — after the content apply — and the
-    // transaction must roll back whole.
     const db = openRaw(filePath);
     db.prepare(
       `INSERT INTO work_item (work_item_id, owner, kind, source_ref, status, queued_at, payload)
@@ -208,8 +179,6 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
     expect(result.ok).toBe(false);
     if (result.ok) return;
     expect(result.error.code).toBe("storage_failure");
-    // Nothing changed: not the message content, not the estimate, not a
-    // single form state or source version, not the queue.
     expect(await snapshot(filePath)).toEqual(before);
   });
 });
@@ -217,8 +186,6 @@ describe("TC-5.1 / AC-5.1: edit updates content, blocks, and estimate synchronou
 describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both directions", () => {
   it("clears exactly the edited message's chain; the second chunk's forms are byte-stable", async () => {
     const double = createInferenceCallbacksDouble();
-    // max=1: every turn's compression meets the maximum, so each turn forms
-    // its own immediately closed chunk — two chunks, both with summaries.
     const sdk = manualSdk(double, {
       chunkPolicy: { targetProjectedTokens: 1, maxProjectedTokens: 1 },
     });
@@ -236,7 +203,6 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
     await drain(sdk, filePath);
 
     const before = readDerivedForms(filePath);
-    // Fixture sanity: both chunks closed with every form ready.
     expect(before.map((form) => clearKey(form)).sort()).toEqual(
       [
         "message/m1/smoothed_prompt",
@@ -261,7 +227,6 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // The cleared set is exactly the chain: m1's forms, t1's two, c1's two.
     expect(result.value.cleared.map(clearKey).sort()).toEqual(
       [
         "message/m1/smoothed_prompt",
@@ -273,15 +238,11 @@ describe("TC-5.2 / AC-5.2 (architecture risk): cascade reach is exact in both di
       ].sort(),
     );
 
-    // The untouched-set half: every form outside the chain — chunk 2's
-    // summaries, t2's forms, m4's smoothing — deep-equal their pre-edit rows,
-    // state and source version included.
     const clearedSet = new Set(result.value.cleared.map(clearKey));
     const after = readDerivedForms(filePath);
     expect(after.filter((form) => !clearedSet.has(clearKey(form)))).toEqual(
       before.filter((form) => !clearedSet.has(clearKey(form))),
     );
-    // And the cleared half sits pending at the bumped version.
     for (const form of after.filter((candidate) => clearedSet.has(clearKey(candidate)))) {
       expect(form.state).toBe("pending");
       expect(form.sourceVersion).toBe(2);
@@ -313,9 +274,6 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
       "w-t1-turn_derivation-v2",
     ];
 
-    // Edit while everything is ready: every dependent form leaves ready in
-    // the edit's transaction, replacement items carry the new source version
-    // in their ids and payloads, and nothing was queued to supersede.
     const first = await withEstimator(o200k, () =>
       messages.edit({ filePath }, { messageId: "m1", content: "first edit" }),
     );
@@ -330,9 +288,6 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
     expect(queueAfterFirst.map((row) => row.workItemId).sort()).toEqual(firstWaveIds);
     expect(queueAfterFirst.every((row) => row.status === "queued" && row.sourceVersion === 2)).toBe(true);
 
-    // Second edit before any drain: the still-queued first wave is
-    // supersede-deleted in the cascade transaction and reported; the queue
-    // holds only the v3 replacements.
     const second = await withEstimator(o200k, () =>
       messages.edit({ filePath }, { messageId: "m1", content: "second edit" }),
     );
@@ -349,7 +304,6 @@ describe("TC-5.3 / AC-5.3: post-return, nothing pre-edit is ready; replacements 
     ]);
     expect(readDerivedForms(filePath).every((form) => form.state === "pending" && form.sourceVersion === 3)).toBe(true);
 
-    // And the drain rebuilds the whole chain from the second edit's content.
     await drain(sdk, filePath);
     const smoothing = readDerivedForms(filePath).find(
       (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
@@ -369,10 +323,6 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
       validEvent("turn_end"),
     ]);
 
-    // Hold the old-content smoothing in flight: the drain claims it, the
-    // handler awaits the delayed double, and the edit lands inside that
-    // window — a real claimed old-version item held across the edit, not a
-    // simulated version poke.
     double.delayKind("prompt_smoothing", 400);
     const captured = double.captureInputs();
     const drainPromise = sdk.work.drain({ filePath });
@@ -386,12 +336,8 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
     );
     expect(edited.ok).toBe(true);
     if (!edited.ok) return;
-    // The still-queued turn derivation behind the claimed head was
-    // superseded; the claimed item was left to the version check.
     expect(edited.value.superseded).toEqual(["w-t1-turn_derivation-v1"]);
 
-    // Old claimed item and post-edit replacement coexist — ids include the
-    // source version, so they never collide.
     const mid = rawDetail(filePath);
     expect(mid.map((row) => [row.workItemId, row.status])).toEqual([
       ["w-m1-prompt_smoothing-v1", "claimed"],
@@ -399,9 +345,6 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
       ["w-t1-turn_derivation-v2", "queued"],
     ]);
 
-    // Let both complete. The straggler's completion is a normal completion
-    // reported stale_discarded — not an error — and the drain
-    // continues into the replacement work.
     const drained = await drainPromise;
     expect(drained.ok).toBe(true);
     if (!drained.ok) return;
@@ -412,8 +355,6 @@ describe("TC-5.4 / AC-5.4 (architecture risk): the version check beats the strag
       ["w-t1-detailed_turn_compression-v2", "done"],
     ]);
 
-    // Exactly one ready smoothing row, derived from the post-edit content at
-    // the post-edit source version — regardless of completion order.
     const rows = readDerivedForms(filePath).filter(
       (form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt",
     );
@@ -429,7 +370,6 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
-    // m1 in closed t1; m3 in open t2.
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "closed prompt" } }),
       validEvent("turn_end"),
@@ -455,9 +395,6 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     expect(missing.error.code).toBe("message_not_found");
     expect(await snapshot(filePath)).toEqual(before);
 
-    // A deleted target reads as message_not_found through the filtered view
-    // — never a distinct error. (deleted_at stamped below the SDK: the
-    // delete operation itself is Story 6.)
     const db = openRaw(filePath);
     db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = 'm1'`).run("2026-06-11T00:00:00.000Z");
     db.close();
@@ -473,8 +410,6 @@ describe("TC-5.5 / AC-5.5: refusals are stable and change nothing", () => {
     const double = createInferenceCallbacksDouble();
     const sdk = manualSdk(double);
     const filePath = await newThread();
-    // A note before any prompt attaches to the initialized open turn. It
-    // exists and is not deleted; the open-turn boundary refuses the edit.
     await send(sdk, filePath, [validEvent("runtime_note", { payload: { text: "a note before any turn" } })]);
     const m1 = unwrap(await messages.list({ filePath })).find((record) => record.messageId === "m1");
     expect(m1?.turnId).toBe("t1");

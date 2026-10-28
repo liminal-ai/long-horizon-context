@@ -1,20 +1,3 @@
-// Epic 05 Story 5 — TC-4.1, TC-4.2, TC-4.3: the opt-in real-inference suite
-// and the real-adapter lifecycle capstone (AC-4.1, AC-4.2, AC-1.2).
-// Epic 07 adds focused real-inference seam checks for the smoothed-prompt
-// guard and tool-result classifier paths.
-//
-// The suite keys on OPENROUTER_API_KEY, resolved ONCE at module load by the
-// suite-level guard from process.env plus ~/.lhc/.env: exactly one ran/not-ran line lands in run output, and
-// the accounting tests below always run, so absence of the key can never
-// produce a silent pass — unkeyed runs show one NOT-RAN line, a green
-// accounting leg that asserted the not-ran record, and the keyed legs
-// reported as skipped (never as passes). This is the CI-default posture:
-// zero network calls. With the key present, the six derivation kinds
-// round-trip a real endpoint, the same seam-conformance helpers that ran
-// against the fake host run against the real one unchanged (DD-13), and the
-// Epic 04 lifecycle sequence completes under the real adapter with
-// structural assertions: ready forms, non-marker content, real-model
-// provenance, mutation regeneration, coherent checkpoints.
 import { readFileSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type {
@@ -56,7 +39,6 @@ import {
 } from "./fixtures/index.js";
 import { estimateTokens } from "./fixtures/tokens.js";
 
-// ── the suite-level guard: one resolution, one visible line ───────
 const integrationEnabled = process.env.LHC_RUN_INTEGRATION === "1";
 const suiteEnv = integrationEnabled
   ? resolveRealSuiteEnv({ ...loadLocalLhcEnv(), ...process.env })
@@ -66,24 +48,16 @@ const realKey = "notRan" in suiteEnv ? undefined : suiteEnv.key;
 const realModel = "notRan" in suiteEnv ? DEFAULT_OPENROUTER_MODEL : suiteEnv.model;
 emitRealSuiteAccounting(suiteEnv);
 
-// Deterministic inference callback markers, two grains: the design's anchored
-// derivation-content pattern, and a digest-bearing scan pattern for "appears
-// anywhere" sweeps over served views and materialized files.
 const MARKER_AT_START = /^(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\(/;
 const MARKER_ANYWHERE = /(?:smoothed|toolcall|toolresult|rendering|projection|detailed|brief)\([0-9a-f]{8}:/;
 const SIZE_DISPOSITIONS = ["in_range", "under_min", "over_max"] as const;
 
-// Distinctive substrings from each default prompt template's rendered content.
-// v3 turn/chunk templates emit a single user message (no system role); smoothing
-// embeds instructions in a user message; only tool-result-v2 uses system role.
 const PROMPT_CONTENT_MARKERS = {
   smoothing: "You rewrite user prompts for a long-horizon coding agent's smooth context layer.",
   turnCompression: "You condense dialogues from AI coding sessions",
   chunkBrief: "You write brief memory notes from AI coding-session history",
 } as const;
 
-// Assigned inference lanes that currently cross ModelCall in production.
-// tool_result_summary keeps an assignment but handlers.ts gates inference off.
 const LIVE_INFERENCE_DERIVATION_TYPES = [
   "smoothed_prompt",
   "detailed_turn_compression",
@@ -101,8 +75,6 @@ function messageText(message: LlmRequestContextMessage): string {
   return message.content.map((part) => part.text).join("");
 }
 
-// All inference-backed kinds assigned to the one real lane; prompt names stay
-// the registry defaults validAssignments already wires.
 function realAssignments(model: string): ReturnType<typeof validAssignments> {
   const overrides: Partial<Record<InferenceDerivationType, { provider: string; model: string }>> = {};
   for (const kind of INFERENCE_DERIVATION_TYPES) {
@@ -111,16 +83,12 @@ function realAssignments(model: string): ReturnType<typeof validAssignments> {
   return validAssignments(overrides);
 }
 
-// ── TC-4.1: accounting — these tests run keyed or not ─────────────
-
 describe("TC-4.1 / AC-4.1: ran/not-ran accounting is always visible", () => {
   it("the unkeyed guard returns a not-ran record with reason, never a pass-shaped record", () => {
     const record = resolveRealSuiteEnv({});
     expect("notRan" in record).toBe(true);
     if (!("notRan" in record)) throw new Error("unreachable");
     expect(record.notRan).toContain("OPENROUTER_API_KEY");
-    // Distinguishable from a pass: the not-ran shape carries no key/model —
-    // nothing downstream can construct a keyed run from it.
     expect("key" in record).toBe(false);
     expect("model" in record).toBe(false);
   });
@@ -153,8 +121,6 @@ describe("TC-4.1 / AC-4.1: ran/not-ran accounting is always visible", () => {
   });
 });
 
-// ── TC-4.1 / TC-4.3: keyed seven-kind round-trips + conformance ───
-
 describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): all derivation kinds through the shared seam helpers", () => {
   const call = realKey === undefined ? undefined : createOpenRouterCall(realKey, realModel);
   const assignments = realAssignments(realModel);
@@ -164,10 +130,6 @@ describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): all derivation kinds through the
   beforeAll(async () => {
     store = tempStore();
     if (call === undefined) throw new Error("keyed leg started without a key");
-    // TC-4.3: the SAME routing helper Story 2's fake-host seam test runs,
-    // unchanged, against the real host — it drives a real intake → drain
-    // exercising all six derivation kinds and asserts routing, lane coverage, and
-    // single-turn message shape internally.
     routing = await assertRoutingThroughSdk(call, assignments, store);
   }, 300_000);
   afterAll(() => {
@@ -191,7 +153,6 @@ describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): all derivation kinds through the
         if (INFERENCE_DERIVATION_TYPES.includes(form.derivationType as InferenceDerivationType)) {
           const kind = form.derivationType as InferenceDerivationType;
           if (LIVE_INFERENCE_DERIVATION_TYPES.includes(kind as (typeof LIVE_INFERENCE_DERIVATION_TYPES)[number])) {
-            // Provenance names the real lane from config, never model output.
             expect(form.metadata?.provenance).toEqual({
               provider: "openrouter",
               model: realModel,
@@ -211,8 +172,6 @@ describe.runIf(keyed)("TC-4.1 / TC-4.3 (keyed): all derivation kinds through the
     }
   });
 });
-
-// ── Epic 07: focused real-inference seam checks ───────────────────
 
 function tokenText(minTokens: number, word = "guardword"): string {
   let text = "";
@@ -473,8 +432,6 @@ function assignmentsForKind(kind: InferenceDerivationType) {
   return realAssignments(realModel)[kind];
 }
 
-// ── TC-4.2: the real-adapter lifecycle capstone ───────────────────
-
 describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real adapter", () => {
   let store: TempStore;
   let run: LifecycleRun;
@@ -487,16 +444,11 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     if ("notRan" in suiteEnv) throw new Error("keyed leg started without a key");
     const recorded = recordRealCall(createOpenRouterCall(suiteEnv.key, realModel));
     callLog = recorded.log;
-    // The Epic 04 sequence verbatim — intake, drain, compact, model context, inspect,
-    // edit, rebuild, drain, compact, materialize — with the inference
-    // adapter in the inference-callback slot (the one swap point).
     run = await runLifecycle(store, {
       name: "real-capstone",
       inference: { call: recorded.call, assignments: realAssignments(realModel) },
       guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
       onCheckpoint: (checkpoint, ctx) => {
-        // Pre-mutation snapshot: the regeneration assertion compares each
-        // mutation-cleared form's content before the edit and after rebuild.
         if (checkpoint === "inspect1") preEditForms = readDerivedForms(ctx.filePath);
         return Promise.resolve();
       },
@@ -591,8 +543,6 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     for (const target of cleared) {
       const before = find(preEditForms, target);
       const after = find(finalForms, target);
-      // Cleared-then-ready: ready before the mutation (pre-edit snapshot),
-      // pending in the mutate-phase health below, ready again after rebuild.
       expect(before?.state).toBe("ready");
       expect(after?.state).toBe("ready");
       expect(after?.content).toBeDefined();
@@ -601,14 +551,9 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
   });
 
   it("health is coherent at each checkpoint: settled, cleared-set pending, settled again", () => {
-    // Checkpoint 1 — post-drain status: derivation fully settled before the
-    // first compact.
     const status = ok(run.phases.status);
     expect(status.derivation).toEqual({ pending: 0, failed: 0, blocked: 0 });
 
-    // Checkpoint 2 — immediately after the mutations: exactly the cleared
-    // set is in flight, queued and unclaimed (cleared → pending around
-    // mutations).
     const clearedCount = ok(run.phases.mutate.edit).cleared.length + ok(run.phases.mutate.delete).cleared.length;
     const healthAfterMutate = ok(run.phases.mutate.healthAfterMutate);
     const inFlight = healthAfterMutate.owners.reduce((sum, row) => sum + row.counts.pending, 0);
@@ -616,8 +561,6 @@ describe.runIf(keyed)("TC-4.2 (keyed): Epic 04 lifecycle capstone under the real
     expect(healthAfterMutate.queue).toEqual({ queued: clearedCount, claimed: 0 });
     expect(healthAfterMutate.failures).toEqual([]);
 
-    // Checkpoint 3 — post-rebuild: everything ready, nothing failed or
-    // blocked, queue empty.
     const health2: HealthReport = ok(run.phases.health2);
     for (const row of health2.owners) {
       expect(row.counts.pending).toBe(0);

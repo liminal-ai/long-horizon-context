@@ -1,11 +1,3 @@
-// Story 3 (Epic 04), default suite: TC-2.1–2.3 — the view-contents report
-// plus the describe legs. `threadView.describe` exposes the stored active
-// view row verbatim (null when absent, never recomputed); `inspect.view`
-// composes describe + a measured context read so loadCost equals what model context serves
-// now (AC-2.3, parity by construction) — asserted here against an
-// INDEPENDENT context read re-measured with the same estimator, on a compacted
-// and a never-compacted thread (meta null, tail-only, AC-2.4). Reads are
-// pure (AC-1.4 contract): read-only delta assert, zero model calls.
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
@@ -54,9 +46,6 @@ function measured(messages: ReadonlyArray<{ content: string | readonly { text: s
   return messages.reduce((sum, message) => sum + estimateTokens(servedText(message)), 0);
 }
 
-// Independent stored-row read (anti-shim: the report and describe are
-// compared against the raw thread_view/thread_view_band rows through this
-// separate path, not against each other alone).
 function readRawStoredView(filePath: string): StoredView | null {
   const db = new DatabaseSync(filePath);
   try {
@@ -104,9 +93,6 @@ function readRawStoredView(filePath: string): StoredView | null {
   }
 }
 
-// The report's band sections regrouped from the raw row, independently of
-// view-report.ts: arrangement entries per band in served order, stored band
-// token counts verbatim.
 function bandsFromRaw(raw: StoredView): ViewContentsReport["bands"] {
   return (["brief", "detailed", "smooth"] as const).flatMap((band) => {
     const entries = raw.arrangement
@@ -123,13 +109,6 @@ function bandsFromRaw(raw: StoredView): ViewContentsReport["bands"] {
   });
 }
 
-// The TC-2.1 substrate: the tool-heavy fixture with one degraded entry and
-// one gap reached through production paths — post-build edits (not drained)
-// clear t8's turn derivations (the smooth entry degrades down its ladder) and all
-// of c2's chain (summaries pending, zero ready member smooth compressions: the gap
-// rung). Same recipe Epic 03's degraded compact proved; params force the
-// chunk bands so profileName stores null and config carries the resolved
-// truth.
 const DEGRADED_COMPACT_PARAMS = {
   lowerBound: 400,
   percentages: { full: 25, smooth: 25, detailed: 10, brief: 40 },
@@ -154,7 +133,6 @@ async function degradedCompactedThread(): Promise<DerivedThreadFixture> {
   return fixture;
 }
 
-// A small never-compacted thread: two closed turns, fully drained.
 async function neverCompactedThread(): Promise<{ filePath: string; sdk: Lhc }> {
   const double = createInferenceCallbacksDouble();
   const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: double, mode: "manual" });
@@ -201,13 +179,10 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
     expect(raw).not.toBeNull();
     if (raw === null) return;
 
-    // describe leg: the stored row verbatim through the surface.
     const described = resultValue<StoredView | null>(await sdk.threadView.describe({ filePath }));
     expect(described).toEqual(raw);
 
     const report = resultValue<ViewContentsReport>(await sdk.inspect.view({ filePath }));
-    // Meta: identity, profile (null — explicit params), resolved config,
-    // window — the row's fields, never re-resolved.
     expect(report.meta).toEqual({
       viewId: raw.viewId,
       createdAt: raw.createdAt,
@@ -222,21 +197,15 @@ describe("TC-2.1 / AC-2.1, AC-2.5: arrangement fidelity from the stored snapshot
     });
     expect(report.meta?.config).toEqual(raw.config);
 
-    // Every band entry in served order with derivation/degraded verbatim; per-band
-    // stored token counts; every gap with its reason — all from the row.
     expect(report.bands).toEqual(bandsFromRaw(raw));
     expect(report.gaps).toEqual(raw.gaps);
     expect(report.sourceState).toEqual(raw.sourceState);
 
-    // Fixture sanity: the degraded entries (t8's smooth fallback and c2's
-    // compact stored-member concat) are both present and named.
     const entries = report.bands.flatMap((band) => band.entries);
     expect(entries.some((entry) => entry.subjectId === "t8" && entry.degraded)).toBe(true);
     expect(report.gaps).toHaveLength(0);
     expect(entries.some((entry) => entry.subjectId === "c2" && entry.degraded)).toBe(true);
 
-    // Load-cost parity on the compacted shape too (bands + tail): an
-    // independent context read re-measured with the same estimator.
     const contextRead = resultValue<LlmRequestContext>(await sdk.threadView.getLlmRequestContext({ filePath }));
     expect(report.loadCost.total).toBe(measured(contextRead.messages));
     expect(report.loadCost.bandTokens).toBe(measured(contextRead.messages.filter(isBandMessage)));
@@ -272,8 +241,6 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity with a seeded boundary in the
     const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
     if (!created.ok) throw new Error(`thread creation failed: ${created.error.reason}`);
 
-    // Six plain turns, drained, then a compact small enough to leave bands
-    // and a real compact point.
     for (let turn = 1; turn <= 6; turn += 1) {
       const sent = await sdk.intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt", { payload: { text: `turn ${turn}: please investigate area ${turn}` } }),
@@ -291,9 +258,6 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity with a seeded boundary in the
     expect(compacted.ok).toBe(true);
     if (!compacted.ok) return;
 
-    // Two post-compact tool turns (150-token results, over the 500-char
-    // abbreviation floor). Seed the boundary behind the older turn; the newer
-    // closed turn stays full.
     for (const run of [1, 2]) {
       const sent = await sdk.intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt", { payload: { text: `post-compact tool run ${run}` } }),
@@ -330,20 +294,14 @@ describe("TC-2.2 / AC-2.2, AC-2.3: loadCost parity with a seeded boundary in the
     );
     expect(abridged.length).toBe(1);
     expect(fullResults.length).toBe(1);
-    // Short forms cost short: the abridged result is cheaper as served than
-    // its full sibling of identical record size.
     expect(estimateTokens(abridged[0] === undefined ? "" : servedText(abridged[0]))).toBeLessThan(
       estimateTokens(fullResults[0] === undefined ? "" : servedText(fullResults[0])),
     );
 
     const report = resultValue<ViewContentsReport>(await sdk.inspect.view({ filePath }));
-    // Tail as served: count and tokens measured over the served tail —
-    // boundary-aware shortening inherited from the serving assembly, never re-implemented.
     expect(report.tail.messageCount).toBe(tailServed.length);
     expect(report.tail.tokens).toBe(measured(tailServed));
     expect(report.loadCost.tailTokens).toBe(report.tail.tokens);
-    // The governing contract: total equals an independent context read's measured
-    // content under the same estimator.
     expect(report.loadCost.total).toBe(measured(contextRead.messages));
     expect(report.loadCost.total).toBe(report.loadCost.bandTokens + report.loadCost.tailTokens);
   });
@@ -360,8 +318,6 @@ describe("TC-2.3 / AC-2.4: never-compacted thread reports tail-only under the sa
     expect(report.loadCost.bandTokens).toBe(0);
 
     const contextRead = resultValue<LlmRequestContext>(await sdk.threadView.getLlmRequestContext({ filePath }));
-    // The whole record serves as tail: every contextRead message is band-absent
-    // and the report counts all six visible messages.
     expect(contextRead.messages.every((message) => !isBandMessage(message))).toBe(true);
     expect(report.tail.messageCount).toBe(contextRead.messages.length);
     expect(report.tail.messageCount).toBe(6);
@@ -384,8 +340,6 @@ describe("AC-1.4 contract: view and describe are pure reads", () => {
     expect(second).toEqual(first);
     expect(captured).toHaveLength(0);
 
-    // Inference callbacks that throw on contact: both reads stay inference-callback-free
-    // structurally (the zero-model assert extended to Story 3's ops).
     const refuse = (): never => {
       throw new Error("inference callbacks must never be called by a read operation");
     };

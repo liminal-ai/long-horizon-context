@@ -1,6 +1,3 @@
-// Bodies are token-budgeted; receipts are per-id. Without an id cap the
-// model-visible result is unbounded — arbitrarily many missing ids would
-// each earn a receipt despite the body budget (validator P0, 2026-08-08).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, initLhc, intakeStream, type Lhc, retrieval } from "../src/index.js";
 import { MAX_RETRIEVAL_IDS_PER_CALL } from "../src/retrieval/index.js";

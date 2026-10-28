@@ -1,8 +1,3 @@
-/**
- * Compact-continuation contract package surface.
- * See README.md and contract.ts for the full specification.
- */
-
 export {
   COMPACT_CONTINUATION_CONTRACT_VERSION,
   COMPACT_CONTINUATION_HOST_CAPABILITIES,

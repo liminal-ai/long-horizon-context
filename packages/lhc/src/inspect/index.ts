@@ -1,15 +1,3 @@
-// Inspect is a pure consumer of other public surfaces: it imports no internals,
-// owns no tables, calls no inference, and writes nothing. It reports repair
-// targets without executing repair; mutations stay on the owning surfaces.
-//
-// `view` reports the stored snapshot from `threadView.describe` plus the
-// serving cost measured from thread-view serving assembly, matching what agents
-// receive by construction.
-//
-// Reads-only is structural: every operation runs in the touch-suppressed scope,
-// so open announcements fired by composed surfaces cannot let background
-// scheduling hang catch-up work or inference off an inspect read.
-
 import type { HealthReport, InspectOverview, OpResult, ViewContentsReport } from "../shared-tech/index.js";
 import type { ThreadRef } from "../threads/index.js";
 import { composeHealth } from "./internal/health.js";

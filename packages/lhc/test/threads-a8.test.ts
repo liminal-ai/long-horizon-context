@@ -1,10 +1,3 @@
-// A-8 registry additions (pi-lhc Epic 02 Story 1 prerequisite): the cwd column,
-// partial-id (prefix) resolve with ambiguity failure, the cwd-scoped listing,
-// and deterministic most-recent ordering.
-// These are the registry operations the connector's launch-driven thread
-// resolution depends on; they are proven here at the registry boundary, not
-// only through the connector (anti-shim: the scope is the query, not a filter
-// over an unscoped list).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { threads } from "../src/index.js";
 import { type TempStore, tempStore } from "./fixtures/index.js";
@@ -53,7 +46,7 @@ describe("A-8: cwd column", () => {
 describe("A-8: partial-id resolve", () => {
   it("resolves a unique prefix to the one matching thread", async () => {
     const id = await create({ title: "only" });
-    const prefix = id.slice(0, 8); // a true partial: shorter than the full id
+    const prefix = id.slice(0, 8);
     expect(prefix.length).toBeLessThan(id.length);
 
     const resolved = await threads.resolve({ threadId: prefix, registryPath: store.registryPath });
@@ -71,7 +64,6 @@ describe("A-8: partial-id resolve", () => {
   it("an ambiguous prefix fails ambiguous_thread_id and creates nothing", async () => {
     const a = await create();
     const b = await create();
-    // Every id shares the "th_" scheme prefix, so it matches both threads.
     const ambiguous = await threads.resolve({ threadId: "th_", registryPath: store.registryPath });
     expect(ambiguous.ok).toBe(false);
     if (!ambiguous.ok) {
@@ -81,7 +73,6 @@ describe("A-8: partial-id resolve", () => {
       expect(ambiguous.error.reason).toContain(b);
     }
 
-    // No thread was created by the failed resolution.
     const listed = await threads.listThreads({ registryPath: store.registryPath });
     expect(listed.ok).toBe(true);
     if (listed.ok) expect(listed.value).toHaveLength(2);
@@ -100,9 +91,6 @@ describe("A-8: partial-id resolve", () => {
   it("LIKE metacharacters in a partial id match literally, not as wildcards", async () => {
     await create();
     await create();
-    // "_" is a LIKE single-char wildcard; unescaped it would match every id
-    // (all begin "th_..."). Escaped, "th%" / "_" must be treated literally and
-    // match nothing, since no id literally contains "%" or begins "th_%".
     const pct = await threads.resolve({ threadId: "th%", registryPath: store.registryPath });
     expect(pct.ok).toBe(false);
     if (!pct.ok) expect(pct.error.code).toBe("thread_not_found");

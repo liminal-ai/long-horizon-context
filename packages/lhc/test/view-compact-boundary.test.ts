@@ -1,25 +1,3 @@
-// LIM-115 exact-boundary proofs. Three comparisons in the selector are `>=`
-// or `<=` and decide the arrangement at the point where the two sides are
-// equal. The differential suite cannot see any of them: two of the three sit
-// on inputs no realistic fixture lands on exactly, and the third is in the
-// walk both plans share, so both plans move together when it moves.
-//
-// Each test below stands the record exactly on one of those lines and pins
-// the documented answer, so flipping the comparison fails a named test:
-//
-//   A. crossingMessage's `sum >= budget` — the accumulated newest-first token
-//      sum equals the full budget exactly at the crossing message.
-//   B. the straddling closed turn's `fullSideTokens >= smoothSideTokens` — the
-//      turn's tokens split exactly in half across the budget line (ties stay
-//      in full), and one token either side of it.
-//   C. fillBand's `sum + entry.tokens <= bandBudget` — an entry whose rendered
-//      token estimate exactly fills what the band has left.
-//
-// A and B run through the real bounded compact-point query and through the
-// legacy eager reads, and again through the public preview under both values
-// of LHC_COMPACT_ALGORITHM, so the boundary is pinned in both product states.
-// C is a pure fixture over the shared walk: fillBand has one implementation,
-// so pinning it once pins it for both.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput, threads } from "../src/index.js";
@@ -49,7 +27,6 @@ afterEach(() => {
   else process.env["LHC_COMPACT_ALGORITHM"] = AMBIENT_ALGORITHM;
 });
 
-// full 100 of a 1000 lower bound: the budget the fixtures land on exactly.
 const FULL_BUDGET = 100;
 const PARAMS = { lowerBound: 1000, percentages: { full: 10, smooth: 30, detailed: 30, brief: 30 } };
 const CONFIG: SelectionConfig = {
@@ -86,12 +63,6 @@ function execSql(filePath: string, sql: string, ...params: SQLInputValue[]): voi
   withDb(filePath, (db) => db.prepare(sql).run(...params));
 }
 
-/**
- * Five closed turns of two messages each, with every message's token estimate
- * set to an exact value. Intake decides token estimates from content, so the
- * only way to stand a record exactly on the budget line is to state the
- * estimates directly.
- */
 async function threadWithExactTokens(tokensByTurn: readonly (readonly [number, number])[]): Promise<string> {
   const sdk = sdkFor();
   const filePath = await newThread();
@@ -136,7 +107,6 @@ function closedAtOf(filePath: string, turnId: string): number {
   });
 }
 
-/** The bounded plan's compact point, through its real metadata queries. */
 function boundedCompactPoint(filePath: string): number {
   return withDb(filePath, (db) => {
     const transaction: DbReadTransaction = { db, filePath, threadId: "boundary" };
@@ -145,13 +115,10 @@ function boundedCompactPoint(filePath: string): number {
       signal: undefined,
       tokenEstimator: o200k,
     });
-    // The real bounded source, so the compact-point keyset query is the thing
-    // under test — not a stand-in SelectionSource.
     return walkArrangement(plan.source, CONFIG).compactPoint;
   });
 }
 
-/** The legacy plan's compact point, through its eager reads. */
 function legacyCompactPoint(filePath: string): number {
   return withDb(filePath, (db) => selectArrangement(readSelectionInputs(db, o200k), CONFIG).compactPoint);
 }
@@ -165,7 +132,6 @@ async function previewCompactPoint(algorithm: "bounded" | "legacy", filePath: st
   return preview.value.preview.compactPoint;
 }
 
-/** Every route to the compact point agrees, and agrees with the documented value. */
 async function expectCompactPoint(filePath: string, expected: number): Promise<void> {
   expect(boundedCompactPoint(filePath)).toBe(expected);
   expect(legacyCompactPoint(filePath)).toBe(expected);
@@ -175,10 +141,6 @@ async function expectCompactPoint(filePath: string, expected: number): Promise<v
 
 describe("LIM-115 boundary A: the crossing message that lands exactly on the full budget", () => {
   it("takes the message whose running sum equals the budget, not the one after it", async () => {
-    // Newest-first: 20+20 (t5) + 20+20 (t4) = 80, then t3's newer message at
-    // 20 makes exactly 100. t3's older message is larger, so the straddle
-    // rounds the turn into smooth — and taking the older message instead
-    // would cover t3 whole and put the point a turn earlier.
     const filePath = await threadWithExactTokens([
       [10, 10],
       [10, 10],
@@ -189,7 +151,6 @@ describe("LIM-115 boundary A: the crossing message that lands exactly on the ful
     expect(closedAtOf(filePath, "t2")).toBe(6);
     expect(closedAtOf(filePath, "t3")).toBe(9);
 
-    // The sum reaches the budget exactly, never overshoots it.
     const tokensNewerThanT3Close = withDb(filePath, (db) =>
       Number(
         (
@@ -204,17 +165,12 @@ describe("LIM-115 boundary A: the crossing message that lands exactly on the ful
     );
     expect(tokensNewerThanT3Close + 20).toBe(FULL_BUDGET);
 
-    // `>=` stops at that message: t3 straddles and rounds to smooth.
-    // `>` would walk one message older, cover t3 whole, and answer 6.
     await expectCompactPoint(filePath, 9);
   });
 });
 
 describe("LIM-115 boundary B: the closed turn that straddles the budget line at an exact tie", () => {
   it("keeps a turn split exactly in half in full", async () => {
-    // t3 holds 40 tokens; 20 of them sit on the full side of the line.
-    // fullSideTokens === smoothSideTokens, and the documented rule is that
-    // ties stay in full — so the tail begins at t2's close, not t3's.
     const filePath = await threadWithExactTokens([
       [10, 10],
       [10, 10],
@@ -224,14 +180,10 @@ describe("LIM-115 boundary B: the closed turn that straddles the budget line at 
     ]);
     expect(closedAtOf(filePath, "t2")).toBe(6);
     expect(closedAtOf(filePath, "t3")).toBe(9);
-    // The tie, stated: 80 tokens newer than t3's close, 100 of budget, 40 in
-    // the turn. One token more on the newer side and the turn goes to smooth.
     await expectCompactPoint(filePath, 6);
   });
 
   it("sends a turn one token short of the tie to smooth", async () => {
-    // The same shape with t3 at 41 tokens: 20 on the full side, 21 on the
-    // smooth side. One token fewer on the newer side and the turn stays full.
     const filePath = await threadWithExactTokens([
       [10, 10],
       [10, 10],
@@ -246,16 +198,12 @@ describe("LIM-115 boundary B: the closed turn that straddles the budget line at 
 
 describe("LIM-115 boundary C: the entry that exactly fills its band budget", () => {
   it("includes an entry whose rendered tokens exactly consume what the band has left", () => {
-    // A ready turn_rendering renders as its body verbatim, so an entry's cost
-    // is the estimate of that body — known before the walk runs.
     const olderBody = "older banded turn rendering body with enough words to price above zero";
     const newerBody = "newer banded turn rendering body";
     const olderTokens = estimateTokens(olderBody);
     const newerTokens = estimateTokens(newerBody);
     const smoothBudget = olderTokens + newerTokens;
 
-    // Percentages of a lower bound chosen so the smooth share is exactly the
-    // two entries together: (4S × 25) / 100 === S.
     const config: SelectionConfig = {
       lowerBound: 4 * smoothBudget,
       percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 },
@@ -266,9 +214,6 @@ describe("LIM-115 boundary C: the entry that exactly fills its band budget", () 
     const turns: SelectionTurn[] = [
       { turnId: "t1", turnOrder: 1, status: "closed", openedAt: 1, closedAt: 2 },
       { turnId: "t2", turnOrder: 2, status: "closed", openedAt: 3, closedAt: 4 },
-      // An open turn holding more tokens than any budget: the compact point is
-      // pinned at t2's close whatever the shares are, so the two banded turns
-      // are the same two entries every time.
       { turnId: "t3", turnOrder: 3, status: "open", openedAt: 5, closedAt: null },
     ];
     const messages: SelectionMessage[] = [
@@ -292,9 +237,6 @@ describe("LIM-115 boundary C: the entry that exactly fills its band budget", () 
     const selection = selectArrangement(inputs, config);
 
     expect(selection.compactPoint).toBe(4);
-    // Both entries fit, the newer one first and the older one landing on the
-    // budget exactly. A strict `<` would stop the band after the newer entry
-    // and drop the older one.
     expect(selection.entries.map((entry) => entry.subjectId)).toEqual(["t1", "t2"]);
     expect(selection.entries.map((entry) => entry.tokens).reduce((total, tokens) => total + tokens, 0)).toBe(
       smoothBudget,

@@ -1,12 +1,3 @@
-// Deterministic InferenceCallbacks double (DD-7, test plan §Test Substrate).
-// Injected at the same seam production adapters use — dependency injection,
-// not a mock of internals. Every operation returns marked, input-derived
-// output: `<marker>(<digest>:<prefix>)` where the digest and prefix are pure
-// functions of the input, so identical input to the same operation yields
-// identical output across double instances, and different operations are
-// distinguishable by marker. Scripting (failNext / failKind / delayKind /
-// captureInputs) is per-instance state and never leaks across tests that
-// construct their own double.
 import {
   deterministicText,
   type InferenceCallbacks,
@@ -24,9 +15,6 @@ export type InferenceCallbackOpName =
   | "compressDetailedTurn"
   | "summarizeChunkBrief";
 
-// Tests script by work-kind / form-kind vocabulary (the test plan writes
-// `failKind(prompt_smoothing, …)`); the double accepts those aliases as well
-// as the operation names themselves.
 const KIND_ALIASES: Record<string, InferenceCallbackOpName> = {
   smoothPrompt: "smoothPrompt",
   summarizeToolResult: "summarizeToolResult",
@@ -62,7 +50,6 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
   private capturing = false;
   private readonly captured: CapturedInput[] = [];
 
-  // Fail the next n calls to any operation, then succeed.
   failNext(n: number, failure?: { reason?: string }): void {
     this.failNextScript = {
       remaining: n,
@@ -70,8 +57,6 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     };
   }
 
-  // Fail the next n calls to one operation (kind names and op names both
-  // accepted).
   failKind(kind: string, n: number, failure?: { reason?: string }): void {
     const op = resolveOpName(kind);
     this.failByOp.set(op, {
@@ -84,7 +69,6 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
     this.delayByOp.set(resolveOpName(kind), ms);
   }
 
-  // Start capturing inputs; returns the live log (appended in call order).
   captureInputs(): readonly CapturedInput[] {
     this.capturing = true;
     return this.captured;
@@ -103,10 +87,6 @@ export class InferenceCallbacksDouble implements InferenceCallbacks {
         return { ok: false, reason: script.reason };
       }
     }
-    // Output format shared with src/shared-tech/deterministic.ts so this double
-    // and deterministic inference callbacks produce byte-identical artifacts;
-    // the chunk-summary receipt/outcome suffixes (AC-3.8) come from the same
-    // shared helpers where deterministic test handlers assemble them locally.
     return { ok: true, text: deterministicText(op, input, text) + suffix };
   }
 

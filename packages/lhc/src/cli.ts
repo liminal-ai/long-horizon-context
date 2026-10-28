@@ -1,9 +1,3 @@
-// `lhc`: the SDK's thin command line. Verbs map one-to-one onto threads-domain
-// operations; the only logic here is flag parsing, instance construction for
-// verbs that derive, and the exit code. One line on stdout on success, one
-// line on stderr on failure. Exit 0 ok, 2 refused (a caller error the
-// scriptable caller can act on), 1 anything else.
-
 import { writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -235,8 +229,6 @@ async function repair(flags: Flags, sdk: Lhc, ref: threads.ThreadRef): Promise<t
   return unwrap(await sdk.threads.repairDerivations(input));
 }
 
-// Counts on stdout; the per-subject reasons go to stderr so a scripted caller
-// can act on the line and a human can still see why a repair did not land.
 function repairLine(receipt: threads.RepairReceipt): string {
   for (const error of receipt.errors) {
     process.stderr.write(`repair ${error.subjectKind} ${error.subjectId}: ${error.code}: ${error.reason}\n`);
@@ -302,8 +294,6 @@ async function fork(flags: Flags): Promise<string> {
     repairText = repairLine(await repair(flags, sdkOnce(), ref));
   }
 
-  // Cross-provider: the copy's closed turns become text bands before any host
-  // can find it, so no host renders another harness's tool blocks.
   const plan = threads.forkCompactPlan(sourceHost, host, choice);
   let compactText = `compact=skipped (${plan.reason})`;
   if (plan.compact) {

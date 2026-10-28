@@ -1,9 +1,3 @@
-// Epic compact-continuation test seams. Lives in fixtures/ — the one
-// directory sanctioned to reach below the SDK surface (boundary check exempt).
-//
-// Production `runCompactContinuation` / public HostFacts reject testHooks.
-// Tests inject faults only through this internal runner and seed helpers.
-
 import type { CompactContinuationHostFacts } from "../../src/compact-continuation/index.js";
 import {
   type CompactContinuationTestHooks,

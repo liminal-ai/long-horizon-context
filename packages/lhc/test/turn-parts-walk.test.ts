@@ -1,10 +1,3 @@
-// Turn parts — the walk (epic Flows 1, 3, 4, 6): split the open turn at the
-// newest admissible complete step edge, serve parts behind seam lines inside
-// the installed snapshot, keep the split point monotone and prior part bytes
-// stable, retain a closed transition until newer messages fill the full band,
-// settle it whole before any other turn splits, and never emit a part on the
-// legacy plan. One invariant, exercised by the scenario matrix: at most one
-// unsettled turn at compact completion.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput, type ViewCompactParams } from "../src/index.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
@@ -36,7 +29,6 @@ async function send(sdk: Lhc, filePath: string, events: MessageEventInput[]): Pr
   if (!result.ok) throw new Error(result.error.reason);
 }
 
-// One complete step: text, a call, its result. `stepIndex` is the host fact.
 function step(stepIndex: number, label: string, weight = 6): MessageEventInput[] {
   const body = `${label} `.repeat(weight).trim();
   return [
@@ -50,7 +42,6 @@ function step(stepIndex: number, label: string, weight = 6): MessageEventInput[]
   ];
 }
 
-// Over the construction cap: an oversized step the tail must carry verbatim.
 const GIANT = Array.from({ length: 300 }, (_, i) => `line ${i} of a very long assistant message body`).join("\n");
 
 const closedTurn = (label: string): MessageEventInput[] => [
@@ -60,7 +51,6 @@ const closedTurn = (label: string): MessageEventInput[] => [
 ];
 
 interface Sums {
-  // token sum of live messages after each step's edge, by host step index
   after: Map<number, number>;
   edge: Map<number, number>;
 }
@@ -91,9 +81,6 @@ function stepSums(filePath: string, turnId: string): Sums {
   }
 }
 
-// The split rule is proven with newest-closed protection off (Flow 5 has its
-// own seam file); with it on, the tiny closed t1 plus the whole open turn
-// would fit the bound and the walk would rightly not split.
 const params = (lowerBound: number): ViewCompactParams => ({
   lowerBound,
   percentages: { full: 50, smooth: 20, detailed: 15, brief: 15 },
@@ -128,8 +115,6 @@ async function expectMarkerOnlyInFullSuffix(
   const context = await sdk.threadView.getLlmRequestContext({ filePath });
   expect(context.ok).toBe(true);
   if (!context.ok) throw new Error(context.error.reason);
-  // Assembly emits one message per rendered band first; every entry after
-  // that metadata-derived boundary is a verbatim Full-tail message.
   const fullSuffixTexts = context.value.messages
     .slice(compacted.receipt.renderedBands.length)
     .map((message) => message.content.map((part) => part.text).join(""));
@@ -150,14 +135,9 @@ describe("turn parts: the walk splits the open turn", () => {
       ...step(1, "bravo"),
       ...step(2, "charlie"),
       ...step(3, "delta"),
-      // in-flight step: a call with no result yet
       validEvent("assistant_text", { payload: { text: "step 4: working", stepIndex: 4 } }),
       validEvent("tool_call", { payload: { toolCallId: "c4", toolName: "read", arguments: {}, stepIndex: 4 } }),
     ]);
-    // Exact tie on step 1's edge: the full share equals the tail after it, so
-    // k = 2 (steps 0–1 in the part) by the inclusive rule; an off-by-one
-    // (strict <) would select step 2's edge instead. lastEdge is 3 (three
-    // complete steps 0..3 → k ≤ 3), so the tie is well inside the admissible range.
     const sums = stepSums(filePath, "t2");
     const tie = sums.after.get(1)!;
     expect(sums.after.get(0)!).toBeGreaterThan(tie);
@@ -168,14 +148,12 @@ describe("turn parts: the walk splits the open turn", () => {
     expect(receipt.compactPoint).toBe(sums.edge.get(1));
     expect(receipt.settled).toBeUndefined();
 
-    // Nothing closed, nothing opened.
     const turns = await sdk.turns.listTurns({ filePath });
     expect(turns.ok && turns.value.map((t) => [t.turnId, t.status])).toEqual([
       ["t1", "closed"],
       ["t2", "open"],
     ]);
 
-    // The part: one smooth entry over steps 0–1, labeled, raw prompt, seam line last.
     const part = entries.find((entry) => entry.part !== undefined)!;
     expect(part).toMatchObject({ band: "smooth", subjectKind: "turn", subjectId: "t2", derivationUsed: "part" });
     expect(part.text.startsWith("<t2>\n")).toBe(true);
@@ -185,7 +163,6 @@ describe("turn parts: the walk splits the open turn", () => {
     expect(part.text.endsWith("\n[seam · t2 · steps 0–1 summarized above · t2 resumes below]\n</t2>")).toBe(true);
     expect(part.text).toMatch(/<m\d+>/);
 
-    // Served view: bands, then the verbatim tail from the first message of step 2.
     const context = await sdk.threadView.getLlmRequestContext({ filePath });
     expect(context.ok).toBe(true);
     if (!context.ok) return;
@@ -213,12 +190,10 @@ describe("turn parts: the walk splits the open turn", () => {
     expect(first.receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 0 }]);
     const firstPart = first.entries.find((e) => e.part !== undefined)!;
 
-    // Pressure relaxes (huge budget): k never moves backward.
     const relaxed = await compact(sdk, filePath, params(100_000));
     expect(relaxed.receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 0 }]);
     expect(relaxed.entries.find((e) => e.part !== undefined)!.text).toBe(firstPart.text);
 
-    // More steps, tighter budget: coverage extends with a NEW part over the new range only.
     await send(sdk, filePath, [...step(3, "delta"), ...step(4, "echo"), ...step(5, "foxtrot")]);
     const sums = stepSums(filePath, "t2");
     const second = await compact(sdk, filePath, params(sums.after.get(3)! * 2));
@@ -252,7 +227,6 @@ describe("turn parts: the walk splits the open turn", () => {
     expect(unstamped.receipt.splitPoint).toBeUndefined();
     expect(unstamped.entries.some((e) => e.part !== undefined)).toBe(false);
 
-    // Stamped but legacy: identical no-split outcome, no part vocabulary anywhere.
     const legacyPath = await newThread(sdk);
     await send(sdk, legacyPath, closedTurn("t1"));
     await send(sdk, legacyPath, [
@@ -283,13 +257,10 @@ describe("turn parts: no edge fits (TC-1.8c)", () => {
       validEvent("assistant_text", { payload: { text: GIANT, stepIndex: 1 } }),
       validEvent("tool_call", { payload: { toolCallId: "c1", toolName: "read", arguments: {}, stepIndex: 1 } }),
       validEvent("tool_result", { payload: { toolCallId: "c1", content: "result 1", stepIndex: 1 } }),
-      // In flight: step 2's call has no result yet, so step 1 is the newest
-      // complete step and k may reach at most 1.
       validEvent("assistant_text", { payload: { text: "step 2: charlie", stepIndex: 2 } }),
       validEvent("tool_call", { payload: { toolCallId: "c2", toolName: "read", arguments: {}, stepIndex: 2 } }),
     ]);
     const sums = stepSums(filePath, "t2");
-    // The full share is under the tail behind step 0's edge: no edge fits.
     const { receipt, entries } = await compact(sdk, filePath, params(sums.after.get(0)!));
     expect(receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 0 }]);
     expect(receipt.compactPoint).toBe(sums.edge.get(0));
@@ -432,8 +403,6 @@ describe("turn parts: close, lazy settle, settle-before-split, byte equivalence"
     const { filePath, partText } = await splitThenClose(sdk);
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "next" } })]);
 
-    // Lazy: a generous budget would leave t2 in the tail — the walk keeps its
-    // installed edge and parts instead of serving it whole-unsettled.
     const lazy = await compact(sdk, filePath, params(100_000));
     expect(lazy.receipt.parts).toEqual([{ turnId: "t2", fromStep: 0, toStep: 0 }]);
     expect(lazy.receipt.settled).toBeUndefined();
@@ -441,8 +410,6 @@ describe("turn parts: close, lazy settle, settle-before-split, byte equivalence"
     const lazyMeta = await sdk.threadView.hostMetadata({ filePath });
     expect(lazyMeta.ok && lazyMeta.value.unsettledTurn).toEqual({ turnId: "t2" });
 
-    // t3 grows past the full share: t2 settles whole (composed in-walk — no
-    // drain ran, so no stored rendering exists), then t3 splits.
     await send(sdk, filePath, [...step(0, "golf"), ...step(1, "hotel"), ...step(2, "india"), ...step(3, "juliet")]);
     const sums = stepSums(filePath, "t3");
     const settled = await compact(sdk, filePath, params(sums.after.get(1)! * 2));
@@ -479,7 +446,6 @@ describe("turn parts: close, lazy settle, settle-before-split, byte equivalence"
       }
       await send(sdk, filePath, [validEvent("turn_end")]);
       await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "next" } }), ...step(0, "golf")]);
-      // Pin derivation state on both copies: every queued derivation lands.
       const drained = await sdk.work.drain({ filePath });
       if (!drained.ok || drained.value.remaining !== 0) throw new Error("drain left work behind");
     };
@@ -488,8 +454,6 @@ describe("turn parts: close, lazy settle, settle-before-split, byte equivalence"
     await script(split, true);
     await script(whole, false);
 
-    // The split copy settles through the composed-in-walk rung: clear its
-    // stored rendering (what an edit cascade does) so the walk must compose.
     const db = openRaw(split);
     try {
       db.prepare(`DELETE FROM derivation WHERE subject_id = 't2' AND derivation_type = 'turn_rendering'`).run();
@@ -619,13 +583,10 @@ describe("turn parts: named contract cases", () => {
     } finally {
       db.close();
     }
-    // t3 exactly fills the 100-token full share: settle, no part anywhere.
     const settled = await compact(sdk, filePath, params(200));
     expect(settled.receipt.settled?.turnId).toBe("t2");
     expect(settled.receipt.parts).toBeUndefined();
 
-    // "Interrupted immediately after install": a fresh process serves from the
-    // snapshot alone.
     const resumed = sdkFor();
     const served = await resumed.threadView.getLlmRequestContext({ filePath });
     const described = await resumed.threadView.describe({ filePath });
@@ -649,8 +610,6 @@ describe("turn parts: named contract cases", () => {
     } finally {
       installedDb.close();
     }
-    // Nothing is pending on the view's behalf: the queue drains to zero and
-    // the installed snapshot is exactly what it was.
     const drained = await resumed.work.drain({ filePath });
     expect(drained.ok && drained.value.remaining).toBe(0);
     const after = await resumed.threadView.describe({ filePath });

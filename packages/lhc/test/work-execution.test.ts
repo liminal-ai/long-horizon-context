@@ -1,9 +1,3 @@
-// Story 1 (Epic 02): queue execution and drain — Flow 1, in-process half.
-// Claim/lease mechanics, queue-order dispatch, terminal dispositions (reported
-// then deleted, DD-1),
-// unknown-kind handling, both host modes, and coalesced background
-// scheduling. The cross-process legs (TC-1.3 kill, TC-1.4 claim exclusion,
-// CLI parity) live in cli-process-work.test.ts.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   applyDerivationSuccess,
@@ -51,8 +45,6 @@ beforeEach(() => {
   store = tempStore();
 });
 afterEach(() => {
-  // Background-mode SDKs install process-wide seams at construction; tests
-  // must not leak them into each other.
   setSchedulerPoke(null);
   setThreadTouch(null);
   store.cleanup();
@@ -239,8 +231,6 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
     expect(liveCount(filePath)).toBe(3);
 
     const report = await drain(sdk, filePath);
-    // Queue order across owners: m1's smoothing, m3's result summary, then
-    // the turn derivation queued at close — never reordered.
     expect(report.ran.map((entry) => entry.workItemId)).toEqual([
       "w-m1-prompt_smoothing-v1",
       "w-m3-tool_result_summary-v1",
@@ -251,8 +241,6 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
     expect(report.stoppedBecause).toBe("empty");
     expect(report.remaining).toBe(0);
 
-    // DD-1 storage contract: terminal rows are gone — the report is the only
-    // place the dispositions exist (raw zero-row read).
     expect(liveCount(filePath)).toBe(0);
     const db = openRaw(filePath);
     try {
@@ -264,8 +252,6 @@ describe("TC-1.1: a drain runs queued items one at a time, in queue order, and r
       db.close();
     }
 
-    // Artifacts landed in run order: derivedAt strictly monotone with the
-    // injected clock from m1 to m3 to the turn's forms.
     const forms = readDerivedForms(filePath);
     expect(forms.map((form) => form.state)).toEqual(["ready", "ready", "ready", "ready", "ready"]);
     const at = (subjectId: string, derivationType: string): number => {
@@ -296,20 +282,15 @@ describe("TC-1.2 / AC-1.2: mid-drain queueing coalesces into at most one further
     const { threadId, filePath } = await newThread();
 
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "batch A" } })]);
-    // Let the poked drain start (it defers one macrotask), then queue two
-    // more batches while item A's slow handler is in flight.
     await sleep(10);
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "batch B" } })]);
     await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "batch C" } })]);
 
     await sdk.drainSettled({ filePath });
 
-    // Everything queued mid-drain was processed before the cycle ended…
     expect(liveCount(filePath)).toBe(0);
     const smoothed = readDerivedForms(filePath).filter((f) => f.derivationType === "smoothed_prompt");
     expect(smoothed.map((f) => f.state)).toEqual(["ready", "ready", "ready"]);
-    // …and the burst coalesced: one initial pass plus exactly one follow-up,
-    // not one pass per poke (the cost model is the assertion).
     expect(sdk.scheduler.testPassCount(threadId)).toBe(2);
   });
 });
@@ -397,8 +378,6 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
   });
 
   it("reopening a thread with leftover queued rows recovers them when the process engages — message reads stay pure (Epic 04 DD-6)", async () => {
-    // Build the leftover state with no background scheduler installed: rows
-    // accumulate exactly as a dead process would have left them.
     const { filePath } = await newThread();
     const seeded = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath }, [validEvent("user_prompt"), validEvent("turn_end")]),
@@ -415,19 +394,11 @@ describe("TC-1.5 / AC-1.5, AC-1.6: background mode — queueing is sufficient; f
     });
     registerTestWorkHandlers(sdk, double);
 
-    // First touch of the thread in this process lifetime is a read. Message
-    // list/show are read-only (Epic 04 DD-6, SV-01-001): like thread-view's
-    // model-context/status before them, they suppress the open announcement, so the
-    // read schedules no first-touch catch-up — the leftover rows stay exactly
-    // as the dead process left them, and no model call fires off a read.
     const read = await sdk.messages.list({ filePath });
     expect(read.ok).toBe(true);
     await sdk.drainSettled({ filePath });
     expect(liveCount(filePath)).toBe(2);
 
-    // Recovery arrives the moment the process engages the thread through a
-    // non-read path — here an explicit drain (an intake or any write touches
-    // the same way). The leftover work catches up to ready.
     const recovered = await sdk.work.drain({ filePath });
     expect(recovered.ok).toBe(true);
     await sdk.drainSettled({ filePath });
@@ -529,7 +500,6 @@ describe("TC-1.7 / AC-1.8: an unregistered kind lands failed_terminal with a sta
     const sdk = manualSdk(double);
     const { filePath } = await newThread();
 
-    // Raw current-shape row with an unregistered kind, queued ahead of any valid work.
     const db = openRaw(filePath);
     try {
       db.prepare(
@@ -702,7 +672,6 @@ describe("claim ownership fencing", () => {
     const retryDrain = drain(sdk, filePath);
     await until(() => runs.length === 2, "retry claim");
 
-    // The old holder returns a well-formed result while the retry still runs.
     runs[0]?.resolve({ content: "stale completion" });
     expect((await olderDrain).ran[0]).toMatchObject({ disposition: "lost_lease" });
     expect(liveCount(filePath)).toBe(1);
@@ -761,7 +730,6 @@ describe("claim ownership fencing", () => {
     const { filePath } = await newThread();
     await send(sdk, filePath, [validEvent("user_prompt")]);
 
-    // Both holders are abandoned mid-run (their processes "crash").
     const first = drain(sdk, filePath);
     await until(() => runs.length === 1, "first run");
     now.ms += 100;

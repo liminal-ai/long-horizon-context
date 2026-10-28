@@ -1,7 +1,3 @@
-// The logging surface: a domain-blind tech-util for recording fallback
-// events and diagnostics. LHC internals and the host extension both write
-// through this surface. Writes are fail-soft and never share the caller's
-// transaction. Queries return entries by actionable fields.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { DbReadTransaction, DbWriteTransaction } from "../persist.js";
 import { databasePathFor, openDatabase } from "../storage.js";
@@ -13,11 +9,10 @@ export interface LogEntry {
   message: string;
   derivationType?: string;
   subjectId?: string;
-  reason?: string; // e.g. "not_ready" | "failed_floor"
-  floorUsed?: string; // for fallback events
+  reason?: string;
+  floorUsed?: string;
 }
 
-// Stored log entry as read from the database
 export interface StoredLogEntry {
   logId: number;
   level: LogLevel;
@@ -52,16 +47,11 @@ function insertLog(path: string, entry: LogEntry): void {
       entry.floorUsed ?? null,
     );
   } catch {
-    // Fail-soft: drop the log entry but do not propagate the error to the caller
-    // The operation that produced this log entry continues unchanged.
   } finally {
     db?.close();
   }
 }
 
-// Write a log entry. Fail-soft: never throws to the caller, never shares
-// the caller's transaction. A logging failure is contained and does not
-// affect the operation that produced the log entry.
 export function writeLog(transaction: DbReadTransaction | DbWriteTransaction, entry: LogEntry): void {
   const path = databasePathFor(transaction.db);
   if (path === undefined) return;
@@ -72,8 +62,6 @@ export function writeLog(transaction: DbReadTransaction | DbWriteTransaction, en
   insertLog(path, entry);
 }
 
-// Query log entries by actionable fields. Returns all matching entries in
-// descending order of recorded_at (newest first).
 export function queryLog(db: DatabaseSync, q: LogQuery): StoredLogEntry[] {
   const conditions: string[] = [];
   const params: SQLInputValue[] = [];

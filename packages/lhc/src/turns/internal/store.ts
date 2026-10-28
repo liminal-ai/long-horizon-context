@@ -1,7 +1,3 @@
-// Turn row operations. Writes run on the caller's handle inside the batch
-// transaction; reads run on a fresh handle per operation. A closed turn has
-// no writer anywhere in this module: its membership and boundaries are stable
-// because no UPDATE touches closed rows.
 import type { DatabaseSync } from "node:sqlite";
 import type { TurnRecord } from "../index.js";
 import { readPlacements } from "./chunks.js";
@@ -36,8 +32,6 @@ export function insertOpenTurn(db: DatabaseSync, turnOrder: number, openedAtEven
   return turnId;
 }
 
-// Host facts (outcome/timing) project only from a turn_end payload. Closers
-// that lack them (prompt-boundary close, empty turn_end) leave NULLs.
 export interface TurnCloseHostFacts {
   outcome?: "completed" | "aborted";
   outcomeReason?: string;
@@ -77,12 +71,6 @@ interface RawTurnRow {
   ended_at: string | null;
 }
 
-// Membership is stored on the member (message.turn_id), never as a list on
-// the turn: memberMessageIds is a query, ordered by event order, so there is
-// exactly one source of truth. Both halves read deleted-filtered (tech
-// design §Mechanics): a deleted turn leaves the listing entirely, and a
-// deleted message leaves its turn's membership — the membership shrinks in
-// place, the turn row and its boundaries untouched.
 export function readTurns(db: DatabaseSync): TurnRecord[] {
   const memberRows = db
     .prepare(
@@ -104,7 +92,6 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
        FROM turns WHERE deleted_at IS NULL ORDER BY turn_order`,
     )
     .all() as unknown as RawTurnRow[];
-  // Chunk placement is stored in chunk_member once derivation places the turn.
   const placements = readPlacements(db);
   return turnRows.map((row) => {
     const record: TurnRecord = {
@@ -118,7 +105,6 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
       record.closedAtEventOrder = Number(row.closed_at_event_order);
     }
     if (row.outcome !== null) {
-      // Column CHECK + null filter: only completed|aborted remain.
       record.outcome = row.outcome as "completed" | "aborted";
     }
     if (row.outcome_reason !== null) {
@@ -139,11 +125,6 @@ export function readTurns(db: DatabaseSync): TurnRecord[] {
   });
 }
 
-// The turn structure for compact selection: every turn row in turn order,
-// including tombstoned ones (the deleted flag carried through). Unlike
-// readTurns, this keeps tombstoned rows because the consumer's referential
-// checks treat a tombstoned turn as a legitimate reference target, not damage
-// — it separates the live selection set from the referential universe itself.
 export interface TurnStructureRow {
   turnId: string;
   turnOrder: number;

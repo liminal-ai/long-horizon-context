@@ -1,7 +1,3 @@
-// A process that exits cleanly mid-derivation hands its claim back (queued,
-// expiry count unchanged); only a crash or kill leaves it to expire. Real
-// child processes (fixtures/drain-runner.ts), since the handback runs from the
-// process "exit" event.
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -40,8 +36,6 @@ async function seededThread(): Promise<string> {
   return created.value.filePath;
 }
 
-// Runs the drain runner until it exits (or, with killOnStart, SIGKILLs it once
-// its handler starts). Returns the exit code/signal and stdout.
 function runDrain(
   threadPath: string,
   opts: { leaseMs: number; exitAfterMs?: number; killOnStart?: boolean },
@@ -96,7 +90,6 @@ async function drainInProcess(filePath: string, leaseMs = 1000) {
 describe("claim handback on clean exit", () => {
   it("a clean exit mid-derivation leaves the item queued with no expiry; a later longer run completes it", async () => {
     const filePath = await seededThread();
-    // A long lease: without the handback the claim would sit for a minute.
     const run = await runDrain(filePath, { leaseMs: 60_000, exitAfterMs: 150 });
     expect(run.stderr).toBe("");
     expect(run.code).toBe(0);
@@ -123,7 +116,6 @@ describe("claim handback on clean exit", () => {
     expect(killed.signal).toBe("SIGKILL");
     expect(headRow(filePath)).toMatchObject({ status: "claimed", payload: { claimAttempt: 1 } });
 
-    // The next process finds the claim expired (one count), reclaims it, then exits cleanly.
     await new Promise((resolve) => setTimeout(resolve, 100));
     const clean = await runDrain(filePath, { leaseMs: 60_000, exitAfterMs: 150 });
     expect(clean.code).toBe(0);
@@ -133,7 +125,6 @@ describe("claim handback on clean exit", () => {
       payload: { claimAttempt: 2 },
     });
 
-    // The kill's expiry mark is cleared by the clean exit, so it no longer counts.
     expect(headRow(filePath).payload.claimExpired).toBeUndefined();
 
     const report = await drainInProcess(filePath);

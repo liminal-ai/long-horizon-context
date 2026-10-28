@@ -92,8 +92,6 @@ export type {
   MessageRecord,
   MutationResult,
 } from "./messages/index.js";
-// Compact-continuation contract (LIM-60): pure whole-seam oracle + parity helpers.
-// Stage-by-stage runtime against live threads is LIM-61 (`compactContinuation`).
 export {
   asCompactContinuationInput,
   assertDecisionParity,
@@ -150,10 +148,6 @@ export {
   type WorkContinuation,
   type WriterClaim,
 } from "./shared-tech/compact-continuation/index.js";
-// Inference vocabulary: the host-supplied ModelCall boundary and per-kind
-// assignment config. The adapter and registry are construction internals behind
-// initLhc.
-// Inspect vocabulary: the report shapes the inspect surface serves.
 export type {
   Band,
   CompactReceipt,
@@ -260,10 +254,6 @@ export {
   type StoredLogEntry,
   writeLog,
 } from "./shared-tech/logging/index.js";
-// The config-selectable prompt-name catalog (E05-NB-2): the full set of names
-// a per-kind assignment may select, and the default name per kind. Exposed so
-// operators discover valid prompt names from the SDK surface without reading
-// source. The registry itself stays a construction internal behind initLhc.
 export {
   DEFAULT_PROMPT_NAMES,
   PROMPT_NAMES,
@@ -301,8 +291,6 @@ export {
   type WorkOwner,
   type WorkSourceRef,
 } from "./shared-tech/work-queue/index.js";
-// Thread-view vocabulary: config shapes live on SdkConfig and operation shapes
-// live on the thread-view surface below.
 export {
   BUILT_IN_PROFILES,
   DEFAULT_COMPACT_THRESHOLD,
@@ -320,8 +308,6 @@ export type {
 } from "./threads/index.js";
 export type { ChunkRecord, TurnRecord } from "./turns/index.js";
 
-// ── LHC initialization ────────────────────────────────────────────
-
 function unknownWorkKind(kind: string): { ok: false; error: ErrorResult } {
   return {
     ok: false,
@@ -333,8 +319,6 @@ function unknownWorkKind(kind: string): { ok: false; error: ErrorResult } {
   };
 }
 
-// Dispatch-time lookup: an unregistered kind is reported explicitly — never
-// a throw, never a silent undefined.
 export function lookupWorkHandler(map: WorkHandlerMap, kind: string): OpResult<WorkHandler> {
   const handler = map[kind as WorkKind];
   if (handler === undefined) return unknownWorkKind(kind);
@@ -352,14 +336,10 @@ export function lookupWorkDispatcher(
   return { ok: true, value: dispatcher };
 }
 
-// The work surface used by CLI work operations.
 export interface WorkSurface {
   drain(ref: threadsDomain.ThreadRef, opts?: { maxItems?: number }): Promise<OpResult<DrainReport>>;
 }
 
-// The thread-view surface as the SDK exposes it: operations only. Config
-// substrate is construction machinery, not an operation. `describe` is the
-// stored-snapshot read the inspect domain composes.
 export interface ThreadViewSurface {
   getLlmRequestContext(ref: threadsDomain.ThreadRef): Promise<OpResult<LlmRequestContext>>;
   getSessionThreadView(ref: threadsDomain.ThreadRef): Promise<OpResult<SessionThreadView>>;
@@ -392,14 +372,6 @@ export interface ThreadViewSurface {
     prepared: threadViewDomain.PreparedCompact,
     opts?: threadViewDomain.InstallPreparedOptions,
   ): Promise<OpResult<CompactReceipt>>;
-  /**
-   * Prepare and install in one call. On the bounded plan, a thread that has
-   * never taken the forced-boundary path may have its open turn split into
-   * parts here with no seam assertion: only complete, host-recorded steps
-   * split, and the open turn's step indices ride the drift digest so a step
-   * that lands between prepare and install recomputes. `midTurnCompact` is
-   * the entry point that asserts the host's capture seam (AC-7.4).
-   */
   compact(
     ref: threadsDomain.ThreadRef,
     opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
@@ -430,21 +402,12 @@ export interface Lhc {
   retrieval: typeof retrievalDomain;
   turns: typeof turnsDomain;
   threadView: ThreadViewSurface;
-  /**
-   * Compact-continuation runtime (LIM-61): staged operation against thread
-   * state. Host trigger policy stays outside the SDK.
-   */
   compactContinuation: typeof compactContinuationDomain;
-  // Read-only report surface. Scoped through the instance seam like every other
-  // namespace so composed status reads resolve this SDK's view config.
   inspect: typeof inspectDomain;
   logging: LoggingSurface;
   config: ResolvedSdkConfig;
   scheduler: Scheduler;
   work: WorkSurface;
-  // Resolves when the scheduler has no running or pending drain for the
-  // thread (issue 3) — the awaitable for background mode, and a no-op
-  // resolve in manual mode.
   drainSettled(ref: threadsDomain.ThreadRef): Promise<void>;
 }
 
@@ -475,12 +438,6 @@ function requirePositive(value: number, name: string): void {
   }
 }
 
-// Bind a domain surface to one SDK instance's delivery seam (epic-fix-001):
-// every operation invoked through sdk.* runs inside runWithInstanceSeam, so
-// the poke/touch it triggers deep inside reaches THIS SDK's scheduler
-// (background) or a no-op (manual) — never another SDK's. Non-function exports
-// pass through unchanged. The wrapped object is the same shape as the
-// namespace, so the public surface type holds.
 function scopeSurface<T extends object>(surface: T, seam: InstanceSeam): T {
   const scoped: Record<string, unknown> = {};
   for (const key of Object.keys(surface)) {
@@ -494,16 +451,8 @@ function scopeSurface<T extends object>(surface: T, seam: InstanceSeam): T {
   return scoped as T;
 }
 
-// The default provider lane and model for inference derivation types, used
-// when the host omits an inference type from inference.assignments. The
-// provider key is a host routing key; LHC never resolves it.
 const DEFAULT_INFERENCE_LANE = { provider: "codex", model: "gpt-5.4-mini" } as const;
 
-// Default assignment per inference derivation type: documented default lane and
-// model, registry default prompt template, and tested target ratios for
-// compression/brief types. Deterministic derivations are not inference
-// assignments. Construction-internal: defaults are observable through routed
-// calls, not part of the public export surface.
 const DEFAULT_INFERENCE_THINKING = "none" as const;
 
 const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> = {
@@ -522,10 +471,7 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
   detailed_turn_compression: {
     provider: DEFAULT_INFERENCE_LANE.provider,
     model: DEFAULT_INFERENCE_LANE.model,
-    // Stated prompt target (v3) is lower than these ratios — see detailed-turn-compression-v3.ts.
     prompt: DEFAULT_PROMPT_NAMES.detailed_turn_compression ?? "detailed-turn-compression-v3",
-    // These ratios (and the targets stated in prompts) are steering, not decided
-    // specs or tolerances. Ballparks that get the model in the zone; adjust freely.
     targetMinRatio: 0.35,
     targetMaxRatio: 0.65,
     targetAimRatio: 0.5,
@@ -534,9 +480,7 @@ const DEFAULT_INFERENCE_ASSIGNMENTS: Readonly<Record<string, ModelAssignment>> =
   chunk_summary_brief: {
     provider: DEFAULT_INFERENCE_LANE.provider,
     model: DEFAULT_INFERENCE_LANE.model,
-    // Stated prompt target (v3) is lower than these ratios — see chunk-brief-v3.ts.
     prompt: DEFAULT_PROMPT_NAMES.chunk_summary_brief ?? "chunk-brief-v3",
-    // Steering, not specs — see the comment on detailed_turn_compression above.
     targetMinRatio: 0.08,
     targetMaxRatio: 0.2,
     targetAimRatio: 0.12,
@@ -556,13 +500,6 @@ function resolveTargetRatios(
   };
 }
 
-// Resolve the `inference` construction path: validate the host function and
-// assignment map, then fill defaults. Provided inference assignments must carry
-// non-empty provider/model and a registry-known prompt. Inference types the host
-// omits are filled from DEFAULT_INFERENCE_ASSIGNMENTS. Unknown keys are
-// rejected, never silently ignored. Then the adapter is built into the same
-// InferenceCallbacks slot direct injection uses. No partial construction: every
-// mistake throws before anything is assembled.
 function resolveInferenceCallbacks(
   inference: InferenceConfig,
   guards: ResolvedSdkConfig["guards"],
@@ -577,15 +514,12 @@ function resolveInferenceCallbacks(
 
   const inferenceKeys = new Set<string>(Object.keys(DEFAULT_INFERENCE_ASSIGNMENTS));
 
-  // Unknown keys are rejected (anti-shim: never silently ignore) — TC-0.3a.
   for (const key of Object.keys(provided)) {
     if (!inferenceKeys.has(key)) {
       throw new TypeError(`${INIT_CONFIG_PREFIX}: inference.assignments has unknown derivation type "${key}"`);
     }
   }
 
-  // Validate every effective inference assignment after merging defaults: non-empty
-  // provider/model/prompt, and prompt must name a registry template.
   const merged: Record<string, ModelAssignment> = {};
   for (const kind of inferenceKeys) {
     const override = provided[kind];
@@ -629,14 +563,7 @@ function resolveInferenceCallbacks(
   });
 }
 
-// The only initialization path: inference callbacks, mode, clock, and policy enter here.
-// Config mistakes are programmer errors at construction and throw; operating
-// failures after construction return OpResults per the error contract.
 export function initLhc(config: SdkConfig): Lhc {
-  // Inference callbacks arrive by direct injection or by the inference config
-  // There is no named inference-callback registry and no env/flag resolution
-  // path to fall back on. The XOR rule is validated before anything downstream
-  // so the error names the caller's mistake, not a symptom.
   if (config.inferenceCallbacks !== undefined && config.inference !== undefined) {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: exactly one of inferenceCallbacks or inference`);
   }
@@ -689,8 +616,6 @@ export function initLhc(config: SdkConfig): Lhc {
     },
     lease: config.lease ?? { durationMs: 120000 },
     chunkPolicy: config.chunkPolicy ?? { targetProjectedTokens: 2200, maxProjectedTokens: 4400 },
-    // Built-ins merged with user profiles by name; band sums and visibility
-    // budgets validated, throwing with the violated setting named.
     view: resolveViewConfig(config.view),
     tokenFamily: config.tokenFamily,
     tokenEstimator: new TokenEstimator(config.tokenFamily, config.tokenFamilies),
@@ -735,7 +660,6 @@ export function initLhc(config: SdkConfig): Lhc {
     throw new TypeError(`${INIT_CONFIG_PREFIX}: chunkPolicy.maxProjectedTokens must be >= targetProjectedTokens`);
   }
 
-  // Handler maps merge from per-domain contributions at construction.
   const workHandlers = mapWorkQHandlers([messageWorkHandlers, turnWorkHandlers]);
   const workDispatchers: DurableWorkDispatcherMap = {
     "messages.derive": (run, item) => dispatchMessageDeriveWork(run, item),
@@ -754,15 +678,6 @@ export function initLhc(config: SdkConfig): Lhc {
   };
   const scheduler = createScheduler(resolved.mode, drainDeps);
 
-  // This SDK's per-instance delivery seam. Every operation
-  // invoked through the scoped surfaces below runs inside it, so enqueue pokes
-  // and thread-file touches reach this instance's scheduler in background mode,
-  // or a no-op in manual mode, isolated from any other SDK alive in the process.
-  // A manual SDK therefore never auto-drains, whatever the construction order.
-  // The seam also carries this instance's resolved view config: thread-view
-  // operations invoked through sdk.* read this SDK's profiles/budgets/threshold;
-  // below-SDK direct domain calls fall back to built-in defaults inside the
-  // thread-view surface.
   const seam: InstanceSeam =
     resolved.mode === "background"
       ? {
@@ -782,12 +697,6 @@ export function initLhc(config: SdkConfig): Lhc {
           drain: (filePath, opts) => runDrain(filePath, drainDeps, opts),
         };
 
-  // Background mode also installs the below-SDK default seam so a direct
-  // domain call made with no SDK scope — a top-level mutation in the
-  // single-background default path — still reaches the one installed
-  // scheduler. The per-instance scoping above overrides this for every sdk.*
-  // call, so the default can never auto-drain a manual SDK's work. Manual mode
-  // leaves the default alone (pokes stay no-ops by contract).
   if (resolved.mode === "background") {
     installSchedulerPoke((threadId) => scheduler.poke(threadId));
     setThreadTouch((filePath, db) => scheduler.touch(filePath, db));
@@ -847,8 +756,6 @@ export function initLhc(config: SdkConfig): Lhc {
   };
 
   const sdk: Lhc = {
-    // Scoped since the fork operations landed: repairDerivations derives
-    // through this instance's inference, so the seam must reach it.
     threads: scopeSurface(threadsDomain, seam),
     intakeStream: scopeSurface(intakeStreamSurface, seam),
     messages: scopeSurface(messagesDomain, seam),
@@ -880,7 +787,7 @@ export function initLhc(config: SdkConfig): Lhc {
     work,
     drainSettled: async (ref) => {
       const resolvedRef = await threadsDomain.resolveThreadRef(ref);
-      if (!resolvedRef.ok) return; // nothing can be scheduled for an unresolvable ref
+      if (!resolvedRef.ok) return;
       const threadId = peekThreadId(resolvedRef.value.filePath);
       if (threadId === null) return;
       return scheduler.drainSettled(threadId);

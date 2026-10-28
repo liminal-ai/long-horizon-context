@@ -4,9 +4,6 @@ import { createDbReadTransaction, type ErrorResult, type OpResult, storageFailur
 import { type CopyThreadInput, copyThread } from "./fork.js";
 import { createThreadFile, deleteThreadFile, generateThreadId, openThreadDatabase } from "./internal/create.js";
 
-// Re-exported for the other domain surfaces: opening a thread file through
-// the threads domain is what guarantees its schema is current before any write
-// or read touches it.
 export { openThreadDatabase };
 
 import {
@@ -48,7 +45,7 @@ export interface ThreadInfo {
   filePath: string;
   title?: string;
   cwd?: string;
-  createdAt: string; // ISO-8601
+  createdAt: string;
 }
 
 function toThreadInfo(row: RegistryRow): ThreadInfo {
@@ -73,9 +70,6 @@ function threadNotFound(threadId: string): { ok: false; error: ErrorResult } {
   };
 }
 
-// A partial id that matches more than one thread is a caller error, not a
-// silent pick: resolution names the collision and the caller must disambiguate
-// An ambiguous id fails loud, never resolves arbitrarily.
 function ambiguousThreadId(prefix: string, matchIds: readonly string[]): { ok: false; error: ErrorResult } {
   return {
     ok: false,
@@ -94,10 +88,6 @@ function invalidThreadRef(reason: string): { ok: false; error: ErrorResult } {
   };
 }
 
-// A file path that is empty or whitespace-only cannot name a durable file:
-// node:sqlite's DatabaseSync("") opens a temporary database that vanishes on
-// close, so such a path must be refused as a caller error before any storage
-// is touched rather than silently producing a thread with no durable file.
 function isBlankPath(filePath: string): boolean {
   return filePath.trim() === "";
 }
@@ -106,14 +96,7 @@ function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-// Creation spans two databases that cannot share a transaction. Order is
-// file-then-row with compensation: the invariant "no registry row without
-// its file" is absolute; an orphan file from a crash between the writes is
-// documented harmless (design decision 2).
 export async function newThread(input: NewThreadInput): Promise<OpResult<{ threadId: string; filePath: string }>> {
-  // Guard before any storage touch: an empty/blank path would otherwise open
-  // a temp database and register a thread with no durable file (the no-row-
-  // without-file invariant below depends on the path naming a real file).
   if (isBlankPath(input.filePath)) {
     return invalidThreadRef("filePath must be a non-empty path; received a blank string");
   }
@@ -180,11 +163,6 @@ export async function adoptThreadCopy(
   return { ok: true, value: { threadId: copied.value.threadId, filePath: copied.value.filePath } };
 }
 
-// Resolution accepts a full or partial (prefix) thread id (A-8). An exact id
-// wins outright — a full id always resolves to itself, even if it is also a
-// prefix of a longer id — so only a genuinely partial id ever consults the
-// prefix path; that path resolves a unique prefix, fails ambiguous on more than
-// one match, and fails not-found on none. No path ever creates a thread.
 export async function resolve(input: { threadId: string; registryPath?: string }): Promise<OpResult<ThreadInfo>> {
   let registry: DatabaseSync | null | undefined;
   try {
@@ -222,11 +200,6 @@ export async function listThreads(input?: { cwd?: string; registryPath?: string 
   }
 }
 
-// The thread file's own identity header: thread_metadata is this domain's table.
-// Creation writes it and only this surface reads it back. Inspect overview can
-// report thread identity for any resolvable ref, including a { filePath } ref
-// no registry knows, without reading tables itself. This is a pure read under
-// touch suppression, so a background SDK cannot hang catch-up work off it.
 export interface ThreadFileInfo {
   threadId: string;
   createdAt: string;
@@ -249,27 +222,17 @@ export async function info(ref: ThreadRef): Promise<OpResult<ThreadFileInfo>> {
   }
 }
 
-// The single interpreter of thread references: { threadId } resolves to a
-// path through the registry, { filePath } passes through untouched. No other
-// code ever reads a thread reference.
 export async function resolveThreadRef(ref: ThreadRef): Promise<OpResult<{ filePath: string }>> {
   if ("threadId" in ref) {
     const resolved = await resolve(ref);
     if (!resolved.ok) return resolved;
     return { ok: true, value: { filePath: resolved.value.filePath } };
   }
-  // Mirror newThread's guard so every read surface that routes through here
-  // fails closed on a blank path instead of opening a temp database.
   if (isBlankPath(ref.filePath)) {
     return invalidThreadRef("filePath must be a non-empty path; received a blank string");
   }
   return { ok: true, value: { filePath: ref.filePath } };
 }
-
-// The alias map: a host's own opaque session ids, qualified by host, pointing
-// at the LHC thread they belong to. One thread accumulates many aliases over
-// its life; exactly one of them is current — the latest the host accepted.
-// This is the layer consulted before any thread file opens.
 
 export interface ThreadAliasRegistration {
   alias: string;
@@ -293,9 +256,6 @@ export interface ThreadAliasBinding {
   registeredAt: string;
 }
 
-// currentAlias is null when the thread has aliases but has not accepted one
-// yet: absence is reported as a value, so a caller entering through an old
-// alias still learns its thread instead of being refused.
 export interface ThreadAliasResolution {
   alias: string;
   threadId: string;
@@ -336,10 +296,6 @@ function aliasBoundToOtherThread(alias: string, boundThreadId: string): { ok: fa
   };
 }
 
-// Aliases are opaque to core and host-qualified as "<host>:<host-alias>". Core
-// looks for the qualifier separator and nothing else — it never reads either
-// side, so no host's id structure is parsed here. The qualifier is what keeps
-// one shared registry from colliding two hosts' native session ids.
 const ALIAS_QUALIFIER_SEPARATOR = ":";
 
 function rejectInvalidAlias(alias: string): { ok: false; error: ErrorResult } | null {
@@ -365,8 +321,6 @@ function rejectInvalidRegistration(registration: ThreadAliasRegistration): { ok:
   return rejectInvalidAlias(registration.alias) ?? rejectInvalidThreadId(registration.threadId);
 }
 
-// Registering and advancing share one transaction body so the pointer can never
-// be advanced in a separate commit from the registration it depends on.
 function bindAlias(
   registry: DatabaseSync,
   registration: ThreadAliasRegistration,
@@ -404,10 +358,6 @@ function bindAlias(
   }
 }
 
-// Registers an alias against a thread without touching which alias is current.
-// Registering the same alias to the same thread again returns the existing
-// binding; registering it to a different thread is refused — an alias names one
-// thread for its whole life.
 export async function registerAlias(registration: ThreadAliasRegistration): Promise<OpResult<ThreadAliasBinding>> {
   const invalid = rejectInvalidRegistration(registration);
   if (invalid !== null) return invalid;
@@ -423,9 +373,6 @@ export async function registerAlias(registration: ThreadAliasRegistration): Prom
   }
 }
 
-// Registers an alias and makes it the thread's current alias in one commit, so
-// no reader ever sees a current pointer whose alias is not yet registered.
-// Called with an alias the thread already holds, it advances the pointer alone.
 export async function registerCurrentAlias(
   registration: ThreadAliasRegistration,
 ): Promise<OpResult<ThreadAliasResolution>> {
@@ -452,10 +399,6 @@ export async function registerCurrentAlias(
   }
 }
 
-// The entry point for a host holding any alias of a thread: it answers which
-// thread that alias belongs to and which alias that thread currently accepts,
-// from one read. An alias no registry knows is a miss, not a failure of the
-// registry — the caller decides what to do with an unknown alias.
 export async function resolveAlias(lookup: ThreadAliasLookup): Promise<OpResult<ThreadAliasResolution>> {
   const invalid = rejectInvalidAlias(lookup.alias);
   if (invalid !== null) return invalid;
@@ -481,8 +424,6 @@ export async function resolveAlias(lookup: ThreadAliasLookup): Promise<OpResult<
   }
 }
 
-// The thread's current alias on its own, for a caller that already holds the
-// thread id. A thread with no accepted alias yet reports null.
 export async function currentAlias(lookup: ThreadCurrentAliasLookup): Promise<OpResult<ThreadCurrentAlias>> {
   const invalid = rejectInvalidThreadId(lookup.threadId);
   if (invalid !== null) return invalid;
@@ -502,8 +443,6 @@ export async function currentAlias(lookup: ThreadCurrentAliasLookup): Promise<Op
   }
 }
 
-// Fork operations live beside creation and aliasing: same domain, same
-// reference rules, composed by the `lhc thread fork` verb.
 export {
   type BindHostInput,
   bindHost,

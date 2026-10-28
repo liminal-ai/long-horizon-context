@@ -49,18 +49,12 @@ export interface TurnRecord {
   memberMessageIds: string[];
   openedAtEventOrder: number;
   closedAtEventOrder?: number;
-  // Host-observed facts from turn_end (schema v5). Absent when unknown —
-  // pre-v5 turns, prompt-boundary closes, or hosts that omit them.
   outcome?: "completed" | "aborted";
   outcomeReason?: string;
   startedAt?: string;
   endedAt?: string;
-  // Present once the turn's derivation placed it in a chunk. Stored values
-  // read back; reads never recompute placement.
   chunkId?: string;
   memberIdx?: number;
-  // Stored turn-owned derivations, attached only when rows exist. Reads
-  // return stored state verbatim and never block on derivation readiness.
   derivations?: Derivation[];
 }
 
@@ -74,14 +68,8 @@ export interface ChunkRecord {
 }
 
 export interface TurnTransitionOutcome {
-  // Transitions in occurrence order: a close_then_open reports the close
-  // first, then the open, exactly as the batch result surfaces them.
   transitions: Array<{ action: "opened" | "closed"; turnId: string }>;
-  // The open turn after the transition; this is the membership stamp for
-  // message-producing events.
   turnId: string;
-  // Work queued by this transition: one turn_derivation item per closed
-  // turn. Empty when nothing closed.
   queuedWork: WorkItemRecord[];
 }
 
@@ -100,9 +88,6 @@ function currentOpenTurnId(transaction: DbWriteTransaction): string {
   return openTurnIds[0]!;
 }
 
-// Closing a turn durably queues that turn's derivation work in the same
-// transaction: the close update and the work item commit or roll back together.
-// hostFacts land only from turn_end; prompt-boundary closes leave them unset.
 function closeTurnAndQueueWork(
   transaction: DbWriteTransaction,
   turnId: string,
@@ -110,8 +95,6 @@ function closeTurnAndQueueWork(
   hostFacts: TurnCloseHostFacts = {},
 ): WorkItemRecord {
   closeTurn(transaction.db, turnId, eventOrder, hostFacts);
-  // One work item backs two deterministic turn-owned derivation rows; compression
-  // queues from the turn_derivation completion transaction.
   return enqueue(transaction, {
     owner: "turns",
     kind: "turn_derivation",
@@ -123,9 +106,6 @@ function closeTurnAndQueueWork(
   });
 }
 
-// Cross-domain surface, called by intake-stream inside the batch transaction
-// for every recorded event. Synchronous and throwing by design, like
-// messages.create: a turn-storage failure rejects the whole batch.
 export type RecordedTurnEvent = Pick<EventRecord, "eventKind" | "eventOrder" | "payload">;
 
 export function create(transaction: DbWriteTransaction, recordedEvent: RecordedTurnEvent): TurnTransitionOutcome {
@@ -133,7 +113,6 @@ export function create(transaction: DbWriteTransaction, recordedEvent: RecordedT
   const hasMembers = countTurnMembers(transaction.db, openTurnId) > 0;
   if (recordedEvent.eventKind === "turn_end") {
     if (!hasMembers) return { transitions: [], turnId: openTurnId, queuedWork: [] };
-    // Payload was closed-validated as TurnEndPayload at intake (validate.ts layer 3).
     const payload = recordedEvent.payload as TurnEndPayload;
     const item = closeTurnAndQueueWork(transaction, openTurnId, recordedEvent.eventOrder, payload);
     const turnId = insertOpenTurn(transaction.db, nextTurnOrder(transaction.db), recordedEvent.eventOrder);
@@ -146,9 +125,6 @@ export function create(transaction: DbWriteTransaction, recordedEvent: RecordedT
       queuedWork: [item],
     };
   }
-  // A steering prompt (host-asserted `steer: true`) arrived inside a run in
-  // progress: it is a member of the open turn, never a boundary (turn parts,
-  // Flow 7 — the task's turn identity survives a steer).
   const steer =
     recordedEvent.eventKind === "user_prompt" && (recordedEvent.payload as UserPromptPayload).steer === true;
   if (recordedEvent.eventKind === "user_prompt" && hasMembers && !steer) {
@@ -192,8 +168,6 @@ export async function listTurns(threadRef: ThreadRef): Promise<OpResult<TurnReco
   }
 }
 
-// Returns stored chunk records whatever their derivation states. Derivations
-// attach only where rows exist; freshly opened chunks have none.
 export async function listChunks(threadRef: ThreadRef): Promise<OpResult<ChunkRecord[]>> {
   try {
     return await createDbReadTransaction(threadRef, (transaction) => {
@@ -217,28 +191,11 @@ export function getChunkText(
   return compactChunkMaterialFromStoredMembers(transaction.db, chunkId, derivationType);
 }
 
-// In-transaction read for coordinators that already hold an open thread
-// handle (thread-view's compact selection): the turn and chunk structure on
-// the caller's handle, so thread-view asks the turns owner for turn ordering,
-// boundaries, and chunk membership instead of reading the turn/chunk tables
-// itself. Turns carry the deleted flag and chunks carry raw (unvalidated)
-// membership so the consumer keeps ownership of the source-state corruption
-// policy; it never sees the live-only shapes listTurns/listChunks return.
-// The open turn's step facts for a host pressure decision (turn parts,
-// AC-7.1): identity, the sum of stored member estimates, and the step edges
-// read from host-supplied step indices. Deterministic, inference-free, no
-// writes. Null only when the record holds no open turn (a damaged thread; the
-// state machine otherwise keeps exactly one).
 /** Step edges of one turn from its host-supplied step indices (any status). */
 export function readTurnSteps(db: DatabaseSync, turnId: string): StepEdges {
   return stepEdges(readStepMembers(db, turnId));
 }
 
-// Part construction (turn parts): the deterministic rendering of one
-// contiguous span of a turn, composed independently over exactly that span
-// with no message derivation as input — the raw prompt, recorded tool
-// arguments, deterministically truncated results. `trailer` is the seam line
-// the walk places inside the wrapper at the span's end.
 export function composeTurnPartText(
   db: DatabaseSync,
   turnId: string,
@@ -247,9 +204,6 @@ export function composeTurnPartText(
   estimator: TokenEstimator,
 ): string {
   const messages = readMemberMessages(db, turnId, range);
-  // A part is bounded-plan serving: composed under the cap, explicitly, and
-  // raw by design — its unsmoothed prompt and tool results are the contract,
-  // not a degraded state.
   const { parts } = composeRenderingInput(messages, new Map(), {
     capForServing: true,
     rawByDesign: true,
@@ -260,17 +214,9 @@ export function composeTurnPartText(
 
 export interface WholeTurnComposition {
   text: string;
-  // Whether the serving cap elided any message's construction (F1).
   capped: boolean;
 }
 
-// Whole-turn construction composed in-walk (turn parts: settle, protection,
-// and bounded serving of a ready stored rendering): the same composition the
-// queued turn_derivation handler stores as turn_rendering — live members with
-// their message derivations where ready — requested under the bounded-serving
-// cap, with no write, no floor write, no enqueue, no placement. `capped`
-// reports whether the cap changed anything. Null when the turn has no live
-// members.
 export function composeWholeTurnText(
   db: DatabaseSync,
   turnId: string,
@@ -317,17 +263,10 @@ export function readTurnChunkStructure(db: DatabaseSync): TurnChunkStructure {
   return { turns: readTurnStructure(db), chunks: readChunkStructure(db) };
 }
 
-// Cross-domain compact hook. The caller owns the surrounding transaction;
-// turns owns validation and removal of its derived chunk rows.
 export function dropUnreadableChunks(db: DatabaseSync, chunkIds: readonly string[]): string[] {
   return dropEmptyReadableChunks(db, chunkIds);
 }
 
-// ── report and repair ─────────────────────────────────────────────
-
-// This owner's repair report: every turn- and chunk-owned derivation's durable
-// state joined with live queue detail in one query. Needs no inference;
-// reads degrade, never block.
 export async function report(
   threadRef: ThreadRef,
   opts?: { notReady?: boolean; turnId?: string; chunkId?: string },

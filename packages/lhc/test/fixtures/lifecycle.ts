@@ -1,24 +1,3 @@
-// The Epic 04 lifecycle script (Story 4, Flow 5): every built v1 surface
-// driven once, in PI-extension call order, against one real SDK
-// configuration with deterministic inference callbacks — zero network, zero
-// model calls, no mocks anywhere. The script owns the sequence and the phase
-// names (tech design Flow 5); assertions live in the driving tests, so the
-// replay, teardown, and process legs all run THIS sequence rather than a
-// re-described one (DD-8).
-//
-// Phases: create | intake | drain | status | compact1 | llmContext1 | inspect1 |
-// mutate | rebuild | health2 | compact2 | llmContext2 | materialize.
-//
-// Mode is background — the production posture the PI extension will run —
-// and the drain/rebuild phases settle through `drainSettled`, the real
-// background awaitable. The post-mutation health snapshot (AC-5.2's
-// "cleared set pending") is deterministic because every SDK operation here
-// is synchronous SQLite chained through microtasks, while a background
-// drain pass always starts on a macrotask (scheduler runLoop defers through
-// setImmediate): the edit → delete → health reads inside the mutate phase
-// run as one unbroken microtask cascade and complete before the poked drain
-// can claim its first item. The rebuild phase then yields via drainSettled
-// and the drain runs to empty.
 import { join } from "node:path";
 import {
   type BatchResult,
@@ -40,25 +19,12 @@ import {
 } from "../../src/index.js";
 import { type TempStore, validEvent } from "./index.js";
 
-// ── the one SDK configuration (AC-5.1) ────────────────────────────
-//
-// Deterministic callbacks injected at construction (the only direct-callback
-// path since the CLI retired), background mode, so a
-// deterministic run never arms a wake timer, the Epic 03 fixture's pinned
-// chunk policy (12 fixed-shape turns cut into 4 chunks, c1–c3 closed), and
-// a named "lifecycle" profile so compact runs profile-addressed (story
-// scope: "compact (profile)") with all three lower bands non-empty on this
-// thread (Epic 03 Story 2's reference gradient).
 export const LIFECYCLE_PROFILE = {
   name: "lifecycle",
   lowerBound: 400,
   percentages: { full: 25, smooth: 16, detailed: 10, brief: 49 },
 } as const;
 
-// Epic 05 TC-4.2: the capstone replays this exact sequence with the real
-// inference adapter — the inference-callback slot is the one swap point; the
-// sequence, phase names, and every other configuration value stay owned here
-// so the deterministic leg and the real leg run THE SAME lifecycle.
 export function createLifecycleSdk(inference?: InferenceConfig, guards?: SdkConfig["guards"]): Lhc {
   return initLhc({
     tokenFamily: "o200k",
@@ -69,27 +35,15 @@ export function createLifecycleSdk(inference?: InferenceConfig, guards?: SdkConf
     toolResult: { smallTierTokens: 1, smallTargetRatio: 0.15, midTargetRatio: 0.04 },
     view: {
       profiles: [{ ...LIFECYCLE_PROFILE, percentages: { ...LIFECYCLE_PROFILE.percentages } }],
-      // Low threshold so the status checkpoint genuinely recommends the
-      // compact the sequence performs next.
       compactThreshold: 300,
     },
   });
 }
 
-// ── the recorded conversation ─────────────────────────────────────
-//
-// Same shape and text profile as the Epic 03 derived-thread fixture (12
-// turns, tool-heavy middle 5–8, two tool runs each) so the pinned chunk
-// policy cuts the same 4-chunk shape — but with explicit per-run
-// idempotency keys so a replay on a fresh thread records byte-identical
-// event payloads regardless of any process-global fixture counters.
 const TURN_COUNT = 12;
 const TOOL_HEAVY_TURNS = new Set([5, 6, 7, 8]);
-const TURNS_PER_BATCH = 3; // multi-turn batches (story scope)
+const TURNS_PER_BATCH = 3;
 
-// Mutation targets: both in the post-compact tail (compact point at t9's
-// start under the lifecycle profile), so the second compact's model context shows the
-// edit verbatim and the deletion's absence — the tail is full fidelity.
 export const EDIT_TARGET = { turnId: "t12", kind: "user_prompt" } as const;
 export const EDITED_MESSAGE_TEXT = "turn 12 revised: drop area 12 and re-check area 5 instead";
 export const DELETE_TARGET = { turnId: "t10", kind: "assistant_text" } as const;
@@ -156,8 +110,6 @@ function intakeBatches(): MessageEventInput[][] {
   return batches;
 }
 
-// ── run shape ─────────────────────────────────────────────────────
-
 export interface LifecyclePhases {
   create: OpResult<{ threadId: string; filePath: string }>;
   intake: Array<OpResult<BatchResult>>;
@@ -175,8 +127,6 @@ export interface LifecyclePhases {
     deletedMessageId: string;
     edit: OpResult<MutationResult>;
     delete: OpResult<MutationResult>;
-    // Captured inside the mutate phase, before the background drain's first
-    // macrotask: the cleared-set-pending evidence (AC-5.2).
     healthAfterMutate: OpResult<HealthReport>;
     messagesNotReady: OpResult<DerivationReportEntry[]>;
     turnsNotReady: OpResult<DerivationReportEntry[]>;
@@ -191,19 +141,9 @@ export interface LifecyclePhases {
 export type LifecycleCheckpoint = "inspect1" | "health2" | "materialize";
 
 export interface LifecycleOptions {
-  // Distinguishes the thread file and materialize target so replay and
-  // teardown legs run side by side in one store (same dir ⇒ same header cwd).
   name?: string;
-  // TC-5.3: a fresh initLhc between the intake / compact / mutation /
-  // render phase groups — every group boundary is a quiescent point (no
-  // queued work, no running drain), so the abandoned instance can never act
-  // after its group ends.
   freshSdkBetweenGroups?: boolean;
-  // TC-5.4: spawned-CLI parity probes at the three read checkpoints.
   onCheckpoint?: (checkpoint: LifecycleCheckpoint, ctx: { sdk: Lhc; filePath: string }) => Promise<void>;
-  // Epic 05 TC-4.2: run the sequence on the model-call inference path instead
-  // of deterministic inference callbacks. Same configuration otherwise (see
-  // createLifecycleSdk).
   inference?: InferenceConfig;
   guards?: SdkConfig["guards"];
 }
@@ -222,8 +162,6 @@ function expectOk<T>(result: OpResult<T>, phase: string): T {
   return result.value;
 }
 
-// ── the sequence ──────────────────────────────────────────────────
-
 export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}): Promise<LifecycleRun> {
   const name = opts.name ?? "lifecycle";
   const filePath = store.threadPath(name);
@@ -232,16 +170,12 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
 
   let sdk = createLifecycleSdk(opts.inference, opts.guards);
   const nextGroup = (): void => {
-    // The fresh instance is the same configuration assembled again — the
-    // continuity proof is that no phase depends on the prior instance's
-    // memory, only on the thread file.
     if (opts.freshSdkBetweenGroups) sdk = createLifecycleSdk(opts.inference, opts.guards);
   };
   const checkpoint = async (cp: LifecycleCheckpoint): Promise<void> => {
     if (opts.onCheckpoint !== undefined) await opts.onCheckpoint(cp, { sdk, filePath });
   };
 
-  // ── group 1: create → intake → drain → status ──
   const create = await sdk.threads.newThread({
     filePath,
     registryPath: store.registryPath,
@@ -255,15 +189,12 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
     expectOk(sent, "intake");
   }
 
-  // Background drain settles (story scope): the intake pokes scheduled the
-  // work; this is the await that lets the scheduler run it to empty.
   await sdk.drainSettled(ref);
   const drain = { settled: true } as const;
 
   const status = await sdk.threadView.status(ref);
   expectOk(status, "status");
 
-  // ── group 2: compact1 → llmContext1 → inspect1 ──
   nextGroup();
   const compact1 = await sdk.threadView.compact(ref, { profile: LIFECYCLE_PROFILE.name });
   expectOk(compact1, "compact1");
@@ -279,7 +210,6 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
   expectOk(inspect1.health, "inspect1.health");
   await checkpoint("inspect1");
 
-  // ── group 3: mutate → rebuild → health2 ──
   nextGroup();
   const listed = expectOk(await sdk.messages.list(ref), "mutate.list");
   const editTarget = listed.find((record) => record.kind === EDIT_TARGET.kind && record.turnId === EDIT_TARGET.turnId);
@@ -289,9 +219,6 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
   if (editTarget === undefined || deleteTarget === undefined) {
     throw new Error("lifecycle invariant: edit/delete targets not found in the record");
   }
-  // Edit, delete, and the pending-state reads run in one microtask cascade
-  // (see module header): the snapshot is taken before the poked background
-  // drain starts its first pass.
   const edit = await sdk.messages.edit(ref, {
     messageId: editTarget.messageId,
     content: EDITED_MESSAGE_TEXT,
@@ -312,8 +239,6 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
   expectOk(mutate.messagesNotReady, "mutate.messagesNotReady");
   expectOk(mutate.turnsNotReady, "mutate.turnsNotReady");
 
-  // Rebuild drains: the mutations' pokes already scheduled the cascade
-  // rebuilds on THIS instance's scheduler; settle is the production await.
   await sdk.drainSettled(ref);
   const rebuild = { settled: true } as const;
 
@@ -321,7 +246,6 @@ export async function runLifecycle(store: TempStore, opts: LifecycleOptions = {}
   expectOk(health2, "health2");
   await checkpoint("health2");
 
-  // ── group 4: compact2 → llmContext2 → materialize ──
   nextGroup();
   const compact2 = await sdk.threadView.compact(ref, { profile: LIFECYCLE_PROFILE.name });
   expectOk(compact2, "compact2");

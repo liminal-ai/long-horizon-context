@@ -1,9 +1,3 @@
-// Epic 03 Story 1: model context and status on the record (TC-1.1, TC-1.2, TC-1.4,
-// TC-2.5 pre-compact legs, the per-kind tail-mapping legs, and the model-context/status
-// legs of the suite-wide zero-model assertion). Every TC goes through the
-// real SDK surface (initLhc().threadView.model-context/status) against real temp
-// thread files; the inference callbacks double appears only in construction/fixture
-// setup — no Epic 03 operation may touch it.
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type LlmRequestContextMessage, type SdkViewConfig } from "../src/index.js";
@@ -79,9 +73,6 @@ function workItemCount(filePath: string): number {
   }
 }
 
-// Below-SDK read-only snapshot of everything a read could illegally mutate:
-// queue rows, derivation states, view rows, boundary position (TC-1.2 / TC-2.5
-// reads-only assertions).
 function stateSnapshot(filePath: string): Record<string, unknown> {
   const db = openRaw(filePath);
   try {
@@ -104,11 +95,6 @@ function stateSnapshot(filePath: string): Record<string, unknown> {
     db.close();
   }
 }
-
-// Surface-skeleton describe retired (Epic 03 Story 5, sanctioned amendment):
-// every thread-view operation is real now — compact since Story 2, sweep
-// since Story 3, materialize since Story 5 (view-render-targets.test.ts owns
-// the operation). No stubbed op remains on this surface.
 
 describe("TC-1.1 (AC-1.2, AC-1.3): never-compacted thread returns full model context in order; later intake appends", () => {
   it("carries threadId and both intake rounds in record order", async () => {
@@ -140,8 +126,6 @@ describe("TC-1.1 (AC-1.2, AC-1.3): never-compacted thread returns full model con
     const second = await sdk.threadView.getLlmRequestContext({ filePath });
     expect(second.ok).toBe(true);
     if (!second.ok) return;
-    // All committed intake appears, in record order; the new batch appends
-    // after the first round's messages, which are byte-unchanged (AC-1.2).
     expect(second.value.messages).toEqual([
       { role: "user", content: textPart("first question") },
       { role: "assistant", content: textPart("first answer") },
@@ -153,9 +137,6 @@ describe("TC-1.1 (AC-1.2, AC-1.3): never-compacted thread returns full model con
 
 describe("TC-1.2 (AC-1.1, AC-1.7): two model-context reads with nothing between are byte-identical and create no work or model calls", () => {
   it("hashes identical, zero work rows created, inference callbacks double observes zero calls", async () => {
-    // The double's capture log starts recording here; any Epic 03 read that
-    // touched inference callbacks would append to it (zero-model assertion, model-context
-    // leg of the suite-wide architecture-risk row).
     const captured = fixture.double.captureInputs();
     const before = stateSnapshot(fixture.filePath);
     const workRowsBefore = workItemCount(fixture.filePath);
@@ -165,8 +146,6 @@ describe("TC-1.2 (AC-1.1, AC-1.7): two model-context reads with nothing between 
     expect(one.ok && two.ok).toBe(true);
     if (!one.ok || !two.ok) return;
 
-    // Byte-identical via the FULL serialized result, not field spot-checks
-    // (story Anti-Shim Requirements).
     expect(sha256(one.value)).toBe(sha256(two.value));
     expect(JSON.stringify(one.value)).toBe(JSON.stringify(two.value));
 
@@ -248,8 +227,6 @@ describe("tail mapping legs (architecture-risk): one named leg per message kind"
     expect(refreshedContext.ok).toBe(true);
     if (!refreshedContext.ok) return;
     const short = refreshedContext.value.messages[3];
-    // Summaries are pending on this undrained thread, but rendering now uses
-    // deterministic truncation for at-or-behind-boundary tool results.
     expect(short).toEqual({
       role: "user",
       content: textPart("[tool result · read_file · abridged]\nmapping output"),
@@ -284,8 +261,6 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
         validEvent("turn_end"),
       ]);
     }
-    // Drain through the real Epic 02 machinery so the tool-result summaries
-    // are ready but still not rendered for at-or-behind-boundary results.
     const drained = await sdk.work.drain({ filePath });
     expect(drained.ok).toBe(true);
 
@@ -301,10 +276,6 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     );
     expect(behindSummary?.content).toBeDefined();
 
-    // The sanctioned below-SDK helper seeds the boundary mid-tail: at the
-    // first result's event order (at-or-behind includes it), ahead of nothing
-    // else. Boundary mechanics are Story 4's; only the position's effect on
-    // rendering is under test here.
     seedViewBoundary(filePath, behind.sourceEventOrder);
 
     const context = await sdk.threadView.getLlmRequestContext({ filePath });
@@ -312,15 +283,9 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
     if (!context.ok) return;
     const contents = context.value.messages.map((m) => messageText(m));
 
-    // Behind: deterministic short form with the abridged marker.
-    // Ready model summaries remain stored derivations but are not rendered
-    // on the at-or-behind-boundary full-band surface.
     expect(contents).toContain("[tool result · read_file · abridged]\nboundary output 1");
     expect(contents).not.toContain(`[tool result · read_file · abridged]\n${behindSummary?.content}`);
-    // Ahead: full content.
     expect(contents).toContain("[tool result · read_file]\nboundary output 2");
-    // Non-tool-result content renders full everywhere, both sides of the
-    // boundary (prompts, thinking, assistant text).
     for (const turn of [1, 2]) {
       expect(contents).toContain(`boundary prompt ${turn}`);
       expect(contents).toContain(`[thinking]\nboundary thought ${turn}\n[/thinking]`);
@@ -342,8 +307,6 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
       }),
       validEvent("turn_end"),
     ]);
-    // No drain: the summary stays pending, so the ladder's truncation rung
-    // renders — fixed 500-char prefix plus the exact dropped-count marker.
     const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
@@ -360,8 +323,6 @@ describe("TC-1.4 (AC-1.5): boundary mid-tail — short behind, full ahead, non-t
 });
 
 describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", () => {
-  // TC-2.5's intake leg mutates its thread, so this describe builds its own
-  // fixture instance instead of sharing the suite's read-only one.
   let heavyStore: TempStore;
   let heavy: DerivedThreadFixture;
   let statusSdk: Lhc;
@@ -369,8 +330,6 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
   beforeAll(async () => {
     heavyStore = tempStore();
     heavy = await derivedThreadFixture(heavyStore);
-    // A low threshold makes the fixture "heavy" relative to config: the
-    // recommendation must trip without any conversation-scale inflation.
     statusSdk = manualSdk({ compactThreshold: 100 });
   });
   afterAll(() => {
@@ -378,8 +337,6 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
   });
 
   it("reports tail tokens vs threshold, recommendation, derivation counts, null view health, and the zone sum — reads only", async () => {
-    // Status legs of the zero-model assertion: the builder's double
-    // records every call from here on; status must add none.
     const captured = heavy.double.captureInputs();
     const before = stateSnapshot(heavy.filePath);
 
@@ -391,18 +348,10 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
     expect(status.value.tailTokens).toBeGreaterThan(100);
     expect(status.value.compactRecommended).toBe(true);
 
-    // Derivation counts by state, from the owners' report surfaces: the
-    // fixture's two scripted failures (rate-limit + permanent), all
-    // other derivations drained ready — nothing pending or blocked here
-    // (the blocked leg reads the sacrificial sibling below).
     expect(status.value.derivation).toEqual({ pending: 0, failed: 2, blocked: 0 });
 
-    // Pre-compact: view health is null, not a zeroed shape (AC-2.8 leg owned
-    // here; the view-health legs complete in Story 2).
     expect(status.value.view).toBeNull();
 
-    // The visibility zone: boundary at its seeded default 0, so the sum is
-    // every live tool result's estimate — cross-checked against the record.
     const listed = await statusSdk.messages.list({ filePath: heavy.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
@@ -411,8 +360,6 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
       .reduce((sum, m) => sum + m.tokenEstimate, 0);
     expect(status.value.visibility).toEqual({ boundaryPosition: 0, zoneTokens: expectedZone, maxTokens: 64000 });
 
-    // Reads only: no work rows, no derivation-state change, no view row, boundary
-    // unmoved, zero model calls — and no compact occurred uninvoked.
     expect(stateSnapshot(heavy.filePath)).toEqual(before);
     expect(captured.length).toBe(0);
   });
@@ -422,8 +369,6 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
     const status = await sibling.sdk.threadView.status({ filePath: sibling.filePath });
     expect(status.ok).toBe(true);
     if (!status.ok) return;
-    // The sibling's damaged turn landed both turn derivations blocked through the
-    // production terminal path (turn_rendering + detailed_turn_compression).
     expect(status.value.derivation.blocked).toBe(2);
     expect(status.value.view).toBeNull();
   });
@@ -450,8 +395,6 @@ describe("TC-2.5 pre-compact legs (AC-2.8): the status read on a heavy thread", 
 
 describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): model context and status are reads-only in a background SDK with pending work queued", () => {
   it("schedules no catch-up drain: work rows, derivation states, inference callback count, and status all unchanged; repeated model-context reads byte-identical", async () => {
-    // Pending work manufactured through a manual SDK (its no-op seam never
-    // drains): one tool-heavy turn leaves live queue rows and pending derivations.
     const seeder = manualSdk();
     const filePath = await newThread(seeder);
     await intake(seeder, filePath, [
@@ -467,10 +410,6 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): model context
     ]);
     expect(workItemCount(filePath)).toBeGreaterThan(0);
 
-    // The production background path: a fresh background SDK whose scheduler
-    // WOULD hang a first-touch catch-up drain off the open announcement
-    // (openThreadDatabase → fireThreadTouch → scheduler.touch) if model context or
-    // status fired it — the SV-01-PULL-STATUS-001 side-effect path.
     const bgDouble = createInferenceCallbacksDouble();
     const bg = initLhc({
       tokenFamily: "o200k",
@@ -487,25 +426,17 @@ describe("TC-1.2 / TC-2.5 background legs (SV-01-PULL-STATUS-001): model context
     expect(one.ok && two.ok && firstStatus.ok).toBe(true);
     if (!one.ok || !two.ok || !firstStatus.ok) return;
 
-    // The pending work is visible through the read itself (never-attempted
-    // derivations bucket as pending) — proof the reads ran against live queue rows.
     expect(firstStatus.value.derivation.pending).toBeGreaterThan(0);
 
-    // Give any wrongly-scheduled catch-up drain room to surface, then wait
-    // out the scheduler before asserting nothing happened.
     await new Promise((resolve) => setTimeout(resolve, 25));
     await bg.drainSettled({ filePath });
 
-    // Byte-identical repeated model-context reads (AC-1.7) in background mode.
     expect(sha256(one.value)).toBe(sha256(two.value));
     expect(JSON.stringify(one.value)).toBe(JSON.stringify(two.value));
 
-    // Reads only: queue rows, derivation states, view rows, and boundary all
-    // unchanged; the inference callback double observed zero calls.
     expect(stateSnapshot(filePath)).toEqual(before);
     expect(captured.length).toBe(0);
 
-    // The status read repeats unchanged too — no state moved underneath it.
     const secondStatus = await bg.threadView.status({ filePath });
     expect(secondStatus.ok).toBe(true);
     if (!secondStatus.ok) return;

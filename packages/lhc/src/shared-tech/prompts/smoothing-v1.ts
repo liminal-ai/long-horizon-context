@@ -1,5 +1,3 @@
-// Settled smoothing prompt from the smoothed_prompt dial-in runs. This prompt
-// keeps smoothing as near-verbatim cleanup, not summarization or response.
 import type { PromptTemplate } from "./index.js";
 
 export const smoothingV1: PromptTemplate<{ text: string }> = {

@@ -1,7 +1,3 @@
-/**
- * LIM-61 evidence tests: real runtime cases required for Fable certification.
- * Each test name states exactly what is exercised — no admitted skips.
- */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { readPendingBoundary, upsertBoundary } from "../src/compact-continuation/internal/store.js";
 import {
@@ -205,7 +201,6 @@ function insertDupMessage(
   );
 }
 
-/** Label: shapes that normal intake cannot produce require corrupt-state fixtures. */
 type FixtureKind = "normal_pipeline" | "corrupt_state_fixture";
 
 describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuation)", () => {
@@ -217,7 +212,6 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     opts: { seedToolCallId?: string } = {},
   ): Promise<void> {
     const fixture = await derivedThreadFixture(store, { failures: false });
-    // Seed a real pair unless this is a pure missing-id case.
     const seedId = opts.seedToolCallId ?? toolCallId;
     if (seedId !== "") {
       await seedPendingToolTurn(fixture.filePath, seedId);
@@ -243,10 +237,6 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
     );
     expect(result.ok, `${name} (${kind})`).toBe(true);
     if (!result.ok) return;
-    // The pair cannot be *protected* through compact, so the continuation
-    // machinery declines into the host's ordinary settled-seam compact on
-    // canonical state. It still mutates nothing and never claims the writer —
-    // and it never strands: the next provider request proceeds.
     expect(result.value.receipt.outcome).toBe("decline_to_ordinary_compact");
     expect(result.value.receipt.refused).toBe(false);
     expect(result.value.receipt.refuseCode).toBeNull();
@@ -258,7 +248,6 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
   }
 
   it("missing pair: declines into ordinary compact before claim, no mutation", async () => {
-    // Seed an unrelated pair; request a toolCallId that does not exist.
     await assertDeclinesWithoutMutation("missing", "does-not-exist", "normal_pipeline", () => {}, {
       seedToolCallId: "call-unrelated-other",
     });
@@ -449,10 +438,6 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
   });
 
   it("at-or-before compact point: advance compact_point past pair (corrupt_state_fixture) — declines into ordinary compact, no mutation", async () => {
-    // not_in_open_tail is reachable only when compact_point advances past an
-    // already-captured pair (view install / manual compact_point). Normal
-    // intake never places a live open-turn pair at/before compact point without
-    // a compact install; this corrupt_state_fixture models post-compact residual.
     await assertDeclinesWithoutMutation("before-compact-point", "call-bcp", "corrupt_state_fixture", (filePath) => {
       const db = openRaw(filePath);
       try {
@@ -495,7 +480,6 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
   });
 
   it("tool_call_id_mismatch: duplicate-key JSON (extract first, parse last) — unit + runtime", async () => {
-    // SQLite json_extract returns the first duplicate key; JSON.parse returns the last.
     const dupKeyCall = `{"toolCallId":"call-mm","toolCallId":"call-other","toolName":"read_file","arguments":{"path":"x"}}`;
     const fixture = await derivedThreadFixture(store, { failures: false });
     await seedPendingToolTurn(fixture.filePath, "call-mm");
@@ -506,7 +490,6 @@ describe("LIM-61 evidence: tool-pair runtime matrix (public runCompactContinuati
          WHERE block_type = 'tool_call'
            AND json_extract(content, '$.toolCallId') = 'call-mm'`,
       ).run(dupKeyCall);
-      // extract still sees call-mm (first key)
       const extract = db
         .prepare(
           `SELECT json_extract(content, '$.toolCallId') AS id FROM message_block
@@ -583,7 +566,6 @@ describe("LIM-61 evidence: marker-event → boundary-status crash gap", () => {
     const cTurnId = interrupted.value.continuationTurnId!;
     expect(cTurnId).toMatch(/^t\d+$/);
 
-    // Marker event exists; boundary status may still say markerPersisted false.
     const markerKey = compactContinuationMarkerIdempotencyKey(cTurnId);
     const events = await intakeStream.listEvents({ filePath: fixture.filePath });
     expect(events.ok).toBe(true);
@@ -596,7 +578,6 @@ describe("LIM-61 evidence: marker-event → boundary-status crash gap", () => {
     expect(pending.ok).toBe(true);
     if (!pending.ok) return;
     expect(pending.value?.status).toBe("pending");
-    // Gap: status not yet marker_persisted.
     expect(pending.value?.markerPersisted).toBe(false);
     expect(writerClaimOf(fixture.filePath)).toEqual({ claim: "lhc", attemptId: "marker-event-gap-1" });
 
@@ -610,7 +591,6 @@ describe("LIM-61 evidence: marker-event → boundary-status crash gap", () => {
       stagesBefore.value.some((s) => s.stage === "interrupted" && s.detail?.["after"] === "marker_event_commit"),
     ).toBe(true);
 
-    // Resume: detect marker by key, reconcile status, no second marker, complete.
     const resumed = await withEstimator(o200k, () =>
       compactContinuation.runCompactContinuation(
         { filePath: fixture.filePath },
@@ -638,7 +618,6 @@ describe("LIM-61 evidence: marker-event → boundary-status crash gap", () => {
     if (!stagesAfter.ok) return;
     expect(stagesAfter.value.some((s) => s.stage === "marker_persisted")).toBe(true);
     expect(stagesAfter.value.some((s) => s.stage === "writer_released")).toBe(true);
-    // Append-only: interrupt stage still present.
     expect(
       stagesAfter.value.some((s) => s.stage === "interrupted" && s.detail?.["after"] === "marker_event_commit"),
     ).toBe(true);
@@ -647,13 +626,11 @@ describe("LIM-61 evidence: marker-event → boundary-status crash gap", () => {
 
 describe("LIM-61 evidence: marker-delta source fingerprint", () => {
   async function prepareWithOpenContinuation(filePath: string) {
-    // Force a real continue-turn boundary + open continuation turn, then prepare.
     const forced = await runCCTest(filePath, baseFacts({ attemptId: "prep-force" }), {
       interruptAfterBoundary: true,
     });
     if (!forced.ok) throw new Error(forced.error.reason);
     const continuationTurnId = forced.value.continuationTurnId!;
-    // Release writer for prepare/install tests (we only need the open turn + later marker).
     const db = openRaw(filePath);
     try {
       db.prepare(
@@ -678,7 +655,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     const { prepared, continuationTurnId, viewBefore } = await prepareWithOpenContinuation(fixture.filePath);
     const markerKey = compactContinuationMarkerIdempotencyKey(continuationTurnId);
 
-    // Append exactly one valid marker for the open continuation turn.
     const markerBatch = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath: fixture.filePath }, [
         validEvent("compact_continuation_marker", {
@@ -699,12 +675,10 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
 
     const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
 
-    // Positive: marker-only delta installs.
     const okInstall = await sdk.threadView.installPreparedCompact({ filePath: fixture.filePath }, prepared);
     expect(okInstall.ok).toBe(true);
     if (!okInstall.ok) return;
 
-    // Fresh prepare for negative path (prior install changed view).
     const fixture2 = await derivedThreadFixture(store, { failures: false });
     await seedOpenAgenticTurn(fixture2.filePath);
     const prep2 = await prepareWithOpenContinuation(fixture2.filePath);
@@ -727,7 +701,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     expect(marker2.ok).toBe(true);
     if (!marker2.ok) return;
 
-    // Mutate a different source message/block without adding an event.
     const db = openRaw(fixture2.filePath);
     try {
       const row = db
@@ -755,7 +728,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
 
   it("derivation changes after prepare do not block activation", async () => {
     const sdk = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
-    // derivedThreadFixture drains work so ready derivation rows exist.
     const fixture = await derivedThreadFixture(store, { failures: false });
     const db0 = openRaw(fixture.filePath);
     let d: { subject_kind: string; subject_id: string; derivation_type: string; content: string | null };
@@ -798,7 +770,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     const listed = await messages.list({ filePath: fixture.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
-    // Prefer assistant_text / tool_result — not turn-initiating user_prompt.
     const removable = listed.value.find((m) => m.kind === "assistant_text" || m.kind === "tool_result");
     expect(removable).toBeDefined();
     const prep = await sdk.threadView.prepareCompact(
@@ -856,7 +827,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     let nestedBeginError: string | null = null;
     setViewInjectionHook("compact-install-before-validate", (ctx) => {
       expect(ctx?.db).toBeDefined();
-      // node:sqlite has no public inTransaction flag; nested BEGIN fails only inside a txn.
       try {
         ctx!.db.exec("BEGIN IMMEDIATE");
         nestedBeginError = "nested_begin_succeeded";
@@ -879,7 +849,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     expect(created.ok).toBe(true);
     if (!created.ok) return;
-    // Several closed undrained turns so smooth band uses message_excerpt (no chunk membership yet).
     for (let i = 0; i < 4; i++) {
       const batch = await withEstimator(o200k, () =>
         intakeStream.messageEvents({ filePath }, [
@@ -907,12 +876,10 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
     expect(smoothBand).toBeDefined();
     expect(smoothBand!.renderedText).toMatch(/unique-excerpt-marker-/);
     expect(prep.value.selectedSourceTurnIds.length).toBeGreaterThan(0);
-    // Positive: no drift installs.
     const ok = await sdk.threadView.installPreparedCompact({ filePath }, prep.value);
     expect(ok.ok).toBe(true);
     if (!ok.ok) return;
 
-    // Fresh prepare for mutation path.
     const prep2 = await sdk.threadView.prepareCompact(
       { filePath },
       { params: { lowerBound: 200, percentages: { full: 10, smooth: 70, detailed: 10, brief: 10 } } },
@@ -976,7 +943,6 @@ describe("LIM-61 evidence: marker-delta source fingerprint", () => {
 describe("LIM-61 evidence: invalid candidate without material hooks", () => {
   it("unresolved tool_call at settled active_non_tool: bounded retry / failed_repairable", async () => {
     const fixture = await derivedThreadFixture(store, { failures: false });
-    // Normal pipeline: open turn with tool_call and NO result (unresolved).
     const batch = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath: fixture.filePath }, [
         validEvent("user_prompt", { payload: { text: "please use a tool" } }),
@@ -1005,7 +971,6 @@ describe("LIM-61 evidence: invalid candidate without material hooks", () => {
     expect(result.value.receipt.refused).toBe(false);
     expect(result.value.receipt.warnings.map((w) => w.code)).toEqual(["compact_attempt_failed"]);
     expect(result.value.receipt.retry).toMatchObject({ attemptIndex: 1, retryAuthorized: true });
-    // The relief failed; the session keeps working on the body it already has.
     expect(result.value.nextProviderRequestAllowed).toBe(true);
     expect(result.value.decision.transitionPath.some((s) => String(s).includes("compact"))).toBe(true);
     expect(result.value.pendingBoundary?.status).toBe("failed_repairable");
@@ -1317,7 +1282,6 @@ describe("LIM-61 evidence: storage invariants", () => {
     expect(stages2.ok).toBe(true);
     if (!stages2.ok) return;
     expect(stages2.value.length).toBeGreaterThan(n1);
-    // Prior stages still present (append-only).
     expect(stages2.value.filter((s) => s.stage === "retry_posture").length).toBeGreaterThanOrEqual(2);
     expect(stages2.value.some((s) => s.stage === "claimed_writer")).toBe(true);
   });
@@ -1330,10 +1294,8 @@ describe("LIM-61 evidence: public export surface", () => {
     expect("CompactContinuationTestHooks" in publicMod).toBe(false);
     const sdk = await import("../src/index.js");
     expect("runCompactContinuationForTests" in sdk).toBe(false);
-    // Runtime: nested domain from initLhc
     const lhc = initLhc({ tokenFamily: "o200k", inferenceCallbacks: createInferenceCallbacksDouble(), mode: "manual" });
     expect("runCompactContinuationForTests" in lhc.compactContinuation).toBe(false);
-    // Fixtures path still has it.
     const fixtures = await import("./fixtures/compact-continuation-seam.js");
     expect(typeof fixtures.runCompactContinuationForTests).toBe("function");
   });

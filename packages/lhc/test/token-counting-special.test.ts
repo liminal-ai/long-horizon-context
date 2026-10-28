@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { estimateTokens, o200k } from "./fixtures/tokens.js";
 
-// Captured text is data: literal special-token strings must count and slice,
-// never throw. Regression for the capture-path panic found 2026-08-08 when a
-// transcript contained "<|endoftext|>" (grok fork, vendored lhc-rs — the rs
-// panic faithfully ported this TS throw).
 describe("token counting with literal special-token text", () => {
   const hostile = "before <|endoftext|> after <|fim_prefix|> tail";
 

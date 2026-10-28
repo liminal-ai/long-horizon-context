@@ -1,6 +1,3 @@
-// Host metadata (turn parts, AC-7.1): one read composing the record's open
-// turn step facts with the installed view's transition turn. No inference,
-// no writes, no walk.
 import type { DatabaseSync } from "node:sqlite";
 import type { HostMetadata } from "../../shared-tech/index.js";
 import { readActiveTurnSteps } from "../../turns/index.js";

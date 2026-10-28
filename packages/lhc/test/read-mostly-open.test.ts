@@ -1,17 +1,3 @@
-/**
- * LIM-133: current-schema opens are read-mostly.
- *
- * The queued turn_derivation repair is a recurring mixed-version crash-window
- * repair, not a once-only migration, so it keeps running on every open — but
- * only after a read-only predicate says there is something to repair. With no
- * matching work the open takes no write transaction at all.
- *
- * `PRAGMA query_only = ON` is the instrument: it turns any write attempt,
- * `BEGIN IMMEDIATE` included, into an immediate "attempt to write a readonly
- * database" error. A migration pass that completes under query_only provably
- * wrote nothing.
- */
-
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, threads } from "../src/index.js";
@@ -28,7 +14,6 @@ afterEach(() => {
   store.cleanup();
 });
 
-/** Runs the current-schema migration under a connection that cannot write. */
 function migrateUnderQueryOnly(filePath: string): { wrote: boolean; detail: string } {
   const db = new DatabaseSync(filePath);
   try {
@@ -67,7 +52,6 @@ interface PoisonOptions {
   dropAssemblyRow?: boolean;
 }
 
-/** Rewrites a work item back to the pre-rewire (legacy) turn_derivation shape. */
 function poisonTurnDerivationItem(filePath: string, opts: PoisonOptions = {}): void {
   const db = new DatabaseSync(filePath);
   try {
@@ -180,7 +164,6 @@ describe("current-schema open with matching legacy work", () => {
     const filePath = await threadWithOneTurn();
     poisonTurnDerivationItem(filePath, { status: "queued" });
 
-    // The predicate says there is work: the open takes the write transaction.
     expect(migrateUnderQueryOnly(filePath).wrote).toBe(true);
 
     const opened = openThreadDatabase(filePath);
@@ -196,7 +179,6 @@ describe("current-schema open with matching legacy work", () => {
     ).derivations.map((target) => target.derivationType);
     expect(derivationTypes).toEqual(["turn_rendering", "pre_detailed_assembly"]);
 
-    // Second and third opens find nothing to do and write nothing.
     expect(migrateUnderQueryOnly(filePath).wrote).toBe(false);
     const reopened = openThreadDatabase(filePath);
     expect(reopened.ok).toBe(true);
@@ -219,7 +201,6 @@ describe("current-schema open with matching legacy work", () => {
 
   it("seeds only the matching item when matching and non-matching rows are mixed", async () => {
     const filePath = await threadWithOneTurn();
-    // A second turn's item stays in the current shape with its assembly row.
     const db = new DatabaseSync(filePath);
     try {
       db.prepare(
@@ -254,7 +235,6 @@ describe("current-schema open with matching legacy work", () => {
 
     expect(assemblyRows(filePath, "t1").length).toBe(1);
     expect(assemblyRows(filePath, "t9").length).toBe(1);
-    // t9's payload was already current: it is untouched.
     const t9 = JSON.parse(readWorkItem(filePath, "w-t9").payload) as {
       derivations: Array<{ derivationType: string }>;
     };

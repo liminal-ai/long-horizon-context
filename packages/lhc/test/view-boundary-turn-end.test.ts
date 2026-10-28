@@ -1,4 +1,3 @@
-// Visibility boundary: intake does not auto-advance the boundary at turn close.
 import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type SdkViewConfig } from "../src/index.js";
 import {

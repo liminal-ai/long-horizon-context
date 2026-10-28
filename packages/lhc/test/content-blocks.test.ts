@@ -1,15 +1,8 @@
-// Content blocks (images, documents, and every other non-text Messages API
-// block) through intake and serving. The rule under test: LHC holds every
-// block faithfully; binary/opaque payloads live in the blob table keyed by
-// content hash; text never carries base64 anywhere in the record; the tail
-// replays the real block; bands and every text reader see a short placeholder.
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { extractBlobs, initLhc, inlineBlobs, type Lhc, type MessageEventInput, placeholderText } from "../src/index.js";
 import { createInferenceCallbacksDouble, openRaw, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
 
-// A real 1x1 PNG and a stand-in PDF body; the bytes matter only as
-// bytes — the hash and the length are what the record keeps.
 const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
 const PNG_LEN = Buffer.from(PNG_B64, "base64").byteLength;
 const IMAGE_PLACEHOLDER = `[image · image/png · ${PNG_LEN} B]`;
@@ -100,16 +93,13 @@ describe("content blocks: intake and serving", () => {
 
     const db = openRaw(filePath);
     try {
-      // One blob row for the same bytes sent twice.
       const blobs = (db.prepare("SELECT sha256, media_type, byte_length FROM blob").all() as unknown[]).map(loose);
       expect(blobs).toEqual([{ sha256: sha(PNG_B64), media_type: "image/png", byte_length: PNG_LEN }]);
-      // No base64 anywhere in text: event payloads, message blocks.
       const marker = PNG_B64.slice(0, 24);
       for (const row of (db.prepare("SELECT payload FROM event").all() as unknown[]).map(loose))
         expect(row.payload).not.toContain(marker);
       for (const row of (db.prepare("SELECT content FROM message_block").all() as unknown[]).map(loose))
         expect(row.content).not.toContain(marker);
-      // Block 0 is the text-shaped form with the placeholder; rows 1..n are the API blocks.
       const promptBlocks = (
         db
           .prepare("SELECT block_type, content FROM message_block WHERE message_id = 'm1' ORDER BY block_index")
@@ -126,12 +116,10 @@ describe("content blocks: intake and serving", () => {
       db.close();
     }
 
-    // messages.show returns the record with blob references, not bytes.
     const shown = await sdk.messages.show({ filePath }, "m1");
     expect(shown.ok).toBe(true);
     if (shown.ok) expect(JSON.stringify(shown.value)).not.toContain(PNG_B64.slice(0, 24));
 
-    // The served tail carries the real content arrays, base64 back in place.
     const view = await sdk.threadView.getSessionThreadView({ filePath });
     expect(view.ok).toBe(true);
     if (!view.ok) return;
@@ -175,7 +163,6 @@ describe("content blocks: intake and serving", () => {
     expect(plain.blocks).toBeUndefined();
     const listed = await sdk.messages.list({ filePath }, {});
     if (!listed.ok) throw new Error(listed.error.reason);
-    // The document's context cost is counted (≈2,000 tokens a page), not just its placeholder.
     expect(listed.value[0]?.tokenEstimate).toBeGreaterThan(4_000);
   });
 

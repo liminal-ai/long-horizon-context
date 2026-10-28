@@ -1,18 +1,7 @@
-// Event to message + typed blocks. Verbatim means payload fields are copied
-// into block content untouched: nothing here trims, normalizes, splits, or
-// summarizes. Token estimates come from the one counting util, called directly:
-// it is pure and deterministic, so golden counts beat stubs.
 import { type ApiBlock, blobTokenEstimate, placeholderText } from "../../shared-tech/index.js";
 import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
 import type { Block, BlockType, RecordedEvent } from "../index.js";
 
-// A message that carried content blocks beyond text keeps block 0 as its
-// text-shaped form — the text of its text blocks with a short placeholder
-// (type, media type, size, title) where each non-text block sits — so every
-// reader of block 0 (bands, derivations, retrieval, token pricing) sees that
-// the block existed without seeing its bytes. Rows 1..n hold the API blocks
-// verbatim (blob payloads already replaced by references at intake), in order,
-// so serving can replay the exact content array.
 function apiBlockRows(blocks: readonly ApiBlock[] | undefined): Block[] {
   return (blocks ?? []).map((block) => ({ blockType: block.type as BlockType, content: block }));
 }
@@ -31,9 +20,6 @@ function blobTokens(blocks: readonly ApiBlock[] | undefined): number {
 
 export interface ProjectedMessage {
   blocks: Block[];
-  // o200k text (+ blobs). Signature billed tokens are stored alongside this
-  // number in token_estimate (see projectEvent) so durable rows stay one
-  // integer; weighStored() subtracts the billed signature before weighting.
   tokenEstimate: number;
   signatureTokenEstimate: number;
 }
@@ -42,7 +28,6 @@ function textRaw(estimator: TokenEstimator, text: string): number {
   return estimator.rawCount(text);
 }
 
-// turn_end is recorded in the event order but produces no message.
 export function projectEvent(event: RecordedEvent, estimator: TokenEstimator): ProjectedMessage | null {
   switch (event.eventKind) {
     case "user_prompt": {
@@ -51,8 +36,6 @@ export function projectEvent(event: RecordedEvent, estimator: TokenEstimator): P
         blocks: [
           {
             blockType: "text",
-            // The steer assertion rides the block so the record says why this
-            // prompt sits mid-turn; text is what every reader consumes.
             content: event.payload.steer === true ? { text, steer: true } : { text },
           },
           ...apiBlockRows(event.payload.blocks),
@@ -79,16 +62,11 @@ export function projectEvent(event: RecordedEvent, estimator: TokenEstimator): P
       };
     }
     case "assistant_thinking": {
-      // Verbatim payload copy: text always; signature + model identity when sent.
       const content: Record<string, unknown> = { text: event.payload.text };
       if (event.payload.signature !== undefined) content.signature = event.payload.signature;
       if (event.payload.provider !== undefined) content.provider = event.payload.provider;
       if (event.payload.model !== undefined) content.model = event.payload.model;
       if (event.payload.api !== undefined) content.api = event.payload.api;
-      // Replayed signatures are billed in the provider's input context and
-      // must be counted, but at the measured provider rate rather than as BPE text.
-      // token_estimate stores o200k(text) + billed signature so one integer stays
-      // the durable size; signatureTokenEstimate lets weighStored skip re-weighting.
       const signatureTokens =
         event.payload.signature === undefined ? 0 : estimator.estimateSignature(event.payload.signature);
       return {
@@ -141,7 +119,6 @@ export function projectEvent(event: RecordedEvent, estimator: TokenEstimator): P
           },
           ...apiBlockRows(event.payload.block === undefined ? undefined : [event.payload.block]),
         ],
-        // Tool calls count their serialized arguments.
         tokenEstimate: textRaw(estimator, JSON.stringify(event.payload.arguments)),
         signatureTokenEstimate: 0,
       };
@@ -159,16 +136,11 @@ export function projectEvent(event: RecordedEvent, estimator: TokenEstimator): P
           },
           ...apiBlockRows(event.payload.blocks),
         ],
-        // Tool results count the full text-shaped content — the same string
-        // block 0 carries in full — plus the blob estimate of any nested
-        // image or document the text cannot see.
         tokenEstimate: textRaw(estimator, content) + blobTokens(event.payload.blocks),
         signatureTokenEstimate: 0,
       };
     }
     case "compact_continuation_marker": {
-      // Typed marker: model-visible when served; not ordinary user chat.
-      // Token estimate covers the stable model-facing instruction text.
       const content = {
         kind: event.payload.kind,
         continuationTurnId: event.payload.continuationTurnId,

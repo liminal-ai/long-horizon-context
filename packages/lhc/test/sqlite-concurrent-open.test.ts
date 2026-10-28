@@ -1,9 +1,3 @@
-/**
- * Slice 2 correction: concurrent capture + retrieval/impression writes must
- * both succeed under WAL. Re-applying journal_mode=WAL on every open previously
- * raced and produced "database is locked" on capture.
- */
-
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, retrieval } from "../src/index.js";
 import { o200k, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";

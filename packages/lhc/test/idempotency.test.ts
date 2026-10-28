@@ -1,6 +1,3 @@
-// Flow 5: idempotent resend (TC-5.1 through TC-5.5, asserted at the event
-// level — the no-message / no-transition / no-work-item clauses re-assert in
-// Stories 3-5 as those records exist).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type EventRecord, intakeStream, threads } from "../src/index.js";
 import {
@@ -35,7 +32,6 @@ async function readBack(filePath: string): Promise<EventRecord[]> {
   return result.value;
 }
 
-// Serializes every row of every table for below-SDK absence assertions.
 function rawDump(filePath: string): string {
   const db = openRaw(filePath);
   try {
@@ -132,7 +128,6 @@ describe("Flow 5 (SDK): idempotent resend", () => {
     expect(resend.value.turnTransitions).toEqual([]);
     expect(resend.value.queuedWork).toEqual([]);
 
-    // No duplicate event rows: each key appears exactly once below the SDK.
     const db = openRaw(filePath);
     try {
       const counts = db
@@ -144,7 +139,6 @@ describe("Flow 5 (SDK): idempotent resend", () => {
       db.close();
     }
 
-    // Skips consumed no order numbers: the next recorded event lands at 3.
     const next = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]),
     );
@@ -180,7 +174,6 @@ describe("Flow 5 (SDK): idempotent resend", () => {
     expect(events).toHaveLength(1);
     expect(events[0]!.payload).toEqual({ text: "PAYLOAD-A-ORIGINAL" });
 
-    // openRaw scan: payload B appears in no table at all.
     const dump = rawDump(filePath);
     expect(dump).toContain("PAYLOAD-A-ORIGINAL");
     expect(dump).not.toContain("PAYLOAD-B-MUST-VANISH");

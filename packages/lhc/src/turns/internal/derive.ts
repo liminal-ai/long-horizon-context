@@ -1,9 +1,3 @@
-// The turns derivation handlers: turn_derivation (deterministic assembly),
-// detailed_turn_compression (inference over pre_detailed_assembly), and the
-// two chunk summaries. turn_derivation composes turn_rendering and
-// pre_detailed_assembly, places the turn from uncompressed assembly tokens,
-// and enqueues detailed_turn_compression in the same completion transaction.
-
 import type { DatabaseSync } from "node:sqlite";
 import { writeMessageDerivationFloorInThread } from "../../messages/internal/derive.js";
 import type {
@@ -391,9 +385,6 @@ const detailedTurnCompressionHandler: WorkHandler = async (run, item) => {
   };
 };
 
-// Detailed is deterministic material assembly from stored member compressions.
-// Brief is inference-backed and consumes the stored detailed summary for the
-// same chunk.
 type DetailedChunkComposition =
   | Extract<HandlerOutcome, { ok: false }>
   | { ok: true; text: string; fallbackLogs: LogEntry[] };
@@ -606,7 +597,6 @@ function chunkBriefHandler(): WorkHandler {
   };
 }
 
-// The domain's handler table, merged into the SDK dispatch map at construction.
 export const turnWorkHandlers: Readonly<Partial<Record<WorkKind, WorkHandler>>> = {
   turn_derivation: turnDerivationHandler,
   detailed_turn_compression: detailedTurnCompressionHandler,
@@ -726,7 +716,6 @@ export async function deriveTurnOwnedInOpenDb(
   );
   if (claim.outcome !== "claimed") {
     if (claim.outcome === "expired") {
-      // Same rule as the drain: requeue, and the scheduler runs it.
       const requeue = requeueExpiredClaim(db, claim.item, config.clock().toISOString());
       if (requeue.outcome !== "repeated") {
         pokeThreadScheduler(db);

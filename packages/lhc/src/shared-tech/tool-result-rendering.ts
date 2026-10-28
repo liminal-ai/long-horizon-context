@@ -1,6 +1,3 @@
-// Deterministic truncation for composed tool activity (call args and result
-// floors). Pure: no inference, DB, clock, or config, so identical source text
-// always yields identical output.
 export const FALLBACK_TRUNCATION_LIMIT = 500;
 
 export function truncateForFallback(text: string): string {

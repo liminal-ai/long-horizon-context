@@ -1,11 +1,3 @@
-// Story 2 (Epic 02): message-level derivation — Flow 2. The three real
-// handlers (prompt smoothing, tool-call summary, tool-result summary) through
-// Story 1's drain, mechanical outcome stamping (TC-2.4's identical-text
-// fixture is the architecture-risk proof that model text never drives the
-// outcome), the hot-path locality assertion (TC-2.2: intake returns before
-// any model call), and the AC-2.8 late-result repair with its
-// control leg. No registerTestWorkHandlers here: every drain dispatches the
-// production handlers registered by the messages domain at initLhc.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type BatchResult,
@@ -90,9 +82,6 @@ describe("TC-2.1 / AC-2.1: prompt smoothing lands a ready form readable alongsid
       }),
     ]);
 
-    // Readable alongside the message through the production read surface
-    // (02F-001): list carries the stored form on the message record —
-    // not a fixture read of derivation.
     const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
@@ -104,15 +93,11 @@ describe("TC-2.1 / AC-2.1: prompt smoothing lands a ready form readable alongsid
         subjectId: "m1",
         derivationType: "smoothed_prompt",
         state: "ready",
-        // The content is the double's pure function of the prompt text — the
-        // production smoothPrompt input shape, nothing else mixed in.
         content: deterministicText("smoothPrompt", { text }, text),
         sourceVersion: 1,
       }),
     ]);
 
-    // The raw row agrees with the surfaced read: stored state, not a
-    // read-time derivation.
     const raw = formOf(filePath, "m1", "smoothed_prompt");
     expect(raw?.state).toBe("ready");
     expect(raw?.content).toBe(deterministicText("smoothPrompt", { text }, text));
@@ -138,7 +123,7 @@ describe("TC-2.5 / AC-2.5: tool_call queues no summary", () => {
 
 describe("TC-2.3 / AC-2.3: the result summary abbreviates; the full content stays byte-identical in the record", () => {
   it.skip("a 300KB result drains to a bounded summary and reads back whole through the Epic 01 surface", async () => {
-    const big = "result-bytes ".repeat(24000); // ~300KB
+    const big = "result-bytes ".repeat(24000);
     const double = createInferenceCallbacksDouble();
     const captured = double.captureInputs();
     const sdk = manualSdk(double);
@@ -279,9 +264,6 @@ describe("TC-2.7 / AC-2.7: kinds with no derivable form queue no work and carry 
     const sdk = manualSdk(double);
     const filePath = await newThread();
 
-    // assistant_thinking joins the no-derivable-form kinds (Fix 3.2 coverage):
-    // like assistant text and runtime notes it queues no work and carries no
-    // derivation state row.
     const batch = await send(sdk, filePath, [
       validEvent("assistant_text"),
       validEvent("runtime_note"),
