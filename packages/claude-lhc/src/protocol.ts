@@ -6,18 +6,28 @@
  * adapter callbacks that cannot cross a process boundary (`canUseTool`,
  * `onUserDialog`) become `req`/`res` pairs originated by the sidecar; the query
  * controls (`setModel`, `setPermissionMode`, `setMaxThinkingTokens`, `interrupt`,
- * `setMcpServers`) become `req`/`res` pairs originated by the driver. Closing stdin
- * closes the sidecar.
+ * `setMcpServers`, `applyFlagSettings`, `stopTask`, `backgroundTasks`) become `req`/`res`
+ * pairs originated by the driver. Closing stdin closes the sidecar.
  *
  * `setMcpServers` carries `{ servers }` and answers with the SDK's `McpSetServersResult`.
  * Like `Query.setMcpServers`, it replaces the servers added after start; servers from the
  * start frame stay. The retrieval server joins every set under its own name, and the set
  * carries into every later generation.
+ *
+ * `setModel` carries `{ model, settings? }`. When `settings` is present it holds the
+ * compaction windows fitted to the new model (`autoCompactWindow`, `lhcLowerBound`), and
+ * the sidecar compacts against them from then on.
+ *
+ * `applyFlagSettings` carries `{ settings }` and merges into the live generation's flag
+ * settings like `Query.applyFlagSettings`. The merged layer is applied again to every
+ * later generation. `stopTask` carries `{ taskId }`; `backgroundTasks` carries
+ * `{ toolUseId? }` and answers with the SDK's boolean.
  */
 import type {
   McpHttpServerConfig,
   McpSSEServerConfig,
   McpStdioServerConfig,
+  Query,
   SDKMessage,
   SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk";
@@ -39,9 +49,15 @@ export type DriverControlMethod =
   | "setPermissionMode"
   | "setMaxThinkingTokens"
   | "interrupt"
-  | "setMcpServers";
+  | "setMcpServers"
+  | "applyFlagSettings"
+  | "stopTask"
+  | "backgroundTasks";
 export type WireMcpServerConfig = McpStdioServerConfig | McpSSEServerConfig | McpHttpServerConfig;
 export type SetMcpServersParams = { servers: Record<string, WireMcpServerConfig> };
+export type SetModelParams = { model?: string; settings?: Record<string, unknown> };
+export type FlagSettings = Parameters<Query["applyFlagSettings"]>[0];
+export type ApplyFlagSettingsParams = { settings: FlagSettings };
 export type SidecarRequestMethod = "canUseTool" | "onUserDialog";
 
 export type DriverFrame =

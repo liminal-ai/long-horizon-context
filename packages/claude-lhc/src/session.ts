@@ -39,7 +39,15 @@ import {
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
 import { nativeAncestors, writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
-import type { SetMcpServersParams, SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
+import type {
+  ApplyFlagSettingsParams,
+  FlagSettings,
+  SetMcpServersParams,
+  SetModelParams,
+  SidecarOptions,
+  SidecarRequestMethod,
+  WireOptions,
+} from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
 import { abortSummaryWorkers } from "./summaryWorker.js";
 import {
@@ -201,6 +209,7 @@ export class ClaudeLhcSession {
   #env: NodeJS.ProcessEnv = process.env;
   #gen: Generation | null = null;
   #hostMcpServers: Record<string, McpServerConfig> | null = null;
+  #flagSettings: FlagSettings | null = null;
   #turnOpen = false;
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
@@ -336,10 +345,19 @@ export class ClaudeLhcSession {
     const record = (params ?? {}) as Record<string, unknown>;
     switch (method) {
       case "setModel": {
+        const { settings } = record as SetModelParams;
+        const windows = typeof settings === "object" && settings !== null ? takeHostCompactSettings(settings) : null;
         const model = typeof record["model"] === "string" ? record["model"] : undefined;
         this.#model = model;
         this.#observeLaterModel(model);
         await gen.query.setModel(model);
+        if (windows !== null) {
+          this.#autoCompactTrigger = windows.autoCompactTrigger;
+          this.#viewTarget = windows.lhcLowerBound;
+          this.#io.log(
+            `setModel ${model ?? "default"}: compact at ${windows.autoCompactTrigger} tokens, view target ${windows.lhcLowerBound}`,
+          );
+        }
         return undefined;
       }
       case "setPermissionMode": {
@@ -363,6 +381,24 @@ export class ClaudeLhcSession {
         this.#hostMcpServers = servers;
         return await gen.query.setMcpServers(withRetrieval(servers, gen.retrieval));
       }
+      case "applyFlagSettings": {
+        const { settings } = record as Partial<ApplyFlagSettingsParams>;
+        if (typeof settings !== "object" || settings === null)
+          throw new Error("applyFlagSettings needs params.settings");
+        await gen.query.applyFlagSettings(settings);
+        this.#flagSettings = { ...this.#flagSettings, ...settings };
+        return undefined;
+      }
+      case "stopTask": {
+        const taskId = record["taskId"];
+        if (typeof taskId !== "string") throw new Error("stopTask needs params.taskId");
+        await gen.query.stopTask(taskId);
+        return undefined;
+      }
+      case "backgroundTasks":
+        return await gen.query.backgroundTasks(
+          typeof record["toolUseId"] === "string" ? record["toolUseId"] : undefined,
+        );
       default:
         throw new Error(`unknown control ${method}`);
     }
@@ -432,6 +468,15 @@ export class ClaudeLhcSession {
             `generation ${sessionId}: host MCP servers not applied: ${cause instanceof Error ? cause.message : String(cause)}`,
           ),
       );
+    }
+    if (this.#flagSettings !== null) {
+      void q
+        .applyFlagSettings(this.#flagSettings)
+        .catch((cause) =>
+          this.#io.log(
+            `generation ${sessionId}: flag settings not applied: ${cause instanceof Error ? cause.message : String(cause)}`,
+          ),
+        );
     }
     void this.#pump(gen);
     return gen;

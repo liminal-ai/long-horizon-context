@@ -11,6 +11,7 @@ import { ClaudeLhcSession } from "../src/session.ts";
 interface FakeQuery {
   options: Options;
   sets: Array<Record<string, McpServerConfig>>;
+  calls: Array<[method: string, arg: unknown]>;
   feed(message: SDKMessage): void;
 }
 
@@ -28,6 +29,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
       const fake: FakeQuery = {
         options,
         sets: [],
+        calls: [],
         feed(message) {
           backlog.push(message);
           wake?.();
@@ -45,6 +47,19 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
         setMcpServers: async (servers: Record<string, McpServerConfig>) => {
           fake.sets.push(servers);
           return SET_RESULT;
+        },
+        setModel: async (model?: string) => {
+          fake.calls.push(["setModel", model]);
+        },
+        applyFlagSettings: async (settings: unknown) => {
+          fake.calls.push(["applyFlagSettings", settings]);
+        },
+        stopTask: async (taskId: string) => {
+          fake.calls.push(["stopTask", taskId]);
+        },
+        backgroundTasks: async (toolUseId?: string) => {
+          fake.calls.push(["backgroundTasks", toolUseId]);
+          return toolUseId !== "toolu_finished";
         },
         interrupt: async () => {},
         close: () => {},
@@ -74,12 +89,13 @@ const LATE: Record<string, WireMcpServerConfig> = { late: { type: "http", url: "
 
 async function startSession(mcpServers?: Record<string, WireMcpServerConfig>) {
   const emitted: SDKMessage[] = [];
+  const logs: string[] = [];
   const session = new ClaudeLhcSession({
     emit: (message) => emitted.push(message),
     request: async () => ({}),
     end(): void {},
     fail(): void {},
-    log(): void {},
+    log: (line) => logs.push(line),
   });
   await session.start({
     cwd: dir,
@@ -89,12 +105,12 @@ async function startSession(mcpServers?: Record<string, WireMcpServerConfig>) {
     sessionId: randomUUID(),
     ...(mcpServers === undefined ? {} : { mcpServers }),
   });
-  return { session, emitted, live: () => queries.at(-1)! };
+  return { session, emitted, logs, live: () => queries.at(-1)! };
 }
 
 const retrievalOf = (fake: FakeQuery) => fake.options.mcpServers?.[RETRIEVAL_SERVER_NAME];
 
-const assistant = (text: string): SDKMessage =>
+const assistant = (text: string, inputTokens = 0): SDKMessage =>
   ({
     type: "assistant",
     uuid: randomUUID(),
@@ -105,6 +121,7 @@ const assistant = (text: string): SDKMessage =>
       model: "claude-sonnet-5",
       role: "assistant",
       content: [{ type: "text", text }],
+      usage: { input_tokens: inputTokens, output_tokens: 1 },
     },
   }) as unknown as SDKMessage;
 
@@ -196,5 +213,106 @@ describe("setMcpServers after start", () => {
 
     await expect(session.control("setMcpServers", {})).rejects.toThrow("setMcpServers needs params.servers");
     expect(live().sets).toEqual([]);
+  });
+});
+
+describe("flag settings, task controls, and setModel windows", () => {
+  test("applyFlagSettings reaches the live generation", async () => {
+    const { session, live } = await startSession();
+
+    const answer = await session.control("applyFlagSettings", { settings: { effortLevel: "low", fastMode: true } });
+
+    expect(answer).toBeUndefined();
+    expect(live().calls).toEqual([["applyFlagSettings", { effortLevel: "low", fastMode: true }]]);
+  });
+
+  test("the merged flag layer, cleared keys included, carries into the next generation", async () => {
+    const { session, live } = await startSession();
+    const first = live();
+    await session.control("applyFlagSettings", { settings: { effortLevel: "low", fastMode: true } });
+    await session.control("applyFlagSettings", { settings: { fastMode: null } });
+
+    await session.pushUser(compactPrompt());
+
+    const next = live();
+    expect(next).not.toBe(first);
+    expect(next.calls).toEqual([["applyFlagSettings", { effortLevel: "low", fastMode: null }]]);
+  });
+
+  test("without applied flags, a new generation makes no applyFlagSettings call", async () => {
+    const { session, live } = await startSession();
+
+    await session.pushUser(compactPrompt());
+
+    expect(queries).toHaveLength(2);
+    expect(live().calls).toEqual([]);
+  });
+
+  test("applyFlagSettings without settings is refused", async () => {
+    const { session, live } = await startSession();
+
+    await expect(session.control("applyFlagSettings", {})).rejects.toThrow("applyFlagSettings needs params.settings");
+    expect(live().calls).toEqual([]);
+  });
+
+  test("stopTask reaches the live generation with the task id", async () => {
+    const { session, live } = await startSession();
+
+    expect(await session.control("stopTask", { taskId: "task-7" })).toBeUndefined();
+    await expect(session.control("stopTask", {})).rejects.toThrow("stopTask needs params.taskId");
+
+    expect(live().calls).toEqual([["stopTask", "task-7"]]);
+  });
+
+  test("backgroundTasks returns the SDK's answer, and no toolUseId backgrounds every task", async () => {
+    const { session, live } = await startSession();
+
+    expect(await session.control("backgroundTasks", { toolUseId: "toolu_running" })).toBe(true);
+    expect(await session.control("backgroundTasks", { toolUseId: "toolu_finished" })).toBe(false);
+    expect(await session.control("backgroundTasks", {})).toBe(true);
+
+    expect(live().calls).toEqual([
+      ["backgroundTasks", "toolu_running"],
+      ["backgroundTasks", "toolu_finished"],
+      ["backgroundTasks", undefined],
+    ]);
+  });
+
+  test("setModel with settings compacts against the new windows; without settings the windows stay", async () => {
+    const { session, emitted, logs, live } = await startSession();
+    const turn = async (expected: number) => {
+      live().feed(assistant("working", 150_000));
+      live().feed(result());
+      await vi.waitFor(() => expect(emitted.filter((m) => m.type === "result")).toHaveLength(expected));
+    };
+
+    await session.control("setModel", { model: "claude-opus-5" });
+    await turn(1);
+    expect(queries).toHaveLength(1);
+
+    await session.control("setModel", {
+      model: "claude-sonnet-5",
+      settings: { autoCompactWindow: 100_000, lhcLowerBound: 60_000 },
+    });
+    await turn(2);
+
+    expect(queries).toHaveLength(2);
+    expect(queries[0]!.calls).toEqual([
+      ["setModel", "claude-opus-5"],
+      ["setModel", "claude-sonnet-5"],
+    ]);
+    expect(logs.some((line) => line.startsWith("[lhc compact:auto]") && line.includes("(target 60000)"))).toBe(true);
+  });
+
+  test("setModel with invalid windows is refused before the model changes", async () => {
+    const { session, live } = await startSession();
+
+    await expect(
+      session.control("setModel", {
+        model: "claude-opus-5",
+        settings: { autoCompactWindow: 100_000, lhcLowerBound: 200_000 },
+      }),
+    ).rejects.toThrow("lhcLowerBound must be less than autoCompactWindow");
+    expect(live().calls).toEqual([]);
   });
 });
