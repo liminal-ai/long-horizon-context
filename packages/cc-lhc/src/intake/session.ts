@@ -438,7 +438,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   let captureHealth: CaptureGenerationState = createCaptureGeneration(genSeed);
   let runtimeSettings: ClaudeRuntimeSettings = {};
   const chain = createRolloutChain();
-  let lastEventOrderAtBind: number | undefined;
 
   const publishLifecycle = (signals: readonly LifecycleSignal[]): void => {
     if (userOnLifecycle === undefined || signals.length === 0) return;
@@ -512,26 +511,50 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     return true;
   };
 
+  const recordedOrders = async (sdkRef: Lhc, ref: ThreadRef, uuid: string): Promise<number[] | null> => {
+    const orders: number[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await sdkRef.intakeStream.listEventKeysByPrefix(ref, {
+        prefix: rolloutKeyPrefix(uuid),
+        ...(cursor === null ? {} : { cursor }),
+      });
+      if (!page.ok) {
+        logError(`cc-lhc rewind: key lookup ${page.error.code}: ${page.error.reason}`);
+        return null;
+      }
+      if (page.value.capExhausted) return null;
+      for (const key of page.value.keys) orders.push(key.eventOrder);
+      cursor = page.value.cursor;
+    } while (cursor !== null);
+    return orders;
+  };
+
+  // Every event this native session records is keyed under one of its records,
+  // so the thread held exactly what sits below its first one when the session
+  // bound. That survives a capture restart, which rebinds at a later frontier.
+  const sessionBoundary = async (sdkRef: Lhc, ref: ThreadRef): Promise<number | null> => {
+    for (const [uuid, entry] of chain.parents) {
+      if (!entry.live) continue;
+      const orders = await recordedOrders(sdkRef, ref, uuid);
+      if (orders === null) return null;
+      if (orders.length > 0) return Math.min(...orders) - 1;
+    }
+    const frontier = await sdkRef.intakeStream.threadFrontier(ref);
+    if (!frontier.ok) {
+      logError(`cc-lhc rewind: thread frontier ${frontier.error.code}: ${frontier.error.reason}`);
+      return null;
+    }
+    return frontier.value.lastEventOrder;
+  };
+
   const resolveRewindAnchor = async (sdkRef: Lhc, ref: ThreadRef, keptUuid: string | null): Promise<number | null> => {
     for (const uuid of liveAncestry(chain, keptUuid)) {
-      let keepThrough = -1;
-      let cursor: string | null = null;
-      do {
-        const page = await sdkRef.intakeStream.listEventKeysByPrefix(ref, {
-          prefix: rolloutKeyPrefix(uuid),
-          ...(cursor === null ? {} : { cursor }),
-        });
-        if (!page.ok) {
-          logError(`cc-lhc rewind: key lookup ${page.error.code}: ${page.error.reason}`);
-          return null;
-        }
-        if (page.value.capExhausted) return null;
-        for (const key of page.value.keys) keepThrough = Math.max(keepThrough, key.eventOrder);
-        cursor = page.value.cursor;
-      } while (cursor !== null);
-      if (keepThrough >= 0) return keepThrough;
+      const orders = await recordedOrders(sdkRef, ref, uuid);
+      if (orders === null) return null;
+      if (orders.length > 0) return Math.max(...orders);
     }
-    return lastEventOrderAtBind ?? null;
+    return sessionBoundary(sdkRef, ref);
   };
 
   const appendRewindRollback = async (
@@ -1139,19 +1162,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         );
       }
 
-      if (stopped) {
-        continuity.close();
-        return;
-      }
-
-      if (sdk !== undefined && threadRef !== undefined) {
-        try {
-          const frontier = await sdk.intakeStream.threadFrontier(threadRef);
-          if (frontier.ok) lastEventOrderAtBind = frontier.value.lastEventOrder;
-        } catch (cause) {
-          logError(`cc-lhc rewind: thread frontier unreadable: ${detail(cause)}`);
-        }
-      }
       if (stopped) {
         continuity.close();
         return;

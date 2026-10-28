@@ -183,6 +183,43 @@ describe("cc-lhc capture of a Claude rewind", () => {
     expect(live.session.isCaptureHealthy()).toBe(true);
   });
 
+  it("a rewind to the session root after a capture restart drops every turn the session captured", async () => {
+    const live = await liveCapture(BEFORE_REWIND);
+    await live.session.stop();
+    if (!("threadId" in live.ref)) throw new Error("expected a registry ref");
+    const resumed = startCaptureSession({
+      cwd: CWD,
+      noInference: true,
+      expectedSession: { sessionId: SESSION_ID, source: "explicit_resume" },
+      knownRolloutPath: live.rolloutPath,
+      lineageDbPath: join(live.home, "lineage.sqlite"),
+      registryPath: join(live.home, "registry.sqlite"),
+      launchThread: { threadId: live.ref.threadId, createdAtLaunch: false },
+      initSdkFn: () => live.sdk,
+      log: (message) => live.logs.push(message),
+      logError: (message) => live.logs.push(`ERROR ${message}`),
+    });
+    sessions.push(resumed);
+    await waitFor(() => resumed.isCaptureReady(), "resumed capture ready");
+
+    const root = {
+      type: "user",
+      uuid: crypto.randomUUID(),
+      parentUuid: null,
+      message: { role: "user", content: "ROOT" },
+    };
+    appendFileSync(live.rolloutPath, `${JSON.stringify(root)}\n`);
+    await waitFor(async () => (await served(live)).includes('"ROOT"'), "root prompt captured");
+
+    const view = await served(live);
+    expect(view).not.toContain("Reply only ALPHA.");
+    expect(view).not.toContain("Reply only BETA.");
+    expect((await rollbacks(live)).map((event) => event.payload)).toEqual([
+      { keepThroughEventOrder: 0, reason: "claude_rewind" },
+    ]);
+    expect(resumed.isCaptureHealthy()).toBe(true);
+  });
+
   it("a shrink halts capture as degraded and never records a rollback", async () => {
     const live = await liveCapture(BEFORE_REWIND);
     truncateSync(live.rolloutPath, Buffer.byteLength(BEFORE_REWIND) - 10);
@@ -236,7 +273,10 @@ describe("cc-lhc capture of a Claude rewind", () => {
     expect(rebuilt).not.toContain("BETA");
   });
 
-  it("a rewind into a rebuilt prefix keeps everything the thread held at bind", async () => {
+  it.each([
+    ["in the capture that bound it", false],
+    ["after a capture restart", true],
+  ])("a rewind into a rebuilt prefix keeps everything the thread held at bind, %s", async (_label, restart) => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-rewind-prefix-"));
     const projectDir = join(home, "projects", encodeProjectPath(CWD));
     mkdirSync(projectDir, { recursive: true });
@@ -254,37 +294,59 @@ describe("cc-lhc capture of a Claude rewind", () => {
     const prefix = record("p1", null, "user", "rebuilt prompt") + record("p2", "p1", "assistant", "rebuilt answer");
     writeFileSync(rolloutPath, prefix);
     const sent: MessageEventInput[] = [];
+    const heldAtBind = 42;
     const sdk = {
-      intakeStream: { threadFrontier: async () => ({ ok: true as const, value: { lastEventOrder: 42 } }) },
-    } as unknown as Lhc;
-    const session = startCaptureSession({
-      cwd: CWD,
-      noInference: true,
-      expectedSession: { sessionId: "rebuilt", source: "rebuilt_handoff" },
-      knownRolloutPath: rolloutPath,
-      prefixBoundary: computeVerifiedPrefixBoundary(prefix, 2),
-      lineageDbPath: join(home, "lineage.sqlite"),
-      registryPath: join(home, "registry.sqlite"),
-      launchThread: { threadId: "th_prefix", createdAtLaunch: true },
-      initSdkFn: () => sdk,
-      flushBatchFn: async (_sdk, _ref, _items, events) => {
-        sent.push(...events);
+      intakeStream: {
+        threadFrontier: async () => ({ ok: true as const, value: { lastEventOrder: heldAtBind + sent.length } }),
+        listEventKeysByPrefix: async (_ref: ThreadRef, { prefix }: { prefix: string }) => ({
+          ok: true as const,
+          value: {
+            keys: sent.flatMap((event, index) =>
+              event.idempotencyKey.startsWith(prefix) ? [{ eventOrder: heldAtBind + index + 1 }] : [],
+            ),
+            cursor: null,
+            capExhausted: false,
+          },
+        }),
       },
-      log: () => {},
-      logError: () => {},
-    });
-    sessions.push(session);
-    await waitFor(() => session.isCaptureReady(), "capture ready");
+    } as unknown as Lhc;
+    const capture = () =>
+      startCaptureSession({
+        cwd: CWD,
+        noInference: true,
+        expectedSession: { sessionId: "rebuilt", source: "rebuilt_handoff" },
+        knownRolloutPath: rolloutPath,
+        prefixBoundary: computeVerifiedPrefixBoundary(prefix, 2),
+        lineageDbPath: join(home, "lineage.sqlite"),
+        registryPath: join(home, "registry.sqlite"),
+        launchThread: { threadId: "th_prefix", createdAtLaunch: true },
+        initSdkFn: () => sdk,
+        flushBatchFn: async (_sdk, _ref, _items, events) => {
+          sent.push(...events);
+        },
+        log: () => {},
+        logError: () => {},
+      });
+    const first = capture();
+    sessions.push(first);
+    await waitFor(() => first.isCaptureReady(), "capture ready");
     appendFileSync(
       rolloutPath,
       record("l1", "p2", "user", "live prompt") + record("l2", "l1", "assistant", "live answer"),
     );
+    if (restart) {
+      await waitFor(() => sent.some((event) => event.eventKind === "assistant_text"), "live turn sent");
+      await first.stop();
+      const second = capture();
+      sessions.push(second);
+      await waitFor(() => second.isCaptureReady(), "restarted capture ready");
+    }
     appendFileSync(rolloutPath, record("l3", "p2", "user", "after rewind"));
     await waitFor(() => sent.some((event) => event.eventKind === "rollback"), "rollback sent");
     const kinds = sent.map((event) => event.eventKind);
     expect(kinds.indexOf("rollback")).toBeLessThan(kinds.lastIndexOf("user_prompt"));
     expect(sent.find((event) => event.eventKind === "rollback")!.payload).toEqual({
-      keepThroughEventOrder: 42,
+      keepThroughEventOrder: heldAtBind,
       reason: "claude_rewind",
     });
   });

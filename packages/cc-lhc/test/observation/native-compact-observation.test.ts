@@ -131,6 +131,7 @@ describe("rebuilt historical-prefix replay of a native compact summary", () => {
       const live = {
         ...INSTALLED_SUMMARY,
         uuid: "live-native-summary",
+        parentUuid: INSTALLED_SUMMARY.uuid,
         sessionId,
         session_id: sessionId,
         cwd,
