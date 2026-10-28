@@ -1,8 +1,3 @@
-/**
- * The split against the real core: a segment turn_end closes the canonical turn and opens
- * an empty one; a compact-style turn_end landing right after (mid-turn seam or manual
- * /compact before the next event) is a no-op on the empty turn, never an error (gate B3).
- */
 import { describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -56,7 +51,6 @@ describe("segment end against core", () => {
       if (!after.ok) throw new Error(after.error.reason);
       expect(after.value.activeTurn === null ? 0 : after.value.activeTurn.estimatedTokens).toBe(0);
 
-      // Compact right after the split: the mid-turn seam's turn_end on the fresh empty turn.
       const openId = turns.value[1]!.turnId;
       await ok([
         {
@@ -72,7 +66,6 @@ describe("segment end against core", () => {
       expect(turns.value.map((t) => t.status)).toEqual(["closed", "open"]);
       expect(turns.value[1]!.turnId).toBe(openId);
 
-      // A repeat of the same segment end is an SDK skip, not a second close.
       await ok([
         {
           eventKind: "tool_call",

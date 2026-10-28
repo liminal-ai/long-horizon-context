@@ -14,13 +14,11 @@ import type { NativeEntry } from "./projection/project.js";
 
 const PROJECT_KEY_CAP = 200;
 
-/** Pinned SDK `qt`: `CLAUDE_CONFIG_DIR ?? ~/.claude`, then NFC. No trim. */
 export function effectiveClaudeHome(env: NodeJS.ProcessEnv = process.env): string {
   const home = env.CLAUDE_CONFIG_DIR ?? NodePath.join(NodeOS.homedir(), ".claude");
   return home.normalize("NFC");
 }
 
-/** Pinned SDK `Oy`: 32-bit Java string hash. */
 export function javaStringHash(value: string): number {
   let hash = 0;
   for (let i = 0; i < value.length; i += 1) {
@@ -29,14 +27,12 @@ export function javaStringHash(value: string): number {
   return hash;
 }
 
-/** Pinned SDK `So`. Encodes the already-canonical cwd. */
 export function encodeProjectKey(cwd: string): string {
   const encoded = cwd.replace(/[^a-zA-Z0-9]/g, "-");
   if (encoded.length <= PROJECT_KEY_CAP) return encoded;
   return `${encoded.slice(0, PROJECT_KEY_CAP)}-${Math.abs(javaStringHash(cwd)).toString(36)}`;
 }
 
-/** Pinned SDK `KU`: `realpathSync` (not `.native`), then NFC on darwin (`Or`). */
 export function canonicalizeCwd(cwd: string, platform = process.platform): string {
   let resolved = cwd;
   try {
@@ -81,10 +77,6 @@ function jsonl(entries: readonly NativeEntry[]): string {
   return `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`;
 }
 
-/**
- * Complete the file before the caller may resume. Write to a sibling tmp, then
- * rename onto the UUID name so a failure does not leave a partial resume file.
- */
 export async function writeProjectedSession(input: {
   readonly sessionId: string;
   readonly cwd: string;

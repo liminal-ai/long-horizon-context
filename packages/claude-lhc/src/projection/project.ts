@@ -1,24 +1,3 @@
-/**
- * LHC served view → one fresh native Claude Code transcript generation.
- *
- * Shapes verified against Claude Code 2.1.259 transcripts written through SDK
- * 0.3.170 (scripts/spikes/01). Rules (cc-lhc rebuild + claude-lhc projector): band
- * context and runtime notes as plain user lines; the tail as native blocks — one
- * assistant line per block sharing a synthetic message id, tool results paired by
- * tool_use_id; thinking follows SELECTED_THINKING_REBUILD_ARM below (signed_verbatim:
- * captured signed blocks re-emit exactly, never an invented signature; unsigned
- * thinking is dropped); model_change stamps later assistant lines; thinking_level_change has
- * no native shape. A tool call the record never answered gets a synthetic error
- * result so the resumed transcript never ends on a dangling tool_use.
- *
- * Content blocks: a user or toolResult entry that carries `blocks` (LHC served
- * the native content array with blob payloads inlined) is written as that array,
- * so an attached image or a Read of a PNG/PDF comes back to the model as the
- * image/document block it was, never as base64 inside text. Server-side tool
- * blocks (server_tool_use and its *_tool_result) are written verbatim inside
- * the assistant message they came from. redacted_thinking follows the thinking
- * arm: the captured block verbatim under signed_verbatim, omitted under omit.
- */
 import { randomUUID } from "node:crypto";
 import type { SessionAssistantPart, SessionThreadView, SessionThreadViewEntry } from "lhc";
 
@@ -33,13 +12,6 @@ export interface ProjectionStamp {
 
 export type NativeEntry = Record<string, unknown>;
 
-/**
- * Thinking rebuild arm, mirroring cc-lhc's SELECTED_THINKING_REBUILD_ARM (rollout/thinking-ladder.ts).
- * signed_verbatim: the tail's thinking blocks re-enter the projected session with their captured
- * signatures, so the walker's tail budget (which counts them) matches what the model reads.
- * omit: the pre-2026-09-08 behaviour. One-line flip if the API starts rejecting replayed
- * signatures behind a compacted prefix on this account (Reed gate A1). No runtime fallback.
- */
 export type ThinkingRebuildArm = "signed_verbatim" | "omit";
 export const SELECTED_THINKING_REBUILD_ARM: ThinkingRebuildArm = "signed_verbatim";
 
@@ -54,7 +26,7 @@ export function projectView(
   const lines: NativeEntry[] = [];
   let parent: string | null = null;
   let model = stamp.model;
-  const openCalls = new Map<string, true>();
+  const openCalls = new Set<string>();
 
   const base = (): NativeEntry => ({
     parentUuid: parent, isSidechain: false, userType: "external", entrypoint: "sdk-ts",
@@ -73,7 +45,7 @@ export function projectView(
     push({ ...base(), type: "user", message: { role: "user", content: [{ tool_use_id: toolCallId, type: "tool_result", content, is_error: isError }] } });
   };
   const settleOpenCalls = (): void => {
-    for (const id of [...openCalls.keys()]) toolResult(id, DANGLING_RESULT, true);
+    for (const id of [...openCalls]) toolResult(id, DANGLING_RESULT, true);
   };
 
   for (const entry of view.entries) {
@@ -90,7 +62,7 @@ export function projectView(
     const id = `msg_${randomUUID().replace(/-/g, "")}`;
     const requestId = `req_${randomUUID().replace(/-/g, "")}`;
     for (const [index, block] of blocks.entries()) {
-      if (block["type"] === "tool_use") openCalls.set(String(block["id"]), true);
+      if (block["type"] === "tool_use") openCalls.add(String(block["id"]));
       push({
         ...base(), type: "assistant", apiBlockIndex: index, requestId,
         message: { model: entry.model ?? model, id, type: "message", role: "assistant", content: [block], stop_reason: stop, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } },
@@ -108,11 +80,9 @@ function nativeBlock(part: SessionAssistantPart, arm: ThinkingRebuildArm): Nativ
   if (part.type === "thinking") {
     if (arm === "omit") return null;
     const signature = typeof part.thinkingSignature === "string" && part.thinkingSignature !== "" ? part.thinkingSignature : undefined;
-    // signed_verbatim: the captured block exactly (text may be empty: omitted-display thinking).
-    // No signature to preserve: drop rather than invent one.
     return signature === undefined ? null : { type: "thinking", thinking: part.thinking ?? "", signature };
   }
-  return part.block ?? null; // server_tool_use and server-side results: the block as the API sent it
+  return part.block ?? null;
 }
 
 export function isMessageEntry(entry: SessionThreadViewEntry): boolean {

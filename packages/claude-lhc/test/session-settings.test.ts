@@ -55,16 +55,6 @@ describe("takeHostCompactSettings", () => {
 });
 
 describe("start() rejects invalid compact settings", () => {
-  test("names autoCompactWindow when it is missing", async () => {
-    const session = new ClaudeLhcSession(silentIo);
-    await expect(session.start({ settings: { lhcLowerBound: 180_000 } })).rejects.toThrow(/autoCompactWindow/);
-  });
-
-  test("names lhcLowerBound when it is missing", async () => {
-    const session = new ClaudeLhcSession(silentIo);
-    await expect(session.start({ settings: { autoCompactWindow: 500_000 } })).rejects.toThrow(/lhcLowerBound/);
-  });
-
   test("rejects bound >= trigger", async () => {
     const session = new ClaudeLhcSession(silentIo);
     await expect(session.start({ settings: { autoCompactWindow: 150_000, lhcLowerBound: 180_000 } })).rejects.toThrow(

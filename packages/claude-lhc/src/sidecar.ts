@@ -1,7 +1,3 @@
-/**
- * claude-lhc sidecar entry: JSONL frames on stdin/stdout (see protocol.ts), diagnostics
- * on stderr. Frames are handled strictly in arrival order.
- */
 import { createInterface } from "node:readline";
 import { decodeFrame, type DriverFrame, encodeFrame, type SidecarFrame, type SidecarRequestMethod } from "./protocol.js";
 import { ClaudeLhcSession, type SessionIO } from "./session.js";

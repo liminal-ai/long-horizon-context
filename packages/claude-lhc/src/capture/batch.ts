@@ -29,7 +29,6 @@ export class ToolBatch {
     return [...this.#settled.entries()].filter(([, settled]) => !settled).map(([id]) => id);
   }
 
-  /** A tool's result is known (its PostToolUse or PostToolUseFailure fired, or its tool_result is on the wire). */
   settle(id: string): void {
     this.#settled.set(id, true);
   }
@@ -39,7 +38,6 @@ export class ToolBatch {
     this.#messageId = "";
   }
 
-  /** Feeds one main-thread wire message; returns the tool names of any tool_use first seen here. */
   observe(message: SDKMessage): string[] {
     if (message.type === "stream_event") {
       if (message.parent_tool_use_id !== null) return [];
@@ -66,7 +64,6 @@ export class ToolBatch {
     return [];
   }
 
-  /** A new API message starts a batch: the settled ids of the previous one leave. Blocks of the same message join it. */
   #start(messageId: string): void {
     if (messageId !== "" && messageId === this.#messageId) return;
     this.#messageId = messageId;

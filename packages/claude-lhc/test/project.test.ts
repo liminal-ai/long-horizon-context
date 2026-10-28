@@ -23,7 +23,6 @@ describe("projectView", () => {
     expect(call!["message"].stop_reason).toBe("tool_use");
     expect(result!["message"].content[0]).toEqual({ tool_use_id: "toolu_1", type: "tool_result", content: "ok", is_error: false });
     expect(text!["message"].stop_reason).toBe("end_turn");
-    // parent chain
     for (let i = 1; i < lines.length; i += 1) expect(lines[i]!["parentUuid"]).toBe(lines[i - 1]!["uuid"]);
     expect(lines.every((l) => l["sessionId"] === "S" && l["cwd"] === "/w" && l["version"] === "2.1.259")).toBe(true);
   });

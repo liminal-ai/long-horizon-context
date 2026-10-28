@@ -1,5 +1,3 @@
-// Spike 1: SDK 0.3.170 under bun driving the box's claude; fresh session, one tool turn.
-// Prints every wire message type and the transcript file the CLI wrote.
 import { query, type SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { randomUUID } from "node:crypto";
 import { mkdtempSync, writeFileSync, readdirSync, readFileSync } from "node:fs";

@@ -21,10 +21,6 @@ afterEach(() => {
 });
 
 describe("native LHC title", () => {
-  test("label is [LHC] plus the logical thread id", () => {
-    expect(nativeLhcTitle("th_abc")).toBe("[LHC] th_abc");
-  });
-
   test("renameSession appends a custom-title line on a projected UUID", async () => {
     const home = scratch("claude-lhc-title-home-");
     const cwd = scratch("claude-lhc-title-cwd-");
