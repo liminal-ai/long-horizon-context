@@ -39,6 +39,10 @@ export interface TurnCloseHostFacts {
   endedAt?: string;
 }
 
+export function markTurnDeleted(db: DatabaseSync, turnId: string, deletedAt: string): void {
+  db.prepare(`UPDATE turns SET deleted_at = ? WHERE turn_id = ? AND deleted_at IS NULL`).run(deletedAt, turnId);
+}
+
 export function closeTurn(
   db: DatabaseSync,
   turnId: string,

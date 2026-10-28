@@ -78,6 +78,8 @@ export class TurnStateCorruptionError extends Error {
   readonly code = "turn_state_corrupt" as const;
 }
 
+export { applyRollback, RollbackAnchorError } from "./internal/rollback.js";
+
 function currentOpenTurnId(transaction: DbWriteTransaction): string {
   const openTurnIds = selectOpenTurnIds(transaction.db);
   if (openTurnIds.length !== 1) {
