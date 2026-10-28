@@ -17,14 +17,14 @@ restart and every compact mints a fresh native session id from that view.
 
 ## Install
 
-t3code-lhc installs the sidecar from npm; nothing in this repo needs building:
+The T3 Code fork installs the sidecar from npm; nothing in this repo needs building:
 
 ```sh
 npm install claude-lhc@0.1.1
 ```
 
 Point t3code at the compiled entry with `CLAUDE_LHC_SIDECAR=<prefix>/node_modules/claude-lhc/dist/sidecar.js`
-(t3code-lhc's setup script does this). Node 24.3 or later. The package bundles the `lhc` core; it
+(the fork's setup script does this). Node 24.3 or later. The package bundles the `lhc` core; it
 is not published separately.
 
 ## Configuration
@@ -35,8 +35,7 @@ is not published separately.
   `autoCompactWindow` (compact trigger) and `lhcLowerBound` (rebuilt view size), with the lower bound
   below the trigger.
 - **`T3CODE_LHC_NO_INFERENCE=1`:** skip summary derivations (tests and previews).
-- **`T3CODE_THREAD_ID`:** set by the t3code driver and passed through to Claude Code, so `lhc-agent`
-  in a seat resolves its sender without `--from`.
+- **`T3CODE_THREAD_ID`:** set by the t3code driver and passed through to Claude Code.
 
 ## Build from source
 

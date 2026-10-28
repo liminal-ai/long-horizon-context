@@ -75,9 +75,8 @@ contains every later feature from another port.
 | Codex CLI | Native Rust integration in the maintained [`codex-lhc`](https://github.com/liminal-ai/codex-lhc) fork | Fork release |
 | Grok Build | Native Rust integration in the maintained [`grok-build-lhc`](https://github.com/liminal-ai/grok-build-lhc) fork | Fork release |
 | Claude Code | [`cc-lhc`](packages/cc-lhc), a closed-host PTY wrapper | Public npm package and GitHub bundles |
-| Claude Code (in t3code) | [`claude-lhc`](packages/claude-lhc), an Agent SDK sidecar that records into LHC and projects native sessions from the served view | Public npm package, installed by t3code-lhc |
+| Claude Code (in t3code) | [`claude-lhc`](packages/claude-lhc), an Agent SDK sidecar that records into LHC and projects native sessions from the served view | Public npm package |
 | Hermes Agent | Native Python integration in the maintained [`hermes-lhc`](https://github.com/liminal-ai/hermes-lhc) fork using `context.engine: lhc` | Fork installation |
-| t3code | Native integration in the external maintained [`liminal-ai/t3code`](https://github.com/liminal-ai/t3code) fork | External fork; [`packages/t3code-lhc`](packages/t3code-lhc) contains documentation only |
 
 Hosts do not have identical capabilities. The integration surface determines
 how each host captures events, exposes retrieval, and replaces its working
