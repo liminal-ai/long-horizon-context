@@ -42,7 +42,7 @@ Driver frames:
 - `user` — one SDK user message.
 - `req` — a query control: `setModel`, `setPermissionMode`, `setMaxThinkingTokens`, or `interrupt`, with an id the sidecar answers.
 - `res` — the driver's answer to a sidecar request.
-- `abort` — cancels a pending sidecar request by id.
+- `abort` — reserved. The sidecar currently ignores incoming abort frames; it cancels its own requests through their AbortSignal and sends its own `abort` frame instead.
 
 Sidecar frames:
 
@@ -73,7 +73,7 @@ Projection replays the tail's thinking blocks with their signatures (`SELECTED_T
 
 Two numbers, both required, both in provider-billed tokens. They arrive in the forwarded settings and are stripped before the settings reach Claude:
 
-- `autoCompactWindow` — the auto-compact trigger. When provider-reported context goes over it, a compact is due.
+- `autoCompactWindow` — the auto-compact trigger. When provider-reported context reaches or exceeds it, a compact is due.
 - `lhcLowerBound` — the rebuilt view size, passed to `threadView.compact` as the profile lower bound. It must be below the trigger, or `start` fails naming both.
 
 The rebuild compacts with the core `continuation` profile's band shares. The sidecar holds no built-in numbers of its own: t3code's Claude LHC instance form owns both values. Before compacting, the sidecar waits up to 45 seconds (`DERIVATION_WAIT_MS`) for queued derivations, so bands assemble from renderings rather than truncated excerpts.
