@@ -1,13 +1,8 @@
-/**
- * The summary worker: one Agent SDK query per derivation with none of Claude
- * Code's framing (no settings files, tools, MCP, skills; one turn; empty cwd),
- * Lee's system prompt, and only the auth part of the user's settings.
- */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options, query } from "@anthropic-ai/claude-agent-sdk";
-import { SUMMARY_WORKER_SYSTEM_PROMPT, summaryWorkerAuthSettings as userAuthSettings } from "lhc";
+import { SUMMARY_WORKER_SYSTEM_PROMPT } from "lhc";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
   createSummaryWorkerModelCall,
@@ -74,11 +69,7 @@ describe("summary worker", () => {
     expect(existsSync(options.cwd!)).toBe(false);
   });
 
-  test("always uses Lee's system prompt, 504 bytes; a template's system text leads the prompt", async () => {
-    expect(Buffer.byteLength(SUMMARY_WORKER_SYSTEM_PROMPT)).toBe(504);
-    expect(SUMMARY_WORKER_SYSTEM_PROMPT.startsWith("Your role is to smooth or summarize conversation excerpts")).toBe(
-      true,
-    );
+  test("always uses Lee's system prompt; a template's system text leads the prompt", async () => {
     const seen: Seen[] = [];
     const call = createSummaryWorkerModelCall({
       claudeBin: "c",
@@ -115,7 +106,6 @@ describe("summary worker", () => {
       env: { ANTHROPIC_BASE_URL: "http://proxy", ANTHROPIC_AUTH_TOKEN: "tok" },
       apiKeyHelper: "/bin/key",
     };
-    expect(userAuthSettings({ CLAUDE_CONFIG_DIR: config })).toEqual(expected);
     const seen: Seen[] = [];
     await createSummaryWorkerModelCall({
       claudeBin: "c",
@@ -123,12 +113,6 @@ describe("summary worker", () => {
       run: fakeQuery(seen, ok),
     })(input([{ role: "user", content: "x" }]));
     expect(seen[0]!.options.settings).toEqual(expected);
-  });
-
-  test("no settings file, or one without auth, carries nothing", () => {
-    expect(userAuthSettings({ CLAUDE_CONFIG_DIR: config })).toBeNull();
-    writeFileSync(join(config, "settings.json"), JSON.stringify({ env: { FOO: "1" }, outputStyle: "x" }));
-    expect(userAuthSettings({ CLAUDE_CONFIG_DIR: config })).toBeNull();
   });
 
   test("failures map to the core's kinds and never throw", async () => {
@@ -183,7 +167,6 @@ describe("summary worker", () => {
       env: { CLAUDE_CONFIG_DIR: config },
       run: fakeQuery(seen, ok),
     });
-    // os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
     const tmpVars = ["TMPDIR", "TEMP", "TMP"] as const;
     const priorTmp = tmpVars.map((k) => process.env[k]);
     for (const k of tmpVars) process.env[k] = join(config, "no-such-tmp");

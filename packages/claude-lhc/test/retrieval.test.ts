@@ -1,8 +1,3 @@
-/**
- * get_turns / get_messages: the in-process MCP server a Claude LHC session
- * gets in every generation, called here through a real MCP client against a
- * real LHC thread.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -168,8 +163,6 @@ describe("retrieval server", () => {
   });
 });
 
-// ── session wiring ──────────────────────────────────────────────────
-
 // biome-ignore lint/suspicious/noExplicitAny: SDK query options are checked structurally below
 type LooseOptions = Record<string, any>;
 const captured: LooseOptions[] = [];
@@ -269,7 +262,6 @@ describe("session wiring", () => {
       event("turn_end", {}),
     ] as never);
     if (!sent.ok) throw new Error(sent.error.reason);
-    // A compaction binds the rebuilt Claude session to the same LHC thread.
     const rebuilt = "22222222-2222-4222-8222-222222222222";
     await bindSession(threadId, rebuilt);
     captured.length = 0;
@@ -281,7 +273,6 @@ describe("session wiring", () => {
     const client = new Client({ name: "test", version: "0" });
     await client.connect(clientSide);
     expect(await callText(client, "get_turns", { ids: ["t1"] })).toContain("OTTER-LANTERN-77");
-    // Same wording as pi-lhc and codex-lhc: get_turns serves renderings, get_messages the verbatim record.
     const { tools } = await client.listTools();
     const describe = (name: string) => tools.find((t) => t.name === name)!.description!;
     expect(describe("get_turns")).toMatch(/^Fetch full renderings of past conversation turns by turn id/);

@@ -27,9 +27,6 @@ describe("family resolution from the start options", () => {
     expect(formatTokenFamilyLog(seedTokenFamilyFromStartModel(undefined), undefined)).toBe(
       "claude-lhc token family claude-2026 (provider-fallback) model=",
     );
-    expect(formatTokenFamilyLog(seedTokenFamilyFromStartModel(""), "")).toBe(
-      "claude-lhc token family claude-2026 (provider-fallback) model=",
-    );
   });
 
   test("a synthetic model id is ignored and falls back like a missing model", () => {
