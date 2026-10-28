@@ -273,6 +273,11 @@ export class ClaudeLhcSession {
     }
 
     const first = typeof sessionId === "string" && sessionId !== "" ? sessionId : randomUUID();
+    const holder = await resolveSession(first);
+    if (holder !== null)
+      throw new Error(
+        `Claude session ${first} already names LHC thread ${holder}; a fresh start needs a new session id`,
+      );
     this.#threadId = await createThread(this.#cwd);
     this.#thread = threadRef(this.#threadId);
     await bindSession(this.#threadId, first);
@@ -872,15 +877,11 @@ export class ClaudeLhcSession {
       permissionMode: this.#permissionMode ?? "default",
       model: this.#model ?? "claude-sonnet-5",
     });
-    const dest = await writeProjectedSession({
-      sessionId,
-      cwd,
-      entries,
-      env: this.#env,
-    });
-    await labelNativeSession(sessionId, nativeLhcTitle(this.#threadId), cwd, this.#io);
+    const title = nativeLhcTitle(this.#threadId);
+    const dest = entries.length === 0 ? null : await writeProjectedSession({ sessionId, cwd, entries, env: this.#env });
+    if (dest !== null) await labelNativeSession(sessionId, title, cwd, this.#io);
     await bindSession(this.#threadId, sessionId);
-    const next = this.#startGeneration(sessionId, { resume: sessionId });
+    const next = this.#startGeneration(sessionId, dest === null ? { sessionId, title } : { resume: sessionId });
     const old = this.#gen;
     this.#gen = next;
     if (old !== null) {
@@ -889,7 +890,7 @@ export class ClaudeLhcSession {
       old.query.close();
     }
     this.#io.log(
-      `generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries at ${dest}`,
+      `generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries ${dest === null ? "(fresh native session)" : `at ${dest}`}`,
     );
     return next;
   }

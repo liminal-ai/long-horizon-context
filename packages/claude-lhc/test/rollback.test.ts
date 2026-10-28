@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { mapPrompt, mapSdkMessage } from "../src/capture/mapper.ts";
-import { createLhc, threadRef } from "../src/lhcHome.ts";
+import { createLhc, resolveSession, threadRef } from "../src/lhcHome.ts";
 import { nativeSessionPath } from "../src/nativeSessionFile.ts";
 import { ClaudeLhcSession } from "../src/session.ts";
 
@@ -231,5 +231,44 @@ describe("host rollback on resume", () => {
     const { logs } = await startSession({ resume: gen1, resumeSessionAt: kept });
 
     expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
+  });
+});
+
+describe("thread start", () => {
+  const threadFiles = () => readdirSync(join(dir, "lhc-home", "threads")).length;
+
+  test("a fresh session id opens a new thread and the old thread keeps its aliases", async () => {
+    const { gen1, threadId } = await seedThread();
+    const restart = randomUUID();
+
+    const { session } = await startSession({ sessionId: restart });
+
+    expect(session.threadId).not.toBe(threadId);
+    expect(await resolveSession(gen1)).toBe(threadId);
+    expect(await resolveSession(restart)).toBe(session.threadId);
+    expect(threadFiles()).toBe(2);
+  });
+
+  test("a fresh start that reuses a bound session id is refused before any thread is created", async () => {
+    const { gen1, threadId } = await seedThread();
+
+    await expect(startSession({ sessionId: gen1 })).rejects.toThrow(
+      `Claude session ${gen1} already names LHC thread ${threadId}; a fresh start needs a new session id`,
+    );
+    expect(threadFiles()).toBe(1);
+    expect(await resolveSession(gen1)).toBe(threadId);
+  });
+
+  test("resuming a thread with no served entries opens a fresh native session instead of an empty file", async () => {
+    const { gen1, threadId } = await seedThread();
+
+    const { session, options } = await startSession({ resume: gen1 });
+
+    expect(session.threadId).toBe(threadId);
+    expect(options).not.toHaveProperty("resume");
+    expect(typeof options.sessionId).toBe("string");
+    const path = nativeSessionPath({ sessionId: options.sessionId, cwd: dir, env: { CLAUDE_CONFIG_DIR: claudeHome } });
+    expect(existsSync(path)).toBe(false);
+    expect(await resolveSession(options.sessionId)).toBe(threadId);
   });
 });
