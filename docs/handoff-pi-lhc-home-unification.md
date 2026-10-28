@@ -20,11 +20,10 @@ commit; **never push** — the operator reviews and pushes.
 
 ## Onboard first, in this order
 
-1. `memory/MEMORY.md` — per repo AGENTS.md; read any memory relevant to routing or process.
-2. `docs/onboard/01-core-concepts.md` — vocabulary: threads, record vs derivation, thread views.
-3. `docs/onboard/02-domain-design.md` — skim; focus on ThreadRef/registry and serving.
-4. `packages/pi-lhc/README.md` and the `packages/pi-lhc` source — the host you are modifying. Read fully.
-5. `docs/backlog.md` item 26 — this work closes it.
+1. `docs/onboard/01-core-concepts.md` — vocabulary: threads, record vs derivation, thread views.
+2. `docs/onboard/02-domain-design.md` — skim; focus on ThreadRef/registry and serving.
+3. `packages/pi-lhc/README.md` and the `packages/pi-lhc` source — the host you are modifying. Read fully.
+4. `docs/backlog.md` item 26 — this work closes it.
 
 Read in detail (these are the exact surfaces the slices touch):
 
