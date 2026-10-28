@@ -1,7 +1,3 @@
-/**
- * Wrapper integration: descriptor env, guidance, spawn throw, lifecycle revoke.
- */
-
 import { copyFileSync, existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -32,9 +28,7 @@ function io(): DescriptorIo {
     unlink: (p) => {
       try {
         fs.unlinkSync(p);
-      } catch {
-        // ignore
-      }
+      } catch {}
     },
     exists: fs.existsSync,
     mkdir: (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }),
@@ -53,7 +47,6 @@ describe("wrapper descriptor lifecycle (unit seams)", () => {
     const path = newDescriptorPath(home, io());
     createOpeningDescriptor(path, io());
     expect(existsSync(path)).toBe(true);
-    // Simulate post-create spawn failure cleanup
     closeAndRemove(path, undefined, io());
     expect(existsSync(path)).toBe(false);
     expect(loadDescriptor(path, io()).ok).toBe(false);
@@ -71,7 +64,6 @@ describe("wrapper descriptor lifecycle (unit seams)", () => {
       rolloutPath: join(home, "s.jsonl"),
     });
     expect(loadDescriptor(path, dIo).ok).toBe(true);
-    // Synchronous revoke (as teardown does before await stop)
     revokeDescriptor(path, d, dIo);
     expect(existsSync(path)).toBe(false);
     void d;
@@ -117,7 +109,6 @@ describe("wrapper descriptor lifecycle (unit seams)", () => {
         },
       }),
     ).rejects.toThrow(/spawn boom/);
-    // No leftover ready descriptors
     if (existsSync(runtimeDir)) {
       const { readdirSync } = require("node:fs") as typeof import("node:fs");
       const left = readdirSync(runtimeDir).filter((n) => n.endsWith(".json"));
@@ -128,9 +119,6 @@ describe("wrapper descriptor lifecycle (unit seams)", () => {
   it("startup on a supported platform with no prebuild fails with an actionable error, never degrades", async () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-wrap-noaddon-"));
     process.env.CC_LHC_HOME = home;
-    // Real native probe against a package root that has a valid targets
-    // manifest but no artifact; env:{} bypasses the test-suite addon stub so
-    // this is the true production loading path.
     const bareRoot = mkdtempSync(join(tmpdir(), "cc-lhc-noartifact-"));
     const here = dirname(fileURLToPath(import.meta.url));
     copyFileSync(join(here, "../../../cc-lhc-native/targets.json"), join(bareRoot, "targets.json"));
@@ -172,12 +160,9 @@ describe("wrapper descriptor lifecycle (unit seams)", () => {
     });
     expect(code).toBe(2);
     expect(spawned).toBe(0);
-    // Actionable: names the addon problem and the remediation, no silent
-    // degradation to PID-only or Linux-only identity.
     expect(stderrText).toMatch(/cannot establish OS process identity/);
     expect(stderrText).toMatch(/addon_unavailable|no addon artifact/);
     expect(stderrText).toContain("pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native");
-    // No descriptor may remain claimable.
     const runtimeDir = join(home, "runtime");
     if (existsSync(runtimeDir)) {
       const { readdirSync } = require("node:fs") as typeof import("node:fs");

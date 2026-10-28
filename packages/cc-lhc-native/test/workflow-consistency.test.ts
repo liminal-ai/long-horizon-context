@@ -1,10 +1,3 @@
-/**
- * Workflow/manifest consistency: the GitHub matrix in
- * .github/workflows/native-platforms.yml must stay in lockstep with
- * targets.json (the single source of truth) and the pinned toolchain versions.
- * Deliberately string/regex-based so the gate needs no YAML dependency.
- */
-
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -15,14 +8,10 @@ import { loadTargetsManifest, targetKey } from "../src/targets.js";
 const packageRoot = defaultPackageRoot();
 const repoRoot = join(packageRoot, "..", "..");
 const workflowPath = join(repoRoot, ".github", "workflows", "native-platforms.yml");
-// Normalize newlines once: a Windows checkout (core.autocrlf) may hand this
-// file over with CRLF, and every regex/indexOf below must parse identically
-// on all six matrix legs.
 const workflow = readFileSync(workflowPath, "utf8").replaceAll("\r\n", "\n");
 const manifest = loadTargetsManifest(join(packageRoot, "targets.json"));
 const manifestKeys = manifest.targets.map(targetKey);
 
-/** The certified runner mapping; ARM Linux/Windows labels are public preview but required. */
 const EXPECTED_RUNNERS: Record<string, string> = {
   "linux-x64": "ubuntu-24.04",
   "linux-arm64": "ubuntu-24.04-arm",
@@ -97,8 +86,6 @@ describe("pinned toolchain and required steps", () => {
   });
 
   it("pins current-runtime action majors (Node 24) so Node 20 deprecation warnings cannot return", () => {
-    // Current major per action, verified against the official releases via gh
-    // on 2026-08-13 — all run on the Node 24 actions runtime.
     const REQUIRED_ACTION_MAJORS: Record<string, number> = {
       "actions/checkout": 7,
       "actions/download-artifact": 8,

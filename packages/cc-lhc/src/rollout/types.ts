@@ -1,5 +1,3 @@
-/** Approximate Claude Code rollout JSONL shapes (2.1.x; may drift). */
-
 export interface ContentBlock {
   type: string;
   [key: string]: unknown;

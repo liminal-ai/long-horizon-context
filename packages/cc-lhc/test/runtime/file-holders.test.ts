@@ -1,10 +1,3 @@
-/**
- * The Windows holder rule (jfv): Restart Manager holders other than this
- * process mean held; a refused share-none open with no listed holder (and
- * this process not listed, whose own handle would also refuse it) means
- * "cannot prove unheld"; otherwise unheld. The real native path runs on the
- * Windows CI targets through torn-tail.test.ts.
- */
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

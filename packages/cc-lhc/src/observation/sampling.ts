@@ -1,20 +1,6 @@
-/**
- * Lifecycle sampling fold: one completed sampling attempt → one sampling_observed
- * with the final/verbatim provider usage. Aggregation is lifecycle-only;
- * canonical intake remains per-block in native order.
- *
- * Identity preference (documented):
- * 1. immutable requestId when present on the rollout line
- * 2. assistant message.id
- * 3. line uuid fallback
- *
- * Distinct requestIds are never merged (retries stay separate).
- */
-
 export interface SamplingRecord {
   model?: string;
   providerUsage?: Record<string, unknown>;
-  /** True once the completed-attempt fact was published. */
   emitted: boolean;
 }
 
@@ -41,10 +27,6 @@ export type SamplingClaim =
   | { action: "hold" }
   | { action: "skip" };
 
-/**
- * Accumulate model/usage on a split line. Emit exactly once when the caller
- * marks the sampling attempt complete (terminal content for that API message).
- */
 export function noteSamplingPartial(
   state: SamplingDedupeState,
   samplingId: string,
@@ -57,15 +39,11 @@ export function noteSamplingPartial(
   const nextModel = model ?? existing?.model;
   const nextUsage = providerUsage ?? existing?.providerUsage;
   if (nextModel !== undefined) next.model = nextModel;
-  // Prefer later usage when provided (final line often has complete tokens).
   if (providerUsage !== undefined) next.providerUsage = providerUsage;
   else if (nextUsage !== undefined) next.providerUsage = nextUsage;
   state.records.set(samplingId, next);
 }
 
-/**
- * Publish the single completed sampling_observed for this attempt, if not yet emitted.
- */
 export function completeSamplingAttempt(
   state: SamplingDedupeState,
   samplingId: string,

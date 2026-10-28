@@ -1,7 +1,3 @@
-/**
- * Slice 2: strict parser + overhead arithmetic (ASCII/multibyte ceilings).
- */
-
 import { describe, expect, it } from "vitest";
 
 import {
@@ -104,8 +100,7 @@ describe("planByteBudget", () => {
 
   it("framing bytes match format.ts open+close", () => {
     const op = "get-turns" as const;
-    const measured =
-      Buffer.byteLength(recallOpen(op), "utf8") + Buffer.byteLength(recallClose(op), "utf8");
+    const measured = Buffer.byteLength(recallOpen(op), "utf8") + Buffer.byteLength(recallClose(op), "utf8");
     expect(framingOverheadBytes(op)).toBe(measured);
   });
 
@@ -114,7 +109,6 @@ describe("planByteBudget", () => {
     expect(envStdoutCeiling({ BASH_MAX_OUTPUT_LENGTH: "0" })).toBeUndefined();
     expect(envStdoutCeiling({ BASH_MAX_OUTPUT_LENGTH: "abc" })).toBeUndefined();
     expect(envStdoutCeiling({})).toBeUndefined();
-    // Undocumented alias must not enlarge/select ceiling
     expect(envStdoutCeiling({ CC_LHC_BASH_MAX_OUTPUT_LENGTH: "12000" } as NodeJS.ProcessEnv)).toBeUndefined();
   });
 

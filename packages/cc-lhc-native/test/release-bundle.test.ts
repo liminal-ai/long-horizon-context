@@ -51,8 +51,6 @@ describe("missingReleaseBundleFiles", () => {
     ];
     const missing = missingReleaseBundleFiles({ bundleRoot: root, manifest, exists: existsIn(paths) });
     expect(missing).toContain("targets.json");
-    // The bundle contract lists static files with portable forward slashes
-    // on every platform — never platform-joined backslashes.
     expect(missing).toContain("dist/index.js");
   });
 

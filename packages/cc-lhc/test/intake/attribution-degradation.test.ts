@@ -164,7 +164,6 @@ describe("deterministic attribution + sticky degradation", () => {
       await session.stop();
     }
 
-    // Restart over a clean expected rollout (restart = re-arm) starts healthy gen 2.
     const cleanPath = join(projectDir, `${sid}.jsonl`);
     writeFileSync(
       cleanPath,
@@ -197,7 +196,6 @@ describe("deterministic attribution + sticky degradation", () => {
       await waitFor(() => restarted.isCaptureReady(), "restart ready");
       expect(restarted.getCaptureGeneration()).toBe(2);
       expect(restarted.isCaptureHealthy()).toBe(true);
-      // Persistent foreign evidence degrades again when observed.
       appendFileSync(
         cleanPath,
         `${JSON.stringify({
@@ -319,8 +317,6 @@ describe("deterministic attribution + sticky degradation", () => {
       cwd,
       expectedSession: { sessionId: newId, source: "rebuilt_handoff" },
       knownRolloutPath: path,
-      // Explicit none: this unit only proves path bind; full rebuild fence is
-      // covered by rebuilt-prefix-resume tests with verified boundaries.
       prefixBoundary: { kind: "none" },
       noInference: true,
       discoverDeps: { projectsRoot, pollMs: 20 },

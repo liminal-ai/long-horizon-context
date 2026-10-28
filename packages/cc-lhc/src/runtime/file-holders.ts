@@ -1,21 +1,3 @@
-/**
- * Which processes (other than this one) hold a file open.
- *
- * The cc-lhc-native `findChildHoldingFile` only searches the direct children
- * of a given pid, so it cannot answer "does anything hold this transcript?".
- * This is the smallest system-wide check:
- *   linux  — scan /proc/<pid>/fd/* symlinks for the file's real path
- *   darwin — `lsof -F pc -- <path>`
- *   win32  — the native addon: Restart Manager holders, plus whether a
- *            share-none open is refused (a holder the Restart Manager does
- *            not list); a refusal with no listed holder cannot be named, so
- *            it is "cannot prove unheld", not "unheld"
- *   other  — unavailable (callers must treat as "cannot prove unheld")
- *
- * Linux limit: processes whose fd table this user cannot read (another user's,
- * without privilege) are invisible and treated as not holding the file.
- */
-
 import { spawnSync } from "node:child_process";
 import { readdirSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
 import { join } from "node:path";
@@ -28,7 +10,6 @@ export interface FileHolder {
 
 export type FileHoldersResult = { ok: true; holders: FileHolder[] } | { ok: false; reason: string };
 
-/** The native Windows holder list (cc-lhc-native `listFileHolders`). */
 export type NativeFileHolders = (
   path: string,
 ) =>
@@ -37,9 +18,7 @@ export type NativeFileHolders = (
 
 export interface FindFileHoldersOptions {
   platform?: NodeJS.Platform;
-  /** Windows holder list; default the native addon's. */
   nativeHolders?: NativeFileHolders;
-  /** Linux /proc root (tests). */
   procRoot?: string;
   selfPid?: number;
 }
@@ -48,9 +27,7 @@ function procCmd(procRoot: string, pid: number): string {
   try {
     const cmdline = readFileSync(join(procRoot, String(pid), "cmdline"), "utf8").replace(/\0+$/, "");
     if (cmdline !== "") return cmdline.split("\0").join(" ");
-  } catch {
-    // fall through
-  }
+  } catch {}
   try {
     return readFileSync(join(procRoot, String(pid), "comm"), "utf8").trim();
   } catch {
@@ -74,7 +51,7 @@ function linuxHolders(target: string, procRoot: string, selfPid: number): FileHo
     try {
       fds = readdirSync(fdDir);
     } catch {
-      continue; // exited, or not ours to inspect
+      continue;
     }
     for (const fd of fds) {
       let link: string;
@@ -117,8 +94,6 @@ function win32Holders(target: string, selfPid: number, native: NativeFileHolders
   if (!listed.ok) return { ok: false, reason: `holder list failed: ${listed.code}: ${listed.message}` };
   const holders = listed.holders.filter((h) => h.pid !== selfPid).map((h) => ({ pid: h.pid, cmd: h.name }));
   if (holders.length > 0) return { ok: true, holders };
-  // Our own handle would also refuse the share-none open; only a refusal
-  // with this process not listed points at an unlisted holder.
   const selfListed = listed.holders.some((h) => h.pid === selfPid);
   if (listed.sharingViolation && !selfListed) {
     return { ok: false, reason: "open by a process the Restart Manager does not list (share-none open refused)" };

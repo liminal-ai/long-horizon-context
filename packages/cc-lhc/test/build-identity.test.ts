@@ -1,9 +1,3 @@
-/**
- * TC-3.1a build identity binding: the stamp is explicit input, and the package
- * check accepts a stamped SHA only when it equals the accepted --source-sha.
- * Exercises the real scripts as subprocesses on a minimal assembled-package
- * fixture, and the real assembly when the workspace dists are present.
- */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,7 +42,6 @@ describe("verifyBuildIdentity binds a stamp to explicit accepted input", () => {
   });
 });
 
-/** The smallest root check-npm-package accepts, with the given stamped identity. */
 function fixture(identity: object): string {
   const root = mkdtempSync(join(tmpdir(), "cc-lhc-check-"));
   temps.push(root);
@@ -127,7 +120,6 @@ describe.skipIf(!canAssemble)("assembled package identity comes from the assembl
     expect(check(out, ["--source-sha", SHA]).status).toBe(0);
     expect(check(out).status).toBe(1);
     expect(check(out, ["--source-sha", OTHER]).status).toBe(1);
-    // Without an accepted SHA the assembly truthfully stamps identity unavailable, whatever the workspace stamp said.
     const plain = spawnSync(process.execPath, [ASSEMBLE, "--out", out, "--targets", "current"], { encoding: "utf8" });
     expect(plain.status, String(plain.stderr)).toBe(0);
     expect(JSON.parse(readFileSync(join(out, "dist", "build-identity.json"), "utf8"))).toEqual({

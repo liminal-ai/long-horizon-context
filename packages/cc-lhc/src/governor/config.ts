@@ -1,15 +1,3 @@
-/**
- * Context policy load/merge/validate.
- * Precedence: builtin < user (XDG) < project (.cc-lhc.json) < session.
- *
- * There is one built-in policy. Explicit user/project/session values keep
- * their precedence over it. Configuration can be wrong; it can never disarm
- * the product. An unknown field, a malformed value, an unreadable file, or an
- * incoherent pair of bounds falls back to the built-in default for the fields
- * involved and records a notice naming the field and its source. There is no
- * field that turns Smart Compact off.
- */
-
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -25,7 +13,6 @@ import type {
   ResolvedContextPolicy,
 } from "./types.js";
 
-/** Single built-in policy. cc-lhc assumes a 1M-window model. */
 export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
   lowerBoundTokens: 180_000,
   upperBoundTokens: 360_000,
@@ -36,16 +23,13 @@ export const BUILTIN_CONTEXT_POLICY: ContextPolicy = {
   minRunwayTokens: 50_000,
 };
 
-/** The operator-facing sentence every fallback surface repeats verbatim. */
 export const CONFIG_FALLBACK_NOTICE =
   "Invalid compact configuration. Default configuration used. Please fix or update the configuration.";
 
-/** Accepted user/CLI `profile` values — product preset IDs, not core names. */
 export const CANONICAL_LHC_PROFILES = PRODUCT_PRESET_IDS;
 
 const POLICY_FIELD_KEYS = Object.keys(BUILTIN_CONTEXT_POLICY) as PolicyFieldKey[];
 
-/** The complete field set; anything else in a layer is unknown and dropped. */
 export const CONTEXT_POLICY_FIELD_KEYS: readonly PolicyFieldKey[] = POLICY_FIELD_KEYS;
 
 const KNOWN_KEYS = new Set<string>(POLICY_FIELD_KEYS);
@@ -68,15 +52,9 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 
 export interface ParsedPolicyPartial {
   value: ContextPolicyPartial;
-  /** Fields dropped as unknown or malformed; each already carries its origin. */
   fallbacks: ConfigFallback[];
 }
 
-/**
- * Parse a partial policy object field by field. Unknown keys and wrong types
- * are dropped with a notice rather than discarding the whole layer; bounds
- * coherence is settled later against the merged policy.
- */
 export function parseContextPolicyPartial(raw: unknown, origin: string): ParsedPolicyPartial {
   const fallbacks: ConfigFallback[] = [];
   if (!isPlainObject(raw)) {
@@ -163,7 +141,6 @@ function emptySources(): PolicyFieldSources {
   return sources;
 }
 
-/** Which configuration layer supplied each non-builtin field, by label. */
 type FieldOrigins = Partial<Record<PolicyFieldKey, string>>;
 
 function applyPartial(
@@ -185,7 +162,6 @@ function applyPartial(
   return next;
 }
 
-/** One coherence rule over the merged policy, plus the fields it constrains. */
 interface CoherenceRule {
   fields: readonly PolicyFieldKey[];
   check: (policy: ContextPolicy) => string | null;
@@ -222,7 +198,6 @@ const COHERENCE_RULES: readonly CoherenceRule[] = [
   },
 ];
 
-/** Per-field shape check, shared by config parsing and panel edits. */
 function fieldErrors(policy: ContextPolicy): string[] {
   const errors: string[] = [];
   const posInt = (key: "lowerBoundTokens" | "upperBoundTokens" | "minRunwayTokens"): void => {
@@ -244,10 +219,6 @@ function fieldErrors(policy: ContextPolicy): string[] {
   return errors;
 }
 
-/**
- * Report shape and coherence problems in a candidate policy. Used by the
- * panel's atomic edit, which rejects the edit and keeps the running policy.
- */
 export function validateContextPolicy(policy: ContextPolicy): string[] {
   const errors = fieldErrors(policy);
   if (errors.length > 0) return errors;
@@ -258,13 +229,6 @@ export function validateContextPolicy(policy: ContextPolicy): string[] {
   return errors;
 }
 
-/**
- * Settle coherence by reverting configured fields to the built-in defaults.
- *
- * Only fields a user actually set are reverted, so the offending value loses
- * and the built-in wins. Reverting strictly reduces the configured set, so
- * this terminates at (at worst) the wholly-coherent built-in policy.
- */
 function settleCoherence(
   policy: ContextPolicy,
   sources: PolicyFieldSources,
@@ -302,20 +266,12 @@ function settleCoherence(
 export interface LoadContextPolicyOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  /** Explicit session overrides (not persisted). */
   sessionOverrides?: ContextPolicyPartial | unknown;
-  /** Test seam: substitute user config path. */
   userConfigPath?: string;
-  /** Test seam: substitute project config path. */
   projectConfigPath?: string;
-  /** Test seam: read JSON by path. */
   readJson?: (path: string) => { ok: true; value: unknown } | { ok: false; error: string };
 }
 
-/**
- * Load and merge policy with explicit precedence. Always returns a usable
- * policy; anything that could not be honoured is listed in `fallbacks`.
- */
 export function loadContextPolicy(options: LoadContextPolicyOptions = {}): ResolvedContextPolicy {
   const env = options.env ?? process.env;
   const cwd = options.cwd ?? process.cwd();
@@ -356,7 +312,6 @@ export function loadContextPolicy(options: LoadContextPolicyOptions = {}): Resol
   return { policy, sources, fallbacks };
 }
 
-/** Compact source summary for observe records. */
 export function policySourcesSummary(sources: PolicyFieldSources): string {
   const parts: string[] = [];
   for (const key of ["lowerBoundTokens", "upperBoundTokens", "profile"] as const) {
@@ -365,11 +320,6 @@ export function policySourcesSummary(sources: PolicyFieldSources): string {
   return parts.join(",");
 }
 
-/**
- * Operator-facing lines for every fallback, headed by the required notice.
- * Empty when configuration was fully usable. The same lines go to startup
- * output, the wrapper log, the control panel, and the compact message.
- */
 export function formatConfigFallbackNotice(fallbacks: readonly ConfigFallback[]): string[] {
   if (fallbacks.length === 0) return [];
   return [CONFIG_FALLBACK_NOTICE, ...fallbacks.map((f) => `  ${f.origin}: ${f.detail}`)];

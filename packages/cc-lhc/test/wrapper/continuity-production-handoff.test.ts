@@ -1,12 +1,3 @@
-/**
- * LIM-145 production handoff: real rollout records feed the parent-owned
- * continuity record, the settled Smart Compact seam accepts one carryover
- * generation without waiting or asking, the rebuilt session receives the
- * manifest, each mechanism is invoked once after the replacement is live, and
- * the generation closes. Covers TC-2.3a/b, TC-2.5a-d, TC-2.6a, TC-2.8a-c and
- * the Monitor relaunch fence.
- */
-
 import {
   appendFileSync,
   existsSync,
@@ -85,7 +76,6 @@ vi.mock("../../src/commands/rebuild-receipt.js", async (importOriginal) => {
 });
 
 const REBUILT_ID = "12345678-1234-1234-1234-123456789abc";
-/** The hook command the wrapper registers; the test runs the same op in-process. */
 const HOOK_COMMAND = "'/usr/bin/node' '/opt/cc-lhc/dist/bin.js' tasks hook";
 const OUR_HOOK_ENTRY = { hooks: [{ type: "command", command: HOOK_COMMAND, timeout: RESULT_HOOK_TIMEOUT_SECONDS }] };
 
@@ -95,7 +85,6 @@ function settingsArg(args: readonly string[]): Record<string, unknown> {
   return JSON.parse(args[hits[0]! + 1]!) as Record<string, unknown>;
 }
 
-/** Claude Code 2.1.252's rollout record for a UserPromptSubmit hook's accepted context. */
 function hookContextRecord(context: string): RolloutLineItem {
   return {
     type: "attachment",
@@ -111,7 +100,6 @@ function hookContextRecord(context: string): RolloutLineItem {
   } as unknown as RolloutLineItem;
 }
 
-/** Run the registered hook op the way Claude does: payload on stdin, in the child's environment. */
 async function runHook(
   env: Record<string, string>,
   sessionId: string,
@@ -153,7 +141,6 @@ async function runHook(
   );
   return { code, out, err };
 }
-/** Run a `cc-lhc tasks` management op the way the replacement's Bash would: bound by the child's environment. */
 async function runTasks(env: Record<string, string>, sessionId: string, argv: string[]) {
   let out = "";
   let err = "";
@@ -178,7 +165,6 @@ async function runTasks(env: Record<string, string>, sessionId: string, argv: st
   return { code, out, err };
 }
 const T = "th_auto";
-/** A real, harmless Monitor command: the relaunch proves itself by what it writes. */
 const MONITOR_COMMAND = "printf relaunched-once-XyZ";
 function monitorLines(command: string): RolloutLineItem[] {
   return [
@@ -186,11 +172,9 @@ function monitorLines(command: string): RolloutLineItem[] {
     toolResult("toolu_mon", { taskId: "mon-1", timeoutMs: 60_000, persistent: false }),
   ];
 }
-/** A Monitor that stays alive after proving itself, so a restarted wrapper meets a live relaunched process. */
 const LONG_MONITOR_COMMAND = "printf relaunched-once-XyZ; sleep 30";
 
 interface FakePty {
-  /** The environment the wrapper spawned this child with. */
   env: Record<string, string>;
   pid: number;
   args: string[];
@@ -282,7 +266,6 @@ function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
   const stream = new PassThrough() as unknown as NodeJS.ReadStream & NodeJS.WriteStream;
   Object.defineProperty(stream, "isTTY", { value: false, configurable: true });
   Object.defineProperty(stream, "columns", { value: 80, configurable: true });
-  // Tall enough that Home's notice rows stay on screen beneath the wrapped status rows.
   Object.defineProperty(stream, "rows", { value: 40, configurable: true });
   return stream;
 }
@@ -319,7 +302,6 @@ const POLICY = {
   fallbacks: [],
 };
 
-/** A later settled seam over the trigger: a distinct sampling so dedupe cannot swallow it. */
 function laterSeam(id: string): LifecycleSignal[] {
   return [
     { kind: "turn_opened", reason: "user_prompt" },
@@ -341,7 +323,6 @@ const TRIGGER_SIGNALS: LifecycleSignal[] = [
   { kind: "turn_settled", reason: "end_turn" },
 ];
 
-/** The old session's host layout, as Claude Code 2.1.252 lays it out, plus its rollout file. */
 function hostLayout(
   home: string,
   opts: { monitorInRollout?: boolean; agentTranscript?: boolean; monitorCommand?: string } = {},
@@ -364,7 +345,6 @@ function hostLayout(
   return { paths, rolloutPath };
 }
 
-/** Every family launched, as the old child's rollout reports it. */
 function fiveFamilyLaunch(paths: LaunchPaths, monitorCommand = MONITOR_COMMAND): RolloutLineItem[] {
   return [
     ...LAUNCHES.agent.lines(paths),
@@ -383,14 +363,12 @@ interface Rig {
   paths: LaunchPaths;
   sdk: ReturnType<typeof sdkForCapture>;
   spawned: FakePty[];
-  /** Per capture session, in start order: the carried work seeded into its fold. */
   seeds: Array<readonly OpenAsyncWork[]>;
   stdin: NodeJS.ReadStream & NodeJS.WriteStream;
   results: HandoffResult[];
   receipts: string[];
   terminalOutput: () => string;
   feed: (lines: RolloutLineItem[]) => void;
-  /** Feed the newest capture (the replacement after a handoff). */
   feedCurrent: (lines: RolloutLineItem[]) => void;
   lifecycle: (signals: readonly LifecycleSignal[]) => void;
   runPromise: Promise<number>;
@@ -399,24 +377,16 @@ interface Rig {
 
 const homes: string[] = [];
 
-/** Launch the wrapper on the old session with capture fed by real rollout records. */
 interface LaunchOptions {
-  /** Adopted-task discovery seam handed to run() (LIM-149). */
   discoverTaskProcess?: typeof discoverAdoptedTaskProcess;
-  /** Identity probe seam handed to run() — retention requires an exact old-child identity. */
   probeProcessIdentity?: (pid: number) => ProcessLivenessResult;
-  /** Raw freeze/kill signal seam handed to run() — mixed carryover freezes the fake old child through this, never a real pid (LIM-149). */
   hostSignal?: (pid: number, signal: NodeJS.Signals) => void;
-  /** Paused-host exit-record reader handed to run() (LIM-149). */
   readTaskExit?: (proc: {
     pid: number;
     starttime: string;
   }) => import("../../src/continuity/task-process.js").TaskExitOutcome | null;
-  /** The first N replacement candidates never produce output, so they fail viability before the switch. */
   muteCandidates?: number;
-  /** A second wrapper process over the same durable authority: reuse this home instead of a fresh one. */
   reuseHome?: string;
-  /** The managed session this wrapper's main capture binds (default: the old session). */
   boundSession?: { sessionId: string; rolloutPath: string };
 }
 
@@ -464,8 +434,6 @@ async function launch(
     const bound = options.boundSession ?? { sessionId: "old-session", rolloutPath };
     const sessionId = isRebuilt ? REBUILT_ID : bound.sessionId;
     const path = isRebuilt ? opts.knownRolloutPath! : bound.rolloutPath;
-    // The real fold, wired to the parent exactly as production wires it — including the carried seed.
-    // What the wrapper hands each capture as already-open work (the record's carried items for the bound thread).
     const seed = opts.seedAsyncWork?.(T) ?? [];
     seeds.push(seed);
     const fold = createAsyncWorkFold((event) => opts.onAsyncWorkEvent?.(event, T), seed);
@@ -583,7 +551,6 @@ async function launch(
   };
 }
 
-/** Wait until the parent has recorded every launch the old rollout reported. */
 async function storeHas(dbPath: string, launchIds: readonly string[]): Promise<void> {
   await waitFor(() => {
     const store = openContinuityStore(dbPath);
@@ -595,13 +562,10 @@ async function storeHas(dbPath: string, launchIds: readonly string[]): Promise<v
   }, "continuity record");
 }
 
-/** Close on test end even when an assertion threw first (Windows pins open files). */
 function closeQuietly(store: ContinuityStore): void {
   try {
     store.close();
-  } catch {
-    // already closed by the test body
-  }
+  } catch {}
 }
 
 function withStore<R>(dbPath: string, fn: (store: ContinuityStore) => R): R {
@@ -613,7 +577,6 @@ function withStore<R>(dbPath: string, fn: (store: ContinuityStore) => R): R {
   }
 }
 
-/** The generation's snapshot, re-read from the store alone. */
 function snapshotOf(store: ContinuityStore, generation: number): ContinuitySnapshot {
   const gen = store.getGeneration(T, generation);
   if (gen === null) throw new Error("no generation");
@@ -629,7 +592,6 @@ function snapshotOf(store: ContinuityStore, generation: number): ContinuitySnaps
 
 const ALL_IDS = Object.values(LAUNCH_IDS);
 
-/** The wrapper log appends asynchronously: read it fresh each time. */
 function wrapperLog(rig: Pick<Rig, "home">): string {
   const path = join(rig.home, "wrapper.log");
   return existsSync(path) ? readFileSync(path, "utf8") : "";
@@ -656,21 +618,17 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     const before = Date.now();
     rig.lifecycle(TRIGGER_SIGNALS);
     await waitFor(() => rig.results.length === 1, "handoff result");
-    // No wait for the work, no question asked: the seam ran straight into the swap.
     expect(rig.results[0]!.kind).toBe("success");
     expect(Date.now() - before).toBeLessThan(5_000);
     expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
     expect(rig.terminalOutput()).not.toMatch(/Compact now|wait|confirm|\[y\/n\]/i);
 
-    // The replacement receives one short line: how many processes were carried.
-    // Item identities and transitions live durably in the store (asserted below).
     expect(rig.receipts).toHaveLength(1);
     const note = rig.receipts[0]!;
     expect(note).toContain("5 background processes carried over.");
     expect(note).not.toContain("cannot return output");
     expect(note).not.toContain("continuity lost");
 
-    // The generation closed after the transfer; every item is its member and still active.
     withStore(rig.dbPath, (store) => {
       expect(store.getGeneration(T, 1)).toMatchObject({ state: "closed", oldSessionId: "old-session" });
       expect(store.latestGeneration(T)?.generation).toBe(1);
@@ -680,7 +638,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
         toolUseId: "toolu_mon",
         rolloutPath: rig.rolloutPath,
       });
-      // The truthful transition and mechanism live durably in the manifest data.
       const carried = snapshotOf(store, 1).items;
       expect(new Map(carried.map((i) => [i.launchId, `${i.transition}/${i.continuation.kind}`]))).toEqual(
         new Map([
@@ -727,8 +684,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     };
     expect(store.listPendingResults(T)).toHaveLength(0);
 
-    // The carried agent and shell finish in the rebuilt session's own rollout while Claude is idle;
-    // the same evidence arriving again is absorbed.
     rig.feedCurrent([notification({ taskIds: ["agent-1"], status: "completed" })]);
     rig.feedCurrent([notification({ taskIds: ["shell-1"], status: "failed" })]);
     rig.feedCurrent([notification({ taskIds: ["agent-1"], status: "completed" })]);
@@ -744,7 +699,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(store.getItem(T, LAUNCH_IDS.agent)).toMatchObject({ state: "terminal", terminal: { outcome: "completed" } });
     expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({ state: "active" });
 
-    // Zero activity outside the database.
     expect(sdkCalls()).toEqual(before.sdk);
     expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
     expect(rig.spawned.map((p) => p.writes.length)).toEqual(before.ptyWrites);
@@ -752,7 +706,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(rig.terminalOutput().length).toBe(before.terminal);
     expect(rig.receipts).toHaveLength(before.receipts);
 
-    // Opening the Control Panel shows the pending results; it delivers nothing.
     (rig.stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => rig.terminalOutput().includes("carried work finished"), "panel notice");
     const panel = rig.terminalOutput();
@@ -781,7 +734,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(rig.results[0]!.kind).toBe("success");
     await waitFor(() => rig.spawned.length === 2, "replacement child");
 
-    // Every managed child carries one settings payload: the user's hooks exactly, ours appended, the status line merged.
     for (const child of rig.spawned) {
       const settings = settingsArg(child.args);
       expect(settings.theme).toBe("dark");
@@ -793,7 +745,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       expect(child.env.CC_LHC_RUNTIME_DESCRIPTOR).toBeTruthy();
     }
 
-    // Carried work finishes while idle → pending results (Pass B).
     const store = openContinuityStore(rig.dbPath);
     rig.feedCurrent([notification({ taskIds: ["agent-1"], status: "completed" })]);
     rig.feedCurrent([notification({ taskIds: ["shell-1"], status: "failed" })]);
@@ -812,7 +763,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       rollout: readFileSync(rebuiltPath),
     };
 
-    // The user submits a real prompt: Claude runs the registered hook in the replacement's environment.
     const replacement = rig.spawned[1]!;
     const hook = await runHook(replacement.env, REBUILT_ID, rebuiltPath);
     expect(hook.code).toBe(0);
@@ -825,12 +775,9 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     );
     expect(context).not.toContain("curl");
     expect(context).not.toContain(rig.paths.tasksDir);
-    // Hook invocation alone acknowledges nothing.
     expect(store.listPendingResults(T).map((r) => r.delivery)).toEqual(["pending", "pending"]);
-    // A hook run for a foreign session gets nothing.
     expect((await runHook(replacement.env, "ffffffff-0000-0000-0000-000000000000", rebuiltPath)).out).toBe("");
 
-    // Partial/foreign evidence first: a record naming a foreign key and one real key delivers exactly that key.
     const header = context.split("\n")[0]!;
     rig.feedCurrent([
       hookContextRecord(
@@ -839,11 +786,9 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     ]);
     await waitFor(() => store.getResult(T, LAUNCH_IDS.agent)?.delivery === "delivered", "partial delivery");
     expect(store.getResult(T, LAUNCH_IDS.background_shell)).toMatchObject({ delivery: "pending" });
-    // User text quoting a key is not delivery.
     rig.feedCurrent([{ type: "user", message: { role: "user", content: context } } as unknown as RolloutLineItem]);
     expect(store.getResult(T, LAUNCH_IDS.background_shell)).toMatchObject({ delivery: "pending" });
 
-    // Claude's record of the hook's accepted context, in the normal capture path, delivers the rest — once.
     rig.feedCurrent([hookContextRecord(context)]);
     await waitFor(() => store.listPendingResults(T).length === 0, "delivered");
     const delivered = [LAUNCH_IDS.agent, LAUNCH_IDS.background_shell].map((id) => store.getResult(T, id)!);
@@ -853,11 +798,9 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     await waitFor(() => wrapperLog(rig).includes("carried result(s) delivered on a real prompt"), "delivery log");
     expect(wrapperLog(rig).match(/carried result\(s\) delivered on a real prompt/g)).toHaveLength(2);
 
-    // Throughout: no provider call, no PTY write, no rollout mutation, no synthetic turn.
     expect(sdkCalls()).toEqual(before.sdk);
     expect(rig.spawned.map((p) => p.writes.length)).toEqual(before.ptyWrites);
     expect(readFileSync(rebuiltPath).equals(before.rollout)).toBe(true);
-    // The next hook run has nothing to add; the panel no longer lists them.
     expect((await runHook(replacement.env, REBUILT_ID, rebuiltPath)).out).toBe("");
     (rig.stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => rig.terminalOutput().includes("type /help for commands"), "panel");
@@ -904,16 +847,13 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(rig.results[0]!.kind).toBe("replacement_nonviable");
     expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
     expect(rig.spawned).toHaveLength(2);
-    // Old routing/authority: the old child was never signalled and still receives input.
     expect(rig.spawned[0]!.killed).toHaveLength(0);
     (rig.stdin as unknown as PassThrough).write(Buffer.from("k"));
     await waitFor(() => rig.spawned[0]!.writes.some((w) => String(w) === "k"), "input routed to the old child");
     expect(wrapperLog(rig)).not.toContain("typed-ahead");
     expect(rig.spawned[1]!.writes).toEqual([]);
-    // Zero carry invocation: no relaunch, no closure, no transition claimed.
     expect(existsSync(relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1))).toBe(false);
     expect(wrapperLog(rig)).not.toMatch(/restarted once|adopted|re-armed|generation 1 closed/);
-    // One truthful representation: generation 1 prepared and open, every item stamped once, no results.
     withStore(rig.dbPath, (store) => {
       expect(store.getGeneration(T, 1)).toMatchObject({ state: "open", launchIds: expect.arrayContaining(ALL_IDS) });
       expect(store.listItems(T)).toHaveLength(5);
@@ -921,7 +861,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       expect(store.listPendingResults(T)).toEqual([]);
     });
 
-    // Old-session terminal evidence, plus a duplicate: one item closes, one pending result, no second row.
     rig.feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
     rig.feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
     await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length === 1), "one result");
@@ -933,7 +872,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       ]);
     });
 
-    // A later normal seam: requalify what is still active, allocate generation 2 (1 superseded), transfer once.
     rig.lifecycle(laterSeam("retry"));
     await waitFor(() => rig.results.length === 2, "second handoff result");
     expect(rig.results[1]!.kind).toBe("success");
@@ -951,7 +889,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     );
     expect(existsSync(relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1))).toBe(false);
     expect(wrapperLog(rig).match(/restarted once/g)).toHaveLength(1);
-    // The rebuilt session's note counts the four remaining items, not the finished agent.
     const note = rig.receipts[1]!;
     expect(note).toContain("4 background processes carried over.");
     expect(note).not.toContain("agent-1");
@@ -965,7 +902,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       for (const id of remaining) expect(store.getItem(T, id)).toMatchObject({ state: "active", generation: 2 });
       expect(store.getItem(T, LAUNCH_IDS.agent)).toMatchObject({ state: "terminal", generation: 1 });
       expect(store.listItems(T)).toHaveLength(5);
-      // Still exactly one result: the failed attempt duplicated nothing.
       expect(store.listPendingResults(T).map((r) => r.launchId)).toEqual([LAUNCH_IDS.agent]);
     });
     await rig.finish();
@@ -979,7 +915,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     await waitFor(() => rig.results.length === 1, "first handoff result");
     expect(rig.results[0]!.kind).toBe("replacement_nonviable");
 
-    // The recorded output file is replaced by another object at the same path (stale/foreign identity).
     const outputPath = join(rig.paths.tasksDir, "shell-1.output");
     const replacement = `${outputPath}.new`;
     writeFileSync(replacement, "someone else's output\n");
@@ -994,7 +929,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       () => wrapperLog(rig).includes(LAUNCH_IDS.background_shell) && /unverified/.test(wrapperLog(rig)),
       "refusal logged",
     );
-    // Refused before any mutation: no second compact, no candidate, old child still routed and untouched.
     expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
     expect(rig.results).toHaveLength(1);
     expect(rig.spawned).toHaveLength(2);
@@ -1005,7 +939,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       expect(store.listPendingResults(T)).toEqual([]);
     });
 
-    // The stale shell finishes (old-session evidence): one result, and the remaining work can move.
     rig.feed([notification({ taskIds: ["shell-1"], status: "stopped" })]);
     await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length === 1), "shell result");
     rig.lifecycle(laterSeam("after-stale"));
@@ -1032,7 +965,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
   }, 20_000);
 
   it("TC-2.9b/2.7c restart: a fresh wrapper bound to the same session reopens the record, seeds carried work, and delivers pending results once; wrapper 1's exit stopped its relaunched Monitor (F4)", async () => {
-    // ---- wrapper 1: carry five families, relaunch a long-lived Monitor, one result while idle ----
     const first = await launch({ monitorCommand: LONG_MONITOR_COMMAND });
     first.feed(fiveFamilyLaunch(first.paths, LONG_MONITOR_COMMAND));
     await storeHas(first.dbPath, ALL_IDS);
@@ -1052,7 +984,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       results: store.listPendingResults(T),
     }));
     expect(before.generation).toMatchObject({ state: "closed" });
-    // Another thread's carried item lives in the same database; it is not this session's.
     withStore(first.dbPath, (store) => {
       const other = createContinuityObserver({ store, threadId: "th_other", nowFn: () => 1 });
       for (const line of [
@@ -1068,8 +999,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
         nowMs: 3,
       });
     });
-    // End wrapper 1 cleanly: the replacement child exits; the database stays. F4: the relaunched Monitor is the
-    // wrapper's own detached process and does not outlive the session — stopped (identity-gated) and recorded.
     expect(await first.finish()).toBeTypeOf("number");
     expect(existsSync(first.dbPath)).toBe(true);
     await waitFor(() => {
@@ -1086,7 +1015,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       delivery: "pending",
     });
     const rebuiltPath = join(first.home, `${REBUILT_ID}.jsonl`);
-    // The wrapper log appends asynchronously: let wrapper 1's own lines land before slicing.
     await waitFor(
       () => /restarted once/.test(wrapperLog(first)) && /generation 1 closed/.test(wrapperLog(first)),
       "wrapper 1 log",
@@ -1094,22 +1022,17 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     await new Promise((r) => setTimeout(r, 150));
     const logBefore = wrapperLog(first).length;
 
-    // ---- wrapper 2: same home, bound to the rebuilt session ----
     const second = await launch({ monitorCommand: LONG_MONITOR_COMMAND }, ["--resume", REBUILT_ID], {
       reuseHome: first.home,
       boundSession: { sessionId: REBUILT_ID, rolloutPath: rebuiltPath },
     });
     const log2 = () => wrapperLog(first).slice(logBefore);
     expect(second.spawned).toHaveLength(1);
-    // The main capture of the new wrapper was seeded from the record: the three still-open carried items, nothing foreign.
     expect(second.seeds).toHaveLength(1);
     const remaining = ALL_IDS.filter((id) => id !== LAUNCH_IDS.agent && id !== LAUNCH_IDS.monitor);
     expect(second.seeds[0]!.map((w) => `${w.family}:${w.key}`).sort()).toEqual(
       remaining.map((id) => id.slice(0, id.lastIndexOf(":"))).sort(),
     );
-    // Single authority, untouched by the restart: the open items, the generation, and the results are exactly as
-    // wrapper 1 left them. Wrapper 1's orderly exit cleaned up the finished agent's and the stopped Monitor's
-    // tracking (AC-2.10); their durable results stayed and still answer.
     withStore(first.dbPath, (store) => {
       expect(store.listItems(T)).toEqual(
         before.items.filter((item) => item.launchId !== LAUNCH_IDS.agent && item.launchId !== LAUNCH_IDS.monitor),
@@ -1128,7 +1051,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(log2().match(/restarted once|generation \d+ closed|adopted|re-armed/g) ?? []).toEqual([]);
     expect(second.sdk.threadView.compact).not.toHaveBeenCalled();
 
-    // The stopped Monitor answers through the new wrapper's binding from its durable result and owned output copy.
     const env = second.spawned[0]!.env;
     const status = await runTasks(env, REBUILT_ID, ["status", LAUNCH_IDS.monitor]);
     expect(status.code).toBe(0);
@@ -1137,13 +1059,11 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(status.out).toMatch(/terminal: stopped/);
     const output = await runTasks(env, REBUILT_ID, ["output", LAUNCH_IDS.monitor]);
     expect(output.out).toContain("relaunched-once-XyZ");
-    // Foreign thread: not seeded, not reported.
     expect(log2()).not.toContain("th_other");
     const foreign = await runTasks(env, REBUILT_ID, ["status", "agent:agent-9:toolu_agent9"]);
     expect(foreign.code).not.toBe(0);
     expect(foreign.err).toContain("unknown_item");
 
-    // New terminal evidence in the bound session closes the seeded item once; duplicates add nothing.
     second.feed([notification({ taskIds: ["shell-1"], status: "failed" })]);
     await waitFor(() => withStore(first.dbPath, (store) => store.listPendingResults(T).length === 3), "second result");
     second.feed([notification({ taskIds: ["shell-1"], status: "failed" })]);
@@ -1157,7 +1077,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       ]);
     });
 
-    // Pending results are deliverable through the new wrapper's hook binding; delivery acknowledges once.
     const hook = await runHook(env, REBUILT_ID, rebuiltPath);
     expect(hook.code).toBe(0);
     const context = (JSON.parse(hook.out) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput
@@ -1176,7 +1095,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(resultsOf()).toEqual(delivered);
     expect((await runHook(env, REBUILT_ID, rebuiltPath)).out).toBe("");
 
-    // Nothing is left to stop: the Monitor's tracking is gone with its process.
     const stop = await runTasks(env, REBUILT_ID, ["stop", LAUNCH_IDS.monitor]);
     expect(stop.code).not.toBe(0);
     expect(second.spawned[0]!.writes).toEqual([]);
@@ -1207,7 +1125,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       "truthful report",
     );
     expect(wrapperLog(rig)).not.toContain("seeded for thread");
-    // Terminal evidence for a carried item is not consumed: the fold holds nothing, so nothing closes and no result appears.
     rig.feed([notification({ taskIds: ["agent-1"], status: "completed" })]);
     await new Promise((r) => setTimeout(r, 200));
     const db2 = new DatabaseSync(dbPath);
@@ -1266,7 +1183,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       "cc-lhc continuity cleanup: thread th_auto: 2 finished item(s) removed, 0 retained, 3 still open, 0 generation row(s) removed",
     );
     withStore(rig.dbPath, (store) => {
-      // Finished items: tracking gone, durable results kept.
       expect(store.getItem(T, LAUNCH_IDS.agent)).toBeNull();
       expect(store.getItem(T, LAUNCH_IDS.monitor)).toBeNull();
       expect(store.getResult(T, LAUNCH_IDS.agent)).toMatchObject({
@@ -1284,12 +1200,9 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       const copy = (monitor.artifact as { path: string }).path;
       expect(copy.startsWith(join(rig.monitorOutputDir, "results"))).toBe(true);
       expect(readFileSync(copy, "utf8")).toBe("relaunched-once-XyZ");
-      // 0600 where mode bits exist; on Windows Node reports 0666 for a writable file (ACLs carry the isolation).
       expect(statSync(copy).mode & 0o777).toBe(process.platform === "win32" ? 0o666 : 0o600);
-      // The parent's fence went only after the copy; the user's own output is byte-exact.
       expect(existsSync(fence)).toBe(false);
       expect(readFileSync(userOutput, "utf8")).toBe("user bytes 1\n");
-      // Open work and its generation: exactly as before.
       expect(
         [LAUNCH_IDS.background_shell, LAUNCH_IDS.workflow, LAUNCH_IDS.scheduled_wakeup].map((id) =>
           store.getItem(T, id),
@@ -1297,7 +1210,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       ).toEqual(before.open);
       expect(store.getGeneration(T, 1)).toEqual(before.generation);
       expect(store.listItems(T)).toHaveLength(3);
-      // The durable result still answers status and output.
       expect(itemStatus(store, T, LAUNCH_IDS.monitor)).toMatchObject({
         ok: true,
         status: {
@@ -1379,7 +1291,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     await waitFor(() => rig.results.length === 1, "handoff result");
     expect(rig.results[0]!.kind).toBe("success");
 
-    // The exact command ran once, after the replacement was live, writing to the fence file.
     const outputPath = relaunchOutputPath(rig.monitorOutputDir, LAUNCH_IDS.monitor, 1);
     await waitFor(
       () => existsSync(outputPath) && readFileSync(outputPath, "utf8") === "relaunched-once-XyZ",
@@ -1390,7 +1301,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     await waitFor(() => restarted().length >= 1, "restart log");
     expect(restarted()).toHaveLength(1);
 
-    // Invoking the same generation again starts nothing: the fence holds.
     withStore(rig.dbPath, (store) => {
       const again = invokeCarryover(
         store,
@@ -1404,15 +1314,11 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
         outputPath,
       });
       expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({ state: "active", carryMode: "reconstruct" });
-      // LIM-146: the parent recorded its one relaunch — verified output identity and the exact
-      // process identity — so the replacement can read and stop it through `cc-lhc tasks`.
       expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({
         operations: ["status", "output", "stop"],
         relaunch: { outputPath, output: { path: outputPath }, process: { pid: expect.any(Number) } },
       });
     });
-    // With the fence gone, closed-generation readback stays read-only and
-    // truthful: no spawn, no terminal recorded, and the log says so.
     withStore(rig.dbPath, (store) => {
       const itemBefore = store.getItem(T, LAUNCH_IDS.monitor);
       rmSync(outputPath);
@@ -1431,11 +1337,10 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       const monitorLine = logs.find((l) => l.includes(LAUNCH_IDS.monitor));
       expect(monitorLine).toContain("generation 1 already closed; nothing recorded");
       expect(monitorLine).not.toContain("recorded as failed");
-      expect(existsSync(outputPath)).toBe(false); // nothing respawned the fence
+      expect(existsSync(outputPath)).toBe(false);
       writeFileSync(outputPath, "relaunched-once-XyZ");
     });
     expect(readFileSync(outputPath, "utf8")).toBe("relaunched-once-XyZ");
-    // The note only counts; the durable transition (restarted, never adopted) is in the store above.
     expect(rig.receipts[0]).toMatch(/\d+ background processes? carried over\./);
     withStore(rig.dbPath, (store) => {
       expect(snapshotOf(store, 1).items.find((i) => i.launchId === LAUNCH_IDS.monitor)).toMatchObject({
@@ -1486,7 +1391,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     const snapshot = snapshotContinuity(store, { threadId: T, oldSessionId: "old-session", nowMs: 2_000 });
     expect(snapshot.ok).toBe(true);
     if (!snapshot.ok) return;
-    // Between the snapshot and the invocation the rollout became unreadable: no command is invented.
     const logs: string[] = [];
     const transfer = invokeCarryover(
       store,
@@ -1512,7 +1416,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(transfer.closure.terminalSinceSnapshot.map((t) => t.launchId)).toEqual([LAUNCH_IDS.monitor]);
     expect(store.getGeneration(T, 1)?.state).toBe("closed");
     expect(existsSync(relaunchOutputPath(join(home, "continuity"), LAUNCH_IDS.monitor, 1))).toBe(false);
-    // No retry: a second invocation of the closed generation repeats nothing and reopens nothing.
     const again = invokeCarryover(
       store,
       snapshot.snapshot,
@@ -1566,7 +1469,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     const rig = await launch();
     rig.feed(fiveFamilyLaunch(rig.paths));
     await storeHas(rig.dbPath, ALL_IDS);
-    // Below the trigger: nothing automatic runs. The operator asks for it.
     rig.lifecycle([
       { kind: "turn_opened", reason: "user_prompt" },
       {
@@ -1585,7 +1487,6 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
     expect(rig.results[0]!.kind).toBe("success");
     expect(rig.sdk.threadView.compact).toHaveBeenCalledOnce();
 
-    // Same manifest, same generation, same invocation, same closure as the automatic seam.
     expect(rig.receipts).toHaveLength(1);
     const note = rig.receipts[0]!;
     expect(note).toContain("[lhc compact:manual]");
@@ -1625,13 +1526,11 @@ describe("LIM-145 production handoff: carry active work through Smart Compact", 
       expect(text, surface).not.toContain(MONITOR_COMMAND);
       expect(text, surface).not.toContain("printf");
     }
-    // The command lives only where it always did: the old session's rollout.
     expect(readFileSync(rig.rolloutPath, "utf8")).toContain(MONITOR_COMMAND);
   }, 15_000);
 });
 
 describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained completion host", () => {
-  /** An identity probe where the listed pids are alive with stable exact identities. */
   function probeFor(alive: Set<number>): (pid: number) => ProcessLivenessResult {
     return (pid: number) =>
       alive.has(pid)
@@ -1639,7 +1538,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
         : { ok: false, code: "not_found", message: "no such process" };
   }
 
-  /** A second adopted shell launch so success and failure outcomes coexist. */
   function secondShellLines(p: LaunchPaths): RolloutLineItem[] {
     return [
       {
@@ -1685,7 +1583,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     await waitFor(() => rig.results.length === 1, "handoff result");
     expect(rig.results[0]!.kind).toBe("success");
 
-    // The old child was RETAINED, never signalled: it is the completion host.
     const oldPty = rig.spawned[0]!;
     expect(oldPty.killed).toEqual([]);
     await waitFor(
@@ -1694,7 +1591,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     );
     const host = withStore(rig.dbPath, (store) => store.retainedHostGeneration(T)?.retainedHost);
     expect(host).toMatchObject({ pid: 1000, bootId: "boot-fixture", starttime: "st-1000" });
-    // Receipt truth: cleanup recorded as retained_task_host, not terminated.
     const receiptDb = new DatabaseSync(rig.dbPath, { readOnly: true });
     const kinds = receiptDb
       .prepare("SELECT cleanup_kind FROM cc_handoff_receipts ORDER BY rowid DESC LIMIT 1")
@@ -1702,7 +1598,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     receiptDb.close();
     expect(kinds.cleanup_kind).toBe("retained_task_host");
 
-    // Both items carried as adopt, still active — no invented outcome.
     for (const id of [LAUNCH_IDS.background_shell, SHELL2_ID]) {
       expect(withStore(rig.dbPath, (store) => store.getItem(T, id))).toMatchObject({
         carryMode: "adopt",
@@ -1710,8 +1605,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
       });
     }
 
-    // Claude (the retained host) supervises to the end and writes the real
-    // outcomes: exit 0 for one task, exit 3 for the other (probed 2.1.258).
     appendFileSync(join(rig.paths.tasksDir, "shell-1.output"), "\n[exited with code 0]\n");
     appendFileSync(join(rig.paths.tasksDir, "shell-2.output"), "\n[exited with code 3]\n");
 
@@ -1725,7 +1618,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
       );
     const before = { sdk: sdkCalls(), ptyWrites: rig.spawned.map((p) => p.writes.length) };
 
-    // The next real prompt's hook settles both from the markers and serves them.
     const replacement = rig.spawned[1]!;
     const hook = await runHook(replacement.env, REBUILT_ID, rebuiltPath);
     expect(hook.code).toBe(0);
@@ -1740,7 +1632,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     expect(two?.terminal).toMatchObject({ outcome: "failed" });
     expect(two?.terminal?.evidence).toContain("exited with code 3");
 
-    // Exactly-once delivery of both, then a replayed ack changes nothing.
     rig.feedCurrent([hookContextRecord(context)]);
     await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length) === 0, "both delivered");
     const settled = withStore(rig.dbPath, (store) => [
@@ -1758,8 +1649,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     ).toEqual(settled);
     expect((await runHook(replacement.env, REBUILT_ID, rebuiltPath)).out).toBe("");
 
-    // Delivery was the settle seam: with nothing left to supervise, the host
-    // is retired gracefully (its own PTY handle) and the record cleared.
     await waitFor(() => oldPty.killed.length > 0, "host retired");
     expect(oldPty.killed).toContain("SIGTERM");
     expect(oldPty.killed).not.toContain("SIGKILL");
@@ -1768,17 +1657,11 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
       "host record cleared",
     );
 
-    // No provider call, no PTY write to the replacement, throughout.
     expect(sdkCalls()).toEqual(before.sdk);
     expect(rig.spawned[1]!.writes.length).toBe(before.ptyWrites[1]);
     await rig.finish();
   }, 20_000);
 
-  /**
-   * Seams for a carryover that pauses the wrapper's own supervised child.
-   * Every target is that child (pid 1000) or one of its own tasks; the test
-   * drives them through injected seams and never touches a real process.
-   */
   function pauseSeams() {
     const alive = new Set([1000]);
     const signals: Array<[number, string]> = [];
@@ -1793,7 +1676,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
           ? { pid: 7002, bootId: "boot-task", starttime: "st-7002" }
           : null;
     const discoverTaskProcess: typeof discoverAdoptedTaskProcess = (_parentPid, output) => taskFor(output.path);
-    /** The task's own exit status, as the paused supervisor's uncollected child record reports it. */
     const readTaskExit = (proc: { pid: number; starttime: string }) =>
       proc.pid === 7001
         ? ({ kind: "exited", code: 0 } as const)
@@ -1826,8 +1708,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     await waitFor(() => rig.results.length === 1, "handoff result");
     expect(rig.results[0]!.kind).toBe("success");
 
-    // The supervised child was paused at the switch, never terminated: its
-    // shell keeps running, and its own model can start no further work.
     const oldPty = rig.spawned[0]!;
     expect(oldPty.killed).toEqual([]);
     expect(seams.signals).toEqual([[1000, "SIGSTOP"]]);
@@ -1838,8 +1718,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
       frozen: true,
     });
 
-    // Both families carried once under the same generation: the agent by the
-    // replacement, the shell adopted in place.
     expect(withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.agent))).toMatchObject({
       carryMode: "reconstruct",
       generation: 1,
@@ -1854,7 +1732,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     const replacement = rig.spawned[1]!;
     const rebuiltPath = join(rig.home, `${REBUILT_ID}.jsonl`);
 
-    // The next real prompt settles the shell from its own exit status.
     const hook = await runHook(replacement.env, REBUILT_ID, rebuiltPath, { readTaskExit: seams.readTaskExit });
     expect(hook.code).toBe(0);
     const context = (JSON.parse(hook.out) as { hookSpecificOutput: { additionalContext: string } }).hookSpecificOutput
@@ -1864,7 +1741,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     expect(settledItem?.terminal).toMatchObject({ outcome: "completed" });
     expect(settledItem?.terminal?.evidence).toContain("exited with code 0");
 
-    // Delivered exactly once: a replayed acknowledgement changes no byte.
     rig.feedCurrent([hookContextRecord(context)]);
     await waitFor(() => withStore(rig.dbPath, (store) => store.listPendingResults(T).length) === 0, "delivered");
     const delivered = withStore(rig.dbPath, (store) => store.getResult(T, LAUNCH_IDS.background_shell));
@@ -1876,7 +1752,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
       "",
     );
 
-    // Retired only once its last task had settled, and only by exact identity.
     await waitFor(() => seams.signals.some(([, signal]) => signal === "SIGKILL"), "supervised child retired");
     expect(seams.signals).toEqual([
       [1000, "SIGSTOP"],
@@ -1887,7 +1762,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
       "host record cleared",
     );
 
-    // No provider call and no terminal traffic from the old session throughout.
     expect(sdkCallCounts(rig)).toEqual(before.sdk);
     expect(rig.spawned[1]!.writes.length).toBe(before.replacementWrites);
     expect(oldPty.writes).toEqual([]);
@@ -1915,7 +1789,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
 
     expect(rig.spawned[0]!.killed).toEqual([]);
     expect(seams.signals[0]).toEqual([1000, "SIGSTOP"]);
-    // The wakeup is rearmed by the replacement, exactly one carried record.
     expect(withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.scheduled_wakeup))).toMatchObject({
       carryMode: "rearm",
       generation: 1,
@@ -1960,7 +1833,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     rig.lifecycle(TRIGGER_SIGNALS);
     await waitFor(() => rig.results.length === 1, "handoff result");
     expect(rig.results[0]!.kind).toBe("success");
-    // No pause, no host record: the plain graceful discipline, logged truthfully.
     expect(seams.signals).toEqual([]);
     expect(rig.spawned[0]!.killed).toEqual(["SIGTERM"]);
     expect(withStore(rig.dbPath, (store) => store.retainedHostGeneration(T))).toBeNull();
@@ -1968,7 +1840,6 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
       () => wrapperLog(rig).includes("no task process pinned for background_shell:shell-1:toolu_sh"),
       "log line",
     );
-    // The agent still carried by the replacement; the shell settles from Claude's marker.
     expect(withStore(rig.dbPath, (store) => store.getItem(T, LAUNCH_IDS.agent))).toMatchObject({
       carryMode: "reconstruct",
       generation: 1,
@@ -2004,11 +1875,8 @@ describe("LIM-149 TC-4.5d: adopted tasks outlive Smart Compact via the retained 
     await waitFor(() => rig.results.length === 1, "handoff result");
     const oldPty = rig.spawned[0]!;
     expect(oldPty.killed).toEqual([]);
-    // The task is still running; the wrapper exits. The host must not outlive
-    // the wrapper — graceful, so Claude reaps and writes its truthful marker.
     await rig.finish();
     expect(oldPty.killed).toContain("SIGTERM");
-    // The wrapper log is appended asynchronously; the line lands after run() resolves on slower hosts.
     await waitFor(
       () => wrapperLog(rig).includes("terminating retained completion host pid 1000 on orderly exit"),
       "teardown log",

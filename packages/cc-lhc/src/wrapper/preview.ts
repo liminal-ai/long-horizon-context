@@ -1,14 +1,3 @@
-/**
- * Disposable production-renderer preview of the first-load Control Panel (D12).
- *
- * Copy and layout tuning happens against the installed path or not at all:
- * every fixture is composed with the production row builders (first-load
- * plan, actionable guidance, alarm/advisory formatters, panel snapshot),
- * opened through the production leader transition, and drawn by the
- * production `renderPanel`. State lives in a disposable CC-LHC home with its
- * own continuity database. Nothing here launches Claude or touches an
- * operator's home.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,21 +47,12 @@ export const PREVIEW_GEOMETRIES = {
 export type PreviewGeometryName = keyof typeof PREVIEW_GEOMETRIES;
 export const PREVIEW_GEOMETRY_NAMES = Object.keys(PREVIEW_GEOMETRIES) as PreviewGeometryName[];
 
-/** What a launch has decided before the panel opens — the same facts run.ts holds. */
 export interface PreviewFixture {
   name: PreviewFixtureName;
-  /** Onboarding version already shown in this home, or none. */
   shownVersion: number | null;
   nativeAutoCompact: NativeAutoCompactState;
-  /** Standing Home alarms (production text through `toPanelWording`). */
   alarms: readonly string[];
-  /** Non-default operational rows Home shows (startup anomalies and the like). */
   extraStatusRows: readonly string[];
-  /**
-   * Runtime-descriptor state at the moment the panel is drawn. A panel that
-   * opens by itself at launch is drawn while retrieval is still opening; one
-   * opened later on demand finds it ready.
-   */
   retrievalState: "ready" | "opening";
   conditions: readonly ActionableCondition[];
 }
@@ -156,13 +136,11 @@ export const PREVIEW_FIXTURES: Record<PreviewFixtureName, PreviewFixture> = {
     nativeAutoCompact: "passthrough",
     alarms: REPLACEMENT_ALARM.map(toPanelWording),
     extraStatusRows: [nativeCompactAdvisoryLine()],
-    // Deliberately out of priority order: the builder sorts.
     conditions: [CONDITIONS.native, CONDITIONS.identity, CONDITIONS.replacement, CONDITIONS.unsafe, CONDITIONS.input],
   },
   "no-messages": { name: "no-messages", shownVersion: shown, ...quiet, retrievalState: "ready", conditions: [] },
 };
 
-/** A disposable CC-LHC home with its own continuity database. */
 export interface PreviewHome {
   path: string;
   store: ContinuityStore;
@@ -182,7 +160,6 @@ export function createPreviewHome(): PreviewHome {
   };
 }
 
-/** The panel data the fixture's launch would hand the renderer — built by the production snapshot builder. */
 export function previewPanelView(fixture: PreviewFixture, home: PreviewHome): PanelViewSnapshot {
   return buildPanelViewSnapshot({
     providerContextTokens: null,
@@ -206,15 +183,10 @@ export interface PreviewRender {
   cols: number;
   rows: number;
   tier: ReturnType<typeof panelTier>;
-  /** Whether this launch would have opened the panel by itself. */
   autoOpened: boolean;
-  /** Notice rows the panel carries (guidance, then onboarding). */
   panelRows: string[];
-  /** The exact bytes the production renderer writes for this state. */
   frame: string;
-  /** Escape closed the panel (mode back to passthrough, exit_modal emitted). */
   escapeClosed: boolean;
-  /** The reopen key brought the same panel back (frame equal to the first). */
   reopenReturned: boolean;
 }
 
@@ -223,11 +195,6 @@ export interface PreviewOptions {
   style?: PanelStyle;
 }
 
-/**
- * Open the fixture's panel the way run.ts does — the leader transition with
- * the plan's rows and the snapshot — and draw it at one geometry. Then close
- * with Escape and reopen with the leader through the same input machine.
- */
 export function renderPreview(
   fixture: PreviewFixture,
   geometry: PreviewGeometryName,
@@ -274,8 +241,6 @@ export function renderPreview(
   const frame = draw(opened);
 
   const escaped = processInputChunk(Buffer.from([0x1b]), opened);
-  // A lone Esc is held until the next byte or the bare-Esc timer; the harness
-  // rules it bare the way the timer does.
   const bare = resolveBareEsc(escaped.state);
   const afterEsc = bare === null ? escaped : bare;
   const escapeClosed =
@@ -299,7 +264,6 @@ export function renderPreview(
   };
 }
 
-/** Every named fixture at every geometry, in one disposable home. */
 export function renderPreviewMatrix(
   options: PreviewOptions & {
     fixtures?: readonly PreviewFixtureName[];
@@ -324,7 +288,6 @@ const ESC = String.fromCharCode(0x1b);
 const ANSI = new RegExp(`${ESC}\\[[0-9;?]*[a-zA-Z]`, "g");
 const CURSOR_MOVE = new RegExp(`^${ESC}\\[(\\d+);(\\d+)H$`);
 
-/** Lay one rendered frame onto a cols×rows grid of plain text, as a terminal would show it. */
 export function frameGrid(frame: string, cols: number, rows: number): string[] {
   const grid: string[][] = Array.from({ length: rows }, () => Array.from({ length: cols }, () => " "));
   let row = 0;
@@ -359,7 +322,6 @@ export const PREVIEW_USAGE = `usage: cc-lhc preview [--fixture NAME] [--geometry
   disposable home. --raw prints one fixture at one geometry as the exact frame.
   fixtures: ${PREVIEW_FIXTURE_NAMES.join(", ")}`;
 
-/** `cc-lhc preview`: developer-facing; exit 0 on success, 2 on usage. */
 export function runPreviewCli(
   argv: readonly string[],
   io: { stdout: (text: string) => void; stderr: (text: string) => void; env?: NodeJS.ProcessEnv },

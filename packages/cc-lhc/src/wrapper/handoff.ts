@@ -1,83 +1,27 @@
-/**
- * Controlled handoff: the wrapper-owned child swap that makes a rebuilt session
- * live. This module owns the ORDER of the transaction; run.ts supplies the
- * machinery through HandoffPorts (process, routing, descriptor, capture).
- *
- * The order is spawn-first (R5). A working session exists at every moment:
- *
- *   spawn the replacement OFF-ROUTE  →  establish observable viability  →
- *   atomically switch input/output routing and the capture generation  →
- *   best-effort kill of the old child (loud orphan notice if it survives)
- *
- * The old child blocks nothing structurally: it is a separate process on a
- * separate session and a separate rollout file, the wrapper owns the real
- * terminal and all routing, and the wrapper is the only writer of LHC state
- * and rollout files. Killing it first was hygiene promoted into a sequencing
- * gate; it is now the last step and its failure cannot stop the swap.
- *
- * Forward-only invariants carried here:
- *  - There is no rollback. The oversized session is never restored. The only
- *    sanctioned way to stay on the old session is a replacement that never
- *    became viable — and that is not a rollback, because nothing was ever
- *    switched away from.
- *  - Bookkeeping never governs. Lineage, the current-session pointer, the
- *    retrieval descriptor and capture health are recorded after the switch and
- *    only ever produce warnings; none of them can kill a live replacement.
- *  - Old artifacts are never rewritten; the old rollout is only read.
- *  - Candidate and active child references stay distinct until the switch.
- */
-
 import { randomUUID } from "node:crypto";
 
 import type { HandoffRequest } from "../commands/context-mutation.js";
-import {
-  type DurableHandoffReceipt,
-  type HandoffReceiptPort,
-  cleanupFields,
-} from "./handoff-receipt-store.js";
+import { type DurableHandoffReceipt, type HandoffReceiptPort, cleanupFields } from "./handoff-receipt-store.js";
 import { formatOldChildCleanup, type OldChildCleanup } from "./old-child-cleanup.js";
 
 export type { OldChildCleanup } from "./old-child-cleanup.js";
 export { formatOldChildCleanup } from "./old-child-cleanup.js";
 
 export const DEFAULT_CAPTURE_READY_TIMEOUT_MS = 20_000;
-/**
- * How long the candidate gets to emit its first PTY output. A resumed Claude
- * renders the loaded history immediately; a child that dies or stays mute
- * before this deadline is not a live replacement.
- */
 export const DEFAULT_CHILD_LIVENESS_TIMEOUT_MS = 10_000;
-/** After first output, the child must survive this window without exiting. */
 export const DEFAULT_CHILD_STABLE_WINDOW_MS = 750;
-/** Spawn/viability attempts for one swap before the seam is given up. */
 export const DEFAULT_REPLACEMENT_ATTEMPTS = 2;
 
 export interface HandoffChild {
   write(data: string): void;
 }
 
-/**
- * A replacement process that exists but owns nothing: no terminal output, no
- * stdin, no capture generation. Distinct from the active child until the
- * routing switch promotes it.
- */
 export interface CandidateChild {
   sessionId: string;
   pid: number;
   child: HandoffChild;
 }
 
-/**
- * What was observed about a candidate before routing switched.
- *
- * `processAlive` is the decisive evidence: the child rendered and survived the
- * stabilization window. `sessionFileWritten` is corroborating evidence that
- * Claude accepted the rebuilt rollout enough to append to it — it is recorded
- * when it appears and never required, because a healthy resumed child may
- * render its history without appending anything until the next interaction.
- * Prompt intake is never required here: that is the one-shot pointer rule, not
- * an interactive viability rule.
- */
 export interface ReplacementEvidence {
   processAlive: boolean;
   sessionFileWritten: boolean;
@@ -88,73 +32,29 @@ export type CandidateViability =
   | { kind: "exited"; evidence: ReplacementEvidence }
   | { kind: "no_output"; evidence: ReplacementEvidence };
 
-/**
- * What the switch did. `switched: false` is not a refusal and not a gate — it
- * is the physical state of the candidate process at the one instant promotion
- * reads it. A candidate that proved viable and then died before routing could
- * move to it cannot be routed to, and because nothing moved there is nothing to
- * undo: the old child is still routed, still live, and still owns its capture
- * generation and descriptor.
- */
 export type SwitchOutcome =
   | { switched: false; reason: string }
   | {
       switched: true;
-      /** A new capture generation is bound to the rebuilt session. */
       captureStarted: boolean;
-      /** Non-fatal detail when capture did not come across with the routing. */
       captureWarning?: string;
-      /** Non-fatal detail from the switch itself: repaint, descriptor adoption. */
       switchWarnings?: readonly string[];
     };
 
 export interface HandoffPorts {
-  /**
-   * The one thing that can still stop a swap before it starts, and it is not
-   * about the compact: the wrapper process is already exiting, so there is
-   * nobody left to route a replacement to. Returns a reason or null.
-   */
   preHandoffStop(): string | null;
-  /**
-   * Spawn `claude --resume <sessionId>` OFF-ROUTE: its output is held, its
-   * stdin is unconnected, and it owns no capture generation. Throws on spawn
-   * failure.
-   */
   spawnCandidate(sessionId: string): CandidateChild;
-  /**
-   * Observable viability for the candidate: it emitted PTY output and survived
-   * the stabilization window, raced against exit and a bounded timeout.
-   * Terminal content is never parsed. Session-file growth is collected as
-   * corroborating evidence, never as a requirement.
-   */
   awaitCandidateViable(
     candidate: CandidateChild,
     timeoutMs: number,
     stableWindowMs: number,
   ): Promise<CandidateViability>;
-  /** Kill a candidate that never became viable. It was never routed to. */
   discardCandidate(candidate: CandidateChild): Promise<void>;
-  /**
-   * THE SWITCH. Confirms the candidate still exists and has not exited, then
-   * moves input routing, output routing, the retrieval descriptor and the
-   * capture generation to it in one step, after which all later old-child
-   * output is ignored.
-   *
-   * Must not throw. A candidate that died between proving viable and being
-   * promoted returns `switched: false` having moved nothing; once it reports
-   * `switched: true`, repaint, descriptor and capture trouble come back as
-   * warnings on a switch that already happened.
-   */
   switchToCandidate(candidate: CandidateChild): SwitchOutcome;
-  /** Best-effort termination of the now-unrouted old child. */
   killOldChild(): Promise<OldChildCleanup>;
-  /** Ready-after-replay for the replacement generation (health, not a gate). */
   awaitReplacementCaptureReady(timeoutMs: number): Promise<"ready" | "degraded" | "timeout">;
-  /** Rebuild capture state from the persisted transcript after a bad reading. */
   reconcileCapture(reason: string): void;
-  /** Canonical lineage + current-session pointer for the accepted replacement. */
   registerSuccessLineage(request: HandoffRequest): Promise<{ ok: true } | { ok: false; reason: string }>;
-  /** Publish the ready descriptor for the new generation. False = degraded. */
   publishReadyDescriptor(): boolean;
   log(message: string): void;
   warn(message: string): void;
@@ -167,24 +67,14 @@ export type HandoffResult =
       newSessionId: string;
       evidence: ReplacementEvidence;
       attempts: number;
-      /** In-memory proven cleanup classification; user/log/receipt share this value. */
       oldChildCleanup: OldChildCleanup;
-      /** Durable evidence row id; present even when SQLite writes fail soft. */
       handoffId: string;
-      /** Old-child cleanup could not be carried out or could not be observed. */
       oldChildWarning?: string;
       lineageWarning?: string;
       descriptorWarning?: string;
       captureWarning?: string;
-      /** Repaint or descriptor-adoption detail from the switch itself. */
       switchWarnings?: readonly string[];
     }
-  /**
-   * The replacement never became viable, so nothing was ever switched. The old
-   * session keeps the terminal, untouched, and the installed view and rebuilt
-   * rollout stay on disk. This is the only sanctioned way to remain on the old
-   * session, and it is not a rollback.
-   */
   | {
       kind: "replacement_nonviable";
       reason: string;
@@ -193,7 +83,6 @@ export type HandoffResult =
       rebuiltSessionId: string;
     };
 
-/** User-facing handoff result. */
 export function formatHandoffResult(result: HandoffResult): string {
   switch (result.kind) {
     case "success":
@@ -213,7 +102,6 @@ export interface HandoffOptions {
   childLivenessTimeoutMs?: number;
   childStableWindowMs?: number;
   replacementAttempts?: number;
-  /** Evidence-only durable handoff receipt. Failures are loud and never gate routing. */
   handoffReceipts?: HandoffReceiptPort;
   uuidFn?: () => string;
   nowFn?: () => Date;
@@ -223,12 +111,7 @@ function reasonOf(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-function failSoftReceipt(
-  ports: HandoffPorts,
-  phase: string,
-  handoffId: string,
-  step: () => void,
-): void {
+function failSoftReceipt(ports: HandoffPorts, phase: string, handoffId: string, step: () => void): void {
   try {
     step();
   } catch (cause) {
@@ -300,15 +183,6 @@ function persistSuccessCleanup(
   });
 }
 
-/**
- * Run one step of the after-the-switch settlement.
- *
- * Past the switch the replacement is live, routed, and talking to the operator.
- * Everything left to do is recording what already happened — lineage, the old
- * child's corpse, capture health, the retrieval descriptor — so a port that
- * throws yields a warning and nothing else. None of it may unmake the swap, and
- * none of it may report a live replacement as a failure.
- */
 async function settleAfterSwitch<T>(
   ports: HandoffPorts,
   what: string,
@@ -329,12 +203,6 @@ interface EstablishedReplacement {
   attempts: number;
 }
 
-/**
- * Spawn and prove a replacement while the old session is still live and
- * untouched. Every failure here is discovered at zero cost to the session, so
- * the answer is another attempt, and the answer to running out of attempts is
- * to keep the old session — never to undo anything.
- */
 async function establishReplacement(
   sessionId: string,
   ports: HandoffPorts,
@@ -421,13 +289,8 @@ export async function executeHandoff(
     };
   }
 
-  // ---- THE SWITCH: routing and capture generation move together ----
   const switched = ports.switchToCandidate(established.candidate);
   if (!switched.switched) {
-    // The candidate proved viable and then died before routing could reach it.
-    // That is a fact about a process, not a decision about a compact: nothing
-    // moved, so the old child is still routed, still live, and still owns its
-    // capture generation and descriptor. A later settled seam simply retries.
     ports.warn(
       `cc-lhc handoff: replacement ${rebuiltId} was not promoted — ${switched.reason}; ` +
         `session ${request.oldSessionId} continues live, still routed and untouched`,
@@ -450,12 +313,8 @@ export async function executeHandoff(
   for (const warning of switchWarnings) ports.warn(`cc-lhc handoff WARNING: ${warning}`);
   if (switched.captureWarning !== undefined) ports.warn(`cc-lhc handoff WARNING: ${switched.captureWarning}`);
 
-  // ---- The replacement is live and routed. Everything below records what
-  // already happened; none of it can undo it or call it a failure. ----
   let lineageWarning: string | undefined;
-  const lineage = await settleAfterSwitch(ports, "lineage registration", () =>
-    ports.registerSuccessLineage(request),
-  );
+  const lineage = await settleAfterSwitch(ports, "lineage registration", () => ports.registerSuccessLineage(request));
   if (!lineage.ok) {
     lineageWarning = lineage.warning;
   } else if (!lineage.value.ok) {
@@ -463,9 +322,6 @@ export async function executeHandoff(
     ports.warn(`cc-lhc handoff WARNING: ${lineageWarning}`);
   }
 
-  // The old child owns nothing now. Classify cleanup from identity evidence;
-  // the in-memory value is what user output, the wrapper log, and the durable
-  // receipt all report. Receipt write failure cannot change it.
   let oldChildWarning: string | undefined;
   const killed = await settleAfterSwitch(ports, "old-child cleanup", () => ports.killOldChild());
   const oldChildCleanup: OldChildCleanup = killed.ok
@@ -510,8 +366,6 @@ export async function executeHandoff(
     await reconcile(switched.captureWarning ?? "replacement capture did not start");
   }
 
-  // Retrieval is a capability over the captured archive, so it publishes after
-  // capture has caught up — never before, and never as a condition of the swap.
   let descriptorWarning: string | undefined;
   const published = await settleAfterSwitch(ports, "ready descriptor publication", () =>
     ports.publishReadyDescriptor(),

@@ -1,6 +1,3 @@
-/**
- * LIM-116 continuity note: TC-5.1a-d, TC-5.3a-c, AR-9.
- */
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -433,7 +430,6 @@ describe("manual mutation freezes live work at the settled seam", () => {
 
 describe("formatCarryoverNote: one short count line", () => {
   const WAKE_AT = 1_800_000_000_000;
-  /** The five-family manifest exactly as LIM-145's production snapshot carries it, rooted at `home`. */
   function fiveCarried(home: string): ContinuitySnapshot {
     const shellOut = `${home}/tasks/shell-1.output`;
     const items: CarriedItem[] = [

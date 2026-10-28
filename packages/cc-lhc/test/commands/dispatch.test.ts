@@ -90,7 +90,6 @@ describe("dispatchLhcCommand", () => {
     expect(text).toContain("Claude native auto-compact: may run — explicit --autocompact passed through");
     expect(text).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
     expect(text).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
-    // Human language only: no internal field labels leak.
     for (const internal of [
       "tailTokens",
       "zoneTokens",
@@ -130,7 +129,6 @@ describe("dispatchLhcCommand", () => {
       fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef, isTurnOpen: () => true }),
     );
     expect(outcome.messages).toEqual([TURN_OPEN_REFUSAL]);
-    expect(outcome.restart).toBeUndefined();
     expect(prune).not.toHaveBeenCalled();
   });
 
@@ -142,7 +140,6 @@ describe("dispatchLhcCommand", () => {
       fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef, isTurnOpen: () => true }),
     );
     expect(outcome.messages).toEqual([TURN_OPEN_REFUSAL]);
-    expect(outcome.restart).toBeUndefined();
     expect(previewCompact).not.toHaveBeenCalled();
   });
 

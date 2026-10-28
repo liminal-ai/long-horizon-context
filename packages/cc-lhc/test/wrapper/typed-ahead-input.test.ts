@@ -1,9 +1,3 @@
-/**
- * Typed-ahead accounting during compaction: only bytes a person could have
- * typed raise the resend notice. The terminal's answers to the replacement
- * child's startup queries arrive on stdin in the same window and are control
- * sequences, not input.
- */
 import { describe, expect, it } from "vitest";
 
 import { countTypedBytes } from "../../src/wrapper/typed-ahead-input.js";

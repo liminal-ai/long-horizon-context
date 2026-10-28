@@ -1,6 +1,5 @@
 import { type ChildProcess, spawn as defaultSpawn } from "node:child_process";
 
-/** The subset of node-pty used by the termination policy. */
 export interface TerminablePty {
   pid: number;
   kill(signal?: string): void;
@@ -46,7 +45,6 @@ export type SpawnTaskkill = (
   options: { windowsHide: true; stdio: "ignore" },
 ) => ChildProcess;
 
-/** Run taskkill without blocking PTY output, exit events, or buffered stdin. */
 export function runTaskkillTree(
   pid: number,
   timeoutMs = 2_000,
@@ -75,9 +73,7 @@ export function runTaskkillTree(
     const timer = setTimeout(() => {
       try {
         child.kill();
-      } catch {
-        // The close/error event may already be in flight.
-      }
+      } catch {}
       finish(false);
     }, timeoutMs);
     timer.unref?.();
@@ -94,10 +90,6 @@ export interface ForceKillDeps {
   taskkill(pid: number): Promise<boolean>;
 }
 
-/**
- * Escalate to a platform-supported forced process-tree termination.
- * The caller's exit observer, not this return value, proves child exit.
- */
 export async function forceKillChildTree(pid: number, deps: ForceKillDeps): Promise<TerminationAttempt> {
   const attempted: TerminationMethod[] = [];
   if (!Number.isSafeInteger(pid) || pid <= 0 || pid === deps.selfPid) {
@@ -108,9 +100,7 @@ export async function forceKillChildTree(pid: number, deps: ForceKillDeps): Prom
     attempted.push("taskkill");
     try {
       if (await deps.taskkill(pid)) return { method: "taskkill", attempted };
-    } catch {
-      // Fall through to the only node-pty operation supported on Windows.
-    }
+    } catch {}
     attempted.push("pty_close");
     try {
       deps.closePty();

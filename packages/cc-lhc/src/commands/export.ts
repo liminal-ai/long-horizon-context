@@ -6,18 +6,6 @@ import type { Lhc, ThreadRef } from "lhc";
 import { dumpRolloutLines, dumpSessionThreadView, parseRolloutContent } from "../verify/transcript-dump.js";
 import type { DispatchOutcome, LhcCommandRuntime } from "./dispatch.js";
 
-/**
- * `export` — the fidelity-certification command (pi-lhc's export pair, ported).
- * Writes two canonical transcript dumps to the cwd:
- *
- *   cc-lhc-rollout-<stamp>.txt     — the live rollout file, normalized
- *   cc-lhc-threadview-<stamp>.txt  — the served thread view, normalized
- *
- * Certification loop: export → compact (or prune) → export again → diff the
- * rollout dumps. The tail must match byte-for-byte; only the banded head
- * (and the trailing swap receipt) may differ. Diffing rollout-vs-threadview
- * from the SAME moment checks capture/serving fidelity instead.
- */
 export async function runExportCommand(_commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   if (runtime.sdk === undefined || runtime.threadRef === undefined) return { messages: ["capture not ready"] };
 

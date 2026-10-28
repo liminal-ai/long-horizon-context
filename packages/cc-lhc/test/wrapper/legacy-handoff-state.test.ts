@@ -1,12 +1,3 @@
-/**
- * Pre-rewrite handoff state is consumed once, under the thread lease, and only
- * for the thread that holds it.
- *
- * The recovery directory and the attempt table are shared by every thread on
- * the box and neither carries a thread column, so these tests are mostly about
- * what consumption must NOT touch: another thread's artifacts, and anything
- * whose identity cannot be read.
- */
 import { type ChildProcess, spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -35,11 +26,6 @@ function tempHome(): Home {
   return { home, recovery, lineageDbPath: join(home, "cc-lhc.sqlite") };
 }
 
-/**
- * A legacy input journal exactly as the pre-rewrite build wrote it: a framed
- * `[type:1][length:4 BE][JSON header]` record, then chunk and state records
- * that consumption must never need to read.
- */
 function writeLegacyJournal(
   paths: Home,
   journalId: string,
@@ -52,8 +38,6 @@ function writeLegacyJournal(
   frame.writeUInt32BE(payload.length, 1);
   const parts = [frame, payload];
   if (opts.withBody !== false) {
-    // A chunk record and a `delivering` state record — the send ambiguity the
-    // old build wedged on, and which nothing here may look at.
     const chunk = Buffer.from("secret keystrokes", "utf8");
     const chunkFrame = Buffer.allocUnsafe(5);
     chunkFrame.writeUInt8(0x02, 0);
@@ -72,7 +56,6 @@ function writeLegacyRecoveryJson(paths: Home, name: string, body: Record<string,
   return path;
 }
 
-/** The pre-rewrite per-attempt table, as an installed older build left it. */
 function seedAttemptRow(paths: Home, receiptId: string, payload: unknown): void {
   const db = openLineageDatabase(paths.lineageDbPath);
   db.exec(`
@@ -113,7 +96,6 @@ function attemptReceiptIds(paths: Home): string[] {
   return rows.map((row) => row.receipt_id);
 }
 
-/** A RecoveryAttempt payload as the pre-rewrite recovery store serialized it. */
 function attemptPayload(threadId: string | undefined, sessions: { old: string; rebuilt: string }): unknown {
   return {
     receiptId: "r",
@@ -159,7 +141,6 @@ describe("state this thread owns", () => {
     expect(outcome.legacyRecoveryFiles).toBe(1);
     expect(outcome.notices.at(-1)).toBe(TYPED_AHEAD_RESEND_NOTICE);
     expect(existsSync(journal)).toBe(false);
-    // Consumed once: a second launch has nothing left to settle.
     expect(consumeLegacyHandoffState({ ...paths, threadId: "th_a" }).notices).toEqual([]);
   });
 
@@ -184,7 +165,6 @@ describe("state this thread owns", () => {
   it("reads a journal no further than its header frame", () => {
     const paths = tempHome();
     recordSessionThread(paths.lineageDbPath, "s-a-old", "th_a", {}, { prefix: { kind: "none" } });
-    // Truncated immediately after the header: no chunk record, no state record.
     const journal = writeLegacyJournal(
       paths,
       "j-header-only",
@@ -259,12 +239,10 @@ describe("state belonging to another thread", () => {
     expect(outcome.legacyAttemptRows).toBe(1);
     expect(existsSync(journalA)).toBe(false);
 
-    // Thread B is untouched: same bytes, same row.
     expect(readFileSync(journalB)).toEqual(journalBBefore);
     expect(readFileSync(artifactB)).toEqual(artifactBBefore);
     expect(attemptReceiptIds(paths)).toEqual(["r-b"]);
 
-    // And B's own wrapper can still settle it later, on its own lease.
     const outcomeB = consumeLegacyHandoffState({ ...paths, threadId: "th_b" });
     expect(outcomeB.legacyRecoveryFiles).toBe(2);
     expect(outcomeB.legacyAttemptRows).toBe(1);
@@ -278,30 +256,23 @@ describe("state that cannot be attributed", () => {
     const paths = tempHome();
     recordSessionThread(paths.lineageDbPath, "s-a-old", "th_a", {}, { prefix: { kind: "none" } });
 
-    // A journal with no framed header at all (the old build's torn file).
     const tornPath = join(paths.recovery, "input-torn.journal");
     writeFileSync(tornPath, Buffer.from([0x01, 0x02]));
-    // A header frame that parses but names no session.
     const anonymous = writeLegacyJournal(paths, "j-anon", { version: 1, journalId: "j-anon" });
-    // A header naming sessions no thread on this box claims.
     const foreign = writeLegacyJournal(paths, "j-foreign", {
       version: 1,
       journalId: "j-foreign",
       oldSessionId: "s-unknown",
       rebuiltSessionId: "s-unknown-new",
     });
-    // Recovery JSON that is not JSON.
     const unparsable = join(paths.recovery, "handoff-bad.json");
     writeFileSync(unparsable, "{not json");
-    // Rows that name no thread, and a payload that will not parse.
     seedAttemptRow(paths, "r-nothread", attemptPayload(undefined, { old: "s-x", rebuilt: "s-y" }));
     seedAttemptRow(paths, "r-corrupt", "{{{");
 
     const before = [tornPath, anonymous, foreign, unparsable].map((path) => readFileSync(path));
     const outcome = consumeLegacyHandoffState({ ...paths, threadId: "th_a" });
 
-    // No claim, no deletion, and above all no resend notice for input that was
-    // never this operator's.
     expect(outcome.notices).toEqual([]);
     expect(outcome.legacyRecoveryFiles).toBe(0);
     expect(outcome.legacyAttemptRows).toBe(0);
@@ -333,7 +304,6 @@ describe("state that cannot be attributed", () => {
       ...paths,
       threadId: "th_a",
       lineageDeps: {
-        // The table is there; its rows will not come back.
         openDbFn: (path: string) => {
           const real = openLineageDatabase(path);
           return new Proxy(real, {
@@ -354,7 +324,6 @@ describe("state that cannot be attributed", () => {
     });
     expect(outcome.notices).toEqual([]);
     expect(outcome.legacyAttemptRows).toBe(0);
-    // Unreadable is not the same as consumed: the row is still there.
     expect(attemptReceiptIds(paths)).toEqual(["r-a"]);
   });
 });
@@ -407,14 +376,10 @@ describe("two wrappers consuming at once, each on its own thread lease", () => {
     });
 
     try {
-      // Both workers hold their leases before either is allowed to consume.
       await new Promise((resolve) => setTimeout(resolve, 300));
       writeFileSync(join(paths.home, "consume-go"), "go");
       await Promise.all(done);
     } finally {
-      // Wait for the workers to be gone, not just signalled: on Windows a
-      // killed worker's SQLite handles outlive kill() for a moment, and the
-      // temp home cannot be removed while they are open (CI 35941944288).
       await Promise.all(
         children.map(
           (child) =>
@@ -427,7 +392,6 @@ describe("two wrappers consuming at once, each on its own thread lease", () => {
       );
     }
 
-    // Each consumed exactly its own one journal and one row.
     expect(lines.sort()).toEqual(["DONE th_a 1 1", "DONE th_b 1 1"]);
     expect(existsSync(join(paths.recovery, "input-j-a.journal"))).toBe(false);
     expect(existsSync(join(paths.recovery, "input-j-b.journal"))).toBe(false);

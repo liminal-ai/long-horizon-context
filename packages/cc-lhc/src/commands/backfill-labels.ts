@@ -1,13 +1,3 @@
-/**
- * Operator CLI: `cc-lhc backfill-labels <thread-id-or-prefix> [--dry-run]`.
- *
- * Explicit selected-thread label backfill through the SDK's pure-composition
- * operation. Operator-facing and thread-addressed by design — this is not a
- * model-callable retrieval op and takes no descriptor binding. It never
- * touches canonical events; the only mutation is the stored turn_rendering
- * row's content and derived_at, and a dry run mutates nothing.
- */
-
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc } from "lhc";
 
 import { defaultRegistryPath } from "../intake/paths.js";
@@ -73,8 +63,6 @@ export async function runBackfillLabelsCli(argv: readonly string[], deps: Backfi
   const threadIdOrPrefix = positional[0];
   const registryPath = deps.registryPath ?? defaultRegistryPath();
 
-  // Manual + deterministic: the backfill path never calls a model and must not
-  // start background drains against the operator's thread.
   const sdk =
     deps.initSdk?.() ??
     initLhc({

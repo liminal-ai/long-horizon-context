@@ -1,10 +1,3 @@
-/**
- * Tests against the real compiled addon — the production-default path with no
- * injected seams. Skipped when no artifact is present unless
- * CC_LHC_NATIVE_REQUIRE_ADDON=1 (CI matrix sets it so a missing build step
- * fails loudly instead of skipping silently).
- */
-
 import { type ChildProcess, spawn } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";

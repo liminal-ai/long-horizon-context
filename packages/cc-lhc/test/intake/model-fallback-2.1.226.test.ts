@@ -1,11 +1,3 @@
-/**
- * Claude Code 2.1.226 production fingerprint: standalone assistant fallback
- * block + Opus text + system model_refusal_fallback notice.
- *
- * Proves meta classification, exact Opus capture identity/usage, unknown still
- * degrades, and live watcher catch-up stays ready through the transition.
- */
-
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -60,7 +52,6 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
     expect(payload.model).toBe("claude-opus-4-8");
     expect(payload.providerUsage.output_tokens).toBe(77);
     expect(payload.text).toContain("MIGRATION_TAIL_SENTENCE_UNIQUE_C3_7721");
-    // No empty/synthetic event invented for the fallback-only line
     expect(mapped.events.filter((e) => e.eventKind === "assistant_text")).toHaveLength(1);
   });
 
@@ -92,7 +83,6 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
     const sid = "dddddddd-dddd-dddd-dddd-dddddddddddd";
     const path = join(projectDir, `${sid}.jsonl`);
 
-    // Seed with a normal user line so capture binds ready first
     writeFileSync(
       path,
       `${JSON.stringify({
@@ -153,7 +143,6 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
       await waitFor(() => session.isCaptureReady(), "initial ready");
       expect(session.getCaptureHealth().phase).toBe("ready");
 
-      // Append production fallback sequence (rewrite sessionIds to match)
       const seq = loadSequence().map((item) => ({
         ...item,
         sessionId: sid,
@@ -168,7 +157,6 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
         "opus text captured",
       );
 
-      // Still ready — no unknown-shape degradation from the fallback block
       expect(session.isCaptureReady()).toBe(true);
       expect(session.getCaptureHealth().phase).toBe("ready");
       expect(lifecycle.filter((s) => s.kind === "capture_degraded")).toEqual([]);
@@ -178,7 +166,6 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
       expect(texts[0]!.model).toBe("claude-opus-4-8");
       expect(texts[0]!.text).toContain("MIGRATION_TAIL_SENTENCE_UNIQUE_C3_7721");
 
-      // Mutation: append a drifted fallback-with-text line → must degrade visibly
       const drifted = {
         type: "assistant",
         uuid: "drift-fallback-text",
@@ -201,7 +188,6 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
       expect(session.isCaptureReady()).toBe(false);
       expect(session.getCaptureHealth().phase).toBe("degraded");
 
-      // Catch-up style: reopen session against the same file (restart path)
       await session.stop();
       const restartLifecycle: LifecycleSignal[] = [];
       const restarted = startCaptureSession({
@@ -228,7 +214,6 @@ describe("Claude 2.1.226 model refusal fallback fingerprint", () => {
           }) as unknown as Lhc,
       });
       try {
-        // File already contains the drifted unknown line from above.
         await waitFor(
           () =>
             restarted.getCaptureHealth().phase === "degraded" ||

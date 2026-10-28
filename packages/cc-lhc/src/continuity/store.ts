@@ -1,27 +1,3 @@
-/**
- * Parent-owned asynchronous-work records (tech-design D4, LIM-145).
- *
- * The stable cc-lhc parent and its SQLite database own the identity and
- * lifecycle of every piece of asynchronous work a managed session launches.
- * A Claude child is a client of these rows: it can be replaced by Smart
- * Compact without the work losing its identity, its verified state, or the
- * operations the parent may perform on it.
- *
- * The schema lives in the existing cc-lhc database beside the governor and
- * handoff receipts — one file, one authority, no second store.
- *
- * Writes are monotonic:
- *  - one row per launch identity; a launch that is already recorded is not
- *    rewritten, and a terminal row never reopens;
- *  - `terminal` is absorbing: the first terminal evidence wins, later
- *    evidence for the same item is ignored;
- *  - the continuity generation on a row only increases, stamped by each
- *    accepted snapshot that carries it;
- *  - the per-thread generation counter only increases.
- *
- * Elapsed time is never an input: nothing here reads a clock to decide state.
- */
-
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -33,17 +9,10 @@ export const CONTINUITY_BUSY_TIMEOUT_MS = 10_000;
 
 export type ContinuityState = "active" | "terminal" | "unknown";
 
-/**
- * How a family adapter carries an item across a child replacement. The
- * foundation records every launch as `unqualified` — a truthful "no adapter
- * has proven this yet" — and only a qualified adapter may change it.
- */
 export type CarryMode = "adopt" | "reconstruct" | "rearm" | "unqualified";
 
-/** The modes a qualified adapter may declare. `unqualified` is the launch default only. */
 export type QualifiedCarryMode = Exclude<CarryMode, "unqualified">;
 
-/** Management operations the parent can perform on an item through its adapter. */
 export type ContinuityOperation = "status" | "output" | "stop";
 const OPERATIONS: readonly ContinuityOperation[] = ["status", "output", "stop"];
 
@@ -58,50 +27,21 @@ const TERMINAL_OUTCOMES: readonly TerminalOutcome[] = [
   "unknown",
 ];
 
-/**
- * The identity a family adapter verified immediately before qualifying the
- * item — the fact the replacement will reconnect through. Platform-qualified:
- * a POSIX output identity is dev+inode; no Windows output identity is proved,
- * so none is ever recorded there.
- */
 export type VerifiedIdentity =
   | { kind: "posix_output"; path: string; dev: string; ino: string }
-  /** Win32 file-object identity from the opened file (volume serial + 128-bit file id, or 64-bit index), never Node dev/ino. */
   | { kind: "win32_output"; path: string; volumeId: string; fileId: string }
   | { kind: "agent_transcript"; agentId: string; path: string }
   | { kind: "workflow_run"; runId: string; scriptPath: string; journalPath: string }
   | { kind: "scheduled_time"; toolUseId: string; scheduledForMs: number }
-  /** The Monitor launch record resolvable from the old session's rollout by its tool-use id; never the command text. */
   | { kind: "monitor_launch"; toolUseId: string; rolloutPath: string };
 
-/**
- * The supported normal-path action that continues an item after the swap,
- * with the verified facts it takes. Each kind is a mechanism Story 0 proved
- * on Claude Code 2.1.252 or an accepted parent-owned operation. It is derived
- * uniquely from the verified identity, so a durable item needs no second
- * copy of the parameters.
- */
 export type ContinuationMechanism =
-  /** The surviving process keeps writing; the parent reads the verified output file (operation `output`). */
   | { kind: "parent_output_read"; path: string }
-  /** `SendMessage(agentId)` resumes the saved transcript. */
   | { kind: "send_message"; agentId: string }
-  /** `Workflow({resumeFromRunId, scriptPath})` resumes the run; completed `agent()` calls are cached. */
   | { kind: "workflow_resume"; resumeFromRunId: string; scriptPath: string }
-  /** The due time is re-armed from the durable launch and surfaced at the next real turn. */
   | { kind: "rearm_at"; scheduledForMs: number }
-  /**
-   * The exact Monitor launch is resolved from the rollout at invocation time and
-   * relaunched once for the handoff generation (`relaunchKey`), reported as `restarted`.
-   */
   | { kind: "monitor_relaunch"; toolUseId: string; rolloutPath: string };
 
-/**
- * How the replacement receives the item, truthfully: `adopted` (uninterrupted,
- * the work never stopped), `resumed` (continued from its saved record),
- * `rearmed` (re-armed from its durable time), `restarted` (relaunched; the
- * original run was interrupted).
- */
 export type ContinuityTransition = "adopted" | "resumed" | "rearmed" | "restarted";
 
 export function transitionOf(mechanism: ContinuationMechanism): ContinuityTransition {
@@ -118,17 +58,10 @@ export function transitionOf(mechanism: ContinuationMechanism): ContinuityTransi
   }
 }
 
-/** The exactly-once fence for a relaunch: one per carried item per handoff generation. */
 export function relaunchKey(launchId: string, generation: number): string {
   return `${launchId}#${generation}`;
 }
 
-/**
- * Delivery key for one relaunched-Monitor event line (F4): the item's launch
- * id and the byte offset just past that line in the relaunch output. Observing
- * it in the rollout advances the item's delivered offset; it never names a
- * result, so it can never mark one delivered.
- */
 export const EVENT_KEY_PREFIX = "event:";
 
 export function eventDeliveryKey(launchId: string, endOffset: number): string {
@@ -147,7 +80,6 @@ export function parseEventDeliveryKey(key: string): { launchId: string; endOffse
   return { launchId: body.slice(0, at), endOffset };
 }
 
-/** The one mechanism a verified identity supports. */
 export function continuationMechanismOf(identity: VerifiedIdentity): ContinuationMechanism {
   switch (identity.kind) {
     case "posix_output":
@@ -166,31 +98,16 @@ export function continuationMechanismOf(identity: VerifiedIdentity): Continuatio
 
 export interface TerminalEvidence {
   outcome: TerminalOutcome;
-  /** What the record said, e.g. `task-notification completed`, `TaskStop`. */
   evidence: string;
   observedAtMs: number;
 }
 
-/**
- * The one run the parent itself started for a carried Monitor (LIM-145
- * relaunch): the parent-owned output file with its verified identity, and the
- * exact OS identity of the relaunched process when it could be read at spawn.
- * Written once per item; `stop` exists only when `process` is present.
- */
 export interface RelaunchRecord {
   outputPath: string;
   output: VerifiedIdentity;
   process: { pid: number; bootId: string; starttime: string } | null;
 }
 
-/**
- * One durable terminal result for a carried item (LIM-146 AC-2.7). Written
- * exactly once, by the same write that closes the item, keyed by the item's
- * stable identity (thread + launch id); a repeated terminal observation is
- * absorbed by the item and writes nothing. Holds only the sanitized label,
- * the outcome, bounded evidence text, and the owned artifact reference —
- * never a command, task output, or provider payload.
- */
 export interface CarriedResult {
   threadId: string;
   launchId: string;
@@ -201,31 +118,21 @@ export interface CarriedResult {
   evidence: string;
   artifact: ResultArtifact | null;
   observedAtMs: number;
-  /** Delivery to the replacement is a later pass; this pass only ever writes `pending`. */
   delivery: "pending" | "delivered";
   createdAtMs: number;
 }
 
-/** Bound on stored result evidence: plain printable ASCII, one line. */
 export const MAX_RESULT_EVIDENCE_CHARS = 160;
 
-/**
- * Where a result's output lives: the item's own verified output while the item
- * is tracked, or the CC-LHC-owned bounded copy cleanup made before removing
- * the item's tracking (LIM-146 AC-2.10). Copies are retained indefinitely.
- */
 export type ResultArtifact =
   | { kind: "adopted_output" | "relaunch_output"; path: string }
   | { kind: "owned_copy"; path: string; bytes: number; truncated: boolean };
 
 export interface ContinuityItem {
   threadId: string;
-  /** Stable logical identity of one launch: `family:key:toolUseId`. */
   launchId: string;
-  /** Continuity generation of the last accepted snapshot that carried it; 0 before any. */
   generation: number;
   family: AsyncWorkFamily;
-  /** Sanitized operator-facing label: never a command body, output, or progress text. */
   label: string;
   state: ContinuityState;
   carryMode: CarryMode;
@@ -233,9 +140,7 @@ export interface ContinuityItem {
   taskId: string | null;
   toolUseId: string | null;
   scheduledForMs: number | null;
-  /** Host continuation facts the record supplied; fields are learned once and never rewritten. */
   continuation: AsyncWorkContinuation | null;
-  /** Identity verified by the qualifying adapter; null while unqualified. */
   verifiedIdentity: VerifiedIdentity | null;
   relaunch: RelaunchRecord | null;
   terminal: TerminalEvidence | null;
@@ -245,7 +150,6 @@ export interface ContinuityItem {
 
 export type GenerationState = "open" | "closed" | "superseded";
 
-/** One accepted snapshot: the set of launches a handoff generation carries. */
 export interface ContinuityGeneration {
   threadId: string;
   generation: number;
@@ -254,27 +158,14 @@ export interface ContinuityGeneration {
   state: GenerationState;
   createdAtMs: number;
   updatedAtMs: number;
-  /** The retained old Claude child supervising this generation's adopted tasks, when one was kept (LIM-149). */
   retainedHost: RetainedHostRecord | null;
 }
 
-/**
- * Exact identity of the retained old Claude child kept alive as the adopted
- * tasks' completion host. Recorded before retention is claimed; a settle can
- * only ever signal a process whose live identity matches this record exactly.
- */
 export interface RetainedHostRecord {
   pid: number;
   bootId: string;
   starttime: string;
   retainedAtMs: number;
-  /**
-   * Paused (mixed carryover, LIM-149): every thread of the old child is
-   * stopped, so its duplicate agent/workflow/monitor/wakeup never run and its
-   * model is never woken; its separate-group shells keep going and their exit
-   * records are read through the native addon (Linux, macOS, Windows alike).
-   * Absent/false means an alive host writing file markers (adopt-only).
-   */
   frozen?: boolean;
 }
 
@@ -297,19 +188,13 @@ export interface RecordLaunchInput {
 
 export interface ContinuityStore {
   readonly path: string;
-  /** Open one item per launch identity. An existing row (any state) is returned unchanged. */
   recordLaunch(input: RecordLaunchInput): { item: ContinuityItem; inserted: boolean };
-  /**
-   * Progress refreshes an open item and closes nothing. Continuation facts the
-   * launch did not carry are learned here; a fact already recorded is kept.
-   */
   recordProgress(input: {
     threadId: string;
     launchId: string;
     continuation?: AsyncWorkContinuation;
     nowMs: number;
   }): ContinuityItem | null;
-  /** First terminal evidence closes the item; later evidence is ignored (`applied: false`). */
   recordTerminal(input: {
     threadId: string;
     launchId: string;
@@ -317,19 +202,8 @@ export interface ContinuityStore {
     evidence: string;
     nowMs: number;
   }): { item: ContinuityItem; applied: boolean } | null;
-  /**
-   * Record the adopted shell's discovered task process identity (LIM-149),
-   * merged into the continuation. First discovery wins; terminal items are
-   * left as they are.
-   */
   setTaskProcess(input: { threadId: string; launchId: string; taskProcess: TaskProcessIdentity; nowMs: number }): void;
-  /** Verification result for a non-terminal item: `active` when verified, `unknown` when not. */
   setVerified(input: { threadId: string; launchId: string; verified: boolean; nowMs: number }): ContinuityItem | null;
-  /**
-   * A qualified adapter declares how it carries the item, what it can do to it,
-   * and the identity it verified. Never back to `unqualified`. A terminal item
-   * is left as it is.
-   */
   setCarryMode(input: {
     threadId: string;
     launchId: string;
@@ -338,11 +212,6 @@ export interface ContinuityStore {
     verifiedIdentity: VerifiedIdentity;
     nowMs: number;
   }): ContinuityItem | null;
-  /**
-   * Record the parent's one relaunch of a carried item (learn-once; a second
-   * call for the same item changes nothing) and declare the operations it
-   * supports: `output` always, `stop` only with an exact process identity.
-   */
   setRelaunched(input: {
     threadId: string;
     launchId: string;
@@ -350,36 +219,18 @@ export interface ContinuityStore {
     nowMs: number;
   }): ContinuityItem | null;
   getItem(threadId: string, launchId: string): ContinuityItem | null;
-  /** Bytes of a relaunched item's output already delivered as events (0 when none, or no such item). */
   deliveredEventOffset(threadId: string, launchId: string): number;
-  /** The durable terminal result of one carried item, if it has one. */
   getResult(threadId: string, launchId: string): CarriedResult | null;
-  /** Undelivered terminal results of carried items, oldest first. Reading changes nothing. */
   listPendingResults(threadId: string): CarriedResult[];
-  /**
-   * Mark exactly these result keys delivered, if they are pending results of
-   * this thread; unknown, foreign, and already-delivered keys change nothing.
-   * An event key (`eventDeliveryKey`) advances its relaunched item's delivered
-   * event offset instead — monotonic, never backwards.
-   * Returns the keys that transitioned now (idempotent on re-observation).
-   */
   markDelivered(input: { threadId: string; launchIds: readonly string[]; nowMs: number }): string[];
-  /** Cleanup: point a result at the CC-LHC-owned bounded copy of its output. False when no such result exists. */
   setResultArtifact(input: {
     threadId: string;
     launchId: string;
     artifact: Extract<ResultArtifact, { kind: "owned_copy" }>;
   }): boolean;
-  /** Cleanup: remove one terminal item's tracking row. False when the item is absent or not terminal. */
   deleteTerminalItem(threadId: string, launchId: string): boolean;
-  /**
-   * Cleanup: remove the thread's generation rows once no item row remains for
-   * it. Returns the number removed; 0 when any item is still tracked.
-   */
   removeObsoleteGenerations(threadId: string): number;
-  /** Every item of the thread in launch order. */
   listItems(threadId: string): ContinuityItem[];
-  /** Allocate the next generation for the thread and stamp its members. Earlier open generations are superseded. */
   allocateGeneration(input: {
     threadId: string;
     oldSessionId: string;
@@ -387,11 +238,8 @@ export interface ContinuityStore {
     nowMs: number;
   }): ContinuityGeneration;
   getGeneration(threadId: string, generation: number): ContinuityGeneration | null;
-  /** Record the retained old-child host for a generation (LIM-149). First record wins. */
   setRetainedHost(input: { threadId: string; generation: number; host: RetainedHostRecord; nowMs: number }): void;
-  /** The newest generation still carrying a retained-host record, if any. */
   retainedHostGeneration(threadId: string): ContinuityGeneration | null;
-  /** Drop a generation's retained-host record once the host is proven gone or was terminated. */
   clearRetainedHost(input: { threadId: string; generation: number; nowMs: number }): void;
   latestGeneration(threadId: string): ContinuityGeneration | null;
   setGenerationState(input: {
@@ -502,7 +350,6 @@ function initSchema(db: DatabaseSync): void {
       PRIMARY KEY (thread_id, launch_id)
     )
   `);
-  // Additive, idempotent migrations for rows written by the foundation schema.
   for (const column of ["continuation_json", "identity_json", "relaunch_json"]) {
     if (!tableHasColumn(db, "cc_continuity_items", column)) {
       db.exec(`ALTER TABLE cc_continuity_items ADD COLUMN ${column} TEXT`);
@@ -551,7 +398,6 @@ function initResultsSchema(db: DatabaseSync): void {
       PRIMARY KEY (thread_id, launch_id)
     )
   `);
-  // Additive: the owned copy's size and whether the source exceeded the bound.
   if (!tableHasColumn(db, "cc_continuity_results", "artifact_bytes")) {
     db.exec("ALTER TABLE cc_continuity_results ADD COLUMN artifact_bytes INTEGER");
   }
@@ -578,14 +424,12 @@ interface ResultRow {
   created_at_ms: number;
 }
 
-/** Evidence text as stored: whitespace collapsed, printable ASCII only, bounded. */
 export function boundedEvidence(text: string, maxChars: number = MAX_RESULT_EVIDENCE_CHARS): string {
   const flattened = text.replace(/\s+/g, " ").trim();
   const ascii = [...flattened].map((ch) => (ch.charCodeAt(0) >= 0x20 && ch.charCodeAt(0) <= 0x7e ? ch : "?")).join("");
   return ascii.length <= maxChars ? ascii : `${ascii.slice(0, Math.max(0, maxChars - 1))}~`;
 }
 
-/** The one artifact a terminal item owns, for the result's reference. */
 function ownedArtifactOf(item: ContinuityItem): CarriedResult["artifact"] {
   if (item.relaunch !== null) return { kind: "relaunch_output", path: item.relaunch.outputPath };
   const id = item.verifiedIdentity;
@@ -643,7 +487,6 @@ function tableHasColumn(db: DatabaseSync, table: string, column: string): boolea
 
 const CONTINUATION_KEYS = ["outputFile", "runId", "scriptPath", "transcriptDir"] as const;
 
-/** Exact identity of an adopted shell's task process (see async-work continuation). */
 export interface TaskProcessIdentity {
   pid: number;
   bootId: string;
@@ -723,7 +566,6 @@ function parseVerifiedIdentity(json: string | null, row: ItemRow): VerifiedIdent
   return parsed;
 }
 
-/** Learn absent continuation fields once; recorded fields are never rewritten. */
 function mergeContinuation(
   recorded: AsyncWorkContinuation | null,
   learned: AsyncWorkContinuation | undefined,
@@ -870,11 +712,6 @@ function parseGeneration(row: GenerationRow): ContinuityGeneration {
   };
 }
 
-/**
- * Open (or create) the continuity tables in the cc-lhc database. Additive:
- * coexists with the lineage, governor-receipt, and handoff-receipt tables in
- * the same file.
- */
 export function openContinuityStore(
   dbPath: string = defaultLineageDbPath(),
   deps: ContinuityStoreDeps = {},
@@ -886,14 +723,9 @@ export function openContinuityStore(
     initSchema(db);
     initResultsSchema(db);
   } catch (cause) {
-    // A corrupt or foreign file throws on the first statement. Release the
-    // handle before rethrowing so the failed open does not pin the file for
-    // the wrapper's lifetime (Windows refuses deletion of a pinned file).
     try {
       db.close();
-    } catch {
-      // never opened far enough to close
-    }
+    } catch {}
     throw cause;
   }
 
@@ -1029,9 +861,6 @@ export function openContinuityStore(
     },
     recordTerminal(input) {
       if (getItem(input.threadId, input.launchId) === null) return null;
-      // One transaction: the item closes and, if it was carried, its single
-      // durable result lands with it. A later terminal observation changes
-      // neither (the item is absorbing; the result key is the item's identity).
       db.exec("BEGIN IMMEDIATE");
       let applied: boolean;
       let item: ContinuityItem;

@@ -1,15 +1,8 @@
 export interface InFlightCommand {
-  /** Human-readable command label ("status", "prune 30000") for busy/late receipts. */
   label: string;
   startedAtMs: number;
 }
 
-/**
- * Single-flight guard over modal commands. It remembers WHAT is running and
- * since WHEN so a busy refusal can say "prune still running (41s)" instead of
- * a bare "busy" — after a detach, that named line is the only way the user
- * can tell a slow command from a dead one.
- */
 export class CommandInFlightGuard {
   private inFlight: InFlightCommand | null = null;
 

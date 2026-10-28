@@ -1,11 +1,3 @@
-/**
- * LIM-64 production-path wrapper/capture integration (not direct store-API-only proof).
- *
- * Drives run() + lifecycle through the real watcher/capture sink path and
- * asserts durable receipts, exact outcome binding, replay fail-closed, and
- * no mutation without a durable receipt.
- */
-
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -25,7 +17,6 @@ import { firstLoadMarkerPath, markShown, ONBOARDING_VERSION } from "../../src/wr
 import type { HandoffResult } from "../../src/wrapper/handoff.js";
 import { run } from "../../src/wrapper/run.js";
 
-/** Retained Claude Code 2.1.235 native-compact summary record (LIM-99 canary (d) exhibit). */
 const INSTALLED_SUMMARY: RolloutLineItem = JSON.parse(
   readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../fixtures/native-compact-2.1.235.jsonl"), "utf8")
     .trimEnd()
@@ -244,7 +235,6 @@ const POLICY = {
 
 const BOUND_SIGNALS: LifecycleSignal[] = [{ kind: "session_bound", sessionId: "old-session" }];
 
-/** Provider alone below trigger; live estimate pushes next-request pressure over. */
 const ESTIMATE_CROSS_SIGNALS: LifecycleSignal[] = [
   { kind: "turn_opened", reason: "user_prompt" },
   {
@@ -291,9 +281,7 @@ describe("LIM-64 production wrapper path", () => {
     for (const d of dirs.splice(0)) {
       try {
         rmSync(d, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -340,7 +328,6 @@ describe("LIM-64 production wrapper path", () => {
         isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
         generation,
       );
-      // getRolloutInfo follows liveSessionId so post-success identity is new session.
       (session as { getRolloutInfo: () => { path: string; sessionId: string } }).getRolloutInfo = () => ({
         path: isRebuilt ? opts.knownRolloutPath! : "/tmp/old-session.jsonl",
         sessionId: liveSessionId,
@@ -394,10 +381,8 @@ describe("LIM-64 production wrapper path", () => {
 
     const settled = observes.filter((o) => o.wouldMutate);
     expect(settled.length).toBeGreaterThanOrEqual(1);
-    expect(settled[0]!.pressure).toBe(5_500); // 3000 + 500 + 2000
+    expect(settled[0]!.pressure).toBe(5_500);
 
-    // Exact receipt for the old-session decision has handoff_success, even though
-    // live capture now identifies the new session.
     const store = openGovernorReceiptStore(receiptDb);
     const rows = store.listBySession("old-session");
     const would = rows.filter((r) => r.wouldMutate);
@@ -410,7 +395,6 @@ describe("LIM-64 production wrapper path", () => {
     expect(would[0]!.handoffOutcome).toHaveProperty("handoffId");
     expect(would[0]!.handoffOutcome).not.toHaveProperty("orphanPid");
     expect(JSON.stringify(would[0]!.handoffOutcome)).not.toMatch(/cleanupKind|surviving_orphan/);
-    // New session must not have stolen the outcome attachment.
     expect(store.listBySession(REBUILT_ID).filter((r) => r.wouldMutate)).toHaveLength(0);
     store.close();
 
@@ -422,7 +406,6 @@ describe("LIM-64 production wrapper path", () => {
   it("receipt persistence unavailable → compact still runs against an in-memory receipt", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-no-receipt-"));
     dirs.push(dir);
-    // Path points at a directory so open/append fails closed.
     const badPath = join(dir, "not-a-file-dir");
     writeFileSync(badPath, "not a sqlite db");
 
@@ -442,9 +425,6 @@ describe("LIM-64 production wrapper path", () => {
       return session;
     };
 
-    // Force store open to succeed with a path that breaks on write: use a
-    // read-only parent by opening on a file that is not sqlite — open may throw
-    // or append may throw. Prefer inject via non-writable path under a file.
     const runPromise = run([], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
@@ -471,7 +451,6 @@ describe("LIM-64 production wrapper path", () => {
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
     await waitFor(() => mutationSentinel, "compact to start without a durable receipt");
 
-    // Bookkeeping records the compact; it does not decide whether it happens.
     expect(mutationSentinel).toBe(true);
     expect(
       wrapperLogLines.some((l) => l.includes("durable receipt unavailable") && l.includes("in-memory receipt")),
@@ -498,9 +477,6 @@ describe("LIM-64 production wrapper path", () => {
       return session;
     };
 
-    // Empty string path can fail open depending on platform; use /dev/full-style
-    // invalid: a path that is a directory component with no write permission.
-    // Safer approach: open against a path where parent is a file.
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-openfail-"));
     dirs.push(dir);
     const fileAsDir = join(dir, "file");
@@ -558,9 +534,6 @@ describe("LIM-64 production wrapper path", () => {
       return session;
     };
 
-    // Crash simulation: pre-seed a scheduled would_mutate receipt with the same
-    // native facts the upcoming lifecycle will produce. Restart must fail closed
-    // rather than re-run automatic mutation.
     {
       const { applyGovernorLifecycleBatch, createGovernorRuntimeState } = await import(
         "../../src/governor/observe-state.js"
@@ -611,7 +584,6 @@ describe("LIM-64 production wrapper path", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
-    // Re-tail the same classification after "crash": must not schedule mutation.
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
     await new Promise((r) => setTimeout(r, 400));
     expect(mutationCalls).toBe(0);
@@ -671,11 +643,9 @@ describe("LIM-64 production wrapper path", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
-    // First high-pressure settle.
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
     await new Promise((r) => setTimeout(r, 400));
 
-    // Second distinct sampling (different sampling id / pressure) while first refused.
     lifecycleSink!([
       { kind: "turn_opened", reason: "user_prompt" },
       {
@@ -691,7 +661,6 @@ describe("LIM-64 production wrapper path", () => {
     ]);
     await new Promise((r) => setTimeout(r, 400));
 
-    // Wait for both settled wouldMutate receipts to terminalize (preview refuse).
     await waitFor(
       () => {
         const s = openGovernorReceiptStore(receiptDb);
@@ -716,7 +685,6 @@ describe("LIM-64 production wrapper path", () => {
     expect(first).toBeDefined();
     expect(second).toBeDefined();
     expect(first!.receiptId).not.toBe(second!.receiptId);
-    // Each row terminalizes independently — assert exact outcomes, not textual equality.
     expect(first!.handoffOutcome?.kind).toBe("mutation_refused");
     expect(second!.handoffOutcome?.kind).toBe("mutation_refused");
     store.close();
@@ -733,7 +701,6 @@ describe("LIM-64 production wrapper path", () => {
     let mutationStarted = false;
     const sdk = sdkForCapture(async () => {
       mutationStarted = true;
-      // Stop before handoff: this test proves the seam is reached, not the swap.
       return { ok: true, value: { kind: "error", reason: "test stops before handoff" } };
     });
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
@@ -773,9 +740,6 @@ describe("LIM-64 production wrapper path", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
-    // The signal is derived from the retained Claude Code 2.1.235 record, not
-    // hand-written, so the wrapper half is bound to the shape observation
-    // actually produces.
     const nativeSignals = observeWatcherEmission(
       { kind: "line", item: INSTALLED_SUMMARY, raw: JSON.stringify(INSTALLED_SUMMARY) },
       0,
@@ -860,7 +824,6 @@ describe("LIM-64 production wrapper path", () => {
     await waitFor(() => mutationSentinel, "compact to start from the last known reading");
     const settled = observes.filter((o) => o.decision === "would_compact" && o.wouldMutate);
     expect(settled.length).toBeGreaterThanOrEqual(1);
-    // 900k is a real provider number carried forward, labelled as such.
     expect(settled[0]?.base).toBe(900_000);
     expect(settled[0]?.freshness).toBe("last_known");
     spawned[0]!.fireExit(0);
@@ -885,8 +848,6 @@ describe("LIM-64 production wrapper path", () => {
       return session;
     };
 
-    // A one-shot seat: one prompt, then exit. Its compaction seam is the start
-    // of the next invocation, so nothing swaps the child running this prompt.
     const runPromise = run(["-p", "please do the thing"], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
@@ -910,7 +871,6 @@ describe("LIM-64 production wrapper path", () => {
     lifecycleSink!(ESTIMATE_CROSS_SIGNALS);
     await new Promise((r) => setTimeout(r, 400));
     expect(mutationSentinel).toBe(false);
-    // The prompt was launched exactly once, by the child that carried it.
     expect(spawned).toHaveLength(1);
     expect(spawned[0]!.args).toContain("please do the thing");
 
@@ -933,11 +893,6 @@ describe("LIM-64 production wrapper path", () => {
     const receiptDb = join(dir, "cc-lhc.sqlite");
     const spawned: FakePty[] = [];
     let mutationCalls = 0;
-    // Arrangement: the first settle rebuilds and the replacement never becomes
-    // viable (a mute child), so the old session simply stays live — nothing
-    // switched, nothing undone. The second distinct settle must be free to try
-    // again right away: a transient swap failure used to cost two minutes at
-    // maximum pressure on top of a 10K growth toll.
     const sdk = sdkForCapture(async () => ({
       ok: true,
       value: { kind: "error", reason: "stop" },
@@ -988,7 +943,6 @@ describe("LIM-64 production wrapper path", () => {
     const runPromise = run([], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
-        // Every replacement candidate is mute, so no swap ever completes.
         const mute = args.includes("--resume") && args.includes(REBUILT_ID);
         const fake = makeFakePty(8800 + spawned.length, `c${spawned.length}`, args, true, !mute);
         spawned.push(fake);
@@ -1019,7 +973,6 @@ describe("LIM-64 production wrapper path", () => {
     expect(mutationCalls).toBeGreaterThanOrEqual(1);
 
     const mutationAfterFirst = mutationCalls;
-    // Second distinct pressure immediately after the failure.
     lifecycleSink!([
       { kind: "turn_opened", reason: "user_prompt" },
       {
@@ -1046,7 +999,6 @@ describe("LIM-64 production wrapper path", () => {
       },
       { kind: "turn_settled", reason: "end_turn" },
     ]);
-    // The seam is taken again immediately — no 120-second wait, no growth toll.
     await waitFor(() => mutationCalls > mutationAfterFirst, "second compact attempt", 8_000);
 
     const store = openGovernorReceiptStore(receiptDb);
@@ -1055,21 +1007,14 @@ describe("LIM-64 production wrapper path", () => {
       .listBySession("old-session")
       .find((r) => r.samplingId === "req:cool2" && r.observePhase === "settled_seam" && r.wouldMutate === true);
     expect(second).toBeDefined();
-    // No timer anywhere in the outcome vocabulary: nothing was deferred for
-    // waiting out a clock.
     expect(all.every((r) => (r.handoffOutcome as { reason?: string }).reason !== "cooldown")).toBe(true);
     store.close();
     writeSpy.mockRestore();
-    // The old child never lost the terminal, so it is what ends the run.
     spawned[0]!.fireExit(0);
     await runPromise;
   }, 25_000);
 
   it("wrapper_exiting before claim: no mutation; receipt mutation_deferred wrapper_exiting", async () => {
-    // Direct coverage of runAutoOperation's early wrapper_exiting gate (claim path).
-    // The lifecycle-side `if (exited) deferAuto("wrapper_exiting")` before setImmediate
-    // is only reachable during teardown (exited flipped between insert and schedule);
-    // that race cannot be forced without production-only timing and is not faked here.
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim64-wexit-"));
     dirs.push(dir);
     const receiptDb = join(dir, "cc-lhc.sqlite");
@@ -1171,7 +1116,6 @@ describe("LIM-64 production wrapper path", () => {
       governorReceiptDbPath: receiptDb,
       onBeforeAutoOperation: ({ markHandoffInProgress, clearHandoffInProgress }) => {
         markHandoffInProgress();
-        // Clear after the gate observes the race so run() can tear down on child exit.
         setImmediate(() => clearHandoffInProgress());
       },
       onHandoffResult: () => {
@@ -1298,9 +1242,6 @@ describe("LIM-64 production wrapper path", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "sink");
     lifecycleSink!(BOUND_SIGNALS);
-    // Two settled wouldMutate decisions in ONE lifecycle batch so the second
-    // observe sees autoOperationScheduled=true before setImmediate runs
-    // runAutoOperation (which would set operationInFlight and force wouldMutate=false).
     lifecycleSink!([
       ...ESTIMATE_CROSS_SIGNALS,
       { kind: "turn_opened", reason: "user_prompt" },
@@ -1308,7 +1249,6 @@ describe("LIM-64 production wrapper path", () => {
         kind: "sampling_observed",
         samplingId: "req:inflight2",
         providerUsage: {
-          // First settle pressure was 5500; need +retryGrowth (1000) and above upper (5000).
           input_tokens: 8_000,
           cache_creation_input_tokens: 0,
           cache_read_input_tokens: 0,
@@ -1330,12 +1270,9 @@ describe("LIM-64 production wrapper path", () => {
       { kind: "turn_settled", reason: "end_turn" },
     ]);
     await new Promise((r) => setTimeout(r, 200));
-    // Only the first auto op should claim mutation.
     expect(mutationStarted).toBe(1);
 
     const store = openGovernorReceiptStore(receiptDb);
-    // Prefer settled wouldMutate row — open_turn classifications share samplingId
-    // with wouldMutate=false and must not be confused with the schedule owner.
     const second = store
       .listBySession("old-session")
       .find((r) => r.samplingId === "req:inflight2" && r.wouldMutate === true);
@@ -1344,7 +1281,6 @@ describe("LIM-64 production wrapper path", () => {
       kind: "mutation_deferred",
       reason: "auto_operation_in_flight",
     });
-    // First receipt should still be scheduled or terminal after claim — not the second's owner.
     const first = store.listBySession("old-session").find((r) => r.samplingId === "req:est" && r.wouldMutate === true);
     expect(first?.receiptId).not.toBe(second?.receiptId);
     store.close();
@@ -1411,7 +1347,6 @@ describe("LIM-64 production wrapper path", () => {
 
     expect(wrapperLogLines.some((l) => l.includes("outcome NOT durable") || l.includes("attach failed"))).toBe(true);
 
-    // Re-open store without the failing hook: receipt still scheduled (unresolved).
     const store = openGovernorReceiptStore(receiptDb);
     const would = store.listBySession("old-session").filter((r) => r.wouldMutate);
     expect(would).toHaveLength(1);
@@ -1474,7 +1409,6 @@ describe("LIM-64 production wrapper path", () => {
     expect(mutationSentinel).toBe(true);
     expect(wrapperLogLines.some((l) => l.includes("receipt append failed"))).toBe(true);
     expect(wrapperLogLines.some((l) => l.includes("in-memory receipt"))).toBe(true);
-    // Store open succeeded — no "receipt store unavailable" required.
     expect(wrapperLogLines.some((l) => l.includes("receipt store unavailable"))).toBe(false);
 
     spawned[0]!.fireExit(0);
@@ -1504,9 +1438,7 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
     for (const d of dirs.splice(0)) {
       try {
         rmSync(d, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -1518,7 +1450,6 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
     upperBoundTokens: number;
   }
 
-  /** The first describe's rig, launched on the built-in 1M policy. */
   function launchOneMillionRig() {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-lim144-1m-"));
     dirs.push(dir);
@@ -1724,7 +1655,6 @@ describe("F5 continue once after a too-long rejection (gorilla, long-horizon-con
     for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
   });
 
-  /** Claude answered the turn with the exact `Prompt is too long` rejection; pressure stays far below the trigger. */
   const rejectedTurn = (n: number): LifecycleSignal[] => [
     { kind: "turn_opened", reason: "user_prompt" },
     { kind: "sampling_observed", samplingId: `req:rejected-${n}`, contextLimitRejected: true },
@@ -1767,8 +1697,6 @@ describe("F5 continue once after a too-long rejection (gorilla, long-horizon-con
       return session;
     };
     const results: HandoffResult[] = [];
-    // A TTY stdin lets actionable notices open the Control Panel on screen;
-    // onboarding is marked shown so the panel is closed at launch.
     if (tty) markShown(firstLoadMarkerPath(process.env.CC_LHC_HOME!), ONBOARDING_VERSION);
     const stdin = tty ? ttyStream() : fakeStream();
     const stdout = tty ? ttyStream() : fakeStream();
@@ -1829,9 +1757,7 @@ describe("F5 continue once after a too-long rejection (gorilla, long-horizon-con
     expect(replacement.writes.indexOf("\r")).toBeGreaterThan(
       replacement.writes.indexOf(rig.continues(replacement)[0]!),
     );
-    // The old child never received it.
     expect(rig.continues(rig.spawned[0]!)).toHaveLength(0);
-    // The fence reopens after the Enter: typing reaches the replacement again.
     rig.stdin.write("z");
     await waitFor(() => replacement.writes.some((w) => String(w) === "z"), "input forwarded after the continue");
     expect(rig.logLines.some((l) => l.includes("typed-ahead byte(s)"))).toBe(false);

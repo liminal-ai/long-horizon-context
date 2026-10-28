@@ -1,15 +1,3 @@
-/**
- * run() must let go of every file under the cc-lhc home before it returns,
- * on every way out: the orderly exit, a guidance exit, a refused launch.
- * A store left open is harmless when cli.ts exits right after run(), but it
- * holds the database for an in-process caller, and on Windows an open handle
- * stops the home from being removed (CI 35943449452: ~270 EPERM teardowns
- * from a store left open).
- *
- * Linux only: /proc/self/fd names every descriptor this process holds, so the
- * check needs no Windows runner to catch the class.
- */
-
 import {
   chmodSync,
   mkdirSync,
@@ -41,7 +29,6 @@ function fakeStream(): NodeJS.ReadStream & NodeJS.WriteStream {
   return stream;
 }
 
-/** Every path this process holds open under `root`. */
 function heldUnder(root: string): string[] {
   const held: string[] = [];
   for (const fd of readdirSync("/proc/self/fd")) {
@@ -49,7 +36,7 @@ function heldUnder(root: string): string[] {
     try {
       target = readlinkSync(join("/proc/self/fd", fd));
     } catch {
-      continue; // closed between readdir and readlink (the readdir's own fd)
+      continue;
     }
     if (target.startsWith(`${root}/`)) held.push(target);
   }
@@ -96,7 +83,6 @@ describe.skipIf(process.platform !== "linux")("run() releases the cc-lhc home on
   it("orderly one-shot exit", async () => {
     const session = "22222222-2222-4222-8222-222222222222";
     expect(await run(["-p", "hello there", "--session-id", session], { ...opts(), claudeBin: STANDIN })).toBe(0);
-    // The run really used the home: the lineage database is there.
     expect(readdirSync(lhcHome)).toContain("cc-lhc.sqlite");
     expect(heldUnder(home).map((p) => p.slice(home.length))).toEqual([]);
   });

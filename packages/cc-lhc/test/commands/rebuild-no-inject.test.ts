@@ -98,10 +98,7 @@ describe("manual compact/prune: wrapper-owned handoff, success-only lineage", ()
     const runtime = makeRuntime({ cwd });
     const outcome = await runCompactCommand("compact", runtime);
 
-    expect(outcome.restart).toBeUndefined();
     expect(writeSpy).toHaveBeenCalledOnce();
-    // Success-only lineage: nothing is persisted before the replacement is
-    // proven ready-after-replay (the wrapper registers it post-proof).
     expect(lineageSpy).not.toHaveBeenCalled();
     expect(outcome.handoff).toBeDefined();
     expect(outcome.handoff?.operation).toBe("compact");
@@ -116,17 +113,13 @@ describe("manual compact/prune: wrapper-owned handoff, success-only lineage", ()
   });
 
   it("retries the rebuild, then keeps the installed view with no handoff when every attempt throws", async () => {
-    const writeSpy = vi
-      .spyOn(writeRebuilt, "writeRebuiltRollout")
-      .mockRejectedValue(new Error("disk full"));
+    const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockRejectedValue(new Error("disk full"));
     const lineageSpy = vi.spyOn(lineageDb, "safeRecordSessionThread").mockResolvedValue({ ok: true });
 
     const outcome = await runCompactCommand("compact", makeRuntime());
-    expect(outcome.restart).toBeUndefined();
     expect(outcome.handoff).toBeUndefined();
     expect(outcome.messages.join("\n")).toMatch(/rebuilt rollout not written after \d+ attempts/);
     expect(outcome.messages.join("\n")).toMatch(/disk full/);
-    // Forward-only: the compact stays installed and the next seam re-materializes.
     expect(outcome.messages.join("\n")).toMatch(/LHC view is installed and durable/);
     expect(lineageSpy).not.toHaveBeenCalled();
 
@@ -148,7 +141,6 @@ describe("manual compact/prune: wrapper-owned handoff, success-only lineage", ()
     const lineageSpy = vi.spyOn(lineageDb, "safeRecordSessionThread").mockResolvedValue({ ok: true });
 
     const outcome = await runPruneCommand("prune", makeRuntime());
-    expect(outcome.restart).toBeUndefined();
     expect(lineageSpy).not.toHaveBeenCalled();
     expect(outcome.handoff?.operation).toBe("prune");
     expect(outcome.handoff?.rebuilt.sessionId).toBe(rebuiltId);

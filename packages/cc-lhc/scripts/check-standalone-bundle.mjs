@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-/** Validate and execute one unpacked cc-lhc standalone bundle. */
-
 import { spawnSync } from "node:child_process";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";

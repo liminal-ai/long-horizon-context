@@ -11,10 +11,8 @@ import type { RolloutLineItem, WatcherEmission } from "./types.js";
 
 const POLL_MS = 500;
 export const MAX_PARTIAL_BYTES = 10 * 1024 * 1024;
-/** Bounded retries when snapshot metadata changes mid-read. */
 export const SNAPSHOT_MAX_RETRIES = 3;
 
-/** Injectable I/O seam for deterministic short-read / failure / mutation tests. */
 export interface WatcherIo {
   fstat: (fd: number) => {
     size: number;
@@ -25,7 +23,6 @@ export interface WatcherIo {
   };
   lstat: (path: string) => { dev: number | bigint; ino: number | bigint };
   read: (fd: number, buffer: Buffer, offset: number, length: number, position: number) => number;
-  /** Close an fd opened by the watcher (not continuity-owned handles). */
   close: (fd: number) => void;
 }
 
@@ -41,11 +38,6 @@ export interface FileMeta {
 
 export interface RolloutWatcher {
   stop(): void;
-  /**
-   * Settles after a coherent initial snapshot is fully validated and onBatch
-   * (if any) resolves. Rejects on incomplete initial evidence. Terminal after
-   * rejection — no later onBatch.
-   */
   initialCatchUp: Promise<void>;
   isTerminal?: () => boolean;
 }
@@ -53,25 +45,11 @@ export interface RolloutWatcher {
 export interface WatchRolloutOptions {
   pollMs?: number;
   maxPartialBytes?: number;
-  /**
-   * Byte offset where live suffix begins. When > 0, `expectedConsumedDigest`
-   * is required — the watcher never re-reads [0, startOffset) to invent a
-   * baseline.
-   */
   startOffset?: number;
-  /**
-   * Proven sha256 of exact bytes [0, startOffset). Session must transfer the
-   * already-verified rebuilt-prefix digest (or EMPTY when startOffset=0).
-   * Positive offset without a valid 64-hex digest fails closed at construct.
-   */
   expectedConsumedDigest?: string;
   continuity?: ContinuityHandle;
   filePath?: string;
   io?: Partial<WatcherIo>;
-  /**
-   * Test seam: after candidate bytes are fully copied (local), before commit/
-   * delivery. May mutate the underlying file. Snapshot post-check must reject.
-   */
   afterCandidateRead?: (info: { bytes: Buffer; snapshotEnd: number }) => void;
   onBatch: (emissions: WatcherEmission[]) => void | Promise<void>;
   onBufferCap?: (message: string) => void;
@@ -83,10 +61,6 @@ export interface WatchRolloutOptions {
 
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
-/**
- * Resolve the owned consumed-region baseline. Never re-reads the file to
- * establish trust — positive offset requires an explicit proven digest.
- */
 export function resolveInitialConsumedDigest(
   startOffset: number,
   expectedConsumedDigest: string | undefined,
@@ -152,7 +126,6 @@ function detail(cause: unknown): string {
 
 function defaultIo(): WatcherIo {
   return {
-    // Exact (bigint) dev/ino: see RolloutFileIdentity.
     fstat: (fd) => {
       const st = fstatSync(fd, { bigint: true });
       return {
@@ -180,24 +153,6 @@ function sha256(buf: Buffer): string {
   return createHash("sha256").update(buf).digest("hex");
 }
 
-/**
- * Coherent snapshot continuity watcher.
- *
- * For each actual change/growth:
- * 1. Capture pre-read fd identity/size/mtime/ctime
- * 2. Read [0, snapshotEnd) into local candidate bytes (local cursor; short-read safe)
- * 3. Capture post-read metadata; if changed, bounded retry or reject
- * 4. Prove candidate[0, oldOffset) matches prior consumed digest
- * 5. Derive suffix + new digest from those exact candidate bytes
- * 6. Initial: validate every complete line before commit/onBatch; an
- *    unterminated last line is held as partial until its newline arrives
- * 7. Commit offset/digest/meta, then deliver
- *
- * Idle polls with unchanged metadata skip work. fs.watch marks continuity dirty
- * so a watcher event cannot be skipped solely because coarse stats compare equal.
- *
- * Cost: O(snapshotEnd) bytes read+hash per change (full prefix re-prove).
- */
 export function watchRolloutFile(
   filePathOrOptions: string | WatchRolloutOptions,
   maybeOptions?: WatchRolloutOptions,
@@ -227,7 +182,6 @@ export function watchRolloutFile(
   void initialCatchUp.catch(() => {});
 
   let lastMeta: FileMeta | undefined;
-  /** Set by fs.watch; forces a full continuity pass even if stats compare equal. */
   let continuityDirty = true;
 
   const finishInitialOk = (): void => {
@@ -247,9 +201,7 @@ export function watchRolloutFile(
     closed = true;
     try {
       closeHandle();
-    } catch {
-      // best effort
-    }
+    } catch {}
   };
 
   const stopPolling = (): void => {
@@ -260,9 +212,7 @@ export function watchRolloutFile(
     if (fsWatcher !== undefined) {
       try {
         fsWatcher.close();
-      } catch {
-        // best effort
-      }
+      } catch {}
       fsWatcher = undefined;
     }
   };
@@ -292,7 +242,6 @@ export function watchRolloutFile(
     }
   };
 
-  // --- Open with idempotent closer before fstat (no leak on fstat throw) ---
   if (options.continuity !== undefined) {
     fd = options.continuity.fd;
     identity = options.continuity.identity;
@@ -317,16 +266,13 @@ export function watchRolloutFile(
         },
       };
     }
-    // Idempotent closer immediately after successful open — before fstat.
     let localClosed = false;
     closeHandle = () => {
       if (localClosed) return;
       localClosed = true;
       try {
         io.close(fd);
-      } catch {
-        // best effort
-      }
+      } catch {}
     };
     try {
       const st = io.fstat(fd);
@@ -345,8 +291,6 @@ export function watchRolloutFile(
     }
   }
 
-  // Owned baseline: caller-supplied proven digest only. Never re-read disk to
-  // establish trust (handoff-gap rewrites must fail the first candidate proof).
   const resolvedDigest = resolveInitialConsumedDigest(offset, options.expectedConsumedDigest);
   if (!resolvedDigest.ok) {
     terminate("initial", resolvedDigest.reason);
@@ -432,11 +376,6 @@ export function watchRolloutFile(
     }
   };
 
-  /**
-   * Parse the complete-lines portion of the initial snapshot. Callers pass
-   * text ending at a newline (the unterminated tail is held back as partial). Returns emissions or a rejection reason.
-   * Does not touch global partial/offset.
-   */
   const parseCompleteSnapshot = (
     fullText: string,
     suffixFrom: number,
@@ -447,19 +386,14 @@ export function watchRolloutFile(
     if (!fullText.endsWith("\n")) {
       return { ok: false, reason: "unterminated initial partial line" };
     }
-    // Only deliver the suffix portion (bytes after oldOffset as text).
-    // Candidate is raw bytes; suffix is UTF-8 of candidate.subarray(suffixFrom).
     const suffixBytes = Buffer.from(fullText, "utf8").subarray(suffixFrom);
     const suffixText = suffixBytes.toString("utf8");
-    // For initial full-file validation: every line in the whole file must be complete
-    // (already ensured by trailing \n). Emit only suffix lines.
     const lines = suffixText === "" ? [] : suffixText.slice(0, -1).split("\n");
     const emissions: WatcherEmission[] = [];
     for (const line of lines) {
       if (line.length === 0) continue;
       emissions.push(parseLine(line));
     }
-    // Also validate prefix lines parse if present (full file integrity).
     if (suffixFrom > 0) {
       const prefixText = fullText.slice(0, fullText.length - suffixText.length);
       const prefixLines = prefixText.endsWith("\n") ? prefixText.slice(0, -1).split("\n") : prefixText.split("\n");
@@ -475,10 +409,6 @@ export function watchRolloutFile(
     return { ok: true, emissions };
   };
 
-  /**
-   * Live (post-initial) suffix parse may leave a trailing partial in local
-   * state until the next growth completes it.
-   */
   const parseLiveSuffix = (suffixText: string): { emissions: WatcherEmission[]; nextPartial: string } => {
     const combined = partial + suffixText;
     const lines = combined.split("\n");
@@ -496,7 +426,6 @@ export function watchRolloutFile(
   const attemptCoherentSnapshot = (
     isInitial: boolean,
   ): "idle" | "ok" | { fail: string; kind: "initial" | "shrink" | "continuity" | "runtime" } => {
-    // Path identity
     try {
       const lst = io.lstat(path);
       if (!identitiesEqual({ dev: lst.dev, ino: lst.ino }, identity)) {
@@ -526,20 +455,17 @@ export function watchRolloutFile(
         };
       }
 
-      // Idle: unchanged metadata and not dirty from fs.watch → skip.
       if (!isInitial && !continuityDirty && lastMeta !== undefined && metaEqual(pre, lastMeta) && pre.size === offset) {
         return "idle";
       }
 
       const snapshotEnd = pre.size;
-      // Read coherent candidate [0, snapshotEnd)
       const readResult = readRangeLocal(0, snapshotEnd);
       if (!readResult.ok) {
         return { fail: readResult.reason, kind: isInitial ? "initial" : "runtime" };
       }
       const candidate = readResult.chunk;
 
-      // Test seam: mutate after copy, before post-check / commit.
       options.afterCandidateRead?.({ bytes: candidate, snapshotEnd });
 
       const post = captureMeta();
@@ -554,7 +480,6 @@ export function watchRolloutFile(
             kind: isInitial ? "initial" : "continuity",
           };
         }
-        // Bounded retry with a fresh candidate.
         continue;
       }
 
@@ -565,7 +490,6 @@ export function watchRolloutFile(
         };
       }
 
-      // Prove [0, oldOffset) from **candidate bytes** matches prior digest.
       const oldOffset = offset;
       const priorRegion = candidate.subarray(0, oldOffset);
       const priorHash = oldOffset === 0 ? EMPTY_PREFIX_SHA256 : sha256(priorRegion);
@@ -576,33 +500,23 @@ export function watchRolloutFile(
         };
       }
 
-      // Derive new digest and suffix from the same candidate.
       const newDigest = snapshotEnd === 0 ? EMPTY_PREFIX_SHA256 : sha256(candidate);
       const suffixBuf = candidate.subarray(oldOffset);
       const suffixText = suffixBuf.toString("utf8");
 
       if (snapshotEnd === oldOffset) {
-        // No growth: still update lastMeta (and clear dirty).
         lastMeta = pre;
         continuityDirty = false;
         if (isInitial) {
-          // Empty or already-at-startOffset: must not leave partial.
           if (partial.trim() !== "") {
             return { fail: "unterminated initial partial line", kind: "initial" };
           }
-          // Initial with no suffix to deliver.
           finishInitialOk();
         }
         return "ok";
       }
 
       if (isInitial) {
-        // Validate every complete initial line before any commit or onBatch.
-        // An unterminated last line is not-yet-complete data (a writer caught
-        // mid-append, or a torn tail the launch repair could not touch): it is
-        // held as the live partial and ingested when its newline arrives —
-        // never grounds to fail initial catch-up. It must lie in the suffix;
-        // an unterminated already-consumed prefix still fails closed.
         const completeEnd = candidate.lastIndexOf(0x0a) + 1;
         if (completeEnd < snapshotEnd && completeEnd < oldOffset) {
           return { fail: "unterminated initial partial line", kind: "initial" };
@@ -618,7 +532,6 @@ export function watchRolloutFile(
           options.onBufferCap,
         );
         if (tail.capBreach !== null) parsed.emissions.push(tail.capBreach);
-        // Commit then deliver.
         offset = snapshotEnd;
         consumedDigest = newDigest;
         lastMeta = pre;
@@ -632,7 +545,6 @@ export function watchRolloutFile(
         return "ok";
       }
 
-      // Live: may leave trailing partial; still commit only after proof on candidate.
       const live = parseLiveSuffix(suffixText);
       offset = snapshotEnd;
       consumedDigest = newDigest;
@@ -673,9 +585,7 @@ export function watchRolloutFile(
       continuityDirty = true;
       tick();
     });
-  } catch {
-    // polling only
-  }
+  } catch {}
 
   pollTimer = setInterval(tick, pollMs);
   readMore(true);
@@ -693,7 +603,6 @@ export function watchRolloutFile(
           continuityDirty = true;
           readMore(false, true);
         } catch {
-          // best effort
         } finally {
           flushingOnStop = false;
         }

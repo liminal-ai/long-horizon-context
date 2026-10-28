@@ -1,11 +1,3 @@
-/**
- * TC-3.3a — Product terminology audit.
- *
- * CC-LHC behavior is Smart Compact. Claude's built-in behavior is Claude native
- * Compact. Bare "Compact" (capital C) is allowed only inside literal interfaces
- * such as `/compact`. After masking those literals, legacy lowercase product
- * phrases are also rejected.
- */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,11 +46,9 @@ import {
   SMART_COMPACT,
 } from "../../src/wrapper/terminology.js";
 
-/** The Control Panel's own spelling of the operation. */
 const SMART_COMPACT_COMMAND = "/smart-compact";
 
 const PKG_ROOT = join(dirname(fileURLToPath(import.meta.url)), "../..");
-// Docs may be checked out with CRLF (Windows autocrlf); audit the text, not the checkout.
 const README = readFileSync(join(PKG_ROOT, "README.md"), "utf8").replaceAll("\r\n", "\n");
 const ONBOARDING = readFileSync(join(PKG_ROOT, "../../docs/onboard/05-host-cc-lhc.md"), "utf8").replaceAll(
   "\r\n",
@@ -75,24 +65,21 @@ function stripComments(source: string): string {
 }
 
 function maskLiteralInterfaces(text: string): string {
-  return (
-    text
-      .replaceAll("Smart Compact", " ")
-      // Control Panel commands are literal interfaces, like /compact below.
-      .replaceAll("/smart-compact", " ")
-      .replaceAll("/smart-prune", " ")
-      .replaceAll("Claude native Compact", " ")
-      .replaceAll("/compact", " ")
-      .replaceAll("DISABLE_AUTO_COMPACT", " ")
-      .replaceAll("DISABLE_COMPACT", " ")
-      .replaceAll("--lhc-auto-compact", " ")
-      .replaceAll("--autocompact", " ")
-      .replaceAll("[lhc compact:", " ")
-      .replaceAll("autoCompact", " ")
-      .replaceAll("auto_compact", " ")
-      .replaceAll("context_compact_continue", " ")
-      .replaceAll("compact-continuation", " ")
-  );
+  return text
+    .replaceAll("Smart Compact", " ")
+    .replaceAll("/smart-compact", " ")
+    .replaceAll("/smart-prune", " ")
+    .replaceAll("Claude native Compact", " ")
+    .replaceAll("/compact", " ")
+    .replaceAll("DISABLE_AUTO_COMPACT", " ")
+    .replaceAll("DISABLE_COMPACT", " ")
+    .replaceAll("--lhc-auto-compact", " ")
+    .replaceAll("--autocompact", " ")
+    .replaceAll("[lhc compact:", " ")
+    .replaceAll("autoCompact", " ")
+    .replaceAll("auto_compact", " ")
+    .replaceAll("context_compact_continue", " ")
+    .replaceAll("compact-continuation", " ");
 }
 
 function bareCompactHits(text: string): string[] {
@@ -321,8 +308,6 @@ describe("TC-3.3a product terminology audit", () => {
     }
 
     expect(CC_LHC_HELP).toContain(SMART_COMPACT);
-    // Control Panel surfaces name the COMMAND, not the product: the panel is
-    // a CLI and its screens must print what the parser accepts.
     expect(helpCommand.messages.join("\n")).toContain(SMART_COMPACT_COMMAND);
     expect(helpCommand.messages.join("\n")).not.toContain(SMART_COMPACT);
     expect(nativeCompactAnomalyNotice()).toContain(CLAUDE_NATIVE_COMPACT);
@@ -332,8 +317,6 @@ describe("TC-3.3a product terminology audit", () => {
     expect(formatSurvivalRelaunchNotice("old", false)).toContain(CLAUDE_NATIVE_COMPACT);
     expect(formatOneShotCompactedBeforeLaunch("a", "b")).toContain(SMART_COMPACT);
     expect(formatOneShotCompactedBeforeLaunch("a", "b")).not.toMatch(/compacted\b/i);
-    // Panel-facing summaries name the command; their log counterparts keep
-    // the product name.
     expect(formatAutoMutationSummary("refused", "d")).toContain(SMART_COMPACT_COMMAND);
     expect(formatAutoMutationLog("refused", "d")).toContain(SMART_COMPACT);
     expect(formatCompactViewLine("v1", 1, 1)).toContain(SMART_COMPACT);
@@ -349,7 +332,6 @@ describe("TC-3.3a product terminology audit", () => {
     ] as const) {
       expect(text, name).toContain("no fixed ratio or direction");
       expect(text, name).toMatch(/may differ|may\s+differ/);
-      // Fixed-relationship claims: guaranteed inequality, or a percentage/direction of bias.
       expect(text, name).not.toMatch(
         /never the same number|always (?:higher|lower|larger|smaller)|(?:over|under)-?estimates? by|\d+\s*% (?:higher|lower|more|less)/i,
       );
@@ -372,11 +354,9 @@ describe("TC-3.3a product terminology audit", () => {
     expect(homeRows).toContain("size after /smart-compact");
     expect(homeRows).toContain("automatic /smart-compact point");
     expect(homeRows).toContain(`${CLAUDE_NATIVE_AUTO_COMPACT} may run (--autocompact)`);
-    // Bare lowercase "compact" standing for the product is gone from panel copy.
     const panelCopy = PANEL_COMMANDS.map((c) => `${c.summary} ${c.short ?? ""} ${c.helpSummary ?? ""}`).join("\n");
     expect(panelCopy).not.toMatch(/(?<![/-])\bcompact\b/);
     expect(homeRows).not.toMatch(/(?<![/-])\bcompact\b/);
-    // Governor reasons that land in durable receipts name the products.
     const decideSource = stripComments(readFileSync(join(SRC_ROOT, "governor/decide.ts"), "utf8"));
     expect(decideSource).toContain("Smart Compact, Tool Prune, or handoff already in flight");
     expect(decideSource).toContain("capability-limited Smart Compact eligible at settled seam");

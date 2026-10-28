@@ -1,26 +1,3 @@
-/**
- * Carryover transfer at the Smart Compact handoff (LIM-145 AC-2.5–2.8).
- *
- * After the replacement child is live, each carried item's declared mechanism
- * is invoked once for the handoff generation, then the same generation is
- * closed. The parent does only what a mechanism needs from it:
- *
- *  - parent_output_read: nothing to start — the process never stopped; the
- *    output file is re-verified so an adopted item is never claimed blindly.
- *  - send_message / workflow_resume / rearm_at: the replacement continues
- *    these from the manifest in its rebuilt rollout; the parent starts nothing.
- *  - monitor_relaunch: the exact launch specification is resolved from the
- *    old rollout now, never earlier, and run once under
- *    `relaunchKey(launchId, generation)`, through the shell Claude Code itself
- *    would use (`relaunch-shell.ts`). The fence is the exclusive creation of
- *    that key's output file: a second invocation for the same generation
- *    finds it and starts nothing. The command text is held in memory only.
- *
- * An unavailable mechanism or a failed invocation closes that item with one
- * truthful `failed` terminal outcome; the handoff is never retried or rolled
- * back for it.
- */
-
 import { type ChildProcess, spawn } from "node:child_process";
 import { closeSync, mkdirSync, openSync } from "node:fs";
 import { join } from "node:path";
@@ -39,7 +16,6 @@ import { type RelaunchShell, type RelaunchShellResolution, resolveRelaunchShell 
 import { type ClosureResult, type ContinuitySnapshot, closeContinuitySnapshot } from "./snapshot.js";
 import { type ContinuityStore, relaunchKey } from "./store.js";
 
-/** Where a relaunched Monitor writes: one file per relaunch key, created exclusively. */
 export function relaunchOutputPath(dir: string, launchId: string, generation: number): string {
   const safe = relaunchKey(launchId, generation).replace(/[^A-Za-z0-9._-]/g, "_");
   return join(dir, `${safe}.output`);
@@ -52,7 +28,6 @@ export type RelaunchSpawn = (
   shell: RelaunchShell,
 ) => { pid: number };
 
-/** The resolved shell runs the exact command string, detached, output to the fence file. */
 export function spawnRelaunchReal(
   spec: MonitorLaunchSpec,
   outputFd: number,
@@ -72,16 +47,12 @@ export function spawnRelaunchReal(
 }
 
 export interface CarryoverPorts {
-  /** Directory for relaunch output files (created on demand). */
   monitorOutputDir: string;
-  /** Working directory for a relaunched command: the old child's. */
   cwd: string;
   statPath?: (path: string) => PathFact;
   readRollout?: (path: string) => string | null;
   spawnRelaunch?: RelaunchSpawn;
-  /** The shell for a relaunch; resolved for this platform when omitted. */
   relaunchShell?: RelaunchShellResolution;
-  /** Exact OS identity of the relaunched process (LIM-146 stop); native addon when omitted. */
   probeIdentity?: ProbeProcessIdentity;
   platform?: NodeJS.Platform;
   log: (message: string) => void;
@@ -91,7 +62,6 @@ export type InvocationResult =
   | { launchId: string; kind: "adopted" | "manifest" | "rearmed" }
   | { launchId: string; kind: "relaunched"; pid: number; outputPath: string }
   | { launchId: string; kind: "already_relaunched"; outputPath: string }
-  /** A relaunch the wrapper made in an earlier generation, carried as is. */
   | { launchId: string; kind: "relaunch_carried"; pid: number | null; outputPath: string }
   | { launchId: string; kind: "failed"; reason: string };
 
@@ -105,22 +75,12 @@ function failed(launchId: string, reason: string): InvocationResult {
   return { launchId, kind: "failed", reason };
 }
 
-/**
- * Invoke every carried mechanism once for the snapshot's generation, record a
- * truthful terminal failure for anything that cannot continue, then close the
- * generation. Idempotent per generation: a relaunch already performed is
- * reported, not repeated.
- */
 export function invokeCarryover(
   store: ContinuityStore,
   snapshot: ContinuitySnapshot,
   ports: CarryoverPorts,
   nowMs: number,
 ): CarryoverTransfer {
-  // A closed generation's transfer already happened: everything below reports
-  // read-only — no spawn, no fence creation, no terminal write — so no
-  // mechanism (a Monitor relaunch above all) can run a second time and the
-  // store's record cannot shift underneath the closure.
   const generationClosed = store.getGeneration(snapshot.threadId, snapshot.generation)?.state === "closed";
   const statPath = ports.statPath ?? statPathReal;
   const spawnRelaunch = ports.spawnRelaunch ?? spawnRelaunchReal;
@@ -148,8 +108,6 @@ export function invokeCarryover(
         result = { launchId: item.launchId, kind: "rearmed" };
         break;
       case "monitor_relaunch": {
-        // A relaunch the wrapper made for an earlier generation carries as is;
-        // this generation's own relaunch keeps its exactly-once fence below.
         if (
           item.relaunch !== null &&
           item.relaunch.outputPath !== relaunchOutputPath(ports.monitorOutputDir, item.launchId, snapshot.generation)
@@ -195,9 +153,6 @@ export function invokeCarryover(
         try {
           const spawned = spawnRelaunch(resolved.spec, fd, ports.cwd, relaunchShell.shell);
           result = { launchId: item.launchId, kind: "relaunched", pid: spawned.pid, outputPath };
-          // LIM-146: what the replacement may manage. The output file is the
-          // parent's own; the process identity is read exactly or not at all —
-          // without it the item has output but no stop.
           const output = verifyOutputFile({ platform, sourceRolloutPath: undefined, statPath }, outputPath);
           if (isRefusal(output)) {
             ports.log(`cc-lhc continuity: ${item.family} ${item.launchId} relaunch output identity ${output.reason}`);
@@ -252,7 +207,6 @@ export function invokeCarryover(
   return { generation: snapshot.generation, results, closure };
 }
 
-/** One log line per item: family, launch id, and outcome. Never the command. */
 function describeInvocation(
   family: string,
   result: InvocationResult,
@@ -276,8 +230,6 @@ function describeInvocation(
         result.pid === null ? "" : `, pid ${result.pid}`
       }; generation ${generation})`;
     case "failed":
-      // A closed generation's readback mutates nothing: no terminal was
-      // recorded on this call, so the log must not claim one was.
       return generationClosed
         ? `${head} not carried: ${result.reason} (generation ${generation} already closed; nothing recorded)`
         : `${head} not carried: ${result.reason} (recorded as failed)`;

@@ -64,7 +64,6 @@ if (mode === "concurrency") {
     current = parsed.current ?? 0;
     peak = parsed.peak ?? 0;
   } catch {
-    // fresh counter file
   }
   current += 1;
   peak = Math.max(peak, current);
@@ -79,7 +78,6 @@ if (mode === "concurrency") {
     peak = parsed.peak ?? peak;
     writeFileSync(counterPath, JSON.stringify({ current, peak }));
   } catch {
-    // ignore
   }
   process.stdout.write(`peak:${String(peak)}`);
   process.exit(0);
@@ -99,7 +97,6 @@ if (mode === "auth") {
   process.exit(1);
 }
 
-// What claude -p 2.1.281 does with no login: the reason on stdout, stderr empty.
 if (mode === "auth-stdout") {
   process.stdout.write("Not logged in · Please run /login\n");
   process.exit(1);

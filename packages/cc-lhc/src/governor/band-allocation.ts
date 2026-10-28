@@ -1,8 +1,3 @@
-/**
- * Product Band % allocations. CC-LHC exposes exactly three presets; the
- * bounded selector stays in core LHC. Mapping to an internal core profile
- * happens only at mutation preparation.
- */
 import type { ViewProfileOverride } from "lhc";
 
 import type { ContextPolicy, ResolvedContextPolicy } from "./types.js";
@@ -22,12 +17,10 @@ export interface BandAllocation {
   coreProfile: InternalCoreProfile;
 }
 
-/** Construction default for host-supplied profiles; mutation passes the active target explicitly. */
 export const HOST_PROFILE_CONSTRUCTION_LOWER_BOUND = 120_000;
 
 export const ACCEPTED_BOUNDED_CORE_SOURCE_COMMIT = "1cfce5d5b45258150278a5699657a2481de5a48e";
 
-/** Campaign HEAD onto which the accepted core source patch was applied. Final Story-2 commit is a later qualification receipt. */
 export const ADAPTATION_BASE_COMMIT = "da5e9bbb6a66728e78ae57fce4c51268b40731a6";
 
 export const BAND_ALLOCATIONS: readonly BandAllocation[] = [
@@ -88,18 +81,11 @@ export function mutationCoreProfile(profile: string): InternalCoreProfile {
   return allocationById(profile).coreProfile;
 }
 
-/**
- * Soft canonical segment size for the reader: half the full-fidelity share of
- * the active policy's lower target (180000 × 30% / 2 = 27000 on the built-in
- * policy). Read live, so preset and user
- * changes apply to the next candidate. A single atomic exchange may exceed it.
- */
 export function segmentThresholdTokens(policy: Pick<ContextPolicy, "profile" | "lowerBoundTokens">): number {
   const allocation = allocationById(policy.profile as BandAllocationId);
   return (policy.lowerBoundTokens * allocation.full) / 100 / 2;
 }
 
-/** SDK compact construction: internal profile plus the active policy target. */
 export function compactConstruction(policy: Pick<ContextPolicy, "profile" | "lowerBoundTokens">): {
   profile: InternalCoreProfile;
   params: { lowerBound: number };
@@ -123,7 +109,6 @@ function hostProfile(allocation: BandAllocation): ViewProfileOverride {
   };
 }
 
-/** Complete host-supplied profiles injected into every mutation-capable SDK. */
 export const HOST_VIEW_PROFILES: readonly ViewProfileOverride[] = BAND_ALLOCATIONS.filter(
   (allocation) => allocation.id !== "default",
 ).map(hostProfile);

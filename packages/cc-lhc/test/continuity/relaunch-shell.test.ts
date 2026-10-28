@@ -1,7 +1,3 @@
-/**
- * LIM-145: the shell a relaunched Monitor runs through, resolved exactly as
- * Claude Code 2.1.252 resolves its own bash on Windows.
- */
 import { describe, expect, it } from "vitest";
 
 import { resolveRelaunchShell } from "../../src/continuity/relaunch-shell.js";
@@ -36,7 +32,6 @@ describe("resolveRelaunchShell", () => {
       ok: true,
       shell: { program: configured },
     });
-    // A configured path that does not exist falls through to auto-detection, as Claude Code does.
     expect(
       resolveRelaunchShell("win32", { CLAUDE_CODE_GIT_BASH_PATH: "D:\\missing\\bash.exe", PATH: "" }, at(GIT_BASH)),
     ).toMatchObject({

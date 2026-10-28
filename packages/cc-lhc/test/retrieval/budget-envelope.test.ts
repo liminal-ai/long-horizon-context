@@ -23,7 +23,6 @@ describe("analytic envelope bound (reachable max)", () => {
     const served = assembleMaxServedShape("get-turns", 4, plan.sdkByteBudget!);
     const id0 = maxId("get-turns", 0);
     const maxSlice = maxWidthNonTerminalSlice();
-    // All numeric fields carry MAX_SAFE_INTEGER digit width
     expect(String(maxSlice.fromToken).length).toBe(MAX_TOKEN_DIGITS);
     expect(String(maxSlice.toToken).length).toBe(MAX_TOKEN_DIGITS);
     expect(String(maxSlice.totalTokens).length).toBe(MAX_TOKEN_DIGITS);
@@ -32,21 +31,17 @@ describe("analytic envelope bound (reachable max)", () => {
     expect(remain).toBeGreaterThan(1);
     expect(String(remain).length).toBe(MAX_TOKEN_DIGITS);
 
-    // Exact formatter bytes — not a hand-built shorter proxy
     const longFooter = sliceFooter("get-turns", id0, maxSlice);
     expect(longFooter).toMatch(/Next slice:/);
     expect(longFooter).toContain(`--from ${maxSlice.toToken}`);
     expect(longFooter).toContain(`${remain} tok remain`);
-    // Mutation of one-digit from=0/remain=1 must NOT match the proof footer
     const shortProxy = sliceFooter("get-turns", id0, {
       fromToken: 0,
       toToken: TOK - 1,
       totalTokens: TOK,
     });
     expect(shortProxy).not.toBe(longFooter);
-    expect(Buffer.byteLength(longFooter, "utf8")).toBeGreaterThan(
-      Buffer.byteLength(shortProxy, "utf8"),
-    );
+    expect(Buffer.byteLength(longFooter, "utf8")).toBeGreaterThan(Buffer.byteLength(shortProxy, "utf8"));
     expect(served.envelope).toContain(longFooter);
     expect(served.envelope).not.toContain(shortProxy);
 
@@ -74,12 +69,8 @@ describe("analytic envelope bound (reachable max)", () => {
     const served = assembleMaxServedShape("get-messages", 32, plan.sdkByteBudget!);
     const unserved = assembleMaxUnservedShape("get-messages", 32);
     const mixed = assembleMixedShape("get-messages", 32, plan.sdkByteBudget!);
-    // Reviewer gap: served empty-ends can exceed mixed/unserved — must still fit
     expect(served.bytes).toBeGreaterThan(0);
-    expect(Math.max(served.bytes, unserved.bytes, mixed.bytes)).toBeLessThanOrEqual(
-      plan.stdoutCeiling,
-    );
-    // Exact structural byte equality vs re-assembly
+    expect(Math.max(served.bytes, unserved.bytes, mixed.bytes)).toBeLessThanOrEqual(plan.stdoutCeiling);
     const again = assembleMaxServedShape("get-messages", 32, plan.sdkByteBudget!);
     expect(again.envelope).toBe(served.envelope);
     expect(again.bytes).toBe(served.bytes);
@@ -94,7 +85,6 @@ describe("analytic envelope bound (reachable max)", () => {
         if (tiny.sdkByteBudget !== null) {
           expect(proveEnvelopeFits(op, n, 2_000)).toBe(true);
         }
-        // Exact structural: maximum assembler is pure of inputs
         if (tiny.sdkByteBudget !== null) {
           const a = assembleMaximumShapeEnvelope(op, n, tiny.sdkByteBudget);
           const b = assembleMaximumShapeEnvelope(op, n, tiny.sdkByteBudget);
@@ -113,11 +103,7 @@ describe("analytic envelope bound (reachable max)", () => {
 
   it("full body 32-message max shape under certified ceiling", () => {
     const plan = planByteBudget("get-messages", 32);
-    const { bytes, shape, envelope } = assembleMaximumShapeEnvelope(
-      "get-messages",
-      32,
-      plan.sdkByteBudget!,
-    );
+    const { bytes, shape, envelope } = assembleMaximumShapeEnvelope("get-messages", 32, plan.sdkByteBudget!);
     expect(bytes).toBeLessThanOrEqual(CERTIFIED_STDOUT_CEILING_BYTES);
     expect(bytes).toBeLessThanOrEqual(plan.stdoutCeiling);
     expect(["all-served-empty-ends", "all-unserved", "mixed"]).toContain(shape);

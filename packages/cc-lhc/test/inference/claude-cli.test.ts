@@ -247,9 +247,6 @@ describe("createClaudeCliModelCall", () => {
     harness.restore();
     await new Promise((resolve) => setTimeout(resolve, 50));
     const counter = JSON.parse(readFileSync(counterFile, "utf8")) as { peak: number };
-    // Only the upper bound is ours to guarantee: the limiter must cap
-    // concurrency at 2. Whether the box actually ran two children at once is
-    // scheduler-dependent and flakes under load (observed twice: peak=1).
     expect(counter.peak).toBeLessThanOrEqual(2);
   }, 10_000);
 
@@ -316,10 +313,6 @@ describe("createClaudeCliModelCall", () => {
     expect(readFileSync(sentinelPath, "utf8").trim().split("\n")).toHaveLength(1);
   });
 
-  // Deterministic ChildProcess-compatible seam (no real child, no timing):
-  // stdin.write reports the platform's child-exited failure asynchronously
-  // (nextTick, like Windows' "write EOF"), then the child closes with the
-  // scripted code on a later setImmediate — error strictly before close.
   function scriptedSpawn(script: { stdinError?: Error; exitCode: number; stdout?: string }): typeof spawn {
     return ((..._args: Parameters<typeof spawn>) => {
       const stdin = new EventEmitter() as EventEmitter & { write: (d: unknown) => boolean; end: () => void };
@@ -366,9 +359,6 @@ describe("createClaudeCliModelCall", () => {
     expect(result).toEqual({ ok: false, kind: "other", message: expect.stringContaining("stdin delivery failed") });
     if (!result.ok) expect(result.message).toContain("write EOF");
 
-    // The failed call released its slot exactly once: a follow-up call on the
-    // SAME single-slot limiter runs immediately and a clean exit-0 child with
-    // delivered stdin still succeeds unchanged.
     const succeeding = createClaudeCliModelCall({
       binary: () => "claude",
       spawnFn: scriptedSpawn({ exitCode: 0, stdout: "ok" }),

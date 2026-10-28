@@ -1,16 +1,3 @@
-/**
- * Downloader mutation gates: .setup/scripts/fetch-prebuild.mjs run for real
- * against a loopback HTTP server (127.0.0.1 only — no external network),
- * with the install root redirected via the --prebuilds-dir test seam.
- *
- * Proven here: a checksum mismatch installs nothing; a checksum-valid but
- * unloadable artifact is rejected by the subprocess probe BEFORE the
- * installed addon is touched; a failure during replacement restores the
- * previously installed addon; success replaces it and leaves no temp/backup
- * residue; and a foreign target gets checksum verification only (a
- * deliberately unloadable foreign artifact still installs cleanly).
- */
-
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createServer, type Server } from "node:http";
@@ -66,8 +53,6 @@ async function withServer(assets: Record<string, Buffer>, fn: (baseUrl: string) 
   }
 }
 
-// Async spawn on purpose: the loopback server lives in THIS process, so a
-// spawnSync here would block the event loop and deadlock every download.
 function runFetch(
   baseUrl: string,
   target: string,
@@ -102,7 +87,6 @@ function runFetch(
   });
 }
 
-/** Fresh install root with a sentinel "previously installed addon" for `target`. */
 function seededRoot(target: string, sentinel: Buffer): { root: string; dest: string } {
   const root = mkdtempSync(join(tmpdir(), "cc-lhc-fetch-http-"));
   const destDir = join(root, target);
@@ -132,9 +116,6 @@ describe("fetch-prebuild against a mutating loopback release server", () => {
       { [assetLib.CHECKSUMS_ASSET_NAME]: sums([[currentAsset, other]]), [currentAsset]: garbage },
       async (baseUrl) => {
         const run = await runFetch(baseUrl, currentKey, root);
-        // Failure exits are nonzero, not exactly 1: Windows can surface a
-        // native abnormal-termination status (e.g. 3221226505) for a failing
-        // Node subprocess; the semantic proof is stderr + on-disk state.
         expect(run.status).not.toBe(0);
         expect(run.status).not.toBeNull();
         expect(run.stderr).toContain("checksum mismatch");

@@ -1,15 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Validate an assembled cc-lhc npm package before npm pack/install.
- *
- *   node scripts/check-npm-package.mjs [ROOT] [--source-sha SHA] [--version V]
- *
- * The build identity is bound to the caller's accepted source SHA: a stamped
- * SHA passes only when it equals `--source-sha`; without an accepted SHA only
- * an unavailable (null) identity passes.
- */
-
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 

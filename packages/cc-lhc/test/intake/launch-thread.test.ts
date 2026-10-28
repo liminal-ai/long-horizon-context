@@ -7,7 +7,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 
 const ownerMocks = vi.hoisted(() => ({
-  /** Runs inside acquireThreadOwner: the window between resolve and lock. */
   whileAcquiring: null as (() => void) | null,
 }));
 
@@ -60,7 +59,6 @@ function mustNotCreate(): Promise<string> {
   return Promise.reject(new Error("this launch must not create a thread"));
 }
 
-/** A thread whose current session has already moved on from its first one. */
 async function seedSwappedThread(paths: Home, threadId: string, first: string, current: string): Promise<void> {
   await bindLaunchThread({
     sessionId: first,
@@ -87,7 +85,6 @@ describe("opening a launch thread", () => {
       expect(opened.createdAtLaunch).toBe(true);
       expect(opened.expectedSession).toEqual({ sessionId: "s-fresh", source: "fresh" });
       expect(opened.correctedFrom).toBeUndefined();
-      // Thread-lock identity receipt: the lease names the thread, not a session.
       expect(opened.lease.path).toBe(threadOwnerPath("th_fresh", paths.home));
       const stored = JSON.parse(readFileSync(opened.lease.path, "utf8")) as {
         threadId: string;
@@ -184,8 +181,6 @@ describe("opening a launch thread", () => {
 
     const accept = tsxCommand(join(dirname(fileURLToPath(import.meta.url)), "../fixtures/accept-current-session.ts"));
     ownerMocks.whileAcquiring = () => {
-      // Another wrapper accepts a swap onto s-newest right here — after this
-      // launch resolved its lock key, before it reads which session is current.
       execFileSync(accept.command, accept.args, {
         env: {
           ...process.env,
@@ -227,8 +222,6 @@ describe("opening a launch thread", () => {
     recordSessionThread(paths.lineageDbPath, "s-current", "th_int", clock, {
       prefix: { kind: "verified", lineCount: 2, byteLength: 40, sha256: "cd".repeat(32) },
     });
-    // A swap that wrote its replacement rollout and then died before the
-    // wrapper ever observed it live: the pointer never advanced.
     recordSessionThread(paths.lineageDbPath, "s-reserved", "th_int", clock, {
       prefix: { kind: "verified", lineCount: 3, byteLength: 60, sha256: "ef".repeat(32) },
     });
@@ -260,8 +253,6 @@ describe("a swap accepted before its registry pointer advanced", () => {
         return new Date(Date.UTC(2026, 0, 1, 0, 0, tick));
       },
     };
-    // The thread as the crashed wrapper left it: current still names the old
-    // session, the accepted replacement is only a later lineage row.
     await seedSwappedThread(paths, "th_pending", "s-first", "s-old");
     recordSessionThread(paths.lineageDbPath, "s-old", "th_pending", clock, { prefix: { kind: "none" } });
     recordSessionThread(paths.lineageDbPath, "s-accepted", "th_pending", clock, {
@@ -280,10 +271,8 @@ describe("a swap accepted before its registry pointer advanced", () => {
     try {
       expect(opened.expectedSession).toEqual({ sessionId: "s-accepted", source: "current_alias" });
       expect(opened.correctedFrom).toBe("s-old");
-      // The live replacement is not an artifact to discard.
       expect(opened.discardedSwapArtifacts).toEqual([]);
       expect(opened.pendingAcceptanceNote).toBeUndefined();
-      // The registry is current again, and the recovery record is settled.
       expect(await currentSessionAlias("th_pending", paths.registryPath)).toBe(claudeSessionAlias("s-accepted"));
       expect(readPendingCurrentSession(paths.lineageDbPath, "th_pending")).toBeUndefined();
     } finally {
@@ -294,7 +283,6 @@ describe("a swap accepted before its registry pointer advanced", () => {
   it("keeps the registry authoritative when it says that session is another thread's", async () => {
     const paths = tempHome("pending-foreign");
     await seedSwappedThread(paths, "th_own", "s-first", "s-old");
-    // Another thread already holds the session the record names.
     await acceptCurrentSession({ sessionId: "s-elsewhere", threadId: "th_other", registryPath: paths.registryPath });
     recordPendingCurrentSession(paths.lineageDbPath, "th_own", "s-elsewhere", "s-old");
 
@@ -310,7 +298,6 @@ describe("a swap accepted before its registry pointer advanced", () => {
       expect(opened.expectedSession.sessionId).toBe("s-old");
       expect(opened.pendingAcceptanceNote).toContain("discarded");
       expect(await currentSessionAlias("th_own", paths.registryPath)).toBe(claudeSessionAlias("s-old"));
-      // Settled: a record the registry has refused is not retried forever.
       expect(readPendingCurrentSession(paths.lineageDbPath, "th_own")).toBeUndefined();
     } finally {
       opened.lease.release();
@@ -324,8 +311,6 @@ describe("a failure after the thread lock is taken", () => {
     await seedSwappedThread(paths, "th_leak", "s-old", "s-current");
 
     ownerMocks.whileAcquiring = () => {
-      // The registry becomes unreadable in the instant the lock is taken, so
-      // the current-alias read after it fails.
       writeFileSync(paths.registryPath, "not a database at all");
     };
 
@@ -339,7 +324,6 @@ describe("a failure after the thread lock is taken", () => {
       }),
     ).rejects.toBeInstanceOf(ThreadRegistryUnavailableError);
 
-    // The thread is not left owned by a launch that never started.
     expect(existsSync(threadOwnerPath("th_leak", paths.home))).toBe(false);
     expect(existsSync(threadOwnerGuardPath("th_leak", paths.home))).toBe(false);
     const retry = acquireThreadOwner("th_leak", { home: paths.home });
@@ -398,8 +382,6 @@ describe("concurrent launches through different aliases of one thread", () => {
       for (const loss of losses) {
         expect(["LOST ThreadOwnershipConflictError", "LOST ThreadOwnerGuardError"]).toContain(loss);
       }
-      // Whichever alias won, it owns the one thread and landed on its current
-      // session — not on the alias it entered through.
       expect(wins[0]).toBe("WON th_race s-current");
       const stored = JSON.parse(readFileSync(threadOwnerPath("th_race", paths.home), "utf8")) as {
         threadId: string;
@@ -426,19 +408,20 @@ describe("concurrent launches through different aliases of one thread", () => {
   }, 40_000);
 });
 
-/**
- * A restart in the middle of a swap completes forward. It keeps a replacement
- * the wrapper accepted, it never activates a stale reserved file, and corrupt
- * recovery bookkeeping is unclaimed work rather than a wedge.
- */
 describe("restart in the middle of a swap", () => {
   it("leaves a stale reserved rollout untouched on disk instead of activating it", async () => {
     const paths = tempHome("stale-file");
     await seedSwappedThread(paths, "th_stale", "s-old", "s-current");
     recordSessionThread(paths.lineageDbPath, "s-current", "th_stale", {}, { prefix: { kind: "none" } });
-    recordSessionThread(paths.lineageDbPath, "s-reserved", "th_stale", {}, {
-      prefix: { kind: "verified", lineCount: 3, byteLength: 60, sha256: "ef".repeat(32) },
-    });
+    recordSessionThread(
+      paths.lineageDbPath,
+      "s-reserved",
+      "th_stale",
+      {},
+      {
+        prefix: { kind: "verified", lineCount: 3, byteLength: 60, sha256: "ef".repeat(32) },
+      },
+    );
     const reservedFile = join(paths.home, "s-reserved.jsonl");
     writeFileSync(reservedFile, '{"reserved":true}\n');
 
@@ -452,8 +435,6 @@ describe("restart in the middle of a swap", () => {
     try {
       expect(opened.expectedSession.sessionId).toBe("s-current");
       expect(opened.discardedSwapArtifacts.map((a) => a.sessionId)).toContain("s-reserved");
-      // Discarded from session selection, never rewritten, never removed: the
-      // next settled seam re-materializes from the latest captured state.
       expect(existsSync(reservedFile)).toBe(true);
       expect(readFileSync(reservedFile, "utf8")).toBe('{"reserved":true}\n');
     } finally {
@@ -465,8 +446,6 @@ describe("restart in the middle of a swap", () => {
     const paths = tempHome("never-revert");
     await seedSwappedThread(paths, "th_keep", "s-first", "s-old");
     recordPendingCurrentSession(paths.lineageDbPath, "th_keep", "s-accepted", "s-old");
-    // A launch on the OLD session after the interrupted swap still lands on the
-    // replacement the wrapper accepted. Nothing reverts.
     const opened = await openLaunchThread({
       expectedSession: { sessionId: "s-old", source: "explicit_resume" },
       registryPath: paths.registryPath,
@@ -485,8 +464,6 @@ describe("restart in the middle of a swap", () => {
   it("treats a corrupt recovery row as unclaimed and lands on the registry pointer", async () => {
     const paths = tempHome("corrupt-row");
     await seedSwappedThread(paths, "th_corrupt", "s-old", "s-current");
-    // A row that names no accepted session: it can repair nothing, so it must
-    // read as absent rather than stop or misdirect the launch.
     recordPendingCurrentSession(paths.lineageDbPath, "th_corrupt", "", "s-current");
     expect(readPendingCurrentSession(paths.lineageDbPath, "th_corrupt")).toBeUndefined();
 

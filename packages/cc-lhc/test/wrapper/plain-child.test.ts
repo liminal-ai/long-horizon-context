@@ -1,10 +1,3 @@
-/**
- * One-shot plain child (gorilla F1+F8): Claude inherits the wrapper's stdio
- * byte-for-byte, exit codes and signals come back as the pty's did, and a
- * SIGKILLed wrapper never leaves the child running (setpriv PR_SET_PDEATHSIG on
- * Linux, a detached watchdog elsewhere).
- */
-
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -53,12 +46,10 @@ function recordingSpawn(): {
   return { calls, spawn: fake };
 }
 
-/** A stand-in wrapper: spawns the child through spawnPlainChild, prints its pid, then idles. */
 function writeParentScript(dir: string, childArgs: string[], mode: "default" | "watchdog"): string {
   const script = join(dir, `parent-${mode}.mts`);
   writeFileSync(
     script,
-    // A file URL: Windows ESM rejects a bare absolute path as an import specifier.
     `import { spawnPlainChild } from ${JSON.stringify(pathToFileURL(MODULE).href)};
 const h = spawnPlainChild(process.execPath, ${JSON.stringify(childArgs)}, {
   cwd: process.cwd(), env: process.env,
@@ -76,9 +67,7 @@ afterEach(() => {
   for (const p of spawned.splice(0)) {
     try {
       p.kill("SIGKILL");
-    } catch {
-      // already gone
-    }
+    } catch {}
   }
 });
 
@@ -152,7 +141,6 @@ describe("spawnPlainChild: launch shape", () => {
       wrapperPid: 777,
       bindToWrapperJob: (pid) => {
         bound.push(pid);
-        // Claude is spawned, the watchdog not yet.
         expect(rec.calls).toHaveLength(1);
         return { ok: true };
       },
@@ -208,7 +196,6 @@ describe("spawnPlainChild: real processes", () => {
     const idle = spawnPlainChild(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: tmpdir(), env });
     const exited = new Promise<{ exitCode: number; signal?: number }>((r) => idle.onExit(r));
     idle.kill("SIGTERM");
-    // Windows closes the tree with taskkill /F, which ends it with exit code 1 and no signal.
     if (process.platform === "win32") expect(await exited).toEqual({ exitCode: 1 });
     else expect((await exited).signal).toBe(15);
   });
@@ -243,10 +230,6 @@ describe("spawnPlainChild: real processes", () => {
     expect(await waitUntil(() => !alive(childPid), 8_000)).toBe(true);
   }, 30_000);
 
-  // macOS gorilla report: a SIGKILLed wrapper whose own parent has not reaped
-  // it is a zombie, and kill(pid, 0) still succeeds on it, so a pid-polling
-  // watchdog left Claude running. The parent here is `sleep`, which never
-  // reaps; the watchdog must act on the wrapper's pipe closing instead.
   it.skipIf(process.platform === "win32")(
     "a SIGKILLed wrapper whose parent never reaps it (a zombie) still leaves no child running (watchdog)",
     async () => {
@@ -268,7 +251,6 @@ describe("spawnPlainChild: real processes", () => {
       expect(alive(childPid)).toBe(true);
 
       process.kill(wrapperPid, "SIGKILL");
-      // The wrapper is now an unreaped zombie: the pid still answers kill(0).
       await new Promise((r) => setTimeout(r, 300));
       expect(alive(wrapperPid)).toBe(true);
       expect(await waitUntil(() => !alive(childPid), 8_000)).toBe(true);
@@ -280,7 +262,6 @@ describe("spawnPlainChild: real processes", () => {
     "the watchdog's Windows branch runs taskkill /T /F on the child once the wrapper is gone",
     async () => {
       const dir = mkdtempSync(join(tmpdir(), "plain-child-wd-"));
-      // A stand-in taskkill on PATH that records its argv and kills the named pid.
       const log = join(dir, "taskkill.log");
       const fake = join(dir, "taskkill");
       writeFileSync(fake, `#!/bin/sh\necho "$@" >> ${JSON.stringify(log)}\nkill -9 "$2"\n`, { mode: 0o755 });

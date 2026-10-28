@@ -1,11 +1,3 @@
-/**
- * Portable old-child cleanup classification.
- *
- * The old-child port returns this three-way result directly. Classification
- * uses the existing native identity probe plus exact identity comparison —
- * never a collapsed `{ exited, pid }` boolean reconstructed later.
- */
-
 import {
   identitiesEqual,
   type ProbeProcessIdentity,
@@ -16,7 +8,6 @@ import {
 export type OldChildCleanup =
   | { kind: "terminated"; pid: number }
   | { kind: "surviving_orphan"; pid: number }
-  /** Deliberately kept alive as the adopted background tasks' completion host (LIM-149). */
   | { kind: "retained_task_host"; pid: number }
   | { kind: "unknown"; pid?: number; detail: string };
 
@@ -40,14 +31,6 @@ export function formatOldChildCleanup(cleanup: OldChildCleanup): string {
   }
 }
 
-/**
- * Classify a completed termination attempt from identity evidence.
- *
- * - PTY exit, post `not_found`, or a changed identity means terminated.
- * - The same exact retained identity after a completed non-exit is a surviving orphan.
- * - Missing baseline, indeterminate post-probe, thrown termination without
- *   independent absence/change proof, or timeout without identity proof is unknown.
- */
 export function classifyOldChildCleanup(input: {
   pid: number;
   baseline: ProcessIdentity | null;

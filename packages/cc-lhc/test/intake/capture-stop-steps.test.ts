@@ -43,7 +43,9 @@ describe("capture stop: each step reports its own failure and closed is always a
           intakeStream: {
             messageEvents: async (_ref: unknown, events: Array<{ idempotencyKey: string }>) => ({
               ok: true,
-              value: { events: events.map((e) => ({ idempotencyKey: e.idempotencyKey, outcome: "recorded" as const })) },
+              value: {
+                events: events.map((e) => ({ idempotencyKey: e.idempotencyKey, outcome: "recorded" as const })),
+              },
             }),
           },
           inspect: {

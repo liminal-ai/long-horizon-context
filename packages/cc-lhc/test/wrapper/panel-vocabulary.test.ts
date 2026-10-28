@@ -1,12 +1,3 @@
-/**
- * The Control Panel's own vocabulary audit.
- *
- * The panel is a CLI: everything it prints as a command must be a canonical
- * slash command from the one registry, and the title-case product spellings
- * must not drift back onto these screens, their confirmations, their progress
- * lines, or their receipts. This test is the guard that makes that structural
- * rather than a habit.
- */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -76,11 +67,8 @@ function feed(state: InputState, text: string): InputState {
   return processInputChunk(Buffer.from(text, "latin1"), state).state;
 }
 
-/** Every string the panel itself is responsible for putting on screen. */
 function panelOwnedCopy(): string[] {
   return [
-    // The registry's own copy fields, rendered or not: dead copy is where
-    // title-case labels come back from.
     ...PANEL_COMMANDS.flatMap((command) => [
       command.name,
       command.usage,
@@ -105,14 +93,12 @@ function panelOwnedCopy(): string[] {
   ];
 }
 
-/** What the panel prints of its own accord, plus what the user typed. */
 function panelOwnedCopyWithTypedLine(): string[] {
   return [...panelOwnedCopy(), panelText(renderPanel(home_("/sm"), 100, 29))];
 }
 
 describe("panel-owned copy speaks the canonical slash vocabulary", () => {
   it("never shows the title-case operation names", () => {
-    // Includes a screen with a half-typed command, where the menu is open.
     for (const text of panelOwnedCopyWithTypedLine()) {
       expect(text, `title-case Smart Compact drifted back: ${text}`).not.toContain("Smart Compact");
       expect(text, `title-case Smart Prune drifted back: ${text}`).not.toContain("Smart Prune");
@@ -122,16 +108,13 @@ describe("panel-owned copy speaks the canonical slash vocabulary", () => {
 
   it("prints commands only in their canonical form", () => {
     const canonical = new Set(PANEL_COMMANDS.map((command) => command.name));
-    // Every slash token the panel draws is a real command, spelled exactly.
     for (const text of panelOwnedCopy()) {
-      // Command position only: a slash inside a word is not a command.
       for (const token of text.match(/(?<=^|[\s(])\/[a-zA-Z][\w-]*/g) ?? []) {
-        if (token.startsWith("/lhc-")) continue; // internal dispatch, never displayed
-        if (token === "/compact") continue; // Claude's own command, named as theirs
+        if (token.startsWith("/lhc-")) continue;
+        if (token === "/compact") continue;
         expect(canonical.has(token), `${token} is not a canonical command: ${text}`).toBe(true);
       }
     }
-    // And each canonical spelling is exactly what the parser accepts.
     for (const command of PANEL_COMMANDS) {
       expect(command.name).toMatch(/^\/[a-z][a-z-]*$/);
       expect(command.usage.startsWith(command.name), command.usage).toBe(true);
@@ -158,12 +141,6 @@ describe("panel-owned copy speaks the canonical slash vocabulary", () => {
   });
 });
 
-/**
- * Strings the WRAPPER builds at runtime and hands to the panel: standing
- * alarms, automatic last-attempt notices, the Details last-action row, settled
- * receipts, and handoff failures. These are the projections a fixture-only
- * audit misses.
- */
 function panelProductionProjections(): Array<[string, string]> {
   const compactReceipt = formatCompactReceipt({
     viewId: "v9",
@@ -180,8 +157,6 @@ function panelProductionProjections(): Array<[string, string]> {
     noOp: false,
   } as never);
   return [
-    // Standing alarm: the formatter's array is shared raw text, so run.ts
-    // projects it on the way to Home notices and pending panel notices.
     [
       "nonviability alarm",
       formatReplacementNonviabilityAlarm({
@@ -193,13 +168,10 @@ function panelProductionProjections(): Array<[string, string]> {
         .map(toPanelWording)
         .join("\n"),
     ],
-    // Automatic last-attempt notices on Home.
     ["auto deferred", formatAutoDeferredSummary("command_guard_busy", formatActiveOperation("/status"))],
     ["auto not re-scheduled", formatAutoNotRescheduledSummary("r1")],
     ["auto suspended", formatAutoSuspendedSummary()],
-    // run.ts projects the raw mutation detail before it becomes a Home notice.
     ["auto mutation", formatAutoMutationSummary("refused", toPanelWording(formatCompactBlocked("record damage")))],
-    // Details last-action row.
     [
       "last action compact",
       formatLastActionRow({
@@ -214,7 +186,6 @@ function panelProductionProjections(): Array<[string, string]> {
       "last action prune",
       formatLastActionRow({ operation: "prune", origin: "manual", ago: "1m ago", zoneBefore: "900", zoneAfter: "400" }),
     ],
-    // Work in flight: the guard's internal label, as Home and Details show it.
     ["active operation auto", formatActiveOperationRow("auto-compact")],
     ["active operation manual", formatActiveOperationRow("/smart-prune 2500")],
     ["operation detail row", formatActiveOperation("auto-compact")],
@@ -222,10 +193,8 @@ function panelProductionProjections(): Array<[string, string]> {
       "auto deferred on busy guard",
       formatAutoDeferredSummary("command_guard_busy", formatActiveOperation("auto-compact")),
     ],
-    // Handoff failures.
     ["handoff cancelled", formatHandoffFailureSummary("auto_compact", "cancelled", "operator declined")],
     ["handoff nonviable", formatHandoffFailureSummary("prune", "nonviable", "no_output")],
-    // Settled receipts, exactly as run.ts projects them onto the panel.
     ["compact receipt", panelReceiptRows([compactReceipt]).join("\n")],
     ["prune receipt", panelReceiptRows([pruneReceipt]).join("\n")],
     ["prune error", panelReceiptRows(["prune error: prune broke"]).join("\n")],
@@ -241,7 +210,6 @@ describe("runtime projections reach the panel in slash form", () => {
     for (const [name, text] of panelProductionProjections()) {
       expect(text, `${name}: title-case product name reached the panel`).not.toContain("Smart Compact");
       expect(text, `${name}: title-case product name reached the panel`).not.toContain("Smart Prune");
-      // Bare operation labels at the head of a line are command names.
       expect(text, `${name}: internal guard label reached the panel`).not.toContain("auto-compact");
       expect(text, `${name}: internal operation id reached the panel`).not.toContain("auto_compact");
       for (const line of text.split("\n")) {
@@ -272,8 +240,6 @@ describe("runtime projections reach the panel in slash form", () => {
   });
 
   it("keeps the shared alarm and the durable outcome detail in product terminology", () => {
-    // The alarm array is written to the wrapper log, the terminal line, and a
-    // governor refusal log as-is: those readers keep the product name.
     const raw = formatReplacementNonviabilityAlarm({
       rebuiltSessionId: "new",
       oldSessionId: "old",
@@ -282,28 +248,21 @@ describe("runtime projections reach the panel in slash form", () => {
     });
     expect(raw.join("\n")).toContain("Manual Smart Compact still runs.");
     expect(raw.join("\n")).not.toContain("/smart-compact");
-    // The panel sees the same alarm through the projection run.ts applies.
     expect(raw.map(toPanelWording).join("\n")).toContain("Manual /smart-compact still runs.");
     expect(raw.map(toPanelWording).join("\n")).not.toContain("Smart Compact");
 
-    // The busy-guard detail is durable governor outcome text, not panel copy:
-    // it keeps the product name and the internal label.
     expect(formatAutoGuardBusyDetail("auto-compact")).toBe(
       "command guard busy (auto-compact); Smart Compact not started",
     );
-    // Home's notice for the same event names the command instead.
     expect(formatAutoDeferredSummary("command_guard_busy", formatActiveOperation("auto-compact"))).toBe(
       "/smart-compact deferred: command_guard_busy (/smart-compact)",
     );
   });
 
   it("leaves the wrapper log and durable records in product terminology", () => {
-    // The log-side formatters beside the panel ones keep the product name, so
-    // this pass changed panel wording without rewriting log semantics.
     expect(formatAutoMutationLog("refused", "detail")).toContain("Smart Compact");
     expect(formatAutoGuardBusyLog("/status", "r1")).toContain("Smart Compact");
     expect(formatAutoThrew("EIO")).toContain("Smart Compact");
-    // And the raw mutation messages are untouched until the panel seam.
     expect(formatCompactViewLine("v1", 5, 9)).toContain("Smart Compact");
     expect(toPanelWording(formatCompactViewLine("v1", 5, 9))).toContain("/smart-compact");
   });
@@ -311,8 +270,6 @@ describe("runtime projections reach the panel in slash form", () => {
 
 describe("work in flight names the command, not the guard label", () => {
   it("cannot render the internal auto-compact label on Home", () => {
-    // Exactly the row run.ts pushes while the automatic operation holds the
-    // command guard.
     const inFlight = buildPanelViewSnapshot({
       providerContextTokens: 84_000,
       targetTokens: 100_000,
@@ -324,7 +281,6 @@ describe("work in flight names the command, not the guard label", () => {
     });
     const home = panelText(renderPanel({ ...home_(), panelView: inFlight }, 100, 29));
     expect(home).toContain("active operation: /smart-compact");
-    // The window row legitimately names "Claude native auto-compact"; the bare guard label never appears.
     expect(home, "the guard label reached Home").not.toMatch(/(?<!native )auto-compact/);
     expect(homeStatusLines(inFlight).join("\n")).not.toMatch(/(?<!native )auto-compact/);
 
@@ -342,7 +298,6 @@ describe("the standing alarm on Home", () => {
       nonviableSwaps: 3,
       lastReason: "no_output",
     });
-    // Exactly what run.ts hands the snapshot for Home.
     const alarmed = buildPanelViewSnapshot({
       providerContextTokens: 84_000,
       targetTokens: 100_000,
@@ -360,15 +315,11 @@ describe("the standing alarm on Home", () => {
 
 describe("session scope is declared truthfully", () => {
   it("marks exactly the commands whose changes outlive the child but not the wrapper", () => {
-    // /allocation opens a selector, and applying a choice edits session policy
-    // the same way /auto and /bounds do. Anything that can change the run must
-    // carry the scope, or the note under Help is a lie.
     const sessionScoped = PANEL_COMMANDS.filter((command) => command.scope === "session").map(
       (command) => command.name,
     );
     expect(sessionScoped.sort()).toEqual(["/allocation", "/bounds"]);
 
-    // The note names exactly those commands, and each one carries the marker.
     const note = helpLines(VIEW).find((line) => line.startsWith(SESSION_SCOPE_MARKER)) ?? "";
     expect(note).toContain("survive handoffs and reset when this wrapper exits");
     for (const name of sessionScoped) expect(note, `${name} missing from the scope note`).toContain(name);
@@ -377,7 +328,6 @@ describe("session scope is declared truthfully", () => {
       const marked = row?.marker === SESSION_SCOPE_MARKER;
       expect(marked, `${command.name} scope marker disagrees with its metadata`).toBe(command.scope === "session");
     }
-    // One-shot operations stay unmarked.
     for (const oneShot of ["/status", "/stats", "/smart-compact", "/smart-prune", "/export", "/details", "/help"]) {
       const command = PANEL_COMMANDS.find((entry) => entry.name === oneShot)!;
       expect(command.scope, oneShot).toBe("none");
@@ -386,9 +336,7 @@ describe("session scope is declared truthfully", () => {
 
   it("says what /allocation actually mutates, and where that is recorded", () => {
     const allocation = PANEL_COMMANDS.find((command) => command.name === "/allocation")!;
-    // Opening the selector is not the mutation; applying a choice is.
     expect(allocation.helpSummary).toContain("Applying a choice takes effect for this wrapper run.");
-    // Details reports the same scope for all three session commands.
     expect(MODAL_SCOPE_NOTE).toContain("/bounds");
     expect(MODAL_SCOPE_NOTE).not.toContain("/auto");
     expect(MODAL_SCOPE_NOTE).toContain("/bounds");
@@ -403,8 +351,6 @@ describe("the Introduction does not overstate the handoff contract", () => {
     expect(lines).toContain("It continues in a replacement Claude Code session. Stored LHC history remains available.");
     expect(lines).toContain("The replacement session gets a continuity note for tracked unfinished work.");
 
-    // The old session's tracked work can be terminated, orphaned, or unknown:
-    // the panel must never say that work itself survives the replacement.
     expect(lines).not.toContain("tracked unfinished work remain available");
     expect(lines).not.toContain("tracked unfinished work remains available");
     expect(lines).not.toMatch(/unfinished work[^.]*\b(remain|remains|are|is|stay|stays)\b[^.]*available/i);
@@ -414,24 +360,14 @@ describe("the Introduction does not overstate the handoff contract", () => {
 
 describe("run.ts routes every panel-bound string through the wording seam", () => {
   it("keeps each panel projection call site in place", () => {
-    // The repo's terminology audit guards formatter USE the same way. These
-    // are the seams that turn a runtime label into panel copy; deleting one
-    // is how a bare or title-case label reaches the screen again.
     const source = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "../../src/wrapper/run.ts"), "utf8");
-    // [seam, how many call sites must use it]
     for (const [seam, sites] of [
-      // Home notice + Details row for work in flight.
       ["formatActiveOperation(inFlight.label)", 1],
       ["formatActiveOperationRow(", 1],
-      // Home notice when the automatic path finds the guard busy.
       ['formatAutoDeferredSummary("command_guard_busy", formatActiveOperation(busyLabel))', 1],
-      // Details last action, handoff failure notice, settled receipts.
       ["formatLastActionRow(", 1],
       ["formatHandoffFailureSummary(", 1],
-      ["panelReceiptRows(", 4], // its definition plus the three panel sinks
-      // Standing alarm: BOTH panel sinks — Home rows and the notices a
-      // reopened panel replays. The log, terminal line, and governor refusal
-      // log read the same array raw.
+      ["panelReceiptRows(", 4],
       ["standingNonviabilityAlarm.map(toPanelWording)", 2],
       ["toPanelWording(outcome.messages", 1],
     ] as const) {
@@ -451,12 +387,10 @@ describe("one registry drives parser, Home, Help, and autocomplete", () => {
       const probe = command.name === "/bounds" ? "/bounds 1 2" : command.name;
       expect(parsePanelCommand(probe).kind, command.name).not.toBe("unknown");
     }
-    // Home shows the subset marked as command rows, in their declared order.
     const homeRows = PANEL_COMMANDS.flatMap((command) =>
       command.homeAction === undefined ? [] : [{ order: command.homeAction.order, name: command.name }],
     ).sort((left, right) => left.order - right.order);
     expect(HOME_ACTIONS.map((action) => action.label)).toEqual(homeRows.map((entry) => entry.name));
-    // Help groups partition the registry: every command in exactly one group.
     const grouped = HELP_GROUPS.flatMap((group) =>
       PANEL_COMMANDS.filter((command) => command.group === group.id).map((command) => command.name),
     );
@@ -464,14 +398,11 @@ describe("one registry drives parser, Home, Help, and autocomplete", () => {
   });
 
   it("a command removed from the registry disappears from all four surfaces at once", () => {
-    // The mutation: drop /export from the registry the surfaces read.
     const mutated = PANEL_COMMANDS.filter((command) => command.name !== "/export");
     const helpFromMutated = mutated.map((command) => command.usage).join("\n");
     const suggestionsFromMutated = mutated.filter((command) => command.name.startsWith("/e"));
     expect(helpFromMutated).not.toContain("/export");
     expect(suggestionsFromMutated).toHaveLength(0);
-    // …and the live registry still owns all four, proving the surfaces read it
-    // rather than keeping private copies.
     expect(helpLines(VIEW).join("\n")).toContain("/export");
     expect(commandSuggestions("/e").map((entry) => entry.name)).toEqual(["/export"]);
     expect(parsePanelCommand("/export").kind).toBe("execute");

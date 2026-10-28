@@ -1,16 +1,5 @@
-/**
- * Historical envelope + live receipts for the CLI adapter.
- *
- * Framing wording matches the SDK/pi/lhc-rs byte-stable contract
- * (`<recalled-history>`). Next-call instructions use CLI syntax
- * (`cc-lhc get-turns --from N id`), not host tool JSON.
- *
- * Slice footers and unserved lines render OUTSIDE the envelope (R6).
- */
-
 import type { RetrievalOp } from "./parse.js";
 
-/** Mirrors SDK SliceReceipt — host-local so we do not re-export SDK internals. */
 export interface SliceLike {
   fromToken: number;
   toToken: number;
@@ -62,17 +51,6 @@ export function sliceFooter(op: RetrievalOp, id: string, slice: SliceLike): stri
   );
 }
 
-/**
- * Initial zero-served slice: from=0, to=0, total>0 (empty body).
- * Means the entity has content but the shared call body budget was already spent
- * (typically by a prior id). Host projects this to the actionable budget unserved
- * receipt — not "nothing at token offset 0".
- *
- * Not this shape:
- * - nonzero from with empty window → keep offset receipt
- * - totalTokens === 0 → keep empty/offset receipt
- * - positive served window → ordinary footer
- */
 export function isInitialZeroServedBudgetRefusal(slice: SliceLike | undefined): boolean {
   if (slice === undefined) return false;
   return slice.fromToken === 0 && slice.toToken === 0 && slice.totalTokens > 0;
@@ -84,14 +62,6 @@ export interface ServedEntityLike {
   slice?: SliceLike;
 }
 
-/**
- * Host projection after a successful SDK call: rewrite initial zero-served
- * slices into budget unserved lines. Does not call the SDK again; impressions
- * already recorded for the served rows stay as-is.
- *
- * Order: remaining real served (sections+footers in input order), then SDK
- * unserved, then budget-refused former served (deterministic by original order).
- */
 export function projectServedForEnvelope(
   op: RetrievalOp,
   served: readonly ServedEntityLike[],
@@ -131,19 +101,11 @@ export function projectServedForEnvelope(
 export function unservedLine(op: RetrievalOp, missed: UnservedLike): string {
   if (missed.reason === "budget") {
     const size = missed.tokens === undefined ? "" : `${missed.tokens} tok — `;
-    return (
-      `not served: ${missed.id} (${size}call budget spent). ` +
-      `Pull it separately: cc-lhc ${op} ${missed.id}`
-    );
+    return `not served: ${missed.id} (${size}call budget spent). ` + `Pull it separately: cc-lhc ${op} ${missed.id}`;
   }
-  return `not served: ${missed.id} (${missed.reason}${
-    missed.tokens === undefined ? "" : `, ${missed.tokens} tok`
-  })`;
+  return `not served: ${missed.id} (${missed.reason}${missed.tokens === undefined ? "" : `, ${missed.tokens} tok`})`;
 }
 
-/**
- * Assemble full stdout: bodies inside envelope; footers + unserved outside.
- */
 export function assembleEnvelope(
   op: RetrievalOp,
   servedSections: readonly string[],

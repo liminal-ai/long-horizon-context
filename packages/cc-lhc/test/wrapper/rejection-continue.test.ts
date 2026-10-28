@@ -1,5 +1,3 @@
-/** F5 note shaping: which tool calls of the rejected turn had completed. */
-
 import { describe, expect, it } from "vitest";
 
 import {

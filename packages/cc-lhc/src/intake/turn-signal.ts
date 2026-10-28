@@ -1,8 +1,3 @@
-// Turn-state signal derived from the rollout tail the wrapper already parses.
-// This is a fold over lines the watcher tails anyway — NOT a parallel tracker:
-// Claude Code's own record of its activity is the only party that knows
-// whether a turn is open, and every line of it flows through intake.
-//
 // Shapes verified against live 2.1.x rollouts (2026-07-07):
 // - assistant lines always carry message.stop_reason: "tool_use" mid-loop,
 //   "end_turn" at turn close, "stop_sequence" on synthetic/error lines
@@ -81,26 +76,18 @@ function classifyAssistantLine(item: RolloutLineItem): TurnSignal {
     return "closes";
   }
 
-  // Thinking-only / empty content: never terminal solely from stop_reason.
   return "neutral";
 }
 
-/**
- * True when this assistant line completes a sampling attempt for lifecycle
- * aggregation (has text or tool_use content). Thinking-only prefixes hold.
- */
 export function isAssistantSamplingComplete(item: RolloutLineItem): boolean {
   if (!isAssistantLine(item) || item.isSidechain === true) return false;
   const content = item.message?.content;
   const blocks = contentBlocks(content);
   if (blocks.some((block) => block.type === "tool_use")) return true;
   if (typeof content === "string" && content !== "") return true;
-  return blocks.some(
-    (block) => block.type === "text" && typeof block.text === "string" && block.text !== "",
-  );
+  return blocks.some((block) => block.type === "text" && typeof block.text === "string" && block.text !== "");
 }
 
-/** What one rollout line says about claude's turn state; fold in order. */
 export function classifyTurnSignal(item: RolloutLineItem): TurnSignal {
   if (item.isSidechain === true) return "neutral";
   if (isUserLine(item)) return classifyUserLine(item);

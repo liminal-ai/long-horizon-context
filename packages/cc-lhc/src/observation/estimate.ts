@@ -1,18 +1,3 @@
-/**
- * Host-side post-measurement estimate helpers (LIM-64 production path).
- *
- * Predicted next-request growth after an authoritative provider measurement:
- * - Prefer provider-reported `output_tokens` for the completed response.
- * - Otherwise estimate from canonical captured payload UTF-8 bytes (~4 bytes/token).
- * - Subsequent tool results / assistant / runtime content add the same host-byte
- *   estimate. Accepted user_prompt text uses the session TokenEstimator.
- *   Sidechains, synthetic resume chrome, meta, and suppressed rebuilt prefixes
- *   never contribute.
- *
- * Limitations of bytes/4: it is a host heuristic, not provider billing usage.
- * Labels keep that domain explicit (`source_labelled_estimate`).
- */
-
 import { type MessageEventInput, TOKEN_ESTIMATOR_ID, type TokenEstimator } from "lhc";
 import { estimateTokensFromCapturedBytes } from "../governor/provider-context.js";
 import type { PostMeasurementEstimate } from "../governor/types.js";
@@ -30,21 +15,11 @@ export function pendingPromptEstimateSource(family: string): string {
   return `pending_prompt:${TOKEN_ESTIMATOR_ID}:${family}`;
 }
 
-/** Default-family labels for tests and compose ranking of the launch fallback. */
 export const USER_PROMPT_ESTIMATE_SOURCE = userPromptEstimateSource(defaultSessionTokenFamily().family);
 export const PENDING_PROMPT_ESTIMATE_SOURCE = pendingPromptEstimateSource(defaultSessionTokenFamily().family);
 
-/** Fold state shared across observe lines for one capture generation. */
 export interface PostMeasurementEstimateFold {
-  /**
-   * True after a completed sampling_observed in the current live suffix.
-   * Content before the first completed sampling of a generation is not post-measurement.
-   */
   hasAuthoritativeSampling: boolean;
-  /**
-   * Canonical payload bytes for the in-flight assistant sampling attempt
-   * (split thinking/text/tool lines before completion).
-   */
   pendingAssistantPayloadBytes: number;
 }
 
@@ -55,7 +30,6 @@ export function createPostMeasurementEstimateFold(): PostMeasurementEstimateFold
   };
 }
 
-/** Safe non-negative integer, or null when missing/invalid. */
 export function readProviderOutputTokens(usage: Record<string, unknown> | null | undefined): number | null {
   if (usage === null || usage === undefined || typeof usage !== "object" || Array.isArray(usage)) {
     return null;
@@ -70,10 +44,6 @@ export function readProviderOutputTokens(usage: Record<string, unknown> | null |
   return null;
 }
 
-/**
- * Canonical payload bytes that can grow the next provider request.
- * Measures only conversational payload fields — not event chrome or ids.
- */
 export function canonicalPayloadBytes(event: MessageEventInput): number {
   switch (event.eventKind) {
     case "user_prompt":
@@ -98,7 +68,6 @@ export function canonicalPayloadBytes(event: MessageEventInput): number {
       return Buffer.byteLength(name, "utf8") + argsBytes;
     }
     default:
-      // model_change, thinking_level_change, turn_end, compact markers: not counted
       return 0;
   }
 }
@@ -141,7 +110,6 @@ function atomicEstimateSources(source: string): string[] {
   return atoms;
 }
 
-/** Stable unique join of estimator labels. Provider+host alone keeps the historical mixed name. */
 export function composeEstimateSources(sources: readonly string[]): string {
   const unique = new Set<string>();
   for (const source of sources) {
@@ -164,11 +132,6 @@ export function composeEstimateSources(sources: readonly string[]): string {
     .join("+");
 }
 
-/**
- * Merge estimate source labels when accumulating mixed deltas.
- * Unlike sources compose and dedupe; the provider+host mixed name is used only
- * when provider-reported output is actually one of the atoms.
- */
 export function mergeEstimateSource(previousSource: string, nextSource: string, previousTokens: number): string {
   if (previousTokens <= 0 || previousSource.trim() === "") return nextSource;
   if (previousSource === nextSource) return previousSource;
@@ -189,21 +152,11 @@ function estimatorOf(estimator: TokenEstimator | undefined): TokenEstimator {
   return estimator ?? sessionDefaultEstimator();
 }
 
-/**
- * Size of the prompt an invocation is about to send, before it is sent.
- *
- * One-shot pre-launch uses the session TokenEstimator. The source label names
- * that estimator and family so the figure is never read as provider usage or
- * as the captured-content bytes/4 heuristic. This value is ephemeral at the
- * seam and is not stored; accepted user_prompt events account for the same
- * text separately after intake.
- */
 export function pendingPromptEstimate(promptText: string, estimator?: TokenEstimator): PostMeasurementEstimate {
   const used = estimatorOf(estimator);
   return lhcTextEstimate(promptText, pendingPromptEstimateSource(used.family), used);
 }
 
-/** Per-event post-measurement contribution for accepted canonical intake. */
 export function estimateAcceptedEvent(event: MessageEventInput, estimator?: TokenEstimator): PostMeasurementEstimate {
   if (event.eventKind === "user_prompt") {
     const used = estimatorOf(estimator);
@@ -212,10 +165,6 @@ export function estimateAcceptedEvent(event: MessageEventInput, estimator?: Toke
   return hostEstimateFromCanonicalBytes(canonicalPayloadBytes(event));
 }
 
-/**
- * Shared add used by immediate observe and deferred post-dedupe accepted events.
- * User prompts use the session TokenEstimator; assistant/tool/runtime stay bytes/4.
- */
 export function postMeasurementEstimateFromEvents(
   events: readonly MessageEventInput[],
   estimator?: TokenEstimator,
@@ -241,12 +190,6 @@ export function postMeasurementEstimateFromEvents(
   return { tokens, source, domain: "source_labelled_estimate" };
 }
 
-/**
- * Everything the next request carries that no provider measurement covers:
- * content captured after the last reading, plus the prompt about to be sent.
- * This is the estimate half of one-shot pre-launch pressure; the provider base
- * is the last authoritative reading from the persisted transcript.
- */
 export function preLaunchEstimate(
   capturedGrowth: PostMeasurementEstimate,
   promptText: string,

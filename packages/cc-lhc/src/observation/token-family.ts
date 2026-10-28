@@ -1,14 +1,3 @@
-/**
- * Session token-family state for cc-lhc.
- *
- * The capture SDK is constructed once per process with the family known at
- * launch. Seed order, before initLhc: (1) child argv `--model`; (2) on a
- * resume, the last recorded assistant model id in the thread record; (3) the
- * Anthropic provider fallback (`claude-2026`). A later model-id change is one
- * log line and does not recreate the SDK; estimates stay on the launch family
- * until relaunch.
- */
-
 import {
   messages,
   type ResolvedTokenFamily,
@@ -21,7 +10,6 @@ import {
 
 export const CC_LHC_TOKEN_PROVIDER = "anthropic";
 
-/** How this process chose the family it constructed the SDK with. */
 export type TokenFamilySeedSource = "launch --model" | "resumed record" | "provider fallback";
 
 export const TOKEN_FAMILY_STICKY_UNTIL_RELAUNCH = "estimates continue on the previous family until relaunch";
@@ -30,9 +18,6 @@ export function defaultSessionTokenFamily(): ResolvedTokenFamily {
   return resolveTokenFamily("", CC_LHC_TOKEN_PROVIDER);
 }
 
-/** A model id the wire actually served. Claude Code stamps `<synthetic>` on
- *  lines it fabricates locally (resume chrome, local command output); those
- *  never change the family and never seed one. */
 export function isRealModelId(modelId: unknown): modelId is string {
   return typeof modelId === "string" && modelId !== "" && !modelId.startsWith("<");
 }
@@ -41,18 +26,14 @@ export function familyFromAssistantModel(modelId: string): ResolvedTokenFamily {
 }
 
 export interface SessionTokenFamilyState {
-  /** Last assistant model id observed or seeded; null when the seed had none. */
   modelId: string | null;
   resolved: ResolvedTokenFamily;
   estimator: TokenEstimator;
-  /** Why this process's SDK family was chosen. Unchanged after launch. */
   seedSource: TokenFamilySeedSource;
 }
 
 export interface TokenFamilyLaunchSeed {
-  /** `--model` value from the child argv, when present. */
   launchModel?: string;
-  /** Last assistant model id from the resumed thread record, when present. */
   resumedAssistantModel?: string | null;
 }
 
@@ -63,7 +44,6 @@ export interface AssistantModelRecord {
 
 let defaultEstimator: TokenEstimator | null = null;
 
-/** Estimator for the provider-fallback family; used before a session has one. */
 export function sessionDefaultEstimator(): TokenEstimator {
   defaultEstimator ??= new TokenEstimator(defaultSessionTokenFamily().family);
   return defaultEstimator;
@@ -84,10 +64,6 @@ export function createSessionTokenFamilyState(seed?: {
   };
 }
 
-/**
- * Seed the process family before initLhc. `--model` wins; else a resume
- * record; else the provider fallback.
- */
 export function seedTokenFamilyAtLaunch(input: TokenFamilyLaunchSeed = {}): SessionTokenFamilyState {
   const launchModel = input.launchModel?.trim() ?? "";
   if (launchModel !== "") {
@@ -100,7 +76,6 @@ export function seedTokenFamilyAtLaunch(input: TokenFamilyLaunchSeed = {}): Sess
   return createSessionTokenFamilyState({ modelId: null, seedSource: "provider fallback" });
 }
 
-/** Last non-empty `model` on an assistant_text / assistant_thinking row. */
 export function lastAssistantModelIdFromRecords(records: readonly AssistantModelRecord[]): string | null {
   for (let i = records.length - 1; i >= 0; i -= 1) {
     const rec = records[i]!;
@@ -111,7 +86,6 @@ export function lastAssistantModelIdFromRecords(records: readonly AssistantModel
   return null;
 }
 
-/** Last recorded assistant model id in a resumed thread, or null if none/unreadable. */
 export async function lastAssistantModelFromThread(threadRef: ThreadRef): Promise<string | null> {
   try {
     const listed = await messages.list(threadRef);
@@ -122,7 +96,6 @@ export async function lastAssistantModelFromThread(threadRef: ThreadRef): Promis
   }
 }
 
-/** `/details` Family value and compact-note parenthetical: `claude-2025 (launch --model)`. */
 export function formatTokenFamilyLabel(state: Pick<SessionTokenFamilyState, "resolved" | "seedSource">): string {
   return `${state.resolved.family} (${state.seedSource})`;
 }
@@ -135,10 +108,6 @@ export function formatTokenFamilyChangeLog(
   return `cc-lhc token family: ${previous.family} (${previous.source}) -> ${next.family} (${next.source}) model=${modelId}`;
 }
 
-/**
- * Re-resolve from a captured assistant model id. Returns whether the model id
- * changed (the caller logs that; nothing else happens).
- */
 export function noteAssistantModel(state: SessionTokenFamilyState, modelId: string): boolean {
   if (!isRealModelId(modelId)) return false;
   if (modelId === "" || state.modelId === modelId) return false;

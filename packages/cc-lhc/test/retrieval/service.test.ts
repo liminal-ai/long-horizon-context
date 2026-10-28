@@ -1,7 +1,3 @@
-/**
- * Slice 2 correction: service gates, impression deltas, continuation, overflow assert.
- */
-
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,9 +28,7 @@ function realIo(): DescriptorIo {
     unlink: (p) => {
       try {
         fs.unlinkSync(p);
-      } catch {
-        // ignore
-      }
+      } catch {}
     },
     exists: fs.existsSync,
     mkdir: (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }),
@@ -308,7 +302,6 @@ describe("executeRetrieval", () => {
 
   it("absent env with missing rollout refuses zero impressions", async () => {
     const n0 = await impressions();
-    // ready descriptor points at nonexistent rollout
     const badPath = newDescriptorPath(root, io);
     let d = createOpeningDescriptor(badPath, io);
     d = markReady(badPath, d, {
@@ -318,7 +311,6 @@ describe("executeRetrieval", () => {
       rolloutPath: join(root, `${sessionId}.jsonl.MISSING`),
     });
     void d;
-    // basename won't match either — use correct basename missing file
     const missing = join(root, "missing-dir", `${sessionId}.jsonl`);
     const bad2 = newDescriptorPath(root, io);
     let d2 = createOpeningDescriptor(bad2, io);
@@ -363,7 +355,6 @@ describe("executeRetrieval", () => {
   });
 
   it("continuation --from after slice", async () => {
-    // Fresh large thread
     const tf = join(root, "threads", "big.sqlite");
     const created = await sdk.threads.newThread({ filePath: tf, registryPath });
     if (!created.ok) throw new Error(created.error.reason);
@@ -412,14 +403,9 @@ describe("executeRetrieval", () => {
   });
 
   it("oversized first entity: Next slice + second entity budget Pull it separately (turns)", async () => {
-    // Two real turns: t1 huge (bytes force slice), t2 short valid.
     const tf = join(root, "threads", "budget-pair-turns.sqlite");
     const created = await sdk.threads.newThread({ filePath: tf, registryPath });
     if (!created.ok) throw new Error(created.error.reason);
-    // Production-shaped whitespace-delimited phrases with multibyte text.
-    // Dense multibyte fills the 32-id body budget so t2 is initial zero-served
-    // (from=0,to=0,total>0) and the host projects budget "Pull it separately".
-    // Do not use unbroken "A".repeat — it can pin the tokenizer pathologically.
     const phrase = "運用記録 日本語 🔧 ";
     const big = phrase.repeat(1500);
     await sdk.intakeStream.messageEvents({ filePath: tf }, [
@@ -484,7 +470,6 @@ describe("executeRetrieval", () => {
     const imps0 = await retrieval.listImpressions({ filePath: tf });
     if (!imps0.ok) throw new Error(imps0.error.reason);
     const n0 = imps0.value.length;
-    // 32 unique-id reservation shape forces small body budget
     const ids = ["t1", "t2", ...Array.from({ length: 30 }, (_, i) => `t${String(900000 + i).padStart(12, "0")}`)];
     const r = await executeRetrieval(["get-turns", ...ids], {
       descriptorPath: dp,
@@ -504,12 +489,10 @@ describe("executeRetrieval", () => {
     expect(imps.ok).toBe(true);
     if (!imps.ok) return;
     expect(imps.value.length - n0).toBe(32);
-    // One call id for all 32
     const lastCall = imps.value[imps.value.length - 1]!.callId;
     const forCall = imps.value.filter((row) => row.callId === lastCall);
     expect(forCall).toHaveLength(32);
 
-    // Separate pull of t2 succeeds with real body
     const solo = await executeRetrieval(["get-turns", "t2"], {
       descriptorPath: dp,
       descriptorIo: io,
@@ -526,7 +509,6 @@ describe("executeRetrieval", () => {
     const tf = join(root, "threads", "budget-pair-msgs.sqlite");
     const created = await sdk.threads.newThread({ filePath: tf, registryPath });
     if (!created.ok) throw new Error(created.error.reason);
-    // Same dense multibyte body strategy as the turns budget-pair test.
     const phrase = "運用記録 日本語 🔧 ";
     const big = phrase.repeat(1500);
     await sdk.intakeStream.messageEvents({ filePath: tf }, [
@@ -553,7 +535,6 @@ describe("executeRetrieval", () => {
       },
     ]);
     await sdk.work.drain({ filePath: tf });
-    // messages: m1 user huge, m2 assistant short
     const sid = "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee";
     const rp = join(root, `${sid}.jsonl`);
     writeRollout(rp, sid);
@@ -631,20 +612,13 @@ describe("executeRetrieval", () => {
         },
       }),
     ).rejects.toThrow(/RETRIEVAL_ENVELOPE_INVARIANT/);
-    // Adversarial override bypasses SDK writes — documents contract corruption,
-    // not the pre-SDK zero-impression acceptance gate.
     expect(await impressions()).toBe(n0);
   });
 
-  /** Counting fake writable: tracks error/drain listeners for leak mutations. */
   function makeCountingWritable(opts: {
-    /** write() return value (backpressure). */
     writeReturns: boolean;
-    /** When to invoke write callback relative to write return. */
     callbackTiming: "sync-ok" | "sync-err" | "async-ok" | "async-err" | "held";
-    /** Emit drain before write returns (custom writable). */
     drainBeforeReturn?: boolean;
-    /** Emit drain after write returns (async). */
     drainAfterMs?: number;
     syncErr?: Error;
   }) {
@@ -751,11 +725,9 @@ describe("executeRetrieval", () => {
     );
     await new Promise((r) => setTimeout(r, 20));
     expect(settled).toBe(false);
-    // Callback first (success)
     stream.getHeldCallback()?.(null);
     await new Promise((r) => setTimeout(r, 20));
     expect(settled).toBe(false);
-    // Then drain
     stream.emit("drain");
     await p;
     expect(settled).toBe(true);
@@ -781,11 +753,9 @@ describe("executeRetrieval", () => {
         rejected = e;
       },
     );
-    // Drain first (Darwin reproduction path)
     stream.emit("drain");
     await new Promise((r) => setTimeout(r, 30));
     expect(settled).toBe(false);
-    // Late callback error must reject even after drain
     stream.getHeldCallback()?.(new Error("LATE_EPIPE"));
     await expect(p).rejects.toThrow(/LATE_EPIPE/);
     expect(settled).toBe(true);
@@ -998,7 +968,6 @@ describe("executeRetrieval", () => {
     const tf2 = join(root, "threads", "t2.sqlite");
     const created2 = await sdk.threads.newThread({ filePath: tf2, registryPath });
     if (!created2.ok) throw new Error(created2.error.reason);
-    // Distinct assistant text
     await sdk.intakeStream.messageEvents({ filePath: tf2 }, [
       {
         eventKind: "user_prompt",

@@ -1,14 +1,3 @@
-/**
- * Outcome coverage for LIM-94: sessions reach compact.
- *
- * These are not gate tests. Each one drives run() to a settled seam over the
- * trigger under a condition that used to suppress the compact, and asserts the
- * compact happened or reached its specified recovery. The named removed gates
- * are: observe-only, no-capture mode, input-during-turn, the 10K retry-growth
- * requirement, the 120-second cooldown, the receipt-database veto, and the
- * retrieval-descriptor readiness dependency.
- */
-
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -117,7 +106,6 @@ function sdkForCapture(onPreview: () => void) {
 
 type Health = { phase: "binding" | "ready" | "degraded" | "closed"; generation: number };
 
-/** A capture session whose readiness the test controls. */
 function scriptedCapture(sdk: unknown, health: () => Health): CaptureSession {
   const stats = { ...emptyCaptureStats(), threadId: "th_auto" };
   return {
@@ -168,12 +156,6 @@ async function waitFor(condition: () => boolean, label: string, capMs = 8_000): 
   }
 }
 
-/**
- * Receipts whose automatic operation actually CONCLUDED. Every receipt is
- * born with an outcome (`deferred_open_turn`, `scheduled`, `not_applicable`),
- * so "has an outcome" observes nothing; only a claimed operation's own end
- * states prove the flight was released.
- */
 const OPERATION_CONCLUDED = new Set([
   "mutation_partial",
   "mutation_refused",
@@ -264,7 +246,6 @@ async function startRig(options: {
   const ptys: FakePty[] = [];
   const dir = mkdtempSync(join(tmpdir(), "cc-lhc-reach-"));
   dirs.push(dir);
-  // A path whose parent is a regular file: the store cannot be opened at all.
   const fileAsDir = join(dir, "not-a-dir");
   writeFileSync(fileAsDir, "x");
   const stderrChunks: string[] = [];
@@ -328,9 +309,7 @@ describe("a session over the trigger reaches compact", () => {
     for (const d of dirs.splice(0)) {
       try {
         rmSync(d, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -343,8 +322,6 @@ describe("a session over the trigger reaches compact", () => {
 
   it("input typed during the turn does not veto the compact at that seam", async () => {
     const rig = await startRig({});
-    // Bytes reaching Claude during the open turn bump the input epoch. They
-    // belong to the next turn; they cannot invalidate settled history.
     rig.fire([{ kind: "turn_opened", reason: "user_prompt" }]);
     rig.stdin.write("keystrokes typed mid-turn\r");
     await new Promise((r) => setTimeout(r, 50));
@@ -372,14 +349,7 @@ describe("a session over the trigger reaches compact", () => {
     const rig = await startRig({});
     rig.fire(overTrigger("req:a"));
     await waitFor(() => rig.compacts() >= 1, "first compact");
-    // The compact call is the start of the automatic operation, not its end:
-    // a seam fired while the operation still owns the flight is coalesced by
-    // design ("no second mutation"), not replayed. The claim under test is
-    // the governor's (no toll, no cooldown between seams), so wait for the
-    // first operation's CONCLUDING outcome — attached synchronously just
-    // before the flight is released — before the next seam.
     await waitFor(() => operationsConcluded(rig.receiptDb) >= 1, "first operation conclusion");
-    // Identical pressure, immediately after: nothing to earn, nothing to wait out.
     rig.fire(overTrigger("req:b"));
     await waitFor(() => rig.compacts() >= 2, "second compact at the same pressure");
     await rig.end();
@@ -396,8 +366,6 @@ describe("a session over the trigger reaches compact", () => {
     );
     expect(rig.compacts()).toBe(0);
 
-    // Capture finishes catching up. The skipped seam is re-evaluated — no new
-    // turn, no timer, no operator action.
     phase = "ready";
     rig.fire([{ kind: "session_bound", sessionId: "old-session" }]);
     await waitFor(() => rig.compacts() > 0, "catch-up evaluation to compact");
@@ -432,12 +400,9 @@ describe("a session over the trigger reaches compact", () => {
       },
       { kind: "turn_settled", reason: "end_turn" },
     ]);
-    // Below trigger: nothing yet.
     await new Promise((r) => setTimeout(r, 150));
     expect(rig.compacts()).toBe(0);
 
-    // Next turn's usage line is unreadable. The 4,000 stands, and the growth
-    // measured on top of it carries pressure over the trigger.
     rig.fire([
       { kind: "turn_opened", reason: "user_prompt" },
       { kind: "sampling_observed", samplingId: "req:broken" },
@@ -464,7 +429,6 @@ describe("a session over the trigger reaches compact", () => {
     const rig = await startRig({
       resolvedContextPolicy: { ...policy(), fallbacks } as never,
     });
-    // Immediate surfacing: startup output and the wrapper log, before any compact.
     expect(rig.stderrText()).toContain(CONFIG_FALLBACK_NOTICE);
     expect(rig.logs.some((l) => l.includes(CONFIG_FALLBACK_NOTICE))).toBe(true);
 

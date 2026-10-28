@@ -24,7 +24,6 @@ export interface ClaudeCliDeps {
   timeoutMs?: number;
   maxConcurrency?: number;
   spawnFn?: typeof spawn;
-  /** Test hook: share one limiter across multiple ModelCall instances. */
   limiter?: ConcurrencyLimiter;
 }
 
@@ -86,9 +85,7 @@ export function killAllInferenceChildren(): void {
   for (const child of liveChildren) {
     try {
       child.kill("SIGKILL");
-    } catch {
-      // Best-effort teardown.
-    }
+    } catch {}
   }
   liveChildren.clear();
 }
@@ -119,7 +116,6 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
     }
 
     const remainingMs = timeoutMs - elapsed;
-    // Lee's prompt as the system prompt; the template's text (its own system text first) on stdin.
     const { user: userBody } = summaryWorkerRequest(input.messages);
 
     return new Promise<ModelCallResult>((resolve) => {
@@ -142,17 +138,12 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
       let launch: ReturnType<typeof summaryWorkerCliLaunch> | undefined;
 
       try {
-        // --no-session-persistence (derivation sessions must never land in the
-        // project directory as rollout files: they would pollute the wrapper
-        // resume picker and session attribution, verified in 2.1.226), no
-        // framing, tools or extra turns, in an empty scratch dir.
         launch = summaryWorkerCliLaunch({
           model: input.model,
           env: process.env,
           scratchPrefix: "cc-lhc-summary-",
         });
         const spawnOptions: SpawnOptions = { stdio: ["pipe", "pipe", "pipe"], cwd: launch.cwd, env: launch.env };
-        // An explicit relative binary resolves from our cwd, not the scratch dir.
         child = spawnFn(summaryWorkerBinary(binary()), launch.args, spawnOptions);
       } catch (cause) {
         const code = typeof cause === "object" && cause !== null ? (cause as NodeJS.ErrnoException).code : undefined;
@@ -170,9 +161,7 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
       timer = setTimeout(() => {
         try {
           child?.kill("SIGKILL");
-        } catch {
-          // Already exited.
-        }
+        } catch {}
         finish({ ok: false, kind: "timeout", message: `claude -p timed out after ${String(timeoutMs)}ms` });
       }, remainingMs);
 
@@ -219,14 +208,9 @@ export function createClaudeCliModelCall(deps: ClaudeCliDeps = {}): ModelCall {
             finish({ ok: true, text: stdout });
             return;
           }
-          // Fail closed: exit 0 with an undelivered prompt must never pass
-          // as a successful derivation — the output cannot have seen the
-          // user body.
           finish({ ok: false, kind: "other", message: excerpt(`stdin delivery failed: ${stdinFailure}`) });
           return;
         }
-        // `claude -p` reports some failures (e.g. "Not logged in") on stdout
-        // with an empty stderr; classify whichever carries the reason.
         const detail = stderr.trim() !== "" ? stderr : stdout.trim();
         const kind = classifyStderr(detail);
         const base = detail === "" ? `exit code ${String(code)}` : detail;

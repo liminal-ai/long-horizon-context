@@ -1,6 +1,3 @@
-/**
- * LIM-116 handoff integration: TC-5.3d-e, AR-5, AR-8, automatic cleanup surfaces.
- */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -57,9 +54,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) {
     try {
       rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // best effort
-    }
+    } catch {}
   }
 });
 
@@ -440,7 +435,6 @@ describe("AR-8 one trailing runtime note and no injection/rewrite/second replace
 
 describe("automatic Smart Compact exposes cleanup once on a user-visible surface", () => {
   const REBUILT_ID = "12345678-1234-1234-1234-123456789abc";
-  /** Valid Claude session UUID so resolveLaunchSession takes the explicit resume seam. */
   const LAUNCH_SESSION = "aaaaaaaa-1111-2222-3333-444444444444";
   const POLICY = {
     policy: {
@@ -710,7 +704,6 @@ describe("automatic Smart Compact exposes cleanup once on a user-visible surface
         if (result.kind !== "success") return;
         expect(result.oldChildCleanup.kind).toBe(kind);
         const needle = formatOldChildCleanup(result.oldChildCleanup);
-        // Once on the panel the operator is looking at — not once per repaint.
         expect(lastPanelText(terminalOutput).split(needle).length - 1).toBe(1);
         expect(logLines.join("\n").split(needle).length - 1).toBe(1);
         expect(childWrites).not.toContain(needle);

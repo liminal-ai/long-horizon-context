@@ -1,25 +1,3 @@
-/**
- * Addon artifact resolution and loading.
- *
- * Resolution order (first hit wins):
- *   1. CC_LHC_IDENTITY_ADDON env override — explicit path, development/test
- *      seam only; must exist or loading fails.
- *   2. prebuilds/<platform>-<arch>/<artifact> — the released path; artifacts
- *      are produced by the CI matrix, published as GitHub release assets, and
- *      installed here checksum-verified by .setup/scripts/fetch-prebuild.mjs
- *      (this package is private to the workspace, never an npm tarball), so
- *      end users never need a compiler toolchain.
- *   3. build/Release/<artifact> — the source-build/development path produced
- *      by the `build:native` package script (node-gyp; requires a local C
- *      toolchain).
- *
- * A platform/arch pair absent from targets.json fails explicitly with the
- * supported-target list before any filesystem probing. A supported target
- * with no artifact fails explicitly with both candidate paths. Loaded addons
- * are validated against the compiled-platform tag and contract version so a
- * wrong or stale artifact can never silently serve identities.
- */
-
 import { existsSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -64,7 +42,6 @@ export class AddonContractError extends Error {
   }
 }
 
-/** Shape the compiled addon must present after load. */
 export interface NativeIdentityAddon {
   readonly platform: string;
   readonly identityContractVersion: number;
@@ -78,7 +55,6 @@ export interface NativeIdentityAddon {
   listFileHolders(path: string): unknown;
 }
 
-/** Every export a contract-4 addon must present as a function. */
 export const ADDON_FUNCTION_EXPORTS = [
   "readProcessIdentity",
   "readFileIdentity",
@@ -90,7 +66,6 @@ export const ADDON_FUNCTION_EXPORTS = [
   "listFileHolders",
 ] as const;
 
-/** Deterministic seams; every field defaults to the production value. */
 export interface LoaderSeams {
   platform?: string;
   arch?: string;
@@ -109,8 +84,6 @@ export interface ResolvedAddonArtifact {
 }
 
 export function defaultPackageRoot(): string {
-  // loader runs from src/ (tests) or dist/ (built); both sit one level below
-  // the package root where targets.json, prebuilds/, and build/ live.
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 

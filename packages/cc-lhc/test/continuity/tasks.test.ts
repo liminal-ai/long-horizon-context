@@ -1,9 +1,3 @@
-/**
- * LIM-146 AC-2.6 (TC-2.6a–d): the replacement session manages carried work
- * through `cc-lhc tasks` — the production CLI path bound to a real ready
- * descriptor, a real SQLite continuity record, real bounded artifacts, and a
- * real parent relaunch (the same `invokeCarryover` the handoff runs).
- */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,7 +29,6 @@ afterEach(async () => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** One session: adopted shell (real output file), relaunched Monitor (real detached process), and an agent with no parent operations. */
 function session(monitorCommand: string) {
   const root = mkdtempSync(join(tmpdir(), "cc-lhc-tasks-"));
   dirs.push(root);
@@ -72,7 +65,6 @@ function session(monitorCommand: string) {
   if (relaunched?.kind === "relaunched") trackForReap(pids, relaunched.pid);
   store.close();
 
-  // The wrapper's ready descriptor names the thread; the live session id matches it.
   const io: DescriptorIo = defaultDescriptorIo();
   const descPath = newDescriptorPath(root, io);
   const desc = createOpeningDescriptor(descPath, io);
@@ -160,13 +152,11 @@ describe("TC-2.6b read output", () => {
     }
     const monitor = s.tasks(["output", LAUNCH_IDS.monitor]);
     expect(monitor.ok && monitor.bytes?.toString("utf8")).toBe("mon-out-ABC");
-    // An item with no parent-readable artifact refuses as unsupported; nothing is read.
     expect(s.tasks(["output", LAUNCH_IDS.agent])).toMatchObject({
       ok: false,
       reason: expect.stringContaining("unsupported"),
     });
 
-    // The real CLI stream path prints header then bytes.
     let out = "";
     const stdout = new Writable({
       write: (chunk, _e, cb) => {
@@ -200,7 +190,6 @@ describe("TC-2.6c stop carried work", () => {
       reason: expect.stringContaining("unsupported"),
     });
     const stopped = s.tasks(["stop", LAUNCH_IDS.monitor]);
-    // Compare the reason on a refusal, so a failure prints why (toMatchObject omits it).
     expect(stopped.ok ? stopped.stdout : `refused: ${stopped.reason}`).toBe(
       `stopped ${LAUNCH_IDS.monitor} (pid ${pid}); recorded as stopped`,
     );
@@ -218,12 +207,10 @@ describe("TC-2.6c stop carried work", () => {
     const status = stdoutOf(s.tasks(["status", LAUNCH_IDS.monitor]));
     expect(status).toContain("state: terminal");
     expect(status).toContain("terminal: stopped (stopped by the replacement session (cc-lhc tasks stop, pid");
-    // Terminal now: a second stop signals nothing.
     expect(s.tasks(["stop", LAUNCH_IDS.monitor])).toMatchObject({
       ok: false,
       reason: expect.stringContaining("not_active"),
     });
-    // Other items untouched.
     expect(stdoutOf(s.tasks(["status", LAUNCH_IDS.background_shell]))).toContain("state: active");
   });
 });
@@ -258,7 +245,6 @@ describe("TC-2.6d stale identity", () => {
         return { ok: true as const };
       },
     };
-    // Same pid, different incarnation.
     const reused = stopItem(store, T, LAUNCH_IDS.monitor, {
       ...ports,
       probeIdentity: () => ({
@@ -267,13 +253,11 @@ describe("TC-2.6d stale identity", () => {
       }),
     });
     expect(reused).toMatchObject({ ok: false, reason: "process_identity_changed" });
-    // Exited.
     const exited = stopItem(store, T, LAUNCH_IDS.monitor, {
       ...ports,
       probeIdentity: () => ({ ok: false, code: "not_found", message: "gone" }),
     });
     expect(exited).toMatchObject({ ok: false, reason: "process_not_live" });
-    // Indeterminate.
     const unknown = stopItem(store, T, LAUNCH_IDS.monitor, {
       ...ports,
       probeIdentity: () => ({ ok: false, code: "indeterminate", message: "?" }),
@@ -292,11 +276,9 @@ describe("TC-2.6d stale identity", () => {
     if (!recorded) throw new Error("no process identity recorded");
     const live = { ok: true as const, identity: { ...recorded } };
     const failedSignal = () => ({ ok: false as const, reason: "ERROR: child could not be terminated" });
-    // Still the same live process after the failed signal: refused, item stays active.
     const refused = stopItem(store, T, LAUNCH_IDS.monitor, { signal: failedSignal, probeIdentity: () => live });
     expect(refused).toMatchObject({ ok: false, reason: "signal_failed" });
     expect(store.getItem(T, LAUNCH_IDS.monitor)).toMatchObject({ state: "active" });
-    // Gone after the failed signal (the root was killed, a child was already gone): stopped.
     let probes = 0;
     const stopped = stopItem(store, T, LAUNCH_IDS.monitor, {
       signal: failedSignal,
@@ -310,7 +292,6 @@ describe("TC-2.6d stale identity", () => {
 
   it("a foreign thread's item and an unbound or mismatched session are refused before any lookup", () => {
     const s = session("sleep 30");
-    // Another wrapper's descriptor names another thread: the same launch id is unknown there.
     const io = defaultDescriptorIo();
     const otherPath = newDescriptorPath(s.root, io);
     markReady(otherPath, createOpeningDescriptor(otherPath, io), {

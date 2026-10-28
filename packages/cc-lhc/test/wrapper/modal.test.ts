@@ -76,7 +76,6 @@ describe("passthrough", () => {
     expect(result.pty).toBe(pasted);
     expect(result.actions).toEqual([]);
     expect(result.state.mode).toBe("passthrough");
-    // Paste closed: the next leader press is a real keypress again.
     const after = feed(result.state, LEADER);
     expect(after.actions).toEqual([{ kind: "enter_modal" }]);
   });
@@ -111,14 +110,10 @@ describe("passthrough", () => {
   });
 
   it("holds a pending ESC across the chunk boundary; the next byte resolves it", () => {
-    // The ESC is HELD, not forwarded — it may head the kitty-encoded leader.
     const result = feed(createInputState(), Buffer.from([0x1b]));
     expect(result.pty).toBe("");
     expect(result.state.escape).toEqual({ kind: "pending_esc" });
     expect(result.state.heldSeq).toEqual([0x1b]);
-    // The byte after a bare Esc resolves it: both flush; a raw leader here is
-    // suppressed once (forwarded literally) — the accepted trade for never
-    // misreading a split sequence; leader-again recovers.
     const suppressed = feed(result.state, LEADER);
     expect(suppressed.pty).toBe("\x1b\x1d");
     expect(suppressed.actions).toEqual([]);
@@ -133,31 +128,23 @@ describe("passthrough", () => {
     expect(resolved).not.toBeNull();
     expect(resolved!.toPty!.toString("latin1")).toBe("\x1b");
     expect(resolved!.actions).toEqual([]);
-    // tracking survives the flush, exactly as if the ESC had streamed unheld
     expect(resolved!.state.escape).toEqual({ kind: "pending_esc" });
     expect(resolved!.state.heldSeq).toEqual([]);
-    // nothing left to flush → a second fire is a no-op
     expect(resolveBareEsc(resolved!.state)).toBeNull();
-    // a sequence arriving after the flush still tracks: paste opens, a raw
-    // leader inside it stays literal, and no byte is double-sent
     const after = feed(resolved!.state, "[200~a\x1db\x1b[201~");
     expect(after.pty).toBe("[200~a\x1db\x1b[201~");
     expect(after.actions).toEqual([]);
-    // and a second bare ESC right after the flush is not double-forwarded
     const doubleEsc = feed(resolved!.state, Buffer.from([0x1b]));
     expect(doubleEsc.pty).toBe("");
     expect(doubleEsc.state.heldSeq).toEqual([0x1b]);
   });
 
   it("a stalled paste-opener candidate flushes but keeps CSI tracking (reviewer probe)", () => {
-    // ESC[200 held; the timer fires before the ~ arrives
     const stalled = feed(createInputState(), "\x1b[200");
     const flushed = resolveBareEsc(stalled.state);
     expect(flushed).not.toBeNull();
     expect(flushed!.toPty!.toString("latin1")).toBe("\x1b[200");
     expect(flushed!.state.escape).toEqual({ kind: "csi", params: "200" });
-    // the late ~ completes the paste marker; a literal raw leader inside the
-    // pasted body stays literal — no modal, every byte reaches the child
     const after = feed(flushed!.state, "~x\x1dy");
     expect(after.actions).toEqual([]);
     expect(after.state.mode).toBe("passthrough");
@@ -166,8 +153,6 @@ describe("passthrough", () => {
     const closed = feed(after.state, "\x1b[201~");
     expect(closed.state.inPaste).toBe(false);
 
-    // a stalled kitty-shaped candidate also resumes as plain CSI: its late
-    // final is forwarded, never claimed as the leader
     const kittyStall = feed(createInputState(), "\x1b[93;5");
     const kittyFlushed = resolveBareEsc(kittyStall.state);
     expect(kittyFlushed!.toPty!.toString("latin1")).toBe("\x1b[93;5");
@@ -177,28 +162,23 @@ describe("passthrough", () => {
   });
 
   it("never opens modal on a leader inside a sequence split after its ESC", () => {
-    // OSC with a leader (and BEL terminator) in the payload
     const osc = feed(createInputState(), "\x1b", "]11;fo\x1dob\x07");
     expect(osc.pty).toBe("\x1b]11;fo\x1dob\x07");
     expect(osc.actions).toEqual([]);
 
-    // bracketed-paste open split after ESC, leader in the pasted content
     const paste = feed(createInputState(), "\x1b", "[200~ab\x1dcd", "\x1b[201~");
     expect(paste.pty).toBe("\x1b[200~ab\x1dcd\x1b[201~");
     expect(paste.actions).toEqual([]);
     expect(paste.state.inPaste).toBe(false);
 
-    // CSI with the leader byte among its params
     const csi = feed(createInputState(), "\x1b", "[38;5;\x1dm");
     expect(csi.pty).toBe("\x1b[38;5;\x1dm");
     expect(csi.actions).toEqual([]);
 
-    // legacy mouse report with a leader among its three payload bytes
     const mouse = feed(createInputState(), Buffer.from([0x1b]), Buffer.from([0x4d, 0x20, 0x1d, 0x21]));
     expect(mouse.pty).toBe("\x1bM \x1d!");
     expect(mouse.actions).toEqual([]);
 
-    // double-ESC then a split sequence keeps tracking
     const doubleEsc = feed(createInputState(), "\x1b", "\x1b", "[200~x\x1dy\x1b[201~");
     expect(doubleEsc.pty).toBe("\x1b\x1b[200~x\x1dy\x1b[201~");
     expect(doubleEsc.actions).toEqual([]);
@@ -245,7 +225,6 @@ describe("passthrough", () => {
       const result = feed(createInputState(), "\x1b", "[93;5u");
       expect(result.pty).toBe("");
       expect(result.actions).toEqual([{ kind: "enter_modal" }]);
-      // even byte-at-a-time
       const oneByOne = feed(createInputState(), ..."\x1b[93;5u".split(""));
       expect(oneByOne.pty).toBe("");
       expect(oneByOne.actions).toEqual([{ kind: "enter_modal" }]);
@@ -270,10 +249,8 @@ describe("passthrough", () => {
       const punct = feed(createInputState(0x1f), "\x1b[95;5u");
       expect(punct.actions).toEqual([{ kind: "enter_modal" }]);
       expect(punct.pty).toBe("");
-      // ctrl-A (0x01) -> keycode 97
       const letter = feed(createInputState(0x01), "\x1b[97;5u");
       expect(letter.actions).toEqual([{ kind: "enter_modal" }]);
-      // and the default leader's encoding is NOT claimed for that config
       const wrong = feed(createInputState(0x1f), "\x1b[93;5u");
       expect(wrong.pty).toBe("\x1b[93;5u");
       expect(wrong.actions).toEqual([]);
@@ -286,15 +263,12 @@ describe("passthrough", () => {
     });
 
     it("xterm modifyOtherKeys encoding (27;5;93~) enters modal and is NOT forwarded", () => {
-      // Observed live from tmux extended-keys: ctrl-] arrives as CSI 27;5;93~.
       const result = feed(createInputState(), "\x1b[27;5;93~");
       expect(result.pty).toBe("");
       expect(result.actions).toEqual([{ kind: "enter_modal" }]);
-      // colon-suffixed third field is a different key event: forwarded byte-identical
       const suffixed = feed(createInputState(), "\x1b[27;5;93:3~");
       expect(suffixed.pty).toBe("\x1b[27;5;93:3~");
       expect(suffixed.actions).toEqual([]);
-      // other modifier or other key: forwarded untouched
       const alt = feed(createInputState(), "\x1b[27;7;93~");
       expect(alt.pty).toBe("\x1b[27;7;93~");
       expect(alt.actions).toEqual([]);
@@ -374,7 +348,6 @@ describe("modal line editor", () => {
     expect(result.pty).toBe("");
     expect(executed(result.actions)).toEqual(["/lhc-status"]);
     expect(result.state.mode).toBe("executing");
-    // the submitted text stays visible on the panel's prompt line while running
     expect(result.state.line).toBe("/status");
   });
 
@@ -448,20 +421,16 @@ describe("modal line editor", () => {
     expect(resolved).not.toBeNull();
     expect(resolved!.actions).toEqual([{ kind: "exit_modal" }]);
     expect(resolved!.state.mode).toBe("passthrough");
-    // nothing pending → null
     expect(resolveBareEsc(resolved!.state)).toBeNull();
   });
 
   it("a split escape sequence while modal is never misread as cancel", () => {
-    // split arrow key: dropped, stays modal
     const arrow = feed(openModal(), "\x1b", "[A");
     expect(arrow.state.mode).toBe("modal");
     expect(arrow.pty).toBe("");
     expect(arrow.actions).toEqual([]);
-    // split kitty Enter still submits
     const kitty = feed(openModal(), "/status", "\x1b", "[13;1u");
     expect(executed(kitty.actions)).toEqual(["/lhc-status"]);
-    // split OSC response forwards and stays modal
     const osc = feed(openModal(), "\x1b", "]11;rgb:aa\x07");
     expect(osc.pty).toBe("\x1b]11;rgb:aa\x07");
     expect(osc.state.mode).toBe("modal");
@@ -582,7 +551,6 @@ describe("executing mode", () => {
     expect(result.pty).toBe("");
     expect(result.actions).toEqual([]);
     expect(result.state.mode).toBe("executing");
-    // the running command stays visible on the panel's progress line
     expect(result.state.line).toBe("/status");
   });
 
@@ -590,9 +558,6 @@ describe("executing mode", () => {
     const detached = feed(startExecuting(), "\x03");
     expect(detached.actions).toEqual([{ kind: "exit_modal" }]);
     expect(detached.state.mode).toBe("passthrough");
-    // subsequent input flows to claude; the late receipt path (settleCommand
-    // with mode !== executing) logs or lands on a reopened panel without
-    // touching input state
     const after = feed(detached.state, "hello");
     expect(after.pty).toBe("hello");
     expect(forceResetInput(after.state)).toBe(after.state);
@@ -606,8 +571,6 @@ describe("executing mode", () => {
   });
 
   it("encoded ctrl-C DETACHES while executing", () => {
-    // claude pushes kitty disambiguate mode, so iTerm2/Warp/Ghostty deliver
-    // ctrl-C as CSI 99;5u — before the fix nothing could detach there.
     const kitty = feed(startExecuting(), "\x1b[99;5u");
     expect(kitty.actions).toEqual([{ kind: "exit_modal" }]);
     expect(kitty.state.mode).toBe("passthrough");
@@ -622,7 +585,6 @@ describe("executing mode", () => {
     expect(win32.state.mode).toBe("passthrough");
     expect(win32.pty).toBe("");
 
-    // release events and other modifiers stay inert
     const release = feed(startExecuting(), "\x1b[99;5:3u");
     expect(release.actions).toEqual([]);
     expect(release.state.mode).toBe("executing");
@@ -707,10 +669,6 @@ describe("string-sequence wedge escape hatch", () => {
   });
 
   it("ctrl-C escapes a wedged string sequence: cancel + ST closes the child's introducer", () => {
-    // alt-] (ESC ]) or a truncated OSC response used to wedge the modal
-    // permanently: every later key forwarded as presumed protocol, no dismiss
-    // key worked. A raw 0x03 cannot occur inside a legal string payload, so
-    // it is proof of a keypress — the hatch.
     const wedged = feed(openModal(), Buffer.from([0x1b, 0x5d]), "junk");
     expect(wedged.state.escape).toEqual({ kind: "string_term" });
     const escaped = feed(wedged.state, "\x03");
@@ -733,7 +691,6 @@ describe("string-sequence wedge escape hatch", () => {
     expect(wedged.state.escape).toEqual({ kind: "string_term_esc" });
     const escaped = feed(wedged.state, "\x03");
     expect(escaped.actions).toEqual([{ kind: "exit_modal" }]);
-    // the ESC already forwarded + this backslash = a complete ST for the child
     expect(escaped.pty).toBe("\\");
   });
 

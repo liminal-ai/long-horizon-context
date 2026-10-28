@@ -1,12 +1,3 @@
-/**
- * Launch-scoped `--settings` merge for the continuity result-delivery hook.
- *
- * One payload: existing operator `--settings` (if any) plus an appended
- * UserPromptSubmit hook. The operator's other fields, including any status
- * line they already set, are left untouched. Unreadable or unmergeable
- * settings leave the argv as forwarded and report the hook unavailable.
- */
-
 import { readFileSync } from "node:fs";
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -14,16 +5,8 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 export interface SettingsMergeInput {
-  /** Child argv as assembled by the launch grammar. */
   argv: readonly string[];
-  /** Reads a `--settings <path>` file; null when unreadable. */
   readFile: (path: string) => string | null;
-  /**
-   * LIM-146: the launch-scoped `UserPromptSubmit` hook that delivers carried
-   * results. Appended to the user's own hooks for that event, never replacing
-   * them; a payload whose `hooks` cannot be extended reports the hook
-   * unavailable and leaves the rest of the payload intact.
-   */
   deliveryHook?: { command: string; timeoutSeconds: number };
 }
 
@@ -42,7 +25,6 @@ export type SettingsMergeResult =
     }
   | { kind: "unmerged"; reason: string; argv: string[] };
 
-/** Extend `hooks.UserPromptSubmit` with the delivery hook, preserving every existing entry byte-for-byte. */
 function mergeDeliveryHook(
   base: Record<string, unknown>,
   hook: { command: string; timeoutSeconds: number } | undefined,

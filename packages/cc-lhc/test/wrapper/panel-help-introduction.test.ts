@@ -1,6 +1,3 @@
-/**
- * LIM-118: TC-2.1a-b, TC-2.2a-c. Help/parser bijection and Introduction copy.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,11 +41,6 @@ function openHome(): InputState {
   };
 }
 
-/**
- * Rows that are a command's own table row: the usage in the label column,
- * followed by the gutter or nothing. Prose that merely mentions a command
- * ("/allocation changes survive handoffs") is not one of these.
- */
 function isCommandRow(row: string, usage: string): boolean {
   const text = row.trimStart();
   if (!text.startsWith(usage)) return false;
@@ -56,7 +48,6 @@ function isCommandRow(row: string, usage: string): boolean {
   return rest.trim() === "" || rest.startsWith("  ");
 }
 
-/** Each Help screen the card draws while scrolling to the end of the copy. */
 function helpScreens(cols: number, rows: number): string[][] {
   let state = feed(openHome(), "/help\r");
   const screens: string[][] = [cardBodyRows(renderPanel(state, cols, rows), cols, rows)];
@@ -67,12 +58,10 @@ function helpScreens(cols: number, rows: number): string[][] {
   return screens;
 }
 
-/** Every Help row drawn across those screens. */
 function helpScreenRows(cols: number, rows: number): string[] {
   return helpScreens(cols, rows).flat();
 }
 
-/** Everything Help says while scrolling, unwrapped for copy assertions. */
 function helpScreenText(cols: number, rows: number): string {
   let state = feed(openHome(), "/help\r");
   const seen: string[] = [panelText(renderPanel(state, cols, rows))];
@@ -97,7 +86,6 @@ describe("Help teaches outcomes", () => {
       expect(usages, `Help omitted ${command.name}`).toContain(command.usage);
     }
 
-    // Group membership comes from the registry, not from a second list.
     const flat = rows.map((row) => panelRowText(row));
     for (const group of HELP_GROUPS) {
       const groupStart = flat.indexOf(group.title);
@@ -152,12 +140,8 @@ describe("Help teaches outcomes", () => {
           const index = screen.findIndex((row) => isCommandRow(row, command.usage));
           if (index < 0) continue;
           expect(screen[index]!.length, `${cols}x${rows}: ${command.usage} overflowed`).toBeLessThanOrEqual(cols);
-          // The last row of a screen, and the row above a clip marker,
-          // continue at the next scroll position.
           if (index === screen.length - 1) continue;
           if ((screen[index + 1] ?? "").includes("… more")) continue;
-          // The description starts on the command's row, or on the row directly
-          // beneath it — never separated from the command it belongs to.
           const own = screen[index] ?? "";
           const next = screen[index + 1] ?? "";
           expect(
@@ -201,7 +185,6 @@ describe("Help teaches outcomes", () => {
       for (const row of helpScreenRows(width, height)) {
         const text = row.trim();
         if (!text.includes(SESSION_SCOPE_MARKER)) continue;
-        // The explanatory note owns the marker as its subject; skip it.
         if (text.startsWith(SESSION_SCOPE_MARKER)) continue;
         expect(text, `${width}x${height}: marker floated alone`).not.toBe(SESSION_SCOPE_MARKER);
         expect(text, `${width}x${height}: marker detached from its words`).toMatch(
@@ -210,7 +193,6 @@ describe("Help teaches outcomes", () => {
       }
     }
 
-    // The explanation itself survives, whatever the width.
     expect(helpLines(openHome().panelView).join("\n")).toContain(
       `${SESSION_SCOPE_MARKER} /bounds and /allocation changes survive handoffs`,
     );
@@ -231,8 +213,6 @@ describe("TC-2.1a Help matches parser behavior", () => {
       expect(parsed.kind === "execute" || parsed.kind === "route", command.usage).toBe(true);
     }
 
-    // Nothing Help prints as a command is missing its slash, and no bare or
-    // title-case spelling is offered anywhere on the screen.
     for (const row of helpRows(helpState.panelView)) {
       if (row.kind !== "pair") continue;
       const label = row.label ?? "";
@@ -256,12 +236,9 @@ describe("TC-2.1b Help distinguishes setting scope", () => {
     const lines = rows.join("\n");
     expect(lines).toContain("/bounds <target> <trigger>");
     expect(lines).toContain("survive handoffs and reset when this wrapper exits");
-    // Session-scoped commands carry the marker; one-shot commands do not.
     const marked = (usage: string): boolean =>
       rows.some((line) => line.startsWith(usage) && line.includes(SESSION_SCOPE_MARKER));
     expect(marked("/bounds <target> <trigger>")).toBe(true);
-    // Applying an allocation choice is a session policy edit, so /allocation
-    // carries the same marker as the other two.
     expect(marked("/allocation")).toBe(true);
     expect(lines).toContain("/allocation");
     expect(lines).toContain("Applying a choice takes effect for this wrapper run.");
@@ -300,12 +277,10 @@ describe("the typed details screen", () => {
       expect(drawn).not.toContain(PANEL_PROMPT);
     }
     expect(detailsLines(view).join("\n")).toContain("Precedence");
-    // The slashless and title-case spellings do not open it.
     for (const rejected of ["details", "Details", "DETAILS"]) {
       const state = feed({ ...openHome(), panelView: view }, `${rejected}\r`);
       expect(state.route, rejected).toBe("home");
     }
-    // Enter returns Home, Esc closes — same contract as Help/Introduction.
     const opened = feed({ ...openHome(), panelView: view }, "/details\r");
     expect(feed(opened, "\r").route).toBe("home");
     expect(feed(opened, "\x03").mode).toBe("passthrough");
@@ -318,21 +293,16 @@ describe("TC-2.2a Introduction presents the mental model", () => {
     const intro = feed(home, "/introduction\r");
     const out = panelText(renderPanel(intro, 120, 40));
 
-    // 1. What does it do for me?
     expect(out).toContain("CC-LHC saves your Claude Code session in durable LHC history.");
     expect(out).toContain("Claude works from a smaller context built from that history");
-    // 2. What happens automatically?
     expect(out).toContain("What happens automatically");
     expect(out).toContain("CC-LHC runs /smart-compact");
     expect(out).toContain("It continues in a replacement Claude Code session. Stored LHC history remains available.");
     expect(out).toContain("The replacement session gets a continuity note for tracked unfinished work.");
-    // The old session's tracked work may be terminated, orphaned, or unknown.
     expect(out).not.toMatch(/unfinished work[^.]*\b(remain|remains)\b[^.]*available/i);
-    // 3. How is context kept?
     expect(out).toContain("How context is kept");
     expect(out).toContain("Older work moves through Full, High, Medium, and Low fidelity bands.");
     expect(out).toContain("/allocation controls how much context space each band receives.");
-    // 4. What should I do?
     expect(out).toContain("Start here");
     expect(out).toContain("1. Keep the defaults and work normally.");
     expect(out).toContain("2. Use /status to check context size, target, and trigger.");
@@ -340,7 +310,6 @@ describe("TC-2.2a Introduction presents the mental model", () => {
     expect(out).toContain("4. Use /smart-prune after tool-heavy work");
     expect(out).toContain("Neither command deletes stored LHC history.");
 
-    // Onboarding copy stays in plain language and slash spellings.
     for (const jargon of ["thread-view tail", "derivation counts", "working-context fidelity"]) {
       expect(out.toLowerCase()).not.toContain(jargon.toLowerCase());
     }
@@ -362,8 +331,6 @@ describe("TC-2.2a Introduction presents the mental model", () => {
     expect(lines).toContain("Historical");
     expect(lines).not.toMatch(/compaction is off|\/auto\b|turn it back on/i);
 
-    // Without a snapshot the screen still promises the automatic run — Smart
-    // Compact is always on — but names no numbers it does not have.
     const unknown = introductionLines(null).join("\n");
     expect(unknown).toContain("CC-LHC runs /smart-compact automatically at the active trigger");
     expect(unknown).toContain("Use /status to see the current target and trigger.");
@@ -400,9 +367,7 @@ describe("TC-2.2c Values refresh after selection", () => {
     for (const dir of dirs.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -416,8 +381,6 @@ describe("TC-2.2c Values refresh after selection", () => {
     Object.defineProperty(stdout, "rows", { value: 40, configurable: true });
     Object.defineProperty(stdout, "isTTY", { value: false, configurable: true });
     Object.defineProperty(stdin, "isTTY", { value: false, configurable: true });
-    // The panel draws UTF-8 glyphs; decode as UTF-8 so a chunk boundary
-    // inside a multi-byte glyph does not corrupt what we read back.
     const decoder = new StringDecoder("utf8");
     let out = "";
     (stdout as unknown as PassThrough).on("data", (chunk: Buffer) => {
@@ -460,7 +423,6 @@ describe("TC-2.2c Values refresh after selection", () => {
       Buffer.from("\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\r"),
     );
     await waitFor(() => shown().includes("Band allocation") && shown().includes("Historical"), "allocation selector");
-    // The selector opened from the Home command row, not from a prose label.
     (stdin as unknown as PassThrough).write(Buffer.from("\x1b[B\x1b[B\r"));
     await waitFor(() => shown().includes("Allocation Historical"), "preset applied");
     const afterSelect = out.length;

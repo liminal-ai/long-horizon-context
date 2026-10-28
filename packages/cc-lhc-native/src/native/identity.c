@@ -1,108 +1,3 @@
-/*
- * cc-lhc exact process identity — Node-API addon (NAPI_VERSION 8, C only).
- *
- * One translation unit; the platform implementation is selected at compile
- * time. Every platform returns the same normalized shape:
- *
- *   pid       — the queried pid, echoed back
- *   bootId    — boot-session discriminator (see per-platform notes below)
- *   starttime — kernel-held process birth time, decimal digits only
- *
- * Per-platform sources of truth:
- *   linux : bootId  = /proc/sys/kernel/random/boot_id (per-boot UUID)
- *           starttime = field 22 of /proc/<pid>/stat (clock ticks since boot)
- *   darwin: bootId  = sysctl kern.bootsessionuuid (per-boot UUID)
- *           starttime = kinfo_proc kp_proc.p_starttime as microseconds since
- *           the Unix epoch (exact kernel timeval, not seconds-resolution ps)
- *   win32 : bootId  = constant "win32-filetime-1601" — the creation FILETIME
- *           is absolute (100ns units since 1601, kernel-held, immutable for
- *           the process object), so pid + starttime is already exact across
- *           boots and no separate boot identity is required
- *           starttime = GetProcessTimes creation FILETIME as a decimal
- *           unsigned 64-bit count of 100ns intervals
- *
- * Result object: { ok: true, pid, bootId, starttime }
- *            or { ok: false, code, message } with code one of
- *            "invalid_pid" | "not_found" | "access_denied" | "native_error".
- * Callers must fail closed on anything but ok === true.
- *
- * readFileIdentity(path) — exact identity of the file at a path, from the
- * opened file object, for adopting a surviving background command's output
- * across a Claude child replacement (LIM-145):
- *
- *   volumeId — the volume the file lives on (decimal digits)
- *   fileId   — the file object on that volume, tagged by its source:
- *              linux/darwin "ino:<st_ino>" (st_dev is the volumeId)
- *              win32        "id128:<32 hex>" from GetFileInformationByHandleEx
- *                           FileIdInfo (NTFS/ReFS 128-bit file id, exact), or
- *                           "index64:<n>" from GetFileInformationByHandle when
- *                           the volume has no 128-bit id (FAT, some shares)
- *
- * Result object: { ok: true, path, volumeId, fileId }
- *            or { ok: false, code, message } with code one of
- *            "invalid_path" | "not_found" | "access_denied" | "not_a_file" |
- *            "native_error". Equality is exact string equality of both parts.
- *
- * Supervised-child control (contract 3, LIM-149): the wrapper replaces its
- * Claude child during Smart Compact and keeps the old child around, paused,
- * as the supervisor of its own still-running background tasks, so their real
- * exit outcome survives the replacement. Every target is a child the wrapper
- * spawned; the TypeScript layer gates each call on exact identity first.
- *
- *   pauseProcess(pid) / resumeProcess(pid)
- *     linux/darwin: SIGSTOP / SIGCONT; win32: ntdll process suspend/resume.
- *     Result { ok: true, pid } or a failure with "invalid_pid" | "not_found" |
- *     "access_denied" | "native_error".
- *
- *   readChildExit(pid, starttime) — the exit record of a task whose (paused)
- *     supervisor has not collected it yet. starttime must equal the value
- *     readProcessIdentity reported for that pid, else "identity_changed".
- *       linux : /proc/<pid>/stat state 'Z' + exit_code (field 52)
- *       darwin: sysctl KERN_PROC_PID SZOMB + p_xstat
- *       win32 : the process object retained by the parent's open handle;
- *               GetExitCodeProcess after the object is signaled
- *     Result { ok: true, pid, state: "running" }
- *         or { ok: true, pid, state: "exited", code }
- *         or { ok: true, pid, state: "signaled", signal } (POSIX only)
- *         or a failure with "invalid_pid" | "not_found" | "identity_changed" |
- *            "access_denied" | "native_error".
- *
- *   findChildHoldingFile(parentPid, path) — which direct child of parentPid
- *     holds the file at path open (the task writing its output file).
- *       linux : /proc children + stat through /proc/<pid>/fd/<n> (dev+ino)
- *       darwin: proc_listchildpids + PROC_PIDFDVNODEINFO (dev+ino)
- *       win32 : Toolhelp children ∩ Restart Manager holders of the path
- *     Result { ok: true, parentPid, path, pid, matches } where pid is the
- *     single matching child or null when zero or several match, or a failure
- *     with "invalid_pid" | "invalid_path" | "not_found" | "access_denied" |
- *     "native_error".
- *
- * Contract 4 adds two Windows-only calls (elsewhere they answer
- * "unsupported"; Linux/macOS have their own mechanisms in the TS layer):
- *
- *   bindChildToWrapperJob(pid) — put a child the wrapper just spawned into
- *     one process-wide job object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE and
- *     no breakaway of any kind (nothing may leave the job, deliberately or
- *     not), whose only handle this process holds (not inheritable).
- *     When the wrapper exits or is killed the handle closes and Windows ends
- *     every process still in the job: the child and every descendant it
- *     spawned after the call, even when the child itself exited first. The
- *     job nests under libuv's own (which allows silent breakaway, which is how
- *     tool processes escaped); the immediate job's breakaway rule governs.
- *     Breakaway must stay off: Git Bash (MSYS2) starts every child with
- *     CREATE_BREAKAWAY_FROM_JOB whenever its job allows it, so with
- *     BREAKAWAY_OK every program Claude's Bash tool ran left the job.
- *     Result { ok: true, pid } or a failure with "invalid_pid" | "not_found" |
- *     "access_denied" | "native_error" | "unsupported".
- *
- *   listFileHolders(path) — every process holding the file open, system-wide,
- *     from the Restart Manager, plus whether an exclusive (share-none) open of
- *     the path is refused with a sharing violation — which catches a holder
- *     the Restart Manager does not list. Result { ok: true, path, holders:
- *     [{ pid, name }], truncated, sharingViolation } or a failure with
- *     "invalid_path" | "not_found" | "access_denied" | "native_error" |
- *     "unsupported".
- */
 
 #include <node_api.h>
 
@@ -138,9 +33,6 @@ typedef struct {
   char message[256];
 } file_id_result;
 
-/* Supervised-child control (identity contract 3). All targets are children
- * the calling wrapper spawned itself; every call is pid + exact-identity
- * gated by the TypeScript layer before it reaches here. */
 typedef enum {
   PC_OK = 0,
   PC_NOT_FOUND = 1,
@@ -154,14 +46,14 @@ typedef enum { CHILD_RUNNING = 0, CHILD_EXITED = 1, CHILD_SIGNALED = 2 } child_s
 
 typedef struct {
   child_state state;
-  long long code;   /* exit code when CHILD_EXITED */
-  long long signal; /* terminating signal when CHILD_SIGNALED */
+  long long code;
+  long long signal;
   char message[256];
 } exit_result;
 
 typedef struct {
-  long long pid; /* the single matching child, or -1 */
-  int matches;   /* how many direct children hold the file */
+  long long pid;
+  int matches;
   char message[256];
 } holder_result;
 
@@ -169,14 +61,14 @@ typedef struct {
 
 typedef struct {
   long long pid;
-  char name[260]; /* UTF-8 application name, "?" when unknown */
+  char name[260];
 } file_holder;
 
 typedef struct {
   file_holder holders[FILE_HOLDERS_MAX];
   int count;
-  int truncated;         /* more holders than FILE_HOLDERS_MAX */
-  int sharing_violation; /* an exclusive open of the path was refused */
+  int truncated;
+  int sharing_violation;
   char message[256];
 } file_holders_result;
 
@@ -281,8 +173,6 @@ static id_status read_identity(int64_t pid, id_result *out) {
 #include <signal.h>
 #include <sys/stat.h>
 
-/* Copy 0-based post-comm field `index` of a /proc/<pid>/stat line (man 5 proc
- * numbering minus 3) into buf. Returns 1 when present. */
 static int proc_stat_field(const char *stat_line, int index, char *buf, size_t blen) {
   const char *close_paren = strrchr(stat_line, ')');
   if (close_paren == NULL) {
@@ -384,8 +274,6 @@ static pc_status read_child_exit(int64_t pid, const char *starttime, exit_result
   return PC_OK;
 }
 
-/* Which direct child of `parent` holds `path` open: compare each child's open
- * file objects (stat through /proc/<pid>/fd/<n>) with the path's dev+ino. */
 static pc_status find_child_holding_file(int64_t parent, const char *path, holder_result *out) {
   struct stat target;
   if (stat(path, &target) != 0) {
@@ -587,11 +475,6 @@ static pc_status read_child_exit(int64_t pid, const char *starttime, exit_result
   return PC_OK;
 }
 
-/* Which direct child of `parent` holds `path` open. Children come from one
- * KERN_PROC_ALL snapshot filtered on e_ppid (what ps does); each child's
- * vnode-backed descriptors (libproc) are compared with the path's dev+ino.
- * The message carries a scan summary so a miss is diagnosable from the
- * result alone. */
 static pc_status find_child_holding_file(int64_t parent, const char *path, holder_result *out) {
   struct stat target;
   if (stat(path, &target) != 0) {
@@ -766,8 +649,6 @@ static fid_status read_file_identity(const char *path, file_id_result *out) {
     snprintf(out->file_id, sizeof(out->file_id), "id128:%s", hex);
     return FID_OK;
   }
-  /* Volumes without a 128-bit file id: the 64-bit index, still from the
-   * opened object, tagged so it never compares equal to an id128 value. */
   ULARGE_INTEGER idx;
   idx.LowPart = bh.nFileIndexLow;
   idx.HighPart = bh.nFileIndexHigh;
@@ -959,9 +840,6 @@ static pc_status read_child_exit(int64_t pid, const char *starttime, exit_result
   return PC_OK;
 }
 
-/* Which direct child of `parent` holds `path` open: the Restart Manager
- * reports every process with the file open; intersect with the parent's
- * direct children from a process snapshot. */
 static pc_status find_child_holding_file(int64_t parent, const char *path, holder_result *out) {
   out->pid = -1;
   out->matches = 0;
@@ -1204,7 +1082,6 @@ static pc_status list_file_holders(const char *path, file_holders_result *out) {
         count = needed;
         rc = RmGetList(session, &needed, &count, infos, &reason);
         if (rc != ERROR_SUCCESS) {
-          /* Includes a holder appearing between the two calls: fail closed. */
           snprintf(out->message, sizeof(out->message), "RmGetList failed (error %lu)", (unsigned long)rc);
           result = PC_NATIVE_ERROR;
         } else {
@@ -1233,8 +1110,6 @@ static pc_status list_file_holders(const char *path, file_holders_result *out) {
   RmEndSession(session);
 
   if (result == PC_OK) {
-    /* Share-none open: refused while any handle to the file is open. Held
-     * for no longer than the call. */
     HANDLE f = CreateFileW(wpath, GENERIC_READ, 0, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
     if (f == INVALID_HANDLE_VALUE) {
       DWORD err = GetLastError();
@@ -1263,7 +1138,6 @@ static pc_status list_file_holders(const char *path, file_holders_result *out) {
 
 #include <sys/stat.h>
 
-/* Stop or continue every thread of the wrapper's own supervised child. */
 static pc_status pause_or_resume(int64_t pid, int resume, char *message, size_t mlen) {
   if (pid > INT_MAX) {
     snprintf(message, mlen, "pid exceeds platform range");
@@ -1284,9 +1158,6 @@ static pc_status pause_or_resume(int64_t pid, int resume, char *message, size_t 
   return PC_OK;
 }
 
-/* POSIX: the device + inode of the file, the same facts stat(2) gives the
- * host; cc-lhc keeps using Node's stat dev+ino on these platforms and this
- * reader exists for parity tests and a uniform contract. */
 static fid_status read_file_identity(const char *path, file_id_result *out) {
   struct stat st;
   if (stat(path, &st) != 0) {
@@ -1310,9 +1181,6 @@ static fid_status read_file_identity(const char *path, file_id_result *out) {
   return FID_OK;
 }
 
-/* Contract 4's Windows-only calls. Linux couples a child's death to the
- * wrapper with PR_SET_PDEATHSIG and macOS with a watchdog (TS layer), and the
- * TS layer lists file holders from /proc or lsof. */
 static pc_status bind_child_to_wrapper_job(int64_t pid, char *message, size_t mlen) {
   (void)pid;
   snprintf(message, mlen, "process-tree jobs are Windows-only");
@@ -1327,9 +1195,6 @@ static pc_status list_file_holders(const char *path, file_holders_result *out) {
 
 #endif
 
-/* ------------------------------------------------------------------------- */
-/* Node-API glue                                                             */
-/* ------------------------------------------------------------------------- */
 
 #define IDENTITY_CONTRACT_VERSION 4
 #define MAX_FILE_PATH_UTF8 32768
@@ -1483,9 +1348,6 @@ static const char *pc_code(pc_status s) {
                                     : "native_error";
 }
 
-/* Read argv[index] as a positive safe-integer pid; on a malformed value the
- * returned napi_value is the failure object to hand back (or NULL after a
- * thrown type error). */
 static int read_pid_arg(napi_env env, napi_value arg, const char *fn, int64_t *pid, napi_value *failure) {
   double d = 0;
   if (napi_get_value_double(env, arg, &d) != napi_ok) {
@@ -1670,7 +1532,6 @@ static napi_value FindChildHoldingFile(napi_env env, napi_callback_info info) {
     return NULL;
   }
   if (r.message[0] != '\0') {
-    /* Platform scan summary (diagnostic only; never part of the decision). */
     napi_value detail_v = make_string(env, r.message);
     if (detail_v == NULL || napi_set_named_property(env, obj, "detail", detail_v) != napi_ok) {
       napi_throw_error(env, NULL, "cc-lhc identity: cannot populate holder detail");

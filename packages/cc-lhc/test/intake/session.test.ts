@@ -135,14 +135,12 @@ describe("resume handoff capture", () => {
       noInference: true,
       lineageDbPath: join(home, "cc-lhc.sqlite"),
       knownRolloutPath: rolloutPath,
-      // Explicit none: this unit only proves knownRolloutPath bind, not lineage.
       prefixBoundary: { kind: "none" },
       continueCapture: {
         threadRef: { threadId: "th_known", registryPath: join(home, "registry.sqlite") },
         sdk: { drainSettled: async () => {} } as unknown as Lhc,
         stats,
       },
-      // Discovery would never resolve here; knownRolloutPath must bypass it.
       discoverDeps: { projectsRoot: join(rolloutDir, "no-projects"), pollMs: 20 },
       log: () => {},
       logError: () => {},
@@ -164,7 +162,6 @@ describe("resume handoff capture", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-home-prefix-"));
     const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-prefix-rollout-"));
     const rolloutPath = join(rolloutDir, "rebuilt-prefix.jsonl");
-    // Two replayed-prefix lines that map to unknown skips (no events).
     const prefix = `${JSON.stringify({ type: "mode", mode: "normal" })}\n${JSON.stringify({ type: "mode", mode: "normal" })}\n`;
     writeFileSync(rolloutPath, prefix);
     const { computeVerifiedPrefixBoundary } = await import("../../src/intake/prefix-boundary.js");
@@ -199,13 +196,11 @@ describe("resume handoff capture", () => {
     expect(session.stats.skippedUnknown).toBe(5);
     expect(session.stats.skippedReplay).toBe(0);
 
-    // A genuinely new line past the prefix counts normally again.
     appendLine(rolloutPath, { type: "mode", mode: "normal" } as RolloutLineItem);
     for (let attempt = 0; attempt < 50 && session.stats.linesSeen < 11; attempt += 1) {
       await sleep(50);
     }
     expect(session.stats.linesSeen).toBe(11);
-    // mode/system are meta (not unknown) after Slice 1 correction.
     expect(session.stats.skippedUnknown).toBe(5);
     expect(session.stats.replayedPrefixLines).toBe(2);
     await session.stop();
@@ -217,11 +212,6 @@ describe("resume handoff capture", () => {
     const rolloutDir = mkdtempSync(join(tmpdir(), "cc-lhc-prefix-events-rollout-"));
     const rolloutPath = join(rolloutDir, "rebuilt-events.jsonl");
 
-    // A realistic rebuilt prefix: one line whose content matches the original
-    // capture (signature known) and one synthetic line a compact rebuild
-    // produces (band summary — signature matches nothing). Neither may
-    // re-enter intake: rebuilt bytes are ours, the thread already holds the
-    // real history behind them.
     const userLine = {
       type: "user",
       uuid: "prefix-user",
@@ -237,10 +227,6 @@ describe("resume handoff capture", () => {
     const { computeVerifiedPrefixBoundary } = await import("../../src/intake/prefix-boundary.js");
     const prefixBoundary = computeVerifiedPrefixBoundary(prefix, 2);
 
-    // Persist only the first line's signature as already-seen — the state a
-    // real handoff inherits for verbatim tail content. The synthetic line
-    // deliberately has no known signature: it must be excluded by prefix
-    // position alone, not by dedupe.
     const { mapRolloutLine } = await import("../../src/intake/map.js");
     const { eventContentSignature } = await import("../../src/intake/replay-dedupe.js");
     const { appendThreadSignatures } = await import("../../src/intake/lineage-db.js");
@@ -289,15 +275,12 @@ describe("resume handoff capture", () => {
     for (let attempt = 0; attempt < 50 && session.stats.replayedPrefixLines < 2; attempt += 1) {
       await sleep(50);
     }
-    // Both prefix lines counted once as prefix lines, zero events produced —
-    // the synthetic line included, despite dedupe never having seen it.
     expect(session.stats.replayedPrefixLines).toBe(2);
     expect(session.stats.skippedReplay).toBe(0);
     expect(session.stats.linesSeen).toBe(10);
     expect(session.stats.eventsSent).toBe(8);
     expect(intakeCalls).toEqual([]);
 
-    // A genuinely new post-prefix line intakes normally.
     appendLine(rolloutPath, {
       type: "user",
       uuid: "post-prefix-user",
@@ -388,7 +371,6 @@ describe("lineage wiring", () => {
     const rolloutPath = join(projectDir, `${sessionId}.jsonl`);
     const startedAt = new Date(Date.now() - 60_000);
 
-    // Band-looking content must not reach intake under lineage failure.
     writeFileSync(
       rolloutPath,
       `${JSON.stringify({

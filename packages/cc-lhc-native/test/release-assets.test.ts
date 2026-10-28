@@ -1,11 +1,3 @@
-/**
- * Release-asset contract: shared asset naming + SHA-256 checksum logic
- * (scripts/asset-names.mjs) and the aggregation script that merges per-target
- * CI artifacts into a bundle plus checksummed release-candidate assets
- * (scripts/assemble-release-bundle.mjs). The aggregation script is exercised
- * for real against fake package roots, including every rejection path.
- */
-
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -71,17 +63,13 @@ describe("checksum parsing and verification", () => {
 
   it("throws on malformed, duplicate, or empty checksum files", () => {
     expect(() => assetLib.parseChecksums("not a checksum line")).toThrow(/malformed/);
-    expect(() => assetLib.parseChecksums(`${hex} ${name}`)).toThrow(/malformed/); // single space
+    expect(() => assetLib.parseChecksums(`${hex} ${name}`)).toThrow(/malformed/);
     expect(() =>
       assetLib.parseChecksums([assetLib.checksumLine(hex, name), assetLib.checksumLine(hex, name)].join("\n")),
     ).toThrow(/twice/);
     expect(() => assetLib.parseChecksums("\n\n")).toThrow(/empty/);
   });
 });
-
-// ---------------------------------------------------------------------------
-// Aggregation script against fake package roots.
-// ---------------------------------------------------------------------------
 
 const FAKE_TARGET_KEYS = ["linux-x64", "win32-arm64"];
 

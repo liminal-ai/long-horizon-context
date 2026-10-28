@@ -1,12 +1,3 @@
-/**
- * Launch-time cleanup of what killed wrappers leave behind (F3):
- *   1. runtime descriptors whose owner is proven gone → deleted
- *   2. abandoned rebuilt transcripts → moved aside (never deleted)
- * Dead-owner leases are reported where they are reclaimed (thread-owner
- * onReclaim → launch-thread log). One summary line goes to the wrapper log.
- * Never throws; a failed step is logged and the launch continues.
- */
-
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -30,13 +21,6 @@ export interface LaunchSweepInput {
   cwd: string;
   registryPath: string;
   lineageDbPath: string;
-  /**
-   * The thread whose lease this launch holds. Its owner probe reads this
-   * launch itself, which is not an in-flight handoff: the lease is exclusive,
-   * so no other process can be mid-swap on that thread, and its abandoned
-   * rebuilds are this launch's to move aside. Other threads' owners are probed
-   * as usual.
-   */
   ownThreadId?: string;
   log: { info(message: string): void; warn(message: string): void };
   projectsRoot?: string;
@@ -60,7 +44,6 @@ async function sweepRebuilds(
   descriptorSessionIds: ReadonlySet<string>,
 ): Promise<AbandonedRebuildSweep | { skipped: string }> {
   if (!existsSync(input.lineageDbPath)) return { skipped: "no lineage db" };
-  // Without a registry no alias/current fact is provable.
   if (!existsSync(input.registryPath)) return { skipped: "no registry" };
   let rebuiltSessions: Array<{ sessionId: string; threadId: string }>;
   try {

@@ -1,17 +1,3 @@
-/**
- * Evidence into the parent-owned store (LIM-145 AC-2.1).
- *
- * The rollout fold in `observation/async-work.ts` already decides what a line
- * means — a launch acknowledgement, progress, or matching terminal evidence.
- * This module follows that decision into SQLite so the parent holds one
- * durable record per launch across child replacements. It is not a second
- * fold: the fold emits, the store records.
- *
- * Labels are sanitized here, once: family noun, a bounded description for
- * non-shell families, and the task id. A background command's body, progress
- * text, environment, and output never reach the database.
- */
-
 import {
   type AsyncWorkEvent,
   type AsyncWorkFamily,
@@ -42,7 +28,6 @@ function plainAscii(text: string, maxChars: number): string {
   return ascii.length <= maxChars ? ascii : `${ascii.slice(0, maxChars - 3)}...`;
 }
 
-/** Durable, sanitized label for one launch. Shell commands contribute only their family and id. */
 export function continuityLabel(work: OpenAsyncWork): string {
   const parts = [FAMILY_NOUN[work.family]];
   if (work.family !== "background_shell" && work.description !== undefined && work.description !== "") {
@@ -59,7 +44,6 @@ function terminalOutcome(outcome: AsyncWorkTerminalOutcome): TerminalOutcome {
   return outcome;
 }
 
-/** Record one accepted piece of fold evidence for the thread. */
 export function applyAsyncWorkEvent(
   store: ContinuityStore,
   threadId: string,
@@ -101,12 +85,6 @@ export function applyAsyncWorkEvent(
   }
 }
 
-/**
- * The carried, still-active items of a thread as the open work a rebuilt
- * session's fold must start with (LIM-146 AC-2.7): the fold key and identity
- * reproduce the recorded launch id exactly, so a terminal notice in the new
- * rollout closes the same durable item.
- */
 export function carriedOpenWork(store: ContinuityStore, threadId: string): OpenAsyncWork[] {
   const work: OpenAsyncWork[] = [];
   for (const item of store.listItems(threadId)) {
@@ -129,13 +107,10 @@ export function carriedOpenWork(store: ContinuityStore, threadId: string): OpenA
 }
 
 export interface ContinuityObserver {
-  /** The live fold, for the open-set readers that already exist. */
   readonly fold: AsyncWorkFold;
-  /** Fold one rollout line; every accepted piece of evidence lands in the store. */
   observeLine(item: RolloutLineItem): void;
 }
 
-/** A fold whose evidence is recorded in the parent-owned store as it is read. */
 export function createContinuityObserver(input: {
   store: ContinuityStore;
   threadId: string;

@@ -1,11 +1,3 @@
-/**
- * Guards for cross-platform script execution and the no-compile install
- * contract. Package scripts must run under native Windows cmd via npm/pnpm:
- * no `rm -rf`, no POSIX inline env assignment, no nested pnpm-run (this repo
- * tracks a pnpm pre-run crash), and binding.gyp's implicit install
- * compilation must stay neutralized by an explicit install script.
- */
-
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -20,12 +12,9 @@ const pkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as {
 
 describe("package scripts are portable to native Windows cmd", () => {
   it.each(Object.entries(pkg.scripts))("%s: %s", (_name, command) => {
-    // No POSIX-only file removal.
     expect(command).not.toMatch(/\brm\s+-rf?\b/);
-    // No POSIX inline environment assignment (VAR=x cmd).
     expect(command).not.toMatch(/^[A-Z_][A-Z0-9_]*=\S+\s/);
     expect(command).not.toMatch(/&&\s*[A-Z_][A-Z0-9_]*=\S+\s/);
-    // No nested pnpm-run dependence.
     expect(command).not.toMatch(/\bpnpm\s+(run|exec|--filter)\b/);
     expect(command).not.toMatch(/\bnpm\s+run\b/);
   });
@@ -40,8 +29,6 @@ describe("package scripts are portable to native Windows cmd", () => {
 });
 
 describe("matrix-invoked scripts of dependent packages are portable too", () => {
-  // The native-platforms matrix runs these package scripts on native Windows
-  // (pwsh -> pnpm -> cmd): they must obey the same portability rules.
   const cases: Array<[string, string[]]> = [
     ["lhc", ["clean", "build"]],
     ["cc-lhc", ["clean", "build", "typecheck", "test"]],

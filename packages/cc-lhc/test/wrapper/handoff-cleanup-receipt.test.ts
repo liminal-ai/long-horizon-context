@@ -1,6 +1,3 @@
-/**
- * LIM-116 post-switch cleanup: TC-5.2a-c, AR-1, AR-2, AR-3, AR-4.
- */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,9 +87,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) {
     try {
       rmSync(dir, { recursive: true, force: true });
-    } catch {
-      // best effort
-    }
+    } catch {}
   }
 });
 
@@ -432,7 +427,6 @@ describe("open failure releases the database handle", () => {
     dirs.push(dir);
     const garbage = join(dir, "cc-lhc.sqlite");
     writeFileSync(garbage, "not a database at all\n");
-    // The same handle the store would use, tracked so close-on-throw is provable.
     const handles: DatabaseSync[] = [];
     const openDbFn = (path: string): DatabaseSync => {
       const db = new DatabaseSync(path);
@@ -441,7 +435,6 @@ describe("open failure releases the database handle", () => {
     };
     expect(() => openHandoffReceiptStore(garbage, { openDbFn })).toThrow();
     expect(handles).toHaveLength(1);
-    // A closed handle refuses further statements; an open one would accept this.
     expect(() => handles[0]!.exec("SELECT 1")).toThrow(/closed|not open/i);
   });
 });

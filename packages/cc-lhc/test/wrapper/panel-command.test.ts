@@ -1,7 +1,3 @@
-/**
- * LIM-118: TC-3.1a-c, TC-3.2a. Control Panel command grammar and no mutation
- * on removed or invalid spellings.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -186,18 +182,15 @@ describe("the panel is a slash CLI", () => {
       if (parsed.kind === "route") expect(parsed.route, typed).toBe(route);
     }
 
-    // Every command row the panel displays is itself a canonical command.
     for (const action of HOME_ACTIONS) {
       expect(action.label.startsWith("/"), action.label).toBe(true);
       expect(parsePanelCommand(action.label).kind, action.label).not.toBe("unknown");
     }
 
-    // Slashless names are recognized only well enough to teach the rule.
     for (const bare of ["status", "smart-compact", "help", "allocation", "bounds 1 2"]) {
       const parsed = parsePanelCommand(bare);
       expect(parsed.kind, bare).toBe("needs_slash");
     }
-    // Prose labels, case variants, and removed spellings do not execute.
     for (const rejected of [
       "Smart Compact",
       "Smart Prune",
@@ -222,13 +215,10 @@ describe("the panel is a slash CLI", () => {
     expect(bare.state.panelRows).toEqual(["commands start with / · try /help"]);
     const drawn = panelText(renderPanelForTest(bare.state));
     expect(drawn).toContain("commands start with / · try /help");
-    // No hidden alias is echoed back as if it had worked.
     expect(drawn).not.toContain("rebuilding");
   });
 
   it("answers an unknown command with two short rows, not the vocabulary", () => {
-    // A slash token no command starts with: nothing to complete, so Enter
-    // reaches the parser and the parser answers.
     const opened = feed(openHome(), "/compact\r");
     expect(opened.state.panelRows).toEqual(["unknown command: /compact", "commands start with / · try /help"]);
     const drawn = panelText(renderPanelForTest(opened.state));
@@ -245,7 +235,6 @@ describe("TC-3.1a Run Smart Compact", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-cmd-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
-    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
     markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
@@ -255,9 +244,7 @@ describe("TC-3.1a Run Smart Compact", () => {
     for (const dir of dirs.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -336,7 +323,6 @@ describe("TC-3.1b Run Smart Prune", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-prune-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
-    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
     markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
@@ -346,9 +332,7 @@ describe("TC-3.1b Run Smart Prune", () => {
     for (const dir of dirs.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -424,7 +408,6 @@ describe("TC-3.1c Removed spellings stay removed", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-unknown-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
-    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
     markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
@@ -434,9 +417,7 @@ describe("TC-3.1c Removed spellings stay removed", () => {
     for (const dir of dirs.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -497,7 +478,6 @@ describe("work in flight on Home", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-inflight-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
-    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
     markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
@@ -507,9 +487,7 @@ describe("work in flight on Home", () => {
     for (const dir of dirs.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -520,8 +498,6 @@ describe("work in flight on Home", () => {
       intakeStream: { messageEvents: async () => ({ ok: true, value: { events: [] } }) },
     } as unknown as Lhc;
     mocks.captureFactory = () => scriptedCapture(sdk);
-    // The automatic path holds the guard under its internal label while it
-    // runs; this is exactly the state Home renders during an auto compaction.
     const guard = new CommandInFlightGuard();
     expect(guard.tryAcquire("auto-compact", Date.now())).toBe(true);
     expect(guard.current()?.label).toBe("auto-compact");
@@ -550,10 +526,8 @@ describe("work in flight on Home", () => {
     (stdin as unknown as PassThrough).write(LEADER);
     await waitFor(() => panelText(out).includes("active operation:"), "in-flight notice on Home");
     expect(panelText(out)).toContain("active operation: /smart-compact");
-    // The window row legitimately names "Claude native auto-compact"; the guard's bare label never appears.
     expect(panelText(out), "the guard's internal label reached Home").not.toMatch(/(?<!native )auto-compact/);
 
-    // Details reports the same operation the same way.
     (stdin as unknown as PassThrough).write(Buffer.from("/details\r"));
     await waitFor(() => panelText(out).includes("Operation"), "details operation row");
     expect(panelText(out)).toContain("Operation /smart-compact");
@@ -572,7 +546,6 @@ describe("TC-3.2a Reject invalid target", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-invalid-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
-    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
     markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
@@ -582,9 +555,7 @@ describe("TC-3.2a Reject invalid target", () => {
     for (const dir of dirs.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -653,7 +624,6 @@ describe("manual mutation last attempt", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-panel-last-attempt-"));
     dirs.push(home);
     process.env.CC_LHC_HOME = home;
-    // TTY-shaped rigs: onboarding already shown, so the panel opens only on demand.
     markShown(firstLoadMarkerPath(home), ONBOARDING_VERSION);
   });
   afterEach(() => {
@@ -663,9 +633,7 @@ describe("manual mutation last attempt", () => {
     for (const dir of dirs.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -706,7 +674,6 @@ describe("manual mutation last attempt", () => {
     (stdin as unknown as PassThrough).write(LEADER);
     await new Promise((resolve) => setTimeout(resolve, 40));
     (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
-    // A failed attempt is non-default state: it stays on Home, as a notice.
     await waitFor(
       () => panelText(out).includes("last attempt: manual /smart-compact did not hand off:"),
       "home last attempt",

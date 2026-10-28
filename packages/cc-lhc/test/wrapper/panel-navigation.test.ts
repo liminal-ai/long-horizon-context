@@ -1,6 +1,3 @@
-/**
- * LIM-118: TC-1.2a-b, TC-1.3a, TC-1.5a-b, TC-2.3a-c, AR-10.
- */
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { PRODUCT_PRESET_IDS } from "../../src/governor/band-allocation.js";
@@ -102,7 +99,6 @@ describe("TC-1.2a New user discovers actions", () => {
     for (const action of HOME_ACTIONS) {
       const index = HOME_ACTIONS.indexOf(action);
       let cursor = openHome();
-      // Walk the unified cursor onto this command row.
       for (let step = 0; step < homeCursorLength() && cursor.viewport.selectedIndex !== index; step += 1) {
         cursor = feed(cursor, "\x1b[B").state;
       }

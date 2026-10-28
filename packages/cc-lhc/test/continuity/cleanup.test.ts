@@ -1,12 +1,3 @@
-/**
- * LIM-146 AC-2.10 (TC-2.10a–c): bounded cleanup of finished carried work over
- * the real SQLite record and real files. Ordering (result safe → copy → result
- * updated → tracking removed), the 1 MiB bound and 0600 mode, survival of
- * status/output through the durable result, byte-exact user output, fence
- * removal only after copy, exact preservation of open work, refusal on
- * identity change / copy failure / update failure / missing result, and no
- * process signal anywhere.
- */
 import { spawn } from "node:child_process";
 import {
   existsSync,
@@ -56,11 +47,6 @@ function alive(pid: number): boolean {
   }
 }
 
-/**
- * The owned copy is created 0600. Windows has no POSIX permission bits: Node's
- * chmod drives only the read-only attribute, a writable file reads back 0666,
- * and per-user isolation comes from the home/temp directory ACL instead.
- */
 const OWNED_COPY_MODE = process.platform === "win32" ? 0o666 : 0o600;
 
 const pids: ReapTarget[] = [];
@@ -74,13 +60,12 @@ it("reapProcesses fails closed on a target without exact identity: the live proc
   try {
     const target: ReapTarget = { pid: child.pid!, identity: null };
     await reapProcesses([target], 300);
-    expect(alive(child.pid!)).toBe(true); // waited out, not killed
+    expect(alive(child.pid!)).toBe(true);
   } finally {
     child.kill("SIGKILL");
   }
 });
 
-/** A thread with five carried items: shell adopted (real 1 MiB+ output), Monitor relaunched by the parent (real live process + fence). */
 function seed() {
   const root = mkdtempSync(join(tmpdir(), "cc-lhc-cleanup-"));
   const continuityDir = join(root, "continuity");
@@ -94,7 +79,6 @@ function seed() {
   const fence = join(continuityDir, "monitor_mon-1_toolu_mon.1.output");
   writeFileSync(fence, "relaunched-once-XyZ");
   const fenceFd = openSync(fence, "a");
-  // A portable long-lived writer holding the fence open (no /bin/sh on Windows).
   const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 30_000)"], {
     detached: true,
     stdio: ["ignore", fenceFd, fenceFd],
@@ -140,13 +124,11 @@ function seed() {
     },
     nowMs: 3_001,
   });
-  // A never-carried later launch (generation 0) that finishes: obsolete tracking with nothing to preserve.
   observer.observeLine(toolUse("toolu_agent2", "Agent", { description: "later", subagent_type: "general-purpose" }));
   observer.observeLine(
     toolResult("toolu_agent2", { status: "async_launched", agentId: "agent-2", description: "agent-2" }),
   );
   observer.observeLine(notification({ taskIds: ["agent-2"], status: "completed" }));
-  // Another thread's carried item in the same database.
   const other = createContinuityObserver({ store, threadId: OTHER, nowFn: () => 1_000 });
   other.observeLine(toolUse("toolu_agent9", "Agent", { description: "other", subagent_type: "general-purpose" }));
   other.observeLine(
@@ -172,8 +154,6 @@ function seed() {
   const copies = () =>
     existsSync(resultCopyDir(continuityDir)) ? readdirSync(resultCopyDir(continuityDir)).sort() : [];
   const logs: string[] = [];
-  // These cases model the relaunched Monitor's process as already ended: a
-  // live one keeps its fence (F4b), which the TC-2.10b case checks first.
   const clean = (ports: Parameters<typeof cleanupThread>[3] = {}) =>
     cleanupThread(store, T, continuityDir, { log: (m) => logs.push(m), probeIdentity: PROCESS_GONE, ...ports });
   const otherState = () => ({
@@ -229,16 +209,13 @@ describe("cleanup of finished carried work", () => {
     expect(copy.path.startsWith(resultCopyDir(s.continuityDir))).toBe(true);
     expect(statSync(copy.path).mode & 0o777).toBe(OWNED_COPY_MODE);
     expect(readFileSync(copy.path).equals(s.source.subarray(0, RESULT_COPY_MAX_BYTES))).toBe(true);
-    // The user's output is byte-exact and still the same file object.
     expect(readFileSync(s.shellOutput).equals(s.source)).toBe(true);
-    // Durable results: repointed shell, plain agent; both retained and pending.
     expect(s.store.getResult(T, LAUNCH_IDS.background_shell)).toMatchObject({
       artifact: { kind: "owned_copy", path: copy.path, bytes: RESULT_COPY_MAX_BYTES, truncated: true },
       delivery: "pending",
     });
     expect(s.store.getResult(T, LAUNCH_IDS.agent)).toMatchObject({ artifact: null, delivery: "pending" });
     expect(s.store.getResult(T, "agent:agent-2:toolu_agent2")).toBeNull();
-    // Tracking gone, status and bounded output still answer from the result.
     expect(s.store.getItem(T, LAUNCH_IDS.background_shell)).toBeNull();
     expect(itemStatus(s.store, T, LAUNCH_IDS.background_shell)).toMatchObject({
       ok: true,
@@ -255,7 +232,6 @@ describe("cleanup of finished carried work", () => {
     expect(out.ok && out.bytes.equals(s.source.subarray(100, 1_100))).toBe(true);
     expect(out.ok && out.totalBytes).toBe(RESULT_COPY_MAX_BYTES);
     expect(readItemOutput(s.store, T, LAUNCH_IDS.agent)).toMatchObject({ ok: false, reason: "unsupported" });
-    // Open work, its relaunch record, its live process, its fence, and its generation: exactly as before.
     expect(
       [LAUNCH_IDS.monitor, LAUNCH_IDS.workflow, LAUNCH_IDS.scheduled_wakeup].map((id) => s.store.getItem(T, id)),
     ).toEqual(open);
@@ -263,7 +239,6 @@ describe("cleanup of finished carried work", () => {
     expect(alive(s.pid)).toBe(true);
     expect(readFileSync(s.fence, "utf8")).toBe("relaunched-once-XyZ");
     expect(s.otherState()).toEqual(other);
-    // Idempotent: nothing further changes.
     const copyStat = statSync(copy.path);
     const again = s.clean();
     expect(again).toMatchObject({ removed: [], retained: [], copied: [], fencesRemoved: [], generationsRemoved: 0 });
@@ -277,25 +252,20 @@ describe("cleanup of finished carried work", () => {
     s.finish(LAUNCH_IDS.background_shell);
     s.finish(LAUNCH_IDS.agent);
     s.finish(LAUNCH_IDS.workflow, "failed");
-    // Monitor still active: its fence and process stay whatever else is cleaned.
     let report = s.clean();
-    // shell, agent, workflow, and the never-carried agent-2.
     expect(report.removed).toHaveLength(4);
     expect(report.preserved.sort()).toEqual([LAUNCH_IDS.monitor, LAUNCH_IDS.scheduled_wakeup].sort());
     expect(existsSync(s.fence)).toBe(true);
     expect(alive(s.pid)).toBe(true);
     expect(s.store.getGeneration(T, 1)).toMatchObject({ state: "open" });
-    // Monitor and wakeup finish (the process itself is still there — cleanup never signals it).
     s.finish(LAUNCH_IDS.monitor, "stopped");
     s.finish(LAUNCH_IDS.scheduled_wakeup);
-    // F4b: while that process is live, its fence and tracking stay.
     report = s.clean({ probeIdentity: probeProcessIdentityNative });
     expect(report.retained).toEqual([
       expect.objectContaining({ launchId: LAUNCH_IDS.monitor, reason: "relaunch_process_live" }),
     ]);
     expect(report.removed).toEqual([LAUNCH_IDS.scheduled_wakeup]);
     expect(existsSync(s.fence)).toBe(true);
-    // Once it is gone (modelled), the fence goes after its copy is durable.
     report = s.clean();
     expect(report.removed).toEqual([LAUNCH_IDS.monitor]);
     expect(report.retained).toEqual([]);
@@ -311,7 +281,6 @@ describe("cleanup of finished carried work", () => {
       outcome: "stopped",
       artifact: { kind: "owned_copy", path: copy.path },
     });
-    // Nothing open: the thread's generation tracking goes; every result and copy stays.
     expect(report.generationsRemoved).toBe(1);
     expect(s.store.listItems(T)).toEqual([]);
     expect(s.store.getGeneration(T, 1)).toBeNull();
@@ -327,7 +296,6 @@ describe("cleanup of finished carried work", () => {
       status: { state: "terminal", terminal: { outcome: "stopped" } },
     });
     expect(s.otherState().items).toHaveLength(1);
-    // Rerun over an empty thread: no-op.
     expect(s.clean()).toMatchObject({ removed: [], retained: [], copied: [], generationsRemoved: 0 });
     s.store.close();
   });
@@ -342,10 +310,8 @@ describe("cleanup of finished carried work", () => {
     const monitorBefore = s.store.getItem(T, LAUNCH_IDS.monitor)!;
     const monitorResultBefore = s.store.getResult(T, LAUNCH_IDS.monitor)!;
 
-    // Identity change: the shell's output path now names another file object.
     writeFileSync(`${s.shellOutput}.new`, "someone else");
     renameSync(`${s.shellOutput}.new`, s.shellOutput);
-    // Copy failure for the monitor's fence.
     const failing = {
       copyBounded: () => {
         throw new Error("disk full");
@@ -373,7 +339,6 @@ describe("cleanup of finished carried work", () => {
     expect(alive(s.pid)).toBe(true);
     expect(s.store.getGeneration(T, 1)).not.toBeNull();
 
-    // Update failure: the copy is made, the result refuses it — the copy is withdrawn and the original reference kept.
     const refusing: ContinuityStore = {
       ...s.store,
       setResultArtifact: () => {
@@ -391,7 +356,6 @@ describe("cleanup of finished carried work", () => {
     expect(existsSync(s.fence)).toBe(true);
     expect(s.copies()).toEqual([]);
 
-    // Missing durable result: a carried terminal item whose result row is gone is kept, not removed.
     const db = new DatabaseSync(s.dbPath);
     db.prepare("DELETE FROM cc_continuity_results WHERE thread_id = ? AND launch_id = ?").run(T, LAUNCH_IDS.monitor);
     db.close();

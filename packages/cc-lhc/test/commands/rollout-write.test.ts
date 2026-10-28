@@ -1,9 +1,3 @@
-/**
- * `cc-lhc rollout write`: the fork's native-file entry point. Writes the
- * rebuilt rollout under a fresh session id, records lineage so the first
- * resume skips the replayed prefix, and makes the session current.
- */
-
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -157,13 +151,11 @@ describe("rollout write CLI", () => {
     const resolved = await threads.resolveAlias({ alias: `claude-code:${SID}`, registryPath });
     expect(resolved.ok && resolved.value.threadId).toBe(threadId);
 
-    // The same session id again: the rollout exists, refuse before touching anything.
     out = [];
     expect(await run("--thread-id", threadId, "--session-id", SID, ...FAMILY)).toBe(2);
     expect(errs[0]).toMatch(/^path_exists: /);
     expect(out).toEqual([]);
 
-    // Registry cwd is the default; an explicit --cwd writes under another project dir.
     errs = [];
     expect(await run("--thread-id", threadId, "--session-id", SID2, "--cwd", join(root, "elsewhere"), ...FAMILY)).toBe(
       0,

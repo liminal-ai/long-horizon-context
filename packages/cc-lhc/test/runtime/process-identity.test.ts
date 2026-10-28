@@ -9,7 +9,6 @@ import {
 
 describe("parseProcStatStarttime", () => {
   it("parses plain comm", () => {
-    // synthetic: pid (comm) state ... starttime at field 22
     const fields = [
       "R",
       "1",
@@ -48,8 +47,6 @@ describe("parseProcStatStarttime", () => {
   });
 });
 
-// The /proc reference reader is Linux-only by definition; on other platforms
-// it must return null (fail closed), which is asserted separately below.
 describe.skipIf(process.platform !== "linux")("readProcessIdentityLinux (Linux reference)", () => {
   it("reads self identity", () => {
     const id = readProcessIdentityLinux(process.pid);

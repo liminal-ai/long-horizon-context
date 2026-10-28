@@ -1,10 +1,4 @@
 #!/usr/bin/env node
-/**
- * Short-lived intermediate parent: spawn the worker, record its pid, exit.
- *
- * After this process exits the worker is no longer a child of the PTY old-child,
- * which is the Windows taskkill-/T exclusion candidate (I-9).
- */
 import { spawn } from "node:child_process";
 import { writeFileSync } from "node:fs";
 

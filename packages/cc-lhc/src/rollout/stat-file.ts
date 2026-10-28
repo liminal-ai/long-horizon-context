@@ -5,7 +5,6 @@ export interface RolloutStat {
   mtimeMs: number;
 }
 
-/** Size/mtime of a rollout file, or null when it does not exist (yet). */
 export async function statRolloutFile(path: string): Promise<RolloutStat | null> {
   try {
     const fileStat = await stat(path);

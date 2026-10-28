@@ -14,13 +14,9 @@ import { isSessionUuid, isUnsupportedSessionChangingFlag, type UnsupportedSessio
 
 export interface LaunchSessionPlan {
   expected: ExpectedSession;
-  /** Argv to pass to the Claude child after normalization. */
   childArgv: string[];
-  /** Source resume id when forking (attribution retained separately from target). */
   forkSourceSessionId?: string;
-  /** Non-selector tokens before `--`: user options and the initial prompt. */
   rest: string[];
-  /** `--` and everything after it, verbatim. */
   passthrough: string[];
 }
 
@@ -29,7 +25,6 @@ export interface LaunchSessionDeps {
   discoverDeps?: DiscoverDeps;
   pickSessionId?: (candidates: SessionPickCandidate[]) => Promise<string | undefined>;
   listCandidates?: (cwd: string) => Promise<SessionPickCandidate[]>;
-  /** Test hook: whether a rollout file exists for --session-id collision. */
   rolloutExistsFn?: (cwd: string, sessionId: string) => Promise<boolean>;
   stdin?: NodeJS.ReadableStream;
   stdout?: NodeJS.WritableStream;
@@ -53,25 +48,17 @@ type SelectorKind = "resume" | "continue" | "session_id" | "fork_session";
 
 interface ParsedSelector {
   kind: SelectorKind;
-  /** Present for resume value / session-id value. */
   value?: string;
-  /** resume value is a UUID vs free-text search term. */
   resumeForm?: "uuid" | "search" | "bare";
 }
 
 interface NormalizedArgv {
-  /** Tokens after `--` pass through untouched. */
   passthrough: string[];
-  /** Tokens before `--` excluding consumed selectors. */
   rest: string[];
   selectors: ParsedSelector[];
   unsupported: UnsupportedSessionFlag[];
 }
 
-/**
- * One grammar-aware normalization pass. Respects `--`, records selector
- * cardinality, never silently picks the first of conflicting selectors.
- */
 export function normalizeLaunchArgv(argv: readonly string[]): NormalizedArgv {
   const passthrough: string[] = [];
   const rest: string[] = [];
@@ -90,7 +77,6 @@ export function normalizeLaunchArgv(argv: readonly string[]): NormalizedArgv {
     if (arg === "--") {
       afterDashDash = true;
       i += 1;
-      // remaining go to passthrough including the separator as child sees it
       passthrough.push("--");
       continue;
     }
@@ -98,7 +84,6 @@ export function normalizeLaunchArgv(argv: readonly string[]): NormalizedArgv {
     const bad = isUnsupportedSessionChangingFlag(arg);
     if (bad !== undefined) {
       unsupported.push(bad);
-      // still consume optional value so rest stays clean
       if (!arg.includes("=") && i + 1 < argv.length && !argv[i + 1]!.startsWith("-")) {
         i += 2;
       } else {
@@ -189,11 +174,6 @@ export function normalizeLaunchArgv(argv: readonly string[]): NormalizedArgv {
   return { passthrough, rest, selectors, unsupported };
 }
 
-/**
- * Build child argv: pre-`--` options, then normalized Claude selectors, then
- * the exact `--` suffix (byte-for-byte order preserved). Selectors must never
- * land after `--` or they become literal prompt tokens.
- */
 export function assembleChildArgv(
   rest: readonly string[],
   selectorArgs: readonly string[],
@@ -239,9 +219,7 @@ async function defaultListCandidates(cwd: string, deps: DiscoverDeps): Promise<S
         label: `${sessionId}  mtime=${new Date(st.mtimeMs).toISOString()}`,
         mtimeMs: st.mtimeMs,
       });
-    } catch {
-      // skip
-    }
+    } catch {}
   }
   candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
   return candidates.slice(0, 30);
@@ -280,10 +258,6 @@ async function defaultPickSessionId(
   }
 }
 
-/**
- * Resolve expected Claude session id and shape child argv before spawn.
- * Fails closed on ambiguous/unsupported selector combinations.
- */
 export async function resolveLaunchSession(
   argv: readonly string[],
   deps: LaunchSessionDeps = {},
@@ -343,7 +317,6 @@ export async function resolveLaunchSession(
   const passthrough = normalized.passthrough;
   const child = (selectorArgs: string[]): string[] => assembleChildArgv(rest, selectorArgs, passthrough);
 
-  // Explicit new session via --session-id
   if (hasSessionId) {
     const id = sessionIds[0]!.value!;
     const exists =
@@ -363,8 +336,6 @@ export async function resolveLaunchSession(
     };
   }
 
-  // --fork-session is not certified: no fork-clone lineage/prefix contract.
-  // Reject before child spawn / candidate lookup / target lineage mutation.
   if (hasFork) {
     throw new LaunchGrammarError(
       "cc-lhc: --fork-session is not supported (no certified fork-clone lineage/prefix contract). " +
@@ -398,7 +369,6 @@ export async function resolveLaunchSession(
         passthrough: [...passthrough],
       };
     }
-    // uuid
     const id = resume.value!;
     return {
       expected: expectedSessionFromExplicitId(id, "explicit_resume"),
@@ -423,7 +393,6 @@ export async function resolveLaunchSession(
     };
   }
 
-  // Fresh launch
   const fresh = createFreshExpectedSession();
   return {
     expected: fresh,
@@ -433,22 +402,10 @@ export async function resolveLaunchSession(
   };
 }
 
-/**
- * Child argv for THIS invocation on `sessionId`: the user's own argv verbatim —
- * options, initial prompt and passthrough — with the session selector replaced
- * by an external `--resume <sessionId>`. The prompt belongs to this launch and
- * runs here, exactly once.
- */
 export function launchChildArgv(rest: readonly string[], passthrough: readonly string[], sessionId: string): string[] {
   return assembleChildArgv(rest, ["--resume", sessionId], passthrough);
 }
 
-/**
- * Child argv for a wrapper-owned replacement: the launch's inherited options
- * with the session selector replaced by `--resume <sessionId>`. The initial
- * prompt is left behind — a replacement continues a conversation, it never
- * re-executes the prompt that started it.
- */
 export function replacementChildArgv(
   rest: readonly string[],
   passthrough: readonly string[],
@@ -515,63 +472,23 @@ const CLAUDE_ZERO_ARITY_FLAGS = new Set([
   "--version",
 ]);
 
-/**
- * The Claude flags that make a launch a one-shot: print the response and exit.
- *
- * `-p, --print` is zero-arity in the installed binary (verified against the
- * 2.1.235 `--help`, matching the 2.1.226 arity fixture above), so the prompt of
- * a print launch is a positional token or stdin — never a value on the flag.
- * The parser does accept an `=value` form on a declared boolean, though
- * (`--print=1`, `-p=1` both parse), and that launch is just as much a one-shot.
- * Recognising only the bare forms would arm the interactive child swap on a
- * seat that is about to exit.
- */
 function isPrintFlag(token: string): boolean {
   const name = token.includes("=") ? token.slice(0, token.indexOf("=")) : token;
   return name === "-p" || name === "--print";
 }
 
-/**
- * What kind of seat this launch is.
- *
- * A one-shot runs the prompt it carries and exits, so its compaction seam is
- * the start of the next invocation — before any Claude process exists (R9). An
- * interactive launch stays live and compacts at settled seams with a child swap.
- */
 export type LaunchForm = "interactive" | "one_shot";
 
 export function launchFormOf(rest: readonly string[]): LaunchForm {
   return rest.some(isPrintFlag) ? "one_shot" : "interactive";
 }
 
-/**
- * How a launch's argv divides between what a wrapper-owned replacement child
- * inherits and the initial prompt, which belongs to the invocation that carried
- * it. Both halves stay in this launch's own argv; the split only says what a
- * replacement may take with it.
- */
 export interface LaunchArgvSplit {
-  /** Options, with their provable values, a replacement child inherits. */
   options: string[];
-  /** The initial prompt tokens. Executed once, by the launch that carried them. */
   promptTokens: string[];
-  /**
-   * Options a replacement child does not inherit because the argv does not say
-   * where their values end. Kept as a fact to report, not a reason to refuse.
-   */
   droppedAmbiguousOptions: string[];
 }
 
-/**
- * Split launch argv into inherited options and the initial prompt.
- *
- * Option values are recognized through the fixed-arity table above. Optional,
- * variadic and unknown options in their space form are indistinguishable from a
- * prompt that follows them, so the option and its bare successors are left out
- * of a replacement rather than risking a prompt that runs twice; the `=` form
- * of the same option is provable and carries through. Everything after `--` is
- * the child's own argument list, which for the supported launch forms is prompt.
- */
 export function splitLaunchArgv(rest: readonly string[], passthrough: readonly string[]): LaunchArgvSplit {
   const options: string[] = [];
   const promptTokens: string[] = [];
@@ -590,8 +507,6 @@ export function splitLaunchArgv(rest: readonly string[], passthrough: readonly s
       continue;
     }
     if (isPrintFlag(token)) {
-      // A replacement continues the conversation; a print child would exit at
-      // once. The flag stays in this launch's own argv and goes no further.
       i += 1;
       continue;
     }
@@ -611,8 +526,6 @@ export function splitLaunchArgv(rest: readonly string[], passthrough: readonly s
       i += 1;
       continue;
     }
-    // Optional-value, variadic and unknown options all reach here: their value
-    // boundary is not provable from the argv alone.
     if (i + 1 < rest.length && !rest[i + 1]!.startsWith("-")) {
       droppedAmbiguousOptions.push(token);
       i += 1;
@@ -629,15 +542,10 @@ export function splitLaunchArgv(rest: readonly string[], passthrough: readonly s
   return { options, promptTokens, droppedAmbiguousOptions };
 }
 
-/** The initial prompt text this launch carries, as the child receives it. */
 export function launchPromptText(rest: readonly string[], passthrough: readonly string[]): string {
   return splitLaunchArgv(rest, passthrough).promptTokens.join(" ");
 }
 
-/**
- * `--model` value from child argv when present (`--model <id>` or `--model=`).
- * Last occurrence before `--` wins. Empty values are absent.
- */
 export function launchModelFlag(argv: readonly string[]): string | undefined {
   let model: string | undefined;
   let i = 0;
@@ -665,8 +573,6 @@ export function launchModelFlag(argv: readonly string[]): string | undefined {
   return model;
 }
 
-// Re-export legacy parse helpers used by tests that only need UUID resume extraction
-// from a post-normalization child argv (not production launch).
 export function parseResumeSessionId(argv: readonly string[]): string | undefined {
   try {
     const n = normalizeLaunchArgv(argv);

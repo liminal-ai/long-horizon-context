@@ -30,8 +30,6 @@ describe("verifyDescriptorRolloutBinding", () => {
     if (!r.ok) expect(r.reason).toMatch(/basename/);
   });
 
-  // POSIX-only: chmod 0o000 cannot make a file unreadable on Windows (the
-  // mode maps to a read-only attribute), so this refusal is unprovable there.
   it.skipIf(process.platform === "win32")("unreadable refuses", () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rb-"));
     const path = join(dir, `${SID}.jsonl`);
@@ -92,7 +90,6 @@ describe("verifyDescriptorRolloutBinding", () => {
   it("swapped dual fields (camel is origin wrong current) refuses", () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-rb-"));
     const path = join(dir, `${SID}.jsonl`);
-    // camel is current; if camel is wrong, conflict even if snake matches expected
     writeFileSync(
       path,
       line({
@@ -115,7 +112,6 @@ describe("verifyDescriptorRolloutBinding", () => {
   });
 
   it("internally consistent nonexistent path (basename only) still refuses", () => {
-    // The old bug: basename(desc.rolloutPath)===sessionId with no file I/O.
     const path = join("/tmp/definitely-missing-cc-lhc", `${SID}.jsonl`);
     const r = verifyDescriptorRolloutBinding({ sessionId: SID, rolloutPath: path });
     expect(r.ok).toBe(false);

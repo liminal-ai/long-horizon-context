@@ -49,8 +49,6 @@ function hermeticSession(
     projectsRoot: string;
   },
 ): CaptureSession {
-  // basename, not split("/"): the capture bind (session.ts) requires the
-  // rollout basename to equal the session id, and Windows paths use "\\".
   const sessionId =
     rolloutOptions.knownRolloutPath !== undefined ? basename(rolloutOptions.knownRolloutPath, ".jsonl") : "session";
   return startCaptureSession({
@@ -108,7 +106,6 @@ describe("capture session turn-state fold", () => {
     const projectDir = join(projectsRoot, encodeProjectPath(cwd));
     mkdirSync(projectDir, { recursive: true });
     const rolloutPath = join(projectDir, "rebuilt.jsonl");
-    // A rebuilt rollout whose served history would read "open" if folded.
     const prefix = USER_PROMPT + USER_PROMPT;
     writeFileSync(rolloutPath, prefix);
     const { computeVerifiedPrefixBoundary } = await import("../../src/intake/prefix-boundary.js");

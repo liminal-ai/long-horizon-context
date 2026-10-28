@@ -1,8 +1,3 @@
-/**
- * Strict pre-SDK argv parser for model-callable retrieval.
- * Invalid syntax never reaches the SDK (zero impressions).
- */
-
 import { retrieval } from "lhc";
 
 const MAX_RETRIEVAL_IDS_PER_CALL = retrieval.MAX_RETRIEVAL_IDS_PER_CALL;
@@ -12,16 +7,12 @@ export type RetrievalOp = "get-turns" | "get-messages";
 
 export interface ParsedRetrievalRequest {
   op: RetrievalOp;
-  /** Raw ids in request order (may include duplicates; service dedupes for budget). */
   ids: string[];
-  /** Unique ids, first-occurrence order. */
   uniqueIds: string[];
   fromToken: number;
 }
 
-export type ParseResult =
-  | { ok: true; request: ParsedRetrievalRequest }
-  | { ok: false; reason: string; usage?: string };
+export type ParseResult = { ok: true; request: ParsedRetrievalRequest } | { ok: false; reason: string; usage?: string };
 
 const TURN_ID = /^t\d{1,12}$/;
 const MESSAGE_ID = /^m\d{1,12}$/;
@@ -42,7 +33,6 @@ function isNonNegIntString(s: string): boolean {
   return Number.isSafeInteger(n) && n >= 0;
 }
 
-/** Parse `get-turns|get-messages` argv (without the `cc-lhc` binary name). */
 export function parseRetrievalArgv(argv: readonly string[]): ParseResult {
   if (argv.length === 0) {
     return { ok: false, reason: "missing operation", usage: usageFor() };
@@ -121,17 +111,13 @@ export function parseRetrievalArgv(argv: readonly string[]): ParseResult {
     if (!idPattern.test(id) || !RETRIEVAL_ID_PATTERN.test(id)) {
       return {
         ok: false,
-        reason: `invalid ${kind} id ${JSON.stringify(id)} — expected e.g. ${
-          kind === "turn" ? "t211" : "m3177"
-        }`,
+        reason: `invalid ${kind} id ${JSON.stringify(id)} — expected e.g. ${kind === "turn" ? "t211" : "m3177"}`,
         usage: usageFor(op),
       };
     }
   }
 
   const uniqueIds = [...new Set(ids)];
-  // A --from continuation resumes one sliced result; several unique ids have
-  // no defined continuation target (TC-3.3c). Repeats of one id normalize.
   if (fromSeen && uniqueIds.length > 1) {
     return {
       ok: false,

@@ -1,19 +1,3 @@
-/**
- * Bounded cleanup of finished carried work (LIM-146 AC-2.10).
- *
- * One explicit path, run by the wrapper on orderly exit for its bound thread:
- * a terminal item's tracking may go only once its durable result is safe. If
- * the item owns readable output, the recorded identity is re-verified and at
- * most 1 MiB is copied into a CC-LHC-owned artifact (mode 0600) beside the
- * continuity state; the result is pointed at that copy before the tracking row
- * is removed. Any verification, copy, or update failure retains the item and
- * its original reference and deletes nothing. User/Claude-owned output is never
- * modified; a parent-owned Monitor fence is removed only after its copy is
- * durable. No process is signalled. Active or unknown work, its relaunch
- * record, and its generation state are left exactly as they are; generation
- * rows go only when no item row remains. Results and owned copies are retained
- * indefinitely.
- */
 import { createHash } from "node:crypto";
 import {
   closeSync,
@@ -34,7 +18,6 @@ import { type AdapterContext, isRefusal, sameIdentity, statPathReal, verifyOutpu
 import { OUTPUT_MAX_BYTES_CEILING, ownedOutputOf } from "./manage.js";
 import type { ContinuityStore, ResultArtifact } from "./store.js";
 
-/** The most of an item's output cleanup preserves. */
 export const RESULT_COPY_MAX_BYTES = OUTPUT_MAX_BYTES_CEILING;
 
 export type CleanupRefusal =
@@ -50,29 +33,21 @@ export interface CleanupPorts {
   platform?: NodeJS.Platform;
   statPath?: AdapterContext["statPath"];
   readFileIdentity?: AdapterContext["readFileIdentity"];
-  /** Test seam: the bounded copy writer. */
   copyBounded?: typeof copyBounded;
-  /** Test seam: the process identity probe for a relaunched Monitor. */
   probeIdentity?: ProbeProcessIdentity;
   log?: (message: string) => void;
 }
 
 export interface CleanupReport {
   threadId: string;
-  /** Terminal items whose tracking was removed. */
   removed: string[];
-  /** Terminal items kept, with why; nothing of theirs was touched. */
   retained: Array<{ launchId: string; reason: CleanupRefusal; detail: string }>;
-  /** Owned copies made this run. */
   copied: Array<{ launchId: string; path: string; bytes: number; truncated: boolean }>;
-  /** Parent-owned Monitor fences removed after their copy was durable. */
   fencesRemoved: string[];
-  /** Still-open work, preserved exactly. */
   preserved: string[];
   generationsRemoved: number;
 }
 
-/** Where owned result copies live: beside the continuity state. */
 export function resultCopyDir(continuityDir: string): string {
   return join(continuityDir, "results");
 }
@@ -83,15 +58,10 @@ function copyName(launchId: string): string {
   return `${safe}.${digest}.output`;
 }
 
-/** The owned result copy path for one launch id (also where a subagent's saved final text is kept). */
 export function resultCopyPath(continuityDir: string, launchId: string): string {
   return join(resultCopyDir(continuityDir), copyName(launchId));
 }
 
-/**
- * Copy at most `maxBytes` of `source` into `target`, created 0600, fsynced,
- * and renamed into place; the source is only read.
- */
 export function copyBounded(source: string, target: string, maxBytes: number): { bytes: number; truncated: boolean } {
   mkdirSync(join(target, ".."), { recursive: true });
   const temp = `${target}.tmp-${process.pid}`;
@@ -132,9 +102,7 @@ export function copyBounded(source: string, target: string, maxBytes: number): {
     if (out !== null) closeSync(out);
     try {
       unlinkSync(temp);
-    } catch {
-      // never created, or already gone
-    }
+    } catch {}
     throw cause;
   } finally {
     closeSync(src);
@@ -154,10 +122,6 @@ function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-/**
- * Clean up the bound thread's finished carried work. Idempotent: rerunning
- * after a partial or complete run changes nothing further.
- */
 export function cleanupThread(
   store: ContinuityStore,
   threadId: string,
@@ -185,8 +149,6 @@ export function cleanupThread(
       report.preserved.push(item.launchId);
       continue;
     }
-    // A relaunched Monitor still running keeps its fence and tracking: its
-    // process writes there, and the session-end stop needs the record.
     const proc = item.relaunch?.process;
     if (proc != null) {
       const probed = (ports.probeIdentity ?? probeProcessIdentityNative)(proc.pid);
@@ -206,7 +168,6 @@ export function cleanupThread(
       }
       const owned = result.artifact?.kind === "owned_copy" ? null : ownedOutputOf(item);
       if (owned !== null) {
-        // Re-verify the recorded identity: only this item's own output is preserved.
         const current = verifyOutputFile(context, owned.path);
         if (isRefusal(current)) {
           const reason: CleanupRefusal =
@@ -244,16 +205,13 @@ export function cleanupThread(
           }
           try {
             unlinkSync(target);
-          } catch {
-            // our own just-written file; best effort
-          }
+          } catch {}
           continue;
         }
         report.copied.push({ launchId: item.launchId, ...artifact });
         ports.log?.(
           `cc-lhc continuity cleanup: ${item.launchId} output preserved (${made.bytes} bytes${made.truncated ? ", truncated" : ""}) at ${target}`,
         );
-        // The parent's own Monitor fence: removable now that its copy is durable and the Monitor is terminal.
         if (item.relaunch !== null && owned.path === item.relaunch.outputPath) {
           try {
             unlinkSync(owned.path);

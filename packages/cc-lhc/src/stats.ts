@@ -5,16 +5,9 @@ export interface CaptureStats {
   skippedUnknown: number;
   skippedMeta: number;
   skippedImage: number;
-  /** EVENTS dropped by replay dedupe (signature already seen while the replay window was open). */
   skippedReplay: number;
-  /**
-   * LINES re-tailed as a rebuilt-rollout prefix after an in-app resume. Kept
-   * apart from both linesSeen (they are not new activity) and skippedReplay
-   * (that counter is event-unit) so each stat stays a single coherent unit.
-   */
   replayedPrefixLines: number;
   parseFailures: number;
-  /** Canonical segment/completion ends this session recorded (never native turns). */
   segmentEnds?: number;
   derivationsPending: number | null;
   threadId: string | null;
@@ -37,7 +30,6 @@ export function emptyCaptureStats(): CaptureStats {
   };
 }
 
-/** Greppable one-line summary for stderr. */
 export function formatCaptureStatsLine(stats: CaptureStats): string {
   const parts = [
     "cc-lhc-capture",

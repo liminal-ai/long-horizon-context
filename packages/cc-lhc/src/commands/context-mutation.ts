@@ -1,22 +1,3 @@
-/**
- * Shared context mutation/materialization operation for manual compact, manual
- * prune, and automatic compact. ONE settled-seam snapshot, then one pass that
- * runs to completion: prune-if-due, preview, compact, served view, ONE rebuilt
- * rollout. Compact plus a due prune is one materialization and (in the
- * wrapper) one handoff, never two.
- *
- * Forward-only construction: the snapshot is taken once, at the seam that
- * authorized the operation, and never re-read. Settled history cannot be
- * retroactively invalidated — input, capture generation changes, and turns
- * that open while construction runs append to the thread; they cannot make the
- * snapshot wrong, so nothing mid-construction may cancel the work.
- *
- * This module owns no processes: no child lifecycle, no descriptor writes, no
- * respawn. Its one lineage write is the not-yet-accepted reservation of the
- * rebuilt session, made before the file exists (acceptance happens at the
- * switch). It returns a HandoffRequest for the wrapper lifecycle manager.
- */
-
 import type { Band, CompactReceipt, Lhc, PruneReceipt, ThreadRef } from "lhc";
 import type { ContinuitySnapshot } from "../continuity/snapshot.js";
 import { compactConstruction } from "../governor/band-allocation.js";
@@ -34,31 +15,19 @@ import { formatCarryoverNote, formatContinuityNote, freezeLiveAsyncWork } from "
 import { CAPTURE_DEGRADED_REFUSAL, type LhcCommandRuntime, TURN_OPEN_REFUSAL } from "./dispatch.js";
 import { reserveRebuiltSessionLineage, threadIdFromRef } from "./rebuild-receipt.js";
 
-/**
- * How many times the rebuilt rollout is written before the operation gives up
- * on this seam. The last attempt re-reads the installed view first: the view is
- * durable, so rebuilding from it is always available and never needs the
- * compact to run again.
- */
 export const REBUILT_ROLLOUT_WRITE_ATTEMPTS = 3;
 
 export type ContextMutationOperation = "compact" | "prune" | "auto_compact";
 export type ContextMutationOrigin = "auto" | "manual";
 
-/** Metrics behind the durable receipt and the panel's last-action line. */
 export interface ContextMutationMetrics {
   origin: ContextMutationOrigin;
-  /** Provider context that triggered an automatic operation (host measure). */
   triggerContextTokens?: number;
-  /** Rebuilt LHC served-view size from the compact receipt (SDK measure). */
   viewTokens?: number;
-  /** Configured SDK lower target. */
   targetTokens?: number;
   zoneTokensBefore?: number;
   zoneTokensAfter?: number;
-  /** Tokenizer family the host estimates and compact note were priced with. */
   tokenFamily?: string;
-  /** Why this process seeded that family (`launch --model` / `resumed record` / `provider fallback`). */
   tokenFamilySeedSource?: string;
 }
 
@@ -67,43 +36,26 @@ export interface HandoffRequest {
   oldSessionId: string;
   threadId: string;
   rebuilt: WriteRebuiltRolloutResult;
-  /** Receipt lines describing the SDK mutation (for logs/panel). */
   receiptLines: string[];
-  /** The ONE durable runtime note appended to the rebuilt rollout. */
   durableReceipt: string;
   metrics: ContextMutationMetrics;
-  /** Frozen prelaunch live-work snapshot consumed by the continuity note. */
   liveAsyncWork: readonly OpenAsyncWork[];
-  /** The accepted carryover generation this handoff transfers (automatic path). */
   carryover?: ContinuityCarryover;
 }
 
-/** The accepted continuity snapshot plus where a relaunched Monitor's output lands. */
 export interface ContinuityCarryover {
   snapshot: ContinuitySnapshot;
   monitorOutputDir: string;
 }
 
-/**
- * Outcome of accepting active work at the seam. `carryover` absent with
- * `ok: true` means the parent holds no continuity record at all (store
- * unavailable), so the rebuilt session gets the continuity-lost note.
- */
 export type CarryoverAcceptance = { ok: true; carryover?: ContinuityCarryover } | { ok: false; detail: string };
 
-/** Compact token display for receipts: 247k / 8.2k / 941. One ontology — these
- * are the same token numbers the SDK and governor report, only shortened. */
 export function formatTokensShort(tokens: number): string {
   if (tokens >= 10_000) return `${Math.round(tokens / 1000)}k`;
   if (tokens >= 1_000) return `${(tokens / 1000).toFixed(1)}k`;
   return String(tokens);
 }
 
-/**
- * Exactly one concise durable receipt, labeled operation:origin. "Trigger
- * context" is Claude host context (includes system/tool overhead); "LHC view"
- * is the SDK-served size — the receipt never implies they are the same measure.
- */
 export function formatDurableReceipt(
   operation: ContextMutationOperation,
   metrics: ContextMutationMetrics,
@@ -139,52 +91,22 @@ export function formatDurableReceipt(
 
 export interface ContextMutationPlan {
   operation: ContextMutationOperation;
-  /** Product Band % preset id; mapped to an internal core profile at preparation. */
   profile: string;
-  /** Configured SDK lower target, passed as params.lowerBound. */
   lowerBoundTokens: number;
-  /**
-   * Combined compact-time prune: when the tool-result zone is at/above
-   * thresholdTokens, prune to targetTokens before compacting. One rebuild.
-   */
   pruneIfDue?: { thresholdTokens: number; targetTokens: number };
-  /** Manual prune target (operation "prune" only). */
   manualPruneTargetTokens?: number;
-  /** Provider context that triggered an automatic operation (receipt detail). */
   triggerContextTokens?: number;
-  /**
-   * Host-level notices to carry into the compact message written to the
-   * rebuilt session — today, the configuration-fallback notice. Core LHC
-   * produces the compacted content; cc-lhc injects host anomalies here.
-   */
   hostNotices?: readonly string[];
-  /**
-   * Frozen live-work snapshot for automatic mutation, taken at the settled
-   * seam. Interactive manual compact/prune omit this so the settled-seam
-   * freeze reads `runtime.getLiveAsyncWork()`.
-   */
   liveAsyncWork?: readonly OpenAsyncWork[];
-  /** One-shot prelaunch has no old child and must not add a live-work note. */
   omitContinuityNote?: boolean;
-  /** Tokenizer family for the durable runtime note. */
   tokenFamily?: string;
-  /** Seed source printed next to the family in the durable runtime note. */
   tokenFamilySeedSource?: string;
-  /**
-   * An already-accepted continuity snapshot (tests / callers that snapshot
-   * themselves); otherwise the runtime's `acceptCarryover` runs at the seam.
-   */
   carryover?: ContinuityCarryover;
 }
 
 export type ContextMutationOutcome =
   | { kind: "refused"; messages: string[] }
   | { kind: "noop"; messages: string[] }
-  /**
-   * The LHC view is installed and durable, but this seam produced no rebuilt
-   * artifact — the SDK or the filesystem failed. Nothing is rolled back and the
-   * next settled seam re-materializes from the installed view.
-   */
   | { kind: "partial"; messages: string[] }
   | { kind: "rebuilt"; messages: string[]; handoff: HandoffRequest };
 
@@ -216,16 +138,6 @@ export function formatPruneReceipt(receipt: PruneReceipt): string {
   ].join("\n");
 }
 
-/**
- * The settled-seam snapshot. Read ONCE, before any SDK work, and never read
- * again for the life of the operation.
- *
- * What it carries is what compact genuinely needs to exist before it starts:
- * a bound thread to compact, a turn that is not mid-flight (Claude Code has no
- * mid-agentic-turn replacement seam), and capture that has caught up so the
- * view is built from current history. It is not a fence: nothing re-reads it,
- * and no later change to any of these can cancel work already under way.
- */
 export function settledSeamSnapshot(runtime: LhcCommandRuntime): string | null {
   if (runtime.sdk === undefined || runtime.threadRef === undefined) return "capture not ready";
   if (runtime.isTurnOpen?.() === true) return TURN_OPEN_REFUSAL;
@@ -244,16 +156,6 @@ function freezeContinuitySnapshot(plan: ContextMutationPlan, runtime: LhcCommand
   return freezeLiveAsyncWork(runtime.getLiveAsyncWork?.() ?? []);
 }
 
-/**
- * Run the settled-seam mutation and single materialization, to completion.
- *
- * After the snapshot there are no further state or input checks. The only
- * outcomes left are what the SDK and the filesystem actually did: a compact
- * that landed and produced a rebuilt artifact (`rebuilt`), a compact that
- * landed with no artifact this seam (`partial` — the installed view is durable
- * and the next seam re-materializes from it), a prune with nothing to do
- * (`noop`), or an SDK refusal before anything changed (`refused`).
- */
 export async function runContextMutation(
   plan: ContextMutationPlan,
   runtime: LhcCommandRuntime,
@@ -261,9 +163,6 @@ export async function runContextMutation(
   const snapshot = settledSeamSnapshot(runtime);
   if (snapshot !== null) return { kind: "refused", messages: [snapshot] };
   const liveAsyncWork = freezeContinuitySnapshot(plan, runtime);
-  // LIM-145: one carryover generation per seam, manual or automatic. Nothing
-  // waits and nobody is asked; an item no adapter can carry refuses the seam
-  // here, before any SDK mutation, and the current session stays (AC-2.5d).
   let carryover = plan.carryover;
   if (carryover === undefined && plan.omitContinuityNote !== true && runtime.acceptCarryover !== undefined) {
     const accepted = runtime.acceptCarryover();
@@ -275,8 +174,6 @@ export async function runContextMutation(
   const threadRef = runtime.threadRef as ThreadRef;
   const threadId = threadIdFromRef(threadRef);
   const lines: string[] = [];
-  // The snapshot says the native turn is settled; make the record say so too
-  // before compact reads it, so a finished turn is never served as active.
   if (plan.operation !== "prune" && runtime.closeSettledSegment !== undefined) {
     const close = await runtime.closeSettledSegment();
     if (close.kind !== "skipped") lines.push(`settled segment ${close.kind}: ${close.detail}`);
@@ -291,7 +188,6 @@ export async function runContextMutation(
     ...(tokenFamilySeedSource === undefined || tokenFamilySeedSource === "" ? {} : { tokenFamilySeedSource }),
   };
 
-  /** An SDK failure: `partial` once the view moved, `refused` while it has not. */
   const sdkFailure = (message: string): ContextMutationOutcome =>
     viewMutated ? { kind: "partial", messages: [...lines, message] } : { kind: "refused", messages: [message] };
 
@@ -308,7 +204,6 @@ export async function runContextMutation(
     metrics.zoneTokensAfter = receipt.zoneTokensAfter;
     viewMutated = true;
   } else {
-    // Compact path (manual or automatic): combined prune first when due.
     if (plan.pruneIfDue !== undefined) {
       const status = await sdk.threadView.status(threadRef);
       if (status.ok && status.value.visibility.zoneTokens >= plan.pruneIfDue.thresholdTokens) {
@@ -323,7 +218,6 @@ export async function runContextMutation(
           }
           lines.push(formatPruneReceipt(pruneResult.value));
         } else {
-          // A failed due-prune does not abort the compact; it is reported.
           lines.push(`prune error: ${pruneResult.error.reason}`);
         }
       }
@@ -356,9 +250,6 @@ export async function runContextMutation(
         : formatContinuityNote(liveAsyncWork),
   );
 
-  // ONE rebuilt rollout for the whole operation, written from the installed
-  // view. Every attempt re-reads that view, so a write that fails against a
-  // stale read is retried against durable state rather than abandoned.
   const failures: string[] = [];
   for (let attempt = 1; attempt <= REBUILT_ROLLOUT_WRITE_ATTEMPTS; attempt += 1) {
     const view = await sdk.threadView.getSessionThreadView(threadRef);
@@ -375,11 +266,6 @@ export async function runContextMutation(
         cwd: runtime.cwd,
         ...(runtime.sourceRolloutPath === undefined ? {} : { sourceRolloutPath: runtime.sourceRolloutPath }),
         receipt: { text: durableReceipt },
-        // Recorded against the thread, unaccepted, before the file exists: a
-        // kill between the write and the switch leaves a transcript the next
-        // launch maps back to this thread's current session. A failed record
-        // does not stop the write — an unrecorded rebuilt transcript is still
-        // recognized by its rebuild prefix at launch.
         beforeWrite: async (reservation) => {
           await reserveRebuiltSessionLineage({
             newSessionId: reservation.sessionId,

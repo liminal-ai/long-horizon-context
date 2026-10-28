@@ -1,15 +1,7 @@
 import { BUILTIN_CONTEXT_POLICY } from "../governor/config.js";
-import {
-  runContextMutation,
-  type ContextMutationPlan,
-} from "./context-mutation.js";
+import { runContextMutation, type ContextMutationPlan } from "./context-mutation.js";
 import type { DispatchOutcome, LhcCommandRuntime } from "./dispatch.js";
 
-/**
- * Manual compact: same settled-seam transaction and (in the wrapper) same
- * handoff as automatic compact — only the terminal receipt differs. A due
- * combined prune runs inside the one materialization.
- */
 export async function runCompactCommand(_commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   const policy = runtime.contextPolicy;
   const plan: ContextMutationPlan = {

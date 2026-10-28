@@ -1,8 +1,3 @@
-/**
- * Subprocess flush-safety: near-ceiling multibyte retrieval stdout must match
- * in-process executeRetrieval byte-for-byte when the CLI exits via exitCode.
- */
-
 import { spawn } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -34,9 +29,7 @@ function realIo(): DescriptorIo {
     unlink: (p) => {
       try {
         fs.unlinkSync(p);
-      } catch {
-        // ignore
-      }
+      } catch {}
     },
     exists: fs.existsSync,
     mkdir: (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }),
@@ -62,7 +55,6 @@ describe("retrieval CLI flush subprocess", () => {
     });
     const created = await sdk.threads.newThread({ filePath: tf, registryPath });
     if (!created.ok) throw new Error(created.error.reason);
-    // Dense multibyte body → large but under ceiling when retrieved alone
     const big = "運用記録 日本語 🔧 ".repeat(900);
     await sdk.intakeStream.messageEvents({ filePath: tf }, [
       {
@@ -144,7 +136,6 @@ describe("retrieval CLI flush subprocess", () => {
     expect(code, stderr).toBe(0);
     expect(stdout.byteLength).toBe(expectedBytes);
     expect(stdout.toString("utf8")).toBe(expected.stdout.endsWith("\n") ? expected.stdout : `${expected.stdout}\n`);
-    // Multibyte intact (no U+FFFD truncation artifact at end of body window)
     expect(stdout.includes(Buffer.from("運用記録", "utf8"))).toBe(true);
   }, 60_000);
 });

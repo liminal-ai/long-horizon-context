@@ -1,8 +1,3 @@
-/**
- * Shared retrieval service — descriptor bind, session check, SDK call, envelope.
- * CLI (and any future adapter) goes through this only; never invents thread/db.
- */
-
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, retrieval, type ThreadRef } from "lhc";
 
 import { defaultSessionTokenFamily } from "../observation/token-family.js";
@@ -26,7 +21,6 @@ export const DEFAULT_TOKEN_BUDGET = retrieval.DEFAULT_RETRIEVAL_TOKEN_BUDGET;
 export type RetrievalServiceResult =
   | {
       ok: true;
-      /** Full stdout envelope; safe to print as a whole. */
       stdout: string;
       callId: string;
       bytes: number;
@@ -34,10 +28,8 @@ export type RetrievalServiceResult =
     }
   | {
       ok: false;
-      /** stderr-facing refusal; no SDK call → zero impressions. */
       reason: string;
       usage?: string;
-      /** 2 = syntax, 3 = binding/session/descriptor */
       exitCode: 2 | 3;
     };
 
@@ -45,14 +37,8 @@ export interface RetrievalServiceDeps {
   env?: NodeJS.ProcessEnv;
   descriptorIo?: DescriptorIo;
   rolloutBindIo?: RolloutBindIo;
-  /** Test seam: inject SDK. */
   initSdk?: () => Lhc;
-  /** Test seam: override descriptor path. */
   descriptorPath?: string;
-  /**
-   * Test seam: replace SDK retrieval methods (e.g. inject oversize body that
-   * violates the host budget contract).
-   */
   retrievalOverride?: {
     getTurns?: typeof retrieval.getTurns;
     getMessages?: typeof retrieval.getMessages;
@@ -64,11 +50,6 @@ function liveSessionId(env: NodeJS.ProcessEnv): string | undefined {
   return v !== undefined && v !== "" ? v : undefined;
 }
 
-/**
- * Session mismatch gate.
- * - When CLAUDE_CODE_SESSION_ID is present: must equal descriptor.sessionId.
- * - When absent: independent rollout file existence + Slice 1 dual-field proof.
- */
 export function checkSessionBinding(
   desc: RuntimeDescriptorV1,
   env: NodeJS.ProcessEnv,
@@ -95,12 +76,6 @@ function threadRefOf(desc: RuntimeDescriptorV1): ThreadRef {
   return { threadId: desc.threadId!, registryPath: desc.registryPath! };
 }
 
-/**
- * Bind to the wrapper's ready descriptor (LIM-146 shares this with `tasks`):
- * env-supplied path only, fail closed on any non-ready state, then the
- * session-mismatch/rollout cross-check. No thread or database id is ever
- * taken from argv.
- */
 export function bindReadyDescriptor(deps: {
   env: NodeJS.ProcessEnv;
   descriptorIo: DescriptorIo;
@@ -144,7 +119,6 @@ export async function executeRetrieval(
   const io = deps.descriptorIo ?? defaultDescriptorIo();
   const rolloutIo = deps.rolloutBindIo ?? defaultRolloutBindIo();
 
-  // 1. Strict parse — zero impressions on failure.
   const parsed = parseRetrievalArgv(argv);
   if (!parsed.ok) {
     return {
@@ -156,7 +130,6 @@ export async function executeRetrieval(
   }
   const request = parsed.request;
 
-  // 2–4. Descriptor from environment only; ready state; session cross-check.
   const bound = bindReadyDescriptor({
     env,
     descriptorIo: io,
@@ -166,7 +139,6 @@ export async function executeRetrieval(
   if (!bound.ok) return bound;
   const desc = bound.descriptor;
 
-  // 5. Budget: reserve envelope overhead; refuse if arithmetic leaves no body room.
   const plan = planByteBudget(request.op, request.uniqueIds.length, envStdoutCeiling(env));
   if (plan.sdkByteBudget === null) {
     return {
@@ -176,7 +148,6 @@ export async function executeRetrieval(
     };
   }
 
-  // 6. SDK call — impressions only from here.
   const sdk = (
     deps.initSdk ??
     (() =>
@@ -202,15 +173,11 @@ export async function executeRetrieval(
     request.op === "get-turns" ? await getTurns(ref, request.ids, opts) : await getMessages(ref, request.ids, opts);
 
   if (!result.ok) {
-    // SDK caller_error after our validation is rare; treat as refusal (impressions
-    // may or may not have been written — SDK only writes inside the successful tx).
     return { ok: false, reason: result.error.reason, exitCode: 2 };
   }
 
   const receipt = result.value;
 
-  // Host projection: initial zero-served slices (from=0,to=0,total>0) become
-  // actionable budget unserved lines — no second SDK call / impression.
   const servedEntities =
     request.op === "get-turns"
       ? (
@@ -243,9 +210,6 @@ export async function executeRetrieval(
   const stdout = assembleEnvelope(request.op, projected.sections, projected.footers, projected.unserved);
   const bytes = Buffer.byteLength(stdout, "utf8");
 
-  // 7. Internal invariant: real SDK results under a positive plan must fit.
-  // A contract-violating injected override may throw here after SDK impressions;
-  // that is corruption of the SDK contract, not a pre-SDK zero-impression refusal.
   if (bytes > plan.stdoutCeiling) {
     throw new Error(`RETRIEVAL_ENVELOPE_INVARIANT: envelope ${bytes} exceeds ceiling ${plan.stdoutCeiling}`);
   }
@@ -259,18 +223,6 @@ export async function executeRetrieval(
   };
 }
 
-/**
- * Await a full write with conjunctive completion:
- * - write callback must complete successfully, and
- * - if write() returned false, drain must also be observed.
- * Resolve only when both required conditions hold. Reject on sync throw,
- * stream `error`, or callback error even if drain already fired.
- *
- * Listeners are registered *before* `write()` so a synchronous callback
- * (success or error) or drain-before-return cannot race attachment. Settlement
- * always removes this call's `error` and `drain` listeners — never attach after
- * settle (C9 leak: sync error callback cleaned up, then post-return `once(drain)`).
- */
 export function writeAll(stream: NodeJS.WritableStream, data: string): Promise<void> {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -293,8 +245,6 @@ export function writeAll(stream: NodeJS.WritableStream, data: string): Promise<v
 
     const maybeResolve = () => {
       if (settled) return;
-      // Do not resolve until write() has returned so requiresDrain is known
-      // (handles sync callback / drain before return).
       if (!writeCallComplete) return;
       if (!callbackOk) return;
       if (requiresDrain && !drainSeen) return;
@@ -309,8 +259,6 @@ export function writeAll(stream: NodeJS.WritableStream, data: string): Promise<v
       maybeResolve();
     };
 
-    // Pre-register before write so sync callback/error/drain are observed and
-    // cleanup always owns the same handlers (no post-return attach).
     stream.once("error", onError);
     stream.once("drain", onDrain);
 
@@ -327,7 +275,6 @@ export function writeAll(stream: NodeJS.WritableStream, data: string): Promise<v
       const ok = stream.write(data, onCallback);
       requiresDrain = !ok;
       writeCallComplete = true;
-      // Attempt settle for: sync success + (true return | drain already seen).
       maybeResolve();
     } catch (err) {
       fail(err instanceof Error ? err : new Error(String(err)));
@@ -335,7 +282,6 @@ export function writeAll(stream: NodeJS.WritableStream, data: string): Promise<v
   });
 }
 
-/** CLI entry: parse argv, run service, write streams (flush-safe). */
 export async function runRetrievalCli(
   argv: readonly string[],
   streams: {

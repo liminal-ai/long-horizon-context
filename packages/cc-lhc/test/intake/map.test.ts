@@ -229,7 +229,6 @@ describe("mapRolloutLine", () => {
     const result = mapRolloutLine(item);
     expect(result.events.map((event) => event.payload)).toEqual([
       { toolCallId: "toolu_png", content: "", isError: false, blocks: [png] },
-      // Text-only results keep cc-lhc's calibrated stringification (the dump normalizer relies on it).
       { toolCallId: "toolu_txt", content: JSON.stringify([{ type: "text", text: "plain" }]), isError: false },
     ]);
   });
@@ -338,7 +337,6 @@ describe("mapRolloutLine", () => {
     } as RolloutLineItem).events[0];
     expect(original).toBeDefined();
 
-    // Exactly what lhc's session-thread-view renders into a rebuilt rollout.
     const rendered = `[runtime note] ${blob}`;
     const replayed = mapRolloutLine({
       type: "user",
@@ -370,7 +368,6 @@ describe("mapRolloutLine", () => {
       .map((l) => l.trim())
       .filter(Boolean)
       .map((l) => JSON.parse(l) as RolloutLineItem);
-    // [0]=user, [1]=fallback-only assistant, [2]=opus text, [3]=system notice
     const fallbackOnly = seq[1]!;
     const opusText = seq[2]!;
     const systemNotice = seq[3]!;
@@ -400,13 +397,11 @@ describe("mapRolloutLine", () => {
     expect(sys.stats.meta).toBe(1);
     expect(sys.stats.unknown).toBe(0);
 
-    // Whole sequence: one user + one assistant_text; fallback+system are meta
     const batch = mapRolloutLines(seq);
     expect(batch.stats.unknown).toBe(0);
     expect(batch.stats.meta).toBe(2);
     const kinds = batch.events.map((e) => e.eventKind);
     expect(kinds).toEqual(["user_prompt", "assistant_text"]);
-    // Exactly one assistant_text (no empty synthetic for the fallback block)
     expect(kinds.filter((k) => k === "assistant_text")).toHaveLength(1);
   });
 
@@ -424,7 +419,6 @@ describe("mapRolloutLine", () => {
     expect(weird.stats.unknown).toBe(1);
     expect(weird.stats.meta).toBe(0);
 
-    // Malformed fallback (missing to.model) is NOT the production fingerprint
     const badFallback = mapRolloutLine({
       type: "assistant",
       uuid: "bad-fallback",
@@ -501,9 +495,6 @@ describe("mapRolloutLine", () => {
   });
 
   it("skips Claude Code's synthetic 'No response requested.' resume filler as meta", () => {
-    // Appended by claude 2.1.202 (zero usage, no API call) when resuming a
-    // session whose last line is a user message — every swap-receipt rollout
-    // ends that way, so this arrives after each prune/compact swap.
     const item = {
       type: "assistant",
       uuid: "synthetic-uuid",
@@ -543,7 +534,6 @@ describe("mapRolloutLine", () => {
   });
 
   it("uses line index in synthetic idempotency keys for uuid-less lines", () => {
-    // Exercised via user lines without uuid in batch mapping — keys differ by line index.
     const noUuidA = {
       type: "user",
       sessionId: "sess-1",

@@ -214,7 +214,6 @@ describe("createExactIdentityReader fail-closed mapping", () => {
       readProcessIdentity: () => ({ ok: true, pid: 999, bootId: "boot-uuid", starttime: "123" }),
     };
     const read = createExactIdentityReader(seams({ existing: [devBuild], loadAddon: () => junkAddon }));
-    // Echoed pid disagrees with the queried pid — must not be trusted.
     expect(read(1234)).toMatchObject({ ok: false, code: "native_error" });
   });
 

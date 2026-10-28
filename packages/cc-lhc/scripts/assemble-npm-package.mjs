@@ -1,17 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Assemble the globally-installable cc-lhc npm package.
- *
- * The user installs one package and gets one `cc-lhc` executable. The two
- * private workspace runtimes are bundled under node_modules so the tarball
- * never depends on unpublished workspace package names. Third-party JS and
- * PTY packages remain ordinary registry dependencies.
- *
- * This script never publishes. It only creates the exact package directory
- * that later inspection, smoke tests, and a separately authorized publish use.
- */
-
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -56,8 +44,6 @@ try {
 }
 const targetMode = argValue("--targets") ?? "all";
 const nativeBundleRoot = resolve(argValue("--native-bundle") ?? nativeRoot);
-// The candidate's accepted source identity, supplied explicitly; absent means
-// the assembled build truthfully carries identity unavailable.
 let sourceSha = null;
 try {
   sourceSha = sourceShaFromArgv(process.argv.slice(2)) ?? null;
@@ -112,8 +98,6 @@ mkdirSync(join(outputRoot, "node_modules", "lhc"), { recursive: true });
 mkdirSync(join(outputRoot, "node_modules", "cc-lhc-native"), { recursive: true });
 
 copyDirectory(join(packageRoot, "dist"), join(outputRoot, "dist"), "cc-lhc dist");
-// Re-stamp the assembled dist from explicit inputs only: the candidate name and
-// version this assembly was asked for, and the accepted source SHA if given.
 writeBuildIdentity(join(outputRoot, "dist"), { name: packageName, version, sourceSha });
 cpSync(join(packageRoot, "README.md"), join(outputRoot, "README.md"));
 cpSync(join(packageRoot, "LICENSE"), join(outputRoot, "LICENSE"));

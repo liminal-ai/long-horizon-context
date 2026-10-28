@@ -1,9 +1,3 @@
-/**
- * Rollout line shapes the async-work fold accepts, built the way Claude Code
- * 2.1.235–2.1.252 writes them (see test/fixtures/async-work/README.md):
- * an assistant tool_use, then a user tool_result carrying `toolUseResult`,
- * then queued `<task-notification>` records.
- */
 import { spawnSync } from "node:child_process";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,7 +45,6 @@ export function notification(body: {
   } as unknown as RolloutLineItem;
 }
 
-/** Host paths a launch acknowledgement names (2.1.252 shapes). Defaults do not exist on disk. */
 export interface LaunchPaths {
   tasksDir: string;
   sessionDir: string;
@@ -62,9 +55,8 @@ export const DEFAULT_PATHS: LaunchPaths = {
   sessionDir: "/nonexistent/projects/-x/session-old",
 };
 
-export const WAKEUP_AT_MS = 1_800_000_000_000;
+const WAKEUP_AT_MS = 1_800_000_000_000;
 
-/** Launch one item of each family, in this order, with these ids and the acks' continuation facts. */
 export const LAUNCHES = {
   agent: {
     toolUseId: "toolu_agent",
@@ -139,7 +131,6 @@ export const LAUNCHES = {
   },
 } as const;
 
-/** The monitor learns its output file from its first event notification, as the host reports it. */
 export function monitorEvent(p: LaunchPaths = DEFAULT_PATHS): RolloutLineItem {
   return notification({ taskIds: ["mon-1"], event: "line matched", outputFile: `${p.tasksDir}/mon-1.output` });
 }
@@ -154,11 +145,7 @@ export function allLaunchLines(p: LaunchPaths = DEFAULT_PATHS): RolloutLineItem[
   ];
 }
 
-/**
- * Explicit adapter qualification for positive manifests, mirroring what the
- * production adapters can produce (a Monitor is `reconstruct` by relaunch).
- */
-export type QualifiableFamily = keyof typeof LAUNCH_IDS;
+type QualifiableFamily = keyof typeof LAUNCH_IDS;
 export const QUALIFIED: Record<QualifiableFamily, QualifiedCarryMode> = {
   agent: "reconstruct",
   workflow: "reconstruct",
@@ -167,11 +154,10 @@ export const QUALIFIED: Record<QualifiableFamily, QualifiedCarryMode> = {
   scheduled_wakeup: "rearm",
 };
 
-export function isQualifiableFamily(family: string): family is QualifiableFamily {
+function isQualifiableFamily(family: string): family is QualifiableFamily {
   return family in QUALIFIED;
 }
 
-/** A synthetic verified identity for foundation tests that qualify without running the real adapters. */
 export function syntheticIdentity(item: { family: QualifiableFamily; launchId: string }): VerifiedIdentity {
   switch (item.family) {
     case "agent":
@@ -215,7 +201,6 @@ export const LAUNCH_IDS = {
   scheduled_wakeup: "scheduled_wakeup:scheduled_wakeup:toolu_wake",
 } as const;
 
-/** A test-owned pid plus its exact identity at track time (null when the real addon is absent). */
 export interface ReapTarget {
   pid: number;
   identity: { bootId: string; starttime: string } | null;
@@ -223,7 +208,6 @@ export interface ReapTarget {
 
 let realAddonForReap: { readProcessIdentity(pid: number): unknown } | null | undefined;
 
-/** Exact identity from the REAL compiled addon (env seam bypassed — the suite-wide stub's synthetic starttime cannot witness pid reuse). */
 function reapProbe(pid: number): { bootId: string; starttime: string } | null {
   if (realAddonForReap === undefined) {
     try {
@@ -249,27 +233,14 @@ function reapProbe(pid: number): { bootId: string; starttime: string } | null {
   }
 }
 
-/** Whether the reaper can signal at all: the real compiled addon loaded and read this process. */
 export function hasRealAddonForReap(): boolean {
   return reapProbe(process.pid) !== null;
 }
 
-/** Track a pid for reaping, snapshotting its exact identity at spawn time. */
 export function trackForReap(list: ReapTarget[], pid: number): void {
   list.push({ pid, identity: reapProbe(pid) });
 }
 
-/**
- * Terminate test-owned processes and wait for kernel-proven exit so their
- * open handles are released before temp-tree removal (Windows refuses to
- * delete a tree while a descendant still holds a file open). A pid is only
- * ever signalled when its exact identity still matches the track-time
- * snapshot — a reused pid names a stranger and is left alone. A target whose
- * identity could not be read at track time fails closed: it is never
- * signalled (a bare pid cannot witness reuse). On Windows the reap still
- * waits out a natural exit so handles release; elsewhere unlinking the temp
- * tree needs no wait, so the target is left to expire on its own.
- */
 export async function reapProcesses(targets: ReapTarget[], capMs = 4_000): Promise<void> {
   const alive = (pid: number): boolean => {
     try {
@@ -289,32 +260,19 @@ export async function reapProcesses(targets: ReapTarget[], capMs = 4_000): Promi
     }
     const now = reapProbe(pid);
     if (now === null || now.bootId !== target.identity.bootId || now.starttime !== target.identity.starttime) {
-      continue; // exited, or the pid names a different process now
+      continue;
     }
     let treePids: number[] = [pid];
     if (process.platform === "win32") {
-      // taskkill /T kills the whole tree in one identity-gated signal, but a
-      // descendant's exit is not implied by the tracked pid's: Git Bash runs
-      // `bash -c <command>` as its own child, and that grandchild can outlive
-      // the awaited root while still holding the temp root as its CWD (the
-      // observed EPERM removing the directory itself). Snapshot the live
-      // descendants first so every process the kill reaches is awaited below.
-      // Waiting never signals, so a reused descendant pid costs at most the
-      // bounded cap — the fail-closed rule (signal only on exact identity
-      // match, and only the tracked pid) is unchanged.
       treePids = [pid, ...win32DescendantPids(pid)];
       spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" });
     } else {
       try {
         process.kill(-pid, "SIGKILL");
-      } catch {
-        // no group of ours; fall through to the direct signal
-      }
+      } catch {}
       try {
         process.kill(pid, "SIGKILL");
-      } catch {
-        // already gone
-      }
+      } catch {}
     }
     const deadline = Date.now() + capMs;
     for (const treePid of treePids) {
@@ -323,11 +281,6 @@ export async function reapProcesses(targets: ReapTarget[], capMs = 4_000): Promi
   }
 }
 
-/**
- * Windows pids of `rootPid`'s live descendants from one process-table
- * snapshot (pid, parent-pid pairs), walked transitively in-process. Used only
- * to WAIT on the tree taskkill /T reaches — never to signal.
- */
 function win32DescendantPids(rootPid: number): number[] {
   const table = spawnSync(
     "powershell",

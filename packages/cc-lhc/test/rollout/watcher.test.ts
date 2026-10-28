@@ -119,7 +119,6 @@ describe("watchRolloutFile", () => {
   it("does not re-ingest from byte zero on file truncation (fail closed)", async () => {
     dir = mkdtempSync(join(tmpdir(), "cc-lhc-watcher-"));
     filePath = join(dir, "session.jsonl");
-    // Long enough first line so a shorter rewrite shrinks below offset.
     writeFileSync(
       filePath,
       '{"type":"user","uuid":"old","message":{"role":"user","content":"old-content-long-enough"}}\n',
@@ -141,7 +140,6 @@ describe("watchRolloutFile", () => {
       .map((e) => e.item.uuid);
     expect(before).toContain("old");
 
-    // Truncate/rewrite shorter than current offset.
     writeFileSync(filePath, '{"type":"user","uuid":"new"}\n');
     await sleep(200);
     watcher.stop();
@@ -151,7 +149,6 @@ describe("watchRolloutFile", () => {
       .flat()
       .filter((e): e is Extract<WatcherEmission, { kind: "line" }> => e.kind === "line")
       .map((e) => e.item.uuid);
-    // Must not re-deliver rewritten content from byte zero after shrink.
     expect(after).not.toContain("new");
   });
 

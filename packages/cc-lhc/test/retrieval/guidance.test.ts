@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  injectRetrievalGuidance,
-  RETRIEVAL_SYSTEM_GUIDANCE,
-  splitAtDoubleDash,
-} from "../../src/retrieval/guidance.js";
+import { injectRetrievalGuidance, RETRIEVAL_SYSTEM_GUIDANCE, splitAtDoubleDash } from "../../src/retrieval/guidance.js";
 
 describe("injectRetrievalGuidance argv grammar", () => {
   it("static guidance forbids pipe/head truncation of bounded retrieval", () => {
@@ -21,7 +17,6 @@ describe("injectRetrievalGuidance argv grammar", () => {
     expect(before).toContain("--append-system-prompt");
     expect(after).toEqual(["literal --append-system-prompt x"]);
     expect(r.argv.indexOf("--")).toBeLessThan(r.argv.length - 1);
-    // Guidance body includes no-pipe sentence
     const gIdx = before.indexOf("--append-system-prompt");
     expect(before[gIdx + 1]).toContain("Do not pipe, redirect, head, tail");
   });
@@ -30,11 +25,7 @@ describe("injectRetrievalGuidance argv grammar", () => {
     const r = injectRetrievalGuidance(["--", "--append-system-prompt", "PROMPT_DATA"]);
     expect(r.ok).toBe(true);
     if (!r.ok) return;
-    expect(r.argv.slice(r.argv.indexOf("--") + 1)).toEqual([
-      "--append-system-prompt",
-      "PROMPT_DATA",
-    ]);
-    // Guidance appears only before --
+    expect(r.argv.slice(r.argv.indexOf("--") + 1)).toEqual(["--append-system-prompt", "PROMPT_DATA"]);
     expect(r.argv[0]).toBe("--append-system-prompt");
   });
 
@@ -55,12 +46,7 @@ describe("injectRetrievalGuidance argv grammar", () => {
   });
 
   it("refuses duplicate flags", () => {
-    const r = injectRetrievalGuidance([
-      "--append-system-prompt",
-      "a",
-      "--append-system-prompt",
-      "b",
-    ]);
+    const r = injectRetrievalGuidance(["--append-system-prompt", "a", "--append-system-prompt", "b"]);
     expect(r.ok).toBe(false);
   });
 

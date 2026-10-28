@@ -1,22 +1,3 @@
-// Canonical transcript dumps — the fidelity-certification harness (ported
-// from pi-lhc's export-serializer approach). Two sources, one format:
-//
-//   dumpSessionThreadView  — what LHC serves (the rebuild's input)
-//   dumpRolloutLines       — what a Claude Code rollout file contains
-//
-// Because the rebuild emits native blocks, a faithful swap makes the two
-// dumps line up entry-for-entry: diff a pre-compact rollout dump against a
-// post-compact one and the tail must match exactly, with only the banded
-// head replaced by [context · band] entries (plus the trailing swap
-// receipt). The dump format itself uses bracket labels — that is fine HERE
-// because these files are diff artifacts for humans, never served to a
-// model.
-//
-// Determinism rules: tool arguments serialize with recursively sorted keys
-// (structural equality → byte equality); native tool-result content
-// normalizes through the same stringification intake uses; envelope noise
-// (uuids, timestamps, session ids) never appears.
-
 import type { SessionThreadView } from "lhc";
 
 import { isMetaUserLine, isSyntheticNoResponse, stringifyToolResultContent } from "../intake/map.js";
@@ -33,7 +14,6 @@ function sortKeys(value: unknown): unknown {
   return value;
 }
 
-/** Stable-sorted-key JSON: two structurally equal payloads compare equal. */
 export function stableJson(value: unknown): string {
   return JSON.stringify(sortKeys(value)) ?? "null";
 }
@@ -56,7 +36,6 @@ function toolResultLabel(id: string, isError: boolean): string {
   return `[tool result · ${id}${isError ? " · error" : ""}]`;
 }
 
-/** Canonical dump of the served thread view — the rebuild's exact input. */
 export function dumpSessionThreadView(view: SessionThreadView): string {
   const out: DumpEntry[] = [];
   for (const entry of view.entries) {
@@ -114,20 +93,10 @@ function dumpUserBlock(block: ContentBlock, out: DumpEntry[]): void {
   } else if (block.type === "text" && typeof block.text === "string") {
     out.push({ label: "[user]", body: block.text });
   } else {
-    // images and other rich blocks: presence marker only
     out.push({ label: `[${block.type}]`, body: "" });
   }
 }
 
-/**
- * Canonical dump of parsed rollout lines. Skips exactly what intake skips —
- * sidechains, meta lines by flag AND by content marker (`<command-name>`,
- * `<local-command-stdout>`, …), and the synthetic "No response requested."
- * resume line — so a pre-compact dump and a post-compact dump differ only
- * where transcript content differs, never on harness bookkeeping (proven on
- * the 2026-07-19 230k certification: the only spurious diffs were /exit
- * meta lines and the synthetic resume line before this alignment).
- */
 export function dumpRolloutLines(items: readonly RolloutLineItem[]): string {
   const out: DumpEntry[] = [];
   for (const item of items) {
@@ -156,16 +125,13 @@ export function dumpRolloutLines(items: readonly RolloutLineItem[]): string {
   return formatEntries(out);
 }
 
-/** Parse rollout JSONL content into line items, skipping unparseable lines. */
 export function parseRolloutContent(content: string): RolloutLineItem[] {
   const items: RolloutLineItem[] = [];
   for (const line of content.split("\n")) {
     if (line.trim() === "") continue;
     try {
       items.push(JSON.parse(line) as RolloutLineItem);
-    } catch {
-      // unparseable lines carry no transcript content worth diffing
-    }
+    } catch {}
   }
   return items;
 }

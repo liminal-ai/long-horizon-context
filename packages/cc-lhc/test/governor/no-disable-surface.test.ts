@@ -1,11 +1,3 @@
-/**
- * TC-1.5d: Smart Compact has no disable surface or disabled state.
- *
- * Load-bearing census over the real source, help, README, and docs, plus the
- * live parser, config schema, panel registry, and governor. Reintroducing any
- * off switch — a policy field, a launch flag, a panel command, a decision
- * kind, a receipt outcome, or prose that offers one — fails here.
- */
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,7 +27,6 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Every spelling an off switch has had or could plausibly take. */
 const FORBIDDEN = [
   /\bautoCompact\b/,
   /\bpolicy_disabled\b/,

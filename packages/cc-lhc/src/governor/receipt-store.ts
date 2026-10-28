@@ -1,15 +1,3 @@
-/**
- * Durable governor receipt store (LIM-64).
- *
- * Structured, restart-inspectable records with deterministic replay/upsert
- * keys derived from stable native facts (session/thread, observe phase,
- * sampling ID, decision, provider/estimate pressure). Lives in the wrapper
- * lineage SQLite (`cc-lhc.sqlite`), not the append-only wrapper log alone.
- *
- * Coexistence: busy_timeout is set BEFORE journal_mode=WAL (same race lesson
- * as LHC/pi-lhc open). Insert/upsert + readback use transactions.
- */
-
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
@@ -18,7 +6,6 @@ import { DatabaseSync } from "node:sqlite";
 import { defaultLineageDbPath } from "../intake/paths.js";
 import type { GovernorDurableReceipt, GovernorHandoffOutcome, GovernorObserveRecord } from "./types.js";
 
-/** Cross-process lock wait (ms). Matches LHC open-database busy timeout spirit. */
 export const GOVERNOR_RECEIPT_BUSY_TIMEOUT_MS = 10_000;
 
 export interface GovernorReceiptStoreDeps {
@@ -30,7 +17,6 @@ export interface GovernorReceiptStoreDeps {
 
 export interface AppendObserveResult {
   receipt: GovernorDurableReceipt;
-  /** True when a new row was inserted; false when exact replay returned existing. */
   inserted: boolean;
 }
 
@@ -51,8 +37,6 @@ function tableHasColumn(db: DatabaseSync, table: string, column: string): boolea
 }
 
 function initSchema(db: DatabaseSync): void {
-  // busy_timeout FIRST so concurrent lineage/receipt openers wait instead of
-  // instant SQLITE_BUSY while journal_mode=WAL takes its brief write lock.
   db.exec(`PRAGMA busy_timeout = ${GOVERNOR_RECEIPT_BUSY_TIMEOUT_MS}`);
   const modeRow = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string } | undefined;
   const mode = String(modeRow?.journal_mode ?? "").toLowerCase();
@@ -75,7 +59,6 @@ function initSchema(db: DatabaseSync): void {
       updated_at TEXT NOT NULL
     )
   `);
-  // Additive, idempotent migration: stable native replay key for restart/re-tail.
   if (!tableHasColumn(db, "cc_governor_receipts", "replay_key")) {
     db.exec(`ALTER TABLE cc_governor_receipts ADD COLUMN replay_key TEXT`);
   }
@@ -94,11 +77,6 @@ function initSchema(db: DatabaseSync): void {
   `);
 }
 
-/**
- * Deterministic identity for one classification. Uses only stable native facts
- * that survive process restart — not observeSequence, settleSequence, or
- * captureGeneration (those can reset on restart / re-tail).
- */
 export function governorReceiptReplayKey(args: {
   observe: GovernorObserveRecord;
   sessionId?: string | null;
@@ -128,7 +106,6 @@ export function governorReceiptReplayKey(args: {
   return createHash("sha256").update(parts.join("\u001f")).digest("hex");
 }
 
-/** Terminal handoff/mutation outcomes that must survive exact replay. */
 export function isTerminalHandoffOutcome(outcome: GovernorHandoffOutcome | null | undefined): boolean {
   if (outcome === null || outcome === undefined) return false;
   switch (outcome.kind) {
@@ -143,8 +120,6 @@ export function isTerminalHandoffOutcome(outcome: GovernorHandoffOutcome | null 
     case "not_applicable":
       return true;
     case "scheduled":
-      // Only non-terminal: operation owns the receipt, or crash between insert
-      // and claim (fail closed on exact replay — see wrapper run docs).
       return false;
     default:
       return false;
@@ -153,24 +128,15 @@ export function isTerminalHandoffOutcome(outcome: GovernorHandoffOutcome | null 
 
 export interface GovernorReceiptStore {
   readonly path: string;
-  /**
-   * Persist a classification. Exact native replay returns the existing receipt
-   * (preserves terminal handoff outcome). Concurrent inserts cannot duplicate.
-   */
   appendObserve(args: {
     observe: GovernorObserveRecord;
     sessionId?: string | null;
     threadId?: string | null;
   }): AppendObserveResult;
-  /** Attach a handoff/mutation outcome to an exact receipt id only. */
   attachHandoffOutcome(receiptId: string, outcome: GovernorHandoffOutcome): GovernorDurableReceipt | null;
   listBySession(sessionId: string): GovernorDurableReceipt[];
   listAll(): GovernorDurableReceipt[];
   getById(receiptId: string): GovernorDurableReceipt | null;
-  /**
-   * Close the underlying connection. Errors are not swallowed — evidence and
-   * coexistence tests need truthful close failures.
-   */
   close(): void;
 }
 
@@ -223,11 +189,6 @@ function materializeReceipt(args: {
   };
 }
 
-/**
- * Open (or create) the durable governor receipt store under the lineage DB path.
- * Schema is additive; coexists with lineage tables in the same file when path
- * points at `cc-lhc.sqlite`.
- */
 export function openGovernorReceiptStore(
   dbPath: string = defaultLineageDbPath(),
   deps: GovernorReceiptStoreDeps = {},
@@ -238,14 +199,9 @@ export function openGovernorReceiptStore(
   try {
     initSchema(db);
   } catch (cause) {
-    // A corrupt or foreign file throws on the first statement. Release the
-    // handle before rethrowing so the failed open does not pin the file for
-    // the wrapper's lifetime (Windows refuses deletion of a pinned file).
     try {
       db.close();
-    } catch {
-      // never opened far enough to close
-    }
+    } catch {}
     throw cause;
   }
 
@@ -295,9 +251,7 @@ export function openGovernorReceiptStore(
     } catch (cause) {
       try {
         rollback.run();
-      } catch {
-        // already rolled back or no active transaction
-      }
+      } catch {}
       throw cause;
     }
   };
@@ -309,7 +263,6 @@ export function openGovernorReceiptStore(
       return runInTx(() => {
         const existing = selectByReplayKey.get(replayKey) as { payload_json: string } | undefined;
         if (existing !== undefined) {
-          // Exact replay: return existing row, preserve terminal handoff outcome.
           return { receipt: parsePayload(existing.payload_json), inserted: false };
         }
 
@@ -340,7 +293,6 @@ export function openGovernorReceiptStore(
             replayKey,
           );
         } catch (cause) {
-          // Concurrent append: unique index wins; re-read winner.
           const raced = selectByReplayKey.get(replayKey) as { payload_json: string } | undefined;
           if (raced !== undefined) {
             return { receipt: parsePayload(raced.payload_json), inserted: false };
@@ -391,7 +343,6 @@ export function openGovernorReceiptStore(
   return store;
 }
 
-/** Pure helper for tests: build a receipt without opening SQLite. */
 export function materializeGovernorReceipt(args: {
   observe: GovernorObserveRecord;
   sessionId?: string | null;

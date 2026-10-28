@@ -1,10 +1,3 @@
-/**
- * LIM-145 TC-2.4c / TC-2.5c: the Compact-delay grace and the wait-or-orphan
- * consent machinery are gone from source, help, README, and onboarding docs,
- * and the modal has no confirmation mode. Scoped: legitimate child-termination
- * timing (`sigtermGraceMs`, "graceful") and resume timing stay untouched, and
- * the census proves it still sees them.
- */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -25,7 +18,6 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-/** Every spelling the removed machinery had. Word-bounded so `graceful` and `sigtermGraceMs` stay legal. */
 const FORBIDDEN = [
   /compact_confirm/,
   /compact-confirm/,
@@ -65,12 +57,10 @@ describe("removed surfaces: Compact-delay grace and wait-or-orphan consent (TC-2
     expect(existsSync(join(PACKAGE_ROOT, "src", "wrapper", "compact-confirm.ts"))).toBe(false);
   });
 
-  it("the census is scoped: child-termination and resume timing are still present and legal", () => {
+  it("the census is scoped: child-termination timing is still present and legal", () => {
     const run = readFileSync(join(PACKAGE_ROOT, "src", "wrapper", "run.ts"), "utf8");
     expect(run).toMatch(/sigtermGraceMs/);
     expect(run).toMatch(/graceful/);
-    expect(existsSync(join(PACKAGE_ROOT, "src", "wrapper", "resume-injection.ts"))).toBe(true);
-    // The pattern set would catch a Compact-delay field without matching those.
     expect(FORBIDDEN.some((p) => p.test("compactGraceMs: 30_000"))).toBe(true);
     expect(FORBIDDEN.some((p) => p.test("grace_pending"))).toBe(true);
     expect(FORBIDDEN.some((p) => p.test("sigtermGraceMs: 300"))).toBe(false);
@@ -87,7 +77,6 @@ describe("removed surfaces: Compact-delay grace and wait-or-orphan consent (TC-2
     ]) {
       expect(name in terminology, name).toBe(false);
     }
-    // A 'y' typed on the main screen is Claude's, forwarded untouched.
     const result = modal.processInputChunk(Buffer.from("y"), modal.createInputState());
     expect(result.state.mode).toBe("passthrough");
     expect(result.actions.some((action) => (action.kind as string).includes("confirm"))).toBe(false);

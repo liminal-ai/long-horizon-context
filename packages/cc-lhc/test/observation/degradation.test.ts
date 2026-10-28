@@ -65,7 +65,6 @@ describe("capture degradation", () => {
 
   it("caps reasonCounts under overflow; thousands of distinct unknowns stay bounded", () => {
     let state = createCaptureGeneration(1);
-    // Establish a concrete normalized key before overflow so its count stays tracked.
     for (let i = 0; i < 40; i += 1) {
       state = markCaptureDegraded(state, `parse_error:line ${i} boom`);
     }
@@ -79,7 +78,6 @@ describe("capture degradation", () => {
     expect(Object.keys(state.reasonCounts).length).toBeLessThanOrEqual(MAX_DEGRADATION_REASONS + 1);
     expect(state.reasons).toContain("reasons_capped");
     expect(state.reasonCounts["reasons_capped"]).toBeGreaterThan(1);
-    // parse_error remains first-class and bounded even after mass overflow.
     expect(state.reasonCounts["parse_error"]).toBe(40);
   });
 
@@ -91,14 +89,11 @@ describe("capture degradation", () => {
       state = applied.state;
       if (applied.isFirstForKey) firsts.push(applied.countKey);
     }
-    // At most MAX distinct + one reasons_capped first-transition.
     expect(firsts.length).toBeLessThanOrEqual(MAX_DEGRADATION_REASONS + 1);
     expect(firsts.filter((k) => k === REASONS_CAPPED_KEY)).toHaveLength(1);
-    // Further overflow is not first.
     const more = applyCaptureDegraded(state, "another_novel_after_cap");
     expect(more.isFirstForKey).toBe(false);
     expect(more.countKey).toBe(REASONS_CAPPED_KEY);
-    // Identical host failures: only first is first.
     let s2 = createCaptureGeneration(2);
     const a = applyCaptureDegraded(s2, "parse_error:one");
     s2 = a.state;

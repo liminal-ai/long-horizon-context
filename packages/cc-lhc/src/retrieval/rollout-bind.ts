@@ -1,12 +1,3 @@
-/**
- * Independent absent-session rollout cross-check.
- *
- * When CLAUDE_CODE_SESSION_ID is absent, binding cannot trust two fields from
- * the same descriptor assertion alone. The exact rollout file must exist as a
- * regular readable file, basename must match session id, and Slice 1 dual-field
- * attribution must show positive matching evidence without conflict.
- */
-
 import { basename } from "node:path";
 import { lstatSync, readFileSync } from "node:fs";
 
@@ -30,10 +21,6 @@ export function defaultRolloutBindIo(): RolloutBindIo {
 
 export type RolloutBindResult = { ok: true } | { ok: false; reason: string };
 
-/**
- * Strict deterministic cross-check of descriptor.sessionId against the real
- * rollout file contents. Never scans cwd or chooses "newest".
- */
 export function verifyDescriptorRolloutBinding(
   desc: Pick<RuntimeDescriptorV1, "sessionId" | "rolloutPath">,
   io: RolloutBindIo = defaultRolloutBindIo(),

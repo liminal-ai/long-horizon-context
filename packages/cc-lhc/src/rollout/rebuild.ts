@@ -20,7 +20,6 @@ export interface RebuildRolloutInput {
   entries: readonly SessionThreadViewEntry[];
   newSessionId: string;
   envelope: RolloutEnvelope;
-  /** Override only for tests of alternate ladder arms. Production uses SELECTED. */
   thinkingRebuildArm?: ThinkingRebuildArm;
 }
 
@@ -33,21 +32,6 @@ function isMessageEntry(entry: SessionThreadViewEntry): entry is SessionThreadVi
   return "role" in entry;
 }
 
-/**
- * Native content block for one assistant part, or null for an empty/omitted part.
- *
- * The tail of a rebuilt rollout must be NATIVE blocks, never bracket-labelled
- * text. Tool ids re-emit verbatim (`toolCallId` ↔ `tool_use_id`).
- *
- * Server-side tool blocks (server_tool_use, *_tool_result) re-emit verbatim
- * from the served part's `block`; redacted_thinking follows the thinking arm.
- *
- * Thinking rebuild follows the ladder in thinking-ladder.ts. Selected arm:
- * signed_verbatim — captured signed blocks (text, empty text, redacted) re-emit
- * exactly; unsigned thinking is dropped. Canonical LHC always retains the
- * original signed block. Never invent `signature: ""` merely to fit an assumed
- * shape.
- */
 function assistantPartBlock(
   part: SessionAssistantPart,
   arm: ThinkingRebuildArm = SELECTED_THINKING_REBUILD_ARM,
@@ -67,11 +51,9 @@ function assistantPartBlock(
       if (thinking === "") return null;
       return { type: "thinking", thinking };
     }
-    // signed_verbatim
     if (signature !== undefined) {
       return { type: "thinking", thinking, signature };
     }
-    // No signature to preserve — omit rather than invent empty signature.
     return null;
   }
   if (part.type === "toolCall") {
@@ -121,12 +103,6 @@ function userMessageContent(content: string | ContentBlock[]): {
   return { role: "user", content };
 }
 
-/**
- * One native assistant line body carrying a single block. Real rollout files
- * (verified live on 2.1.x) hold exactly one content block per line, with
- * consecutive lines of the same API message sharing `message.id` — so the
- * rebuild emits one line per part under a shared synthetic id.
- */
 function assistantMessageContent(
   messageId: string,
   model: string,
@@ -143,25 +119,6 @@ function assistantMessageContent(
   };
 }
 
-/**
- * The swap receipt shown to the user after prune/compact. It lives in the
- * rebuilt rollout as a trailing runtime-note line, so Claude Code renders it
- * natively in the transcript on resume — raw stdout writes land in the TUI's
- * status-line region and are wiped by the post-swap repaint.
- */
-export function formatSwapReceipt(oldSessionId: string, newSessionId: string, expectedReintakeLines: number): string {
-  return (
-    `session ${oldSessionId} preserved; LHC view rebuilt as ${newSessionId} ` +
-    `(expect ~${expectedReintakeLines} lines); relaunch with cc-lhc --resume ${newSessionId}`
-  );
-}
-
-/**
- * A trailing user line carrying a runtime note. The "[runtime note]" label is
- * what the intake mapper strips and re-classifies as runtime_note, so the
- * receipt stays out of the user lane and its replay signature is stable
- * across prune cycles.
- */
 export function runtimeNoteRolloutLine(
   text: string,
   sessionId: string,
@@ -174,20 +131,6 @@ export function runtimeNoteRolloutLine(
   return { line, rolloutType: "user" };
 }
 
-/**
- * Map assembled thread-view entries to rollout JSONL line objects (not yet
- * serialized). Bands arrive as user text entries (already lossy summaries —
- * bracket labels are correct there); the tail re-emits NATIVE shapes:
- * per-block assistant lines (thinking / text / tool_use) under a shared
- * synthetic message id, and tool results as tool_result blocks paired by
- * tool_use_id. A user or toolResult entry served with `blocks` (the native
- * content array, blob payloads inlined) re-emits that array, so an attached
- * image or a Read of a PNG/PDF comes back as the image/document block it was,
- * never as base64 inside text. `model_change` entries stamp the model on subsequent
- * assistant lines (their native representation — rollout files carry no
- * standalone model-change line); `thinking_level_change` has no rollout
- * representation and is skipped.
- */
 export function buildRolloutLines(input: RebuildRolloutInput): RebuiltRolloutLine[] {
   const { entries, newSessionId, envelope } = input;
   const thinkingArm = input.thinkingRebuildArm ?? SELECTED_THINKING_REBUILD_ARM;
@@ -237,8 +180,6 @@ export function buildRolloutLines(input: RebuildRolloutInput): RebuiltRolloutLin
         .map((part) => assistantPartBlock(part, thinkingArm))
         .filter((block): block is ContentBlock => block !== null);
       if (blocks.length === 0) continue;
-      // One API message across the entry: shared synthetic id, and the
-      // native stop_reason ("tool_use" when the message issues tool calls).
       const stopReason = blocks.some((block) => block.type === "tool_use") ? "tool_use" : "end_turn";
       let messageId: string | null = null;
       for (const block of blocks) {
@@ -284,7 +225,6 @@ function assistantModelFromLine(item: RolloutLineItem): string | undefined {
   return typeof model === "string" && model !== "" ? model : undefined;
 }
 
-/** Extract scalar envelope fields from the newest user/assistant line in a source rollout. */
 export function envelopeFromRolloutLine(item: RolloutLineItem, cwd: string): RolloutEnvelope {
   const envelope: RolloutEnvelope = { cwd };
   if (typeof item.version === "string") envelope.version = item.version;

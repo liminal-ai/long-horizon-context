@@ -1,7 +1,3 @@
-/**
- * Slice 2 correction: descriptor lifecycle + OS process identity ownership.
- */
-
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,9 +28,7 @@ function realIo(opts: { probe?: ProbeProcessIdentity } = {}): DescriptorIo {
     unlink: (p) => {
       try {
         fs.unlinkSync(p);
-      } catch {
-        // ignore
-      }
+      } catch {}
     },
     exists: fs.existsSync,
     mkdir: (p) => fs.mkdirSync(p, { recursive: true, mode: 0o700 }),
@@ -55,11 +49,6 @@ describe("runtime descriptor identity", () => {
     expect(desc.state).toBe("opening");
     expect(desc.processIdentity.pid).toBe(process.pid);
     expect(desc.processIdentity.starttime).toMatch(/^\d+$/);
-    // Confidentiality contract is platform-split: POSIX enforces the exact
-    // 0600 mode; Windows has no meaningful POSIX mode bits, so no mode is
-    // asserted there — the enforced contract is the in-profile location
-    // policy (resolveCcLhcHome, covered in test/intake/paths.test.ts) plus
-    // the profile's default ACLs. No bespoke DACL is installed or claimed.
     if (process.platform !== "win32") {
       expect(statMode(path)).toBe(0o600);
     }
@@ -73,7 +62,6 @@ describe("runtime descriptor identity", () => {
     const ioCreate = realIo({ probe: () => aliveResult(self) });
     const path = newDescriptorPath(root, ioCreate);
     createOpeningDescriptor(path, ioCreate);
-    // Same pid, different starttime (reuse)
     const ioLoad = realIo({
       probe: () => aliveResult({ ...self, starttime: String(Number(self.starttime) + 1) }),
     });
@@ -100,14 +88,11 @@ describe("runtime descriptor identity", () => {
     const io = realIo({ probe: () => aliveResult(self) });
     const path = newDescriptorPath(root, io);
     const desc = createOpeningDescriptor(path, io);
-    // Tamper incarnation and wrapperStartedAtMs but keep processIdentity
     const raw = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
     raw.incarnation = "forged-nonce-value-xxxxx";
     raw.wrapperStartedAtMs = 1;
     writeFileSync(path, JSON.stringify(raw), { mode: 0o600 });
-    // Still ok if identity matches
     expect(loadDescriptor(path, io).ok).toBe(true);
-    // Forge processIdentity starttime
     raw.processIdentity = { ...desc.processIdentity, starttime: "1" };
     writeFileSync(path, JSON.stringify(raw), { mode: 0o600 });
     expect(loadDescriptor(path, io).ok).toBe(false);
@@ -138,7 +123,6 @@ describe("runtime descriptor identity", () => {
       expect(loaded.reason).toMatch(/cannot establish current OS process identity/);
       expect(loaded.reason).not.toMatch(/stale/);
     }
-    // Fail closed means refuse only — the descriptor must not be touched.
     expect(existsSync(path)).toBe(true);
   });
 
@@ -185,7 +169,6 @@ describe("runtime descriptor identity", () => {
         throw new Error("rename fail");
       },
     };
-    // Checked revoke: publish fails, unlink succeeds → proven absent (no throw)
     const out = markDegraded(path, desc, "x", ioFail);
     expect(out.state).toBe("degraded");
     expect(existsSync(path)).toBe(false);
@@ -205,7 +188,7 @@ describe("runtime descriptor identity", () => {
     });
     revokeDescriptor(path, undefined, io);
     expect(existsSync(path)).toBe(false);
-    expect(assertReadyBinding(desc).ok).toBe(true); // in-memory only
+    expect(assertReadyBinding(desc).ok).toBe(true);
   });
 
   it("closeAndRemove unlinks", () => {

@@ -1,14 +1,3 @@
-/**
- * `cc-lhc rollout write`: the native-file entry point for a forked thread.
- * Writes the rebuilt Claude Code rollout for a thread under a fresh session
- * id, records the replayed-prefix lineage so the first `--resume` skips it
- * instead of re-intaking it, and makes that session the thread's current
- * alias. Composes three existing seams (rebuilt-rollout writer, lineage
- * registration, current-session acceptance); no wrapper, no PTY, no
- * inference. The identity note a fork stamped is already tail text in the
- * served view, so no receipt line is appended.
- */
-
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -100,8 +89,6 @@ export async function runRolloutWriteCli(argv: readonly string[], deps: RolloutW
     return refuse("usage", `thread ${threadId} has no registry cwd; pass --cwd`);
   }
 
-  // Refusals before any write: an existing rollout under this id, or an alias
-  // already bound elsewhere. A fresh uuid never trips either.
   const projectsRoot = flags.get("projects-root") ?? deps.projectsRoot;
   const rolloutPath = rolloutPathForSession(projectsRoot ?? defaultProjectsRoot(), cwd, sessionId);
   if (existsSync(rolloutPath)) return refuse("path_exists", `rollout ${rolloutPath} already exists`);
@@ -123,8 +110,6 @@ export async function runRolloutWriteCli(argv: readonly string[], deps: RolloutW
     ...(flags.has("envelope-from") ? { sourceRolloutPath: flags.get("envelope-from") as string } : {}),
   });
 
-  // Lineage first: without it the first launch re-intakes the replayed
-  // prefix as new history. Then the alias, so `--resume` finds the thread.
   const lineage = await registerRebuiltSessionLineage({
     newSessionId: sessionId,
     threadId,
@@ -146,7 +131,5 @@ export async function runRolloutWriteCli(argv: readonly string[], deps: RolloutW
 }
 
 function defaultProjectsRoot(): string {
-  // Mirrors writeRebuiltRollout's default; kept here only for the pre-write
-  // existence check so the two never disagree on the path.
   return join(homedir(), ".claude", "projects");
 }

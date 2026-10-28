@@ -133,9 +133,7 @@ describe("run: launching through an alias of a thread", () => {
     for (const home of homes.splice(0)) {
       try {
         rmSync(home, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -158,7 +156,6 @@ describe("run: launching through an alias of a thread", () => {
     expect(spawned).toHaveLength(1);
     expect(spawned[0]!.args).toContain("--resume");
     expect(spawned[0]!.args[spawned[0]!.args.indexOf("--resume") + 1]).toBe(CURRENT_SESSION);
-    // Capture was bound to the same thread, through the current session.
     expect(launchMocks.captureCalls[0]?.launchThread).toEqual({ threadId: "th_launch", createdAtLaunch: false });
     expect(launchMocks.captureCalls[0]?.expectedSession).toEqual({
       sessionId: CURRENT_SESSION,
@@ -174,7 +171,6 @@ describe("run: launching through an alias of a thread", () => {
     const binding = launchMocks.captureCalls[0]?.launchThread;
     expect(binding?.createdAtLaunch).toBe(true);
     expect(binding?.threadId).toMatch(/^th_[0-9a-f]{16}$/);
-    // The launch session became the new thread's current one.
     expect(await currentSessionAlias(binding!.threadId, defaultRegistryPath())).toBe(claudeSessionAlias(OLD_SESSION));
   });
 

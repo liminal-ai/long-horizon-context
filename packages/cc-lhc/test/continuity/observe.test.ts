@@ -1,8 +1,3 @@
-/**
- * LIM-145 AC-2.1 (TC-2.1a–d): launch, progress, and terminal evidence for all
- * five families recorded in the parent-owned store through the real fold.
- * Elapsed time never closes anything.
- */
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,9 +69,6 @@ describe("TC-2.1a launch opens exactly one item per family", () => {
       scheduledForMs: LAUNCHES.scheduled_wakeup.scheduledForMs,
       label: 'scheduled wakeup "poll CI"',
     });
-    // Continuation facts arrive exactly as the host stated them (AC-2.2 inputs).
-    // The fold records the host's own paths verbatim; the fixture states them
-    // natively, so the expectation is built the same way the fixture is.
     expect(byFamily.agent?.continuation).toEqual({ outputFile: join(DEFAULT_PATHS.tasksDir, "agent-1.output") });
     expect(byFamily.workflow?.continuation).toEqual({
       runId: "wf_run-1",
@@ -88,7 +80,6 @@ describe("TC-2.1a launch opens exactly one item per family", () => {
     });
     expect(byFamily.monitor?.continuation).toBeNull();
     expect(byFamily.scheduled_wakeup?.continuation).toBeNull();
-    // The shell's command body never reaches the database.
     expect(byFamily.background_shell?.label).toBe("background command (shell-1)");
     expect(JSON.stringify(items)).not.toMatch(/SECRET|Authorization|curl/);
     store.close();
@@ -123,13 +114,11 @@ describe("TC-2.1b progress does not close work", () => {
     expect(monitor.updatedAtMs).toBeGreaterThan(before.updatedAtMs);
     expect(store.getItem(T, LAUNCH_IDS.agent)?.state).toBe("active");
     expect(store.listItems(T).filter((item) => item.state === "active")).toHaveLength(5);
-    // A monitor learns its output file from the host's first event, once.
     feed([monitorEvent()]);
     feed([notification({ taskIds: ["mon-1"], event: "again", outputFile: "/nonexistent/tasks/other.output" })]);
     expect(store.getItem(T, LAUNCH_IDS.monitor)?.continuation).toEqual({
       outputFile: "/nonexistent/tasks/mon-1.output",
     });
-    // Progress text is never persisted.
     expect(JSON.stringify(store.listItems(T))).not.toContain("build green");
     store.close();
   });
@@ -239,7 +228,6 @@ describe("real Claude Code 2.1.252 records", () => {
       new Set(["background_shell", "monitor", "agent", "workflow"]),
     );
     expect(stopped.every((item) => item.terminal?.evidence === "task-notification stopped")).toBe(true);
-    // Nothing in the fixture is read as work twice.
     expect(new Set(items.map((item) => item.launchId)).size).toBe(items.length);
     store.close();
   });

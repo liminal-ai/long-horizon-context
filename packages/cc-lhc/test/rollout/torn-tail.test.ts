@@ -50,10 +50,6 @@ function sink() {
   };
 }
 
-// The real holder check. The suite-wide CC_LHC_IDENTITY_ADDON stub answers
-// `listFileHolders` as unsupported, so on Windows the check must load the
-// compiled addon with the override removed (`env: {}`), as the other
-// real-addon suites do; Linux and macOS never reach the addon.
 const realControl = createProcessControl({ env: {} });
 const realFindHolders = (path: string) =>
   findFileHolders(path, { nativeHolders: (target) => realControl.listFileHolders(target) });
@@ -147,7 +143,6 @@ describe("pre-launch torn-tail repair", () => {
       home: f.home,
       findHolders: realFindHolders,
     });
-    // The whole result, so a refusal prints its reason.
     expect(repair).toMatchObject({ kind: "fragment_trimmed" });
     expect(readFileSync(f.path, "utf8")).toBe(line("a"));
   });

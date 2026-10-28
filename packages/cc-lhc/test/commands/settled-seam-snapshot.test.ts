@@ -1,12 +1,3 @@
-/**
- * Construction is forward-only: ONE snapshot at the settled seam, then the
- * operation runs to completion.
- *
- * These are outcome tests. The suite they replace asserted the opposite
- * contract — that state re-read at eight points during construction could
- * cancel it — and every one of those assertions is deliberately gone.
- */
-
 import type { Lhc, ThreadRef } from "lhc";
 import { describe, expect, it, vi } from "vitest";
 
@@ -97,7 +88,6 @@ function settledState(): LiveState {
   return { turnOpen: false, ready: true, healthy: true, phase: "ready", generation: 1 };
 }
 
-/** Everything the world can do to the wrapper while construction is running. */
 function degradeEverything(live: LiveState): void {
   live.turnOpen = true;
   live.ready = false;
@@ -134,7 +124,6 @@ describe("construction runs to completion", () => {
     const sdk = {
       threadView: {
         previewCompact: vi.fn(async () => {
-          // The whole world moves on between the snapshot and the compact.
           degradeEverything(live);
           return { ok: true, value: { kind: "ok" } };
         }),
@@ -219,8 +208,6 @@ describe("rebuilt rollout write retries", () => {
     };
     const outcome = await runCompactCommand("compact", baseRuntime(sdk, live));
     expect(outcome.handoff?.rebuilt.sessionId).toBe("new-2222");
-    // Compact ran once; only the materialization was retried, each attempt
-    // rebuilding from the durable installed view.
     expect(sdk.threadView.compact).toHaveBeenCalledTimes(1);
     expect(viewRead).toHaveBeenCalledTimes(REBUILT_ROLLOUT_WRITE_ATTEMPTS);
     expect(outcome.messages.join("\n")).toContain(`attempt ${REBUILT_ROLLOUT_WRITE_ATTEMPTS}`);

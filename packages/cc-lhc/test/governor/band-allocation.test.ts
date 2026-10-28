@@ -1,6 +1,3 @@
-/**
- * LIM-117: TC-4.1b-c, TC-4.2b-c.
- */
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

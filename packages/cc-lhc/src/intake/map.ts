@@ -10,8 +10,6 @@ import type {
 
 const HARNESS = "cc";
 
-// Server-side tool blocks the model receives inside its own message; recorded
-// as tool_result events carrying the block, paired by tool_use_id.
 const SERVER_RESULT_TYPES = new Set([
   "web_search_tool_result",
   "web_fetch_tool_result",
@@ -23,13 +21,6 @@ const SERVER_RESULT_TYPES = new Set([
 
 const META_MARKERS = ["<local-command-caveat>", "<command-name>", "<local-command-stdout>"] as const;
 
-// Background-task notifications are machine traffic injected as user messages.
-// They stay in the record (the assistant's next turn responds to them) but as
-// runtime_note, so they skip prompt smoothing and stay out of the user lane.
-// Rebuilt rollouts re-serve runtime notes with the "[runtime note]" label; the
-// mapper recognizes that label AND strips it, so the stored payload is always
-// the canonical note text — labels never stack across prune cycles, and the
-// replay signature of a re-tailed note matches the originally captured event.
 const TASK_NOTIFICATION_MARKER = "<task-notification>";
 const RUNTIME_NOTE_LABEL = "[runtime note]";
 
@@ -41,14 +32,6 @@ const RUNTIME_NOTE_LABEL = "[runtime note]";
 const SYNTHETIC_MODEL = "<synthetic>";
 const SYNTHETIC_NO_RESPONSE_TEXT = "No response requested.";
 
-/**
- * Claude Code 2.1.226 production fingerprint: a standalone assistant content
- * block that is only harness/provider transition metadata —
- * exactly `{type:"fallback", from:{model}, to:{model}}` (outer keys only).
- * Observed after Fable→Opus refusal fallback (see model_refusal_fallback system
- * notice). Not dialogue. Fail closed on any extra/missing field or identity
- * mismatch — do not treat every future `fallback` variant as safe.
- */
 export function isProductionAssistantFallbackOnly(item: RolloutLineItem): boolean {
   if (!isAssistantLine(item)) return false;
   const message = item.message;
@@ -57,7 +40,6 @@ export function isProductionAssistantFallbackOnly(item: RolloutLineItem): boolea
   if (blocks.length !== 1) return false;
   const block = blocks[0]!;
   if (!isRecord(block)) return false;
-  // Exact outer keys: type, from, to — any extra (e.g. user-visible text) = drift.
   const outerKeys = Object.keys(block).sort();
   if (outerKeys.length !== 3) return false;
   if (outerKeys[0] !== "from" || outerKeys[1] !== "to" || outerKeys[2] !== "type") return false;
@@ -65,14 +47,12 @@ export function isProductionAssistantFallbackOnly(item: RolloutLineItem): boolea
   const from = block.from;
   const to = block.to;
   if (!isRecord(from) || !isRecord(to)) return false;
-  // Nested from/to: only nonempty model.
   const fromKeys = Object.keys(from);
   const toKeys = Object.keys(to);
   if (fromKeys.length !== 1 || fromKeys[0] !== "model") return false;
   if (toKeys.length !== 1 || toKeys[0] !== "model") return false;
   if (typeof from.model !== "string" || from.model === "") return false;
   if (typeof to.model !== "string" || to.model === "") return false;
-  // Response identity must match the transition target.
   if (typeof message.model !== "string" || message.model === "") return false;
   if (message.model !== to.model) return false;
   return true;
@@ -107,7 +87,6 @@ export function contentBlocks(content: unknown): ContentBlock[] {
   return content.filter((block): block is ContentBlock => isRecord(block) && typeof block.type === "string");
 }
 
-/** The native content array when any block is not text; undefined for text-only (or string) content. */
 function nonTextBlocks(content: unknown): ContentBlock[] | undefined {
   const blocks = contentBlocks(content);
   return blocks.some((block) => block.type !== "text") ? blocks : undefined;
@@ -120,12 +99,6 @@ function joinedText(blocks: readonly ContentBlock[]): string {
     .join("");
 }
 
-/**
- * Exported for the transcript-dump normalizer: dumps must render native
- * (pre-swap) tool-result content through the SAME stringification the intake
- * stores and the rebuild re-emits, or before/after transcript diffs would
- * flag every non-string tool result as a mismatch.
- */
 export function stringifyToolResultContent(content: unknown): string {
   if (typeof content === "string") return content;
   try {
@@ -172,7 +145,6 @@ function messageModel(message: { model?: string } | undefined): string | undefin
   return typeof model === "string" && model !== "" ? model : undefined;
 }
 
-/** Verbatim provider usage object from an assistant message, if present. Never invent. */
 export function messageProviderUsage(message: ConversationMessage | undefined): Record<string, unknown> | undefined {
   if (message === undefined) return undefined;
   const usage = (message as Record<string, unknown>).usage;
@@ -182,7 +154,6 @@ export function messageProviderUsage(message: ConversationMessage | undefined): 
   return usage as Record<string, unknown>;
 }
 
-/** Canonical runtime-note text, or null when the text is a regular prompt. */
 export function runtimeNoteText(text: string): string | null {
   const trimmed = text.trimStart();
   if (trimmed.startsWith(TASK_NOTIFICATION_MARKER)) return text;
@@ -209,8 +180,6 @@ function mapUserToolResults(item: RolloutLineItem, blocks: ToolResultBlock[], li
   for (const block of blocks) {
     const toolCallId = block.tool_use_id;
     const isError = block.is_error === true;
-    // A result carrying images or documents (Read on a PNG or PDF) sends the
-    // native content array as `blocks`; the bytes never enter the text.
     const attached = nonTextBlocks(block.content);
     const content = attached === undefined ? stringifyToolResultContent(block.content) : joinedText(attached);
     events.push({
@@ -235,8 +204,6 @@ function mapUserTextBlocks(
   const imageCount = attached === undefined ? 0 : 1;
   if (text === "" && attached === undefined) return { events: [], imageCount };
   const events = mapUserString(item, text, lineIndex);
-  // A prompt with attached images or documents carries the native content
-  // array as `blocks`; runtime notes stay text.
   if (attached !== undefined) {
     for (const event of events) {
       if (event.eventKind === "user_prompt") event.payload = { ...event.payload, blocks: attached };
@@ -254,10 +221,6 @@ function mapAssistant(item: RolloutLineItem, lineIndex: number): MessageEventInp
   const events: MessageEventInput[] = [];
   const model = messageModel(message);
   const providerUsage = messageProviderUsage(message);
-  // Single pass preserves native content-block order. Idempotency keys use the
-  // native block index so capturing a previously skipped block cannot renumber
-  // later events on replay. Empty unsigned thinking is preserved canonically
-  // (SDK skips at serving only).
 
   for (let blockIndex = 0; blockIndex < blocks.length; blockIndex += 1) {
     const block = blocks[blockIndex]!;
@@ -280,8 +243,6 @@ function mapAssistant(item: RolloutLineItem, lineIndex: number): MessageEventInp
     }
     if (block.type === "text") {
       const text = typeof block.text === "string" ? block.text : "";
-      // Empty text blocks carry no record content — skip without consuming a
-      // different index scheme (index is still the native position above).
       if (text === "") continue;
       const extra: Record<string, unknown> = {};
       if (model !== undefined) extra.model = model;
@@ -344,7 +305,6 @@ function mapAssistant(item: RolloutLineItem, lineIndex: number): MessageEventInp
   return events;
 }
 
-/** Exported for the transcript-dump normalizer: dumps skip the same synthetic resume line intake skips. */
 export function isSyntheticNoResponse(item: RolloutLineItem): boolean {
   const message = item.message;
   if (message === undefined || message.model !== SYNTHETIC_MODEL) return false;
@@ -362,24 +322,6 @@ export function isAssistantLine(item: RolloutLineItem): boolean {
   return item.message?.role === "assistant";
 }
 
-/**
- * The summary text a native-compact record carries, or null when the record is
- * not one. Two shapes are recognized, and nothing is inferred from adjacency:
- *
- * - **Installed** (certified against Claude Code 2.1.235): a `type: "user"`
- *   record flagged `isCompactSummary: true` whose `message` is a user message
- *   with string content. `isCompactSummary` is the record's own statement about
- *   itself and is sufficient on its own. The adjacent
- *   `system`/`subtype: "compact_boundary"` record stays harness metadata; it is
- *   neither required, paired, nor waited for.
- * - **Legacy** (`type: "summary"`): retained for compatibility with older
- *   rollouts. LIM-99's corpus survey found zero instances on this box, so it is
- *   kept as a compatibility path, not as the live shape.
- *
- * Anything that only resembles either shape — an ordinary user record, a
- * boundary record alone, an assistant record, block-array content — returns
- * null and is mapped as the ordinary record it is.
- */
 export function nativeCompactSummaryText(item: RolloutLineItem): string | null {
   if (item.type === "summary") {
     return typeof item.summary === "string" ? item.summary : "";
@@ -390,21 +332,14 @@ export function nativeCompactSummaryText(item: RolloutLineItem): string | null {
   return typeof message.content === "string" ? message.content : null;
 }
 
-/** True when this record is a native compact summary in either recognized shape. */
 export function isNativeCompactSummaryLine(item: RolloutLineItem): boolean {
   return nativeCompactSummaryText(item) !== null;
 }
 
-// R8: a native summary is ordinary bounded evidence, never an authority change.
-// It enters the record as ONE tagged user message with no response that is also
-// ONE complete turn. The tag makes it detectable if dedicated mechanisms are
-// built later; no new event kind is introduced.
 const NATIVE_COMPACT_SUMMARY_TAG = "claude-compact-summary";
-/** Deterministic bound in code points, so a multi-byte character never splits. */
 const NATIVE_COMPACT_SUMMARY_MAX_CHARS = 2_000;
 const NATIVE_COMPACT_SUMMARY_TRUNCATION_MARKER = "[... remainder of summary truncated]";
 
-/** Tagged, bounded body for one native compact summary. */
 export function nativeCompactSummaryContent(summary: string): string {
   const points = Array.from(summary);
   const truncated = points.length > NATIVE_COMPACT_SUMMARY_MAX_CHARS;
@@ -415,18 +350,12 @@ export function nativeCompactSummaryContent(summary: string): string {
   return parts.join("\n");
 }
 
-/** Summary records carry `leafUuid`, not `uuid`; fall back to the shared shape. */
 function nativeCompactSummaryUuid(item: RolloutLineItem, lineIndex: number): string {
   const leaf = item.leafUuid;
   if (typeof leaf === "string" && leaf !== "") return `summary:${leaf}`;
   return recordUuid(item, lineIndex);
 }
 
-/**
- * One intake package: the tagged prompt settles any open turn through the SDK
- * turn state machine, then `turn_end` closes the summary's own turn. Nothing
- * pauses, latches, or waits on it.
- */
 function mapNativeCompactSummary(item: RolloutLineItem, lineIndex: number, summary: string): MessageEventInput[] {
   const uuid = nativeCompactSummaryUuid(item, lineIndex);
   return [
@@ -441,11 +370,6 @@ function mapNativeCompactSummary(item: RolloutLineItem, lineIndex: number, summa
   ];
 }
 
-// Housekeeping record types Claude Code writes into session files. None carry
-// conversation content: queue-operation duplicates the prompt already captured
-// via the user record; attachment records are tool/agent/skill listing deltas
-// injected by the runtime; ai-title/custom-title and last-prompt are session metadata.
-// Counted as meta so skipped_unknown stays a meaningful drift gauge.
 // Known housekeeping record types from the supported Claude Code corpus
 // (2.1.215–2.1.226 census). Counted as meta so skipped_unknown remains a
 // meaningful drift gauge for truly unrecognized shapes.
@@ -464,9 +388,7 @@ const META_LINE_TYPES = new Set([
 
 function isMetaLineType(item: RolloutLineItem): boolean {
   if (typeof item.type === "string" && META_LINE_TYPES.has(item.type)) return true;
-  // Older Claude Code versions write attachment records without a top-level type.
   if (item.attachment !== undefined) return true;
-  // system / system+turn_duration and similar system records are harness chrome.
   if (item.type === "system") return true;
   return false;
 }
@@ -535,14 +457,12 @@ export function mapRolloutLine(item: RolloutLineItem, lineIndex = 0): MapResult 
       stats.meta += 1;
       return { events: [], stats };
     }
-    // Standalone production fallback transition block — meta only, no dialogue.
     if (isProductionAssistantFallbackOnly(item)) {
       stats.meta += 1;
       return { events: [], stats };
     }
     const events = mapAssistant(item, lineIndex);
     if (events.length === 0) {
-      // Unknown/unsupported assistant content (including non-production fallback shapes).
       stats.unknown += 1;
     }
     return { events, stats };

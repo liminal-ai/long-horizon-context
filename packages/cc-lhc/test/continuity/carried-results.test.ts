@@ -1,10 +1,3 @@
-/**
- * beads 7uo (gorilla F4): a carried subagent and a relaunched Monitor reach
- * the replacement session through the next-real-prompt hook and end terminal.
- * Real SQLite record, real adapters and relaunch (`invokeCarryover`), real
- * hook binding through a ready descriptor; delivery is acknowledged only the
- * way the wrapper does it — from the rollout's hook_additional_context record.
- */
 import {
   appendFileSync,
   existsSync,
@@ -60,12 +53,10 @@ const pids: ReapTarget[] = [];
 const stores: ContinuityStore[] = [];
 afterEach(async () => {
   await reapProcesses(pids);
-  // Windows refuses to remove a tree while the SQLite file is still open.
   for (const store of stores.splice(0)) store.close();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
-/** Claude Code 2.1.x subagent transcript records (shapes from real `subagents/agent-<id>.jsonl` files). */
 const rec = {
   prompt: (text: string) => ({
     type: "user",
@@ -107,7 +98,6 @@ const FINAL_TRANSCRIPT = jsonl([
     "end_turn",
   ),
 ]);
-/** The gorilla shape: the paused child's agent stopped at its first tool call. */
 const UNFINISHED_TRANSCRIPT = jsonl([
   rec.prompt("write sub log lines"),
   rec.attachment(),
@@ -115,7 +105,6 @@ const UNFINISHED_TRANSCRIPT = jsonl([
   rec.assistant("msg_1", [{ type: "tool_use", id: "toolu_b1", name: "Bash", input: { command: "echo" } }], "tool_use"),
 ]);
 
-/** A handed-over session: carried agent + relaunched Monitor, generation closed, ready descriptor bound. */
 function session(opts: { monitorCommand: string; transcript: string }) {
   const root = mkdtempSync(join(tmpdir(), "cc-lhc-f4-"));
   dirs.push(root);
@@ -127,7 +116,6 @@ function session(opts: { monitorCommand: string; transcript: string }) {
   const metaPath = join(sessionDir, "subagents", "agent-agent-1.meta.json");
   writeFileSync(transcriptPath, "");
   writeFileSync(metaPath, JSON.stringify({ agentType: "general-purpose", description: "reviewer" }));
-  // The replacement session's folder, as Claude names it: <projectDir>/<sessionId>.
   const newSessionDir = join(root, "projects", "-x", SESSION);
   const rolloutPath = `${sessionDir}.jsonl`;
   const monitorLines = [
@@ -150,7 +138,6 @@ function session(opts: { monitorCommand: string; transcript: string }) {
   const relaunched = transfer.results.find((r) => r.launchId === LAUNCH_IDS.monitor);
   if (relaunched?.kind !== "relaunched") throw new Error(`monitor not relaunched: ${JSON.stringify(relaunched)}`);
   trackForReap(pids, relaunched.pid);
-  // The saved transcript as the old host left it.
   writeFileSync(transcriptPath, opts.transcript);
 
   const io = defaultDescriptorIo();
@@ -168,7 +155,6 @@ function session(opts: { monitorCommand: string; transcript: string }) {
     hook_event_name: "UserPromptSubmit",
     prompt: "next",
   });
-  /** One real prompt: the hook answers; the wrapper's capture path acknowledges what the rollout recorded. */
   const prompt = (observed = true): string => {
     const hook = executeTasksHook(payload, { env, descriptorPath: descPath, continuityDbPath: dbPath });
     if (!hook.ok) throw new Error(hook.reason);
@@ -222,7 +208,6 @@ async function waitGone(pid: number): Promise<void> {
   throw new Error(`pid ${pid} still alive`);
 }
 
-/** The agent's result line and, when present, its indented detail line. */
 const agentLines = (context: string): string[] => {
   const lines = context.split("\n");
   const at = lines.findIndex((l) => l.startsWith(`result ${LAUNCH_IDS.agent} `));
@@ -242,9 +227,7 @@ describe("F4 carried subagent: settled on the next prompt from its saved transcr
     ]);
     expect(itemOf(s.store, LAUNCH_IDS.agent)).toMatchObject({ state: "terminal", terminal: { outcome: "completed" } });
     expect(s.store.getResult(T, LAUNCH_IDS.agent)).toMatchObject({ delivery: "delivered", outcome: "completed" });
-    // Exactly once: the next prompt carries nothing for it.
     expect(agentLines(s.prompt())).toEqual([]);
-    // The full saved text is served by `tasks output <key>`.
     const out = s.tasks(["output", LAUNCH_IDS.agent]);
     expect(out.ok && out.bytes?.toString("utf8")).toBe("Review done.\n\nNo blocking issues; one nit in foo.ts.");
   });
@@ -314,7 +297,6 @@ describe("0.4.5 interrupted helper: its transcript moves into the replacement se
 
   it("a failed copy never offers SendMessage: the notice says to start it again", () => {
     const s = session({ monitorCommand: "sleep 30", transcript: UNFINISHED_TRANSCRIPT });
-    // The destination folder cannot be created: a file stands where it would go.
     mkdirSync(s.newSessionDir, { recursive: true });
     writeFileSync(join(s.newSessionDir, "subagents"), "not a folder");
     const [, detail] = agentLines(s.prompt());
@@ -327,7 +309,6 @@ describe("0.4.5 interrupted helper: its transcript moves into the replacement se
 
   it("a copy that fails partway leaves no transcript and no partial file, and no resume offer", () => {
     const s = session({ monitorCommand: "sleep 30", transcript: UNFINISHED_TRANSCRIPT });
-    // The metadata copies; the transcript cannot be read (a folder in its place).
     rmSync(s.transcriptPath);
     mkdirSync(s.transcriptPath);
     const [, detail] = agentLines(s.prompt());
@@ -394,7 +375,6 @@ describe("0.4.5 helpers stay resumable after every compaction", () => {
     expect(carryHelpersFromPreviousSession(t.store, T, t.dir("B"))).toMatchObject({
       results: [{ ok: true, agentId: "h1", status: "copied" }],
     });
-    // Resumed in B: its transcript there grows; a new helper h2 starts in B.
     appendFileSync(join(t.dir("B"), "subagents", "agent-h1.jsonl"), "resumed in B\n");
     t.helper("B", "h2", "h2 transcript\n");
     t.handoff("B");
@@ -407,7 +387,6 @@ describe("0.4.5 helpers stay resumable after every compaction", () => {
     });
     expect(readFileSync(join(t.dir("C"), "subagents", "agent-h1.jsonl"), "utf8")).toBe("h1 transcript\nresumed in B\n");
     expect(existsSync(join(t.dir("C"), "subagents", "agent-h2.meta.json"))).toBe(true);
-    // Running it again (every prompt) changes nothing.
     appendFileSync(join(t.dir("C"), "subagents", "agent-h1.jsonl"), "resumed in C\n");
     expect(carryHelpersFromPreviousSession(t.store, T, t.dir("C"))).toMatchObject({
       results: [
@@ -430,13 +409,11 @@ describe("0.4.5 helpers stay resumable after every compaction", () => {
       skipped: "previous session still running",
     });
     expect(existsSync(join(t.dir("B"), "subagents"))).toBe(false);
-    // Paused (a mixed carryover): it can no longer write, so its helpers move.
     t.store.clearRetainedHost({ threadId: T, generation: g, nowMs: Date.now() });
     t.store.setRetainedHost({ threadId: T, generation: g, host: { ...host, frozen: true }, nowMs: Date.now() });
     expect(carryHelpersFromPreviousSession(t.store, T, t.dir("B"))).toMatchObject({
       results: [{ ok: true, agentId: "h1", status: "copied" }],
     });
-    // Or stopped since (its retained-host record cleared): likewise.
     t.helper("A", "h2", "y\n");
     t.store.clearRetainedHost({ threadId: T, generation: g, nowMs: Date.now() });
     expect(carryHelpersFromPreviousSession(t.store, T, t.dir("B"))).toMatchObject({
@@ -455,9 +432,7 @@ describe("parseAgentFinalResult", () => {
       text: "Review done.\n\nNo blocking issues; one nit in foo.ts.",
     });
     expect(parseAgentFinalResult(UNFINISHED_TRANSCRIPT).kind).toBe("none");
-    // A tool result after the last assistant message: still working.
     expect(parseAgentFinalResult(`${FINAL_TRANSCRIPT}${jsonl([rec.toolResult("t")])}`).kind).toBe("none");
-    // Synthetic API error message.
     const synthetic = {
       ...rec.assistant("e", [{ type: "text", text: "API Error: 500" }], "stop_sequence"),
       isApiErrorMessage: true,
@@ -488,11 +463,7 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
       expect(second.map((l) => l.split(" · ").at(-1))).toEqual(["build 1 passed", "build 2 started"]);
       expect(events(s.prompt())).toEqual([]);
 
-      // The relaunched process exits: a trailing unterminated line is final now, and the item closes.
       appendFileSync(s.outputPath, "watch ended");
-      // Through the reaper: it stops the whole tree and waits for every process in it.
-      // A bare kill of the pid ends only Git Bash on Windows; its `sleep` child keeps
-      // the output file open and the temp dir cannot be removed (CI run 35920735874).
       await reapProcesses(
         pids.splice(
           pids.findIndex((t) => t.pid === s.pid),
@@ -512,8 +483,6 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
   );
 
   it("a failed stop signal keeps the Monitor only while the exact process still runs (win32 taskkill /T)", () => {
-    // taskkill /T /F exits non-zero when one process in the tree is already
-    // gone, though the root was killed (CI 35941944288, win32-x64).
     const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
     const item = itemOf(s.store, LAUNCH_IDS.monitor);
     const proc = item.relaunch!.process!;
@@ -525,7 +494,6 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
     expect(kept.kept).toEqual([{ launchId: LAUNCH_IDS.monitor, reason: failed().reason }]);
     expect(itemOf(s.store, LAUNCH_IDS.monitor).state).toBe("active");
 
-    // The root did die: the first probe (before signalling) sees it live, the re-probe does not.
     let probes = 0;
     const stopped = stopRelaunchedMonitors(s.store, T, {
       signal: failed,
@@ -553,14 +521,12 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
   it("session end stops the live relaunched Monitor, identity-gated, and records it stopped", async () => {
     const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
     const report = stopRelaunchedMonitors(s.store, T);
-    // The whole report, so a kept Monitor prints why.
     expect(report).toEqual({ stopped: [{ launchId: LAUNCH_IDS.monitor, pid: s.pid }], alreadyExited: [], kept: [] });
     await waitGone(s.pid);
     expect(itemOf(s.store, LAUNCH_IDS.monitor)).toMatchObject({
       state: "terminal",
       terminal: { outcome: "stopped", evidence: `stopped at session end (pid ${s.pid})` },
     });
-    // Idempotent: nothing left to stop.
     expect(stopRelaunchedMonitors(s.store, T).stopped).toEqual([]);
   });
 
@@ -591,7 +557,6 @@ describe("F4 relaunched Monitor: events delivered once each, terminal after exit
 });
 
 describe("F4b a relaunched Monitor across a second Smart Compact", () => {
-  /** A later compaction: the new rollout holds no Monitor tool_use (the wrapper made the relaunch). */
   function compactAgain(s: ReturnType<typeof session>, generationNow: number) {
     const rolloutPath = join(s.root, "projects", "-x", "session-new.jsonl");
     writeFileSync(rolloutPath, "");
@@ -616,7 +581,6 @@ describe("F4b a relaunched Monitor across a second Smart Compact", () => {
   it("carries as is: later events are delivered once, the process is stopped at exit, nothing is left", async () => {
     const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
     appendFileSync(s.outputPath, "tick 1\n");
-    // The first prompt settles the carried agent and delivers the first event.
     expect(events(s.prompt())).toEqual(["tick 1"]);
 
     const { qualified, transfer } = compactAgain(s, 10_000);
@@ -626,7 +590,7 @@ describe("F4b a relaunched Monitor across a second Smart Compact", () => {
       { launchId: LAUNCH_IDS.monitor, kind: "relaunch_carried", pid: s.pid, outputPath: s.outputPath },
     ]);
     expect(itemOf(s.store, LAUNCH_IDS.monitor).state).toBe("active");
-    process.kill(s.pid, 0); // still the one relaunched process, never respawned
+    process.kill(s.pid, 0);
 
     appendFileSync(s.outputPath, "tick 2\ntick 3\n");
     expect(events(s.prompt())).toEqual(["tick 2", "tick 3"]);
@@ -644,7 +608,6 @@ describe("F4b a relaunched Monitor across a second Smart Compact", () => {
   it("a terminal record over a live relaunch never leaks it: exit stops it, cleanup keeps its fence until it is gone", async () => {
     const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
     s.prompt();
-    // The 0.4.3 soak state: recorded failed while the relaunched process kept running.
     s.store.recordTerminal({
       threadId: T,
       launchId: LAUNCH_IDS.monitor,
@@ -660,7 +623,6 @@ describe("F4b a relaunched Monitor across a second Smart Compact", () => {
 
     expect(stopRelaunchedMonitors(s.store, T).stopped).toEqual([{ launchId: LAUNCH_IDS.monitor, pid: s.pid }]);
     await waitGone(s.pid);
-    // Its terminal record stands; only the process was stopped.
     expect(itemOf(s.store, LAUNCH_IDS.monitor).terminal).toMatchObject({ outcome: "failed" });
     expect(cleanupThread(s.store, T, s.monitorOutputDir).retained).toEqual([]);
     expect(s.store.getItem(T, LAUNCH_IDS.monitor)).toBeNull();

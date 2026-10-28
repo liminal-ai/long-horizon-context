@@ -5,10 +5,7 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  computeVerifiedPrefixBoundary,
-  verifyPrefixBoundaryOnDisk,
-} from "../../src/intake/prefix-boundary.js";
+import { computeVerifiedPrefixBoundary, verifyPrefixBoundaryOnDisk } from "../../src/intake/prefix-boundary.js";
 
 describe("prefix boundary", () => {
   it("computes digest over exact serialized prefix bytes", () => {

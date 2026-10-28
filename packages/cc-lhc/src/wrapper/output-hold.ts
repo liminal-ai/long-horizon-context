@@ -1,9 +1,3 @@
-/**
- * Holds pty output while the modal owns the screen. Claude keeps running the
- * whole time — its bytes are delayed, never dropped. A byte cap bounds the
- * hold: past it, onOverflow fires (run.ts cancels the modal, prints a notice,
- * and flushes) so a runaway stream can never grow the buffer unbounded.
- */
 export class OutputHold {
   private chunks: string[] = [];
   private bytes = 0;
@@ -33,7 +27,6 @@ export class OutputHold {
     if (this.bytes > this.capBytes) this.onOverflow();
   }
 
-  /** Release the hold and write everything held, in order. */
   flush(): void {
     this.active = false;
     if (this.chunks.length === 0) return;

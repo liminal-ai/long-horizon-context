@@ -10,10 +10,7 @@ import {
 } from "../../src/wrapper/modal.js";
 import { NOTIFIER_HINT, renderPanel } from "../../src/wrapper/panel.js";
 
-function feed(
-  state: InputState,
-  bytes: string | Buffer,
-): { state: InputState; toPty: Buffer; actions: InputAction[] } {
+function feed(state: InputState, bytes: string | Buffer): { state: InputState; toPty: Buffer; actions: InputAction[] } {
   const chunk = typeof bytes === "string" ? Buffer.from(bytes, "latin1") : bytes;
   return processInputChunk(chunk, state);
 }
@@ -53,7 +50,6 @@ describe("hazardous-command matcher", () => {
     expect(matchHazardousCommand("/compactor")).toBeNull();
     expect(matchHazardousCommand("/help")).toBeNull();
     expect(matchHazardousCommand("say /clear please")).toBeNull();
-    // Candidates rejected pending a live fixture:
     expect(matchHazardousCommand("/rewind")).toBeNull();
     expect(matchHazardousCommand("/branch")).toBeNull();
   });
@@ -62,16 +58,15 @@ describe("hazardous-command matcher", () => {
 describe("hazard notifier: straight-line interception", () => {
   it("holds ONLY the final Enter of a straight-line /clear; continue forwards it exactly once", () => {
     const typed = feed(createInputState(), "/clear");
-    expect(typed.toPty.toString()).toBe("/clear"); // command text forwarded untouched
+    expect(typed.toPty.toString()).toBe("/clear");
     const submitted = feed(typed.state, "\r");
-    expect(submitted.toPty.length).toBe(0); // the Enter is held
+    expect(submitted.toPty.length).toBe(0);
     expect(submitted.actions).toEqual([{ kind: "notifier_open", command: "/clear" }]);
     expect(submitted.state.mode).toBe("notifier");
 
     const continued = feed(submitted.state, "\r");
     expect(continued.actions).toEqual([{ kind: "notifier_continue", enterBytes: [0x0d] }]);
     expect(continued.state.mode).toBe("passthrough");
-    // Nothing duplicated: the command text was never re-sent.
     expect(continued.toPty.length).toBe(0);
   });
 
@@ -82,10 +77,8 @@ describe("hazard notifier: straight-line interception", () => {
     expect(returned.actions).toEqual([{ kind: "notifier_return" }]);
     expect(returned.state.mode).toBe("passthrough");
     expect(returned.toPty.length).toBe(0);
-    // The typed command still sits in Claude's input line: bare Enter re-notifies.
     const again = feed(returned.state, "\r");
     expect(again.actions).toEqual([{ kind: "notifier_open", command: "/resume" }]);
-    // Editing after return poisons: Enter then passes through.
     const edited = feedAll(feed(open.state, "n").state, [Buffer.from([0x7f]), "\r"]);
     expect(edited.actions).toEqual([]);
     expect(edited.toPty.toString("latin1")).toBe("\x7f\r");
@@ -97,7 +90,6 @@ describe("hazard notifier: straight-line interception", () => {
     expect(viaCtrlC.actions).toEqual([{ kind: "notifier_return" }]);
     expect(viaCtrlC.toPty.length).toBe(0);
 
-    // Bare Esc: pending, resolved by run.ts's timer.
     const pending = feed(open.state, Buffer.from([0x1b]));
     const resolved = resolveBareEsc(pending.state);
     expect(resolved?.actions).toEqual([{ kind: "notifier_return" }]);
@@ -110,12 +102,7 @@ describe("hazard notifier: straight-line interception", () => {
   });
 
   it("pasted content never triggers: bracketed paste poisons the line", () => {
-    const paste = feedAll(createInputState(), [
-      "\x1b[200~", // paste open (forwarded)
-      "/clear",
-      "\x1b[201~", // paste close
-      "\r",
-    ]);
+    const paste = feedAll(createInputState(), ["\x1b[200~", "/clear", "\x1b[201~", "\r"]);
     expect(paste.actions).toEqual([]);
     expect(paste.toPty.toString("latin1")).toBe("\x1b[200~/clear\x1b[201~\r");
   });
@@ -141,7 +128,6 @@ describe("hazard notifier: straight-line interception", () => {
 
   it("ctrl-C mid-line is a clean boundary: text typed after it is a fresh line", () => {
     const result = feedAll(createInputState(), ["garbage", Buffer.from([0x03]), "/clear", "\r"]);
-    // After ctrl-C cleared Claude's input, "/clear" IS a straight line.
     expect(result.actions).toEqual([{ kind: "notifier_open", command: "/clear" }]);
     expect(result.toPty.toString("latin1")).toBe("garbage\x03/clear");
   });
@@ -153,16 +139,13 @@ describe("hazard notifier: straight-line interception", () => {
     expect(submitted.toPty.length).toBe(0);
     expect(submitted.actions).toEqual([{ kind: "notifier_open", command: "/compact" }]);
     const continued = feed(submitted.state, "\r");
-    expect(continued.actions).toEqual([
-      { kind: "notifier_continue", enterBytes: [...kittyEnter] },
-    ]);
+    expect(continued.actions).toEqual([{ kind: "notifier_continue", enterBytes: [...kittyEnter] }]);
   });
 
   it("kitty plain Enter on a non-hazard line forwards intact (clean boundary)", () => {
     const result = feedAll(createInputState(), ["hello", Buffer.from("\x1b[13u", "latin1")]);
     expect(result.actions).toEqual([]);
     expect(result.toPty.toString("latin1")).toBe("hello\x1b[13u");
-    // Next line is fresh: a straight /clear notifies.
     const next = feedAll(result.state, ["/clear", "\r"]);
     expect(next.actions).toEqual([{ kind: "notifier_open", command: "/clear" }]);
   });
@@ -197,19 +180,15 @@ describe("hazard notifier: straight-line interception", () => {
   it("keeps win32 key-up and modifier events neutral but poisons navigation", () => {
     const prefix = feedAll(createInputState(), [
       ...win32Text("/cle"),
-      win32Key(17, 0, 1, 40), // control down: no edit
-      win32Key(17, 0, 0, 40), // control up
-      win32Key(69, 101, 0), // printable key release
+      win32Key(17, 0, 1, 40),
+      win32Key(17, 0, 0, 40),
+      win32Key(69, 101, 0),
       ...win32Text("ar"),
       win32Key(13, 13),
     ]);
     expect(prefix.actions).toEqual([{ kind: "notifier_open", command: "/clear" }]);
 
-    const navigated = feedAll(createInputState(), [
-      ...win32Text("/clear"),
-      win32Key(37, 0), // left arrow key-down
-      win32Key(13, 13),
-    ]);
+    const navigated = feedAll(createInputState(), [...win32Text("/clear"), win32Key(37, 0), win32Key(13, 13)]);
     expect(navigated.actions).toEqual([]);
     expect(navigated.toPty.toString("latin1")).toContain(win32Key(37, 0));
   });
@@ -243,24 +222,20 @@ describe("hazard notifier: straight-line interception", () => {
     expect(result.toPty.toString("latin1")).toBe("/clear\r/resume abc\r");
   });
 
-
   it("terminal protocol traffic (focus events, DA/DSR/kitty responses, OSC) does NOT poison — the tmux case", () => {
     const result = feedAll(createInputState(), [
-      "\x1b[I", // focus in
+      "\x1b[I",
       "/cl",
-      "\x1b[?62;1c", // DA1 response
+      "\x1b[?62;1c",
       "ea",
-      "\x1b[24;80R", // cursor position report
+      "\x1b[24;80R",
       "r",
-      "\x1b]11;rgb:1e/1e/1e\x07", // OSC background response
-      "\x1b[O", // focus out
+      "\x1b]11;rgb:1e/1e/1e\x07",
+      "\x1b[O",
       "\r",
     ]);
-    // Everything forwarded verbatim, and the straight line still notifies.
     expect(result.actions).toEqual([{ kind: "notifier_open", command: "/clear" }]);
-    expect(result.toPty.toString("latin1")).toBe(
-      "\x1b[I/cl\x1b[?62;1cea\x1b[24;80Rr\x1b]11;rgb:1e/1e/1e\x07\x1b[O",
-    );
+    expect(result.toPty.toString("latin1")).toBe("\x1b[I/cl\x1b[?62;1cea\x1b[24;80Rr\x1b]11;rgb:1e/1e/1e\x07\x1b[O");
   });
 
   it("navigation keys still poison even between protocol traffic", () => {

@@ -17,9 +17,7 @@ describe("resolveLaunchSession grammar", () => {
   it("fresh launch generates session id and injects --session-id", async () => {
     const plan = await resolveLaunchSession(["--model", "sonnet"]);
     expect(plan.expected.source).toBe("fresh");
-    expect(plan.expected.sessionId).toMatch(
-      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
-    );
+    expect(plan.expected.sessionId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
     expect(plan.childArgv).toEqual(["--model", "sonnet", "--session-id", plan.expected.sessionId]);
   });
 
@@ -111,9 +109,7 @@ describe("resolveLaunchSession grammar", () => {
 
   it("refuses duplicate/conflicting selectors", async () => {
     await expect(resolveLaunchSession(["--resume", UUID_A, "--continue"])).rejects.toThrow(/cannot combine/);
-    await expect(resolveLaunchSession(["--session-id", UUID_A, "--resume", UUID_B])).rejects.toThrow(
-      /cannot combine/,
-    );
+    await expect(resolveLaunchSession(["--session-id", UUID_A, "--resume", UUID_B])).rejects.toThrow(/cannot combine/);
     await expect(resolveLaunchSession(["--resume", UUID_A, "--resume", UUID_B])).rejects.toThrow(/duplicate/);
   });
 
@@ -123,23 +119,12 @@ describe("resolveLaunchSession grammar", () => {
   });
 
   it("places normalized selectors before -- and preserves exact suffix order", async () => {
-    const plan = await resolveLaunchSession(
-      ["--model", "sonnet", "--", "--resume", "literal", "extra"],
-      { rolloutExistsFn: async () => false },
-    );
+    const plan = await resolveLaunchSession(["--model", "sonnet", "--", "--resume", "literal", "extra"], {
+      rolloutExistsFn: async () => false,
+    });
     expect(plan.expected.source).toBe("fresh");
     const sid = plan.expected.sessionId;
-    expect(plan.childArgv).toEqual([
-      "--model",
-      "sonnet",
-      "--session-id",
-      sid,
-      "--",
-      "--resume",
-      "literal",
-      "extra",
-    ]);
-    // Selector must not appear after --
+    expect(plan.childArgv).toEqual(["--model", "sonnet", "--session-id", sid, "--", "--resume", "literal", "extra"]);
     const dd = plan.childArgv.indexOf("--");
     expect(plan.childArgv.indexOf("--session-id")).toBeLessThan(dd);
   });
@@ -175,7 +160,6 @@ describe("resolveLaunchSession grammar", () => {
   });
 });
 
-
 describe("splitLaunchArgv (fixture: claude 2.1.226 --help arity table)", () => {
   it("the real supported launch form is inherited whole: --model --effort --name", () => {
     const split = splitLaunchArgv(["--model", "claude-fable-5", "--effort", "medium", "--name", "seat"], []);
@@ -194,11 +178,7 @@ describe("splitLaunchArgv (fixture: claude 2.1.226 --help arity table)", () => {
     const split = splitLaunchArgv(["--verbose", "do this thing"], []);
     expect(split.promptTokens).toEqual(["do this thing"]);
     expect(split.options).toEqual(["--verbose"]);
-    expect(replacementChildArgv(["--verbose", "do this thing"], [], "S")).toEqual([
-      "--verbose",
-      "--resume",
-      "S",
-    ]);
+    expect(replacementChildArgv(["--verbose", "do this thing"], [], "S")).toEqual(["--verbose", "--resume", "S"]);
   });
 
   it("prompt tokens after -- are prompt, not options", () => {
@@ -242,13 +222,6 @@ describe("launchFormOf", () => {
     expect(launchFormOf([])).toBe("interactive");
   });
 
-  /**
-   * The installed parser accepts an `=value` form on a declared boolean
-   * (verified on 2.1.235: `claude --print=1 --version` and `claude -p=1
-   * --version` both parse). That launch prints and exits like any other
-   * one-shot, so classifying it as interactive would arm the child swap on a
-   * seat that is about to end.
-   */
   it("the equals form of the print flag is a one-shot as well", () => {
     expect(launchFormOf(["--print=1", "do this"])).toBe("one_shot");
     expect(launchFormOf(["-p=1", "do this"])).toBe("one_shot");
@@ -257,12 +230,6 @@ describe("launchFormOf", () => {
 });
 
 describe("the print flag and a replacement child", () => {
-  /**
-   * `-p, --print` is zero-arity in the installed binary (2.1.235 `--help`,
-   * matching the 2.1.226 arity fixture), so a print launch's prompt is the
-   * positional token — the `=value` is not prompt text and is not estimated as
-   * any. What the split owes is that no form of the flag reaches a replacement.
-   */
   it("no form of the print flag is inherited, and the prompt stays positional", () => {
     for (const flag of ["-p", "--print", "-p=1", "--print=1"]) {
       const split = splitLaunchArgv([flag, "do this thing"], []);

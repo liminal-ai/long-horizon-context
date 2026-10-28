@@ -1,19 +1,3 @@
-// Alt-screen command panel. The modal stopped sharing Claude Code's canvas:
-// in-place rows wedged below CC's input box and newline scrolling pushed its
-// layout around. On modal entry the wrapper switches to the terminal's
-// ALTERNATE SCREEN (?1049h) and draws a centered panel on the blank canvas;
-// any dismissal leaves it (?1049l), which restores CC's screen exactly —
-// CC never emits alt-screen switches itself and its output is held while the
-// modal is open, so the two buffers cannot fight. Held output flushes AFTER
-// the restore, so ordering on the main screen is intact.
-//
-// Presentation follows Claude Code's own dialog grammar: ONE rounded card
-// with its title in the border, a dim label gutter, normal-weight values, a
-// single caret for selection, and one dim hint line outside the card. Colour
-// is semantic and never load-bearing — selection survives as caret + bold
-// without colour, and as caret alone without any attributes, so a no-colour
-// terminal still shows the same hierarchy (border, alignment, caret).
-
 import type { InputState } from "./modal.js";
 import {
   commandSuggestions,
@@ -34,39 +18,25 @@ import {
 } from "./panel-commands.js";
 import { allocationSelectorChoices } from "./preset-presentation.js";
 
-/** Prompt caret. The command line is ours, so it wears Claude Code's caret. */
 export const PANEL_PROMPT = "❯ ";
-/** Dim placeholder shown in the empty command line. */
 export const PANEL_PROMPT_PLACEHOLDER = "type /help for commands";
-/** Placeholder for cards too narrow for the full one. */
 export const PANEL_PROMPT_PLACEHOLDER_SHORT = "type /help";
-/** Section label above the Home command rows. */
 export const HOME_COMMANDS_HEADING = "Commands";
-/** Section label above the slash-command suggestion menu. */
 export const SUGGESTIONS_HEADING = "Suggestions";
-/** Suggestion rows drawn at each size tier. */
 export const SUGGESTION_ROWS_FULL = 5;
 export const SUGGESTION_ROWS_COMPACT = 3;
-/** Marker on the in-flight progress row (a notice, not an alarm). */
 export const PROGRESS_PREFIX = "⋯ ";
-/** Caret on the selected action row. */
 export const ACTION_CARET = "❯ ";
-/** Marker on the focused status row (never confusable with an action). */
 export const FOCUS_CARET = "› ";
 const CARET_BLANK = "  ";
-/** Prefix on notice/alarm rows, so the state is legible without colour. */
 export const NOTICE_PREFIX = "! ";
 
 export const PANEL_HINT = "esc close · enter run · ↑↓ select";
-/** Shown while the suggestion menu owns the arrows and Tab completes. */
 export const PANEL_HINT_SUGGESTIONS = "esc close · tab complete · ↑↓ select";
-/** Shown while a command runs — Esc/ctrl-C/leader all detach in executing mode. */
 export const PANEL_HINT_EXECUTING = "esc detach · command keeps running";
 export const PANEL_HINT_READONLY = "esc close · enter home · ↑↓ scroll";
 export const PANEL_HINT_ALLOCATION = "esc close · enter apply · ↑↓ select";
-/** Notifier overlay: two answers only; the typed command stays in Claude's input line. */
 export const NOTIFIER_HINT = "Enter continue · Esc/n return (your typed line stays put)";
-/** Survival-mode hints: the exit key always survives, whatever else is cut. */
 export const PANEL_HINT_SURVIVAL = "esc close · ↵ run";
 export const PANEL_HINT_SURVIVAL_READONLY = "esc close · ↵ home";
 export const PANEL_HINT_SURVIVAL_EXECUTING = "esc detach";
@@ -75,11 +45,6 @@ export const PANEL_HINT_SURVIVAL_ALLOCATION = "esc close · ↵ apply";
 const CLIPPED_MARKER = "… more — enlarge terminal";
 const MORE_BELOW_MARKER = "↓ more";
 
-/**
- * Progress line while a command executes. Every command gets one — a panel
- * that keeps showing the prompt with a frozen line is indistinguishable from
- * a hang, which is exactly how the modal used to read during a slow `status`.
- */
 export function commandProgressLabel(commandLine: string, elapsedSeconds?: number): string {
   const name = commandLine.trim().split(/\s+/)[0] ?? "";
   const rebuilding = name === "/smart-compact" || name === "/smart-prune";
@@ -88,9 +53,7 @@ export function commandProgressLabel(commandLine: string, elapsedSeconds?: numbe
   return `${name === "" ? "command" : name} — ${verb}${elapsed}`;
 }
 
-/** Switch to the alternate screen (saves main screen + cursor). */
 export const ENTER_ALT_SCREEN = "\x1b[?1049h";
-/** Leave the alternate screen and re-show the cursor (restores main screen). */
 export const LEAVE_ALT_SCREEN = "\x1b[?1049l\x1b[?25h";
 
 export interface AltScreenGuard {
@@ -99,13 +62,6 @@ export interface AltScreenGuard {
   leave(): void;
 }
 
-/**
- * Tracks whether ?1049h is in effect so EVERY exit path — including the
- * process-exit hook after a crash, signal handlers, and stdin loss — can
- * restore the terminal exactly once. enter/leave are idempotent: a blind
- * double-leave would scroll some terminals' main screens, and a missed leave
- * strands the user on a blank alternate screen.
- */
 export function createAltScreenGuard(write: (data: string) => void): AltScreenGuard {
   let active = false;
   return {
@@ -133,15 +89,6 @@ function moveTo(row: number, col: number): string {
   return `\x1b[${row};${col}H`;
 }
 
-// ---------------------------------------------------------------------------
-// Style
-// ---------------------------------------------------------------------------
-
-/**
- * What the terminal can carry. Truthful degradation is the contract: with
- * `color` off the caret and bold still mark selection; with `attributes` off
- * the caret, the border, and the gutter alignment still do.
- */
 export interface PanelStyle {
   color: boolean;
   attributes: boolean;
@@ -180,7 +127,6 @@ function lineWidth(line: Line): number {
   return width;
 }
 
-/** Hard-clip a composed line to a width, keeping span inks. */
 function fitLine(line: Line, width: number): Line {
   if (lineWidth(line) <= width) return line;
   const spans: Span[] = [];
@@ -218,10 +164,6 @@ function paint(entry: Span, style: PanelStyle): string {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Text fitting
-// ---------------------------------------------------------------------------
-
 function truncate(text: string, width: number): string {
   if (width <= 0) return "";
   if (text.length <= width) return text;
@@ -232,7 +174,6 @@ function padTo(text: string, width: number): string {
   return text.length >= width ? text : text + " ".repeat(width - text.length);
 }
 
-/** Word wrap that keeps a source line's own indentation on its continuations. */
 function wrapPlain(text: string, width: number): string[] {
   if (width <= 0) return [""];
   const indent = /^\s*/.exec(text)?.[0] ?? "";
@@ -272,7 +213,6 @@ function wrapPlain(text: string, width: number): string[] {
 
 interface ValueUnit {
   text: string;
-  /** Separator placed before this unit when it shares a line with the last one. */
   joiner: string;
   ink: Ink;
   id: HomeStatusRowId | null;
@@ -285,11 +225,6 @@ interface WrappedUnits {
   ids: HomeStatusRowId[];
 }
 
-/**
- * Wrap a value line by SEGMENT first: `target 180k` never splits across a
- * line break, so a status fact always reads whole. Only a single oversized
- * segment falls back to word wrapping.
- */
 function wrapUnits(units: readonly ValueUnit[], width: number): WrappedUnits[] {
   const lines: WrappedUnits[] = [];
   let spans: Span[] = [];
@@ -327,17 +262,8 @@ function wrapUnits(units: readonly ValueUnit[], width: number): WrappedUnits[] {
   return lines.length === 0 ? [{ spans: [], ids: [] }] : lines;
 }
 
-// ---------------------------------------------------------------------------
-// Geometry
-// ---------------------------------------------------------------------------
-
 export type PanelTier = "full" | "compact" | "survival";
 
-/**
- * Size tiers. Full keeps the gutter and the action descriptions; compact
- * keeps the card and drops descriptions; survival drops the card for one
- * summary row, one focused row, the command line, and the exit hint.
- */
 export function panelTier(cols: number, rows: number): PanelTier {
   if (cols >= 56 && rows >= 12) return "full";
   if (cols >= 30 && rows >= 8) return "compact";
@@ -352,7 +278,6 @@ interface Geometry {
   pad: number;
   contentWidth: number;
   gutter: number;
-  /** Body rows available inside the card (hint and borders already reserved). */
   bodyBudget: number;
 }
 
@@ -373,10 +298,6 @@ const SHORT_GROUP_LABEL: Record<string, string> = {
   allocation: "Alloc",
 };
 
-// ---------------------------------------------------------------------------
-// Card drawing
-// ---------------------------------------------------------------------------
-
 function borderLine(width: number, title: string, moreBelow: boolean, top: boolean): Line {
   const [open, close] = top ? ["╭", "╮"] : ["╰", "╯"];
   const label = top ? title : moreBelow ? MORE_BELOW_MARKER : "";
@@ -396,8 +317,6 @@ function cardLines(title: string, body: readonly Line[], geometry: Geometry, mor
   const padding = " ".repeat(pad);
   const drawn: Line[] = [borderLine(cardWidth, title, false, true)];
   for (const line of body) {
-    // The frame is the contract: nothing may overflow it, whatever the
-    // content or the terminal width.
     const fitted = fitLine(line, contentWidth);
     const filler = " ".repeat(Math.max(0, contentWidth - lineWidth(fitted)));
     drawn.push(ln(span("│", "dim"), span(padding), ...fitted.spans, span(`${filler}${padding}`), span("│", "dim")));
@@ -406,13 +325,8 @@ function cardLines(title: string, body: readonly Line[], geometry: Geometry, mor
   return drawn;
 }
 
-// ---------------------------------------------------------------------------
-// Body builders
-// ---------------------------------------------------------------------------
-
 interface Body {
   lines: Line[];
-  /** Index of the row the unified cursor is on (Home only). */
   focusLine: number;
 }
 
@@ -438,16 +352,12 @@ function statusBody(rows: readonly HomeStatusRow[], geometry: Geometry, focusId:
         valueLines.push(current);
         current = [];
       }
-      // Compact keeps the fact and drops the description; the fact itself
-      // always survives.
       const segments = tier === "full" ? row.segments : row.compactSegments;
       const focused = focusId !== null && row.id === focusId;
       segments.forEach((text, position) => {
         current.push({
           text,
           joiner: position === 0 ? " · " : row.separator,
-          // The cursor can sit on one fact inside a shared line: the line
-          // carries the caret, the fact itself carries the emphasis.
           ink: focused ? "accent" : position >= row.dimFrom ? "dim" : "normal",
           id: row.id,
         });
@@ -487,7 +397,6 @@ function statusBody(rows: readonly HomeStatusRow[], geometry: Geometry, focusId:
   return { lines, focusLine };
 }
 
-/** One selectable command row: caret, command, and (where it fits) outcome. */
 function commandRow(
   label: string,
   description: string,
@@ -507,8 +416,6 @@ function commandRow(
       ),
     ];
   }
-  // Too narrow for a description column: the description wraps beneath its
-  // command, indented, so the two stay visibly attached.
   const lines = [ln(caret, span(label, selected ? "accent" : "normal"))];
   const indent = "    ";
   const room = geometry.contentWidth - indent.length;
@@ -525,18 +432,11 @@ function actionBody(selectedIndex: number, geometry: Geometry): Body {
   HOME_ACTIONS.forEach((action, index) => {
     const selected = index === selectedIndex;
     if (selected) focusLine = lines.length;
-    // Every command keeps its description at narrow sizes; windowing decides
-    // how many rows are on screen, not whether they explain themselves.
     lines.push(...commandRow(action.label, action.description, selected, labelWidth, geometry, true));
   });
   return { lines, focusLine };
 }
 
-/**
- * The slash-command menu: registry rows filtered by what has been typed, with
- * the selected row carrying the same caret Home uses. It is bounded by tier so
- * the prompt and the exit hint never leave the screen.
- */
 function suggestionBody(state: InputState, geometry: Geometry): Line[] {
   const suggestions = commandSuggestions(state.line);
   if (suggestions.length === 0) return [];
@@ -544,8 +444,6 @@ function suggestionBody(state: InputState, geometry: Geometry): Line[] {
   const selected = Math.max(0, Math.min(suggestions.length - 1, state.suggestionIndex));
   const labelWidth = Math.max(...suggestions.map((entry) => entry.usage.length)) + 2;
   const rows = suggestions.flatMap((entry, index) =>
-    // The menu is transient: at narrow sizes only the selected row spends a
-    // second line on its description.
     commandRow(entry.usage, entry.description, index === selected, labelWidth, geometry, index === selected),
   );
   const shown = windowAroundFocus(rows, budget, selected);
@@ -580,14 +478,8 @@ function promptBody(line: string, geometry: Geometry): { line: Line; cursorOffse
   };
 }
 
-/** Indent for a value whose label was too long for the gutter. */
 const STACKED_INDENT = "  ";
 
-/**
- * Put a row's marker on the same visual line as the words it qualifies. If the
- * description already fills the line, the last word comes down with the marker
- * rather than leaving `◦s` stranded on a row of its own.
- */
 function attachMarker(wrapped: readonly string[], marker: string, width: number): string[] {
   if (marker === "") return [...wrapped];
   const lines = [...wrapped];
@@ -614,9 +506,6 @@ function rowsBody(rows: readonly PanelRow[], geometry: Geometry): Line[] {
   const labels = rows.flatMap((row) =>
     row.kind === "pair" && row.ownGutter !== true ? [(row.label ?? "").length] : [],
   );
-  // The label column is shared so the screen scans as a table, but it never
-  // eats more than half the card: an outlier label stacks above its value
-  // instead of squeezing every other row into a paragraph.
   const sharedGutter =
     labels.length === 0 ? gutter : Math.min(Math.max(...labels) + 2, Math.max(10, Math.floor(contentWidth * 0.5)));
   const lines: Line[] = [];
@@ -662,10 +551,6 @@ function allocationBody(state: InputState, geometry: Geometry): Line[] {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Clipping / windowing
-// ---------------------------------------------------------------------------
-
 function clipBody(body: readonly Line[], budget: number, scrollOffset: number): { lines: Line[]; moreBelow: boolean } {
   if (budget <= 0) return { lines: [], moreBelow: body.length > 0 };
   if (body.length <= budget) return { lines: [...body], moreBelow: false };
@@ -695,10 +580,6 @@ function windowAroundFocus(rows: readonly Line[], budget: number, focus: number)
   return rows.slice(start, start + budget);
 }
 
-/**
- * A section label with none of its rows left is noise. When windowing cuts a
- * block down to its heading, drop the heading too.
- */
 function dropDanglingHeading(lines: readonly Line[]): Line[] {
   const last = lines[lines.length - 1];
   if (last === undefined) return [...lines];
@@ -710,16 +591,11 @@ function dropDanglingHeading(lines: readonly Line[]): Line[] {
   return [...lines];
 }
 
-/** Keep the tail (prompt/progress) whole; clip its head when the card is short. */
 function clipTail(tail: readonly Line[], budget: number): Line[] {
   if (budget <= 0) return [];
   if (tail.length <= budget) return [...tail];
   return tail.slice(tail.length - budget);
 }
-
-// ---------------------------------------------------------------------------
-// Screen assembly
-// ---------------------------------------------------------------------------
 
 interface Screen {
   lines: Line[];
@@ -748,9 +624,6 @@ function homeCard(state: InputState, geometry: Geometry, elapsedSeconds: number 
   const tail: Line[] = [];
   const suggestions = executing ? [] : suggestionBody(state, geometry);
   if (state.panelRows.length > 0) {
-    // Notices and receipts read top-down: when the card is short, keep their
-    // head and say so, so a prioritized guidance header is never the row that
-    // falls off. The prompt/progress rows and the menu keep their room.
     const reserved = suggestions.length + 3;
     const notices = clipBody(receiptBody(state.panelRows, geometry), Math.max(1, geometry.bodyBudget - reserved), 0);
     tail.push(BLANK_LINE, ...notices.lines);
@@ -779,7 +652,6 @@ function homeCard(state: InputState, geometry: Geometry, elapsedSeconds: number 
   const cursorLine = cursorTailOffset === null ? null : mainLines.length + cursorTailOffset;
   return {
     lines: cardLines(title, body, geometry, false),
-    // +1 for the card's top border row.
     cursorLine: cursorLine === null ? null : cursorLine + 1,
     cursorOffset: cursorOffset + 1 + geometry.pad,
     showCursor: !executing,
@@ -809,15 +681,9 @@ function plainCard(title: string, rows: readonly string[], geometry: Geometry): 
   };
 }
 
-/**
- * Survival mode: no card. One summary row, one focused row that follows the
- * unified cursor, the command line, and (added by renderPanel) the exit hint
- * — so every status field and every action stays reachable at 20x5 exactly as
- * before.
- */
 function survivalScreen(state: InputState, cols: number, rows: number, elapsedSeconds: number | undefined): Screen {
   const width = Math.max(1, cols - 2);
-  const budget = Math.max(1, rows - 1); // the hint row is reserved
+  const budget = Math.max(1, rows - 1);
   const lines: Line[] = [];
   const push = (line: Line): void => {
     lines.push(line);
@@ -867,9 +733,6 @@ function survivalScreen(state: InputState, cols: number, rows: number, elapsedSe
   const focusId = executing ? null : focusedHomeStatusId(state.viewport.scrollOffset);
   const suggestions = executing ? [] : commandSuggestions(state.line);
   if (suggestions.length > 0) {
-    // One row, the selected one: at this size the menu is a single line
-    // between the summary and the prompt. It wears the selection caret, not
-    // the prompt caret, so the two rows cannot be confused.
     const index = Math.max(0, Math.min(suggestions.length - 1, state.suggestionIndex));
     const suggestion = suggestions[index]!;
     push(ln(span(FOCUS_CARET, "accent"), span(truncate(suggestion.usage, width - FOCUS_CARET.length), "accent")));
@@ -880,9 +743,6 @@ function survivalScreen(state: InputState, cols: number, rows: number, elapsedSe
     const action = HOME_ACTIONS[homeSelectedActionIndex(state.viewport.scrollOffset)];
     push(ln(span(ACTION_CARET, "accent"), span(truncate(action?.label ?? "", width - ACTION_CARET.length), "accent")));
   }
-  // One notice row, when it and the command line both fit: the first
-  // actionable/first-load guidance row the panel carries, else Home's own
-  // first non-normal status row.
   const guidance = state.panelRows.find((row) => row.startsWith("! ")) ?? state.panelRows[0];
   const notice = statusRows.find((entry) => entry.tone !== "normal");
   if (budget >= lines.length + 2) {
@@ -915,7 +775,6 @@ function survivalScreen(state: InputState, cols: number, rows: number, elapsedSe
   };
 }
 
-/** The notifier overlay's one line: unchanged wording, restyled surface. */
 function notifierWarning(command: string): string {
   return `Claude ${command} can invalidate cc-lhc session capture/binding`;
 }
@@ -926,8 +785,6 @@ function hintFor(state: InputState, tier: PanelTier): string {
   if (isReadonlyRoute(state.route)) return tier === "survival" ? PANEL_HINT_SURVIVAL_READONLY : PANEL_HINT_READONLY;
   if (state.route === "allocation") return tier === "survival" ? PANEL_HINT_SURVIVAL_ALLOCATION : PANEL_HINT_ALLOCATION;
   if (tier === "survival") return PANEL_HINT_SURVIVAL;
-  // While the menu is open the arrows and Tab mean something different; the
-  // hint says which keys are live rather than leaving the user to guess.
   return commandSuggestions(state.line).length > 0 ? PANEL_HINT_SUGGESTIONS : PANEL_HINT;
 }
 
@@ -935,7 +792,6 @@ function cardTitle(state: InputState, geometry: Geometry): string {
   if (state.mode === "notifier") return "Claude command";
   if (state.route === "allocation") return "Band allocation";
   if (isReadonlyRoute(state.route)) return readonlyRouteTitle(state.route);
-  // Same room test the border uses, so a title never silently disappears.
   return geometry.cardWidth >= PANEL_TITLE.length + 7 ? PANEL_TITLE : PANEL_TITLE_SHORT;
 }
 
@@ -960,11 +816,6 @@ function buildScreen(state: InputState, cols: number, rows: number, elapsedSecon
   return homeCard(state, geometry, elapsedSeconds, title);
 }
 
-/**
- * Number of laid-out body lines a read-only route produces at this size —
- * scroll clamping has to know the WRAPPED length, not the row count, or the
- * last lines of Help become unreachable.
- */
 export function readonlyBodyLineCount(state: InputState, cols: number, rows: number): number {
   const route = isReadonlyRoute(state.route) ? state.route : "help";
   const tier = panelTier(Math.max(20, cols), Math.max(5, rows));
@@ -972,13 +823,6 @@ export function readonlyBodyLineCount(state: InputState, cols: number, rows: num
   return rowsBody(readonlyRows(route, state.panelView), geometry).length;
 }
 
-/**
- * Full positioned redraw of the panel, centered for the given terminal size.
- * Home keeps the only command box. Help/Introduction/Details/Allocation are
- * read-only. Rows beyond the terminal are clipped; the card title, the
- * command entry (Home), and the exit hint stay inside the height budget so a
- * small terminal stays operable.
- */
 export function renderPanel(
   state: InputState,
   cols: number,

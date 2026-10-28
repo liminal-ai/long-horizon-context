@@ -1,9 +1,3 @@
-/**
- * LIM-145: Windows background-shell adoption through the real native addon —
- * the production adapter with no injected seams. Runs only on win32 with the
- * compiled addon; under CC_LHC_NATIVE_REQUIRE_ADDON=1 on a Windows lane the
- * addon must load, so the proof cannot skip silently there.
- */
 import { appendFileSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,9 +10,6 @@ import { openContinuityStore } from "../../src/continuity/store.js";
 import { LAUNCH_IDS, LAUNCHES, tempDbPath } from "./helpers.js";
 
 const isWin32 = process.platform === "win32";
-// env: {} bypasses the suite-wide CC_LHC_IDENTITY_ADDON stub — this proof is
-// about the compiled artifact; the stub's Node-stat identity must never stand
-// in for the Win32 file object (that is exactly the proxy the contract bans).
 const addonLoads = ((): boolean => {
   try {
     loadIdentityAddon({ env: {} });

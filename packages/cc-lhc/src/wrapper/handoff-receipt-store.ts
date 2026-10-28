@@ -1,12 +1,3 @@
-/**
- * Evidence-only durable handoff receipts (LIM-116).
- *
- * `cc_handoff_receipts` in host-local `cc-lhc.sqlite` is the sole persisted
- * authority for old-child cleanup classification. It never drives mutation,
- * routing, recovery, or replay. Governor receipts may reference `handoffId`
- * and terminal success; they do not copy cleanup kind, pid, or detail.
- */
-
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -115,14 +106,9 @@ export function openHandoffReceiptStore(
   try {
     initSchema(db);
   } catch (cause) {
-    // A corrupt or foreign file throws on the first statement. Release the
-    // handle before rethrowing so the failed open does not pin the file for
-    // the wrapper's lifetime (Windows refuses deletion of a pinned file).
     try {
       db.close();
-    } catch {
-      // never opened far enough to close
-    }
+    } catch {}
     throw cause;
   }
 
@@ -153,9 +139,7 @@ export function openHandoffReceiptStore(
     } catch (cause) {
       try {
         rollback.run();
-      } catch {
-        // already rolled back
-      }
+      } catch {}
       throw cause;
     }
   };

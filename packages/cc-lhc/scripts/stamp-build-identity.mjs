@@ -1,15 +1,5 @@
 #!/usr/bin/env node
 
-/**
- * Stamp dist/build-identity.json for `cc-lhc --lhc-version` (D13).
- *
- *   node scripts/stamp-build-identity.mjs [--out DIR] [--source-sha SHA]
- *
- * The SHA is the caller's explicit, accepted source identity. Without it the
- * stamp truthfully records identity unavailable (an ordinary development
- * build). This script never inspects the repository.
- */
-
 import { readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

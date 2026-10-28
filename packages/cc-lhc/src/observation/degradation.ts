@@ -1,22 +1,11 @@
-/**
- * Generation-scoped sticky capture degradation.
- *
- * Phases: binding → ready | degraded → closed (terminal).
- * Until expected-file bind, thread/SDK, initial watcher catch-up, and initial
- * intake settle, phase stays binding — mutation must report not-ready.
- */
-
 export type CapturePhase = "binding" | "ready" | "degraded" | "closed";
 
-/** Cap retained distinct degradation reason keys (schema-drift safety). */
 export const MAX_DEGRADATION_REASONS = 16;
 
 export interface CaptureGenerationState {
   generation: number;
   phase: CapturePhase;
-  /** Bounded sticky reason keys (first-seen order). */
   reasons: string[];
-  /** Counts for repeated reason keys (log volume control). */
   reasonCounts: Record<string, number>;
   durableLineOffset: number;
 }
@@ -31,13 +20,8 @@ export function createCaptureGeneration(generation = 1): CaptureGenerationState 
   };
 }
 
-/**
- * Collapse free-form reasons into a bounded key. Line numbers stay out of the
- * sticky key; first concrete diagnostic is preserved in the key prefix.
- */
 export function boundDegradationReason(reason: string): string {
   if (reason.startsWith("unknown_shape:")) {
-    // Prefer type=… segment if present; else generic unknown_shape.
     const typeMatch = /type=([^\s:]+)/.exec(reason);
     if (typeMatch !== null) return `unknown_shape:type=${typeMatch[1]}`;
     const lineMatch = /^unknown_shape:line_\d+$/.exec(reason);
@@ -79,29 +63,19 @@ export function markCaptureReady(state: CaptureGenerationState, durableLineOffse
   };
 }
 
-/** Aggregate overflow for unbounded distinct keys after the reasons cap. */
 export const REASONS_CAPPED_KEY = "reasons_capped";
 
 export interface MarkDegradedResult {
   state: CaptureGenerationState;
-  /** Key that was counted (may be reasons_capped after overflow). */
   countKey: string;
-  /** True only on the first occurrence of countKey in this generation. */
   isFirstForKey: boolean;
 }
 
-/**
- * Latch sticky degradation. Caps both `reasons` and `reasonCounts`.
- * Callers that log/emit must use `isFirstForKey` so post-cap novel reasons and
- * repeated identical failures do not produce unbounded lifecycle/log output.
- */
 export function markCaptureDegraded(state: CaptureGenerationState, reason: string): CaptureGenerationState {
   return applyCaptureDegraded(state, reason).state;
 }
 
-/** Same as markCaptureDegraded but returns whether this is a first-seen key. */
 export function applyCaptureDegraded(state: CaptureGenerationState, reason: string): MarkDegradedResult {
-  // closed is terminal — never leave it.
   if (state.phase === "closed") {
     return { state, countKey: boundDegradationReason(reason), isFirstForKey: false };
   }
@@ -112,8 +86,6 @@ export function applyCaptureDegraded(state: CaptureGenerationState, reason: stri
     if (reasons.length < MAX_DEGRADATION_REASONS) {
       reasons = [...reasons, key];
     } else {
-      // Cap reasonCounts as well as reasons: novel keys after the cap aggregate
-      // under one bounded overflow key so the map cannot grow without bound.
       countKey = REASONS_CAPPED_KEY;
       if (!reasons.includes(REASONS_CAPPED_KEY)) {
         reasons = [...reasons, REASONS_CAPPED_KEY];
@@ -149,7 +121,6 @@ export function canMutateCapture(state: CaptureGenerationState): boolean {
   return state.phase === "ready";
 }
 
-/** Format reasons for logs: key (count) when count > 1. */
 export function formatDegradationReasons(state: CaptureGenerationState): string {
   return state.reasons
     .map((key) => {

@@ -28,7 +28,6 @@ function storedOwnerJson(threadId: string, token: string, identity: ProcessIdent
   })}\n`;
 }
 
-/** A pid that cannot be this test process; identity is obviously foreign. */
 const STALE_IDENTITY: ProcessIdentity = {
   pid: 999_999_901,
   bootId: "long-dead-boot-id",
@@ -56,8 +55,6 @@ describe("thread owner lease", () => {
       token: "second",
       readIdentity: (pid: number) => {
         reads += 1;
-        // First read establishes the would-be new owner; the second checks the
-        // stored owner and proves that identity dead.
         return reads === 1 ? aliveResult(actual) : notFoundResult(pid);
       },
     });
@@ -70,8 +67,6 @@ describe("thread owner lease", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-owner-reuse-"));
     const actual = selfIdentity();
     const first = acquireThreadOwner("th_a", { home, token: "first" });
-    // The stored owner pid is now occupied by a *different* incarnation:
-    // same pid, different starttime.
     const reused = { ...actual, starttime: String(Number(actual.starttime) + 7) };
     let selfRead = false;
     const second = acquireThreadOwner("th_a", {
@@ -110,7 +105,6 @@ describe("thread owner lease", () => {
         },
       }),
     ).toThrow(ThreadOwnerLivenessError);
-    // Fail closed: the existing lease must not be deleted, rotated, or replaced.
     expect(readFileSync(first.path, "utf8")).toBe(before);
     first.release();
   });
@@ -136,8 +130,6 @@ describe("thread owner lease", () => {
   it("never reclaims an ambiguous malformed ownership record", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-owner-malformed-"));
     const path = threadOwnerPath("th_a", home);
-    // Create the owners directory through an unrelated valid lease, then place
-    // an ambiguous record at the target key.
     const seed = acquireThreadOwner("seed-session", { home });
     writeFileSync(path, "", { mode: 0o600 });
     expect(() => acquireThreadOwner("th_a", { home })).toThrow(ThreadOwnershipConflictError);
@@ -158,10 +150,6 @@ describe("thread owner acquisition guard (TOCTOU serialization)", () => {
     let bError: unknown = null;
     let bProbeCalls = 0;
     let interleaved = false;
-    // A's probe of the stale owner runs inside A's guarded transaction, at
-    // exactly the point where the unguarded implementation raced: after
-    // observing the stale lease, before deleting it. Interleave B's whole
-    // acquisition attempt right there.
     const aProbe: ProbeProcessIdentity = (pid: number) => {
       if (pid === process.pid) return aliveResult(self);
       interleaved = true;
@@ -182,11 +170,8 @@ describe("thread owner acquisition guard (TOCTOU serialization)", () => {
 
     const a = acquireThreadOwner("th_a", { home, token: "a", readIdentity: aProbe });
     expect(interleaved).toBe(true);
-    // B failed closed at the guard: it read its own identity once and never
-    // inspected, deleted, or published a lease.
     expect(bError).toBeInstanceOf(ThreadOwnerGuardError);
     expect(bProbeCalls).toBe(1);
-    // A's reclaim won; its lease is intact (B could not delete it).
     const now = JSON.parse(readFileSync(a.path, "utf8")) as { token: string };
     expect(now.token).toBe("a");
     a.release();
@@ -212,12 +197,9 @@ describe("thread owner acquisition guard (TOCTOU serialization)", () => {
     expect(caught).toBeInstanceOf(ThreadOwnerGuardError);
     expect(String(caught)).toMatch(/never\s+removes it automatically/);
     expect(String(caught)).toContain(guard);
-    // Fail closed: guard still standing, stale lease untouched.
     expect(existsSync(guard)).toBe(true);
     expect(readFileSync(path, "utf8")).toBe(staleJson);
 
-    // Operator recovery: remove the guard, then normal crashed-owner reclaim
-    // (stale identity → not_found) works.
     rmdirSync(guard);
     const lease = acquireThreadOwner("th_a", { home, readIdentity: probe });
     expect(JSON.parse(readFileSync(lease.path, "utf8"))).toMatchObject({ token: lease.token });
@@ -319,16 +301,11 @@ describe("thread owner acquisition guard (TOCTOU serialization)", () => {
       for (const loss of losses) {
         expect(["LOST ThreadOwnershipConflictError", "LOST ThreadOwnerGuardError"]).toContain(loss);
       }
-      // The surviving lease belongs to the single winner, and no guard leaked.
       const winnerToken = wins[0]!.slice("WON ".length);
       const stored = JSON.parse(readFileSync(threadOwnerPath("th_race", home), "utf8")) as { token: string };
       expect(stored.token).toBe(winnerToken);
       expect(existsSync(threadOwnerGuardPath("th_race", home))).toBe(false);
     } finally {
-      // Cooperative shutdown: tsx runs the worker as a grandchild, so killing
-      // the spawned wrapper would orphan the real process and leak its stdio
-      // pipes. The stop file makes the winner exit itself; then wait for full
-      // stdio teardown ("close", not just "exit") so no handles leak.
       writeFileSync(join(home, "race-stop"), "", { mode: 0o600 });
       await Promise.all(
         children.map(

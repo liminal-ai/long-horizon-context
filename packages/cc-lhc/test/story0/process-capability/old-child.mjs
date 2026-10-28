@@ -1,11 +1,4 @@
 #!/usr/bin/env node
-/**
- * Synthetic "old child" (stand-in for the Claude Code PTY process).
- *
- * Spawned under node-pty as the run() old child. Launches attached and
- * detached candidates, writes a pid manifest, ignores POSIX SIGTERM so
- * production terminateChild escalates to forceKillChildTree.
- */
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -73,7 +66,6 @@ function sleepSync(ms) {
   } catch {
     const end = Date.now() + ms;
     while (Date.now() < end) {
-      // Main-thread Atomics.wait is unavailable; spin the remainder.
     }
   }
 }

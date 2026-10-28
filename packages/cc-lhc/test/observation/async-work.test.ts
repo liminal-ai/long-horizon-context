@@ -12,12 +12,6 @@ import {
 import { observeRolloutLines } from "../../src/observation/observe.js";
 import type { RolloutLineItem } from "../../src/rollout/types.js";
 
-/**
- * Real Claude Code 2.1.235 records captured from throwaway probe sessions.
- * These drive through the same per-line observation the capture session runs,
- * so the derivation is exercised through its production entry point rather
- * than by hand-built shapes.
- */
 const FIXTURE_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -35,7 +29,6 @@ function fixtureLines(): RolloutLineItem[] {
 
 const NOW = 1_787_135_000_000;
 
-/** Replay lines through the production observer and read the open set. */
 function replay(
   lines: readonly RolloutLineItem[],
   options: { suppressRuntimeLifecycle?: boolean } = {},
@@ -48,7 +41,6 @@ function replay(
   return openAsyncWork(asyncWorkFold);
 }
 
-/** The launch/acknowledgement pairs, in fixture order. */
 const LAUNCH_PAIRS = 10;
 
 describe("open async work derived from real 2.1.235 records", () => {
@@ -81,8 +73,6 @@ describe("open async work derived from real 2.1.235 records", () => {
   });
 
   it("keeps the acknowledgement itself from closing anything", () => {
-    // The whole point: an async launcher's tool result says "started", and the
-    // launch/ack pairs alone must leave every item open.
     expect(replay(fixtureLines().slice(0, LAUNCH_PAIRS))).toHaveLength(5);
   });
 
@@ -104,7 +94,6 @@ describe("open async work derived from real 2.1.235 records", () => {
 
   it("closes exactly the completed item and nothing else", () => {
     const lines = fixtureLines();
-    // ...through the agent completion only.
     const afterAgent = replay(lines.slice(0, LAUNCH_PAIRS + 2));
     expect(afterAgent.map((work) => work.family)).toEqual([
       "workflow",
@@ -112,7 +101,6 @@ describe("open async work derived from real 2.1.235 records", () => {
       "monitor",
       "scheduled_wakeup",
     ]);
-    // ...and then the workflow completion.
     const afterWorkflow = replay(lines.slice(0, LAUNCH_PAIRS + 3));
     expect(afterWorkflow.map((work) => work.family)).toEqual(["background_shell", "monitor", "scheduled_wakeup"]);
   });
@@ -127,15 +115,11 @@ describe("open async work derived from real 2.1.235 records", () => {
     const lines = fixtureLines();
     const queueOnly = replay(lines.slice(0, lines.length - 1));
     expect(queueOnly.map((work) => work.family)).toEqual(["scheduled_wakeup"]);
-    // The same envelope is delivered again as a synthetic user turn; closing is
-    // idempotent, so the second delivery changes nothing.
     expect(replay(lines).map((work) => work.family)).toEqual(["scheduled_wakeup"]);
   });
 
   it("closes on a task-notification delivered as a synthetic user turn alone", () => {
     const lines = fixtureLines();
-    // Resume catch-up can reach the delivered user record without the queue
-    // record that preceded it (a prune boundary, a re-read from an offset).
     const deliveredOnly = [...lines.slice(0, LAUNCH_PAIRS), lines[lines.length - 1]!];
     expect(replay(deliveredOnly).map((work) => work.family)).toEqual([
       "agent",
@@ -147,8 +131,6 @@ describe("open async work derived from real 2.1.235 records", () => {
 
   it("reconstructs the same set when the whole transcript is re-read", () => {
     const lines = fixtureLines();
-    // Resume catch-up re-reads from the top; the derivation must land in the
-    // same place, including launch-then-stopped for the background shell.
     const once = replay(lines);
     const twice = replay([...lines]);
     expect(twice).toEqual(once);
@@ -156,17 +138,10 @@ describe("open async work derived from real 2.1.235 records", () => {
   });
 
   it("ignores a rebuilt historical prefix", () => {
-    // Replayed prefix lines are a projection of history the swap already
-    // killed; they must not resurrect work.
     expect(replay(fixtureLines(), { suppressRuntimeLifecycle: true })).toEqual([]);
   });
 });
 
-/**
- * Shapes the fixture cannot hold because they need a session in a state the
- * probe could not reach (aggregate orphan reports, superseded wakeups, error
- * results). Each is the documented 2.1.235 shape.
- */
 describe("open async work: shapes beyond the captured session", () => {
   function assistantToolUse(id: string, name: string, input: Record<string, unknown>): RolloutLineItem {
     return {
@@ -205,7 +180,6 @@ describe("open async work: shapes beyond the captured session", () => {
   it("keeps concurrent items apart by their own ids", () => {
     const open = replay([...bashLaunch, ...agentLaunch]);
     expect(open.map((work) => work.key)).toEqual(["b111", "a222"]);
-    // Closing one leaves the other exactly where it was.
     const afterOne = replay([
       ...bashLaunch,
       ...agentLaunch,
@@ -231,8 +205,6 @@ describe("open async work: shapes beyond the captured session", () => {
   });
 
   it("ignores orphan-summary scan markers, including ones naming live tasks", () => {
-    // An aggregate report pads its id list with markers; one of them names a
-    // task Claude is explicitly NOT reporting because it is still running.
     const open = replay([
       ...bashLaunch,
       ...agentLaunch,
@@ -285,9 +257,6 @@ describe("open async work: shapes beyond the captured session", () => {
   });
 
   it("keeps an overdue wakeup open, because elapsed time is not evidence", () => {
-    // The record shows the wakeup armed and never shows it running. A swap
-    // still kills it, and the clock cannot say otherwise — only a superseding
-    // call or an explicit stop closes it.
     const longPast = [
       assistantToolUse("w1", "ScheduleWakeup", { delaySeconds: 60, reason: "loop" }),
       toolResult("w1", { scheduledFor: NOW - 3_600_000, clampedDelaySeconds: 60, wasClamped: false }),
@@ -347,8 +316,6 @@ describe("open async work: shapes beyond the captured session", () => {
   });
 
   it("keeps an item's identity stable while its progress text changes", () => {
-    // The confirmation compares what the operator saw against what is open
-    // now. A monitor reporting a new event is the same monitor.
     const before = replay([...bashLaunch]);
     const after = replay([
       ...bashLaunch,
@@ -359,8 +326,6 @@ describe("open async work: shapes beyond the captured session", () => {
   });
 
   it("gives a superseding wakeup a different identity from the one it replaced", () => {
-    // Both live under the same singleton key, so the key alone would call them
-    // the same item; the launching tool-use id is what tells them apart.
     const first = [
       assistantToolUse("w1", "ScheduleWakeup", { delaySeconds: 600, reason: "first" }),
       toolResult("w1", { scheduledFor: NOW + 600_000, clampedDelaySeconds: 600 }),
@@ -377,9 +342,6 @@ describe("open async work: shapes beyond the captured session", () => {
   });
 
   it("opens nothing when a same-shaped result comes from a different tool", () => {
-    // Every discriminator below is real, and none of them is unique to its
-    // launcher. Read off shape alone, each of these would invent live work
-    // that nothing is actually running.
     const nearMisses: Array<[string, Record<string, unknown>]> = [
       ["Read", { taskId: "x1", timeoutMs: 300_000, persistent: false }],
       ["Grep", { scheduledFor: NOW + 600_000, clampedDelaySeconds: 600, wasClamped: false }],
@@ -394,8 +356,6 @@ describe("open async work: shapes beyond the captured session", () => {
   });
 
   it("opens nothing when a launcher's result belongs to a different family", () => {
-    // Right tool, wrong acknowledgement: a Bash call cannot arm a wakeup, and
-    // a Monitor call cannot launch an agent.
     const crossed: Array<[string, Record<string, unknown>]> = [
       ["Bash", { scheduledFor: NOW + 600_000, clampedDelaySeconds: 600, wasClamped: false }],
       ["Monitor", { status: "async_launched", agentId: "x5", description: "nope" }],
@@ -445,8 +405,6 @@ describe("open async work: shapes beyond the captured session", () => {
   });
 
   it("opens nothing from an acknowledgement whose call this reader never saw", () => {
-    // Capture attached mid-stream, or the call was on a line already behind
-    // the read offset. Without the call there is no proof of family.
     expect(replay([toolResult("orphan-ack", { stdout: "", stderr: "", backgroundTaskId: "b999" })])).toEqual([]);
   });
 
@@ -468,17 +426,6 @@ describe("open async work: shapes beyond the captured session", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Claude Code 2.1.252: what a plain --resume reports after the child died
-// ---------------------------------------------------------------------------
-
-/**
- * Verbatim records from the LIM-143 continuity probes (see
- * `fixtures/async-work/claude-2.1.252-continuity-probe.jsonl` and
- * `test/story0/family-matrix.md`): launches of a background shell, a monitor,
- * a background agent, and a workflow; the orphan notices the resumed session
- * enqueued after SIGKILL; and the host's own continuation calls.
- */
 const PROBE_PATH = join(
   dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -502,10 +449,6 @@ function isOrphanNotice(item: RolloutLineItem): boolean {
   );
 }
 
-/**
- * The fixture is in transcript order: launches, then the orphan notices the
- * resumed session enqueued, then that session's own continuation calls.
- */
 function probeParts(): { launches: RolloutLineItem[]; notices: RolloutLineItem[]; continuation: RolloutLineItem[] } {
   const lines = probeLines();
   const lastNotice = lines.reduce((last, item, index) => (isOrphanNotice(item) ? index : last), -1);
@@ -545,11 +488,6 @@ describe("open async work: 2.1.252 orphan notices after a child death", () => {
   });
 
   it("reads the host's continuation handles out of the orphan notices", () => {
-    // The host itself offers the continuation seams Story 0 measured: an
-    // agent resumes from its saved transcript via SendMessage, a workflow via
-    // Workflow({resumeFromRunId}). Both replay a tool call that was in flight
-    // when the child died (family-matrix.md), so neither is a carry mode on
-    // its own; the fold only has to see them as terminal for the old session.
     const texts = probeParts().notices.map((item) => (item as { content: string }).content);
     expect(texts.some((t) => /Resume it by sending it a message with SendMessage/.test(t))).toBe(true);
     expect(texts.some((t) => /resumeFromRunId: "wf_[a-z0-9-]+"/.test(t))).toBe(true);
@@ -557,9 +495,6 @@ describe("open async work: 2.1.252 orphan notices after a child death", () => {
   });
 
   it("does not reopen anything from the resumed session's own continuation calls", () => {
-    // SendMessage and the resumed Workflow acknowledge new work under the
-    // same ids; SendMessage is not a retained launcher, and the Workflow
-    // resume opens a fresh item only because it is a real relaunch.
     const { launches, notices, continuation } = probeParts();
     expect(continuation.length).toBeGreaterThan(0);
     const open = replay([...launches, ...notices, ...continuation]);
@@ -588,8 +523,6 @@ describe("2.1.252 continuity fixture is a scrubbed projection", () => {
 
   it("keeps every reference the fold and the resume evidence rely on", () => {
     const text = readFileSync(PROBE_PATH, "utf8");
-    // Launch ids recur in their orphan notices; the resumed workflow's fresh
-    // task id appears once, and the run id ties both launches together.
     for (const id of ["shell-task-1", "monitor-task-1", "agent-1", "workflow-task-1", "wf_run-1"]) {
       expect(text.split(id).length, id).toBeGreaterThan(2);
     }

@@ -1,7 +1,3 @@
-/**
- * Checked revocation, illegal transitions, publish+unlink double failure.
- */
-
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,7 +86,6 @@ describe("revokeCapability", () => {
     const good = io();
     const { path, desc } = readyDesc(root, good);
     const bad = io({ failWrite: true, failUnlink: false });
-    // read/exists still from real fs via bad's exists/unlink using real paths
     const rev = revokeCapability(path, desc, "degraded", "x", {
       ...bad,
       exists: good.exists,
@@ -110,7 +105,6 @@ describe("revokeCapability", () => {
       ...bad,
       exists: good.exists,
       readFile: good.readFile,
-      // unlink throws; exists still true
       unlink: () => {
         throw new Error("unlink fail");
       },

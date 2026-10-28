@@ -1,5 +1,3 @@
-/** Lifecycle signals derived from the Claude rollout observation adapter. */
-
 export type LifecycleSignalKind =
   | "session_bound"
   | "turn_opened"
@@ -18,26 +16,12 @@ export type LifecycleSignal =
   | { kind: "turn_opened"; reason: TurnOpenReason }
   | {
       kind: "sampling_observed";
-      /** Stable sampling identity from the rollout (assistant message.id when present). */
       samplingId: string;
       model?: string;
       providerUsage?: Record<string, unknown>;
-      /**
-       * Exact Claude context-limit rejection (`isApiErrorMessage`,
-       * `invalid_request`, text `Prompt is too long`). Settled-seam compact
-       * reason; omitted for every other error.
-       */
       contextLimitRejected?: true;
     }
   | {
-      /**
-       * Source-labelled estimate of content captured after the last provider
-       * request. Never authoritative as provider usage (LIM-64).
-       *
-       * - mode "set": replace the current estimate (tests / absolute recompute)
-       * - mode "add" (default when omitted in production): accumulate growth for
-       *   the current authoritative sampling. A new sampling_observed resets.
-       */
       kind: "post_measurement_estimate";
       tokens: number;
       source: string;
