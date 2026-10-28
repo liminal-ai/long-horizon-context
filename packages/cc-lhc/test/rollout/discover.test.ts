@@ -1,5 +1,5 @@
 import type { Dirent } from "node:fs";
-import { mkdtempSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -8,8 +8,8 @@ import { describe, expect, it } from "vitest";
 import {
   encodeProjectPath,
   findExpectedSessionFileOnce,
-  SessionAttributionError,
   resolveContinueSessionId,
+  SessionAttributionError,
 } from "../../src/rollout/discover.js";
 
 function fakeDirent(name: string, isFile = true): Dirent {

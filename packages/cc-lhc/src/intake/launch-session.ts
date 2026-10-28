@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { access } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";

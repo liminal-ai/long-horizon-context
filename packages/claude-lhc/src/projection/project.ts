@@ -29,8 +29,14 @@ export function projectView(
   const openCalls = new Set<string>();
 
   const base = (): NativeEntry => ({
-    parentUuid: parent, isSidechain: false, userType: "external", entrypoint: "sdk-ts",
-    cwd: stamp.cwd, sessionId: stamp.sessionId, version: stamp.version, gitBranch: stamp.gitBranch ?? "",
+    parentUuid: parent,
+    isSidechain: false,
+    userType: "external",
+    entrypoint: "sdk-ts",
+    cwd: stamp.cwd,
+    sessionId: stamp.sessionId,
+    version: stamp.version,
+    gitBranch: stamp.gitBranch ?? "",
     timestamp: now,
   });
   const push = (line: NativeEntry): void => {
@@ -39,10 +45,23 @@ export function projectView(
     parent = uuid;
   };
   const userText = (content: string | NativeEntry[]): void =>
-    push({ ...base(), type: "user", message: { role: "user", content }, permissionMode: stamp.permissionMode, promptSource: "sdk" });
+    push({
+      ...base(),
+      type: "user",
+      message: { role: "user", content },
+      permissionMode: stamp.permissionMode,
+      promptSource: "sdk",
+    });
   const toolResult = (toolCallId: string, content: string | NativeEntry[], isError: boolean): void => {
     openCalls.delete(toolCallId);
-    push({ ...base(), type: "user", message: { role: "user", content: [{ tool_use_id: toolCallId, type: "tool_result", content, is_error: isError }] } });
+    push({
+      ...base(),
+      type: "user",
+      message: {
+        role: "user",
+        content: [{ tool_use_id: toolCallId, type: "tool_result", content, is_error: isError }],
+      },
+    });
   };
   const settleOpenCalls = (): void => {
     for (const id of [...openCalls]) toolResult(id, DANGLING_RESULT, true);
@@ -53,8 +72,15 @@ export function projectView(
       if (entry.kind === "model_change" && entry.modelId !== "") model = entry.modelId;
       continue;
     }
-    if (entry.role === "user") { settleOpenCalls(); userText(entry.blocks ?? entry.content); continue; }
-    if (entry.role === "toolResult") { toolResult(entry.toolCallId, entry.blocks ?? entry.content, entry.isError === true); continue; }
+    if (entry.role === "user") {
+      settleOpenCalls();
+      userText(entry.blocks ?? entry.content);
+      continue;
+    }
+    if (entry.role === "toolResult") {
+      toolResult(entry.toolCallId, entry.blocks ?? entry.content, entry.isError === true);
+      continue;
+    }
     settleOpenCalls();
     const blocks = entry.content.map((part) => nativeBlock(part, arm)).filter((b): b is NativeEntry => b !== null);
     if (blocks.length === 0) continue;
@@ -64,8 +90,20 @@ export function projectView(
     for (const [index, block] of blocks.entries()) {
       if (block["type"] === "tool_use") openCalls.add(String(block["id"]));
       push({
-        ...base(), type: "assistant", apiBlockIndex: index, requestId,
-        message: { model: entry.model ?? model, id, type: "message", role: "assistant", content: [block], stop_reason: stop, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } },
+        ...base(),
+        type: "assistant",
+        apiBlockIndex: index,
+        requestId,
+        message: {
+          model: entry.model ?? model,
+          id,
+          type: "message",
+          role: "assistant",
+          content: [block],
+          stop_reason: stop,
+          stop_sequence: null,
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
       });
     }
   }
@@ -74,12 +112,15 @@ export function projectView(
 }
 
 function nativeBlock(part: SessionAssistantPart, arm: ThinkingRebuildArm): NativeEntry | null {
-  if (part.type === "text") return part.text !== undefined && part.text !== "" ? { type: "text", text: part.text } : null;
-  if (part.type === "toolCall") return { type: "tool_use", id: part.toolCallId ?? "", name: part.toolName ?? "tool", input: part.arguments ?? {} };
+  if (part.type === "text")
+    return part.text !== undefined && part.text !== "" ? { type: "text", text: part.text } : null;
+  if (part.type === "toolCall")
+    return { type: "tool_use", id: part.toolCallId ?? "", name: part.toolName ?? "tool", input: part.arguments ?? {} };
   if (part.type === "redacted_thinking") return arm === "omit" ? null : (part.block ?? null);
   if (part.type === "thinking") {
     if (arm === "omit") return null;
-    const signature = typeof part.thinkingSignature === "string" && part.thinkingSignature !== "" ? part.thinkingSignature : undefined;
+    const signature =
+      typeof part.thinkingSignature === "string" && part.thinkingSignature !== "" ? part.thinkingSignature : undefined;
     return signature === undefined ? null : { type: "thinking", thinking: part.thinking ?? "", signature };
   }
   return part.block ?? null;

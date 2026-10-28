@@ -1,16 +1,33 @@
 import { describe, expect, test } from "vitest";
 import { ToolBatch } from "../src/capture/batch.ts";
 
-const streamEvent = (event: Record<string, unknown>, parent: string | null = null) => ({ type: "stream_event", event, parent_tool_use_id: parent, uuid: "u", session_id: "s" }) as never;
-const assistant = (id: string, content: Record<string, unknown>[], parent: string | null = null) => ({ type: "assistant", message: { id, role: "assistant", content }, parent_tool_use_id: parent, uuid: "u", session_id: "s" }) as never;
-const results = (...ids: string[]) => ({ type: "user", message: { role: "user", content: ids.map((id) => ({ type: "tool_result", tool_use_id: id, content: "ok" })) }, parent_tool_use_id: null, uuid: "u", session_id: "s" }) as never;
+const streamEvent = (event: Record<string, unknown>, parent: string | null = null) =>
+  ({ type: "stream_event", event, parent_tool_use_id: parent, uuid: "u", session_id: "s" }) as never;
+const assistant = (id: string, content: Record<string, unknown>[], parent: string | null = null) =>
+  ({
+    type: "assistant",
+    message: { id, role: "assistant", content },
+    parent_tool_use_id: parent,
+    uuid: "u",
+    session_id: "s",
+  }) as never;
+const results = (...ids: string[]) =>
+  ({
+    type: "user",
+    message: { role: "user", content: ids.map((id) => ({ type: "tool_result", tool_use_id: id, content: "ok" })) },
+    parent_tool_use_id: null,
+    uuid: "u",
+    session_id: "s",
+  }) as never;
 const use = (id: string, name = "Read") => ({ type: "tool_use", id, name, input: {} });
 
 describe("ToolBatch", () => {
   test("stream events announce the whole batch before any tool runs; the stop waits for the last", () => {
     const batch = new ToolBatch();
     batch.observe(streamEvent({ type: "message_start", message: { id: "msg_1" } }));
-    expect(batch.observe(streamEvent({ type: "content_block_start", index: 0, content_block: use("a") }))).toEqual(["Read"]);
+    expect(batch.observe(streamEvent({ type: "content_block_start", index: 0, content_block: use("a") }))).toEqual([
+      "Read",
+    ]);
     batch.observe(streamEvent({ type: "content_block_start", index: 1, content_block: use("b", "Bash") }));
     batch.observe(streamEvent({ type: "content_block_start", index: 2, content_block: use("c") }));
     expect(batch.size).toBe(3);
@@ -53,7 +70,9 @@ describe("ToolBatch", () => {
   test("subagent traffic is ignored; clear forgets everything", () => {
     const batch = new ToolBatch();
     expect(batch.observe(assistant("msg_x", [use("sub")], "toolu_parent"))).toEqual([]);
-    expect(batch.observe(streamEvent({ type: "content_block_start", index: 0, content_block: use("sub2") }, "toolu_parent"))).toEqual([]);
+    expect(
+      batch.observe(streamEvent({ type: "content_block_start", index: 0, content_block: use("sub2") }, "toolu_parent")),
+    ).toEqual([]);
     expect(batch.size).toBe(0);
     batch.observe(assistant("msg_1", [use("a")]));
     batch.clear();

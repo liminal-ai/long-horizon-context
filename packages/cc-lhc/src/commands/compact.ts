@@ -1,5 +1,5 @@
 import { BUILTIN_CONTEXT_POLICY } from "../governor/config.js";
-import { runContextMutation, type ContextMutationPlan } from "./context-mutation.js";
+import { type ContextMutationPlan, runContextMutation } from "./context-mutation.js";
 import type { DispatchOutcome, LhcCommandRuntime } from "./dispatch.js";
 
 export async function runCompactCommand(_commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {

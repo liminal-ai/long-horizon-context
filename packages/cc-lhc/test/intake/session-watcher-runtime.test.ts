@@ -104,7 +104,7 @@ describe("session watcher runtime + stop ownership", () => {
       release = r;
     });
     let sdkInits = 0;
-    let created = 0;
+    const created = 0;
     let watcherConstructs = 0;
     const lifecycle: string[] = [];
 

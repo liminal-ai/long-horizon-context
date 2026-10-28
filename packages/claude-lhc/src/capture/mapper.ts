@@ -42,7 +42,10 @@ function nonTextBlocks(content: unknown): ApiBlock[] | undefined {
 }
 
 function joinedText(content: unknown): string {
-  return blocks(content).filter((b) => b["type"] === "text").map((b) => (typeof b["text"] === "string" ? b["text"] : "")).join("");
+  return blocks(content)
+    .filter((b) => b["type"] === "text")
+    .map((b) => (typeof b["text"] === "string" ? b["text"] : ""))
+    .join("");
 }
 
 export function stringifyToolResultContent(content: unknown): string {
@@ -53,11 +56,27 @@ export function stringifyToolResultContent(content: unknown): string {
       .map((block) => (isRecord(block) && typeof block["text"] === "string" ? block["text"] : JSON.stringify(block)))
       .join("\n");
   }
-  try { return JSON.stringify(content); } catch { return String(content); }
+  try {
+    return JSON.stringify(content);
+  } catch {
+    return String(content);
+  }
 }
 
-function text(kind: "user_prompt" | "assistant_text" | "assistant_thinking" | "runtime_note", body: string, actor: string, key: string, extra: Record<string, unknown> = {}): MessageEventInput {
-  return { eventKind: kind, idempotencyKey: key, actor, harness: HARNESS, payload: { text: body, ...extra } } as MessageEventInput;
+function text(
+  kind: "user_prompt" | "assistant_text" | "assistant_thinking" | "runtime_note",
+  body: string,
+  actor: string,
+  key: string,
+  extra: Record<string, unknown> = {},
+): MessageEventInput {
+  return {
+    eventKind: kind,
+    idempotencyKey: key,
+    actor,
+    harness: HARNESS,
+    payload: { text: body, ...extra },
+  } as MessageEventInput;
 }
 
 export function promptText(message: SDKUserMessage): string {
@@ -74,14 +93,24 @@ export function mapPrompt(message: SDKUserMessage, uuid: string, turnOpen: boole
   const body = promptText(message);
   if (body === "" && nonTextBlocks(message.message.content) === undefined) return [];
   const trimmed = body.trimStart();
-  if (trimmed.startsWith(TASK_NOTIFICATION_MARKER)) return [text("runtime_note", body, "system", idempotencyKey(uuid, 0, "runtime_note"))];
+  if (trimmed.startsWith(TASK_NOTIFICATION_MARKER))
+    return [text("runtime_note", body, "system", idempotencyKey(uuid, 0, "runtime_note"))];
   if (trimmed.startsWith(RUNTIME_NOTE_LABEL)) {
     const stripped = trimmed.slice(RUNTIME_NOTE_LABEL.length).replace(/^ /, "");
     return [text("runtime_note", stripped, "system", idempotencyKey(uuid, 0, "runtime_note"))];
   }
-  if (turnOpen) return [text("runtime_note", `${STEER_LABEL} ${body}`, "user", idempotencyKey(uuid, 0, "runtime_note"))];
+  if (turnOpen)
+    return [text("runtime_note", `${STEER_LABEL} ${body}`, "user", idempotencyKey(uuid, 0, "runtime_note"))];
   const attached = nonTextBlocks(message.message.content);
-  return [text("user_prompt", body, "user", idempotencyKey(uuid, 0, "user_prompt"), attached === undefined ? {} : { blocks: attached })];
+  return [
+    text(
+      "user_prompt",
+      body,
+      "user",
+      idempotencyKey(uuid, 0, "user_prompt"),
+      attached === undefined ? {} : { blocks: attached },
+    ),
+  ];
 }
 
 export interface MapResult {
@@ -92,7 +121,8 @@ export interface MapResult {
 
 function usageContextTokens(usage: unknown): number | undefined {
   if (!isRecord(usage)) return undefined;
-  const n = (k: string): number => (typeof usage[k] === "number" && Number.isFinite(usage[k]) ? (usage[k] as number) : 0);
+  const n = (k: string): number =>
+    typeof usage[k] === "number" && Number.isFinite(usage[k]) ? (usage[k] as number) : 0;
   const total = n("input_tokens") + n("cache_creation_input_tokens") + n("cache_read_input_tokens");
   return total > 0 ? total : undefined;
 }
@@ -114,31 +144,71 @@ export function mapSdkMessage(message: SDKMessage, turnStartedAt: string | undef
     for (const [index, block] of blocks(inner["content"]).entries()) {
       if (block["type"] === "thinking") {
         const signature = typeof block["signature"] === "string" ? block["signature"] : "";
-        events.push(text("assistant_thinking", typeof block["thinking"] === "string" ? block["thinking"] : "", "assistant", idempotencyKey(id, index, "assistant_thinking"), {
-          ...(signature !== "" ? { signature } : {}), ...provenance,
-        }));
+        events.push(
+          text(
+            "assistant_thinking",
+            typeof block["thinking"] === "string" ? block["thinking"] : "",
+            "assistant",
+            idempotencyKey(id, index, "assistant_thinking"),
+            {
+              ...(signature !== "" ? { signature } : {}),
+              ...provenance,
+            },
+          ),
+        );
       } else if (block["type"] === "redacted_thinking") {
-        events.push(text("assistant_thinking", "", "assistant", idempotencyKey(id, index, "assistant_thinking"), { block, ...provenance }));
+        events.push(
+          text("assistant_thinking", "", "assistant", idempotencyKey(id, index, "assistant_thinking"), {
+            block,
+            ...provenance,
+          }),
+        );
       } else if (block["type"] === "server_tool_use") {
         events.push({
-          eventKind: "tool_call", idempotencyKey: idempotencyKey(id, index, "tool_call"), actor: "assistant", harness: HARNESS,
-          payload: { toolCallId: String(block["id"]), toolName: String(block["name"]), arguments: isRecord(block["input"]) ? block["input"] : {}, block: block as ApiBlock },
+          eventKind: "tool_call",
+          idempotencyKey: idempotencyKey(id, index, "tool_call"),
+          actor: "assistant",
+          harness: HARNESS,
+          payload: {
+            toolCallId: String(block["id"]),
+            toolName: String(block["name"]),
+            arguments: isRecord(block["input"]) ? block["input"] : {},
+            block: block as ApiBlock,
+          },
         });
       } else if (typeof block["type"] === "string" && SERVER_RESULT_TYPES.has(block["type"])) {
         events.push({
-          eventKind: "tool_result", idempotencyKey: idempotencyKey(id, index, "tool_result"), actor: "tool", harness: HARNESS,
-          payload: { toolCallId: String(block["tool_use_id"]), content: "", isError: isRecord(block["content"]) && typeof block["content"]["error_code"] === "string", blocks: [block as ApiBlock] },
+          eventKind: "tool_result",
+          idempotencyKey: idempotencyKey(id, index, "tool_result"),
+          actor: "tool",
+          harness: HARNESS,
+          payload: {
+            toolCallId: String(block["tool_use_id"]),
+            content: "",
+            isError: isRecord(block["content"]) && typeof block["content"]["error_code"] === "string",
+            blocks: [block as ApiBlock],
+          },
         });
       } else if (block["type"] === "text") {
         const body = typeof block["text"] === "string" ? block["text"] : "";
         if (body === "") continue;
-        events.push(text("assistant_text", body, "assistant", idempotencyKey(id, index, "assistant_text"), {
-          ...(providerUsage !== undefined ? { providerUsage } : {}), ...provenance,
-        }));
+        events.push(
+          text("assistant_text", body, "assistant", idempotencyKey(id, index, "assistant_text"), {
+            ...(providerUsage !== undefined ? { providerUsage } : {}),
+            ...provenance,
+          }),
+        );
       } else if (block["type"] === "tool_use") {
         events.push({
-          eventKind: "tool_call", idempotencyKey: idempotencyKey(id, index, "tool_call"), actor: "assistant", harness: HARNESS,
-          payload: { toolCallId: String(block["id"]), toolName: String(block["name"]), arguments: isRecord(block["input"]) ? block["input"] : {} },
+          eventKind: "tool_call",
+          idempotencyKey: idempotencyKey(id, index, "tool_call"),
+          actor: "assistant",
+          harness: HARNESS,
+          payload: {
+            toolCallId: String(block["id"]),
+            toolName: String(block["name"]),
+            arguments: isRecord(block["input"]) ? block["input"] : {},
+          },
         });
       }
     }
@@ -155,10 +225,15 @@ export function mapSdkMessage(message: SDKMessage, turnStartedAt: string | undef
       if (block["type"] === "tool_result") {
         const attached = nonTextBlocks(block["content"]);
         events.push({
-          eventKind: "tool_result", idempotencyKey: idempotencyKey(id, index, "tool_result"), actor: "tool", harness: HARNESS,
+          eventKind: "tool_result",
+          idempotencyKey: idempotencyKey(id, index, "tool_result"),
+          actor: "tool",
+          harness: HARNESS,
           payload: {
-            toolCallId: String(block["tool_use_id"]), isError: block["is_error"] === true,
-            content: attached === undefined ? stringifyToolResultContent(block["content"]) : joinedText(block["content"]),
+            toolCallId: String(block["tool_use_id"]),
+            isError: block["is_error"] === true,
+            content:
+              attached === undefined ? stringifyToolResultContent(block["content"]) : joinedText(block["content"]),
             ...(attached === undefined ? {} : { blocks: attached }),
           },
         });
@@ -176,15 +251,20 @@ export function mapSdkMessage(message: SDKMessage, turnStartedAt: string | undef
     const id = uuid ?? `result:${Date.now()}`;
     const endedAt = new Date().toISOString();
     return {
-      events: [{
-        eventKind: "turn_end", idempotencyKey: idempotencyKey(id, 0, "turn_end"), actor: "system", harness: HARNESS,
-        payload: {
-          outcome: aborted ? "aborted" : "completed",
-          outcomeReason: message.subtype,
-          ...(turnStartedAt !== undefined ? { startedAt: turnStartedAt } : {}),
-          endedAt,
+      events: [
+        {
+          eventKind: "turn_end",
+          idempotencyKey: idempotencyKey(id, 0, "turn_end"),
+          actor: "system",
+          harness: HARNESS,
+          payload: {
+            outcome: aborted ? "aborted" : "completed",
+            outcomeReason: message.subtype,
+            ...(turnStartedAt !== undefined ? { startedAt: turnStartedAt } : {}),
+            endedAt,
+          },
         },
-      }],
+      ],
       turnEnd: true,
     };
   }

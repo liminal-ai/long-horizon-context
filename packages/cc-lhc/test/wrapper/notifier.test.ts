@@ -9,6 +9,7 @@ import {
   resolveBareEsc,
 } from "../../src/wrapper/modal.js";
 import { NOTIFIER_HINT, renderPanel } from "../../src/wrapper/panel.js";
+import { cursorRows } from "../helpers/panel-text.js";
 
 function feed(state: InputState, bytes: string | Buffer): { state: InputState; toPty: Buffer; actions: InputAction[] } {
   const chunk = typeof bytes === "string" ? Buffer.from(bytes, "latin1") : bytes;
@@ -262,8 +263,8 @@ describe("notifier overlay rendering", () => {
     ] as const) {
       const out = renderPanel(open.state, cols, rows);
       expect(out).toContain("/clear");
-      const cursorRows = [...out.matchAll(/\x1b\[(\d+);\d+H/g)].map((m) => Number.parseInt(m[1]!, 10));
-      for (const row of cursorRows) expect(row).toBeLessThanOrEqual(Math.max(5, rows));
+      const rowsMoved = cursorRows(out);
+      for (const row of rowsMoved) expect(row).toBeLessThanOrEqual(Math.max(5, rows));
     }
     const out = renderPanel(open.state, 120, 40);
     expect(out).toContain(NOTIFIER_HINT);

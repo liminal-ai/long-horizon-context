@@ -443,28 +443,12 @@ describe("run", () => {
     const stdin = fakeStdin();
     const passthroughWrites: string[] = [];
     let modalOpen = false;
-    let passthroughReassembly = "";
-    const childTickStreamOk = (accumulated: string): boolean => {
-      return /^(tick\d+\r?\n)*(tick\d*)?(\r)?$/.test(accumulated);
-    };
-    const isAllowedPassthroughWrite = (chunk: string): boolean => {
-      if (chunk.includes(ENTER_ALT_SCREEN) || chunk.includes(LEAVE_ALT_SCREEN)) return true;
-      if (chunk.includes("\x0c") || chunk.includes("^L")) return true;
-      const stripped = chunk.replaceAll(ENTER_ALT_SCREEN, "").replaceAll(LEAVE_ALT_SCREEN, "");
-      if (stripped.length === 0) return true;
-      return childTickStreamOk(passthroughReassembly + stripped);
-    };
 
     const trackPassthrough = (chunk: string): void => {
       if (chunk.includes(ENTER_ALT_SCREEN)) modalOpen = true;
       if (chunk.includes(LEAVE_ALT_SCREEN)) modalOpen = false;
       if (!modalOpen) {
         passthroughWrites.push(chunk);
-        const stripped = chunk.replaceAll(ENTER_ALT_SCREEN, "").replaceAll(LEAVE_ALT_SCREEN, "").replaceAll("\x0c", "");
-        if (stripped.length > 0) {
-          passthroughReassembly += stripped;
-          passthroughReassembly = passthroughReassembly.replace(/^(tick\d+\r?\n)+/, "");
-        }
       }
     };
 

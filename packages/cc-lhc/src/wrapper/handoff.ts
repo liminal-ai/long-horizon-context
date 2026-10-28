@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { HandoffRequest } from "../commands/context-mutation.js";
-import { type DurableHandoffReceipt, type HandoffReceiptPort, cleanupFields } from "./handoff-receipt-store.js";
+import { cleanupFields, type DurableHandoffReceipt, type HandoffReceiptPort } from "./handoff-receipt-store.js";
 import { formatOldChildCleanup, type OldChildCleanup } from "./old-child-cleanup.js";
 
 export type { OldChildCleanup } from "./old-child-cleanup.js";

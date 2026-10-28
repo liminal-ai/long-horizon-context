@@ -166,7 +166,7 @@ describe("coherent snapshot watcher", () => {
     });
     await watcher.initialCatchUp;
 
-    const evil = early.map((l, i) =>
+    const evil = early.map((_line, i) =>
       JSON.stringify({
         type: "user",
         uuid: `EVIL-${i}`,

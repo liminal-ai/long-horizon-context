@@ -1,15 +1,15 @@
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Lhc, ThreadRef } from "lhc";
 import { describe, expect, it, vi } from "vitest";
 
 import { runCompactCommand } from "../../src/commands/compact.js";
-import { runPruneCommand } from "../../src/commands/prune.js";
 import type { LhcCommandRuntime } from "../../src/commands/dispatch.js";
+import { runPruneCommand } from "../../src/commands/prune.js";
+import * as lineageDb from "../../src/intake/lineage-db.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
-import * as lineageDb from "../../src/intake/lineage-db.js";
 
 function makeRuntime(overrides: Partial<LhcCommandRuntime> = {}): LhcCommandRuntime {
   const threadRef = { threadId: "th_rebuild", registryPath: "/tmp/reg.sqlite" } as ThreadRef;

@@ -1,5 +1,4 @@
 import { describe, expect, it } from "vitest";
-
 import {
   assembleMaximumShapeEnvelope,
   assembleMaxServedShape,
@@ -7,12 +6,12 @@ import {
   assembleMixedShape,
   CERTIFIED_STDOUT_CEILING_BYTES,
   MAX_TOKEN_DIGITS,
+  maxId,
   maxWidthNonTerminalSlice,
   planByteBudget,
   proveEnvelopeFits,
 } from "../../src/retrieval/budget.js";
 import { sliceFooter } from "../../src/retrieval/format.js";
-import { maxId } from "../../src/retrieval/budget.js";
 
 const TOK = Number.MAX_SAFE_INTEGER;
 

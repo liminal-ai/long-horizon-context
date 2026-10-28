@@ -2,13 +2,13 @@ import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import type { Lhc, MessageEventInput, ThreadRef } from "lhc";
+import type { Lhc, MessageEventInput } from "lhc";
 import { describe, expect, it } from "vitest";
 
 import { registerRebuiltSessionLineage } from "../../src/commands/rebuild-receipt.js";
 import { lookupSessionLineage, recordSessionThread } from "../../src/intake/lineage-db.js";
-import type { LifecycleSignal } from "../../src/observation/types.js";
 import { startCaptureSession } from "../../src/intake/session.js";
+import type { LifecycleSignal } from "../../src/observation/types.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
 import { writeRebuiltRollout } from "../../src/rollout/write-rebuilt.js";
 

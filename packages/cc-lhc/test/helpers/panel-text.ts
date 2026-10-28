@@ -5,6 +5,7 @@ const FRAME_START = `${ESC}[?25l${ESC}[2J`;
 const ANSI = new RegExp(`${ESC}\\[[0-9;?]*[a-zA-Z]`, "g");
 const CURSOR_MOVE = new RegExp(`^${ESC}\\[(\\d+);(\\d+)H$`);
 const SGR = new RegExp(`${ESC}\\[\\d*(;\\d+)*m`);
+const CURSOR_POSITION = new RegExp(`${ESC}\\[(\\d+);\\d+H`, "g");
 
 export function stripAnsi(text: string): string {
   return text.replace(ANSI, "");
@@ -12,6 +13,10 @@ export function stripAnsi(text: string): string {
 
 export function containsSgr(text: string): boolean {
   return SGR.test(text);
+}
+
+export function cursorRows(output: string): number[] {
+  return [...output.matchAll(CURSOR_POSITION)].map((m) => Number.parseInt(m[1]!, 10));
 }
 
 export function panelFrames(output: string): string[] {

@@ -1,5 +1,11 @@
 import { createInterface } from "node:readline";
-import { decodeFrame, type DriverFrame, encodeFrame, type SidecarFrame, type SidecarRequestMethod } from "./protocol.js";
+import {
+  type DriverFrame,
+  decodeFrame,
+  encodeFrame,
+  type SidecarFrame,
+  type SidecarRequestMethod,
+} from "./protocol.js";
 import { ClaudeLhcSession, type SessionIO } from "./session.js";
 
 const write = (frame: SidecarFrame): void => {
@@ -19,11 +25,15 @@ const io: SessionIO = {
       const id = ++nextRequestId;
       pending.set(id, { resolve, reject });
       write({ type: "req", id, method, params });
-      signal.addEventListener("abort", () => {
-        if (!pending.delete(id)) return;
-        write({ type: "abort", id });
-        reject(new Error("aborted"));
-      }, { once: true });
+      signal.addEventListener(
+        "abort",
+        () => {
+          if (!pending.delete(id)) return;
+          write({ type: "abort", id });
+          reject(new Error("aborted"));
+        },
+        { once: true },
+      );
     }),
   end: () => {
     void shutdown(0);
@@ -64,7 +74,12 @@ function handle(frame: DriverFrame): void {
           const value = await session.control(frame.method, frame.params);
           write({ type: "res", id: frame.id, ok: true, value });
         } catch (cause) {
-          write({ type: "res", id: frame.id, ok: false, error: cause instanceof Error ? cause.message : String(cause) });
+          write({
+            type: "res",
+            id: frame.id,
+            ok: false,
+            error: cause instanceof Error ? cause.message : String(cause),
+          });
         }
       });
       return;
@@ -97,4 +112,6 @@ lines.on("close", () => {
 });
 process.on("SIGTERM", () => void shutdown(0));
 process.on("uncaughtException", (cause) => io.fail(`sidecar crashed: ${cause.message}`));
-process.on("unhandledRejection", (cause) => io.fail(`sidecar crashed: ${cause instanceof Error ? cause.message : String(cause)}`));
+process.on("unhandledRejection", (cause) =>
+  io.fail(`sidecar crashed: ${cause instanceof Error ? cause.message : String(cause)}`),
+);

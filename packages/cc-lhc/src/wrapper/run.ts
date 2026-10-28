@@ -1992,7 +1992,7 @@ async function runWithStores(
 
     const debugInput = createInputDebugLogger(process.env.CC_LHC_INPUT_DEBUG);
 
-    const settleCommand = (messages: string[], label: string, retainForNextPanel = false): void => {
+    const settleCommand = (messages: string[], label: string): void => {
       stopExecutingTicker();
       if (inputState.mode === "executing") {
         if (messages.length === 0) {
@@ -2084,7 +2084,7 @@ async function runWithStores(
             outputHold.flush();
             try {
               const result = await performHandoff(outcome.handoff);
-              settleCommand([...outcome.messages, formatHandoffResult(result)], label, true);
+              settleCommand([...outcome.messages, formatHandoffResult(result)], label);
             } finally {
               governorState = setGovernorOperationInFlight(governorState, false);
             }

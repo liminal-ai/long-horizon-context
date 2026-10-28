@@ -1,7 +1,7 @@
-import { renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { renameSession } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, describe, expect, test } from "vitest";
 
 import { nativeSessionPath, writeProjectedSession } from "../src/nativeSessionFile.ts";

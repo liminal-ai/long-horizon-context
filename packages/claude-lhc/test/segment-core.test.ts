@@ -1,7 +1,7 @@
-import { describe, expect, test } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { describe, expect, test } from "vitest";
 
 const home = mkdtempSync(join(tmpdir(), "claude-lhc-segment-"));
 process.env.T3CODE_LHC_HOME = home;

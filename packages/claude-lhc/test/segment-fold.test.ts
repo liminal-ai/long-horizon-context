@@ -1,5 +1,5 @@
-import { describe, expect, test } from "vitest";
 import type { MessageEventInput } from "lhc";
+import { describe, expect, test } from "vitest";
 import {
   createSegmentFoldState,
   foldSegmentEvents,
