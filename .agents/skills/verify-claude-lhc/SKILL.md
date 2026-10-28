@@ -145,9 +145,10 @@ FAILs with `timeout waiting for results for the compacted turn and the
 held prompt`. After the mid-turn `/compact` swap, the continued turn and
 the replayed held prompt produce one `result` frame where standalone
 waits for two; every earlier step passes. Record so far, all on
-2026-10-28: 3 of 5 live runs failed this way, both isolated `drive.mjs
-turn` runs before scratch moved out of `/tmp` among them; the one run
-after the move passed. It has not been bisected against the claude-lhc
+2026-10-28: 5 of 7 live runs failed this way. Of the isolated `drive.mjs
+turn` runs, both with scratch in `/tmp` failed, the one in the run folder
+passed, and both under the XDG scratch root failed, so scratch location
+does not explain it. It has not been bisected against the claude-lhc
 cleanup (PR #20).
 
 - Report a live FAIL with that message as this known failure, by name,
