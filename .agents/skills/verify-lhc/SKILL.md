@@ -13,7 +13,7 @@ Surface facts (from the code, re-check if a drive breaks):
 - Seeding is `threads.newThread` then `intakeStream.messageEvents` then `work.drain` (manual mode). Events need `eventKind`, unique `idempotencyKey`, `actor`, `harness`, and a per-kind `payload`.
 - Deterministic inference: `createDeterministicInferenceCallbacks()` with `tokenFamily: "o200k"`, `mode: "manual"`. No network, no real model.
 - Serving is `threadView.getLlmRequestContext` / `getSessionThreadView`; compact is `threadView.compact`; retrieval is `retrieval.getTurns` / `getMessages` by `t…` / `m…` id.
-- A host rollback is one `rollback` intake event with payload `{ keepThroughEventOrder }`. Every served view and the CLI export drop what was recorded after the anchor; `messages.list({ includeDeleted: true })` still shows it as `deleted: true`.
+- A host rollback is one `rollback` intake event with payload `{ keepThroughEventOrder }`. Every served view and the CLI export drop what was recorded after the anchor, except that the open turn survives as an empty turn; `messages.list({ includeDeleted: true })` still shows hidden messages as `deleted: true`.
 
 ## Launch
 
@@ -66,7 +66,7 @@ node .agents/skills/verify-lhc/helpers/rollback.mjs
 ```
 
 - User-only check: after the rollback, the served views and the `lhc thread export` file hold the kept turn and the new turn in order, and no discarded text, including text that sat behind the compact point.
-- Outcome check: the record still holds the four hidden messages under the deleted contract. A build without the event exits 3 with `verify-lhc rollback: UNSUPPORTED`, which is the trunk result for a regression lane.
+- Outcome check: the record still holds the four hidden messages under the deleted contract. Any refused rollback batch exits 3 with `verify-lhc rollback: UNSUPPORTED (this build has no rollback event)`. A build from before the event (PR #25) gives that result, and so does an anchor at or past the rollback's own event order.
 
 CLI thread ops against an existing home are covered in [features/cli-thread-ops.md](features/cli-thread-ops.md). Use `--keep` on the round trip to leave its home in place for manual CLI poking:
 

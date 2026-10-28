@@ -7,7 +7,7 @@ SID="$(new_uuid)"
 CODEWORD="ALDER-7"
 echo "$SID" >"$EVIDENCE_DIR/capture-session-id.txt"
 LOG="$EVIDENCE_DIR/capture.log"
-ENV="HOME='$ISO_HOME' CC_LHC_HOME='$ISO_HOME/.cc-lhc' CLAUDE_CONFIG_DIR='$ISO_HOME/.claude' CC_LHC_CLAUDE_BIN='$STANDIN'"
+ENV="$(iso_cmd_env) CC_LHC_CLAUDE_BIN='$STANDIN'"
 RC="$(run_in_tmux capture "$LOG" \
   "$ENV node '$CC_LHC_BIN_JS' --lhc-no-inference -p 'seed prompt: the codeword is $CODEWORD' --session-id $SID")" || RC=124
 

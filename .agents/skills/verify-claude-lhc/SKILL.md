@@ -74,7 +74,8 @@ One read-only worth-driving check (writes nothing):
 
 Pass line: `VERIFY-CLAUDE-LHC doctor: PASS worth driving`. It checks node
 >= 24.3.0, the built `dist/sidecar.js`, the protocol/session sources, and
-reports whether a `claude` binary exists for the live turn drive.
+reports whether a `claude` binary and an env credential exist for the live
+turn drive.
 
 ## Drive
 
@@ -89,7 +90,7 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `restart` | seed, stop, `start{resume: gen2}` | stderr `resumed thread ... via <gen2> as generation <gen3>`, exit 0 | projected `<gen3>.jsonl` exists with lines; thread count unchanged (the "you see" bar: restarts onto its own projected file, one thread) |
 | `resume-superseded-alias` | seed, stop, `start{resume: gen1}` (superseded alias) | same-thread resume line via the old alias, fresh generation, exit 0 | 1 thread, new projected file. Observed semantics: any alias resumes the **current** served view — not gen1-era history; see [rollback-shaped-start.md](features/rollback-shaped-start.md) |
 | `resume-unknown` | `start{resume: <random>}` | one `error` frame: `no LHC thread holds the Claude session ...`, exit 1 | zero thread files created |
-| `turn` | real tool turn + recall | reply text answers from seeded files (live only) | LHC events/aliases via `scripts/standalone.ts` |
+| `turn` | real tool turn + recall via `scripts/standalone.ts` (live only, `CLAUDE_LHC_LIVE=1`) | standalone `RESULT: PASS` | native files only under the throwaway `CLAUDE_CONFIG_DIR`, none under real `~/.claude/projects` |
 
 Feature files (user POV, harness steps, gotchas):
 [start-and-capture.md](features/start-and-capture.md),
@@ -106,33 +107,56 @@ Every drive above runs both halves; do not weaken a drive to one half.
 
 ### Live turn (real Claude)
 
-Not deterministic and not run by `all`. The repo proof covers start → tool
-turn → `/compact` → deferred compact → restart-recall against the real
-model, with an isolated `T3CODE_LHC_HOME` but the real Claude login
-(it writes native session files under the real Claude home — that is the
-product behavior being proved):
+Not deterministic; `all` runs it only with `CLAUDE_LHC_LIVE=1`. The repo
+proof `packages/claude-lhc/scripts/standalone.ts` covers start → tool turn
+→ `/compact` → deferred compact → restart-recall against the real model.
+It inherits the caller's env, and `src/nativeSessionFile.ts` writes native
+session files and project memory under `CLAUDE_CONFIG_DIR`, else
+`~/.claude`. Run it only through the harness, which isolates it:
 
 ```sh
-pnpm --filter claude-lhc standalone   # prints RESULT: PASS
+CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs turn
 ```
 
-`drive.mjs turn` without `CLAUDE_LHC_LIVE=1` prints SKIP naming this path.
+The drive makes one fresh scratch dir and runs standalone with `HOME`,
+`CLAUDE_CONFIG_DIR`, `T3CODE_LHC_HOME` and `TMPDIR` (so the standalone cwd)
+all inside it. Auth comes from env only: one of `ANTHROPIC_API_KEY`,
+`CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), or
+`ANTHROPIC_AUTH_TOKEN` with its `ANTHROPIC_BASE_URL`. The throwaway
+config holds no login, and the drive never reads or copies the real
+Claude config. With none of those set it prints SKIP naming them; record
+the live turn as skipped with that reason. PASS needs standalone's
+`RESULT: PASS`, native files under the throwaway `CLAUDE_CONFIG_DIR`, and
+no `~/.claude/projects/<key>` entry for the scratch cwd (any such entry
+fails the drive as an isolation breach). Evidence:
+`turn/standalone.stdout.log` and `turn/standalone.stderr.log`.
+
+Never run `pnpm --filter claude-lhc standalone` by hand from a normal
+shell: it writes into the real Claude home, and without
+`T3CODE_LHC_HOME` into `../home/t3code-lhc` outside the checkout.
 Never report the live turn as passed from a deterministic run.
+
+Observed 2026-10-28: one of two live runs failed with `timeout waiting
+for results for the compacted turn and the held prompt`. After the
+mid-turn `/compact` swap, the continued turn and the replayed held prompt
+produced one result instead of two. The rerun passed. Later the same day
+both isolated runs (`drive.mjs turn`) failed the same way, with every
+earlier step passing, so it is now an open finding in the mid-turn
+swap and held-prompt replay, not a flake. Report it as a live FAIL; do not
+weaken standalone's two-result wait to pass it.
 
 ### Rollback-shaped start (PA prototype method)
 
 Method: after a compact mints gen2, start a new sidecar with
 `resume: <gen1>` — the superseded alias — instead of the current one.
-The plan's prototype evidence file
-`.pstack/runs/lhc-catchup-plan/proof/proto-rollback-t3-observe.json` was
-not readable in the lane worktree where this skill was seeded (no
-`.pstack/` tree), so the drive re-derives the observation from current
-code: `session.ts` resolves **any** alias to its thread, settles any open
-turn, and starts a projected generation from the thread's current served
-view. The drive asserts exactly that and prints the observation in its
-PASS line instead of hiding it. If the prototype file reappears, diff its
-recorded resume behavior against this drive's evidence before trusting
-either.
+`session.ts` resolves **any** alias to its thread, closes an open turn
+that has messages, and starts a projected generation from the thread's
+current served view. The drive asserts the alias identity, fresh
+generation, single thread, and projected file; the served-view sentence
+in its PASS line is a reading of the code. claude-lhc never sends the
+core `rollback` intake event, so a host rewind is not honored. The plan's
+prototype record agrees; see
+[rollback-shaped-start.md](features/rollback-shaped-start.md).
 
 ## Evidence
 
@@ -171,7 +195,7 @@ stdin (the harness owns every process it started); never kill by process
 name — a user's real sidecar may share it. Note the one non-isolated
 artifact: `labelNativeSession` may log a harmless `native title ... failed`
 line against an isolated Claude home; the real `~/.t3code-lhc` and
-`~/.claude` are not written by deterministic drives.
+`~/.claude` are not written by any drive, the live turn included.
 
 ## Helpers
 
@@ -181,7 +205,8 @@ script, not the cwd):
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
 - `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|turn|all>`;
   env `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
-  `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn gate).
+  `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn runs the isolated live
+  standalone instead of SKIP).
 - `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <dir>...`.
 - `check-links.mjs` — frontmatter, required sections, feature-file H2s,
   relative links, helper executability. `check-links.mjs` (no args);

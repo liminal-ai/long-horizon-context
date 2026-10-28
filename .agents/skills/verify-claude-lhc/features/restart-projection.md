@@ -3,14 +3,17 @@
 ## Sub-features
 
 - `start{resume: <any session id alias of a thread>}`: resolves the alias
-  (`lhcHome.ts` `resolveSession`), settles any open turn, projects the
+  (`lhcHome.ts` `resolveSession`), closes the first open turn when it has
+  member messages (`outcomeReason: "session restarted"`), projects the
   LHC served view into a new native session file
   (`projection/project.ts` → `nativeSessionFile.ts`), binds the new id as
   current alias, and resumes by UUID as a fresh generation.
 - Every native session id a thread has run under stays an alias; the
   latest is current. Restarting never forks the store.
 - `start{resume: <unknown id>}`: one `error` frame
-  (`no LHC thread holds the Claude session ...`), exit 1, nothing created.
+  (`no LHC thread holds the Claude session ...`), exit 1. The LHC home
+  directory is created, but no registry database, thread file, or
+  projected session is.
 
 ## How to get to it (user POV)
 
@@ -48,8 +51,10 @@ line — the session restarted onto its own projected file — and
 - The projected file may gain lines after the Claude child touches it
   (seeded runs observed 1 projected line → 5 file lines). Assert
   existence/projection from the sidecar log line, not an exact line count.
-- `native title ... failed: Session ... not found` can appear on stderr
-  against isolated/fresh homes. It is a best-effort label
-  (`renameSession`), not a restart failure.
-- Recall after restart ("remembers the secret") is live-only:
-  `scripts/standalone.ts` step 3-4.
+- `native title "<title>" for <session id> failed: <detail>` can appear
+  on stderr against isolated or fresh homes. `<detail>` is whatever the
+  Agent SDK's `renameSession` throws. It is a best-effort label, not a
+  restart failure.
+- Recall after restart is live-only: the final block of
+  `packages/claude-lhc/scripts/standalone.ts`, which logs
+  `resumed as <id>; turn remembers secret and answer.txt`.

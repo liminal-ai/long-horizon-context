@@ -10,7 +10,9 @@ context pressure and triggers compaction without leaving the session.
 
 - `panel-open` — Ctrl-`]` opens the panel over the live Claude session.
 - `panel-help` — `/help` lists commands; `/introduction` explains cc-lhc.
-- `panel-status` — `/status` and `/stats` report thread and pressure.
+- `panel-status` — `/status` reports provider context against the target
+  and trigger (`120,000`/`700,000` tokens under the built-in policy) and
+  the thread; `/stats` reports capture counters and the thread id.
 - `panel-bounds` — `/bounds <target> <trigger>` retunes policy.
 - `panel-compact` — `/smart-compact` / `/smart-prune` (see
   [smart-compact.md](./smart-compact.md)).
@@ -30,8 +32,12 @@ Preconditions:
   interactive session (throwaway-HOME Claude login).
 
 - **Help-text entry (user-only, seeded).** Run `helpers/drive-help.sh`:
-  `--lhc-help` must name `/smart-compact`, the Ctrl-`]` leader, and the
-  bounds env knobs, and an unknown `--lhc-*` flag must exit 2. A
+  `--lhc-help` must state the always-on Smart Compact policy with the
+  built-in 700k trigger and 120k target, name `/smart-compact` and
+  `CC_LHC_HOME`, `--lhc-version` must print a `cc-lhc ` line, and an
+  unknown `--lhc-*` flag must exit 2. The help text also names the Ctrl-`]`
+  leader and the `--lhc-lower-bound-tokens`, `--lhc-upper-bound-tokens`,
+  and `--lhc-min-runway-tokens` flags; the helper does not grade those. A
   user-only check gets nothing beyond this help text and the terminal.
 - **Live panel (user-only + outcome, live only).** In tmux, launch
   `cc-lhc` interactively under the throwaway HOME; wait for Claude's
@@ -41,7 +47,8 @@ Preconditions:
   shows the status receipt. Without throwaway login: `SKIP:`.
 - **Panel preview.** `node packages/cc-lhc/dist/bin.js preview`
   (package script `preview:panel`) renders panel states without a
-  session; useful as a smoke check, not as panel proof.
+  session; useful as a smoke check, not as panel proof. Run it under a
+  throwaway `HOME`; its home view shows `target 120k` and `trigger 700k`.
 
 ## Gotchas
 

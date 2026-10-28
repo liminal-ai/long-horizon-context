@@ -4,7 +4,7 @@
 
 - Start with `resume:` set to a **superseded** alias — a session id from
   before the latest compact/restart, instead of the thread's current
-  alias. This replays the PA prototype method (resume the thread through
+  alias. This follows the PA prototype method (resume the thread through
   an old native id and observe what history it lands on).
 - Observed semantics on current code: the alias resolves to its thread
   (`threads.resolveAlias`, via `resolveSession`), and the new generation
@@ -31,22 +31,31 @@ not through alias choice.
 The drive seeds start(gen1) + `/compact`(gen2), stops, then starts with
 `resume: gen1`. User-only half: `resumed thread <same id> via <gen1> as
 generation <fresh id>`, exit 0. Outcome half: new projected file for the
-fresh generation, still exactly one thread file. The PASS line prints the
-observation (`current served view, not gen1-era history`) so a lane
-screenshot cannot hide it.
+fresh generation, still exactly one thread file. The drive asserts alias
+identity, a fresh generation, one thread, a projected file, and exit 0.
+The PASS line also prints `OBSERVED: current served view, not gen1-era
+history`. That sentence is a reading of `session.ts` (resume branch and
+`#startProjectedGeneration`, which project `getSessionThreadView`), not
+an assertion. The seed compacts an empty thread, so there is no
+pre-compact turn a resume could restore.
 
-Prototype provenance: the plan cites
-`.pstack/runs/lhc-catchup-plan/proof/proto-rollback-t3-observe.json`.
-That file was not present in the worktree that seeded this skill, so the
-observation above is re-derived from current code
-(`session.ts` start/resume branch + `#startProjectedGeneration`) and from
-this drive's own evidence frames. If the prototype file is restored,
-compare its recorded resume behavior with this drive before citing it.
+Prototype record: the plan's prototype evidence,
+`.pstack/runs/lhc-catchup-plan/proof/proto-rollback-t3-observe.json`, is
+a local run file in the operator's main checkout (`.pstack/` is not in
+git, so worktrees do not have it). It resumed through an old alias with a
+`resumeSessionAt` host uuid and recorded: the alias resolved to the same
+thread, `intakeCount` 0, the projected file held both the kept turn and
+the turn the host meant to remove, and the host uuid did not appear in
+the projection. That agrees with current code: `packages/claude-lhc`
+never sends the core `rollback` intake event (see verify-lhc's
+`features/rollback.md`) and passes `resumeSessionAt` through to the SDK
+untouched.
 
 ## Gotchas
 
 - Do not describe this as rollback support. It is alias resolution with a
-  stale name; the served view is not versioned by alias.
+  stale name; the served view is not versioned by alias. A host rewind
+  through claude-lhc is not honored today.
 - The fresh generation becomes the thread's **current** alias
   (`registerCurrentAlias`). A driver still holding gen2 can also resume
   afterward — aliases accumulate, none is revoked by a rollback-shaped
