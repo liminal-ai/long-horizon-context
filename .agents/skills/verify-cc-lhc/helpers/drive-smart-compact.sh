@@ -35,8 +35,8 @@ if [ -n "$NEW_FILES" ]; then
     || note "codeword not in first new transcript; inspect evidence"
   finish smart-compact; exit $?
 fi
-if grep -qi "smart compact\|compact.*rebuilt\|rebuilt session" "$EVIDENCE_DIR/smart-compact-wrapper.log" 2>/dev/null; then
-  pass "wrapper.log records Smart Compact rebuild"
+if [ "$RC" = "0" ] && grep -q "pre-launch Smart Compact rebuilt:" "$EVIDENCE_DIR/smart-compact-wrapper.log" 2>/dev/null; then
+  pass "wrapper.log records a successful Smart Compact rebuild"
   finish smart-compact; exit $?
 fi
 
