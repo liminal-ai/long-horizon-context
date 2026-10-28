@@ -23,8 +23,7 @@ inference only through the canonical `ModelCall` seam.
 
 ### Phase 2 notes
 
-The governing handoff is
-[`docs/lhc-rs-port/phase2-brief.md`](../../docs/lhc-rs-port/phase2-brief.md).
+The governing phase-2 handoff was a port worklog document, removed after the port landed; git history retains it. The phase-1 conventions brief is [`docs/lhc-rs-port-phase1-brief.md`](../../docs/lhc-rs-port-phase1-brief.md).
 
 - Behavior bodies are implemented against the ported suites; do not widen
   public surfaces without a TS counterpart.

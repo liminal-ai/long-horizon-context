@@ -17,8 +17,7 @@
 > or no persistence at all" is the project's justification — and because the
 > constraints still bind: Principle 6 governs the future salience/distiller
 > layer (bead `long-horizon-context-5ez`), and Principle 8 remains
-> unimplemented. Treat this as the layer above the
-> [bad code log](onboard/bad-code-log.md): why we build, not just what we got wrong.
+> unimplemented. This document is about why we build, not what we got wrong.
 > Companion founding document: the January 2026
 > [product brief](https://github.com/liminal-ai/oc-context-cleaner/blob/master/docs/product-brief.md)
 > (`oc-context-cleaner`, liminal-ai org) — the original compression-gradient

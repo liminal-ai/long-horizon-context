@@ -18,4 +18,3 @@ memory/
 *.db
 .beads-credential-key
 .beads/proxieddb/
-docs/worklog/

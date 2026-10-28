@@ -98,7 +98,7 @@ ports together.)
 - Full suite: PORT-GATE total=452 passed=448 skipped=4 failed=0 (skips: 3
   upstream it.skip mirrors + 1 env-gated regen harness; port-lag skips ZERO —
   both frozen differentials run green byte-for-byte against pin goldens).
-- Receipts per slice: docs/worklog/convex-wave/LOG.md (repo-local).
+- Receipts per slice were kept in a repo-local wave worklog that was never tracked here.
 - Commits: 613a9f5 (Gate-0), abfd6aa (S1), 6e3167e (S2), cee7abf (S3),
   79e3d26 (S4).
 

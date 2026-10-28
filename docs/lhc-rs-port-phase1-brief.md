@@ -122,9 +122,7 @@ per-wave commits, ledger updated per file. Deltas:
 
 ## Orchestration
 
-Governed by `docs/lhc-rs-port/ORCHESTRATION-ONBOARDING.md` — the fresh
-orchestrator's entry point (full-project framing, cast, dual-verifier
-protocol, loop, escalation rules). Cast: grok-4.5-high implements,
+The orchestration entry point for the port run was a worklog document removed after the port landed; git history retains it. Cast: grok-4.5-high implements,
 Fable 5 medium + gpt-5.6-sol medium dual-verify independently,
 orchestrator reconciles/gates/commits. Known model behaviors from the
 Python run: grok cuts corners on tests/fixtures under time pressure

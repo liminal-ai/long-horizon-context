@@ -45,7 +45,7 @@ Product commits after `6232317` through `a4b3334` touch **only** `packages/cc-lh
 | **LIM-64** | cc-lhc capability-limited measurement/classification + controlled settled handoff | Close `a4b3334` (Fable delta PASS — STORY COMPLETE) |
 | **LIM-65** | This cross-host certification + propagation readiness record | This document |
 
-Worklog evidence: `docs/worklog/compact-continuation/ORCHESTRATION.md` and the frozen Fable reports beside it. Prefer **source tests/fixtures/commits** over report prose when they disagree.
+The wave worklogs that once held the orchestration record and the frozen Fable reports were removed with the rest of the port worklogs; git history retains them. Prefer **source tests/fixtures/commits** over report prose when they disagree.
 
 ---
 

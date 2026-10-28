@@ -1,8 +1,9 @@
 # Host: cc-lhc
 
-Last verified against code and production certification: 2026-08-10, Claude
-Code 2.1.226. Precedence when facts disagree: code, retained certification
-evidence, package README, then this document.
+Last verified against code: 2026-10-27. Production certification evidence is
+retained for Claude Code 2.1.226 and 2.1.235 (see Certification contract).
+Precedence when facts disagree: code, retained certification evidence,
+package README, then this document.
 
 This document builds on the vocabulary in [01-core-concepts.md](01-core-concepts.md)
 and [02-domain-design.md](02-domain-design.md). Record, event, derivation, view,
@@ -192,7 +193,7 @@ Current code built-ins (see `packages/cc-lhc/src/governor/config.ts`) are:
 | compact target (lower) | 180,000 tokens (LHC rendered-history domain) |
 | trigger (upper) | 360,000 tokens (provider-reported input domain) |
 | minimum runway | 50,000 tokens |
-| LHC profile | `continuation` |
+| LHC profile | product preset `default` (core profile `continuation`); presets are `default`, `balanced`, `historical` |
 | automatic prune | off |
 | native auto-compact | disabled per managed child (`DISABLE_AUTO_COMPACT=1`) |
 | host capability | `capability_limited` (not Codex full state machine) |
@@ -319,8 +320,9 @@ and retried. There is no rollback anywhere: the oversized session is never
 restored, because a swap either happens or never starts.
 
 **When replacements repeatedly will not run.** Each nonviable swap costs the
-session nothing and is retried at the next settled seam. After a bounded number
-of them the retrying stops being free to keep doing, so two things happen
+session nothing and is retried at the next settled seam. After 3 nonviable
+swaps in one wrapper lifetime (`NONVIABLE_SWAPS_BEFORE_ALARM`) the retrying
+stops being free to keep doing, so two things happen
 instead, and both persist. A standing alarm goes up: *cc-lhc rebuilt sessions
 are not loading — likely a compatibility problem with the installed Claude
 version.* That is explicitly a best guess inferred from observable viability,
@@ -357,7 +359,7 @@ Catching LHC up from that transcript is how a stale capture recovers — intake
 events carry content-stable idempotency keys, so re-reading the file records
 only what a previous invocation missed. A missing or unreadable count falls back
 to the last known reading plus growth, exactly as the live path does. Catch-up
-is bounded so an operator's prompt still starts.
+is bounded (60 seconds by default) so an operator's prompt still starts.
 
 Compacting needs a snapshot of settled history LHC actually holds, so the seam
 reports what capture is rather than asserting what it needs. Capture that has
@@ -365,8 +367,9 @@ not reached ready inside the bound, and a transcript whose last turn a previous
 invocation left unfinished, are both unusable snapshots: the invocation launches
 anyway, on the session it resumed, with capture left bound and still catching up
 behind the running prompt. The next invocation compacts once that history has
-settled. Reaching the bound costs the invocation its pre-launch compact, never
-its launch.
+settled. The catch-up bound is 60 seconds
+(`DEFAULT_PRE_LAUNCH_CAPTURE_TIMEOUT_MS`). Reaching it costs the invocation
+its pre-launch compact, never its launch.
 
 Over the trigger, the wrapper compacts and writes the rebuilt session first,
 then launches Claude **once**, resuming the rebuilt session with the original
@@ -422,8 +425,10 @@ Claude owns the normal screen. Wrapper diagnostics go to the append-only
 wrapper log, durable runtime receipts go through the record, and interactive controls
 use an alternate-screen panel.
 
-Press ctrl-] (configurable through `CC_LHC_LEADER`) for `status`, `stats`,
-`compact`, `prune`, `export`, `auto`, `bounds`, and `help`. The modal recognizes
+Press ctrl-] (configurable through `CC_LHC_LEADER`) for the panel. Its
+commands are `/status`, `/stats`, `/smart-compact`, `/smart-prune`,
+`/export`, `/bounds`, `/allocation`, `/details`, `/help`, and
+`/introduction`. The modal recognizes
 raw, kitty CSI-u, xterm modifyOtherKeys, and Windows Terminal win32 input
 encodings; it preserves escape and bracketed-paste traffic and holds child
 output while open. Overflow cancels the panel and flushes held bytes rather
@@ -468,8 +473,8 @@ commands. Plain `--help` intentionally remains Claude's help.
 Legacy stored turn renderings can be upgraded explicitly:
 
 ```text
-cc-lhc backfill-labels <thread-id-or-prefix> --dry-run
-cc-lhc backfill-labels <thread-id-or-prefix>
+cc-lhc backfill-labels <thread-id-or-prefix> --token-family <slug> --dry-run
+cc-lhc backfill-labels <thread-id-or-prefix> --token-family <slug>
 ```
 
 The SDK recomposes selected legacy `turn_rendering` rows with stable
@@ -525,7 +530,7 @@ recognize `type: "summary"` for older rollouts), and the record's appended
 amendment carries the passing canary (d) rerun on 2.1.235. The native-summary
 paragraphs above describe current behavior.
 
-The TypeScript SDK remains the contract source. The new
-`turns.backfillRenderingLabels` operation creates port-parity follow-up
-`long-horizon-context-0su.1`; that follow-up does not weaken this host's
-certification.
+The TypeScript SDK remains the contract source. The
+`turns.backfillRenderingLabels` operation has no counterpart in the Rust,
+Python, or Convex ports yet. That port-parity gap does not weaken this
+host's certification.

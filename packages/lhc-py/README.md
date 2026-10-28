@@ -14,8 +14,8 @@ FNV digests (incl. astral chars via UTF-16 code-unit iteration in
 `shared_tech/_jsstr.py`), tiktoken counts, prompt renders, stored-view
 JSON bytes (JS-number normalization via `js_json_dumps`), and rendered
 view output (goldens byte-identical, never regenerated). Port conventions
-live in `docs/lhc-py-port-phase1-brief.md` and
-`docs/lhc-py-port/phase2-brief.md`.
+live in `docs/lhc-py-port-phase1-brief.md`. The phase-2 brief was a port worklog
+document, removed after the port landed; git history retains it.
 
 ```sh
 uv sync                              # one-time env setup
