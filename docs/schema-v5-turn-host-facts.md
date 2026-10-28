@@ -89,7 +89,6 @@ messages/turns surfaces, which is the right altitude for host facts.
 | `packages/lhc` (TS) | **Together with Rust — leads.** | TS is the conformance oracle; a Rust-only v5 suspends byte-parity certification. |
 | `packages/lhc-rs` | **Together with TS.** | Regenerate conformance fixtures at v5, including a migration leg: same v4 fixture thread migrated by TS and by Rust must produce byte-identical files. |
 | `packages/lhc-py` | Same batch, rides behind. | Test suite mirrors TS's — port the TS test changes while fresh. Hermes host untouched (fields optional). |
-| `packages/lhc-convex` | Same batch. | Gets a consumer today (Lee's specs in progress) — must start life on v5, not migrate under its first user. Convex schema evolution, not the SQLite ladder: new optional fields on `turns`/`messages` tables in `convex/schema.ts`. |
 | codex-lhc / grok-build pins | After the batch certifies. | Pin bumps; the tripwire pin-drift check reports lag automatically. Host wiring to *send* the new payload fields is each fork's own follow-up. |
 
 ## Explicitly out of scope
@@ -106,6 +105,6 @@ messages/turns surfaces, which is the right altitude for host facts.
 Standard: gate green in every touched port; prompt/goldens untouched;
 new conformance legs — v5 fresh-thread byte-parity (TS vs Rust) and
 v4→v5 migration byte-parity (TS vs Rust); py suite green with the
-ported test deltas; convex suite green. Fields must round-trip verbatim
+ported test deltas. Fields must round-trip verbatim
 (intake payload → storage → read surface) in every port, asserted
 byte-level for `provider_usage`.

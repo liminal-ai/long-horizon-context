@@ -1,9 +1,8 @@
 """R6 retrieval formatter goldens — pin 81cd48c wording + SDK assembly placement.
 
-Wording from ``packages/pi-lhc/src/serving/retrieval-tools.ts``. Assembly
-placement (bodies inside envelope; footers/receipts after close) from the
-SDK/Rust ``retrieval::format`` contract at the same pin. No source-text
-inspection; byte/data assertions only.
+Assembly placement (bodies inside envelope; footers/receipts after close)
+from the SDK/Rust ``retrieval::format`` contract at the same pin. No
+source-text inspection; byte/data assertions only.
 """
 
 from __future__ import annotations

@@ -7,7 +7,7 @@ decided beyond "this needs doing."
 ## The problem
 
 Hosts have rewind/undo features — Codex's rollback ("drop my last N
-turns"), Claude Code's rewind, PI's equivalents. When a user rewinds,
+turns") and Claude Code's rewind. When a user rewinds,
 the host's own session state forgets those turns, but nothing tells
 LHC. The canonical record still holds them as normal live turns.
 
@@ -21,7 +21,7 @@ Consequences:
   rollback itself is a fact about the thread that goes unrecorded.
 
 This affects every host: codex-lhc (`ThreadRolledBack` markers are
-applied host-side, LHC never sees them), pi-lhc, cc-lhc. Surfaced
+applied host-side, LHC never sees them) and cc-lhc. Surfaced
 concretely during the Codex rollout-ownership analysis
 (`/srv/work/codex/lhc-docs/rollout-design-notes.md`, "Rollback" open
 question), where regeneration makes the gap user-visible.
@@ -58,13 +58,12 @@ work for hidden turns, whether rollback of a rollback needs to exist.
 ## Propagation
 
 Same cross-port batch shape as schema v5 (design once, TS leads,
-rs/py/convex follow, conformance-certified — see
+rs/py follow, conformance-certified — see
 `docs/schema-v5-turn-host-facts.md` for the pattern), then per-host
 wiring:
 
 - codex-lhc: `ThreadRolledBack` → the new intake event. Until then the
   rollout rework carries host markers forward as a documented stopgap.
-- pi-lhc: wire its rewind path.
 - cc-lhc: hardest — watch-only host, can't be told; has to detect
   rollbacks from observed session files.
 

@@ -84,7 +84,7 @@ A compact that falls due while a turn is open does not wait for the turn to end.
 
 The sidecar adds an in-process MCP server named `lhc` to every session (`src/retrieval.ts`). It exposes two read-only tools, `mcp__lhc__get_turns` and `mcp__lhc__get_messages`. Both are on `allowedTools` and allowed by the sidecar's own `canUseTool`, so no approval request reaches the host in any permission mode.
 
-One call serves at most 8,000 tokens and 48,000 bytes of item text, at most 32 ids (the core caps). Served content sits inside the byte-stable `<recalled-history>` envelope, the same text pi-lhc uses. Receipts and the literal next continuation call sit outside the envelope, as live text. The tools only read. This host shipped without retrieval until 0.1.1; the release note is [`docs/releases/claude-lhc-v0.1.1.md`](../releases/claude-lhc-v0.1.1.md).
+One call serves at most 8,000 tokens and 48,000 bytes of item text, at most 32 ids (the core caps). Served content sits inside the byte-stable `<recalled-history>` envelope. Receipts and the literal next continuation call sit outside the envelope, as live text. The tools only read. This host shipped without retrieval until 0.1.1; the release note is [`docs/releases/claude-lhc-v0.1.1.md`](../releases/claude-lhc-v0.1.1.md).
 
 ## Inference lane
 

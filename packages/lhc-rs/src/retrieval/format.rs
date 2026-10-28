@@ -1,9 +1,7 @@
 //! Host-agnostic retrieval result formatting (R6 SDK half).
 //!
 //! Byte-stable historical envelope and out-of-envelope receipts / just-in-time
-//! next-call instructions. Wording is copied from
-//! `packages/pi-lhc/src/serving/retrieval-tools.ts` so both forks produce
-//! identical envelope bytes. Tool registration is host work — this module is
+//! next-call instructions. Tool registration is host work — this module is
 //! pure formatting only.
 //!
 //! # Analytic model-visible output bound
