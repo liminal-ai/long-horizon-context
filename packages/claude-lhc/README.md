@@ -17,14 +17,14 @@ restart and every compact mints a fresh native session id from that view.
 
 ## Install
 
-t3code-lhc installs the sidecar from npm; nothing in this repo needs building:
+The T3 Code fork installs the sidecar from npm; nothing in this repo needs building:
 
 ```sh
 npm install claude-lhc@0.1.1
 ```
 
 Point t3code at the compiled entry with `CLAUDE_LHC_SIDECAR=<prefix>/node_modules/claude-lhc/dist/sidecar.js`
-(t3code-lhc's setup script does this). Node 24.3 or later. The package bundles the `lhc` core; it
+(the fork's setup script does this). Node 24.3 or later. The package bundles the `lhc` core; it
 is not published separately.
 
 ## Configuration

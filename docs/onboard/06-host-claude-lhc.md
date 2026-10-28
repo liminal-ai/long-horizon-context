@@ -23,7 +23,7 @@ pnpm --filter lhc build && pnpm --filter claude-lhc build
 node packages/claude-lhc/dist/sidecar.js
 ```
 
-From npm, t3code-lhc installs the published package and points t3code at the entry:
+From npm, the T3 Code fork installs the published package and points t3code at the entry:
 
 ```sh
 npm install claude-lhc@0.1.1
