@@ -10,10 +10,6 @@ export function estimateTokens(text: string): number {
   return o200k.estimate(text);
 }
 
-export function estimateSignatureTokens(signature: string): number {
-  return o200k.estimateSignature(signature);
-}
-
 export function withEstimator<T>(estimator: TokenEstimator, fn: () => T): T {
   const poke = resolveInstancePoke();
   return runWithInstanceSeam({ poke, touch: () => {}, tokenEstimator: estimator }, fn);

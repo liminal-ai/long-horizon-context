@@ -166,7 +166,6 @@ export {
   threadWithToolRun,
 } from "./threads.js";
 export {
-  estimateSignatureTokens,
   estimateTokens,
   o200k,
   sendMessageEvents,
