@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   type HookJSONOutput,
+  type McpSdkServerConfigWithInstance,
+  type McpServerConfig,
   type Options,
   type PermissionMode,
   type PermissionResult,
@@ -37,7 +39,7 @@ import {
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
 import { nativeAncestors, writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
-import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
+import type { SetMcpServersParams, SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
 import { abortSummaryWorkers } from "./summaryWorker.js";
 import {
@@ -139,7 +141,15 @@ interface Generation {
   readonly sessionId: string;
   readonly query: Query;
   readonly input: InputQueue;
+  readonly retrieval: McpSdkServerConfigWithInstance;
   superseded: boolean;
+}
+
+function withRetrieval(
+  servers: Record<string, McpServerConfig>,
+  retrieval: McpSdkServerConfigWithInstance,
+): Record<string, McpServerConfig> {
+  return { ...servers, [RETRIEVAL_SERVER_NAME]: retrieval };
 }
 
 function requireFiniteSetting(value: unknown, name: string): number {
@@ -190,6 +200,7 @@ export class ClaudeLhcSession {
   #claudeBin = "claude";
   #env: NodeJS.ProcessEnv = process.env;
   #gen: Generation | null = null;
+  #hostMcpServers: Record<string, McpServerConfig> | null = null;
   #turnOpen = false;
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
@@ -346,6 +357,12 @@ export class ClaudeLhcSession {
       case "interrupt":
         await gen.query.interrupt();
         return undefined;
+      case "setMcpServers": {
+        const { servers } = record as Partial<SetMcpServersParams>;
+        if (typeof servers !== "object" || servers === null) throw new Error("setMcpServers needs params.servers");
+        this.#hostMcpServers = servers;
+        return await gen.query.setMcpServers(withRetrieval(servers, gen.retrieval));
+      }
       default:
         throw new Error(`unknown control ${method}`);
     }
@@ -367,6 +384,7 @@ export class ClaudeLhcSession {
 
   #startGeneration(sessionId: string, extra: Partial<Options>): Generation {
     const input = new InputQueue();
+    const retrieval = createRetrievalServer(this.#lhc, () => this.#thread);
     let gen: Generation | null = null;
     const options: Options = {
       ...(this.#base as Options),
@@ -375,10 +393,7 @@ export class ClaudeLhcSession {
       ...(typeof this.#maxThinkingTokens === "number" ? { maxThinkingTokens: this.#maxThinkingTokens } : {}),
       env: this.#env,
       pathToClaudeCodeExecutable: this.#claudeBin,
-      mcpServers: {
-        ...((this.#base as Options).mcpServers ?? {}),
-        [RETRIEVAL_SERVER_NAME]: createRetrievalServer(this.#lhc, () => this.#thread),
-      },
+      mcpServers: withRetrieval((this.#base as Options).mcpServers ?? {}, retrieval),
       allowedTools: [...((this.#base as Options).allowedTools ?? []), ...RETRIEVAL_TOOL_NAMES],
       canUseTool: async (toolName, toolInput, callbackOptions) => {
         if (RETRIEVAL_TOOL_NAMES.includes(toolName)) return { behavior: "allow", updatedInput: toolInput };
@@ -404,7 +419,20 @@ export class ClaudeLhcSession {
       ...extra,
     };
     const q = query({ prompt: input, options });
-    gen = { sessionId, query: q, input, superseded: false };
+    gen = { sessionId, query: q, input, retrieval, superseded: false };
+    if (this.#hostMcpServers !== null) {
+      void q.setMcpServers(withRetrieval(this.#hostMcpServers, retrieval)).then(
+        (result) => {
+          const failed = Object.keys(result.errors);
+          if (failed.length > 0)
+            this.#io.log(`generation ${sessionId}: host MCP server(s) failed: ${failed.join(", ")}`);
+        },
+        (cause) =>
+          this.#io.log(
+            `generation ${sessionId}: host MCP servers not applied: ${cause instanceof Error ? cause.message : String(cause)}`,
+          ),
+      );
+    }
     void this.#pump(gen);
     return gen;
   }

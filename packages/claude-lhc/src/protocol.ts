@@ -5,11 +5,22 @@
  * The native Claude Agent SDK stream is forwarded unchanged inside `msg`. The two
  * adapter callbacks that cannot cross a process boundary (`canUseTool`,
  * `onUserDialog`) become `req`/`res` pairs originated by the sidecar; the query
- * controls (`setModel`, `setPermissionMode`, `setMaxThinkingTokens`, `interrupt`)
- * become `req`/`res` pairs originated by the driver. Closing stdin closes the
- * sidecar.
+ * controls (`setModel`, `setPermissionMode`, `setMaxThinkingTokens`, `interrupt`,
+ * `setMcpServers`) become `req`/`res` pairs originated by the driver. Closing stdin
+ * closes the sidecar.
+ *
+ * `setMcpServers` carries `{ servers }` and answers with the SDK's `McpSetServersResult`.
+ * Like `Query.setMcpServers`, it replaces the servers added after start; servers from the
+ * start frame stay. The retrieval server joins every set under its own name, and the set
+ * carries into every later generation.
  */
-import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  McpHttpServerConfig,
+  McpSSEServerConfig,
+  McpStdioServerConfig,
+  SDKMessage,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 
 /**
  * SDK `Options` with the non-serialisable members removed, plus the sidecar's own
@@ -23,7 +34,14 @@ import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 export type WireOptions = Record<string, unknown> & { lhc?: SidecarOptions; resumeSessionAt?: string };
 export type SidecarOptions = { forceRebuildFailure?: boolean };
 
-export type DriverControlMethod = "setModel" | "setPermissionMode" | "setMaxThinkingTokens" | "interrupt";
+export type DriverControlMethod =
+  | "setModel"
+  | "setPermissionMode"
+  | "setMaxThinkingTokens"
+  | "interrupt"
+  | "setMcpServers";
+export type WireMcpServerConfig = McpStdioServerConfig | McpSSEServerConfig | McpHttpServerConfig;
+export type SetMcpServersParams = { servers: Record<string, WireMcpServerConfig> };
 export type SidecarRequestMethod = "canUseTool" | "onUserDialog";
 
 export type DriverFrame =
