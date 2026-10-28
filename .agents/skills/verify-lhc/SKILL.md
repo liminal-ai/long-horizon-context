@@ -25,7 +25,7 @@ pnpm --filter lhc run build
 node .agents/skills/verify-lhc/helpers/doctor.mjs
 ```
 
-Launch reaches a usable state from an empty data dir because every drive creates its own temp home; there is no server to start and no port to wait on. Ready line: `verify-lhc doctor: PASS`.
+Launch reaches a usable state from an empty data dir because every drive creates its own temp home under the run folder (see Evidence); there is no server to start and no port to wait on. Ready line: `verify-lhc doctor: PASS`.
 
 ## Doctor
 
@@ -77,16 +77,18 @@ node packages/lhc/bin/lhc thread health --home <printed-dir> --thread-id <printe
 
 ## Evidence
 
-Save drive output outside the temp home so it survives cleanup:
+Drives make their temp homes under `<run>/scratch/`, where `<run>` is `$VERIFY_RUN_DIR`, default `.pstack/runs/verify-lhc` in the main checkout (the first entry of `git worktree list`; `.pstack/` is git-ignored). Nothing goes to `/tmp`. Save drive output under `<run>/proof/` so it survives cleanup:
 
 ```sh
-mkdir -p /tmp/verify-lhc-evidence
-node .agents/skills/verify-lhc/helpers/doctor.mjs > /tmp/verify-lhc-evidence/doctor.txt 2>&1
-node .agents/skills/verify-lhc/helpers/round-trip.mjs > /tmp/verify-lhc-evidence/round-trip.txt 2>&1
-node .agents/skills/verify-lhc/helpers/retrieval.mjs > /tmp/verify-lhc-evidence/retrieval.txt 2>&1
-node .agents/skills/verify-lhc/helpers/rollback.mjs > /tmp/verify-lhc-evidence/rollback.txt 2>&1
-node .agents/skills/verify-lhc/helpers/check-links.mjs > /tmp/verify-lhc-evidence/check-links.txt 2>&1
-grep -h PASS /tmp/verify-lhc-evidence/*.txt
+RUN="${VERIFY_RUN_DIR:-$(git worktree list --porcelain | sed -n '1s/^worktree //p')/.pstack/runs/verify-lhc}"
+EVIDENCE="${VERIFY_LHC_EVIDENCE:-$RUN/proof}"
+mkdir -p "$EVIDENCE"
+node .agents/skills/verify-lhc/helpers/doctor.mjs > "$EVIDENCE/doctor.txt" 2>&1
+node .agents/skills/verify-lhc/helpers/round-trip.mjs > "$EVIDENCE/round-trip.txt" 2>&1
+node .agents/skills/verify-lhc/helpers/retrieval.mjs > "$EVIDENCE/retrieval.txt" 2>&1
+node .agents/skills/verify-lhc/helpers/rollback.mjs > "$EVIDENCE/rollback.txt" 2>&1
+node .agents/skills/verify-lhc/helpers/check-links.mjs > "$EVIDENCE/check-links.txt" 2>&1
+grep -h PASS "$EVIDENCE"/*.txt
 ```
 
 Pass lines: `verify-lhc doctor: PASS`, `verify-lhc round-trip: PASS`, `verify-lhc retrieval: PASS`, `verify-lhc rollback: PASS`, `verify-lhc check-links: PASS`. For a lane or PR, also record `git rev-parse HEAD` beside the logs. Terminal screenshots of these runs satisfy the plan's `.png` evidence names where a harness captures them.
@@ -100,10 +102,10 @@ pnpm --filter lhc run test -- test/retrieval.test.ts test/threads.test.ts
 
 ## Cleanup
 
-Drives delete their temp homes in a `finally` block. A `--keep` home is yours to remove:
+Drives delete their temp homes in a `finally` block. Remove a `--keep` home with the helper, not a raw `rm` (it refuses anything but a `verify-lhc-*` home directly under `<run>/scratch/`):
 
 ```sh
-rm -rf <printed-dir>
+node .agents/skills/verify-lhc/helpers/cleanup.mjs <printed-dir>
 ```
 
 Nothing writes outside the temp home except evidence you redirect yourself. No processes are left running; there is no server.
@@ -112,11 +114,12 @@ Nothing writes outside the temp home except evidence you redirect yourself. No p
 
 All under [helpers/](helpers/), plain node ESM, importing the built SDK from `packages/lhc/dist/index.js`:
 
-- `helpers/lib.mjs` — temp home, SDK construction, seeded events (6 closed turns, one tool run).
+- `helpers/lib.mjs` — temp home under `<run>/scratch/`, SDK construction, seeded events (6 closed turns, one tool run).
 - `helpers/doctor.mjs` — read-only readiness check (see Doctor).
 - `helpers/round-trip.mjs` — create/append/compact/serve + CLI health. Flags: `--keep`, `--home DIR`.
 - `helpers/retrieval.mjs` — `getTurns`/`getMessages` served + unserved assertions.
 - `helpers/rollback.mjs` — rollback behind the compact point, append, recompact, CLI export. Flag: `--keep`.
+- `helpers/cleanup.mjs` — removes `--keep` homes. Args: one or more printed dirs.
 - `helpers/check-links.mjs` — every relative link and `helpers/*.mjs` path in this skill resolves on disk.
 
 Feature map: [features/README.md](features/README.md).

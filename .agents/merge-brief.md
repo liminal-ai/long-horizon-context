@@ -6,6 +6,8 @@
 - CI `pr-checks` jobs `root` (root lint and typecheck), `lhc`, `claude-lhc`, and `cc-lhc` pass at the head.
 - Run `/deslop` before each commit and `/no-comments` before review.
 - Review bots and their lanes are in `.github/REVIEW_RULES.md`. Triage every Bugbot, Codex, and security-reviewer comment before code-ready; fix it or dismiss it with a concrete reason. The gate refuses a head with an open review thread or without a Codex review.
+- A Codex review counts only when it is tied to the head commit. After a new push, or when the review names no commit, comment `@codex review` on the PR to re-run it at the head.
+- A Codex review stuck at "running" may be waived with `--waive codex=<reason>` only when an independent verdict already covers the head. The reason names the stuck run and that verdict.
 - A verdict drives the change through the verify skill for each package it touches: `verify-lhc` for `packages/lhc`, `verify-claude-lhc` for `packages/claude-lhc`, `verify-cc-lhc` for `packages/cc-lhc` and `packages/cc-lhc-native`. Tests alone do not verify. When the PR declares a plan (`pstack-plan:`), the verdict lists every verify box of its section.
 - Rebase onto trunk before the code-ready report; rebase again only at merge prep, on trunk conflict, or on trunk-caused CI failure.
 - Owners build, test, and stop at code-ready on a pushed branch. No owner merges, retargets, rebases a chain, or force-pushes a shared branch.

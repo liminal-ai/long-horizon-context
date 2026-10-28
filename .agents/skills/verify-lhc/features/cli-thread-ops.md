@@ -18,9 +18,9 @@ The round-trip drive already exercises `health` against its seeded home. For man
 ```sh
 node .agents/skills/verify-lhc/helpers/round-trip.mjs --keep
 node packages/lhc/bin/lhc thread health --home <printed-dir> --thread-id <printed-id>
-node packages/lhc/bin/lhc thread export --home <printed-dir> --thread-id <printed-id> --out /tmp/export.json
+node packages/lhc/bin/lhc thread export --home <printed-dir> --thread-id <printed-id> --out <printed-dir>/export.json
 node packages/lhc/bin/lhc thread health --home <printed-dir> --thread-id th_unknown
-rm -rf <printed-dir>
+node .agents/skills/verify-lhc/helpers/cleanup.mjs <printed-dir>
 ```
 
 Exit codes: 0 for a successful verb, which prints one stdout line. 2 for a refusal: `thread_not_found` (as in the last health line above), `mid_turn`, `path_exists`, `thread_exists`, `alias_bound_to_other_thread`, `file_bound_host`, `invalid_thread_alias`, or `compact_refused`. 1 for a usage error, such as a missing `--token-family`, and every other failure. No args or `--help` exits 0 and prints the usage block.

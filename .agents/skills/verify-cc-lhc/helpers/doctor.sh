@@ -36,7 +36,7 @@ if [ -f "$CC_LHC_BIN_JS" ]; then
     && pass "--lhc-version under isolated HOME: $(echo "$VER_OUT" | head -1)" \
     || fail "--lhc-version failed rc=$VER_RC: $VER_OUT"
   echo "$VER_OUT" >"$EVIDENCE_DIR/doctor-version.txt"
-  rm -rf "$ISO_HOME"
+  remove_iso_home "$ISO_HOME"
 fi
 
 finish doctor

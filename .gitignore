@@ -12,3 +12,5 @@ tmp/
 repo-ref/
 packages/ccode/
 memory/
+
+.pstack/

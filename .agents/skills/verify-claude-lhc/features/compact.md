@@ -51,6 +51,9 @@ summarization quality over real turns is the live standalone proof's job.
   (`#replayHeld`), not dropped, into whichever generation is current when
   the rebuild finishes. After a failed rebuild that is the old generation.
   Live-covered, not seeded.
+- Known failure: after a mid-turn `/compact`, the continued turn and the
+  replayed held prompt sometimes return one result instead of two, so the
+  live `turn` drive fails intermittently. See Known failure in [SKILL.md](../SKILL.md).
 - With `T3CODE_LHC_NO_INFERENCE=1` the view is built from deterministic
   callbacks. Band text is a marker such as `smoothed(<digest>:<first 40
   chars>)`, not a model summary.

@@ -1,5 +1,5 @@
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -7,6 +7,16 @@ export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..
 export const LHC_DIST = join(REPO_ROOT, "packages", "lhc", "dist", "index.js");
 export const LHC_BIN = join(REPO_ROOT, "packages", "lhc", "bin", "lhc");
 export const SEED_TURNS = 6;
+
+function mainCheckout() {
+  try {
+    return execFileSync("git", ["-C", REPO_ROOT, "worktree", "list", "--porcelain"], { encoding: "utf8" }).match(/^worktree (.+)$/m)[1];
+  } catch {
+    return REPO_ROOT;
+  }
+}
+export const RUN_DIR = process.env.VERIFY_RUN_DIR ?? join(mainCheckout(), ".pstack", "runs", "verify-lhc");
+export const SCRATCH_ROOT = join(RUN_DIR, "scratch");
 
 export function fail(message) {
   console.error(`FAIL: ${message}`);
@@ -21,7 +31,8 @@ export function unwrap(result, label) {
 }
 
 export function tempHome(prefix = "verify-lhc-") {
-  const home = mkdtempSync(join(tmpdir(), prefix));
+  mkdirSync(SCRATCH_ROOT, { recursive: true });
+  const home = mkdtempSync(join(SCRATCH_ROOT, prefix));
   mkdirSync(join(home, "threads"), { recursive: true });
   return {
     home,
