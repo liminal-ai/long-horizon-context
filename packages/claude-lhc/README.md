@@ -13,7 +13,7 @@ restart and every compact mints a fresh native session id from that view.
 - `src/nativeSessionFile.ts` — write those lines into the effective Claude home (`projects/<key>/<uuid>.jsonl`) before `query({resume})`. No `sessionStore`.
 - `src/lhcHome.ts` — host `t3code-lhc`: `~/.t3code-lhc` (`T3CODE_LHC_HOME`), aliases `t3code-lhc:<session id>`.
 - `src/inference/claudeCli.ts` — derivations through `claude -p --no-session-persistence`.
-- `bin/claude-lhc` — convenience wrapper (`exec node dist/sidecar.js`). T3 spawns `process.execPath` with the compiled JS entry.
+- `bin/claude-lhc` — convenience wrapper (`exec node dist/sidecar.js`). A host spawns Node with the compiled JS entry; see the launch contract.
 
 ## Install
 
@@ -27,6 +27,40 @@ Point t3code at the compiled entry with `CLAUDE_LHC_SIDECAR=<prefix>/node_module
 (t3code-lhc's setup script does this). Node 24.3 or later. The package bundles the `lhc` core; it
 is not published separately.
 
+## Launch contract
+
+A host launches one sidecar per Claude session and speaks the wire in `src/protocol.ts`.
+
+- **Node runtime:** the host passes an explicit Node 24.3 or later binary and spawns
+  `<node> <prefix>/dist/sidecar.js`. A host built as a single executable must not use
+  `process.execPath`, because that path names the host binary, not Node.
+- **Sidecar env** (read from the sidecar's own process env, never from the start frame):
+  - `T3CODE_LHC_HOME`: the LHC store. Unset or blank falls back to `~/.t3code-lhc`.
+  - `T3CODE_LHC_NO_INFERENCE=1`: skip summary derivations (tests and previews).
+  - `T3CODE_THREAD_ID`: passed to Claude Code when the start frame's `env` does not set it.
+- **Home rule:** each host install sets its own `T3CODE_LHC_HOME`, so two installs never share a
+  store. The `~/.t3code-lhc` default belongs to the legacy t3code-lhc fork; a new host must not
+  reach it by leaving the key unset.
+- **Claude env:** the start frame's `options.env` becomes Claude Code's whole environment, with
+  `DISABLE_AUTO_COMPACT=1` forced. Without it, Claude Code inherits the sidecar's env. The Claude
+  home in that env (`CLAUDE_CONFIG_DIR`, else `~/.claude`) is where projected native sessions land.
+- **Start:** the first frame is `start` with the SDK options minus callbacks. `sessionId` opens a
+  new LHC thread and must be fresh: a session id that already names a thread is refused with an
+  `error` frame. `resume` reopens the thread any of its session ids names, as a new native session.
+- **Rollback:** `resume` plus `resumeSessionAt: <assistant message uuid>` records a rollback to that
+  message in LHC before projecting. The sidecar never forwards `resumeSessionAt` to Claude Code.
+  An anchor no captured event carries is logged and the current view is projected. To roll back to
+  thread start, open a new thread with a fresh `sessionId`; the old thread stays reachable by its
+  ids.
+- **MCP servers:** servers in the start frame's `mcpServers` stay for the whole session. A
+  `req` with method `setMcpServers` and params `{ servers }` (stdio, sse, or http configs)
+  replaces the servers added after start, like `Query.setMcpServers`, and answers with
+  `{ added, removed, errors }`. It applies to the live session at once, mid-turn included, and
+  carries into every session the sidecar opens after a compact or rollback. The `lhc` retrieval
+  server joins every set under its own name; a host server named `lhc` is dropped. Needs
+  claude-lhc 0.2.0 or later.
+- **Close:** closing stdin ends the session; the sidecar exits 0.
+
 ## Configuration
 
 - **Claude home:** the same login and settings as Claude Code (`CLAUDE_CONFIG_DIR`, else `~/.claude`).
@@ -34,7 +68,6 @@ is not published separately.
 - **Compact settings** (the t3code Claude LHC instance form; both required, provider-billed tokens):
   `autoCompactWindow` (compact trigger) and `lhcLowerBound` (rebuilt view size), with the lower bound
   below the trigger.
-- **`T3CODE_LHC_NO_INFERENCE=1`:** skip summary derivations (tests and previews).
 - **`T3CODE_THREAD_ID`:** set by the t3code driver and passed through to Claude Code, so `lhc-agent`
   in a seat resolves its sender without `--from`.
 
