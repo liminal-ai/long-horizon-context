@@ -46,6 +46,12 @@ iso_env() {
     "$@"
 }
 
+iso_cmd_env() {
+  require_isolation
+  printf "env -u CC_LHC_RUNTIME_DESCRIPTOR HOME='%s' CC_LHC_HOME='%s/.cc-lhc' CLAUDE_CONFIG_DIR='%s/.claude' XDG_CONFIG_HOME='%s/.config'" \
+    "$ISO_HOME" "$ISO_HOME" "$ISO_HOME" "$ISO_HOME"
+}
+
 new_uuid() { node -e 'console.log(crypto.randomUUID())'; }
 
 TMUX_SESSION=""

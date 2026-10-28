@@ -9,10 +9,10 @@ THREAD_ID="$(echo "$SEED_OUT" | awk '{print $1}')"
 if [ -z "$THREAD_ID" ]; then
   fail "seed failed: $(cat "$EVIDENCE_DIR/compact-seed.err")"; finish smart-compact; exit 1
 fi
-ENV="HOME='$ISO_HOME' CC_LHC_HOME='$ISO_HOME/.cc-lhc' CLAUDE_CONFIG_DIR='$ISO_HOME/.claude' CC_LHC_CLAUDE_BIN='$STANDIN'"
+ENV="$(iso_cmd_env) CC_LHC_CLAUDE_BIN='$STANDIN'"
 SID="$(new_uuid)"
 RC="$(run_in_tmux compact-seed-write "$EVIDENCE_DIR/compact-write.log" \
-  "$ENV node '$CC_LHC_BIN_JS' rollout write --thread-id $THREAD_ID --session-id $SID --token-family claude-2026 --cwd '$ISO_HOME/work' --envelope-from '$REPO_ROOT/packages/cc-lhc/test/fixtures/claude-2.1.226-custom-title.jsonl'")" || RC=124
+  "$ENV node '$CC_LHC_BIN_JS' rollout write --thread-id $THREAD_ID --session-id $SID --token-family claude-2026 --cwd '$ISO_HOME/work' --envelope-from '$REPO_ROOT/packages/cc-lhc/test/fixtures/claude-2.1.226-model-fallback-sequence.jsonl'")" || RC=124
 [ "$RC" = "0" ] || { fail "precondition rollout write rc=$RC"; finish smart-compact; exit 1; }
 pass "precondition: rebuilt session $SID written"
 

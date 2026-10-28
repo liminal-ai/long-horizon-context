@@ -20,8 +20,10 @@ Isolation facts, from the code (read them before driving):
 - Transcripts resolve from `homedir()/.claude/projects`, **not**
   `CLAUDE_CONFIG_DIR`: `packages/cc-lhc/src/rollout/discover.ts`,
   `write-rebuilt.ts`, `src/intake/launch-session.ts`. A throwaway `HOME`
-  is therefore the isolation boundary. Helpers also set `CLAUDE_CONFIG_DIR`
-  and `XDG_CONFIG_HOME` under it so a real `claude` child stays isolated,
+  is therefore the isolation boundary. Every wrapper command a helper
+  runs goes through `iso_env` or `iso_cmd_env` (`helpers/lib.sh`), which
+  also set `CLAUDE_CONFIG_DIR` and `XDG_CONFIG_HOME` under it, so a real
+  `claude` child and cc-lhc's `cc-lhc/config.json` lookup stay isolated,
   and unset `CC_LHC_RUNTIME_DESCRIPTOR` (a live-session capability; never
   set it manually).
 - `CC_LHC_CLAUDE_BIN` overrides the child binary. Seeded drives point it at
@@ -43,7 +45,7 @@ pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native
 pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run stage:prebuild
 pnpm --filter cc-lhc run build
-node packages/cc-lhc/dist/bin.js --lhc-version   # expect: cc-lhc 0.4.5
+node packages/cc-lhc/dist/bin.js --lhc-version   # expect first line: cc-lhc 0.4.5
 ```
 
 Without the addon a launch exits 2 with `cannot establish process identity
@@ -78,7 +80,7 @@ child per the product contract; the wrapper still runs inside the PTY.
 Seeded drives (each prints `VERIFY-CC-LHC <name>: PASS`):
 
 ```sh
-.agents/skills/verify-cc-lhc/helpers/drive-help.sh          # --lhc-help / --lhc-version / unknown-flag exit 2
+.agents/skills/verify-cc-lhc/helpers/drive-help.sh          # --lhc-help (700k/120k policy) / --lhc-version / unknown-flag exit 2
 .agents/skills/verify-cc-lhc/helpers/drive-capture.sh       # scripted session capture (-p, stand-in Claude)
 .agents/skills/verify-cc-lhc/helpers/drive-rebuild.sh       # rollout write -> --resume the rebuilt session
 .agents/skills/verify-cc-lhc/helpers/drive-smart-compact.sh # forced-bounds one-shot Smart Compact (may SKIP, exit 3)
@@ -90,7 +92,7 @@ with `helpers/seed-thread.mjs` (an LHC thread with two settled turns,
 seeded the same way `test/commands/rollout-write.test.ts` does). Seeding
 is a precondition, never proof; the drive itself is the real CLI surface.
 The rebuild drive passes `--envelope-from` a checked-in 2.1.226 rollout
-fixture so the rebuilt file carries a realistic Claude envelope.
+fixture and grades that the rebuilt lines carry its `version`.
 
 Live-Claude drives (credentials required; not seeded): to prove a real
 interactive session, Smart Compact handoff, or the control panel, launch

@@ -61,3 +61,10 @@ and `Gotchas`.
   handoff and carried background work.
 - [Control panel](./control-panel.md) — Ctrl-`]` panel: `/status`,
   `/stats`, `/bounds`, `/smart-compact`, `/export`, `/help`.
+
+## Not yet mapped
+
+These user-facing subcommands (`packages/cc-lhc/src/help.ts`) have no
+feature file or drive yet. A proof that touches them is unverified here:
+`cc-lhc get-turns`, `cc-lhc get-messages`, `cc-lhc tasks
+status|output|stop`, and `cc-lhc backfill-labels`.

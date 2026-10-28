@@ -36,10 +36,11 @@ Preconditions:
   `helpers/drive-smart-compact.sh`. It resumes with
   `--lhc-lower-bound-tokens=10 --lhc-upper-bound-tokens=20
   --lhc-min-runway-tokens=1 --lhc-no-inference`. PASS requires a new
-  session transcript (different id) carrying the seeded history, or a
-  compact record in `wrapper.log`. If the seam stands down the drive
-  exits 3 with `SKIP:` and the last `wrapper.log` signal — that is a
-  recorded gap, never a pass.
+  session transcript (different id), or the `wrapper.log` line
+  `pre-launch Smart Compact rebuilt:`. The seeded codeword in the new
+  transcript is a `NOTE:` when missing, not a failure. If the seam does
+  not fire the drive exits 3 with `SKIP:` and the last `wrapper.log`
+  signal — that is a recorded gap, never a pass.
 - **Manual panel (live only).** With a throwaway-HOME Claude login,
   launch interactively in tmux, settle a turn, press Ctrl-`]`, run
   `/smart-compact`, and capture the panel receipt plus the new session
@@ -49,18 +50,25 @@ Preconditions:
 
 ## Gotchas
 
-- Seeded-drive reality (recorded 2026-10-27): the stand-in's tiny usage
-  (`input_tokens: 10`) and capture-readiness rules can stand the
-  one-shot seam down even with forced bounds. The SKIP branch exists
-  for exactly this; do not fake pressure by editing transcripts.
+- Seeded-drive reality: on 2026-10-28 the forced-bounds drive fired and
+  passed with a new transcript. The one-shot seam can still skip two
+  ways, and the SKIP branch exists for both; do not fake pressure by
+  editing transcripts.
 - Capture that has not reached ready, or a transcript left mid-turn,
-  stands the one-shot seam down by design — the prompt launches on the
-  resumed session and the *next* invocation compacts.
+  skips Smart Compact for this launch by design — the prompt launches on
+  the resumed session and the *next* invocation compacts.
+- A ready, settled seam whose pressure (provider total plus estimate)
+  stays under the trigger logs `cc-lhc one-shot pre-launch seam:
+  below_threshold` and does not rebuild. The stand-in reports
+  `input_tokens: 10`, so the forced bounds must stay that small.
 - Threshold crossing mid-turn is receipted but never mutated mid-turn;
   drive only at settled seams (prompt idle, no open agentic turn).
 - Input typed while Smart Compact owns the session is dropped, never
   replayed. A drive that types through a compact must expect the
   one-line resend notice.
-- Bounds must satisfy upper > lower and upper − lower ≥ runway, or the
-  launch policy is rejected. Tiny bounds are a verification forcing
-  function, not a supported user configuration.
+- Bounds must satisfy upper > lower and upper − lower ≥ runway. An
+  incoherent launch override falls back to the built-in 120k/700k/50k
+  policy, logs the fallback, and the launch continues. A live `/bounds`
+  edit that fails the check is rejected and leaves the policy unchanged.
+  Tiny bounds are a verification forcing function, not a supported user
+  configuration.
