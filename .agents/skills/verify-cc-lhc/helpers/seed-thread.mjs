@@ -1,10 +1,4 @@
 #!/usr/bin/env node
-// Seed precondition ONLY (not proof): create an LHC thread with two settled
-// turns in the isolated registry, using the built `lhc` SDK the same way
-// packages/cc-lhc/test/commands/rollout-write.test.ts seeds its thread.
-// The drives then exercise the real cc-lhc CLI surface on that thread.
-// Usage: seed-thread.mjs <repoRoot> <ccLhcHome> <workDir> <codeword>
-// Prints: <threadId> <threadFilePath>
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";

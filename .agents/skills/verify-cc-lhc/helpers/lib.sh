@@ -1,10 +1,4 @@
 # shellcheck shell=bash
-# Shared isolation + tmux harness for verify-cc-lhc. Source, do not execute.
-# Isolation contract (from packages/cc-lhc/src/intake/paths.ts and
-# src/rollout/discover.ts): cc-lhc state is CC_LHC_HOME (default ~/.cc-lhc)
-# and Claude transcripts are resolved from homedir()/.claude/projects --
-# NOT from CLAUDE_CONFIG_DIR. Throwaway HOME is therefore mandatory;
-# CLAUDE_CONFIG_DIR is set too so a real `claude` child stays isolated.
 
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 REPO_ROOT="$(cd "$SKILL_DIR/../../.." && pwd)"
@@ -14,14 +8,13 @@ STANDIN="$REPO_ROOT/packages/cc-lhc/test/fixtures/oneshot-claude.mjs"
 EVIDENCE_DIR="${VERIFY_CC_LHC_EVIDENCE:-/tmp/verify-cc-lhc-evidence}"
 mkdir -p "$EVIDENCE_DIR"
 
+SKIP_RC=3
 FAILURES=0
 pass() { echo "PASS: $*"; echo "PASS: $*" >>"$EVIDENCE_DIR/results.txt"; }
 fail() { echo "FAIL: $*"; echo "FAIL: $*" >>"$EVIDENCE_DIR/results.txt"; FAILURES=$((FAILURES + 1)); }
 skip() { echo "SKIP: $*"; echo "SKIP: $*" >>"$EVIDENCE_DIR/results.txt"; }
 note() { echo "NOTE: $*"; }
 
-# Refuse to run against the operator's real state. Every drive must call
-# make_isolation first; it exports the isolated env and a marker.
 make_isolation() {
   ISO_HOME="$(mktemp -d "${TMPDIR:-/tmp}/verify-cc-lhc-home-XXXXXX")"
   mkdir -p "$ISO_HOME/work" "$ISO_HOME/.claude"
@@ -43,8 +36,6 @@ require_isolation() {
   esac
 }
 
-# Isolated env prefix for one cc-lhc invocation. Never inherits the
-# operator's CC_LHC_HOME / CLAUDE_CONFIG_DIR / runtime descriptor.
 iso_env() {
   require_isolation
   env -u CC_LHC_RUNTIME_DESCRIPTOR \
@@ -58,9 +49,6 @@ iso_env() {
 new_uuid() { node -e 'console.log(crypto.randomUUID())'; }
 
 TMUX_SESSION=""
-# run_in_tmux <name> <logfile> <command-string>
-# Runs the command in a fresh tmux (PTY) session from $ISO_HOME/work,
-# waits deterministically for its exit-code file, captures the pane.
 run_in_tmux() {
   local name="$1" log="$2" cmd="$3"
   require_isolation
@@ -87,7 +75,6 @@ run_in_tmux() {
   cat "$exit_file"
 }
 
-# Kill only the tmux session this process started; never kill by name pattern.
 cleanup_tmux() {
   if [ -n "${TMUX_SESSION:-}" ]; then
     tmux kill-session -t "$TMUX_SESSION" 2>/dev/null || true

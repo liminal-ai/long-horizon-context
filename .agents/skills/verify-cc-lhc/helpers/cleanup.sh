@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Cleanup: remove the throwaway HOMEs and tmux sessions THIS skill's runs
-# recorded. Evidence in $VERIFY_CC_LHC_EVIDENCE is never removed.
-# Kills only sessions recorded by name below; never kills by pattern.
 set -u
 . "$(dirname "$0")/lib.sh"
 

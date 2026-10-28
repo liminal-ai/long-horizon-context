@@ -1,17 +1,7 @@
 #!/usr/bin/env bash
-# Seeded drive: scripted Claude session capture.
-# A one-shot (`-p`) run through the real wrapper with the repo's stand-in
-# Claude (test/fixtures/oneshot-claude.mjs) as CC_LHC_CLAUDE_BIN -- the
-# production boundary where cc-lhc already isolates the closed binary.
-# The one-shot runs Claude as a plain child (README: one-shot seats are
-# not PTY); the wrapper itself is launched inside an isolated tmux PTY.
-# User-only check: run the prompt, see `ok`, exit 0.
-# Outcome check: transcript JSONL, thread lease, lineage + registry DBs,
-# and wrapper.log thread ownership -- all under the throwaway HOME only.
 set -u
 . "$(dirname "$0")/lib.sh"
 make_isolation
-chmod +x "$STANDIN" 2>/dev/null || true
 
 SID="$(new_uuid)"
 CODEWORD="ALDER-7"
@@ -39,7 +29,6 @@ grep -q "cc-lhc owns thread" "$ISO_HOME/.cc-lhc/wrapper.log" 2>/dev/null \
   || fail "wrapper.log has no thread ownership line"
 cp "$ISO_HOME/.cc-lhc/wrapper.log" "$EVIDENCE_DIR/capture-wrapper.log" 2>/dev/null || true
 
-# Isolation outcome: nothing for this session may exist in the real HOME.
 if find "$HOME/.claude/projects" -name "$SID.jsonl" 2>/dev/null | grep -q .; then
   fail "ISOLATION BREACH: transcript leaked into operator ~/.claude"
 else

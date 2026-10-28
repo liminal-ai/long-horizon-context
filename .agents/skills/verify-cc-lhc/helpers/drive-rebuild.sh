@@ -1,17 +1,7 @@
 #!/usr/bin/env bash
-# Seeded drive: rebuild a thread into a fresh Claude session and continue it.
-# Precondition seeding (seed-thread.mjs) creates a settled thread via the
-# lhc SDK, exactly as test/commands/rollout-write.test.ts does; the DRIVE
-# is the real CLI surface: `cc-lhc rollout write` (the rebuilt-rollout
-# writer Smart Compact uses), then `--resume <new-id> -p` via the wrapper.
-# User-only check: resume the rebuilt session; it answers.
-# Outcome check: rebuilt JSONL carries the seeded history under the NEW
-# session id, lineage is registered, and the resumed transcript grows
-# without re-intaking the replayed prefix as a degraded capture.
 set -u
 . "$(dirname "$0")/lib.sh"
 make_isolation
-chmod +x "$STANDIN" 2>/dev/null || true
 CODEWORD="ALDER-7"
 
 SEED_OUT="$(iso_env node "$SKILL_DIR/helpers/seed-thread.mjs" "$REPO_ROOT" "$ISO_HOME/.cc-lhc" "$ISO_HOME/work" "$CODEWORD" 2>"$EVIDENCE_DIR/rebuild-seed.err")"

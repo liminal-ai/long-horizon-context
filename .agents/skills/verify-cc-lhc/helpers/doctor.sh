@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Doctor: ONE read-only worth-driving check. Touches no operator state:
-# --lhc-version/--lhc-help launch no Claude and run under a throwaway HOME.
 set -u
 # shellcheck source=lib.sh
 . "$(dirname "$0")/lib.sh"
@@ -28,9 +26,8 @@ ADDON="$(ls "$REPO_ROOT"/packages/cc-lhc-native/prebuilds/*/cc_lhc_identity.node
 [ -n "$ADDON" ] && pass "native identity addon present ($ADDON)" \
   || fail "native identity addon missing -- every real launch exits 2 (build:native + stage:prebuild, see Launch)"
 
-[ -x "$STANDIN" ] || chmod +x "$STANDIN" 2>/dev/null || true
-[ -f "$STANDIN" ] && pass "stand-in Claude fixture present (test/fixtures/oneshot-claude.mjs)" \
-  || fail "stand-in fixture missing: $STANDIN"
+[ -x "$STANDIN" ] && pass "stand-in Claude fixture present (test/fixtures/oneshot-claude.mjs)" \
+  || fail "stand-in fixture missing or not executable: $STANDIN"
 
 if [ -f "$CC_LHC_BIN_JS" ]; then
   make_isolation

@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-// Link + structure check for this skill: every relative Markdown link
-// resolves, SKILL.md has frontmatter + the six required sections, every
-// feature file has the four required H2s, every helper named in SKILL.md
-// exists and is executable. Usage: link-check.mjs [skillDir]
 import { accessSync, constants, existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

@@ -1,18 +1,7 @@
 #!/usr/bin/env bash
-# Seeded drive: Smart Compact on the one-shot seat.
-# README contract: a one-shot over the trigger runs Smart Compact BEFORE
-# launching Claude on the rebuilt session. This drive forces tiny bounds
-# (--lhc-lower-bound-tokens / --lhc-upper-bound-tokens / runway) on a
-# resume of a rollout-write-rebuilt session, under throwaway HOME with
-# the stand-in Claude and --lhc-no-inference.
-# PASS requires observable compaction: a NEW session transcript appears
-# (different id) or wrapper.log records the compact + rebuilt write.
-# If the seam stands down, this prints SKIP with the recorded reason --
-# never a fabricated PASS. Exit 3 = skipped.
 set -u
 . "$(dirname "$0")/lib.sh"
 make_isolation
-chmod +x "$STANDIN" 2>/dev/null || true
 CODEWORD="ALDER-7"
 
 SEED_OUT="$(iso_env node "$SKILL_DIR/helpers/seed-thread.mjs" "$REPO_ROOT" "$ISO_HOME/.cc-lhc" "$ISO_HOME/work" "$CODEWORD" 2>"$EVIDENCE_DIR/compact-seed.err")"
@@ -27,7 +16,6 @@ RC="$(run_in_tmux compact-seed-write "$EVIDENCE_DIR/compact-write.log" \
 [ "$RC" = "0" ] || { fail "precondition rollout write rc=$RC"; finish smart-compact; exit 1; }
 pass "precondition: rebuilt session $SID written"
 
-# One normal resume so capture settles on the rebuilt prefix.
 RC="$(run_in_tmux compact-settle "$EVIDENCE_DIR/compact-settle.log" \
   "$ENV node '$CC_LHC_BIN_JS' --lhc-no-inference --resume $SID -p 'settle turn'")" || RC=124
 [ "$RC" = "0" ] && pass "settle resume exited 0" || fail "settle resume rc=$RC"
@@ -55,4 +43,4 @@ fi
 REASON="$(grep -i 'stand.*down\|not.*ready\|degraded\|no persisted\|capture' "$EVIDENCE_DIR/smart-compact-wrapper.log" 2>/dev/null | tail -1)"
 skip "Smart Compact seam did not fire on the stand-in seat (rc=$RC). Last wrapper.log signal: ${REASON:-none}. Live-Claude panel drive (/smart-compact) remains the proof path; see features/smart-compact.md Gotchas."
 echo "VERIFY-CC-LHC smart-compact: SKIP"
-exit 3
+exit "$SKIP_RC"

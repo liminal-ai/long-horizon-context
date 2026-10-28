@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Seeded drive: wrapper help/version surface in an isolated tmux PTY.
-# User-only check: only the terminal and cc-lhc's own --lhc-help text.
-# Outcome check: exit codes + help naming panel commands and env knobs.
 set -u
 . "$(dirname "$0")/lib.sh"
 make_isolation
