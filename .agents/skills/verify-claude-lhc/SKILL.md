@@ -120,8 +120,9 @@ CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs turn
 
 The drive makes one fresh scratch dir and runs standalone with `HOME`,
 `CLAUDE_CONFIG_DIR`, `T3CODE_LHC_HOME` and `TMPDIR` (so the standalone cwd)
-all inside it. The scratch dir sits in the main checkout's run folder (see
-Evidence), so the live Claude also reads the repo's `CLAUDE.md` chain. Auth comes from env only: one of `ANTHROPIC_API_KEY`,
+all inside it. The scratch dir sits under the scratch root (see Evidence),
+outside `~/lim-v2`, so Claude's upward `CLAUDE.md`/`AGENTS.md` lookup from
+the session cwd finds no repo or parent instructions. Auth comes from env only: one of `ANTHROPIC_API_KEY`,
 `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`), or
 `ANTHROPIC_AUTH_TOKEN` with its `ANTHROPIC_BASE_URL`. The throwaway
 config holds no login, and the drive never reads or copies the real
@@ -174,8 +175,13 @@ prototype record agrees; see
 
 Run folder `<run>` is `$VERIFY_RUN_DIR`, default
 `.pstack/runs/verify-claude-lhc` in the main checkout (the first entry of
-`git worktree list`; `.pstack/` is git-ignored). Scratch homes go in
-`<run>/scratch/`; nothing goes to `/tmp`. Default evidence dir is a fresh
+`git worktree list`; `.pstack/` is git-ignored). Scratch homes go under
+the scratch root `$VERIFY_SCRATCH_ROOT`, default
+`${XDG_STATE_HOME:-$HOME/.local/state}/verify-claude-lhc/scratch`; nothing
+goes to `/tmp`. The scratch root stays outside any repo because every drive
+uses a scratch dir as Claude's cwd and Claude loads each `CLAUDE.md` and
+`AGENTS.md` above it; the drive fails preflight when one sits above the
+root. Default evidence dir is a fresh
 `<run>/proof/evidence-*` dir printed as
 `VERIFY-CLAUDE-LHC evidence: <dir>` (override with
 `VERIFY_CLAUDE_LHC_EVIDENCE=<dir>`). Per drive it holds
@@ -203,11 +209,11 @@ which prints each kept dir as `VERIFY-CLAUDE-LHC kept scratch: <dir>`.
 Remove kept scratch with the helper, never a raw `rm`:
 
 ```sh
-.agents/skills/verify-claude-lhc/cleanup.sh <run>/scratch/verify-claude-lhc-restart-XXXX
+.agents/skills/verify-claude-lhc/cleanup.sh "${XDG_STATE_HOME:-$HOME/.local/state}"/verify-claude-lhc/scratch/verify-claude-lhc-restart-XXXX
 ```
 
-It refuses anything that is not a `verify-claude-lhc-*` dir under
-`<run>/scratch/`, and never touches the evidence dir. Sidecars are stopped by closing
+It refuses anything that is not a `verify-claude-lhc-*` dir under the
+scratch root, and never touches the evidence dir. Sidecars are stopped by closing
 stdin (the harness owns every process it started); never kill by process
 name — a user's real sidecar may share it. Note the one non-isolated
 artifact: `labelNativeSession` may log a harmless `native title ... failed`
@@ -221,7 +227,7 @@ script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
 - `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|turn|all>`;
-  env `VERIFY_RUN_DIR`, `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
+  env `VERIFY_RUN_DIR`, `VERIFY_SCRATCH_ROOT`, `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn runs the isolated live
   standalone instead of SKIP).
 - `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <dir>...`.

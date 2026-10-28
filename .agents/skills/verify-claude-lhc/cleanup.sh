@@ -4,9 +4,7 @@ if [ "$#" -eq 0 ]; then
   echo "usage: cleanup.sh <scratch-dir> [<scratch-dir>...]" >&2
   exit 2
 fi
-REPO="$(cd "$(dirname "$0")/../../.." && pwd)"
-MAIN="$(git -C "$REPO" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
-SCRATCH_ROOT="${VERIFY_RUN_DIR:-${MAIN:-$REPO}/.pstack/runs/verify-claude-lhc}/scratch"
+SCRATCH_ROOT="${VERIFY_SCRATCH_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/verify-claude-lhc/scratch}"
 if [ ! -d "$SCRATCH_ROOT" ]; then
   echo "cleanup: no scratch root at $SCRATCH_ROOT; nothing to remove"
   exit 0

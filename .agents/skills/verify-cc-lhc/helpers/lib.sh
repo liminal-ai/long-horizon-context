@@ -8,8 +8,10 @@ STANDIN="$REPO_ROOT/packages/cc-lhc/test/fixtures/oneshot-claude.mjs"
 MAIN_CHECKOUT="$(git -C "$REPO_ROOT" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
 RUN_DIR="${VERIFY_RUN_DIR:-${MAIN_CHECKOUT:-$REPO_ROOT}/.pstack/runs/verify-cc-lhc}"
 EVIDENCE_DIR="${VERIFY_CC_LHC_EVIDENCE:-$RUN_DIR/proof}"
-mkdir -p "$EVIDENCE_DIR" "$RUN_DIR/scratch"
-SCRATCH_DIR="$(cd "$RUN_DIR/scratch" && pwd -P)"
+# Outside ~/lim-v2 so Claude's upward CLAUDE.md/AGENTS.md lookup from the session cwd finds no repo instructions.
+SCRATCH_ROOT="${VERIFY_SCRATCH_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/verify-cc-lhc/scratch}"
+mkdir -p "$EVIDENCE_DIR" "$SCRATCH_ROOT"
+SCRATCH_DIR="$(cd "$SCRATCH_ROOT" && pwd -P)"
 
 SKIP_RC=3
 FAILURES=0

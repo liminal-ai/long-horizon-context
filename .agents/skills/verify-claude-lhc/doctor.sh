@@ -31,7 +31,7 @@ else
   note "WARN claude binary not on PATH; deterministic drives still run, the live turn drive cannot"
 fi
 
-note "isolation: drives set T3CODE_LHC_HOME, CLAUDE_CONFIG_DIR, cwd to fresh dirs under the run folder's scratch/ (never /tmp) and T3CODE_LHC_NO_INFERENCE=1"
+note "isolation: drives set T3CODE_LHC_HOME, CLAUDE_CONFIG_DIR, cwd to fresh dirs under ${VERIFY_SCRATCH_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/verify-claude-lhc/scratch} (outside any repo, never /tmp) and T3CODE_LHC_NO_INFERENCE=1"
 note "live turn (CLAUDE_LHC_LIVE=1 drive.mjs turn) also sets HOME and TMPDIR under its scratch; real homes untouched (~/.t3code-lhc, ~/.claude)"
 live_auth=""
 for v in ANTHROPIC_API_KEY CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_AUTH_TOKEN; do
