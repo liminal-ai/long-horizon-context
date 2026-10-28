@@ -35,8 +35,7 @@ is not published separately.
   `autoCompactWindow` (compact trigger) and `lhcLowerBound` (rebuilt view size), with the lower bound
   below the trigger.
 - **`T3CODE_LHC_NO_INFERENCE=1`:** skip summary derivations (tests and previews).
-- **`T3CODE_THREAD_ID`:** set by the t3code driver and passed through to Claude Code, so `lhc-agent`
-  in a seat resolves its sender without `--from`.
+- **`T3CODE_THREAD_ID`:** set by the t3code driver and passed through to Claude Code.
 
 ## Build from source
 
