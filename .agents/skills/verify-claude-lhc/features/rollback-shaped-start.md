@@ -25,7 +25,7 @@ not through alias choice.
 ## Driving it with the harness
 
 ```sh
-.agents/skills/verify-claude-lhc/drive.mjs rollback
+.agents/skills/verify-claude-lhc/drive.mjs resume-superseded-alias
 ```
 
 The drive seeds start(gen1) + `/compact`(gen2), stops, then starts with

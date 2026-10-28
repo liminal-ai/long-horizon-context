@@ -1,17 +1,4 @@
 #!/usr/bin/env node
-// Deterministic seeded drives for the claude-lhc JSONL sidecar.
-//
-// Usage: drive.mjs <start|compact|restart|rollback|resume-unknown|turn|all>
-// Env:   VERIFY_CLAUDE_LHC_EVIDENCE  evidence dir (default: a fresh mkdtemp, printed)
-//        VERIFY_KEEP_SCRATCH=1       keep isolated homes after the drive
-//        CLAUDE_LHC_LIVE=1           required for the `turn` drive (real model)
-//
-// Every drive runs the compiled sidecar (packages/claude-lhc/dist/sidecar.js)
-// against a fresh T3CODE_LHC_HOME, CLAUDE_CONFIG_DIR, and cwd, with
-// T3CODE_LHC_NO_INFERENCE=1 (deterministic inference callbacks; see
-// packages/claude-lhc/src/lhcHome.ts `createLhc`). No prompt that needs a
-// model answer is sent except in the gated `turn` drive. Print contract:
-// one `VERIFY-CLAUDE-LHC <drive>: PASS|FAIL|SKIP ...` line per drive.
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -122,7 +109,6 @@ const threadIdFrom = (s) => /created thread (\S+)|resumed thread (\S+)/.exec(s.s
 
 function assert(cond, reason) { if (!cond) throw new Error(reason); }
 
-/** Shared seed: fresh start + manual compact on an empty view. Returns ids. */
 async function seedCompacted(scratch, evidenceDir) {
   const sid1 = randomUUID();
   const s = new Sidecar(scratch, "seed");
@@ -194,17 +180,12 @@ const drives = {
     } finally { scratch.cleanup(); }
   },
 
-  async rollback(evidenceDir) {
-    // Rollback-shaped start (PA prototype method, replayed): start with
-    // resume:<superseded gen1 alias> after a compact minted gen2. Current-code
-    // observation to verify, not hide: ANY alias resumes the thread's CURRENT
-    // served view in a fresh generation (session.ts start/resume branch);
-    // it does not roll history back to gen1's point in time.
-    const scratch = new Scratch("rollback");
+  async "resume-superseded-alias"(evidenceDir) {
+    const scratch = new Scratch("resume-superseded-alias");
     try {
       const { sid1, sid2, seed } = await seedCompacted(scratch, evidenceDir);
       const thread = threadIdFrom(seed);
-      const s = new Sidecar(scratch, "rollback");
+      const s = new Sidecar(scratch, "resume-superseded-alias");
       s.send({ type: "start", options: baseOptions(scratch, { resume: sid1 }) });
       await s.waitFor(() => s.logHas("resumed thread"), "resumed-thread log line");
       const genN = /as generation (\S+)/.exec(s.stderr.join("\n"))?.[1];
@@ -247,7 +228,7 @@ async function main() {
     process.exit(1);
   }
   const which = process.argv[2] ?? "all";
-  const names = which === "all" ? ["start", "compact", "restart", "rollback", "resume-unknown", "turn"] : [which];
+  const names = which === "all" ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "turn"] : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;
   for (const name of names) {

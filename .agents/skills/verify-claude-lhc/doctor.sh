@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# Doctor: one read-only worth-driving check for claude-lhc. Writes nothing.
-# Usage: doctor.sh   (run from anywhere; paths resolve from this script)
 set -u
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../../.." && pwd)"

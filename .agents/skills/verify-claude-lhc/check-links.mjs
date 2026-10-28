@@ -1,6 +1,4 @@
 #!/usr/bin/env node
-// Link/structure check for this skill: frontmatter, required sections,
-// relative markdown links, and executable helpers. Usage: check-links.mjs
 import { accessSync, constants, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";

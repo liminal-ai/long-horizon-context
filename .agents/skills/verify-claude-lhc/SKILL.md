@@ -90,7 +90,7 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `start` | `start{sessionId}` → stdin close | startup log names the requested generation, no error frame, clean exit | `registry.sqlite` exists, exactly 1 `threads/*.sqlite` |
 | `compact` | `start` → `user:"/compact"` | frames in native order `status:compacting > status:null:success > boundary > result`, boundary carries a new session id | projected `<gen2>.jsonl` written under the isolated Claude home; still 1 thread |
 | `restart` | seed, stop, `start{resume: gen2}` | stderr `resumed thread ... via <gen2> as generation <gen3>`, exit 0 | projected `<gen3>.jsonl` exists with lines; thread count unchanged (the "you see" bar: restarts onto its own projected file, one thread) |
-| `rollback` | seed, stop, `start{resume: gen1}` (superseded alias) | same-thread resume line via the old alias, fresh generation, exit 0 | 1 thread, new projected file. Observed semantics: any alias resumes the **current** served view — not gen1-era history; see [rollback-shaped-start.md](features/rollback-shaped-start.md) |
+| `resume-superseded-alias` | seed, stop, `start{resume: gen1}` (superseded alias) | same-thread resume line via the old alias, fresh generation, exit 0 | 1 thread, new projected file. Observed semantics: any alias resumes the **current** served view — not gen1-era history; see [rollback-shaped-start.md](features/rollback-shaped-start.md) |
 | `resume-unknown` | `start{resume: <random>}` | one `error` frame: `no LHC thread holds the Claude session ...`, exit 1 | zero thread files created |
 | `turn` | real tool turn + recall | reply text answers from seeded files (live only) | LHC events/aliases via `scripts/standalone.ts` |
 
@@ -182,7 +182,7 @@ All executable, all runnable from a clean shell (paths resolve from the
 script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
-- `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|rollback|resume-unknown|turn|all>`;
+- `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|turn|all>`;
   env `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn gate).
 - `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <dir>...`.
@@ -199,7 +199,7 @@ Resuming an **empty** thread (start-only, never compacted, 0 served
 entries) projects a 0-line native file; the Claude runtime then errors
 `No conversation found with session ID: ...` and the sidecar exits 1,
 although alias resolution and the single-thread store are correct. The
-seeded `restart`/`rollback` drives therefore resume a compacted thread
+seeded `restart`/`resume-superseded-alias` drives therefore resume a compacted thread
 (>= 1 served entry), which exits 0. Recorded in
 [restart-projection.md](features/restart-projection.md) Gotchas — do not
 "fix" the drive to hide it; it is current-code behavior to observe.
