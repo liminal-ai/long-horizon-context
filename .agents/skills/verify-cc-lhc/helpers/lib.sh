@@ -13,6 +13,20 @@ SCRATCH_ROOT="${VERIFY_SCRATCH_ROOT:-${XDG_STATE_HOME:-$HOME/.local/state}/verif
 mkdir -p "$EVIDENCE_DIR" "$SCRATCH_ROOT"
 SCRATCH_DIR="$(cd "$SCRATCH_ROOT" && pwd -P)"
 
+refuse_instruction_ancestors() {
+  local d="$SCRATCH_DIR"
+  while :; do
+    for f in CLAUDE.md AGENTS.md; do
+      if [ -e "$d/$f" ]; then
+        echo "REFUSED: scratch root $SCRATCH_DIR sits under $d/$f; Claude would load it from the session cwd. Set VERIFY_SCRATCH_ROOT outside it." >&2
+        exit 2
+      fi
+    done
+    [ "$d" = "/" ] && break
+    d="$(dirname "$d")"
+  done
+}
+
 SKIP_RC=3
 FAILURES=0
 pass() { echo "PASS: $*"; echo "PASS: $*" >>"$EVIDENCE_DIR/results.txt"; }
@@ -21,6 +35,7 @@ skip() { echo "SKIP: $*"; echo "SKIP: $*" >>"$EVIDENCE_DIR/results.txt"; }
 note() { echo "NOTE: $*"; }
 
 make_isolation() {
+  refuse_instruction_ancestors
   ISO_HOME="$(mktemp -d "$SCRATCH_DIR/verify-cc-lhc-home-XXXXXX")"
   mkdir -p "$ISO_HOME/work" "$ISO_HOME/.claude"
   export VERIFY_CC_LHC_ISOLATED=1
