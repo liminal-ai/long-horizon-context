@@ -98,7 +98,6 @@ describe("manual compact/prune: wrapper-owned handoff, success-only lineage", ()
     const runtime = makeRuntime({ cwd });
     const outcome = await runCompactCommand("compact", runtime);
 
-    expect(outcome.restart).toBeUndefined();
     expect(writeSpy).toHaveBeenCalledOnce();
     expect(lineageSpy).not.toHaveBeenCalled();
     expect(outcome.handoff).toBeDefined();
@@ -118,7 +117,6 @@ describe("manual compact/prune: wrapper-owned handoff, success-only lineage", ()
     const lineageSpy = vi.spyOn(lineageDb, "safeRecordSessionThread").mockResolvedValue({ ok: true });
 
     const outcome = await runCompactCommand("compact", makeRuntime());
-    expect(outcome.restart).toBeUndefined();
     expect(outcome.handoff).toBeUndefined();
     expect(outcome.messages.join("\n")).toMatch(/rebuilt rollout not written after \d+ attempts/);
     expect(outcome.messages.join("\n")).toMatch(/disk full/);
@@ -143,7 +141,6 @@ describe("manual compact/prune: wrapper-owned handoff, success-only lineage", ()
     const lineageSpy = vi.spyOn(lineageDb, "safeRecordSessionThread").mockResolvedValue({ ok: true });
 
     const outcome = await runPruneCommand("prune", makeRuntime());
-    expect(outcome.restart).toBeUndefined();
     expect(lineageSpy).not.toHaveBeenCalled();
     expect(outcome.handoff?.operation).toBe("prune");
     expect(outcome.handoff?.rebuilt.sessionId).toBe(rebuiltId);

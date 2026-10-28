@@ -57,11 +57,10 @@ describe("removed surfaces: Compact-delay grace and wait-or-orphan consent (TC-2
     expect(existsSync(join(PACKAGE_ROOT, "src", "wrapper", "compact-confirm.ts"))).toBe(false);
   });
 
-  it("the census is scoped: child-termination and resume timing are still present and legal", () => {
+  it("the census is scoped: child-termination timing is still present and legal", () => {
     const run = readFileSync(join(PACKAGE_ROOT, "src", "wrapper", "run.ts"), "utf8");
     expect(run).toMatch(/sigtermGraceMs/);
     expect(run).toMatch(/graceful/);
-    expect(existsSync(join(PACKAGE_ROOT, "src", "wrapper", "resume-injection.ts"))).toBe(true);
     expect(FORBIDDEN.some((p) => p.test("compactGraceMs: 30_000"))).toBe(true);
     expect(FORBIDDEN.some((p) => p.test("grace_pending"))).toBe(true);
     expect(FORBIDDEN.some((p) => p.test("sigtermGraceMs: 300"))).toBe(false);

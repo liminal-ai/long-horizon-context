@@ -74,22 +74,3 @@ export function attributeLineSession(
     ...(originSessionId !== undefined ? { originSessionId } : {}),
   };
 }
-
-export function lineSessionConflicts(
-  expectedSessionId: string,
-  lineSessionId: string | null | undefined,
-  lineSessionIdSnake: string | null | undefined,
-): { conflict: boolean; observed?: string; originSessionId?: string } {
-  const attr = attributeLineSession(expectedSessionId, lineSessionId, lineSessionIdSnake);
-  if (attr.conflict) {
-    return {
-      conflict: true,
-      ...(attr.observed !== undefined ? { observed: attr.observed } : {}),
-      ...(attr.originSessionId !== undefined ? { originSessionId: attr.originSessionId } : {}),
-    };
-  }
-  return {
-    conflict: false,
-    ...(attr.originSessionId !== undefined ? { originSessionId: attr.originSessionId } : {}),
-  };
-}

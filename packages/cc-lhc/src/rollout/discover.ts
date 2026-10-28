@@ -171,23 +171,3 @@ export async function resolveContinueSessionId(cwd: string, deps: DiscoverDeps =
   }
   return best?.sessionId;
 }
-
-export async function discoverSessionFile(_cwd: string, _startedAt: Date, _deps: DiscoverDeps = {}): Promise<string> {
-  throw new SessionAttributionError(
-    "missing",
-    "discoverSessionFile (cwd-recency) removed; pass expectedSessionId to discoverExpectedSessionFile",
-  );
-}
-
-export async function findSessionFileOnce(
-  cwd: string,
-  _startedAt: Date,
-  deps: DiscoverDeps = {},
-): Promise<string | null> {
-  void cwd;
-  void deps;
-  throw new SessionAttributionError(
-    "missing",
-    "findSessionFileOnce (cwd-recency) removed; use findExpectedSessionFileOnce",
-  );
-}

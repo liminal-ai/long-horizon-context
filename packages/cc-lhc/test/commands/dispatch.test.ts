@@ -129,7 +129,6 @@ describe("dispatchLhcCommand", () => {
       fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef, isTurnOpen: () => true }),
     );
     expect(outcome.messages).toEqual([TURN_OPEN_REFUSAL]);
-    expect(outcome.restart).toBeUndefined();
     expect(prune).not.toHaveBeenCalled();
   });
 
@@ -141,7 +140,6 @@ describe("dispatchLhcCommand", () => {
       fakeRuntime({ sdk, threadRef: { threadId: "th_test" } as ThreadRef, isTurnOpen: () => true }),
     );
     expect(outcome.messages).toEqual([TURN_OPEN_REFUSAL]);
-    expect(outcome.restart).toBeUndefined();
     expect(previewCompact).not.toHaveBeenCalled();
   });
 

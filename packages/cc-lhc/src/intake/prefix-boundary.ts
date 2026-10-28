@@ -153,8 +153,6 @@ export function verifyConsumedRegionDigest(fd: number, consumedEnd: number, expe
   }
 }
 
-export const CONSUMED_END_ANCHOR_MAX_BYTES = 0;
-
 export function verifyPrefixBoundaryOnHandle(
   handle: ContinuityHandle,
   boundary: PrefixBoundaryVerified,

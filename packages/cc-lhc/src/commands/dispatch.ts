@@ -50,21 +50,8 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   acceptCarryover?: () => CarryoverAcceptance;
 }
 
-export interface SessionRestartPlan {
-  oldSessionId: string;
-  newSessionId: string;
-  rolloutPath: string;
-  rebuiltLineCount: number;
-  expectedReintakeLines: number;
-  replayedPrefixLines: number;
-  captureGeneration?: number;
-  oldRolloutPath?: string;
-  oldRolloutSizeAtRebuild?: number;
-}
-
 export interface DispatchOutcome {
   messages: string[];
-  restart?: SessionRestartPlan;
   handoff?: import("./context-mutation.js").HandoffRequest;
 }
 
@@ -176,8 +163,4 @@ export async function dispatchLhcCommand(commandLine: string, runtime: LhcComman
 
 export function formatCommandOutput(text: string): string {
   return `\r\n\x1b[2K[cc-lhc] ${text.replace(/\n/g, "\r\n\x1b[2K[cc-lhc] ")}`;
-}
-
-export function formatSessionResumeLog(plan: SessionRestartPlan): string {
-  return `[cc-lhc] (compat) session ${plan.oldSessionId} preserved; would inject /resume ${plan.newSessionId} via ${plan.rolloutPath} (disabled on 2.1.226 default path)`;
 }

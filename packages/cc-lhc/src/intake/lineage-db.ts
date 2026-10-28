@@ -753,5 +753,3 @@ export async function bindCaptureThread(input: BindCaptureThreadInput): Promise<
 }
 
 export { defaultLineageDbPath } from "./paths.js";
-
-export const defaultLineagePath = defaultLineageDbPath;

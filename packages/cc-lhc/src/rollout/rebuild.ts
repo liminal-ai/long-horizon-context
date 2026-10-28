@@ -119,13 +119,6 @@ function assistantMessageContent(
   };
 }
 
-export function formatSwapReceipt(oldSessionId: string, newSessionId: string, expectedReintakeLines: number): string {
-  return (
-    `session ${oldSessionId} preserved; LHC view rebuilt as ${newSessionId} ` +
-    `(expect ~${expectedReintakeLines} lines); relaunch with cc-lhc --resume ${newSessionId}`
-  );
-}
-
 export function runtimeNoteRolloutLine(
   text: string,
   sessionId: string,
