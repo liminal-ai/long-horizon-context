@@ -1,0 +1,119 @@
+name: pr-checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-checks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lhc:
+    name: lhc
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (recursive submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install build Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck lhc
+        run: pnpm --filter lhc run typecheck
+
+      - name: Test lhc
+        run: pnpm --filter lhc run test
+
+  claude-lhc:
+    name: claude-lhc
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (recursive submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install build Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build lhc
+        run: pnpm --filter lhc run build
+
+      - name: Typecheck claude-lhc
+        run: pnpm --filter claude-lhc run typecheck
+
+      - name: Test claude-lhc
+        run: pnpm --filter claude-lhc run test
+
+  cc-lhc:
+    name: cc-lhc
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (recursive submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install build Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Build lhc
+        run: pnpm --filter lhc run build
+
+      - name: Build cc-lhc-native (TypeScript)
+        run: pnpm --filter cc-lhc-native run build
+
+      - name: Compile native addon (node-gyp)
+        run: pnpm --filter cc-lhc-native run build:native
+
+      - name: Stage prebuild for linux-x64
+        run: pnpm --filter cc-lhc-native run stage:prebuild
+
+      - name: Build cc-lhc
+        run: pnpm --filter cc-lhc run build
+
+      - name: Typecheck cc-lhc
+        run: pnpm --filter cc-lhc run typecheck
+
+      - name: Test cc-lhc (compiled addon mandatory)
+        run: pnpm --filter cc-lhc exec vitest run --exclude "test/package/**" --exclude test/story0/process-capability/production-path.test.ts
+        env:
+          CC_LHC_NATIVE_REQUIRE_ADDON: "1"
