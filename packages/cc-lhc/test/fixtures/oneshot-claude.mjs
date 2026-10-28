@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { appendFileSync, existsSync, mkdirSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
@@ -36,10 +36,26 @@ if (resumed !== undefined && !existsSync(file)) {
 }
 mkdirSync(dirname(file), { recursive: true });
 
+// Claude chains a resumed prompt to the last record. After /rewind with
+// Restore conversation, the next prompt instead names the parent of the
+// prompt it replaced; ONESHOT_CLAUDE_REWIND=1 writes that shape.
+const chained = existsSync(file)
+  ? readFileSync(file, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((raw) => JSON.parse(raw))
+      .filter((record) => typeof record.uuid === "string" && record.isSidechain !== true)
+  : [];
+const lastPrompt = chained.findLast((record) => record.type === "user" && typeof record.message?.content === "string");
+const parentUuid =
+  process.env.ONESHOT_CLAUDE_REWIND === "1" && lastPrompt !== undefined
+    ? lastPrompt.parentUuid
+    : (chained.at(-1)?.uuid ?? null);
+
 const base = { isSidechain: false, userType: "external", cwd, sessionId, version: "2.1.280" };
 const userUuid = randomUUID();
 const lines = [
-  { ...base, type: "user", uuid: userUuid, parentUuid: null, timestamp: new Date().toISOString(), message: { role: "user", content: prompt } },
+  { ...base, type: "user", uuid: userUuid, parentUuid, timestamp: new Date().toISOString(), message: { role: "user", content: prompt } },
   {
     ...base,
     type: "assistant",
