@@ -1,10 +1,3 @@
-// Story 5 (Chunk 5): derivation work queueing. TC-2.6 (complete batch
-// result), TC-2.7/TC-2.9 (message-owned work and its kind gate), the work
-// halves of TC-3.3/TC-3.6 (Story 4's named debt, paid here), TC-3.8's
-// two-work-items assertion, TC-5.4's no-work-item clause, and the two
-// architecture-risk regressions: restart survival extended to work items and
-// the complete-surface rollback. Work items are asserted below the SDK with
-// direct queue reads — never through the batch result alone.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, type MessageEventInput, messages, threads, turns, type WorkItemRecord } from "../src/index.js";
 import { listItems, type WorkOwner } from "../src/shared-tech/work-queue/index.js";
@@ -49,8 +42,6 @@ function queuedFor(filePath: string, owner: WorkOwner): WorkItemRecord[] {
   }
 }
 
-// Below-SDK count of durable work-item rows: the batch result alone is not
-// proof of durability (anti-shim requirement).
 function rawWorkItemCount(filePath: string): number {
   const db = openRaw(filePath);
   try {
@@ -61,8 +52,6 @@ function rawWorkItemCount(filePath: string): number {
   }
 }
 
-// Full logical read-back across every record kind the epic owns — the
-// complete-surface rollback regression compares this whole.
 async function readBack(filePath: string) {
   const [events, projected, turnRecords, messageWork, turnWork] = await Promise.all([
     intakeStream.listEvents({ filePath }),
@@ -91,7 +80,6 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
     const filePath = await createThread();
     const result = await send(filePath, [validEvent("user_prompt"), validEvent("tool_result")]);
 
-    // The batch result reports both items with full identity.
     expect(result.queuedWork).toContainEqual({
       workItemId: "w-m1-prompt_smoothing-v1",
       owner: "messages",
@@ -105,8 +93,6 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
       sourceRef: { messageId: "m2" },
     });
 
-    // Durable read-back through the owning domain: deterministic ids, status
-    // queued, queuedAt from the injected clock.
     expect(await queuedFor(filePath, "messages")).toEqual([
       {
         workItemId: "w-m1-prompt_smoothing-v1",
@@ -126,13 +112,10 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
       },
     ]);
 
-    // The prompt opened a turn that is still open: no turn-owned work yet,
-    // and each domain reads back only its own items.
     expect(await queuedFor(filePath, "turns")).toEqual([]);
     expect(rawWorkItemCount(filePath)).toBe(2);
   });
 
-  // Tool calls render as recorded; only tool results queue summary work.
   it("TC-2.9: text, thinking, and note messages queue nothing — the kind gate is exact (AC-2.8)", async () => {
     const filePath = await createThread();
     const result = await send(filePath, [
@@ -151,11 +134,7 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
     const original = validEvent("user_prompt");
     await send(filePath, [original]);
 
-    const result = await send(filePath, [
-      original, // duplicate: skipped
-      validEvent("assistant_text"),
-      validEvent("turn_end"),
-    ]);
+    const result = await send(filePath, [original, validEvent("assistant_text"), validEvent("turn_end")]);
 
     expect(result.events).toEqual([
       {
@@ -166,7 +145,6 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
       expect.objectContaining({ outcome: "recorded", messageId: "m2" }),
       expect.objectContaining({ outcome: "recorded" }),
     ]);
-    // turn_end produces no message.
     expect(result.events[2]).not.toHaveProperty("messageId");
     expect(result.turnTransitions).toEqual([
       { action: "closed", turnId: "t1" },
@@ -224,7 +202,6 @@ describe("Flow 3 (SDK): turn-owned work queueing — Story 4's debt paid", () =>
     const explicitItems = await queuedFor(explicitPath, "turns");
     const implicitItems = await queuedFor(implicitPath, "turns");
     expect(explicitItems).toHaveLength(1);
-    // Same item contract modulo queuedAt (wall clock differs between runs).
     const contract = (items: WorkItemRecord[]) => items.map(({ queuedAt: _queuedAt, ...rest }) => rest);
     expect(contract(implicitItems)).toEqual(contract(explicitItems));
     expect(contract(explicitItems)).toEqual([
@@ -259,7 +236,7 @@ describe("Flow 3 (SDK): turn-owned work queueing — Story 4's debt paid", () =>
     const prompt = validEvent("user_prompt");
     const end = validEvent("turn_end");
     await send(filePath, [prompt, validEvent("assistant_text"), end]);
-    await send(filePath, [validEvent("user_prompt")]); // t2 now open
+    await send(filePath, [validEvent("user_prompt")]);
     const baseline = await readBack(filePath);
     const baselineCount = rawWorkItemCount(filePath);
 
@@ -284,9 +261,6 @@ describe("architecture-risk: durability and rollback over the complete record su
     expect(before.messageWork).toHaveLength(2);
     expect(before.turnWork).toHaveLength(1);
 
-    // Every SDK operation opens and closes its own handle, so a fresh
-    // read-back is a real reopen of the real file. The raw scan proves the
-    // rows live in the thread file itself — not an in-memory queue.
     const db = openRaw(filePath);
     try {
       const rows = db
@@ -309,8 +283,6 @@ describe("architecture-risk: durability and rollback over the complete record su
     const baseline = await readBack(filePath);
     const baselineCount = rawWorkItemCount(filePath);
 
-    // A valid prefix that would queue work, then one invalid event: the
-    // batch must reject whole and queue nothing.
     const rejected = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt"),
@@ -326,11 +298,6 @@ describe("architecture-risk: durability and rollback over the complete record su
   });
 });
 
-// ── Story 0 (Epic 02): work-kind registry, handler-map assembly, and the
-// enqueue wrapper's atomicity. The registry and map are FC-0.4; atomicity is
-// Chunk 0's named architecture risk — row + pending form + poke all drop on
-// rollback, because every later queue site (intake, cascade, repair) leans
-// on that invariant.
 import {
   createDbWriteTransaction,
   type DurableWorkDispatcher,
@@ -344,8 +311,6 @@ import {
 import { enqueue } from "../src/shared-tech/work-queue/index.js";
 import { readDerivedForms, setIntakeWalkHook } from "./fixtures/index.js";
 
-// Below-SDK read of derivation rows — enqueue's pending rows are asserted
-// durably, not through the batch result.
 function rawFormRows(filePath: string): Array<{ key: string; state: string }> {
   const db = openRaw(filePath);
   try {
@@ -397,8 +362,6 @@ describe("FC-0.4: work-kind registry and handler-map assembly", () => {
     expect(found.value).toBe(handler);
     const missed = lookupWorkHandler(map, "chunk_summary_brief");
     expect(missed.ok).toBe(false);
-    // One owner per kind: a second table claiming the same kind is a wiring
-    // bug surfaced at construction.
     expect(() => mapWorkQHandlers([{ prompt_smoothing: handler }, { prompt_smoothing: handler }])).toThrow(
       /prompt_smoothing/,
     );
@@ -421,15 +384,11 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
       validEvent("assistant_text"),
       validEvent("turn_end"),
     ]);
-    // Two enqueues (prompt smoothing + turn derivation) → two pokes, both
-    // carrying the thread's resolved id, fired only after COMMIT.
     expect(pokes).toHaveLength(2);
     expect(new Set(pokes).size).toBe(1);
     expect(pokes[0]).toMatch(/^th_/);
     expect(result.queuedWork).toHaveLength(2);
 
-    // The pending state rows rode the same transaction (DD-5): one for the
-    // prompt's derivation, two for the turn's rendering + pre-detailed assembly.
     expect(rawFormRows(filePath)).toEqual([
       { key: "message/m1/smoothed_prompt", state: "pending" },
       { key: "turn/t1/pre_detailed_assembly", state: "pending" },
@@ -442,9 +401,6 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
     const pokes: string[] = [];
     setSchedulerPoke((threadId) => pokes.push(threadId));
 
-    // The prompt's enqueue has already run inside the walk when the hook
-    // fires on the second event and rejects the batch (production rollback
-    // path, same seam Epic 01's atomicity tests use).
     setIntakeWalkHook((_db, eventIndex) => {
       if (eventIndex === 1) throw new Error("induced mid-walk failure after enqueue");
     });
@@ -464,7 +420,6 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
     setSchedulerPoke((threadId) => pokes.push(threadId));
     const clock = () => new Date(FIXED_INSTANT);
 
-    // Rollback leg: the body enqueues, then throws.
     await expect(
       createDbWriteTransaction(
         { filePath },
@@ -484,8 +439,6 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
     expect(rawFormRows(filePath)).toEqual([]);
     expect(pokes).toEqual([]);
 
-    // Commit leg: same enqueue, no failure — and the poke fires after the
-    // body, not inside it.
     const committed = await createDbWriteTransaction(
       { filePath },
       (transaction) => {
@@ -524,8 +477,6 @@ describe("architecture-risk: enqueue atomicity — row, pending form, poke commi
       clock,
     );
     expect(queued.ok).toBe(true);
-    // Versioned ids let the replacement coexist with (not collide into)
-    // the version-1 item (DD-1/DD-3).
     const replacement = await createDbWriteTransaction(
       { filePath },
       (transaction) =>

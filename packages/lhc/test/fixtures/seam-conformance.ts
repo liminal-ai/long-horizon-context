@@ -1,8 +1,3 @@
-// Parameterized seam-contract assertions (Epic 05 DD-13): the same helpers
-// run against the scripted fakes (TC-1.2) and, unchanged, against the real
-// OpenRouter host (TC-4.3) — shared assertion code, never duplicated tests.
-// Framework-agnostic on purpose: plain node:assert throws surface in vitest
-// and in any future runner identically.
 import assert from "node:assert/strict";
 import { type Derivation, initLhc, type Lhc } from "../../src/index.js";
 import type { ModelAssignment, ModelCall, ModelCallInput } from "../../src/shared-tech/inference-types.js";
@@ -24,10 +19,6 @@ export function probeInput(overrides: Partial<ModelCallInput> = {}): ModelCallIn
   };
 }
 
-// AC-1.2's result contract on one probe call: a ModelCall resolves to either
-// `{ ok: true, text }` or `{ ok: false, kind, message }` with `kind` from the
-// failure vocabulary. Catches fixture (and real-host) drift from the
-// boundary contract.
 export async function assertModelCallContract(call: ModelCall, probe: ModelCallInput = probeInput()): Promise<void> {
   const result = await call(probe);
   assert.ok(typeof result === "object" && result !== null, "ModelCall must resolve to a result object");
@@ -52,9 +43,6 @@ async function seedAllSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   assert.ok(created.ok, "conformance fixture: thread creation failed");
-  // Turn 1 carries a tool run (smoothing, tool-call/result summaries,
-  // rendering, compression); turn 2 exists so turn 1's chunk closes under the
-  // tiny target policy and the two chunk summaries enqueue.
   const result = await sdk.intakeStream.messageEvents({ filePath }, [
     validEvent("user_prompt", { payload: { text: "please inspect the fixture file" } }),
     validEvent("tool_call", {
@@ -77,13 +65,6 @@ async function seedAllSevenKinds(sdk: Lhc, store: TempStore): Promise<string> {
   return filePath;
 }
 
-// TC-1.2's routing assertions, extracted so TC-4.3 runs them against the
-// real host unchanged: construct an SDK on the inference path, drive all
-// derivation kinds through a real intake → drain, and assert (1) every kind
-// lands ready, (2) every call that crossed the boundary carried exactly one
-// inference kind's assigned provider/model routing keys, (3) each inference
-// kind's lane was exercised, and (4) every messages value is single-turn
-// shape — system and user roles only, string content (AC-1.2, AC-1.4).
 export async function assertRoutingThroughSdk(
   call: ModelCall,
   assignments: Record<InferenceDerivationType, ModelAssignment>,
@@ -99,8 +80,6 @@ export async function assertRoutingThroughSdk(
     inference: { call: logged, assignments },
     mode: "manual",
     guards: { detailedTurnCompression: { tinyTurnTokens: 1 } },
-    // Tiny target: each placed turn crosses it, so the prior turn's chunk
-    // closes during the drain and the chunk-summary kinds run too.
     chunkPolicy: { targetProjectedTokens: 5, maxProjectedTokens: 4400 },
   });
   const filePath = await seedAllSevenKinds(sdk, store);

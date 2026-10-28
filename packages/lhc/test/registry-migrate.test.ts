@@ -1,9 +1,3 @@
-/**
- * Registry schema migration (R15 / LIM-93): the alias map has to reach the
- * registry a host already has, not only a registry created after this build.
- * The pre-alias registry is the one in the field — schema created lazily on
- * first write, user_version never stamped.
- */
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { threads } from "../src/index.js";
@@ -30,8 +24,6 @@ interface ThreadListingRow {
   created_at: string;
 }
 
-// A registry as builds before the alias map wrote it: the threads listing
-// alone, created outside any transaction, with user_version left at 0.
 function simulatePreAliasRegistry(registryPath: string, rows: ThreadListingRow[]): void {
   const db = new DatabaseSync(registryPath);
   try {
@@ -128,8 +120,6 @@ describe("registry schema migration", () => {
     expect(readSchemaVersion(store.registryPath)).toBe(CURRENT_REGISTRY_SCHEMA_VERSION);
     expect(readThreadListing(store.registryPath)).toEqual(existing);
 
-    // The pre-existing threads are still resolvable through the paths that
-    // never touch aliases.
     const listed = await threads.listThreads({ registryPath: store.registryPath });
     expect(listed.ok).toBe(true);
     if (listed.ok) expect(listed.value.map((info) => info.threadId)).toEqual(existing.map((row) => row.thread_id));

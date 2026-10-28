@@ -1,14 +1,3 @@
-// Story 3 (Epic 02): turn composition and chunk formation — Flow 3. The
-// turn_derivation handler composing from message forms with recorded
-// fallback gaps (TC-3.2), the no-auto-cascade rule (TC-3.3, architecture
-// risk), outcome-explicit tool-run accounts (TC-3.4), placement in the
-// completion transaction (TC-3.5), the accumulated close policy's golden
-// cases (TC-3.6/3.7, architecture risk), the two summary kinds with
-// independent lifecycles (TC-3.8), and determinism under replay (TC-3.9,
-// architecture risk). Every drain dispatches the production handlers
-// registered by the turns domain at initLhc; the TC-3.3/TC-3.8 re-queues
-// drive the queue util directly per the story note (the public re-queue
-// surface is Story 4's).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type BatchResult,
@@ -79,7 +68,6 @@ async function drain(sdk: Lhc, filePath: string): Promise<DrainReport> {
   return result.value;
 }
 
-// One closed prompt+answer turn through real intake.
 async function sendTurn(sdk: Lhc, filePath: string, prompt: string, answer: string): Promise<void> {
   await send(sdk, filePath, [
     validEvent("user_prompt", { payload: { text: prompt } }),
@@ -122,9 +110,6 @@ function structuredRendering(parts: readonly RenderingPart[], turnId = "t1"): st
   return composeStructuredTurnText(parts, turnId);
 }
 
-// The story-sanctioned re-queue path for TC-3.3/TC-3.8: the Story 1 queue
-// util driven directly inside a real transaction (the public re-queue
-// operation with refusal/idempotency semantics is Story 4's surface).
 async function requeueDirect(filePath: string, input: EnqueueInput): Promise<void> {
   const queued = await createDbWriteTransaction({ filePath }, (transaction) => enqueue(transaction, input));
   if (!queued.ok) throw new Error(`direct requeue failed: ${queued.error.reason}`);
@@ -146,9 +131,6 @@ describe("TC-3.1 / AC-3.1: a closed turn lands a rendering and smooth-turn compr
       ["w-t1-detailed_turn_compression-v1", "done"],
     ]);
 
-    // Reconstruct the exact composition: the smoothed form verbatim, the
-    // assistant text raw (never had a form) — proof the rendering consumed
-    // forms, not raw re-derivation.
     const smoothed = deterministicText("smoothPrompt", { text: prompt }, prompt);
     const parts: RenderingPart[] = [
       { messageId: "m1", kind: "user_prompt", text: smoothed, fallback: false },
@@ -205,9 +187,6 @@ describe("TC-3.2 / AC-3.2: a non-ready message form falls back and records a gap
       ["w-t1-detailed_turn_compression-v1", "done"],
     ]);
 
-    // Message-derivation fallback degrades the rendering's inputs; it does
-    // not fail the turn. The ready row stays clean; the fallback is durable
-    // in the log.
     const rendering = formOf(filePath, "t1", "turn_rendering");
     expect(rendering?.state).toBe("ready");
     expect(rendering?.content).toContain("raw prompt one");
@@ -254,9 +233,6 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
     expect(gapped?.gaps).toBeUndefined();
     const placedBefore = readChunks(filePath);
 
-    // Leg 1: repair the failed smoothing through the queue util (now
-    // healthy — the script above is consumed). The dependent must not move:
-    // no live link, no auto-cascade, no queued turn work.
     await requeueDirect(filePath, {
       owner: "messages",
       kind: "prompt_smoothing",
@@ -268,14 +244,9 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
       ["w-m1-prompt_smoothing-v1", "done"],
     ]);
     expect(formOf(filePath, "m1", "smoothed_prompt")?.state).toBe("ready");
-    // Byte-for-byte: the fallback-composed rendering is exactly the row that landed —
-    // content, derivedAt, source version, all of it.
     expect(formOf(filePath, "t1", "turn_rendering")).toEqual(gapped);
     expect(liveCount(filePath)).toBe(0);
 
-    // Leg 2: the explicit rebuild — turn_derivation re-queued at the next
-    // source version through the queue util. Gaps recompute from current
-    // dependency states: the smoothing is ready now, so the gap clears.
     await requeueDirect(filePath, {
       owner: "turns",
       kind: "turn_derivation",
@@ -296,8 +267,6 @@ describe("TC-3.3 / AC-3.3 (architecture risk): derived content stands after depe
     expect(rebuilt?.sourceVersion).toBe(2);
     expect(rebuilt?.gaps).toBeUndefined();
     expect(rebuilt?.content).not.toBe(gapped?.content);
-    // Rebuild keeps placement: membership is never re-cut by derivation —
-    // the turn sits exactly where its first placement put it.
     expect(readChunks(filePath)).toEqual(placedBefore);
   });
 });
@@ -329,8 +298,6 @@ describe("TC-3.4 / AC-3.4: tool runs compose as outcome-explicit accounts; a sta
 
     const rendering = formOf(filePath, "t1", "turn_rendering");
     const runText = rendering?.content ?? "";
-    // Fix 2 grouping (AC-3.4): the three-call edit run folds into ONE run part
-    // after the prompt — outcome-explicit, not one part per tool message.
     expect(runText).toContain("[tool run · edit_file · 3 calls · 2 succeeded, 1 failed]");
     expect(runText).not.toMatch(/\b3 succeeded\b/);
     const toolMessages = [
@@ -392,8 +359,6 @@ describe("TC-3.6 / AC-3.6 (architecture risk): the accumulated close rule — th
       { chunkId: "c1", turnId: "t2", memberIdx: 1 },
       { chunkId: "c2", turnId: "t3", memberIdx: 0 },
     ]);
-    // The close queued both summary kinds for c1 and the drain ran them;
-    // the still-open c2 has none.
     expect(formOf(filePath, "c1", "chunk_summary_detailed")?.state).toBe("ready");
     expect(formOf(filePath, "c1", "chunk_summary_brief")?.state).toBe("ready");
     expect(formOf(filePath, "c2", "chunk_summary_detailed")).toBeUndefined();
@@ -481,8 +446,6 @@ describe("TC-3.7 / AC-3.7: a single compression at or above the max forms its ow
 });
 
 describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with independent lifecycles", () => {
-  // target=max=1: every turn self-chunks and closes immediately, the
-  // smallest deterministic way to manufacture closed chunks.
   const SELF_CHUNK = { targetProjectedTokens: 1, maxProjectedTokens: 1 };
 
   it("both summaries land ready as distinct chunk-level forms", async () => {
@@ -503,8 +466,6 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     const brief = formOf(filePath, "c1", "chunk_summary_brief");
     expect(detailed?.state).toBe("ready");
     expect(brief?.state).toBe("ready");
-    // Detailed is deterministic material assembly; brief still goes through
-    // its own inference operation over projections + outcomes.
     const memberProjections = [formOf(filePath, "t1", "detailed_turn_compression")?.content ?? ""];
     expect(detailed?.content).toBe(memberProjections[0]);
     const briefInputText = detailed?.content ?? "";
@@ -526,7 +487,6 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     const captured = double.captureInputs();
     const sdk = manualSdk(double, SELF_CHUNK);
     const filePath = await newThread();
-    // Two-call edit run, one isError, closing into its own chunk so both summaries derive over it.
     await send(sdk, filePath, [
       validEvent("user_prompt", { payload: { text: "edit two files" } }),
       validEvent("tool_call", {
@@ -559,8 +519,6 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(runText).toContain(`${resultB} ⇒ failed`);
     expect(rendering?.metadata).toBeUndefined();
 
-    // Seam evidence: only the brief call crosses the inference boundary, and
-    // it receives the detailed chunk text rather than raw member projections.
     const briefInput = captured.find((entry) => entry.op === "summarizeChunkBrief")?.input;
     const detailed = formOf(filePath, "c1", "chunk_summary_detailed");
     const detailedText = detailed?.content ?? "";
@@ -572,8 +530,6 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
     expect(detailedText).not.toContain('({"');
     for (const summary of [callA, resultA, callB, resultB]) expect(detailedText).not.toContain(summary as string);
 
-    // Artifact evidence: detailed is member compression only; brief is produced
-    // from detailed and carries size metadata.
     const brief = formOf(filePath, "c1", "chunk_summary_brief");
     expect(detailed?.state).toBe("ready");
     expect(brief?.state).toBe("ready");
@@ -624,8 +580,6 @@ describe("TC-3.8 / AC-3.8: chunk close queues two summary work items with indepe
       ]),
     );
 
-    // Re-queue the brief alone through the queue util (Story 4 owns the
-    // public surface); the detailed form must not move.
     await requeueDirect(filePath, {
       owner: "turns",
       kind: "chunk_summary_brief",
@@ -664,11 +618,7 @@ describe("TC-3.9 / AC-3.9 (architecture risk): chunk boundaries are deterministi
 
     const firstSnapshot = readChunks(first);
     expect(firstSnapshot).toEqual(readChunks(second));
-    // The replay claim is only meaningful if the policy actually cut: the
-    // stream must span more than one chunk.
     expect(firstSnapshot.chunks.length).toBeGreaterThan(1);
-    // No inference joined placement anywhere: the closed chunks' summary
-    // artifacts are byte-identical across the two records too.
     const summariesOf = (filePath: string) =>
       readDerivedForms(filePath)
         .filter((form) => form.subjectKind === "chunk")

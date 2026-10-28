@@ -1,33 +1,3 @@
-/**
- * Pure compact-continuation decision function — whole-seam parity/receipt oracle.
- *
- * Deterministic: same input ⇒ same Decision (including transition path and
- * ordered effects). No I/O. LIM-61 executes stages, then uses this oracle to
- * classify and receipt the completed seam. See contract.ts protocol comment.
- *
- * ## CX-S5: no stop in the compact path
- *
- * Compact is the recovery mechanism, not the thing you recover from. No
- * condition here refuses. Every former refusal is one of:
- * - **warn + continue** — the seam compacts with a loud diagnostic
- *   (incomplete capture, unproven provider identity, unverified open-turn
- *   invariant, unsafe projected runway, unproven provider request, failed host
- *   body validation);
- * - **bounded retry** — a failed compact or install retries within budget and
- *   then continues on the current body;
- * - **decline into ordinary compact** — the continuation machinery hands the
- *   seam to the host's ordinary settled-seam compact on canonical turns
- *   (uncorrelatable tool pairs, invalid protected pair set, unknown contract
- *   version, unavailable continuation boundary);
- * - **discard and start fresh** — an unusable pending forced boundary;
- * - **reclaim or continue** — a stale writer row is reclaimed under host
- *   ownership authority; a live loser continues its current request.
- *
- * Effect ordering is canonical: everything the seam *detected* (boundary
- * discard, writer reclaim, warnings) precedes everything the seam *did*
- * (claim writer, force boundary, compact, marker, install, receipt, release).
- */
-
 import {
   COMPACT_CONTINUATION_CONTRACT_VERSION,
   COMPACT_CONTINUATION_MARKER_ACTION,
@@ -59,11 +29,6 @@ function isAppliedBoundary(b: ForcedContinuationBoundary): b is Extract<ForcedCo
   return b.applied === true;
 }
 
-/**
- * Ordered facts the seam detected before it did anything: a discarded pending
- * boundary, a reclaimed stale writer row, and every degradation warning. These
- * effects lead the receipt's effect list on every terminal path.
- */
 type SeamPrelude = {
   effects: CompactContinuationEffect[];
   boundaryDiscarded: boolean;
@@ -73,7 +38,6 @@ function warn(code: CompactContinuationWarningCode, reason: string): CompactCont
   return { type: "warn", code, reason };
 }
 
-/** Receipt warnings are the `warn` effects, in the order they were detected. */
 function warningsOf(effects: readonly CompactContinuationEffect[]): CompactContinuationWarning[] {
   const out: CompactContinuationWarning[] = [];
   for (const e of effects) {
@@ -82,7 +46,6 @@ function warningsOf(effects: readonly CompactContinuationEffect[]): CompactConti
   return out;
 }
 
-/** Effective bounded retry budget. A failed attempt is never terminal, so min 1. */
 function retryBudgetOf(input: CompactContinuationInput): number {
   const raw = input.policy.compactRetryBudget;
   if (typeof raw !== "number" || !Number.isFinite(raw)) return DEFAULT_COMPACT_RETRY_BUDGET;
@@ -95,7 +58,6 @@ function attemptIndexOf(input: CompactContinuationInput): number {
   return Math.max(1, Math.trunc(raw));
 }
 
-/** Retry accounting for a seam where no compact/install attempt failed. */
 function noRetry(input: CompactContinuationInput): CompactContinuationRetryReceipt {
   return { attemptIndex: attemptIndexOf(input), budget: retryBudgetOf(input), retryAuthorized: false };
 }
@@ -218,15 +180,6 @@ function residual(parts: ResidualParts): CompactContinuationResidualState {
   return { ...parts, pendingBoundaryDiscarded: parts.pendingBoundaryDiscarded ?? false };
 }
 
-/**
- * Applied forced-boundary residual facts must remain truthful on skip/decline
- * exits that never reach repair compact.
- *
- * `markerAlreadyPersisted` is trusted only on repair (`forcedThisSeam: false`).
- * A fresh force (`forcedThisSeam: true`) just minted the continuation turn id,
- * so its boundary-derived marker cannot already exist — never OR an untrusted
- * fresh+already-persisted claim back to residual true.
- */
 function appliedBoundaryResidualOverlay(input: CompactContinuationInput, base: ResidualParts): ResidualParts {
   if (!isAppliedBoundary(input.forcedContinuationBoundary)) return base;
   const trustPriorMarker =
@@ -237,18 +190,11 @@ function appliedBoundaryResidualOverlay(input: CompactContinuationInput, base: R
     forcedContinuationBoundaryApplied: true,
     continuationTurnOpened: true,
     continuationTurnId: input.forcedContinuationBoundary.continuationTurnId,
-    // Residual marker presence: already-persisted fact at entry (repair only).
     markerPersisted: base.markerPersisted || trustPriorMarker,
     originalAgenticTurnStillOpen: false,
   };
 }
 
-/**
- * After a supported input has reached the settled seam and carries
- * `writerClaim: "lhc"`, a decline must still record the idempotent claim_writer
- * and a final release_writer when residual says writerReleased. Never claim or
- * release native/conflict writers.
- */
 function declineEffects(
   input: CompactContinuationInput,
   prelude: SeamPrelude,
@@ -268,7 +214,6 @@ function declineEffects(
 
 function residualMarkerPersisted(input: CompactContinuationInput, attemptPersisted: boolean): boolean {
   if (!isAppliedBoundary(input.forcedContinuationBoundary)) return attemptPersisted;
-  // Fresh force cannot already hold a marker; only repair prior-marker is residual fact.
   const prior =
     input.forcedContinuationBoundary.forcedThisSeam !== true &&
     input.forcedContinuationBoundary.markerAlreadyPersisted === true;
@@ -348,7 +293,6 @@ function decide(
     effects: parts.effects,
     residual: parts.residual,
     retry: parts.retry ?? noRetry(input),
-    // The refuse set is empty in this contract version (CX-S5).
     refused: false,
     refuseCode: null,
     skipped: parts.skipped,
@@ -365,13 +309,6 @@ function decide(
   };
 }
 
-/**
- * Decline into the host's ordinary settled-seam compact on canonical state.
- *
- * The continuation machinery performs no mutation and claims no relief; the
- * canonical turns are schema-stable and compact through the ordinary path. The
- * next provider request is authorized — declining is a recovery path, not a stop.
- */
 function declineToOrdinary(
   input: CompactContinuationInput,
   path: CompactContinuationState[],
@@ -406,7 +343,6 @@ function declineToOrdinary(
         markerServed: false,
         originalAgenticTurnStillOpen: true,
         pendingBoundaryDiscarded: prelude.boundaryDiscarded,
-        // Declining hands the seam to the ordinary compact path — never strands.
         nextProviderRequestAllowed: true,
         ...emptyResidualExtras(input),
       }),
@@ -417,15 +353,6 @@ function declineToOrdinary(
   });
 }
 
-/**
- * Unknown contract version: degrade by **feature omission** (R22).
- *
- * The oracle does not interpret a single byte of version-specific continuation
- * state — misreading it risks semantic corruption. Continuation state is
- * treated as absent in its entirety: the pending boundary is discarded, the
- * continuation machinery is skipped, and the host's ordinary compact runs on
- * canonical turns. No partial parse, no guessing.
- */
 function declineUnsupportedVersion(input: CompactContinuationInput): CompactContinuationDecision {
   const rejected = String(input.contractVersion);
   const reason = `unsupported compact-continuation contract version ${rejected}; oracle is ${COMPACT_CONTINUATION_CONTRACT_VERSION} — continuation state omitted in its entirety, ordinary compact runs on canonical turns`;
@@ -451,8 +378,6 @@ function declineUnsupportedVersion(input: CompactContinuationInput): CompactCont
     safeRunwayThresholdSource: null,
     projectedPressureSafe: null,
   };
-  // Nothing below is read from the unknown-version input: continuation state is
-  // absent by construction, not by interpretation.
   const residualState = residual({
     writerReleased: true,
     priorServingViewIntact: true,
@@ -511,11 +436,6 @@ function declineUnsupportedVersion(input: CompactContinuationInput): CompactCont
   };
 }
 
-/**
- * A live owner holds this LHC thread (R23-S8). This attempt is the loser: it
- * neither steals the row nor strands. It continues its current request and
- * re-competes at the next eligible seam.
- */
 function writerOwnedElsewhere(
   input: CompactContinuationInput,
   path: CompactContinuationState[],
@@ -553,7 +473,6 @@ function writerOwnedElsewhere(
         markerServed: false,
         originalAgenticTurnStillOpen: true,
         pendingBoundaryDiscarded: prelude.boundaryDiscarded,
-        // The loser continues its current request; it is never stranded.
         nextProviderRequestAllowed: true,
         ...emptyResidualExtras(input),
       }),
@@ -599,8 +518,6 @@ function skip(
         markerPersisted: false,
         markerServed: false,
         originalAgenticTurnStillOpen: true,
-        // Skip = wait and re-evaluate. Does not authorize a fresh next request.
-        // Does not cancel an already in-flight transport retry.
         nextProviderRequestAllowed: false,
         ...emptyResidualExtras(input),
       }),
@@ -753,7 +670,6 @@ function degradationReasonsOf(input: CompactContinuationInput): string[] {
   return reasons;
 }
 
-/** Bounded-retry classification shared by compact-failure and install-failure. */
 function retryClassification(input: CompactContinuationInput): {
   retry: CompactContinuationRetryReceipt;
   outcome: CompactContinuationOutcomeKind;
@@ -771,7 +687,6 @@ function retryClassification(input: CompactContinuationInput): {
   };
 }
 
-/** Warning tail for a failed attempt: the failure, plus exhaustion when spent. */
 function attemptFailureWarnings(
   code: "compact_attempt_failed" | "install_attempt_failed",
   reason: string,
@@ -789,11 +704,6 @@ function attemptFailureWarnings(
   return effects;
 }
 
-/**
- * Compact/install attempt failed on the preserve-tool path: bounded retry, then
- * continue on the current body. The original agentic turn stays open, the prior
- * serving view stands, and the next provider request proceeds — never a stop.
- */
 function attemptFailedAfterPreserve(
   input: CompactContinuationInput,
   path: CompactContinuationState[],
@@ -832,7 +742,6 @@ function attemptFailedAfterPreserve(
       markerPersisted: false,
       markerServed: false,
       originalAgenticTurnStillOpen: true,
-      // Relief failed; the session continues on the body it already has.
       nextProviderRequestAllowed: true,
       ...emptyResidualExtras(input, {
         reliefPath: "core_install_failed",
@@ -846,11 +755,6 @@ function attemptFailedAfterPreserve(
   });
 }
 
-/**
- * Compact/install attempt failed after a forced continuation boundary: bounded
- * retry, then continue on the current body. The boundary stays durable and
- * repairable at the next seam; the session keeps working meanwhile.
- */
 function attemptFailedAfterContinue(
   input: CompactContinuationInput,
   path: CompactContinuationState[],
@@ -859,7 +763,6 @@ function attemptFailedAfterContinue(
   effectsSoFar: CompactContinuationEffect[],
   compactRan: boolean,
   continuationTurnId: string,
-  /** True when this attempt inserted the marker (install-failure path). */
   attemptMarkerPersisted: boolean,
 ): CompactContinuationDecision {
   const cls = retryClassification(input);
@@ -893,7 +796,6 @@ function attemptFailedAfterContinue(
       markerPersisted,
       markerServed: false,
       originalAgenticTurnStillOpen: false,
-      // Boundary is durable and repairable; the session is not held hostage to it.
       nextProviderRequestAllowed: true,
       ...emptyResidualExtras(input, {
         reliefPath: input.compactMaterial.protectedEscalationApplied ? "protected_escalation" : "core_install_failed",
@@ -917,12 +819,6 @@ function insertDegradeAfterCompact(effects: CompactContinuationEffect[], degrada
   });
 }
 
-/**
- * Unsafe projected runway and an unproven provider request are diagnostics, not
- * gates: warn and install the best available body. The provider is the final
- * authority on what it accepts, and a provider rejection is recoverable where a
- * stranded session is not.
- */
 function bodyQualityWarnings(input: CompactContinuationInput): CompactContinuationEffect[] {
   const material = input.compactMaterial;
   const effects: CompactContinuationEffect[] = [];
@@ -947,7 +843,6 @@ function bodyQualityWarnings(input: CompactContinuationInput): CompactContinuati
   return effects;
 }
 
-/** Visibility-boundary advance effect when the install moved the boundary. */
 function boundaryAdvanceEffects(input: CompactContinuationInput): CompactContinuationEffect[] {
   const material = input.compactMaterial;
   if (
@@ -967,11 +862,6 @@ function boundaryAdvanceEffects(input: CompactContinuationInput): CompactContinu
   ];
 }
 
-/**
- * Host body-validation acknowledgment effects. A `failed` acknowledgment
- * degrades: the core install stands, the warning is loud, and the next provider
- * request proceeds on the best available body (R10 / R23-S16).
- */
 function hostValidationEffects(hostStatus: "not_required" | "awaiting" | "ok" | "failed"): CompactContinuationEffect[] {
   if (hostStatus === "not_required") return [];
   const effects: CompactContinuationEffect[] = [{ type: "await_host_validation", attemptIdScope: "current_attempt" }];
@@ -1003,12 +893,9 @@ function postCompactTail(
     branch === "preserve_tool" ? "path_preserve_tool" : "path_continue_turn";
   const branchPath: CompactContinuationState[] = [...path, branchState];
 
-  // ── continue_turn: claim → [force if this seam] → compact → marker → … ──
   if (branch === "continue_turn") {
     const boundary = input.forcedContinuationBoundary;
     if (!isAppliedBoundary(boundary) || boundary.continuationTurnId.length === 0) {
-      // No continuation turn identity to key the boundary/marker on, and the
-      // oracle never invents one. Hand the seam to the ordinary compact path.
       return declineToOrdinary(
         input,
         branchPath,
@@ -1041,7 +928,6 @@ function postCompactTail(
       );
     }
 
-    // Body-quality diagnostics never gate the install.
     effectsSoFar.push(...bodyQualityWarnings(input));
 
     insertDegradeAfterCompact(effectsSoFar, degradationReasons);
@@ -1060,12 +946,9 @@ function postCompactTail(
       );
     }
 
-    // Protected-escalation (pending tools + forced boundary) preserves pairs
-    // and may advance visibility boundary. Active non-tool has no protected set.
     const protectedIds = input.continuation.kind === "pending_correlated_tool_result" ? protectedIdsOf(input) : [];
     const escalatedPending = protectedIds.length > 0 && material.protectedEscalationApplied === true;
     const hostStatus = material.hostValidationStatus ?? (escalatedPending ? "awaiting" : "not_required");
-    // Only an unanswered acknowledgment holds the next request; a failure degrades.
     const nextAllowed = hostStatus !== "awaiting";
     let reliefPath: CompactContinuationReliefPath = "none";
     if (escalatedPending) {
@@ -1195,7 +1078,6 @@ function postCompactTail(
     });
   }
 
-  // ── preserve_tool ─────────────────────────────────────────────────────────
   if (input.continuation.kind !== "pending_correlated_tool_result") {
     throw new Error("preserve_tool branch requires pending_correlated_tool_result");
   }
@@ -1229,8 +1111,6 @@ function postCompactTail(
   };
 
   if (!material.installSucceeds) {
-    // Normative preserve-tool order places preserve before install; install
-    // attempt reached ⇒ include preserve effect even when install fails.
     return attemptFailedAfterPreserve(
       input,
       [...pathAfterClaim, "installing"],
@@ -1338,15 +1218,7 @@ function postCompactTail(
   });
 }
 
-/**
- * Evaluate compact-continuation for a completed (or classifiable) seam.
- *
- * Ordering is fixed (see COMPACT_CONTINUATION_TRANSITION_ORDER). Capability-
- * limited hosts still receive the full decision table; they must not claim
- * effects they cannot perform (host adapter concern, not decision rewriting).
- */
 export function decideCompactContinuation(input: CompactContinuationInput): CompactContinuationDecision {
-  // Unknown contract version: omit continuation features entirely (R22).
   if (input.contractVersion !== COMPACT_CONTINUATION_CONTRACT_VERSION) {
     return declineUnsupportedVersion(input);
   }
@@ -1371,16 +1243,10 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
 
   const path: CompactContinuationState[] = ["at_seam", "checking_invariants"];
 
-  // Input-epoch drift is diagnostic only (R1). Settled history is not
-  // invalidated by input that arrived later in the turn; that input belongs to
-  // the next turn. There is no epoch veto at any of the three former sites.
-
   const preludeEffects: CompactContinuationEffect[] = [];
   let boundaryDiscarded = false;
   let effective = input;
 
-  // ── Stage: forced_boundary_state_legality ────────────────────────────────
-  // An unusable applied boundary is discarded and the seam starts fresh (R23-S12).
   const entryBoundary = input.forcedContinuationBoundary;
   if (isAppliedBoundary(entryBoundary)) {
     const wrongKind =
@@ -1400,10 +1266,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
       boundaryDiscarded = true;
       effective = { ...input, forcedContinuationBoundary: { applied: false } };
     } else if (entryBoundary.forcedThisSeam === true && entryBoundary.markerAlreadyPersisted === true) {
-      // A fresh atomic turn_end just minted this continuation turn id, so its
-      // boundary-derived marker cannot already exist. Keep the real boundary —
-      // discarding it would orphan an open continuation turn — and simply do
-      // not trust the contradictory marker claim (residual already ignores it).
       preludeEffects.push(
         warn(
           "boundary_marker_claim_untrusted",
@@ -1413,7 +1275,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
     }
   }
 
-  // ── Stage: writer_claim (stale-row reclaim under host authority, R23-S8) ──
   const writerClaim = effective.invariants.writerClaim;
   if (writerClaim === "native" || writerClaim === "conflict") {
     const authority = effective.invariants.writerOwnershipAuthority ?? null;
@@ -1425,7 +1286,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
           `stale ${writerClaim} writer row reclaimed after host ownership authority confirmed no live owner holds this LHC thread`,
         ),
       );
-      // The row is ours now; downstream paths claim and release LHC normally.
       effective = { ...effective, invariants: { ...effective.invariants, writerClaim: "none" } };
     } else {
       return writerOwnedElsewhere(
@@ -1439,7 +1299,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
     }
   }
 
-  // ── Stage: capture_identity_correlation — warn, never refuse ─────────────
   if (!effective.invariants.captureComplete) {
     preludeEffects.push(
       warn(
@@ -1465,10 +1324,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
     );
   }
 
-  // Uncorrelatable pairs / invalid pair set: the pair cannot be *protected*
-  // through compact, so the protected path is unavailable. Recorded here and
-  // resolved at the branch: below trigger continues normally; above trigger
-  // declines into the ordinary settled-seam compact on canonical state.
   let protectedPathUnavailable: { code: CompactContinuationWarningCode; reason: string } | null = null;
   if (effective.continuation.kind === "pending_correlated_tool_result") {
     if (!effective.continuation.correlationValid) {
@@ -1484,20 +1339,13 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
           "protectedToolCallIds must be a sorted unique non-empty set; declining into ordinary settled-seam compact on canonical state",
       };
     }
-    // Not warned here: the warning describes a decision actually taken. Below
-    // trigger nothing compacts, so an unprotectable pair changes nothing; above
-    // trigger the decline emits it.
   }
 
   const prelude: SeamPrelude = { effects: preludeEffects, boundaryDiscarded };
   const evalPath: CompactContinuationState[] = [...path, "evaluating_pressure"];
 
-  // Repair: applied boundary with forcedThisSeam=false takes precedence over
-  // fresh pressure/usage. Fresh continue-turn also supplies applied boundary
-  // (runtime forced first and filled the turn id).
   if (isAppliedBoundary(effective.forcedContinuationBoundary)) {
     if (protectedPathUnavailable !== null) {
-      // The boundary stays durable and repairable; this seam declines.
       return declineToOrdinary(
         effective,
         evalPath,
@@ -1541,10 +1389,6 @@ export function decideCompactContinuation(input: CompactContinuationInput): Comp
     return postCompactTail(effective, evalPath, prelude, "preserve_tool");
   }
 
-  // Active non-tool above trigger without an applied boundary: the runtime must
-  // force the boundary first and re-enter with the continuation turn id. The
-  // oracle never invents one, so this seam declines into the ordinary compact
-  // path rather than stopping.
   return declineToOrdinary(
     effective,
     evalPath,

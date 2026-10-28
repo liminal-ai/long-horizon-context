@@ -1,7 +1,3 @@
-// Flow 4: batch validation and rejection (TC-4.1, 4.2, 4.3, 4.5, the
-// caller_error + system_error legs of TC-4.4, plus the unknown-field
-// strictness and empty actor/harness supplementals). TC-4.4's corruption leg
-// lands with Story 4's fixture.
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -56,7 +52,6 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
       { batch: [unknownKind], reason: /unknown event kind/ },
       { batch: [missingKey], reason: /idempotencyKey/ },
       { batch: [serverField], reason: /server-generated.*eventOrder/ },
-      // turn_end may carry optional host facts, but unknown keys stay closed.
       { batch: [turnEndWithPayload], reason: /"text".*unexpected|unexpected.*"text"/ },
     ];
 
@@ -105,8 +100,6 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
     );
     expect(rejected.ok).toBe(false);
 
-    // Logical equality at the read-back level (events at this story; the
-    // rollback ladder extends to messages/turns/work in Stories 3-5).
     expect(await readBack(filePath)).toEqual(baseline);
   });
 
@@ -147,7 +140,7 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
 
     const mixed = [
       validEvent("tool_call"),
-      original[0]!, // valid duplicate of a recorded event
+      original[0]!,
       { ...validEvent("turn_end"), payload: { bad: true } } as unknown as MessageEventInput,
     ];
     const rejected = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, mixed));
@@ -156,7 +149,6 @@ describe("Flow 4 (SDK): batch validation and rejection", () => {
     expect(rejected.error.code).toBe("invalid_event");
     expect(rejected.error.eventIndex).toBe(2);
 
-    // Duplicates' original records unchanged; the new events absent.
     expect(await readBack(filePath)).toEqual(baseline);
   });
 

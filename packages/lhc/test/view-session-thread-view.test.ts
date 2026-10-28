@@ -187,11 +187,6 @@ describe("threadView.getSessionThreadView", () => {
   });
 
   it("splits assistant groups at identity boundaries so signatures keep their own provenance", async () => {
-    // Two thinking rows with different capture identities inside one
-    // assistant run (model changed mid-turn). Message-level provenance
-    // covers every signature in a group, so the group must split — otherwise
-    // the second signature would serve under the first identity and the
-    // host's identity gate would re-emit the wrong ciphertext.
     const captured = await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt"),
       validEvent("assistant_thinking", {
@@ -232,13 +227,10 @@ describe("threadView.getSessionThreadView", () => {
     const second = assistants[1]?.content[0];
     expect(first?.type === "thinking" && first.thinkingSignature).toBe("SIG_A");
     expect(second?.type === "thinking" && second.thinkingSignature).toBe("SIG_B");
-    // The trailing plain text (no provenance) inherits the open group.
     expect(assistants[1]?.content.some((part) => part.type === "text")).toBe(true);
   });
 
   it("splits ADJACENT rows on a provider-only conflict — no change event between them", async () => {
-    // No model_change here: the split must come from provenance conflict
-    // detection alone (a change event would flush the group anyway).
     const captured = await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt"),
       validEvent("assistant_thinking", {
@@ -282,8 +274,6 @@ describe("threadView.getSessionThreadView", () => {
     expect(view.ok).toBe(true);
     if (!view.ok) return;
 
-    // History order preserved: assistant(A) BEFORE the model_change marker,
-    // then assistant(B) — and the provider-only difference alone must split.
     const shapes = view.value.entries.map((entry) => (isMessageEntry(entry) ? entry.role : entry.kind));
     expect(shapes).toEqual(["user", "assistant", "model_change", "assistant"]);
     const assistants = view.value.entries.filter(

@@ -1,9 +1,3 @@
-// Fork operations: copy a thread record into a home under a new id, bind it
-// for a named host, stamp its provenance, repair carried derivation failures,
-// and export its raw history as neutral JSON. Every operation is a plain SDK
-// operation over thread references; the CLI verb `lhc thread fork` composes
-// them and holds no logic of its own. Hosts, relays, seats, and the control
-// plane are unknown here: a host is a binding rule and nothing more.
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
@@ -39,23 +33,13 @@ function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-// ---------------------------------------------------------------------------
-// copyThread
-
 export interface CopyThreadInput {
-  /** The record to copy; opened read-only, never written. */
   source: ThreadRef;
-  /** Target file. Refused when it exists. */
   filePath: string;
-  /** Target registry (default: the SDK's default registry). */
   registryPath?: string;
-  /** Explicit new id. Default: a fresh id, unless `keepThreadId` is set. */
   newThreadId?: string;
-  /** Keep the source id (adoption into a home that does not hold it). */
   keepThreadId?: boolean;
-  /** Refuse a copy whose open turn already holds members (default true). */
   requireIdle?: boolean;
-  /** Registry title and cwd; default to the source's registry row when the source is a `{ threadId }` ref. */
   title?: string;
   cwd?: string;
 }
@@ -65,7 +49,6 @@ export interface CopyThreadReceipt {
   sourceThreadId: string;
   filePath: string;
   rekeyed: boolean;
-  /** Schema version the source carried and the version the copy runs after open. */
   schema: { source: number; copy: number };
 }
 
@@ -84,10 +67,6 @@ function readSourceHeader(db: DatabaseSync): SourceHeader {
   return { threadId: row.thread_id, createdAt: row.created_at, schema: version.user_version };
 }
 
-// Idle means the open turn holds nothing the host has not finished: a fork
-// taken with a prompt or tool activity in flight would resume mid-turn on a
-// host that never saw the turn start. Runtime notes (provenance stamps,
-// compact receipts) are not host activity and do not count.
 function openTurnMemberCount(db: DatabaseSync): number {
   const row = db
     .prepare(
@@ -146,9 +125,6 @@ export async function copyThread(input: CopyThreadInput): Promise<OpResult<CopyT
   const threadId = input.keepThreadId === true ? header.threadId : (input.newThreadId ?? generateThreadId());
   const rekeyed = threadId !== header.threadId;
 
-  // Open the copy through the domain (schema migrates here), verify identity,
-  // refuse a mid-turn record, and rekey in place. The copy is the truth for
-  // the idle check: the live source may have moved since the backup.
   const opened = openThreadDatabase(input.filePath);
   if (!opened.ok) {
     deleteThreadFile(input.filePath);
@@ -217,49 +193,25 @@ export async function copyThread(input: CopyThreadInput): Promise<OpResult<CopyT
   };
 }
 
-// ---------------------------------------------------------------------------
-// Host binding table
-
 export type ForkHost = "cc-lhc" | "claude-lhc" | "pi-lhc" | "codex-lhc" | "grok" | "hermes";
 export const FORK_HOSTS: readonly ForkHost[] = ["cc-lhc", "claude-lhc", "pi-lhc", "codex-lhc", "grok", "hermes"];
 
-/**
- * Hosts a fork may read from but not land in. hermes keeps its threads per
- * profile (`<home>/profiles/<name>/lhc/threads/<session>.sqlite`) with no
- * registry, so a copy could only land as an unbound file; until a hermes
- * target is specified, the tool refuses rather than leave one behind.
- */
 export const SOURCE_ONLY_HOSTS: readonly ForkHost[] = ["hermes"];
 export function isSourceOnlyHost(host: ForkHost): boolean {
   return SOURCE_ONLY_HOSTS.includes(host);
 }
 
-/**
- * How a host finds a thread for a native session id. Alias hosts consult the
- * registry alias map; file hosts open `threads/<name>.sqlite` by naming rule
- * (their Rust registries carry no alias tables); pi-lhc picks by cwd or id.
- */
 export type HostBinding = { kind: "alias"; alias: string } | { kind: "file"; fileName: string } | { kind: "none" };
 
-/**
- * The thread schema the Rust hosts (codex-lhc, grok) accept, pinned by the
- * lhc-rs they vendor. A copy lands at the SDK's current version, so a fork
- * for a Rust host is only openable while the two agree; the test that pins
- * this fails loudly the day the SDK moves ahead of the vendored crate.
- */
 export const RUST_HOST_THREAD_SCHEMA_VERSION = 13;
 export const FILE_HOST_THREAD_SCHEMA_VERSION: number = CURRENT_THREAD_SCHEMA_VERSION;
 
-/** Which model provider a host talks to. A fork across providers compacts first (decision 4). */
 export const HOST_PROVIDERS: Readonly<Record<ForkHost, string>> = {
   "cc-lhc": "anthropic",
   "claude-lhc": "anthropic",
-  // pi is multi-provider; it counts as its own so a pi fork compacts unless told not to.
   "pi-lhc": "pi",
   "codex-lhc": "openai",
   grok: "xai",
-  // hermes ran gpt-5.6 through its own harness; its own provider, like pi,
-  // so a fork out of hermes compacts under handoff unless told not to.
   hermes: "hermes",
 };
 
@@ -273,7 +225,6 @@ export interface ForkCompactPlan {
   reason: string;
 }
 
-/** Compact when the providers differ, unless the caller forces or suppresses it. */
 export function forkCompactPlan(
   sourceHost: ForkHost,
   host: ForkHost,
@@ -288,7 +239,6 @@ export function forkCompactPlan(
     : { compact: true, reason: `${from} -> ${to}` };
 }
 
-/** The built-in profile a cross-provider fork compacts under: no verbatim band, no protected closed turn. */
 export const HANDOFF_PROFILE = "handoff";
 
 export function handoffCompactOptions(lowerBound?: number): { profile: string; params?: ViewCompactParams } {
@@ -297,13 +247,6 @@ export function handoffCompactOptions(lowerBound?: number): { profile: string; p
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-/**
- * The id a fork gives its copy. codex-lhc's thread id is the rollout uuid
- * (`codex resume <uuid>` and `threads/<uuid>.sqlite` are the same id), so
- * there the thread id and the session id are one value and must be a uuid;
- * grok names the file after the session but keys the record by its own id,
- * which is minted as a uuid too. Registry hosts keep the SDK's thread ids.
- */
 export function forkThreadId(host: ForkHost, given: { newId?: string; sessionId?: string }): OpResult<string> {
   switch (host) {
     case "codex-lhc": {
@@ -325,17 +268,11 @@ export function forkThreadId(host: ForkHost, given: { newId?: string; sessionId?
   }
 }
 
-// Mirrors each Rust host's path encoder: bytes outside its safe set are
-// percent-encoded. codex keeps alphanumerics and `-`; grok also keeps `_`.
-// Plain uuids pass through both unchanged.
 function encodeForPath(id: string, unsafe: RegExp): string {
   return id.replace(unsafe, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
 }
 const CODEX_UNSAFE = /[^A-Za-z0-9-]/g;
 const GROK_UNSAFE = /[^A-Za-z0-9_-]/g;
-// hermes has no path encoder: its session names are `<yyyymmdd_hhmmss_hex>`
-// and the file is that name verbatim. Anything outside that safe set is
-// refused rather than encoded, since no hermes reader would decode it.
 const HERMES_SAFE = /^[A-Za-z0-9_-]+$/;
 
 export function hostBinding(host: ForkHost, sessionId?: string): OpResult<HostBinding> {
@@ -379,7 +316,6 @@ export interface BindHostInput {
   sessionId?: string;
 }
 
-/** Registers the host's session alias as the thread's current alias. File-bound hosts are refused: their binding is the file name chosen at copy time. */
 export async function bindHost(input: BindHostInput): Promise<OpResult<HostBinding>> {
   const binding = hostBinding(input.host, input.sessionId);
   if (!binding.ok) return binding;
@@ -403,15 +339,11 @@ export async function bindHost(input: BindHostInput): Promise<OpResult<HostBindi
   }
 }
 
-// ---------------------------------------------------------------------------
-// writeIdentityNote
-
 export interface IdentityNoteInput {
   ref: ThreadRef;
   sourceThreadId: string;
   sourceHome?: string;
   seat?: string;
-  /** ISO date; default now. */
   at?: string;
 }
 
@@ -427,7 +359,6 @@ export function identityNoteText(input: Omit<IdentityNoteInput, "ref">): string 
   return `[lhc fork] copied from ${from} on ${at}${seat}`;
 }
 
-/** One runtime note in the record naming where the copy came from; it lands in the open turn and serves in the tail. */
 export async function writeIdentityNote(input: IdentityNoteInput): Promise<OpResult<IdentityNoteReceipt>> {
   if (input.sourceThreadId.trim() === "") {
     return callerError("invalid_thread_ref", "sourceThreadId must be a non-empty id");
@@ -450,9 +381,6 @@ export async function writeIdentityNote(input: IdentityNoteInput): Promise<OpRes
   }
   return { ok: true, value: { text, messageId: first.messageId } };
 }
-
-// ---------------------------------------------------------------------------
-// exportHistory
 
 export interface HistoryBlock {
   blockType: string;
@@ -482,11 +410,9 @@ export interface HistoryExport {
   threadId: string;
   exportedAt: string;
   turns: HistoryTurn[];
-  /** Kinds left out of the export, counted, so a consumer knows what it did not get. */
   omitted: Record<string, number>;
 }
 
-/** Kinds a foreign importer can act on. Thinking, markers, and setting changes stay in the record only. */
 export const HISTORY_EXPORT_KINDS: readonly string[] = [
   "user_prompt",
   "assistant_text",
@@ -495,7 +421,6 @@ export const HISTORY_EXPORT_KINDS: readonly string[] = [
   "runtime_note",
 ];
 
-/** The raw history as neutral JSON, grouped per turn, in record order. Bands, derivations, and blobs are not exported. */
 export async function exportHistory(ref: ThreadRef): Promise<OpResult<HistoryExport>> {
   try {
     const result = await createDbReadTransaction(ref, (transaction): OpResult<HistoryExport> => {
@@ -575,18 +500,9 @@ export async function exportHistory(ref: ThreadRef): Promise<OpResult<HistoryExp
   }
 }
 
-// ---------------------------------------------------------------------------
-// repairDerivations
-
 export interface RepairInput {
   ref: ThreadRef;
-  /** Cap per list (turns, chunks). Default: no cap. */
   limit?: number;
-  /**
-   * Passes to run. Queued work carried in the record drains before each pass,
-   * and a pass that deferred subjects behind work it enqueued is followed by
-   * another. Default 3; deferred counts on the last pass stand as reported.
-   */
   rounds?: number;
 }
 
@@ -594,16 +510,13 @@ export interface RepairTally {
   attempted: number;
   repaired: number;
   failed: number;
-  /** Refused because queued derivation work for the subject is live; drain the instance's work queue first. */
   deferred: number;
 }
 
 export interface RepairReceipt {
   turns: RepairTally;
   chunks: RepairTally;
-  /** Failures the health report still lists after the pass. */
   remainingFailures: number;
-  /** Why subjects failed or deferred in this pass, first REPAIR_ERROR_CAP only. */
   errors: Array<{ subjectKind: "turn" | "chunk"; subjectId: string; code: string; reason: string }>;
 }
 
@@ -611,10 +524,6 @@ export const REPAIR_ERROR_CAP = 20;
 
 const DETAILED_TURN = "detailed_turn_compression";
 
-// The work list is what the loose rederive script computed: every turn whose
-// compression failed, then every closed chunk that holds such a turn plus every
-// chunk whose own summaries failed or blocked. Turns first, because chunk
-// summaries block on their members' compressions.
 async function repairTargets(ref: ThreadRef): Promise<OpResult<{ turns: string[]; chunks: string[] }>> {
   const read = await createDbReadTransaction(ref, (transaction): OpResult<{ turns: string[]; chunks: string[] }> => {
     const db = transaction.db;
@@ -658,16 +567,6 @@ function outcomeOf(result: OpResult<{ outcome?: string; error?: ErrorResult }>):
   return result.value.error?.code === "derivation_work_in_flight" ? "deferred" : "failed";
 }
 
-/**
- * Re-derives failed turn compressions and the chunk summaries they hold up.
- * Runs the instance's inference: call it through an initialised SDK
- * (`sdk.threads.repairDerivations`); the bare module call reports the missing
- * config like every other derive operation. Subjects run one at a time: the
- * work queue claims head-first, so a second synchronous derive started while
- * another is live only queues behind it. Subjects whose work is already
- * queued are deferred, not failed: drain the instance's work queue and run
- * the pass again.
- */
 async function repairPass(input: RepairInput): Promise<OpResult<RepairReceipt>> {
   const targets = await repairTargets(input.ref);
   if (!targets.ok) return targets;
@@ -715,9 +614,6 @@ async function repairPass(input: RepairInput): Promise<OpResult<RepairReceipt>> 
 
 const DEFAULT_REPAIR_ROUNDS = 3;
 
-// Queued derivation work carried in the record runs first, so a pass never
-// meets a subject whose work is still live. Without an instance seam there is
-// nothing to drain; the pass then reports live work as deferred.
 async function drainCarriedWork(filePath: string): Promise<OpResult<number>> {
   const drain = resolveInstanceDrain();
   if (drain === undefined) return { ok: true, value: 0 };
@@ -766,7 +662,6 @@ export async function repairDerivations(input: RepairInput): Promise<OpResult<Re
   return { ok: true, value: receipt as RepairReceipt };
 }
 
-/** Fresh thread id for a caller that must name the target file before the copy (the CLI). */
 export function generateThreadIdForCli(): string {
   return generateThreadId();
 }

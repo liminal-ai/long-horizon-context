@@ -108,8 +108,6 @@ describe("Story 5: runtime-change typing", () => {
     expect(drained.ok).toBe(true);
     if (!drained.ok) return;
 
-    // turn_rendering keeps full texture in stream order; compression reads
-    // the dialog-register pre_detailed_assembly instead.
     const rendering = readDerivedForms(filePath).find(
       (form) => form.subjectId === "t1" && form.derivationType === "turn_rendering",
     )?.content;

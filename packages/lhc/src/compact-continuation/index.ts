@@ -36,27 +36,31 @@
  */
 
 export {
-  type CompactContinuationHostFacts,
-  type CompactContinuationRunResult,
-  type CompactContinuationWriterOwnershipCheck,
   computeAttemptIntent,
   computeOperationIdentity,
   computeRetryPosture,
+  hashAttemptIntent,
+  hashRecord,
+  parseStoredOperationIdentity,
+  type StoredOperationIdentity,
+} from "./internal/identity.js";
+export {
   getCompactContinuationAttemptIntent,
   getCompactContinuationHostValidation,
   getCompactContinuationReceipt,
   getCompactContinuationWriterClaim,
   getPendingCompactContinuationBoundary,
   hasCompactContinuationMarker,
-  hashAttemptIntent,
-  hashRecord,
   listCompactContinuationBoundaries,
   listCompactContinuationReceipts,
   listCompactContinuationStages,
-  parseStoredOperationIdentity,
   recordCompactContinuationHostValidation,
+} from "./internal/read.js";
+export {
+  type CompactContinuationHostFacts,
+  type CompactContinuationRunResult,
+  type CompactContinuationWriterOwnershipCheck,
   runCompactContinuation,
-  type StoredOperationIdentity,
 } from "./internal/run.js";
 
 export type {

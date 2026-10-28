@@ -1,7 +1,3 @@
-// Durable compact-continuation writer, boundary status, stage log, receipts.
-// Domain-owned table access only — no ad hoc SQL outside this module.
-// Schema v10: terminal receipts, immutable identity, force intent, one unresolved boundary.
-
 import type { DatabaseSync } from "node:sqlite";
 import type {
   CompactContinuationDecision,
@@ -35,12 +31,6 @@ export type StageName =
   | "install_succeeded"
   | "install_failed"
   | "compact_failed"
-  /**
-   * Historical stage: the SDK once refused an unsafe projected runway before
-   * install. CX-S5 removed that gate (oversized content is ours to truncate and
-   * the host's exact body check is downstream), so no path writes it now. Kept
-   * so stage logs written by earlier versions still read back.
-   */
   | "unsafe_runway_refused"
   | "receipt_recorded"
   | "writer_released"
@@ -79,10 +69,6 @@ export function readWriterClaim(db: DatabaseSync): WriterClaimRow {
   };
 }
 
-/**
- * Claim the LHC writer for this attempt. Idempotent for the same attemptId.
- * Returns false when another claim is held by a different attempt.
- */
 export function claimLhcWriter(db: DatabaseSync, attemptId: string, claimedAt: string): boolean {
   const current = readWriterClaim(db);
   if (current.claim === "lhc" && current.attemptId === attemptId) {
@@ -112,7 +98,6 @@ export function releaseLhcWriter(db: DatabaseSync, attemptId: string): boolean {
   return Number(result.changes) === 1 || readWriterClaim(db).claim === "none";
 }
 
-/** Test-only: force-clear the writer claim. */
 export function forceClearWriter(db: DatabaseSync): void {
   db.prepare(
     `UPDATE compact_continuation_writer
@@ -121,7 +106,6 @@ export function forceClearWriter(db: DatabaseSync): void {
   ).run();
 }
 
-/** Test-only: seed a held writer claim without going through claimLhcWriter. */
 export function seedWriterClaim(db: DatabaseSync, attemptId: string, claimedAt: string): void {
   db.prepare(
     `UPDATE compact_continuation_writer
@@ -143,10 +127,6 @@ export type StoredCompactContinuationReceipt = {
   decision: CompactContinuationDecision;
 };
 
-/**
- * Persist a receipt. Terminal receipts never overwrite an existing terminal row.
- * Returns: 'inserted' | 'already_terminal' | 'updated_nonterminal'
- */
 export function persistReceipt(
   db: DatabaseSync,
   attemptId: string,
@@ -309,11 +289,6 @@ export function listStageLog(
   }));
 }
 
-/**
- * Insert or update a boundary owned by attemptId.
- * Never changes ownership: if the row exists under a different attempt, throws.
- * Zero-row owner-mismatch updates also throw (do not silently continue).
- */
 export function upsertBoundary(
   db: DatabaseSync,
   row: {
@@ -358,12 +333,6 @@ export function upsertBoundary(
   }
 }
 
-/// Discard a pending/failed compact-continuation boundary owned by this
-/// attempt. Used when the bounded retry budget is exhausted (R23-S9/S10): the
-/// attempt terminalizes on `continue_current_body` and its speculative
-/// boundary bookkeeping must not remain to wedge every fresh attempt. Only
-/// the bookkeeping row is removed — canonical turn/marker bytes and the
-/// terminal receipt stay untouched.
 export function deleteBoundary(db: DatabaseSync, continuationTurnId: string, attemptId: string): void {
   const existing = readBoundary(db, continuationTurnId);
   if (existing === null) return;
@@ -453,11 +422,6 @@ export function readForceIntent(db: DatabaseSync, attemptId: string): ForceInten
   };
 }
 
-/**
- * Mark force intent reconciled with the continuation turn.
- * Throws when no force-intent row exists for this attempt (caller must have
- * recorded intent before turn_end). Idempotent when already reconciled.
- */
 export function markForceIntentApplied(db: DatabaseSync, attemptId: string, continuationTurnId: string): void {
   const existing = db
     .prepare(`SELECT attempt_id FROM compact_continuation_force_intent WHERE attempt_id = ?`)
@@ -472,9 +436,6 @@ export function markForceIntentApplied(db: DatabaseSync, attemptId: string, cont
   ).run(continuationTurnId, attemptId);
 }
 
-/**
- * Find turn opened by a force turn_end event (idempotency key), if recorded.
- */
 export function findContinuationTurnFromForceKey(db: DatabaseSync, turnEndIdempotencyKey: string): string | null {
   const event = db
     .prepare(
@@ -484,7 +445,6 @@ export function findContinuationTurnFromForceKey(db: DatabaseSync, turnEndIdempo
     .get(turnEndIdempotencyKey) as { event_order: number | bigint } | undefined;
   if (event === undefined) return null;
   const order = Number(event.event_order);
-  // The newly opened turn has opened_at_event_order = turn_end event order.
   const turn = db
     .prepare(`SELECT turn_id FROM turns WHERE opened_at_event_order = ? ORDER BY turn_order DESC LIMIT 1`)
     .get(order) as { turn_id: string } | undefined;
@@ -520,10 +480,6 @@ export function readBoundary(db: DatabaseSync, continuationTurnId: string): Boun
   };
 }
 
-/**
- * Read the single unresolved boundary. Schema enforces at most one; if the
- * index is missing and multiple exist, throw (do not silently hide one).
- */
 export function readPendingBoundary(db: DatabaseSync): BoundaryRow | null {
   const rows = db
     .prepare(
@@ -557,11 +513,6 @@ export function readPendingBoundary(db: DatabaseSync): BoundaryRow | null {
   };
 }
 
-/**
- * Whether this thread has ever taken the forced-boundary path (any boundary
- * row, resolved or not). Per-thread mechanism exclusivity (turn parts,
- * AC-7.3): such a thread is never served parts.
- */
 export function hasForcedBoundaryHistory(db: DatabaseSync): boolean {
   return db.prepare(`SELECT 1 AS present FROM compact_continuation_boundary LIMIT 1`).get() !== undefined;
 }
@@ -620,8 +571,6 @@ export function maxEventOrder(db: DatabaseSync): number {
   return Number(row.m);
 }
 
-// ── Host validation (schema v11) ─────────────────────────────────────────────
-
 export type HostValidationStatus = "awaiting" | "ok" | "failed";
 
 export type HostValidationRow = {
@@ -657,10 +606,6 @@ export function readHostValidation(db: DatabaseSync, attemptId: string): HostVal
   };
 }
 
-/**
- * Record awaiting host validation after successful core install.
- * Idempotent for same attempt when already awaiting; refuses overwrite of terminal ok/failed.
- */
 export function recordHostValidationAwaiting(db: DatabaseSync, attemptId: string, recordedAt: string): void {
   const existing = readHostValidation(db, attemptId);
   if (existing !== null) {
@@ -673,10 +618,6 @@ export function recordHostValidationAwaiting(db: DatabaseSync, attemptId: string
   ).run(attemptId, recordedAt, recordedAt);
 }
 
-/**
- * Host records full-body validation result. Does not roll back core install.
- * Only transitions from awaiting (or inserts failed/ok when missing for repair).
- */
 export function recordHostValidationResult(
   db: DatabaseSync,
   attemptId: string,

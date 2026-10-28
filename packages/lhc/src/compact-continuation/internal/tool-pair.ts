@@ -1,12 +1,3 @@
-/**
- * Durable proof of pending correlated tool call/result pairs in the open tail.
- * Host correlationValid is necessary but not sufficient.
- *
- * Contract 2.0.0: prove a sorted unique non-empty set of protected IDs. Each ID
- * must have exactly one live call and result, ordered in the same current open
- * turn after the compact point.
- */
-
 import type { DatabaseSync } from "node:sqlite";
 import { normalizeProtectedToolCallIds } from "../../shared-tech/compact-continuation/index.js";
 import { readOpenTurnIds } from "./store.js";
@@ -47,7 +38,6 @@ export type ProtectedToolPairSetProof =
       ok: true;
       protectedToolCallIds: string[];
       pairs: Array<Extract<ToolPairProof, { ok: true }>>;
-      /** Earliest protected tool_result source_event_order. */
       earliestProtectedResultOrder: number;
       turnId: string;
     }
@@ -58,10 +48,6 @@ export type ProtectedToolPairSetProof =
       failedToolCallId?: string;
     };
 
-/**
- * Prove exactly one live tool_call and one matching live tool_result for
- * toolCallId in the current open turn's uncompacted tail (after compact point).
- */
 export function provePendingToolPair(db: DatabaseSync, toolCallId: string): ToolPairProof {
   const openIds = readOpenTurnIds(db);
   if (openIds.length !== 1) {
@@ -198,10 +184,6 @@ export function provePendingToolPair(db: DatabaseSync, toolCallId: string): Tool
   };
 }
 
-/**
- * Prove the full protected set: sorted unique non-empty; every id has exactly
- * one live call/result pair in the same open turn after the compact point.
- */
 export function proveProtectedToolPairSet(
   db: DatabaseSync,
   protectedToolCallIds: readonly string[],
@@ -213,10 +195,8 @@ export function proveProtectedToolPairSet(
   if (
     normalized.length !== new Set(protectedToolCallIds.filter((id) => typeof id === "string" && id.length > 0)).size
   ) {
-    // normalize already unique; detect input duplicates that differed only by empties.
   }
   if (protectedToolCallIds.length !== normalized.length) {
-    // Either empties or duplicates in input.
     const nonEmpty = protectedToolCallIds.filter((id) => typeof id === "string" && id.length > 0);
     if (nonEmpty.length !== new Set(nonEmpty).size) {
       return { ok: false, reason: "duplicate_protected_id", detail: "protectedToolCallIds contains duplicates" };

@@ -1,6 +1,3 @@
-// Flow 1: thread creation, registry, resolution (TC-1.1, 1.2, 1.3, 1.5, 1.6
-// plus lazy-init and read-path-equivalence supplementals). TC-1.4 is owned by
-// Story 2 and lives in test/intake.test.ts.
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -66,7 +63,6 @@ describe("Flow 1 (SDK): thread creation, registry, resolution", () => {
     expect(result.value.threadId).toMatch(/^th_[a-z0-9]+$/);
     expect(existsSync(threadPath)).toBe(true);
 
-    // AC-1.3: the id reads back from the file alone, no registry involved.
     const metadata = readMetadata(threadPath);
     expect(metadata.thread_id).toBe(result.value.threadId);
     expect(metadata.token_estimator).toBe(TOKEN_ESTIMATOR_ID);
@@ -288,7 +284,6 @@ describe("Flow 1 (SDK): thread creation, registry, resolution", () => {
     expect(byId.value.filePath).toBe(threadPath);
     expect(byPath.value.filePath).toBe(threadPath);
 
-    // Both reads reach the same thread: identical metadata through either ref.
     expect(readMetadata(byId.value.filePath).thread_id).toBe(created.value.threadId);
     expect(readMetadata(byPath.value.filePath).thread_id).toBe(created.value.threadId);
 
@@ -300,7 +295,4 @@ describe("Flow 1 (SDK): thread creation, registry, resolution", () => {
     if (unknown.ok) return;
     expect(unknown.error.code).toBe("thread_not_found");
   });
-
-  // TC-1.4 (full id/path equivalence under message-events): Story 1's named
-  // deferral, closed by Story 2 — the test lives in test/intake.test.ts.
 });

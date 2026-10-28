@@ -1,4 +1,3 @@
-// Pre-dial-in template kept under its versioned name for provenance.
 import type { ToolOutcome } from "../derivation.js";
 import type { PromptTemplate } from "./index.js";
 

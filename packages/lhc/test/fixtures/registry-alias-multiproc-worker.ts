@@ -1,18 +1,3 @@
-/**
- * Separate-process registry alias worker for the R15 concurrency evidence.
- * Invoked via: tsx registry-alias-multiproc-worker.ts <specJson> <outJson> <readyPath> <goPath>
- *
- * Barrier protocol matches write-lock-multiproc-worker.ts:
- * 1. Worker finishes imports, then writes READY to readyPath.
- * 2. Worker waits until goPath exists.
- * 3. Parent waits for READY from every worker, then writes goPath so all sides
- *    hit the registry at once.
- *
- * Modes:
- *  advance — register a fresh alias as current, repeatedly.
- *  resolve — read the thread's current alias and prove the pair is consistent.
- *  claim   — race every worker to register ONE shared alias against its own thread.
- */
 import { existsSync, writeFileSync } from "node:fs";
 
 import { threads } from "../../src/index.js";
@@ -55,10 +40,6 @@ const failures: string[] = [];
 let observations = 0;
 let claimed: { ok: boolean; code?: string } = { ok: false };
 
-// A current pointer must always name an alias registered to that same thread.
-// If registration and advancement were separate commits, a reader between them
-// would see a current alias that resolves to nothing — that is the violation
-// this records rather than an incidental read failure.
 async function proveCurrentIsResolvable(currentAlias: string): Promise<void> {
   const resolved = await threads.resolveAlias({ alias: currentAlias, registryPath: spec.registryPath });
   if (!resolved.ok) {
@@ -99,8 +80,6 @@ if (spec.mode === "resolve") {
       await proveCurrentIsResolvable(current.value.currentAlias);
     }
 
-    // Entry through the oldest alias must land on the thread and on an alias
-    // that thread really holds — both from the one resolve read.
     const viaSeed = await threads.resolveAlias({ alias: seedAlias, registryPath: spec.registryPath });
     if (!viaSeed.ok) {
       violations.push(`seed alias ${seedAlias} stopped resolving: ${viaSeed.error.code}`);

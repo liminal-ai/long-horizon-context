@@ -104,8 +104,6 @@ describe("FC-0.4: fixture builders", () => {
   });
 });
 
-// ── Story 0 (Epic 02): inference callbacks double, shared types, fixture builders ──
-
 import { afterEach, beforeEach } from "vitest";
 import {
   type Derivation,
@@ -126,8 +124,6 @@ import {
   threadWithToolRun,
 } from "./fixtures/index.js";
 
-// One call per inference-backed operation with a fixed, distinct input — the operation sweep
-// FC-0.1/FC-0.2 iterate.
 function callAllOperations(double: InferenceCallbacks): Array<Promise<InferenceResult>> {
   return [
     double.smoothPrompt({ text: "please smooth this prompt text" }),
@@ -159,8 +155,6 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
       if (!result.ok) continue;
       expect(result.text.startsWith(`${OPERATION_MARKERS[index]}(`)).toBe(true);
     }
-    // Input-derived, not canned: a different input to the same operation
-    // yields different marked output.
     const double = createInferenceCallbacksDouble();
     const a = await double.smoothPrompt({ text: "first input" });
     const b = await double.smoothPrompt({ text: "second input" });
@@ -193,8 +187,6 @@ describe("FC-0.1 / FC-0.2: deterministic inference callbacks double", () => {
     expect(r1).toMatchObject({ ok: false });
     expect(r2).toMatchObject({ ok: false });
     expect(r3.ok).toBe(true);
-    // ...and exactly N calls consumed the script: the recovered output is
-    // the deterministic one a fresh double produces.
     const fresh = await createInferenceCallbacksDouble().smoothPrompt({ text: "x" });
     expect(r3).toEqual(fresh);
   });
@@ -271,7 +263,6 @@ describe("FC-0.1 (production seam): initLhc assembles with the double injected w
       maxProjectedTokens: 4400,
     });
     expect(sdk.scheduler.mode).toBe("manual");
-    // The Epic 01 surfaces ride the assembled SDK.
     expect(sdk.threads.newThread).toBeTypeOf("function");
     expect(sdk.intakeStream.messageEvents).toBeTypeOf("function");
     expect(sdk.intakeStream.initLhc).toBeTypeOf("function");
@@ -370,8 +361,6 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
     }
     const states = new Set(forms.map((f) => f.state));
     expect([...states].sort()).toEqual(["blocked", "failed", "pending", "ready"]);
-    // State-shape contract: ready carries content, failed/blocked carry
-    // reasons, pending carries neither.
     for (const form of forms) {
       if (form.state === "ready") expect(form.content).toBeDefined();
       if (form.state === "failed" || form.state === "blocked") {
@@ -391,8 +380,6 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
     expect(toolForm).toBeDefined();
     expect(toolForm?.metadata).toEqual({ outcome: "succeeded" });
     expect(toolForm?.content).not.toContain("succeeded");
-    // The shared vocabulary is the compile-time contract both owning domains
-    // consume; this read shape is that type.
     const typed: Derivation | undefined = toolForm;
     expect(typed?.state).toBe("ready");
   });
@@ -407,15 +394,12 @@ describe("FC-0.3 / FC-0.6: derived-form vocabulary and thread builders, verified
     } finally {
       db.close();
     }
-    // The damage is live: intake refuses the file as corrupt, exactly as
-    // Epic 01 defines the state.
     const rejected = await withEstimator(o200k, () =>
       intakeStream.messageEvents({ filePath }, [validEvent("user_prompt")]),
     );
     expect(rejected.ok).toBe(false);
     if (rejected.ok) return;
     expect(rejected.error.code).toBe("turn_state_corrupt");
-    // The queued turn_derivation work the damage sits under is still there.
     const queueDb = openRaw(filePath);
     try {
       const queued = queueDb.prepare("SELECT kind FROM work_item WHERE owner = 'turns' ORDER BY rowid").all() as Array<{

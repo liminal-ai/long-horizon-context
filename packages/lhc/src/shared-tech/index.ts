@@ -1,7 +1,3 @@
-// Public technical surface for mechanism-only capabilities consumed by LHC
-// product domains. Sub-capabilities with their own public entrypoints
-// (`work-queue`, `token-counting`, `logging`, `prompts`) remain importable
-// directly; everything else should flow through this index.
 export * from "./classify.js";
 export * from "./compact-continuation/index.js";
 export * from "./content-blocks.js";

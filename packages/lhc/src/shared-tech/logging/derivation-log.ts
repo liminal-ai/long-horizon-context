@@ -1,5 +1,3 @@
-// Append-only execution history for inference-backed derivations. State stays
-// compact (pending | ready | failed | blocked); this table carries the story.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import type { SubjectKind } from "../derivation.js";
 import type { DbReadTransaction, DbWriteTransaction } from "../persist.js";
@@ -62,7 +60,6 @@ function insertDerivationLog(path: string, entry: DerivationLogEntry): void {
       JSON.stringify(entry.payload),
     );
   } catch {
-    // Fail-soft: logging must not affect derivation execution.
   } finally {
     db?.close();
   }

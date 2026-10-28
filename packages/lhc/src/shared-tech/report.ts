@@ -1,7 +1,3 @@
-// The report row mapper shared by owner report queries. Each domain owns its
-// one-query join and derivation_type→kind mapping; the raw-row →
-// DerivationReportEntry mapping is owner-blind and lives here so owners cannot
-// drift on how state, metadata, gaps, and queue detail read back.
 import type {
   DependencyGap,
   DerivationMetadata,

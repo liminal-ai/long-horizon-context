@@ -1,12 +1,3 @@
-// Story 1's registered test handlers: one per work kind, each calling the
-// matching inference callback operation with deterministic input derived from the
-// item's source id and handing the resulting form content back through the
-// HandlerOutcome contract. Real handlers (Stories 2–3) read records; these
-// exist so the drain's mechanics — claim, terminal paths, report —
-// are exercised against the real handler seam with the double scripted per
-// test. Registered by assigning into the SDK's assembled map, the same map
-// production domain tables merge into (DD-6).
-
 import type {
   DurableWorkDispatcher,
   DurableWorkDispatcherMap,
@@ -32,9 +23,6 @@ const WORK_KINDS: readonly WorkKind[] = [
 ];
 
 export interface TestHandlerHooks {
-  // Fires when a handler begins running an item — i.e. after the item's
-  // claim committed and any earlier item's completion landed. The kill and
-  // hold runners hang their marker/sleep protocol here.
   onHandlerStart?: (item: { workItemId: string; kind: string }) => void | Promise<void>;
 }
 

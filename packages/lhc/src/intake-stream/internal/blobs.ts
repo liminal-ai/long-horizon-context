@@ -1,8 +1,3 @@
-// The one place an event payload's content blocks are rewritten: binary and
-// opaque payload strings leave for the blob table and `{ $blob, bytes }`
-// references take their place. Which payload keys carry blocks is fixed by the
-// intake types (`blocks` on user_prompt and tool_result, `block` on
-// assistant_thinking and tool_call); everything else passes through untouched.
 import { type ExtractedBlob, extractBlobs } from "../../shared-tech/index.js";
 
 export function extractPayloadBlobs<P>(payload: P): { payload: P; blobs: ExtractedBlob[] } {

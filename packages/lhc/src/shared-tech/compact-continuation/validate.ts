@@ -1,8 +1,3 @@
-/**
- * Structural validation for compact-continuation parity fixtures and receipts.
- * Pure: no I/O. Suitable for TypeScript tests now and Rust ports later.
- */
-
 import {
   COMPACT_CONTINUATION_CONTRACT_VERSION,
   COMPACT_CONTINUATION_HOST_CAPABILITIES,
@@ -53,7 +48,6 @@ function isBool(value: unknown): value is boolean {
   return typeof value === "boolean";
 }
 
-/** Closed-shape: reject unknown keys on contract-owned input objects. */
 function rejectUnknownKeys(
   obj: Record<string, unknown>,
   allowed: readonly string[],
@@ -94,7 +88,6 @@ const EFFECT_TYPES = new Set([
   "omit_signed_reasoning",
   "reclaim_writer",
   "discard_pending_boundary",
-  // Historical only — the refuse set is empty in this contract version (CX-S5).
   "refuse",
 ]);
 const RELIEF_SET = new Set<string>(COMPACT_CONTINUATION_RELIEF_PATHS);
@@ -270,7 +263,6 @@ function validateContinuation(raw: unknown, issues: ValidationIssue[]): void {
     rejectUnknownKeys(raw, ["kind", "protectedToolCallIds", "correlationValid"], "continuation", issues);
   }
   if (kind === "pending_correlated_tool_result") {
-    // Reject dual-field shim / legacy single id.
     if ("toolCallId" in raw) {
       issues.push(issue("continuation.toolCallId", "removed in contract 2.0.0; use protectedToolCallIds"));
     }
@@ -353,8 +345,6 @@ function validateForcedBoundary(raw: unknown, issues: ValidationIssue[]): void {
   if (typeof raw["continuationTurnId"] !== "string" || raw["continuationTurnId"].length === 0) {
     issues.push(issue("forcedContinuationBoundary.continuationTurnId", "required non-empty string when applied"));
   } else if (!/^t\d+$/.test(raw["continuationTurnId"])) {
-    // Soft shape check: turn ids are tN; still accept any non-empty string? Ruling says tN.
-    // Require t + digits for parity stability.
     issues.push(issue("forcedContinuationBoundary.continuationTurnId", "must match turn id shape t<digits>"));
   }
   if (!isBool(raw["forcedThisSeam"])) {
@@ -363,7 +353,6 @@ function validateForcedBoundary(raw: unknown, issues: ValidationIssue[]): void {
   if (!isBool(raw["markerAlreadyPersisted"])) {
     issues.push(issue("forcedContinuationBoundary.markerAlreadyPersisted", "must be a boolean when applied"));
   }
-  // Fresh force just minted continuationTurnId; boundary marker cannot already exist.
   if (raw["forcedThisSeam"] === true && raw["markerAlreadyPersisted"] === true) {
     issues.push(
       issue(
@@ -460,7 +449,6 @@ function validateMaterial(raw: unknown, issues: ValidationIssue[]): void {
   }
 }
 
-/** Validate a CompactContinuationInput shape (fixture input side). */
 export function validateCompactContinuationInput(raw: unknown): ValidationResult {
   const issues: ValidationIssue[] = [];
   if (!isObject(raw)) {
@@ -494,7 +482,6 @@ export function validateCompactContinuationInput(raw: unknown): ValidationResult
   validateForcedBoundary(raw["forcedContinuationBoundary"], issues);
   validateMaterial(raw["compactMaterial"], issues);
 
-  // Reject unsafe combined token sums before arithmetic (pressure = base + estimate).
   if (
     isObject(raw["providerUsage"]) &&
     raw["providerUsage"]["available"] === true &&
@@ -722,7 +709,6 @@ function validateResidual(raw: unknown, issues: ValidationIssue[]): void {
   }
 }
 
-/** Receipt structural rules shared by fixtures and live decisions. */
 export function validateCompactContinuationReceipt(raw: unknown): ValidationResult {
   const issues: ValidationIssue[] = [];
   if (!isObject(raw)) {
@@ -790,7 +776,6 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
 
   validateResidual(raw["residual"], issues);
 
-  // Warnings mirror the ordered `warn` effects exactly (same codes, same order).
   if (!Array.isArray(raw["warnings"])) {
     issues.push(issue("warnings", "must be an array"));
   } else {
@@ -850,8 +835,6 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
     }
   }
 
-  // Never-strand rule: no non-skip outcome may withhold the next provider
-  // request except while a host validation acknowledgment is still awaited.
   if (isObject(raw["residual"]) && raw["skipped"] !== true) {
     if (
       raw["residual"]["nextProviderRequestAllowed"] === false &&
@@ -909,7 +892,6 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
     issues.push(issue("skipCode", "must be null when not skipped"));
   }
 
-  // Force-boundary effects must tie to turnEndReason.
   if (Array.isArray(raw["effects"])) {
     const types = raw["effects"].map((e) => (isObject(e) ? e["type"] : null));
     const hasForce = types.includes("force_turn_end");
@@ -932,7 +914,6 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
       }
     }
 
-    // Outcomes that imply a forced boundary (including degraded + post-boundary refuse).
     const boundaryOutcomes = new Set([
       "compact_continue_turn",
       "degraded_compact",
@@ -952,9 +933,6 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
       }
     }
 
-    // Mutual exclusions: ordinary preserve vs marker/force.
-    // Contract 2.0.0 protected escalation intentionally combines force + marker
-    // + preserve_tool_pairs_verbatim (and optional boundary advance).
     const hasAdvance = types.includes("advance_visibility_boundary");
     const protectedEscalationEffects = hasPreserve && (hasForce || hasMarker || hasAdvance);
     if (hasPreserve && hasMarker && !protectedEscalationEffects) {
@@ -963,21 +941,15 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
     if (hasPreserve && hasForce && !protectedEscalationEffects) {
       issues.push(issue("effects", "preserve_tool path must not force turn_end"));
     }
-    // When preserve pairs with force/marker it is protected escalation — allowed.
     if (hasPreserve && hasForce && !hasMarker && hasAdvance) {
-      // force without marker is incomplete escalation; still allow residual refuse paths.
     }
 
-    // force_turn_end implies opensContinuationTurn semantics (no separate open effect).
     if (hasForce && types.includes("open_continuation_turn")) {
       issues.push(
         issue("effects", "open_continuation_turn is not a separate effect; force_turn_end opens the turn atomically"),
       );
     }
 
-    // Meaningful order: claim before release; force before compact when both present;
-    // degrade after compact and before install; compact before install.
-    // Residual writerReleased + claim_writer implies a final release_writer.
     if (hasClaim && isObject(raw["residual"]) && raw["residual"]["writerReleased"] === true && !hasRelease) {
       issues.push(issue("effects", "claim_writer with residual.writerReleased requires release_writer"));
     }
@@ -1026,8 +998,6 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
         issue("residual.priorServingViewIntact", "install failure must not imply a partially installed view"),
       );
     }
-    // A failed install never claims a served marker or a successful install,
-    // whatever the outcome vocabulary of the receipt that recorded it.
     const installFailed =
       raw["refuseCode"] === "install_failed" ||
       (Array.isArray(raw["warnings"]) &&
@@ -1044,9 +1014,6 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
       issues.push(issue("residual.markerPersisted", "insert_continuation_marker requires markerPersisted"));
     }
 
-    // Continuation receipt fields vs effects.
-    // markerServed on continuation means served into installed view; may be false
-    // while hasMarker+markerPersisted on install_failed.
     if (isObject(raw["continuation"])) {
       if (raw["continuation"]["markerServed"] === true && !hasMarker) {
         issues.push(issue("continuation.markerServed", "true requires insert_continuation_marker"));
@@ -1065,7 +1032,6 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
       }
     }
 
-    // Success continue-turn outcomes require force (or residual pending boundary) + marker.
     if (raw["outcome"] === "compact_continue_turn") {
       if (raw["turnEndReason"] !== CONTEXT_COMPACT_CONTINUE_REASON) {
         issues.push(issue("turnEndReason", "compact_continue_turn requires context_compact_continue"));
@@ -1075,17 +1041,12 @@ export function validateCompactContinuationReceipt(raw: unknown): ValidationResu
       }
     }
 
-    // silence unused (boundaryOutcomes reserved for future tighter checks)
     void boundaryOutcomes;
   }
 
   return { ok: issues.length === 0, issues };
 }
 
-/**
- * Cross-check that a Decision is internally consistent and that receipt
- * mirrors decision fields used by parity fixtures.
- */
 export function validateCompactContinuationDecision(decision: CompactContinuationDecision): ValidationResult {
   const issues: ValidationIssue[] = [];
   const r = validateCompactContinuationReceipt(decision.receipt);
@@ -1107,7 +1068,6 @@ export function validateCompactContinuationDecision(decision: CompactContinuatio
     issues.push(issue("terminalState", `unknown state ${decision.terminalState}`));
   }
 
-  // Compact/no_reduction/failure paths must include selected branch state.
   const path = decision.transitionPath;
   if (path.includes("compacting")) {
     if (!path.includes("path_preserve_tool") && !path.includes("path_continue_turn")) {
@@ -1115,7 +1075,6 @@ export function validateCompactContinuationDecision(decision: CompactContinuatio
     }
   }
 
-  // Missing provider usage must not pass through below_trigger.
   if (decision.receipt.pressure.providerBaseTokens === null && path.includes("below_trigger")) {
     issues.push(issue("transitionPath", "missing provider usage must not route through below_trigger"));
   }
@@ -1123,10 +1082,6 @@ export function validateCompactContinuationDecision(decision: CompactContinuatio
   return { ok: issues.length === 0, issues };
 }
 
-/**
- * Re-run the pure decision and compare against an expected decision object
- * (fixture expected side). Used by table-driven parity tests.
- */
 export function assertDecisionParity(
   actual: CompactContinuationDecision,
   expected: CompactContinuationDecision,
@@ -1162,7 +1117,6 @@ export function assertDecisionParity(
   return { ok: issues.length === 0, issues };
 }
 
-/** Type-narrowing helper for tests: load fixture JSON as typed input. */
 export function asCompactContinuationInput(raw: unknown): CompactContinuationInput {
   const v = validateCompactContinuationInput(raw);
   if (!v.ok) {

@@ -31,9 +31,6 @@ import {
   readMutableMessage,
 } from "./internal/store.js";
 
-// LHC's projected block kinds, plus the Messages API block names for the
-// content blocks a message carried beyond its text (rows 1..n; block 0 is
-// always the text-shaped projection). See shared-tech/content-blocks.ts.
 export type BlockType =
   | "text"
   | "tool_call"
@@ -45,7 +42,7 @@ export type BlockType =
 
 export interface Block {
   blockType: BlockType;
-  content: Record<string, unknown>; // per-kind shape as projected, verbatim source content
+  content: Record<string, unknown>;
 }
 
 export interface MessageRecord {
@@ -56,37 +53,19 @@ export interface MessageRecord {
   tokenEstimate: number;
   actor: string;
   harness: string;
-  // The source event's recorded_at: when the event that produced this message
-  // was durably recorded. Part of the message's source-event identity (it
-  // pairs with sourceEventOrder), read from the durable event, never a
-  // read-time clock.
   recordedAt: string;
   turnId: string;
-  // Host-observed provider usage from assistant_text (schema v5). Absent when
-  // the source event did not carry it (other kinds, pre-v5 rows, hosts that omit).
   providerUsage?: Record<string, unknown>;
-  // Host-supplied step index (schema v12). Absent when the source event did
-  // not carry it; never inferred.
   stepIndex?: number;
-  // Stored derivations for messages that are derivation sources. Kinds with no
-  // derivable output carry no rows and no key. Stored state is returned
-  // verbatim, never re-derived on read.
   derivations?: Derivation[];
-  // The deleted-audit marker is present only on deleted records, which only
-  // the includeDeleted listing and show read ever surface. A default list never
-  // carries the key.
   deleted?: boolean;
 }
 
-// The event as the walk holds it after recording: the validated input plus
-// its server-stamped order and timestamp.
 export type RecordedEvent = EventRecord;
 
 export type MessageCreated = {
   messageId: string;
   kind: Exclude<EventKind, "turn_end">;
-  // Carried for tool activity only: the pairing key the queue sites need —
-  // tool_result handling runs late-result lookup against it.
   toolCallId?: string;
 } | null;
 
@@ -95,14 +74,6 @@ export interface MessageCreateResult {
   queuedWork: WorkItemRecord[];
 }
 
-// Cross-domain surface, called by intake-stream inside the batch transaction.
-// Synchronous and throwing by design: message creation failure propagates to the
-// pipeline's catch and rejects the whole batch. Recorded events without
-// messages is the stranded state the transaction exists to prevent. Returns
-// null for turn_end (no message).
-// turnId is the membership stamp, settled by the pipeline before this call:
-// the current open turn after this event's turn intake. Written once, never
-// updated.
 export function create(
   transaction: DbWriteTransaction,
   recordedEvent: RecordedEvent,
@@ -112,9 +83,6 @@ export function create(
   if (projected === null) return { message: null, queuedWork: [] };
   const kind = recordedEvent.eventKind as Exclude<EventKind, "turn_end">;
   const messageId = `m${recordedEvent.eventOrder}`;
-  // providerUsage rides assistant_text only; projectEvent leaves it on the
-  // event payload and storage writes it as a message column (not a block).
-  // exactOptionalPropertyTypes: omit the key when absent — do not pass undefined.
   const row: Parameters<typeof insertMessage>[1] = {
     messageId,
     sourceEventOrder: recordedEvent.eventOrder,
@@ -145,11 +113,6 @@ export function create(
   return { message, queuedWork: queueMessageWork(transaction, message) };
 }
 
-// The kind gate, exact by design: a prompt queues prompt_smoothing, a tool
-// result queues tool_result_summary, nothing else queues anything —
-// text, thinking, and note messages are not derivation sources. Cross-domain
-// surface, called by intake-stream inside the batch transaction for every
-// recorded message, so the item commits (or rolls back) with the batch.
 function queueMessageWork(transaction: DbWriteTransaction, message: MessageCreated): WorkItemRecord[] {
   if (message === null) return [];
   const items: WorkItemRecord[] = [];
@@ -157,7 +120,6 @@ function queueMessageWork(transaction: DbWriteTransaction, message: MessageCreat
   if (kind !== undefined) {
     const derivation = MESSAGE_WORK_DERIVATIONS[kind];
     if (derivation === undefined) {
-      // Every queuing kind names its derivation above; a miss is a wiring bug.
       throw new Error(`no derived derivation mapped for message work kind ${kind}`);
     }
     items.push(
@@ -183,19 +145,11 @@ function threadNotFound(filePath: string): { ok: false; error: ErrorResult } {
   };
 }
 
-// Bounded-listing options: from/to are source-event-order bounds, limit caps
-// the count after bounds, includeDeleted is the audit opt-in. All optional:
-// existing callers see visible messages, unbounded, in record order.
-//
-// `forUserChat: true` hides typed compact-continuation markers (and any future
-// kinds that are model/inspect visible but not ordinary user chat). Default
-// list/show retain markers for inspection and retrieval.
 export interface MessageListOptions {
   from?: number;
   to?: number;
   limit?: number;
   includeDeleted?: boolean;
-  /** When true, exclude kinds that are not ordinary user chat (e.g. markers). */
   forUserChat?: boolean;
 }
 
@@ -206,8 +160,6 @@ function invalidBounds(reason: string): ErrorResult {
   return { errorClass: "caller_error", code: "invalid_bounds", reason };
 }
 
-// Bounds mistakes are operational caller errors returned as results, never a
-// silent empty list a caller could mistake for an empty window.
 function validateListOptions(opts: MessageListOptions): ErrorResult | undefined {
   const integers: ReadonlyArray<readonly [string, number | undefined]> = [
     ["from", opts.from],
@@ -235,10 +187,6 @@ export async function list(threadRef: ThreadRef, filter?: MessageListOptions): P
   }
   try {
     return await createDbReadTransaction(threadRef, (transaction) => {
-      // Bounds resolve the window first, then derivation read-back rides only
-      // that window: each record carries its stored derivations, attached from
-      // one grouped query scoped to the listed ids, never every message-owned
-      // derivation in a large thread.
       let records = readMessages(transaction.db, filter ?? {});
       if (filter?.forUserChat === true) {
         const hidden = new Set<string>(USER_CHAT_HIDDEN_KINDS);
@@ -259,26 +207,12 @@ export async function list(threadRef: ThreadRef, filter?: MessageListOptions): P
   }
 }
 
-// In-transaction read for coordinators that already hold an open thread
-// handle (thread-view's compact selection): the live message records in
-// source order with their projected blocks, so thread-view asks the messages
-// owner for its records instead of reading the message tables itself. The
-// async `list` is the threadRef-scoped surface for normal callers; this is
-// the same record set on a caller-owned handle, mirroring turns.getChunkText.
 export function readLiveMessages(db: DatabaseSync): MessageRecord[] {
   return readMessages(db, {});
 }
 
-// The single-message view returns the canonical record: every block with
-// complete content, full tool results, never view-shortened derivations. It
-// also joins message derivations with their states and mechanically stamped
-// metadata from the owner's report read.
 export interface MessageDetail extends Omit<MessageRecord, "derivations"> {
-  // Always present and honest: show on a deleted message returns the record
-  // flagged, never not-found.
   deleted: boolean;
-  // The owner report's queue-joined entries, never synthesized here: the same
-  // `reportMessageDerivations` read messages.report serves, scoped by id.
   derivations: DerivationReportEntry[];
 }
 
@@ -306,12 +240,6 @@ export async function show(threadRef: ThreadRef, messageId: string): Promise<OpR
   }
 }
 
-// ── report and repair ────────────────────────────────────────────
-
-// This owner's repair report: every message-owned derivation's durable state
-// joined with live queue detail in one query — the five operational
-// situations (pending, ready, failed, blocked) read from the rows
-// without any queue API. Needs no inference; reads degrade, never block.
 export async function report(
   threadRef: ThreadRef,
   opts?: { notReady?: boolean; messageId?: string },
@@ -326,11 +254,6 @@ export async function report(
   }
 }
 
-// Synchronous message-owned derivation. For each message id, the domain
-// selects the one message-owned derivation implied by the stored message kind
-// (`user_prompt` -> `smoothed_prompt`, `tool_result` -> `tool_result_summary`),
-// runs the existing handler, and lands the normal version-checked derivation
-// write before returning. Non-derivable message kinds return `not_derivable`;
 export async function derive(threadRef: ThreadRef, messageIds: string[]): Promise<OpResult<MessageDeriveResult[]>> {
   const config = resolveInstanceConfig();
   if (config === undefined) {
@@ -377,12 +300,6 @@ export async function derive(threadRef: ThreadRef, messageIds: string[]): Promis
   }
 }
 
-// ── mutations ────────────────────────────────────────────────────
-
-// The mutation result contract: what changed in the record, which dependent
-// derivations cleared, which dropped (delete only), what replacement work
-// queued, and which still-queued old items the cascade tidied away. Shared by
-// edit and delete.
 export interface MutationResult {
   changed: { messageIds: string[]; turnIds: string[] };
   cleared: CascadeClear[];
@@ -391,19 +308,6 @@ export interface MutationResult {
   superseded: string[];
 }
 
-// Editing changes a closed-turn message's content and blocks, re-stamps the
-// token estimate, and walks the full dependent chain: clear to pending,
-// supersede queued old work, and enqueue replacements at the next source
-// version in one transaction.
-// Synchronous and local by contract: everything above commits before this
-// returns; the re-queued rebuilds run through the normal drain (background
-// mode needs no further call — the enqueue pokes ride the commit). Events
-// are never touched, and no generated thread-view is either — visibility
-// arrives at the next compact/rebuild.
-// Refusals read through the deleted-filtered view and enforce the closed-turn
-// target boundary: only a message in a closed turn is editable. An open-turn
-// message is refused as turn_open, a missing or deleted message is
-// message_not_found, and a refusal changes nothing.
 export async function edit(
   threadRef: ThreadRef,
   edit: { messageId: string; content: string },
@@ -454,16 +358,6 @@ export async function edit(
   }
 }
 
-// ── delete ───────────────────────────────────────────────────────
-
-// Delete is message-record level: the deleted_at stamp plus the delete cascade
-// (own derivations dropped, turn and chunk cleared and re-queued for minus-one
-// composition) land in one transaction. The source events are never touched;
-// event read-back keeps returning them. Validation reads the same filtered view
-// as edit, so a missing, deleted, or double-deleted target is message_not_found
-// and an open-turn target is turn_open. The delete-specific refusal is prompt
-// protection: deleting the turn's initiating prompt is refused because
-// initiating-prompt and whole-turn delete are unsupported.
 export async function remove(threadRef: ThreadRef, removal: { messageId: string }): Promise<OpResult<MutationResult>> {
   try {
     const result = await createDbWriteTransaction(threadRef, (transaction): OpResult<MutationResult> => {

@@ -103,9 +103,6 @@ export function compactChunkMaterialFromStoredMembers(
   if (row?.state === "ready" && row.content !== null) {
     return { kind: "ready", content: row.content };
   }
-  // Optional chunk summaries never fail closed. Unreadable canonical members
-  // return blocked; the compact path treats that as absent material and gaps
-  // the entry rather than stopping.
   const fallback = storedMemberConcat(db, chunkId);
   if (fallback.kind !== "concat") return fallback;
   return {
@@ -114,7 +111,6 @@ export function compactChunkMaterialFromStoredMembers(
   };
 }
 
-/** Receipt warning.reason: failure class, plus original derivation reason when present. */
 export function compactFallbackReason(
   row: { state: string; reason: string | null } | undefined,
   derivationType: string,

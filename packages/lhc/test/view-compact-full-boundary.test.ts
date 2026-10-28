@@ -122,9 +122,6 @@ describe("compact full-band boundary rounding", () => {
   it("evicts an oversized newest closed turn ahead of an empty open turn", async () => {
     const preview = await oversizedFinalTurn(false);
 
-    // Token split puts most of t2 on the smooth side. Empty open turn is not
-    // a reason to keep t2 in full; tail starts after t2 close with no
-    // mappable messages.
     expect(preview.compactPoint).toBe(6);
     expect(preview.firstKeptMessageId).toBeNull();
   });
@@ -145,8 +142,6 @@ describe("compact full-band boundary rounding", () => {
   });
 
   it("compactPointUpperBound keeps the compact point behind a later event order", () => {
-    // Token split at 60 would evict t2 (compactPoint=7). The bound keeps the
-    // point at t1 close so later events stay in the full tail.
     const selection = selectArrangement(selectionInputs(MID_THREAD_TURNS, MID_THREAD_MESSAGES), {
       lowerBound: 60,
       percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
@@ -157,8 +152,6 @@ describe("compact full-band boundary rounding", () => {
   });
 
   it("compactPointUpperBound snaps to the greatest closed-turn boundary, not a raw clamp", () => {
-    // Upper bound 5 is inside t2 (closedAt=7). The greatest legal
-    // closed-turn boundary <= 5 is t1.closedAt=3, not 5 itself.
     const selection = selectArrangement(selectionInputs(MID_THREAD_TURNS, MID_THREAD_MESSAGES), {
       lowerBound: 60,
       percentages: { full: 100, smooth: 0, detailed: 0, brief: 0 },
@@ -200,8 +193,6 @@ describe("compact full-band boundary rounding", () => {
   });
 
   it("evicts a straddling turn even when the only newer message is a runtime_note", () => {
-    // Same mid-thread token layout as compactPointAt(60). A runtime_note is
-    // not mappable, but emptiness no longer overrides the token split.
     const turns: SelectionTurn[] = [
       { turnId: "t1", turnOrder: 1, status: "closed", openedAt: 1, closedAt: 3 },
       { turnId: "t2", turnOrder: 2, status: "closed", openedAt: 4, closedAt: 7 },
@@ -226,8 +217,6 @@ describe("compact full-band boundary rounding", () => {
 
   it("runtime_note-only tail leaves firstKeptMessageId null after token-split eviction", async () => {
     const { sdk, filePath } = await newSdk();
-    // t1 small, t2 oversized (token-split evicts). Open turn holds only a
-    // runtime_note — not mappable, so the preview tail has no PI anchor.
     const captured = await sdk.intakeStream.messageEvents({ filePath }, [
       validEvent("user_prompt", { payload: { text: "small first turn" } }),
       validEvent("assistant_text", { payload: { text: "done" } }),

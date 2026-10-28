@@ -1,5 +1,3 @@
-// Pre-dial-in template kept under its versioned name. Input bounding is applied
-// by the adapter before this template renders.
 import type { ToolOutcome } from "../derivation.js";
 import type { PromptTemplate } from "./index.js";
 

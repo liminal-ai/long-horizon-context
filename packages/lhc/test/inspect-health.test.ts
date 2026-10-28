@@ -1,9 +1,3 @@
-// Story 2 (Epic 04), default suite: TC-4.1–4.3 — the inspect health report.
-// Counts by owner/kind/state assembled entirely from the owners' report
-// surfaces (AC-4.1), actionable failure detail (AC-4.2), a repair preview
-// that is reported and never executed (AC-4.3), rebuild visibility bracketing
-// a drain (AC-4.4), and live queue visibility consistent with the state
-// counts in the same report (AC-4.5).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type HealthReport, initLhc, intakeStream, threads } from "../src/index.js";
 import {
@@ -53,10 +47,6 @@ describe("TC-4.1 / AC-4.1, AC-4.5: counts per owner/kind/state and queue consist
     if (!health.ok) return;
     const report = health.value;
 
-    // Every owner/kind/state count, exact, in deterministic order: 13 turns'
-    // smoothings ready + t14's pending; the tool-heavy middle's summaries
-    // with the two scripted failures; t13's turn forms blocked on the real
-    // source damage; the three closed chunks' summaries ready.
     expect(report.owners).toEqual([
       { owner: "messages", kind: "smoothed_prompt", counts: { ...ZERO, ready: 13, pending: 1 } },
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 6, failed: 2 } },
@@ -67,8 +57,6 @@ describe("TC-4.1 / AC-4.1, AC-4.5: counts per owner/kind/state and queue consist
       { owner: "turns", kind: "turn_rendering", counts: { ...ZERO, ready: 12, blocked: 1 } },
     ]);
 
-    // Queue visibility from the same report's live joins: exactly the one
-    // still-queued smoothing item, consistent with the pending count.
     expect(report.queue).toEqual({ queued: 1, claimed: 0 });
     const pendingTotal = report.owners.reduce((sum, row) => sum + row.counts.pending, 0);
     expect(report.queue.queued + report.queue.claimed).toBe(pendingTotal);
@@ -81,7 +69,6 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
     const { filePath, sdk } = fixture;
     const report = healthValue(await sdk.inspect.health({ filePath }));
 
-    // Actionable failure detail is enough to target a re-derive without raw SQL.
     const failed = report.failures.filter(
       (entry) => entry.reason.startsWith("rate_limit") || entry.reason.startsWith("content_refusal"),
     );
@@ -102,8 +89,6 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
       },
     ]);
 
-    // Blocked forms surface as failures too — with the damage named — but
-    // never as repair targets.
     const blocked = report.failures.filter((entry) => !failed.includes(entry));
     expect(blocked.map((entry) => [entry.owner, entry.subjectKind, entry.subjectId, entry.derivationType])).toEqual([
       ["turns", "turn", fixture.blockedTurnId, "pre_detailed_assembly"],
@@ -113,9 +98,6 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
       expect(entry.reason.length).toBeGreaterThan(0);
     }
 
-    // The preview lists exactly the failed-and-not-blocked set, in report
-    // order — and previews only: the read changed nothing (the delta assert
-    // in TC-4.1 covers the same operation).
     expect(report.repairPreview).toEqual([
       {
         owner: "messages",
@@ -131,8 +113,6 @@ describe("TC-4.2 / AC-4.2, AC-4.3: failure detail and repair preview", () => {
       },
     ]);
 
-    // Never executed: the failed forms are still failed on a second read —
-    // health did not requeue what it previewed.
     const again = healthValue(await sdk.inspect.health({ filePath }));
     expect(again).toEqual(report);
   });
@@ -177,8 +157,6 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
     const fixture = await mutationInFlightVariant(store);
     const { filePath, sdk } = fixture;
 
-    // The cascade contract's exact cleared set: the prompt's own smoothing,
-    // t2's two turn forms, c1's two chunk summaries.
     const clearedKeys = fixture.mutation.cleared
       .map((target) => `${target.subjectKind}:${target.subjectId}:${target.derivationType}`)
       .sort();
@@ -194,9 +172,6 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
     );
 
     const before = healthValue(await expectReadOnly(filePath, () => sdk.inspect.health({ filePath })));
-    // The cleared set reads pending — one per owner/kind — with its queued
-    // replacement work visible, and every form outside the cascade still
-    // ready (failures-free fixture: full counts minus the cascade).
     expect(before.owners).toEqual([
       { owner: "messages", kind: "smoothed_prompt", counts: { ...ZERO, ready: 11, pending: 1 } },
       { owner: "messages", kind: "tool_result_summary", counts: { ...ZERO, ready: 8 } },
@@ -206,15 +181,10 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
       { owner: "turns", kind: "pre_detailed_assembly", counts: { ...ZERO, ready: 11, pending: 1 } },
       { owner: "turns", kind: "turn_rendering", counts: { ...ZERO, ready: 11, pending: 1 } },
     ]);
-    // Queued work visible and consistent: 5 replacement items — smoothing,
-    // turn derivation (two forms), compression, two chunk summaries — join
-    // onto the 6 pending entries.
     expect(before.queue).toEqual({ queued: 6, claimed: 0 });
     expect(before.failures).toEqual([]);
     expect(before.repairPreview).toEqual([]);
 
-    // The exact pending subjects per the cascade contract, read through the
-    // owners' surfaces health composes.
     const messagesPending = await sdk.messages.report({ filePath }, { notReady: true });
     const turnsPending = await sdk.turns.report({ filePath }, { notReady: true });
     expect(messagesPending.ok && turnsPending.ok).toBe(true);
@@ -225,13 +195,10 @@ describe("TC-4.3 / AC-4.4: rebuild visibility brackets a drain", () => {
       .sort();
     expect(pendingKeys).toEqual(clearedKeys);
 
-    // Drain the queued rebuilds and wait the scheduler out.
     const drained = await sdk.work.drain({ filePath });
     expect(drained.ok).toBe(true);
     await sdk.drainSettled({ filePath });
 
-    // The same set reads ready; counts return to the full fixture totals;
-    // queue empty — two reads bracket the rebuild.
     const after = healthValue(await sdk.inspect.health({ filePath }));
     expect(after.owners).toEqual([
       { owner: "messages", kind: "smoothed_prompt", counts: { ...ZERO, ready: 12 } },

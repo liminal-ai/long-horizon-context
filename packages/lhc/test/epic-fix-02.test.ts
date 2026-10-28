@@ -1,16 +1,3 @@
-// Epic 02 Fix Batch 001 — Green-phase regression suite for the canonical
-// epic review's two blockers (impl-lead ruling epic-fix-001). New file: the
-// Red-committed suites stay byte-identical except mutations-delete.test.ts
-// TC-6.2, whose cascade-scope assertion the BLOCK-002b ruling corrects (and
-// whose manifest hash was re-recorded to bless that one change).
-//
-//   - EPIC-02-BLOCK-001: per-SDK-instance poke/touch scoping — a manual SDK
-//     never auto-drains, regardless of construction order, even with a live
-//     background SDK in the same process on a different thread.
-//   - EPIC-02-BLOCK-002a/b: the call/result pair is a source dependency — a
-//     deleted tool_result re-queues its paired tool_call's summary, which
-//     rebuilds outcome `unknown` because the deleted-read filter excludes the
-//     dead result; unrelated summaries are untouched.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   countLiveItems,
@@ -36,8 +23,6 @@ beforeEach(() => {
   store = tempStore();
 });
 afterEach(() => {
-  // Background-mode SDKs install the below-SDK default seams at construction;
-  // tests must not leak them into each other.
   setSchedulerPoke(null);
   setThreadTouch(null);
   store.cleanup();
@@ -81,12 +66,8 @@ function formKey(entry: { subjectKind: string; subjectId: string; derivationType
   return `${entry.subjectKind}/${entry.subjectId}/${entry.derivationType}`;
 }
 
-// ── EPIC-02-BLOCK-001: per-SDK-instance scheduler seam ────────────
 describe("EPIC-02-BLOCK-001: a manual SDK never auto-drains alongside a background SDK", () => {
   it("background-then-manual on different threads: the manual thread's rows stay queued until explicit drain", async () => {
-    // Construction order is the regression: the background SDK installs the
-    // below-SDK default seam first; the manual SDK must still isolate its own
-    // operations to a no-op so its queued work never auto-drains.
     const bgDouble = createInferenceCallbacksDouble();
     const sdkBg = sdkFor(bgDouble, "background");
     const manDouble = createInferenceCallbacksDouble();
@@ -95,30 +76,21 @@ describe("EPIC-02-BLOCK-001: a manual SDK never auto-drains alongside a backgrou
     const threadB = await newThread("bg");
     const threadM = await newThread("man");
 
-    // Manual SDK queues smoothing work on its own thread.
     const queued = await sdkMan.intakeStream.messageEvents({ filePath: threadM }, [validEvent("user_prompt")]);
     expect(queued.ok).toBe(true);
 
-    // Positive control: the background SDK does drive its own thread — proving
-    // its scheduler is live, not merely inert.
     const bgBatch = await sdkBg.intakeStream.messageEvents({ filePath: threadB }, [validEvent("user_prompt")]);
     expect(bgBatch.ok).toBe(true);
     await sdkBg.drainSettled({ filePath: threadB });
 
-    // Give any erroneous background drain of the manual thread a chance to run
-    // (a background drain defers one macrotask).
     await sleep(50);
 
-    // The manual thread's rows stayed queued — never poked, never touched, so
-    // never auto-drained (AC-1.7).
     expect(liveCount(threadM)).toBe(1);
     expect(readDerivedForms(threadM).map((form) => form.state)).toEqual(["pending"]);
 
-    // The background thread WAS processed without an explicit drain (AC-1.5).
     expect(liveCount(threadB)).toBe(0);
     expect(readDerivedForms(threadB).map((form) => form.state)).toEqual(["ready"]);
 
-    // Explicit drain finally runs the manual thread's accumulated work.
     const report = await sdkMan.work.drain({ filePath: threadM });
     expect(report.ok).toBe(true);
     expect(liveCount(threadM)).toBe(0);
@@ -126,9 +98,6 @@ describe("EPIC-02-BLOCK-001: a manual SDK never auto-drains alongside a backgrou
   });
 
   it("manual-then-background isolates the manual SDK the same way", async () => {
-    // The reverse order: the manual SDK exists first, the background SDK
-    // installs the default seam afterward; the manual SDK's operations still
-    // deliver to its own no-op seam, not the freshly installed default.
     const manDouble = createInferenceCallbacksDouble();
     const sdkMan = sdkFor(manDouble, "manual");
     const bgDouble = createInferenceCallbacksDouble();
@@ -145,7 +114,6 @@ describe("EPIC-02-BLOCK-001: a manual SDK never auto-drains alongside a backgrou
   });
 });
 
-// ── EPIC-02-BLOCK-002a/b: pair counterpart joins the cascade ──────
 describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () => {
   async function toolRunThread(sdk: Lhc): Promise<string> {
     const filePath = await newThread("toolrun");
@@ -167,7 +135,6 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
     const sdk = sdkFor(double, "manual");
     const filePath = await toolRunThread(sdk);
 
-    // Before: the result summary and the control prompt smoothing are ready.
     const before = readDerivedForms(filePath);
     const resultBefore = before.find(
       (form) => form.subjectId === "m3" && form.derivationType === "tool_result_summary",
@@ -175,7 +142,6 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
     expect(resultBefore?.state).toBe("ready");
     const promptBefore = before.find((form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt");
 
-    // Delete the tool_result (m3). Only the result's own derivation drops.
     const result = await sdk.messages.remove({ filePath }, { messageId: "m3" });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -185,14 +151,12 @@ describe("EPIC-02-BLOCK-002: the call/result pair is a source dependency", () =>
     expect(rebuild.ok).toBe(true);
     const after = readDerivedForms(filePath);
 
-    // Control: the unrelated prompt smoothing is byte-stable.
     const promptAfter = after.find((form) => form.subjectId === "m1" && form.derivationType === "smoothed_prompt");
     expect(promptAfter).toEqual(promptBefore);
     expect(liveCount(filePath)).toBe(0);
   });
 });
 
-// ── Fix 2 (P2): tool activity composes into grouped run parts (AC-3.4) ────────
 describe("FIX-2: consecutive tool activity groups into run parts", () => {
   it("prompt, call, result, call, result, text, call, result → exactly two run parts (sizes 2 and 1)", async () => {
     const double = createInferenceCallbacksDouble();
@@ -219,8 +183,6 @@ describe("FIX-2: consecutive tool activity groups into run parts", () => {
     expect(batch.ok).toBe(true);
     expect((await sdk.work.drain({ filePath })).ok).toBe(true);
 
-    // prompt | runA | assistant text | runB — two outcome-bearing run parts in
-    // the smooth-band rendering, anchored at each run's first tool message.
     const rendering = readDerivedForms(filePath).find(
       (f) => f.subjectId === "t1" && f.derivationType === "turn_rendering",
     );
@@ -259,14 +221,11 @@ describe("FIX-2: consecutive tool activity groups into run parts", () => {
       (f) => f.subjectId === "t1" && f.derivationType === "turn_rendering",
     );
     const runText = rendering?.content ?? "";
-    // The run reads failed at run level because one call failed; the header
-    // line carries an explicit mixed tally.
     expect(runText).toContain("[tool run · edit_file · 2 calls · 1 succeeded, 1 failed]");
     expect(rendering?.metadata).toBeUndefined();
   });
 });
 
-// ── Fix 3.3 (P3): a stale claimed item for a deleted target discards ──────────
 describe("FIX-3.3: a claimed summary for a deleted message discards on completion", () => {
   it.skip("completing the straggler after the delete discards as stale_discarded; tombstone and cascade stand", async () => {
     const double = createInferenceCallbacksDouble();
@@ -282,8 +241,6 @@ describe("FIX-3.3: a claimed summary for a deleted message discards on completio
     ]);
     expect(batch.ok).toBe(true);
 
-    // Hold m3's tool_result_summary in flight: the drain claims it, the handler
-    // awaits the delayed double, and the delete lands inside that window.
     double.delayKind("tool_result_summary", 400);
     const captured = double.captureInputs();
     const drainPromise = sdk.work.drain({ filePath });
@@ -292,8 +249,6 @@ describe("FIX-3.3: a claimed summary for a deleted message discards on completio
       "m3's tool_result_summary to be claimed and in-handler",
     );
 
-    // Delete m3 (the tool_result) while its summary item is claimed. Its own form
-    // drops; the claimed item is left to the version check (DD-3).
     const deleted = await sdk.messages.remove({ filePath }, { messageId: "m3" });
     expect(deleted.ok).toBe(true);
     if (!deleted.ok) return;
@@ -302,19 +257,14 @@ describe("FIX-3.3: a claimed summary for a deleted message discards on completio
     const drained = await drainPromise;
     expect(drained.ok).toBe(true);
     if (!drained.ok) return;
-    // The straggler completion is reported stale_discarded, not an error.
     const m3Item = drained.value.ran.find((r) => r.workItemId === "w-m3-tool_result_summary-v1");
     expect(m3Item?.disposition).toBe("stale_discarded");
 
-    // Tombstone intact: m3 is gone from the live read and its summary form was
-    // not resurrected by the stale completion.
     const listed = await sdk.messages.list({ filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
     expect(listed.value.map((m) => m.messageId)).not.toContain("m3");
     expect(readDerivedForms(filePath).some((f) => f.subjectId === "m3")).toBe(false);
-    // Cascade stands: the counterpart re-queue and the turn rebuild drained
-    // clean behind the discarded straggler.
     expect(liveCount(filePath)).toBe(0);
   });
 });

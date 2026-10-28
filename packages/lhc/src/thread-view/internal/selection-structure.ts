@@ -1,25 +1,14 @@
-// Turn/chunk shaping shared by both execution plans. Structure is bounded by
-// turn and chunk counts, so both plans read it the same way and the walk sees
-// the same placeable set either way: a tombstoned turn is a legitimate
-// reference target, not damage, and a record the walk cannot place is skipped
-// and reported, never refused.
-//
-// Skip order is part of the shape: orphaned messages are reported before
-// dangling chunk members, matching the order the record is read in.
 import type { SkippedRecord } from "../../shared-tech/index.js";
 import type * as turnsDomain from "../../turns/index.js";
 import type { SelectionChunk, SelectionTurn } from "./select.js";
 
 export interface ShapedTurns {
   turns: SelectionTurn[];
-  /** Every turn row, tombstoned included — the referential universe. */
   turnIds: Set<string>;
   liveTurnIds: Set<string>;
 }
 
 export function shapeTurns(structure: turnsDomain.TurnChunkStructure): ShapedTurns {
-  // A tombstoned turn is a legitimate reference target, not damage; the
-  // selection walk itself sees live turns only.
   const turnIds = new Set(structure.turns.map((row) => row.turnId));
   const turns: SelectionTurn[] = structure.turns
     .filter((row) => !row.deleted)
@@ -35,11 +24,9 @@ export function shapeTurns(structure: turnsDomain.TurnChunkStructure): ShapedTur
 
 export interface ShapedChunks {
   chunks: SelectionChunk[];
-  /** Derived chunks whose stored members are all legitimate tombstoned turns. */
   emptyChunkIds: string[];
 }
 
-/** Appends its dangling-member findings to `skippedRecords` in chunk order. */
 export function shapeChunks(
   structure: turnsDomain.TurnChunkStructure,
   shaped: ShapedTurns,
@@ -63,9 +50,6 @@ export function shapeChunks(
       memberTurnIds.push(memberTurnId);
     }
     if (!memberTurnIds.some((turnId) => shaped.liveTurnIds.has(turnId))) {
-      // The empty-chunk drop is for chunks whose members are all legitimate
-      // tombstoned turns. A chunk carrying a dangling member is left on disk
-      // untouched — skipped from selection, never removed.
       if (!dangling) emptyChunkIds.push(row.chunkId);
       return [];
     }

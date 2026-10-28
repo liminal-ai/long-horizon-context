@@ -14,9 +14,6 @@ import { isEmptyThinkingHusk, type TailRenderContext, toolNamesByCallId, toolRes
 import type { TailMessageRow } from "./snapshot.js";
 import { readBlob, readTailMessages, readThreadMetadata, readViewSnapshot } from "./snapshot.js";
 
-// Server-side tool results arrive inside the model's own message in the API;
-// LHC records them as tool_result events (pairing, summaries) and serves them
-// back where they came from: as parts of the assistant entry.
 const SERVER_RESULT_TYPES: ReadonlySet<string> = new Set([
   "web_search_tool_result",
   "web_fetch_tool_result",
@@ -26,8 +23,6 @@ const SERVER_RESULT_TYPES: ReadonlySet<string> = new Set([
   "tool_search_tool_result",
 ]);
 
-/** Rows 1..n of a message: the Messages API content array it carried beyond
- *  its text-shaped block 0, blob payloads inlined. Empty when the message was text only. */
 function apiBlocksOf(message: TailMessageRow, load: BlobLoader): ApiBlock[] {
   return message.blocks.slice(1).map((block) => inlineBlobs(block.content, load) as ApiBlock);
 }
@@ -78,7 +73,6 @@ interface RowProvenance {
   api?: string;
 }
 
-/** Provider/model/api carried by one assistant row (thinking or text only). */
 function rowProvenanceOf(row: TailMessageRow): RowProvenance {
   if (row.kind !== "assistant_thinking" && row.kind !== "assistant_text") return {};
   const content = blockContent(row);
@@ -92,8 +86,6 @@ function rowProvenanceOf(row: TailMessageRow): RowProvenance {
   };
 }
 
-/** True when both sides state a field and disagree — rows with no provenance
- *  never conflict (they inherit the group's). */
 function provenanceConflicts(a: RowProvenance, b: RowProvenance): boolean {
   return (
     (a.provider !== undefined && b.provider !== undefined && a.provider !== b.provider) ||
@@ -102,7 +94,6 @@ function provenanceConflicts(a: RowProvenance, b: RowProvenance): boolean {
   );
 }
 
-/** First non-empty provider/model/api from grouped assistant rows (thinking or text). */
 function modelProvenanceOf(rows: readonly TailMessageRow[]): {
   provider?: string;
   model?: string;
@@ -127,8 +118,6 @@ function modelProvenanceOf(rows: readonly TailMessageRow[]): {
 }
 
 function assistantPartOf(message: TailMessageRow, load: BlobLoader): SessionAssistantPart {
-  // A verbatim API block behind the text-shaped row (redacted_thinking behind
-  // a thinking row, server_tool_use behind a tool call) is the part itself.
   const [apiBlock] = apiBlocksOf(message, load);
   if (apiBlock !== undefined && (apiBlock.type === "redacted_thinking" || apiBlock.type === "server_tool_use")) {
     return { type: apiBlock.type, block: apiBlock };
@@ -162,8 +151,6 @@ function assistantPartOf(message: TailMessageRow, load: BlobLoader): SessionAssi
 function toolResultOf(message: TailMessageRow, ctx: TailRenderContext, load: BlobLoader): SessionThreadViewEntry {
   const block = blockContent(message);
   const toolCallId = typeof block["toolCallId"] === "string" ? block["toolCallId"] : "";
-  // The real content array rides along only ahead of the boundary: an
-  // abridged result is text, and its placeholder already names the blocks.
   const blocks = message.sourceEventOrder > ctx.boundaryPosition ? apiBlocksOf(message, load) : [];
   const result: SessionThreadViewEntry = {
     role: "toolResult",
@@ -245,10 +232,6 @@ function tailEntriesOf(
       case "assistant_thinking":
       case "assistant_text":
       case "tool_call": {
-        // Identity boundary: message-level provenance covers every signature
-        // in the group, so rows captured under a different model/provider
-        // must start a new assistant entry — otherwise the identity gate
-        // would re-emit (or suppress) the wrong ciphertext on resume.
         const rp = rowProvenanceOf(row);
         if (provenanceConflicts(assistantProvenance, rp)) flushAssistant();
         const merged = {
@@ -269,7 +252,6 @@ function tailEntriesOf(
       case "tool_result": {
         const serverPart = serverResultPart(apiBlocksOf(row, load));
         if (serverPart !== null) {
-          // Stays inside the assistant entry it belongs to.
           assistantParts.push(serverPart);
           assistantSources.push(entrySource(row));
           assistantRows.push(row);
@@ -280,8 +262,6 @@ function tailEntriesOf(
         break;
       }
       case "model_change": {
-        // Flush first: the change marks a boundary in time, so it must not
-        // appear BEFORE assistant output that preceded it.
         flushAssistant();
         const modelChange = modelChangeOf(row);
         if (modelChange !== null) entries.push(modelChange);
@@ -292,15 +272,10 @@ function tailEntriesOf(
         entries.push(thinkingLevelChangeOf(row));
         break;
       case "runtime_note":
-        // Same rendering as getLlmRequestContext: a labeled user line. Hosts
-        // rebuilding a session file from this view keep the note in place, so
-        // the assistant turn that responded to it stays coherent.
         flushAssistant();
         entries.push({ role: "user", content: `[runtime note] ${textOf(row)}`, sourceMessages: [entrySource(row)] });
         break;
       case "compact_continuation_marker": {
-        // Typed host handoff / model-serving form. Not ordinary user chat;
-        // hosts that rebuild session files need the marker in place.
         flushAssistant();
         const block = blockContent(row);
         const cause = typeof block["cause"] === "string" ? block["cause"] : "context_compacted_task_in_progress";

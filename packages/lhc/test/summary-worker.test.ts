@@ -1,9 +1,3 @@
-/**
- * The shared summary-worker setup and the core `claude -p` lane that uses it:
- * Lee's prompt, no framing (settings files, tools, MCP, extra turns), an empty
- * scratch cwd removed afterwards, no side traffic, and only the auth part of
- * the user's settings carried over.
- */
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -26,7 +20,6 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-/** A stand-in `claude` that records its argv, cwd (and its entries) and env, then prints "ok". */
 function standIn(): { bin: string; record: string } {
   const bin = join(dir, "claude");
   const record = join(dir, "record.json");
@@ -182,7 +175,6 @@ describe("summary worker", () => {
     expect(summaryWorkerAuthSettings({ HOME: childHome }, "linux")).toEqual({
       env: { ANTHROPIC_BASE_URL: "http://child-proxy" },
     });
-    // A child home with no settings gets none, whatever this process's home holds.
     expect(summaryWorkerAuthSettings({ HOME: join(dir, "empty-home") }, "linux")).toBeNull();
   });
 
@@ -193,7 +185,6 @@ describe("summary worker", () => {
       env: { ...process.env, CLAUDE_CONFIG_DIR: join(dir, "none") },
     });
     const input = { provider: "claude-cli", model: "sonnet", messages: [{ role: "user" as const, content: "x" }] };
-    // os.tmpdir() reads TMPDIR on POSIX and TEMP/TMP on Windows.
     const tmpVars = ["TMPDIR", "TEMP", "TMP"] as const;
     const priorTmp = tmpVars.map((k) => process.env[k]);
     for (const k of tmpVars) process.env[k] = join(dir, "no-such-tmp");
@@ -212,7 +203,6 @@ describe("summary worker", () => {
         else process.env[k] = prior;
       });
     }
-    // All three slots are free again: this call runs rather than waiting forever.
     const after = await Promise.race([call(input), new Promise((r) => setTimeout(() => r("stuck"), 10_000))]);
     expect(after).toEqual({ ok: true, text: "ok" });
   });

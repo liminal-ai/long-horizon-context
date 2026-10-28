@@ -32,9 +32,6 @@ afterEach(() => {
   store.cleanup();
 });
 
-// Fresh threads are created at the current schema. Simulating an older file
-// means stripping columns that that older version never had, so the migration
-// step that adds them can run for real.
 function stripV5HostFactColumns(db: DatabaseSync): void {
   db.exec("ALTER TABLE turns DROP COLUMN outcome;");
   db.exec("ALTER TABLE turns DROP COLUMN outcome_reason;");
@@ -243,7 +240,6 @@ describe("thread schema migration", () => {
     const db = opened.value;
     try {
       expect(getSchemaVersion(db)).toBe(THREAD_SCHEMA_VERSION_13);
-      // v13 added the content blob table.
       expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'blob'").get()).toBeDefined();
       expect(
         db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'derivation_log'").get(),
@@ -472,8 +468,6 @@ describe("thread schema migration", () => {
     await drainTurnDerivationsGreen(filePath);
   });
 
-  // Schema v5 (D4): add nullable turn host-fact + message provider_usage columns
-  // with no backfill. Existing rows keep NULL in every new field.
   function simulateV4Thread(filePath: string): void {
     const db = new DatabaseSync(filePath);
     try {
@@ -558,7 +552,6 @@ describe("thread schema migration", () => {
       expect(turnCols).toEqual(expect.arrayContaining(["outcome", "outcome_reason", "started_at", "ended_at"]));
       expect(messageCols).toContain("provider_usage");
 
-      // All pre-migration rows keep NULL in every new field — no invented values.
       const turnRows = db
         .prepare(`SELECT turn_id, outcome, outcome_reason, started_at, ended_at FROM turns ORDER BY turn_order`)
         .all() as Array<{
@@ -584,7 +577,6 @@ describe("thread schema migration", () => {
         expect(row.provider_usage).toBeNull();
       }
 
-      // Existing record content is intact.
       expect(
         Number((db.prepare("SELECT COUNT(*) AS count FROM event").get() as { count: number | bigint }).count),
       ).toBe(eventCount);
@@ -684,7 +676,6 @@ describe("thread schema migration", () => {
         claim: string;
       };
       expect(claim.claim).toBe("none");
-      // v8 receipt has terminal column
       const cols = db.prepare(`PRAGMA table_info(compact_continuation_receipt)`).all() as Array<{ name: string }>;
       expect(cols.map((c) => c.name)).toContain("terminal");
     } finally {
@@ -700,7 +691,6 @@ describe("thread schema migration", () => {
 
     const old = new DatabaseSync(filePath);
     try {
-      // Strip v8 tables and rebuild v7 receipt shape.
       old.exec("DROP TABLE IF EXISTS compact_continuation_stage_log;");
       old.exec("DROP TABLE IF EXISTS compact_continuation_boundary;");
       old.exec("DROP TABLE compact_continuation_receipt;");
@@ -994,8 +984,6 @@ describe("thread schema migration", () => {
     expect(intake.ok).toBe(true);
     await drainTurnDerivationsGreen(filePath);
 
-    // What the old drain left: failed claim_expired, item deleted. The smoothed
-    // prompt failed under the new rule (claim_expired_repeatedly) and must not move.
     const db = new DatabaseSync(filePath);
     try {
       db.prepare(
@@ -1031,7 +1019,6 @@ describe("thread schema migration", () => {
     const prompt = readDerivedForms(filePath).find((form) => form.derivationType === "smoothed_prompt");
     expect(prompt).toMatchObject({ state: "failed", reason: "claim_expired_repeatedly" });
 
-    // A second open finds nothing left to requeue.
     const reopened = openThreadDatabase(filePath);
     expect(reopened.ok).toBe(true);
     if (!reopened.ok) return;

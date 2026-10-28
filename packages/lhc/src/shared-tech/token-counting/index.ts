@@ -81,9 +81,6 @@ function o200kEncoder(): Tiktoken {
 }
 
 function encodeAll(text: string): number[] {
-  // Allow all special tokens: captured text is data, and a literal
-  // "<|endoftext|>" in a transcript must count, never throw — counting is
-  // on the capture path and capture must be total.
   return o200kEncoder().encode(text, "all");
 }
 
@@ -94,12 +91,6 @@ export interface TokenSlice {
   totalTokens: number;
 }
 
-/** Decode `tokens[from, from + count)` and shrink `count` until the decoded
- *  tail lands on a clean char boundary — BPE token boundaries can split a
- *  multi-byte char, and a split tail would corrupt verbatim text (U+FFFD)
- *  and leave the continuation offset pointing inside a char. `atEnd` windows
- *  reach the text's end and cannot have a split tail. Receipts built from
- *  the returned count always continue at a clean boundary. */
 function cleanTailWindow(
   tokens: number[],
   from: number,
@@ -148,50 +139,35 @@ export class TokenEstimator {
     this.measured = spec.measured;
   }
 
-  /** Unweighted o200k_base count. This is what `message.token_estimate` stores. */
   rawCount(text: string): number {
     return encodeAll(text).length;
   }
 
-  /** Billed-token estimate: ceil(o200k count × family textWeight). */
   estimate(text: string): number {
     return this.weigh(this.rawCount(text));
   }
 
-  /** Apply the family weight to a stored o200k count. Does not re-scale billed signature tokens. */
   weigh(rawCount: number): number {
     if (!Number.isFinite(rawCount) || rawCount <= 0) return 0;
     return Math.ceil(rawCount * this.textWeight);
   }
 
-  /**
-   * Budget a stored `token_estimate` that may include billed signature tokens.
-   * `signatureBilled` is already at the family signature rate and is added back
-   * unweighted. Pass 0 when the stored number is text-only.
-   */
   weighStored(rawCount: number, signatureBilled = 0): number {
     const billed = Math.max(0, signatureBilled);
     return this.weigh(rawCount - billed) + billed;
   }
 
-  /** ceil(signature.length / family signatureCharsPerToken). Empty → 0. */
   estimateSignature(signature: string): number {
     if (signature.length === 0) return 0;
     return Math.ceil(signature.length / this.signatureCharsPerToken);
   }
 
-  /** Convert a billed-token index/count into the o200k index used to cut text. */
   toRawIndex(billed: number): number {
     if (!Number.isFinite(billed) || billed <= 0) return 0;
     if (this.textWeight === 1) return Math.floor(billed);
     return Math.floor(billed / this.textWeight);
   }
 
-  /**
-   * Exact token window of `text`. The cut is still o200k-based; `fromToken`,
-   * `maxTokens`, and the reported counts are in billed (weighted) units so a
-   * remaining budget from `estimate()` is the same unit.
-   */
   sliceTokens(text: string, fromToken: number, maxTokens: number): TokenSlice {
     const tokens = encodeAll(text);
     const totalRaw = tokens.length;
@@ -207,12 +183,6 @@ export class TokenEstimator {
     };
   }
 
-  /** `sliceTokens` that also fits a UTF-8 byte allowance: encode ONCE, take the
-   *  token window, and when its bytes exceed `maxBytes` binary-search the
-   *  largest token count whose decoded slice fits. Receipts stay token-
-   *  denominated — bytes only shrink how much is served now. Single encode:
-   *  probing decodes token subranges, never re-encodes (long-run BPE pieces
-   *  make re-encoding quadratic). */
   sliceTokensByteCapped(text: string, fromToken: number, maxTokens: number, maxBytes: number): TokenSlice {
     const tiktoken = o200kEncoder();
     const tokens = encodeAll(text);
@@ -242,7 +212,6 @@ export class TokenEstimator {
   }
 }
 
-/** Billed signature tokens from projected/stored blocks. 0 when absent or empty. */
 export function billedSignatureTokens(
   estimator: TokenEstimator,
   blocks: ReadonlyArray<{ content?: Record<string, unknown> }>,

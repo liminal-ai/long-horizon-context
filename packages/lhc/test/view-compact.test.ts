@@ -1,11 +1,3 @@
-// Epic 03 Story 2: smart compact (TC-2.1–2.4, TC-2.6, TC-2.7, TC-1.3,
-// TC-1.5, the TC-2.5 view-health completion legs, and the architecture-risk
-// rows: restart-serves-snapshot and coverage-edge accounting). Every TC goes
-// through the real SDK surface (initLhc().threadView.compact) against real
-// temp thread files; the inference callbacks double appears only in fixture setup —
-// degraded states are reached through production paths (scripted inference callback
-// failure at build, edit-cascade pending clears), never by writing
-// derivation directly.
 import { createHash } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type LlmRequestContextMessage, type MessageEventInput } from "../src/index.js";
@@ -41,23 +33,14 @@ afterAll(() => {
   store.cleanup();
 });
 
-// The story's reference configs (hand-derived from the fixture's
-// deterministic token costs via the literal selection rules — ruling 013;
-// the goldens in view-select-golden.test.ts pin arrangements exactly).
-// TARGET: equal shares for the targets-the-bound assertions (smooth absorbs
-// t6–t8 within share; c1 fills detailed; brief left empty by candidacy).
 const TARGET_PARAMS = {
   lowerBound: 400,
   percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 },
 };
-// GRADIENT: all three bands non-empty (smooth t8, detailed c2 plus t7 coverage, brief c1).
 const GRADIENT_PARAMS = {
   lowerBound: 400,
   percentages: { full: 25, smooth: 16, detailed: 10, brief: 49 },
 };
-// EDGE: compact point lands at t10's close (full 50 tokens), making c3, c2,
-// and c1 chunk candidates; the brief share (30) holds c2 alone (36, loner)
-// and excludes c1 — the coverage edge.
 const EDGE_PARAMS = {
   lowerBound: 100,
   percentages: { full: 50, smooth: 10, detailed: 10, brief: 30 },
@@ -67,9 +50,6 @@ function sha256(value: unknown): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-// The canonical record plus its derived state — everything compact must
-// never touch (AC-2.9). View tables and the boundary are deliberately
-// excluded: those are compact's own rows.
 function recordSnapshot(filePath: string): string {
   const db = openRaw(filePath);
   try {
@@ -87,8 +67,6 @@ function recordSnapshot(filePath: string): string {
   }
 }
 
-// A closed turn row left without its close boundary — turn structure that the
-// compact walk must read past rather than refuse.
 function stripCloseBoundary(filePath: string, turnId: string): void {
   const db = openRaw(filePath);
   try {
@@ -98,8 +76,6 @@ function stripCloseBoundary(filePath: string, turnId: string): void {
   }
 }
 
-// Manufactured orphaning: drop only the turn row, so its messages point at a
-// turn that no longer exists. Returns the orphaned message ids.
 function orphanMessagesOfTurn(filePath: string, turnId: string): string[] {
   const db = openRaw(filePath);
   try {
@@ -114,8 +90,6 @@ function orphanMessagesOfTurn(filePath: string, turnId: string): string[] {
   }
 }
 
-// Full-file state including the view rows and boundary — for the
-// thread-unchanged-after-rejection assertions.
 function fullStateSnapshot(filePath: string): string {
   const db = openRaw(filePath);
   try {
@@ -232,8 +206,6 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
     expect(unknown.error.code).toBe("unknown_profile");
     expect(unknown.error.reason).toContain('"nonesuch"');
 
-    // Thread unchanged after all rejections: no view row landed, no record
-    // or boundary movement (read-back equality).
     expect(fullStateSnapshot(fixture.filePath)).toBe(before);
     expect(viewRowCount(fixture.filePath)).toBe(0);
   });
@@ -251,9 +223,6 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
       lowerBound: 120000,
       newestClosedProtection: 0.6,
     });
-    // At a 120k bound this small thread is all tail: bands empty, compact
-    // point at the origin, and the reported total IS the tail (totalTokens
-    // receipt coverage, ruling 013).
     expect(receipt.value.compactPoint).toBe(0);
     expect(receipt.value.bands.smooth.entries).toBe(0);
     expect(receipt.value.totalTokens).toBe(receipt.value.tailTokens);
@@ -266,8 +235,6 @@ describe("TC-2.1 (AC-2.2, AC-2.3, AC-2.7): profiles, explicit params, and named 
     );
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
-    // coding's mix with the two overridden fields; explicit params ⇒ the
-    // receipt names no profile (config carries the resolved truth).
     expect(receipt.value.config).toEqual({
       full: 25,
       smooth: 40,
@@ -295,20 +262,11 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
       brief: (400 * 25) / 100,
     };
 
-    // Whole-entry fills: the budgeted brief band lands at-or-under its share
-    // unless a single indivisible entry had to represent. Detailed may receive
-    // post-fill coverage entries so closed turns behind the compact point are
-    // never silently omitted.
     for (const band of ["brief"] as const) {
       const actual = receipt.value.bands[band];
       const attributable = actual.tokens <= shares[band] || actual.entries === 1;
       expect(attributable).toBe(true);
     }
-    // The fixture's pinned arrangement under these params (literal rules):
-    // c1 fits brief, c2 fills detailed as a loner, detailed also carries the
-    // coverage entry for skipped t7, and tail remains under the full share
-    // plus turn-boundary snap.
-    // Token count includes the <turns>…</turns> member-turn header on chunk bands.
     expect(receipt.value.bands.brief).toEqual({ entries: 1, tokens: 41 });
     expect(receipt.value.bands.detailed.entries).toBe(2);
     expect(receipt.value.bands.detailed.tokens).toBeGreaterThanOrEqual(shares.detailed);
@@ -318,8 +276,6 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
     expect(receipt.value.tailTokens).toBeLessThanOrEqual((400 * 25) / 100);
     expect(receipt.value.compactPoint).toBe(48);
 
-    // The explicit total (ruling 013): the assembled view's actual size —
-    // band tokens plus tail — reported beside the per-band actuals.
     expect(receipt.value.totalTokens).toBe(
       receipt.value.bands.brief.tokens +
         receipt.value.bands.detailed.tokens +
@@ -327,8 +283,6 @@ describe("TC-2.2 (AC-2.4, AC-2.9): the compact targets the bound from stored art
         receipt.value.tailTokens,
     );
 
-    // No model call anywhere in the compact path; the record (events,
-    // messages, turns, chunks, forms) is byte-identical after.
     expect(captured.length).toBe(capturedBefore);
     expect(recordSnapshot(fixture.filePath)).toBe(recordBefore);
   });
@@ -463,16 +417,9 @@ describe("architecture-risk: coverage edge accounting", () => {
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
 
-    // The compact point lands at t10's close, so c3, c2, and c1 are all
-    // chunk candidates; c3 takes detailed (loner), the brief share holds c2
-    // alone, and c1 remains after the chunk budgets. c1's member turns are
-    // older than the oldest selected subject: covered_from stays at the
-    // oldest represented material, and the left-out turns get one gap-marker
-    // line so the reader can see the hole (F6: leading turns included).
     expect(receipt.value.compactPoint).toBe(56);
     expect(receipt.value.coveredFrom).toBe(13);
     expect(receipt.value.bands.detailed.entries).toBe(1);
-    // c2's brief plus the marker for c1's turns.
     expect(receipt.value.bands.brief.entries).toBe(2);
     expect(receipt.value.gaps).toHaveLength(1);
     expect(receipt.value.gaps[0]?.band).toBe("brief");
@@ -489,7 +436,6 @@ describe("architecture-risk: restart serves the snapshot (real-file durability)"
     expect(before.ok).toBe(true);
     if (!before.ok) return;
 
-    // Not a same-process reread: a fresh SDK instance opens the file cold.
     const fresh = initLhc({
       tokenFamily: "o200k",
       inferenceCallbacks: createInferenceCallbacksDouble(),
@@ -525,8 +471,6 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
       setViewInjectionHook("compact-write", null);
     }
 
-    // The previous view still serves, byte-identical; no partial rows, no
-    // boundary movement.
     const afterCrash = await local.sdk.threadView.getLlmRequestContext({ filePath: local.filePath });
     expect(afterCrash.ok).toBe(true);
     if (!afterCrash.ok) return;
@@ -534,8 +478,6 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
     expect(viewRowCount(local.filePath)).toBe(1);
     expect(boundaryPosition(local.filePath)).toBe(48);
 
-    // Rerun: the new view lands whole and the boundary resets to ITS compact
-    // point (56) in the same transaction.
     const rerun = await local.sdk.threadView.compact({ filePath: local.filePath }, { params: EDGE_PARAMS });
     expect(rerun.ok).toBe(true);
     if (!rerun.ok) return;
@@ -587,15 +529,6 @@ describe("TC-2.4 (AC-2.6): crash injection at the compact-write point", () => {
   });
 });
 
-// ── degraded thread (TC-2.3 + the TC-2.5 view-health completion legs) ──
-
-// The fixture conversation rebuilt with manufactured derived damage, all
-// through production paths: c1's brief summary fails through a scripted
-// inference callback failure at build; post-build edits clear t8's turn
-// forms and all of c2's dependent chain to pending (the Epic 02 cascade) —
-// a pending turn rendering for the smooth band, and a chunk with no usable
-// form at all (summaries pending, zero ready member projections) for the
-// gap rung.
 const TOOL_HEAVY_TURNS = new Set([5, 6, 7, 8]);
 const C1_BRIEF_FAILURE_REASON = "rate_limit: scripted c1 brief failure (test)";
 
@@ -648,8 +581,6 @@ async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread
   const promptIdByTurn = new Map<number, string>();
   for (let turn = 1; turn <= 12; turn += 1) {
     if (turn === 4) {
-      // c1 closes during turn 4's drain (placement of t4): its brief summary
-      // lands failed.
       double.failKind("chunk_summary_brief", 1, {
         reason: C1_BRIEF_FAILURE_REASON,
       });
@@ -662,10 +593,6 @@ async function buildDegradedThread(intoStore: TempStore): Promise<DegradedThread
     if (!drained.ok) throw new Error(`drain failed: ${drained.error.reason}`);
   }
 
-  // Post-build edits, NOT drained: the cascade clears each edited message's
-  // dependent chain to pending. t8 ⇒ a PENDING turn rendering in the smooth
-  // band; t4+t5+t6 ⇒ c2's summaries pending with zero ready member
-  // projections — the gap rung.
   for (const turn of [4, 5, 6, 8]) {
     const promptId = promptIdByTurn.get(turn);
     if (promptId === undefined) throw new Error(`no prompt id recorded for turn ${turn}`);
@@ -701,33 +628,22 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(receipt.ok).toBe(true);
     if (!receipt.ok) return;
 
-    // The pending turn rendering (t8, edited): the smooth entry degrades down
-    // its ladder (projection pending too) to the deterministic excerpt.
     const t8 = receipt.value.degraded.find((entry) => entry.subjectId === "t8");
     expect(t8).toBeDefined();
     expect(t8?.band).toBe("smooth");
     expect(t8?.usedDerivation).toBe("message_excerpt");
 
-    // The unusable chunk (c2: summaries pending, zero ready member
-    // projections): Story 4 compact recovery uses stored-member concat, not
-    // a gap, so the span remains present. t7 is represented by the coverage
-    // cascade between the selected chunk and smooth turn.
     expect(receipt.value.gaps).toEqual([]);
     const c2 = receipt.value.degraded.find((entry) => entry.subjectId === "c2");
     expect(c2).toBeDefined();
     expect(c2?.usedDerivation).toBe("stored_member_concat");
 
-    // Per-band counts present; no span silently absent: every turn in the
-    // compacted range is accounted for by a band subject (c1: t1–t3, c2:
-    // t4–t6, coverage: t7, smooth: t8) and everything after the compact
-    // point is tail.
     expect(receipt.value.bands.brief.entries).toBe(1);
     expect(receipt.value.bands.detailed.entries).toBe(2);
     expect(receipt.value.bands.smooth.entries).toBe(1);
     expect(receipt.value.compactPoint).toBe(48);
     expect(receipt.value.coveredFrom).toBe(1);
 
-    // The rendered text carries the markers (degrade visibly, AC-2.5/2.10).
     const messages = await contextMessages(degraded.sdk, degraded.filePath);
     const bandText = bandMessages(messages)
       .map((message) => messageText(message))
@@ -735,7 +651,6 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(bandText).toContain("[degraded: detailed-from-stored-members]");
     expect(bandText).toContain("[degraded: smooth-from-excerpt]");
 
-    // Default sweep does not bypass older live queue work while compacting.
     expect(captured.length).toBe(capturedBefore);
   });
 
@@ -747,7 +662,6 @@ describe("TC-2.3 (AC-2.5, AC-2.7) + TC-2.5 view-health legs: degraded material r
     expect(status.value.view?.degraded).toBe(3);
     expect(status.value.view?.gaps).toBe(0);
     expect(typeof status.value.view?.builtAt).toBe("string");
-    // The edits' requeued rebuild work is visible as pending derivation.
     expect(status.value.derivation.pending).toBeGreaterThan(0);
   });
 });
@@ -771,7 +685,6 @@ describe("TC-2.7 (AC-2.5): irregular turn records compact best-effort; derived-o
       const drained = await sdk.work.drain({ filePath });
       expect(drained.ok).toBe(true);
 
-      // A prior view exists before the irregularity.
       const first = await sdk.threadView.compact(
         { filePath },
         { params: { lowerBound: 80, percentages: { full: 50, smooth: 30, detailed: 10, brief: 10 } } },
@@ -781,9 +694,6 @@ describe("TC-2.7 (AC-2.5): irregular turn records compact best-effort; derived-o
       expect(priorView.ok).toBe(true);
       if (!priorView.ok) return;
 
-      // Manufactured turn-record irregularity, written below the SDK (the
-      // Epic 01 two-open-turns pattern): open a turn through real intake, then
-      // add a second open row.
       const opened = await sdk.intakeStream.messageEvents({ filePath }, [
         validEvent("user_prompt", { payload: { text: "left open before the damage" } }),
       ]);
@@ -798,8 +708,6 @@ describe("TC-2.7 (AC-2.5): irregular turn records compact best-effort; derived-o
       expect(compacted.ok).toBe(true);
       if (!compacted.ok) return;
 
-      // A new view is serving, and the canonical record is byte-identical:
-      // compact read around the irregularity, it did not repair it.
       const afterView = await sdk.threadView.describe({ filePath });
       expect(afterView.ok).toBe(true);
       if (!afterView.ok) return;
@@ -872,7 +780,6 @@ describe("TC-2.7 (AC-2.5): irregular turn records compact best-effort; derived-o
       const drained = await sdk.work.drain({ filePath });
       expect(drained.ok).toBe(true);
 
-      // Orphan every message of t2 by removing only the turn row.
       const orphaned = orphanMessagesOfTurn(filePath, "t2");
       expect(orphaned.length).toBeGreaterThan(0);
       const recordBefore = recordSnapshot(filePath);
@@ -894,7 +801,6 @@ describe("TC-2.7 (AC-2.5): irregular turn records compact best-effort; derived-o
         expect(skip.reason.length).toBeGreaterThan(0);
       }
 
-      // Skipped means passed over, not deleted: every raw row is still there.
       expect(recordSnapshot(filePath)).toBe(recordBefore);
       for (const messageId of orphaned) {
         const shown = await sdk.messages.show({ filePath }, messageId);
@@ -930,7 +836,6 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     const before = bandMessages(await contextMessages(mut.sdk, mut.filePath));
     const bandHash = sha256(before);
 
-    // t5 is banded inside c2's detailed entry; edit its prompt.
     const listed = await mut.sdk.messages.list({ filePath: mut.filePath });
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
@@ -946,15 +851,11 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     const afterEdit = bandMessages(await contextMessages(mut.sdk, mut.filePath));
     expect(sha256(afterEdit)).toBe(bandHash);
 
-    // Drain the requeued rebuilds: the rebuilt summary lands in the RECORD
-    // only; the snapshot still serves the same bytes.
     const drained = await mut.sdk.work.drain({ filePath: mut.filePath });
     expect(drained.ok).toBe(true);
     const afterDrain = bandMessages(await contextMessages(mut.sdk, mut.filePath));
     expect(sha256(afterDrain)).toBe(bandHash);
 
-    // The record really changed underneath: c2's rebuilt detailed summary is
-    // not the text the band serves.
     const db = openRaw(mut.filePath);
     try {
       const row = db
@@ -978,7 +879,6 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     expect(listed.ok).toBe(true);
     if (!listed.ok) return;
 
-    // Tail region: t9 onward (compact point 48). Delete t10's findings.
     const tailTarget = listed.value.find((m) => m.turnId === "t10" && m.kind === "assistant_text");
     expect(tailTarget).toBeDefined();
     if (tailTarget === undefined) return;
@@ -991,14 +891,11 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     const afterTailDelete = await contextMessages(mut.sdk, mut.filePath);
     expect(afterTailDelete.some((m) => messageText(m) === "findings for area 10")).toBe(false);
 
-    // The record change is visible to the status read (tail sum shrank).
     const statusAfter = await mut.sdk.threadView.status({ filePath: mut.filePath });
     expect(statusAfter.ok).toBe(true);
     if (!statusAfter.ok) return;
     expect(statusAfter.value.tailTokens).toBeLessThan(statusBefore.value.tailTokens);
 
-    // Banded region: delete a t6 message whose derived content sits inside
-    // c2's band entry. The snapshot is untouched until the next compact.
     const bandsBefore = bandMessages(afterTailDelete);
     const bandTarget = listed.value.find((m) => m.turnId === "t6" && m.kind === "assistant_text");
     expect(bandTarget).toBeDefined();
@@ -1009,8 +906,6 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
     const afterBandedDelete = await contextMessages(mut.sdk, mut.filePath);
     expect(sha256(bandMessages(afterBandedDelete))).toBe(sha256(bandsBefore));
 
-    // Next-compact visibility: the record changed under the snapshot — the
-    // delete's cascade left rebuild work pending in the status read.
     const statusFinal = await mut.sdk.threadView.status({ filePath: mut.filePath });
     expect(statusFinal.ok).toBe(true);
     if (!statusFinal.ok) return;
@@ -1018,9 +913,6 @@ describe("TC-1.3 (AC-1.4) and TC-1.5 (AC-1.6): snapshot immutability under recor
   });
 });
 
-// LIM-92: install observes durable state under the same lock that writes, so a
-// prepared snapshot that no longer describes the thread is reassembled rather
-// than installed stale — and never refused.
 describe("install-time drift recomputes against fresh state", () => {
   async function driftStore(): Promise<{ store: TempStore; sdk: Lhc; filePath: string }> {
     const localStore = tempStore();
@@ -1068,8 +960,6 @@ describe("install-time drift recomputes against fresh state", () => {
       expect(stale.ok).toBe(true);
       if (!stale.ok) return;
 
-      // A whole compact cycle happens under the prepared snapshot: new turns
-      // land, and another compact installs its own view.
       for (let turn = 5; turn <= 7; turn += 1) {
         const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
         expect(sent.ok).toBe(true);
@@ -1080,7 +970,6 @@ describe("install-time drift recomputes against fresh state", () => {
       expect(interim.ok).toBe(true);
       if (!interim.ok) return;
 
-      // What a compact prepared right now would produce — the fresh answer.
       const fresh = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
       expect(fresh.ok).toBe(true);
       if (!fresh.ok) return;
@@ -1091,8 +980,6 @@ describe("install-time drift recomputes against fresh state", () => {
       expect(installed.ok).toBe(true);
       if (!installed.ok) return;
 
-      // The receipt and the stored view describe current state, not the
-      // snapshot the caller handed in.
       expect(installed.value.viewId).toBe(fresh.value.viewId);
       expect(installed.value.compactPoint).toBe(fresh.value.selection.compactPoint);
       expect(installed.value.compactPoint).not.toBe(stale.value.selection.compactPoint);
@@ -1114,7 +1001,6 @@ describe("install-time drift recomputes against fresh state", () => {
       expect(stale.ok).toBe(true);
       if (!stale.ok) return;
 
-      // Another compact installs a differently-arranged view; nothing else moves.
       const interim = await sdk.threadView.compact(
         { filePath },
         { params: { lowerBound: 400, percentages: { full: 25, smooth: 25, detailed: 25, brief: 25 } } },
@@ -1129,7 +1015,6 @@ describe("install-time drift recomputes against fresh state", () => {
       expect(described.ok).toBe(true);
       if (!described.ok) return;
       expect(described.value?.viewId).toBe(installed.value.viewId);
-      // Recorded source state is the state the view was assembled from.
       expect(storedSourceState(filePath).maxEventOrder).toBe(maxEventOrder(filePath));
     } finally {
       local.cleanup();
@@ -1146,7 +1031,6 @@ describe("install-time drift recomputes against fresh state", () => {
         stale.value.selection.entries.map((entry) => [entry.band, entry.subjectId, entry.derivationUsed]),
       );
 
-      // Turn/chunk structure and derivation content both advance.
       for (let turn = 5; turn <= 8; turn += 1) {
         const sent = await sdk.intakeStream.messageEvents({ filePath }, degradedTurnEvents(turn));
         expect(sent.ok).toBe(true);
@@ -1188,9 +1072,6 @@ describe("install-time drift recomputes against fresh state", () => {
         expect(sent.ok).toBe(true);
       }
 
-      // Prepared while the turn/chunk derivations are still queued: the bands
-      // stand on fallbacks — or, for the newest closed turn, on the in-walk
-      // composition that stands in for its not-yet-stored rendering (Flow 5).
       const stale = await sdk.threadView.prepareCompact({ filePath }, { params: DRIFT_PARAMS });
       expect(stale.ok).toBe(true);
       if (!stale.ok) return;
@@ -1201,7 +1082,6 @@ describe("install-time drift recomputes against fresh state", () => {
       ).toBe(true);
       const eventsBefore = maxEventOrder(filePath);
 
-      // Draining writes derivations only — not one new event.
       const drained = await sdk.work.drain({ filePath });
       expect(drained.ok).toBe(true);
       expect(maxEventOrder(filePath)).toBe(eventsBefore);
@@ -1231,7 +1111,6 @@ describe("install-time drift recomputes against fresh state", () => {
       if (!stale.ok) return;
       const staleTail = stale.value.sourceState.maxEventOrder;
 
-      // A runtime note appends one event and derives nothing.
       const noted = await sdk.intakeStream.messageEvents({ filePath }, [
         validEvent("runtime_note", { payload: { text: "note landed between prepare and install" } }),
       ]);
@@ -1265,8 +1144,6 @@ describe("install-time drift recomputes against fresh state", () => {
       let nestedBeginError: string | null = null;
       setViewInjectionHook("compact-install-before-validate", (ctx) => {
         transactionEntries += 1;
-        // node:sqlite has no public in-transaction flag; a nested BEGIN fails
-        // only when one is already open.
         try {
           ctx?.db.exec("BEGIN IMMEDIATE");
           nestedBeginError = "nested_begin_succeeded";
@@ -1282,10 +1159,7 @@ describe("install-time drift recomputes against fresh state", () => {
       }
       expect(installed.ok).toBe(true);
       if (!installed.ok) return;
-      // Drift really happened...
       expect(installed.value.viewId).not.toBe(stale.value.viewId);
-      // ...and the whole thing still took exactly one write transaction: the
-      // fresh observation cannot be separated from the install it feeds.
       expect(transactionEntries).toBe(1);
       expect(nestedBeginError).toMatch(/transaction within a transaction/i);
     } finally {
@@ -1312,8 +1186,6 @@ describe("install-time drift recomputes against fresh state", () => {
         expect(sent.ok).toBe(true);
       }
 
-      // The compact is cancelled exactly when install opens its transaction, so
-      // the recompute the drift triggers cannot complete.
       const signal = { aborted: false };
       setViewInjectionHook("compact-install-before-validate", () => {
         signal.aborted = true;
@@ -1326,7 +1198,6 @@ describe("install-time drift recomputes against fresh state", () => {
       }
       expect(failed.ok).toBe(false);
       if (failed.ok) return;
-      // The genuine failure, never a stale-prepared refusal.
       expect(failed.error.code).toBe("compact_stopped");
 
       const afterView = await sdk.threadView.describe({ filePath });

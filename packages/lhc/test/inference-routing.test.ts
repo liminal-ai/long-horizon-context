@@ -1,10 +1,3 @@
-// Epic 05 Story 2 — TC-1.2 (AC-1.2, AC-1.4): per-call routing through the
-// inference seam. A recording fake logs every call while a seeded thread
-// exercises all seven kinds; the assertions inspect the actual serialized
-// ModelCall input emitted during the drain — never a helper-level intention
-// (anti-shim). The routing assertions live in the parameterized
-// seam-conformance helpers so TC-4.3 runs them against the real host
-// unchanged (DD-13).
 import { afterEach, describe, expect, it } from "vitest";
 import {
   assertModelCallContract,
@@ -46,8 +39,6 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
         expect(input.provider).toBe(`${FAKE_PROVIDER_PREFIX}${kind}`);
         expect(input.model).toBe(assignments[kind].model);
       }
-      // The landed content is the canned text the kind's lane returned —
-      // routing proven end to end, not just at the call log.
       const ready = forms.filter((form) => form.derivationType === kind && form.state === "ready");
       expect(ready.length).toBeGreaterThan(0);
       for (const form of ready) {
@@ -92,9 +83,6 @@ describe("TC-1.2: per-kind provider/model routing (AC-1.4)", () => {
     const { derivations: forms } = await assertRoutingThroughSdk(call, assignments, freshStore());
 
     for (const kind of INFERENCE_DERIVATION_TYPES) {
-      // Models stay unique per kind, so the lane each item actually used is
-      // readable from the log: every call for this kind's model must carry
-      // this kind's lane provider — no bleed from the other lanes.
       const calls = log.filter((input) => input.model === assignments[kind].model);
       expect(calls.length).toBeGreaterThan(0);
       for (const input of calls) {

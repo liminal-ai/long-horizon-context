@@ -1,13 +1,3 @@
-// Retrieval: deterministic drill-down from band labels to full content.
-// `getTurns` serves rendered turns by turn id (`t…`); `getMessages` serves
-// verbatim message content by message id (`m…`). Both enforce a per-call token
-// budget with in-order serving. Oversized content is not refused: the item
-// that crosses the budget is served as an exact token slice with a receipt
-// (`slice`) naming the window and total, so the caller can continue via
-// `fromToken`. Later ids past a spent budget get explicit "budget" receipts.
-// Every requested id writes one impression row — the durable usage log that
-// later ranking work reads. Retrieval never mutates record content; the only
-// write is the impression log.
 import { randomUUID } from "node:crypto";
 import type { DatabaseSync } from "node:sqlite";
 import type { OpResult } from "../shared-tech/errors.js";
@@ -44,19 +34,9 @@ export const MAX_RETRIEVAL_IDS_PER_CALL = 32;
 export const MAX_RETRIEVAL_OUTPUT_TOKENS = 22_000;
 
 export interface RetrievalOptions {
-  /** Per-call token budget over served item text (TokenEstimator.estimate). */
   tokenBudget?: number;
-  /** Optional per-call BYTE budget over served item text (UTF-8). Hosts
-   *  whose runtimes enforce output limits in bytes (codex core truncates
-   *  FunctionCallOutput at bytes/4-per-token approximations) pass their
-   *  allowance here; serving then slices to fit both budgets, so receipts
-   *  and impressions describe exactly what the model can see. Token-cheap
-   *  byte-heavy content (BPE-packed runs) is the case this bounds. */
   byteBudget?: number;
-  /** Token offset into each requested item's text — continues a previous
-   *  slice. Intended for single-id continuation calls. */
   fromToken?: number;
-  /** Impression provenance: which surface asked (e.g. "get_turns" tool, "board"). */
   surface?: string;
 }
 
@@ -68,7 +48,6 @@ export type UnservedReason = "not_found" | "deleted" | "budget" | "invalid";
  *  P0, 2026-08-08). */
 export const RETRIEVAL_ID_PATTERN = /^[tm]\d{1,12}$/;
 
-/** Echo bound for invalid ids in receipts/impressions. */
 function clampIdEcho(id: string): string {
   return id.length <= 32 ? id : `${id.slice(0, 32)}…`;
 }
@@ -84,17 +63,13 @@ export interface SliceReceipt {
 export interface UnservedEntity {
   id: string;
   reason: UnservedReason;
-  /** Known size when the entity exists but did not fit the budget. */
   tokens?: number;
 }
 
 export interface RetrievedTurn {
   turnId: string;
-  /** Tagged rendering (`<tN>` wrap, `<mN>` message tags). */
   text: string;
   tokens: number;
-  /** "stored" = ready turn_rendering derivation; "composed" = live fallback
-   *  composition from current message forms (derivation not ready). */
   source: "stored" | "composed";
   slice?: SliceReceipt;
 }
@@ -103,14 +78,12 @@ export interface RetrievedMessage {
   messageId: string;
   turnId: string;
   kind: string;
-  /** Verbatim historical content (tool args/results as recorded). */
   text: string;
   tokens: number;
   slice?: SliceReceipt;
 }
 
 export interface RetrievalReceipt<TServed> {
-  /** Correlates the impression rows this call wrote. */
   callId: string;
   served: TServed[];
   unserved: UnservedEntity[];
@@ -147,7 +120,6 @@ function writeImpressions(db: DatabaseSync, callId: string, surface: string, row
   }
 }
 
-/** First occurrence wins; duplicate requests collapse to one serve/impression. */
 function dedupe(ids: readonly string[]): string[] {
   return [...new Set(ids)];
 }
@@ -157,13 +129,6 @@ interface Candidate<T> {
   outcome: { kind: "servable"; item: T; tokens: number } | { kind: "unservable"; reason: UnservedReason };
 }
 
-/** In-order budget walk shared by both ops. Not-found/deleted entities never
- *  charge the budget. A servable item that fits the remaining budget is served
- *  whole. The item that crosses the budget is served as an exact token slice
- *  filling the remainder (if at least RETRIEVAL_SLICE_FLOOR remains), with a
- *  slice receipt for continuation. Items past a spent budget report "budget"
- *  with their size. `fromToken > 0` slices every requested item from that
- *  offset — the single-id continuation contract. */
 function budgetWalk<T extends { text: string; tokens: number; slice?: SliceReceipt }>(
   candidates: readonly Candidate<T>[],
   entityKind: "turn" | "message",
@@ -188,8 +153,6 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
     const remaining = tokenBudget - totalTokens;
     const remainingBytes = byteBudget - totalBytes;
 
-    // Whole serve: no offset requested and the full text fits what's left
-    // in BOTH budgets.
     if (fromToken === 0 && tokens <= remaining && utf8Bytes(item.text) <= remainingBytes) {
       served.push(item);
       totalTokens += tokens;
@@ -198,19 +161,11 @@ function budgetWalk<T extends { text: string; tokens: number; slice?: SliceRecei
       return;
     }
 
-    // Partial serve: explicit continuation always slices; a budget-crossing
-    // item slices only when enough budget remains to be worth reading.
     if (fromToken > 0 || remaining >= RETRIEVAL_SLICE_FLOOR) {
       const window = Number.isFinite(byteBudget)
         ? estimator.sliceTokensByteCapped(item.text, fromToken, remaining, remainingBytes)
         : estimator.sliceTokens(item.text, fromToken, remaining);
       const servedTokens = window.toToken - window.fromToken;
-      // Sub-floor serves under TOKEN pressure teach nothing — report
-      // "budget" so the model re-pulls alone. But when the BYTE budget is
-      // what bound the window, re-pulling alone cannot yield more: serve
-      // the byte-fit slice, however small — it is the only way through
-      // byte-dense content. Explicit continuations serve whatever fits,
-      // including the empty past-the-end slice (its receipt IS the answer).
       const tokenWindow = Math.min(remaining, Math.max(0, window.totalTokens - window.fromToken));
       const byteBound = Number.isFinite(byteBudget) && servedTokens < tokenWindow;
       const sliver = !byteBound && fromToken === 0 && servedTokens < Math.min(RETRIEVAL_SLICE_FLOOR, tokens);
@@ -247,8 +202,6 @@ function resolveBudget(options: RetrievalOptions | undefined): number {
   if (!Number.isFinite(budget) || budget <= 0) {
     throw new Error(`retrieval tokenBudget must be a positive number, got ${String(budget)}`);
   }
-  // The default is also the ceiling: callers cannot raise the model-visible
-  // bound above what the serving contract promises (validator P0).
   return Math.min(budget, DEFAULT_RETRIEVAL_TOKEN_BUDGET);
 }
 
@@ -293,8 +246,6 @@ function turnCandidate(db: DatabaseSync, turnId: string, estimator: TokenEstimat
     };
   }
 
-  // Live fallback: compose from current message forms exactly like the
-  // turn_derivation handler would (pure composition, no writes, no inference).
   const members = readMemberMessages(db, turnId);
   const derivations = readMessageDerivationRows(
     db,
@@ -318,9 +269,6 @@ interface BlockRow {
   content: string;
 }
 
-/** Verbatim text of one message from its stored blocks — the historical
- *  artifact as recorded, not a summary. Tool blocks carry their pairing ids so
- *  calls and results stay matchable. */
 function verbatimText(blocks: readonly BlockRow[]): string {
   const parts: string[] = [];
   for (const block of blocks) {
@@ -417,9 +365,6 @@ async function retrieve<T extends { text: string; tokens: number; slice?: SliceR
   if (ids.length === 0) {
     return storageFailure(`${defaultSurface}: at least one id is required`);
   }
-  // Hard bound on the whole model-visible result: bodies are budgeted, but
-  // receipts/footers scale with id count — unbounded ids means unbounded
-  // output. Refuse over-cap calls whole with a receipt naming the cap.
   if (dedupe(ids).length > MAX_RETRIEVAL_IDS_PER_CALL) {
     return storageFailure(
       `${defaultSurface}: too many ids — ${dedupe(ids).length} requested, cap is ${MAX_RETRIEVAL_IDS_PER_CALL} per call; split the request`,
@@ -428,8 +373,6 @@ async function retrieve<T extends { text: string; tokens: number; slice?: SliceR
   const surface = options?.surface ?? defaultSurface;
   const callId = randomUUID();
   try {
-    // Write transaction: the serve itself is a read, but every call logs
-    // impressions — the durable usage record is part of the contract.
     return await createDbWriteTransaction(ref, (transaction) => {
       const estimator = resolveInstanceTokenEstimator("retrieval");
       const candidates = dedupe(ids).map((id) =>

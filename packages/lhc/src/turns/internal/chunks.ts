@@ -1,10 +1,3 @@
-// Chunk mechanics: open-chunk append, the accumulated close policy, and the
-// close-to-summary enqueues. Placement is pure arithmetic over stored projected
-// token counts. The caller hands in the incoming turn's count, the open chunk
-// carries its accumulated count durably, and placement never uses clock,
-// inference, or token re-estimation. Everything here runs inside the
-// turn-derivation completion transaction; a crash leaves either a placed turn
-// with any close's summary enqueues or nothing.
 import type { DatabaseSync } from "node:sqlite";
 import type { DbWriteTransaction } from "../../shared-tech/index.js";
 import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
@@ -18,12 +11,7 @@ export interface ChunkPolicy {
 export interface PlacementResult {
   chunkId: string;
   memberIdx: number;
-  // Chunks closed by this placement, in close order: at most the previous
-  // open chunk (accumulation rule) and then the incoming turn's own chunk
-  // (max rule) — a turn ≥ max arriving behind an open chunk closes both.
   closedChunkIds: string[];
-  // An explicitly rebuilt turn keeps its placement. Sanctioned delete rebuilds
-  // chunk summaries from surviving members without changing chunk membership.
   alreadyPlaced: boolean;
 }
 
@@ -56,11 +44,6 @@ function openNextChunk(db: DatabaseSync): string {
   return chunkId;
 }
 
-// The close policy: when the open chunk's accumulated count plus the incoming
-// turn's count would reach the target, equality included, the chunk closes
-// holding its current members and the incoming turn opens the next chunk. A
-// single turn at or above max closes its own chunk immediately. An empty open
-// chunk always accepts the incoming turn; a chunk never closes empty.
 export function placeTurn(
   db: DatabaseSync,
   turnId: string,
@@ -93,8 +76,6 @@ export function placeTurn(
     memberCount(db, open.chunk_id) > 0 &&
     estimator.weigh(Number(open.accumulated_projected_tokens) + projectedTokens) >= policy.targetProjectedTokens
   ) {
-    // Crossing closes without the incoming turn: the decision weighs
-    // accumulated + incoming, and the incoming turn starts the next chunk.
     closeChunk(db, open.chunk_id);
     closedChunkIds.push(open.chunk_id);
     open = undefined;
@@ -113,8 +94,6 @@ export function placeTurn(
   ).run(projectedTokens, chunkId);
 
   if (estimator.weigh(projectedTokens) >= policy.maxProjectedTokens) {
-    // Max rule: the incoming turn alone meets the maximum, so its chunk closes
-    // immediately, whatever it holds.
     closeChunk(db, chunkId);
     closedChunkIds.push(chunkId);
   }
@@ -122,8 +101,6 @@ export function placeTurn(
   return { chunkId, memberIdx, closedChunkIds, alreadyPlaced: false };
 }
 
-// Closing queues the two summary kinds as independent work items. Both enqueues
-// ride the caller's ambient completion transaction.
 export function enqueueChunkSummaries(transaction: DbWriteTransaction, chunkId: string): WorkItemRecord[] {
   return (["chunk_summary_detailed", "chunk_summary_brief"] as const).map((kind) =>
     enqueue(transaction, {
@@ -135,12 +112,6 @@ export function enqueueChunkSummaries(transaction: DbWriteTransaction, chunkId: 
   );
 }
 
-// The chunk structure for compact selection: every chunk in chunk order with
-// its raw membership in member order. Membership is NOT filtered by turn
-// liveness — references are returned as stored so the consumer can run its
-// own referential check (a member pointing at no turn row at all is damage;
-// a member pointing at a tombstoned turn is not). This is why it does not
-// reuse readChunkRows, whose live-turn join would hide both cases.
 export interface ChunkStructureRow {
   chunkId: string;
   chunkOrder: number;
@@ -173,12 +144,6 @@ export function readChunkStructure(db: DatabaseSync): ChunkStructureRow[] {
   }));
 }
 
-// A tombstoned turn remains a legitimate stable-address record, but a derived
-// chunk whose every member turn is tombstoned has no readable source. Such a
-// chunk must not survive as an input to compact: its summaries describe content
-// the readable projection intentionally removed. Cleanup is deliberately
-// revalidated at write time because preview/selection may have read the file
-// before another process acquired the compact transaction.
 export function dropEmptyReadableChunks(db: DatabaseSync, candidates: readonly string[]): string[] {
   const dropped: string[] = [];
   const hasReadableMember = db.prepare(
@@ -212,8 +177,6 @@ export function dropEmptyReadableChunks(db: DatabaseSync, candidates: readonly s
   return dropped;
 }
 
-// Placement read-back for the turns surface: chunkId + memberIdx by turn, one
-// query, stored values only.
 export function readPlacements(db: DatabaseSync): Map<string, { chunkId: string; memberIdx: number }> {
   const rows = db.prepare(`SELECT turn_id, chunk_id, member_idx FROM chunk_member`).all() as unknown as Array<{
     turn_id: string;

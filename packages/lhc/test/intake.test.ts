@@ -1,7 +1,3 @@
-// Flow 2 (recording half): TC-2.1, TC-2.8, TC-1.4 (closing Story 1's
-// deferral), the four architecture-risk tests (mid-walk rollback, restart
-// survival, no-lock-on-rejection, system_error rollback parity). The CLI
-// in-process stdin legs retired with the CLI surface (Epic 05 Story 1).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type EventRecord, intakeStream, type MessageEventInput, threads } from "../src/index.js";
 import {
@@ -83,10 +79,6 @@ describe("Flow 2 (SDK): event recording", () => {
   });
 
   it("TC-1.4: the same batch by thread id and by file path produces identical results and read-back (closes Story 1's deferral)", async () => {
-    // recordedAt is sourced from the injected clock (test-plan: fixed per
-    // test), so the two independent recordings stamp the same instant and the
-    // read-back can be compared field-for-field — recordedAt included, nothing
-    // stripped.
     const recordedAt = new Date("2026-01-01T00:00:00.000Z");
     setIntakeClock(() => recordedAt);
 
@@ -109,9 +101,6 @@ describe("Flow 2 (SDK): event recording", () => {
     if (!byId.ok || !byPath.ok) return;
     expect(byId.value).toEqual(byPath.value);
 
-    // Exact read-back equivalence through both reference forms — every field,
-    // recordedAt included. Determinism comes from the injected clock, not from
-    // weakening the assertion.
     const readById = await intakeStream.listEvents({
       threadId: createdA.value.threadId,
       registryPath: store.registryPath,
@@ -121,8 +110,6 @@ describe("Flow 2 (SDK): event recording", () => {
     const readByPath = await readBack(pathB);
     expect(readById.value).toEqual(readByPath);
 
-    // recordedAt is the injected instant, proving it came from the clock seam
-    // rather than wall time.
     expect(readById.value.map((e: EventRecord) => e.recordedAt)).toEqual(
       readByPath.map(() => recordedAt.toISOString()),
     );
@@ -136,8 +123,6 @@ describe("Flow 2 (SDK): event recording", () => {
     const baseline = await readBack(filePath);
     expect(baseline).toHaveLength(2);
 
-    // Real mechanism: the seam closes the handle inside the transaction after
-    // the first event of the new batch has been recorded.
     setIntakeWalkHook((db, eventIndex) => {
       if (eventIndex === 0) db.close();
     });
@@ -150,7 +135,6 @@ describe("Flow 2 (SDK): event recording", () => {
     expect(result.error.errorClass).toBe("system_error");
     expect(result.error.code).toBe("storage_failure");
 
-    // Post-reopen read-back: not the operation's own claim about itself.
     expect(await readBack(filePath)).toEqual(baseline);
   });
 
@@ -166,7 +150,6 @@ describe("Flow 2 (SDK): event recording", () => {
     expect(result.error.errorClass).toBe("system_error");
     expect(result.error.code).toBe("storage_failure");
 
-    // AC-4.6 is class-independent: the first two walked events are gone too.
     expect(await readBack(filePath)).toEqual([]);
     const db = openRaw(filePath);
     try {
@@ -185,8 +168,6 @@ describe("Flow 2 (SDK): event recording", () => {
     const recorded = await withEstimator(o200k, () => intakeStream.messageEvents({ filePath }, batch));
     expect(recorded.ok).toBe(true);
 
-    // Every SDK operation opens and closes its own handle, so each read-back
-    // below is a fresh open of the file the write durably left behind.
     const firstRead = await readBack(filePath);
     expect(firstRead).toHaveLength(5);
     const secondRead = await readBack(filePath);
@@ -208,9 +189,6 @@ describe("Flow 2 (SDK): event recording", () => {
     const locker = openRaw(filePath);
     try {
       locker.exec("BEGIN IMMEDIATE;");
-      // If rejection touched the transaction path it would block on the held
-      // lock and surface SQLITE_BUSY as storage_failure; pure validation
-      // returns the caller error immediately instead.
       const result = await withEstimator(o200k, () =>
         intakeStream.messageEvents({ filePath }, [
           { ...validEvent("user_prompt"), eventKind: "bogus" } as unknown as MessageEventInput,

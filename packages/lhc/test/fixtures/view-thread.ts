@@ -1,12 +1,3 @@
-// The Epic 03 derived-thread fixture (Story 0, FC-0.3/0.4/0.5): one recorded
-// conversation — 12 turns, 4 chunks, tool-heavy middle — drained through the
-// real Epic 02 machinery (intake → enqueue → drain → handlers) against the
-// deterministic inference callbacks double into known form states. States are reached
-// through production paths, never hand-written rows (the anti-shim line
-// FC-0.3 enforces): the failed states come from scripted inference callback failures,
-// and blocked comes from
-// real source damage on a sacrificial sibling thread. Every later Epic 03
-// story compacts against what this builder returns.
 import { DatabaseSync } from "node:sqlite";
 import {
   type CompactReceipt,
@@ -21,19 +12,9 @@ import { type TempStore, validEvent } from "./index.js";
 import { createInferenceCallbacksDouble, type InferenceCallbacksDouble } from "./inference-callbacks-double.js";
 import { type ChunkSnapshot, readChunks } from "./threads.js";
 
-// Reason classes the scripted failures stamp, chosen from the sweep
-// classification table's vocabulary (tech design §Spec Validation): a
-// rate-limit class reads transient, a content-refusal class reads permanent —
-// FC-0.4's distinguishable-on-read-back guarantee, proven here before
-// Story 3 depends on it.
 export const RATE_LIMIT_FAILURE_REASON = "rate_limit: scripted failure (fixture)";
 export const PERMANENT_FAILURE_REASON = "content_refusal: scripted permanent failure (fixture)";
 
-// Chunk policy pinned so the 12 fixed-shape turns cut into exactly 4 chunks
-// (3 members each; c1–c3 closed, c4 still open). Projections from the
-// deterministic double are near-constant in size (`projection(<digest>:<40
-// chars>)`), so the cut is stable; the builder asserts the shape and throws
-// if drift ever moves it.
 const FIXTURE_CHUNK_POLICY = { targetProjectedTokens: 90, maxProjectedTokens: 4400 };
 
 const TURN_COUNT = 12;
@@ -49,8 +30,6 @@ function turnEvents(turn: number): MessageEventInput[] {
     }),
   ];
   if (TOOL_HEAVY_TURNS.has(turn)) {
-    // The tool-heavy middle: two tool runs per turn — what gives Story 4 a
-    // realistic over-max zone of tool results to age behind the boundary.
     for (const run of [1, 2]) {
       const toolCallId = `call-fx-${turn}-${run}`;
       events.push(
@@ -79,17 +58,14 @@ export interface DerivedThreadFixture {
   filePath: string;
   sdk: Lhc;
   double: InferenceCallbacksDouble;
-  turnIds: string[]; // t1..t12
+  turnIds: string[];
   chunks: ChunkSnapshot;
-  // The two manufactured failed subjects (tool_result_summary forms), reached
-  // through real terminal failure — absent when failures
-  // are disabled for a variant.
   failedTransientMessageId?: string;
   failedPermanentMessageId?: string;
 }
 
 export interface DerivedThreadOptions {
-  failures?: boolean; // default true: manufacture the two failed states
+  failures?: boolean;
 }
 
 async function send(sdk: Lhc, filePath: string, batch: readonly MessageEventInput[]): Promise<string[]> {
@@ -157,22 +133,16 @@ export async function derivedThreadFixture(
 
   for (let turn = 1; turn <= TURN_COUNT; turn += 1) {
     if (failures && turn === 6) {
-      // The first tool_result_summary item of this batch lands failed with the
-      // rate-limit reason class.
       double.failKind("tool_result_summary", 1, {
         reason: RATE_LIMIT_FAILURE_REASON,
       });
     }
     if (failures && turn === 7) {
-      // The first tool_result_summary item lands with the permanent reason class.
       double.failKind("tool_result_summary", 1, {
         reason: PERMANENT_FAILURE_REASON,
       });
     }
     const messageIds = await send(sdk, filePath, turnEvents(turn));
-    // Batch shape is fixed for tool-heavy turns: prompt, thinking, call,
-    // result, call, result, text, end — index 3 is the first tool result,
-    // the scripted failures' subject.
     const firstToolResultId = messageIds[3];
     if (failures && (turn === 6 || turn === 7)) {
       if (firstToolResultId === undefined || firstToolResultId === "") {
@@ -186,7 +156,6 @@ export async function derivedThreadFixture(
     turnIds.push(`t${turn}`);
   }
 
-  // Shape invariants the chunk policy is pinned for.
   fixture.chunks = readChunks(filePath);
   if (fixture.chunks.chunks.length !== 4) {
     throw new Error(
@@ -205,9 +174,6 @@ export async function derivedThreadFixture(
     if (fixture.failedPermanentMessageId !== undefined) {
       setMessageDerivationFailed(filePath, fixture.failedPermanentMessageId, PERMANENT_FAILURE_REASON);
     }
-    // Verify the manufactured states by read-back through the owning report
-    // surface before handing the fixture to any test (FC-0.3's enforcement
-    // lives in the tests; this guards the builder's own contract).
     const report = await sdk.messages.report({ filePath });
     if (!report.ok) throw new Error(`fixture report failed: ${report.error.reason}`);
     const transient = failedEntries(report.value, RATE_LIMIT_FAILURE_REASON);
@@ -227,10 +193,6 @@ export async function derivedThreadFixture(
   return fixture;
 }
 
-// The canonical-corruption variant (FC-0.5, Epic 01 fixture pattern): a
-// short real conversation, drained clean, then damaged below the SDK into
-// the two-open-turns state no public operation can produce. Canonical
-// consumers refuse it with state_corruption.
 export async function corruptedVariantThread(store: TempStore): Promise<{ filePath: string; sdk: Lhc }> {
   const double = createInferenceCallbacksDouble();
   const sdk = initLhc({
@@ -246,33 +208,18 @@ export async function corruptedVariantThread(store: TempStore): Promise<{ filePa
     await send(sdk, filePath, turnEvents(turn));
   }
   await drain(sdk, filePath);
-  // Open a turn through real intake, then add a second open row: two open
-  // turns, the Epic 01 invariant violation.
   await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "left open before the damage" } })]);
   corruptTwoOpenTurns(filePath);
   return { filePath, sdk };
 }
 
-// ── Epic 04 Story 2 extensions (test plan: fixture extended in place) ──
-
-// The mutation-in-flight variant: the tool-heavy thread compacted, then ONE
-// edit applied through the production mutation path with the drain NOT
-// settled — so the cascade's cleared-pending states and their queued work
-// are real production states, never hand-written rows (FC-fidelity rule).
-// Serves the mid-rebuild overview shape (TC-1.1) and the rebuild bracket's
-// opening state (TC-4.3).
 export interface MutationInFlightFixture extends DerivedThreadFixture {
   compactReceipt: CompactReceipt;
   editedMessageId: string;
-  // The cascade contract's exact account of the edit: cleared set, queued
-  // replacements, superseded items — what the bracketing health reads
-  // assert against.
   mutation: MutationResult;
 }
 
 export async function mutationInFlightVariant(store: TempStore): Promise<MutationInFlightFixture> {
-  // No manufactured failures: the bracket's "nothing outside the cascade
-  // changed state" assertion wants a clean baseline.
   const fixture = await derivedThreadFixture(store, { failures: false });
   const { sdk, filePath } = fixture;
 
@@ -281,9 +228,6 @@ export async function mutationInFlightVariant(store: TempStore): Promise<Mutatio
     throw new Error(`fixture compact failed: ${compacted.error.reason}`);
   }
 
-  // A mid-thread closed-turn target: turn 2's prompt, so the cascade spans
-  // all three subject kinds — its own smoothed_prompt, t2's two turn forms,
-  // and c1's two chunk summaries.
   const listed = await sdk.messages.list({ filePath });
   if (!listed.ok) throw new Error(`fixture list failed: ${listed.error.reason}`);
   const target = listed.value.find((record) => record.kind === "user_prompt" && record.turnId === "t2");
@@ -305,28 +249,17 @@ export async function mutationInFlightVariant(store: TempStore): Promise<Mutatio
   };
 }
 
-// The mixed-state variant (TC-4.1's substrate): one thread carrying every
-// operational state at once — ready (the drained body), failed-transient and
-// failed-permanent (the scripted failures), blocked (a turn derivation
-// meeting real source damage), and pending with live queued work (a partial
-// drain stopping short). All states reached through intake, mutation, and
-// drain behavior; the only below-SDK write is the sanctioned two-open-turns
-// corruption.
 export interface MixedStateFixture extends DerivedThreadFixture {
-  blockedTurnId: string; // t13: turn forms blocked through the terminal path
-  pendingPromptMessageId: string; // t14's prompt: smoothed_prompt still queued
+  blockedTurnId: string;
+  pendingPromptMessageId: string;
 }
 
 export async function mixedStateVariantThread(store: TempStore): Promise<MixedStateFixture> {
   const fixture = await derivedThreadFixture(store);
   const { sdk, filePath } = fixture;
 
-  // Turn 13 closes cleanly but is NOT drained: its prompt smoothing and turn
-  // derivation sit queued (events: prompt, thinking, text, end — no tools).
   await send(sdk, filePath, turnEvents(13));
 
-  // Turn 14 opens with a lone prompt: one more queued smoothing item that the
-  // partial drain below will leave pending.
   const promptIds = await send(sdk, filePath, [
     validEvent("user_prompt", {
       payload: { text: "turn 14: this prompt's smoothing stays pending" },
@@ -337,13 +270,8 @@ export async function mixedStateVariantThread(store: TempStore): Promise<MixedSt
     throw new Error("fixture invariant: turn 14 prompt did not project");
   }
 
-  // Real source damage: t14 is open, the corruption writer adds a second open
-  // row — the state t13's claimed derivation meets at drain time.
   corruptTwoOpenTurns(filePath);
 
-  // Partial drain, head-first FIFO: item 1 is t13's prompt smoothing (ready),
-  // item 2 is t13's turn derivation (terminal on the damage → blocked).
-  // t14's smoothing stays queued — the live pending state.
   const report = await sdk.work.drain({ filePath }, { maxItems: 2 });
   if (!report.ok) throw new Error(`fixture drain failed: ${report.error.reason}`);
   const blockedRun = report.value.ran.find(
@@ -359,10 +287,6 @@ export async function mixedStateVariantThread(store: TempStore): Promise<MixedSt
   return { ...fixture, blockedTurnId: "t13", pendingPromptMessageId };
 }
 
-// The blocked state's sacrificial sibling (FC-0.3): a closed turn whose
-// queued derivation meets real source damage at drain time — the handler
-// finds two open turns and lands the turn forms blocked through the
-// production terminal path, never a hand-written row.
 export async function blockedSiblingThread(
   store: TempStore,
 ): Promise<{ filePath: string; sdk: Lhc; blockedTurnId: string }> {
@@ -376,9 +300,6 @@ export async function blockedSiblingThread(
   const filePath = store.threadPath();
   const created = await sdk.threads.newThread({ filePath, registryPath: store.registryPath });
   if (!created.ok) throw new Error(`fixture thread creation failed: ${created.error.reason}`);
-  // Turn 1 closes (its turn_derivation queues); a second turn opens through
-  // real intake; the corruption writer adds another open row. The drain then
-  // claims t1's derivation against a record with two open turns.
   await send(sdk, filePath, turnEvents(1));
   await send(sdk, filePath, [validEvent("user_prompt", { payload: { text: "left open before the damage" } })]);
   corruptTwoOpenTurns(filePath);

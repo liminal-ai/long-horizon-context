@@ -1,7 +1,3 @@
-// thread-view surface: model context, status, compact, materialize, and
-// describe. Hot-path reads use local deterministic assembly only: no inference,
-// no network, no queue interaction, and no writes. Profile resolution consumed
-// by initLhc is re-exported at the bottom.
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import * as path from "node:path";
@@ -57,10 +53,6 @@ import {
   tailTokenSum,
 } from "./internal/snapshot.js";
 
-// Config resolution for the operation in hand: the SDK instance's resolved
-// view config rides the per-instance seam; below-SDK direct domain calls fall
-// back to the built-in defaults through the same one resolution path initLhc
-// uses.
 const DEFAULT_VIEW_CONFIG: ResolvedViewConfig = resolveViewConfig();
 
 function viewConfig(): ResolvedViewConfig {
@@ -82,19 +74,6 @@ function detail(cause: unknown): string {
   return cause instanceof Error ? cause.message : String(cause);
 }
 
-// ── model context ────────────────────────────────────────────────
-
-// The hot-path read: view header + bands (if any), tail messages after the
-// compact point (deleted-filtered, record order), boundary position; then
-// format — band messages first, tail per the mapping table, tool results
-// at-or-behind the boundary in short form. No view row ⇒ the whole record is
-// tail from event 1 through this same code path with the compact point at its
-// zero origin: snapshot-absent, never a separate branch.
-//
-// Reads-only is structural, not disciplined: the whole operation runs in the
-// touch-suppressed scope, so the open announcement that would let a
-// background SDK's scheduler hang a first-touch catch-up drain off this read
-// (openThreadDatabase → fireThreadTouch → scheduler.touch) never fires.
 export async function getLlmRequestContext(ref: ThreadRef): Promise<OpResult<LlmRequestContext>> {
   try {
     return await createDbReadTransaction(ref, (transaction) => {
@@ -113,9 +92,6 @@ export async function getLlmRequestContext(ref: ThreadRef): Promise<OpResult<Llm
   }
 }
 
-// SessionManager-friendly materialization from canonical record data: compacted
-// bands as user context lines, tail messages regrouped into user / assistant /
-// toolResult shapes. Reads-only, touch-suppressed like getLlmRequestContext.
 export async function getSessionThreadView(ref: ThreadRef): Promise<OpResult<SessionThreadView>> {
   try {
     return await createDbReadTransaction(ref, (transaction) => buildSessionThreadView(transaction.db));
@@ -124,10 +100,6 @@ export async function getSessionThreadView(ref: ThreadRef): Promise<OpResult<Ses
   }
 }
 
-// ── status ───────────────────────────────────────────────────────
-
-// Derivation counts bucket from one report entry. Ready derivations are healthy
-// and not an operational situation.
 function bucketDerivation(entries: readonly DerivationReportEntry[], counts: ViewStatus["derivation"]): void {
   for (const entry of entries) {
     switch (entry.state) {
@@ -146,17 +118,6 @@ function bucketDerivation(entries: readonly DerivationReportEntry[], counts: Vie
   }
 }
 
-// Reads only, callable any time, no side effects: tail size against the
-// configured trigger threshold with a compact recommendation (`tailTokens >
-// threshold`, nothing smarter — the caller owns policy), derivation counts
-// by state read through the OWNERS' report surfaces (must-not-own: never a
-// direct derivation read here), the active view's health or null
-// pre-compact, and the visibility zone's sum against its max — computed live
-// by visibilityZoneTokens, so "visible in status" is structural, not stored.
-//
-// Like model context, the whole read — including the owners' report surfaces it
-// consumes — runs in the touch-suppressed scope, so a background SDK's
-// status can never schedule a catch-up drain.
 export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
@@ -196,8 +157,6 @@ export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
     return storageFailure(`view status failed: ${detail(cause)}`);
   }
 
-  // The owners' report surfaces open their own handles; ours is closed first
-  // so the status read never holds two handles on one thread file.
   const messageReport = await messagesDomain.report({ filePath });
   if (!messageReport.ok) return messageReport;
   const turnReport = await turnsDomain.report({ filePath });
@@ -223,15 +182,6 @@ export async function status(ref: ThreadRef): Promise<OpResult<ViewStatus>> {
   };
 }
 
-// ── describe ─────────────────────────────────────────────────────
-
-// The stored active view row, exposed read-only so inspect never reads
-// thread-view tables directly. Everything is the snapshot verbatim:
-// arrangement, gaps, config, source-state provenance, per-band stored token
-// counts; nothing is recomputed, repaired, or read from the record. Absent
-// view means ok with null, mirroring status's never-compacted behavior. Like the
-// other reads, the whole operation runs touch-suppressed: a background SDK's
-// describe can never schedule a catch-up drain.
 export async function describe(ref: ThreadRef): Promise<OpResult<StoredView | null>> {
   try {
     return await createDbReadTransaction(ref, (transaction) => readStoredView(transaction.db));
@@ -322,7 +272,6 @@ export async function midTurnCompact(ref: ThreadRef, opts: MidTurnCompactOptions
   });
 }
 
-// Host metadata: the pressure-decision reads (AC-7.1). Read-only.
 export async function hostMetadata(ref: ThreadRef): Promise<OpResult<HostMetadata>> {
   try {
     return await createDbReadTransaction(ref, (transaction) => readHostMetadata(transaction.db));
@@ -330,8 +279,6 @@ export async function hostMetadata(ref: ThreadRef): Promise<OpResult<HostMetadat
     return storageFailure(`host metadata read failed: ${detail(cause)}`);
   }
 }
-
-// ── prune ────────────────────────────────────────────────────────
 
 function pruneCallerError(code: "invalid_target_tokens", reason: string): { ok: false; error: ErrorResult } {
   return { ok: false, error: { errorClass: "caller_error", code, reason } };
@@ -492,10 +439,6 @@ function pruneInTransaction(transaction: DbWriteTransaction, targetTokens: numbe
   });
 }
 
-// Advance the visibility boundary forward so older tool results in the
-// visibility zone render short. Deterministic, no inference, one write
-// transaction. Explicit commands always execute and report — a zone already
-// under target returns a no-op receipt, never an error.
 export async function prune(ref: ThreadRef, params?: { targetTokens?: number }): Promise<OpResult<PruneReceipt>> {
   const resolved = await resolveThreadRef(ref);
   if (!resolved.ok) return resolved;
@@ -512,10 +455,6 @@ export async function prune(ref: ThreadRef, params?: { targetTokens?: number }):
   }
 }
 
-// ── compact ──────────────────────────────────────────────────────
-
-// The default base when no profile is named: the first built-in, matching
-// the PI continuation harness. Explicit params override the base field-wise.
 const DEFAULT_PROFILE_NAME = "continuation";
 
 function callerError(
@@ -571,10 +510,6 @@ function buildRenderedBands(
   });
 }
 
-// The view's gaps: gap entries (a rendered subject with no usable material)
-// and subjects the last band's walk skipped as too large (no entry at all).
-// Both are holes in the same coverage window, so both land in gaps_json and
-// the receipt.
 function gapNotes(selection: Pick<SelectionResult, "entries" | "skipped">): CompactReceipt["gaps"] {
   return [
     ...selection.entries
@@ -592,12 +527,6 @@ function gapNotes(selection: Pick<SelectionResult, "entries" | "skipped">): Comp
   ];
 }
 
-// Preview helper for wouldProduceBands: true when compact would write a
-// non-empty banded snapshot that differs from the stored view (or is the first
-// write). A different compact point in either direction counts as a write —
-// including regression, which compact always accepts. Same-point still
-// compares arrangement/gaps so repair previews report true when the stored
-// snapshot is incomplete.
 function selectionWouldWriteSnapshot(
   transaction: DbReadTransaction,
   selection: Pick<SelectionResult, "compactPoint" | "entries" | "skipped">,
@@ -622,9 +551,6 @@ function selectionWouldWriteSnapshot(
   );
 }
 
-// Read-only compact preflight: same selection path as compact, no snapshot write.
-// Runs touch-suppressed like getLlmRequestContext so background mode never
-// schedules catch-up drain from a preview read.
 export async function previewCompact(
   ref: ThreadRef,
   opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
@@ -660,25 +586,14 @@ export async function previewCompact(
 }
 
 /**
- * Prepared compact assembly (no view write). Used by the public compact path
- * and by compact-continuation so the marker can land before install.
- */
-/**
  * Strong source-state fingerprint (digest of durable inputs used by
  * arrangement/rendering). Install refuses when digests diverge beyond the
  * allowed marker delta.
  */
 export type PreparedCompactSourceState = {
   maxEventOrder: number;
-  /** SHA-256 hex of relevant derivation rows (id/type/state/content/version). */
   derivationDigest: string;
-  /**
-   * SHA-256 hex of durable source messages/blocks used by band rendering and
-   * the post-compact-point tail (includes fallback band sources at/below the
-   * compact point, not only rows after compact point).
-   */
   tailDigest: string;
-  /** SHA-256 hex of turn/chunk placement used by selection. */
   structureDigest: string;
   installedViewId: string | null;
   compactPoint: number;
@@ -690,23 +605,16 @@ export type PreparedCompact = {
   maxEventOrder: number;
   derivationCounts: Record<string, Record<string, number>>;
   sourceState: PreparedCompactSourceState;
-  /**
-   * Turn ids whose durable messages/blocks feed prepared band text
-   * (message_excerpt, stored_turn, stored_member_concat, chunk members, etc.).
-   * Fingerprinted in addition to the post-compact-point tail.
-   */
   selectedSourceTurnIds: readonly string[];
   viewId: string;
   firstKeptMessageId: string | null;
   profileName: string | null;
   merged: ViewProfile;
-  /** Selection constraint this compact was prepared under; reused when install-time drift forces a fresh recompute. */
   compactPointUpperBound?: number;
   bands: Array<{ band: Band; renderedText: string; tokenCount: number }>;
   warnings: NonNullable<CompactReceipt["warnings"]>;
   degraded: CompactReceipt["degraded"];
   gaps: CompactReceipt["gaps"];
-  /** Canonical records the selection walk could not place; skipped, never refused. */
   skippedRecords: SkippedRecord[];
 };
 
@@ -794,9 +702,6 @@ export function readPreparedSourceState(
     ),
   );
 
-  // Deterministic membership: post-compact tail ∪ selected band source turns.
-  // When selected turns are empty (legacy callers), fall back to chunk members
-  // so stored_member_concat still fingerprints.
   type SourceMessageRow = {
     message_id: string;
     kind: string;
@@ -843,8 +748,6 @@ export function readPreparedSourceState(
     }
   }
 
-  // Batching changes statement order, never digest order. Rebuild the exact
-  // canonical order the former single UNION query produced before hashing.
   const sqliteBinaryCompare = (a: string, b: string): number => Buffer.compare(Buffer.from(a), Buffer.from(b));
   const sourceMessages = [...messageRows.values()].sort(
     (a, b) =>
@@ -899,9 +802,6 @@ export function readPreparedSourceState(
   const boundary = db.prepare(`SELECT position FROM view_boundary WHERE thread_singleton = 1`).get() as
     | { position: number | bigint }
     | undefined;
-  // Open-turn step edges are structure: they decide where the walk may split.
-  // Closed turns are already fingerprinted by their close; only the open turn's
-  // step indices can still move a split point between prepare and install.
   const openTurnIds = turnRows.filter((t) => t.status === "open").map((t) => t.turn_id);
   const stepRows =
     openTurnIds.length === 0
@@ -943,17 +843,7 @@ export function readPreparedSourceState(
 export type InstallPreparedOptions = {
   signal?: { aborted: boolean };
   createdAt?: string;
-  /**
-   * Atomic visibility-boundary advance installed with the prepared view.
-   * Must be >= compact point and >= current boundary (monotonic). When omitted,
-   * compact reset writes boundary = compactPoint (historical behavior).
-   */
   visibilityBoundary?: number;
-  /**
-   * The durable boundary the caller prepared against. When it no longer
-   * matches at install time, install recomputes the compact against fresh
-   * state and installs that; it never refuses on the drift.
-   */
   expectedPreviousBoundary?: number;
 };
 
@@ -963,14 +853,7 @@ export type PrepareCompactOptions = {
   profile?: string;
   params?: ViewCompactParams;
   signal?: { aborted: boolean };
-  /**
-   * Read-only boundary override for candidate rendering / source fingerprint.
-   * Does not mutate durable boundary. Fingerprint still includes the durable
-   * boundary in structureDigest; override is applied only at render time via
-   * install options or assembleCandidate override.
-   */
   visibilityBoundaryOverride?: number;
-  /** Cap selection so compactPoint never advances past this event order. */
   compactPointUpperBound?: number;
 };
 
@@ -1032,16 +915,6 @@ function buildPreparedFromArrangement(
   };
 }
 
-/**
- * Does the prepared snapshot still describe the thread? Compares the prepared
- * fingerprints — serving view identity, turn/chunk structure, derivation
- * content, event order, and source message/block content — against durable
- * state, plus the caller's pinned boundary when it supplied one.
- *
- * This is a router, not a gate: a reason string sends install through a fresh
- * recompute, never back to the caller. Must be called inside the transaction
- * that installs.
- */
 function preparedStateDrift(
   db: DatabaseSync,
   prepared: PreparedCompact,
@@ -1067,7 +940,6 @@ function preparedStateDrift(
   return null;
 }
 
-/** Carries a failed in-transaction recompute out through replaceViewSnapshot's rollback. */
 class RecomputeFailedError extends Error {
   readonly error: ErrorResult;
   constructor(error: ErrorResult) {
@@ -1111,11 +983,6 @@ export async function prepareCompact(
   }
 }
 
-/**
- * Assemble a compact against the database as it stands right now. Reads only —
- * so the install path can run it inside its own write transaction — and writes
- * no diagnostics; see logPreparedDiagnostics.
- */
 function assemblePreparedCompact(
   db: DatabaseSync,
   filePath: string,
@@ -1146,10 +1013,6 @@ function assemblePreparedCompact(
   return { ok: true, value: prepared };
 }
 
-/**
- * What the assembly degraded or passed over, for the thread log. Fail-soft and
- * on its own connection, so it never runs inside the install transaction.
- */
 function logPreparedDiagnostics(db: DatabaseSync, filePath: string, prepared: PreparedCompact): void {
   const threadId = readThreadMetadata(db).threadId;
   const transaction: DbReadTransaction = { db, filePath, threadId };
@@ -1204,8 +1067,6 @@ export async function installPreparedCompact(
   if (!opened.ok) return opened;
   const db = opened.value;
   try {
-    // Pre-transaction injection: tests may mutate between prepare and install
-    // acquisition; validation still runs under BEGIN IMMEDIATE.
     fireViewInjection("compact-write");
 
     if (compactStopped(opts.signal)) {
@@ -1215,10 +1076,6 @@ export async function installPreparedCompact(
     const createdAt = opts.createdAt ?? new Date().toISOString();
     const proposedBoundary = opts.visibilityBoundary;
 
-    // One BEGIN IMMEDIATE that both looks and writes. If the prepared snapshot
-    // no longer describes durable state, it is reassembled here — under the
-    // same lock that installs it — so what lands is never a stale snapshot and
-    // never a refusal the host has to turn into "no compact".
     let installed = prepared;
     let recomputed = false;
     try {
@@ -1269,8 +1126,6 @@ export async function installPreparedCompact(
         };
       });
     } catch (cause) {
-      // A recompute that could not produce a view (an aborted compact, a read
-      // failure) surfaces as itself, with the prior view still serving.
       if (cause instanceof RecomputeFailedError) return { ok: false, error: cause.error };
       throw cause;
     }
@@ -1353,11 +1208,6 @@ export async function previewProtectedBoundary(
   }
 }
 
-// Compact runs only when invoked through this surface; no core path calls it.
-// Order: validate profile/params before IO, prepare assembly, replace the view
-// and reset the boundary in one BEGIN IMMEDIATE, then return a receipt.
-// Assembly is entirely from stored artifacts: nothing here can reach inference
-// or schedule repair work.
 export async function compact(
   ref: ThreadRef,
   opts: { profile?: string; params?: ViewCompactParams; signal?: { aborted: boolean } },
@@ -1367,18 +1217,6 @@ export async function compact(
   return installPreparedCompact(ref, prepared.value, opts.signal !== undefined ? { signal: opts.signal } : {});
 }
 
-// ── materialize ──────────────────────────────────────────────────
-
-// PI session-file materialization: run the serving assembly internally, hand
-// the same entry array to the JSONL writer, return the written path. No
-// thread state changes (reads + a file write outside the thread file), and
-// every generated field derives from view/record metadata, never write-time
-// clocks — repeating after no thread changes produces a byte-identical file
-// Parity with model context is by construction: one assembly, two shapes. A
-// never-compacted thread materializes its tail-only model context with the
-// header timestamp from the thread's created-at. Like model context, the whole
-// operation runs touch-suppressed: a background SDK's materialize can never
-// schedule a catch-up drain.
 export async function materialize(
   ref: ThreadRef,
   opts: { path: string; format?: "pi-session" },
@@ -1402,7 +1240,6 @@ export async function materialize(
       return {
         threadId: threadMeta.threadId,
         headerTimestamp: assembled.snapshot?.createdAt ?? threadMeta.createdAt,
-        // Deterministic per thread file — never the writing process's cwd.
         cwd: path.dirname(path.resolve(transaction.filePath)),
         entries: assembled.entries,
       };
@@ -1419,7 +1256,6 @@ export async function materialize(
   }
 }
 
-// ── initLhc substrate ────────────────────────────────────────────
 export {
   BUILT_IN_PROFILES,
   DEFAULT_COMPACT_THRESHOLD,

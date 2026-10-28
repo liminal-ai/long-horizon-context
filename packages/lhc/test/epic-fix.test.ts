@@ -1,6 +1,3 @@
-// Epic Fix Batch 1: blank-path rejection (F-EPIC-001), read-surface reference
-// validation (F-EPIC-002), and strict CLI flag parsing (NB-2). New Green-phase
-// suite — the Red-committed files stay byte-identical.
 import { existsSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, messages, type ThreadRef, threads, turns } from "../src/index.js";
@@ -14,8 +11,6 @@ afterEach(() => {
   store.cleanup();
 });
 
-// Every read-back surface, exercised through one signature so the empty-path
-// and unknown-id legs prove the same fail-closed contract on each.
 const READ_SURFACES: ReadonlyArray<{
   name: string;
   call: (ref: ThreadRef) => Promise<{ ok: boolean; error?: { errorClass: string; code: string } }>;
@@ -36,7 +31,6 @@ describe("F-EPIC-001 (SDK): blank file path is refused before any storage touch"
     expect(result.error.errorClass).toBe("caller_error");
     expect(result.error.code).toBe("invalid_thread_ref");
 
-    // No durable file, and no registry row — the registry was never opened.
     expect(existsSync(store.registryPath)).toBe(false);
     const listed = await threads.listThreads({ registryPath: store.registryPath });
     expect(listed.ok).toBe(true);

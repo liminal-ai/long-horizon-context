@@ -1,16 +1,3 @@
-/**
- * R15 / LIM-93 concurrency evidence, across real processes — same-process
- * callers cannot interleave, because node:sqlite is synchronous.
- *
- * Two properties are under test, both of which would break if the registry
- * were built differently:
- *  - a reader can never see a current-alias pointer whose alias is not
- *    registered to that thread (it would, if register and advance were
- *    separate commits);
- *  - resolve returns the alias's thread and that thread's current alias from
- *    one state (it would not, if the pair were read in two statements while a
- *    concurrent writer advanced between them).
- */
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -59,8 +46,6 @@ async function waitFor(predicate: () => boolean, label: string, timeoutMs = 30_0
   }
 }
 
-// Every worker imports and signals READY first; the parent releases them all
-// with one barrier file so they hit the registry simultaneously.
 async function runWorkers(specs: WorkerSpec[]): Promise<WorkerReport[]> {
   const goPath = join(store.dir, "go");
   const children = specs.map((spec, index) => {
@@ -142,8 +127,6 @@ describe("registry alias map under concurrent processes", () => {
     const advanced = reports.filter((report) => report.mode === "advance").flatMap((report) => report.registered);
     expect(advanced).toHaveLength(3 * rounds);
 
-    // Every alias any writer registered still names this thread, and the
-    // pointer that survived the race is one of them.
     for (const alias of advanced) {
       const resolved = await threads.resolveAlias({ alias, registryPath: store.registryPath });
       expect(resolved.ok, `alias ${alias} lost its binding`).toBe(true);
@@ -187,7 +170,6 @@ describe("registry alias map under concurrent processes", () => {
       expect(resolved.value.currentAlias).toBe(sharedAlias);
     }
 
-    // A losing thread never acquired a pointer to an alias it does not hold.
     for (const threadId of threadIds.filter((id) => id !== winnerThreadId)) {
       const current = await threads.currentAlias({ threadId, registryPath: store.registryPath });
       expect(current.ok && current.value.currentAlias).toBeNull();

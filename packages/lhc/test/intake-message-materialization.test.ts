@@ -1,7 +1,3 @@
-// Story 3 (Flow 2, message materialization half): TC-2.2 through TC-2.5, TC-5.4's
-// no-duplicate-message clause, and the message materialization rung of the rollback ladder
-// (an induced message materialization failure rejects the whole batch). Everything enters
-// through the intake-stream surface.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type EventRecord, intakeStream, type MessageRecord, messages, threads } from "../src/index.js";
 import { eventBatch, openRaw, setIntakeWalkHook, type TempStore, tempStore, validEvent } from "./fixtures/index.js";
@@ -60,8 +56,6 @@ describe("Flow 2 (SDK): message materialization", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    // messageId appears on every recorded message-producing entry, in walk
-    // order; the turn_end entry is recorded but carries no messageId.
     expect(result.value.events.map((entry) => entry.outcome)).toEqual(Array.from({ length: 7 }, () => "recorded"));
     expect(result.value.events.map((entry) => entry.messageId)).toEqual([
       "m1",
@@ -73,7 +67,6 @@ describe("Flow 2 (SDK): message materialization", () => {
       undefined,
     ]);
 
-    // turn_end is present in the event order but absent from messages.
     expect((await readEvents(filePath)).map((event) => event.eventKind)).toEqual([
       "user_prompt",
       "assistant_text",
@@ -96,7 +89,6 @@ describe("Flow 2 (SDK): message materialization", () => {
       "tool_result",
     ]);
 
-    // Full block structure per kind, content verbatim — not just block count.
     expect(materialized[0]!.blocks).toEqual([{ blockType: "text", content: { text: "please summarize the file" } }]);
     expect(materialized[1]!.blocks).toEqual([
       { blockType: "text", content: { text: "the file describes turn handling" } },
@@ -122,8 +114,6 @@ describe("Flow 2 (SDK): message materialization", () => {
       },
     ]);
 
-    // Story 4 stamps membership at intake: the prompt opened t1 and every
-    // message in the batch belongs to it (turn_end closed it, no message).
     for (const message of materialized) {
       expect(message.turnId).toBe("t1");
     }
@@ -162,9 +152,6 @@ describe("Flow 2 (SDK): message materialization", () => {
 
   it("TC-2.4: a 300KB tool result reads back byte-identical through the SDK (AC-2.5)", async () => {
     const filePath = await createThread();
-    // Varied content (unicode included) repeated past any rendering
-    // threshold; byte-identity is asserted on the full string, not a length
-    // or checksum shortcut.
     const bigContent = "tool output line δσπ 😀 — verbatim?\n".repeat(8000);
     expect(Buffer.byteLength(bigContent, "utf8")).toBeGreaterThan(300_000);
 
@@ -230,7 +217,6 @@ describe("Flow 2 (SDK): message materialization", () => {
 
     expect(await readMessages(filePath)).toEqual(baseline);
 
-    // Below the SDK: exactly one message row per source event order.
     const db = openRaw(filePath);
     try {
       const counts = db
@@ -254,9 +240,6 @@ describe("Flow 2 (SDK): message materialization", () => {
     expect(baselineEvents).toHaveLength(1);
     expect(baselineMessages).toHaveLength(1);
 
-    // Real mechanism: after the new batch's first event records and materializes,
-    // the seam drops the block table, so the second event's message materialization insert
-    // fails inside the transaction.
     setIntakeWalkHook((db, eventIndex) => {
       if (eventIndex === 0) db.exec("DROP TABLE message_block");
     });
@@ -269,8 +252,6 @@ describe("Flow 2 (SDK): message materialization", () => {
     expect(result.error.errorClass).toBe("system_error");
     expect(result.error.code).toBe("storage_failure");
 
-    // Read-back state, not the error result alone: events and messages are
-    // both at baseline — message materialization failure stranded no event rows.
     expect(await readEvents(filePath)).toEqual(baselineEvents);
     expect(await readMessages(filePath)).toEqual(baselineMessages);
   });

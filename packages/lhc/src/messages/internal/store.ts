@@ -1,7 +1,3 @@
-// Message and block row operations. Writes run on the caller's handle inside
-// the batch transaction (insert failures propagate so the pipeline rejects
-// the whole batch); reads run on a fresh handle per operation. Edit/delete
-// validation and row applies also live here: row-level mechanics, no policy.
 import type { DatabaseSync } from "node:sqlite";
 import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
 import type { Block, MessageRecord } from "../index.js";
@@ -13,13 +9,8 @@ export interface MessageRow {
   tokenEstimate: number;
   actor: string;
   harness: string;
-  // Membership stamp, settled at intake: the current open turn after turn
-  // intake. Written once here, never updated.
   turnId: string;
-  // Verbatim provider usage JSON for assistant_text events that carried it
-  // (schema v5). Absent / NULL for every other kind and for pre-v5 rows.
   providerUsage?: Record<string, unknown>;
-  // Host-supplied step index (schema v12). Absent / NULL when not reported.
   stepIndex?: number;
   blocks: Block[];
 }
@@ -49,14 +40,6 @@ export function insertMessage(db: DatabaseSync, row: MessageRow): void {
   }
 }
 
-// Mutation validation reads the live (deleted-filtered) message joined to its
-// turn's status. A deleted target misses here and refuses as message_not_found:
-// the filtered view is the refusal read by design, including double delete.
-// turnStatus is null only when the stored membership references no readable
-// turn; the closed-turn target boundary refuses it the same as an open turn.
-// initiatesTurn carries the prompt-protection fact: with initial empty turns,
-// the initiator is the first live member of a turn, not necessarily the turn's
-// open event.
 export interface MutableMessageView {
   messageId: string;
   kind: string;
@@ -99,17 +82,10 @@ export function readMutableMessage(db: DatabaseSync, messageId: string): Mutable
   };
 }
 
-// Delete applies the message-record tombstone: the deleted_at stamp every
-// normal message read filters on. Source events are never touched; event
-// read-back keeps showing them.
 export function markMessageDeleted(db: DatabaseSync, messageId: string, deletedAt: string): void {
   db.prepare(`UPDATE message SET deleted_at = ? WHERE message_id = ?`).run(deletedAt, messageId);
 }
 
-// Edit applies new content to each block's content-bearing field — the same
-// field per block type that internal/project.ts wrote and counted — and the
-// token estimate re-stamps from the same estimator, so placement arithmetic
-// stays current after edits. Events are untouched; the log keeps the original.
 export function applyMessageEdit(
   db: DatabaseSync,
   messageId: string,
@@ -138,9 +114,6 @@ export function applyMessageEdit(
         parsed["content"] = content;
         break;
       case "tool_call":
-        // Arguments are the call's counted content; the edit's string lands
-        // verbatim as the new arguments value, mirroring projectEvent's
-        // serialized-arguments estimate.
         parsed["arguments"] = content;
         tokenEstimate = estimator.rawCount(JSON.stringify(content));
         break;
@@ -169,9 +142,6 @@ interface RawMessageRow {
   provider_usage: string | null;
   step_index: number | bigint | null;
   deleted_at: string | null;
-  // The source event's recorded_at, joined from the durable event row on
-  // source_event_order = event_order (every message has exactly one source
-  // event).
   recorded_at: string;
 }
 
@@ -193,22 +163,14 @@ function recordFromRow(row: RawMessageRow, blocks: Block[]): MessageRecord {
     recordedAt: row.recorded_at,
     turnId: row.turn_id,
   };
-  // Provider usage is present only when the source event carried it. NULL
-  // rows (pre-v5 messages, non-assistant kinds) omit the key.
   if (row.provider_usage !== null) {
     record.providerUsage = JSON.parse(row.provider_usage) as Record<string, unknown>;
   }
   if (row.step_index !== null) record.stepIndex = Number(row.step_index);
-  // The deleted marker is present only on deleted rows, which only the
-  // includeDeleted read surfaces. It is never silently mixed into default reads.
   if (row.deleted_at !== null) record.deleted = true;
   return record;
 }
 
-// Bounds are in source-event-order coordinates: the coordinate the reports
-// name, so drill-down uses what the operator already holds. limit caps the
-// count after bounds. Defaults preserve visible messages, unbounded, in record
-// order.
 export interface MessageReadOptions {
   from?: number;
   to?: number;
@@ -217,14 +179,6 @@ export interface MessageReadOptions {
 }
 
 export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): MessageRecord[] {
-  // Bounds before content: the message query carries the deleted filter, the
-  // source-order window, and the limit, so a bounded list resolves its window
-  // from the message table first. It never reads a row, or parses a block
-  // below, outside that window.
-  //
-  // The deleted-read filter keeps default message reads to live rows only. A
-  // deleted message's source events stay readable through event read-back, the
-  // unfiltered audit surface. includeDeleted returns deleted rows flagged.
   const conditions: string[] = [];
   const params: number[] = [];
   if (opts.includeDeleted !== true) conditions.push("m.deleted_at IS NULL");
@@ -247,14 +201,8 @@ export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): M
     .all(...params) as unknown as RawMessageRow[];
   if (messageRows.length === 0) return [];
 
-  // Block content only for the windowed messages — never the whole table:
-  // an out-of-window block is never selected, so its content is never loaded
-  // or parsed (the no-load-everything proof corrupts one to assert this).
   const ids = messageRows.map((row) => row.message_id);
   const blockRows: RawBlockRow[] = [];
-  // SQLite's parameter ceiling varies by build. A mature thread can contain
-  // tens of thousands of messages, so never bind the complete live set in one
-  // IN clause. Keep each read comfortably below the lowest common ceiling.
   const blockReadBatchSize = 400;
   for (let offset = 0; offset < ids.length; offset += blockReadBatchSize) {
     const batch = ids.slice(offset, offset + blockReadBatchSize);
@@ -279,10 +227,6 @@ export function readMessages(db: DatabaseSync, opts: MessageReadOptions = {}): M
   return messageRows.map((row) => recordFromRow(row, blocksByMessage.get(row.message_id) ?? []));
 }
 
-// The show operation's by-id read returns the canonical record: full blocks
-// verbatim, never view-shortened, with the deleted flag honest. It is
-// deliberately unfiltered on deleted_at: show on a deleted message is the audit
-// read, never not-found.
 export function readMessageById(
   db: DatabaseSync,
   messageId: string,

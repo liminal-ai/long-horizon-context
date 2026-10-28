@@ -1,10 +1,3 @@
-// Epic 05 Story 3 — TC-2.2 (AC-2.2, AC-2.3): the LHC-owned prompt
-// templates. Goldens pin each template's rendered messages for a fixture
-// input (prompt/fixture drift is an architecture risk: a model call could
-// succeed while a prompt silently loses required input fields); registry
-// completeness proves every config-selectable name resolves; the brief/
-// detailed contrast and the input-bounding legs run through the adapter
-// operations, never the renderers alone (anti-shim).
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -20,9 +13,6 @@ import { cannedResponses, FAKE_MODEL_PREFIX, recordingCall, validAssignments } f
 
 const goldensDir = path.join(path.dirname(fileURLToPath(import.meta.url)), "goldens", "prompts");
 
-// One fixture input per template, keyed by template name. Each carries
-// distinctive strings the golden embeds, so a template that drops an input
-// field fails its golden rather than passing on shape alone.
 const PROMPT_FIXTURES: Record<string, { input: unknown; embedded: string[] }> = {
   "smoothing-v1": {
     input: { text: "plz smooth this prmpt about src/app.ts line 42 thx" },
@@ -237,7 +227,6 @@ describe("TC-2.2: registry completeness (AC-2.3)", () => {
         defaultNames.add(name);
       }
     }
-    // One distinct template per inference kind — no kind shares another's prompt.
     expect(defaultNames.size).toBe(inferenceKinds.length);
   });
 });
@@ -372,16 +361,11 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
     expect(bounded.startsWith("HHHH")).toBe(true);
     expect(bounded.endsWith("TTTT")).toBe(true);
     expect(bounded).toContain("truncated");
-    // Bounding happened before rendering: the middle never reached the prompt.
     expect(user).not.toContain("M".repeat(50));
   });
 
   it("a maxInputChars below the truncation marker still bounds the whole (DD-7)", async () => {
     const { call, log } = recordingCall(cannedResponses());
-    // 40 chars is a legitimately small context budget — and shorter than the
-    // truncation marker itself. It is the counterexample to a naive
-    // head+tail+marker bound: with no room for the marker, that bound returns
-    // the marker alone and overshoots the cap it was meant to hold.
     const tinyMax = 40;
     const inferenceCallbacks = createInferenceCallbacks(resolvedConfig({ call, maxInputChars: tinyMax }));
     const content = "H".repeat(40) + "M".repeat(700) + "T".repeat(40);
@@ -393,10 +377,7 @@ describe("TC-2.2: tool-result input bounding (AC-2.2, DD-7)", () => {
     if (input === undefined) return;
     const user = userContent(input);
     const bounded = rawToolResponseExcerpt(input);
-    // The bounded whole never exceeds the cap, even though no marker fits.
     expect(bounded.length).toBeLessThanOrEqual(tinyMax);
-    // With no room for the marker the bound degrades to a plain head: a true
-    // prefix of the input, never the marker text standing on its own.
     expect(content.startsWith(bounded)).toBe(true);
     expect(bounded).not.toContain("truncated");
     expect(user).not.toContain("M".repeat(50));

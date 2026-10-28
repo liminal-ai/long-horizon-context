@@ -1,28 +1,3 @@
-// The band walk itself: compact point, smooth/detailed/brief fills, coverage
-// gaps, and the coverage edge. One implementation, parameterised over a
-// SelectionSource, so the two execution plans — the eager one that hydrates
-// every live message and every closed chunk's fallback material up front, and
-// the bounded one that reads metadata aggregates and hydrates only what the
-// walk visits — differ in what they load, never in what they decide.
-//
-// The source contract is deliberately split: metadata answers (does a message
-// exist, which message crosses the full budget, a turn's oldest message order
-// and token sum) are always available and always cheap; excerpt text and chunk
-// fallback material are asked for only on the rung that would render them, so
-// a candidate the walk passes over is never hydrated.
-//
-// Tie-breakers: inclusion thresholds are <=; walks are newest-first everywhere;
-// chunk coverage is decided by the chunk's newest member turn. Entry costs are
-// the tokens of the rendered entry text itself, so the budgeted tokens are the
-// stored tokens — no second estimate.
-//
-// An entry too large for its band's remaining budget stops smooth and detailed
-// (the rest cascades to the next band's candidates) but only skips in brief:
-// brief is the last band, and one unrepresentable entry may not end the walk
-// over everything older. A skipped subject renders no entry of its own; it is
-// reported as a gap (SelectionResult.skipped) and covered_from runs to the
-// oldest INCLUDED entry, so coverage extends past the hole — which the view
-// marks with a gap-marker line naming the turns it leaves out.
 import type { SettleConstruction } from "../../shared-tech/index.js";
 import type { StepEdges } from "../../turns/internal/steps.js";
 import { DEFAULT_NEWEST_CLOSED_PROTECTION } from "./profiles.js";
@@ -45,18 +20,6 @@ import type {
 } from "./select.js";
 import type { InstalledTransition, PartRange } from "./snapshot.js";
 
-/**
- * What the walk may ask of the record. Structure is eager because it is
- * bounded by turn and chunk counts; message facts are aggregates; excerpt and
- * fallback material are hydration points, reached only from the ladder rung
- * that renders them.
- */
-/**
- * Turn parts: what the walk asks for beyond the band inputs. Absent on the
- * legacy plan, so the legacy walk can neither split nor settle. Step edges and
- * constructions are hydration points, reached only when a split or settle is
- * actually decided.
- */
 export interface PartsSource {
   readonly installed: InstalledTransition | null;
   turnSteps(turnId: string): StepEdges;
@@ -65,41 +28,23 @@ export interface PartsSource {
 }
 
 export interface SelectionSource {
-  /** Turn parts source; undefined on the legacy plan. */
   readonly parts?: PartsSource;
-  /** Live turns, ascending turnOrder. */
   readonly turns: readonly SelectionTurn[];
-  /** Chunks the walk can place, ascending chunkOrder. */
   readonly chunks: readonly SelectionChunk[];
-  /** Whether the record holds any live, placeable message at all. */
   hasPlaceableMessages(): boolean;
-  /** Newest-first: the first live message whose running token sum reaches `budget`. */
   crossingMessage(budget: number): { order: number; turnId: string } | null;
-  /** The turn's oldest live message order; undefined when it has none. */
   turnMinMessageOrder(turnId: string): number | undefined;
-  /** Token-estimate sum of the turn's live messages (0 when it has none). */
   turnMessageTokens(turnId: string): number;
-  /** Token-estimate sum of every live message newer than `order`. */
   messageTokensAfter(order: number): number;
-  /** The turn's excerpt lines joined; null when the turn has no live messages. */
   turnExcerpt(turnId: string): string | null;
   derivation(subjectId: string, derivationType: string): DerivationSnapshot | undefined;
-  /** Stored fallback material; undefined when the caller did not ask for it. */
   chunkMaterial(chunkId: string, derivationType: ChunkSummaryType): CompactChunkMaterialSnapshot | undefined;
 }
 
-/**
- * The seam line a part ends with: identity, range, direction — nothing else.
- * Position-independent by design: a part's bytes must not change when a later
- * compact appends another part after it (AC-4.1b), so the last part's marker
- * reads the same whether the tail or another part follows.
- */
 export function seamMarker(turnId: string, range: PartRange): string {
   return `[seam · ${turnId} · steps ${range.fromStep}–${range.toStep} summarized above · ${turnId} resumes below]`;
 }
 
-// Ordinal k for a part range: how many steps of the turn the parts through
-// `toStep` cover. Zero when the step is unknown to the record.
 function ordinalThrough(steps: StepEdges, toStep: number): number {
   const at = steps.steps.findIndex((step) => step.index === toStep);
   return at < 0 ? 0 : at + 1;
@@ -119,23 +64,13 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
 
   const turnsById = new Map(turns.map((turn) => [turn.turnId, turn]));
 
-  // The oldest event order a turn's entry represents: its oldest live
-  // message, falling back to its open boundary.
   function turnStartOrder(turn: SelectionTurn): number {
     return source.turnMinMessageOrder(turn.turnId) ?? turn.openedAt;
   }
 
-  // Rule 1 — compact point: messages newest-first until the estimate sum
-  // first reaches the full share; the point snaps to a turn boundary so the
-  // tail never begins mid-turn. Open-turn messages always land in the tail.
   const fullBudget = budget(config.percentages.full);
   const closedTurns = turns.filter((turn) => turn.status === "closed");
   const openTurn = turns.find((turn) => turn.status === "open");
-  // A compact point upper bound is the protected-pair clamp of the
-  // forced-boundary runtime. Per-thread exclusivity (AC-7.3) means it never
-  // meets a thread that has served parts; if it does, the invariant is
-  // broken above this walk and the walk says so rather than splitting under
-  // a clamp it cannot honor. Under a bound on a clean thread, no split.
   if (config.compactPointUpperBound !== undefined && source.parts?.installed !== null && source.parts !== undefined) {
     throw new Error(
       `turn parts invariant violated: compactPointUpperBound on a thread serving parts of ${source.parts.installed.turnId}`,
@@ -143,21 +78,14 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   }
   const partsSource = config.compactPointUpperBound === undefined ? source.parts : undefined;
   let compactPoint = 0;
-  // The crossing is read whenever a closed turn can be banded — and, with a
-  // parts source, whenever the open turn alone could need splitting.
   const crossing =
     (closedTurns.length > 0 || partsSource !== undefined) && source.hasPlaceableMessages()
       ? source.crossingMessage(fullBudget)
       : null;
   if (closedTurns.length > 0) {
-    // Budget never reached ⇒ the whole record fits the full share:
-    // everything is tail, no bands.
     compactPoint = crossing === null ? 0 : snapCompactPoint(crossing);
   }
   if (config.compactPointUpperBound !== undefined && compactPoint > config.compactPointUpperBound) {
-    // Snap backward to the greatest legal closed-turn boundary <= the upper
-    // bound. Compact points must land on a real turn.closedAt (or 0); a raw
-    // numeric clamp could split a turn and violate selector/view invariants.
     const legalBoundaries = closedTurns
       .filter((t) => t.closedAt !== null && t.closedAt <= config.compactPointUpperBound!)
       .map((t) => t.closedAt as number);
@@ -170,23 +98,14 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
       const previous = closedTurns.filter((t) => t.turnOrder < turn.turnOrder).at(-1);
       return previous?.closedAt ?? 0;
     };
-    // Every selected message resolves to a live turn: the source's message
-    // population skipped the ones that do not.
     if (candidate === undefined) return 0;
     if (candidate.status === "open") {
-      // Open-turn messages are tail regardless of budget; the tail begins at
-      // the open turn's start.
       return previousClose(candidate);
     }
-    // Fully covered down to the turn's start ⇒ the tail begins at this turn.
     if (oldestTaken.order <= turnStartOrder(candidate)) {
       return previousClose(candidate);
     }
 
-    // A partially-covered closed turn straddles the full-budget line. Round
-    // toward the side holding at least half of the turn's tokens (ties stay in
-    // full). The split is at the exact budget line, even when that line falls
-    // inside the crossing message's estimate.
     const turnTokens = source.turnMessageTokens(candidate.turnId);
     const newerTokens = candidate.closedAt === null ? 0 : source.messageTokensAfter(candidate.closedAt);
     const fullSideTokens = Math.max(0, Math.min(turnTokens, fullBudget - newerTokens));
@@ -196,17 +115,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     return candidate.closedAt ?? 0;
   }
 
-  // ── turn parts: the transition turn, settle, and the split point ──
-  //
-  // The installed view names at most one transition turn. When it is closed,
-  // it settles once message tokens newer than its close fill the full share
-  // (inclusive). Short of that threshold it keeps its parts and compact point,
-  // even if ordinary turn-boundary rounding would band it. This preserves the
-  // installed verbatim suffix until enough genuinely newer material replaces
-  // it. Only with no other turn left unsettled may the open turn split, at the
-  // smallest complete step edge whose verbatim tail fits the full share
-  // (inclusive), clamped up to the installed k so a split point never moves
-  // backward.
   let settling: SelectionTurn | null = null;
   let settledRecord: SelectionResult["settled"];
   let partsPlan: { turn: SelectionTurn; steps: StepEdges; ranges: PartRange[] } | null = null;
@@ -235,9 +143,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
       const kMax = steps.splittable ? (steps.lastEdge ?? 0) : priorK;
       let kComputed = 0;
       if (crossing !== null && crossing.turnId === openTurn.turnId && kMax > 0) {
-        // The open turn alone reaches the full share. Smallest k whose tail
-        // fits (<=); when none does, the minimum verbatim tail is served —
-        // elder bands absorb the overrun.
         kComputed = kMax;
         for (let k = 1; k <= kMax; k += 1) {
           const edge = (steps.steps[k - 1] as StepEdges["steps"][number]).lastOrder;
@@ -262,20 +167,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     }
   }
 
-  // ── Flow 5: the newest closed turn is protected by placement ──
-  //
-  // Precedence: (1) the active turn's minimum verbatim tail; (2) the newest
-  // closed turn full when its verbatim cost fits min(fraction × lower bound,
-  // what (1) left); (3)–(4) the extended tail and elder bands take the rest.
-  //
-  // The served view is contiguous — bands, then one verbatim tail from the
-  // compact point — so a full newest closed turn puts everything newer than
-  // it in the tail too. Under a planned split, (1) therefore reserves the
-  // whole active turn, and a turn already served as parts can never be
-  // followed by a full closed turn (k never moves backward). A turn that does
-  // not fit takes its whole deterministic rendering — stored or composed
-  // in-walk — never an excerpt. Requires the parts source (the bounded plan
-  // on a clean thread): the legacy plan is byte-unchanged.
   let protectedRecord: SelectionResult["protectedTurn"];
   const newestClosed = closedTurns.length === 0 ? undefined : closedTurns[closedTurns.length - 1];
   const transitionTurnId = partsPlan?.turn.turnId ?? settling?.turnId ?? null;
@@ -304,25 +195,11 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     }
   }
 
-  // Band candidates: closed turns wholly behind the compact point. Rule 5 is
-  // structural here — chunked or not, a banded turn is a smooth candidate
-  // (bands are defined by representation, not strict time strata).
   const bandedTurns = closedTurns.filter((turn) => turn.closedAt !== null && turn.closedAt <= compactPoint);
   const bandedTurnIds = new Set(bandedTurns.map((turn) => turn.turnId));
 
   type WholeConstruction = { rep: ReturnType<typeof resolveSmoothRepresentation>; construction: SettleConstruction };
 
-  // The whole construction from canonical, with the construction reference the
-  // settle record carries. Never the excerpt or compression rung.
-  //
-  // With a parts source (the bounded plan on a clean thread) a ready stored
-  // rendering is never parsed or truncated: the turn is recomposed from
-  // canonical and its ready message derivations under the serving cap (F1),
-  // and the cap decides. When no message's construction is over the cap the
-  // stored row is served as the stored construction — what the legacy plan
-  // serves; when the cap elided anything the capped recomposition is served
-  // and reported truthfully as composed_in_walk. Without a parts source the
-  // stored row serves unchanged.
   function resolveWholeConstruction(turn: SelectionTurn, requireStored: boolean): WholeConstruction | null {
     const rendering = lookup(turn.turnId, "turn_rendering");
     const stored = rendering?.state === "ready" && typeof rendering.content === "string" ? rendering.content : null;
@@ -359,8 +236,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     } else if (protectedRecord?.representation === "whole_rendering" && protectedRecord.turnId === turn.turnId) {
       rep = resolveWholeConstruction(turn, false)?.rep ?? null;
     } else if (partsSource !== undefined) {
-      // Ordinary smooth rung on the bounded plan: a ready stored rendering is
-      // served under the cap; anything else takes the ordinary ladder.
       rep = resolveWholeConstruction(turn, true)?.rep ?? null;
     }
     rep ??= resolveSmoothRepresentation(turn.turnId, lookup, () => source.turnExcerpt(turn.turnId));
@@ -409,35 +284,12 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     return entry;
   }
 
-  // The one fill rule, shared by all three bands: newest-first whole-entry
-  // fill, <= inclusion (an entry exactly filling the budget is included), the
-  // first crossing entry included only when the band was still empty.
-  //
-  // What a crossing entry does next depends on the band's position in the
-  // ladder. In smooth and detailed it stops the band and cascades the rest to
-  // the next band's candidates — that cascade is the ladder working. Brief has
-  // no lower band to catch the remainder, so stopping there discarded every
-  // older chunk for one unrepresentable entry (the incident: a chunk whose
-  // brief derivation failed rendered its whole uncompressed fallback and
-  // dropped 45 older chunks that all had healthy briefs). In `skip` mode a
-  // crossing entry is passed over and the walk continues to older candidates;
-  // the walk ends only when candidates run out or included entries genuinely
-  // consume the budget.
-  //
-  // Passed-over candidates the walk never got older than are not holes — they
-  // are the far edge of the window, where a full band has always simply
-  // stopped covering. Only a candidate with older entries selected after it
-  // is reported as skipped.
   function fillBand<T>(
     candidates: readonly T[], // newest-first
     bandBudget: number,
     build: (candidate: T) => ArrangementEntry,
     crossing: "stop" | "skip" = "stop",
-    // A band keeps its first candidate even over budget — except a band whose
-    // share the precedence cascade consumed entirely, which stays empty.
     admitFirst = true,
-    // Entries the band already holds from an earlier fill over other
-    // candidates: their tokens are spent, and the band is not empty.
     prior: readonly ArrangementEntry[] = [],
   ): { included: ArrangementEntry[]; rest: T[]; skipped: ArrangementEntry[] } {
     if (!admitFirst && bandBudget <= 0) return { included: [], rest: [...candidates], skipped: [] };
@@ -469,9 +321,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     return { included, rest: [], skipped: reportable() };
   }
 
-  // Turn parts: one entry per part, composed independently over its own
-  // order span, each ending in its seam line. Parts are the newest smooth
-  // material and are always included; they consume the smooth share first.
   const partEntries: ArrangementEntry[] = [];
   if (partsPlan !== null && partsSource !== undefined) {
     const { turn, steps, ranges } = partsPlan;
@@ -498,19 +347,9 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   }
   const partTokens = partEntries.reduce((sum, entry) => sum + entry.tokens, 0);
 
-  // Precedence (4): the placements this mechanism makes — a split, a settle,
-  // a lazy keep, newest-closed protection — may leave the verbatim tail over
-  // the full share. That overrun, with the part tokens, cascades through the
-  // elder shares smooth → detailed → brief, so the served view stays within
-  // the bound (plus at most one entry's slack per band that keeps a share);
-  // a share the cascade consumes entirely yields an empty band. An ordinary
-  // walk (Rule 1's straddle rounding alone) is untouched.
   const mechanismPlacement = partsPlan !== null || settling !== null || protectedRecord !== undefined;
   const tailOverrun = mechanismPlacement ? Math.max(0, source.messageTokensAfter(compactPoint) - fullBudget) : 0;
 
-  // Mandatory smooth entries: a settling turn's whole construction (AC-3.2,
-  // AC-3.4) and a protected turn's whole rendering (AC-5.2) are placements,
-  // not fill candidates — served whatever the share, priced against it first.
   const mandatoryTurnIds = new Set<string>();
   if (settling !== null) mandatoryTurnIds.add(settling.turnId);
   if (protectedRecord?.representation === "whole_rendering") mandatoryTurnIds.add(protectedRecord.turnId);
@@ -528,9 +367,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   const detailedBudget = shareAfterCarry(config.percentages.detailed);
   const briefBudget = shareAfterCarry(config.percentages.brief);
 
-  // Rule 2 + 5 — smooth band: banded closed turns newest-first, chunked or
-  // not (rule 5 is structural: a closed-but-unchunked turn is a turn, takes
-  // the smooth representation, and consumes this budget).
   const smooth = fillBand(
     [...bandedTurns].reverse().filter((turn) => !mandatoryTurnIds.has(turn.turnId)),
     smoothBudget,
@@ -546,17 +382,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
       Number.POSITIVE_INFINITY,
     );
 
-  // Rules 3–4 — chunk candidacy: chunks entirely older than the smooth
-  // band's coverage, with the pinned tie-breaker doing the deciding — chunk
-  // coverage is its NEWEST member turn, which must sit behind the compact
-  // point and be older than the smooth band's oldest included turn.
-  // A chunk holding the still-unsettled transition turn is not a band
-  // candidate until that turn settles.
-  //
-  // A banded turn older than smooth that no chunk candidate holds — a member
-  // of a closed chunk straddling that edge (F6), or of a chunk still open, or
-  // of none yet — cannot render as a chunk. Such turns are placed per-turn
-  // below, in whatever detailed/brief budget the chunks leave unused.
   const unsettledClosedTurnId = partsPlan !== null && partsPlan.turn.status === "closed" ? partsPlan.turn.turnId : null;
   const chunkCandidates: SelectionChunk[] = [];
   for (const chunk of chunks) {
@@ -565,7 +390,7 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     const liveMembers = chunk.memberTurnIds
       .map((turnId) => turnsById.get(turnId))
       .filter((turn): turn is SelectionTurn => turn !== undefined);
-    if (liveMembers.length === 0) continue; // fully tombstoned membership
+    if (liveMembers.length === 0) continue;
     const newestMember = liveMembers.reduce((newest, turn) => (turn.turnOrder > newest.turnOrder ? turn : newest));
     if (bandedTurnIds.has(newestMember.turnId) && newestMember.turnOrder < oldestSmoothOrder) {
       chunkCandidates.push(chunk);
@@ -575,9 +400,8 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
   const elderTurns = bandedTurns.filter(
     (turn) => turn.turnOrder < oldestSmoothOrder && !chunkCandidateTurnIds.has(turn.turnId),
   );
-  chunkCandidates.reverse(); // newest-first
+  chunkCandidates.reverse();
 
-  // Rule 3 — detailed: same fill rule against its share.
   const detailed = fillBand(
     chunkCandidates,
     detailedBudget,
@@ -585,19 +409,11 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     "stop",
     !cascading,
   );
-  // Rule 4 — brief: the remaining chunks, same fill rule against its share,
-  // skipping (not stopping at) entries too large for the remaining budget —
-  // this is the last band, so a stop here would drop every older chunk.
   const brief = fillBand(detailed.rest, briefBudget, (chunk) => buildChunkEntry(chunk, "brief"), "skip", !cascading);
 
   const byRecordOrder = (a: ArrangementEntry, b: ArrangementEntry): number => a.startOrder - b.startOrder;
   const selectedEntries: ArrangementEntry[] = [...brief.included, ...detailed.included, ...smooth.included];
 
-  // Coverage invariant: every closed turn behind the compact point must be
-  // represented by a selected turn, represented by a selected chunk's
-  // membership, or explicitly surfaced as a smooth gap. This catches the
-  // normal open-chunk shape where older closed turns are too old for smooth
-  // but cannot be represented by their still-open chunk.
   const coveredTurnIds = new Set<string>();
   const chunksById = new Map(chunks.map((chunk) => [chunk.chunkId, chunk]));
   let oldestSelectedTurnOrder = Number.POSITIVE_INFINITY;
@@ -618,28 +434,12 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     }
   }
 
-  // A skipped chunk's turns are accounted for — as a recorded gap, not as
-  // content. They must not fall through to the coverage machinery, which
-  // would answer a hole in the cheapest band with unbudgeted detailed
-  // material for every member turn.
   for (const entry of brief.skipped) {
     for (const turnId of chunksById.get(entry.subjectId)?.memberTurnIds ?? []) {
       if (bandedTurnIds.has(turnId)) coveredTurnIds.add(turnId);
     }
   }
 
-  // Elder turns (F6) the coverage machinery below cannot reach: older than
-  // every selected entry, so nothing older anchors them. The usual shape is a
-  // thread whose first chunk is still open: without this, the elder bands
-  // stay empty and those turns silently leave the view. They take the
-  // detailed/brief budget the chunks left unused, newest-first, on the same
-  // fill rule — stop in detailed, skip in brief. A turn with ready material
-  // is one entry from the detailed-turn ladder; a contiguous run of turns
-  // with none is ONE candidate, the run's gap marker, priced like any entry.
-  // So the elder fill never emits a line per missing turn, and the lines it
-  // does emit are bounded by the budget, not by the backlog. These turns are
-  // then settled: the unbudgeted coverage pass below never re-reaches them.
-  // A turn newer than the oldest selected entry is left to it, as before.
   const hasReadyTurnSummary = (turn: SelectionTurn): boolean =>
     readyContent(lookup(turn.turnId, "detailed_turn_compression")) !== null ||
     readyContent(lookup(turn.turnId, "pre_detailed_assembly")) !== null;
@@ -647,7 +447,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     .filter((turn) => turn.turnOrder < oldestSelectedTurnOrder && !coveredTurnIds.has(turn.turnId))
     .sort((a, b) => b.turnOrder - a.turnOrder);
   const settledElderTurnIds = new Set(orphanedMembers.map((turn) => turn.turnId));
-  // Members a run marker stands for (its subject id names the run, not a turn).
   const markerMembers = new Map<ArrangementEntry, readonly SelectionTurn[]>();
   if (orphanedMembers.length > 0) {
     type ElderCandidate = { turn: SelectionTurn } | { run: SelectionTurn[] };
@@ -690,8 +489,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     }
   }
 
-  // One line naming a contiguous run of turns (ascending) that no entry
-  // represents: "[turns tA–tB not in view; use get-turns]".
   function gapMarkerEntry(turnsInRun: readonly SelectionTurn[], band: ArrangementEntry["band"]): ArrangementEntry {
     const first = turnsInRun[0] as SelectionTurn;
     const last = turnsInRun[turnsInRun.length - 1] as SelectionTurn;
@@ -720,9 +517,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     return derivation === undefined ? "missing" : derivation.state;
   }
 
-  // A closed turn's detailed-ladder entry (detailed_turn_compression →
-  // pre_detailed_assembly → gap): the coverage entry, and a straddling chunk's
-  // elder member placed per-turn in detailed or brief.
   function buildCoverageEntry(turn: SelectionTurn, band: "detailed" | "brief" = "detailed"): ArrangementEntry {
     const compression = lookup(turn.turnId, "detailed_turn_compression");
     const assembly = lookup(turn.turnId, "pre_detailed_assembly");
@@ -783,21 +577,10 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     ...smooth.included.sort(byRecordOrder),
   ];
 
-  // The coverage edge is the oldest INCLUDED entry: a skipped subject inside
-  // the window is a hole in coverage that already extends past it, so it
-  // neither moves the edge nor ends it.
-  // Run markers name holes, not material: they do not move the edge.
   const materialEntries = entries.filter((entry) => !markerMembers.has(entry));
   const coveredFrom =
     materialEntries.length === 0 ? compactPoint : Math.min(...materialEntries.map((entry) => entry.startOrder));
 
-  // Gap markers (F6): a banded turn that no entry represents — for whatever
-  // reason, including the leading turns older than the coverage edge —
-  // gets a rendered line in the view, one per contiguous run, so the hole is
-  // visible to the reader and not only in gaps_json. Markers do not move the
-  // coverage edge: it stays the oldest represented material. A marker is a gap entry (gap: true), so it lands in
-  // gaps_json through the ordinary gap-entry path. It sits in the band of its
-  // nearest older entry and is not priced against any share.
   const representedTurnIds = new Set<string>();
   for (const entry of entries) {
     const members = markerMembers.get(entry);
@@ -840,8 +623,6 @@ export function walkArrangement(source: SelectionSource, config: SelectionConfig
     reason: `entry did not fit the remaining ${entry.band} budget (${entry.tokens} tokens from ${entry.derivationUsed}); skipped so older entries could be selected`,
   }));
 
-  // The one invariant: at most one turn is unsettled at compact completion,
-  // and a turn settled here is not also served as parts.
   const unsettled = new Set(entries.filter((entry) => entry.part !== undefined).map((entry) => entry.subjectId));
   if (unsettled.size > 1 || (settling !== null && unsettled.has(settling.turnId))) {
     throw new Error(`turn parts invariant violated: unsettled turns [${[...unsettled].join(", ")}]`);

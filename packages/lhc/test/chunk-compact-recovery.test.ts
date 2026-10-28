@@ -75,8 +75,6 @@ function execCorruptSql(filePath: string, sql: string, ...params: SQLInputValue[
   }
 }
 
-// Chunk placement plus the messages that hang off it — the raw rows compact
-// must leave exactly as it found them.
 function chunkAndMessageRows(filePath: string): unknown {
   const db = openRaw(filePath);
   try {
@@ -241,7 +239,6 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
-    // A repeated expiry (not plain claim_expired, which the open-time repair requeues).
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "failed", {
       reason: "claim_expired_repeatedly",
     });
@@ -339,8 +336,6 @@ describe("Story 4: chunk derivation and compact recovery", () => {
       turnId: "t1",
       reason: expect.stringContaining("t1"),
     });
-    // The dangling member is passed over, never rewritten or dropped: chunk,
-    // membership, and message rows are exactly as they were.
     expect(chunkAndMessageRows(filePath)).toEqual(rowsBefore);
   });
 
@@ -348,12 +343,10 @@ describe("Story 4: chunk derivation and compact recovery", () => {
     const sdk = sdkFor(createInferenceCallbacksDouble());
     const filePath = await newThread();
     await seedFourClosedTurns(sdk, filePath);
-    // No usable chunk summary, so the entry needs stored members...
     setChunkSummaryState(filePath, "c1", "chunk_summary_detailed", "pending");
     setChunkSummaryState(filePath, "c1", "chunk_summary_brief", "pending");
     deleteWorkFor(filePath, "chunk_summary_detailed", "c1");
     deleteWorkFor(filePath, "chunk_summary_brief", "c1");
-    // ...and its member turn is closed without a close boundary.
     execCorruptSql(filePath, `UPDATE turns SET closed_at_event_order = NULL WHERE turn_id = 't1'`);
     const rowsBefore = chunkAndMessageRows(filePath);
 
@@ -369,8 +362,6 @@ describe("Story 4: chunk derivation and compact recovery", () => {
 
     expect(compacted.ok).toBe(true);
     if (!compacted.ok) return;
-    // Worst case is a coarser view, never a stopped compact: the irregular
-    // member simply yields no stored-member material.
     expect(chunkAndMessageRows(filePath)).toEqual(rowsBefore);
   });
 

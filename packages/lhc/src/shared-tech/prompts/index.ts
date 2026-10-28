@@ -1,7 +1,3 @@
-// Name-keyed prompt registry: one module per template exporting
-// `{ name, render(input) → messages }`. Config selects by name, and dial-in
-// swaps by adding a module and editing config, with no handler, adapter, or
-// host changes. Versioning is in the name (`smoothing-v1`).
 import type { ModelCallInput } from "../inference-types.js";
 import { chunkBriefV1 } from "./chunk-brief-v1.js";
 import { chunkBriefV2 } from "./chunk-brief-v2.js";
@@ -18,9 +14,6 @@ export interface PromptTemplate<I = unknown> {
   render(input: I): ModelCallInput["messages"];
 }
 
-// Every config-selectable name. `never` pins the registry read-only at the
-// type level — rendering goes through the adapter, which owns the only
-// kind→input pairing.
 export const PROMPT_REGISTRY: Record<string, PromptTemplate<never>> = {
   [smoothingV1.name]: smoothingV1,
   [toolResultV1.name]: toolResultV1,
@@ -33,13 +26,8 @@ export const PROMPT_REGISTRY: Record<string, PromptTemplate<never>> = {
   [chunkBriefV3.name]: chunkBriefV3,
 };
 
-// Every config-selectable prompt name — the catalog an operator's assignment
-// config picks from. Exposed through the SDK surface (sdk.ts) so valid names
-// are discoverable without reading source.
 export const PROMPT_NAMES: readonly string[] = Object.keys(PROMPT_REGISTRY);
 
-// The default template per derivation type — the defaults an operator's first
-// config reaches for, and what test fixtures assign.
 export const DEFAULT_PROMPT_NAMES: Record<string, string> = {
   smoothed_prompt: smoothingV1.name,
   tool_result_summary: toolResultV2.name,

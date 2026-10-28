@@ -1,6 +1,3 @@
-// Epic 03 Story 4: visibility boundary rendering and the no-auto-advance
-// intake contract. Seeded-boundary tests prove rendering respects a stored
-// position; intake never moves the boundary on its own.
 import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput, type SdkViewConfig, setSchedulerPoke } from "../src/index.js";
 import {
@@ -12,8 +9,6 @@ import {
   validEvent,
 } from "./fixtures/index.js";
 
-// "tok" tokenizes to exactly one o200k token, joined or leading-space alike,
-// so a content of n joined "tok" words carries token_estimate n.
 function tokens(n: number): string {
   return Array<string>(n).fill("tok").join(" ");
 }

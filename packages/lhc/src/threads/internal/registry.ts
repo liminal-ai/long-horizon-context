@@ -16,9 +16,6 @@ function hasNoSchema(db: DatabaseSync): boolean {
   return row === undefined;
 }
 
-// First write creates the current registry file and schema lazily; every open
-// then brings an existing registry forward, so the alias map reaches registries
-// that already hold threads and not just newly created ones.
 export function openRegistryForWrite(registryPath: string): DatabaseSync {
   mkdirSync(dirname(registryPath), { recursive: true });
   const db = openDatabase(registryPath);
@@ -41,17 +38,11 @@ export function openRegistryForWrite(registryPath: string): DatabaseSync {
   return db;
 }
 
-// Reads never create the registry: callers map null to empty list /
-// thread_not_found. The existence check is the non-creation guarantee —
-// openDatabase would create the file.
 export function openRegistryForRead(registryPath: string): DatabaseSync | null {
   if (!existsSync(registryPath)) return null;
   return openDatabase(registryPath);
 }
 
-// Alias reads need the v2 tables, so they open an existing registry through
-// the migrating path — bringing a registry current is not creating one, and
-// the non-creation guarantee still holds through the existence check.
 export function openExistingRegistry(registryPath: string): DatabaseSync | null {
   if (!existsSync(registryPath)) return null;
   return openRegistryForWrite(registryPath);
@@ -75,10 +66,6 @@ interface RawRow {
 
 const ROW_COLUMNS = "thread_id, file_path, title, cwd, created_at";
 
-// Insertion order (rowid) breaks ties at the same created_at timestamp, so
-// "most recent" (the last row) is the last-inserted thread even when two
-// creations land in the same millisecond — the determinism `--continue`
-// (resolve the most recently created thread) relies on.
 const ROW_ORDER = "ORDER BY created_at, rowid";
 
 function toRegistryRow(raw: RawRow): RegistryRow {
@@ -109,10 +96,6 @@ export function selectThreadRow(db: DatabaseSync, threadId: string): RegistryRow
   return raw === undefined ? undefined : toRegistryRow(raw);
 }
 
-// Partial-id resolve (A-8): every thread whose id begins with the given prefix.
-// LIKE metacharacters in the (caller-supplied) prefix are escaped so the '_' in
-// the thread-id scheme (th_<hex>) and any '%' match literally rather than as
-// wildcards; ESCAPE makes '\' the escape character.
 export function selectThreadRowsByPrefix(db: DatabaseSync, prefix: string): RegistryRow[] {
   const escaped = prefix.replace(/[\\%_]/g, (ch) => `\\${ch}`);
   const raws = db
@@ -121,8 +104,6 @@ export function selectThreadRowsByPrefix(db: DatabaseSync, prefix: string): Regi
   return raws.map(toRegistryRow);
 }
 
-// cwd, when given, filters at the registry (A-8): the picker must not scope by
-// filtering an unscoped list after the fact (anti-shim) — the scope is the query.
 export function selectAllThreadRows(db: DatabaseSync, opts: { cwd?: string } = {}): RegistryRow[] {
   const raws =
     opts.cwd === undefined
@@ -144,8 +125,6 @@ export interface ThreadAliasResolutionRow {
   currentAlias: string | null;
 }
 
-// Registration never rebinds: an alias already bound keeps its binding, and the
-// caller learns which thread holds it from the row read back.
 export function insertAliasRowIfAbsent(db: DatabaseSync, row: ThreadAliasRow): void {
   db.prepare("INSERT OR IGNORE INTO thread_alias (alias, thread_id, registered_at) VALUES (?, ?, ?)").run(
     row.alias,
@@ -161,8 +140,6 @@ export function selectAliasRow(db: DatabaseSync, alias: string): ThreadAliasRow 
   return raw === undefined ? undefined : { alias: raw.alias, threadId: raw.thread_id, registeredAt: raw.registered_at };
 }
 
-// One statement, therefore one snapshot: the alias's thread and that thread's
-// current alias can never come from two different states of the registry.
 export function selectAliasResolutionRow(db: DatabaseSync, alias: string): ThreadAliasResolutionRow | undefined {
   const raw = db
     .prepare(
@@ -182,8 +159,6 @@ export function selectCurrentAliasRow(db: DatabaseSync, threadId: string): strin
   return raw === undefined ? null : raw.alias;
 }
 
-// The composite foreign key refuses a pointer to an alias of another thread,
-// so the invariant holds against any writer, not just this one.
 export function upsertCurrentAliasRow(
   db: DatabaseSync,
   pointer: { threadId: string; alias: string; advancedAt: string },

@@ -1,7 +1,3 @@
-/**
- * LIM-67: protected visibility-boundary preview, override rendering,
- * atomic view+boundary install, and canonical message stability.
- */
 import { afterEach, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type MessageEventInput } from "../src/index.js";
 import {
@@ -69,7 +65,6 @@ describe("LIM-67 protected boundary preview", () => {
   it("is read-only, monotonic, and strictly before earliest protected result", async () => {
     const lhc = sdk();
     const filePath = await newThread(lhc);
-    // Closed history with large unprotected results, then open turn with protected pair.
     await intake(lhc, filePath, [
       validEvent("user_prompt", { payload: { text: "old" } }),
       ...toolPair(40, "call-old-1"),
@@ -102,7 +97,6 @@ describe("LIM-67 protected boundary preview", () => {
     expect(preview.value.protectedToolCallIds).toEqual(["call-prot-a", "call-prot-b"]);
     expect(preview.value.fullProtectedTokenEstimate).toBeGreaterThan(0);
 
-    // Durable boundary unchanged (read-only).
     const after = await lhc.threadView.status({ filePath });
     expect(after.ok).toBe(true);
     if (!after.ok) return;
@@ -155,34 +149,28 @@ describe("LIM-67 protected boundary preview", () => {
     const context = await lhc.threadView.getLlmRequestContext({ filePath });
     expect(context.ok).toBe(true);
     if (!context.ok) return;
-    // Protected result remains full (not abridged) when present in rendered context.
     const texts = context.value.messages.map((m) => m.content.map((c) => c.text).join(""));
     const abridged = texts.filter((t) => t.includes(" · abridged]"));
-    // All abridged rows (if any) must be older unprotected results only.
     for (const t of abridged) {
       expect(t.includes("prot-1")).toBe(false);
     }
 
-    // Canonical messages remain verbatim (full tool result bodies in getMessages).
     const msgs = await lhc.messages.list({ filePath });
     expect(msgs.ok).toBe(true);
     if (!msgs.ok) return;
     const toolResults = msgs.value.filter((m) => m.kind === "tool_result");
     expect(toolResults.length).toBeGreaterThan(0);
-    // Canonical content is not abridged by visibility boundary.
     for (const m of toolResults) {
       const body = JSON.stringify(m);
       expect(body.includes(" · abridged]")).toBe(false);
     }
 
-    // A pinned boundary that has since moved recomputes against fresh state
-    // and installs, instead of handing the host a refusal.
     const prepared2 = await lhc.threadView.prepareCompact({ filePath });
     expect(prepared2.ok).toBe(true);
     if (!prepared2.ok) return;
     const drifted = await lhc.threadView.installPreparedCompact({ filePath }, prepared2.value, {
       visibilityBoundary: preview.value.proposedBoundary + 1,
-      expectedPreviousBoundary: prevBoundary, // stale: the first install already advanced it
+      expectedPreviousBoundary: prevBoundary,
     });
     expect(drifted.ok).toBe(true);
     if (!drifted.ok) return;
@@ -195,8 +183,6 @@ describe("LIM-67 protected boundary preview", () => {
     const status2 = await lhc.threadView.status({ filePath });
     expect(status2.ok).toBe(true);
     if (!status2.ok) return;
-    // Forward only: never behind the boundary already installed, never behind
-    // the compact point it was installed with.
     expect(status2.value.visibility.boundaryPosition).toBeGreaterThanOrEqual(preview.value.proposedBoundary);
     expect(status2.value.visibility.boundaryPosition).toBeGreaterThanOrEqual(drifted.value.compactPoint);
 
@@ -232,8 +218,6 @@ describe("LIM-67 protected boundary preview", () => {
     const prepared = await lhc.threadView.prepareCompact({ filePath }, { params });
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
-    // Boundary 0 is behind both the durable boundary and the compact point —
-    // the shape a proposal takes when the state it was computed from has moved.
     const installed = await lhc.threadView.installPreparedCompact({ filePath }, prepared.value, {
       visibilityBoundary: 0,
     });
@@ -275,7 +259,6 @@ describe("LIM-67 protected boundary preview", () => {
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
 
-    // A real storage failure inside the install transaction, not a policy stop.
     setViewInjectionHook("compact-install-before-validate", () => {
       throw new Error("injected storage failure inside the install transaction");
     });

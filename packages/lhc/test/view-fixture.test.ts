@@ -1,9 +1,3 @@
-// Epic 03 Story 0 foundation checks (FC-0.1–FC-0.6): view storage,
-// profile config validation through real initLhc construction, the
-// derived-thread fixture's state fidelity proven by read-back through the
-// owning report surfaces (states reached through production drains, never
-// hand-written rows), the corruption variant, and the two-point test injection
-// facility.
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { initLhc, type Lhc, messages, turns } from "../src/index.js";
 import {
@@ -22,8 +16,6 @@ import {
   validEvent,
 } from "./fixtures/index.js";
 
-// The main fixture is the suite's load-bearing asset and is expensive to
-// drain; it is built once and read (never mutated) by every check below.
 let store: TempStore;
 let fixture: DerivedThreadFixture;
 
@@ -61,7 +53,6 @@ describe("FC-0.1: current view storage on a current thread file", () => {
       ).map((row) => row.name);
       expect(tables).toEqual(["thread_view", "thread_view_band", "view_boundary"]);
 
-      // The boundary singleton is seeded at position 0 (everything full).
       const boundary = db
         .prepare(`SELECT thread_singleton, position, updated_at FROM view_boundary`)
         .all() as unknown as Array<{
@@ -74,8 +65,6 @@ describe("FC-0.1: current view storage on a current thread file", () => {
       expect(Number(boundary[0]!.position)).toBe(0);
       expect(boundary[0]!.updated_at.length).toBeGreaterThan(0);
 
-      // Singleton CHECKs enforce structurally: a second view row or a second
-      // boundary row cannot exist (failed inserts, nothing mutated).
       expect(() =>
         db
           .prepare(
@@ -89,7 +78,6 @@ describe("FC-0.1: current view storage on a current thread file", () => {
         db.prepare(`INSERT INTO view_boundary (thread_singleton, position, updated_at) VALUES (2, 0, 'now')`).run(),
       ).toThrow(/CHECK/);
 
-      // The band table pins its band vocabulary and cascade in the DDL.
       const bandDdl = (
         db.prepare(`SELECT sql FROM sqlite_master WHERE name = 'thread_view_band'`).get() as { sql: string }
       ).sql;
@@ -149,8 +137,6 @@ describe("FC-0.2: view config validated at SDK construction, errors naming the v
       targetTokens: 32000,
     });
     expect(sdk.config.view.compactThreshold).toBe(160000);
-    // The override replaced only the named field; the built-in's percentages
-    // survive, and the other built-ins are untouched.
     expect(sdk.config.view.profiles["coding"]).toEqual({
       name: "coding",
       lowerBound: 64000,
@@ -183,8 +169,6 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
       expect(rendering.state).toBe("ready");
       expect(rendering.content).toBeDefined();
     }
-    // The fixture's pinned shape: 4 chunks, c1–c3 closed with both summary
-    // forms ready (the drain ran their close→summary enqueues to completion).
     expect(fixture.chunks.chunks.map((chunk) => `${chunk.chunkId}:${chunk.status}`)).toEqual([
       "c1:closed",
       "c2:closed",
@@ -209,8 +193,6 @@ describe("FC-0.3: fixture states proven by read-back through the owning report s
     const permanent = report.value.find((entry) => entry.subjectId === fixture.failedPermanentMessageId);
     expect(permanent?.derivationType).toBe("tool_result_summary");
     expect(permanent?.state).toBe("failed");
-    // Terminal failures left no live queue rows behind (DD-1): neither entry
-    // carries queue detail.
     expect(transient?.queue).toBeUndefined();
     expect(permanent?.queue).toBeUndefined();
   });
@@ -244,7 +226,6 @@ describe("FC-0.4: the two failed forms carry distinguishable reason classes (Sto
     expect(permanent?.reason).toBe(PERMANENT_FAILURE_REASON);
     expect(permanent?.reason).toMatch(/^content_refusal:/);
 
-    // The classes are distinguishable on read-back.
     expect(transient?.reason).not.toBe(permanent?.reason);
   });
 });

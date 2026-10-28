@@ -1,6 +1,3 @@
-// Selected-thread label backfill (Slice 7): stored legacy renderings without
-// labels are rewritten via pure composition; canonical events are untouched;
-// no work is queued; missing/failed renderings are reported, never repaired.
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { countLiveItems, type InferenceCallbacks, initLhc, type Lhc, retrieval, threads, turns } from "../src/index.js";
@@ -103,7 +100,6 @@ describe("turns.backfillRenderingLabels", () => {
     expect(rewritten).toContain("question 1");
     expect(rewritten).toMatch(/<m\d+>/);
 
-    // Retrieval now serves the stored rendering instead of re-composing.
     const served = await withEstimator(o200k, () => retrieval.getTurns({ filePath }, ["t1"]));
     expect(served.ok).toBe(true);
     if (!served.ok) return;

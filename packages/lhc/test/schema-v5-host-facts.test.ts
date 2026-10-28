@@ -1,6 +1,3 @@
-// Schema v5 slice 1: turn-scoped host facts (provider usage, turn outcome,
-// wall-clock timing). Intake accepts optional payload fields; projection
-// writes them; turns/messages reads expose them; empty turn_end stays valid.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { intakeStream, type MessageEventInput, messages, type ThreadRef, threads, turns } from "../src/index.js";
 import { o200k, openRaw, type TempStore, tempStore, validEvent, withEstimator } from "./fixtures/index.js";
@@ -98,7 +95,6 @@ describe("schema v5 host facts", () => {
       endedAt: hostFacts.endedAt,
     });
 
-    // Storage holds the same strings; no rewrite, no defaulting.
     const db = openRaw(filePath);
     try {
       const row = db
@@ -119,7 +115,6 @@ describe("schema v5 host facts", () => {
       db.close();
     }
 
-    // Event payload also retains the facts (canonical record).
     const events = await intakeStream.listEvents({ filePath });
     expect(events.ok).toBe(true);
     if (!events.ok) return;
@@ -129,7 +124,6 @@ describe("schema v5 host facts", () => {
 
   it("assistant_text providerUsage round-trips byte-level through list and show", async () => {
     const filePath = await createThread();
-    // Nested, mixed-type shape — not a fixed column set; fidelity is the point.
     const providerUsage = {
       input_tokens: 1204,
       cached_input_tokens: 900,
@@ -164,7 +158,6 @@ describe("schema v5 host facts", () => {
       const row = db.prepare(`SELECT provider_usage FROM message WHERE message_id = ?`).get(assistant!.messageId) as {
         provider_usage: string;
       };
-      // Stored column is the verbatim JSON string.
       expect(row.provider_usage).toBe(usageJson);
     } finally {
       db.close();

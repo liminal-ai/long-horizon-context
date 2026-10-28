@@ -25,7 +25,6 @@ interface DerivationAttemptBase {
   derivations: readonly EnqueueDerivationTarget[];
 }
 
-// claimAttempt names which claim of the row this attempt holds (work-queue/claim-fence.ts).
 export type DerivationAttempt = DerivationAttemptBase & { workItemId?: string; claimAttempt?: number | undefined };
 
 export type DurableWorkDispatchResult =
@@ -203,9 +202,6 @@ export function applyDerivationSuccess(
   }
 }
 
-// A claim that expired twice in a row (requeueExpiredClaim "repeated"): its
-// process crashed or was killed both times, so something beyond an ordinary
-// exit is wrong. Fail it and say so in the thread log; it is not requeued.
 export const CLAIM_EXPIRED_REPEATEDLY = "claim_expired_repeatedly";
 
 export function failRepeatedlyExpiredClaim(

@@ -1,8 +1,3 @@
-// Turn-domain reads for derivation: the turn handler's source turn, its
-// deleted-filtered member messages, the message-level derivation rows used for
-// composition, and the stored member material chunk summaries consume.
-// Completion writes for turn- and chunk-owned derivations ride the work-queue
-// util's version-checked completion path; this module has no write path.
 import type { DatabaseSync } from "node:sqlite";
 import type {
   DependencyGap,
@@ -35,10 +30,6 @@ export function readTurnSource(db: DatabaseSync, turnId: string): TurnSource | u
   };
 }
 
-// Member messages in message order, blocks attached, deleted messages filtered.
-// Composition always reads the live member set.
-// An optional order window narrows the read to one contiguous span of the
-// turn (a part's step range); the whole turn otherwise.
 export function readMemberMessages(
   db: DatabaseSync,
   turnId: string,
@@ -73,9 +64,6 @@ export function readMemberMessages(
   });
 }
 
-// The message-owned derivation rows for a set of member messages, keyed for
-// composition. This is a cross-owner read only; message handlers remain the
-// only writers for message derivations.
 export function readMessageDerivationRows(
   db: DatabaseSync,
   messageIds: readonly string[],
@@ -118,16 +106,9 @@ export function readMessageDerivationRows(
   return rows;
 }
 
-// Stored member material in turn order for chunk summaries: every chunk_member
-// row by member_idx, joined to its canonical turn, stored
-// detailed_turn_compression row, and pre_detailed_assembly for failed floors.
-// Missing turns are returned as source corruption so background summaries
-// block instead of silently summarizing a shortened member list; SDK
-// soft-deleted turns stay filtered because sanctioned delete rebuilds chunk
-// summaries from survivors.
 export interface MemberProjection {
   turnId: string;
-  state?: string; // undefined: no compression row exists for the member
+  state?: string;
   content?: string;
   assemblyState?: string;
   assemblyContent?: string;
@@ -194,9 +175,6 @@ interface RawOwnedDerivationRow {
   derived_at: string | null;
 }
 
-// Every derivation row this owner holds for one subject kind, grouped by subject
-// id. Rows come back exactly as the pipeline landed them; nothing is derived at
-// read time.
 export function readOwnedDerivations(db: DatabaseSync, subjectKind: "turn" | "chunk"): Map<string, Derivation[]> {
   const rows = db
     .prepare(
@@ -229,8 +207,6 @@ export function readOwnedDerivations(db: DatabaseSync, subjectKind: "turn" | "ch
   return bySubject;
 }
 
-// Chunk read-back rows for the listChunks surface: stored chunk state plus
-// live (deleted-filtered) membership in member order.
 export interface ChunkReadRow {
   chunkId: string;
   chunkOrder: number;
@@ -267,8 +243,6 @@ export function readChunkRows(db: DatabaseSync): ChunkReadRow[] {
   }));
 }
 
-// One derivation row by exact key for this owner's subjects — the requeue
-// operation's refusal read (missing row, blocked state, current version).
 export function readTurnDerivationRow(
   db: DatabaseSync,
   subjectKind: "turn" | "chunk",
@@ -316,11 +290,6 @@ export function readChunkSummaryDerivation(
   return view;
 }
 
-// The turns owner's report: one query over turn- and chunk-owned derivation rows
-// LEFT JOINed with the live work_item targeting each derivation at its current
-// source version. turn_rendering and pre_detailed_assembly map to turn_derivation;
-// detailed_turn_compression maps to its same-named kind; chunk summaries map
-// to their same-named kinds.
 export function reportTurnDerivations(
   db: DatabaseSync,
   opts: { notReady?: boolean; turnId?: string; chunkId?: string } = {},
@@ -337,7 +306,6 @@ export function reportTurnDerivations(
     params.push(opts.chunkId);
   }
   if (subjectFilters.length > 0) conditions.push(`(${subjectFilters.join(" OR ")})`);
-  // notReady is exact set equality by construction: every state but ready.
   if (opts.notReady === true) conditions.push("df.state <> 'ready'");
   const rows = db
     .prepare(

@@ -1,10 +1,3 @@
-// Epic 07 Story 0 — assignment config and defaults (Flow 6 + AC-0.3).
-// Covers the construction contract changes Story 0 installs: the typed
-// derivation enumeration is gone (AC-0.3), partial assignments are accepted
-// (deterministic types optional), per-derivation target ranges are accepted
-// (AC-6.1), guard defaults fill (AC-6.2), and every inference derivation type
-// resolves to a documented default provider lane and model when the host
-// supplies no overrides (AC-6.4).
 import { describe, expect, it } from "vitest";
 import { initLhc, type Lhc, type ModelAssignment } from "../src/index.js";
 import {
@@ -14,9 +7,6 @@ import {
   resolveGuards,
 } from "../src/shared-tech/inference-types.js";
 
-// A ModelCall that records every input and resolves to a minimal success, so
-// the default provider/model routing keys are observable from the log alone
-// (TC-6.4a) without depending on the per-kind canned-text fixture.
 function recordingCall(): { call: ModelCall; log: ModelCallInput[] } {
   const log: ModelCallInput[] = [];
   const call: ModelCall = (input) => {
@@ -26,8 +16,6 @@ function recordingCall(): { call: ModelCall; log: ModelCallInput[] } {
   return { call, log };
 }
 
-// The four inference derivation types and the minimal input each callback
-// operation accepts, so TC-6.4a can drive every default-routed lane.
 const INFERENCE_OPS: Array<{ kind: string; run: (p: Lhc) => Promise<unknown> }> = [
   { kind: "smoothed_prompt", run: (p) => p.config.inferenceCallbacks.smoothPrompt({ text: "x" }) },
   {
@@ -73,8 +61,6 @@ describe("TC-0.3b / TC-6.3a: partial assignments accepted (AC-0.3, AC-6.3)", () 
   });
 
   it("constructs when deterministic types (turn_rendering, chunk_summary_detailed) are absent", () => {
-    // Same as above but explicit about the deterministic omission: a config
-    // that carries only the four inference types is a valid production config.
     const { call } = recordingCall();
     const sdk = initLhc({
       tokenFamily: "o200k",

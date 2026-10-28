@@ -1,12 +1,3 @@
-/**
- * Closed validation of compact-continuation host facts before I/O.
- * Mirrors project closed-shape posture (unknown fields rejected).
- *
- * Token counts and epochs are non-negative integers. Provider `total` is the
- * authoritative provider-reported total (not re-derived as a component sum).
- * Public validation rejects `testHooks` — hooks are internal/test-only.
- */
-
 import type { ErrorResult } from "../../shared-tech/errors.js";
 import { DEFAULT_NEWEST_CLOSED_PROTECTION, profileViolation } from "../../thread-view/internal/profiles.js";
 
@@ -71,10 +62,6 @@ const COMPACT_KEYS = ["profile", "params"] as const;
 const PARAMS_KEYS = ["lowerBound", "percentages"] as const;
 const PCT_KEYS = ["full", "smooth", "detailed", "brief"] as const;
 
-/**
- * Validate host facts shape. Returns undefined when valid.
- * Public surface: `testHooks` is rejected (unknown field).
- */
 export function validateHostFacts(raw: unknown): ErrorResult | undefined {
   const top = closedObject(raw, "hostFacts", [
     "attemptId",
@@ -167,13 +154,9 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
         return reject(`providerUsage.${key} must be a non-negative integer when available`);
       }
     }
-    // `total` is the authoritative provider-reported total. Hosts may surface a
-    // provider total that is not a sum of the component fields (billing/cache
-    // accounting differs by provider). Do not invent a sum rule here.
     if (usage.obj["domain"] !== "provider_reported_input") {
       return reject("providerUsage.domain must be provider_reported_input");
     }
-    // Reject unknown optional components when available (reason not allowed).
     if (usage.obj["reason"] !== undefined) {
       return reject("providerUsage.reason must not be present when available");
     }
@@ -257,7 +240,6 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
             return reject(`compact.params.percentages.${key} must be a non-negative integer when present`);
           }
         }
-        // When all four percentages are supplied, enforce profile sum/range rules.
         if (PCT_KEYS.every((k) => pct.obj[k] !== undefined)) {
           const complete = {
             name: "host-compact-params",
@@ -268,8 +250,6 @@ export function validateHostFacts(raw: unknown): ErrorResult | undefined {
               detailed: pct.obj["detailed"] as number,
               brief: pct.obj["brief"] as number,
             },
-            // Host facts carry band allocations only; the protection fraction
-            // is the profile default and is never a host input.
             newestClosedProtection: DEFAULT_NEWEST_CLOSED_PROTECTION,
           };
           const violation = profileViolation(complete);

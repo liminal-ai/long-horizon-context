@@ -1,30 +1,11 @@
-// createInferenceCallbacks returns the same InferenceCallbacks interface direct
-// injection implements, so initLhc and everything below it sees callback
-// operations. Every operation follows the same pipeline: bound input where
-// needed, render the kind's prompt template into single-turn messages, call the
-// host ModelCall with the kind's assignment, reject empty or whitespace-only
-// text as empty_output, and return shaped text with config-known provenance.
-// The adapter never parses model text for outcomes, receipts, or any mechanical
-// fact; those stay handler-authored from the record. Host containment lives in
-// safeCall.
-
 import { safeCall } from "./classify.js";
 import type { InferenceCallbacks, InferenceRequestMessage, InferenceResult } from "./derivation.js";
 import type { ModelAssignment, ModelCallFailureKind, ResolvedInferenceConfig } from "./inference-types.js";
 import { PROMPT_REGISTRY, type PromptTemplate } from "./prompts/index.js";
 
-// A pathological tool result must not blow a small-context model. Content over
-// the bound keeps its head and tail around a marker, and the bounded whole
-// stays within maxInputChars; bounding happens before prompt rendering, so the
-// dropped middle never crosses the boundary.
 function boundContent(content: string, maxInputChars: number): string {
   if (content.length <= maxInputChars) return content;
   const marker = `\n\n[... truncated: tool result was ${String(content.length)} chars; head and tail retained ...]\n\n`;
-  // The marker only earns its place when head + marker + tail still fits the
-  // bound. When maxInputChars is smaller than the marker itself, there is no
-  // budget for the marker — emitting it would be the one path that crosses the
-  // configured boundary exists to hold, so degrade to a plain head truncation
-  // that honors the cap exactly.
   if (marker.length > maxInputChars) return content.slice(0, maxInputChars);
   const keep = maxInputChars - marker.length;
   const head = Math.ceil(keep / 2);
@@ -32,9 +13,6 @@ function boundContent(content: string, maxInputChars: number): string {
   return content.slice(0, head) + marker + (tail > 0 ? content.slice(content.length - tail) : "");
 }
 
-// Failure reasons preserve the established code-before-first-colon contract.
-// Provider and output failures lead with `provider_failure`; caller/config
-// failures lead with their own kind.
 function inferenceFailure(
   kind: ModelCallFailureKind,
   message: string,
@@ -49,11 +27,6 @@ function inferenceFailure(
   };
 }
 
-// Target ratios carried on an assignment, extracted as a plain object so the
-// adapter can merge them into a prompt's render input. Exported so tests pin
-// the extraction directly; the adapter uses it at the call-build site below,
-// making the ratios reachable by the rendering path. Token targets are computed
-// by the owning handler.
 export function targetRatiosOf(
   assignment: ModelAssignment | undefined,
 ): Partial<Pick<ModelAssignment, "targetMinRatio" | "targetMaxRatio" | "targetAimRatio">> {
@@ -65,9 +38,6 @@ export function targetRatiosOf(
   };
 }
 
-// Merge an assignment's target ratios into a prompt's render input. The input
-// is unknown at this registry boundary; ratios attach only when the input is an
-// object, leaving non-object inputs untouched.
 function withTargetRatios(input: unknown, assignment: ModelAssignment): unknown {
   const ratios = targetRatiosOf(assignment);
   if (typeof input !== "object" || input === null) return input;
@@ -80,16 +50,11 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
     if (assignment === undefined) {
       return inferenceFailure("invalid_request", `no assignment for derivation type "${kind}"`);
     }
-    // Construction validated the name; a miss here is registry drift after
-    // construction and is terminal, never retried into.
     const template = PROMPT_REGISTRY[assignment.prompt] as PromptTemplate<unknown> | undefined;
     if (template === undefined) {
       return inferenceFailure("invalid_request", `prompt template "${assignment.prompt}" not in registry`);
     }
     const messages = template.render(withTargetRatios(input, assignment));
-    // safeCall contains the host: thrown exceptions arrive as structured
-    // `other` failures and a hung function loses the timeout race as `timeout`;
-    // both flow through the same classification below.
     const result = await safeCall(
       config.call,
       {
@@ -103,19 +68,10 @@ export function createInferenceCallbacks(config: ResolvedInferenceConfig): Infer
     if (!result.ok) {
       return inferenceFailure(result.kind, result.message, messages);
     }
-    // Shaping: surrounding whitespace never becomes derivation content — and a
-    // model that returned nothing but whitespace has not produced a
-    // derivation: a failure, never a ready derivation.
-    // `empty_output` is adapter-generated; hosts never return it.
     const text = result.text.trim();
     if (text === "") {
       return inferenceFailure("empty_output", "model returned empty or whitespace-only text", messages);
     }
-    // Provenance: config-known strings, copied, never authored from model
-    // output. Hosts that route dynamically may report the actually-serving
-    // provider/model on the result; those take precedence so durable
-    // provenance stays truthful across live model switches. The prompt is
-    // always the assignment's.
     return {
       ok: true,
       text,

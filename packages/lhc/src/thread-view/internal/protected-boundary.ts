@@ -1,12 +1,3 @@
-/**
- * Read-only protected visibility-boundary preview (LIM-67).
- *
- * Accounts every protected tool_result at full size first, then considers only
- * older unprotected tool_result rows after the effective compact/boundary start.
- * Never moves the boundary backward. Boundary is strictly before the earliest
- * protected result event. Calls, assistant text, and reasoning are never targets.
- */
-
 import type { DatabaseSync } from "node:sqlite";
 import { resolveInstanceTokenEstimator } from "../../shared-tech/index.js";
 import { readBoundaryPosition } from "./boundary.js";
@@ -18,21 +9,16 @@ export type ProtectedBoundaryPreview = {
   proposedBoundary: number;
   compactPoint: number;
   effectiveStart: number;
-  /** Earliest protected tool_result source_event_order; null when none. */
   earliestProtectedResultOrder: number | null;
-  /** Max legal boundary is earliestProtectedResultOrder - 1 (or previous when none). */
   maxLegalBoundary: number;
   protectedToolCallIds: string[];
   fullProtectedTokenEstimate: number;
   eligibleUnprotectedTokenEstimate: number;
   prunedUnprotectedTokenEstimate: number;
   remainingUnprotectedFullTokenEstimate: number;
-  /** Estimated zone tokens after proposed boundary (protected full + remaining full unprotected). */
   zoneTokensAfterEstimate: number;
-  /** True when even maximal eligible pruning cannot reduce zone under target (if any). */
   maximalPruneInsufficient: boolean;
   noOp: boolean;
-  /** Human-readable reasons (empty when ok). */
   notes: string[];
 };
 
@@ -64,9 +50,7 @@ function readLiveToolResultsAfter(db: DatabaseSync, effectiveStart: number): Too
       const parsed = JSON.parse(row.content) as { toolCallId?: unknown; content?: unknown };
       if (typeof parsed.toolCallId === "string") toolCallId = parsed.toolCallId;
       if (typeof parsed.content === "string") content = parsed.content;
-    } catch {
-      // leave empty; caller may still count token_estimate
-    }
+    } catch {}
     return {
       sourceEventOrder: Number(row.source_event_order),
       toolCallId,
@@ -84,18 +68,6 @@ function abridgedTokenEstimate(content: string): number {
   );
 }
 
-/**
- * Compute a monotonic proposed visibility boundary that:
- * - starts at max(previousBoundary, compactPoint)
- * - never moves backward
- * - remains strictly before the earliest protected result event
- * - only advances across older unprotected tool_result rows
- *
- * When `targetZoneTokens` is provided, advances just far enough that the
- * remaining full zone (full protected + full unprotected ahead of boundary)
- * is at or under the target, preferring the smallest advance that meets it.
- * When omitted, computes the maximal legal advance (for insufficiency proofs).
- */
 export function previewProtectedVisibilityBoundary(
   db: DatabaseSync,
   protectedToolCallIds: readonly string[],
@@ -123,7 +95,6 @@ export function previewProtectedVisibilityBoundary(
     }
   }
 
-  // Strictly before earliest protected result; if none, may advance through all eligible.
   const maxLegalBoundary =
     earliestProtectedResultOrder === null ? Number.MAX_SAFE_INTEGER : earliestProtectedResultOrder - 1;
 
@@ -131,10 +102,8 @@ export function previewProtectedVisibilityBoundary(
     notes.push("earliest protected result is at or behind effective start; no eligible older unprotected rows");
   }
 
-  // Eligible unprotected rows that can be crossed (result order <= maxLegalBoundary).
   const eligible = unprotectedRows.filter((r) => r.sourceEventOrder <= maxLegalBoundary);
 
-  // Maximal advance: last eligible unprotected result order (or previous if none).
   let maximalBoundary = previousBoundary;
   for (const r of eligible) {
     if (r.sourceEventOrder > maximalBoundary && r.sourceEventOrder <= maxLegalBoundary) {
@@ -145,13 +114,11 @@ export function previewProtectedVisibilityBoundary(
   if (maximalBoundary > maxLegalBoundary && maxLegalBoundary >= previousBoundary) {
     maximalBoundary = Math.max(previousBoundary, Math.min(maximalBoundary, maxLegalBoundary));
   }
-  // Boundary must stay strictly before protected results.
   if (earliestProtectedResultOrder !== null && maximalBoundary >= earliestProtectedResultOrder) {
     maximalBoundary = Math.max(previousBoundary, earliestProtectedResultOrder - 1);
   }
 
   function zoneFullAfter(boundary: number): number {
-    // Full tokens for results with source_event_order > max(boundary, compactPoint)
     const start = Math.max(boundary, compactPoint);
     let sum = 0;
     for (const r of rows) {
@@ -161,7 +128,6 @@ export function previewProtectedVisibilityBoundary(
   }
 
   function prunedSavingsIfBoundary(boundary: number): number {
-    // Results at-or-behind boundary and after compact point render abridged.
     let savings = 0;
     for (const r of unprotectedRows) {
       if (r.sourceEventOrder > compactPoint && r.sourceEventOrder <= boundary) {
@@ -170,7 +136,6 @@ export function previewProtectedVisibilityBoundary(
         savings += Math.max(0, full - short);
       }
     }
-    // Protected must never be abridged — if boundary would abridge them, illegal.
     return savings;
   }
 
@@ -182,8 +147,6 @@ export function previewProtectedVisibilityBoundary(
   } else if (zoneFullAfter(previousBoundary) <= target) {
     proposedBoundary = previousBoundary;
   } else {
-    // Walk eligible rows oldest-first, advancing boundary to each unprotected result
-    // until zone is under target or maximal legal boundary is reached.
     proposedBoundary = previousBoundary;
     for (const r of eligible) {
       if (r.sourceEventOrder <= proposedBoundary) continue;
@@ -195,14 +158,12 @@ export function previewProtectedVisibilityBoundary(
     }
   }
 
-  // Never move backward; clamp to legal.
   if (proposedBoundary < previousBoundary) proposedBoundary = previousBoundary;
   if (earliestProtectedResultOrder !== null && proposedBoundary >= earliestProtectedResultOrder) {
     proposedBoundary = Math.max(previousBoundary, earliestProtectedResultOrder - 1);
     notes.push("clamped proposed boundary strictly before earliest protected result");
   }
 
-  // Pruned estimate: eligible unprotected at-or-behind proposed boundary.
   let prunedUnprotectedTokenEstimate = 0;
   let remainingUnprotectedFullTokenEstimate = 0;
   for (const r of unprotectedRows) {
@@ -219,7 +180,6 @@ export function previewProtectedVisibilityBoundary(
     target !== undefined ? maximalZone > target : fullProtectedTokenEstimate > 0 && eligible.length === 0;
 
   if (earliestProtectedResultOrder !== null && proposedBoundary >= earliestProtectedResultOrder) {
-    // Should be impossible after clamp; hard guard.
     proposedBoundary = Math.max(previousBoundary, earliestProtectedResultOrder - 1);
   }
 

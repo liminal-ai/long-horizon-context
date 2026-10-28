@@ -3,74 +3,52 @@ export type ErrorClass = "caller_error" | "state_corruption" | "system_error";
 export type ErrorCode =
   | "path_exists"
   | "thread_not_found"
-  | "ambiguous_thread_id" // caller_error — a partial thread id matched more than one thread (A-8 partial-id resolve)
-  | "conflicting_lhc_launch_flags" // caller_error — mutually exclusive pi-lhc extension launch flags set together
-  | "invalid_thread_ref" // empty/blank file path or otherwise unusable reference
-  // Registry alias map (R15): opaque host-qualified alias -> thread, plus one
-  // current-alias pointer per thread.
-  | "invalid_thread_alias" // caller_error — alias is blank or not host-qualified as <host>:<host-alias>
-  | "alias_not_found" // caller_error — no thread registered under this alias
-  | "alias_bound_to_other_thread" // caller_error — an alias never rebinds; it already names a different thread
-  // Fork operations (threads domain): copy, rekey, host binding.
-  | "mid_turn" // caller_error — copy refused: the source's open turn holds host activity
-  | "thread_exists" // caller_error — the target registry already holds this thread id
-  | "file_bound_host" // caller_error — host binds by file name chosen at copy time; no alias to register
+  | "ambiguous_thread_id"
+  | "conflicting_lhc_launch_flags"
+  | "invalid_thread_ref"
+  | "invalid_thread_alias"
+  | "alias_not_found"
+  | "alias_bound_to_other_thread"
+  | "mid_turn"
+  | "thread_exists"
+  | "file_bound_host"
   | "invalid_event"
   | "empty_batch"
   | "turn_state_corrupt"
   | "storage_failure"
-  // Message/turn mutation and derivation errors:
-  | "turn_open" // caller_error — mutation against an open turn
-  | "message_initiates_turn" // caller_error — delete refused toward turns.delete
-  | "message_not_found" // caller_error
-  | "turn_not_found" // caller_error
-  | "unknown_work_kind" // state_corruption — unregistered kind at dispatch
-  | "provider_failure" // system_error — inference failed; derivation.reason carries detail
-  | "source_damaged" // state_corruption — handler found corrupt source; derivation blocked
-  | "inference_unavailable" // caller_error — synchronous derivation called outside an SDK inference seam
-  | "derivation_work_in_flight" // caller_error — synchronous derive refused because equivalent queued work is live
-  | "derivation_completion_mismatch" // state_corruption — handler writes did not exactly match queued derivation targets
-  // Surface-skeleton stub contract: machine-readable, never a throw on the
-  // thread-view surface.
-  | "not_implemented" // system_error — operation's story has not landed yet
-  // Compact-time config rejection: unlike SDK construction, a bad compact
-  // invocation is an operational caller error returned as a result.
-  | "unknown_profile" // caller_error — named profile not configured
-  | "invalid_view_config" // caller_error — band sum / bound violation, named
-  | "compact_stopped" // caller_error — caller stopped compact before it wrote a view
-  // materialize accepts pi-session only; an unknown format is a caller error
-  // naming the accepted values.
-  | "unknown_format" // caller_error — materialize format not supported
-  // Bounded listing: a bad bounds option is an operational caller error
-  // returned as a result, mirroring the compact-params precedent.
-  | "invalid_bounds" // caller_error — list bounds option rejected
-  | "invalid_target_tokens" // caller_error — prune targetTokens rejected
-  // Compact-continuation runtime (LIM-61):
-  | "invalid_compact_continuation_input" // caller_error — host input failed closed validation
-  | "compact_continuation_writer_conflict" // caller_error — cannot claim exclusive LHC writer
-  | "compact_continuation_attempt_conflict" // caller_error — attemptId reused for a different operation
-  // Turn parts (mid-turn compact, AC-7.3/7.4). Core cannot observe capture in
-  // flight: the entry point takes the host's seam assertion and refuses when
-  // it is absent or false. Mechanism exclusivity is per thread, both ways.
-  | "unsettled_capture_seam" // caller_error — mid-turn compact invoked without a settled host seam assertion
-  | "forced_boundary_thread" // caller_error — mid-turn compact refused: this thread is on the forced-boundary path
-  | "compact_continuation_parts_thread"; // caller_error — forced-boundary compact refused: this thread has served parts
+  | "turn_open"
+  | "message_initiates_turn"
+  | "message_not_found"
+  | "turn_not_found"
+  | "unknown_work_kind"
+  | "provider_failure"
+  | "source_damaged"
+  | "inference_unavailable"
+  | "derivation_work_in_flight"
+  | "derivation_completion_mismatch"
+  | "not_implemented"
+  | "unknown_profile"
+  | "invalid_view_config"
+  | "compact_stopped"
+  | "unknown_format"
+  | "invalid_bounds"
+  | "invalid_target_tokens"
+  | "invalid_compact_continuation_input"
+  | "compact_continuation_writer_conflict"
+  | "compact_continuation_attempt_conflict"
+  | "unsettled_capture_seam"
+  | "forced_boundary_thread"
+  | "compact_continuation_parts_thread";
 
 export interface ErrorResult {
   errorClass: ErrorClass;
   code: ErrorCode;
-  reason: string; // human-readable; machine logic switches on code
-  eventIndex?: number; // present on batch validation failures
+  reason: string;
+  eventIndex?: number;
 }
 
-// Expected operational failures — caller errors, corruption, environment
-// failures — are always returned as OpResult errors, never thrown.
-// Programmer bugs inside lhc may still throw; callers are not expected
-// to handle throws as contract outcomes.
 export type OpResult<T> = { ok: true; value: T } | { ok: false; error: ErrorResult };
 
-// Infrastructure failures (SQLite, fs) are expected operational outcomes,
-// caught at the operation boundary and wrapped with the underlying detail.
 export function storageFailure(reason: string): { ok: false; error: ErrorResult } {
   return {
     ok: false,

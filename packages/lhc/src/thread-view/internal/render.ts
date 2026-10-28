@@ -1,15 +1,3 @@
-// Tail and band formatting: the tail mapping table, short/full tool-result
-// selection by boundary position, and the deterministic at-or-behind-boundary
-// truncation rule. Pure functions over read state by design: no DB handle, no
-// inference, no clock.
-//
-// The band-entry side includes degrade ladders, gap entries as the last rung,
-// the [degraded: ...] and [inter-turn note] markers, and band-text assembly.
-// select.ts consumes the same entry renderer to price
-// entries during the fill walk, so the tokens the walk budgets are the tokens
-// the band stores: one renderer, no drift. The brief ladder additionally caps
-// its fallback rungs (briefFallbackCapTokens): a failed brief must not cost
-// the band what a full uncompressed body costs.
 import type { Band } from "../../shared-tech/index.js";
 import { FALLBACK_TRUNCATION_LIMIT, truncateForFallback } from "../../shared-tech/index.js";
 import type { TokenEstimator } from "../../shared-tech/token-counting/index.js";
@@ -21,10 +9,6 @@ export interface AssembledContextMessage {
   band?: Band;
 }
 
-// Deterministic abbreviation: a fixed prefix plus an exact tail marker, a pure
-// function of the input string alone. Restated here, byte-identical to
-// turns/internal/compose.ts's truncateForFallback, because cross-domain
-// internals may not be imported.
 export const ABBREVIATION_LIMIT = FALLBACK_TRUNCATION_LIMIT;
 
 export function deterministicTruncation(text: string): string {
@@ -40,17 +24,11 @@ function textOf(message: TailMessageRow): string {
   return typeof text === "string" ? text : "";
 }
 
-// What the tail renderer needs beyond the message itself: the boundary
-// position (short/full selection) and the call-id → tool-name pairing
-// (results carry only their call id).
 export interface TailRenderContext {
   boundaryPosition: number;
   toolNameByCallId: ReadonlyMap<string, string>;
 }
 
-// The call-id → tool-name map from the messages in hand. Pairing within the
-// tail is structurally sufficient: the compact point snaps to a turn start,
-// so a tail result's call is never behind it.
 export function toolNamesByCallId(messages: readonly TailMessageRow[]): Map<string, string> {
   const names = new Map<string, string>();
   for (const message of messages) {
@@ -77,7 +55,6 @@ function toolResultRawContent(message: TailMessageRow): string {
   return typeof content === "string" ? content : "";
 }
 
-/** Tool-result body for session loading: full ahead of the boundary, truncated at-or-behind. */
 export function toolResultSessionContent(message: TailMessageRow, ctx: TailRenderContext): string {
   const content = toolResultRawContent(message);
   if (message.sourceEventOrder > ctx.boundaryPosition) {
@@ -100,19 +77,8 @@ function renderToolResult(message: TailMessageRow, ctx: TailRenderContext): Asse
   };
 }
 
-// Anthropic models running with omitted thinking display emit thinking blocks
-// whose text is empty, with the encrypted reasoning carried (if at all) in a
-// signature. An empty-text, unsigned block carries nothing a model can use,
-// and the two serving exits rendered it divergently (standalone [thinking]
-// husk vs empty adjacent part). Skip such rows at serve time only — capture
-// and derivations keep them.
-//
-// Signed empty-text blocks ARE useful on the session-view (PI resume) path,
-// where thinkingSignature can be round-tripped to the provider. They are NOT
-// useful on the text LLM-request path, which can only emit [thinking] fences.
 export function isEmptyThinkingHusk(message: TailMessageRow): boolean {
   if (message.kind !== "assistant_thinking") return false;
-  // A redacted_thinking block behind the row is content the provider can use.
   if (message.blocks.length > 1) return false;
   const content = message.blocks[0]?.content ?? {};
   const text = content["text"];
@@ -122,15 +88,12 @@ export function isEmptyThinkingHusk(message: TailMessageRow): boolean {
   return !hasText && !hasSignature;
 }
 
-/** True when thinking has non-empty text (the only form the text LLM path can render). */
 export function hasThinkingText(message: TailMessageRow): boolean {
   if (message.kind !== "assistant_thinking") return false;
   const text = message.blocks[0]?.content?.["text"];
   return typeof text === "string" && text.trim() !== "";
 }
 
-// One tail message → one assembled message per the mapping table. Each kind is its
-// own arm so a single kind's drift fails its own named test leg.
 export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContext): AssembledContextMessage {
   switch (message.kind) {
     case "user_prompt":
@@ -138,8 +101,6 @@ export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContex
     case "assistant_text":
       return { role: "assistant", content: textOf(message) };
     case "assistant_thinking":
-      // Included: the tail is full fidelity (bands compress thinking away for
-      // older turns); harness-side conversion may re-block or drop.
       return { role: "assistant", content: `[thinking]\n${textOf(message)}\n[/thinking]` };
     case "tool_call":
       return renderToolCall(message);
@@ -162,8 +123,6 @@ export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContex
       };
     }
     case "compact_continuation_marker": {
-      // Model-serving representation of the typed continuation marker.
-      // Ordinary user-chat projections hide this kind; model context includes it.
       const block = message.blocks[0]?.content ?? {};
       const cause = typeof block["cause"] === "string" ? block["cause"] : "context_compacted_task_in_progress";
       const action = typeof block["action"] === "string" ? block["action"] : "continue_existing_task";
@@ -183,16 +142,10 @@ export function renderTailMessage(message: TailMessageRow, ctx: TailRenderContex
   }
 }
 
-// One non-empty band to one labeled `user` message: band-marker header, then
-// the snapshot bytes verbatim. Inference APIs reject unknown roles.
 export function renderBandMessage(band: Band, renderedText: string): AssembledContextMessage {
   return { role: "user", band, content: `[context · ${band}]\n${renderedText}` };
 }
 
-// ── band entries: degrade ladders, gaps, keys ────────────────────
-
-// One derivation's stored state as the ladder reads it (a read shape for
-// Derivation: the resolvers never write, never re-derive).
 export interface DerivationSnapshot {
   state: "pending" | "ready" | "failed" | "blocked";
   content?: string;
@@ -206,15 +159,9 @@ export type CompactChunkMaterialSnapshot =
 
 export type DerivationLookup = (subjectId: string, derivationType: string) => DerivationSnapshot | undefined;
 
-// The two hydration rungs, behind thunks: raw member material and the raw
-// message excerpt are read only when the ladder actually reaches the rung that
-// renders them. A candidate whose stored derivation is usable costs no read.
 export type CompactChunkMaterialLookup = () => CompactChunkMaterialSnapshot | undefined;
 export type TurnExcerptLookup = () => string | null;
 
-// A subject's resolved representation: which rung of its ladder renders.
-// `derivationUsed` is the arrangement/receipt vocabulary; `degradedMarker` is the
-// rendered [degraded: …] text for fallback rungs.
 export interface ResolvedRepresentation {
   derivationUsed: string;
   body: string;
@@ -225,7 +172,6 @@ export interface ResolvedRepresentation {
 }
 
 function usable(derivation: DerivationSnapshot | undefined): derivation is DerivationSnapshot & { content: string } {
-  // "Usable" means state = ready.
   return derivation?.state === "ready" && typeof derivation.content === "string";
 }
 
@@ -233,8 +179,6 @@ function ladderState(derivation: DerivationSnapshot | undefined): string {
   return derivation === undefined ? "absent" : derivation.state;
 }
 
-// Smooth (turn) ladder: turn_rendering → detailed_turn_compression →
-// deterministic excerpt of the turn's live messages → gap entry.
 export function resolveSmoothRepresentation(
   turnId: string,
   lookup: DerivationLookup,
@@ -273,8 +217,6 @@ export function resolveSmoothRepresentation(
   };
 }
 
-// Detailed (chunk) ladder: chunk_summary_detailed → chunk_summary_brief →
-// concatenated member smooth compressions (truncated, marked) → gap entry.
 export function resolveDetailedRepresentation(
   chunkId: string,
   lookup: DerivationLookup,
@@ -312,20 +254,10 @@ export function resolveDetailedRepresentation(
   };
 }
 
-// The size floor a failed brief may cost: 5% of the brief band's own budget,
-// never below 200 tokens. A brief derivation exists to be small; when it fails
-// the ladder falls back to material sized for a different purpose (member
-// concat, i.e. raw turn text), and an uncompressed fallback that large is what
-// let one chunk consume the band. The floor is on the fallback only — a ready
-// brief is whatever the deriver made it.
 export function briefFallbackCapTokens(briefBandBudget: number): number {
   return Math.max(briefBandBudget * 0.05, 200);
 }
 
-// Character-level shrink priced by the same estimator the fill walk budgets
-// with, so the entry's reported size is its true size: start from the body's
-// own chars-per-token ratio, then step down until the kept text plus its
-// terminal marker prices at or under the cap.
 function capFallbackBody(body: string, capTokens: number, estimator: TokenEstimator): string {
   const bodyTokens = estimator.estimate(body);
   if (bodyTokens <= capTokens) return body;
@@ -340,9 +272,6 @@ function capFallbackBody(body: string, capTokens: number, estimator: TokenEstima
   }
 }
 
-// Brief (chunk) ladder: chunk_summary_brief → chunk_summary_detailed
-// truncated → gap entry (no compression rung in this band's ladder). Every
-// fallback rung is capped by the failure floor; the ready rung never is.
 export function resolveBriefRepresentation(
   chunkId: string,
   lookup: DerivationLookup,
@@ -382,8 +311,6 @@ export function resolveBriefRepresentation(
   };
 }
 
-// The per-message line an excerpt or note renders — a compact, deterministic
-// excerpt of the raw record (last-rung fallback, not the tail mapping).
 export function excerptLine(
   kind: string,
   blocks: ReadonlyArray<{ blockType: string; content: Record<string, unknown> }>,
@@ -402,14 +329,6 @@ export function excerptLine(
   }
 }
 
-// One selected subject → its band-entry text: any attached inter-turn notes
-// (rule 6: rendered raw with the marker, immediately before the entry), then
-// the representation body, [degraded: …] when a fallback rung rendered, or the
-// gap line as the last rung. select.ts prices exactly this text in the fill
-// walk; the band stores exactly this text.
-//
-// Chunk entries may carry memberTurnIds so detailed/brief bands show which
-// turns the chunk covers (smooth turn bodies already wrap themselves in <t…>).
 export function renderArrangementEntry(
   subjectKind: "turn" | "chunk",
   _subjectId: string,
@@ -430,7 +349,6 @@ export function renderArrangementEntry(
   return lines.join("\n");
 }
 
-// A band's snapshot bytes: its entries oldest-first, blank-line separated.
 export function assembleBandText(entryTexts: readonly string[]): string {
   return entryTexts.join("\n\n");
 }

@@ -1,8 +1,3 @@
-// Pure, whole-batch, three-layer closed validation. Strictness falls out of
-// schema construction: every layer is a closed Effect Schema struct decoded
-// under onExcessProperty: "error", so unknown-field rejection is a property of
-// the definitions, not a remembered rule. Validation never touches a database;
-// a rejected batch costs no write lock.
 import { Either, ParseResult, Schema } from "effect";
 import { type ErrorResult, isApiBlock, isPlainRecord } from "../../shared-tech/index.js";
 
@@ -19,18 +14,13 @@ export const EVENT_KINDS = [
   "turn_end",
 ] as const;
 
-// Denied by name with their own reason string: the old MVP's
-// silent-root-field-drop bug class gets named when it appears.
 const SERVER_GENERATED_FIELDS = ["eventOrder", "recordedAt", "threadEventId", "schemaVersion"] as const;
 
 const DECODE_OPTIONS = { onExcessProperty: "error", errors: "first" } as const;
 
 const NonEmptyString = Schema.String.pipe(Schema.minLength(1));
-// Host-supplied step index (schema v12): a non-negative integer, optional on
-// the four step-bearing kinds only.
 const StepIndex = Schema.Number.pipe(Schema.int(), Schema.nonNegative());
 
-// Layer 1 — envelope: thread reference shape, closed.
 const ThreadRefSchema = Schema.Union(
   Schema.Struct({
     threadId: NonEmptyString,
@@ -39,10 +29,6 @@ const ThreadRefSchema = Schema.Union(
   Schema.Struct({ filePath: NonEmptyString }),
 );
 
-// Layer 2 — event object: the five required fields, closed. payload presence
-// and shape are layer 3's job (Schema.Unknown keeps the key from reading as
-// an unexpected field here, and tolerates a missing key — presence is checked
-// explicitly below).
 const EventEnvelopeSchema = Schema.Struct({
   eventKind: Schema.Literal(...EVENT_KINDS),
   idempotencyKey: NonEmptyString,
@@ -51,12 +37,7 @@ const EventEnvelopeSchema = Schema.Struct({
   payload: Schema.Unknown,
 });
 
-// Layer 3 — per-kind payload, closed. turn_end may be empty or carry only the
-// optional host-observed outcome/timing fields (D1). assistant_text may carry
-// optional providerUsage as a verbatim JSON object (no inner shape).
 const TextPayloadSchema = Schema.Struct({ text: Schema.String });
-// user_prompt may carry the host's in-run steer assertion (turn parts, Flow 7)
-// and the Messages API content blocks beyond its text.
 const UserPromptPayloadSchema = Schema.Struct({
   text: Schema.String,
   steer: Schema.optional(Schema.Boolean),
@@ -70,10 +51,6 @@ const AssistantTextPayloadSchema = Schema.Struct({
   api: Schema.optional(Schema.String),
   stepIndex: Schema.optional(StepIndex),
 });
-// signature is optional opaque provider bytes/token; empty string allowed only
-// via omission — if present it must be a string (may be empty; hosts should
-// omit rather than send ""). provider/model/api are optional host identity
-// for resume (PI same-model signature keep).
 const BlockSchema = Schema.Record({ key: Schema.String, value: Schema.Unknown });
 const AssistantThinkingPayloadSchema = Schema.Struct({
   text: Schema.String,
@@ -113,11 +90,6 @@ const ToolResultPayloadSchema = Schema.Struct({
   stepIndex: Schema.optional(StepIndex),
 });
 
-// Which API block types each kind may carry, and where. The user's content
-// set is the API's user-message set minus the kinds LHC records as their own
-// events (tool_use, tool_result, thinking). A tool result nests the API's
-// tool_result content set, plus the server-side result blocks the model
-// receives inside its own message.
 const USER_BLOCK_TYPES = new Set(["text", "image", "document", "search_result", "container_upload", "tool_reference"]);
 const TOOL_RESULT_BLOCK_TYPES = new Set([
   "text",
@@ -171,7 +143,6 @@ function blocksIssue(blocks: unknown, allowed: ReadonlySet<string>, key: string)
   }
   return undefined;
 }
-// Typed compact-continuation marker: closed payload; semantics are contract-frozen.
 const CompactContinuationMarkerPayloadSchema = Schema.Struct({
   kind: Schema.Literal("lhc.compact_continuation"),
   continuationTurnId: NonEmptyString,
@@ -204,8 +175,6 @@ function callerError(reason: string, eventIndex?: number): ErrorResult {
   return error;
 }
 
-// Envelope-level: the thread reference must decode against the closed union.
-// Returns undefined when valid.
 export function validateThreadRef(ref: unknown): ErrorResult | undefined {
   const issue = decodeIssue(ThreadRefSchema, ref);
   if (issue !== undefined) {
@@ -214,8 +183,6 @@ export function validateThreadRef(ref: unknown): ErrorResult | undefined {
   return undefined;
 }
 
-// Whole-batch validation: array order, first failure wins. Returns undefined
-// when every event is valid.
 export function validateEvents(events: unknown): ErrorResult | undefined {
   if (!Array.isArray(events)) {
     return callerError("envelope: events must be a JSON array");

@@ -158,56 +158,31 @@ export async function createDbReadTransaction<T>(
     } catch (cause) {
       try {
         db.exec("ROLLBACK;");
-      } catch {
-        // The handle may already be closed by an induced-failure seam.
-      }
+      } catch {}
       throw cause;
     } finally {
       try {
         db.close();
-      } catch {
-        // Already closed by an induced-failure seam.
-      }
+      } catch {}
     }
   });
 }
 
-/**
- * Per-thread-file async write mutex, keyed by current file identity (dev+ino)
- * so symlink/hardlink aliases share one queue.
- *
- * node:sqlite `DatabaseSync` busy-wait is synchronous and blocks the event
- * loop; concurrent same-process writers must be serialized in JS.
- * Cross-process concurrency still uses PRAGMA busy_timeout + WAL.
- */
 const writeChains = new Map<string, Promise<unknown>>();
 
-/** Narrow test seam — not a public policy export. */
 export function __writeLockMapSizeForTests(): number {
   return writeChains.size;
 }
 
-/**
- * Optional test-only stat override (ESM cannot spy on node:fs bindings).
- * Production always uses the real statSync.
- */
 let statSyncForTests: ((filePath: string) => { dev: number | bigint; ino: number | bigint }) | undefined;
-/** Narrow test seam — not a public policy export. */
 export function __setStatSyncForTests(
   fn: ((filePath: string) => { dev: number | bigint; ino: number | bigint }) | undefined,
 ): void {
   statSyncForTests = fn;
 }
 
-/**
- * Resolve identity key for an existing path.
- * Returns null when current file identity cannot be established — callers must
- * refuse the write (no raw-path fallback that splits symlink aliases).
- */
 export function threadWriteLockKey(filePath: string): string | null {
   try {
-    // stat follows symlinks → same inode as the target.
-    // Hard links share dev+ino by definition.
     const st = (statSyncForTests ?? statSync)(filePath);
     if (st === undefined || st === null) return null;
     return `ino:${String(st.dev)}:${String(st.ino)}`;
@@ -222,7 +197,6 @@ async function withThreadWriteLock<T>(key: string, run: () => Promise<T>): Promi
   const gate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  // Our map entry is the chain that ends at this gate (FIFO).
   const chained: Promise<unknown> = prev.then(
     () => gate,
     () => gate,
@@ -236,14 +210,12 @@ async function withThreadWriteLock<T>(key: string, run: () => Promise<T>): Promi
     return await run();
   } finally {
     release();
-    // Last releaser whose chained promise is still the map tail deletes the entry.
     if (writeChains.get(key) === chained) {
       writeChains.delete(key);
     }
   }
 }
 
-/** Test seam: run under the same mutex used by write transactions. */
 export async function __runUnderThreadWriteLockForTests<T>(filePath: string, run: () => Promise<T>): Promise<T> {
   const key = threadWriteLockKey(filePath);
   if (key === null) {
@@ -290,10 +262,7 @@ export async function createDbWriteTransaction<T>(
       } catch (cause) {
         try {
           db.exec("ROLLBACK;");
-        } catch {
-          // The handle may have been closed by an induced-failure seam; SQLite
-          // has already discarded the open transaction in that case.
-        }
+        } catch {}
         throw cause;
       }
       postCommitHook.flush();
@@ -301,9 +270,7 @@ export async function createDbWriteTransaction<T>(
     } finally {
       try {
         db.close();
-      } catch {
-        // Already closed by an induced-failure seam.
-      }
+      } catch {}
     }
   });
 }

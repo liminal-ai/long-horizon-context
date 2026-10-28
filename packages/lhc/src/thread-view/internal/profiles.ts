@@ -1,8 +1,3 @@
-// Profile config resolution and validation: built-in profiles, user profiles
-// merged over them by name, and the budget rules. Band shares sum to 100, lower
-// bound is positive, visibility max is greater than target. Pure functions, no
-// IO. Config mistakes are programmer errors at SDK construction and throw
-// naming the violation; nothing here returns OpResults.
 import type {
   ResolvedViewConfig,
   SdkViewConfig,
@@ -11,11 +6,8 @@ import type {
   VisibilityBudgets,
 } from "../../shared-tech/index.js";
 
-// Newest-closed-turn protection default (turn parts, Flow 5): 0.6 of the
-// lower bound — the owner's 120K-of-200K framing.
 export const DEFAULT_NEWEST_CLOSED_PROTECTION = 0.6;
 
-// Built-in profiles: defaults and knobs, not architecture.
 export const BUILT_IN_PROFILES: readonly ViewProfile[] = [
   {
     name: "continuation",
@@ -36,10 +28,6 @@ export const BUILT_IN_PROFILES: readonly ViewProfile[] = [
     newestClosedProtection: DEFAULT_NEWEST_CLOSED_PROTECTION,
   },
   {
-    // The compact run when handing a record to another harness (thread fork
-    // across providers): no verbatim band and no protected closed turn, so no
-    // closed turn survives raw and a foreign host never renders this host's
-    // tool blocks. The tail is the open turn only.
     name: "handoff",
     lowerBound: 120000,
     percentages: { full: 0, smooth: 40, detailed: 40, brief: 20 },
@@ -60,9 +48,6 @@ function fail(detail: string): never {
 
 const BAND_KEYS = ["full", "smooth", "detailed", "brief"] as const;
 
-// The violated constraint, named, or null when the profile is sound: one
-// rule set shared by both rejection surfaces — SDK construction (throws,
-// below) and compact invocation (caller-error result).
 export function profileViolation(profile: ViewProfile): string | null {
   if (!Number.isFinite(profile.lowerBound) || profile.lowerBound <= 0) {
     return `profile "${profile.name}": lowerBound must be a positive number, got ${profile.lowerBound}`;
@@ -84,9 +69,6 @@ export function profileViolation(profile: ViewProfile): string | null {
   return null;
 }
 
-// A complete, merged profile validates whole: positive lower bound, finite
-// non-negative shares, shares summing to exactly 100. Errors name the
-// violated constraint and the profile.
 export function validateProfile(profile: ViewProfile): void {
   const violation = profileViolation(profile);
   if (violation !== null) fail(violation);
@@ -100,9 +82,6 @@ function isCompleteOverride(entry: ViewProfileOverride): boolean {
   );
 }
 
-// Merge one configured entry: field-wise over the built-in it names, or — for
-// a name no built-in carries — the entry must be complete, since there is
-// nothing to merge over.
 function mergeProfile(entry: ViewProfileOverride, base: ViewProfile | undefined): ViewProfile {
   if (base === undefined) {
     if (!isCompleteOverride(entry)) {
@@ -138,7 +117,6 @@ function mergeProfile(entry: ViewProfileOverride, base: ViewProfile | undefined)
 const BUDGET_KEYS = ["maxTokens", "targetTokens"] as const;
 
 function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): VisibilityBudgets {
-  // Unknown budget fields are config mistakes, not silent passengers.
   for (const key of Object.keys(partial ?? {})) {
     if (!(BUDGET_KEYS as readonly string[]).includes(key)) {
       fail(`visibility.${key} is not a budget field (budgets are maxTokens and targetTokens)`);
@@ -153,7 +131,6 @@ function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): Vis
       fail(`visibility.${key} must be a positive number, got ${visibility[key]}`);
     }
   }
-  // The budget ordering rule: max > target.
   if (visibility.maxTokens <= visibility.targetTokens) {
     fail(
       `visibility.maxTokens (${visibility.maxTokens}) must be greater than targetTokens (${visibility.targetTokens})`,
@@ -162,9 +139,6 @@ function resolveVisibility(partial: Partial<VisibilityBudgets> | undefined): Vis
   return visibility;
 }
 
-// The one resolution path: built-ins, user profiles merged by name, every
-// resolved profile validated, visibility and threshold defaulted and checked.
-// Called from initLhc so validation runs through real construction.
 export function resolveViewConfig(config?: SdkViewConfig): ResolvedViewConfig {
   const profiles: Record<string, ViewProfile> = {};
   for (const builtIn of BUILT_IN_PROFILES) {

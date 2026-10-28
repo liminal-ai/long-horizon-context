@@ -1,15 +1,5 @@
-// Stated vs acceptance: assignment targetMinRatio/targetMaxRatio/targetAimRatio
-// (0.35–0.65, aim 0.5) are the ACCEPTANCE window that sizeDisposition measures
-// against. This template states a deliberately lower target (20–30%) because
-// GPT models land 1.5–2x above whatever is stated — measured in the prompt lab,
-// 5/5 in-window with this bias. Stated ≠ enforced, by design.
 import type { PromptTemplate } from "./index.js";
 
-// Round the stated number at a granularity matched to its own magnitude
-// (nearest-100 when the target is 1000+, nearest-10 below) — small turns
-// otherwise round to degenerate text ("around 0 tokens total (roughly 0-0)")
-// near the 80-token tiny-turn floor. Reproduces the lab-validated numbers
-// (5618 input → 1400/1100/1700). Same rule as chunk-brief-v3.
 function statedTarget(inputTokens: number, ratio: number): number {
   const raw = inputTokens * ratio;
   const step = raw >= 1000 ? 100 : 10;

@@ -1,7 +1,3 @@
-// Shared derivation vocabulary: state machine types, the inference callback
-// boundary, and the handler contract. Both owning domains consume these;
-// neither owns them. Repair reports, mutation cascade, and drain all speak this
-// vocabulary across domain lines, so it lives in shared-tech.
 import type { DatabaseSync } from "node:sqlite";
 import type { DerivationGuards, InferenceConfig, ResolvedDerivationGuards } from "./inference-types.js";
 import type { FamiliesOverlay, TokenEstimator, TokenFamily } from "./token-counting/index.js";
@@ -11,35 +7,27 @@ export type SubjectKind = "message" | "turn" | "chunk";
 
 export type DerivationState = "pending" | "ready" | "failed" | "blocked";
 
-// Outcome on tool-activity summaries — mechanically stamped from the record
-// (isError/presence), never authored by model text.
 export type ToolOutcome = "succeeded" | "failed" | "unknown";
 
-// A composed derivation's record of a dependency that fell back during composition:
-// names the source record and the derivation type that was not ready.
 export interface DependencyGap {
   subjectKind: SubjectKind;
   subjectId: string;
   derivationType: string;
 }
 
-// The read shape for one derivation's state row.
 export interface Derivation {
   subjectKind: SubjectKind;
   subjectId: string;
   derivationType: string;
   state: DerivationState;
-  content?: string; // ready only
-  reason?: string; // failed | blocked
-  sourceVersion: number; // which version of the source this derivation derives from
-  gaps?: DependencyGap[]; // composed derivations; landed-with-fallback record
-  metadata?: DerivationMetadata; // mechanically stamped fields; never model-authored
+  content?: string;
+  reason?: string;
+  sourceVersion: number;
+  gaps?: DependencyGap[];
+  metadata?: DerivationMetadata;
   derivedAt?: string;
 }
 
-// Mechanically stamped derivation metadata: tool outcomes, fallback detail,
-// and inference provenance. The queue is not an audit table; durable outcome
-// detail lives on the derivation and in derivation logs.
 export interface DerivationMetadata {
   outcome?: ToolOutcome;
   lastError?: string;
@@ -49,26 +37,15 @@ export interface DerivationMetadata {
   inferenceAttempted?: boolean;
   inferenceSucceeded?: boolean;
   sizeDisposition?: "in_range" | "under_min" | "over_max";
-  // Which provider/model/prompt produced the content, copied from the
-  // InferenceResult's config-known strings, never authored from model output.
-  // Deterministic domain assembly never sets it.
   provenance?: ProviderProvenance;
 }
 
-// One row of an owner's repair report: the derivation's durable state joined
-// with the queue's mechanical detail for the live item still working toward it,
-// if any.
 export interface DerivationReportEntry extends Derivation {
   queue?: {
     status: "queued" | "claimed";
   };
 }
 
-// ── inference callback boundary ──────────────────────────────────
-// Every operation returns content or a structured failure.
-// Provenance: the three config-known assignment strings, stamped by the
-// inference adapter (it alone knows the assignment) and copied by handlers
-// into derivation metadata. Never derived from model output.
 export interface ProviderProvenance {
   provider: string;
   model: string;
@@ -87,9 +64,6 @@ export type InferenceResult =
     }
   | { ok: false; reason: string; requestMessages?: InferenceRequestMessage[] };
 
-// Message kinds a rendering part can carry — mirrors the intake event-kind
-// vocabulary minus turn_end (turn_end never projects a message). Mirrored
-// rather than imported: shared-tech/ may not import the domains.
 export type RenderingPartKind =
   | "user_prompt"
   | "assistant_text"
@@ -104,12 +78,10 @@ export type RenderingPartKind =
 export interface RenderingPart {
   messageId: string;
   kind: RenderingPartKind;
-  text: string; // ready derivation content, or raw/truncated fallback
-  fallback: boolean; // true ⇒ gap recorded
+  text: string;
+  fallback: boolean;
   blocks?: Array<{ blockType: string; content: Record<string, unknown> }>;
-  outcome?: ToolOutcome; // tool activity only
-  /** Tool-run parts: every member message id, in record order. Text already
-   *  carries per-member <m…> tags when this is set. */
+  outcome?: ToolOutcome;
   memberMessageIds?: string[];
 }
 
@@ -196,10 +168,6 @@ export const INFERENCE_CALLBACK_OPERATIONS = [
 
 export type InferenceCallbackName = (typeof INFERENCE_CALLBACK_OPERATIONS)[number];
 
-// ── LHC initialization config ────────────────────────────────────
-// Inference callbacks arrive exactly one way: direct callback injection
-// (`inferenceCallbacks`) or `inference` (host model-call function + per-kind
-// assignments).
 export interface SdkConfig {
   inferenceCallbacks?: InferenceCallbacks;
   inference?: InferenceConfig;
@@ -210,17 +178,14 @@ export interface SdkConfig {
     smallTierTokens: number;
     smallTargetRatio: number;
     midTargetRatio: number;
-  }; // 1000 / 0.15 / 0.04
-  lease?: { durationMs: number }; // 120000
-  chunkPolicy?: { targetProjectedTokens: number; maxProjectedTokens: number }; // 2200 / 4400
-  view?: SdkViewConfig; // profiles, visibility budgets, compact threshold
-  /** Tokenizer family the instance uses for billed-token estimates and budgets. */
+  };
+  lease?: { durationMs: number };
+  chunkPolicy?: { targetProjectedTokens: number; maxProjectedTokens: number };
+  view?: SdkViewConfig;
   tokenFamily: TokenFamily;
-  /** Host families/mappings; overlay entries win on slug clash. */
   tokenFamilies?: FamiliesOverlay;
 }
 
-// Every optional filled by initLhc's central defaults.
 export interface ResolvedSdkConfig {
   inferenceCallbacks: InferenceCallbacks;
   mode: "background" | "manual";
@@ -248,21 +213,15 @@ export interface ResolvedSdkConfig {
   tokenEstimator: TokenEstimator;
 }
 
-// ── handler contract ─────────────────────────────────────────────
 export interface HandlerRunContext {
   threadId: string;
   filePath: string;
-  openDb(): DatabaseSync; // short-txn access; NEVER held across inference calls
+  openDb(): DatabaseSync;
   inferenceCallbacks: InferenceCallbacks;
   clock: () => Date;
   config: ResolvedSdkConfig;
 }
 
-// A successful handler hands its derivation content back as data; the
-// drain's completion transaction performs the version-checked UPDATE and the
-// item-row deletion atomically. The handler never opens that transaction
-// itself, so the version check and the done/stale_discarded disposition stay in
-// one place: the queue util.
 export interface HandlerDerivationWrite {
   subjectKind: SubjectKind;
   subjectId: string;
@@ -272,13 +231,6 @@ export interface HandlerDerivationWrite {
   gaps?: DependencyGap[];
 }
 
-// Completion-transaction hook for work that must land atomically with
-// version-checked derivation writes: chunk placement and close→summary enqueues
-// above all. The queue util invokes it inside completion's BEGIN IMMEDIATE,
-// after derivation writes and only when they hit. A stale completion must not
-// place a turn or enqueue summaries. onCommit registrations flush after that
-// COMMIT succeeds and drop on rollback, so a crash leaves either a placed turn
-// with its enqueues or nothing, never a derived-but-unplaced turn.
 export interface CompletionTx {
   db: DatabaseSync;
   onCommit: (fn: () => void) => void;
@@ -288,11 +240,8 @@ export type HandlerOutcome =
   | { ok: true; derivations?: HandlerDerivationWrite[]; onApplied?: (transaction: CompletionTx) => void }
   | { ok: false; deferred: true; reason: string; onDeferred: (transaction: CompletionTx) => void }
   | { ok: false; reason: string }
-  | { ok: false; blocked: true; reason: string }; // source damage → derivation blocked, item terminal
+  | { ok: false; blocked: true; reason: string };
 
-// item is the queue util's WorkItemRecord; typed structurally here so the
-// shared layer does not depend on the util's module (and vice versa stays
-// one-directional: tech-utils imports shared).
 export type WorkHandler = (
   run: HandlerRunContext,
   item: { workItemId: string; kind: string; sourceRef: Record<string, string> },

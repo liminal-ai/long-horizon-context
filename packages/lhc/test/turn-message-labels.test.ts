@@ -1,6 +1,3 @@
-// Smooth-history labels: short XML tags whose name is the entity id
-// (<t1>…</t1>, <m2>…</m2>). turn_rendering carries them; pre_detailed_assembly
-// (compression input) does not.
 import { describe, expect, it } from "vitest";
 import { renderArrangementEntry } from "../src/thread-view/internal/render.js";
 import {
@@ -33,7 +30,6 @@ describe("composeStructuredTurnText labels", () => {
   it("wraps the turn and each non-run message", () => {
     const messages = [msg("m1", "user_prompt", { text: "please read" }), msg("m2", "assistant_text", { text: "done" })];
     const { parts } = composeRenderingInput(messages, new Map());
-    // Without ready smoothed_prompt, user_prompt falls back to cleaned text.
     const text = composeStructuredTurnText(parts, "t1");
     expect(text.startsWith("<t1>\n")).toBe(true);
     expect(text.endsWith("\n</t1>")).toBe(true);
@@ -71,7 +67,6 @@ describe("composeStructuredTurnText labels", () => {
 
     const text = composeStructuredTurnText(parts, "t9");
     expect(text).toContain("<t9>");
-    // Run body is not double-wrapped in the lead message id.
     expect(text).not.toMatch(/<m2>\n\[tool run/);
   });
 });
