@@ -5,7 +5,7 @@ description: Verify core lhc (Long Horizon Context SDK) end to end: thread round
 
 # verify-lhc
 
-Drives core `lhc` only (`packages/lhc`): the SDK surface from `initLhc` and the thin `lhc thread` CLI (`packages/lhc/bin/lhc`, verbs in `src/cli.ts`). Hosts (`claude-lhc`, `cc-lhc`, `pi-lhc`) have their own skills; do not drive them from here.
+Drives core `lhc` only (`packages/lhc`): the SDK surface from `initLhc` and the thin `lhc thread` CLI (`packages/lhc/bin/lhc`, verbs in `src/cli.ts`). Hosts (`claude-lhc`, `cc-lhc`) have their own skills; do not drive them from here.
 
 Surface facts (from the code, re-check if a drive breaks):
 

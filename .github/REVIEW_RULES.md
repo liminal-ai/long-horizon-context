@@ -23,7 +23,7 @@ Rules for every reviewer:
 - If you find nothing in your lane, say so in one line, or post nothing.
 
 Repo-specific focus (LHC core):
-- Context persistence and resume correctness across `packages/lhc`, `packages/cc-lhc`, `packages/pi-lhc`, `packages/lhc-convex`, and `packages/cc-lhc-native`.
+- Context persistence and resume correctness across `packages/lhc`, `packages/cc-lhc`, and `packages/cc-lhc-native`.
 - Compaction/prune boundaries and invariants: no loss or duplication of context; summaries match cut points; retries and watermarks behave as specified by tests.
 - Data integrity on state transitions: atomic persisted cursor flips, no partial writes; crash/rollback paths leave state consistent.
 - Cross-module contracts and types that flow between packages; versioning and ordering when native bindings are involved.

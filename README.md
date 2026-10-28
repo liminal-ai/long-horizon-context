@@ -61,7 +61,6 @@ model request and response cycle.
 | [`lhc`](packages/lhc) | TypeScript SDK and contract source | Repository SDK and contract source; not published as a standalone registry package |
 | [`lhc-rs`](packages/lhc-rs) | Host-agnostic Rust port | Certified against the TypeScript contract; consumed by the Codex and Grok forks |
 | [`lhc-py`](packages/lhc-py) | Python port | Certified against the TypeScript contract; consumed by Hermes |
-| [`lhc-convex`](packages/lhc-convex) | Convex implementation | Released through the current tagging and retrieval wave; downstream propagation continues independently |
 
 Port certification proves the contract surface owned by that port. It does not
 imply that every implementation is published to a package registry or already
@@ -71,7 +70,6 @@ contains every later feature from another port.
 
 | Host | Integration | Distribution |
 | --- | --- | --- |
-| [PI](https://github.com/earendil-works/pi) | [`pi-lhc`](packages/pi-lhc), the reference extension integration | Built from this repository |
 | Codex CLI | Native Rust integration in the maintained [`codex-lhc`](https://github.com/liminal-ai/codex-lhc) fork | Fork release |
 | Grok Build | Native Rust integration in the maintained [`grok-build-lhc`](https://github.com/liminal-ai/grok-build-lhc) fork | Fork release |
 | Claude Code | [`cc-lhc`](packages/cc-lhc), a closed-host PTY wrapper | Public npm package and GitHub bundles |
@@ -203,12 +201,11 @@ the durable work queue.
 
 The workspace development floor is Node.js 24.17 or later with pnpm 11.8.0.
 This is higher than the packaged cc-lhc runtime floor because the complete
-workspace also builds the SDK, ports, tests, and vendored PI integration.
+workspace also builds the SDK, ports, and tests.
 
 ```sh
 git clone --recursive https://github.com/liminal-ai/long-horizon-context.git
 cd long-horizon-context
-cd vendor/pi && npm ci && npm run build && cd ../..
 pnpm install --frozen-lockfile
 pnpm build
 ```
@@ -217,17 +214,12 @@ Useful verification commands:
 
 ```sh
 pnpm --config.verify-deps-before-run=false --filter lhc run verify
-pnpm --config.verify-deps-before-run=false --filter pi-lhc run verify
 pnpm --config.verify-deps-before-run=false --filter cc-lhc run verify
 ```
 
 To install a source checkout for one host, follow the ordered setup guide:
 
 - [cc-lhc standalone setup](.setup/cc-lhc-standalone.md)
-- [pi-lhc standalone setup](.setup/pi-lhc-standalone.md)
-
-The PI setup builds the stock vendored PI submodule before it builds `pi-lhc`.
-The cc-lhc standalone setup does not build PI.
 
 ## Core concepts
 

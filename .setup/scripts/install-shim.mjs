@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 // Installs a launcher shim pointing at this repo's built dist.
-// Usage: node .setup/scripts/install-shim.mjs [--target cc-lhc|pi-lhc] [--bin-dir <dir>]
-// Default --target is cc-lhc. POSIX: executable bash shim at <bin-dir>/<name>.
+// POSIX: executable bash shim at <bin-dir>/<name>.
 // Windows: <bin-dir>/<name>.cmd (stable batch text, works from cmd.exe and
 // PowerShell) plus <bin-dir>/<name>.launcher.js holding the repo paths as
 // JSON-encoded data — an arbitrary clone path is never parsed as cmd source.
@@ -21,11 +20,6 @@ import {
   windowsLauncherJsContent,
 } from "./lib/shim.mjs";
 
-const TARGETS = {
-  "cc-lhc": { name: "cc-lhc", packageDir: "cc-lhc" },
-  "pi-lhc": { name: "pi-lhc", packageDir: "pi-lhc" },
-};
-
 function argValue(argv, flag) {
   const idx = argv.indexOf(flag);
   if (idx === -1) return undefined;
@@ -37,12 +31,7 @@ function argValue(argv, flag) {
   return val;
 }
 
-const targetKey = argValue(process.argv, "--target") ?? "cc-lhc";
-if (!(targetKey in TARGETS)) {
-  console.error(`unknown --target value: ${targetKey} (expected cc-lhc or pi-lhc)`);
-  process.exit(1);
-}
-const target = TARGETS[targetKey];
+const target = { name: "cc-lhc", packageDir: "cc-lhc" };
 
 const repoRootArg = argValue(process.argv, "--repo-root");
 const repoRoot = repoRootArg

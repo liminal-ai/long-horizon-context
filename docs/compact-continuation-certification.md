@@ -212,9 +212,7 @@ No Linear stories, branches, or implementation work are authorized here. Separat
 | Surface | Shared prerequisites | Host capability questions |
 |---|---|---|
 | **Hermes / lhc-py** | Python contract/runtime parity with fixtures at pin `6232317` semantics; schema v10 stores or honest subset | Settled-seam detection? In-flight request replace? Tool-pair preserve? Force turn boundary? One-writer vs native engine? Durable attempt identity on crash? |
-| **Pi / pi-lhc** | TS SDK already available; extension hooks for settle + compact | Does `session_before_compact` remain the only mutation seam? Can MidTurn-equivalent run inside an open agentic turn? Marker visibility filters? |
 | **Grok / lhc-rs host** | Rust runtime already at pin; host adapter pattern from Codex | Feature flags for full SM vs shadow? Inference callback ownership during compact? Resume/reload paths? CLE/overflow product policy? |
-| **lhc-convex** | Convex port parity for thread/view/compact; may lag schema v10 | Multi-writer/concurrency model? Durable claim semantics under Convex transactions? Can it host full SM or only measurement? |
 
 **Rule:** do not claim host “supports compact continuation” until that host’s matrix row is filled with tests equivalent to §3 for the capabilities it asserts. Shared fixture green alone is not host integration.
 
