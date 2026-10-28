@@ -1,9 +1,3 @@
-/**
- * `cc-lhc tasks status|output|stop <launch id>` — the replacement session's
- * management surface for carried work (LIM-146 AC-2.6). Bound exactly like
- * retrieval: the wrapper's ready descriptor names the thread; argv never does.
- */
-
 import { defaultLineageDbPath } from "../intake/paths.js";
 import { defaultRolloutBindIo, type RolloutBindIo } from "../retrieval/rollout-bind.js";
 import { bindReadyDescriptor, writeAll } from "../retrieval/service.js";
@@ -33,7 +27,6 @@ export interface ParsedTasksRequest {
   maxBytes?: number;
 }
 
-/** `cc-lhc tasks hook`: the UserPromptSubmit hook Claude runs (LIM-146). Payload on stdin, context on stdout. */
 export function isTasksHookArgv(argv: readonly string[]): boolean {
   return argv.length === 2 && argv[0] === "tasks" && argv[1] === "hook";
 }
@@ -45,25 +38,13 @@ export interface TasksHookDeps {
   descriptorPath?: string;
   continuityDbPath?: string;
   openStore?: (path: string) => ContinuityStore;
-  /** Reconciliation seams (tests); production probes the real process. */
   reconcile?: ReconcileDeps;
-  /** Subagent/Monitor settlement seams (tests); production reads the real transcript and process. */
   carried?: Partial<SettleCarriedDeps>;
-  /** Output-read seams for relaunched-Monitor events (tests). */
   manage?: ManagePorts;
 }
 
-export type TasksHookResult =
-  /** Context to hand Claude; empty string means nothing pending — print nothing. */
-  { ok: true; additionalContext: string; keys: string[] } | { ok: false; reason: string };
+export type TasksHookResult = { ok: true; additionalContext: string; keys: string[] } | { ok: false; reason: string };
 
-/**
- * Answer one UserPromptSubmit payload. Binds through the wrapper's descriptor
- * (the payload's own session id must match it); settles carried work, copies
- * helper transcripts into the current session, and lists the bound thread's
- * pending results; never marks anything delivered — running the hook is not
- * delivery. Any refusal yields no context and never blocks the prompt.
- */
 export function executeTasksHook(payloadText: string, deps: TasksHookDeps = {}): TasksHookResult {
   let payload: unknown;
   try {
@@ -92,21 +73,12 @@ export function executeTasksHook(payloadText: string, deps: TasksHookDeps = {}):
   const dbPath = deps.continuityDbPath ?? defaultLineageDbPath();
   const store = (deps.openStore ?? openContinuityStore)(dbPath);
   try {
-    // LIM-149: the real user prompt is the delivery seam — settle any adopted
-    // shell whose kernel-proven exit happened since, so its durable result is
-    // in this very hook's pending set (no polling anywhere).
     reconcileAdoptedShells(store, threadId, deps.reconcile ?? {});
-    // 0.4.5: Claude resumes a helper only from the current session's folder,
-    // so the previous session's helper transcripts are copied here first (the
-    // old host is stopped or paused by now), keeping every helper resumable
-    // after each compaction.
     const sessionDir =
       typeof p.transcript_path === "string" && p.transcript_path !== ""
         ? sessionDirOfTranscript(p.transcript_path)
         : undefined;
     if (sessionDir !== undefined) carryHelpersFromPreviousSession(store, threadId, sessionDir);
-    // F4: carried subagents and relaunched Monitors settle here too — the
-    // subagent from its saved transcript, the Monitor from its exact process.
     settleCarriedWork(store, threadId, {
       continuityDir: continuityDirOf(dbPath),
       ...(sessionDir === undefined ? {} : { sessionDir }),
@@ -133,7 +105,6 @@ function readAll(stream: NodeJS.ReadableStream): Promise<string> {
   });
 }
 
-/** The hook's process contract: exit 0 always; JSON on stdout only when there is context; reasons on stderr. */
 export async function runTasksHookCli(
   streams: { stdin?: NodeJS.ReadableStream; stdout?: NodeJS.WritableStream; stderr?: NodeJS.WritableStream } = {},
   deps: TasksHookDeps = {},
@@ -201,11 +172,9 @@ export interface TasksCliDeps {
   descriptorIo?: DescriptorIo;
   rolloutBindIo?: RolloutBindIo;
   descriptorPath?: string;
-  /** The continuity database; the wrapper's lineage database by default. */
   continuityDbPath?: string;
   openStore?: (path: string) => ContinuityStore;
   manage?: ManagePorts;
-  /** Reconciliation seams (tests); production probes the real process. */
   reconcile?: ReconcileDeps;
 }
 
@@ -232,8 +201,6 @@ export function executeTasks(argv: readonly string[], deps: TasksCliDeps = {}): 
   const store = (deps.openStore ?? openContinuityStore)(deps.continuityDbPath ?? defaultLineageDbPath());
   try {
     const ports = deps.manage ?? {};
-    // LIM-149: settle kernel-proven completion before answering, so no surface
-    // ever reports a finished adopted task as active.
     reconcileAdoptedShells(store, threadId, deps.reconcile ?? {});
     switch (request.op) {
       case "status": {

@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 const registryMocks = vi.hoisted(() => ({
-  /** Alias whose current-pointer advance the registry cannot write. */
   unwritableAlias: null as string | null,
 }));
 
@@ -82,15 +81,11 @@ describe("a recorded acceptance the registry still cannot absorb", () => {
     });
 
     try {
-      // The safest forward path: the session this host already accepted, live
-      // and captured, rather than the superseded one the pointer still names.
       expect(opened.expectedSession).toEqual({ sessionId: "s-accepted", source: "current_alias" });
       expect(opened.correctedFrom).toBe("s-old");
       expect(opened.discardedSwapArtifacts).toEqual([]);
-      // Reported truthfully rather than papered over.
       expect(opened.pendingAcceptanceNote).toContain("registry pointer still cannot advance");
       expect(opened.pendingAcceptanceNote).toContain("readonly database");
-      // Registry unchanged, record retained for the next attempt.
       expect(await currentSessionAlias("th_stuck", registryPath)).toBe(claudeSessionAlias("s-old"));
       expect(readPendingCurrentSession(lineageDbPath, "th_stuck")).toMatchObject({ sessionId: "s-accepted" });
     } finally {
@@ -124,8 +119,6 @@ describe("repeated handoffs inside one wrapper lifetime", () => {
     recordSessionThread(lineageDbPath, "s1", "th_repeat", clock, { prefix: VERIFIED });
     recordSessionThread(lineageDbPath, "s2", "th_repeat", clock, { prefix: VERIFIED });
 
-    // One wrapper lifetime: it takes the thread lease once and keeps it across
-    // every handoff it performs. No launch happens in between.
     const wrapper = await openLaunchThread({
       expectedSession: { sessionId: "s0", source: "explicit_resume" },
       registryPath,
@@ -137,7 +130,6 @@ describe("repeated handoffs inside one wrapper lifetime", () => {
     });
     expect(wrapper.expectedSession.sessionId).toBe("s0");
 
-    // First handoff: s1 is accepted, but the registry pointer cannot be written.
     registryMocks.unwritableAlias = claudeSessionAlias("s1");
     const first = await recordSwapAcceptance({
       sessionId: "s1",
@@ -153,8 +145,6 @@ describe("repeated handoffs inside one wrapper lifetime", () => {
       previousSessionId: "s0",
     });
 
-    // Second handoff in the same lifetime: s2 is accepted and the pointer moves.
-    // Its cleanup of the older record fails, so the stale s1 row survives.
     const second = await recordSwapAcceptance({
       sessionId: "s2",
       threadId: "th_repeat",
@@ -173,7 +163,6 @@ describe("repeated handoffs inside one wrapper lifetime", () => {
 
     wrapper.lease.release();
 
-    // Restart, entering through the oldest alias.
     const restarted = await openLaunchThread({
       expectedSession: { sessionId: "s0", source: "explicit_resume" },
       registryPath,
@@ -185,14 +174,11 @@ describe("repeated handoffs inside one wrapper lifetime", () => {
     });
 
     try {
-      // s1 is never restored: the record could only repair the s0 it observed.
       expect(restarted.expectedSession).toEqual({ sessionId: "s2", source: "current_alias" });
       expect(await currentSessionAlias("th_repeat", registryPath)).toBe(claudeSessionAlias("s2"));
       expect(restarted.pendingAcceptanceNote).toContain("settled unapplied");
       expect(restarted.pendingAcceptanceNote).toContain("s2");
-      // The stale record is settled rather than retried forever.
       expect(readPendingCurrentSession(lineageDbPath, "th_repeat")).toBeUndefined();
-      // The live replacement is not an artifact to discard.
       expect(restarted.discardedSwapArtifacts).toEqual([]);
     } finally {
       restarted.lease.release();
@@ -213,7 +199,6 @@ describe("a pending record that observed no predecessor", () => {
       createThread: async () => "th_null",
     });
     await acceptCurrentSession({ sessionId: "s-old", threadId: "th_null", registryPath });
-    // The shape a pre-amendment build left behind.
     recordPendingCurrentSession(lineageDbPath, "th_null", "s-accepted", null);
 
     const opened = await openLaunchThread({

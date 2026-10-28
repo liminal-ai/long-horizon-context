@@ -1,18 +1,3 @@
-// Aggregation step: merge per-target CI prebuild artifacts into one release
-// bundle plus flat release-candidate assets with SHA-256 checksums.
-//
-// Usage:
-//   node scripts/assemble-release-bundle.mjs \
-//     --artifacts <dir>    downloaded artifacts: one prebuild-<target>/ dir per target
-//     --bundle-out <dir>   assembled release bundle (validate with check-release-bundle.mjs)
-//     --assets-out <dir>   flat assets: <artifactBase>-<target>.node x N + SHA256SUMS
-//     [--package-root <dir>]  source of package.json/README.md/targets.json/dist (default: this package)
-//
-// The artifacts directory must contain exactly one `prebuild-<target>`
-// directory per targets.json target, each holding exactly one non-empty file
-// named after the manifest artifact. Anything missing, duplicated, unknown,
-// or extra is a hard failure — a release candidate is all six proven targets
-// or nothing. This script does not create tags or releases.
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,7 +38,6 @@ const manifestPath = join(options.packageRoot, "targets.json");
 if (!existsSync(manifestPath)) fail(`no targets.json at ${options.packageRoot}`);
 const manifest = readTargetsManifestLite(manifestPath);
 
-// --- validate the downloaded artifact set -------------------------------
 if (!existsSync(options.artifacts)) fail(`artifacts directory does not exist: ${options.artifacts}`);
 const expectedDirs = new Map(manifest.targetKeys.map((key) => [`prebuild-${key}`, key]));
 const entries = readdirSync(options.artifacts, { withFileTypes: true });
@@ -99,7 +83,6 @@ if (problems.length > 0) {
   process.exit(1);
 }
 
-// --- assemble the bundle -------------------------------------------------
 const staticEntries = ["package.json", "README.md", "targets.json"];
 for (const name of staticEntries) {
   if (!existsSync(join(options.packageRoot, name))) fail(`package root is missing ${name}`);
@@ -121,7 +104,6 @@ for (const [key, artifactPath] of found) {
   cpSync(artifactPath, join(destDir, manifest.artifact));
 }
 
-// --- flat release-candidate assets + SHA256SUMS --------------------------
 rmSync(options.assetsOut, { recursive: true, force: true });
 mkdirSync(options.assetsOut, { recursive: true });
 const lines = [];

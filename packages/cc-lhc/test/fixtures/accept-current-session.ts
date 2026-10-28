@@ -1,9 +1,3 @@
-/**
- * Stands in for a concurrent wrapper accepting a swap: binds ACCEPT_SESSION as
- * the current session of ACCEPT_THREAD in the registry at ACCEPT_REGISTRY, then
- * exits. Run as a separate process so the write is genuinely another writer's.
- */
-
 import { acceptCurrentSession } from "../../src/intake/thread-alias.js";
 
 const registryPath = process.env.ACCEPT_REGISTRY;

@@ -26,8 +26,6 @@ const PLAN: SessionRestartPlan = {
   replayedPrefixLines: 3,
 };
 
-// Byte-for-byte from a live claude 2.1.201 failure capture (/tmp/resume-x-nonexistent.log):
-// the words of the failure line arrive separated by cursor-column sequences, not spaces.
 const RAW_FAILURE_CHUNK = `  ⎿  \x1b[39mSession \x1b[1m${NEW_ID}\x1b[51G\x1b[22mwas\x1b[55Gnot\x1b[59Gfound.\r\x1b[1B\x1b[K`;
 
 function scanner(id: string = NEW_ID) {
@@ -55,10 +53,6 @@ function fakeCaptureSession(
   } as unknown as CaptureSession;
 }
 
-/**
- * Path-aware statRollout double: the rebuilt rollout grows across calls (swap
- * evidence), the old rollout reports a fixed post-swap size.
- */
 function statByPathFake(oldStat: RolloutStat): (path: string) => Promise<RolloutStat | null> {
   let newCalls = 0;
   return async (path: string) => {
@@ -68,7 +62,6 @@ function statByPathFake(oldStat: RolloutStat): (path: string) => Promise<Rollout
   };
 }
 
-/** statRollout double: first call returns `before`, later calls walk `after` (last repeats). */
 function statSequence(before: RolloutStat | null, ...after: Array<RolloutStat | null>) {
   let calls = 0;
   return async (): Promise<RolloutStat | null> => {
@@ -106,7 +99,6 @@ describe("createTripwireScanner", () => {
 
   it("trips when the raw bytes are split across chunks, including mid-escape-sequence", () => {
     const s = scanner();
-    // Split inside the id, inside "\x1b[55G", and inside "found."
     const cut1 = RAW_FAILURE_CHUNK.indexOf("2222");
     const cut2 = RAW_FAILURE_CHUNK.indexOf("[55G") + 2;
     const cut3 = RAW_FAILURE_CHUNK.indexOf("fou") + 2;
@@ -432,7 +424,6 @@ describe("executeResumeInjection", () => {
     expect(note.eventKind).toBe("runtime_note");
     expect(note.idempotencyKey).toBe(`cc-lhc:swap-collision:${NEW_ID}`);
     expect(note.payload.text).toBe(formatSwapCollisionNote(plan, 500, 650));
-    // The old capture stopped (final flush) before the collision was measured.
     expect(order).toContain("stop");
   });
 

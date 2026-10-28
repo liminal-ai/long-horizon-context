@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/** Long-running fake Claude PTY child for wrapper tests (not capture-sensitive argv). */
 const mode = process.argv[2] ?? "sleep";
 if (mode === "ticks") {
   let i = 0;

@@ -1,9 +1,3 @@
-// Process-level alt-screen safety: signals and stdin loss must restore the
-// main screen (leave BEFORE flushing held output) whatever the child does.
-// These tests run the real wrapper in-process against a bash tick loop under
-// a real pty; the signals are sent to this process, whose handlers run()
-// registered.
-
 import { PassThrough } from "node:stream";
 import { describe, expect, it } from "vitest";
 
@@ -43,7 +37,6 @@ async function waitFor(condition: () => boolean, label: string, capMs = 5_000): 
   }
 }
 
-/** Slice indexes of the alt-screen markers; asserts basic sanity. */
 function altMarkers(out: string): { enterAt: number; leaveAt: number; leaveCount: number } {
   const enterAt = out.indexOf(ENTER_ALT_SCREEN);
   const leaveAt = out.indexOf(LEAVE_ALT_SCREEN);
@@ -62,14 +55,10 @@ async function startModalRig(): Promise<{
   await waitFor(() => output().includes("tick2"), "child ticks to flow");
   (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
   await waitFor(() => output().includes(ENTER_ALT_SCREEN), "modal to enter the alt screen");
-  await sleep(300); // let ticks accumulate in the hold
+  await sleep(300);
   return { stdin, output, runPromise };
 }
 
-// POSIX-only: every test here self-delivers SIGTERM/SIGHUP and the bash tick
-// child traps TERM/HUP. Windows cannot deliver these signals as events
-// (process.kill would terminate the vitest worker), so the signal-restore
-// contract is only provable on Linux/macOS.
 describe.skipIf(process.platform === "win32")("process-level alt-screen safety", () => {
   it("SIGTERM while modal: leave precedes the held flush; child is signalled; exactly one leave", async () => {
     const { output, runPromise } = await startModalRig();
@@ -81,12 +70,10 @@ describe.skipIf(process.platform === "win32")("process-level alt-screen safety",
     const { enterAt, leaveAt, leaveCount } = altMarkers(out);
     expect(enterAt).toBeGreaterThan(-1);
     expect(leaveAt).toBeGreaterThan(enterAt);
-    expect(leaveCount).toBe(1); // signal restore + teardown + exit-hook never double-leave
-    // no held tick leaked onto the alt screen; the held ticks flush after the restore
+    expect(leaveCount).toBe(1);
     const during = out.slice(enterAt, leaveAt);
     expect(during).not.toMatch(/tick\d/);
     expect(out.slice(leaveAt)).toMatch(/tick\d/);
-    // held output was delayed, never dropped: tick numbers stay gapless
     const nums = [...out.matchAll(/tick(\d+)/g)].map((m) => Number(m[1]));
     for (let i = 1; i < nums.length; i += 1) expect(nums[i]).toBe(nums[i - 1]! + 1);
     expect(exitCode).toBe(0);
@@ -112,14 +99,12 @@ describe.skipIf(process.platform === "win32")("process-level alt-screen safety",
     (stdin as unknown as PassThrough).end();
     await waitFor(() => output().includes(LEAVE_ALT_SCREEN), "stdin end to restore the screen");
 
-    // existing stdin-gone semantics: no new lifecycle — the child runs on
     const ticksAtRestore = output().split(LEAVE_ALT_SCREEN)[1] ?? "";
     expect(ticksAtRestore).toMatch(/tick\d|/);
     await sleep(300);
     expect(output().split(LEAVE_ALT_SCREEN).length - 1).toBe(1);
     expect(await Promise.race([runPromise.then(() => "exited"), sleep(200).then(() => "running")])).toBe("running");
 
-    // finish: signal teardown (no second leave — the guard already left)
     process.kill(process.pid, "SIGTERM");
     const exitCode = await runPromise;
     expect(output().split(LEAVE_ALT_SCREEN).length - 1).toBe(1);

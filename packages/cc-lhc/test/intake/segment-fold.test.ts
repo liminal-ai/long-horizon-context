@@ -68,10 +68,8 @@ describe("segment fold", () => {
     expect(fold(state, prompt)).toBeNull();
     expect(fold(state, thinkingOnly)).toBeNull();
     expect(fold(state, twoCalls)).toBeNull();
-    // First of two parallel results: t2 still outstanding.
     expect(fold(state, result("r1", "t1"))).toBeNull();
     expect(fold(state, result("r2", "t2"))).toEqual({ kind: "exchange", lineUuid: "r2" });
-    // A text line of the next API message is not a boundary even with nothing outstanding.
     expect(fold(state, textThenLateCall)).toBeNull();
     expect(fold(state, lateCall)).toBeNull();
     expect(fold(state, result("r3", "t3"))).toEqual({ kind: "exchange", lineUuid: "r3" });
@@ -88,12 +86,9 @@ describe("segment fold", () => {
   it("an interrupted task's abandoned calls never block the next task's exchanges", () => {
     const state = createSegmentFoldState();
     fold(state, twoCalls);
-    // Claude Code's interrupt line: not a completion boundary, but the native
-    // task is over, so its unanswered calls are released.
     expect(fold(state, interrupt)).toBeNull();
     expect(state.lastSettledLineUuid).toBe("u9");
     expect(state.openCalls.size).toBe(0);
-    // Next real task: prompt, one call, its result — a clean exchange boundary.
     expect(fold(state, { type: "user", uuid: "u10", message: { role: "user", content: "new task" } })).toBeNull();
     expect(fold(state, lateCall)).toBeNull();
     expect(fold(state, result("r3", "t3"))).toEqual({ kind: "exchange", lineUuid: "r3" });

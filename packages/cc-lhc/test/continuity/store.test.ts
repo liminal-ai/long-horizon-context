@@ -1,8 +1,3 @@
-/**
- * LIM-145 foundation: parent-owned continuity records in the real cc-lhc
- * SQLite database. Monotonic writes, generation scoping, coexistence with the
- * receipt tables, and persistence across reopen.
- */
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
 
@@ -158,7 +153,6 @@ describe("continuity store: one database, additive tables", () => {
     expect(store.getGeneration(T, 1)?.state).toBe("superseded");
     expect(store.getItem(T, "a")?.generation).toBe(2);
     expect(store.latestGeneration(T)?.generation).toBe(2);
-    // Another thread's counter is its own.
     expect(
       store.allocateGeneration({ threadId: "th_other", oldSessionId: "x", launchIds: [], nowMs: 4_000 }).generation,
     ).toBe(1);

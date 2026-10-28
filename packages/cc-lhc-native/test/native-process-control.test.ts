@@ -1,11 +1,3 @@
-/**
- * Supervised-child control against the real compiled addon (contract 3,
- * LIM-149). Every process here is this test's own child or grandchild.
- * Skipped without an artifact unless CC_LHC_NATIVE_REQUIRE_ADDON=1; the
- * native-platforms matrix sets it, so the macOS and Windows lanes are the
- * real proof of the libproc/sysctl and ntdll/Restart Manager paths.
- */
-
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -155,7 +147,6 @@ describe("normalizers fail closed", () => {
 
 const real = addonLoad.ok ? describe : describe.skip;
 
-/** A child of this test that spawns one grandchild writing to `output`, then stays alive. */
 function spawnSupervisor(output: string, grandchildExitCode: number, grandchildMs: number): ChildProcess {
   const script = `
     const { spawn } = require("node:child_process");
@@ -226,10 +217,7 @@ real("supervised-child control against real children", () => {
       (r) => r.ok && r.pid !== null,
       4_000,
     );
-    // Under the test timeout, so a miss reports the addon's scan summary.
     expect(found).toMatchObject({ ok: true, pid: grandchild, matches: 1 });
-    // From this test's own vantage the direct child holding the file is the
-    // supervisor (it opened the fd it handed down), never the grandchild.
     expect(control.findChildHoldingFile(process.pid, output)).toMatchObject({
       ok: true,
       pid: supervisor.pid,
@@ -264,7 +252,6 @@ real("supervised-child control against real children", () => {
       10_000,
     );
     expect(exited).toEqual({ ok: true, pid: grandchild, state: "exited", code: 3 });
-    // Still readable moments later: nothing collected it while paused.
     await new Promise((resolve) => setTimeout(resolve, 200));
     expect(control.readChildExit(grandchild, identity.identity.starttime)).toEqual(exited);
     expect(control.readChildExit(grandchild, "1")).toMatchObject({ ok: false, code: "identity_changed" });
@@ -332,18 +319,6 @@ function __filename_for_holders(): string {
   return path;
 }
 
-// Windows ARM gorilla report: a killed wrapper left Claude's tool processes
-// running because Claude exited on its own and nothing closed its tree. A
-// stand-in wrapper W spawns C, binds it, C spawns G and then exits first; W
-// is then killed. G must die with W's job handle. Without the bind, G lives
-// (the control run), which is what makes the bound run meaningful.
-//
-// G is spawned detached. libuv assigns a non-detached child to its own
-// kill-on-close job, so such a G dies the moment C exits whatever W does (the
-// harness sanity test shows it) and could prove nothing. Tools that outlive
-// their parent, as in the report, are the ones outside that job; a detached
-// libuv child is, and libuv never asks for CREATE_BREAKAWAY_FROM_JOB, so it
-// stays in any job C inherited from W — which is what the bind relies on.
 async function untilTrue(check: () => boolean, ms: number): Promise<boolean> {
   return until(check, (value) => value, ms);
 }
@@ -356,9 +331,7 @@ describe.runIf(addonLoad.ok && process.platform === "win32")("win32 kill-on-clos
     for (const pid of orphans.splice(0)) {
       try {
         process.kill(pid);
-      } catch {
-        // gone
-      }
+      } catch {}
     }
   });
 
@@ -396,7 +369,6 @@ describe.runIf(addonLoad.ok && process.platform === "win32")("win32 kill-on-clos
     const grandchild = Number(/G (\d+)/.exec(out)![1]);
     orphans.push(grandchild);
     const bound = JSON.parse(/BOUND (.*)\n/.exec(out)![1]!) as unknown;
-    // Give a job-driven kill of G, if any, time to land before looking.
     await new Promise((r) => setTimeout(r, 500));
     return { observed: { bound, gAliveAfterCExit: alive(grandchild) }, grandchild, wrapper };
   }
@@ -446,14 +418,8 @@ describe.runIf(addonLoad.ok && process.platform === "win32")("win32 kill-on-clos
   }, 30_000);
 });
 
-// Windows 0.4.4 report: programs run by Claude's Bash tool outlived a killed
-// wrapper. Git Bash (MSYS2) starts every child with CREATE_BREAKAWAY_FROM_JOB
-// whenever its job allows breakaway, and the 0.4.4 job had BREAKAWAY_OK, so a
-// node started through Git Bash left the job. GitHub's Windows runners have
-// Git Bash at this path.
 const GIT_BASH = "C:\\Program Files\\Git\\bin\\bash.exe";
 
-/** A stand-in Claude: starts a node tool through Git Bash, as Claude's Bash tool does; the tool writes its pid to `dir/tool.pid`. */
 function writeClaudeSim(dir: string): string {
   const sim = join(dir, "claude-sim.js");
   const fwd = dir.replace(/\\/g, "/");
@@ -485,9 +451,7 @@ describe.runIf(addonLoad.ok && process.platform === "win32")("win32 job and Git 
     for (const pid of orphans.splice(0)) {
       try {
         process.kill(pid);
-      } catch {
-        // gone
-      }
+      } catch {}
     }
   });
 
@@ -540,10 +504,6 @@ describe.runIf(addonLoad.ok && process.platform === "win32")("win32 job and Git 
     60_000,
   );
 
-  // Control, independent of the addon: a job made in PowerShell with 0.4.4's
-  // flags (KILL_ON_JOB_CLOSE | BREAKAWAY_OK) lets the Git Bash tool escape and
-  // survive the job's close; the same job without BREAKAWAY_OK keeps it in and
-  // ends it. This is the behavior the fix depends on, checked on the runner.
   it.runIf(existsSync(GIT_BASH))(
     "control: Git Bash's tool leaves a job with BREAKAWAY_OK and stays in one without it",
     () => {

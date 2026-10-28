@@ -5,11 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  lookupSessionLineage,
-  openLineageDatabase,
-  recordSessionThread,
-} from "../../src/intake/lineage-db.js";
+import { lookupSessionLineage, openLineageDatabase, recordSessionThread } from "../../src/intake/lineage-db.js";
 import { isCanonicalNoneRow } from "../../src/intake/prefix-boundary.js";
 
 describe("strict known-none rows", () => {
@@ -28,7 +24,7 @@ describe("strict known-none rows", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-strict-none-"));
     mkdirSync(home, { recursive: true });
     const dbPath = join(home, "cc-lhc.sqlite");
-    openLineageDatabase(dbPath); // init schema
+    openLineageDatabase(dbPath);
     const db = new DatabaseSync(dbPath);
     db.prepare(
       `INSERT INTO cc_session_lineage
@@ -58,7 +54,6 @@ describe("strict known-none rows", () => {
   it("ordinary rebind does not insert missing target as none", () => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-rebind-no-insert-"));
     const dbPath = join(home, "cc-lhc.sqlite");
-    // No prior row
     recordSessionThread(dbPath, "missing-target", "th_x");
     expect(lookupSessionLineage(dbPath, "missing-target")).toBeUndefined();
   });

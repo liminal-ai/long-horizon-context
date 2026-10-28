@@ -149,10 +149,8 @@ export async function createCaptureThread(
   };
 }
 
-/** What the launch resolved and locked before capture was allowed to start. */
 export interface LaunchThreadBinding {
   threadId: string;
-  /** True when this launch created the thread (fresh-provenance eligibility). */
   createdAtLaunch: boolean;
 }
 
@@ -160,10 +158,6 @@ export interface ContinueCapture {
   threadRef: ThreadRef;
   sdk: Lhc;
   stats: CaptureStats;
-  /**
-   * During handoff the SDK continues but binding restarts for the new rollout.
-   * Health from the prior generation is not auto-carried as ready.
-   */
   priorGeneration?: number;
 }
 
@@ -174,84 +168,30 @@ export interface CaptureSessionDeps {
   startedAt?: Date;
   noInference?: boolean;
   continueCapture?: ContinueCapture;
-  /**
-   * The thread this launch owns, resolved through the registry alias map and
-   * fenced by the thread-keyed owner lock before capture starts. Capture never
-   * looks a thread up for itself.
-   */
   launchThread?: LaunchThreadBinding;
   expectedSession?: ExpectedSession;
   knownRolloutPath?: string;
-  /**
-   * Explicit content-verifiable prefix fence (tests / in-process handoff).
-   * When omitted, lineage supplies provenance after resolve.
-   */
   prefixBoundary?: PrefixBoundary;
-  /** @deprecated Prefer prefixBoundary; count-only is not content-verifiable. */
   replayedPrefixLines?: number;
   lineageDbPath?: string;
   lineageDeps?: LineageDbDeps;
-  /**
-   * In-wrapper handoff: do NOT persist the session→thread lineage row at bind.
-   * Canonical success lineage is written by the wrapper only after the
-   * generation is proven ready-after-replay; the pending capability
-   * (thread/sdk/prefix) is passed directly instead of trusted from a row.
-   */
   suppressBindLineageRecord?: boolean;
   log?: (message: string) => void;
   logError?: (message: string) => void;
-  /**
-   * Test seam: substitute intake flush. Production returns `FlushBatchResult`.
-   * Legacy injectors may return void (success, all recorded) or false (failure).
-   */
   flushBatchFn?: (
     ...args: Parameters<typeof flushBatch>
   ) => ReturnType<typeof flushBatch> | Promise<void> | Promise<boolean> | boolean;
   initSdkFn?: (config: SdkConfig) => Lhc;
   onLifecycle?: (signals: readonly LifecycleSignal[]) => void;
-  /**
-   * Accepted asynchronous-work evidence from the rollout fold (launch,
-   * progress, terminal), with the bound thread id, for the parent-owned
-   * continuity record (LIM-145). Fires only for live-suffix lines after bind.
-   */
   onAsyncWorkEvent?: (event: AsyncWorkEvent, threadId: string) => void;
-  /**
-   * Work the parent record already holds for the bound thread (carried across
-   * Smart Compact or a wrapper restart). Called once, with the thread id, after
-   * the thread is bound and before any live line is folded, so that work's
-   * terminal evidence is recognized. A throw seeds nothing and is reported.
-   */
   seedAsyncWork?: (threadId: string) => readonly OpenAsyncWork[];
-  /**
-   * Result keys the live rollout proves were delivered to the model (the
-   * `UserPromptSubmit` hook's accepted context, LIM-146), with the bound thread id.
-   */
   onResultDelivery?: (launchIds: readonly string[], threadId: string) => void;
-  /**
-   * Wrapper-owned token-family fold. Shared across capture generations of one
-   * wrapper run so a `/model` switch is one log line and does not recreate
-   * the SDK. Absent: this session holds its own fold, starting at the
-   * provider-fallback seed.
-   */
   tokenFamily?: SessionTokenFamilyState;
-  /** Latest runtime choices explicitly recorded by the bound Claude rollout. */
   onRuntimeSettings?: (settings: Readonly<ClaudeRuntimeSettings>) => void;
-  /**
-   * Live soft size of one canonical segment in SDK estimate units (the
-   * wrapper reads it from the resolved policy at every candidate). Absent:
-   * no size-based segmentation; genuine completion still closes the segment.
-   */
   segmentThresholdTokens?: () => number;
-  /** Generation id seed (tests / restart counters). */
   generationSeed?: number;
-  /** Test seam: injectable watcher I/O (fstat/read failures). */
   watcherIo?: Partial<import("../rollout/watcher.js").WatcherIo>;
-  /** Test seam: substitute watchRolloutFile. */
   watchRolloutFileFn?: typeof watchRolloutFile;
-  /**
-   * Test seam: delay during bind before/around lineage resolution so stop()
-   * can win ownership. Resolves when the test releases it.
-   */
   bindHold?: Promise<void>;
 }
 
@@ -271,27 +211,12 @@ export interface CaptureSession {
   getCommandContext(): CaptureCommandContextExtended;
   getRolloutInfo(): RolloutCaptureInfo;
   isTurnOpen(): boolean;
-  /** True only when phase is ready (bound + not degraded). */
   isCaptureHealthy(): boolean;
-  /** True when phase is ready (mutation allowed). Binding reports false. */
   isCaptureReady(): boolean;
   getCaptureHealth(): CaptureGenerationState;
   getCaptureGeneration(): number;
-  /**
-   * Asynchronous work this session started that a child swap would kill,
-   * newest launch last. Derived from the same ordered rollout lines capture
-   * already reads and rebuilt by re-reading them; nothing is persisted.
-   */
   getLiveAsyncWork(): OpenAsyncWork[];
-  /** Current tokenizer family (seeded at launch; SDK family is sticky until relaunch). */
   getTokenFamily(): SessionTokenFamilyState;
-  /**
-   * Settled-seam catch-up: close the canonical turn left open by a native
-   * turn the transcript already shows finished (keyed to that terminal line),
-   * once, before a compact reads the record. Ordered behind queued intake.
-   * Skips when no terminal line was folded, the native turn is open, or the
-   * SDK's open turn holds nothing.
-   */
   closeSettledSegment(): Promise<SettledSegmentClose>;
   stop(): Promise<void>;
 }
@@ -317,28 +242,13 @@ function threadIdFromRef(threadRef: ThreadRef): string {
   return "threadId" in threadRef ? threadRef.threadId : "";
 }
 
-/** Per-event intake outcome after a successful `messageEvents` call. */
 export type IntakeEventOutcome = {
   idempotencyKey: string;
   outcome: "recorded" | "skipped";
 };
 
-/**
- * Result of one whole-batch flush. Test injectors may still return void/true
- * (treat as all-recorded success) or false (failure).
- */
 export type FlushBatchResult = { ok: true; eventOutcomes: IntakeEventOutcome[] } | { ok: false };
 
-/**
- * Intake already-filtered events into LHC. Callers must run replay filter first
- * and only publish post-measurement estimate / turn_settled after success.
- *
- * Returns `{ ok: false }` when intake fails or the result mapping is invalid
- * (caller must not commit pressure growth). When `events` is empty, returns
- * success with an empty outcome list (no-op).
- *
- * Signatures are persisted only for events whose outcome is `recorded`.
- */
 async function flushBatch(
   sdk: Lhc,
   threadRef: ThreadRef,
@@ -350,7 +260,6 @@ async function flushBatch(
   dedupeState: ReplayDedupeState | undefined,
   persistSignatures: ((signatures: string[]) => Promise<LineageOutcome>) | undefined,
   onIntakeFailure: (reason: string) => void,
-  /** Precomputed content signatures for accepted events (order matches `events`). */
   signaturesToAdd: readonly string[] = [],
 ): Promise<FlushBatchResult> {
   if (events.length === 0) return { ok: true, eventOutcomes: [] };
@@ -399,7 +308,6 @@ async function flushBatch(
     stats.eventsSent += recorded;
     log(`cc-lhc intake batch: ${recorded}/${events.length} recorded`);
 
-    // Persist identity only for events whose canonical acceptance is established.
     if (dedupeState !== undefined && signaturesToAdd.length > 0) {
       const recordedSignatures: string[] = [];
       for (let i = 0; i < events.length; i += 1) {
@@ -413,7 +321,6 @@ async function flushBatch(
         const outcome = await persistSignatures(recordedSignatures);
         if (!outcome.ok) {
           onIntakeFailure(outcome.reason);
-          // Fail closed for pressure: undurable identity must not arm mutation.
           return { ok: false };
         }
       }
@@ -426,15 +333,7 @@ async function flushBatch(
   }
 }
 
-/**
- * Normalize flushBatchFn / production results for the session queue.
- * - `false` → failure
- * - `void` / `true` → success, all events treated as recorded (legacy test injectors)
- * - `{ ok: false }` → failure
- * - `{ ok: true, eventOutcomes }` → success with explicit outcomes
- */
 function normalizeFlushResult(
-  // Legacy injectors return void (success); production returns FlushBatchResult.
   result: FlushBatchResult | boolean | undefined | null,
   events: readonly MessageEventInput[],
 ): FlushBatchResult {
@@ -451,7 +350,6 @@ function normalizeFlushResult(
   return result;
 }
 
-/** Start capture synchronously; `stop()` is always safe even before discovery resolves. */
 export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSession {
   const cwd = deps.cwd ?? process.cwd();
   const log = deps.log ?? (() => {});
@@ -476,8 +374,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       `${formatTokenFamilyChangeLog(previous, tokenFamily.resolved, tokenFamily.modelId)}; ${TOKEN_FAMILY_STICKY_UNTIL_RELAUNCH}`,
     );
   };
-  // One capture generation, one open-async set. A replacement child starts a
-  // new capture session, and by then everything this set held is dead.
   const asyncWorkFold: AsyncWorkFold = createAsyncWorkFold((event) => {
     const onAsyncWorkEvent = deps.onAsyncWorkEvent;
     if (onAsyncWorkEvent === undefined) return;
@@ -486,12 +382,10 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     try {
       onAsyncWorkEvent(event, threadId);
     } catch (cause) {
-      // The continuity record is a consumer; its failure never poisons intake.
       logError(`cc-lhc continuity: async-work subscriber threw: ${detail(cause)}`);
     }
   });
   let reportedAsyncDiagnostics = 0;
-  /** Post-bind seed: the record's open work for this thread, before the first live line. */
   const seedCarriedWork = (): void => {
     if (deps.seedAsyncWork === undefined || threadRef === undefined) return;
     const threadId = threadIdFromRef(threadRef);
@@ -504,12 +398,10 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     }
   };
   const userOnLifecycle = deps.onLifecycle;
-  /** Explicit boundary wins; otherwise lineage supplies provenance after resolve. */
   let resolvedPrefix: PrefixBoundary =
     deps.prefixBoundary ??
     (deps.replayedPrefixLines !== undefined && deps.replayedPrefixLines > 0
-      ? // Count-only without digest is unknown — never trusted skip.
-        { kind: "unknown" as const }
+      ? { kind: "unknown" as const }
       : prefixBoundaryNone());
   const hadExplicitBoundary = deps.prefixBoundary !== undefined;
 
@@ -527,7 +419,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
   let rolloutFilePath: string | undefined;
   let rolloutSessionId: string | undefined;
   let stopped = false;
-  /** After truncate/rewrite or failed prefix: never feed intake. */
   let intakeHalted = false;
   let batchQueue: Promise<void> = Promise.resolve();
   let lineCounter = 0;
@@ -545,7 +436,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     try {
       userOnLifecycle(signals);
     } catch (cause) {
-      // Lifecycle consumer failure must not poison capture queue or intake.
       logError(`cc-lhc lifecycle subscriber threw: ${detail(cause)}`);
       const applied = applyCaptureDegraded(captureHealth, `lifecycle_subscriber:${detail(cause)}`);
       captureHealth = applied.state;
@@ -555,7 +445,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     }
   };
 
-  /** Latch degradation; log only on first occurrence of the stored key. */
   const degradeQuiet = (reason: string): boolean => {
     const applied = applyCaptureDegraded(captureHealth, reason);
     captureHealth = applied.state;
@@ -565,10 +454,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     return applied.isFirstForKey;
   };
 
-  /**
-   * Latch degradation and emit capture_degraded only on first occurrence of the
-   * stored key (including a single reasons_capped transition after the cap).
-   */
   const degradeAndEmit = (reason: string): void => {
     const applied = applyCaptureDegraded(captureHealth, reason);
     captureHealth = applied.state;
@@ -584,7 +469,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     }
   };
 
-  /** The SDK's open-turn estimate (its own stored, thinking-inclusive units); null when unreadable. */
   const readActiveTurnTokens = async (sdkRef: Lhc, ref: ThreadRef): Promise<number | null> => {
     try {
       const metadata = await sdkRef.threadView.hostMetadata(ref);
@@ -599,7 +483,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     }
   };
 
-  /** Submit one canonical `turn_end`; its identity is the source line, so a repeat is an SDK skip. */
   const appendCanonicalEnd = async (
     sdkRef: Lhc,
     ref: ThreadRef,
@@ -620,54 +503,22 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     return true;
   };
 
-  /**
-   * Process one watcher emission batch serially.
-   *
-   * Architecture (LIM-64 correctness + batch performance):
-   * 1. Observe every line and retain full lifecycle partitions + event slice.
-   *    Do **not** publish ordinary governor lifecycle for all lines up front —
-   *    multi-turn catch-up must not flatten sampling(N+1) before settle(N).
-   * 2. Filter replay before submission; fully replay-dropped lines contribute
-   *    no estimate/settle (sampling_observed / turn_opened may still republish
-   *    in line order after the intake decision).
-   * 3. Submit all remaining events in ONE `messageEvents` call for the batch
-   *    (O(batches), not O(lines)).
-   * 4. Map `BatchResult.events` by input order + idempotencyKey; malformed
-   *    mapping degrades and publishes no mutation-arming deferred pressure.
-   * 5. Replay lifecycle in original line order after the intake decision:
-   *    health → ordinary immediate → mode:set/add → turn_settled for newly
-   *    recorded lines; replay/skip lines get ordinary immediate only.
-   *    mode:add only from events accepted as newly recorded.
-   */
   const enqueueEmissions = (emissions: WatcherEmission[]): Promise<void> => {
     batchQueue = batchQueue
       .then(async () => {
-        // After stop settles closed, do not process further (closed is terminal).
         if (captureHealth.phase === "closed") return;
         if (intakeHalted) return;
         if (stopped && emissions.length === 0) return;
 
-        /**
-         * One observed line's retained partitions. Lifecycle is held until after
-         * the batch intake decision so multi-turn catch-up stays line-ordered:
-         * sampling/set/settle(N) before turn_opened/sampling(N+1).
-         */
         type LineWork = {
-          /** session_mismatch / capture_degraded (degradeQuiet already latched). */
           healthSignals: LifecycleSignal[];
-          /** turn_opened, sampling_observed, native_compact_observed, etc. */
           ordinaryImmediate: LifecycleSignal[];
           samplingEmitted: boolean;
           deferredPressure: readonly LifecycleSignal[];
           wouldPostMeasurementAdd: boolean;
           toSend: MessageEventInput[];
-          /** Inclusive start index into the flat batch event array. */
           eventStart: number;
           eventCount: number;
-          /**
-           * Observed mapped events but every one was dropped by replay dedupe.
-           * May republish sampling/turn-open; never set/settle/add.
-           */
           fullyReplayDropped: boolean;
         };
 
@@ -676,7 +527,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         const batchSignatures: string[] = [];
         const batchItems: RolloutLineItem[] = [];
 
-        /** Partition observed lifecycle; latch degradation without publishing yet. */
         const partitionLifecycle = (
           lifecycle: readonly LifecycleSignal[],
         ): { healthSignals: LifecycleSignal[]; ordinaryImmediate: LifecycleSignal[] } => {
@@ -698,17 +548,11 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           return { healthSignals, ordinaryImmediate };
         };
 
-        /**
-         * Publish one line's non-pressure lifecycle in semantic order.
-         * Health always precedes ordinary immediate so captureHealthy is false
-         * before any later mutation-arming settle in the same batch.
-         */
         const publishLineImmediate = (work: LineWork): void => {
           if (work.healthSignals.length > 0) publishLifecycle(work.healthSignals);
           if (work.ordinaryImmediate.length > 0) publishLifecycle(work.ordinaryImmediate);
         };
 
-        /** Intake failed for a prefix of this batch: no further split, one final attempt at the end. */
         let commitFailed = false;
         const resetBatch = (): void => {
           lineWork.length = 0;
@@ -717,15 +561,8 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           batchItems.length = 0;
         };
 
-        /**
-         * Submit everything observed so far in ONE `messageEvents` call and
-         * publish its lifecycle in line order. Returns the per-event outcomes
-         * (indices match `LineWork.eventStart`), or null when intake failed.
-         * Clears the batch either way.
-         */
         const commitBatch = async (): Promise<IntakeEventOutcome[] | null> => {
           if (sdk === undefined || threadRef === undefined) {
-            // No SDK: publish retained lifecycle in line order (health + chrome only).
             for (const work of lineWork) {
               publishLineImmediate(work);
             }
@@ -733,8 +570,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             return [];
           }
 
-          // Empty mapped events only (meta/sidechain chrome with deferred settle):
-          // no intake call; still allow deferred set/settle for those candidates.
           const needsIntake = batchEvents.length > 0;
           let eventOutcomes: IntakeEventOutcome[] | null = null;
           if (needsIntake) {
@@ -751,13 +586,8 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
               (reason) => degradeAndEmit(reason),
               batchSignatures,
             );
-            // `flushBatchFn` may return void (legacy injectors).
             const flushResult = normalizeFlushResult(rawFlush as FlushBatchResult | boolean | undefined, batchEvents);
             if (!flushResult.ok) {
-              // Failed or malformed intake: no mutation-arming lifecycle from this
-              // batch. Still publish host health + sampling/turn-open per line so
-              // observations stay ordered; captureHealthy (already latched) blocks
-              // wouldMutate if a later path ever settles.
               for (const work of lineWork) {
                 publishLineImmediate(work);
               }
@@ -765,7 +595,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
               resetBatch();
               return null;
             }
-            // Extra guard: injector-supplied outcomes must still align by length/key.
             if (flushResult.eventOutcomes.length !== batchEvents.length) {
               logError(
                 `cc-lhc intake outcome map invalid: expected ${batchEvents.length} event outcome(s), got ${flushResult.eventOutcomes.length}`,
@@ -795,11 +624,9 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             eventOutcomes = [];
           }
 
-          // Replay lifecycle in original line order after successful intake.
           for (const work of lineWork) {
             publishLineImmediate(work);
 
-            // Fully replay-dropped: ordinary immediate only (no set/settle/add).
             if (work.fullyReplayDropped) {
               continue;
             }
@@ -807,8 +634,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             const lineOutcomes =
               work.eventCount === 0 ? [] : eventOutcomes.slice(work.eventStart, work.eventStart + work.eventCount);
             const recordedEvents = work.toSend.filter((_event, i) => lineOutcomes[i]?.outcome === "recorded");
-            // Submitted events but recorded none: pure skip (duplicate idempotency).
-            // Ordinary immediate already published; do not set/settle/add.
             if (work.eventCount > 0 && recordedEvents.length === 0) {
               continue;
             }
@@ -835,7 +660,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           return committed;
         };
 
-        /** Append one canonical end after a committed candidate line, when it applies. */
         const appendSegmentEnd = async (candidate: SegmentCandidate): Promise<void> => {
           if (sdk === undefined || threadRef === undefined) return;
           let reason: SegmentEndReason;
@@ -858,9 +682,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             const lineIndex = lineCounter;
             lineCounter += 1;
 
-            // Live suffix only: full folds + runtime lifecycle. Prefix was
-            // validated separately without mutating these folds.
-            // deferPressureLifecycle: estimate/settled held until after intake.
             const observeOpts: Parameters<typeof observeWatcherEmission>[2] = {
               samplingDedupe,
               generation: captureHealth.generation,
@@ -878,22 +699,14 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             const observed = observeWatcherEmission(emission, lineIndex, observeOpts);
             if (tokenFamily.modelId !== previousModel) noteFamilyChange(previousFamily);
 
-            // Mutation fence turn state folds classifyTurnSignal directly so
-            // assistant tool_use state-maintenance keeps isTurnOpen true even
-            // when lifecycle does not re-emit turn_opened.
             let segmentCandidate: SegmentCandidate | null = null;
             if (emission.kind === "line") {
               const turnSignal = classifyTurnSignal(emission.item);
               if (turnSignal === "opens") turnOpen = true;
               if (turnSignal === "closes") turnOpen = false;
-              // Canonical segment fold: pairing state over every mapped line,
-              // replayed or not; the native turn state above is untouched by it.
               segmentCandidate = foldSegmentLine(segmentFold, emission.item, lineIndex, observed.events);
             }
 
-            // Retain partitions; do not publish ordinary lifecycle yet.
-            // Publishing all sampling first then all settles later flattens
-            // multi-turn catch-up so settle(N) would see sampling(N+1).
             const { healthSignals, ordinaryImmediate } = partitionLifecycle(observed.lifecycle);
             const samplingEmitted = ordinaryImmediate.some((s) => s.kind === "sampling_observed");
 
@@ -937,7 +750,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             stats.skippedImage += observed.stats.image;
 
             if (sdk === undefined || threadRef === undefined) {
-              // No intake path: still retain line order for health/chrome lifecycle.
               lineWork.push({
                 healthSignals,
                 ordinaryImmediate,
@@ -966,8 +778,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
               log(`cc-lhc replay dedupe: skipped ${filtered.skipped} event(s)`);
             }
 
-            // Fully replay-dropped: zero estimate/settle. Immediate lifecycle
-            // (sampling_observed / turn_opened) replays in line order after intake.
             if (observed.events.length > 0 && filtered.toSend.length === 0) {
               lineWork.push({
                 healthSignals,
@@ -1002,12 +812,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             };
             lineWork.push(work);
 
-            // A boundary candidate ends this line: commit the batch through it so
-            // the end lands after this line's events and before any later line's.
-            // Replay is decided by the SDK: the end is appended only when this
-            // line's own source events were newly recorded. While the host replay
-            // window is still active every event so far was a known duplicate, so
-            // the split is skipped as an optimization only.
             if (
               segmentCandidate !== null &&
               work.eventCount > 0 &&
@@ -1034,11 +838,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     return batchQueue;
   };
 
-  /**
-   * Content-verify a rebuilt prefix on a held continuity handle (no path
-   * re-open), parse for attribution only, then hand the same handle to the
-   * watcher so proof and watch share file identity.
-   */
   const establishVerifiedPrefix = (
     handle: ContinuityHandle,
     boundary: PrefixBoundaryVerified,
@@ -1099,7 +898,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     sdk = deps.continueCapture.sdk;
     Object.assign(stats, deps.continueCapture.stats);
     stats.threadId = threadIdFromRef(threadRef) || stats.threadId;
-    // Handoff continues SDK but remains binding until new rollout is attributed.
     captureHealth = createCaptureGeneration(genSeed);
   }
 
@@ -1136,8 +934,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       rolloutSessionId = expectedSession.sessionId;
       log(`cc-lhc rollout: ${filePath} (expected session ${expectedSession.sessionId})`);
 
-      // Single ownership gate for initial and continued bind: stop during this
-      // await wins before SDK init, lineage writes, continuity open, or watcher.
       if (deps.bindHold !== undefined) {
         await deps.bindHold;
         if (stopped) return;
@@ -1167,8 +963,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         threadRef = resolution.threadRef;
         dedupeState = resolution.dedupeState;
         persistSignatures = resolution.persistSignatures;
-        // Durable prefix provenance from lineage when caller did not pass one
-        // (external process-exit resume of a rebuilt session).
         if (!hadExplicitBoundary) {
           resolvedPrefix = resolution.prefix;
         }
@@ -1216,8 +1010,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
               if (entry !== undefined) {
                 resolvedPrefix = entry.prefix;
               } else {
-                // Continue path without a target row: always unknown for
-                // non-explicit provenance (do not invent none).
                 resolvedPrefix = prefixBoundaryUnknown();
               }
             } catch {
@@ -1229,13 +1021,9 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       if (stopped) return;
       seedCarriedWork();
 
-      // --- Prefix provenance gate (before any skip / watcher start) ---
       let watcherStartOffset = 0;
       if (resolvedPrefix.kind === "unknown") {
         degradeAndEmit("prefix_boundary:unknown_provenance");
-        // A rebuilt transcript from an interrupted compaction cannot be fixed by
-        // another compaction (it is refused here); the next step is to resume
-        // the conversation it was rebuilt from.
         const unlinked = await identifyUnlinkedRebuild({
           rolloutPath: filePath,
           lineageDbPath,
@@ -1294,10 +1082,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         return;
       }
 
-      // Ownership transfer: only assign watcher after construction succeeds.
-      // Continuity handle is owned by the watcher thereafter.
-      // Verified prefix: transfer the already-proven persisted digest — watcher
-      // must not re-read [0, startOffset) to invent a new baseline.
       const watchFn = deps.watchRolloutFileFn ?? watchRolloutFile;
       let constructed: RolloutWatcher;
       try {
@@ -1396,7 +1180,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         const ok = await appendCanonicalEnd(sdk, threadRef, lineUuid, "cc_lhc_settled_catch_up");
         return ok ? { kind: "closed", detail: `line ${lineUuid}` } : { kind: "failed", detail: "intake failed" };
       };
-      // Behind every queued batch so the end follows what intake already holds.
       const result = batchQueue.then(run);
       batchQueue = result.then(
         () => {},
@@ -1423,8 +1206,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       return tokenFamily;
     },
     getLiveAsyncWork(): OpenAsyncWork[] {
-      // Unrecognized notification shapes are for review, not for control: they
-      // never open work and never close it. Report each new one once.
       while (reportedAsyncDiagnostics < asyncWorkFold.diagnostics.length) {
         logError(`cc-lhc async work: ${asyncWorkFold.diagnostics[reportedAsyncDiagnostics]}`);
         reportedAsyncDiagnostics += 1;
@@ -1435,8 +1216,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
       stopped = true;
       abort.abort();
       if (watcher !== undefined) watcher.stop();
-      // Each step reports its own failure by name and the next step still runs;
-      // closed is always applied last. stop() never throws.
       const stopStep = async (step: string, run: () => Promise<void>): Promise<void> => {
         try {
           await run();
@@ -1444,13 +1223,9 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           logError(`cc-lhc capture stop (gen ${captureHealth.generation}): ${step} failed: ${detail(cause)}`);
         }
       };
-      // Final flush of captured lines into the record.
       await stopStep("final flush", async () => {
         await batchQueue;
       });
-      // Derivation work queued by this session's last records finishes on the
-      // scheduler whether or not this capture is still open; stopping the tail
-      // never waits on it. Only the pending count is read, for stats.
       const stopSdk = sdk;
       const stopRef = threadRef;
       if (stopSdk !== undefined && stopRef !== undefined && deps.noInference !== true && !isInferenceDisabled()) {
@@ -1461,7 +1236,6 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           }
         });
       }
-      // Terminal: no further phase transitions after stop() resolves.
       captureHealth = markCaptureClosed(captureHealth);
     },
   };

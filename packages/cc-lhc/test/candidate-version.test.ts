@@ -1,9 +1,3 @@
-/**
- * The release scripts take their version from --version, else
- * packages/cc-lhc/package.json, never a literal (long-horizon-context-bvb).
- * Exercises the real scripts as subprocesses; each stops at its version check
- * or the check right after it, so nothing is installed.
- */
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,7 +25,6 @@ function tempDir(prefix: string): string {
   return dir;
 }
 
-/** A package root carrying only a manifest, with a target other than this host's. */
 function packageRootWith(version: string): string {
   const root = tempDir("cc-lhc-bundle-version-");
   writeFileSync(
@@ -61,7 +54,6 @@ describe("assemble-standalone-bundle version check", () => {
   it("accepts a candidate whose version equals --version (not only 0.4.2)", () => {
     const result = assembleStandalone(packageRootWith("0.4.3-local.9"), ["--version", "0.4.3-local.9"]);
     expect(result.status).toBe(1);
-    // Past the version check: it stops at the next one, the target list.
     expect(result.stderr).not.toContain("approved cc-lhc@");
     expect(result.stderr).toContain(`package candidate must contain only target ${target}`);
   });

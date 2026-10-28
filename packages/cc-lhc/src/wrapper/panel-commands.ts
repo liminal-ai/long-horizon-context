@@ -1,19 +1,3 @@
-/**
- * Single Control Panel vocabulary and content model: parser, suggestions,
- * Home rows, Help, Introduction, and Details. This module owns WHAT the panel
- * says; panel.ts owns how it is drawn.
- *
- * The panel is a CLI. Commands are lowercase kebab-case names with a leading
- * slash, and this registry is the only place they exist: the parser, the Home
- * command rows, the Help table, the autocomplete menu, and route activation
- * all read it. A command deleted here disappears from every one of those
- * surfaces at once.
- *
- * The slash is required and the name is matched exactly — no bare or
- * title-case aliases. This vocabulary has not shipped publicly, so there is no
- * compatibility obligation that would justify two interaction models; a bare
- * name gets bounded guidance instead of a silent second grammar.
- */
 import { formatTokensShort } from "../commands/context-mutation.js";
 import { type BandAllocationId, isBandAllocationId, PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
 import { BUILTIN_CONTEXT_POLICY } from "../governor/config.js";
@@ -21,14 +5,11 @@ import type { ConfigFallback, PolicyFieldSource } from "../governor/types.js";
 import { presentAllocation } from "./preset-presentation.js";
 import { type NativeAutoCompactState, nativeAutoCompactHomeSegment } from "./terminology.js";
 
-/** Full product name; used as the card title wherever it fits. */
 export const PANEL_TITLE = "Long Horizon Context Control Panel";
-/** Card title for narrow cards, where the full name would crowd the border. */
 export const PANEL_TITLE_SHORT = "Long Horizon Context";
 
 export type PanelRoute = "home" | "help" | "introduction" | "details" | "allocation";
 
-/** Routes that render a scrolling read-only screen (no command line). */
 export type ReadonlyPanelRoute = "help" | "introduction" | "details";
 
 export function isReadonlyRoute(route: PanelRoute): route is ReadonlyPanelRoute {
@@ -46,13 +27,11 @@ export interface PanelViewport {
   selectedIndex: number;
 }
 
-/** One diagnostics row on the Details screen. An empty label spans the card. */
 export interface DetailsRow {
   label: string;
   value: string;
 }
 
-/** Where each Smart Compact policy value came from (AC-1.6 "configuration source"). */
 export interface PanelPolicySources {
   target: PolicyFieldSource;
   trigger: PolicyFieldSource;
@@ -63,29 +42,22 @@ export interface PanelViewSnapshot {
   providerContextTokens: number | null;
   targetTokens: number;
   triggerTokens: number;
-  /** Minimum trigger − target runway the active policy requires. */
   minRunwayTokens: number;
   policySources: PanelPolicySources;
-  /** What cc-lhc did about Claude's automatic Compact for this launch; shared with `/status` and `/details`. */
   nativeAutoCompact: NativeAutoCompactState;
   captureHealth: string;
   allocationId: BandAllocationId;
   allocationLabel: string;
   allocationDescription: string;
-  /** Home's shorter phrase for the same allocation (one row, not two). */
   allocationHomeDescription: string;
   low: number;
   medium: number;
   high: number;
   full: number;
-  /** Standing alarms — drawn red on Home. */
   alarms: readonly string[];
-  /** Degraded/configuration notices — drawn yellow on Home. */
   degradedNotices: readonly string[];
   fallbackFields: readonly string[];
-  /** Non-default operational state — drawn as Home notices. Default states are elided. */
   extraStatusRows: readonly string[];
-  /** Diagnostics for the typed `details` screen; never shown on Home. */
   details: readonly DetailsRow[];
 }
 
@@ -97,7 +69,6 @@ export interface PanelHomeAction {
   description: string;
 }
 
-/** Help's three outcome groups, in the order Help renders them. */
 export type PanelCommandGroup = "common" | "tune" | "inspect";
 
 export const HELP_GROUPS: readonly { id: PanelCommandGroup; title: string }[] = [
@@ -107,17 +78,11 @@ export const HELP_GROUPS: readonly { id: PanelCommandGroup; title: string }[] = 
 ];
 
 export interface PanelCommandSpec {
-  /** Canonical visible spelling, with the slash: the parser key. */
   name: string;
-  /** Canonical spelling plus argument shape, as displayed. */
   usage: string;
-  /** Canonical description of what the command reports or does. */
   summary: string;
-  /** One short outcome phrase: Home command rows and the suggestion menu. */
   short: string;
-  /** Help-screen sentence: what the command is for and when to reach for it. */
   helpSummary: string;
-  /** Which Help group the command belongs to. */
   group: PanelCommandGroup;
   scope: PanelCommandScope;
   parse: (args: readonly string[], surface: string) => PanelParseResult;
@@ -127,7 +92,6 @@ export interface PanelCommandSpec {
 export type PanelParseResult =
   | { kind: "execute"; commandLine: string; surface: string }
   | { kind: "route"; route: Exclude<PanelRoute, "home"> }
-  /** A real command name typed without its slash: guide, never execute. */
   | { kind: "needs_slash"; input: string; command: string }
   | { kind: "unknown"; input: string }
   | { kind: "invalid"; message: string };
@@ -158,7 +122,6 @@ function parseSmartPrune(args: readonly string[], surface: string): PanelParseRe
   return { kind: "invalid", message: `invalid /smart-prune target — ${SMART_PRUNE_SYNTAX}` };
 }
 
-/** Canonical usage strings, shared by the registry and its argument errors. */
 export const BOUNDS_USAGE = "/bounds <target> <trigger>";
 
 function parseBounds(args: readonly string[], surface: string): PanelParseResult {
@@ -219,8 +182,6 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
     usage: "/allocation",
     summary: "open the band allocation selector",
     short: "choose recent vs older history",
-    // Opening the selector changes nothing; applying a choice is a session
-    // policy edit, so the command carries session scope like /bounds.
     helpSummary:
       "Choose how context space is split between recent detail and older compressed history. Applying a choice takes effect for this wrapper run.",
     group: "tune",
@@ -283,7 +244,6 @@ export const PANEL_COMMANDS: readonly PanelCommandSpec[] = [
 
 const COMMANDS_BY_NAME = new Map(PANEL_COMMANDS.map((command) => [command.name, command]));
 
-/** Bare spellings of real commands: recognized only to say "add the slash". */
 const COMMANDS_BY_BARE_NAME = new Map(PANEL_COMMANDS.map((command) => [command.name.slice(1), command] as const));
 
 export type HomeAction =
@@ -321,30 +281,18 @@ export type HomeStatusGroupId = "context" | "capture" | "allocation" | "notice";
 
 export type StatusTone = "normal" | "notice" | "alarm";
 
-/**
- * One Home status fact. Rows carry their group so the renderer can lay a
- * whole group out under one gutter label, and their own condensed spelling so
- * survival mode can show a single focused fact inside 20 columns.
- */
 export interface HomeStatusRow {
   id: HomeStatusRowId;
   group: HomeStatusGroupId;
-  /** Gutter label; only the first row of a group carries one. */
   label: string;
   segments: readonly string[];
-  /** Same fact, shorter, for the compact tier's narrower value column. */
   compactSegments: readonly string[];
-  /** Segments from this index on are descriptive: drawn dim, dropped first. */
   dimFrom: number;
-  /** Joins this row's own segments (values that read as one phrase). */
   separator: string;
-  /** Start a new value line inside the group. */
   breakBefore: boolean;
   navigable: boolean;
   tone: StatusTone;
-  /** Survival-mode spelling: one self-describing fact inside ~18 columns. */
   tiny: string;
-  /** Flat text form (logs, tests, non-layout consumers). */
   text: string;
 }
 
@@ -357,7 +305,6 @@ interface HomeStatusRowSpec {
   readonly separator?: string;
   readonly dimFrom?: number;
   readonly segments: (view: PanelViewSnapshot) => string[];
-  /** Compact-tier spelling; defaults to the first full segment. */
   readonly compactSegments?: (view: PanelViewSnapshot) => string[];
   readonly tiny: (view: PanelViewSnapshot) => string;
 }
@@ -366,29 +313,18 @@ function fallbackField(view: PanelViewSnapshot, field: string, text: string): st
   return view.fallbackFields.includes(field) ? `${text} (fallback — not selected)` : text;
 }
 
-/** Operator-facing name of a policy value's source. */
 export function formatPolicySource(source: PolicyFieldSource): string {
   if (source === "builtin") return "built-in policy";
   if (source === "session") return "session";
   return `${source} config`;
 }
 
-/**
- * Home spelling of a configured value: the built-in default is the norm and
- * says nothing; an explicit source is named beside the value it set.
- */
 function sourcedValue(source: PolicyFieldSource, text: string): string {
   return source === "builtin" ? text : `${text} (${formatPolicySource(source)})`;
 }
 
-/** How many finished carried items Home names before counting the rest. */
 export const MAX_NAMED_PENDING_RESULTS = 3;
 
-/**
- * Home notices for carried work that finished and has not yet been delivered
- * to the replacement (LIM-146 AC-2.7). Read-only: naming a result here is not
- * delivering it. The label is the stored sanitized one; never output or a command.
- */
 export function formatPendingResultRows(
   results: readonly { label: string; outcome: string }[],
   maxNamed: number = MAX_NAMED_PENDING_RESULTS,
@@ -528,7 +464,6 @@ export function homeSelectedActionIndex(scrollOffset: number): number {
   return Math.max(0, Math.min(HOME_ACTIONS.length - 1, scrollOffset - statusCount));
 }
 
-/** The status row the unified cursor is on, or null when it is on an action. */
 export function focusedHomeStatusId(scrollOffset: number): HomeStatusCanonicalId | null {
   const navigable = homeNavigableStatusIds();
   if (scrollOffset < 0 || scrollOffset >= navigable.length) return null;
@@ -539,16 +474,9 @@ export const MODAL_SCOPE_NOTE =
   "/bounds and /allocation changes are session-scoped: live now, survive handoffs, lost at wrapper exit";
 export const MODAL_ASCII_NOTE = "input is ASCII-only — non-ASCII bytes are ignored";
 export const MODAL_UNKNOWN_PREFIX = "unknown command: ";
-/** Bounded recovery: one grammar rule and one place to read the rest. */
 export const MODAL_UNKNOWN_HINT = "commands start with / · try /help";
-/** Marker for session-scoped commands in the Help table. */
 export const SESSION_SCOPE_MARKER = "◦s";
 
-/**
- * Parse one Control Panel line. The leading slash is required and the name is
- * matched exactly: `/status` runs, `status` and `/Status` do not. A bare real
- * name is answered with guidance rather than a second, invisible grammar.
- */
 export function parsePanelCommand(line: string): PanelParseResult {
   const trimmed = line.trim();
   if (trimmed === "") return { kind: "unknown", input: trimmed };
@@ -563,29 +491,18 @@ export function parsePanelCommand(line: string): PanelParseResult {
   return spec.parse(parts.slice(1), trimmed);
 }
 
-// ---------------------------------------------------------------------------
-// Autocomplete
-// ---------------------------------------------------------------------------
-
-/** One suggestion row: the canonical usage and its short outcome phrase. */
 export interface CommandSuggestion {
   name: string;
   usage: string;
   description: string;
 }
 
-/** The command token a line starts with ("" when the line is not a command). */
 export function commandToken(line: string): string {
   const trimmed = line.trimStart();
   if (!trimmed.startsWith("/")) return "";
   return trimmed.split(/\s+/)[0] ?? "";
 }
 
-/**
- * Suggestions for a line, straight from the registry: case-sensitive prefix
- * match on the first token. Non-slash input never suggests anything, so the
- * menu cannot appear over ordinary typing.
- */
 export function commandSuggestions(line: string): CommandSuggestion[] {
   const token = commandToken(line);
   if (token === "") return [];
@@ -596,13 +513,11 @@ export function commandSuggestions(line: string): CommandSuggestion[] {
   }));
 }
 
-/** The canonical command a line already names exactly, or null. */
 export function exactCommandName(line: string): string | null {
   const token = commandToken(line);
   return token !== "" && COMMANDS_BY_NAME.has(token) ? token : null;
 }
 
-/** Replace the line's command token with a canonical name, keeping arguments. */
 export function completeCommandLine(line: string, name: string): string {
   const trimmed = line.trimStart();
   const token = commandToken(line);
@@ -610,7 +525,6 @@ export function completeCommandLine(line: string, name: string): string {
   return `${name}${trimmed.slice(token.length)}`;
 }
 
-/** Map a Home command line to the dispatch table's /lhc-* form; null if not executable. */
 export function mapModalCommand(line: string): string | null {
   const parsed = parsePanelCommand(line);
   return parsed.kind === "execute" ? parsed.commandLine : null;
@@ -623,33 +537,14 @@ export function scopeNote(scope: PanelCommandScope): string | null {
   return null;
 }
 
-// ---------------------------------------------------------------------------
-// Read-only screen content model
-// ---------------------------------------------------------------------------
-
 export type PanelRowKind = "pair" | "heading" | "text" | "note" | "blank";
 
-/**
- * One line of read-only content before layout. `pair` rows are gutter-aligned
- * (dim label, value in the value column); headings and notes are dim.
- */
 export interface PanelRow {
   kind: PanelRowKind;
   label?: string;
   value?: string;
-  /** Draw the value dim (Help summaries read as metadata, not values). */
   dimValue?: boolean;
-  /**
-   * Marker that belongs TO the description (session-scope flag). It is drawn
-   * attached to the end of the description text, never parked at the card
-   * edge or alone on a row of its own.
-   */
   marker?: string;
-  /**
-   * Size this row's label column to its own label instead of the screen's
-   * shared gutter — a one-off header should not inherit a command table's
-   * column and wrap because of it.
-   */
   ownGutter?: boolean;
 }
 
@@ -678,11 +573,6 @@ export function panelRowText(row: PanelRow): string {
   return row.value ?? "";
 }
 
-/**
- * Help teaches outcomes: what to reach for, and when. Every canonical command
- * appears exactly once, under the group it belongs to, straight from the
- * registry — there is no second list to forget to update.
- */
 export function helpRows(view: PanelViewSnapshot | null): PanelRow[] {
   const rows: PanelRow[] = [
     text("Most users can keep working and let CC-LHC manage context automatically."),
@@ -725,13 +615,6 @@ export function helpLines(view: PanelViewSnapshot | null): string[] {
   return helpRows(view).map(panelRowText);
 }
 
-/**
- * First-use orientation, in the order a new reader asks: what this does, what
- * happens without them, how context is kept, and what to do. Target, trigger,
- * and allocation come from the live snapshot — when a value is not available
- * the truthful fallback wording is used instead of a default. Smart Compact is
- * always on, so there is exactly one automatic-behaviour story to tell.
- */
 export function introductionRows(view: PanelViewSnapshot | null): PanelRow[] {
   const target = view === null ? "the active target" : formatTokensShort(view.targetTokens);
   const trigger = view === null ? "the active trigger" : formatTokensShort(view.triggerTokens);
@@ -752,9 +635,6 @@ export function introductionRows(view: PanelViewSnapshot | null): PanelRow[] {
     blank(),
     heading("What happens automatically"),
     ...automaticRows,
-    // What survives a handoff is the stored record and a note about the work
-    // that cannot report back — the old session's tracked work may have been
-    // terminated, orphaned, or left in an unknown state.
     text("It continues in a replacement Claude Code session. Stored LHC history remains available."),
     text("The replacement session gets a continuity note for tracked unfinished work."),
     blank(),
@@ -776,10 +656,6 @@ export function introductionLines(view: PanelViewSnapshot | null): string[] {
   return introductionRows(view).map(panelRowText);
 }
 
-/**
- * The diagnostics Home no longer carries. Reachable as the typed `details`
- * command and listed in Help; deliberately not a sixth Home action.
- */
 export function detailsRows(view: PanelViewSnapshot | null): PanelRow[] {
   const rows = view?.details ?? [];
   if (rows.length === 0) return [note("no session details yet")];
@@ -795,10 +671,6 @@ export function readonlyRows(route: ReadonlyPanelRoute, view: PanelViewSnapshot 
   if (route === "details") return detailsRows(view);
   return introductionRows(view);
 }
-
-// ---------------------------------------------------------------------------
-// Home status rows
-// ---------------------------------------------------------------------------
 
 function noticeRow(id: HomeStatusRowId, tone: StatusTone, value: string): HomeStatusRow {
   return {
@@ -848,10 +720,6 @@ export function homeStatusLines(view: PanelViewSnapshot): string[] {
   return homeStatusRows(view).map((row) => row.text);
 }
 
-/**
- * One-line Home summary for survival mode: the longest truthful spelling that
- * fits the width. Anything dropped here stays reachable through the cursor.
- */
 export function homeSummaryLine(view: PanelViewSnapshot | null, width: number): string {
   if (view === null) return PANEL_TITLE_SHORT.slice(0, Math.max(0, width));
   const context = view.providerContextTokens === null ? "ctx ?" : formatTokensShort(view.providerContextTokens);
@@ -864,11 +732,8 @@ export function buildPanelViewSnapshot(input: {
   providerContextTokens: number | null;
   targetTokens: number;
   triggerTokens: number;
-  /** Defaults to the built-in runway. */
   minRunwayTokens?: number;
-  /** Defaults to built-in for every field. */
   policySources?: Partial<PanelPolicySources>;
-  /** Defaults to the wrapper's own posture: disabled per managed child. */
   nativeAutoCompact?: NativeAutoCompactState;
   captureHealth: string;
   profile: string;

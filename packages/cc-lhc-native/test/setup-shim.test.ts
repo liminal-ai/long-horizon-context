@@ -1,11 +1,3 @@
-/**
- * Launcher-shim gates: content of the POSIX and Windows shims, PATH
- * containment/guidance logic, and a real install + execution round trip
- * against a fake repo layout. The platform-specific execution branch runs on
- * whichever OS hosts the suite — the Windows branch is exercised by the
- * win32 CI matrix legs, not simulated here.
- */
-
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -63,15 +55,11 @@ describe("shim content", () => {
     expect(content).toContain("process.argv.slice(2)");
     expect(content).toContain('stdio: "inherit"');
     expect(content).toContain("pnpm --config.verify-deps-before-run=false --filter ");
-    // The launcher must be valid JS even with the hostile path embedded.
     expect(() => new Function(content)).not.toThrow();
   });
 
   it("Windows launcher.js executes: forwards args, guards missing dist (runs on every platform)", () => {
     const marker = `launcher-ok-${process.pid}`;
-    // Metacharacters that are legal in directory names on every filesystem
-    // (no double quote — illegal in Windows filenames; the JSON-encoding test
-    // above keeps covering quotes in generated content).
     const repo = mkdtempSync(join(tmpdir(), "cc-lhc shim $ & (x) 'q repo-"));
     const distDir = join(repo, "packages", "cc-lhc", "dist");
     mkdirSync(distDir, { recursive: true });

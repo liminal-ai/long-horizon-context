@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-/** Assemble one registry-free cc-lhc runtime bundle on its target platform. */
-
 import { spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";

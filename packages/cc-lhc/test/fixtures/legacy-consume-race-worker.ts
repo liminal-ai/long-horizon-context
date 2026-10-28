@@ -1,11 +1,3 @@
-/**
- * Concurrency worker: one wrapper's pre-rewrite state consumption, under its
- * own thread lease, against a cc-lhc home shared with another thread's wrapper.
- *
- * Prints exactly one line: `DONE <threadId> <files> <rows>`. Both workers wait
- * on a `consume-go` file so their consumption overlaps rather than queueing.
- */
-
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -19,8 +11,6 @@ if (home === undefined || threadId === undefined) {
   process.exit(2);
 }
 
-// Each worker owns a DIFFERENT thread, so both leases are granted and both
-// run at once — exactly the case the shared stores must survive.
 const lease = acquireThreadOwner(threadId, { home });
 const goFile = join(home, "consume-go");
 const startMs = Date.now();

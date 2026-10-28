@@ -1,8 +1,3 @@
-/**
- * LIM-145 AC-2.8 (TC-2.8a/b/c): work that changes state around the snapshot is
- * represented by its last verified state, once, never lost. Closure is a pure
- * read of the store — repeated calls give the same answer.
- */
 import { describe, expect, it } from "vitest";
 
 import { createContinuityObserver } from "../../src/continuity/observe.js";
@@ -16,7 +11,6 @@ function rig() {
   const store = openContinuityStore(tempDbPath());
   let now = 1_000;
   const observer = createContinuityObserver({ store, threadId: T, nowFn: () => (now += 1) });
-  /** Feed lines and qualify every new active launch, as an adapter would before the seam. */
   const feed = (lines: Parameters<typeof observer.observeLine>[0][], qualify = true) => {
     for (const line of lines) observer.observeLine(line);
     now += 1;
@@ -75,7 +69,6 @@ describe("TC-2.8b completes during replacement construction", () => {
         terminal: { outcome: "failed", evidence: "task-notification failed", observedAtMs: expect.any(Number) },
       },
     ]);
-    // Once: a second read of the closed generation says the same thing.
     expect(close(snap.generation)).toEqual(closure);
     store.close();
   });
@@ -116,7 +109,6 @@ describe("TC-2.8c new work starts before ownership", () => {
       newWork: [],
     });
     expect(refused.carried.map((item) => item.launchId)).toEqual([LAUNCH_IDS.agent]);
-    // A fresh snapshot cannot claim it either until an adapter qualifies it.
     expect(snapshotContinuity(store, { threadId: T, oldSessionId: "old", nowMs: 9_000 })).toEqual({
       ok: false,
       reason: "unqualified_items",

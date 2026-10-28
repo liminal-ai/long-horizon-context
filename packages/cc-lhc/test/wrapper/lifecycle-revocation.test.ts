@@ -1,7 +1,3 @@
-/**
- * Sticky dual-degradation (non-fatal) and fatal ready-revocation exit seam.
- */
-
 import {
   chmodSync,
   existsSync,
@@ -214,18 +210,15 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     });
 
     await waitFor(() => onLifecycleRef.current !== undefined, "lifecycle hook");
-    // Publish ready via session_bound
     onLifecycleRef.current?.([{ kind: "session_bound", sessionId: "life-session" }]);
     await sleep(30);
 
-    // First degradation reason
     health.phase = "degraded";
     health.reasons = ["watcher_gap"];
     health.reasonCounts = { watcher_gap: 1 };
     onLifecycleRef.current?.([{ kind: "capture_degraded", reason: "watcher_gap", generation: 1 }]);
     await sleep(20);
 
-    // Second distinct reason — must NOT fatal (was degraded→degraded throw)
     health.reasons = ["watcher_gap", "attribution_mismatch"];
     health.reasonCounts = { watcher_gap: 1, attribution_mismatch: 1 };
     onLifecycleRef.current?.([{ kind: "capture_degraded", reason: "attribution_mismatch", generation: 1 }]);
@@ -236,12 +229,10 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     expect(warns.some((w) => w.includes("watcher_gap"))).toBe(true);
     expect(warns.some((w) => w.includes("attribution_mismatch"))).toBe(true);
     expect(warns.some((w) => /FATAL/i.test(w))).toBe(false);
-    // Capture health still surfaces both reasons
     const cap = runMocks.captureFactory;
     void cap;
     expect(health.reasons).toEqual(["watcher_gap", "attribution_mismatch"]);
 
-    // Descriptor path should not be loadable as ready (revoked to absent or degraded)
     const runtimeDir = join(home, "runtime");
     if (existsSync(runtimeDir)) {
       const { readdirSync } = await import("node:fs");
@@ -254,7 +245,6 @@ describe("wrapper sticky degradation + fatal revoke", () => {
       }
     }
 
-    // Clean exit of fake child
     onExit?.({ exitCode: 0 });
     const code = await runPromise;
     expect(code).toBe(0);
@@ -293,7 +283,6 @@ describe("wrapper sticky degradation + fatal revoke", () => {
         readyPath: join(home, "r.jsonl"),
         stopImpl: async () => {
           stopEntered = true;
-          // Hold forever if awaited — fatal path must not wait.
           await new Promise<void>(() => {});
           stopFinished = true;
         },
@@ -343,7 +332,6 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     onLifecycleRef.current?.([{ kind: "session_bound", sessionId: "life-session" }]);
     await sleep(40);
 
-    // Ready file must exist before we arm revoke failure
     const runtimeDir = join(home, "runtime");
     await waitFor(() => {
       if (!existsSync(runtimeDir)) return false;
@@ -374,7 +362,6 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     expect(restoredRaw).toBe(true);
     expect(warns.some((w) => /FATAL/i.test(w))).toBe(true);
 
-    // Stale-owner simulation: identity unestablishable → load refuses even if file remains ready
     const deadIo = baseIo({
       readIdentity: () => indeterminateResult("native_error: identity source unreadable"),
     });
@@ -382,7 +369,6 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     expect(after.ok).toBe(false);
     if (!after.ok) expect(after.reason).toMatch(/stale|identity/i);
 
-    // Unblock run Promise (forceWrapperExit also resolves run with 1)
     const code = await Promise.race([runPromise, sleep(200).then(() => -99)]);
     expect(code).toBe(1);
     void onExit;
@@ -452,7 +438,6 @@ describe("wrapper sticky degradation + fatal revoke", () => {
     onLifecycleRef.current?.([{ kind: "session_bound", sessionId: "life-session" }]);
     await sleep(40);
     failRevoke = true;
-    // Child exits cleanly; teardown revoke must fail → fatal exit
     onExit?.({ exitCode: 0 });
     await waitFor(() => forceExit.mock.calls.length > 0, "forceWrapperExit on child exit");
     expect(forceExit).toHaveBeenCalledWith(1);

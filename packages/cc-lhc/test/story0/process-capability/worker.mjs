@@ -1,12 +1,4 @@
 #!/usr/bin/env node
-/**
- * Disposable synthetic worker for the Story 0 process-capability harness.
- *
- * Appends a heartbeat to a coordinator-owned output file and stays alive until
- * SIGTERM (POSIX stop proof) or process termination. Ignores SIGHUP so a
- * detached worker is not reaped merely because the PTY session leader exited.
- * Self-exits after a bounded lifetime so a crashed coordinator cannot leak it.
- */
 import { closeSync, openSync, writeSync } from "node:fs";
 
 const outputPath = process.argv[2];
@@ -32,15 +24,12 @@ const shutdown = (code) => {
   try {
     closeSync(fd);
   } catch {
-    // Already closed.
   }
   process.exit(code);
 };
 
 if (process.platform !== "win32") {
   process.on("SIGHUP", () => {
-    // Stay alive across session-leader death; the coordinator stop path is
-    // identity-checked SIGTERM, not hangup.
   });
 }
 

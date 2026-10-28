@@ -1,18 +1,3 @@
-/**
- * XP2: cc-lhc-native as the production-default exact identity provider.
- *
- * Part 1 — deterministic mapping invariants over injected readers: exact
- * match/mismatch/not_found/fail-closed semantics, actionable remediation.
- * Part 2 — the real compiled addon through production-default loading.
- * All Part 2 assertions are platform neutral (they hold on native Linux,
- * macOS, and Windows); kernel ground-truth parity with /proc is a separate
- * Linux-conditional block. Loader seams pass `env: {}` so the suite-wide
- * CC_LHC_IDENTITY_ADDON stub can never mask the real artifact — proven
- * explicitly below. Skipped only when no artifact is built;
- * CC_LHC_NATIVE_REQUIRE_ADDON=1 turns silent skip into loud failure (the
- * production-default gate for CI matrix jobs).
- */
-
 import { type ChildProcess, spawn } from "node:child_process";
 import { copyFileSync, existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -122,12 +107,6 @@ describe("createNativeIdentityProbe loader failures (real loader, seams)", () =>
   });
 });
 
-// ---------------------------------------------------------------------------
-// Real compiled addon — production-default resolution (prebuilds/ or
-// build/Release under the real package root). `env: {}` removes only the
-// test-suite stub override; everything else is the production path.
-// ---------------------------------------------------------------------------
-
 const requireAddon = process.env.CC_LHC_NATIVE_REQUIRE_ADDON === "1";
 const realProbe = createNativeIdentityProbe({ env: {} });
 const selfProbeResult = realProbe(process.pid);
@@ -144,12 +123,9 @@ it("real addon availability contract", () => {
 });
 
 it("the suite-wide stub override cannot mask real-addon resolution", () => {
-  // The vitest env pins the stub through the documented loader env seam…
   expect(process.env[IDENTITY_ADDON_ENV]).toMatch(/stub-identity-addon\.cjs$/);
   const withEnv = resolveAddonArtifact({});
   expect(withEnv.source).toBe("env-override");
-  // …and the real-addon tests resolve with env:{} — the override is
-  // structurally unreachable there, on every platform.
   if (selfProbeResult.ok) {
     const withoutEnv = resolveAddonArtifact({ env: {} });
     expect(withoutEnv.source).not.toBe("env-override");
@@ -177,8 +153,6 @@ describe.skipIf(!selfProbeResult.ok)("real compiled addon (production default, p
     expect(id.pid).toBe(process.pid);
     expect(id.bootId.length).toBeGreaterThanOrEqual(8);
     expect(/^\d+$/.test(id.starttime)).toBe(true);
-    // Kernel-derived identity can never equal the stub's synthetic constant:
-    // if it did, the stub would be masking the real addon.
     expect(id.bootId).not.toBe(STUB_BOOT_ID);
   });
 

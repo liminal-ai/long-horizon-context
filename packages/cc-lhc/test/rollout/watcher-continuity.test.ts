@@ -1,7 +1,3 @@
-/**
- * Correction 8: exact consumed-region continuity + terminal initial failures.
- */
-
 import { appendFileSync, lstatSync, mkdtempSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,9 +71,8 @@ describe("watcher continuity (exact consumed digest)", () => {
     expect(typeof handle.identity.ino).toBe("bigint");
     expect(typeof handle.identity.dev).toBe("bigint");
     handle.close();
-    // A Windows file id with sequence number 0x40 in its high bits.
     const high = (0x40n << 48n) | 0x1234n;
-    expect(Number(high) === Number(high + 1n)).toBe(true); // a number cannot tell them apart
+    expect(Number(high) === Number(high + 1n)).toBe(true);
     expect(identitiesEqual({ dev: 1n, ino: high }, { dev: 1n, ino: high + 1n })).toBe(false);
     expect(identitiesEqual({ dev: 1n, ino: high }, { dev: 1, ino: high })).toBe(true);
   });
@@ -92,19 +87,9 @@ describe("watcher continuity (exact consumed digest)", () => {
     const handle = openContinuityHandle(path);
     expect(verifyPrefixBoundaryOnHandle(handle, boundary).ok).toBe(true);
 
-    // POSIX proves the invariant end to end with a real rename over the
-    // watched path. Windows forbids replacing a file the continuity handle
-    // holds open (rename → EPERM — the OS itself blocks the substitution),
-    // so there the identity change is injected through the watcher's lstat
-    // seam while the lure bytes are really appended to the path: the watcher
-    // must still degrade on the dev/ino mismatch and never deliver the lure.
     const seamSwap = process.platform === "win32";
     let pathSwapped = false;
     const swappedIo: Partial<WatcherIo> = {
-      // Exact (bigint) ids, as the watcher reads them: a Windows file id is
-      // often above 2^53, where a number's `ino + 1` rounds back to `ino` and
-      // the swap never happened (win32 CI timeouts, runs 35919557989 and
-      // 35939290681).
       lstat: (p) => {
         const st = lstatSync(p, { bigint: true });
         if (!pathSwapped) return { dev: st.dev, ino: st.ino };
@@ -129,11 +114,8 @@ describe("watcher continuity (exact consumed digest)", () => {
     });
     await watcher.initialCatchUp;
 
-    // Replace path only after ready — must not follow new inode lure.
     const lure = `${JSON.stringify({ type: "user", uuid: "LURE", message: { role: "user", content: "lure-path-replace" } })}\n`;
     if (seamSwap) {
-      // Flip identity FIRST so no poll can legitimately read the appended
-      // bytes before the path stops matching the proven file.
       pathSwapped = true;
       appendFileSync(path, lure);
     } else {
@@ -148,7 +130,6 @@ describe("watcher continuity (exact consumed digest)", () => {
   it(">1 KiB consumed prefix: rewrite early bytes only (final 256 identical) then lure — degrades", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-cont-early-"));
     const path = join(dir, "s.jsonl");
-    // Build >1 KiB of prefix lines with a stable tail block.
     const early: string[] = [];
     for (let i = 0; i < 40; i += 1) {
       early.push(
@@ -189,8 +170,6 @@ describe("watcher continuity (exact consumed digest)", () => {
     });
     await watcher.initialCatchUp;
 
-    // Rewrite only early lines while keeping the final tail line text identical.
-    // Full-region digest must fail (or shrink if length drops below offset).
     const evilEarly: string[] = [];
     for (let i = 0; i < 40; i += 1) {
       evilEarly.push(
@@ -292,7 +271,7 @@ describe("watcher continuity (exact consumed digest)", () => {
   it("unterminated initial content waits: completion later is ingested", async () => {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-partial-init-"));
     const path = join(dir, "s.jsonl");
-    writeFileSync(path, '{"type":"user","uuid":"partial"'); // no newline
+    writeFileSync(path, '{"type":"user","uuid":"partial"');
     const emissions: WatcherEmission[] = [];
     watcher = watchRolloutFile({
       filePath: path,
@@ -319,7 +298,6 @@ describe("watcher continuity (exact consumed digest)", () => {
     const io: Partial<WatcherIo> = {
       read: (fd, buffer, offset, length, position) => {
         call += 1;
-        // First two reads return 1 byte; then full.
         if (call <= 2 && length > 1) {
           return realRead(fd, buffer, offset, 1, position);
         }
@@ -352,7 +330,7 @@ describe("watcher continuity (exact consumed digest)", () => {
       read: (fd, buffer, offset, length, position) => {
         call += 1;
         if (call === 1) return realRead(fd, buffer, offset, 1, position);
-        return 0; // then zero
+        return 0;
       },
     };
     const emissions: WatcherEmission[] = [];

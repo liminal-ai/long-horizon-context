@@ -62,15 +62,6 @@ async function waitFor(condition: () => boolean | Promise<boolean>, label: strin
   }
 }
 
-/**
- * Pipe-backed PtySpawn seam: proves run()'s output-forwarding / exit-code
- * wiring without invoking platform-native node-pty — ConPTY on the Windows
- * runners cannot spawn these stub children ("File not found"), and the
- * wiring under test is above the PTY layer. Real-PTY end-to-end behavior
- * stays covered by the POSIX alt-screen suite (run-alt-screen.test.ts).
- * `rig.child` exposes the spawned child so tests can end the run portably
- * (child exit) instead of self-delivering POSIX signals.
- */
 function pipePtySpawn(rig: { child?: ChildProcess }): PtySpawn {
   return ((file: string, args: string[], opts: { env?: Record<string, string>; cwd?: string }) => {
     const child = spawn(file, args, {
@@ -241,11 +232,6 @@ describe("run", () => {
     expect(exitCode).toBe(3);
   });
 
-  // The four ctx.skip(POSIX_SIGNALS_ONLY) tests below end the wrapper by
-  // self-delivering POSIX signals (SIGTERM). Windows cannot deliver these as
-  // catchable events — process.kill there terminates the vitest worker
-  // outright — so they are POSIX-only. The same wrapper logic stays covered
-  // on Windows through the fake-pty suites (modal, panel, handoff).
   const POSIX_SIGNALS_ONLY = "self-delivered POSIX signals are not deliverable on win32";
 
   it("shows compact relaunch guidance in modal without writing /resume to the PTY", async (ctx) => {
@@ -293,13 +279,11 @@ describe("run", () => {
     (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
 
     await waitFor(() => output.join("").includes("cc-lhc --resume new-id"), "guidance visible");
-    // Panel stays open (no auto-dismiss swap)
     expect(output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN))).toBe(true);
-    // No in-app /resume injection on the child PTY
     expect(ptyWrites.some((w) => w.includes("/resume"))).toBe(false);
     expect(output.join("")).not.toMatch(/resuming in-place/i);
 
-    (stdin as unknown as PassThrough).write(Buffer.from([0x1b])); // Esc dismiss
+    (stdin as unknown as PassThrough).write(Buffer.from([0x1b]));
     await waitFor(() => output.some((chunk) => chunk.includes(LEAVE_ALT_SCREEN)), "dismiss");
     process.kill(process.pid, "SIGTERM");
     await runPromise;
@@ -369,7 +353,6 @@ describe("run", () => {
     const joined = output.join("");
     expect(joined.split(LEAVE_ALT_SCREEN).length - 1).toBe(0);
 
-    // End the run portably: child exit (not a self-delivered POSIX signal).
     rig.child?.kill();
     await runPromise;
   }, 15_000);
@@ -405,11 +388,8 @@ describe("run", () => {
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => output.some((chunk) => chunk.includes(ENTER_ALT_SCREEN)), "modal entry");
     (stdin as unknown as PassThrough).write(Buffer.from("/status\r"));
-    // every executing command shows a progress line, not a frozen prompt
     await waitFor(() => output.join("").includes("running"), "progress line");
 
-    // detach with ctrl-C, reopen, and try another command: the busy refusal
-    // names what is still running
     (stdin as unknown as PassThrough).write(Buffer.from([0x03]));
     await waitFor(() => output.some((chunk) => chunk.includes(LEAVE_ALT_SCREEN)), "detach restore");
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
@@ -417,8 +397,6 @@ describe("run", () => {
     (stdin as unknown as PassThrough).write(Buffer.from("/stats\r"));
     await waitFor(() => output.join("").includes("status still running ("), "named busy refusal");
 
-    // the detached command settles while the reopened panel is up: its
-    // receipt lands there, labelled as late
     resolveSlow({ messages: ["tail=42"] });
     await waitFor(() => output.join("").includes("status finished:"), "late receipt label");
     expect(output.join("")).toContain("tail=42");
@@ -449,7 +427,6 @@ describe("run", () => {
           await sleep(400);
           return { messages: ["compact slow"] };
         }
-        // Interim architecture: relaunch guidance, no restart plan / inject.
         return {
           messages: [
             "compact view=v4",
@@ -466,11 +443,8 @@ describe("run", () => {
     const stdin = fakeStdin();
     const passthroughWrites: string[] = [];
     let modalOpen = false;
-    // PTY may fragment `tickN\r\n` across chunks; reassemble for recognition
-    // while still rejecting wrapper diagnostics mixed into the stream.
     let passthroughReassembly = "";
     const childTickStreamOk = (accumulated: string): boolean => {
-      // Only complete/partial tick lines (LF or CRLF), no other wrapper text.
       return /^(tick\d+\r?\n)*(tick\d*)?(\r)?$/.test(accumulated);
     };
     const isAllowedPassthroughWrite = (chunk: string): boolean => {
@@ -478,7 +452,6 @@ describe("run", () => {
       if (chunk.includes("\x0c") || chunk.includes("^L")) return true;
       const stripped = chunk.replaceAll(ENTER_ALT_SCREEN, "").replaceAll(LEAVE_ALT_SCREEN, "");
       if (stripped.length === 0) return true;
-      // Probe with reassembly including this chunk
       return childTickStreamOk(passthroughReassembly + stripped);
     };
 
@@ -490,7 +463,6 @@ describe("run", () => {
         const stripped = chunk.replaceAll(ENTER_ALT_SCREEN, "").replaceAll(LEAVE_ALT_SCREEN, "").replaceAll("\x0c", "");
         if (stripped.length > 0) {
           passthroughReassembly += stripped;
-          // Drop completed tick lines so buffer stays bounded
           passthroughReassembly = passthroughReassembly.replace(/^(tick\d+\r?\n)+/, "");
         }
       }
@@ -502,7 +474,6 @@ describe("run", () => {
         if (chunk.includes("\x0c") || chunk.includes("^L")) return false;
         const stripped = chunk.replaceAll(ENTER_ALT_SCREEN, "").replaceAll(LEAVE_ALT_SCREEN, "");
         if (stripped.length === 0) return false;
-        // Reject if this chunk could never be part of a tick stream
         return !/^[\r\ntick0-9]*$/.test(stripped);
       });
 
@@ -515,7 +486,6 @@ describe("run", () => {
       return (PassThrough.prototype.write as typeof stderr.write).call(stderr, chunk, ...args);
     });
 
-    // ticks mode generates continuous child output so the hold can overflow.
     const runPromise = run([FAKE_PTY_CHILD, "ticks"], {
       claudeBin: "node",
       stdin,
@@ -550,7 +520,6 @@ describe("run", () => {
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     await waitFor(() => modalOpen, "modal for compact guidance");
     (stdin as unknown as PassThrough).write(Buffer.from("/smart-compact\r"));
-    // Panel stays open with relaunch guidance (no inject auto-dismiss).
     await waitFor(async () => {
       const text = await readFile(logPath, "utf8");
       return compactCalls >= 2 || text.includes("command receipt");

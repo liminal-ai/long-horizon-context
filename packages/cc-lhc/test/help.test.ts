@@ -45,9 +45,6 @@ describe("cc-lhc help surface", () => {
   });
 
   it("advertises no capture-disabled or observe-only mode", () => {
-    // Plain `claude` is the passthrough; cc-lhc has no product mode with its
-    // core function switched off, and no live flag whose meaning is "do not
-    // compact".
     expect(CC_LHC_HELP).not.toContain("--lhc-no-capture");
     expect(CC_LHC_HELP).not.toContain("--lhc-auto-compact");
     expect(CC_LHC_HELP).not.toMatch(/\/auto\b/);

@@ -225,19 +225,8 @@ const DEFAULT_ROWS = 24;
 const TERM_NAME = "xterm-256color";
 const SHOW_CURSOR = "\x1b[?25h";
 
-/**
- * Cap on pty output held while the modal is open. Claude keeps running while
- * we hold its bytes; a runaway stream must not grow unbounded, so past the
- * cap the modal is cancelled, a one-line notice printed, and everything
- * flushed.
- */
 export const OUTPUT_HOLD_CAP_BYTES = 4 * 1024 * 1024;
 export const OUTPUT_HOLD_OVERFLOW_MESSAGE = "output buffer full — command entry cancelled";
-/**
- * How long a one-shot invocation waits for LHC to catch up from the persisted
- * transcript before it launches. Reaching it costs the invocation its
- * pre-launch compact, never the launch itself.
- */
 export const DEFAULT_PRE_LAUNCH_CAPTURE_TIMEOUT_MS = 60_000;
 /**
  * How long a pending ESC may sit unresolved before it is ruled a bare Esc
@@ -246,129 +235,56 @@ export const DEFAULT_PRE_LAUNCH_CAPTURE_TIMEOUT_MS = 60_000;
  */
 export const PENDING_ESC_RESOLVE_MS = 50;
 
-/**
- * What the panel shows when a command settles. Compact/prune no longer
- * auto-dismiss via in-app swap (retired on 2.1.226); receipts always stay
- * until the operator dismisses so relaunch guidance is visible.
- */
 export function settleReceipts(outcomeMessages: string[]): string[] {
   return outcomeMessages;
 }
 
-/**
- * Receipt rows as the PANEL shows them: the same settled messages, with the
- * operation named by the command that runs it. The wrapper log and the durable
- * receipt keep the product terminology they are written in.
- */
 export function panelReceiptRows(outcomeMessages: readonly string[]): string[] {
   return outcomeMessages.map(toPanelWording);
 }
 
 export type PtySpawn = typeof defaultSpawn;
 
-/**
- * Production default: terminate the wrapper process so OS process-identity
- * invalidates any unproven ready descriptor. Tests inject a no-op/recording seam.
- */
 export type ForceWrapperExit = (code: number) => void;
 
-/** F5: let the replacement's TUI settle before typing the continue, then submit it. */
 const REJECTION_CONTINUE_DELAY_MS = 1_000;
 const REJECTION_CONTINUE_ENTER_DELAY_MS = 300;
 
 export type RunOptions = {
   claudeBin?: string;
   spawnPty?: PtySpawn;
-  /** Test seam: wait before submitting the F5 continue (default REJECTION_CONTINUE_DELAY_MS). */
   rejectionContinueDelayMs?: number;
-  /** Test seam: the plain-process spawn used for one-shot (`-p`) launches. */
   spawnPlain?: PlainChildSpawn;
   stdin?: NodeJS.ReadStream;
   stdout?: NodeJS.WriteStream;
   stderr?: NodeJS.WriteStream;
   noInference?: boolean;
-  /**
-   * Test seam: the child is not a bound Claude session, so no session is
-   * resolved and no capture starts. Never reachable from argv, env, or config
-   * — cc-lhc has no capture-disabled product mode; plain `claude` is the
-   * passthrough.
-   */
   unboundTestChild?: boolean;
-  /** Test hook: substitute the wrapper log (defaults to ~/.cc-lhc/wrapper.log). */
   wrapperLog?: WrapperLog;
-  /** Test hook: cap held pty output while the modal is open (defaults to 4 MiB). */
   outputHoldCapBytes?: number;
-  /**
-   * Injected wrapper-process termination. Default schedules `process.exit(code)`.
-   * Tests must inject a non-exiting seam.
-   */
   forceWrapperExit?: ForceWrapperExit;
-  /**
-   * Test hook: substitute descriptor filesystem/identity IO (publish, unlink, owner check).
-   * Production uses the real defaultDescriptorIo.
-   */
   descriptorIo?: DescriptorIo;
-  /**
-   * Session-scoped context policy overrides (not persisted). Highest merge
-   * precedence after project config.
-   */
   contextPolicyOverrides?: ContextPolicyPartial;
-  /** Test hook: substitute resolved policy (skips filesystem load). */
   resolvedContextPolicy?: ResolvedContextPolicy;
-  /** Test seam: the UserPromptSubmit hook command registered on managed children (LIM-146). */
   resultHookCommand?: string;
-  /** Test hook: inspect governor runtime state after lifecycle. */
   onGovernorObserve?: (record: import("../governor/index.js").GovernorObserveRecord) => void;
-  /**
-   * Test hook: durable governor receipt store path (defaults to lineage DB under CC_LHC_HOME).
-   * Pass a temp path in tests to avoid shared ~/.cc-lhc pollution.
-   */
   governorReceiptDbPath?: string;
-  /**
-   * Test hook: wrap the opened receipt store (inject append/attach failures after open).
-   * Not used in production.
-   */
   governorReceiptStoreHook?: (store: GovernorReceiptStore) => GovernorReceiptStore;
-  /**
-   * Test hook: wrap the opened evidence-only handoff receipt store.
-   * Not used in production.
-   */
   handoffReceiptStoreHook?: (store: HandoffReceiptStore) => HandoffReceiptStore;
-  /** Test hook: substitute the old-child identity probe. Production uses the native probe. */
   probeProcessIdentity?: ProbeProcessIdentity;
-  /** Adopted-task discovery seam (tests); production asks the native addon (LIM-149). */
   discoverTaskProcess?: typeof discoverAdoptedTaskProcess;
-  /**
-   * Pause/resume/terminate the wrapper's own retained completion host
-   * (tests). Production pauses and resumes through the native addon and
-   * terminates through process.kill.
-   */
   hostSignal?: (pid: number, signal: NodeJS.Signals) => void;
-  /** Paused-host exit-record reader (tests; production asks the native addon, LIM-149). */
   readTaskExit?: (proc: {
     pid: number;
     starttime: string;
   }) => import("../continuity/task-process.js").TaskExitOutcome | null;
-  /**
-   * Test hook: inject a pre-configured command guard (e.g. already holding a flight)
-   * so auto-compact can observe command_guard_busy terminalization.
-   */
   commandGuard?: CommandInFlightGuard;
-  /**
-   * Test hook: run before auto operation claim. Can force handoffInProgress or
-   * exited races (production never uses this). `clearHandoffInProgress` restores
-   * so teardown is not stuck after the deferred gate. `markExited` sets the
-   * wrapper-exiting flag so the early `wrapper_exiting` terminalization path is
-   * reachable without a real process teardown race.
-   */
   onBeforeAutoOperation?: (ports: {
     markHandoffInProgress: () => void;
     clearHandoffInProgress: () => void;
     markExited: () => void;
   }) => void;
-  /** Test hook: observe controlled-handoff results (auto and manual). */
   onHandoffResult?: (result: HandoffResult) => void;
-  /** Test hooks: handoff timing (SIGTERM grace, SIGKILL wait, capture-ready cap, liveness caps). */
   handoffTimeouts?: {
     sigtermGraceMs?: number;
     sigkillWaitMs?: number;
@@ -376,17 +292,9 @@ export type RunOptions = {
     childLivenessTimeoutMs?: number;
     childStableWindowMs?: number;
   };
-  /** Test hook: spawn/viability attempts inside one swap before it counts as nonviable. */
   replacementAttempts?: number;
-  /** Test hook: nonviable swaps before the standing alarm and survival relaunch. */
   nonviableSwapLimit?: number;
-  /**
-   * How long a one-shot invocation waits for its persisted transcript to be
-   * read before it launches anyway. Bounds launch latency; it never decides
-   * whether the pre-launch compact runs.
-   */
   preLaunchCaptureTimeoutMs?: number;
-  /** Disable the hazardous-command notifier for this launch (--lhc-no-notifier). */
   notifierDisabled?: boolean;
 };
 
@@ -418,26 +326,15 @@ function restoreTerminal(stdin: NodeJS.ReadStream, stdout: NodeJS.WriteStream): 
   }
 }
 
-/**
- * run() owns three SQLite stores on the lineage database and a log file. The
- * orderly exit closes the stores; every other way out of run() (a refused
- * launch, a guidance exit, a startup failure, a throw) must close them too,
- * or the database stays open for the life of the process. cli.ts exits right
- * after run(), but an in-process caller (tests, embedders) would keep the file
- * held, and on Windows an open handle stops the home from being removed.
- */
 export async function run(argv: string[], options: RunOptions = {}): Promise<number> {
   const closers: Array<() => void | Promise<void>> = [];
   try {
     return await runWithStores(argv, options, closers);
   } finally {
-    // Last registered, first closed (the log drain, registered first, runs last).
     for (const close of closers.reverse()) {
       try {
         await close();
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   }
 }
@@ -449,7 +346,6 @@ async function runWithStores(
 ): Promise<number> {
   const claudeBin = options.claudeBin ?? resolveClaudeBin();
   const spawnPty = options.spawnPty ?? defaultSpawn;
-  // A test that injects the pty seam gets its fake for one-shot children too.
   const spawnPlain =
     options.spawnPlain ??
     (options.spawnPty !== undefined ? (options.spawnPty as unknown as PlainChildSpawn) : spawnPlainChild);
@@ -462,44 +358,27 @@ async function runWithStores(
   const forceWrapperExit: ForceWrapperExit =
     options.forceWrapperExit ??
     ((code: number) => {
-      // Schedule after the current stack so cleanup can finish; really terminates.
       setImmediate(() => {
         process.exit(code);
       });
     });
   const descriptorIo = options.descriptorIo;
 
-  // Doctrine: the wrapper NEVER writes raw bytes into a UI it does not own.
-  // While the child owns the terminal, diagnostics go to the wrapper log
-  // (surface (c)); `status` reports the warning count so nothing is lost.
   const wrapperLog = options.wrapperLog ?? createWrapperLog();
-  // Registered first, so it runs after the store closers: no append is still
-  // holding wrapper.log when run() returns.
   closers.push(() => wrapperLog.drain?.());
 
-  /** Launch-time anomaly notices: recorded, never a refusal (R11 posture, R12). */
   const startupAnomalyNotices: string[] = [];
-  /**
-   * Allowlisted conditions (first-load.ts). Before the terminal is wired they
-   * collect here and decide whether the panel opens at launch; afterwards the
-   * runtime binding opens the same panel for a condition raised mid-session.
-   */
   const startupActionable: ActionableCondition[] = [];
   let raiseActionable = (condition: ActionableCondition): void => {
     startupActionable.push(condition);
   };
 
-  // Configuration always yields a usable policy: bad fields fall back to
-  // built-in defaults and automatic compact stays armed. The fallback notice
-  // surfaces immediately — stderr while the wrapper still owns the terminal,
-  // the wrapper log always — and again in the panel and the compact message.
   let resolvedContextPolicy: ResolvedContextPolicy =
     options.resolvedContextPolicy ??
     loadContextPolicy({
       cwd: process.cwd(),
       ...(options.contextPolicyOverrides !== undefined ? { sessionOverrides: options.contextPolicyOverrides } : {}),
     });
-  /** Live soft canonical segment size: half the full share of the current lower target. */
   const segmentThresholdTokens = (): number => segmentThresholdFromPolicy(resolvedContextPolicy.policy);
   let configFallbackNotice = formatConfigFallbackNotice(resolvedContextPolicy.fallbacks);
   for (const line of configFallbackNotice) {
@@ -514,10 +393,6 @@ async function runWithStores(
   logContextPolicy("launch");
 
   let sessionTokenFamily = createSessionTokenFamilyState();
-  /**
-   * Launch-scoped `--settings` merge for the continuity result-delivery hook.
-   * Unmergeable operator settings leave the argv as forwarded and skip the hook.
-   */
   const installLaunchSettings = (childArgs: readonly string[]): string[] => {
     if (continuityStore === null) return [...childArgs];
     const merged = mergeLaunchSettings({
@@ -540,9 +415,7 @@ async function runWithStores(
   };
 
   let governorState: GovernorRuntimeState = createGovernorRuntimeState();
-  /** Most recent non-success outcome (health visibility; never claims success). */
   let lastAttempt: { summary: string; atMs: number } | null = null;
-  /** Durable LIM-64 observe/handoff receipts (SQLite; survives restart). */
   let governorReceiptStore: GovernorReceiptStore | null = null;
   try {
     const opened = openGovernorReceiptStore(options.governorReceiptDbPath ?? defaultLineageDbPath());
@@ -571,21 +444,12 @@ async function runWithStores(
       `cc-lhc handoff receipt store unavailable: ${cause instanceof Error ? cause.message : String(cause)}`,
     );
   }
-  /**
-   * Parent-owned continuity record (LIM-145): asynchronous work observed in
-   * the child's rollout, carried across Smart Compact from here, not from the
-   * replaced child. Same database file as the receipts.
-   */
   let continuityStore: ContinuityStore | null = null;
-  /** The old child deliberately kept alive as the adopted tasks' completion host (LIM-149). */
   let retainedHostPty: { pty: IPty; threadId: string; frozen: boolean } | null = null;
-  /** Graceful PTY termination for the retained host, bound once terminateChild exists. */
   let retainedTerminate: ((pty: IPty) => Promise<boolean>) | undefined;
   const hostSignal =
     options.hostSignal ??
     ((pid: number, signal: NodeJS.Signals): void => {
-      // Pause/resume are whole-process operations the addon performs the same
-      // way everywhere; only termination is Node's own portable kill.
       if (signal === "SIGSTOP" || signal === "SIGCONT") {
         const control = exactProcessControl();
         const result = signal === "SIGSTOP" ? control.pause(pid) : control.resume(pid);
@@ -596,21 +460,12 @@ async function runWithStores(
       }
       process.kill(pid, signal);
     });
-  /**
-   * Retire the retained host once every adopted item is terminal. Same-wrapper
-   * hosts terminate through the PTY handle they were spawned with; a host
-   * inherited from a prior wrapper (restart) goes through the identity-gated
-   * pid-exact route. Fail closed on indeterminate probes; never a bare pid.
-   */
   const settleHost = async (threadId: string, terminatePty?: (pty: IPty) => Promise<boolean>): Promise<void> => {
     if (continuityStore === null || threadId === "") return;
     try {
       const settle = await settleRetainedHost(continuityStore, threadId, {
         probeIdentity: probeProcessIdentity,
         terminateHost: async (host) => {
-          // A frozen host cannot act on the PTY handle's graceful SIGTERM, so
-          // it always retires through the identity-gated pid-exact route
-          // (straight SIGKILL, which also reaps its zombie task children).
           if (
             host.frozen !== true &&
             retainedHostPty !== null &&
@@ -658,7 +513,6 @@ async function runWithStores(
     if (continuityStore === null) return;
     applyAsyncWorkEvent(continuityStore, threadId, event, Date.now());
   };
-  /** LIM-146: the rollout proved these result keys reached the model; only now are they delivered. */
   const recordResultDelivery: NonNullable<CaptureSessionDeps["onResultDelivery"]> = (launchIds, threadId) => {
     if (continuityStore === null) return;
     const delivered = continuityStore.markDelivered({ threadId, launchIds, nowMs: Date.now() });
@@ -666,18 +520,11 @@ async function runWithStores(
       wrapperLog.info(
         `cc-lhc continuity: ${delivered.length} carried result(s) delivered on a real prompt: ${delivered.join(", ")}`,
       );
-      // LIM-149: delivery is an existing event seam — if the retained host has
-      // nothing left to supervise, retire it now (no polling anywhere).
       void settleHost(threadId, retainedTerminate);
     }
   };
   const resultHookCommand = options.resultHookCommand ?? defaultResultHookCommand();
   const monitorOutputDir = join(dirname(options.governorReceiptDbPath ?? defaultLineageDbPath()), "continuity");
-  /**
-   * The record's carried open work for the bound thread, handed to every
-   * capture session (fresh launch, rebuilt session, wrapper restart) so its
-   * terminal evidence closes the same item. Unreadable state seeds nothing.
-   */
   const carriedSeed = (threadId: string): OpenAsyncWork[] => {
     if (continuityStore === null) return [];
     try {
@@ -692,13 +539,6 @@ async function runWithStores(
       return [];
     }
   };
-  /**
-   * LIM-145 seam step, shared by manual and automatic Compact: qualify the
-   * parent's record of active work and accept it as one carryover generation.
-   * A Monitor whose relaunch is impossible is closed as failed here; an item
-   * no adapter can carry refuses the seam with the current session kept.
-   */
-  /** The current child's pid while it is spawned — the discovery root for adopted tasks. */
   const liveChildPidForDiscovery = (): number | undefined => {
     try {
       return currentPty.pid;
@@ -713,10 +553,6 @@ async function runWithStores(
     sourceSessionId: string | undefined,
   ): CarryoverAcceptance => {
     if (continuityStore === null || threadId === "") return { ok: true };
-    // LIM-149: a previously adopted task that already finished (or was killed
-    // with an old session) must settle here from Claude's own markers, not be
-    // carried again or stay active forever. Lost supervision is surfaced as
-    // `unknown`, never invented as an outcome.
     const report = reconcileAdoptedShells(continuityStore, threadId, {
       ...(options.readTaskExit === undefined ? {} : { readTaskExit: options.readTaskExit }),
     });
@@ -763,11 +599,6 @@ async function runWithStores(
     return { ok: true, carryover: { snapshot: snapshot.snapshot, monitorOutputDir } };
   };
   const probeProcessIdentity = options.probeProcessIdentity ?? probeProcessIdentityNative;
-  /**
-   * Persist a classification. Returns the exact durable receipt when inserted or
-   * when an exact replay hit an existing row. Open-turn may stay log-only if the
-   * store is unavailable; settled wouldMutate must not mutate without a durable id.
-   */
   const persistGovernorObserve = (
     record: import("../governor/index.js").GovernorObserveRecord,
   ): { receipt: GovernorDurableReceipt; inserted: boolean } | null => {
@@ -787,16 +618,6 @@ async function runWithStores(
       return null;
     }
   };
-  /**
-   * Attach outcome to the exact receipt id that scheduled the operation.
-   * Never uses "latest wouldMutate" fallback — session identity can change
-   * mid-handoff and manual compact must not mutate unrelated governor rows.
-   *
-   * Failures are always loud for a known receipt id (error log + lastAttempt):
-   * a freshly inserted `scheduled` row that cannot be terminalized must not
-   * go quiet even when mutation has not begun. Missing receipt id remains
-   * loud only after mutation began (no durable row to recover).
-   */
   const attachGovernorHandoffOutcome = (
     receiptId: string | null | undefined,
     outcome: GovernorHandoffOutcome,
@@ -845,13 +666,10 @@ async function runWithStores(
   let observedRuntimeSettings: ClaudeRuntimeSettings = {};
   let handoffRuntimeSettings: ClaudeRuntimeSettings | undefined;
   const onRuntimeSettings = (settings: Readonly<ClaudeRuntimeSettings>): void => {
-    // A replacement rollout emits permission mode before its first assistant
-    // response. Keep the prior confirmed effort until Claude confirms a newer one.
     observedRuntimeSettings = { ...observedRuntimeSettings, ...settings };
   };
 
   let expectedSession: ExpectedSession | undefined;
-  /** The one thread this wrapper owns; every alias of it contends for this lease. */
   let launchThread: LaunchThreadBinding | undefined;
   let threadOwnerLease: ThreadOwnerLease | undefined;
   const releaseThreadOwner = (): void => {
@@ -859,14 +677,8 @@ async function runWithStores(
     threadOwnerLease = undefined;
   };
   let childArgv = argv;
-  /** Non-selector user argv: options plus this launch's initial prompt. */
   let launchRest: string[] = [];
   let launchPassthrough: string[] = [];
-  /**
-   * One-shot or interactive. It decides where this seat's compaction seam is:
-   * before launch for a one-shot, at a settled seam with a child swap for an
-   * interactive session.
-   */
   let launchForm: LaunchForm = "interactive";
   if (!unboundTestChild) {
     try {
@@ -885,9 +697,6 @@ async function runWithStores(
         `cc-lhc launch alias ${expectedSession.sessionId} (source=${expectedSession.source}, form=${launchForm})`,
       );
 
-      // R15 launch flow: the alias names the thread this launch owns; the
-      // session it lands on is the one that thread currently accepts, read
-      // under the acquired lock.
       const registryPath = defaultRegistryPath();
       const launchRolloutPath = rolloutPathForExpectedSession(
         join(homedir(), ".claude", "projects"),
@@ -895,8 +704,6 @@ async function runWithStores(
         expectedSession.sessionId,
       );
       if (launchForm === "one_shot") {
-        // A one-shot has no screen for the capture refusal: print the guidance
-        // and exit instead of running Claude on a transcript cc-lhc cannot link.
         const guidance = await unlinkedRebuildLaunchGuidance({
           sessionId: expectedSession.sessionId,
           rolloutPath: launchRolloutPath,
@@ -945,14 +752,6 @@ async function runWithStores(
       const { sessionId } = expectedSession;
       repairResumedTranscript({ sessionId, cwd: process.cwd(), home: ccLhcHome(), log: wrapperLog, stderr });
 
-      // Durable handoff state from a pre-rewrite build is consumed once, here:
-      // under the thread lease, and never before it. The recovery directory and
-      // the attempt table are shared by every thread on the box, so the lease is
-      // what says which of it is ours to settle — a journal or an open attempt
-      // row belonging to this thread means input may not have been delivered, so
-      // the operator is told to resend and that state is cleared. Anything
-      // belonging to another thread, or whose identity cannot be read, is left
-      // untouched and says nothing to this operator.
       const legacyHandoffState = consumeLegacyHandoffState({
         home: ccLhcHome(),
         lineageDbPath: defaultLineageDbPath(),
@@ -968,10 +767,6 @@ async function runWithStores(
         raiseActionable({ kind: "possible_undelivered_input", lines: legacyHandoffState.notices });
       }
 
-      // A wrapper-owned replacement continues the conversation; it never
-      // re-runs the prompt this launch carried, and it leaves behind any option
-      // whose value boundary the argv does not establish. Both are launch facts
-      // worth naming, and neither can stop a compact.
       const argvSplit = splitLaunchArgv(launchRest, launchPassthrough);
       if (argvSplit.droppedAmbiguousOptions.length > 0) {
         wrapperLog.warn(
@@ -981,8 +776,6 @@ async function runWithStores(
         );
       }
 
-      // Family must be known before initLhc: --model, else last assistant
-      // model on a resumed thread, else the provider fallback.
       const launchModel = launchModelFlag(childArgv);
       let resumedAssistantModel: string | null = null;
       if (
@@ -1018,34 +811,15 @@ async function runWithStores(
 
   const startedAt = new Date();
 
-  /** Capture bound before Claude starts; it becomes the wrapper's capture session. */
   let preLaunchCapture: CaptureSession | undefined;
-  /**
-   * The generation the pre-launch seam moved off, still settling. `stop()`
-   * abandons the watcher at once but awaits the writes already queued behind
-   * it, and those writes belong to this wrapper's lease like any other.
-   */
   let outgoingCaptureSettled: Promise<void> | undefined;
 
-  /** Wait out the generation the seam left behind. Consumed once. */
   const settleOutgoingCapture = async (): Promise<void> => {
     const settling = outgoingCaptureSettled;
     outgoingCaptureSettled = undefined;
     if (settling !== undefined) await settling;
   };
 
-  /**
-   * Give back everything this launch acquired while there was still no child to
-   * own it.
-   *
-   * A one-shot binds capture before the child exists, so a startup failure past
-   * that point has live capture as well as a thread lease to settle — and in
-   * that order. The lease is what makes this wrapper the thread's only writer;
-   * handing it back while any generation still has writes in flight would leave
-   * two wrappers able to write one thread, so both the generation the launch
-   * holds and the one the seam moved off are waited out first. Fail-soft, and
-   * safe to call twice.
-   */
   const releasePreChildOwnership = async (): Promise<void> => {
     const capture = preLaunchCapture;
     preLaunchCapture = undefined;
@@ -1058,34 +832,9 @@ async function runWithStores(
     releaseThreadOwner();
   };
 
-  /**
-   * A session rebuilt before launch, waiting for proof that Claude accepted the
-   * prompt on it. Until that proof lands, the thread's current session is still
-   * the one this invocation resumed.
-   */
   let sessionAwaitingPromptIntake: { sessionId: string; threadId: string } | undefined;
-  /**
-   * The one acceptance this invocation can owe. Teardown settles it before the
-   * thread lease goes: this wrapper is the only authority that may advance the
-   * pointer or record the acceptance for recovery, and it must not hand that
-   * authority back with the write still in flight.
-   */
   let promptAcceptanceSettled: Promise<void> | undefined;
 
-  /**
-   * The thread's current session advances to a session rebuilt before launch
-   * only once that session is observed accepting the prompt (R14.2).
-   *
-   * The evidence is Claude's own record: a user prompt in the rebuilt rollout's
-   * live suffix. Replayed prefix lines emit no lifecycle, so this signal cannot
-   * come from the served history — only from the prompt Claude just took. A
-   * launch that fails before it leaves the old session current, so the next
-   * invocation lands there and discards the rebuilt artifact; the prompt is
-   * never resent.
-   *
-   * Clearing the pending acceptance before the write starts is what makes a
-   * repeated signal a no-op: one observed intake, one acceptance attempt.
-   */
   const notePromptIntake = (signals: readonly LifecycleSignal[]): void => {
     const accepted = sessionAwaitingPromptIntake;
     if (accepted === undefined) return;
@@ -1105,8 +854,6 @@ async function runWithStores(
           );
           return;
         }
-        // LIM-96's pending-acceptance recovery is the forward path when the
-        // registry will not take the pointer — but only when the record landed.
         wrapperLog.warn(
           advance.recovery === "recorded"
             ? `cc-lhc one-shot: prompt intake observed on ${accepted.sessionId} but the current-session pointer ` +
@@ -1122,16 +869,6 @@ async function runWithStores(
       });
   };
 
-  /**
-   * Where capture lifecycle goes. The wrapper's live handlers take it once they
-   * exist; before that — the one-shot pre-launch seam, which reads the persisted
-   * transcript before Claude starts — the signals only fold governor state, so
-   * the seam has a real provider reading and nothing executes off history.
-   *
-   * Prompt intake is read on every signal either way: the evidence that moves
-   * the current-session pointer cannot depend on when the wrapper's handlers
-   * happened to be wired.
-   */
   let captureLifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
   const publishCaptureLifecycle = (signals: readonly LifecycleSignal[]): void => {
     notePromptIntake(signals);
@@ -1143,19 +880,6 @@ async function runWithStores(
     governorState = applyGovernorLifecycleBatch(governorState, signals, resolvedContextPolicy).state;
   };
 
-  /**
-   * The one-shot compaction seam (R9): at invocation start, before any Claude
-   * process exists.
-   *
-   * A one-shot seat runs one prompt and exits, so it has no settled seam of its
-   * own to compact at and no child to swap. Instead the invocation reads its own
-   * pressure before it starts — the last authoritative provider count from the
-   * persisted transcript, plus the prompt it is about to send — and, when that
-   * is over the trigger, compacts and writes the rebuilt session first. Claude
-   * then launches once, on the rebuilt session, with the original prompt. No
-   * process is running while any of this happens, so there is nothing to
-   * interrupt and no way for the prompt to execute twice.
-   */
   const compactBeforeOneShotLaunch = async (session: ExpectedSession, thread: LaunchThreadBinding): Promise<void> => {
     const cwd = process.cwd();
     const transcriptPath = await findExpectedSessionFileOnce(cwd, session.sessionId);
@@ -1184,10 +908,6 @@ async function runWithStores(
       tokenFamily: sessionTokenFamily,
     });
 
-    // Catching up from the persisted transcript IS the recovery for stale
-    // capture: every intake event carries a content-stable idempotency key, so
-    // re-reading the file records only what a previous invocation missed. The
-    // deadline bounds how long the operator waits for their prompt to start.
     const catchUp = preLaunchCapture;
     const deadline = Date.now() + (options.preLaunchCaptureTimeoutMs ?? DEFAULT_PRE_LAUNCH_CAPTURE_TIMEOUT_MS);
     while (!catchUp.isCaptureReady() && catchUp.getCaptureHealth().phase === "binding" && Date.now() < deadline) {
@@ -1197,13 +917,6 @@ async function runWithStores(
       });
     }
 
-    // Compacting needs a snapshot of settled history that LHC actually holds.
-    // Capture that never caught up, or a transcript whose last turn was left
-    // open by a previous invocation, is not that snapshot — and no amount of
-    // "no child is running now" makes an unfinished historical turn settled.
-    // The invocation launches anyway, on the session it resumed, with capture
-    // left bound and still catching up behind the running prompt; the next
-    // invocation compacts once that history has settled.
     const standDown = (why: string): void => {
       wrapperLog.warn(formatOneShotStandDown(why, session.sessionId));
     };
@@ -1219,13 +932,9 @@ async function runWithStores(
     const promptText = launchPromptText(launchRest, launchPassthrough);
     const decision = decideGovernor({
       policy: resolvedContextPolicy.policy,
-      // No Claude process exists at this seam, so no turn is in flight and no
-      // operation is running: both are true by construction, not observed.
       turnOpen: false,
       operationInFlight: false,
       providerContext: governorState.latestProviderContext,
-      // A reading recovered from the transcript belongs to a previous
-      // invocation's sampling; it is provider-reported, never fresh.
       providerContextFreshness: governorState.latestProviderContext === null ? "none" : "last_known",
       postMeasurementEstimate: preLaunchEstimate(
         governorState.postMeasurementEstimate,
@@ -1258,9 +967,6 @@ async function runWithStores(
         cwd,
         sourceRolloutPath: transcriptPath,
         sourceSessionId: session.sessionId,
-        // The seam reports what capture actually is. It already stood down for
-        // anything short of a caught-up, settled transcript, so these read true
-        // here rather than being asserted true.
         isTurnOpen: () => catchUp.isTurnOpen(),
         isCaptureReady: () => catchUp.isCaptureReady(),
         isCaptureHealthy: () => catchUp.isCaptureHealthy(),
@@ -1271,15 +977,10 @@ async function runWithStores(
     );
     wrapperLog.info(formatOneShotPreLaunchOutcome(outcome.kind, outcome.messages.join(" | ") || "(no receipt)"));
     if (outcome.kind !== "rebuilt") {
-      // The view may well be installed and durable; what this seam did not
-      // produce is a rebuilt session to launch on. The prompt runs on the
-      // session this invocation resumed and the next invocation re-materializes.
       return;
     }
 
     const rebuilt = outcome.handoff.rebuilt;
-    // Still unaccepted: the one-shot rebuild is accepted only once Claude is
-    // observed taking the prompt on it (recordSwapAcceptance promotes it).
     const lineage = await registerRebuiltSessionLineage({
       newSessionId: rebuilt.sessionId,
       threadId: outcome.handoff.threadId,
@@ -1292,16 +993,11 @@ async function runWithStores(
       wrapperLog.warn(`cc-lhc one-shot: rebuilt session lineage not persisted: ${lineage.reason}`);
     }
 
-    // Capture moves to the rebuilt session before the child that will write to
-    // it exists. The outgoing generation stays authoritative and running until
-    // the replacement generation is actually constructed — a capture that
-    // cannot start must not leave the launch with a capture already stopping.
     const outgoing = catchUp;
     const ctx = outgoing.getCommandContext();
     const threadRef = ctx.threadRef;
     const sdk = ctx.sdk;
     if (threadRef === undefined || sdk === undefined) {
-      // Unreachable: the compact that produced this rebuild ran through both.
       wrapperLog.warn(formatOneShotMissingThread());
       return;
     }
@@ -1332,10 +1028,6 @@ async function runWithStores(
         tokenFamily: sessionTokenFamily,
       });
     } catch (cause) {
-      // No capture for the rebuilt session means nothing would record the turn
-      // that runs on it. The resumed session is still bound, still captured and
-      // still current; the prompt runs there and the rebuilt file is discarded
-      // as an unaccepted artifact at the next launch.
       wrapperLog.warn(
         `cc-lhc one-shot: capture would not start on rebuilt session ${rebuilt.sessionId} ` +
           `(${detailOf(cause)}); launching on ${session.sessionId} with its capture unchanged`,
@@ -1343,11 +1035,6 @@ async function runWithStores(
       return;
     }
     preLaunchCapture = rebuiltCapture;
-    // Past the point of no return for this seam: the outgoing generation owns
-    // nothing now, and nothing waits on its drain to get on with the launch —
-    // its rollout is never deleted, so nothing it misses is lost. The promise is
-    // kept all the same: whatever it still has queued must land before this
-    // wrapper stops being the thread's owner.
     outgoingCaptureSettled = outgoing.stop().catch((cause: unknown) => {
       wrapperLog.warn(`cc-lhc one-shot: capture drain before pre-launch ${SMART_COMPACT} failed: ${detailOf(cause)}`);
     });
@@ -1362,28 +1049,15 @@ async function runWithStores(
     try {
       await compactBeforeOneShotLaunch(expectedSession, launchThread);
     } catch (cause) {
-      // Anything this seam cannot do, it says and leaves behind. The invocation
-      // still launches, on whatever session it was already going to resume.
       wrapperLog.warn(formatOneShotPreLaunchThrew(detailOf(cause)));
     }
   }
 
-  // R8: cc-lhc owns compaction for a managed session, so every managed Claude
-  // child launches with Claude's own automatic compaction off through the
-  // per-child DISABLE_AUTO_COMPACT environment variable. Manual `/compact`
-  // stays available (DISABLE_COMPACT is never used).
-  // R12: an explicit user `--autocompact` passes through verbatim and the
-  // injected disable is omitted for that launch, with a visible anomaly notice.
-  // Omission is all cc-lhc can claim: inherited environment and Claude settings
-  // still govern whether Claude native Compact actually runs.
   const userChoseAutocompact = argvSuppliesNativeAutocompact(argv);
   const disableNativeAutoCompact = !userChoseAutocompact;
-  /** The one fact Home, `/status`, and `/details` all project about Claude's automatic Compact. */
   const nativeAutoCompact: NativeAutoCompactState = disableNativeAutoCompact ? "disabled" : "passthrough";
   if (userChoseAutocompact) {
     wrapperLog.warn(`cc-lhc ${NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY}`);
-    // The panel carries the one-line advisory (AC-1.7a); the full anomaly text
-    // stays in the wrapper log and the cause/remedy live on Details.
     startupAnomalyNotices.push(nativeCompactAdvisoryLine());
     raiseActionable({
       kind: "native_auto_compact_conflict",
@@ -1391,9 +1065,6 @@ async function runWithStores(
     });
   }
 
-  // Per-wrapper runtime descriptor: Bash inherits only the path. Thread/archive
-  // selection for retrieval comes exclusively from this file.
-  // Undefined descriptorIo uses each API's defaultDescriptorIo (production path).
   let runtimeDescriptorPath: string | undefined;
   let runtimeDescriptor: RuntimeDescriptorV1 | undefined;
   if (expectedSession !== undefined) {
@@ -1425,9 +1096,6 @@ async function runWithStores(
       runtimeDescriptorPath = undefined;
       runtimeDescriptor = undefined;
       if (cause instanceof ProcessIdentityUnavailableError) {
-        // Exact process identity is a startup invariant on supported
-        // platforms: without it, ownership and descriptor liveness cannot be
-        // proven. Fail with the actionable message rather than degrading.
         stderr.write(`cc-lhc: ${message}\n`);
         await releasePreChildOwnership();
         return 2;
@@ -1450,8 +1118,6 @@ async function runWithStores(
     childEnv[RUNTIME_DESCRIPTOR_ENV] = runtimeDescriptorPath;
   }
 
-  // A one-shot runs Claude as a plain process with the wrapper's own stdio
-  // (plain-child.ts): no panel, no input routing, no mid-turn handoff.
   const plainChild = launchForm === "one_shot";
   let currentPty: IPty;
   try {
@@ -1478,7 +1144,6 @@ async function runWithStores(
           env: childEnv,
         });
   } catch (cause) {
-    // Spawn failed after descriptor create → revoke opening descriptor.
     if (runtimeDescriptorPath !== undefined) {
       const rev = closeAndRemove(runtimeDescriptorPath, runtimeDescriptor, descriptorIo);
       if (!rev.ok) {
@@ -1493,31 +1158,17 @@ async function runWithStores(
 
   let exited = false;
   let captureSession: CaptureSession | undefined;
-  /** When true, skip long drain — owner identity must go stale promptly. */
   let fatalRevocationExit = false;
-  /** After first successful degrade revoke, later reasons are sticky diagnostics only. */
   let descriptorCapabilityRevoked = false;
   let resolveRun: ((code: number) => void) | undefined;
 
-  // ---- controlled-handoff state ----
-  /**
-   * True from the moment compact claims the settled session until the whole
-   * operation settles. While it holds, stdin is not forwarded and not buffered:
-   * typed-ahead bytes are dropped and the operator is told once to resend.
-   */
   let compactOwnsInput = false;
-  /** Bytes typed while compact owned input. Counted only to raise the notice. */
   let droppedInputBytes = 0;
-  /** True from claim until the operation settles; suppresses teardown-on-exit. */
   let handoffInProgress = false;
-  /** The child whose exit a termination is waiting for. */
   let expectedExitPty: IPty | null = null;
   let expectedExitResolve: (() => void) | null = null;
-  /** Swaps whose replacement never became viable, this wrapper lifetime. */
   let nonviableSwaps = 0;
-  /** The standing alarm once replacements repeatedly will not run. Never cleared. */
   let standingNonviabilityAlarm: string[] = [];
-  /** Recorded ONLY after a confirmed successful handoff. */
   let lastAction: {
     operation: string;
     origin: string;
@@ -1528,24 +1179,14 @@ async function runWithStores(
     zoneBefore?: number;
     zoneAfter?: number;
   } | null = null;
-  /** Detached manual handoff receipts shown once on the next panel open. */
   let pendingPanelNotices: string[] = [];
-  /**
-   * F5: one continue has been submitted after a rejection-triggered compaction
-   * and no turn has since settled without a rejection. A second rejection then
-   * gets a notice, not another continue.
-   */
   let rejectionContinueSent = false;
-  /** Smallest settled provider context seen: the observed Claude host overhead floor. */
   let minObservedProviderTotal: number | null = null;
-  /** One auto operation scheduled/coalesced at a time. */
   let autoOperationScheduled = false;
-  /** Assigned inside the run promise where child/teardown machinery lives. */
   let runAutoOperation: (args: {
     frozenTriggerTokens: number | null;
     receiptId: string;
     liveAsyncWork: readonly OpenAsyncWork[];
-    /** The seam compacted because Claude rejected the turn as too long (F5). */
     afterRejection?: boolean;
   }) => Promise<void> = async () => {};
 
@@ -1553,34 +1194,22 @@ async function runWithStores(
     if (fatalRevocationExit && exited) return;
     fatalRevocationExit = true;
     wrapperLog.warn(`cc-lhc capture/retrieval FATAL: ${reason}`);
-    // 1–3: stop input, restore terminal, best-effort kill children.
     try {
       if (stdin.isTTY) stdin.setRawMode(false);
-    } catch {
-      // best effort
-    }
+    } catch {}
     try {
       stdin.removeAllListeners("data");
-    } catch {
-      // best effort
-    }
+    } catch {}
     try {
       requestPtyTermination(currentPty, process.platform, "SIGKILL");
-    } catch {
-      // kill may throw; still exit the owner process
-    }
+    } catch {}
     killAllInferenceChildren();
     try {
       altScreen.leave();
-    } catch {
-      // best effort
-    }
+    } catch {}
     try {
       if (!plainChild) restoreTerminal(stdin, stdout);
-    } catch {
-      // best effort
-    }
-    // 4: do not await capture drain — schedule wrapper process exit.
+    } catch {}
     forceWrapperExit(1);
     if (!exited) {
       exited = true;
@@ -1588,21 +1217,13 @@ async function runWithStores(
     }
   };
 
-  // Alt-screen truth for every exit path, normal or not: the process-exit
-  // hook, signal handlers, and stdin loss all leave through this guard, so a
-  // crash between ?1049h and a normal dismiss still restores the terminal,
-  // and no path can double-leave.
   const altScreen = createAltScreenGuard((data) => stdout.write(data));
 
-  // Exit stats print on stderr only from teardown, AFTER the child has
-  // exited and the screen is back with the shell — legitimate surface (d).
   const printExitStats = (): void => {
     if (captureSession === undefined) return;
     stderr.write(`${formatCaptureStatsLine(captureSession.stats)}\n`);
   };
 
-  // SIGUSR1 can fire at any moment while claude owns the screen: the stats
-  // snapshot goes to the wrapper log, never the terminal.
   const onSigusr1 = (): void => {
     if (captureSession === undefined) return;
     wrapperLog.info(formatCaptureStatsLine(captureSession.stats));
@@ -1656,28 +1277,16 @@ async function runWithStores(
       );
       wrapperLog.info(`cc-lhc runtime descriptor ready thread=${threadId} session=${rollout.sessionId}`);
     } catch (cause) {
-      // The descriptor is the retrieval capability. It is not an input to
-      // compaction: a session that cannot serve `get-turns` still compacts.
       wrapperLog.warn(
         `cc-lhc runtime descriptor update failed: ${cause instanceof Error ? cause.message : String(cause)}`,
       );
     }
   };
 
-  /**
-   * A settled seam wanted to compact while capture was still catching up.
-   * Cleared by the catch-up evaluation once capture reports ready.
-   */
   let captureCatchUpPending = false;
-  /** Capture generation whose degradation already triggered one rebuild. */
   let captureRebuildForGeneration: number | null = null;
   let captureRebuildInFlight = false;
 
-  /**
-   * Everything capture needs to be restarted on whichever session is routed,
-   * kept outside the live session object so a capture that failed to start —
-   * or one whose object is gone — can still be reconciled forward.
-   */
   let captureContinuation:
     | {
         threadRef: import("lhc").ThreadRef;
@@ -1688,17 +1297,6 @@ async function runWithStores(
       }
     | undefined;
 
-  /**
-   * Degraded, missing, or never-started capture is a reason to reconcile, never
-   * a reason to let the session die oversized. The rollout file is the
-   * persisted transcript and every intake event carries a content-stable
-   * idempotency key, so re-reading it from the top is the same thing a fresh
-   * `--resume` does: already-recorded events are skipped and anything missed
-   * lands. One rebuild per generation; a later settled seam paces the next one.
-   *
-   * Runs off the capture batch path — stopping capture inline would deadlock
-   * the queue this callback runs on.
-   */
   const rebuildCaptureFromTranscript = (force = false): void => {
     if (captureRebuildInFlight) return;
     if (!force && (handoffInProgress || commandGuard.current() !== null)) return;
@@ -1753,11 +1351,9 @@ async function runWithStores(
     });
   };
 
-  /** Log an observation and let the host see it. In-memory only. */
   const noteGovernorObservation = (record: import("../governor/index.js").GovernorObserveRecord): void => {
     wrapperLog.info(formatGovernorObserveLogLine(record));
     options.onGovernorObserve?.(record);
-    // Learn the host overhead floor from predicted next-request pressure.
     const pressureForFloor = record.pressure.nextRequestPressureTokens;
     if (pressureForFloor > 0) {
       minObservedProviderTotal =
@@ -1765,51 +1361,27 @@ async function runWithStores(
     }
   };
 
-  /**
-   * One governor observation: log it, and route an executable settled decision
-   * to the operation.
-   */
   const handleGovernorObserve = (record: import("../governor/index.js").GovernorObserveRecord): void => {
     noteGovernorObservation(record);
-    // Capability-limited: executable would_compact only at a settled seam
-    // (wouldMutate is false during open turns). Starts ONE automatic operation,
-    // scheduled off the capture batch path (the handoff stops capture; doing
-    // that inline would deadlock the batch queue it runs on).
     if (record.wouldMutate !== true || record.observePhase !== "settled_seam") {
       persistGovernorObserve(record);
       return;
     }
 
-    // Active background work never delays the seam (AC-2.3): the open set is
-    // frozen for the operation and the swap starts now.
     runSettledSeam(record, captureSession?.getLiveAsyncWork() ?? []);
   };
 
-  /**
-   * The ordinary executable settled seam: record the classification, then
-   * start the automatic operation or route it to a recovery that comes back.
-   *
-   * Receipts are write-behind. When the store is unavailable the operation runs
-   * against an in-memory receipt id and says so; bookkeeping about the compact
-   * never decides whether the compact happens.
-   */
   const runSettledSeam = (
     record: import("../governor/index.js").GovernorObserveRecord,
     liveAsyncWork: readonly OpenAsyncWork[] = [],
   ): void => {
-    // A turn that settled without a too-long rejection ends the continued task.
     const afterRejection = governorState.contextLimitRejected;
     if (!afterRejection) rejectionContinueSent = false;
     const persisted = persistGovernorObserve(record);
 
     if (persisted !== null && !persisted.inserted) {
-      // The classification matches one already recorded. What happened to that
-      // receipt decides whether this seam is new work.
       const existingOutcome = persisted.receipt.handoffOutcome;
       if (existingOutcome?.kind === "mutation_deferred") {
-        // A deferral means the mutation never started — the wrapper was busy,
-        // or capture was catching up. That must cost the next seam nothing, so
-        // this one runs and re-attaches its own outcome to the same receipt.
         wrapperLog.info(
           `cc-lhc governor: retrying receipt ${persisted.receipt.receiptId} after deferral (${existingOutcome.reason}); no mutation had started`,
         );
@@ -1823,7 +1395,6 @@ async function runWithStores(
         };
         return;
       } else if (isTerminalHandoffOutcome(existingOutcome)) {
-        // An attempt actually ran against this classification.
         wrapperLog.info(
           `cc-lhc governor: exact replay of receipt ${persisted.receipt.receiptId} with terminal outcome ${existingOutcome?.kind}; no re-schedule`,
         );
@@ -1852,7 +1423,6 @@ async function runWithStores(
       const line = `cc-lhc governor: wouldMutate deferred (${reason}): ${detail} [receipt ${receiptId}]`;
       if (logLevel === "warn") wrapperLog.warn(line);
       else wrapperLog.info(line);
-      // attachGovernorHandoffOutcome already sets lastAttempt on failure.
       if (attached) {
         lastAttempt = { summary: formatAutoDeferredSummary(reason, detail), atMs: Date.now() };
       }
@@ -1868,11 +1438,6 @@ async function runWithStores(
         "another automatic operation already owns the flight; coalesced (no second mutation)",
       );
     } else if (standingNonviabilityAlarm.length > 0) {
-      // Replacements repeatedly would not run: the old session was relaunched
-      // so native compaction keeps it alive, and the alarm stands until an
-      // operator acts. Retrying the swap on every seam from here is the quiet
-      // retry loop the ruling forbids. Nothing has ended — capture keeps
-      // running on the live old session and manual compact still works.
       attachGovernorHandoffOutcome(
         receiptId,
         {
@@ -1886,18 +1451,11 @@ async function runWithStores(
       );
       lastAttempt = { summary: formatAutoSuspendedSummary(), atMs: Date.now() };
     } else if (launchForm === "one_shot") {
-      // A one-shot seat is one prompt and an exit. Its compaction seam is the
-      // start of the next invocation, before any Claude process exists (R9) —
-      // swapping the child that is running this seat's prompt would be the one
-      // way to make that prompt run twice. The turn that grew past the trigger
-      // finishes here; the next invocation compacts before it launches.
       deferAuto(
         "one_shot_next_invocation",
         "one-shot seat: this turn completes and the next invocation compacts before it launches",
       );
     } else if (captureSession?.isCaptureReady() !== true) {
-      // Compacting stale semantic state is not the answer: catch capture up
-      // from the transcript and take this seam again the moment it is ready.
       const phase = captureSession?.getCaptureHealth().phase ?? "starting";
       captureCatchUpPending = true;
       if (phase === "degraded") rebuildCaptureFromTranscript();
@@ -1907,7 +1465,6 @@ async function runWithStores(
         "warn",
       );
     } else {
-      // Claim ownership: keep `scheduled` only while this operation owns it.
       const frozenTriggerTokens = record.pressure.nextRequestPressureTokens;
       autoOperationScheduled = true;
       setImmediate(() => {
@@ -1919,8 +1476,6 @@ async function runWithStores(
   };
 
   const onCaptureLifecycle = (signals: readonly LifecycleSignal[]): void => {
-    // R8 detection: loud notice only. Intake already captures the summary as
-    // one bounded closed turn; nothing pauses, latches, or stands down.
     for (const signal of signals) {
       if (signal.kind !== "native_compact_observed") continue;
       const notice = nativeCompactAnomalyNotice(signal.summaryPreview);
@@ -1928,7 +1483,6 @@ async function runWithStores(
       pendingPanelNotices = [...pendingPanelNotices, notice, "captured as one bounded turn; LHC compaction continues"];
     }
 
-    // Generation is a diagnostic stamp for receipts, not a decision input.
     if (captureSession !== undefined) {
       governorState = setGovernorCaptureGeneration(governorState, captureSession.getCaptureGeneration());
     }
@@ -1938,9 +1492,6 @@ async function runWithStores(
     governorState = observed.state;
     for (const record of observed.observes) handleGovernorObserve(record);
 
-    // Capture is caught up: take the settled seam that was skipped while it
-    // was rebuilding. No timer, no latch — the pending flag exists only to
-    // aim one re-evaluation at the next ready moment.
     if (captureCatchUpPending && captureSession?.isCaptureReady() === true && !governorState.turnOpen) {
       captureCatchUpPending = false;
       const caughtUp = reobserveSettled(governorState, resolvedContextPolicy);
@@ -1952,9 +1503,6 @@ async function runWithStores(
       if (signal.kind === "session_bound") {
         publishDescriptorFromCapture();
       } else if (signal.kind === "capture_degraded") {
-        // Slice 1 latches multiple distinct reasons per generation. After the
-        // descriptor capability is already non-ready/absent, further reasons are
-        // diagnostics only — never re-publish or treat as fatal re-transition.
         wrapperLog.warn(`cc-lhc capture degraded: ${signal.reason}`);
         governorState = setGovernorCaptureGeneration(governorState, signal.generation);
         if (descriptorCapabilityRevoked || runtimeDescriptorPath === undefined) {
@@ -2008,12 +1556,8 @@ async function runWithStores(
     }
   };
 
-  // Live handlers exist from here: capture lifecycle stops folding silently and
-  // starts driving the wrapper.
   captureLifecycleSink = onCaptureLifecycle;
   if (preLaunchCapture !== undefined) {
-    // A one-shot invocation already bound capture at its pre-launch seam, on
-    // whichever session it ended up launching. Nothing rebinds.
     captureSession = preLaunchCapture;
     publishDescriptorFromCapture();
     process.on("SIGUSR1", onSigusr1);
@@ -2037,9 +1581,6 @@ async function runWithStores(
     process.on("SIGUSR1", onSigusr1);
   }
 
-  /**
-   * Revoke retrieval capability before long drain. Fatal if still ready.
-   */
   const revokeDescriptorNow = (): RevocationResult => {
     if (runtimeDescriptorPath === undefined) {
       return { ok: true, kind: "absent" };
@@ -2068,7 +1609,6 @@ async function runWithStores(
 
   const cleanup = (): void => {
     altScreen.leave();
-    // A plain one-shot child owned the terminal itself; nothing to restore.
     if (!plainChild) restoreTerminal(stdin, stdout);
     process.removeListener("SIGUSR1", onSigusr1);
     cleanupDescriptor();
@@ -2086,19 +1626,14 @@ async function runWithStores(
   });
   const notifierEnabled = options.notifierDisabled !== true;
   let inputState: InputState = createInputState(leaderByte, { notifierEnabled });
-  /** Bumped on every modal entry; tags a dismiss-at-injection so late failures reopen only if still idle. */
   let _modalGeneration = 0;
 
-  // While the modal (or an executing command) owns the screen, pty output is
-  // held — claude keeps running; we just delay rendering its bytes.
   const outputHold = new OutputHold(
     options.outputHoldCapBytes ?? OUTPUT_HOLD_CAP_BYTES,
     (data) => stdout.write(data),
     () => {
       inputState = forceResetInput(inputState);
       altScreen.leave();
-      // No terminal notice — the child owns the restored screen. The event is
-      // logged and counted; `status` will surface it.
       wrapperLog.warn(OUTPUT_HOLD_OVERFLOW_MESSAGE);
       outputHold.flush();
     },
@@ -2151,7 +1686,6 @@ async function runWithStores(
           : {}),
       },
       isTurnOpen: () => captureSession?.isTurnOpen() ?? false,
-      // `?.()` on the method: test doubles script a CaptureSession without it.
       closeSettledSegment: () =>
         captureSession?.closeSettledSegment?.() ??
         Promise.resolve({ kind: "skipped" as const, detail: "capture not started" }),
@@ -2188,8 +1722,6 @@ async function runWithStores(
     const capturePhase = captureSession?.getCaptureHealth().phase ?? "starting";
     const retrievalState = runtimeDescriptor?.state === "ready" ? "ready" : (runtimeDescriptor?.state ?? "unavailable");
     const inFlight = commandGuard.current();
-    // The guard's label is internal (`auto-compact` for the automatic path);
-    // every panel surface names the command instead.
     const activeOperation = handoffInProgress
       ? "handoff in progress"
       : inFlight !== null
@@ -2214,10 +1746,6 @@ async function runWithStores(
             ...(lastAction.viewTokens === undefined ? {} : { viewTokens: formatTokensShort(lastAction.viewTokens) }),
           });
 
-    // Home carries only non-default operational state: an in-flight
-    // operation, a failed attempt, and startup anomalies. "none" states and
-    // the wrapper's own configuration chain live one typed word away, on
-    // `details` — absence is the design.
     const extraStatusRows: string[] = [];
     if (activeOperation !== null) extraStatusRows.push(formatActiveOperationRow(activeOperation));
     if (lastAttempt !== null && (lastAction === null || lastAttempt.atMs > lastAction.atMs)) {
@@ -2225,8 +1753,6 @@ async function runWithStores(
     }
     if (retrievalState !== "ready") extraStatusRows.push(formatRetrievalStateRow(retrievalState));
     extraStatusRows.push(...startupAnomalyNotices);
-    // LIM-146: finished carried work awaiting delivery. Reading it here changes
-    // no delivery state; opening the panel is visibility, not delivery.
     if (continuityStore !== null) {
       const panelThreadRef = captureSession?.getCommandContext().threadRef;
       const panelThreadId = panelThreadRef !== undefined && "threadId" in panelThreadRef ? panelThreadRef.threadId : "";
@@ -2242,8 +1768,6 @@ async function runWithStores(
       }
     }
 
-    // The alarm array is shared raw text (wrapper log, terminal line, governor
-    // refusal log); only the panel copy names the command.
     const alarms: string[] = standingNonviabilityAlarm.map(toPanelWording);
     if (minObservedProviderTotal !== null && policy.upperBoundTokens <= minObservedProviderTotal) {
       alarms.push(
@@ -2315,10 +1839,6 @@ async function runWithStores(
     stdout.write(renderPanel(inputState, cols, rows, elapsedSeconds));
   };
 
-  // Once-a-second repaint while a command executes: the progress line's
-  // elapsed counter is the panel's liveness signal — without it a slow
-  // `status` is indistinguishable from a hang. Self-cancels the moment the
-  // mode leaves executing (settle, detach, overflow reset, signal restore).
   let executingTicker: NodeJS.Timeout | null = null;
   const stopExecutingTicker = (): void => {
     if (executingTicker !== null) {
@@ -2344,10 +1864,6 @@ async function runWithStores(
   };
   process.on("SIGWINCH", handleSigwinch);
 
-  // Signals restore the terminal FIRST (leave alt, flush held output —
-  // ordering invariant intact), then forward to the child as before. The
-  // child may ignore the signal and keep running; the wrapper must already be
-  // back on the main screen either way.
   const restoreIfModal = (): void => {
     if (!altScreen.active && inputState.mode === "passthrough") return;
     inputState = forceResetInput(inputState);
@@ -2385,15 +1901,11 @@ async function runWithStores(
       process.removeListener("SIGHUP", forwardSignal);
       altScreen.leave();
       outputHold.flush();
-      // Child is gone: revoke ready capability BEFORE awaited flush/drain.
       const rev = revokeDescriptorNow();
       if (fatalRevocationExit || !rev.ok) {
-        // Owner must die even if child kill fails — invalidate OS identity.
         try {
           requestPtyTermination(currentPty, process.platform, "SIGKILL");
-        } catch {
-          // already dead or kill throws
-        }
+        } catch {}
         killAllInferenceChildren();
         cleanup();
         forceWrapperExit(1);
@@ -2405,27 +1917,15 @@ async function runWithStores(
         printExitStats();
         killAllInferenceChildren();
       }
-      // A prompt accepted during that final drain still has to reach the
-      // registry — or the recovery record — while this wrapper is still the
-      // thread's owner, and so do any writes the generation the pre-launch seam
-      // moved off still has queued. `cleanup()` below hands that authority back.
       if (promptAcceptanceSettled !== undefined) await promptAcceptanceSettled;
       await settleOutgoingCapture();
       if (governorReceiptStore !== null) {
         try {
           governorReceiptStore.close();
-        } catch {
-          // best effort
-        }
+        } catch {}
         governorReceiptStore = null;
       }
       if (retainedHostPty !== null) {
-        // Orderly exit: the retained host is this wrapper's own child; it must
-        // not outlive the wrapper. An alive host is asked gracefully so Claude
-        // reaps any still-running task and writes its truthful "[killed]"
-        // marker; a frozen host cannot act on SIGTERM, so it is SIGKILLed
-        // (reaping its zombie children). Either way the next wrapper's
-        // reconcile settles the record from durable evidence.
         wrapperLog.info(
           `cc-lhc continuity: terminating retained ${retainedHostPty.frozen ? "frozen " : ""}completion host ` +
             `pid ${retainedHostPty.pty.pid} on orderly exit`,
@@ -2434,20 +1934,14 @@ async function runWithStores(
           if (retainedHostPty.frozen) {
             try {
               hostSignal(retainedHostPty.pty.pid, "SIGKILL");
-            } catch {
-              // already gone
-            }
+            } catch {}
           } else {
             await (retainedTerminate?.(retainedHostPty.pty) ?? Promise.resolve(false));
           }
-        } catch {
-          // best effort; identity-gated settle on the next wrapper cleans up
-        }
+        } catch {}
         retainedHostPty = null;
       }
       if (continuityStore !== null) {
-        // Orderly exit: bounded cleanup of the bound thread's finished carried
-        // work (AC-2.10). No binding, no cleanup.
         let boundThreadId = "";
         try {
           boundThreadId = threadIdFromRef(captureSession?.getCommandContext().threadRef);
@@ -2458,13 +1952,10 @@ async function runWithStores(
           wrapperLog.info("cc-lhc continuity cleanup: no bound thread; nothing cleaned up");
         } else {
           try {
-            // F4: a relaunched Monitor must not outlive the session (identity-gated stop).
             const stoppedMonitors = stopRelaunchedMonitors(continuityStore, boundThreadId, {
               probeIdentity: probeProcessIdentity,
               log: (message) => wrapperLog.info(message),
             }).stopped;
-            // Give the signalled processes a moment to go, so cleanup can retire
-            // their fences now rather than keep them for a later session.
             const deadline = Date.now() + 1_000;
             const alive = (proc: { pid: number }): boolean => probeProcessIdentity(proc.pid).ok;
             while (stoppedMonitors.some(alive) && Date.now() < deadline) {
@@ -2486,17 +1977,13 @@ async function runWithStores(
         }
         try {
           continuityStore.close();
-        } catch {
-          // best effort
-        }
+        } catch {}
         continuityStore = null;
       }
       if (handoffReceiptStore !== null) {
         try {
           handoffReceiptStore.close();
-        } catch {
-          // best effort
-        }
+        } catch {}
         handoffReceiptStore = null;
       }
       cleanup();
@@ -2505,11 +1992,6 @@ async function runWithStores(
 
     const debugInput = createInputDebugLogger(process.env.CC_LHC_INPUT_DEBUG);
 
-    // A modal-executed command settles here. Receipts go into the alt-screen
-    // panel above a fresh prompt, screen still held — the panel owns its own
-    // screen, so receipts stay readable whatever the main-screen TUI is doing.
-    // One keypress (Esc/ctrl-C/leader) dismisses: leave the alt screen (the
-    // terminal restores CC's layout exactly), then flush the held output.
     const settleCommand = (messages: string[], label: string, retainForNextPanel = false): void => {
       stopExecutingTicker();
       if (inputState.mode === "executing") {
@@ -2524,17 +2006,11 @@ async function runWithStores(
         return;
       }
       if (inputState.mode === "modal") {
-        // The user detached and REOPENED the panel: land the late receipt
-        // where they are looking instead of vanishing it into the log,
-        // preserving whatever they are mid-typing.
         if (messages.length === 0) return;
         inputState = showLateReceipts(inputState, label, panelReceiptRows(messages));
         renderModalPanel();
         return;
       }
-      // Detached (ctrl-C/Esc/leader) or force-cancelled (overflow) and never
-      // reopened: the child owns the live screen, so the receipt goes to the
-      // wrapper log (doctrine — never write into CC's UI).
       for (const message of messages) wrapperLog.warn(`command receipt (modal dismissed early): [${label}] ${message}`);
       if (messages.length > 0) {
         pendingPanelNotices = [
@@ -2544,8 +2020,6 @@ async function runWithStores(
       }
     };
 
-    /** Atomic session-scoped policy edit: validate the whole candidate with the
-     * same rules as launch; a rejected edit changes nothing. */
     const applyPolicyEdit = (commandLine: string): string[] => {
       const parts = commandLine.trim().split(/\s+/);
       const current = resolvedContextPolicy.policy;
@@ -2560,8 +2034,6 @@ async function runWithStores(
       }
       const sources = { ...resolvedContextPolicy.sources };
       for (const key of changedKeys) sources[key] = "session";
-      // A panel edit that validates replaces the whole policy; the load-time
-      // fallbacks it corrects are no longer in force.
       resolvedContextPolicy = { ...resolvedContextPolicy, policy: candidate, sources, fallbacks: [] };
       configFallbackNotice = [];
       wrapperLog.info(
@@ -2578,7 +2050,6 @@ async function runWithStores(
       const dispatchLabel = commandLine.replace(/^\/lhc-/, "");
       const label = inputState.line.trim() === "" ? dispatchLabel : inputState.line.trim();
       if (commandLine.startsWith("/lhc-bounds ")) {
-        // Synchronous session-policy edit: no SDK, no processes, no guard needed.
         settleCommand(applyPolicyEdit(commandLine), label);
         return;
       }
@@ -2591,13 +2062,8 @@ async function runWithStores(
         return;
       }
       startExecutingTicker();
-      // A mutating manual command owns the settled session's input for the
-      // whole operation, exactly like the automatic path.
       const mutating = dispatchLabel === "compact" || dispatchLabel.startsWith("prune");
       if (mutating) takeInputOwnership();
-      // A synchronous throw (runtime-snapshot construction, dispatch setup)
-      // must not escape into the stdin data handler as an uncaught exception —
-      // settle it exactly like an async failure.
       let dispatched: Promise<DispatchOutcome>;
       try {
         dispatched = dispatchLhcCommand(commandLine, commandRuntime());
@@ -2611,9 +2077,6 @@ async function runWithStores(
       void dispatched
         .then(async (outcome) => {
           if (outcome.handoff !== undefined) {
-            // Wrapper-owned child swap (in-app /resume is retired on 2.1.226).
-            // The child swap owns the screen: close the modal and flush held
-            // output BEFORE commit, then run the same handoff as automatic.
             governorState = setGovernorOperationInFlight(governorState, true);
             stopExecutingTicker();
             inputState = forceResetInput(inputState);
@@ -2671,8 +2134,6 @@ async function runWithStores(
             viewport: { scrollOffset: 0, selectedIndex: -1 },
           };
         } else if (action.kind === "exit_modal") {
-          // Leave BEFORE flushing: the terminal restores CC's main screen,
-          // then the held bytes land on it in order.
           altScreen.leave();
           outputHold.flush();
         } else if (action.kind === "notifier_open") {
@@ -2683,9 +2144,6 @@ async function runWithStores(
           altScreen.leave();
           outputHold.flush();
           if (action.enterBytes.length > 0) {
-            // The user's own Enter, delivered exactly once — it is input
-            // reaching Claude, so it bumps the governor epoch like any byte and
-            // is dropped like any byte while compact owns the session.
             if (compactOwnsInput) droppedInputBytes += action.enterBytes.length;
             else {
               governorState = noteGovernorInput(governorState);
@@ -2699,9 +2157,6 @@ async function runWithStores(
       }
     };
 
-    // A pending ESC held by the modal is resolved by the next byte; when no
-    // byte follows (a truly bare Esc keypress), this timer rules it bare so
-    // the cancel is never ambiguous for longer than PENDING_ESC_RESOLVE_MS.
     let pendingEscTimer: NodeJS.Timeout | null = null;
 
     const armPendingEscTimer = (): void => {
@@ -2725,14 +2180,10 @@ async function runWithStores(
     };
 
     const onStdinGone = (): void => {
-      // No input left means no keypress can answer a pending confirmation.
       restoreIfModal();
     };
 
     const onStdinError = (cause: unknown): void => {
-      // Restore the terminal, then let the error do what it always did
-      // (propagate as an uncaught exception) — the exit hook's guarded leave
-      // makes the rethrow safe.
       restoreIfModal();
       throw cause;
     };
@@ -2742,16 +2193,6 @@ async function runWithStores(
       inputState = result.state;
       debugInput(data, inputState);
       if (result.toPty.length > 0) {
-        // Bytes bound for Claude bump the input epoch. That is a receipt
-        // diagnostic — what the operator typed and when — never a veto: bytes
-        // typed during a turn belong to the next one and cannot invalidate the
-        // history that already settled.
-        //
-        // While compact owns the settled session they are dropped instead of
-        // delivered, and never held for replay into a replacement. The wrapper's
-        // own UI keeps working; only the path to Claude is closed. Only bytes a
-        // person could have typed count toward the resend notice: the terminal's
-        // replies to the replacement's startup queries land here too.
         if (compactOwnsInput) droppedInputBytes += countTypedBytes(result.toPty);
         else {
           governorState = noteGovernorInput(governorState);
@@ -2763,32 +2204,20 @@ async function runWithStores(
       armPendingEscTimer();
     };
 
-    /**
-     * One Claude child the wrapper spawned. Exactly one record is `routed` at
-     * any moment: it owns the terminal and stdin. A candidate is a real,
-     * running child that owns neither — its render is held until the switch
-     * promotes it, and the child it replaces keeps rendering into a void.
-     */
     interface ChildRecord {
       pty: IPty;
       sessionId: string;
       routed: boolean;
       exited: boolean;
-      /** Non-semantic liveness signal: bytes counted, never parsed. */
       outputBytes: number;
-      /** Render held while off-route, replayed to the terminal at the switch. */
       held: string[];
       heldBytes: number;
     }
 
-    /** Cap on a candidate's held render before older bytes are dropped. */
     const CANDIDATE_HOLD_CAP_BYTES = 1024 * 1024;
 
     const childRecords = new Map<IPty, ChildRecord>();
 
-    /** Per-child exit routing: an awaited termination resolves its waiter; an
-     * unrouted child's exit changes nothing; the routed child's exit tears down
-     * — except mid-operation, where the swap decides what happens next. */
     const handleChildExit = (record: ChildRecord, exitCode: number, signal?: number): void => {
       record.exited = true;
       if (expectedExitPty === record.pty) {
@@ -2799,8 +2228,6 @@ async function runWithStores(
         return;
       }
       if (!record.routed) return;
-      // Mid-operation the swap decides what happens next: performHandoff checks
-      // for a live routed child when it settles, and exits only if there is none.
       if (handoffInProgress) return;
       if (exited) return;
       void teardownAndExit(signal !== undefined && signal !== 0 ? 128 + signal : (exitCode ?? 1));
@@ -2836,18 +2263,6 @@ async function runWithStores(
       return record;
     };
 
-    /**
-     * THE SWITCH. Routing moves from the currently routed child to the
-     * candidate in one synchronous step: after those assignments, stdin reaches
-     * only the candidate, only the candidate's output reaches the terminal, and
-     * every later byte from the old child is dropped on the floor.
-     *
-     * Which is why the assignments come first and touch nothing that can throw.
-     * What follows is what the operator sees — closing the wrapper's own panel
-     * (it cannot survive a child swap), resizing, and repainting — and a
-     * terminal that misbehaves during that must not leave routing half moved.
-     * A repaint failure is returned as a warning on a switch that happened.
-     */
     const switchRoutingTo = (record: ChildRecord): string | undefined => {
       const previous = childRecords.get(currentPty);
       if (previous !== undefined) previous.routed = false;
@@ -2859,8 +2274,6 @@ async function runWithStores(
       try {
         restoreIfModal();
         onTerminalResize(record.pty, stdout);
-        // The dead session's frame is still on screen; clear before the
-        // replacement's own render lands so the two never interleave.
         forwardOutput("\x1b[2J\x1b[3J\x1b[H");
         if (held.length > 0) forwardOutput(held);
         return undefined;
@@ -2869,7 +2282,6 @@ async function runWithStores(
       }
     };
 
-    // ---- Slice 4: controlled handoff machinery ----
     const sigtermGraceMs = options.handoffTimeouts?.sigtermGraceMs ?? 3_000;
     const sigkillWaitMs = options.handoffTimeouts?.sigkillWaitMs ?? 2_000;
     const captureReadyTimeoutMs = options.handoffTimeouts?.captureReadyTimeoutMs ?? DEFAULT_CAPTURE_READY_TIMEOUT_MS;
@@ -2878,11 +2290,6 @@ async function runWithStores(
     const replacementAttempts = options.replacementAttempts ?? DEFAULT_REPLACEMENT_ATTEMPTS;
     const nonviableSwapLimit = options.nonviableSwapLimit ?? NONVIABLE_SWAPS_BEFORE_ALARM;
 
-    /**
-     * Compact takes ownership of the settled session's input here. From this
-     * moment nothing the operator types reaches Claude: it is dropped, counted,
-     * and reported once when the operation settles.
-     */
     const takeInputOwnership = (): void => {
       compactOwnsInput = true;
       droppedInputBytes = 0;
@@ -2913,22 +2320,11 @@ async function runWithStores(
         };
       });
 
-    /**
-     * Spawn `claude --resume <sessionId>` OFF-ROUTE. The candidate is a real
-     * running child with its own opening descriptor, but it owns nothing: no
-     * terminal, no stdin, no capture generation. The wrapper's active
-     * descriptor is untouched — the old child is still serving retrieval and
-     * keeps its capability until the switch.
-     *
-     * `injectNativeDisable` is false only for R16's survival relaunch, where
-     * the whole point is to hand the session back to Claude's own compaction.
-     */
     interface CandidateSpawn {
       candidate: CandidateChild;
       record: ChildRecord;
       descriptorPath: string | undefined;
       descriptor: RuntimeDescriptorV1 | undefined;
-      /** Rollout path + size at spawn: the baseline for session-file evidence. */
       sessionFile: { path: string; baselineBytes: number } | undefined;
     }
 
@@ -2994,18 +2390,6 @@ async function runWithStores(
         tick.unref?.();
       });
 
-    /**
-     * Observable viability for a candidate, established while the old session
-     * is still live and untouched.
-     *
-     * The decisive evidence is the process: it rendered and then survived the
-     * stabilization window. Session-file growth is collected alongside it as
-     * corroborating evidence — a rebuilt rollout Claude accepted and appended
-     * to — and recorded either way, because a healthy resumed child may render
-     * its whole history without writing a byte until the next interaction.
-     * Requiring it would be a stop that can never clear. Prompt intake is never
-     * consulted here at all.
-     */
     const awaitCandidateViable = async (
       spawn: CandidateSpawn,
       timeoutMs: number,
@@ -3046,7 +2430,6 @@ async function runWithStores(
       return { kind: "viable", evidence: evidence(true) };
     };
 
-    /** Force-kill a child tree and wait, bounded, for it to actually go. */
     const terminateChild = async (pty: IPty, graceful: boolean): Promise<boolean> => {
       expectedExitPty = pty;
       expectedExitResolve = null;
@@ -3077,10 +2460,6 @@ async function runWithStores(
     };
     retainedTerminate = (pty) => terminateChild(pty, true);
 
-    /**
-     * Adopt a candidate's descriptor as the active retrieval capability and
-     * close the one the outgoing generation was using.
-     */
     const adoptCandidateDescriptor = (spawn: CandidateSpawn): void => {
       const outgoingPath = runtimeDescriptorPath;
       const outgoing = runtimeDescriptor;
@@ -3103,12 +2482,6 @@ async function runWithStores(
       }
     };
 
-    /**
-     * Move the capture generation onto the rebuilt session, as part of the
-     * switch. The outgoing generation's stop is fired and forgotten: its
-     * rollout file is never deleted, so anything it misses stays recoverable,
-     * and a stop that hangs or throws must never reach the live replacement.
-     */
     const switchCaptureToRebuilt = (request: HandoffRequest): { captureStarted: boolean; captureWarning?: string } => {
       const dying = captureSession;
       const ctx = dying?.getCommandContext();
@@ -3117,8 +2490,6 @@ async function runWithStores(
       const stats = dying?.stats ?? captureContinuation?.stats;
       const priorGeneration = dying?.getCaptureGeneration() ?? captureContinuation?.generation ?? 0;
       if (dying !== undefined) {
-        // stop() reports each failing step by name itself and never throws;
-        // this catch is the last resort for anything outside those steps.
         void dying.stop().catch((cause: unknown) => {
           wrapperLog.warn(
             `cc-lhc handoff: stopping the old capture after handoff failed: ${cause instanceof Error ? cause.message : String(cause)}`,
@@ -3173,12 +2544,6 @@ async function runWithStores(
       }
     };
 
-    /**
-     * Execute the controlled handoff for a rebuilt session. Shared by manual
-     * compact/prune and the automatic governor path. When `governorReceiptId`
-     * is set (automatic path), outcomes attach only to that exact receipt;
-     * manual compact/prune leave governor receipts alone.
-     */
     const performHandoff = async (
       request: HandoffRequest,
       governorReceiptId?: string | null,
@@ -3219,13 +2584,8 @@ async function runWithStores(
         },
         switchToCandidate: (candidate): SwitchOutcome => {
           const spawn = spawns.get(candidate.pid);
-          // Last look at the process before anything moves. The candidate
-          // proved viable a moment ago; if it has died since, it cannot be
-          // routed to, and nothing here has changed yet — the old child keeps
-          // the terminal, its capture generation, and its descriptor.
           if (spawn === undefined) return { switched: false, reason: "candidate went missing before the switch" };
           if (spawn.record.exited) {
-            // Its capability outlived it by microseconds; take it back.
             spawns.delete(candidate.pid);
             childRecords.delete(spawn.record.pty);
             if (spawn.descriptorPath !== undefined) {
@@ -3239,7 +2599,6 @@ async function runWithStores(
 
           const switchWarnings: string[] = [];
           const repaintWarning = switchRoutingTo(spawn.record);
-          // Routed. Nothing below may throw out of here: the switch happened.
           if (repaintWarning !== undefined) switchWarnings.push(repaintWarning);
           try {
             adoptCandidateDescriptor(spawn);
@@ -3265,24 +2624,6 @@ async function runWithStores(
           };
         },
         killOldChild: async () => {
-          // LIM-149. The replacement is the sole interactive/model authority the
-          // instant the switch lands. This wrapper's own supervised child may
-          // only linger as an input/output-fenced completion recorder for its
-          // adopted background shells — never as a model that could make a
-          // provider call.
-          //   adopt-only carryover: keep it running. It supervises its own
-          //     shells and records the real "[exited with code N]" outcome with
-          //     no provider call; markers work on every platform.
-          //   mixed carryover (shells + any reconstruct/rearm family): the
-          //     non-shell families are already carried by the REPLACEMENT, so
-          //     the child's own copies must not complete and wake its model.
-          //     Pausing it (native addon; Linux, macOS, Windows alike) stops
-          //     every such path while its separate-group shells keep running;
-          //     each shell's real exit status is then read from the child's
-          //     own uncollected task record, which needs the task process
-          //     pinned at qualification. Without every pin the child cannot
-          //     be paused truthfully and is terminated gracefully instead, so
-          //     those shells close from Claude's own "[killed]" marker.
           const items = request.carryover?.snapshot.items ?? [];
           const adoptItems = items.filter((item) => item.carryMode === "adopt");
           const nonShell = items.length - adoptItems.length;
@@ -3312,8 +2653,6 @@ async function runWithStores(
             const carried = request.carryover as NonNullable<typeof request.carryover>;
             const probed = probeProcessIdentity(oldPty.pid);
             if (probed.ok) {
-              // Mixed carryover pauses the child before recording, so no
-              // duplicate family can wake it in the window before retirement.
               let froze = true;
               if (mixed) {
                 try {
@@ -3352,9 +2691,7 @@ async function runWithStores(
                   if (mixed) {
                     try {
                       hostSignal(oldPty.pid, "SIGCONT");
-                    } catch {
-                      // it will be terminated below regardless
-                    }
+                    } catch {}
                   }
                   wrapperLog.warn(
                     "cc-lhc handoff: retained-host record failed; terminating instead: " +
@@ -3363,8 +2700,6 @@ async function runWithStores(
                 }
               }
             } else {
-              // Fail closed: without an exact identity record a later settle
-              // could never safely signal the host, so it is not retained.
               wrapperLog.warn(
                 `cc-lhc handoff: old-child identity unreadable (${probed.code}); adopted task(s) cannot be ` +
                   "hosted and will close as killed",
@@ -3392,13 +2727,6 @@ async function runWithStores(
             lineageDbPath: defaultLineageDbPath(),
             logError: (message) => wrapperLog.warn(message),
           });
-          // The swap is accepted at this point — the replacement is live and
-          // routed — so the thread's current session becomes the replacement:
-          // every later launch through any older alias lands here. If the
-          // registry cannot take the pointer, the acceptance is kept host-side
-          // with the predecessor it observed and the next launch reconciles it
-          // under the thread lock. Never a veto: the replacement is live and
-          // captured either way.
           const advanced = await recordSwapAcceptance({
             sessionId: handoffRequest.rebuilt.sessionId,
             threadId: handoffRequest.threadId,
@@ -3440,8 +2768,6 @@ async function runWithStores(
             ? {}
             : { handoffReceipts: handoffReceiptPortFromStore(handoffReceiptStore) }),
         });
-        // Last action records ONLY a confirmed handoff; anything else is a
-        // last-attempt health note and never claims a successful compact.
         if (result.kind === "success") {
           lastAction = {
             operation: request.operation === "prune" ? "prune" : "compact",
@@ -3455,10 +2781,6 @@ async function runWithStores(
             ...(request.metrics.zoneTokensBefore === undefined ? {} : { zoneBefore: request.metrics.zoneTokensBefore }),
             ...(request.metrics.zoneTokensAfter === undefined ? {} : { zoneAfter: request.metrics.zoneTokensAfter }),
           };
-          // LIM-145: the replacement is live and routed. Invoke each carried
-          // mechanism once for this generation and close it — the same step
-          // for manual and automatic Compact. A failed invocation is one
-          // truthful terminal outcome; the handoff is done either way.
           if (request.carryover !== undefined && continuityStore !== null) {
             const transfer = invokeCarryover(
               continuityStore,
@@ -3505,8 +2827,6 @@ async function runWithStores(
                   rebuiltSessionId: result.rebuiltSessionId,
                   attempts: result.attempts,
                 };
-        // Manual path (no governorReceiptId) must not attach to an unrelated
-        // automatic governor receipt. Auto path always has the frozen id.
         if (governorReceiptId !== undefined && governorReceiptId !== null && governorReceiptId !== "") {
           attachGovernorHandoffOutcome(governorReceiptId, handoffOutcome, { mutationBegan: true });
         }
@@ -3517,10 +2837,6 @@ async function runWithStores(
         if (result.kind === "replacement_nonviable") {
           await noteNonviableSwap(result.oldSessionId, result.rebuiltSessionId, result.reason);
         }
-        // Nothing is routed to a live child any more — the replacement died
-        // after the switch, or it never became viable and the old child died
-        // on its own meanwhile. There is no session left to serve, so the
-        // wrapper exits rather than holding a terminal with nothing behind it.
         if (childRecords.get(currentPty)?.exited === true && !exited) {
           wrapperLog.warn(
             `cc-lhc: no live Claude child after ${request.operation} (old=${request.oldSessionId} ` +
@@ -3532,23 +2848,12 @@ async function runWithStores(
       } finally {
         handoffInProgress = false;
         handoffRuntimeSettings = undefined;
-        // Children that are gone and route nothing are just bookkeeping.
         for (const [pty, record] of childRecords) {
           if (record.exited && !record.routed) childRecords.delete(pty);
         }
       }
     };
 
-    /**
-     * R16 survival relaunch: replace the old child with a fresh one on the SAME
-     * session, launched WITHOUT cc-lhc's injected native-auto-compact disable,
-     * so Claude's own compaction can keep that session alive in degraded form.
-     *
-     * It has to happen here and now. The child that is running still carries
-     * the disable, and waiting for an incidental relaunch is waiting for the
-     * session to hit the provider's hard cutoff. Capture stays attached: it is
-     * the same session and the same rollout file, appended to by the new child.
-     */
     const relaunchOldSessionForSurvival = async (oldSessionId: string): Promise<boolean> => {
       const oldPty = currentPty;
       let spawn: CandidateSpawn;
@@ -3568,9 +2873,6 @@ async function runWithStores(
         wrapperLog.warn(`cc-lhc survival relaunch candidate ${viability.kind}; the old child keeps the terminal`);
         return false;
       }
-      // Same last look as the compact swap: a candidate that died between
-      // proving viable and being promoted cannot be routed to, and nothing has
-      // moved, so the running child keeps the terminal.
       if (spawn.record.exited) {
         childRecords.delete(spawn.record.pty);
         if (spawn.descriptorPath !== undefined) closeAndRemove(spawn.descriptorPath, spawn.descriptor, descriptorIo);
@@ -3581,7 +2883,6 @@ async function runWithStores(
         return false;
       }
       const repaintWarning = switchRoutingTo(spawn.record);
-      // Routed. The relaunch has happened; nothing below may unmake it.
       if (repaintWarning !== undefined) wrapperLog.warn(`cc-lhc survival relaunch: ${repaintWarning}`);
       try {
         adoptCandidateDescriptor(spawn);
@@ -3607,14 +2908,6 @@ async function runWithStores(
       return true;
     };
 
-    /**
-     * One swap whose replacement never became viable. Nothing was switched and
-     * nothing was undone, so below the bound the answer is simply to try again
-     * at the next settled seam, for free. At the bound, retrying forever is the
-     * wrong answer: the standing alarm goes up and R16 hands the old session to
-     * Claude's own compaction so it survives in degraded form. The session
-     * itself keeps running throughout.
-     */
     const noteNonviableSwap = async (oldSessionId: string, rebuiltSessionId: string, reason: string): Promise<void> => {
       nonviableSwaps += 1;
       if (standingNonviabilityAlarm.length > 0 || nonviableSwaps < nonviableSwapLimit) return;
@@ -3633,13 +2926,6 @@ async function runWithStores(
       raiseActionable({ kind: "repeated_replacement_failure", lines: standingNonviabilityAlarm.map(toPanelWording) });
     };
 
-    // Automatic operation: shared mutation op + shared handoff, serialized with
-    // manual commands through the same single-flight guard. Outcomes attach only
-    // to the exact durable receipt that scheduled this operation.
-    //
-    // Early gates (exited / handoff / command-guard) MUST terminalize the
-    // receipt before returning — a stranded `scheduled` row fails closed forever
-    // on replay with no evidence whether mutation began.
     runAutoOperation = async (args: {
       frozenTriggerTokens: number | null;
       receiptId: string;
@@ -3648,8 +2934,6 @@ async function runWithStores(
     }): Promise<void> => {
       const { frozenTriggerTokens, receiptId, liveAsyncWork } = args;
       let continueFrom: string | null = null;
-      // Test seam: allow race injection before early gates (handoff / exiting).
-      // forceExitedForAuto is local so we do not strand the real process-exit flag.
       let forceExitedForAuto = false;
       options.onBeforeAutoOperation?.({
         markHandoffInProgress: () => {
@@ -3684,8 +2968,6 @@ async function runWithStores(
           },
           { mutationBegan: false },
         );
-        // Tests may leave the flag set; clear so child exit can tear down.
-        // Production path only sets handoffInProgress inside performHandoff.
         return;
       }
       if (!commandGuard.tryAcquire("auto-compact", Date.now())) {
@@ -3702,17 +2984,12 @@ async function runWithStores(
         );
         wrapperLog.info(formatAutoGuardBusyLog(busyLabel, receiptId));
         lastAttempt = {
-          // Home notice: the guard label is internal, the panel names commands.
           summary: formatAutoDeferredSummary("command_guard_busy", formatActiveOperation(busyLabel)),
           atMs: Date.now(),
         };
         return;
       }
-      // Mutation claim held: remaining outcomes use mutationBegan so attach
-      // failures are loud (receipt may remain scheduled for operator recovery).
       governorState = setGovernorOperationInFlight(governorState, true);
-      // Compact owns the settled session from here: input stops being
-      // forwarded for the whole operation, construction through swap.
       takeInputOwnership();
       try {
         const runtime = commandRuntime();
@@ -3736,13 +3013,9 @@ async function runWithStores(
         const outcome = await runContextMutation(plan, runtime);
         wrapperLog.info(formatAutoMutationLog(outcome.kind, outcome.messages.join(" | ") || "(no receipt)"));
         if (outcome.kind !== "rebuilt") {
-          // Never a successful action: a mutation that produced no handoff is
-          // health/last-attempt state only.
           lastAttempt = {
             summary: formatAutoMutationSummary(
               outcome.kind,
-              // The detail is a raw mutation message: name its operation the
-              // way the panel names it before it becomes a Home notice.
               toPanelWording(outcome.messages[outcome.messages.length - 1] ?? "(no detail)"),
             ),
             atMs: Date.now(),
@@ -3778,10 +3051,6 @@ async function runWithStores(
           { mutationBegan: true },
         );
       } finally {
-        // F5: a continue is about to be submitted, so the input fence and the
-        // operation guard stay held until its Enter is written
-        // (continueAfterRejection releases both); bytes typed meanwhile are
-        // dropped and trigger the resend notice.
         const continuing = continueFrom !== null && !rejectionContinueSent;
         governorState = setGovernorOperationInFlight(governorState, false);
         if (!continuing) {
@@ -3792,12 +3061,6 @@ async function runWithStores(
       if (continueFrom !== null) await continueAfterRejection(continueFrom);
     };
 
-    /**
-     * F5: after a compaction triggered by a too-long rejection, submit one
-     * `[runtime note]` continue to the replacement (intake records the label as
-     * a runtime note, not a user prompt). A second rejection before any turn
-     * settles cleanly gets a notice instead of another continue.
-     */
     const continueAfterRejection = async (oldSessionId: string): Promise<void> => {
       if (rejectionContinueSent) {
         wrapperLog.warn("cc-lhc: rejected as too long again after the automatic continue; not continuing again");
@@ -3813,7 +3076,6 @@ async function runWithStores(
       }
     };
 
-    /** Types the F5 note and its Enter while the input fence is still closed. */
     const submitRejectionContinue = async (oldSessionId: string): Promise<void> => {
       let completed: string[] = [];
       try {
@@ -3835,17 +3097,10 @@ async function runWithStores(
       if (!exited && currentPty === target) target.write("\r");
     };
 
-    /**
-     * Open the production panel for an allowlisted condition. The rows join
-     * whatever the panel already holds; nothing is written onto Claude's
-     * screen, and a panel that is already open (or a running command) simply
-     * receives the rows. Without a TTY no key can dismiss it, so it waits.
-     */
     const openPanelFor = (rows: readonly string[]): boolean => {
       if (inputState.mode === "passthrough") {
         pendingPanelNotices = [...pendingPanelNotices, ...rows];
         if (!stdin.isTTY || plainChild) return false;
-        // The same transition the reopen key makes, so the panel opens exactly as it does on demand.
         const opened = processInputChunk(Buffer.from([leaderByte]), inputState);
         inputState = opened.state;
         applyActions(opened.actions);
@@ -3874,8 +3129,6 @@ async function runWithStores(
     raiseActionable = (condition) => {
       openPanelFor(actionableGuidanceRows([condition]));
     };
-    // Onboarding is for an interactive terminal: without a TTY nothing is
-    // shown or marked, and only actionable guidance waits in the panel.
     if (startup.open && (!stdin.isTTY || plainChild)) {
       pendingPanelNotices = [...pendingPanelNotices, ...actionableGuidanceRows(startupActionable)];
     } else if (startup.open && openPanelFor(startup.rows)) {
@@ -3892,12 +3145,8 @@ async function runWithStores(
     }
 
     attachChild(currentPty, expectedSession?.sessionId ?? "", true);
-    // A plain one-shot child reads stdin itself; the wrapper must not consume it.
     if (plainChild) return;
     stdin.on("data", forwardInput);
-    // stdin ending/erroring has no wrapper lifecycle of its own (the child
-    // and capture run on) — but with no input left there is no keypress to
-    // dismiss a modal, so restore the terminal before those semantics apply.
     stdin.on("end", onStdinGone);
     stdin.on("close", onStdinGone);
     stdin.on("error", onStdinError);

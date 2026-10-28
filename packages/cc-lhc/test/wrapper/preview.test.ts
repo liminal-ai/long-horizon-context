@@ -1,9 +1,3 @@
-/**
- * D12 preview harness: the nine named first-load fixtures drawn by the
- * production renderer at normal, narrow, and 20x5 geometry in a disposable
- * home; Escape and the reopen key through the production input machine; no
- * Claude launch anywhere in the module graph.
- */
 import { existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -109,7 +103,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
     expect(headers("unmanageable-async-identity")).toEqual([
       "! background work could not be identified — its records were not carried",
     ]);
-    // Five conditions handed over out of order come back in allowlist priority, onboarding last.
     const multi = rowsOf("multiple-prioritized-messages")[0]!;
     expect(headers("multiple-prioritized-messages")).toEqual([
       "! input may not have reached Claude — resend what you typed",
@@ -121,7 +114,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
     expect(multi.indexOf(multi.find((r) => r.startsWith("Welcome to CC-LHC"))!)).toBeGreaterThan(
       multi.lastIndexOf(multi.filter((r) => r.startsWith("! ")).at(-1)!),
     );
-    // Only the launches the contract auto-opens do so.
     const auto = new Set(
       all()
         .filter((r) => r.geometry === "normal" && r.autoOpened)
@@ -147,8 +139,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
       const grid = frameGrid(render.frame, render.cols, render.rows);
       expect(grid, label).toHaveLength(render.rows);
       for (const line of grid) expect(line.length, `${label}: ${line}`).toBeLessThanOrEqual(render.cols);
-      // No drawn text lands outside the grid: re-laying the frame on a larger
-      // canvas adds nothing beyond the declared box.
       const wider = frameGrid(render.frame, render.cols + 40, render.rows + 10);
       expect(
         wider.slice(render.rows).every((line) => line === ""),
@@ -167,10 +157,8 @@ describe("D12 preview fixtures and geometry matrix", () => {
           `${label}: card frame`,
         ).toBe(true);
       }
-      // Every drawn row ends inside the hint: the exit hint is the last drawn row.
       const drawn = grid.filter((line) => line !== "");
       expect(drawn.at(-1) ?? "", `${label}: hint row`).toMatch(/esc|close|ctrl-|leader|Esc/i);
-      // No blank row runs: at most one empty row between drawn rows inside the card.
       let blanks = 0;
       for (const line of grid.slice(
         grid.findIndex((l) => l !== ""),
@@ -191,8 +179,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
       const text = textOf(render);
       const headers = render.panelRows.filter((row) => row.startsWith("! "));
       if (render.geometry === "normal") {
-        // Every row in full — or, for a body taller than the card, the head in
-        // order with the clip marker where the rest fell off.
         const clipped = text.includes("… more — enlarge terminal");
         let cursor = -1;
         for (const row of render.panelRows) {
@@ -206,8 +192,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
         if (clipped) expect(render.fixture).toBe("multiple-prioritized-messages");
       }
       if (render.geometry === "narrow") {
-        // Headers wrap at this width and later ones may be clipped, but the
-        // first is always on screen and the visible ones keep priority order.
         let cursor = -1;
         headers.forEach((header, index) => {
           const lead = new RegExp(header.slice(2).split(" ").slice(0, 3).join(String.raw`\s+`));
@@ -220,7 +204,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
         }
       }
       if (render.geometry === "tiny") {
-        // 20x5 keeps one guidance row: the first header, or the onboarding welcome.
         const first = (headers[0] ?? render.panelRows[0])?.replace(/^! /, "");
         if (first !== undefined)
           expect(stripAnsi(render.frame), `${render.fixture} tiny`).toContain(first.slice(0, 10));
@@ -236,7 +219,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
     expect(readShownVersion(firstLoadMarkerPath(home.path))).toBeNull();
     const render = renderPreview(PREVIEW_FIXTURES["normal-first-launch"], "normal", home, { style: STYLE });
     expect(textOf(render)).toContain("Welcome to CC-LHC");
-    // The fixture's marker state is written into the disposable home, nowhere else.
     expect(readShownVersion(firstLoadMarkerPath(home.path))).toBeNull();
     renderPreview(PREVIEW_FIXTURES["no-messages"], "normal", home, { style: STYLE });
     expect(readShownVersion(firstLoadMarkerPath(home.path))).toBe(1);
@@ -244,7 +226,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
       .filter((name) => !name.endsWith("-wal") && !name.endsWith("-shm"))
       .sort();
     expect(files).toEqual(["cc-lhc.sqlite", "first-load.json"]);
-    // Never the operator's home: the disposable root is a fresh temp directory.
     expect(home.path).not.toBe(ccLhcHome());
     expect(ccLhcHome().startsWith(home.path)).toBe(false);
     home.dispose();
@@ -269,7 +250,6 @@ describe("D12 preview fixtures and geometry matrix", () => {
     });
     expect(render.escapeClosed).toBe(true);
     expect(render.reopenReturned).toBe(true);
-    // The onboarding names the configured key, not the default.
     const onboarding = renderPreview(PREVIEW_FIXTURES["normal-first-launch"], "normal", home, {
       style: STYLE,
       leaderByte: 0x01,

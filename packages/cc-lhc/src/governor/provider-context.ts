@@ -1,17 +1,3 @@
-/**
- * Provider-context arithmetic for one unique sampling attempt, plus
- * source-labelled next-request pressure.
- *
- * Provider formula: input_tokens + cache_creation_input_tokens + cache_read_input_tokens
- * Invalid components yield no reading (null) rather than a guessed one.
- *
- * Predicted next-request pressure = provider base + post-measurement estimate.
- * The estimate is never relabelled as provider usage. When the latest sampling
- * is missing or malformed the base is the last known provider reading, marked
- * `last_known` in the receipt so an older measurement is never read as fresh —
- * a session at 900K does not become healthy because one usage line went bad.
- */
-
 import type {
   GovernorPressureReceipt,
   PostMeasurementEstimate,
@@ -40,16 +26,9 @@ function pickField(usage: Record<string, unknown>, keys: readonly string[]): num
       return readNonNegInt(usage[key]);
     }
   }
-  // Absent field counts as 0 only when at least one of the triad is present
-  // via the caller; we treat missing key as 0 for the optional cache fields
-  // once input_tokens is established.
   return null;
 }
 
-/**
- * Extract provider context tokens from a sampling_observed usage object.
- * Returns null when usage is missing, empty of input authority, or invalid.
- */
 export function providerContextFromUsage(
   usage: Record<string, unknown> | null | undefined,
 ): ProviderContextTokens | null {
@@ -89,10 +68,6 @@ export function providerContextFromUsage(
   };
 }
 
-/**
- * Normalize a host-supplied estimate. Invalid numbers fail closed to zero
- * tokens with the empty estimate shape (never invent provider usage).
- */
 export function normalizePostMeasurementEstimate(
   estimate: PostMeasurementEstimate | null | undefined,
 ): PostMeasurementEstimate {
@@ -110,14 +85,6 @@ export function normalizePostMeasurementEstimate(
   return { tokens, source, domain: "source_labelled_estimate" };
 }
 
-/**
- * Build a pressure receipt from a provider base + labelled estimate.
- * Does not double-count: estimate is a separate domain.
- *
- * `freshness` describes the base, not its validity: a carried-forward reading
- * is still provider-reported. With no reading at all the base counts as zero
- * and pressure is the estimate alone.
- */
 export function buildPressureReceipt(
   providerContext: ProviderContextTokens | null,
   estimate: PostMeasurementEstimate | null | undefined,
@@ -141,14 +108,6 @@ export function buildPressureReceipt(
   };
 }
 
-/**
- * Heuristic host estimate: ~4 bytes per token for UTF-8 captured text after
- * the provider request. Labelled so it is never confused with provider usage.
- *
- * Prefer measuring only canonical captured payload bytes and labelling the
- * source exactly (e.g. `host_canonical_payload_byte_estimate`). This is not
- * provider billing usage and can drift vs real tokenizer counts.
- */
 export function estimateTokensFromCapturedBytes(
   bytes: number,
   source = "host_canonical_payload_byte_estimate",

@@ -9,10 +9,6 @@ function parseTargetTokens(commandLine: string): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
 }
 
-/**
- * Manual prune: same settled-seam transaction and (in the wrapper) same handoff
- * as compact. A no-op prune mutates nothing and hands nothing off.
- */
 export async function runPruneCommand(commandLine: string, runtime: LhcCommandRuntime): Promise<DispatchOutcome> {
   const targetTokens = parseTargetTokens(commandLine);
   const plan: ContextMutationPlan = {

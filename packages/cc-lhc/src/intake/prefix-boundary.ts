@@ -1,47 +1,25 @@
-/**
- * Content-verifiable rebuilt-prefix boundary.
- *
- * Provenance:
- * - `none`     — positively known native/non-rebuilt; may read from byte zero
- * - `unknown`  — legacy / incomplete / ambiguous; fail closed (no watcher/intake)
- * - `verified` — exact non-negative integers + 64-hex sha256; prove then skip
- *
- * Slice 1 must not infer `none` or `verified` from a missing digest, legacy
- * zero, or lineage read failure. Reconciliation must establish either explicitly.
- */
-
 import { createHash } from "node:crypto";
 import { type BigIntStats, closeSync, fstatSync, openSync, readSync } from "node:fs";
 
 export type PrefixProvenanceKind = "none" | "unknown" | "verified";
 
-/** Known absence of a synthetic rebuilt prefix. */
 export interface PrefixBoundaryNone {
   kind: "none";
 }
 
-/**
- * Legacy, incomplete, or ambiguous metadata. Capture fails closed until
- * reconciliation establishes `none` or `verified`.
- */
 export interface PrefixBoundaryUnknown {
   kind: "unknown";
 }
 
-/** Content-addressed fence over the exact serialized rebuilt prefix. */
 export interface PrefixBoundaryVerified {
   kind: "verified";
-  /** Complete JSONL lines in the prefix (excludes trailing runtime receipt). */
   lineCount: number;
-  /** Exact UTF-8 byte length of the serialized prefix (including trailing newlines). */
   byteLength: number;
-  /** Lowercase hex sha256 over the exact serialized prefix bytes. */
   sha256: string;
 }
 
 export type PrefixBoundary = PrefixBoundaryNone | PrefixBoundaryUnknown | PrefixBoundaryVerified;
 
-/** sha256 of the empty byte string — required when lineCount=byteLength=0. */
 export const EMPTY_PREFIX_SHA256 = createHash("sha256").update(Buffer.alloc(0)).digest("hex");
 
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
@@ -54,10 +32,6 @@ export function prefixBoundaryUnknown(): PrefixBoundaryUnknown {
   return { kind: "unknown" };
 }
 
-/**
- * Canonical known-none DB encoding: provenance=none, lines/bytes zero or NULL,
- * sha256 NULL/empty. Contradictory columns are not trusted as none.
- */
 export function isCanonicalNoneRow(row: {
   prefix_provenance?: string | null;
   replayed_prefix_lines?: number | null;
@@ -82,17 +56,12 @@ export function isValidSha256Hex(value: unknown): value is string {
   return typeof value === "string" && SHA256_HEX_RE.test(value);
 }
 
-/**
- * Validate stored verified metadata without clamping/normalization.
- * Invalid or inconsistent rows become unknown (caller maps that way).
- */
 export function parseStoredVerifiedPrefix(lines: unknown, bytes: unknown, sha: unknown): PrefixBoundaryVerified | null {
   if (!isSafeNonNegativeInteger(lines) || !isSafeNonNegativeInteger(bytes)) {
     return null;
   }
   if (!isValidSha256Hex(sha)) return null;
   const sha256 = sha.toLowerCase();
-  // Zero consistency: empty fence iff empty bytes iff empty digest.
   if (lines === 0) {
     if (bytes !== 0 || sha256 !== EMPTY_PREFIX_SHA256) return null;
   } else if (bytes === 0) {
@@ -101,10 +70,6 @@ export function parseStoredVerifiedPrefix(lines: unknown, bytes: unknown, sha: u
   return { kind: "verified", lineCount: lines, byteLength: bytes, sha256 };
 }
 
-/**
- * Build a verified boundary from the exact serialized prefix string that will
- * (or did) occupy the leading bytes of the rebuilt rollout file.
- */
 export function computeVerifiedPrefixBoundary(prefixSerialized: string, lineCount: number): PrefixBoundaryVerified {
   if (!isSafeNonNegativeInteger(lineCount)) {
     throw new Error(`computeVerifiedPrefixBoundary: invalid lineCount ${String(lineCount)}`);
@@ -130,15 +95,10 @@ export interface RolloutFileIdentity {
   ino: number | bigint;
 }
 
-/**
- * Held open across prefix proof and watching so a path replacement cannot
- * swap contents between the two. Closed by the watcher (or caller on failure).
- */
 export interface ContinuityHandle {
   fd: number;
   path: string;
   identity: RolloutFileIdentity;
-  /** Close the underlying descriptor (idempotent). */
   close: () => void;
 }
 
@@ -156,17 +116,13 @@ export function openContinuityHandle(filePath: string): ContinuityHandle {
         closed = true;
         try {
           closeSync(fd);
-        } catch {
-          // best effort
-        }
+        } catch {}
       },
     };
   } catch (cause) {
     try {
       closeSync(fd);
-    } catch {
-      // best effort
-    }
+    } catch {}
     throw cause;
   }
 }
@@ -180,13 +136,6 @@ export function identitiesEqual(a: RolloutFileIdentity, b: RolloutFileIdentity):
   return BigInt(a.dev) === BigInt(b.dev) && BigInt(a.ino) === BigInt(b.ino);
 }
 
-/**
- * Exact digest over all bytes already consumed [0, offset).
- *
- * Cost: every growth/change re-reads and re-hashes the full consumed region
- * (O(offset) bytes per change event). Idle polls may skip via metadata cache.
- * Acceptable for Slice 1 host certification; not free for multi-GB rollouts.
- */
 export function digestConsumedRegion(fd: number, consumedEnd: number): string {
   if (consumedEnd <= 0) return EMPTY_PREFIX_SHA256;
   const bytes = readFdRange(fd, 0, consumedEnd);
@@ -204,13 +153,8 @@ export function verifyConsumedRegionDigest(fd: number, consumedEnd: number, expe
   }
 }
 
-/** @deprecated Use exact consumed-region digest; retained name for import churn. */
 export const CONSUMED_END_ANCHOR_MAX_BYTES = 0;
 
-/**
- * Prove that the continuity handle's file begins with the exact persisted
- * prefix bytes. Uses the open fd only (no re-open by path).
- */
 export function verifyPrefixBoundaryOnHandle(
   handle: ContinuityHandle,
   boundary: PrefixBoundaryVerified,
@@ -287,9 +231,6 @@ export function verifyPrefixBoundaryOnHandle(
   return { ok: true, boundary: parsed };
 }
 
-/**
- * Path-based verify for unit tests; production capture uses ContinuityHandle.
- */
 export function verifyPrefixBoundaryOnDisk(filePath: string, boundary: PrefixBoundaryVerified): PrefixVerifyResult {
   let handle: ContinuityHandle;
   try {
@@ -317,7 +258,6 @@ export function readFdRange(fd: number, position: number, byteLength: number): B
   return filled === byteLength ? buf : buf.subarray(0, filled);
 }
 
-/** Split full serialized rebuild into prefix bytes (for boundary) given line count. */
 export function splitSerializedPrefix(
   fullSerialized: string,
   prefixLineCount: number,

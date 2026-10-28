@@ -1,8 +1,3 @@
-/**
- * AC-3.7b–e: the one-time and actionable first-load Control Panel on the real
- * managed launch path. Disposable homes, fake PTYs with a TTY-shaped terminal,
- * real run().
- */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -149,17 +144,12 @@ describe("first-load marker and allowlist (pure)", () => {
       firstLoad: false,
       rows: ["! Claude native auto-compact may run before Smart Compact on this launch", "advisory"],
     });
-    // The values come from the facts handed in, not from constants.
     const oneM = firstLoadGuidanceRows({ ...FACTS, targetTokens: 180_000, triggerTokens: 360_000 });
     expect(oneM.join("\n")).toContain("target 180k after /smart-compact · trigger 360k");
     expect(oneM.join("\n")).not.toContain("window 1M");
     expect(oneM.join("\n")).not.toContain("window 200k");
   });
 });
-
-// ---------------------------------------------------------------------------
-// Production path
-// ---------------------------------------------------------------------------
 
 interface FakePty {
   args: string[];
@@ -238,7 +228,6 @@ function scriptedCaptureSession(): CaptureSession {
   } as unknown as CaptureSession;
 }
 
-/** A terminal-shaped stream pair: the panel may open by itself only where a key can close it. */
 function ttyStream(): NodeJS.ReadStream & NodeJS.WriteStream {
   const stream = new PassThrough() as unknown as NodeJS.ReadStream & NodeJS.WriteStream;
   Object.defineProperty(stream, "isTTY", { value: true, configurable: true });
@@ -292,7 +281,6 @@ async function launchLive(argv: string[], options: { receiptDb?: string } = {}):
     } as never,
   });
   await waitFor(() => spawned.length > 0, "child spawn");
-  // Let the launch settle past the startup panel decision.
   await new Promise((r) => setTimeout(r, 50));
   return {
     pty: spawned[0]!,
@@ -330,7 +318,6 @@ describe("first-load Control Panel on the managed launch path", () => {
     const marker = firstLoadMarkerPath(home);
     expect(readShownVersion(marker)).toBeNull();
 
-    // --- launch 1: onboarding ---
     const first = await launchLive([]);
     try {
       await waitFor(() => panelText(first.out()).includes(PANEL_TITLE), "onboarding panel");
@@ -339,14 +326,12 @@ describe("first-load Control Panel on the managed launch path", () => {
       expect(shown).toContain("target 180k after /smart-compact · trigger 360k");
       expect(shown).toContain("Claude native auto-compact off");
       expect(shown).toContain("reopen this panel any time with ctrl-] · press Esc to continue to Claude");
-      // The same facts on Home's own rows: no second source of truth.
       expect(shown).toContain("target 180k");
       expect(shown).toContain("trigger 360k");
       expect(first.out().startsWith(ALT_SCREEN_ENTER)).toBe(true);
       expect(readShownVersion(marker)).toBe(ONBOARDING_VERSION);
       expect(first.logLines.join("\n")).toContain(`Control Panel opened at launch (onboarding v${ONBOARDING_VERSION})`);
 
-      // Claude's own paint is held behind the panel, then lands after Escape.
       first.pty.emit("CLAUDE-PAINT-1");
       expect(first.out()).not.toContain("CLAUDE-PAINT-1");
       const beforeEsc = first.out().length;
@@ -354,7 +339,6 @@ describe("first-load Control Panel on the managed launch path", () => {
       await waitFor(() => first.out().includes("CLAUDE-PAINT-1"), "held paint flushed on Escape");
       const afterEsc = first.out().slice(beforeEsc);
       expect(afterEsc.indexOf(ALT_SCREEN_LEAVE)).toBeLessThan(afterEsc.indexOf("CLAUDE-PAINT-1"));
-      // Input now reaches Claude, and the panel is not re-opened by itself.
       first.stdin.write(Buffer.from("hello"));
       await waitFor(() => first.pty.written.join("").includes("hello"), "input routed to Claude");
       const settled = first.out();
@@ -365,17 +349,14 @@ describe("first-load Control Panel on the managed launch path", () => {
       expect(await first.finish()).toBe(0);
     }
 
-    // --- launch 2: same home, same version → silent ---
     const markerBytes = readFileSync(marker, "utf8");
     const second = await launchLive([]);
     try {
       second.pty.emit("CLAUDE-PAINT-2");
       await waitFor(() => second.out().includes("CLAUDE-PAINT-2"), "child paint on the live screen");
-      // Byte-for-byte: the terminal received exactly Claude's bytes.
       expect(second.out()).toBe("CLAUDE-PAINT-2");
       expect(second.logLines.join("\n")).not.toContain("Control Panel opened at launch");
       expect(readFileSync(marker, "utf8")).toBe(markerBytes);
-      // The documented reopen key still opens the same panel on demand.
       second.stdin.write(Buffer.from([DEFAULT_LEADER_BYTE]));
       await waitFor(() => panelText(second.out()).includes(PANEL_TITLE), "panel on demand");
       expect(panelText(second.out())).not.toContain("Welcome to CC-LHC");
@@ -386,7 +367,6 @@ describe("first-load Control Panel on the managed launch path", () => {
       expect(await second.finish()).toBe(0);
     }
 
-    // --- launch 3: an older shown version reopens onboarding; a torn marker is not shown ---
     for (const stale of ['{"shownVersion":0}\n', '{"shownVersion":', ""]) {
       writeFileSync(marker, stale);
       const third = await launchLive([]);
@@ -446,7 +426,6 @@ describe("first-load Control Panel on the managed launch path", () => {
   }, 15_000);
 
   it("without a TTY nothing opens by itself: the guidance waits in the panel and the marker is not written", async () => {
-    // The other rigs in this suite run without a TTY; this pins why they stay silent.
     const marker = firstLoadMarkerPath(home);
     const spawned: FakePty[] = [];
     const chunks: string[] = [];
@@ -504,7 +483,6 @@ describe("D12 preview/production renderer equality", () => {
     for (const dir of homes.splice(0)) rmSync(dir, { recursive: true, force: true });
   });
 
-  /** The production launch's first frame at the preview's normal geometry (100x30). */
   async function productionFirstFrame(argv: string[], receiptDb?: string): Promise<string> {
     const live = await launchLive(argv, receiptDb === undefined ? {} : { receiptDb });
     try {

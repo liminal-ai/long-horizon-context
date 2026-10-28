@@ -1,6 +1,3 @@
-// Stage the locally built addon (build/Release) into prebuilds/<platform>-<arch>/
-// so the loader's released path serves it. CI matrix jobs run this after
-// build:native; refuses targets absent from targets.json.
 import { copyFileSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

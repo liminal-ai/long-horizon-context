@@ -1,8 +1,3 @@
-/**
- * TC-3.1a/TC-3.1b: CC-LHC version identity without launching Claude, and the
- * versioned help header. The subprocess leg drives the real bin path with a
- * poisoned CC_LHC_CLAUDE_BIN that records any launch attempt.
- */
 import { spawn, spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -51,7 +46,6 @@ describe("build identity", () => {
   });
 
   const STAMPER = join(packageRoot, "scripts", "stamp-build-identity.mjs");
-  /** A PATH holding only a `git` that records any invocation; Node itself is invoked by absolute path. */
   function poisonedGitPath(): { path: string; marker: string } {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-nogit-"));
     temps.push(dir);

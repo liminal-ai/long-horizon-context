@@ -1,20 +1,3 @@
-/**
- * LIM-64 acceptance matrix — provider-aware replay fixtures (no paid calls).
- *
- * Covers:
- * 1 multi-model-turn authority
- * 2 threshold during open turn (classify, no mutate)
- * 3 settled seam would_compact + wouldMutate
- * 4 input/cache/cache-read math + source-labelled estimate
- * 5 post-measurement estimate crosses threshold
- * 6 missing/invalid usage falls back to the last known reading
- * 7 removed transient gates no longer suppress a settled compact
- * 8 native summary observation does not suppress later LHC compact
- * 9 handoff outcome receipt attachments (success/refuse/partial/rollback/retry)
- * 10 restart/replay durability of receipts
- * 11 capability boundary fields present on every receipt
- */
-
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -45,9 +28,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) {
     try {
       rmSync(d, { recursive: true, force: true });
-    } catch {
-      // ignore
-    }
+    } catch {}
   }
 });
 
@@ -195,7 +176,6 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     const settled = carried.observes.filter((o) => o.observePhase === "settled_seam")[0];
     expect(settled?.decision).toBe("would_compact");
     expect(settled?.wouldMutate).toBe(true);
-    // Truthful provenance: still provider-reported, explicitly not this turn's.
     expect(settled?.pressure.providerBaseTokens).toBe(900_000);
     expect(settled?.pressure.providerBaseFreshness).toBe("last_known");
     expect(settled?.pressure.providerBaseDomain).toBe("provider_reported_input");
@@ -216,8 +196,6 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
         (o) => o.observePhase === "settled_seam",
       )[0];
 
-    // Input typed during the turn: settled history cannot be retroactively
-    // invalidated by bytes that belong to the next turn.
     let typedAhead = applyGovernorLifecycleBatch(
       readyState(),
       [{ kind: "turn_opened", reason: "user_prompt" }],
@@ -230,11 +208,8 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     )[0];
     expect(afterInput?.decision).toBe("would_compact");
     expect(afterInput?.wouldMutate).toBe(true);
-    // The epoch survives as a diagnostic on the receipt, without authority.
     expect(afterInput?.inputEpoch).toBe(2);
 
-    // A degraded capture generation is a repair trigger for the wrapper, not a
-    // decision input: the classification still says compact.
     const afterDegrade = applyGovernorLifecycleBatch(
       readyState(),
       [{ kind: "capture_degraded", reason: "file_shrink", generation: 2 }, ...overPressure],
@@ -244,7 +219,6 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     expect(afterDegrade?.wouldMutate).toBe(true);
     expect(afterDegrade?.captureGeneration).toBe(2);
 
-    // A session mismatch revokes retrieval; it does not decide compaction.
     const afterMismatch = applyGovernorLifecycleBatch(
       readyState(),
       [{ kind: "session_mismatch_observed", expected: "a", observed: "b" }, ...overPressure],
@@ -253,7 +227,6 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     expect(afterMismatch?.decision).toBe("would_compact");
     expect(afterMismatch?.wouldMutate).toBe(true);
 
-    // Sequencing survives: one operation at a time.
     const inflight = setGovernorOperationInFlight(readyState(), true);
     expect(settledDecision(inflight)?.decision).toBe("operation_in_flight");
   });
@@ -322,8 +295,6 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
       expect(updated?.handoffOutcome).toEqual(outcome);
     }
 
-    // A second settled seam at barely higher pressure still classifies
-    // would_compact: there is no growth toll to pay for a retry.
     const after = applyGovernorLifecycleBatch(
       applyGovernorLifecycleBatch(
         readyState(),
@@ -380,7 +351,6 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     ];
     const first = applyGovernorLifecycleBatch(readyState(), signals, armed());
     const second = applyGovernorLifecycleBatch(readyState(), signals, armed());
-    // Pure fold is deterministic.
     expect(JSON.stringify(first.observes)).toBe(JSON.stringify(second.observes));
 
     const storeA = openGovernorReceiptStore(path);
@@ -426,7 +396,6 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     for (const o of r.observes) {
       expect(o.hostCapability).toBe("capability_limited");
       expect(o.event).toBe("governor_observe");
-      // Never claim full-state-machine effects in the observe payload.
       expect(JSON.stringify(o)).not.toMatch(/full_state_machine|context_compact_continue|compact_preserve_tool/);
     }
   });

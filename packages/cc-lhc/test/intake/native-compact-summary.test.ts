@@ -1,10 +1,3 @@
-/**
- * Native Claude compact summary → one bounded closed turn (LIM-95, R8).
- *
- * These are outcome tests: the mapping is driven through the real LHC intake
- * surface so the SDK turn state machine — not a local expectation — decides
- * what "settle the open turn first" and "one complete turn" actually produce.
- */
 import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -67,12 +60,10 @@ describe("native compact summary content", () => {
   });
 
   it("truncates on whole characters, never splitting a multi-byte character", () => {
-    // Astral plane: each character is two UTF-16 code units.
     const content = nativeCompactSummaryContent("𝄞".repeat(3_000));
     const body = content.slice(TAG_OPEN.length + 1, content.indexOf(`\n${TRUNCATION_MARKER}`));
     expect([...body]).toHaveLength(2_000);
     expect(body).toBe("𝄞".repeat(2_000));
-    // No lone surrogate survived the cut.
     expect(Buffer.from(body, "utf8").toString("utf8")).toBe(body);
   });
 });
@@ -96,8 +87,6 @@ describe("native compact summary mapping", () => {
 
 describe("installed Claude Code 2.1.235 native compact shape", () => {
   it("is the shape the retained canary (d) exhibit actually contains", () => {
-    // Guards the fixture itself: if this drifts, the discriminator below is
-    // being proven against something other than the live record.
     expect(BOUNDARY_RECORD.type).toBe("system");
     expect(BOUNDARY_RECORD.subtype).toBe("compact_boundary");
     expect(INSTALLED_SUMMARY.type).toBe("user");
@@ -114,14 +103,11 @@ describe("installed Claude Code 2.1.235 native compact shape", () => {
     const prompt = mapped.events[0] as Extract<MessageEventInput, { eventKind: "user_prompt" }>;
     expect(prompt.payload.text.startsWith(TAG_OPEN)).toBe(true);
     expect(prompt.payload.text).toContain(TRUNCATION_MARKER);
-    // The raw summary must not also appear as an untagged ordinary prompt.
     expect(prompt.payload.text).not.toBe(INSTALLED_SUMMARY_TEXT);
     expect(mapped.stats.meta).toBe(0);
   });
 
   it("leaves the adjacent compact_boundary record as harness metadata", () => {
-    // No pairing state, no adjacency inference: the boundary carries no
-    // conversation content and stays exactly what current mapping made it.
     const mapped = mapRolloutLine(BOUNDARY_RECORD);
     expect(mapped.events).toHaveLength(0);
     expect(mapped.stats.meta).toBe(1);
@@ -203,7 +189,6 @@ describe("native compact summary intake", () => {
     threadRef = { filePath };
   });
 
-  /** One batch per call, as capture submits a watcher emission (zero-event lines contribute nothing). */
   async function intake(...items: RolloutLineItem[]): Promise<void> {
     const events = items.flatMap((item, index) => mapRolloutLine(item, index).events);
     if (events.length === 0) return;
@@ -239,7 +224,6 @@ describe("native compact summary intake", () => {
       message: { role: "assistant", stop_reason: "end_turn", content: [{ type: "text", text: "did it" }] },
     });
 
-    // The work turn is still open here: nothing has closed it yet.
     const beforeSummary = await closedTurns();
     expect(beforeSummary).toHaveLength(0);
 
@@ -247,7 +231,6 @@ describe("native compact summary intake", () => {
 
     const closed = await closedTurns();
     expect(closed).toHaveLength(2);
-    // The prior turn settled with its own members; the summary is not inside it.
     expect(closed[0]!.memberMessageIds).toHaveLength(2);
     expect(closed[1]!.memberMessageIds).toHaveLength(1);
 
@@ -259,8 +242,6 @@ describe("native compact summary intake", () => {
   });
 
   it("lands the installed 2.1.235 shape as one bounded tagged closed turn", async () => {
-    // Drives the exact retained canary (d) records, boundary first, in order,
-    // in one batch — the shape capture actually submits.
     await intake(BOUNDARY_RECORD, INSTALLED_SUMMARY);
 
     const closed = await closedTurns();
@@ -270,8 +251,6 @@ describe("native compact summary intake", () => {
 
     const messages = await sdk.messages.list(threadRef);
     if (!messages.ok) throw new Error(messages.error.reason);
-    // Exactly one message: the boundary contributed none, and the summary did
-    // not additionally land as an ordinary user prompt.
     expect(messages.value).toHaveLength(1);
     expect(messages.value[0]!.kind).toBe("user_prompt");
 
@@ -280,7 +259,6 @@ describe("native compact summary intake", () => {
     expect(stored.endsWith(TAG_CLOSE)).toBe(true);
     expect(stored).toContain(TRUNCATION_MARKER);
     expect(stored).toContain("This session is being continued");
-    // Unicode-safe 2,000 code points of summary, plus tag and marker lines.
     const body = stored.slice(TAG_OPEN.length + 1, stored.indexOf(`\n${TRUNCATION_MARKER}`));
     expect([...body]).toHaveLength(2_000);
     expect(body).toBe([...INSTALLED_SUMMARY_TEXT].slice(0, 2_000).join(""));

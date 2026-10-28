@@ -1,8 +1,3 @@
-/**
- * LIM-145 AC-2.5 (TC-2.5a/b/d): one and many items are represented once, with
- * identity, family, carry mode, state, and operations; an unverified item is
- * never claimed.
- */
 import { describe, expect, it } from "vitest";
 
 import { createContinuityObserver } from "../../src/continuity/observe.js";
@@ -21,7 +16,6 @@ import {
 
 const T = "th_snapshot";
 
-/** Seeded and, unless `qualify` is false, explicitly qualified by family. */
 function seeded(lines = allLaunchLines(), qualify = true) {
   const store = openContinuityStore(tempDbPath());
   let now = 1_000;
@@ -138,13 +132,11 @@ describe("TC-2.5d no false carryover claim", () => {
     });
     expect(store.latestGeneration(T)).toBeNull();
     expect(store.listItems(T).every((item) => item.generation === 0)).toBe(true);
-    // Every family qualified: the same set snapshots, and only qualified modes reach the manifest.
     qualifyAll(store, T, 6_000);
     const accepted = snapshotContinuity(store, { threadId: T, oldSessionId: "old", nowMs: 7_000 });
     expect(accepted.ok).toBe(true);
     if (!accepted.ok) return;
     expect(accepted.snapshot.items).toHaveLength(5);
-    // The manifest type itself excludes the launch default: only adopt/reconstruct/rearm can appear.
     const modes: QualifiedCarryMode[] = accepted.snapshot.items.map((item) => item.carryMode);
     expect(modes).toEqual(Object.values(QUALIFIED));
     store.close();
@@ -166,7 +158,6 @@ describe("TC-2.5d no false carryover claim", () => {
     expect(result).toEqual({ ok: false, reason: "unverified_items", launchIds: [LAUNCH_IDS.workflow] });
     expect(store.latestGeneration(T)).toBeNull();
     expect(store.listItems(T).every((item) => item.generation === 0)).toBe(true);
-    // Verified again: the same set snapshots normally.
     store.setVerified({ threadId: T, launchId: LAUNCH_IDS.workflow, verified: true, nowMs: 6_000 });
     expect(snapshotContinuity(store, { threadId: T, oldSessionId: "old", nowMs: 7_000 }).ok).toBe(true);
     store.close();

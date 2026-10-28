@@ -1,9 +1,3 @@
-/**
- * LIM-146 AC-2.7c: the live capture path is what proves delivery. A real
- * capture session watching a real rollout reports the result keys named by
- * Claude's record of the UserPromptSubmit hook's accepted context — and
- * nothing else — with the bound thread id.
- */
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -91,16 +85,13 @@ describe("live capture reports delivered result keys", () => {
     });
     try {
       await waitFor(() => session.isCaptureReady(), "ready");
-      // The real prompt, then what proves nothing: user text quoting a key, another hook, a sidechain copy.
       appendFileSync(path, record({ type: "user", uuid: "u1", message: { role: "user", content: `see ${context}` } }));
       appendFileSync(path, hookRecord(context, { hookEvent: "SessionStart", hookName: "SessionStart" }));
       appendFileSync(path, hookRecord(context, {}, { isSidechain: true }));
-      // Then Claude's record of our hook's accepted context.
       appendFileSync(path, hookRecord(context));
       await waitFor(() => delivered.length === 1, "delivery observed");
       await sleep(150);
       expect(delivered).toEqual([{ keys: KEYS, threadId: "th_rt" }]);
-      // Re-observation of the same record reports again; the store makes it idempotent.
       appendFileSync(path, hookRecord(context));
       await waitFor(() => delivered.length === 2, "second observation");
       expect(delivered[1]).toEqual({ keys: KEYS, threadId: "th_rt" });

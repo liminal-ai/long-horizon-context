@@ -1,30 +1,3 @@
-/**
- * Supervised-child control over the native addon (identity contract 3,
- * LIM-149).
- *
- * During Smart Compact the wrapper replaces its Claude child and keeps the
- * old child paused as the supervisor of its own still-running background
- * tasks, so each task's real exit outcome survives the replacement. These
- * four calls are the whole portable surface for that:
- *
- *   pause / resume            — stop or continue every thread of the child
- *   readChildExit             — the uncollected exit record of a task whose
- *                               supervisor is paused (running | exited code |
- *                               signaled), gated on the recorded starttime
- *   findChildHoldingFile      — which direct child of a pid holds a file open
- *
- * Contract 4, Windows only ("unsupported" elsewhere):
- *
- *   bindChildToWrapperJob     — tie a just-spawned child and every descendant
- *                               it spawns to this process's lifetime (a
- *                               kill-on-close job object)
- *   listFileHolders           — every process holding a file open, plus
- *                               whether a share-none open is refused
- *
- * Every target is a child the wrapper spawned; callers gate on exact identity
- * before calling. Failures are results, never throws, so callers fail closed.
- */
-
 import {
   AddonArtifactMissingError,
   AddonContractError,
@@ -110,7 +83,6 @@ function validPid(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 }
 
-/** Validate a pause/resume result; fail closed on any malformed shape. */
 export function normalizeControlResult(raw: unknown, pid: number): ControlResult {
   const obj = asObject(raw);
   if (obj === null) return failure("native_error", "addon returned a non-object result");
@@ -122,7 +94,6 @@ export function normalizeControlResult(raw: unknown, pid: number): ControlResult
   return failure("native_error", "addon result missing ok discriminant");
 }
 
-/** Validate a readChildExit result; fail closed on any malformed shape. */
 export function normalizeChildExitResult(raw: unknown, pid: number): ReadChildExitResult {
   const obj = asObject(raw);
   if (obj === null) return failure("native_error", "addon returned a non-object result");
@@ -147,7 +118,6 @@ export function normalizeChildExitResult(raw: unknown, pid: number): ReadChildEx
   return failure("native_error", "addon result missing ok discriminant");
 }
 
-/** Validate a findChildHoldingFile result; fail closed on any malformed shape. */
 export function normalizeHolderResult(raw: unknown, parentPid: number, path: string): FindChildHoldingFileResult {
   const obj = asObject(raw);
   if (obj === null) return failure("native_error", "addon returned a non-object result");
@@ -168,7 +138,6 @@ export function normalizeHolderResult(raw: unknown, parentPid: number, path: str
   return failure("native_error", "addon result missing ok discriminant");
 }
 
-/** Validate a listFileHolders result; fail closed on any malformed shape. */
 export function normalizeFileHoldersResult(raw: unknown, path: string): FileHoldersNativeResult {
   const obj = asObject(raw);
   if (obj === null) return failure("native_error", "addon returned a non-object result");
@@ -195,7 +164,6 @@ export function normalizeFileHoldersResult(raw: unknown, path: string): FileHold
   return failure("native_error", "addon result missing ok discriminant");
 }
 
-/** Build the control surface over the native addon; loader failures become per-call fail-closed results. */
 export function createProcessControl(seams: LoaderSeams = {}): ProcessControl {
   let cached: NativeIdentityAddon | null = null;
   let loadFailure: ProcessControlFailure | null = null;
@@ -303,7 +271,6 @@ export function createProcessControl(seams: LoaderSeams = {}): ProcessControl {
 
 let defaultControl: ProcessControl | null = null;
 
-/** Production-default control surface: real platform, real manifest, real artifact. */
 export function exactProcessControl(): ProcessControl {
   if (defaultControl === null) defaultControl = createProcessControl();
   return defaultControl;

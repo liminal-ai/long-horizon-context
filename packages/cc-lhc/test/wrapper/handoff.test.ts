@@ -1,12 +1,3 @@
-/**
- * The spawn-first handoff transaction.
- *
- * A working session exists at every moment: the replacement is spawned and
- * proven while the old child is still live and routed, routing switches in one
- * step, and the old child is killed last. There is no rollback, no pre-commit
- * input recheck, and no bookkeeping outcome that can kill a live replacement —
- * the suite this replaces asserted all three as intended behavior.
- */
 import { describe, expect, it, vi } from "vitest";
 
 import type { HandoffRequest } from "../../src/commands/context-mutation.js";
@@ -195,7 +186,6 @@ describe("executeHandoff", () => {
       expect(result.attempts).toBe(2);
       expect(result.oldSessionId).toBe("old-1111");
     }
-    // Nothing was switched, nothing was killed, nothing was undone.
     expect(h.calls).not.toContain("switchToCandidate");
     expect(h.calls).not.toContain("killOldChild");
     expect(h.calls).not.toContain("registerSuccessLineage");
@@ -276,14 +266,10 @@ describe("executeHandoff", () => {
   it("publishes the retrieval descriptor only after capture has caught up", async () => {
     const h = makeHarness();
     await executeHandoff(request(), h.ports);
-    expect(h.calls.indexOf("publishReadyDescriptor")).toBeGreaterThan(
-      h.calls.indexOf("awaitReplacementCaptureReady"),
-    );
+    expect(h.calls.indexOf("publishReadyDescriptor")).toBeGreaterThan(h.calls.indexOf("awaitReplacementCaptureReady"));
   });
 
   it("does not promote a candidate that died between proving viable and the switch", async () => {
-    // The exit race: viability was real when it was observed, and the process
-    // was gone by the time routing tried to move to it.
     const h = makeHarness({
       switchToCandidate: (candidate) => {
         h.calls.push("switchToCandidate");
@@ -297,8 +283,6 @@ describe("executeHandoff", () => {
       expect(result.reason).toContain("exited before the switch");
       expect(result.oldSessionId).toBe("old-1111");
     }
-    // Nothing downstream of the switch ran: the old child was never killed, no
-    // lineage advanced, no descriptor published, no capture generation moved.
     expect(h.calls).not.toContain("killOldChild");
     expect(h.calls).not.toContain("registerSuccessLineage");
     expect(h.calls).not.toContain("publishReadyDescriptor");
@@ -328,11 +312,6 @@ describe("executeHandoff", () => {
   });
 });
 
-/**
- * Past the switch the replacement is live and talking to the operator. Every
- * remaining port records what already happened, so one that throws produces a
- * warning — never a failed handoff, never a dead replacement.
- */
 describe("exceptions after the switch", () => {
   const boom = (): never => {
     throw new Error("EIO");
@@ -380,7 +359,6 @@ describe("exceptions after the switch", () => {
       expect(result.newSessionId).toBe("new-2222");
       expect(testCase.detail(result)).toBeDefined();
       expect(h.warnings.join("\n")).toContain("EIO");
-      // The switch stands and no discard was attempted on the live child.
       expect(h.switchedTo).toEqual(["new-2222"]);
       expect(h.calls.some((c) => c.startsWith("discardCandidate"))).toBe(false);
     });
@@ -390,8 +368,6 @@ describe("exceptions after the switch", () => {
     const h = makeHarness({ registerSuccessLineage: async () => boom() });
     const result = await executeHandoff(request(), h.ports);
     expect(result.kind).toBe("success");
-    // Lineage blew up first; the old child was still cleaned up and the
-    // descriptor still published.
     expect(h.calls).toContain("killOldChild");
     expect(h.calls).toContain("publishReadyDescriptor");
   });

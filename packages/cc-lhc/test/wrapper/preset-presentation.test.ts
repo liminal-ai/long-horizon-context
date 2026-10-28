@@ -1,6 +1,3 @@
-/**
- * LIM-117: TC-4.2a, TC-4.3a-b. Pure presentation/selection; no Control Panel redesign.
- */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -60,7 +57,6 @@ describe("Home allocation phrase", () => {
       expect(shown.homeDescription, id).toBe(homeAllocationPhrase(id));
       expect(shown.homeDescription, id).not.toBe("");
       expect(shown.homeDescription, id).not.toContain(" — ");
-      // Home has ~44 columns for label + phrase at the normal card width.
       expect(`${shown.label} · ${shown.homeDescription}`.length, id).toBeLessThanOrEqual(44);
       phrases.add(shown.homeDescription);
     }

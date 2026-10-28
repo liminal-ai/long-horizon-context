@@ -1,11 +1,3 @@
-/**
- * CC_LHC_HOME contract: the runtime descriptor under the cc-lhc home is a
- * retrieval capability. POSIX confidentiality is mode-enforced (0600/0700)
- * so overrides go anywhere (unchanged); Windows has no POSIX modes and no
- * bespoke DACL is installed, so an out-of-profile home fails closed. Pure
- * platform-parameterized helpers — assertions run on every host.
- */
-
 import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -52,12 +44,7 @@ describe("resolveCcLhcHome", () => {
   });
 
   it("win32: fails closed on out-of-profile overrides with the capability rationale, no escape hatch", () => {
-    for (const override of [
-      "C:\\shared\\lhc",
-      "D:\\lhc",
-      "C:\\Users\\casey\\..\\shared",
-      "C:\\Users\\casey2\\lhc",
-    ]) {
+    for (const override of ["C:\\shared\\lhc", "D:\\lhc", "C:\\Users\\casey\\..\\shared", "C:\\Users\\casey2\\lhc"]) {
       const r = resolveCcLhcHome(override, WIN_HOME, "win32");
       expect(r.ok, override).toBe(false);
       if (!r.ok) {
@@ -80,10 +67,9 @@ describe("resolveCcLhcHome", () => {
       ok: true,
       path: inProfileShort,
     });
-    const outAlias = (p: string): string => p.replace(/LOOKSIN~1/i, "C:\\shared").replace(/^C:\\Users\\casey\\C:\\/, "C:\\");
+    const outAlias = (p: string): string =>
+      p.replace(/LOOKSIN~1/i, "C:\\shared").replace(/^C:\\Users\\casey\\C:\\/, "C:\\");
     void outAlias;
-    // An alias canonicalizing OUTSIDE the profile is rejected even though its
-    // literal spelling sits inside it.
     const evilCanon = (p: string): string =>
       p.toLowerCase().startsWith("c:\\users\\casey\\link") ? p.replace(/^C:\\Users\\casey\\link/i, "C:\\shared") : p;
     const r = resolveCcLhcHome("C:\\Users\\casey\\link\\lhc", "C:\\Users\\casey", "win32", evilCanon);
@@ -101,7 +87,6 @@ describe("canonicalizeForContainment", () => {
     try {
       symlinkSync(real, alias, "dir");
     } catch {
-      // Environments forbidding symlink creation cannot exercise this case.
       return;
     }
     const canonical = canonicalizeForContainment(join(alias, "not-yet", "created"));

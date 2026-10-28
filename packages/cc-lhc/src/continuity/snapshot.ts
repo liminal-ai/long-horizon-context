@@ -1,24 +1,3 @@
-/**
- * Snapshot and closure over the parent-owned store (tech-design D6, LIM-145
- * AC-2.5 and AC-2.8).
- *
- * A snapshot is the accepted set of active work one handoff generation
- * carries. Closure re-reads the store after the replacement was built and
- * says, deterministically, whether that snapshot still describes the world:
- *  - work that finished before the snapshot is not carried (TC-2.8a);
- *  - work that finished during construction is reported once as terminal,
- *    never as a permanently active entry (TC-2.8b);
- *  - work that started after the snapshot means the snapshot is not a
- *    complete transfer, so closure refuses (TC-2.8c) and the caller must
- *    snapshot again or keep the old session authoritative;
- *  - an item whose state is not verified, or whose family has no qualified
- *    adapter, is never claimed (TC-2.5d): the snapshot refuses before any
- *    generation exists, and the old session stays authoritative.
- *
- * Both primitives read only the store and the caller's clock value. Nothing
- * here waits, retries, or consults elapsed time.
- */
-
 import type { AsyncWorkFamily } from "../observation/async-work.js";
 import {
   type ContinuationMechanism,
@@ -34,11 +13,6 @@ import {
   type VerifiedIdentity,
 } from "./store.js";
 
-/**
- * One item as the replacement will receive it: identity, family, carry mode,
- * state, operations, the identity the adapter verified, and the continuation
- * mechanism that identity supports with the parameters needed to invoke it.
- */
 export interface CarriedItem {
   launchId: string;
   family: AsyncWorkFamily;
@@ -51,9 +25,7 @@ export interface CarriedItem {
   scheduledForMs: number | null;
   verifiedIdentity: VerifiedIdentity;
   continuation: ContinuationMechanism;
-  /** Truthful transition the mechanism produces; a relaunched Monitor is `restarted`, never adopted. */
   transition: ContinuityTransition;
-  /** The wrapper's own relaunch of this item, once one exists: carried as is, never re-resolved. */
   relaunch: RelaunchRecord | null;
 }
 
@@ -88,22 +60,15 @@ export type ClosureRefusal =
 export interface ClosureResult {
   threadId: string;
   generation: number;
-  /** True when the snapshot is a complete transfer and the generation is now closed. */
   closed: boolean;
   refusal: ClosureRefusal | null;
-  /** Snapshot members still active: what the replacement carries. */
   carried: readonly CarriedItem[];
-  /** Snapshot members that finished during construction: represented once, as terminal. */
   terminalSinceSnapshot: readonly TerminalSinceSnapshot[];
-  /** Active work launched after the snapshot. Non-empty means the transfer is incomplete. */
   newWork: readonly CarriedItem[];
-  /** Snapshot members whose state is no longer verified. Non-empty means no claim. */
   unverified: readonly string[];
-  /** Active items with no qualified carry mode. Non-empty means no claim. */
   unqualified: readonly string[];
 }
 
-/** Only a qualified mode may be carried; callers refuse before reaching here otherwise. */
 function carried(item: ContinuityItem): CarriedItem {
   if (item.carryMode === "unqualified" || item.verifiedIdentity === null) {
     throw new Error(`cc-lhc continuity: cannot carry unqualified item ${item.launchId}`);
@@ -125,12 +90,6 @@ function carried(item: ContinuityItem): CarriedItem {
   };
 }
 
-/**
- * Accept the current active set as one handoff generation. Terminal items are
- * left behind; an unverified or unqualified active item refuses the whole
- * snapshot — no generation is allocated, no item is stamped — rather than
- * being claimed. Each item is represented exactly once, in launch order.
- */
 export function snapshotContinuity(
   store: ContinuityStore,
   input: { threadId: string; oldSessionId: string; nowMs: number },
@@ -159,11 +118,6 @@ export function snapshotContinuity(
   };
 }
 
-/**
- * Re-read the store against one snapshot and decide whether it is a complete
- * transfer. Closing marks the generation `closed`; a refusal leaves it `open`
- * for the caller to snapshot again or keep the old session.
- */
 export function closeContinuitySnapshot(
   store: ContinuityStore,
   input: { threadId: string; generation: number; nowMs: number },
@@ -202,9 +156,6 @@ export function closeContinuitySnapshot(
       } else unverified.push(item.launchId);
       continue;
     }
-    // Not a member: work the snapshot did not see. Only still-open work makes
-    // the transfer incomplete; work that already finished was never carried.
-    // It is reported by identity — an unqualified newcomer is never carried.
     if (item.state !== "terminal" && item.createdAtMs >= generation.createdAtMs) {
       if (item.carryMode === "unqualified") unqualified.push(item.launchId);
       else newWork.push(carried(item));

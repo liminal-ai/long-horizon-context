@@ -36,7 +36,6 @@ export type HelperTransfer =
   | { ok: true; agentId: string; status: "copied" | "present" }
   | { ok: false; agentId: string; reason: string };
 
-/** A session's folder from its transcript path (`<projectDir>/<sessionId>.jsonl` → `<projectDir>/<sessionId>`). */
 export function sessionDirOfTranscript(transcriptPath: string): string {
   return join(dirname(transcriptPath), basename(transcriptPath, ".jsonl"));
 }
@@ -62,17 +61,11 @@ function copyStaged(from: string, to: string): void {
   } catch (cause) {
     try {
       unlinkSync(temp);
-    } catch {
-      // never created, or already gone
-    }
+    } catch {}
     throw cause;
   }
 }
 
-/**
- * Copy one helper's transcript (and metadata, when there is one) from the
- * subagents folder it was recorded in to another. Never throws.
- */
 export function transferHelper(input: { agentId: string; fromDir: string; toDir: string }): HelperTransfer {
   const { agentId, fromDir, toDir } = input;
   const transcript = `agent-${agentId}.jsonl`;
@@ -96,7 +89,6 @@ export function transferHelper(input: { agentId: string; fromDir: string; toDir:
   }
 }
 
-/** Remove partial copies this module left in a subagents folder (a crash between copy and rename). */
 export function sweepPartialCopies(dir: string): void {
   let names: string[];
   try {
@@ -108,18 +100,10 @@ export function sweepPartialCopies(dir: string): void {
     if (!name.startsWith(".agent-") || !name.includes(PARTIAL_MARK)) continue;
     try {
       unlinkSync(join(dir, name));
-    } catch {
-      // best effort; it never looks resumable
-    }
+    } catch {}
   }
 }
 
-/**
- * Carry every helper of the previous session forward into the current one, so
- * a helper offered for resumption (or resumed and interrupted again) stays
- * resumable after every later compaction. Existing destination transcripts
- * are kept. Returns one result per helper found.
- */
 export function carryHelpersForward(input: { fromSessionDir: string; toSessionDir: string }): HelperTransfer[] {
   const fromDir = subagentsDirOf(input.fromSessionDir);
   const toDir = subagentsDirOf(input.toSessionDir);
@@ -139,12 +123,6 @@ export function carryHelpersForward(input: { fromSessionDir: string; toSessionDi
   return results;
 }
 
-/**
- * The next-prompt step: after the latest handoff generation closed, carry the
- * previous session's helpers into the current one. Skipped while the old
- * Claude is kept running unpaused (an adopt-only carryover): a helper resumed
- * there could still be writing, and two copies must never both run.
- */
 export function carryHelpersFromPreviousSession(
   store: ContinuityStore,
   threadId: string,

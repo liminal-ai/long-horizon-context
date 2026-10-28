@@ -1,51 +1,3 @@
-/**
- * Family adapters for the normal Smart Compact path (tech-design D5, LIM-145
- * AC-2.2): how each asynchronous-work family is carried across a Claude child
- * replacement, and the identity that must verify before the parent claims it.
- *
- * Grounded in the accepted Story 0 evidence for Claude Code 2.1.252
- * (`test/story0/family-matrix.md`) and the host continuation seams it proved:
- *
- *  - background_shell → `adopt`. The OS process survives the swap and keeps
- *    writing the task's output file (dev+inode on POSIX, Win32 file-object
- *    identity through the native addon on Windows); the parent's continuation is reading
- *    that verified file. The Claude-launched record (`{stdout,
- *    backgroundTaskId}` plus the "Output is being written to" sentence)
- *    exposes no pid, so the only identity the parent can verify is the
- *    output file: POSIX dev+inode, proved stable across appends and
- *    discriminating a replaced file. Story 0's Windows adoption verified a
- *    manifest pid + native creation identity that the Story 0 harness's own
- *    launcher wrote; the normal-path record carries no such manifest and no
- *    Windows output identity is proved, so Windows shells stay unqualified
- *    with that exact mismatch named.
- *  - agent → `reconstruct` through `SendMessage(agentId)`, which resumes the
- *    saved transcript `<sessionDir>/subagents/agent-<agentId>.jsonl`.
- *  - workflow → `reconstruct` through `Workflow({resumeFromRunId, scriptPath})`;
- *    the run's `journal.jsonl` under `transcriptDir` is the durable record.
- *  - monitor → `reconstruct` by relaunch (owner decision). The watch dies with
- *    the child and its surviving process has no reader; the one continuation
- *    Claude Code offers is running the Monitor again. The adapter qualifies a
- *    live Monitor only when its exact launch specification resolves from the
- *    old session's rollout by the launching tool-use id; the durable identity
- *    is that reference (rollout path + tool-use id), never the command text,
- *    and the command is resolved again at invocation time. It runs through
- *    the shell Claude Code would use (`/bin/sh`; Git Bash on Windows), so a
- *    Windows host without Git Bash closes the Monitor truthfully instead. The relaunch is
- *    reported as `restarted`, fenced once per handoff generation. A Monitor
- *    whose launch cannot be resolved is closed with one truthful `failed`
- *    terminal outcome so Smart Compact continues without it.
- *  - scheduled_wakeup → `rearm` from the launch's durable scheduled time and
- *    launching tool-use id, surfaced at the next real turn.
- *
- * A qualified result always names its continuation mechanism, not only an
- * identity artifact. Operations are declared only where current evidence
- * supports them: a bounded read of a verified POSIX output file for an
- * adopted shell. No family declares `stop` (no verified process identity
- * exists on this path) and none declares `status`. A verification that fails
- * leaves the item unqualified. Nothing here retries, waits, replays, stores
- * a command, or reads a clock.
- */
-
 import { readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { type ReadFileIdentityResult, readExactFileIdentity } from "cc-lhc-native";
@@ -72,24 +24,16 @@ export type PathFact =
 
 export interface AdapterContext {
   platform: NodeJS.Platform;
-  /** The old session's rollout path; agent transcripts live in the directory named after it. */
   sourceRolloutPath: string | undefined;
-  /** Filesystem seam (tests); production stats the real path. */
   statPath?: (path: string) => PathFact;
-  /** Rollout read seam (tests); production reads the real file. */
   readRollout?: (path: string) => string | null;
-  /** The shell a Monitor relaunch would run through; resolved for `platform` when omitted. */
   relaunchShell?: RelaunchShellResolution;
-  /** Win32 file-object identity seam (tests); production reads through the native addon. */
   readFileIdentity?: (path: string) => ReadFileIdentityResult;
-  /** Pid of the still-live old claude child, for adopted-task discovery (LIM-149). */
   oldChildPid?: number;
-  /** Discovery seam (tests); production walks /proc for the fd holder. */
   discoverTaskProcess?: typeof discoverAdoptedTaskProcess;
 }
 
 export type MonitorLaunchUnresolvable =
-  /** No shell to relaunch through: on Windows, Git Bash was not found (as Claude Code resolves it). */
   | "relaunch_shell_unavailable"
   | "no_rollout_binding"
   | "rollout_unreadable"
@@ -97,7 +41,6 @@ export type MonitorLaunchUnresolvable =
   | "launch_ambiguous"
   | "launch_incomplete";
 
-/** The exact Monitor launch specification as the old session issued it. Held in memory only. */
 export interface MonitorLaunchSpec {
   command: string;
   input: Record<string, unknown>;
@@ -115,12 +58,6 @@ function readRolloutReal(path: string): string | null {
   }
 }
 
-/**
- * Resolve the Monitor launch `tool_use` with this id from the rollout: exactly
- * one assistant `tool_use` named `Monitor` with a non-empty `command`. Called
- * at qualification (to prove the reference resolves) and again at invocation,
- * so the command text never has to be stored anywhere.
- */
 export function resolveMonitorLaunch(
   rolloutPath: string | undefined,
   toolUseId: string | null,
@@ -162,10 +99,7 @@ export function resolveMonitorLaunch(
 export type QualificationRefusal =
   | "no_continuation_facts"
   | "no_session_binding"
-  /** Windows: the normal-path shell record exposes no manifest pid/creation identity and no Windows output identity is proved. */
-  /** win32: the native addon that reads Win32 file identity is unavailable, so nothing is verified. */
   | "win32_file_identity_unavailable"
-  /** Monitor: its exact launch specification does not resolve from the rollout binding. */
   | "monitor_launch_unresolvable"
   | "output_file_missing"
   | "output_file_unreadable"
@@ -188,7 +122,6 @@ export type Qualification =
 
 export interface FamilyAdapter {
   readonly family: AsyncWorkFamily;
-  /** Verify the item's current normal-path identity; never mutates anything. */
   qualify(item: ContinuityItem, context: AdapterContext): Qualification;
 }
 
@@ -212,13 +145,6 @@ type Refusal = Extract<Qualification, { ok: false }>;
 
 export type OutputIdentity = Extract<VerifiedIdentity, { kind: "posix_output" | "win32_output" }>;
 
-/**
- * Output-file identity per Story 0: dev+inode on Linux/macOS (Node's stat,
- * proved there); on Windows the Win32 file-object identity read through the
- * native addon (volume serial + file id) — never Node's dev/ino, which Story 0
- * rejected as Windows proof. A different object at the same path is a
- * different identity, so a replaced or reused path refuses carryover.
- */
 export function verifyOutputFile(context: AdapterContext, path: string | undefined): Refusal | OutputIdentity {
   if (path === undefined) return { ok: false, reason: "no_continuation_facts" };
   if (context.platform === "win32") {
@@ -266,7 +192,6 @@ const monitor: FamilyAdapter = {
   qualify(item, context) {
     const resolved = resolveMonitorLaunch(context.sourceRolloutPath, item.toolUseId, context.readRollout);
     if (!resolved.ok) return { ok: false, reason: "monitor_launch_unresolvable" };
-    // Only the reference is kept; `resolved.spec` is dropped here on purpose.
     const identity: VerifiedIdentity = {
       kind: "monitor_launch",
       toolUseId: item.toolUseId as string,
@@ -282,7 +207,6 @@ const monitor: FamilyAdapter = {
   },
 };
 
-/** `<projects>/<key>/<sessionId>.jsonl` → `<projects>/<key>/<sessionId>` (where the host keeps subagents). */
 export function sessionDirOfRollout(rolloutPath: string): string | undefined {
   return rolloutPath.endsWith(".jsonl") ? rolloutPath.slice(0, -".jsonl".length) : undefined;
 }
@@ -372,7 +296,6 @@ export function sameIdentity(a: VerifiedIdentity, b: VerifiedIdentity): boolean 
 }
 
 export interface QualificationOutcome {
-  /** Items closed here with one truthful terminal outcome, so the seam continues without them. */
   terminalized: Array<{
     launchId: string;
     family: AsyncWorkFamily;
@@ -388,13 +311,6 @@ export interface QualificationOutcome {
   refused: Array<{ launchId: string; family: AsyncWorkFamily; reason: QualificationRefusal }>;
 }
 
-/**
- * Run every family adapter over the thread's active items, once, before a
- * snapshot. A verified item is qualified (or re-verified) in the store; an item
- * that fails stays unqualified, and one that was qualified earlier but no
- * longer verifies — or whose identity changed — is marked unverified so the
- * snapshot refuses it. Terminal items are never touched.
- */
 export function qualifyActiveItems(
   store: ContinuityStore,
   threadId: string,
@@ -405,10 +321,6 @@ export function qualifyActiveItems(
   for (const item of store.listItems(threadId)) {
     if (item.state === "terminal") continue;
     if (item.family === "monitor" && item.relaunch !== null && item.verifiedIdentity !== null) {
-      // F4: the wrapper already relaunched this Monitor and owns its process
-      // and output. The current rollout never holds that launch (the wrapper
-      // made it, not Claude), so it is not resolved again: it carries as is,
-      // still read through its fence and stopped by its recorded identity.
       store.setCarryMode({
         threadId,
         launchId: item.launchId,
@@ -432,8 +344,6 @@ export function qualifyActiveItems(
         ? resolveMonitorLaunch(context.sourceRolloutPath, item.toolUseId, context.readRollout)
         : { ok: false, reason: "relaunch_shell_unavailable" };
       if (!resolved.ok) {
-        // No command is invented and the seam is not blocked: the Monitor's
-        // original run ended with the child, and nothing can restart it.
         store.recordTerminal({
           threadId,
           launchId: item.launchId,
@@ -463,11 +373,6 @@ export function qualifyActiveItems(
         verifiedIdentity: result.verifiedIdentity,
         nowMs,
       });
-      // LIM-149: while the old child is still alive, pin the adopted shell's
-      // real task process (the direct child holding the verified output file)
-      // so its exit record stays readable after its supervisor is paused.
-      // Same on every platform. Without the pin the adopt still stands on
-      // file identity; a mixed carryover then cannot pause the host for it.
       if (
         item.family === "background_shell" &&
         result.carryMode === "adopt" &&

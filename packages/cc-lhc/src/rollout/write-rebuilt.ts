@@ -33,18 +33,7 @@ export interface WriteRebuiltRolloutInput {
   projectsRoot?: string;
   deps?: RolloutWriteDeps;
   readSourceFn?: (path: string) => Promise<string>;
-  /**
-   * When set, append EXACTLY ONE durable operation receipt as a trailing
-   * runtime-note line (e.g. "[lhc compact:auto] trigger context 508k; rebuilt
-   * LHC view 247k (240k target)."). Session ids and recovery detail belong in
-   * wrapper logs/recovery artifacts, not here.
-   */
   receipt?: { text: string };
-  /**
-   * Runs after the session id, path and prefix fence are known and BEFORE any
-   * byte of the file is written — where the caller records the rebuilt session
-   * against its thread as not yet accepted. A throw aborts the write.
-   */
   beforeWrite?: (reservation: RebuiltRolloutReservation) => Promise<void>;
 }
 
@@ -59,21 +48,8 @@ export interface WriteRebuiltRolloutResult {
   rolloutPath: string;
   lineCount: number;
   expectedReintakeLines: number;
-  /**
-   * Lines the handoff capture must hard-skip as replayed served-view content.
-   * A trailing swap receipt is NOT among them: it is genuinely new history
-   * that must map into the thread record (as runtime_note) so later rebuilds
-   * re-serve it.
-   */
   replayedPrefixLines: number;
-  /** Content-verifiable fence over the exact serialized prefix bytes. */
   prefixBoundary: PrefixBoundaryVerified;
-  /**
-   * Exact byte length of the whole written file (prefix + trailing receipt).
-   * Diagnostic metadata: growth past it identifies genuine child appends, but
-   * it is NOT a readiness gate — a healthy resumed child renders the loaded
-   * history without appending until the next interaction.
-   */
   totalByteLength: number;
 }
 
@@ -99,9 +75,6 @@ export async function writeRebuiltRollout(input: WriteRebuiltRolloutInput): Prom
     envelope,
   };
   const prefixLines = buildRolloutLines(rebuildInput);
-  // Prefix fence covers served projection/band lines only. Serialize prefix
-  // alone so the content boundary matches the leading file bytes before any
-  // trailing runtime receipt.
   const prefixSerialized = serializeRolloutLines(prefixLines);
   const replayedPrefixLines = prefixLines.length;
   const prefixBoundary = computeVerifiedPrefixBoundary(prefixSerialized, replayedPrefixLines);

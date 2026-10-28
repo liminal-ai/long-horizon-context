@@ -17,51 +17,21 @@ import { createReplayDedupeState, MAX_THREAD_SIGNATURES, type ReplayDedupeState 
 export interface LineageSessionEntry {
   threadId: string;
   updatedAt: string;
-  /**
-   * Content-verifiable rebuilt-prefix fence (or explicit none/unknown).
-   * `unknown` must not be treated as known-zero skip.
-   */
   prefix: PrefixBoundary;
-  /**
-   * Convenience: verified line count, else 0. Callers that need skip semantics
-   * must inspect `prefix.kind` — do not treat this alone as a trust decision.
-   */
   replayedPrefixLines: number;
-  /**
-   * False for a rebuilt session recorded before its file was written and not
-   * yet promoted at the switch. An unaccepted session belongs to its thread
-   * but is never the thread's current session.
-   */
   accepted: boolean;
 }
 
-/** One session binding of a thread, with its host-local prefix proof. */
 export interface ThreadSessionRow {
   sessionId: string;
   updatedAt: string;
   prefix: PrefixBoundary;
-  /** See {@link LineageSessionEntry.accepted}. */
   accepted: boolean;
 }
 
 export interface RecordSessionThreadOptions {
-  /**
-   * When set, persist (or overwrite) the prefix provenance/boundary.
-   * When omitted on update, an existing boundary is preserved so ordinary
-   * re-binds after resume do not clear a rebuilt-session fence.
-   */
   prefix?: PrefixBoundary;
-  /**
-   * @deprecated Use `prefix: { kind: "verified", ... }` from writeRebuiltRollout.
-   * Count-only registration is rejected for skip trust; prefer full boundary.
-   */
   replayedPrefixLines?: number;
-  /**
-   * Only with `prefix`: false records a rebuilt session as not yet accepted
-   * (written before its file exists); true or omitted records it accepted,
-   * which is how a reserved rebuild is promoted at the switch. An ordinary
-   * rebind never changes acceptance.
-   */
   accepted?: boolean;
 }
 
@@ -85,8 +55,6 @@ const defaultDeps = (): Required<Pick<LineageDbDeps, "nowFn">> & LineageDbDeps =
   existsFn: (path: string) => existsSync(path),
 });
 
-/** Only proven on-disk corruption authorizes quarantine. Busy/locked/schema
- * errors leave the original file untouched and propagate to the caller. */
 function isProvenSqliteCorruption(cause: unknown): boolean {
   if (typeof cause !== "object" || cause === null) return false;
   const record = cause as { code?: unknown; message?: unknown };
@@ -110,17 +78,7 @@ function tableHasColumn(db: DatabaseSync, table: string, column: string): boolea
   return rows.some((row) => row.name === column);
 }
 
-/**
- * Schema notes (correction 5):
- * - `prefix_provenance`: none | unknown | verified
- * - Known-none is distinct from unknown legacy state
- * - Migrating pre-c5 DBs marks existing rows `unknown` so a DEFAULT 0 line
- *   count is never silently trusted as "no synthetic prefix"; capture refuses
- *   unknown until reconciliation establishes `none` or `verified`
- */
 function initLineageSchema(db: DatabaseSync): void {
-  // busy_timeout FIRST so concurrent governor-receipt / lineage openers wait
-  // instead of instant SQLITE_BUSY while journal_mode=WAL takes its write lock.
   db.exec("PRAGMA busy_timeout = 10000");
   const modeRow = db.prepare("PRAGMA journal_mode").get() as { journal_mode: string } | undefined;
   const mode = String(modeRow?.journal_mode ?? "").toLowerCase();
@@ -139,18 +97,14 @@ function initLineageSchema(db: DatabaseSync): void {
     )
   `);
 
-  // Pre-F2 rows were all recorded at (or after) acceptance: default accepted.
   if (!tableHasColumn(db, "cc_session_lineage", "rebuild_unaccepted")) {
     db.exec("ALTER TABLE cc_session_lineage ADD COLUMN rebuild_unaccepted INTEGER NOT NULL DEFAULT 0");
   }
 
-  // Pre-review-3: only thread_id/updated_at
   if (!tableHasColumn(db, "cc_session_lineage", "replayed_prefix_lines")) {
     db.exec("ALTER TABLE cc_session_lineage ADD COLUMN replayed_prefix_lines INTEGER");
   }
   if (!tableHasColumn(db, "cc_session_lineage", "prefix_provenance")) {
-    // Existing rows become unknown — even if replayed_prefix_lines was 0 under
-    // the old NOT NULL DEFAULT 0 migration (that erased the none/unknown split).
     db.exec("ALTER TABLE cc_session_lineage ADD COLUMN prefix_provenance TEXT NOT NULL DEFAULT 'unknown'");
   }
   if (!tableHasColumn(db, "cc_session_lineage", "replayed_prefix_bytes")) {
@@ -160,7 +114,6 @@ function initLineageSchema(db: DatabaseSync): void {
     db.exec("ALTER TABLE cc_session_lineage ADD COLUMN replayed_prefix_sha256 TEXT");
   }
 
-  // Rows that only have a line count (no digest) cannot be verified — force unknown.
   db.exec(`
     UPDATE cc_session_lineage
     SET prefix_provenance = 'unknown',
@@ -172,17 +125,6 @@ function initLineageSchema(db: DatabaseSync): void {
            OR replayed_prefix_bytes IS NULL)
   `);
 
-  // One row per thread: a swap this wrapper observed accepted (capture
-  // ready-after-replay and a live child) whose registry current pointer did
-  // not advance. It records an acceptance that already happened; the next
-  // launch reconciles it into the registry under the thread lock.
-  //
-  // It never maps an alias to a thread and never overrides registry alias
-  // ownership — the registry alone answers which thread an alias belongs to.
-  // `previous_session_id` is the registry current this host observed when the
-  // advance failed: the row may repair only that exact predecessor state, so a
-  // pointer that moved on afterwards is never rolled backwards. A row written
-  // before that column existed carries NULL and can repair nothing.
   db.exec(`
     CREATE TABLE IF NOT EXISTS cc_pending_current_session (
       thread_id TEXT PRIMARY KEY,
@@ -192,7 +134,6 @@ function initLineageSchema(db: DatabaseSync): void {
     )
   `);
 
-  // Pre-amendment rows recorded no predecessor; NULL keeps them settle-only.
   if (!tableHasColumn(db, "cc_pending_current_session", "previous_session_id")) {
     db.exec("ALTER TABLE cc_pending_current_session ADD COLUMN previous_session_id TEXT");
   }
@@ -219,9 +160,7 @@ export function openLineageDatabase(dbPath: string, deps: LineageDbDeps = {}): D
     } catch (cause) {
       try {
         db.close();
-      } catch {
-        // best effort
-      }
+      } catch {}
       throw cause;
     }
   };
@@ -233,9 +172,7 @@ export function openLineageDatabase(dbPath: string, deps: LineageDbDeps = {}): D
     if (merged.existsFn?.(dbPath) === true) {
       try {
         merged.renameFn?.(dbPath, `${dbPath}.corrupt-${String(Date.now())}`);
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
     return tryOpen();
   }
@@ -330,11 +267,9 @@ function prefixFromRow(row: {
 }): PrefixBoundary {
   const prov = row.prefix_provenance ?? "unknown";
   if (prov === "none") {
-    // Strict: contradictory none rows become unknown.
     return isCanonicalNoneRow(row) ? prefixBoundaryNone() : prefixBoundaryUnknown();
   }
   if (prov === "verified") {
-    // Strict: no clamp/floor/normalize of forged negatives or fractional values.
     const parsed = parseStoredVerifiedPrefix(
       row.replayed_prefix_lines,
       row.replayed_prefix_bytes,
@@ -366,7 +301,6 @@ function prefixToColumns(prefix: PrefixBoundary): {
   return { provenance: "unknown", lines: null, bytes: null, sha256: null };
 }
 
-/** Full lineage entry for a rollout session id (thread + prefix provenance). */
 export function lookupSessionLineage(
   dbPath: string,
   sessionId: string,
@@ -396,11 +330,6 @@ export function lookupSessionLineage(
   return entry;
 }
 
-/**
- * The thread a pre-registry lineage row bound this session to. Read ONLY by
- * the alias map's one-way import on a first registry miss; after the import
- * the registry answers thread identity and this column never overrides it.
- */
 export function threadForLegacySession(
   dbPath: string,
   sessionId: string,
@@ -409,11 +338,6 @@ export function threadForLegacySession(
   return lookupSessionLineage(dbPath, sessionId, deps)?.threadId;
 }
 
-/**
- * Every Claude session this thread has been bound to, oldest binding first.
- * Host-local detail: the rows carry the prefix proof and the pre-registry
- * lineage the alias map imports one way on its first miss.
- */
 export function threadSessionRows(dbPath: string, threadId: string, deps: LineageDbDeps = {}): ThreadSessionRow[] {
   const rows: ThreadSessionRow[] = [];
   withLineageDb(dbPath, deps, (db) => {
@@ -446,11 +370,6 @@ export function threadSessionRows(dbPath: string, threadId: string, deps: Lineag
   return rows;
 }
 
-/**
- * Every rebuilt session this host registered: a session is rebuilt exactly
- * when its lineage row carries a verified rebuilt-prefix fence (written only
- * by registerRebuiltSessionLineage). Sessions Claude created carry none/unknown.
- */
 export function rebuiltSessionRows(
   dbPath: string,
   deps: LineageDbDeps = {},
@@ -487,21 +406,15 @@ export function rebuiltSessionRows(
   return rows;
 }
 
-/**
- * Promote a rebuilt session recorded as not yet accepted. A no-op for a session
- * that is already accepted or has no row.
- */
 export function markSessionAccepted(dbPath: string, sessionId: string, deps: LineageDbDeps = {}): void {
   withLineageDb(dbPath, deps, (db) => {
     db.prepare("UPDATE cc_session_lineage SET rebuild_unaccepted = 0 WHERE rollout_session_id = ?").run(sessionId);
   });
 }
 
-/** A swap accepted by this host whose registry pointer has not caught up. */
 export interface PendingCurrentSession {
   threadId: string;
   sessionId: string;
-  /** Registry current observed when the advance failed; null when unobserved. */
   previousSessionId: string | null;
   acceptedAt: string;
 }
@@ -542,9 +455,6 @@ export function readPendingCurrentSession(
       | { thread_id: string; session_id: string; previous_session_id: string | null; accepted_at: string }
       | undefined;
     if (row === undefined) return;
-    // A row that does not carry an accepted session names nothing this launch
-    // can act on. Corrupt recovery bookkeeping is unclaimed work, not a wedge:
-    // the registry pointer and the files on disk are the durable facts.
     if (typeof row.session_id !== "string" || row.session_id === "") return;
     pending = {
       threadId,
@@ -556,17 +466,12 @@ export function readPendingCurrentSession(
   return pending;
 }
 
-/**
- * Drops any pending recovery detail for a thread: a newer acceptance reached
- * the registry, so an older unapplied one can no longer repair anything.
- */
 export function supersedePendingCurrentSession(dbPath: string, threadId: string, deps: LineageDbDeps = {}): void {
   withLineageDb(dbPath, deps, (db) => {
     db.prepare("DELETE FROM cc_pending_current_session WHERE thread_id = ?").run(threadId);
   });
 }
 
-/** Settles the exact pending acceptance; a newer one is left for its own pass. */
 export function clearPendingCurrentSession(
   dbPath: string,
   threadId: string,
@@ -589,7 +494,6 @@ export function recordSessionThread(
   options: RecordSessionThreadOptions = {},
 ): void {
   const { nowFn } = { ...defaultDeps(), ...deps };
-  // Prefer explicit PrefixBoundary; count-only is stored as unknown (not trusted skip).
   let setPrefix = false;
   const unaccepted = options.accepted === false ? 1 : 0;
   let cols = prefixToColumns(prefixBoundaryNone());
@@ -597,7 +501,6 @@ export function recordSessionThread(
     setPrefix = true;
     cols = prefixToColumns(options.prefix);
   } else if (options.replayedPrefixLines !== undefined) {
-    // Deprecated path: never promote count-only to verified.
     setPrefix = true;
     cols =
       options.replayedPrefixLines > 0
@@ -608,9 +511,6 @@ export function recordSessionThread(
   withLineageDb(dbPath, deps, (db) => {
     db.exec("BEGIN");
     try {
-      // On conflict: always refresh thread binding; only overwrite prefix when
-      // the caller explicitly supplied one (rebuild registration / fresh none).
-      // Ordinary resume re-binds must not clear a stored verified fence.
       if (setPrefix) {
         db.prepare(
           `INSERT INTO cc_session_lineage (
@@ -637,8 +537,6 @@ export function recordSessionThread(
           unaccepted,
         );
       } else {
-        // Ordinary rebind: update an existing row's thread binding only.
-        // Do NOT insert a missing target as known-none (that poisons later resume).
         const updated = db
           .prepare(
             `UPDATE cc_session_lineage
@@ -651,8 +549,6 @@ export function recordSessionThread(
             ? Number((updated as { changes: number }).changes)
             : 0;
         if (changes === 0) {
-          // No row: leave absent. Callers that need a new row must pass explicit
-          // prefix (fresh none or verified rebuild).
         }
       }
       db.exec("COMMIT");
@@ -706,11 +602,6 @@ export function appendThreadSignatures(
   });
 }
 
-/**
- * Threads whose recorded replay signatures overlap the given ones, most
- * overlapping first. Read only to link a rebuilt transcript that predates its
- * own lineage record back to the thread it was rebuilt from.
- */
 export function threadsMatchingSignatures(
   dbPath: string,
   signatures: readonly string[],
@@ -765,35 +656,17 @@ export function safeLoadThreadSignatures(
   }
 }
 
-/**
- * Launch class for provenance decisions.
- * - fresh: wrapper-created genuinely new session (fresh / explicit_new only)
- * - existing: resume, continue, fork, rebuilt handoff, or any pre-existing id
- */
 export type LaunchClass = "fresh" | "existing";
 
 export interface BindCaptureThreadInput {
   sessionId: string;
-  /**
-   * The thread this session belongs to, resolved through the registry alias
-   * map at launch. cc-lhc storage never answers thread identity here.
-   */
   threadId: string;
-  /**
-   * True when the launch created this thread. Only a wrapper-created fresh
-   * session on a brand-new thread may establish known-none provenance.
-   */
   threadCreatedAtLaunch: boolean;
-  /**
-   * Whether this launch is allowed to establish known-none on a new thread.
-   * Defaults to `existing` (fail closed) when omitted.
-   */
   launchClass?: LaunchClass;
   registryPath?: string;
   lineageDbPath?: string;
   log?: (message: string) => void;
   logError?: (message: string) => void;
-  /** Structured lineage failure (not log substring). */
   onLineageFailure?: (reason: string) => void;
   lineageDeps?: LineageDbDeps;
 }
@@ -801,36 +674,22 @@ export interface BindCaptureThreadInput {
 export interface BindCaptureThreadResult {
   threadRef: ThreadRef;
   isExistingThread: boolean;
-  /**
-   * Prefix provenance for **input.sessionId** (the session being bound).
-   * Loaded from durable lineage so external resume after process exit can
-   * content-verify before skipping served projection.
-   */
   prefix: PrefixBoundary;
-  /** @deprecated Prefer `prefix`; verified line count only when kind=verified. */
   replayedPrefixLines: number;
   dedupeState: ReplayDedupeState;
   persistSignatures: (signatures: string[]) => Promise<LineageOutcome>;
 }
 
-/**
- * Bind one Claude session to the thread the registry already named, and load
- * the host-local capture detail that binding needs: the session's own prefix
- * proof and the thread's replay signatures. Thread identity is an input here,
- * never a lookup.
- */
 export async function bindCaptureThread(input: BindCaptureThreadInput): Promise<BindCaptureThreadResult> {
   const dbPath = input.lineageDbPath ?? defaultLineageDbPath();
   const registryPath = input.registryPath ?? defaultRegistryPath();
   const log = input.log ?? (() => {});
   const logError = input.logError ?? (() => {});
   const onLineageFailure = input.onLineageFailure ?? (() => {});
-  // Default existing: never establish known-none without an explicit fresh launch.
   const launchClass: LaunchClass = input.launchClass ?? "existing";
   const threadId = input.threadId;
 
   let lineageReadFailed = false;
-  /** The session's own stored prefix proof, when it already has a row. */
   let targetPrefix: PrefixBoundary | undefined;
   try {
     targetPrefix = lookupSessionLineage(dbPath, input.sessionId, input.lineageDeps)?.prefix;
@@ -847,12 +706,6 @@ export async function bindCaptureThread(input: BindCaptureThreadInput): Promise<
   };
 
   if (!input.threadCreatedAtLaunch) {
-    /**
-     * Provenance for an existing binding:
-     * - any lineage read failure → unknown
-     * - the session has its own row → its stored prefix
-     * - no row yet (first launch of this session on a known thread) → unknown
-     */
     const prefix = lineageReadFailed ? prefixBoundaryUnknown() : (targetPrefix ?? prefixBoundaryUnknown());
     const prefixNote =
       prefix.kind === "verified"
@@ -861,7 +714,6 @@ export async function bindCaptureThread(input: BindCaptureThreadInput): Promise<
           ? " (prefix=unknown)"
           : " (prefix=none)";
     log(`cc-lhc: continuing thread ${threadId} for session ${input.sessionId}${prefixNote}`);
-    // Re-bind thread only — do not clear a stored rebuilt-prefix fence.
     const recorded = await safeRecordSessionThread(dbPath, input.sessionId, threadId, logError, input.lineageDeps);
     if (!recorded.ok) onLineageFailure(recorded.reason);
     const loaded = safeLoadThreadSignatures(dbPath, threadId, logError, input.lineageDeps);
@@ -876,8 +728,6 @@ export async function bindCaptureThread(input: BindCaptureThreadInput): Promise<
     };
   }
 
-  // Known-none only for wrapper-created genuinely fresh launches with healthy
-  // lineage I/O. Lineage read failure or existing-class launch → unknown.
   const establishNone = launchClass === "fresh" && !lineageReadFailed;
   const newPrefix = establishNone ? prefixBoundaryNone() : prefixBoundaryUnknown();
   const recorded = await safeRecordSessionThread(dbPath, input.sessionId, threadId, logError, input.lineageDeps, {
@@ -904,5 +754,4 @@ export async function bindCaptureThread(input: BindCaptureThreadInput): Promise<
 
 export { defaultLineageDbPath } from "./paths.js";
 
-/** @deprecated use defaultLineageDbPath */
 export const defaultLineagePath = defaultLineageDbPath;

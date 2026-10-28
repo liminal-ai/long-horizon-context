@@ -1,8 +1,3 @@
-/**
- * `--token-family` for commands that run without a live wrapper session.
- * Same rule as core's CLI: required, no default, unknown slug is a usage error.
- */
-
 import { FAMILIES_CATALOG } from "lhc";
 
 export function knownTokenFamilySlugs(): string {

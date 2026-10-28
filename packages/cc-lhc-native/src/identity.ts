@@ -60,10 +60,6 @@ function failure(code: IdentityFailureCode, message: string): ReadIdentityResult
   return { ok: false, code, message };
 }
 
-/**
- * Validate raw addon output; fail closed (native_error) on any malformed
- * shape rather than trusting the artifact.
- */
 export function normalizeNativeResult(raw: unknown, pid: number, platform: IdentityPlatform): ReadIdentityResult {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     return failure("native_error", "addon returned a non-object result");
@@ -94,12 +90,6 @@ export function normalizeNativeResult(raw: unknown, pid: number, platform: Ident
 
 export type ExactIdentityReader = (pid: number) => ReadIdentityResult;
 
-/**
- * Build a reader over the native addon. Loading happens once, lazily; loader
- * failures surface as per-call fail-closed results (unsupported_platform for
- * targets outside the manifest, addon_unavailable for missing/invalid
- * artifacts), never as throws, so integration code has one uniform contract.
- */
 export function createExactIdentityReader(seams: LoaderSeams = {}): ExactIdentityReader {
   let cached: { addon: NativeIdentityAddon; platform: IdentityPlatform } | null = null;
   let loadFailure: ReadIdentityResult | null = null;
@@ -140,7 +130,6 @@ export function createExactIdentityReader(seams: LoaderSeams = {}): ExactIdentit
 
 let defaultReader: ExactIdentityReader | null = null;
 
-/** Production-default reader: real platform, real manifest, real artifact. */
 export function readExactProcessIdentity(pid: number): ReadIdentityResult {
   if (defaultReader === null) {
     defaultReader = createExactIdentityReader();
@@ -152,12 +141,6 @@ export function exactIdentitiesEqual(a: ExactProcessIdentity, b: ExactProcessIde
   return a.platform === b.platform && a.pid === b.pid && a.bootId === b.bootId && a.starttime === b.starttime;
 }
 
-/**
- * Project to the schema cc-lhc descriptors/owners already store
- * (pid + bootId + starttime, stable key order). starttime stays a digits-only
- * string on every platform, so parseStoredProcessIdentity keeps working
- * unchanged; XP2 may additionally persist the platform tag.
- */
 export function toPortableProcessIdentity(id: ExactProcessIdentity): {
   pid: number;
   bootId: string;

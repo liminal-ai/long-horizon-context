@@ -90,7 +90,6 @@ describe("dispatchLhcCommand", () => {
     expect(text).toContain("Claude native auto-compact: may run — explicit --autocompact passed through");
     expect(text).toContain("LHC history since last Smart Compact: 1,200 estimated tokens");
     expect(text).toContain("/smart-prune: 400 estimated tokens in eligible tool results");
-    // Human language only: no internal field labels leak.
     for (const internal of [
       "tailTokens",
       "zoneTokens",

@@ -1,14 +1,3 @@
-/**
- * Formal Claude rollout observation adapter.
- *
- * One interpretation of each parsed line yields:
- *  - ordered canonical LHC intake events
- *  - typed host lifecycle signals
- *
- * Lifecycle aggregation (sampling/turn) is fold-over-lines only; intake stays
- * per-block in native order.
- */
-
 import type { MessageEventInput } from "lhc";
 
 import { providerContextFromUsage } from "../governor/provider-context.js";
@@ -44,10 +33,6 @@ import {
 import { noteAssistantModel, type SessionTokenFamilyState } from "./token-family.js";
 import type { LifecycleSignal, ObservationStats, TurnOpenReason, TurnSettleReason } from "./types.js";
 
-/**
- * Mutable turn-state fold shared across observe calls for one capture generation.
- * classifyTurnSignal remains a pure state assertion; lifecycle emits only edges.
- */
 export interface TurnFoldState {
   open: boolean;
 }
@@ -60,54 +45,18 @@ export interface ObserveLineOptions {
   expectedSessionId?: string;
   samplingDedupe?: SamplingDedupeState;
   generation?: number;
-  /** When provided, turn lifecycle emissions are edge-only against this fold. */
   turnFold?: TurnFoldState;
-  /**
-   * Live post-measurement estimate fold. Shared across lines for one capture
-   * generation so production emits cumulative growth after the latest sampling.
-   */
   estimateFold?: PostMeasurementEstimateFold;
-  /**
-   * Rebuilt historical prefix: still parse + attribute, but do not emit
-   * conversation/runtime lifecycle facts and do not mutate live sampling/turn
-   * folds. Capture-degraded / session-mismatch validation still flow.
-   */
   suppressRuntimeLifecycle?: boolean;
-  /**
-   * Open asynchronous work derived from the same ordered lines. Shared across
-   * one capture generation, like the sampling and turn folds. Absent for
-   * callers that do not track it.
-   */
   asyncWorkFold?: AsyncWorkFold;
-  /**
-   * Session token-family fold. Updated from every captured assistant model id.
-   * Absent for callers that do not track it (tests of mapping only).
-   */
   tokenFamily?: SessionTokenFamilyState;
-  /**
-   * When true (live capture session path): do not emit pressure-affecting
-   * signals (`post_measurement_estimate`, `turn_settled`) into `lifecycle`.
-   * Put them in `deferredPressure` instead so the caller can publish only
-   * after replay dedupe + successful intake. Sampling folds still update;
-   * mode:add is not precomputed (caller derives adds from accepted events).
-   */
   deferPressureLifecycle?: boolean;
 }
 
 export interface ObserveLineResult {
   events: MessageEventInput[];
   lifecycle: LifecycleSignal[];
-  /**
-   * Pressure-affecting signals held when `deferPressureLifecycle` is set:
-   * sampling `post_measurement_estimate` mode:set and `turn_settled` only.
-   * mode:add is never pre-held — derive from post-dedupe accepted events.
-   */
   deferredPressure: LifecycleSignal[];
-  /**
-   * True when this line would have emitted a post-measurement mode:add under
-   * immediate observe (authoritative sampling already seen, non-sampling-complete
-   * content with payload). Session uses this with accepted-event bytes.
-   */
   wouldPostMeasurementAdd: boolean;
   stats: ObservationStats;
   unknownShape?: boolean;
@@ -159,7 +108,6 @@ function assistantPlainText(item: RolloutLineItem): string {
     .join("");
 }
 
-/** Exact Claude context-limit rejection. Generic/auth/rate-limit errors are not this. */
 export function isClaudePromptTooLongRejection(item: RolloutLineItem): boolean {
   if (item.isSidechain === true) return false;
   if (!isAssistantLine(item)) return false;
@@ -209,27 +157,10 @@ function turnSettleReason(item: RolloutLineItem): TurnSettleReason {
 
 function unknownConversationShapeKey(item: RolloutLineItem, lineIndex: number): string {
   const type = typeof item.type === "string" && item.type !== "" ? item.type : "none";
-  // Bounded key for sticky health; line index is for logs only (not in key).
   void lineIndex;
   return `unknown_shape:type=${type}`;
 }
 
-/**
- * Interpret one rollout line once → ordered events + lifecycle signals.
- *
- * On a completing assistant line: sampling_observed (final), then the completed
- * response's own contribution to next-request growth (provider output_tokens or
- * host byte estimate), then turn_settled when applicable.
- *
- * After an authoritative sampling, subsequent captured tool results /
- * assistant / user / runtime content accumulate as post_measurement_estimate
- * adds. Sidechains, synthetic resume chrome, meta, and suppressed prefixes do
- * not contribute (mapRolloutLine already drops them from events).
- *
- * When `deferPressureLifecycle` is set (live capture path), estimate/settled
- * signals are held so the session can publish them only for events accepted by
- * replay dedupe and successfully intaken into canonical LHC.
- */
 export function observeRolloutLine(
   item: RolloutLineItem,
   lineIndex = 0,
@@ -244,7 +175,6 @@ export function observeRolloutLine(
 
   const pushEstimate = (signal: Extract<LifecycleSignal, { kind: "post_measurement_estimate" }>): void => {
     if (deferPressure) {
-      // mode:add is never held here — session rebuilds adds from accepted events.
       if (signal.mode === "add") return;
       deferredPressure.push(signal);
       return;
@@ -289,16 +219,11 @@ export function observeRolloutLine(
 
   const suppressRuntime = options.suppressRuntimeLifecycle === true;
 
-  // Rebuilt historical prefix lines are a served projection of work that is
-  // already over — the launches they replay were killed by the swap that
-  // wrote them. Only the live suffix opens work.
   if (!suppressRuntime && options.asyncWorkFold !== undefined) {
     observeAsyncWorkLine(item, options.asyncWorkFold);
   }
 
   if (!suppressRuntime) {
-    // Same discriminator intake maps on, so the loud notice and the bounded
-    // closed turn can never disagree about what a native summary is.
     const nativeSummary = nativeCompactSummaryText(item);
     if (nativeSummary !== null) {
       lifecycle.push({
@@ -313,8 +238,6 @@ export function observeRolloutLine(
   const events = mapped.events;
   const linePayloadBytes = totalCanonicalPayloadBytes(events);
 
-  // Sampling fold: accumulate on every assistant line; emit once when complete.
-  // Prefix validation must not mutate live sampling state.
   let samplingEmittedThisLine = false;
   let wouldPostMeasurementAdd = false;
   if (!suppressRuntime && isAssistantLine(item) && item.isSidechain !== true) {
@@ -331,8 +254,6 @@ export function observeRolloutLine(
       noteAssistantModel(options.tokenFamily, model);
     }
     if (isAssistantSamplingComplete(item)) {
-      // Include this completing line's canonical payload in the pending assistant
-      // body so host-byte fallback covers split thinking/text/tool blocks.
       estimateFold.pendingAssistantPayloadBytes += linePayloadBytes;
       const claim = completeSamplingAttempt(samplingDedupe, samplingId, model, usage);
       if (claim.action === "emit") {
@@ -346,8 +267,6 @@ export function observeRolloutLine(
         });
         const blocked = item.isApiErrorMessage === true || (typeof item.error === "string" && item.error !== "");
         const provider = blocked ? null : providerContextFromUsage(claim.providerUsage);
-        // API-error, blocked, all-zero, malformed, or missing usage is not a
-        // new measurement: do not emit mode=set that would erase growth.
         if (provider !== null) {
           const outputTokens = readProviderOutputTokens(claim.providerUsage);
           if (outputTokens !== null) {
@@ -370,8 +289,6 @@ export function observeRolloutLine(
         }
         estimateFold.pendingAssistantPayloadBytes = 0;
       } else {
-        // Duplicate complete (replay/dedupe): do not re-seed estimate or count
-        // the assistant body again as post-measurement growth.
         estimateFold.pendingAssistantPayloadBytes = 0;
       }
     } else if (usage !== undefined || model !== undefined || linePayloadBytes > 0) {
@@ -384,10 +301,6 @@ export function observeRolloutLine(
     estimateFold.hasAuthoritativeSampling &&
     linePayloadBytes > 0
   ) {
-    // Content after the last provider measurement: tool results, user prompts,
-    // runtime notes, and later assistant lines (new attempt partials land here
-    // only once a prior sampling was authoritative; incomplete assistant partials
-    // above accumulate into pending and emit on complete).
     wouldPostMeasurementAdd = true;
     if (!deferPressure) {
       const est = postMeasurementEstimateFromEvents(events, options.tokenFamily?.estimator);
@@ -402,11 +315,6 @@ export function observeRolloutLine(
     }
   }
 
-  // Retain the pure classifyTurnSignal fold for state; publish lifecycle only
-  // on real edges. Assistant tool_use is an "open" state assertion (turn
-  // continues) but must not republish turn_opened for every split block.
-  // User prompt / tool_result openings and open→close settlements emit once.
-  // Prefix validation must not mutate live turn fold state.
   if (!suppressRuntime) {
     const signal = classifyTurnSignal(item);
     const fold = options.turnFold;
@@ -424,8 +332,6 @@ export function observeRolloutLine(
         }
       }
     } else {
-      // Stateless single-line observe (tests / callers without a fold): emit
-      // only user opening edges and close assertions that are content-terminal.
       if (signal === "opens" && isUserLine(item)) {
         lifecycle.push({ kind: "turn_opened", reason: turnOpenReason(item) });
       } else if (signal === "closes") {
@@ -434,10 +340,6 @@ export function observeRolloutLine(
     }
   }
 
-  // Unknown host chrome is diagnostic only. Claude adds top-level bookkeeping
-  // records over time; absence from our metadata census is not evidence that
-  // canonical conversation was lost. Only an unknown USER/ASSISTANT record can
-  // conceal conversational content and therefore threaten safe rebuilding.
   const unknownConversationShape = stats.unknown > 0 && (isUserLine(item) || isAssistantLine(item));
   if (unknownConversationShape) {
     lifecycle.push({
@@ -490,7 +392,6 @@ export function observeRolloutLines(
   const deferredPressure: LifecycleSignal[] = [];
   let wouldPostMeasurementAdd = false;
   const stats = emptyStats();
-  // Share sampling + turn + estimate folds across the batch (same as live session fold).
   const samplingDedupe = options.samplingDedupe ?? createSamplingDedupeState();
   const turnFold = options.turnFold ?? createTurnFoldState();
   const estimateFold = options.estimateFold ?? createPostMeasurementEstimateFold();
@@ -509,12 +410,6 @@ export function observeRolloutLines(
   return { events, lifecycle, deferredPressure, wouldPostMeasurementAdd, stats };
 }
 
-/**
- * Post-measurement add for events that survived replay dedupe and successful
- * intake. Same estimator as immediate observe mode:add. Zero tokens when empty.
- * Callers must not invoke this for sampling-complete assistant lines whose
- * contribution was already published as mode:set.
- */
 export function postMeasurementAddFromAcceptedEvents(
   events: readonly MessageEventInput[],
   estimator?: import("lhc").TokenEstimator,

@@ -1,10 +1,3 @@
-/**
- * LIM-146 AC-2.7c–e: next-real-prompt delivery. The launch-scoped
- * UserPromptSubmit hook is merged into the single settings payload without
- * disturbing the user's hooks; the real hook command answers the real payload
- * with bounded context; only the rollout's record of that accepted context
- * marks exact result keys delivered.
- */
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,7 +47,6 @@ function settingsOf(argv: readonly string[]): Record<string, unknown> {
   return JSON.parse(argv[hits[0]! + 1]!) as Record<string, unknown>;
 }
 
-/** The exact rollout record Claude Code 2.1.252 writes for a UserPromptSubmit hook's accepted context. */
 function hookAttachment(context: string, overrides: Record<string, unknown> = {}): RolloutLineItem {
   return {
     type: "attachment",
@@ -71,7 +63,6 @@ function hookAttachment(context: string, overrides: Record<string, unknown> = {}
   } as unknown as RolloutLineItem;
 }
 
-/** A thread with two carried results pending and a ready descriptor naming it. */
 function boundThread() {
   const root = mkdtempSync(join(tmpdir(), "cc-lhc-delivery-"));
   const dbPath = join(root, "cc-lhc.sqlite");
@@ -180,7 +171,6 @@ describe("one settings payload carries the delivery hook and the user's hooks un
       });
       expect(settings.statusLine).toEqual({ type: "command", command: "my-status --short" });
     }
-    // The prompt token after `--` is untouched and the flag stays before it.
     if (inline.kind === "merged") expect(inline.argv.slice(-2)).toEqual(["--", "prompt"]);
   });
 
@@ -257,7 +247,6 @@ describe("the hook's context is bounded and sanitized", () => {
       LAUNCH_IDS.background_shell,
       LAUNCH_IDS.agent,
     ]);
-    // Other hooks, other attachment kinds, sidechains, or user text quoting a key prove nothing.
     expect(
       deliveredResultKeys(hookAttachment(context, { hookEvent: "SessionStart", hookName: "SessionStart" })),
     ).toEqual([]);
@@ -289,9 +278,7 @@ describe("the real hook command against a bound thread", () => {
       LAUNCH_IDS.agent,
       LAUNCH_IDS.workflow,
     ]);
-    // Running the hook is not delivery.
     expect(b.store.listPendingResults(T).map((r) => r.delivery)).toEqual(["pending", "pending"]);
-    // Running it again gives the same context again — nothing was consumed.
     const again = await b.hook(b.payload());
     expect(again.out).toBe(run.out);
     b.store.close();
@@ -328,7 +315,6 @@ describe("the real hook command against a bound thread", () => {
     expect(b.store.getResult(T, LAUNCH_IDS.agent)).toMatchObject({ delivery: "delivered" });
     expect(b.store.getResult(T, LAUNCH_IDS.workflow)).toMatchObject({ delivery: "pending" });
     expect(b.store.listPendingResults(T).map((r) => r.launchId)).toEqual([LAUNCH_IDS.workflow]);
-    // Re-observation: nothing transitions again; a foreign thread's observation of the same keys is not this thread's.
     expect(b.store.markDelivered({ threadId: T, launchIds: [LAUNCH_IDS.agent], nowMs: 9_500 })).toEqual([]);
     expect(b.store.markDelivered({ threadId: "th_other", launchIds: [LAUNCH_IDS.workflow], nowMs: 9_500 })).toEqual([]);
     expect(b.store.getResult(T, LAUNCH_IDS.workflow)).toMatchObject({ delivery: "pending" });

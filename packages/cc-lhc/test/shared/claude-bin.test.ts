@@ -1,14 +1,7 @@
-/**
- * Windows Claude-executable resolver: PATH/PATHEXT semantics restricted to
- * native executables, absolute-path validation, shim refusal with actionable
- * guidance, and unchanged POSIX pass-through. Pure seams — runs everywhere.
- */
-
 import { describe, expect, it } from "vitest";
 
 import { resolveClaudeBin, resolveWindowsClaudeBin } from "../../src/shared/claude-bin.js";
 
-/** NTFS-like case-insensitive file probe over a fixed listing. */
 function files(...paths: string[]): (path: string) => boolean {
   const set = new Set(paths.map((p) => p.toLowerCase()));
   return (p: string) => set.has(p.toLowerCase());

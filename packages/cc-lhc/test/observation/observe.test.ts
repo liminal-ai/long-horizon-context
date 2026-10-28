@@ -124,7 +124,6 @@ describe("observeRolloutLine", () => {
     const r1 = observeRolloutLine(thinking, 0, { samplingDedupe: dedupe });
     const r2 = observeRolloutLine(text, 1, { samplingDedupe: dedupe });
     expect(r1.lifecycle.filter((s) => s.kind === "sampling_observed")).toHaveLength(0);
-    // thinking-only + end_turn is not turn_settled
     expect(r1.lifecycle.filter((s) => s.kind === "turn_settled")).toHaveLength(0);
     const sampling = r2.lifecycle.filter((s) => s.kind === "sampling_observed");
     expect(sampling).toHaveLength(1);
@@ -173,7 +172,6 @@ describe("observeRolloutLine", () => {
       providerUsage: { output_tokens: 40 },
     });
     expect(r2.lifecycle.filter((s) => s.kind === "turn_settled")).toHaveLength(0);
-    // Assistant tool_use is an open-state assertion, not a turn_opened edge.
     expect(r2.lifecycle.some((s) => s.kind === "turn_opened")).toBe(false);
   });
 
@@ -234,7 +232,6 @@ describe("observeRolloutLine", () => {
     expect(rThink.lifecycle.filter((s) => s.kind === "turn_settled")).toHaveLength(0);
     expect(rText1.lifecycle.filter((s) => s.kind === "turn_settled")).toHaveLength(1);
     expect(rText1.lifecycle.filter((s) => s.kind === "sampling_observed")).toHaveLength(1);
-    // Second terminal text under same request: no second settle, no second sampling.
     expect(rText2.lifecycle.filter((s) => s.kind === "turn_settled")).toHaveLength(0);
     expect(rText2.lifecycle.filter((s) => s.kind === "sampling_observed")).toHaveLength(0);
   });
@@ -406,7 +403,6 @@ describe("observeRolloutLine", () => {
         },
       },
     };
-    // Large tool result so host byte estimate is non-zero (bytes/4).
     const toolBody = "x".repeat(40_000);
     const toolResult: RolloutLineItem = {
       type: "user",
@@ -451,17 +447,14 @@ describe("observeRolloutLine", () => {
     });
     expect((addEst[0] as { tokens: number }).tokens).toBe(Math.floor(40_000 / 4));
 
-    // Sidechain must not emit sampling or estimate growth.
     const rSide = observeRolloutLine(sidechain, 3, opts);
     expect(rSide.lifecycle.filter((s) => s.kind === "sampling_observed")).toHaveLength(0);
     expect(rSide.lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toHaveLength(0);
 
-    // Replay of the same completed assistant (dedupe) must not re-seed estimate.
     const rReplay = observeRolloutLine(assistant, 4, opts);
     expect(rReplay.lifecycle.filter((s) => s.kind === "sampling_observed")).toHaveLength(0);
     expect(rReplay.lifecycle.filter((s) => s.kind === "post_measurement_estimate")).toHaveLength(0);
 
-    // Governor fold: real watcher lifecycle moves pressure across the trigger.
     const resolved: ResolvedContextPolicy = {
       policy: { ...BUILTIN_CONTEXT_POLICY, upperBoundTokens: 360_000 },
       sources: Object.fromEntries(
@@ -474,14 +467,12 @@ describe("observeRolloutLine", () => {
       ...rTool.lifecycle.filter((s) => s.kind === "post_measurement_estimate"),
       { kind: "turn_settled" as const, reason: "end_turn" as const },
     ];
-    // turn_opened first so open-turn classification is honest
     const rGov = applyGovernorLifecycleBatch(
       createGovernorRuntimeState({ captureGeneration: 1 }),
       [{ kind: "turn_opened", reason: "user_prompt" }, ...lifecycle],
       resolved,
     );
     const settled = rGov.observes.filter((o) => o.observePhase === "settled_seam")[0]!;
-    // provider 350k + output 8k + tool bytes/4 (10k) = 368k >= 360k
     expect(settled.providerContextTotal).toBe(350_000);
     expect(settled.postMeasurementEstimate.tokens).toBe(8_000 + 10_000);
     expect(settled.pressure.nextRequestPressureTokens).toBe(368_000);
@@ -504,7 +495,7 @@ describe("observeRolloutLine", () => {
         id: "msg_hb1",
         model: "m",
         stop_reason: "end_turn",
-        content: [{ type: "text", text: "abcd".repeat(100) }], // 400 bytes → 100 tokens
+        content: [{ type: "text", text: "abcd".repeat(100) }],
         usage: { input_tokens: 10_000 },
       },
     };
@@ -831,7 +822,6 @@ describe("accepted user_prompt post-measurement uses the session TokenEstimator"
       164_208 + BURNIN_TOKENS + pendingPromptEstimate("hi").tokens,
     );
     expect(nextPrelaunch.kind).toBe("would_compact");
-    // Ephemeral prelaunch of the original prompt is not stored a second time.
     expect(folded.state.postMeasurementEstimate.tokens).not.toBe(BURNIN_TOKENS + BURNIN_TOKENS);
   });
 

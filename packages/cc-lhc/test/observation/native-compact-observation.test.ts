@@ -1,10 +1,3 @@
-/**
- * Native compact observation on the installed Claude Code 2.1.235 shape
- * (LIM-95/R8 amendment).
- *
- * The loud notice and the intake transform must agree about what a native
- * summary is, and a rebuilt historical prefix must produce neither.
- */
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,7 +16,6 @@ import type { RolloutLineItem } from "../../src/rollout/types.js";
 
 const TAG_OPEN = "<claude-compact-summary>";
 
-/** Same retained canary (d) exhibit the intake suite drives. */
 const FIXTURE_LINES: RolloutLineItem[] = readFileSync(
   join(dirname(fileURLToPath(import.meta.url)), "../fixtures/native-compact-2.1.235.jsonl"),
   "utf8",
@@ -68,7 +60,6 @@ describe("native compact observation", () => {
   });
 
   it("raises no notice when validating a rebuilt historical prefix", () => {
-    // Exactly the call shape session.ts uses to validate a rebuilt prefix.
     expect(observe(INSTALLED_SUMMARY, true).some((s) => s.kind === "native_compact_observed")).toBe(false);
   });
 });
@@ -84,7 +75,6 @@ describe("rebuilt historical-prefix replay of a native compact summary", () => {
     mkdirSync(projectDir, { recursive: true });
     const rolloutPath = join(projectDir, `${sessionId}.jsonl`);
 
-    // A rebuilt prefix that replays the boundary + summary as served history.
     const prefixLines = [
       { ...BOUNDARY_RECORD, sessionId, cwd },
       { ...INSTALLED_SUMMARY, sessionId, session_id: sessionId, cwd },
@@ -135,11 +125,9 @@ describe("rebuilt historical-prefix replay of a native compact summary", () => {
       expect(session.isCaptureReady()).toBe(true);
       expect(session.stats.replayedPrefixLines).toBe(prefixLines.length);
 
-      // The replayed prefix produced neither the anomaly nor any canonical event.
       expect(lifecycle.some((s) => s.kind === "native_compact_observed")).toBe(false);
       expect(JSON.stringify(intake)).not.toContain(TAG_OPEN);
 
-      // A genuinely new native compact after the boundary still does both.
       const live = {
         ...INSTALLED_SUMMARY,
         uuid: "live-native-summary",

@@ -29,19 +29,11 @@
 export const NATIVE_AUTO_COMPACT_DISABLE_ENV = "DISABLE_AUTO_COMPACT";
 const NATIVE_AUTO_COMPACT_DISABLE_VALUE = "1";
 
-/**
- * Anomaly notice for a launch that carries the user's own `--autocompact`.
- * States only what cc-lhc did — never what Claude will consequently do.
- */
 export const NATIVE_AUTOCOMPACT_OVERRIDE_ANOMALY =
   "ANOMALY: launch carries an explicit --autocompact; cc-lhc passed it through and did not inject " +
   "DISABLE_AUTO_COMPACT for this Claude child. Inherited environment and Claude settings still govern " +
   "whether Claude native Compact runs. LHC compaction continues normally.";
 
-/**
- * True when the launch argv itself supplies native `--autocompact` before the
- * `--` passthrough boundary (space or `=` form).
- */
 export function argvSuppliesNativeAutocompact(argv: readonly string[]): boolean {
   for (const arg of argv) {
     if (arg === "--") return false;
@@ -50,11 +42,6 @@ export function argvSuppliesNativeAutocompact(argv: readonly string[]): boolean 
   return false;
 }
 
-/**
- * The exact `--autocompact` tokens the launch argv supplies before the `--`
- * boundary (`--autocompact 500000`, `--autocompact=auto`, or the bare flag),
- * for the Control Panel's "detected cause" row. Null when absent.
- */
 export function nativeAutocompactArgvEvidence(argv: readonly string[]): string | null {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -68,11 +55,6 @@ export function nativeAutocompactArgvEvidence(argv: readonly string[]): string |
   return null;
 }
 
-/**
- * Child environment for a managed Claude child. Adds the disable by default;
- * omits it when the user supplied their own `--autocompact` (R12). Inherited
- * values are carried through as-is — nothing is cleared or rewritten.
- */
 export function nativeAutoCompactChildEnv(
   baseEnv: Record<string, string>,
   userSuppliedAutocompact: boolean,

@@ -1,19 +1,3 @@
-/**
- * Continue once after a too-long rejection (gorilla F5).
- *
- * When the API rejects a turn as `Prompt is too long` (for example an 80-page
- * PDF read as page images inside one turn), Claude Code ends the turn and cc-lhc
- * compacts at the next settled seam. The task itself was never finished. After
- * that rejection-triggered compaction the wrapper submits ONE continue to the
- * replacement, labelled `[runtime note]` so intake records it as a cc-lhc note
- * rather than a user prompt, and listing the tool calls that already completed
- * in the rejected turn so the model does not blindly repeat them. If the
- * continued turn is rejected again, nothing more is sent: the operator gets a
- * notice instead. One-shot (`-p`) seats never get here: they exit with Claude's
- * rejection and the next invocation compacts before it launches.
- */
-
-/** How many completed tool calls the note names; the rest are counted. */
 export const MAX_LISTED_TOOL_CALLS = 12;
 const MAX_TOOL_SUMMARY_CHARS = 90;
 
@@ -35,10 +19,6 @@ function blocksOf(message: unknown): unknown[] {
   return Array.isArray(content) ? content : [];
 }
 
-/**
- * A real prompt the operator typed: a user line with text that is not tool
- * results, harness metadata, a task notification or a cc-lhc runtime note.
- */
 function isRealPrompt(line: Json): boolean {
   if (line.type !== "user" || line.isMeta === true || line.isSidechain === true) return false;
   const blocks = blocksOf(line.message);
@@ -70,11 +50,6 @@ function summarizeInput(input: unknown): string {
   return flat.length <= MAX_TOOL_SUMMARY_CHARS ? flat : `${flat.slice(0, MAX_TOOL_SUMMARY_CHARS - 1)}~`;
 }
 
-/**
- * The tool calls that completed (have a tool_result) after the last real
- * prompt of a Claude rollout, oldest first, as `Name(summary)`. Unparseable
- * lines are skipped: this only shapes a note and never decides anything.
- */
 export function completedToolCallsInLastTurn(rolloutText: string): string[] {
   const lines: Json[] = [];
   for (const raw of rolloutText.split("\n")) {
@@ -82,9 +57,7 @@ export function completedToolCallsInLastTurn(rolloutText: string): string[] {
     try {
       const parsed: unknown = JSON.parse(raw);
       if (isRecord(parsed)) lines.push(parsed);
-    } catch {
-      // a torn or foreign line: not evidence of a tool call
-    }
+    } catch {}
   }
   let start = 0;
   for (let i = lines.length - 1; i >= 0; i -= 1) {
@@ -112,7 +85,6 @@ export function completedToolCallsInLastTurn(rolloutText: string): string[] {
   return calls.filter((call) => finished.has(call.id)).map((call) => call.label);
 }
 
-/** The one continue submitted after a rejection-triggered compaction: a single line. */
 export function rejectionContinueNote(completedToolCalls: readonly string[]): string {
   const listed = completedToolCalls.slice(0, MAX_LISTED_TOOL_CALLS);
   const more = completedToolCalls.length - listed.length;

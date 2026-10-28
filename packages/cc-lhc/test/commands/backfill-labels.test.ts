@@ -1,8 +1,3 @@
-/**
- * Operator label-backfill CLI (Slice 7): explicit selected thread, prefix
- * resolution through the cc-lhc registry, dry-run purity, and refusal shapes.
- */
-
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

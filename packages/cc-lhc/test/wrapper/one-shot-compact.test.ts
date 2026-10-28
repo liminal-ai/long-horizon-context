@@ -1,14 +1,3 @@
-/**
- * One-shot pre-launch compaction (R9 / R14.2).
- *
- * A one-shot seat runs one prompt and exits, so it compacts at the start of the
- * next invocation, before any Claude process exists. These drive run() through
- * that seam: pressure read from the persisted transcript plus the pending
- * prompt, the compact and rebuilt session written before launch, one child
- * launched on the rebuilt session with the original prompt, and the thread's
- * current session advancing only once that prompt is observed landing.
- */
-
 import {
   chmodSync,
   existsSync,
@@ -45,24 +34,14 @@ const REBUILT_ID = "bbbbbbbb-5555-6666-7777-888888888888";
 
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
-  /** Persisted transcript path the resumed session resolves to, or null. */
   transcriptPath: null as string | null,
   registerLineage: vi.fn(async (..._args: unknown[]) => ({ ok: true as const })),
-  /** When set, prompt acceptance waits on this before touching the registry. */
   acceptanceGate: null as Promise<void> | null,
   acceptanceCalls: 0,
-  /** Owner-lease files present at the moment acceptance actually ran. */
   ownerLeasesDuringAcceptance: [] as string[][],
-  /** Owner-lease files present at the moment a capture generation stopped. */
   ownerLeasesDuringCaptureStop: [] as string[][],
-  /** When set, spawning a child throws instead of producing one. */
   spawnThrows: null as Error | null,
-  /**
-   * When set, the resumed generation's `stop()` holds here before settling —
-   * standing in for writes already queued behind an abandoned watcher.
-   */
   outgoingStopGate: null as Promise<void> | null,
-  /** Capture generations whose `stop()` has fully settled, in order. */
   captureStopsSettled: [] as string[],
 }));
 
@@ -210,10 +189,8 @@ function sdkForCapture(options: CompactSdkOptions = {}) {
 
 type ScriptedPhase = "ready" | "degraded" | "binding";
 
-/** Each scripted session's stop(), keyed by the deps it was built from. */
 const scriptedStops = new WeakMap<CaptureSessionDeps, ReturnType<typeof vi.fn>>();
 
-/** A capture session the test drives directly: phase, turn state, lifecycle. */
 function scriptedCaptureSession(
   opts: CaptureSessionDeps,
   sdk: unknown,
@@ -229,11 +206,9 @@ function scriptedCaptureSession(
   const stats = { ...emptyCaptureStats(), threadId };
   const sessionLabel = opts.expectedSession?.sessionId ?? "unknown";
   const stopSpy = vi.fn(async () => {
-    // The outgoing generation's queued writes drain after its watcher is gone.
     if (sessionLabel === RESUMED_ID && mocks.outgoingStopGate !== null) {
       await mocks.outgoingStopGate;
     }
-    // Ownership ordering: the lease must still be held while capture settles.
     try {
       const { readdirSync } = await import("node:fs");
       const { join: joinPath } = await import("node:path");
@@ -283,9 +258,7 @@ function descriptorIoForTests(): DescriptorIo {
     unlink: (path) => {
       try {
         unlinkSync(path);
-      } catch {
-        // ignore
-      }
+      } catch {}
     },
     exists: existsSync,
     mkdir: (path) => mkdirSync(path, { recursive: true, mode: 0o700 }),
@@ -345,7 +318,6 @@ const POLICY = {
   fallbacks: [],
 };
 
-/** The last authoritative provider reading a persisted transcript carries. */
 function transcriptSampling(totalTokens: number): LifecycleSignal[] {
   return [
     { kind: "turn_opened", reason: "user_prompt" },
@@ -363,19 +335,13 @@ function transcriptSampling(totalTokens: number): LifecycleSignal[] {
 }
 
 interface OneShotHarness {
-  /** The stdin handed to run(); a one-shot must never attach a reader to it. */
   stdin: NodeJS.ReadStream;
   spawned: FakePty[];
   captureCalls: CaptureSessionDeps[];
-  /** Lifecycle sink of the capture generation bound to the launched session. */
   launchedSink: () => ((signals: readonly LifecycleSignal[]) => void) | undefined;
-  /** Children alive when the rebuilt session was written; -1 = never written. */
   spawnedWhenRebuilt: () => number;
-  /** Every argv the wrapper tried to spawn, whether or not a child resulted. */
   spawnAttempts: string[][];
-  /** Whether the capture bound to the rebuilt session was stopped. */
   rebuiltStopped: () => boolean;
-  /** Whether the capture bound to the resumed session was stopped. */
   resumedStopped: () => boolean;
 }
 
@@ -413,13 +379,10 @@ describe("run: one-shot pre-launch compaction", () => {
     for (const dir of dirs.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
-  /** Owner-lease files still on disk under this test's CC_LHC_HOME. */
   function leaseFiles(): string[] {
     try {
       return readdirSync(join(process.env.CC_LHC_HOME ?? "", "owners")).filter((n) => n.endsWith(".json"));
@@ -428,24 +391,15 @@ describe("run: one-shot pre-launch compaction", () => {
     }
   }
 
-  /**
-   * One one-shot invocation. `transcriptTokens` is the last authoritative
-   * provider reading recovered from the persisted transcript (null = none), and
-   * `capturePhase` is what catching up from that transcript reached.
-   */
   function launchOneShot(input: {
     prompt: string;
     transcriptTokens: number | null;
     capturePhase?: ScriptedPhase;
-    /** The caught-up transcript ends inside an unfinished turn. */
     transcriptTurnOpen?: boolean;
     compactFails?: boolean;
     writeFails?: boolean;
-    /** Capture on the rebuilt session refuses to start. */
     rebuiltCaptureThrows?: boolean;
-    /** Argv this invocation launches with (defaults to `-p <prompt> --resume`). */
     argv?: string[];
-    /** Descriptor IO seam (process-identity failure injection). */
     descriptorIo?: import("../../src/runtime/descriptor.js").DescriptorIo;
     onSpawn?: (fake: FakePty, index: number) => void;
     resolvedContextPolicy?: typeof POLICY;
@@ -458,9 +412,7 @@ describe("run: one-shot pre-launch compaction", () => {
   } {
     const sdk = sdkForCapture(input.compactFails === true ? { compactFails: true } : {});
     const spawned: FakePty[] = [];
-    /** Every argv the wrapper tried to spawn, whether or not a child resulted. */
     const spawnAttempts: string[][] = [];
-    /** Children alive when the rebuilt session was written; -1 = never written. */
     let spawnedWhenRebuilt = -1;
     const captureCalls: CaptureSessionDeps[] = [];
     const sinks = new Map<string, (signals: readonly LifecycleSignal[]) => void>();
@@ -468,7 +420,6 @@ describe("run: one-shot pre-launch compaction", () => {
     const rebuiltPath = join(rolloutDir, `${REBUILT_ID}.jsonl`);
     const rebuiltContent = '{"line":1}\n{"line":2}\n';
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      // The whole seam runs before any Claude process exists.
       spawnedWhenRebuilt = spawned.length;
       if (input.writeFails === true) throw new Error("rebuilt rollout write failed");
       writeFileSync(rebuiltPath, rebuiltContent);
@@ -499,8 +450,6 @@ describe("run: one-shot pre-launch compaction", () => {
       );
       if (opts.onLifecycle !== undefined) {
         sinks.set(sessionId, opts.onLifecycle);
-        // The transcript's own history reaches the pre-launch seam the same way
-        // live capture reaches the wrapper: as lifecycle from the bound file.
         if (!isRebuilt && input.transcriptTokens !== null) {
           opts.onLifecycle(transcriptSampling(input.transcriptTokens));
         }
@@ -559,14 +508,10 @@ describe("run: one-shot pre-launch compaction", () => {
     const args = harness.spawned[0]!.args;
     expect(args[args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
     expect(args).toContain("do the thing");
-    // Exactly one execution of the prompt: one child, one occurrence in its argv.
     expect(args.filter((token) => token === "do the thing")).toHaveLength(1);
 
-    // No Claude child existed while the compact ran and the rebuild was written.
     expect(harness.spawnedWhenRebuilt()).toBe(0);
 
-    // Capture was caught up on the resumed session first, then moved onto the
-    // rebuilt one — both before any Claude process existed.
     expect(harness.captureCalls).toHaveLength(2);
     expect(harness.captureCalls[0]!.expectedSession?.sessionId).toBe(RESUMED_ID);
     expect(harness.captureCalls[1]!.expectedSession?.sessionId).toBe(REBUILT_ID);
@@ -574,7 +519,6 @@ describe("run: one-shot pre-launch compaction", () => {
     expect(harness.captureCalls[1]!.suppressBindLineageRecord).toBe(true);
     expect(mocks.registerLineage).toHaveBeenCalledOnce();
 
-    // F1+F8: the one-shot child reads stdin itself; the wrapper never consumes it.
     expect(harness.stdin.listenerCount("data")).toBe(0);
 
     harness.spawned[0]!.fireExit(0);
@@ -619,10 +563,8 @@ describe("run: one-shot pre-launch compaction", () => {
     const registryPath = defaultRegistryPath();
     const threadId = harness.captureCalls[0]!.launchThread!.threadId;
 
-    // Before intake the thread still belongs to the session this invocation resumed.
     expect(await currentSessionAlias(threadId, registryPath)).toBe(`claude-code:${RESUMED_ID}`);
 
-    // Claude writes the prompt into the rebuilt rollout: the intake evidence.
     harness.launchedSink()!([{ kind: "turn_opened", reason: "user_prompt" }]);
     await waitForAsync(
       async () => (await currentSessionAlias(threadId, registryPath)) === `claude-code:${REBUILT_ID}`,
@@ -644,9 +586,6 @@ describe("run: one-shot pre-launch compaction", () => {
     await waitFor(() => harness.launchedSink() !== undefined, "rebuilt lifecycle sink");
     const threadId = harness.captureCalls[0]!.launchThread!.threadId;
 
-    // Claude takes the prompt and the one-shot child exits immediately after —
-    // the acceptance is still in flight when teardown begins. The duplicate
-    // signal must not produce a second attempt.
     harness.launchedSink()!([{ kind: "turn_opened", reason: "user_prompt" }]);
     harness.launchedSink()!([{ kind: "turn_opened", reason: "user_prompt" }]);
     harness.spawned[0]!.fireExit(0);
@@ -662,7 +601,6 @@ describe("run: one-shot pre-launch compaction", () => {
     releaseAcceptance?.();
     await runPromise;
     expect(mocks.acceptanceCalls).toBe(1);
-    // The wrapper still owned the thread when the acceptance ran.
     expect(mocks.ownerLeasesDuringAcceptance).toHaveLength(1);
     expect(mocks.ownerLeasesDuringAcceptance[0]!.length).toBe(1);
     expect(await currentSessionAlias(threadId, defaultRegistryPath())).toBe(`claude-code:${REBUILT_ID}`);
@@ -682,8 +620,6 @@ describe("run: one-shot pre-launch compaction", () => {
     harness.launchedSink()!([{ kind: "turn_opened", reason: "user_prompt" }]);
     harness.spawned[0]!.fireExit(0);
 
-    // The one-shot has run and exited; the generation the seam moved off is
-    // still draining, so the lease is not handed back yet.
     await waitFor(() => mocks.captureStopsSettled.includes(REBUILT_ID), "rebuilt capture stop to settle");
     const settledEarly = await Promise.race([
       runPromise.then(() => "settled" as const),
@@ -695,7 +631,6 @@ describe("run: one-shot pre-launch compaction", () => {
     releaseOutgoing?.();
     await runPromise;
     expect(leaseFiles()).toEqual([]);
-    // One stop per generation — the retained promise is awaited, never re-run.
     expect(mocks.captureStopsSettled).toEqual([REBUILT_ID, RESUMED_ID]);
     expect(scriptedStops.get(harness.captureCalls[0]!)?.mock.calls).toHaveLength(1);
     expect(scriptedStops.get(harness.captureCalls[1]!)?.mock.calls).toHaveLength(1);
@@ -709,12 +644,10 @@ describe("run: one-shot pre-launch compaction", () => {
     const registryPath = defaultRegistryPath();
     const threadId = harness.captureCalls[0]!.launchThread!.threadId;
 
-    // The child dies without ever writing a prompt into the rebuilt rollout.
     harness.spawned[0]!.fireExit(1);
     await runPromise;
 
     expect(await currentSessionAlias(threadId, registryPath)).toBe(`claude-code:${RESUMED_ID}`);
-    // Nothing was relaunched: the prompt is the operator's to resend.
     expect(harness.spawned).toHaveLength(1);
   }, 20_000);
 
@@ -772,7 +705,6 @@ describe("run: one-shot pre-launch compaction", () => {
     expect(writeSpy).not.toHaveBeenCalled();
     expect(harness.spawned[0]!.args[harness.spawned[0]!.args.indexOf("--resume") + 1]).toBe(RESUMED_ID);
     expect(harness.spawned[0]!.args).toContain("do the thing");
-    // The bound capture is left alive to keep catching up behind the prompt.
     expect(harness.resumedStopped()).toBe(false);
     expect(harness.captureCalls).toHaveLength(1);
 
@@ -831,8 +763,6 @@ describe("run: one-shot pre-launch compaction", () => {
     const args = harness.spawned[0]!.args;
     expect(args[args.indexOf("--resume") + 1]).toBe(RESUMED_ID);
     expect(args.filter((token) => token === "do the thing")).toHaveLength(1);
-    // The resumed session's capture was never stopped for a replacement that
-    // never existed.
     expect(harness.resumedStopped()).toBe(false);
 
     harness.spawned[0]!.fireExit(0);
@@ -852,7 +782,6 @@ describe("run: one-shot pre-launch compaction", () => {
     await waitFor(() => harness.spawned.length === 1, "launched child");
     const args = harness.spawned[0]!.args;
     expect(args[args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
-    // The launch argv is replayed byte for byte onto the rebuilt session.
     expect(args).toContain("--print=1");
     expect(args.filter((token) => token === "do the thing")).toHaveLength(1);
 
@@ -894,13 +823,6 @@ describe("run: one-shot pre-launch compaction", () => {
     expect(harness.spawned).toHaveLength(1);
   }, 20_000);
 
-  /**
-   * A one-shot binds capture before the child exists, so every startup failure
-   * past that point owes the thread two things back, in order: the capture
-   * generation, then the lease that makes this wrapper the thread's only
-   * writer. None of these is a launch that half happened — the invocation
-   * fails exactly as it always did, having left nothing running.
-   */
   describe("startup failures after capture is bound", () => {
     it("a spawn that throws settles capture before the lease and rethrows", async () => {
       const spawnFailure = new Error("posix_spawnp failed");
@@ -909,13 +831,10 @@ describe("run: one-shot pre-launch compaction", () => {
 
       await expect(runPromise).rejects.toThrow("posix_spawnp failed");
 
-      // The capture generation the launch was holding is stopped, and every
-      // stop happened while this wrapper still owned the thread.
       expect(harness.rebuiltStopped()).toBe(true);
       expect(mocks.ownerLeasesDuringCaptureStop.length).toBeGreaterThan(0);
       for (const held of mocks.ownerLeasesDuringCaptureStop) expect(held).toHaveLength(1);
       expect(leaseFiles()).toEqual([]);
-      // One spawn was attempted and no child exists; the prompt was not resent.
       expect(harness.spawnAttempts).toHaveLength(1);
       expect(harness.spawned).toHaveLength(0);
       const threadId = harness.captureCalls[0]!.launchThread!.threadId;
@@ -923,8 +842,6 @@ describe("run: one-shot pre-launch compaction", () => {
     }, 20_000);
 
     it("the lease outlives the outgoing generation too, not just the one the launch holds", async () => {
-      // The generation the seam moved off still has queued writes draining
-      // behind its abandoned watcher.
       let releaseOutgoing: (() => void) | undefined;
       mocks.outgoingStopGate = new Promise<void>((r) => {
         releaseOutgoing = r;
@@ -936,7 +853,6 @@ describe("run: one-shot pre-launch compaction", () => {
         () => "rejected" as const,
       );
 
-      // The generation the launch holds settles first — and that is not enough.
       await waitFor(() => mocks.captureStopsSettled.includes(REBUILT_ID), "rebuilt capture stop to settle");
       expect(harness.rebuiltStopped()).toBe(true);
       expect(mocks.captureStopsSettled).not.toContain(RESUMED_ID);
@@ -945,13 +861,11 @@ describe("run: one-shot pre-launch compaction", () => {
       );
       expect(leaseFiles()).toHaveLength(1);
 
-      // The outgoing generation settles last, and only then does the lease go.
       releaseOutgoing?.();
       await expect(runPromise).rejects.toThrow("posix_spawnp failed");
       expect(mocks.captureStopsSettled).toEqual([REBUILT_ID, RESUMED_ID]);
       for (const held of mocks.ownerLeasesDuringCaptureStop) expect(held).toHaveLength(1);
       expect(leaseFiles()).toEqual([]);
-      // Nothing about the wait changed the launch: no child, no resend.
       expect(harness.spawnAttempts).toHaveLength(1);
       expect(harness.spawned).toHaveLength(0);
       const threadId = harness.captureCalls[0]!.launchThread!.threadId;
@@ -959,7 +873,6 @@ describe("run: one-shot pre-launch compaction", () => {
     }, 20_000);
 
     it("a refused retrieval-guidance injection settles capture before the lease and still returns 2", async () => {
-      // Duplicate --append-system-prompt: the injector refuses to normalize it.
       const { harness, runPromise } = launchOneShot({
         prompt: "do the thing",
         transcriptTokens: 6_000,
@@ -999,10 +912,8 @@ describe("run: one-shot pre-launch compaction", () => {
       });
 
       await waitFor(() => harness.spawned.length === 1, "launched child");
-      // Retrieval is unavailable this generation; the compact and the launch
-      // are not, so nothing was given back.
       expect(harness.rebuiltStopped()).toBe(false);
-      expect(mocks.ownerLeasesDuringCaptureStop).toHaveLength(1); // the outgoing generation only
+      expect(mocks.ownerLeasesDuringCaptureStop).toHaveLength(1);
       expect(leaseFiles()).toHaveLength(1);
       const args = harness.spawned[0]!.args;
       expect(args[args.indexOf("--resume") + 1]).toBe(REBUILT_ID);

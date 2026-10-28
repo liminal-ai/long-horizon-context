@@ -1,7 +1,3 @@
-/**
- * Correction 9: coherent snapshot commit ordering.
- */
-
 import { appendFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -66,7 +62,6 @@ describe("coherent snapshot watcher", () => {
         if (mutated) return;
         if (bytes.byteLength > 0) {
           mutated = true;
-          // Mutate file after candidate bytes were copied.
           writeFileSync(
             path,
             `${JSON.stringify({ type: "user", uuid: "MUTATED", message: { role: "user", content: "mut" } })}\n`,
@@ -77,15 +72,7 @@ describe("coherent snapshot watcher", () => {
         emissions.push(...em);
       },
     });
-    // Either rejects initial or retries to success with post-check failing then retry.
-    // After mutation during first read, post meta differs → retry; second read may succeed
-    // with MUTATED if we re-read. For first attempt with mutation, post ctime/mtime/size
-    // should differ if same-size rewrite still updates ctime.
-    // Force same-size to still change ctime on linux.
     await sleep(100);
-    // If initial succeeded after retry, emissions may have MUTATED — that's coherent.
-    // The critical invariant: never deliver ORIG while adopting MUTATED baseline.
-    // Inject a mid-flight mutation that changes size so post-check always fails:
     watcher?.stop();
     watcher = undefined;
 
@@ -97,7 +84,6 @@ describe("coherent snapshot watcher", () => {
       pollMs: 40,
       afterCandidateRead: () => {
         fires += 1;
-        // Grow the file so post size differs from pre size.
         appendFileSync(
           path,
           `${JSON.stringify({ type: "user", uuid: "EXTRA", message: { role: "user", content: "x" } })}\n`,
@@ -211,17 +197,12 @@ describe("coherent snapshot watcher", () => {
         emissions.push(...em);
       },
     });
-    await expect(watcher.initialCatchUp).rejects.toThrow(
-      /positive startOffset requires expectedConsumedDigest/,
-    );
+    await expect(watcher.initialCatchUp).rejects.toThrow(/positive startOffset requires expectedConsumedDigest/);
     expect(watcher.isTerminal?.()).toBe(true);
     expect(emissions).toHaveLength(0);
   });
 
   it("handoff-gap same-inode rewrite after verify: digest A rejects B baseline", async () => {
-    // Session proves digest A on held fd, then a rewrite to equal-length B
-    // happens before watcher construct. Watcher must be given A and reject —
-    // never re-read and adopt B as baseline.
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-handoff-gap-"));
     const path = join(dir, "s.jsonl");
     const prefixA = `${JSON.stringify({ type: "user", uuid: "AAAA", message: { role: "user", content: "AAAA" } })}\n`;
@@ -232,7 +213,6 @@ describe("coherent snapshot watcher", () => {
     const handle = openContinuityHandle(path);
     expect(verifyPrefixBoundaryOnHandle(handle, boundaryA).ok).toBe(true);
 
-    // Handoff gap: same-inode rewrite to B (+ lure) after proof, before construct.
     writeFileSync(
       path,
       prefixB +
@@ -244,7 +224,7 @@ describe("coherent snapshot watcher", () => {
     watcher = watchRolloutFile({
       continuity: handle,
       startOffset: boundaryA.byteLength,
-      expectedConsumedDigest: boundaryA.sha256, // proven A — not re-derived from B
+      expectedConsumedDigest: boundaryA.sha256,
       pollMs: 40,
       onBatch: (em) => {
         emissions.push(...em);
@@ -252,9 +232,7 @@ describe("coherent snapshot watcher", () => {
       onInitialFailure: (m) => fails.push(m),
       onContinuityFailure: (m) => fails.push(m),
     });
-    await expect(watcher.initialCatchUp).rejects.toThrow(
-      /consumed region digest mismatch|rewrite of already-read/,
-    );
+    await expect(watcher.initialCatchUp).rejects.toThrow(/consumed region digest mismatch|rewrite of already-read/);
     expect(watcher.isTerminal?.()).toBe(true);
     expect(emissions).toHaveLength(0);
     expect(JSON.stringify(emissions)).not.toContain("LURE-HANDOFF");
@@ -284,7 +262,6 @@ describe("coherent snapshot watcher", () => {
     await expect(watcher.initialCatchUp).rejects.toThrow(/initial fstat failed/);
     expect(watcher.isTerminal?.()).toBe(true);
     expect(closeCount).toBe(1);
-    // stop() must be idempotent — no second close of the same fd.
     watcher.stop();
     expect(closeCount).toBe(1);
   });

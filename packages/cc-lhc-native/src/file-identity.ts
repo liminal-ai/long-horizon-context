@@ -50,11 +50,6 @@ const NATIVE_FAILURE_CODES: ReadonlySet<string> = new Set([
   "native_error",
 ]);
 const IDENTITY_PLATFORMS: ReadonlySet<string> = new Set(["linux", "darwin", "win32"]);
-/**
- * The tag set is per-platform: win32 identity comes only from the opened file
- * object (id128/index64) and an inode-shaped value there means a stat proxy
- * leaked in — fail closed rather than accept it.
- */
 const FILE_ID_PATTERNS: Record<ExactFileIdentity["platform"], RegExp> = {
   linux: /^ino:\d{1,20}$/,
   darwin: /^ino:\d{1,20}$/,
@@ -65,7 +60,6 @@ function failure(code: FileIdentityFailureCode, message: string): ReadFileIdenti
   return { ok: false, code, message };
 }
 
-/** Validate raw addon output; fail closed on any malformed shape. */
 export function normalizeNativeFileResult(
   raw: unknown,
   path: string,
@@ -98,7 +92,6 @@ export function normalizeNativeFileResult(
 
 export type ExactFileIdentityReader = (path: string) => ReadFileIdentityResult;
 
-/** Build a reader over the native addon; loader failures become per-call fail-closed results. */
 export function createExactFileIdentityReader(seams: LoaderSeams = {}): ExactFileIdentityReader {
   let cached: { addon: NativeIdentityAddon; platform: ExactFileIdentity["platform"] } | null = null;
   let loadFailure: ReadFileIdentityResult | null = null;
@@ -138,7 +131,6 @@ export function createExactFileIdentityReader(seams: LoaderSeams = {}): ExactFil
 
 let defaultReader: ExactFileIdentityReader | null = null;
 
-/** Production-default reader: real platform, real manifest, real artifact. */
 export function readExactFileIdentity(path: string): ReadFileIdentityResult {
   if (defaultReader === null) defaultReader = createExactFileIdentityReader();
   return defaultReader(path);

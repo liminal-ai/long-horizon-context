@@ -1,11 +1,3 @@
-/**
- * What cc-lhc says and does when replacements repeatedly will not run.
- *
- * The behavioral pair — a persistent best-guess alarm plus an active survival
- * relaunch — is asserted end to end in auto-handoff.test.ts. What is checked
- * here is the wording the operator actually reads, and the one property of the
- * shipped bound that the behavior depends on.
- */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -23,9 +15,6 @@ const ALARM = formatReplacementNonviabilityAlarm({
 
 describe("the bound on retrying a swap that will not run", () => {
   it("leaves at least one free retry before cc-lhc concludes anything", () => {
-    // The behavior the story negotiates is that retrying is bounded, not that
-    // the bound is any particular number — but a bound of one would alarm on a
-    // single transient failure, with no retry at a later settled seam.
     expect(NONVIABLE_SWAPS_BEFORE_ALARM).toBeGreaterThan(1);
     expect(Number.isInteger(NONVIABLE_SWAPS_BEFORE_ALARM)).toBe(true);
   });
@@ -47,13 +36,9 @@ describe("the standing alarm", () => {
 
   it("says what is still working, and never claims anything ended", () => {
     expect(ALARM).toContain("Session old-1111 stays live and capture keeps running");
-    // Shared raw text: the wrapper log, the terminal line, and the governor
-    // refusal log read this array as-is, so it keeps the product name. The
-    // Control Panel sees it through run.ts's projection instead.
     expect(ALARM).toContain("Manual Smart Compact still runs");
     expect(ALARM).not.toContain("/smart-compact");
     expect(ALARM).toContain("only the automatic child swap stops");
-    // "the terminal" is the screen cc-lhc refuses to parse, not a state claim.
     for (const ended of ["terminal state", "dead", "unrecoverable", "gave up", "wall"]) {
       expect(ALARM.toLowerCase()).not.toContain(ended);
     }

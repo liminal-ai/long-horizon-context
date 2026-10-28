@@ -1,27 +1,14 @@
-/**
- * First-load Control Panel and the visible-message allowlist (AC-3.7).
- *
- * Once Claude owns the terminal the wrapper writes nothing onto its screen.
- * Two things may open the production Control Panel by themselves: the first
- * managed launch of an onboarding version in one CC-LHC home, and a durable
- * condition the operator must act on. Everything else — routine status,
- * successful operations, token counts, active work — waits in the panel for
- * the reopen key and in the wrapper log.
- */
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { formatTokensShort } from "../commands/context-mutation.js";
 import { type NativeAutoCompactState, nativeAutoCompactHomeSegment } from "./terminology.js";
 
-/** Bump when the onboarding content changes enough that every home should see it once more. */
 export const ONBOARDING_VERSION = 1;
 
-/** The one durable fact: which onboarding version this home has already seen. */
 export function firstLoadMarkerPath(home: string): string {
   return join(home, "first-load.json");
 }
 
-/** The shown version, or null when nothing readable says one was shown. */
 export function readShownVersion(path: string): number | null {
   try {
     const parsed: unknown = JSON.parse(readFileSync(path, "utf8"));
@@ -33,7 +20,6 @@ export function readShownVersion(path: string): number | null {
   }
 }
 
-/** Record that `version` was shown; atomic so a torn write reads as not shown. */
 export function markShown(path: string, version: number): void {
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.${process.pid}.tmp`;
@@ -41,17 +27,12 @@ export function markShown(path: string, version: number): void {
   renameSync(tmp, path);
 }
 
-/** The reopen key as the operator types it (`ctrl-]` for the default leader). */
 export function formatLeaderKey(leaderByte: number): string {
   if (leaderByte >= 0x01 && leaderByte <= 0x1a) return `ctrl-${String.fromCharCode(leaderByte + 96)}`;
   if (leaderByte >= 0x1b && leaderByte <= 0x1f) return `ctrl-${String.fromCharCode(leaderByte + 64).toLowerCase()}`;
   return `0x${leaderByte.toString(16).padStart(2, "0")}`;
 }
 
-/**
- * The closed allowlist of conditions that may open the panel unasked. A
- * message that is not one of these is routine and never auto-opens.
- */
 export const ACTIONABLE_KINDS = [
   "possible_undelivered_input",
   "unsafe_capture_or_database_state",
@@ -67,11 +48,9 @@ export function isActionableKind(kind: string): kind is ActionableKind {
 
 export interface ActionableCondition {
   kind: ActionableKind;
-  /** Already user-facing text; shown beneath the kind's one-line guidance. */
   lines: readonly string[];
 }
 
-/** Priority order: what can lose the operator's work first. */
 const GUIDANCE: Record<ActionableKind, string> = {
   possible_undelivered_input: "input may not have reached Claude — resend what you typed",
   unsafe_capture_or_database_state: "cc-lhc state is unsafe — capture or the database could not be trusted",
@@ -80,7 +59,6 @@ const GUIDANCE: Record<ActionableKind, string> = {
   native_auto_compact_conflict: "Claude native auto-compact may run before Smart Compact on this launch",
 };
 
-/** Concise prioritized rows for the panel: highest priority first, each kind once. */
 export function actionableGuidanceRows(conditions: readonly ActionableCondition[]): string[] {
   const rows: string[] = [];
   for (const kind of ACTIONABLE_KINDS) {
@@ -99,7 +77,6 @@ export interface FirstLoadFacts {
   leaderByte: number;
 }
 
-/** The one-time explanation, built from the resolved policy the session actually runs with. */
 export function firstLoadGuidanceRows(facts: FirstLoadFacts): string[] {
   return [
     "Welcome to CC-LHC. Smart Compact keeps this Claude session within its context window automatically.",
@@ -111,15 +88,10 @@ export function firstLoadGuidanceRows(facts: FirstLoadFacts): string[] {
 
 export interface StartupPanelPlan {
   open: boolean;
-  /** True when this open is the onboarding view that must be marked shown. */
   firstLoad: boolean;
   rows: string[];
 }
 
-/**
- * Whether the panel opens at launch and what it says. Onboarding opens once per
- * version per home; allowlisted conditions open it whenever they are present.
- */
 export function planStartupPanel(input: {
   shownVersion: number | null;
   version: number;

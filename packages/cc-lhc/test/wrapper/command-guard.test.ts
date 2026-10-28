@@ -19,7 +19,6 @@ describe("CommandInFlightGuard", () => {
     expect(formatBusyMessage({ label: "prune 30000", startedAtMs: 1_000 }, 42_400)).toBe(
       "busy — prune 30000 still running (41s); its receipt will land here when it settles",
     );
-    // clock skew never yields a negative elapsed
     expect(formatBusyMessage({ label: "status", startedAtMs: 5_000 }, 4_000)).toBe(
       "busy — status still running (0s); its receipt will land here when it settles",
     );

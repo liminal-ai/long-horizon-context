@@ -107,7 +107,6 @@ describe("lineage sqlite", () => {
 
     expect(bound.isExistingThread).toBe(true);
     expect(bound.threadRef).toEqual({ threadId: "th_hit", registryPath: join(home, "registry.sqlite") });
-    // Ordinary rebind never invents a target row as known-none.
     expect(threadForLegacySession(dbPath, "session-later")).toBeUndefined();
     expect(bound.prefix.kind).toBe("unknown");
   });
@@ -130,8 +129,12 @@ describe("lineage sqlite", () => {
     const home = tempHome();
     const dbPath = dbPathInHome(home);
     await Promise.all([
-      Promise.resolve().then(() => recordSessionThread(dbPath, "session-one", "th_one", {}, { prefix: { kind: "none" } })),
-      Promise.resolve().then(() => recordSessionThread(dbPath, "session-two", "th_two", {}, { prefix: { kind: "none" } })),
+      Promise.resolve().then(() =>
+        recordSessionThread(dbPath, "session-one", "th_one", {}, { prefix: { kind: "none" } }),
+      ),
+      Promise.resolve().then(() =>
+        recordSessionThread(dbPath, "session-two", "th_two", {}, { prefix: { kind: "none" } }),
+      ),
     ]);
     expect(threadForLegacySession(dbPath, "session-one")).toBe("th_one");
     expect(threadForLegacySession(dbPath, "session-two")).toBe("th_two");
@@ -232,7 +235,6 @@ describe("lineage sqlite", () => {
       replayedPrefixLines: 7,
       prefix: verified,
     });
-    // Ordinary re-bind (no prefix option) must not clear the fence.
     recordSessionThread(dbPath, "rebuilt-sid", "th_r");
     expect(lookupSessionLineage(dbPath, "rebuilt-sid")?.prefix).toEqual(verified);
   });
@@ -284,8 +286,6 @@ describe("lineage sqlite", () => {
     );
     db.close();
 
-    // Opening through the production path adds the column; the pre-amendment
-    // row keeps a null predecessor, so it can repair no state at all.
     expect(readPendingCurrentSession(dbPath, "th_legacy_pending")).toEqual({
       threadId: "th_legacy_pending",
       sessionId: "s-accepted",
@@ -311,12 +311,13 @@ describe("lineage sqlite", () => {
         updated_at TEXT NOT NULL
       )
     `);
-    db.prepare(
-      "INSERT INTO cc_session_lineage (rollout_session_id, thread_id, updated_at) VALUES (?, ?, ?)",
-    ).run("legacy-sid", "th_legacy", new Date().toISOString());
+    db.prepare("INSERT INTO cc_session_lineage (rollout_session_id, thread_id, updated_at) VALUES (?, ?, ?)").run(
+      "legacy-sid",
+      "th_legacy",
+      new Date().toISOString(),
+    );
     db.close();
 
-    // Open via production path — must ALTER; legacy is unknown (not trusted none).
     expect(lookupSessionLineage(dbPath, "legacy-sid")).toMatchObject({
       threadId: "th_legacy",
       prefix: { kind: "unknown" },

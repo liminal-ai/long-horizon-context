@@ -1,10 +1,3 @@
-/**
- * A one-shot resuming a rebuilt transcript that no record links to its thread
- * (a pre-fix orphan of an interrupted compaction). Capture would be refused,
- * and a one-shot has no screen to show why, so run() prints the guidance to
- * stderr and exits non-zero before any Claude process exists.
- */
-
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -33,27 +26,20 @@ describe("run: one-shot on an unlinked rebuilt transcript", () => {
     CC_LHC_HOME: process.env.CC_LHC_HOME,
   };
   const dirs: string[] = [];
-  // run() opens its receipt/continuity stores on this DB and, on the refusal's
-  // early return, leaves them to process exit (cli.ts exits right after run()).
-  // Kept outside the fake home so Windows can still remove the home; this
-  // directory is removed best effort once the test process has let go of it.
   let storeDir = "";
 
   beforeEach(() => {
     const home = mkdtempSync(join(tmpdir(), "cc-lhc-unlinked-home-"));
-    // Inside the fake profile: on Windows cc-lhc refuses a CC_LHC_HOME outside the user profile.
     const lhcHome = join(home, ".cc-lhc");
     mkdirSync(lhcHome);
     dirs.push(home);
     storeDir = mkdtempSync(join(tmpdir(), "cc-lhc-unlinked-stores-"));
-    // os.homedir() reads USERPROFILE on Windows and HOME elsewhere.
     process.env.HOME = home;
     process.env.USERPROFILE = home;
     process.env.CC_LHC_HOME = lhcHome;
     const projectDir = join(home, ".claude", "projects", encodeProjectPath(process.cwd()));
     mkdirSync(projectDir, { recursive: true });
     writeFileSync(join(projectDir, `${ORPHAN}.jsonl`), readFileSync(ALDER_FIXTURE));
-    // Alder's lineage: an unrelated thread holds both replayed lines.
     appendThreadSignatures(defaultLineageDbPath(), "th_unrelated_B", [
       "7e3af9d1d0129ff782e097d54f659e50c830318997c669c8e72762a7f428a7c4",
       "ba1a1cc30c8df3501d24c76f710ecf0981164d92d8b3e38e7f1d90fd6178ed00",
@@ -68,9 +54,7 @@ describe("run: one-shot on an unlinked rebuilt transcript", () => {
     for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     try {
       rmSync(storeDir, { recursive: true, force: true });
-    } catch {
-      // Windows: still open in this process (see storeDir above).
-    }
+    } catch {}
   });
 
   it("prints the guidance on stderr and exits non-zero without launching Claude", async () => {

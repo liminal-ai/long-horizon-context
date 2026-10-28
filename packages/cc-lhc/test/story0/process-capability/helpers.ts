@@ -1,8 +1,3 @@
-/**
- * Test-only helpers for the Story 0 production-path proof: identity-safe
- * signaling, a one-shot terminal observer, and POSIX output-identity checks.
- */
-
 import { spawnSync } from "node:child_process";
 import {
   appendFileSync,
@@ -38,10 +33,8 @@ export interface Affiliation {
   pid: number;
   ppid: number | null;
   pgrp: number | null;
-  /** Numeric session ID: Linux /proc field 6, Darwin POSIX getsid(pid). Not Darwin `sess` (a kernel pointer). */
   session: number | null;
   source: AffiliationSource;
-  /** Bounded raw probe text for diagnosis; never a command body or output contents. */
   raw: string | null;
 }
 
@@ -76,7 +69,6 @@ function spawnErrorCode(error: Error | undefined): string {
   return String(error.code);
 }
 
-/** POSIX getsid(pid) via the runner Python already required by node-gyp. */
 function darwinGetsid(pid: number): { session: number | null; raw: string } {
   const tried: string[] = [];
   const seen = new Set<string>();
@@ -89,7 +81,6 @@ function darwinGetsid(pid: number): { session: number | null; raw: string } {
     });
     const errorCode = spawnErrorCode(r.error);
     tried.push(`${command}:${r.status === null ? "null" : String(r.status)}|${r.stdout}|${r.stderr}|${errorCode}`);
-    // Missing interpreter only: try the next candidate. Any other result is final.
     if (errorCode === "ENOENT") continue;
     const session = r.status === 0 ? parseDecimal((r.stdout ?? "").trim()) : null;
     return { session, raw: boundedRaw(`getsid:${tried.join(";")}`) };
@@ -119,15 +110,9 @@ export function readAffiliation(pid: number): Affiliation {
           raw: boundedRaw(`${pid} ${rest[1]} ${rest[2]} ${rest[3]}`),
         };
       }
-    } catch {
-      // Fall through.
-    }
+    } catch {}
   }
   if (process.platform === "darwin") {
-    // Darwin `/bin/ps` has no `sid` keyword (`sid: keyword not found`); `sess` is a
-    // kernel pointer (observed 0). Keep ps for pid/ppid/pgid and bounded raw
-    // diagnosis. Numeric session is POSIX getsid; fail closed if unavailable
-    // or malformed — do not substitute PGID or another ps keyword.
     const r = spawnSync("/bin/ps", ["-o", "pid=", "-o", "ppid=", "-o", "pgid=", "-o", "sess=", "-p", String(pid)], {
       encoding: "utf8",
       timeout: 5_000,

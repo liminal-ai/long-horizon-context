@@ -171,8 +171,6 @@ describe("decideGovernor", () => {
   });
 
   it("has no disabled decision: every settled over-trigger input mutates (TC-1.5d)", () => {
-    // The policy type carries no off switch; a foreign `autoCompact:false`
-    // smuggled onto the object changes nothing.
     const smuggled = { ...BUILTIN_CONTEXT_POLICY, autoCompact: false } as unknown as typeof BUILTIN_CONTEXT_POLICY;
     const d = decideGovernor(baseInput({ policy: smuggled }));
     expect(d.kind).toBe("would_compact");
@@ -181,10 +179,6 @@ describe("decideGovernor", () => {
   });
 
   it("nothing but policy and pressure can suppress a settled compact", () => {
-    // Every non-pressure input the decision still accepts, set to its most
-    // pessimistic value at once. The gates this campaign removed — typed-ahead
-    // input, degraded capture, an unready descriptor, an unwritten receipt,
-    // insufficient retry growth — are no longer expressible here at all.
     const d = decideGovernor(
       baseInput({
         providerContext: {
@@ -201,8 +195,6 @@ describe("decideGovernor", () => {
   });
 
   it("repeated settled seams at the same pressure keep producing an executable decision", () => {
-    // No retry-growth toll: a deferral that never started a mutation costs the
-    // next seam nothing.
     const at = baseInput({
       providerContext: {
         inputTokens: 400_000,

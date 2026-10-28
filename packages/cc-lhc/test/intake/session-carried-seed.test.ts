@@ -1,9 +1,3 @@
-/**
- * LIM-146 TC-2.9b: a real capture session seeds the record's carried work
- * once, with the thread it bound, before any live line is folded — so a
- * restarted wrapper recognizes terminal evidence for work it did not see
- * launch. A seed that throws seeds nothing and is reported.
- */
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -92,7 +86,6 @@ describe("live capture seeds carried work after binding its thread", () => {
       expect(seededWith).toEqual(["th_seed"]);
       expect(logs).toContain("cc-lhc continuity: 1 carried item(s) seeded for thread th_seed");
       expect(session.getLiveAsyncWork()).toEqual([CARRIED]);
-      // Unknown work finishing is not this record's evidence; the carried item finishing is.
       appendFileSync(
         r.path,
         r.record({ ...(notification({ taskIds: ["ghost-9"], status: "completed" }) as object), uuid: "n0" }),

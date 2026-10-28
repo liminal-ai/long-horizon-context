@@ -1,8 +1,3 @@
-/**
- * Correction 5: content-verifiable rebuilt-prefix fence across process exit.
- * Adversarial coverage — corrupt each producer path; do not only assert happy path.
- */
-
 import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,10 +6,7 @@ import type { Lhc, MessageEventInput, ThreadRef } from "lhc";
 import { describe, expect, it } from "vitest";
 
 import { registerRebuiltSessionLineage } from "../../src/commands/rebuild-receipt.js";
-import {
-  lookupSessionLineage,
-  recordSessionThread,
-} from "../../src/intake/lineage-db.js";
+import { lookupSessionLineage, recordSessionThread } from "../../src/intake/lineage-db.js";
 import type { LifecycleSignal } from "../../src/observation/types.js";
 import { startCaptureSession } from "../../src/intake/session.js";
 import { encodeProjectPath } from "../../src/rollout/discover.js";
@@ -37,20 +29,18 @@ const TAIL_USER = "tail-user-live-prompt";
 const TAIL_ASSISTANT = "tail-assistant-live-text";
 const LIVE_APPEND = "post-resume-live-only";
 
-function hermeticSession(
-  opts: {
-    root: string;
-    cwd: string;
-    projectsRoot: string;
-    lineageDbPath: string;
-    registryPath: string;
-    threadId: string;
-    sessionId: string;
-    rolloutPath: string;
-    intake: MessageEventInput[];
-    lifecycle?: LifecycleSignal[];
-  },
-) {
+function hermeticSession(opts: {
+  root: string;
+  cwd: string;
+  projectsRoot: string;
+  lineageDbPath: string;
+  registryPath: string;
+  threadId: string;
+  sessionId: string;
+  rolloutPath: string;
+  intake: MessageEventInput[];
+  lifecycle?: LifecycleSignal[];
+}) {
   return startCaptureSession({
     cwd: opts.cwd,
     expectedSession: { sessionId: opts.sessionId, source: "explicit_resume" },
@@ -129,7 +119,6 @@ describe("content-verifiable rebuilt prefix fence", () => {
       sha256: rebuilt.prefixBoundary.sha256,
     });
 
-    // Ordinary re-bind must not clear verified fence.
     recordSessionThread(lineageDbPath, rebuilt.sessionId, threadId);
     expect(lookupSessionLineage(lineageDbPath, rebuilt.sessionId)?.prefix.kind).toBe("verified");
 
@@ -151,11 +140,7 @@ describe("content-verifiable rebuilt prefix fence", () => {
     try {
       await waitFor(() => session.isCaptureReady(), "ready after verified prefix");
       await waitFor(() => session.stats.replayedPrefixLines === 4, "prefix tallied");
-      // No runtime lifecycle from prefix before session_bound.
-      const beforeBound = lifecycle.slice(
-        0,
-        lifecycle.findIndex((s) => s.kind === "session_bound") + 1,
-      );
+      const beforeBound = lifecycle.slice(0, lifecycle.findIndex((s) => s.kind === "session_bound") + 1);
       expect(beforeBound.some((s) => s.kind === "session_bound")).toBe(true);
       expect(beforeBound.some((s) => s.kind === "turn_opened")).toBe(false);
       expect(beforeBound.some((s) => s.kind === "turn_settled")).toBe(false);
@@ -192,7 +177,6 @@ describe("content-verifiable rebuilt prefix fence", () => {
     const registryPath = join(root, "registry.sqlite");
     const threadId = "th_short";
 
-    // Truncate file so it is shorter than the verified byte boundary.
     const original = readFileSync(rebuilt.rolloutPath);
     writeFileSync(rebuilt.rolloutPath, original.subarray(0, Math.max(1, rebuilt.prefixBoundary.byteLength - 10)));
 
@@ -219,11 +203,8 @@ describe("content-verifiable rebuilt prefix fence", () => {
     try {
       await waitFor(() => session.getCaptureHealth().phase === "degraded", "degraded short file");
       expect(session.isCaptureReady()).toBe(false);
-      expect(session.getCaptureHealth().reasons.some((r) => r.startsWith("prefix_boundary"))).toBe(
-        true,
-      );
+      expect(session.getCaptureHealth().reasons.some((r) => r.startsWith("prefix_boundary"))).toBe(true);
 
-      // Append live after failure — must NOT be consumed as prefix (no skip mode).
       appendFileSync(
         rebuilt.rolloutPath,
         `${JSON.stringify({
@@ -234,7 +215,6 @@ describe("content-verifiable rebuilt prefix fence", () => {
         })}\n`,
       );
       await sleep(200);
-      // Intake halted/not ready: either empty or if anything landed it is live not prefix-skip.
       expect(session.stats.replayedPrefixLines).toBe(0);
       expect(session.isCaptureReady()).toBe(false);
     } finally {
@@ -250,7 +230,6 @@ describe("content-verifiable rebuilt prefix fence", () => {
     const registryPath = join(root, "registry.sqlite");
     const threadId = "th_mod";
 
-    // Flip one byte inside the verified prefix region.
     const buf = Buffer.from(readFileSync(rebuilt.rolloutPath));
     const flipAt = Math.min(20, rebuilt.prefixBoundary.byteLength - 1);
     buf[flipAt] = (buf[flipAt]! ^ 0xff) & 0xff;
@@ -294,7 +273,6 @@ describe("content-verifiable rebuilt prefix fence", () => {
 
     const content = readFileSync(rebuilt.rolloutPath, "utf8");
     const all = content.trimEnd().split("\n");
-    // Swap first two complete lines (still same count/bytes length roughly but digest differs).
     if (all.length >= 2) {
       const tmp = all[0]!;
       all[0] = all[1]!;
@@ -335,7 +313,6 @@ describe("content-verifiable rebuilt prefix fence", () => {
     mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
     const sessionId = "ffffffff-ffff-ffff-ffff-ffffffffffff";
     const path = join(projectsRoot, encodeProjectPath(cwd), `${sessionId}.jsonl`);
-    // Served band plus a live-looking suffix — both must stay out of the record.
     writeFileSync(
       path,
       `${JSON.stringify({ type: "user", uuid: "b1", sessionId, message: { role: "user", content: BAND_MARKER } })}\n` +
@@ -507,7 +484,6 @@ describe("content-verifiable rebuilt prefix fence", () => {
     mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
     const sessionId = "10101010-1010-1010-1010-101010101010";
     const path = join(projectsRoot, encodeProjectPath(cwd), `${sessionId}.jsonl`);
-    // Ordinary-looking user/assistant rollout — still unknown, still refuse.
     writeFileSync(
       path,
       `${JSON.stringify({ type: "user", uuid: "u1", sessionId, message: { role: "user", content: "hello native-looking" } })}\n` +
@@ -582,12 +558,10 @@ describe("content-verifiable rebuilt prefix fence", () => {
 
     try {
       await waitFor(() => session.isCaptureReady(), "ready");
-      // Truncate file below current watcher offset (past verified prefix).
       writeFileSync(rebuilt.rolloutPath, "");
       await waitFor(() => session.getCaptureHealth().phase === "degraded", "shrink degrade");
       expect(session.isCaptureReady()).toBe(false);
 
-      // Rewrite with band projection and a "live" lure — must not enter intake.
       writeFileSync(
         rebuilt.rolloutPath,
         `${JSON.stringify({ type: "user", uuid: "pollute", sessionId, message: { role: "user", content: BAND_MARKER } })}\n` +
@@ -608,7 +582,6 @@ describe("content-verifiable rebuilt prefix fence", () => {
     const cwd = "/work/life";
     mkdirSync(join(projectsRoot, encodeProjectPath(cwd)), { recursive: true });
     const sessionId = "12121212-1212-1212-1212-121212121212";
-    // Prefix contains shapes that would emit every runtime lifecycle kind if live.
     const rebuilt = await writeRebuiltRollout({
       view: {
         threadId: "th_life",
@@ -655,15 +628,9 @@ describe("content-verifiable rebuilt prefix fence", () => {
       const boundIdx = lifecycle.findIndex((s) => s.kind === "session_bound");
       expect(boundIdx).toBeGreaterThanOrEqual(0);
       const before = lifecycle.slice(0, boundIdx);
-      for (const kind of [
-        "turn_opened",
-        "turn_settled",
-        "sampling_observed",
-        "native_compact_observed",
-      ] as const) {
+      for (const kind of ["turn_opened", "turn_settled", "sampling_observed", "native_compact_observed"] as const) {
         expect(before.some((s) => s.kind === kind)).toBe(false);
       }
-      // Live fold starts closed; isTurnOpen false until a live open edge.
       expect(session.isTurnOpen()).toBe(false);
 
       appendFileSync(
@@ -676,7 +643,6 @@ describe("content-verifiable rebuilt prefix fence", () => {
         })}\n`,
       );
       await waitFor(() => session.isTurnOpen() || JSON.stringify(intake).includes("live-open-prompt"), "live open");
-      // After genuine suffix user line, turn may open.
       await waitFor(() => lifecycle.some((s) => s.kind === "turn_opened"), "live turn_opened");
       const afterBound = lifecycle.slice(boundIdx + 1);
       expect(afterBound.some((s) => s.kind === "turn_opened")).toBe(true);

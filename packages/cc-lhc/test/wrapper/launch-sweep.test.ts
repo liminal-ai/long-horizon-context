@@ -86,7 +86,6 @@ async function fixture(label: string): Promise<Fixture> {
     registryPath: join(home, "registry.sqlite"),
     lineageDbPath: join(home, "cc-lhc.sqlite"),
   };
-  // Thread th_a: original s-orig, then accepted rebuild s-accepted (current).
   await bindLaunchThread({
     sessionId: "s-orig",
     registryPath: f.registryPath,
@@ -191,7 +190,6 @@ describe("launch sweep: abandoned rebuilt transcripts", () => {
 
   it("leaves the current session and any registry alias untouched", async () => {
     const f = await fixture("alias");
-    // s-older-rebuild: accepted earlier, since superseded — still an alias.
     recordSessionThread(f.lineageDbPath, "s-older-rebuild", "th_a", {}, { prefix: VERIFIED });
     await acceptCurrentSession({ sessionId: "s-older-rebuild", threadId: "th_a", registryPath: f.registryPath });
     await acceptCurrentSession({ sessionId: "s-accepted", threadId: "th_a", registryPath: f.registryPath });

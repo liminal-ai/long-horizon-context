@@ -20,7 +20,6 @@ import { presentAllocation } from "../../src/wrapper/preset-presentation.js";
 import { run } from "../../src/wrapper/run.js";
 import { panelText } from "../helpers/panel-text.js";
 
-/** Isolate durable governor receipts per test (shared ~/.cc-lhc would cross-talk). */
 function tempReceiptDbPath(): string {
   const dir = mkdtempSync(join(tmpdir(), "cc-lhc-auto-receipt-"));
   receiptDirs.push(dir);
@@ -31,13 +30,10 @@ const receiptDirs: string[] = [];
 const mocks = vi.hoisted(() => ({
   captureFactory: null as ((opts: CaptureSessionDeps) => CaptureSession) | null,
   registerLineage: vi.fn(async (..._args: unknown[]) => ({ ok: true as const })),
-  /** Alias whose registry current-pointer advance cannot be written. */
   unwritableAlias: null as string | null,
-  /** Alias the registry cannot resolve, so the launch never reaches a lease. */
   unresolvableAlias: null as string | null,
 }));
 
-/** A pre-rewrite input journal: `[type:1][length:4 BE][JSON header]` + body. */
 function legacyJournalBytes(header: Record<string, unknown>): Buffer {
   const payload = Buffer.from(JSON.stringify({ version: 1, journalId: "j", ...header }), "utf8");
   const frame = Buffer.allocUnsafe(5);
@@ -54,9 +50,6 @@ vi.mock("lhc", async (importOriginal) => {
   const actual = await importOriginal<typeof import("lhc")>();
   return {
     ...actual,
-    // Only the pointer write for one alias fails. Everything the wrapper does
-    // around it — observing the predecessor, recording the acceptance — runs
-    // against the real registry.
     threads: {
       ...actual.threads,
       resolveAlias: async (lookup: Parameters<typeof actual.threads.resolveAlias>[0]) =>
@@ -113,7 +106,6 @@ interface FakePty {
   args: string[];
   killed: string[];
   writes: string[];
-  /** Push a frame from this child on demand (routing assertions). */
   emitData(data: string): void;
   fireExit(code: number, signal?: number): void;
   onData(cb: (data: string) => void): { dispose(): void };
@@ -141,7 +133,6 @@ function makeFakePty(pid: number, label: string, args: string[], autoExitOnKill:
     onData: (cb: (data: string) => void) => {
       dataCbs.push(cb);
       if (emitOutput) {
-        // A live child renders output shortly after spawn (liveness signal).
         setTimeout(() => {
           for (const dataCb of dataCbs) dataCb("render\r\n");
         }, 30);
@@ -320,9 +311,7 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     for (const d of receiptDirs.splice(0)) {
       try {
         rmSync(d, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -412,9 +401,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
     await waitFor(() => spawned.length === 1, "first child");
-    // The operator types while compact owns the settled session. The bytes are
-    // dropped — never delivered to either child, never held for replay — and
-    // one line tells them to resend.
     const origKill = spawned[0]!.kill.bind(spawned[0]);
     spawned[0]!.kill = (sig?: string) => {
       (stdin as unknown as PassThrough).write("typed during compaction");
@@ -433,59 +419,42 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     }
     expect(spawned[1]!.writes.join("")).not.toContain("typed during compaction");
     expect(spawned[0]!.writes.join("")).not.toContain("typed during compaction");
-    // AC-3.7a: the dropped input is never written onto Claude's screen; the
-    // rig has no TTY, so the guidance waits for the panel instead.
     expect(terminalOutput).not.toContain("[cc-lhc]");
     expect(terminalOutput).not.toContain("typed during compaction");
 
-    // Spawn-first: the replacement existed before the old child was signalled.
     expect(spawnOrder.indexOf("spawn:1")).toBeLessThan(spawnOrder.indexOf("kill:0"));
-    // Old child was terminated gracefully; a second child spawned with external --resume.
     expect(spawned).toHaveLength(2);
     expect(spawned[0]!.killed).toContain("SIGTERM");
     expect(spawned[1]!.args).toContain("--resume");
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
-    // R8: the replacement child carries the same per-child native auto-compact
-    // disable as the original, and no --autocompact argv is synthesized.
     expect(spawnedEnvs[1]!.DISABLE_AUTO_COMPACT).toBe("1");
     expect(spawnedEnvs[1]!.DISABLE_COMPACT).toBeUndefined();
     expect(spawned[1]!.args).not.toContain("--autocompact");
-    // Wrapper-owned handoff preserves the latest confirmed Claude runtime choices.
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--effort") + 1]).toBe("max");
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--permission-mode") + 1]).toBe("auto");
 
-    // The SDK received the configured profile and lower bound.
     expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), {
       profile: "continuation",
       params: { lowerBound: 1_000 },
     });
-    // One materialization.
     expect(writeSpy).toHaveBeenCalledOnce();
 
-    // The rebuilt capture generation was passed the pending capability directly.
     expect(captureCalls).toHaveLength(2);
     const rebuiltDeps = captureCalls[1]!;
     expect(rebuiltDeps.suppressBindLineageRecord).toBe(true);
     expect(rebuiltDeps.knownRolloutPath).toBe(rebuiltPath);
     expect(rebuiltDeps.prefixBoundary).toMatchObject({ kind: "verified", lineCount: 2 });
     expect(rebuiltDeps.expectedSession).toMatchObject({ sessionId: REBUILT_ID, source: "rebuilt_handoff" });
-    // Old capture stopped (final flush) before the replacement generation started.
     expect(captureCalls[1]).toBeDefined();
 
-    // Success-only lineage: registered exactly once, for the rebuilt session.
     expect(mocks.registerLineage).toHaveBeenCalledOnce();
     expect(mocks.registerLineage.mock.calls[0]?.[0]).toMatchObject({
       newSessionId: REBUILT_ID,
       threadId: "th_auto",
     });
 
-    // Swap accepted → the thread's current session is the replacement, so a
-    // later launch through any older alias resolves forward to it.
     expect(await currentSessionAlias("th_auto", defaultRegistryPath())).toBe(claudeSessionAlias(REBUILT_ID));
 
-    // Slice 5: only a CONFIRMED handoff records last action. Open the panel
-    // and read it on the typed details screen, where the wrapper's own
-    // diagnostics now live.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => panelText(terminalOutput).includes(PANEL_TITLE), "panel home");
     expect(panelText(terminalOutput)).toContain("input may not have reached Claude");
@@ -495,10 +464,8 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(panelText(terminalOutput)).toMatch(/Last action \/smart-compact .*\(auto\)/);
     expect(panelText(terminalOutput)).toContain("trigger 6.0k");
     expect(panelText(terminalOutput)).toContain("view 9");
-    // Close the modal again (leader-again cancels).
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
-    // Wrapper stays alive on the new child; end the run by exiting it.
     spawned[1]!.fireExit(0);
     const code = await runPromise;
     expect(code).toBe(0);
@@ -700,25 +667,18 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
     await waitFor(() => spawned.length === 1, "first child");
-    // The thread this capture reports is already current on its old session,
-    // so the failed advance observes a real predecessor to record.
     await acceptCurrentSession({ sessionId: "old-session", threadId: "th_auto", registryPath: defaultRegistryPath() });
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(TRIGGER_SIGNALS);
 
     await waitFor(() => results.length === 1, "handoff result");
     const result = results[0]!;
-    // The pointer write failed AFTER acceptance. Nothing rolls back: the
-    // replacement is live, captured, and reported as the successful outcome.
     expect(result.kind).toBe("success");
     if (result.kind === "success") expect(result.newSessionId).toBe(REBUILT_ID);
     expect(spawned).toHaveLength(2);
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
 
-    // The registry pointer is genuinely still behind…
     expect(await currentSessionAlias("th_auto", defaultRegistryPath())).toBe(claudeSessionAlias("old-session"));
-    // …so the acceptance is recorded host-side, with the predecessor it saw,
-    // for the next launch to reconcile.
     expect(readPendingCurrentSession(defaultLineageDbPath(), "th_auto")).toMatchObject({
       threadId: "th_auto",
       sessionId: REBUILT_ID,
@@ -739,8 +699,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const stdout = fakeStream();
 
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      // The user types while the rebuild is being written — compact already
-      // owns the settled session, so these bytes go nowhere.
       (stdin as unknown as PassThrough).write("x");
       await new Promise((r) => setTimeout(r, 60));
       return {
@@ -803,11 +761,9 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     lifecycleSink!(TRIGGER_SIGNALS);
 
     await waitFor(() => results.length === 1, "handoff result");
-    // Late input does not cancel a compact that succeeded.
     expect(results[0]!.kind).toBe("success");
     expect(spawned).toHaveLength(2);
     expect(mocks.registerLineage).toHaveBeenCalledOnce();
-    // The typed byte reached neither child, and was never held for replay.
     expect(spawned[0]!.writes.join("")).not.toContain("x");
     expect(spawned[1]!.writes.join("")).not.toContain("x");
     await waitFor(
@@ -830,9 +786,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     stdout.on("data", (chunk: Buffer) => screen.push(chunk));
 
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockImplementation(async () => {
-      // Nobody types. The terminal answers the replacement's startup queries
-      // (device attributes, keyboard flags, background colour, cursor position)
-      // — control sequences on stdin while compact owns input.
       (stdin as unknown as PassThrough).write(
         Buffer.from("\x1b[?62;4;6;22c\x1b[?0u\x1b]11;rgb:1e1e/1e1e/1e1e\x1b\\\x1b[24;1R", "latin1"),
       );
@@ -897,12 +850,9 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     lifecycleSink!(TRIGGER_SIGNALS);
 
     await waitFor(() => results.length === 1, "handoff result");
-    // Late input does not cancel a compact that succeeded.
     expect(results[0]!.kind).toBe("success");
     expect(spawned).toHaveLength(2);
     expect(mocks.registerLineage).toHaveBeenCalledOnce();
-    // The replies reached neither child and were not typed-ahead: no drop
-    // line, no resend notice, and the Control Panel stays closed.
     expect(spawned[0]!.writes.join("")).not.toContain("22c");
     expect(spawned[1]!.writes.join("")).not.toContain("22c");
     await waitFor(() => wrapperLogLines.some((line) => line.includes("handoff success")), "handoff settled");
@@ -960,8 +910,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const runPromise = run([], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
-        // The replacement child (--resume REBUILT_ID) emits NO output: liveness
-        // must fail. The initial and rollback children render normally.
         const isMuteReplacement = args.includes("--resume") && args.includes(REBUILT_ID);
         const fake = makeFakePty(3000 + spawned.length, `child${spawned.length}`, args, true, !isMuteReplacement);
         spawned.push(fake);
@@ -996,38 +944,26 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       expect(result.reason).toMatch(/no_output/);
       expect(result.oldSessionId).toBe("old-session");
     }
-    // Every candidate resumed the REBUILT id: bounded retries forward, and no
-    // rollback child, because nothing was ever switched away from the old
-    // session.
     const resumeTargets = spawned
       .filter((f) => f.args.includes("--resume"))
       .map((f) => f.args[f.args.indexOf("--resume") + 1]);
     expect(resumeTargets.length).toBeGreaterThanOrEqual(1);
     expect(new Set(resumeTargets)).toEqual(new Set([REBUILT_ID]));
-    // The original child kept the terminal and was never signalled.
     expect(spawned[0]!.killed).toHaveLength(0);
-    // The unproven replacement never advanced canonical lineage.
     expect(mocks.registerLineage).not.toHaveBeenCalled();
 
-    // A nonviable replacement must NOT claim a successful compact — it is
-    // visible only as last-attempt health state.
     let terminalOutput = "";
     (runStdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
       terminalOutput += chunk.toString("utf8");
     });
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
-    // The failed attempt is non-default state: Home says so, as a notice.
     await waitFor(() => panelText(terminalOutput).includes("last attempt:"), "panel after nonviable swap");
     expect(panelText(terminalOutput)).toMatch(/! last attempt: \/smart-compact replacement not viable/);
-    // And no success is claimed: details still records no last action.
     (stdin as unknown as PassThrough).write(Buffer.from("/details\r"));
     await waitFor(() => panelText(terminalOutput).includes("Last action"), "details after nonviable swap");
     expect(panelText(terminalOutput)).toContain("Last action none this wrapper session");
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
 
-    // Routing was never touched. The old child still owns the terminal in both
-    // directions: its frames reach the screen and the operator's keystrokes
-    // reach it — not the candidate that was built and discarded.
     terminalOutput = "";
     spawned[0]!.emitData("OLD-CHILD-STILL-ROUTED");
     await waitFor(() => terminalOutput.includes("OLD-CHILD-STILL-ROUTED"), "old-child output still routed");
@@ -1110,7 +1046,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     });
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
-    // The launch carried the prompt: this child, and only this child, runs it.
     expect(spawned[0]!.args).toContain("fix the login bug");
 
     lifecycleSink!(BOUND_SIGNALS);
@@ -1120,8 +1055,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(results[0]!.kind).toBe("success");
     expect(writeSpy).toHaveBeenCalledOnce();
     expect(spawned).toHaveLength(2);
-    // The replacement continues the conversation on the rebuilt session. The
-    // prompt that started it is not in its argv, so it cannot run twice.
     expect(spawned[1]!.args).not.toContain("fix the login bug");
     expect(spawned[1]!.args[spawned[1]!.args.indexOf("--resume") + 1]).toBe(REBUILT_ID);
 
@@ -1176,12 +1109,10 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
     lifecycleSink!(BOUND_SIGNALS);
 
-    // Open the panel: the status summary appears before the prompt.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => panelText(terminalOutput).includes(PANEL_TITLE), "panel summary");
     expect(panelText(terminalOutput)).toContain("target 1.0k");
     expect(panelText(terminalOutput)).not.toContain("window ");
-    // Scope, precedence, and last action are one typed word away.
     const beforeDetails = terminalOutput.length;
     (stdin as unknown as PassThrough).write(Buffer.from("/details\r"));
     await waitFor(() => panelText(terminalOutput.slice(beforeDetails)).includes("Precedence"), "details screen");
@@ -1192,18 +1123,13 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     (stdin as unknown as PassThrough).write(Buffer.from("\r"));
     await waitFor(() => panelText(terminalOutput.slice(beforeDetails)).includes("Commands"), "back home");
 
-    // Atomic rejection: inverted bounds change NOTHING.
     (stdin as unknown as PassThrough).write("/bounds 200 100\r");
     await waitFor(() => terminalOutput.includes("rejected — nothing changed"), "rejected edit");
 
-    // There is no off switch: the former `/auto off` is an unknown command
-    // and changes nothing (TC-1.5d).
     (stdin as unknown as PassThrough).write("/auto off\r");
     await waitFor(() => panelText(terminalOutput).includes("unknown command: /auto off"), "no /auto command");
     expect(panelText(terminalOutput)).not.toContain("applied live");
 
-    // Close the panel (leader-again), then settle a turn below the trigger: the
-    // rejected bounds left the trigger at 5k and the governor still runs.
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     lifecycleSink!([
       { kind: "turn_opened", reason: "user_prompt" },
@@ -1216,10 +1142,10 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     ]);
     await waitFor(() => observes.length >= 1, "governor observe");
     const last = observes[observes.length - 1]!;
-    expect(last.upperBoundTokens).toBe(5_000); // rejected edit really changed nothing
+    expect(last.upperBoundTokens).toBe(5_000);
     expect(last.decision).toBe("below_threshold");
     expect(last.wouldMutate).toBe(false);
-    expect(spawned).toHaveLength(1); // no handoff, no respawn
+    expect(spawned).toHaveLength(1);
 
     spawned[0]!.fireExit(0);
     await runPromise;
@@ -1229,9 +1155,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
     let lifecycleSink: ((signals: readonly LifecycleSignal[]) => void) | undefined;
-    // While the mutation runs, a NEW sampling observation arrives with a much
-    // larger total. The durable receipt must still report the trigger that
-    // scheduled the operation (6.0k), not the racing value.
     sdk.threadView.previewCompact = vi.fn(async () => {
       lifecycleSink!([
         { kind: "turn_opened", reason: "user_prompt" },
@@ -1324,8 +1247,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
   it("ignores zero provider totals when learning the overhead floor, and shows refused mutations as last attempt", async () => {
     const spawned: FakePty[] = [];
     const sdk = sdkForCapture();
-    // The mutation refuses at preview: no handoff may happen, but the attempt
-    // must be visible as health state (never as a successful action).
     sdk.threadView.previewCompact = vi.fn(async () => ({
       ok: true,
       value: { kind: "error", reason: "record damage" },
@@ -1364,7 +1285,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
 
     await waitFor(() => lifecycleSink !== undefined, "capture lifecycle sink");
     lifecycleSink!(BOUND_SIGNALS);
-    // A degraded ZERO sample must not become the observed floor.
     lifecycleSink!([
       { kind: "turn_opened", reason: "user_prompt" },
       {
@@ -1374,16 +1294,13 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       },
       { kind: "turn_settled", reason: "end_turn" },
     ]);
-    // The real trigger (6.0k) fires; the mutation refuses at preview.
     lifecycleSink!(TRIGGER_SIGNALS);
     await waitFor(() => terminalOutput.length >= 0 && spawned.length === 1, "no respawn", 1_000).catch(() => {});
     await new Promise((r) => setTimeout(r, 300));
 
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => panelText(terminalOutput).includes("last attempt:"), "panel");
-    // Floor learned from the 6.0k sample, not the zero: the alarm fires on Home.
     expect(panelText(terminalOutput)).toContain("at/below observed Claude host overhead (6.0k)");
-    // Refused mutation is last-attempt health state, never a success claim.
     expect(panelText(terminalOutput)).toMatch(/! last attempt: \/smart-compact refused/);
     const beforeRefusedDetails = terminalOutput.length;
     (stdin as unknown as PassThrough).write(Buffer.from("/details\r"));
@@ -1444,8 +1361,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     (stdout as unknown as NodeJS.ReadableStream).on("data", (chunk: Buffer) => {
       terminalOutput += chunk.toString("utf8");
     });
-    // The old child renders one recognizable frame; the replacement renders
-    // another. Whichever child is routed is the only one on screen.
     const runPromise = run([], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
@@ -1478,7 +1393,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(results[0]!.kind).toBe("success");
     expect(spawned).toHaveLength(2);
 
-    // Capture generation moved with the routing, in the same step.
     expect(captureCalls.at(-1)?.expectedSession).toMatchObject({
       sessionId: REBUILT_ID,
       source: "rebuilt_handoff",
@@ -1490,7 +1404,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     await waitFor(() => terminalOutput.includes("REPLACEMENT-FRAME"), "replacement output routed");
     expect(terminalOutput).not.toContain("OLD-CHILD-CONTAMINATION");
 
-    // Input now reaches only the replacement.
     (stdin as unknown as PassThrough).write("after the swap");
     await waitFor(() => spawned[1]!.writes.join("").includes("after the swap"), "input routed to replacement");
     expect(spawned[0]!.writes.join("")).not.toContain("after the swap");
@@ -1577,7 +1490,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       governorReceiptDbPath: tempReceiptDbPath(),
       onHandoffResult: (result) => results.push(result),
       replacementAttempts: 1,
-      // Two nonviable swaps before the alarm: one below the bound, one at it.
       nonviableSwapLimit: 2,
       handoffTimeouts: {
         sigtermGraceMs: 300,
@@ -1593,17 +1505,13 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     lifecycleSink!(BOUND_SIGNALS);
     lifecycleSink!(TRIGGER_SIGNALS);
 
-    // --- below the bound: one nonviable swap costs the session nothing ---
     await waitFor(() => results.length === 1, "first handoff result");
     expect(results[0]!.kind).toBe("replacement_nonviable");
     expect(compactCalls).toBe(1);
-    // No alarm, no survival relaunch: exactly the one mute candidate was spawned.
     expect(terminalOutput).not.toContain("cc-lhc rebuilt sessions are not loading");
     expect(spawned).toHaveLength(2);
-    // The old child kept the terminal and was never signalled.
     expect(spawned[0]!.killed).toHaveLength(0);
 
-    // --- the next settled seam retries the swap, for free ---
     lifecycleSink!([
       { kind: "turn_opened", reason: "user_prompt" },
       {
@@ -1615,18 +1523,13 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     ]);
     await waitFor(() => results.length === 2, "second handoff result");
     expect(results[1]!.kind).toBe("replacement_nonviable");
-    // A retry really happened: a second compact and a second candidate.
     expect(compactCalls).toBe(2);
 
-    // --- at the bound: alarm plus survival relaunch, both at once ---
     await waitFor(() => spawned.length === 4, "survival relaunch child");
-    // The survival child is routed once the old child has been terminated.
     await waitFor(() => spawned[0]!.killed.length > 0, "old child terminated after the survival relaunch");
     const survival = spawned[3]!;
     expect(survival.args[survival.args.indexOf("--resume") + 1]).toBe("old-session");
     expect(spawnedEnvs[3]!.DISABLE_AUTO_COMPACT).toBeUndefined();
-    // AC-3.7a: the alarm is never written onto Claude's screen; it opens (or
-    // waits for) the Control Panel. Nothing ended: the alarm says so in as many words.
     expect(terminalOutput).not.toContain("[cc-lhc]");
     expect(terminalOutput).not.toContain("rebuilt sessions are not loading");
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
@@ -1693,8 +1596,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       spawnPty: ((_file: string, args: string[]) => {
         const index = spawned.length;
         const fake = makeFakePty(5500 + index, `child${index}`, args, true);
-        // The replacement's very first resize blows up: the terminal is the one
-        // thing here the wrapper does not own.
         if (args.includes(REBUILT_ID)) {
           fake.resize = () => {
             throw new Error("ioctl TIOCSWINSZ failed");
@@ -1725,7 +1626,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     lifecycleSink!(TRIGGER_SIGNALS);
 
     await waitFor(() => results.length === 1, "handoff result");
-    // The repaint failed; the swap did not.
     expect(results[0]!.kind).toBe("success");
     if (results[0]!.kind === "success") {
       expect(results[0]!.switchWarnings?.join("\n")).toContain("first repaint failed");
@@ -1733,7 +1633,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(mocks.registerLineage).toHaveBeenCalledOnce();
     expect(spawned[0]!.killed.length).toBeGreaterThan(0);
 
-    // Routing is fully on the replacement, not half moved.
     terminalOutput = "";
     spawned[1]!.emitData("REPLACEMENT-ROUTED");
     spawned[0]!.emitData("OLD-CHILD-CONTAMINATION");
@@ -1814,8 +1713,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[], opts: { env: Record<string, string> }) => {
         const index = spawned.length;
-        // Every rebuilt-session candidate is mute: Claude will not load the
-        // rebuilt rollout. Everything resuming the OLD session renders fine.
         const mute = args.includes(REBUILT_ID);
         const fake = makeFakePty(5200 + index, `child${index}`, args, true, !mute);
         spawnOrder.push(`spawn:${index}:${args.join(" ")}`);
@@ -1854,24 +1751,16 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     await waitFor(() => results.length === 1, "handoff result");
     expect(results[0]!.kind).toBe("replacement_nonviable");
 
-    // R16: the old session is relaunched then and there, WITHOUT the injected
-    // native-auto-compact disable, so Claude's own compaction keeps it alive.
     await waitFor(() => spawned.length === 3, "survival relaunch child");
     const survival = spawned[2]!;
     expect(survival.args[survival.args.indexOf("--resume") + 1]).toBe("old-session");
     expect(spawnedEnvs[2]!.DISABLE_AUTO_COMPACT).toBeUndefined();
-    // The first child (which carries the disable) got it.
     expect(spawnedEnvs[0]!.DISABLE_AUTO_COMPACT).toBe("1");
-    // AC-3.7a: the alarm never lands on Claude's screen; it is read in the
-    // panel below, where it states that it is a best guess.
     await waitFor(() => spawnOrder.includes("kill:0"), "old child terminated after the survival spawn");
     expect(terminalOutput).not.toContain("[cc-lhc]");
     expect(terminalOutput).not.toContain("rebuilt sessions are not loading");
-    // Spawn-first here too: the old child was still serviceable when the
-    // survival child was created.
     expect(spawnOrder.indexOf(`spawn:2:${survival.args.join(" ")}`)).toBeLessThan(spawnOrder.indexOf("kill:0"));
     expect(spawnOrder.indexOf("kill:0")).toBeGreaterThan(-1);
-    // A later settled seam does not quietly retry the swap.
     const compactsAtAlarm = compactCalls;
     lifecycleSink!([
       { kind: "turn_opened", reason: "user_prompt" },
@@ -1886,7 +1775,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(compactCalls).toBe(compactsAtAlarm);
     expect(results).toHaveLength(1);
 
-    // The alarm also sits at the top of the panel.
     terminalOutput = "";
     (stdin as unknown as PassThrough).write(Buffer.from([0x1d]));
     await waitFor(() => terminalOutput.includes("Long Horizon Context Control Panel"), "panel");
@@ -1924,8 +1812,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
       stderrText += chunk.toString("utf8");
     });
 
-    // An explicit resume names the session the lease will land on, which is
-    // what makes the owned journal attributable to this thread.
     const runPromise = run(["--resume", OWNED_SESSION], {
       claudeBin: "fake-claude",
       spawnPty: ((_file: string, args: string[]) => {
@@ -1944,7 +1830,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     await waitFor(() => spawned.length === 1, "child");
     expect(stderrText).toContain("input typed during compaction was not delivered");
     expect(stderrText).toContain("retained-input artifact(s) from an earlier build");
-    // Ours: consumed. Not ours, and unreadable: untouched, and unmentioned.
     expect(existsSync(ownedJournal)).toBe(false);
     expect(readFileSync(foreignJournal)).toEqual(foreignBefore);
     expect(readFileSync(tornJournal)).toEqual(tornBefore);
@@ -1961,7 +1846,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     writeFileSync(journal, legacyJournalBytes({ oldSessionId: SESSION, rebuiltSessionId: "s-new" }));
     const before = readFileSync(journal);
 
-    // The registry cannot answer, so the launch never reaches a thread lease.
     mocks.unresolvableAlias = claudeSessionAlias(SESSION);
 
     const spawned: FakePty[] = [];
@@ -1989,8 +1873,6 @@ describe("run: automatic compact with wrapper-owned handoff", () => {
     expect(exitCode).toBe(2);
     expect(spawned).toHaveLength(0);
     expect(stderrText).toContain("cannot read the LHC thread registry");
-    // Nothing was owned, so nothing was consumed — and the operator was told
-    // nothing about input that is not theirs to resend.
     expect(readFileSync(journal)).toEqual(before);
     expect(stderrText).not.toContain("input typed during compaction was not delivered");
   });

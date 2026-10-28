@@ -1,10 +1,3 @@
-// Build the addon from source, then run the full test suite with the
-// compiled-addon suites made mandatory (CC_LHC_NATIVE_REQUIRE_ADDON=1).
-//
-// Deliberately portable: no shell `rm -rf`, no POSIX inline env assignment,
-// no nested `pnpm run` (this repo tracks a pnpm pre-run crash). Tools are
-// resolved through Node's own resolver and spawned as node processes, so the
-// script behaves identically under native Windows cmd, macOS, and Linux.
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";

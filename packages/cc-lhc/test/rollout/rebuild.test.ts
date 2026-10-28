@@ -120,8 +120,6 @@ describe("buildRolloutLines", () => {
       },
     });
 
-    // Selected thinking rebuild arm is omit: [user, text, toolResult] — no thinking line,
-    // and never invent signature:"".
     expect(lines).toHaveLength(3);
     expect(lines[0]?.line.parentUuid).toBeNull();
     expect(lines[1]?.line.parentUuid).toBe(lines[0]?.line.uuid);
@@ -136,7 +134,6 @@ describe("buildRolloutLines", () => {
     expect(lines[0]?.line.type).toBe("user");
     expect(lines[0]?.line.message?.content).toBe("hello");
 
-    // native per-block assistant lines: text only under omit arm
     expect(lines[1]?.line.type).toBe("assistant");
     expect(lines[1]?.line.message).toMatchObject({
       role: "assistant",
@@ -149,7 +146,6 @@ describe("buildRolloutLines", () => {
     expect(JSON.stringify(lines)).not.toContain('signature":""');
     expect(String(lines[1]?.line.message?.id)).toMatch(/^msg_/);
 
-    // tool result is a native tool_result block paired by tool_use_id
     expect(lines[2]?.line.type).toBe("user");
     expect(lines[2]?.line.message?.content).toEqual([
       { type: "tool_result", tool_use_id: "tool-1", content: "output", is_error: false },
@@ -201,9 +197,7 @@ describe("buildRolloutLines", () => {
       entries,
       newSessionId: "signed-sid",
       envelope: { cwd: "/w", assistantModel: "claude-sonnet-5", dualSessionIdFields: true },
-      // production selected arm
     });
-    // user + thinking(empty, signed) + thinking(signed) + text + tool_use + tool_result
     expect(lines).toHaveLength(6);
     expect(lines.map((l) => l.rolloutType)).toEqual([
       "user",
@@ -227,10 +221,8 @@ describe("buildRolloutLines", () => {
     expect(lines[5]?.line.message?.content).toEqual([
       { type: "tool_result", tool_use_id: "toolu_01XX", content: "a.txt", is_error: false },
     ]);
-    // parent chain
     expect(lines[0]?.line.parentUuid).toBeNull();
     for (let i = 1; i < lines.length; i += 1) expect(lines[i]?.line.parentUuid).toBe(lines[i - 1]?.line.uuid);
-    // shared message id across assistant parts, signatures byte-exact, none invented
     expect(new Set(lines.slice(1, 5).map((l) => l.line.message?.id)).size).toBe(1);
     const raw = JSON.stringify(lines);
     expect(raw).not.toMatch(/"signature":""/);
@@ -276,7 +268,6 @@ describe("buildRolloutLines", () => {
     expect(lines).toHaveLength(2);
     expect(lines[0]?.line.message?.content).toEqual([{ type: "thinking", thinking: "visible" }]);
     expect(JSON.stringify(lines[0]?.line.message?.content)).not.toContain("signature");
-    // empty thinking omitted under unsigned_visible
     const emptyOnly = buildRolloutLines({
       entries: [
         {
@@ -315,7 +306,6 @@ describe("buildRolloutLines", () => {
       content: [{ type: "tool_use", id: "toolu_01AB", name: "Bash", input: { command: "ls" } }],
     });
     expect(lines[1]?.line.message?.id).toBe(lines[0]?.line.message?.id);
-    // no bracket-label text anywhere in a native rebuild
     expect(JSON.stringify(lines)).not.toContain("[tool ");
     expect(JSON.stringify(lines)).not.toContain("[thinking]");
   });
@@ -472,7 +462,6 @@ describe("writeRebuiltRollout", () => {
     });
 
     expect(existsSync(result.rolloutPath)).toBe(true);
-    // unsigned sample thinking is dropped: [user, text, toolResult]
     expect(result.lineCount).toBe(3);
 
     const index = await readSessionsIndex(projectDir);
@@ -509,11 +498,8 @@ describe("writeRebuiltRollout", () => {
       receipt: { text: "[lhc compact:manual] rebuilt LHC view 1.4k (240k target)." },
     });
 
-    // 3 content lines (unsigned thinking dropped) + receipt = 4. Receipt is NEW history (not prefix).
     expect(result.lineCount).toBe(4);
     expect(result.expectedReintakeLines).toBe(4);
-    // ...but it is NEW history, not served-view replay: the handoff capture
-    // must map it (as runtime_note) instead of hard-skipping it as prefix.
     expect(result.replayedPrefixLines).toBe(3);
 
     const lines = readFileSync(result.rolloutPath, "utf8")
@@ -532,11 +518,8 @@ describe("writeRebuiltRollout", () => {
     const receipt = lines[3]!;
     expect(receipt.type).toBe("user");
     expect(receipt.parentUuid).toBe(lines[2]!.uuid);
-    // Slice 5: exactly one concise labeled receipt — no session ids or recovery
-    // detail in the durable note.
     expect(receipt.message?.content).toBe("[runtime note] [lhc compact:manual] rebuilt LHC view 1.4k (240k target).");
 
-    // First prompt shown in the sessions index stays the conversation opener, not the receipt.
     const index = await readSessionsIndex(projectDir);
     const entry = index.entries.find((item) => item.sessionId === "rebuilt-session");
     expect(entry).toMatchObject({ messageCount: 4, firstPrompt: "hello" });

@@ -1,22 +1,8 @@
-/**
- * Bounded prelaunch continuity note for the replacement agent.
- *
- * Consumes the accepted live-work snapshot (`OpenAsyncWork[]`) and formats one
- * truthful paragraph. It is not a second open-work fold: completed work is
- * already omitted by `observation/async-work.ts` before the snapshot freezes.
- *
- * Durable labels never include background-command bodies, latestEvent text,
- * environment values, or command output. Truncation is not redaction.
- */
-
 import type { ContinuitySnapshot } from "../continuity/snapshot.js";
 import type { AsyncWorkFamily, OpenAsyncWork } from "../observation/async-work.js";
 
-/** Small fixed bound on named items in the replacement-agent note. */
 export const MAX_NAMED_CONTINUITY_ITEMS = 6;
-/** Small fixed bound on the whole continuity paragraph. */
 export const MAX_CONTINUITY_NOTE_CHARS = 1_200;
-/** Same single-line description bound the live-work modal uses. */
 export const MAX_CONTINUITY_NAME_CHARS = 64;
 const MAX_TASK_ID_CHARS = 32;
 
@@ -66,13 +52,6 @@ function due(scheduledForMs: number, nowMs: number): string {
   return `fires in ${Math.round(seconds / 60)}m`;
 }
 
-/**
- * Durable replacement-context identity for one open item.
- *
- * Background commands contribute only category and task/key id — never the
- * command body. `latestEvent` is never copied. Non-shell items may keep a
- * bounded description already shown as a name.
- */
 export function formatContinuityItemLabel(work: OpenAsyncWork, nowMs: number): string {
   const parts = [FAMILY_NOUN[work.family]];
   if (work.family !== "background_shell" && work.description !== undefined && work.description !== "") {
@@ -119,10 +98,6 @@ function genericNote(work: readonly OpenAsyncWork[]): string {
   );
 }
 
-/**
- * One bounded continuity paragraph, or `undefined` when the snapshot is empty
- * so the rebuilt rollout keeps the operation receipt as its only note body.
- */
 export function formatContinuityNote(work: readonly OpenAsyncWork[], nowMs: number = Date.now()): string | undefined {
   if (work.length === 0) return undefined;
   const detailed = detailedNote(work, nowMs);
@@ -132,19 +107,12 @@ export function formatContinuityNote(work: readonly OpenAsyncWork[], nowMs: numb
   return genericNote(work);
 }
 
-/**
- * One short line for the replacement: how many background processes Smart
- * Compact carried over. Item identities, transitions, and paths are durable
- * in the continuity store and reachable through `cc-lhc tasks`; they are not
- * repeated here. `undefined` when nothing was carried.
- */
 export function formatCarryoverNote(snapshot: ContinuitySnapshot): string | undefined {
   const count = snapshot.items.length;
   if (count === 0) return undefined;
   return count === 1 ? "1 background process carried over." : `${count} background processes carried over.`;
 }
 
-/** Freeze a copy so later fold updates cannot rewrite the accepted snapshot. */
 export function freezeLiveAsyncWork(work: readonly OpenAsyncWork[]): readonly OpenAsyncWork[] {
   return Object.freeze(work.map((item) => Object.freeze({ ...item })));
 }

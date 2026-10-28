@@ -1,6 +1,3 @@
-/**
- * LIM-117 TC-4.1a and AR-12: Default provenance and packaged bounded-core closure.
- */
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";

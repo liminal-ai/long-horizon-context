@@ -1,7 +1,4 @@
 #!/usr/bin/env node
-// A minimal stand-in Claude Code for one-shot (`-p`) run() tests: it writes
-// the prompt and a one-line answer to the session transcript cc-lhc points it
-// at (`--session-id` starts one, `--resume` needs an existing one), and exits 0.
 
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import { randomUUID } from "node:crypto";

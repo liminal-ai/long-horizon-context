@@ -1,8 +1,3 @@
-/**
- * TC-3.7a: once Claude owns the terminal, routine status, warnings, and state
- * changes put zero wrapper bytes on the screen — the terminal receives exactly
- * what the child wrote, byte for byte.
- */
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -184,17 +179,13 @@ describe("TC-3.7a terminal silence after Claude owns the screen", () => {
     };
 
     paint("\x1b[2J\x1b[HClaude screen line 1\r\n");
-    // Routine status: settled turns below the trigger, a big one still below, and back down.
     signals(settledAt(1_000, "req:1"));
     paint("assistant: hello\r\n");
     signals(settledAt(120_000, "req:2"));
     signals(settledAt(2_000, "req:3"));
-    // A native Compact summary observed on the managed session (loud in the panel/log only).
     signals([{ kind: "native_compact_observed", summaryPreview: "summary" } as LifecycleSignal]);
-    // Capture degrades and recovers.
     signals([{ kind: "capture_degraded", reason: "watcher_gap" } as LifecycleSignal]);
     paint("\r\x1b[2Kstill Claude\r\n");
-    // Warnings and a policy-source notice go to the wrapper log.
     warnings.push("cc-lhc: synthetic warning");
     await new Promise((r) => setTimeout(r, 150));
 
@@ -209,8 +200,6 @@ describe("TC-3.7a terminal silence after Claude owns the screen", () => {
   it("the wrapper source has no writer left that puts a [cc-lhc] line or a carriage-return repaint on the live screen", () => {
     const here = dirname(fileURLToPath(import.meta.url));
     const source = readFileSync(join(here, "../../src/wrapper/run.ts"), "utf8");
-    // Every stdout write is the panel renderer, the alt-screen guard, held child
-    // bytes, or cursor restoration at exit.
     for (const line of source.split("\n").filter((row) => row.includes("stdout.write("))) {
       expect(line, line).not.toMatch(/\[cc-lhc\]|\\r\\n/);
     }

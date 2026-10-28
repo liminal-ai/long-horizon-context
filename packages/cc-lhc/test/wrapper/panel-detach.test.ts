@@ -1,7 +1,3 @@
-/**
- * LIM-118: TC-1.4a-b, AR-11. Detach presentation; command and late receipt
- * each settle exactly once.
- */
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -165,7 +161,6 @@ describe("TC-1.4b Deliver late result truthfully", () => {
         resolve({ messages: ["Smart Compact rebuilt v1"] });
       },
       message: "Smart Compact rebuilt v1",
-      // The wrapper log keeps the product name; the panel names the command.
       panelMessage: "/smart-compact rebuilt v1",
     },
     {

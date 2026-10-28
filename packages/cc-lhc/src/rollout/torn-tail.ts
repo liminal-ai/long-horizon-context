@@ -1,18 +1,3 @@
-/**
- * Pre-launch repair of a torn transcript tail.
- *
- * A Claude session file whose last line has no newline (a writer killed
- * mid-append) is poison on resume: Claude appends its next record onto the
- * fragment, the fused line never parses, and every later capture of the
- * session degrades. Before a launch resumes an existing session file:
- *   - fragment parses as one complete JSON record → append "\n", keep it
- *   - otherwise → save the fragment bytes to
- *     $CC_LHC_HOME/torn-lines/<sessionId>-<timestamp>.fragment and truncate
- *     the transcript to just after its last newline
- * Only when no other process holds the file open; a held (or unprovable)
- * file is left untouched and the launch continues.
- */
-
 import {
   closeSync,
   fstatSync,
@@ -48,7 +33,6 @@ export interface RepairTornTailInput {
 
 const CHUNK = 64 * 1024;
 
-/** Byte offset just after the last "\n" (0 when there is none). */
 function completeEnd(fd: number, size: number): number {
   let end = size;
   const buf = Buffer.alloc(CHUNK);
@@ -98,9 +82,6 @@ export function repairTornTranscriptTail(input: RepairTornTailInput): TornTailRe
   } catch {
     return { kind: "missing" };
   }
-  // Read with our own handle, and close it before asking who holds the file:
-  // on Windows the holder check includes a share-none open, which our own
-  // open handle would refuse.
   let size: number;
   let end: number;
   let fragment: Buffer;
@@ -133,7 +114,6 @@ export function repairTornTranscriptTail(input: RepairTornTailInput): TornTailRe
     return { kind: "failed", reason: `open failed: ${cause instanceof Error ? cause.message : String(cause)}` };
   }
   try {
-    // Anything written between the read and here means someone holds it after all.
     if (fstatSync(fd).size !== size || !readRange(fd, end, size).equals(fragment)) {
       return {
         kind: "holder_check_unavailable",
@@ -152,7 +132,6 @@ export function repairTornTranscriptTail(input: RepairTornTailInput): TornTailRe
     mkdirSync(dir, { recursive: true, mode: 0o700 });
     const stamp = new Date(input.nowMs ?? Date.now()).toISOString().replace(/[:.]/g, "-");
     const sideFile = join(dir, `${input.sessionId}-${stamp}.fragment`);
-    // Fragment is durable before the transcript loses it.
     writeFileSync(sideFile, fragment, { mode: 0o600, flag: "wx" });
     ftruncateSync(fd, end);
     fsyncSync(fd);

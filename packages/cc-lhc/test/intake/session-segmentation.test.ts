@@ -1,9 +1,3 @@
-/**
- * Canonical segmentation through the live capture session: the end lands
- * after the candidate line's events and before any later line's, only when
- * the SDK newly recorded that line, sized by the SDK's own open-turn estimate,
- * with genuine completion closing regardless of size.
- */
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -164,7 +158,6 @@ function ends(flushes: readonly Flush[]): Array<{ key: string; reason: string }>
       reason: String((event.payload as { outcomeReason?: string }).outcomeReason),
     }));
 }
-/** Every tool_call precedes its result and no turn_end sits between them, in submission order. */
 function assertPairsWhole(flushes: readonly Flush[]): void {
   const open = new Set<string>();
   for (const event of flushes.flatMap((flush) => flush.events)) {
@@ -183,9 +176,6 @@ describe("canonical segmentation in the capture session", () => {
     writeFileSync(h.rolloutPath, RESEARCH_RUN);
     try {
       await waitFor(() => h.session.stats.linesSeen === 8 && (h.session.stats.segmentEnds ?? 0) === 3, "all ends");
-      // Flushes, in order: through r2 (t1 and t2 both resolved) → end(r2) →
-      // through r3 (a2's text is not a boundary; t3 issued on a later line) →
-      // end(r3) → a4 → completion end(a4).
       expect(h.flushes.map(kinds)).toEqual([
         ["user_prompt", "assistant_thinking", "tool_call", "tool_call", "tool_result", "tool_result"],
         ["turn_end"],
@@ -200,7 +190,6 @@ describe("canonical segmentation in the capture session", () => {
         { key: "cc-lhc:rollout:a4:0:turn_end", reason: "cc_lhc_completion" },
       ]);
       assertPairsWhole(h.flushes);
-      // Content of the source events is untouched by segmentation.
       const sources = h.flushes.flatMap((flush) => flush.events).filter((event) => event.eventKind !== "turn_end");
       expect(sources.map((event) => event.idempotencyKey)).toEqual([
         "cc-lhc:rollout:u1:0:user_prompt",
@@ -214,7 +203,6 @@ describe("canonical segmentation in the capture session", () => {
         "cc-lhc:rollout:r3:0:tool_result",
         "cc-lhc:rollout:a4:0:assistant_text",
       ]);
-      // Native lifecycle is untouched: exactly one settle, from the real terminal line.
       expect(h.lifecycle.filter((signal) => signal.kind === "turn_settled")).toHaveLength(1);
       expect(h.session.isTurnOpen()).toBe(false);
     } finally {
@@ -255,7 +243,6 @@ describe("canonical segmentation in the capture session", () => {
     writeFileSync(h.rolloutPath, RESEARCH_RUN);
     try {
       await waitFor(() => h.session.stats.linesSeen === 8, "all lines");
-      // Flushes still split at every candidate (ordered prefix), yet no end follows a skipped line.
       await waitFor(() => h.flushes.length === 3, "three prefix flushes");
       expect(ends(h.flushes)).toEqual([]);
       expect(h.session.stats.segmentEnds ?? 0).toBe(0);
@@ -283,7 +270,6 @@ describe("canonical segmentation in the capture session", () => {
     });
     const NEXT_PROMPT = line({ type: "user", uuid: "u2", message: { role: "user", content: "next task" } });
     const h = harness("/work/segment-interrupt", { threshold: 10_500, tokens: 20_000 });
-    // Task 1 issues t1/t2 and only t1 answers before the interrupt; task 2 runs t3 to completion.
     writeFileSync(
       h.rolloutPath,
       PROMPT + CALLS + result("r1", "t1") + INTERRUPT + NEXT_PROMPT + LATE_CALL + result("r3", "t3") + DONE,
@@ -294,7 +280,6 @@ describe("canonical segmentation in the capture session", () => {
         { key: "cc-lhc:rollout:r3:0:turn_end", reason: "cc_lhc_segment" },
         { key: "cc-lhc:rollout:a4:0:turn_end", reason: "cc_lhc_completion" },
       ]);
-      // The end follows r3's events and precedes a4's.
       const flat = h.flushes.flatMap((flush) => flush.events).map((event) => event.idempotencyKey);
       expect(flat.indexOf("cc-lhc:rollout:r3:0:turn_end")).toBe(flat.indexOf("cc-lhc:rollout:r3:0:tool_result") + 1);
       expect(flat.indexOf("cc-lhc:rollout:a4:0:assistant_text")).toBeGreaterThan(
@@ -306,7 +291,6 @@ describe("canonical segmentation in the capture session", () => {
   });
 
   it("settled catch-up closes a finished turn the record still holds open, once, keyed to its terminal line", async () => {
-    // Every source event skipped: this transcript was captured before the repair.
     const h = harness("/work/segment-catchup", { threshold: 10_500, tokens: 30_000, outcome: () => "skipped" });
     writeFileSync(h.rolloutPath, RESEARCH_RUN);
     try {
@@ -315,7 +299,6 @@ describe("canonical segmentation in the capture session", () => {
       const first = await h.session.closeSettledSegment();
       expect(first.kind).toBe("closed");
       expect(ends(h.flushes)).toEqual([{ key: "cc-lhc:rollout:a4:0:turn_end", reason: "cc_lhc_settled_catch_up" }]);
-      // The record now shows nothing open: a second seam does nothing.
       h.setTokens(0);
       const second = await h.session.closeSettledSegment();
       expect(second).toEqual({ kind: "skipped", detail: "canonical turn already closed" });

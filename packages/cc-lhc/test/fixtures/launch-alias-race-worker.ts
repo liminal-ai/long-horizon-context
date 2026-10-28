@@ -1,16 +1,3 @@
-/**
- * Concurrency worker: one full launch-thread acquisition against a shared
- * cc-lhc home, entering through whichever alias of the thread it was given.
- * Prints exactly one line: `WON <threadId> <landedSessionId>` or
- * `LOST <ErrorName>`.
- *
- * A winner keeps its lease and stays alive until the parent creates the
- * `race-stop` file (cooperative shutdown — tsx runs the worker as a
- * grandchild, so signalling the spawned wrapper would orphan the real
- * process and leak its stdio pipes), so every concurrent loser observes a
- * live owner. A 30s safety timer guarantees exit even if the parent dies.
- */
-
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 

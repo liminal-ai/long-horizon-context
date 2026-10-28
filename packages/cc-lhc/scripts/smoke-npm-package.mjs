@@ -1,7 +1,5 @@
 #!/usr/bin/env node
 
-/** Pack and globally install the release package in disposable prefixes. */
-
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -48,8 +46,6 @@ function runNpm(args) {
 
 function runInstalledCli(executable, args) {
   if (process.platform !== "win32") return run(executable, args);
-  // A .cmd shim is not a Win32 executable. `call` lets cmd.exe parse the
-  // quoted path without Node passing the quote characters through literally.
   const command = ["call", `"${executable.replaceAll('"', '""')}"`, ...args].join(" ");
   return run(process.env.ComSpec ?? "cmd.exe", ["/d", "/s", "/c", command], {
     windowsVerbatimArguments: true,

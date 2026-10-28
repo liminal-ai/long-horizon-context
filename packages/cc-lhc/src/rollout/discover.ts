@@ -5,7 +5,6 @@ import { homedir } from "node:os";
 import { attributeLineSession, rolloutPathForExpectedSession } from "./expected-session.js";
 import type { RolloutLineItem } from "./types.js";
 
-/** Encode cwd the way Claude Code names project dirs under ~/.claude/projects/. */
 export function encodeProjectPath(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9-]/g, "-");
 }
@@ -38,12 +37,6 @@ export class SessionAttributionError extends Error {
   }
 }
 
-/**
- * Bind exactly one rollout whose filename is the expected session id.
- * Does not fall back to newest-by-mtime. Missing file returns null (caller polls).
- * Multiple files matching is impossible for a single id; ambiguity is checked
- * by scanning for conflicting non-null sessionId fields once the file exists.
- */
 export async function findExpectedSessionFileOnce(
   cwd: string,
   expectedSessionId: string,
@@ -61,8 +54,6 @@ export async function findExpectedSessionFileOnce(
     return null;
   }
 
-  // Refuse if another jsonl in the same project dir also claims this session id
-  // in its name (should not happen) or if filename does not match basename.
   if (basename(filePath, ".jsonl") !== expectedSessionId) {
     throw new SessionAttributionError(
       "conflict",
@@ -82,9 +73,7 @@ export async function findExpectedSessionFileOnce(
     return filePath;
   }
 
-  const sameName = entries.filter(
-    (entry) => entry.isFile() && entry.name === `${expectedSessionId}.jsonl`,
-  );
+  const sameName = entries.filter((entry) => entry.isFile() && entry.name === `${expectedSessionId}.jsonl`);
   if (sameName.length > 1) {
     throw new SessionAttributionError(
       "ambiguous",
@@ -95,7 +84,6 @@ export async function findExpectedSessionFileOnce(
   return filePath;
 }
 
-/** Poll until the expected session file appears, or abort. */
 export async function discoverExpectedSessionFile(
   cwd: string,
   expectedSessionId: string,
@@ -114,16 +102,11 @@ export async function discoverExpectedSessionFile(
       if (found !== null) return found;
     } catch (cause) {
       if (cause instanceof SessionAttributionError) throw cause;
-      // transient stat errors — keep polling
     }
     await sleep(pollMs);
   }
 }
 
-/**
- * Validate that a known handoff path is attributable to the expected session.
- * Filename must match; optional first-line session fields must not conflict.
- */
 export async function assertRolloutMatchesExpectedSession(
   rolloutPath: string,
   expectedSessionId: string,
@@ -154,20 +137,10 @@ export async function assertRolloutMatchesExpectedSession(
     }
   } catch (cause) {
     if (cause instanceof SessionAttributionError) throw cause;
-    // Unreadable/unparseable first line is not an attribution conflict here;
-    // the watcher parse path will degrade if needed.
   }
 }
 
-/**
- * Resolve which session Claude's `--continue` would likely open: newest mtime
- * jsonl in the project dir. Used only to obtain an explicit id BEFORE launch,
- * never as a post-hoc capture binding heuristic.
- */
-export async function resolveContinueSessionId(
-  cwd: string,
-  deps: DiscoverDeps = {},
-): Promise<string | undefined> {
+export async function resolveContinueSessionId(cwd: string, deps: DiscoverDeps = {}): Promise<string | undefined> {
   const projectsRoot = deps.projectsRoot ?? join(homedir(), ".claude", "projects");
   const projectDir = join(projectsRoot, encodeProjectPath(cwd));
   const readdirFn =
@@ -194,32 +167,23 @@ export async function resolveContinueSessionId(
       if (best === undefined || fileStat.mtimeMs > best.mtimeMs) {
         best = { sessionId, mtimeMs: fileStat.mtimeMs };
       }
-    } catch {
-      // skip
-    }
+    } catch {}
   }
   return best?.sessionId;
 }
 
-/** @deprecated cwd-recency discovery removed from the canonical path (Slice 1). */
-export async function discoverSessionFile(
-  _cwd: string,
-  _startedAt: Date,
-  _deps: DiscoverDeps = {},
-): Promise<string> {
+export async function discoverSessionFile(_cwd: string, _startedAt: Date, _deps: DiscoverDeps = {}): Promise<string> {
   throw new SessionAttributionError(
     "missing",
     "discoverSessionFile (cwd-recency) removed; pass expectedSessionId to discoverExpectedSessionFile",
   );
 }
 
-/** @deprecated use findExpectedSessionFileOnce */
 export async function findSessionFileOnce(
   cwd: string,
   _startedAt: Date,
   deps: DiscoverDeps = {},
 ): Promise<string | null> {
-  // Kept only so tests that still call it fail loudly unless they pass expected id via discoverDeps extension.
   void cwd;
   void deps;
   throw new SessionAttributionError(

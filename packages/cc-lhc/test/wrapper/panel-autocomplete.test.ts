@@ -1,7 +1,3 @@
-/**
- * Slash-command autocomplete: registry-backed suggestions, completion that is
- * never execution, and one completion key however the terminal encodes Tab.
- */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -34,7 +30,6 @@ import {
 } from "../../src/wrapper/panel-commands.js";
 import { cardBodyRows, containsSgr, drawnRows, panelText } from "../helpers/panel-text.js";
 
-/** The drawn menu block: the rows between the Suggestions heading and the blank after it. */
 function menuRows(output: string, cols: number, rows: number): string[] {
   const body = cardBodyRows(output, cols, rows);
   const heading = body.findIndex((row) => row.trim() === SUGGESTIONS_HEADING);
@@ -56,7 +51,6 @@ const VIEW = buildPanelViewSnapshot({
   profile: "balanced",
 });
 
-/** Raw Tab, kitty CSI-u Tab, and Windows Terminal win32 Tab. */
 const TAB_RAW = "\t";
 const TAB_KITTY = "\x1b[9;1u";
 const TAB_WIN32 = "\x1b[9;15;9;1;0;1_";
@@ -103,20 +97,15 @@ describe("suggestions come from the command registry", () => {
     ]);
     expect(commandSuggestions("/sm").map((entry) => entry.name)).toEqual(["/smart-compact", "/smart-prune"]);
     expect(commandSuggestions("/smart-c").map((entry) => entry.name)).toEqual(["/smart-compact"]);
-    // An exact command keeps exactly its own usage row.
     expect(commandSuggestions("/bounds").map((entry) => entry.usage)).toEqual(["/bounds <target> <trigger>"]);
     expect(commandSuggestions("/smart-prune 2500").map((entry) => entry.usage)).toEqual(["/smart-prune [tokens]"]);
-    // Unknown prefixes, non-slash input, and empty lines suggest nothing.
     for (const line of ["/zzz", "smart", "status", "", "   ", "hello /status"]) {
       expect(commandSuggestions(line), line).toEqual([]);
     }
-    // Case-sensitive, like the parser.
     expect(commandSuggestions("/S")).toEqual([]);
   });
 
   it("is the only suggestion list: renaming a registry entry moves every surface", () => {
-    // Home rows, Help rows, parser lookup, and suggestions all read the same
-    // objects — there is no second array to fall out of step.
     for (const action of HOME_ACTIONS) {
       const command = PANEL_COMMANDS.find((entry) => entry.name === action.label);
       expect(command, `${action.label} is not a registry command`).toBeDefined();
@@ -142,7 +131,7 @@ describe("suggestions come from the command registry", () => {
 
 describe("the suggestion menu owns the arrows while it is open", () => {
   it("selects with Up/Down without moving the Home cursor", () => {
-    const home = feed(openHome(), "\x1b[B", "\x1b[B").state; // park the Home cursor
+    const home = feed(openHome(), "\x1b[B", "\x1b[B").state;
     const parked = home.viewport.scrollOffset;
     expect(parked).toBe(2);
 
@@ -156,11 +145,9 @@ describe("the suggestion menu owns the arrows while it is open", () => {
 
     const twice = feed(down, "\x1b[B", "\x1b[B").state;
     expect(selectedSuggestion(twice)?.name).toBe("/stats");
-    // Clamped at the ends, never wrapping past the list.
     expect(selectedSuggestion(feed(twice, "\x1b[B", "\x1b[B").state)?.name).toBe("/stats");
     expect(selectedSuggestion(feed(twice, "\x1b[A", "\x1b[A", "\x1b[A", "\x1b[A").state)?.name).toBe("/status");
 
-    // Clearing the line hands the arrows back with the cursor where it was.
     const cleared = feed(twice, "\x15").state;
     expect(suggestionsOpen(cleared)).toBe(false);
     expect(cleared.viewport.scrollOffset).toBe(parked);
@@ -174,7 +161,6 @@ describe("the suggestion menu owns the arrows while it is open", () => {
     const back = feed(typed, "\x7f\x7f").state;
     expect(back.line).toBe("/smart");
     expect(commandSuggestions(back.line).map((entry) => entry.name)).toEqual(["/smart-compact", "/smart-prune"]);
-    // Selection returns to the first row rather than pointing at a stale entry.
     const selectedThenEdited = feed(feed(typed, "\x1b[B").state, "\x7f").state;
     expect(selectedThenEdited.suggestionIndex).toBe(0);
     const emptied = feed(back, "\x15").state;
@@ -191,12 +177,10 @@ describe("completion is never execution", () => {
       expect(completed.state.line, tab).toBe("/smart-compact");
       expect(executed(completed.actions), tab).toEqual([]);
       expect(completed.state.mode, tab).toBe("modal");
-      // Terminal protocol bytes never reach Claude, and never become text.
       expect(completed.pty, tab).toBe("");
       expect(completed.state.line, tab).not.toContain("\x1b");
       expect(completed.state.line, tab).not.toContain("[9");
 
-      // The second Tab is idempotent: the token is already canonical.
       const again = feed(completed.state, tab);
       expect(again.state.line, tab).toBe("/smart-compact");
       expect(executed(again.actions), tab).toEqual([]);
@@ -219,27 +203,22 @@ describe("completion is never execution", () => {
     expect(executed(partial.actions)).toEqual([]);
     expect(partial.state.mode).toBe("modal");
 
-    // A second Enter now runs the command the user can read on the line.
     const run = feed(partial.state, "\r");
     expect(executed(run.actions)).toEqual(["/lhc-compact"]);
     expect(run.state.mode).toBe("executing");
 
-    // Routes behave the same way.
     const route = feed(openHome(), "/intro\r");
     expect(route.state.line).toBe("/introduction");
     expect(route.state.route).toBe("home");
     expect(feed(route.state, "\r").state.route).toBe("introduction");
 
-    // Exact command plus valid arguments executes on the first Enter.
     const exact = feed(openHome(), "/smart-prune 2500\r");
     expect(executed(exact.actions)).toEqual(["/lhc-prune 2500"]);
 
-    // Exact command plus invalid arguments stays parser-owned.
     const invalid = feed(openHome(), "/smart-prune lots\r");
     expect(executed(invalid.actions)).toEqual([]);
     expect(invalid.state.panelRows[0]).toContain("invalid /smart-prune target");
 
-    // A prefix that matches nothing is not completed into something else.
     const nothing = feed(openHome(), "/zz\r");
     expect(nothing.state.panelRows[0]).toBe("unknown command: /zz");
   });
@@ -255,22 +234,17 @@ describe("completion is never execution", () => {
         rows.map((entry) => entry.usage),
         line,
       ).toEqual([usage]);
-      // Tab does not invent an argument value.
       const tabbed = feed(state, TAB_RAW).state;
       expect(tabbed.line, line).toBe(line);
     }
-    // Argument values are never suggested.
     expect(commandSuggestions("/bounds 1").map((entry) => entry.usage)).toEqual(["/bounds <target> <trigger>"]);
     expect(feed(openHome(), "/bounds 1", TAB_RAW).state.line).toBe("/bounds 1");
-    // The removed off switch is not a command and gets no suggestion.
     expect(commandSuggestions("/auto")).toEqual([]);
   });
 
   it("leaves Esc meaning exit, with no second dismissal state", () => {
     const open = feed(openHome(), "/sm");
     expect(suggestionsOpen(open.state)).toBe(true);
-    // Esc closes the Control Panel from here, exactly as it does with the menu
-    // closed — the menu never swallows the first Esc.
     const escaped = feed(open.state, "\x03");
     expect(escaped.actions).toEqual([{ kind: "exit_modal" }]);
     expect(escaped.state.mode).toBe("passthrough");
@@ -295,7 +269,6 @@ describe("the menu is drawn within bounds at every size", () => {
     expect(menu.length).toBeGreaterThan(0);
     expect(menu[0]!.trimStart().startsWith(ACTION_CARET)).toBe(true);
     expect(menu[0]).toContain("/status");
-    // Prompt and exit hint stay on screen with the menu open.
     const drawn = drawnRows(renderPanel(state, 100, 29), 100, 29);
     expect(drawn.some((row) => row.includes(`${PANEL_PROMPT}/`))).toBe(true);
     expect(drawn[drawn.length - 1]).toBe(PANEL_HINT_SUGGESTIONS);
@@ -350,7 +323,6 @@ describe("the menu is drawn within bounds at every size", () => {
   });
 
   it("leaves Home navigation reachable with the menu closed", () => {
-    // Sanity: the unified cursor still spans status rows plus command rows.
     expect(homeCursorLength()).toBe(10 + HOME_ACTIONS.length);
   });
 });

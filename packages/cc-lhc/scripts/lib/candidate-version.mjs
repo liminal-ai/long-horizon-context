@@ -1,6 +1,3 @@
-// The cc-lhc release version the build scripts assemble and check: --version
-// when given, otherwise packages/cc-lhc/package.json (the one place a release
-// bumps it). Shared so the assemblers and checks never disagree.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";

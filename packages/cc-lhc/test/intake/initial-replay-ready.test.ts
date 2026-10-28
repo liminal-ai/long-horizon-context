@@ -73,7 +73,6 @@ describe("initial replay barrier before ready", () => {
     });
 
     try {
-      // While initial intake is gated, capture must remain binding (not ready).
       await waitFor(() => intakeCalls >= 1, "intake started");
       expect(session.isCaptureReady()).toBe(false);
       expect(session.isCaptureHealthy()).toBe(false);

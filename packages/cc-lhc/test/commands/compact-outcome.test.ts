@@ -1,11 +1,3 @@
-/**
- * What a compact is actually for, driven end to end against the real SDK and
- * the real rollout materializer: the session gets smaller and the settled
- * content the agent is working from survives.
- *
- * No mocked thread view here — the LHC compact decides what the bands hold, and
- * `writeRebuiltRollout` writes the file a replacement child would resume.
- */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -90,7 +82,6 @@ describe("a compact makes the session smaller and keeps the settled content", ()
     if (!status.ok) throw new Error(status.error.reason);
     tailTokensBefore = status.value.tailTokens;
 
-    // The rollout a replacement would resume, built from the uncompacted view.
     const viewBefore = await sdk.threadView.getSessionThreadView(threadRef);
     if (!viewBefore.ok) throw new Error(viewBefore.error.reason);
     const rebuiltBefore = await writeRebuiltRollout({
@@ -134,7 +125,6 @@ describe("a compact makes the session smaller and keeps the settled content", ()
   });
 
   it("still carries the oldest history, compressed rather than dropped", () => {
-    // The brief band names the turns it covers, so nothing silently vanishes.
     expect(rebuiltAfterText).toContain("<turns>");
     expect(rebuiltAfterText).toContain("t1 ");
   });

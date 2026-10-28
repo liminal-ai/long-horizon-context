@@ -148,9 +148,7 @@ export async function appendSessionsIndexEntry(input: AppendIndexInput, deps: Ro
   try {
     const fileStat = await statFn(input.sessionFilePath);
     fileMtime = fileStat.mtimeMs;
-  } catch {
-    // keep now
-  }
+  } catch {}
 
   const now = new Date().toISOString();
   const firstPrompt = input.firstPrompt.slice(0, 100);
@@ -174,12 +172,6 @@ export async function appendSessionsIndexEntry(input: AppendIndexInput, deps: Ro
   await renameFn(tempPath, indexPath);
 }
 
-/**
- * Drop every entry for one session id from a project's sessions-index.json.
- * Same load (with one-time .bak) and temp+rename publish as the append path.
- * Returns how many entries were removed; a missing index is 0. Throws
- * SESSIONS_INDEX_UNREADABLE_MESSAGE on an unparseable index (never rewritten).
- */
 export async function removeSessionsIndexEntry(
   projectDir: string,
   sessionId: string,

@@ -29,7 +29,6 @@ function tempPaths(label: string): Paths {
   return { home, registryPath: join(home, "registry.sqlite"), lineageDbPath: join(home, "cc-lhc.sqlite") };
 }
 
-/** A registry written before the alias map existed: threads listing only. */
 function seedPreAliasRegistry(registryPath: string): void {
   mkdirSync(join(registryPath, ".."), { recursive: true });
   const db = new DatabaseSync(registryPath);
@@ -48,7 +47,6 @@ function seedPreAliasRegistry(registryPath: string): void {
   db.close();
 }
 
-/** Ordered lineage writes so "most recently bound" is deterministic. */
 function tickingClock(): { nowFn: () => Date } {
   let tick = 0;
   return {
@@ -77,7 +75,6 @@ describe("Claude session aliases", () => {
       lineageDbPath,
       createThread: async () => "th_claude",
     });
-    // Another host registers the same native id under its own qualifier.
     const foreign = await threads.registerCurrentAlias({
       alias: `pi:${uuid}`,
       threadId: "th_pi",
@@ -86,10 +83,7 @@ describe("Claude session aliases", () => {
 
     expect(claude.threadId).toBe("th_claude");
     expect(foreign.ok).toBe(true);
-    expect(await resolveLaunchThread({ sessionId: uuid, registryPath, lineageDbPath })).toBe(
-      "th_claude",
-    );
-    // The unqualified native id is not an alias at all.
+    expect(await resolveLaunchThread({ sessionId: uuid, registryPath, lineageDbPath })).toBe("th_claude");
     expect(claudeSessionIdFromAlias(uuid)).toBeNull();
   });
 });
@@ -123,7 +117,6 @@ describe("launch thread resolution", () => {
       },
     });
 
-    // The alias already resolved, so nothing was created at all.
     expect(created).toBe(0);
     expect(bound).toEqual({ threadId: "th_winner", createdAtLaunch: false });
   });
@@ -131,16 +124,15 @@ describe("launch thread resolution", () => {
   it("says the registry is unavailable instead of guessing a thread", async () => {
     const { home, registryPath, lineageDbPath } = tempPaths("unavailable");
     mkdirSync(home, { recursive: true });
-    // A registry file that is not a database at all.
     const db = new DatabaseSync(registryPath);
     db.exec("CREATE TABLE threads (thread_id TEXT PRIMARY KEY, file_path TEXT NOT NULL, created_at TEXT NOT NULL);");
     db.exec("CREATE TABLE thread_alias (nonsense TEXT);");
     db.exec("PRAGMA user_version = 2;");
     db.close();
 
-    await expect(
-      resolveLaunchThread({ sessionId: "s-any", registryPath, lineageDbPath }),
-    ).rejects.toBeInstanceOf(ThreadRegistryUnavailableError);
+    await expect(resolveLaunchThread({ sessionId: "s-any", registryPath, lineageDbPath })).rejects.toBeInstanceOf(
+      ThreadRegistryUnavailableError,
+    );
   });
 });
 
@@ -151,7 +143,6 @@ describe("legacy lineage import", () => {
     recordSessionThread(lineageDbPath, "s-original", "th_legacy", clock, { prefix: { kind: "none" } });
     recordSessionThread(lineageDbPath, "s-rebuilt", "th_legacy", clock, { prefix: VERIFIED });
 
-    // Entering through the OLDEST alias still imports the whole thread.
     const bound = await bindLaunchThread({
       sessionId: "s-original",
       registryPath,
@@ -163,9 +154,7 @@ describe("legacy lineage import", () => {
 
     expect(bound).toEqual({ threadId: "th_legacy", createdAtLaunch: false });
     expect(await currentSessionAlias("th_legacy", registryPath)).toBe("claude-code:s-rebuilt");
-    expect(await resolveLaunchThread({ sessionId: "s-rebuilt", registryPath, lineageDbPath })).toBe(
-      "th_legacy",
-    );
+    expect(await resolveLaunchThread({ sessionId: "s-rebuilt", registryPath, lineageDbPath })).toBe("th_legacy");
   });
 
   it("imports into a registry written before the alias map existed", async () => {
@@ -184,7 +173,6 @@ describe("legacy lineage import", () => {
 
     expect(bound.threadId).toBe("th_legacy");
     expect(await currentSessionAlias("th_legacy", registryPath)).toBe("claude-code:s-migrated");
-    // The pre-existing threads listing survived the migration.
     const listed = await threads.listThreads({ registryPath });
     expect(listed.ok && listed.value.map((row) => row.threadId)).toEqual(["th_legacy"]);
   });
@@ -201,12 +189,9 @@ describe("legacy lineage import", () => {
       },
     });
 
-    // Legacy storage is rewritten to point somewhere else entirely.
     recordSessionThread(lineageDbPath, "s-known", "th_impostor", {}, { prefix: { kind: "none" } });
 
-    expect(await resolveLaunchThread({ sessionId: "s-known", registryPath, lineageDbPath })).toBe(
-      "th_true",
-    );
+    expect(await resolveLaunchThread({ sessionId: "s-known", registryPath, lineageDbPath })).toBe("th_true");
     expect(await currentSessionAlias("th_true", registryPath)).toBe("claude-code:s-known");
   });
 });
@@ -225,10 +210,7 @@ describe("current session pointer", () => {
 
     expect(advanced).toEqual({ ok: true });
     expect(await currentSessionAlias("th_swap", registryPath)).toBe("claude-code:s-new");
-    // Both aliases still name the one thread.
-    expect(await resolveLaunchThread({ sessionId: "s-old", registryPath, lineageDbPath })).toBe(
-      "th_swap",
-    );
+    expect(await resolveLaunchThread({ sessionId: "s-old", registryPath, lineageDbPath })).toBe("th_swap");
   });
 
   it("re-read under the lock wins over a current read taken before it", async () => {
@@ -240,7 +222,6 @@ describe("current session pointer", () => {
       createThread: async () => "th_race",
     });
 
-    // Pre-lock: names the lock key only.
     const preLockThreadId = await resolveLaunchThread({
       sessionId: "s-a",
       registryPath,
@@ -248,10 +229,8 @@ describe("current session pointer", () => {
     });
     const preLockCurrent = await currentSessionAlias("th_race", registryPath);
 
-    // The prior owner accepts a swap in exactly this window.
     await acceptCurrentSession({ sessionId: "s-b", threadId: "th_race", registryPath });
 
-    // …and the launch reads current again after taking the lock.
     const underLockCurrent = await currentSessionAlias(preLockThreadId!, registryPath);
 
     expect(preLockCurrent).toBe("claude-code:s-a");

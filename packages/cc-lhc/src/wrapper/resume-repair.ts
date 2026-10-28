@@ -1,10 +1,3 @@
-/**
- * Pre-launch torn-tail repair of the session file a launch resumes (F7).
- * Runs before Claude starts, while the wrapper still owns the terminal: the
- * outcome goes to the wrapper log, and a one-line warning to stderr whenever
- * the file was changed or a torn tail had to be left in place. Never throws.
- */
-
 import { homedir } from "node:os";
 import { join } from "node:path";
 

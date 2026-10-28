@@ -1,9 +1,3 @@
-/**
- * Native auto-compact launch policy (LIM-95, R8 addendum + R12).
- *
- * Outcome tests: what environment each managed Claude child is actually spawned
- * with, and what the wrapper records when the user supplies their own flag.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -68,8 +62,6 @@ describe("native auto-compact child environment", () => {
   });
 
   it("carries inherited values through untouched on both paths", () => {
-    // Omission is not clearing: an inherited disable stays exactly as inherited,
-    // which is why the wrapper cannot claim native auto-compact then runs.
     const inherited = { PATH: "/bin", DISABLE_AUTO_COMPACT: "1", DISABLE_COMPACT: "1" };
     const passthrough = nativeAutoCompactChildEnv(inherited, true);
     expect(passthrough).toEqual(inherited);
@@ -174,7 +166,6 @@ interface Live {
   finish: () => Promise<number>;
 }
 
-/** Launch and keep the child alive so the Control Panel can be driven. */
 async function launchLive(
   argv: string[],
   sdk: Record<string, unknown> = { drainSettled: async () => {} },
@@ -269,31 +260,24 @@ describe("run: managed Claude child launch environment", () => {
     for (const dir of homes.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
   it("disables native auto-compact for a normal managed launch", async () => {
     const { spawned } = await launch([]);
     expect(spawned[0]!.env[NATIVE_AUTO_COMPACT_DISABLE_ENV]).toBe("1");
-    // Manual /compact must survive: DISABLE_COMPACT is never injected.
     expect(spawned[0]!.env.DISABLE_COMPACT).toBeUndefined();
-    // No backstop argv is synthesized any more.
     expect(spawned[0]!.args).not.toContain("--autocompact");
   });
 
   it("passes --autocompact through, injects no disable, and records an anomaly stating only that", async () => {
     const { spawned, logLines } = await launch(["--autocompact", "500000"]);
     expect(spawned[0]!.env[NATIVE_AUTO_COMPACT_DISABLE_ENV]).toBeUndefined();
-    // The user's flag is preserved exactly — never stripped or rewritten.
     expect(spawned[0]!.args).toContain("--autocompact");
     expect(spawned[0]!.args[spawned[0]!.args.indexOf("--autocompact") + 1]).toBe("500000");
     const anomaly = logLines.find((l) => l.includes("ANOMALY") && l.includes("--autocompact"));
     expect(anomaly).toBeDefined();
-    // The notice reports the wrapper's own action, never Claude's resulting
-    // behavior: inherited environment and settings are unobservable from here.
     expect(anomaly).toContain("did not inject");
     expect(anomaly).toMatch(/inherited environment and Claude settings still govern/i);
     expect(anomaly).not.toMatch(/stays enabled|is enabled|will (auto-?)?compact/i);
@@ -320,9 +304,7 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
     for (const dir of homes.splice(0)) {
       try {
         rmSync(dir, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -335,12 +317,10 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
       expect(home).toContain(
         "Claude native Compact may run before Smart Compact — explicit --autocompact on this launch (see /details)",
       );
-      // Exactly one advisory row; the raw log anomaly is not repeated on Home.
       expect(
         home.match(/may run before Smart Compact — explicit --autocompact on this launch \(see \/details\)/g),
       ).toHaveLength(1);
       expect(home).not.toContain("ANOMALY");
-      // It never claims native Compact is on.
       expect(home).not.toMatch(/native Compact (is |stays )?(on|enabled)|will (auto-?)?compact/i);
 
       live.terminalOutput.length = 0;
@@ -388,7 +368,6 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
       [[], "disabled"],
       [["--autocompact", "500000"], "passthrough"],
     ] as const) {
-      // A real LHC status answer, so the panel's /status renders the production formatter end to end.
       const live = await launchLive([...argv], {
         drainSettled: async () => {},
         threadView: {
@@ -434,7 +413,6 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
 
         live.terminalOutput.length = 0;
         live.stdin.write(Buffer.from("/details\r"));
-        // The 80x24 rig clips the lower Details rows; wait on the Policy row, which carries the values.
         await waitFor(() => panelText(live.terminalOutput.join("")).includes("target 180,000"), "details rows");
         const details = panelText(live.terminalOutput.join(""));
         expect(details).toContain("target 180,000");
@@ -477,18 +455,14 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
   it("the advisory is nonblocking: input reaches Claude untouched and no panel opens by itself (TC-1.7d)", async () => {
     const live = await launchLive(["--autocompact", "500000"]);
     try {
-      // Give the wrapper a moment: nothing may be painted on the main screen
-      // and no modal may open without the user's leader key.
       await new Promise((r) => setTimeout(r, 150));
       expect(live.terminalOutput.join("")).not.toContain(PANEL_TITLE);
       expect(live.terminalOutput.join("")).not.toMatch(/may run|ANOMALY|--autocompact/);
 
-      // Typed input is forwarded to the child immediately — no acknowledgement gate.
       live.stdin.write(Buffer.from("hello claude\r"));
       await waitFor(() => live.spawned[0]!.written.join("").includes("hello claude\r"), "input forwarded");
       expect(live.terminalOutput.join("")).not.toContain(PANEL_TITLE);
 
-      // Opening and closing the panel afterwards leaves input flowing.
       live.stdin.write(leader);
       await waitFor(
         () => panelText(live.terminalOutput.join("")).includes("may run before Smart Compact"),

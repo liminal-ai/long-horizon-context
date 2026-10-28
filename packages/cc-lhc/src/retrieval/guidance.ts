@@ -1,11 +1,3 @@
-/**
- * Stable-address guidance injected via Claude's --append-system-prompt seam.
- * Static only — never embeds dynamic history.
- *
- * Argv grammar: Claude options only before `--`. Never rewrite post-`--` prompt
- * data. Refuse ambiguity when preservation cannot be proved.
- */
-
 export const RETRIEVAL_SYSTEM_GUIDANCE = [
   "Long-horizon history labels: <tN>…</tN> wraps one past turn (N is the turn id);",
   "<mN>…</mN> wraps one message; <turns>t10 t11</turns> lists turns a summary covers.",
@@ -23,17 +15,11 @@ export const RETRIEVAL_SYSTEM_GUIDANCE = [
   "until then there may be nothing to address.",
 ].join(" ");
 
-export type GuidanceInjectResult =
-  | { ok: true; argv: string[] }
-  | { ok: false; reason: string };
+export type GuidanceInjectResult = { ok: true; argv: string[] } | { ok: false; reason: string };
 
 const FLAG = "--append-system-prompt";
 const FLAG_EQ = "--append-system-prompt=";
 
-/**
- * Split argv at first bare `--` (options boundary). Post-boundary tokens are
- * never modified.
- */
 export function splitAtDoubleDash(argv: readonly string[]): {
   before: string[];
   boundary: boolean;
@@ -66,7 +52,6 @@ function findPromptFlags(before: readonly string[]): {
       if (next === undefined) {
         occurrences.push({ kind: "space", index: i, missingValue: true });
       } else if (next.startsWith("-") && next !== "-") {
-        // Value starting with dash is ambiguous for Claude grammar — refuse.
         occurrences.push({ kind: "space", index: i, missingValue: true });
       } else {
         occurrences.push({ kind: "space", index: i, value: next });
@@ -78,10 +63,6 @@ function findPromptFlags(before: readonly string[]): {
   return { occurrences };
 }
 
-/**
- * Merge guidance into child argv using Claude's supported static prompt seam.
- * Only rewrites the pre-`--` option region.
- */
 export function injectRetrievalGuidance(
   childArgv: readonly string[],
   guidance: string = RETRIEVAL_SYSTEM_GUIDANCE,
@@ -112,11 +93,9 @@ export function injectRetrievalGuidance(
       newBefore[o.index + 1] = prev === "" ? guidance : `${prev}\n\n${guidance}`;
     } else {
       const prev = o.value ?? "";
-      newBefore[o.index] =
-        FLAG_EQ + (prev === "" ? guidance : `${prev}\n\n${guidance}`);
+      newBefore[o.index] = FLAG_EQ + (prev === "" ? guidance : `${prev}\n\n${guidance}`);
     }
   } else {
-    // Insert guidance immediately before `--` boundary (or at end of options).
     newBefore = [...before, FLAG, guidance];
   }
 

@@ -1,6 +1,3 @@
-/**
- * LIM-118: TC-1.1a-c, TC-3.4a. Home status and Help/status/stats contract.
- */
 import { describe, expect, it } from "vitest";
 import { dispatchLhcCommand, type LhcCommandRuntime } from "../../src/commands/dispatch.js";
 import { CONFIG_FALLBACK_NOTICE } from "../../src/governor/config.js";
@@ -158,7 +155,6 @@ describe("TC-3.4a Status contract is truthful", () => {
     expect(status.messages[0]).toContain("Derivations: 1 pending · 2 failed");
     expect(status.messages[0]).toContain("Thread: th_test");
     expect(status.messages[0]).toContain(nativeCompactDisabledStatusLine());
-    // TC-3.5c: the Tool Prune argument is explained as an approximate estimated-token target.
     const pruneSpec = PANEL_COMMANDS.find((command) => command.name === "/smart-prune");
     expect(pruneSpec?.helpSummary).toContain("approximate estimated-token target");
     expect(pruneSpec?.helpSummary).toContain("newest eligible tool results kept visible");

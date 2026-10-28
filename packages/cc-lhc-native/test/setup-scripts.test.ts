@@ -1,12 +1,3 @@
-/**
- * Setup-script gates: prerequisite target mapping, the non-persistent Claude
- * auth probe, and the prebuild downloader's source resolution and refusal
- * paths. Libraries under .setup/scripts/lib are imported directly; CLI wiring
- * is exercised by spawning the real scripts. Network downloads are foreign
- * evidence and are not attempted here — every spawned path below fails or
- * succeeds before any fetch.
- */
-
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -153,8 +144,6 @@ describe("fetch-prebuild: release-source resolution", () => {
     expect(source.ok).toBe(false);
     expect(source.error).toContain("--tag");
     expect(source.error).toContain("prebuild-release.json");
-    // Build-from-source fallback must not point at the broken bare pnpm
-    // pre-run path (open bug long-horizon-context-52k).
     expect(source.error).toContain(
       "pnpm --config.verify-deps-before-run=false --filter cc-lhc-native run build:native",
     );

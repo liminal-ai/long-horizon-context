@@ -3,13 +3,6 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, posix as posixPath, win32 as winPath } from "node:path";
 
-/**
- * Whether `candidate` resolves to `profileRoot` or strictly inside it.
- * Pure and platform-parameterized (unit-testable anywhere): Windows
- * comparison is case-insensitive, `..` segments are resolved first, and a
- * sibling whose name merely extends the root (`C:\Users\u2` vs
- * `C:\Users\u`) does not count as contained.
- */
 export function isWithinProfile(candidate: string, profileRoot: string, platform: NodeJS.Platform): boolean {
   const pathMod = platform === "win32" ? winPath : posixPath;
   const norm = (p: string): string => {
@@ -48,17 +41,6 @@ export function canonicalizeForContainment(path: string): string {
 
 export type CcLhcHomeResolution = { ok: true; path: string } | { ok: false; reason: string };
 
-/**
- * Environment-facing CC_LHC_HOME contract, pure given inputs.
- *
- * The runtime descriptor under this root is a retrieval capability. On POSIX
- * its confidentiality is enforced by 0600/0700 modes, so any override
- * location is acceptable (unchanged). Windows has no POSIX modes and cc-lhc
- * installs no bespoke DACL — confidentiality rests on the user profile's
- * default ACLs — so a CC_LHC_HOME outside the profile fails closed. No
- * override escape hatch in this release; tests pass explicit home paths
- * through internal seams instead of the environment.
- */
 export function resolveCcLhcHome(
   override: string | undefined,
   homeDir: string,
@@ -82,14 +64,8 @@ export function resolveCcLhcHome(
   return { ok: true, path: resolved };
 }
 
-/** cc-lhc home directory (`~/.cc-lhc`, overridable via `CC_LHC_HOME`; see resolveCcLhcHome). */
 export function ccLhcHome(): string {
-  const resolution = resolveCcLhcHome(
-    process.env.CC_LHC_HOME,
-    homedir(),
-    process.platform,
-    canonicalizeForContainment,
-  );
+  const resolution = resolveCcLhcHome(process.env.CC_LHC_HOME, homedir(), process.platform, canonicalizeForContainment);
   if (!resolution.ok) throw new Error(`cc-lhc: ${resolution.reason}`);
   return resolution.path;
 }

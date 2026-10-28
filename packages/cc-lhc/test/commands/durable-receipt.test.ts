@@ -1,11 +1,7 @@
 import type { Lhc, ThreadRef } from "lhc";
 import { describe, expect, it, vi } from "vitest";
 
-import {
-  formatDurableReceipt,
-  formatTokensShort,
-  runContextMutation,
-} from "../../src/commands/context-mutation.js";
+import { formatDurableReceipt, formatTokensShort, runContextMutation } from "../../src/commands/context-mutation.js";
 import type { LhcCommandRuntime } from "../../src/commands/dispatch.js";
 import * as writeRebuilt from "../../src/rollout/write-rebuilt.js";
 
@@ -103,9 +99,9 @@ describe("durable operation receipt", () => {
         targetTokens: 240_000,
       }),
     ).toBe("[lhc compact:auto] trigger context 508k; rebuilt LHC view 247k (240k target).");
-    expect(
-      formatDurableReceipt("prune", { origin: "manual", zoneTokensBefore: 82_000, zoneTokensAfter: 30_000 }),
-    ).toBe("[lhc prune:manual] tool-result zone 82k -> 30k.");
+    expect(formatDurableReceipt("prune", { origin: "manual", zoneTokensBefore: 82_000, zoneTokensAfter: 30_000 })).toBe(
+      "[lhc prune:manual] tool-result zone 82k -> 30k.",
+    );
     expect(formatTokensShort(1_426)).toBe("1.4k");
     expect(formatTokensShort(941)).toBe("941");
   });
@@ -125,9 +121,7 @@ describe("durable operation receipt", () => {
     expect(outcome.kind).toBe("rebuilt");
     expect(writeSpy).toHaveBeenCalledOnce();
     const input = writeSpy.mock.calls[0]![0];
-    expect(input.receipt?.text).toBe(
-      "[lhc compact:auto] trigger context 508k; rebuilt LHC view 247k (240k target).",
-    );
+    expect(input.receipt?.text).toBe("[lhc compact:auto] trigger context 508k; rebuilt LHC view 247k (240k target).");
     expect(input.receipt?.text).not.toMatch(/preserved|resume|session /);
     if (outcome.kind === "rebuilt") {
       expect(outcome.handoff.durableReceipt).toBe(input.receipt?.text);
@@ -144,10 +138,7 @@ describe("durable operation receipt", () => {
   it("manual prune writes the prune-labeled receipt", async () => {
     const { runtime: rt } = runtime();
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
-    const outcome = await runContextMutation(
-      { operation: "prune", profile: "default", lowerBoundTokens: 240_000 },
-      rt,
-    );
+    const outcome = await runContextMutation({ operation: "prune", profile: "default", lowerBoundTokens: 240_000 }, rt);
     expect(outcome.kind).toBe("rebuilt");
     const input = writeSpy.mock.calls[0]![0];
     expect(input.receipt?.text).toBe("[lhc prune:manual] tool-result zone 82k -> 30k.");

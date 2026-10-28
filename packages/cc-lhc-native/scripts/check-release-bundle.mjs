@@ -1,12 +1,3 @@
-// Validate a release-bundle directory against the contract in
-// src/release-bundle.ts (single source of truth, imported from dist).
-//
-// Usage:
-//   node scripts/check-release-bundle.mjs [--dir <bundleRoot>] [--target <platform-arch>]...
-//
-// Without --target, every target in the bundle's targets.json must have its
-// prebuilt artifact (full-bundle/aggregation check). Matrix jobs pass their
-// own --target to validate a partial bundle.
 import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";

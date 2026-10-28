@@ -1,21 +1,3 @@
-/**
- * Pure capability-limited governor decision.
- * No I/O, no mutation. Returns a named decision/reason and pressure receipt.
- *
- * Exactly one thing decides whether an automatic compact happens: measured
- * pressure against the active window's trigger. Smart Compact cannot be
- * turned off — there is no policy field or decision kind for it. Capture
- * health, descriptor readiness, receipt storage, and typed-ahead input are
- * diagnostics the wrapper records and recovers from — none of them may
- * suppress the treatment from here. The remaining non-pressure kinds are
- * sequencing, not vetoes: `turn_open` says *not at this instant* and
- * `operation_in_flight` says *already running*; each is followed by another
- * seam.
- *
- * Claude Code cannot replace the in-flight request mid-agentic-turn.
- * wouldMutate is true only at a settled seam for would_compact.
- */
-
 import { buildPressureReceipt, normalizePostMeasurementEstimate } from "./provider-context.js";
 import type { GovernorDecision, GovernorInput } from "./types.js";
 
@@ -43,7 +25,6 @@ function decide(
   };
 }
 
-/** How the pressure base is described in a decision reason. */
 function pressurePhrase(input: GovernorInput, pressureTokens: number): string {
   const base = input.providerContext?.total;
   const estimate = normalizePostMeasurementEstimate(input.postMeasurementEstimate).tokens;
@@ -54,14 +35,6 @@ function pressurePhrase(input: GovernorInput, pressureTokens: number): string {
   return `next-request pressure ${pressureTokens} (${label} ${base} + estimate ${estimate})`;
 }
 
-/**
- * Deterministic decision at an observation point (open-turn or settled seam).
- * Order: the open-turn capability boundary, then sequencing, then pressure.
- *
- * When turnOpen is true and pressure is at/above the upper trigger, the
- * decision is still `would_compact` with wouldMutate=false so the threshold
- * crossing is classified and receipted without mutating mid-turn.
- */
 export function decideGovernor(input: GovernorInput): GovernorDecision {
   const estimate = normalizePostMeasurementEstimate(input.postMeasurementEstimate);
   const inputWithEstimate: GovernorInput = { ...input, postMeasurementEstimate: estimate };
@@ -105,11 +78,6 @@ export function decideGovernor(input: GovernorInput): GovernorDecision {
   );
 }
 
-/**
- * Open-turn classification: record pressure; never mutate.
- * Threshold crossings use would_compact with wouldMutate=false so fixtures can
- * assert "threshold crossed while open" without mid-turn handoff.
- */
 function decideOpenTurn(input: GovernorInput): GovernorDecision {
   if (input.operationInFlight) {
     return decide(
@@ -129,7 +97,6 @@ function decideOpenTurn(input: GovernorInput): GovernorDecision {
   const pressureTokens = pressure.nextRequestPressureTokens;
 
   if (!pressure.atOrAboveTrigger) {
-    // Not yet at trigger: explicit turn_open (waiting for settle / more pressure).
     return decide(
       "turn_open",
       `turn is still open; ${pressurePhrase(input, pressureTokens)} below upperBoundTokens ${input.policy.upperBoundTokens}; Smart Compact only at settled boundary`,
@@ -138,7 +105,6 @@ function decideOpenTurn(input: GovernorInput): GovernorDecision {
     );
   }
 
-  // Threshold crossed while open: classify would_compact, never mutate.
   return decide(
     "would_compact",
     `${pressurePhrase(input, pressureTokens)} >= upperBoundTokens ${input.policy.upperBoundTokens} during open turn; classified only — Claude Code cannot replace the in-flight request mid-agentic-turn`,

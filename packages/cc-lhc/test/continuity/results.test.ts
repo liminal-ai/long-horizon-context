@@ -1,9 +1,3 @@
-/**
- * LIM-146 AC-2.7 foundation: one durable terminal result per carried item in
- * the real cc-lhc SQLite, written by the same terminal write that closes the
- * item; the rebuilt session's fold seeded from the record so terminal evidence
- * is recognized; read-only panel visibility of pending results.
- */
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { describe, expect, it } from "vitest";
@@ -45,7 +39,6 @@ const launch = (launchId: string, nowMs: number) => ({
   nowMs,
 });
 
-/** Carried items: launched, qualified, and stamped into generation 1. */
 function carried(ids: readonly string[]) {
   const path = tempDbPath();
   const store = openContinuityStore(path);
@@ -68,9 +61,7 @@ function dbBytes(path: string): string {
   let wal = "";
   try {
     wal = readFileSync(`${path}-wal`, "latin1");
-  } catch {
-    // no WAL file
-  }
+  } catch {}
   return readFileSync(path, "latin1") + wal;
 }
 
@@ -220,7 +211,6 @@ describe("one durable result per carried terminal item", () => {
     expect(result.evidence).not.toContain("TRAILING-MARKER");
     store.close();
     const bytes = dbBytes(path);
-    // The launch command (with its bearer token) is never persisted anywhere in the database.
     expect(bytes).not.toContain("Bearer sk-SECRET");
     expect(bytes).not.toContain("curl -H");
   });
@@ -285,7 +275,6 @@ describe("the rebuilt session recognizes carried work", () => {
       LAUNCHES.scheduled_wakeup.scheduledForMs,
     );
 
-    // A fresh fold seeded with them closes the same durable items on terminal evidence — and emits no launches.
     const events: AsyncWorkEvent[] = [];
     const fold = createAsyncWorkFold((event) => events.push(event), seed);
     observeAsyncWorkLine(notification({ taskIds: ["agent-1"], status: "completed" }), fold);
@@ -295,7 +284,6 @@ describe("the rebuilt session recognizes carried work", () => {
       ["terminal", LAUNCH_IDS.background_shell],
     ]);
     expect(fold.open.size).toBe(2);
-    // An unseeded fold sees the same lines as nothing.
     const bare = createAsyncWorkFold();
     observeAsyncWorkLine(notification({ taskIds: ["agent-1"], status: "completed" }), bare);
     expect(bare.open.size).toBe(0);

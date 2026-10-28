@@ -1,7 +1,3 @@
-/**
- * Correction 9: session-level post-ready watcher runtime failure + stop-during-bind.
- */
-
 import { appendFileSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -151,7 +147,6 @@ describe("session watcher runtime + stop ownership", () => {
     expect(session.getCaptureHealth().phase).toBe("closed");
     expect(lifecycle).not.toContain("session_bound");
     expect(lifecycle).toHaveLength(0);
-    // Single bindHold gate is before resolve/init/watcher; stop wins ownership.
     expect(created).toBe(0);
     expect(sdkInits).toBe(0);
     expect(watcherConstructs).toBe(0);
@@ -222,7 +217,6 @@ describe("session watcher runtime + stop ownership", () => {
     expect(session.getCaptureHealth().phase).toBe("closed");
     expect(lifecycle).not.toContain("session_bound");
     expect(watcherConstructs).toBe(0);
-    // No session→thread row written while stopped during bindHold.
     const { lookupSessionLineage } = await import("../../src/intake/lineage-db.js");
     expect(lookupSessionLineage(lineageDbPath, sid)).toBeUndefined();
   });

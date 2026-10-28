@@ -1,20 +1,8 @@
-/**
- * CC-LHC build identity (D13): the one shape stamped into
- * dist/build-identity.json and the one rule that binds it.
- *
- * The source SHA is an explicit input from the build/assembly caller, never
- * read from the repository: an ordinary development build stamps
- * `sourceSha: null` (identity unavailable) and the accepted candidate is
- * stamped with its accepted SHA. No timestamps, fixed key order, so identical
- * inputs produce identical bytes.
- */
-
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 export const SOURCE_SHA_PATTERN = /^[0-9a-f]{40}$/;
 
-/** Parse `--source-sha <sha>` from argv; undefined when absent. Throws on a malformed value. */
 export function sourceShaFromArgv(argv) {
   const index = argv.indexOf("--source-sha");
   if (index < 0) return undefined;
@@ -40,12 +28,6 @@ export function writeBuildIdentity(outDir, identity) {
   writeFileSync(join(outDir, "build-identity.json"), `${JSON.stringify(buildIdentity(identity), null, 2)}\n`);
 }
 
-/**
- * Bind a stamped identity to the manifest and to the caller's accepted
- * source SHA. A stamped SHA is valid only when it equals the accepted input;
- * with no accepted input only an unavailable (null) identity passes.
- * Returns the failures, empty when bound.
- */
 export function verifyBuildIdentity(identity, manifest, acceptedSourceSha) {
   const failures = [];
   if (identity === null || typeof identity !== "object") return ["build identity is not an object"];

@@ -1,30 +1,11 @@
-/**
- * Next-real-prompt delivery of carried-work results (LIM-146 AC-2.7c–e).
- *
- * The wrapper registers one launch-scoped `UserPromptSubmit` hook on every
- * managed Claude child. When the user submits a real prompt, Claude runs the
- * hook; it reads the runtime-bound thread's pending results and answers with
- * bounded `additionalContext`. Claude records that context in the rollout as
- * an `attachment` of type `hook_additional_context` immediately after the
- * user's own record — the normal capture path reads it there, and only that
- * observation marks the named result keys delivered. Running the hook is not
- * delivery; a hook whose context never reached the transcript leaves every
- * result pending (and visible in the Control Panel).
- *
- * Nothing here calls the provider, writes to the PTY, or touches a rollout.
- */
-
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import type { RolloutLineItem } from "../rollout/types.js";
 import { type CarriedResult, eventDeliveryKey } from "./store.js";
 
-/** The argv suffix every registered hook command ends with. */
 export const RESULT_HOOK_ARGS = ["tasks", "hook"] as const;
-/** Claude gives a hook this long before treating it as failed; the hook does one SQLite read. */
 export const RESULT_HOOK_TIMEOUT_SECONDS = 10;
-/** How many results one prompt carries; the rest stay pending for the next prompt. */
 export const MAX_RESULTS_PER_PROMPT = 10;
 
 const HEADER = "cc-lhc carried work results (finished since Smart Compact; keys are stable):";
@@ -34,14 +15,10 @@ const FOOTER =
 const RESULT_LINE = /^result (\S+) · /;
 const EVENTS_HEADER = "monitor events (a relaunched Monitor wrote these; each is shown once):";
 const EVENT_LINE = /^event (\S+)@(\d+) · /;
-/** How many relaunched-Monitor event lines one prompt carries; the rest follow on the next prompt. */
 export const MAX_EVENTS_PER_PROMPT = 20;
-/** Bound on one delivered event line. */
 export const MAX_EVENT_CHARS = 200;
-/** Bound on one result's detail line (a subagent's final text or its interrupted notice). */
 export const MAX_DETAIL_CHARS = 600;
 
-/** One line a relaunched Monitor wrote to its output, ending at byte `endOffset`. */
 export interface MonitorEventLine {
   launchId: string;
   label: string;
@@ -50,22 +27,14 @@ export interface MonitorEventLine {
 }
 
 export interface ResultContextExtras {
-  /** Per-result detail, keyed by launch id. */
   details?: ReadonlyMap<string, string>;
-  /** Undelivered relaunched-Monitor events, oldest first. */
   events?: readonly MonitorEventLine[];
 }
 
-/** Single-quote for the POSIX / Git Bash shell Claude runs hook commands through. */
 export function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-/**
- * The hook command for this installation: this Node binary running this
- * package's `bin.js` (beside the built module tree), or the `cc-lhc` on PATH
- * when running from source.
- */
 export function defaultResultHookCommand(): string {
   const bin = fileURLToPath(new URL("../bin.js", import.meta.url));
   const head = existsSync(bin) ? `${shellQuote(process.execPath)} ${shellQuote(bin)}` : "cc-lhc";
@@ -78,11 +47,6 @@ function oneLine(text: string, maxChars: number): string {
   return ascii.length <= maxChars ? ascii : `${ascii.slice(0, Math.max(0, maxChars - 1))}~`;
 }
 
-/**
- * The additional context for one prompt: each pending result as one line of
- * key, family, sanitized label, and outcome — no evidence text, artifact
- * path, command, or output. Empty when nothing is pending.
- */
 export function formatResultContext(results: readonly CarriedResult[], extras: ResultContextExtras = {}): string {
   const events = extras.events ?? [];
   if (results.length === 0 && events.length === 0) return "";
@@ -90,7 +54,6 @@ export function formatResultContext(results: readonly CarriedResult[], extras: R
   const lines: string[] = [];
   for (const r of shown) {
     lines.push(`result ${r.launchId} · ${r.family} · ${oneLine(r.label, 120)} · ${r.outcome}`);
-    // Indented, so no text in a detail can ever parse as a delivery key.
     const detail = extras.details?.get(r.launchId);
     if (detail !== undefined && detail !== "") lines.push(`  ${oneLine(detail, MAX_DETAIL_CHARS)}`);
   }
@@ -117,17 +80,10 @@ export function formatResultContext(results: readonly CarriedResult[], extras: R
   ].join("\n");
 }
 
-/** The delivery keys of the events a context built by `formatResultContext` names. */
 export function eventKeysOf(events: readonly MonitorEventLine[]): string[] {
   return events.slice(0, MAX_EVENTS_PER_PROMPT).map((e) => eventDeliveryKey(e.launchId, e.endOffset));
 }
 
-/**
- * The result keys a rollout line proves were delivered: the record Claude
- * writes for a `UserPromptSubmit` hook's accepted additional context, carrying
- * this module's own header. User text or other hooks mentioning a key prove
- * nothing. Duplicates within one record collapse.
- */
 export function deliveredResultKeys(item: RolloutLineItem): string[] {
   const record = item as Record<string, unknown>;
   if (record.type !== "attachment" || record.isSidechain === true) return [];

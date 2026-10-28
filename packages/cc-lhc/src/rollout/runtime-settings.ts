@@ -23,7 +23,6 @@ function isOneOf<T extends string>(value: unknown, values: readonly T[]): value 
   return typeof value === "string" && values.includes(value as T);
 }
 
-/** Fold only settings Claude records explicitly in its rollout. */
 export function observeClaudeRuntimeSettings(
   current: ClaudeRuntimeSettings,
   item: RolloutLineItem,
@@ -60,11 +59,7 @@ function beforePassthrough(argv: readonly string[], args: readonly string[]): st
   return [...argv.slice(0, boundary), ...args, ...argv.slice(boundary)];
 }
 
-/** Replace launch values with the latest confirmed runtime values. */
-export function applyClaudeRuntimeSettings(
-  argv: readonly string[],
-  settings: ClaudeRuntimeSettings,
-): string[] {
+export function applyClaudeRuntimeSettings(argv: readonly string[], settings: ClaudeRuntimeSettings): string[] {
   let next = [...argv];
   const additions: string[] = [];
   if (settings.effort !== undefined) {
@@ -73,8 +68,6 @@ export function applyClaudeRuntimeSettings(
   }
   if (settings.permissionMode !== undefined) {
     next = withoutOption(next, "--permission-mode");
-    // Claude rollout records use `default`; the current CLI names the same
-    // approval-required mode `manual`.
     additions.push("--permission-mode", settings.permissionMode === "default" ? "manual" : settings.permissionMode);
   }
   return beforePassthrough(next, additions);

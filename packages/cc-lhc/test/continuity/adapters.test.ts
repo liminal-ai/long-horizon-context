@@ -1,10 +1,3 @@
-/**
- * LIM-145 AC-2.2 shared adapter contract: every family, on every supported
- * platform identity shape from Story 0, through the real fold, the real
- * SQLite store, and the real adapters over real files. Proves carry mode,
- * stable logical identity, only currently supported operations, and
- * fail-before-claim when verification fails.
- */
 import { mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -40,7 +33,6 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-/** A disposable host layout in the 2.1.252 shape: rollout, session dir, tasks dir. */
 function hostLayout(): LaunchPaths & { rolloutPath: string } {
   const root = mkdtempSync(join(tmpdir(), "cc-lhc-adapters-"));
   dirs.push(root);
@@ -55,7 +47,6 @@ function hostLayout(): LaunchPaths & { rolloutPath: string } {
   writeFileSync(join(tasksDir, "shell-1.output"), "line\n");
   writeFileSync(join(tasksDir, "mon-1.output"), "tick\n");
   writeFileSync(join(tasksDir, "agent-1.output"), "");
-  // The old session's rollout: the Monitor launch record the relaunch resolves from.
   const rolloutPath = `${sessionDir}.jsonl`;
   writeFileSync(
     rolloutPath,
@@ -72,9 +63,6 @@ function rig(paths: LaunchPaths & { rolloutPath: string }, platform: NodeJS.Plat
   let now = 1_000;
   const observer = createContinuityObserver({ store, threadId: T, nowFn: () => (now += 1) });
   for (const line of [...allLaunchLines(paths), monitorEvent(paths)]) observer.observeLine(line);
-  // A simulated win32 rig is pinned host-independently: no Win32 addon (file
-  // identity unavailable unless a test injects the reader — never Node
-  // dev/ino) and no Git Bash (a real one on the host must not leak in).
   const context: AdapterContext = {
     platform,
     sourceRolloutPath: paths.rolloutPath,
@@ -101,12 +89,6 @@ const POSIX: NodeJS.Platform[] = ["linux", "darwin"];
 const QUALIFIABLE: AsyncWorkFamily[] = ["agent", "workflow", "background_shell", "monitor", "scheduled_wakeup"];
 const MONITOR_COMMAND = "tail -f /tmp/x.log";
 
-/**
- * The contract every family/platform pair must meet, from Story 0's
- * disposition matrix: a qualified result names a real continuation mechanism,
- * never only an identity artifact; a family without one is refused with the
- * exact accepted-contract impossibility.
- */
 const CONTRACT: Record<
   AsyncWorkFamily,
   { mode: string; operations: string[]; identityKind: string; mechanism: string; win32: string | "same" }
@@ -148,7 +130,6 @@ const CONTRACT: Record<
   },
 };
 
-/** Every mechanism kind a qualified result may name. */
 const MECHANISMS = ["parent_output_read", "send_message", "workflow_resume", "rearm_at", "monitor_relaunch"];
 
 describe("TC-2.2a shared adapter contract across families and platforms", () => {
@@ -171,7 +152,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
         expect(row.operations).not.toContain("stop");
         expect(row.operations).not.toContain("status");
       }
-      // Mechanism parameters are the verified facts, not derived values.
       const shellIdentity = item("background_shell").verifiedIdentity as { path: string };
       expect(outcome.qualified.find((q) => q.family === "background_shell")?.continuation).toEqual({
         kind: "parent_output_read",
@@ -190,7 +170,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
         kind: "rearm_at",
         scheduledForMs: LAUNCHES.scheduled_wakeup.scheduledForMs,
       });
-      // Identity facts are the host's own paths, verified, never derived from the command body.
       expect(item("background_shell").verifiedIdentity).toMatchObject({
         path: expect.stringMatching(/shell-1\.output$/),
         dev: expect.any(String),
@@ -244,9 +223,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       });
       const outcome = qualify();
       if (platform === "win32") {
-        // The rig pins a host without Git Bash where Claude Code would look
-        // for it, so the seam closes the Monitor truthfully instead of
-        // promising a restart.
         expect(outcome.terminalized).toEqual([
           {
             launchId: LAUNCH_IDS.monitor,
@@ -265,12 +241,10 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       if (!result.ok) return;
       const carried = result.snapshot.items.find((i) => i.family === "monitor");
       expect(carried).toMatchObject({ launchId: LAUNCH_IDS.monitor, transition: "restarted" });
-      // The raw command lives only in the rollout: not in the store, the outcome, the manifest, or the launch id.
       for (const surface of [store.listItems(T), outcome, result.snapshot, carried?.launchId]) {
         expect(JSON.stringify(surface)).not.toContain(MONITOR_COMMAND);
         expect(JSON.stringify(surface)).not.toMatch(/tail -f|x\.log/);
       }
-      // At invocation time the exact specification resolves again from the reference alone.
       const relaunch = carried?.continuation;
       expect(relaunch?.kind).toBe("monitor_relaunch");
       if (relaunch?.kind !== "monitor_relaunch") return;
@@ -278,7 +252,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
         ok: true,
         spec: { command: MONITOR_COMMAND, input: { command: MONITOR_COMMAND, description: "CI watch" } },
       });
-      // One relaunch per carried item per handoff generation: the fence is the generation itself.
       expect(relaunchKey(carried?.launchId ?? "", result.snapshot.generation)).toBe(`${LAUNCH_IDS.monitor}#1`);
       store.close();
     }
@@ -305,7 +278,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       state: "active",
       verifiedIdentity: { kind: "monitor_launch", toolUseId: "toolu_mon", rolloutPath: paths.rolloutPath },
     });
-    // The Windows shell refusal is unchanged and still owns the snapshot outcome there.
     expect(snapshot()).toEqual({ ok: false, reason: "unqualified_items", launchIds: [LAUNCH_IDS.background_shell] });
     expect(JSON.stringify([store.listItems(T), outcome])).not.toContain(MONITOR_COMMAND);
     store.close();
@@ -385,7 +357,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
         evidence: `monitor relaunch unavailable: ${c.reason}`,
       });
       expect(JSON.stringify(row), c.name).not.toContain(MONITOR_COMMAND);
-      // Never blocks the seam: the rest carry, the Monitor is left behind as terminal.
       const result = snapshot();
       expect(result.ok, c.name).toBe(true);
       expect(result.ok && result.snapshot.items.map((i) => i.family), c.name).toEqual([
@@ -394,7 +365,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
         "background_shell",
         "scheduled_wakeup",
       ]);
-      // Closed once: a second pass touches nothing.
       expect(qualifyActiveItems(store, T, context, 6_000).terminalized, c.name).toEqual([]);
       expect(item("monitor").terminal?.observedAtMs, c.name).toBe(5_000);
       store.close();
@@ -422,7 +392,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
     const paths = hostLayout();
     const { store, item, snapshot } = rig(paths, "win32");
     const outputPath = join(paths.tasksDir, "shell-1.output");
-    // The identity the native addon reads from the opened file: volume serial + 128-bit file id.
     let fileId = `id128:${"0a".repeat(16)}`;
     const readFileIdentity: AdapterContext["readFileIdentity"] = (path) =>
       path === outputPath
@@ -443,7 +412,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
     const stored = item("background_shell");
     expect(stored.verifiedIdentity).toEqual({ kind: "win32_output", path: outputPath, volumeId: "1234567890", fileId });
     expect(JSON.stringify(stored)).not.toMatch(/"dev"|"ino"/);
-    // Re-verification of the same object: stable, carried once with the exact identity.
     expect(qualifyActiveItems(store, T, context, 6_000).refused).toEqual([]);
     const result = snapshot();
     expect(result.ok).toBe(true);
@@ -452,7 +420,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       verifiedIdentity: { kind: "win32_output", volumeId: "1234567890", fileId },
       transition: "adopted",
     });
-    // The path now names a different file object (replaced/reused): a different identity, never carried.
     fileId = `id128:${"0b".repeat(16)}`;
     const changed = qualifyActiveItems(store, T, context, 7_000);
     expect(changed.refused).toEqual([
@@ -463,7 +430,6 @@ describe("TC-2.2a shared adapter contract across families and platforms", () => 
       verifiedIdentity: { fileId: `id128:${"0a".repeat(16)}` },
     });
     expect(snapshot()).toEqual({ ok: false, reason: "unverified_items", launchIds: [LAUNCH_IDS.background_shell] });
-    // A missing file is a missing file.
     rmSync(outputPath);
     const missingContext: AdapterContext = {
       ...context,
@@ -597,7 +563,6 @@ describe("TC-2.5d verification failure leaves the item unqualified and the snaps
 });
 
 describe("durable continuation data survives snapshot and closure (what the next pass invokes)", () => {
-  /** Per family: the exact verified identity and mechanism the manifest must carry, from the host layout. */
   const expectedFor = (paths: ReturnType<typeof hostLayout>) => ({
     background_shell: {
       verifiedIdentity: {
@@ -654,9 +619,7 @@ describe("durable continuation data survives snapshot and closure (what the next
       if (!result.ok) return;
       const carried = result.snapshot.items.find((i) => i.family === family);
       expect(carried).toMatchObject({ launchId: LAUNCH_IDS[family], carryMode: CONTRACT[family].mode, ...expected });
-      // The durable row and the manifest agree exactly; the mechanism is the identity's, not a re-derivation from the fold.
       expect(carried?.verifiedIdentity).toEqual(item(family).verifiedIdentity);
-      // Closure rebuilds the same complete item from the store alone.
       const closure = closeContinuitySnapshot(store, {
         threadId: T,
         generation: result.snapshot.generation,
@@ -664,7 +627,6 @@ describe("durable continuation data survives snapshot and closure (what the next
       });
       expect(closure.closed).toBe(true);
       expect(closure.carried.find((i) => i.family === family)).toEqual(carried);
-      // Reopening the database yields the same identity, so a later process can invoke the same mechanism.
       store.close();
       const reopened = openContinuityStore(store.path);
       expect(reopened.getItem(T, LAUNCH_IDS[family])?.verifiedIdentity).toEqual(carried?.verifiedIdentity);
@@ -694,7 +656,6 @@ describe("re-verification before the seam", () => {
     const { store, qualify, snapshot, item } = rig(paths, "linux");
     qualify();
     const before = item("background_shell").verifiedIdentity;
-    // Hold the old inode (as Story 0 does) so the replacement provably gets another one.
     renameSync(join(paths.tasksDir, "shell-1.output"), join(paths.tasksDir, "shell-1.output.held"));
     writeFileSync(join(paths.tasksDir, "shell-1.output"), "replacement\n");
     const outcome = qualify();
@@ -705,7 +666,6 @@ describe("re-verification before the seam", () => {
     expect(after.state).toBe("unknown");
     expect(after.verifiedIdentity).toEqual(before);
     expect(snapshot()).toEqual({ ok: false, reason: "unverified_items", launchIds: [LAUNCH_IDS.background_shell] });
-    // Still refused on every later pass: the recorded identity never matches the reused path.
     expect(qualify().refused.map((r) => r.reason)).toEqual(["identity_changed"]);
     store.close();
   });

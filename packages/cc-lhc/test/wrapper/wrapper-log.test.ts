@@ -33,10 +33,6 @@ describe("createWrapperLog", () => {
     expect(contents.split("\n").filter(Boolean)).toHaveLength(3);
   });
 
-  // Deterministically unwritable on every platform: the parent of the log
-  // path is an existing regular FILE, so directory creation and append both
-  // fail (ENOTDIR on POSIX, ENOENT on Windows). "/dev/null/…" is only
-  // unwritable on POSIX — on Windows it is a creatable relative path.
   function unwritableLogPath(): string {
     const dir = mkdtempSync(join(tmpdir(), "cc-lhc-wlog-blocked-"));
     const blocker = join(dir, "blocker");

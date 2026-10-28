@@ -20,20 +20,15 @@
 import { existsSync, statSync } from "node:fs";
 import { win32 as winPath } from "node:path";
 
-/** Extensions ConPTY can execute directly (native PE images). */
 export const WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS = [".exe", ".com"] as const;
 
-/** Shim extensions that would require cmd.exe/PowerShell interpretation. */
 const WINDOWS_SHIM_EXTENSIONS = [".cmd", ".bat", ".ps1"] as const;
 
 export type ClaudeBinResolution = { ok: true; path: string } | { ok: false; reason: string };
 
 export interface WindowsClaudeBinSeams {
-  /** PATH value (';'-separated). */
   pathValue?: string | undefined;
-  /** PATHEXT value (';'-separated); Windows default order used when absent. */
   pathextValue?: string | undefined;
-  /** File-existence probe (must behave case-insensitively like NTFS). */
   isFile?: (path: string) => boolean;
 }
 
@@ -55,24 +50,9 @@ function isNativeExt(ext: string): boolean {
   return (WINDOWS_NATIVE_EXECUTABLE_EXTENSIONS as readonly string[]).includes(ext);
 }
 
-const GUIDANCE =
-  "install native Claude Code (claude.exe) or set CC_LHC_CLAUDE_BIN to its absolute .exe path";
+const GUIDANCE = "install native Claude Code (claude.exe) or set CC_LHC_CLAUDE_BIN to its absolute .exe path";
 
-/**
- * Resolve the Claude executable on Windows to an absolute native executable.
- * Pure given seams — unit-testable on every platform.
- *
- * `candidate` is CC_LHC_CLAUDE_BIN when set, else "claude". A candidate that
- * already names a path (absolute or containing separators) is validated
- * directly (native extension required; extension-less candidates try the
- * native extensions). A bare name is searched through PATH in directory
- * order; within each directory, PATHEXT order decides — but only native
- * extensions are acceptable, and shim-only hits fail closed with guidance.
- */
-export function resolveWindowsClaudeBin(
-  candidate: string,
-  seams: WindowsClaudeBinSeams = {},
-): ClaudeBinResolution {
+export function resolveWindowsClaudeBin(candidate: string, seams: WindowsClaudeBinSeams = {}): ClaudeBinResolution {
   const isFile = seams.isFile ?? defaultIsFile;
   const hasPathParts = candidate.includes("\\") || candidate.includes("/") || winPath.isAbsolute(candidate);
 
@@ -97,7 +77,8 @@ export function resolveWindowsClaudeBin(
     };
   }
 
-  const pathextRaw = seams.pathextValue !== undefined && seams.pathextValue !== "" ? seams.pathextValue : DEFAULT_PATHEXT;
+  const pathextRaw =
+    seams.pathextValue !== undefined && seams.pathextValue !== "" ? seams.pathextValue : DEFAULT_PATHEXT;
   const pathext = pathextRaw
     .split(";")
     .map((ext) => ext.trim().toLowerCase())
@@ -141,12 +122,6 @@ export function resolveWindowsClaudeBin(
 
 export class ClaudeBinResolutionError extends Error {}
 
-/**
- * Production entrypoint used by the wrapper and the inference adapter.
- * POSIX behavior is unchanged. On Windows this throws
- * ClaudeBinResolutionError with actionable guidance when no absolute native
- * executable can be resolved.
- */
 export function resolveClaudeBin(): string {
   const override = process.env.CC_LHC_CLAUDE_BIN;
   const candidate = override !== undefined && override !== "" ? override : "claude";

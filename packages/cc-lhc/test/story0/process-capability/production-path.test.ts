@@ -1,8 +1,3 @@
-/**
- * Story 0 E2: drive the production killOldChild/terminateChild closure through
- * exported run() with a real node-pty old child and replacement — the same
- * auto-handoff rig, without stubbing HandoffPorts.
- */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -220,9 +215,7 @@ describe.skipIf(!selfProbe.ok && !requireAddon)("Story 0 E2 production terminate
     for (const d of temps.splice(0)) {
       try {
         rmSync(d, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
+      } catch {}
     }
   });
 
@@ -557,7 +550,6 @@ describe.skipIf(!selfProbe.ok && !requireAddon)("Story 0 E2 production terminate
         const observer = createTerminalObserver();
         const eventId = terminalEventId(detached);
         let previous = matched.liveAfter.ok ? matched.liveAfter : probe(detached.pid);
-        // liveAtDecision was ok; feed from a synthetic ok if the immediate after-probe already moved.
         if (!previous.ok) previous = { ok: true, identity: detached };
         let pollsFed = 0;
         const deadline = Date.now() + 3_000;

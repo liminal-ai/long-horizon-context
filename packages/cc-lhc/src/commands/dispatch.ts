@@ -12,7 +12,6 @@ export interface CaptureCommandContext {
   stats: CaptureStats;
   sdk: Lhc | undefined;
   threadRef: ThreadRef | undefined;
-  /** Sticky generation-scoped degradation — mutation unsafe when true. */
   captureDegraded?: boolean;
   captureGeneration?: number;
   capturePhase?: "binding" | "ready" | "degraded" | "closed";
@@ -24,62 +23,33 @@ export interface LhcCommandRuntime extends CaptureCommandContext {
   cwd: string;
   sourceRolloutPath: string | undefined;
   sourceSessionId: string | undefined;
-  /** Effective context policy inputs for compact construction. */
   contextPolicy?: {
     profile: string;
     lowerBoundTokens: number;
     pruneIfDue?: { thresholdTokens: number; targetTokens: number };
   };
-  /** User-facing values shown by the Control Panel and `/status`. */
   statusSnapshot?: {
     latestProviderContextTokens: number | null;
     targetTokens: number;
     triggerTokens: number;
-    /** What cc-lhc did about Claude's automatic Compact for this launch. */
     nativeAutoCompact: NativeAutoCompactState;
   };
-  /** Tokenizer family for this wrapper run (host estimates and compact note). */
   tokenFamily?: string;
-  /** Why this process seeded `tokenFamily`. */
   tokenFamilySeedSource?: string;
-  /** Host notices to include in the compact message (config fallbacks). */
   hostNotices?: readonly string[];
-  /** Live turn state from the rollout tail; read once in the settled-seam snapshot. */
   isTurnOpen?: () => boolean;
-  /** Capture health, read once in the settled-seam snapshot. */
   isCaptureHealthy?: () => boolean;
-  /** False while binding or degraded. */
   isCaptureReady?: () => boolean;
-  /**
-   * Settled-seam catch-up (segmentation): close the canonical turn a finished
-   * native turn left open, once, before compact reads the record.
-   */
   closeSettledSegment?: () => Promise<import("../intake/session.js").SettledSegmentClose>;
   getCaptureGeneration?: () => number;
-  /** Optional lineage paths for rebuilt-session registration (tests). */
   lineageDbPath?: string;
   lineageDeps?: import("../intake/lineage-db.js").LineageDbDeps;
   logLineageError?: (message: string) => void;
-  /** Wrapper-log warnings since launch — surfaced by `status` so nothing logged is silently lost. */
   warnings?: { count: number; logPath: string };
-  /**
-   * Interactive manual compact/prune freeze this at the settled seam. Automatic
-   * mutation supplies its snapshot on the plan instead.
-   */
   getLiveAsyncWork?: () => OpenAsyncWork[];
-  /**
-   * Accept the parent's record of active work as one carryover generation at
-   * the settled seam (LIM-145): the same step for manual and automatic
-   * Compact. A refusal keeps the current session before anything is mutated.
-   */
   acceptCarryover?: () => CarryoverAcceptance;
 }
 
-/**
- * @deprecated In-app /resume injection is retired on Claude Code 2.1.226.
- * Retained type only for the non-default compatibility module `resume-injection.ts`.
- * Manual compact/prune never return a restart plan.
- */
 export interface SessionRestartPlan {
   oldSessionId: string;
   newSessionId: string;
@@ -94,15 +64,7 @@ export interface SessionRestartPlan {
 
 export interface DispatchOutcome {
   messages: string[];
-  /**
-   * Never set by default compact/prune (Slice 1 interim). Slice 4 uses
-   * `handoff` instead for wrapper-owned child respawn.
-   */
   restart?: SessionRestartPlan;
-  /**
-   * Slice 4: a rebuilt session awaiting the wrapper-owned controlled handoff.
-   * The command module never spawns/kills processes; run.ts executes this.
-   */
   handoff?: import("./context-mutation.js").HandoffRequest;
 }
 
@@ -213,12 +175,9 @@ export async function dispatchLhcCommand(commandLine: string, runtime: LhcComman
 }
 
 export function formatCommandOutput(text: string): string {
-  // \x1b[2K clears any TUI content already on each receipt row (status bar,
-  // box borders) so receipts never interleave with stale characters.
   return `\r\n\x1b[2K[cc-lhc] ${text.replace(/\n/g, "\r\n\x1b[2K[cc-lhc] ")}`;
 }
 
-/** Compatibility log line for the non-default injection module only. */
 export function formatSessionResumeLog(plan: SessionRestartPlan): string {
   return `[cc-lhc] (compat) session ${plan.oldSessionId} preserved; would inject /resume ${plan.newSessionId} via ${plan.rolloutPath} (disabled on 2.1.226 default path)`;
 }

@@ -1,19 +1,3 @@
-/**
- * Per-wrapper runtime descriptor — sole source of thread/archive binding for
- * model-callable retrieval. Path is inherited by Claude/Bash via
- * CC_LHC_RUNTIME_DESCRIPTOR.
- *
- * Lifecycle transitions (enforced):
- *   opening → ready
- *   opening|ready → degraded
- *   opening|ready|degraded → closed
- *   ready → ready only with identical binding (idempotent republish)
- *   degraded→ready and closed→ready FORBIDDEN
- *
- * Revocation is a checked state transition: prove non-ready publication or
- * verified absence. Never report success while a ready file remains loadable.
- */
-
 import { randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -56,7 +40,6 @@ export interface RuntimeDescriptorV1 {
   sessionId?: string;
   rolloutPath?: string;
   degradeReason?: string;
-  /** Tokenizer family the wrapper session is using; retrieval inits LHC with it. */
   tokenFamily?: string;
 }
 
@@ -64,15 +47,10 @@ export interface DescriptorIo {
   writeFile: (path: string, data: string, mode: number) => void;
   readFile: (path: string) => string;
   rename: (from: string, to: string) => void;
-  /** Must throw on failure — callers verify outcomes. */
   unlink: (path: string) => void;
   exists: (path: string) => boolean;
   mkdir: (path: string) => void;
   chmod: (path: string, mode: number) => void;
-  /**
-   * Exact liveness probe. not_found is kernel-proven dead; indeterminate
-   * must fail closed (refuse, never treat as stale).
-   */
   readProcessIdentity: ProbeProcessIdentity;
   nowMs: () => number;
   randomId: () => string;
@@ -112,10 +90,6 @@ export function newDescriptorPath(home: string = ccLhcHome(), io: DescriptorIo =
 // (and the runtime dir's 0700) is the enforcement. Windows has no POSIX mode
 // bits — Node maps mode to the read-only attribute only, so stat reports
 // 0666-style modes there. On Windows the enforcement is the cc-lhc home
-// location policy: ccLhcHome (src/intake/paths.ts) fails closed when
-// CC_LHC_HOME resolves outside the user profile, so the descriptor always
-// lives under the profile and inherits its default user-scoped ACLs. No
-// bespoke DACL is installed, inspected, or claimed.
 export function publishAtomic(path: string, body: string, io: DescriptorIo = defaultDescriptorIo()): void {
   const dir = dirname(path);
   io.mkdir(dir);
@@ -124,21 +98,15 @@ export function publishAtomic(path: string, body: string, io: DescriptorIo = def
     io.writeFile(tmp, body, 0o600);
     try {
       io.chmod(tmp, 0o600);
-    } catch {
-      // mode may already be 0600
-    }
+    } catch {}
     io.rename(tmp, path);
     try {
       io.chmod(path, 0o600);
-    } catch {
-      // best effort mode
-    }
+    } catch {}
   } catch (cause) {
     try {
       if (io.exists(tmp)) io.unlink(tmp);
-    } catch {
-      // temp cleanup best effort
-    }
+    } catch {}
     throw cause;
   }
 }
@@ -179,7 +147,6 @@ function bindingsEqual(
   );
 }
 
-/** Enforce legal state transitions; throws on illegal. */
 export function assertLegalTransition(
   from: DescriptorState,
   to: DescriptorState,
@@ -231,16 +198,9 @@ export function writeDescriptor(
 
 export type DescriptorOwnerStatus =
   | { status: "live" }
-  /** Kernel-proven: owner not found, or the pid now names another incarnation. */
   | { status: "gone"; reason: string }
-  /** Liveness could not be established — never grounds to treat as stale. */
   | { status: "indeterminate"; reason: string };
 
-/**
- * The descriptor owner check: exact stored identity against the live probe.
- * `gone` is proof the owner exited (or its pid was reused); anything the probe
- * cannot establish is `indeterminate`, and callers must fail closed on it.
- */
 export function probeDescriptorOwner(
   storedIdentity: ProcessIdentity,
   io: Pick<DescriptorIo, "readProcessIdentity">,
@@ -250,7 +210,6 @@ export function probeDescriptorOwner(
     if (current.code === "not_found") {
       return { status: "gone", reason: "descriptor stale: owner process not found (exited or never existed)" };
     }
-    // Indeterminate is not proof of staleness — refuse without claiming stale.
     return {
       status: "indeterminate",
       reason: `descriptor refused: cannot establish current OS process identity (fail closed): ${current.message}`,
@@ -323,8 +282,6 @@ export function loadDescriptor(path: string, io: DescriptorIo = defaultDescripto
     return { ok: false, reason: "descriptor processIdentity.pid disagrees with wrapperPid" };
   }
 
-  // Owner check for any non-closed state that could still enable retrieval.
-  // Closed is never ready for retrieval; allow inspect after owner death.
   if (obj.state === "ready" || obj.state === "opening" || obj.state === "degraded") {
     const owner = probeDescriptorOwner(storedIdentity, io);
     if (owner.status !== "live") return { ok: false, reason: owner.reason };
@@ -348,10 +305,6 @@ export function loadDescriptor(path: string, io: DescriptorIo = defaultDescripto
   return { ok: true, descriptor: desc };
 }
 
-/**
- * Load file state for revocation verification even when owner is dead (only
- * inspects published state, never treats ready as usable without identity).
- */
 export function inspectDescriptorState(
   path: string,
   io: DescriptorIo = defaultDescriptorIo(),
@@ -402,7 +355,6 @@ export function markReady(
   const same = current.state === "ready" && bindingsEqual(current, binding);
   assertLegalTransition(current.state, "ready", { sameBinding: same });
   if (same) {
-    // Idempotent republish of identical binding
     writeDescriptor(path, current, io);
     return current;
   }
@@ -424,11 +376,6 @@ export type RevocationResult =
   | { ok: true; kind: "non_ready"; state: "degraded" | "closed" }
   | { ok: false; reason: string };
 
-/**
- * Checked revocation: publish non-ready, attempt removal, prove safe outcome.
- * Safe = verified absence OR durable closed/degraded file (not ready).
- * Fatal if neither can be proven (ready may still be loadable).
- */
 export function revokeCapability(
   path: string,
   current: RuntimeDescriptorV1 | undefined,
@@ -436,7 +383,6 @@ export function revokeCapability(
   reason: string | undefined,
   io: DescriptorIo = defaultDescriptorIo(),
 ): RevocationResult {
-  // 1. Attempt atomic non-ready publication
   if (current !== undefined) {
     try {
       assertLegalTransition(current.state, target);
@@ -447,21 +393,15 @@ export function revokeCapability(
       };
       if (target === "closed") delete next.degradeReason;
       writeDescriptor(path, next, io);
-    } catch {
-      // publication failed — fall through to removal
-    }
+    } catch {}
   }
 
-  // 2. Attempt removal (unlink must throw on real failure)
   try {
     if (io.exists(path)) {
       io.unlink(path);
     }
-  } catch {
-    // removal failed — fall through to verification
-  }
+  } catch {}
 
-  // 3. Verify safe outcome
   if (!io.exists(path)) {
     return { ok: true, kind: "absent" };
   }
@@ -476,7 +416,6 @@ export function revokeCapability(
         reason: "revocation unproven: descriptor still ready after publish/remove failure",
       };
     }
-    // opening is not retrieval-ready but also not the durable non-ready we want
     return {
       ok: false,
       reason: `revocation unproven: descriptor still ${inspected.state}`,
@@ -518,7 +457,6 @@ export function markClosed(
   return { ...current, state: "closed" };
 }
 
-/** Immediate revoke to closed/absent — used on child exit before drain. */
 export function revokeDescriptor(
   path: string,
   current: RuntimeDescriptorV1 | undefined = undefined,
@@ -536,25 +474,13 @@ export function closeAndRemove(
 }
 
 export interface StaleDescriptorSweep {
-  /** Descriptors whose owner the probe proved gone; deleted. */
   removed: string[];
-  /** Owner live — kept. */
   keptLive: number;
-  /** Owner liveness unknown, or the descriptor unreadable/malformed — kept. */
   keptIndeterminate: number;
-  /** Proven stale but the delete itself failed — left in place. */
   failed: string[];
-  /** Session ids named by kept (live or indeterminate) descriptors. */
   keptSessionIds: Set<string>;
 }
 
-/**
- * Launch-time sweep of `$CC_LHC_HOME/runtime/*.json`. A killed wrapper (or a
- * killed handoff candidate) never runs closeAndRemove, so its descriptor
- * lingers after `loadDescriptor` already rejects it as stale. Delete exactly
- * those whose owner `probeDescriptorOwner` proves gone; keep live and
- * indeterminate ones, and anything this sweep cannot parse.
- */
 export function sweepStaleRuntimeDescriptors(
   home: string = ccLhcHome(),
   io: DescriptorIo = defaultDescriptorIo(),
@@ -575,7 +501,6 @@ export function sweepStaleRuntimeDescriptors(
     return result;
   }
   for (const name of names) {
-    // Dotfiles are in-flight publishAtomic temps, never descriptors.
     if (name.startsWith(".") || !name.endsWith(".json")) continue;
     const path = join(dir, name);
     let obj: Record<string, unknown>;

@@ -1,16 +1,3 @@
-/**
- * Stateful fold: lifecycle signals → observe decisions for open-turn and settled seams.
- * Pure of I/O except the caller persists/logs the returned record. Never mutates context.
- *
- * - The newest valid provider reading is authoritative and is carried forward.
- *   A missing or malformed usage line downgrades its freshness to `last_known`;
- *   it never erases the session's pressure.
- * - Post-measurement estimate is source-labelled and never counted as provider
- *   usage. It resets only when a new valid reading supersedes it.
- * - Open-turn threshold crossings are classified (wouldMutate=false) without mutation.
- * - Settled seam may arm wouldMutate for capability-limited compact + controlled handoff.
- */
-
 import { mergeEstimateSource } from "../observation/estimate.js";
 import { defaultSessionTokenFamily, type ResolvedTokenFamily } from "../observation/token-family.js";
 import type { LifecycleSignal } from "../observation/types.js";
@@ -34,42 +21,19 @@ import { CC_LHC_HOST_CAPABILITY, EMPTY_POST_MEASUREMENT_ESTIMATE } from "./types
 
 export interface GovernorRuntimeState {
   turnOpen: boolean;
-  /** Snapshot of input epoch when the current turn opened (diagnostic only). */
   inputEpochAtTurnOpen: number;
   currentInputEpoch: number;
-  /**
-   * Newest valid provider reading for this session. Never cleared by a turn
-   * boundary or a bad usage line — an older true reading beats no reading.
-   */
   latestProviderContext: ProviderContextTokens | null;
-  /** Whether latestProviderContext came from the current turn's sampling. */
   providerContextFreshness: ProviderBaseFreshness;
   latestSamplingId: string | null;
-  /**
-   * Source-labelled estimate of content captured after the latest provider
-   * measurement. Reset when a new valid reading becomes authoritative.
-   */
   postMeasurementEstimate: PostMeasurementEstimate;
   captureGeneration: number;
   operationInFlight: boolean;
-  /** Monotonic settle counter. */
   settleSequence: number;
-  /** Monotonic observe counter (open + settled). */
   observeSequence: number;
-  /**
-   * Last open-turn observe fingerprint for this turn (decision + pressure + sampling).
-   * Prevents spam re-emits of identical open-turn classifications.
-   */
   lastOpenTurnObserveFingerprint: string | null;
-  /** Whether we have seen any sampling for the open/current turn. */
   sawSamplingThisTurn: boolean;
-  /**
-   * Exact Claude context-limit rejection. Cleared on a new turn or a valid
-   * provider sampling; kept through settle so live-work yes reobserve still
-   * authorizes compact below the configured trigger.
-   */
   contextLimitRejected: boolean;
-  /** Tokenizer family used for host-side estimates at this observation. */
   tokenFamily: string;
   tokenFamilySource: TokenFamilySource;
 }
@@ -97,7 +61,6 @@ export function createGovernorRuntimeState(seed: Partial<GovernorRuntimeState> =
   };
 }
 
-/** Bump input epoch (user typed / queued input). Diagnostic; never a veto. */
 export function noteGovernorInput(state: GovernorRuntimeState): GovernorRuntimeState {
   return { ...state, currentInputEpoch: state.currentInputEpoch + 1 };
 }
@@ -110,10 +73,6 @@ export function setGovernorOperationInFlight(state: GovernorRuntimeState, inFlig
   return { ...state, operationInFlight: inFlight };
 }
 
-/**
- * Replace the post-measurement estimate (content captured after last provider request).
- * Domain is forced to source_labelled_estimate.
- */
 export function setGovernorPostMeasurementEstimate(
   state: GovernorRuntimeState,
   estimate: PostMeasurementEstimate,
@@ -134,13 +93,9 @@ export function setGovernorTokenFamily(
 
 export interface GovernorLifecycleResult {
   state: GovernorRuntimeState;
-  /** Observe record for this signal (at most one). */
   observe: GovernorObserveRecord | null;
 }
 
-/**
- * Apply one lifecycle signal. Returns updated state and optional observe record.
- */
 export function applyGovernorLifecycleSignal(
   state: GovernorRuntimeState,
   signal: LifecycleSignal,
@@ -148,8 +103,6 @@ export function applyGovernorLifecycleSignal(
 ): GovernorLifecycleResult {
   switch (signal.kind) {
     case "turn_opened": {
-      // The provider reading and the growth measured on top of it both survive
-      // the turn boundary: the reading is simply no longer this turn's own.
       return {
         state: {
           ...state,
@@ -169,9 +122,6 @@ export function applyGovernorLifecycleSignal(
         signal.providerUsage !== undefined
           ? providerContextFromUsage(signal.providerUsage as Record<string, unknown>)
           : null;
-      // A valid reading supersedes and resets the growth measured on top of the
-      // previous one. A missing or malformed one leaves both in place, marked
-      // last_known — the session's real size does not disappear with a bad line.
       const rejected = signal.contextLimitRejected === true;
       const next: GovernorRuntimeState =
         usage === null
@@ -191,7 +141,6 @@ export function applyGovernorLifecycleSignal(
               postMeasurementEstimate: { ...EMPTY_POST_MEASUREMENT_ESTIMATE },
               contextLimitRejected: false,
             };
-      // Classify during open turn so threshold-crossed-open is receipted.
       if (next.turnOpen) {
         return observeOpenTurn(next, resolved);
       }
@@ -206,8 +155,6 @@ export function applyGovernorLifecycleSignal(
       });
       let estimate: PostMeasurementEstimate;
       if (mode === "add") {
-        // Cumulative growth for the current authoritative sampling. Do not
-        // replace the running total with only the latest line.
         const prev = normalizePostMeasurementEstimate(state.postMeasurementEstimate);
         const tokens = prev.tokens + delta.tokens;
         const safeTokens = Number.isSafeInteger(tokens) ? tokens : prev.tokens;
@@ -221,8 +168,6 @@ export function applyGovernorLifecycleSignal(
         state.providerContextFreshness !== "current_sampling" &&
         normalizePostMeasurementEstimate(state.postMeasurementEstimate).tokens > 0
       ) {
-        // Failed/blocked sampling is last_known: a following mode=set of 0
-        // must not erase accumulated post-measurement growth.
         estimate = normalizePostMeasurementEstimate(state.postMeasurementEstimate);
       } else {
         estimate = delta;
@@ -240,18 +185,13 @@ export function applyGovernorLifecycleSignal(
       return observeOnSettle(state, resolved);
     }
     case "capture_degraded": {
-      // Degradation is a repair trigger for the wrapper, not a decision input.
       return { state: { ...state, captureGeneration: signal.generation }, observe: null };
     }
     case "native_compact_observed": {
-      // R8: loud notice only. Intake captures the summary as ordinary
-      // bounded history; nothing pauses, latches, or defers LHC compaction.
       return { state, observe: null };
     }
     case "session_bound":
     case "session_mismatch_observed": {
-      // Binding and mismatch are capture/retrieval lifecycle; the wrapper acts
-      // on them. Neither changes what the governor decides.
       return { state, observe: null };
     }
     default: {
@@ -260,14 +200,6 @@ export function applyGovernorLifecycleSignal(
   }
 }
 
-/**
- * Re-run the settled decision after capture finished rebuilding/catching up.
- *
- * A seam skipped while capture was catching up is not consumed: this is the
- * catch-up evaluation that replaces "the decision runs exactly once per settle,
- * whatever state capture happened to be in". Returns no record while a turn is
- * open — that turn's own settle will observe.
- */
 export function reobserveSettled(
   state: GovernorRuntimeState,
   resolved: ResolvedContextPolicy,
@@ -306,14 +238,11 @@ function observeOpenTurn(state: GovernorRuntimeState, resolved: ResolvedContextP
     state.latestSamplingId,
     state.postMeasurementEstimate.tokens,
   );
-  // Skip identical re-emits (same classification for same pressure/sampling).
   if (fp === state.lastOpenTurnObserveFingerprint) {
     return { state, observe: null };
   }
 
-  // Skip pure turn_open "waiting" noise unless pressure crossed.
   if (decision.kind === "turn_open" && !decision.pressure.atOrAboveTrigger) {
-    // Still remember fingerprint so we don't thrash if estimate flickers at same kind.
     return {
       state: { ...state, lastOpenTurnObserveFingerprint: fp },
       observe: null,
@@ -407,9 +336,6 @@ function buildObserveRecord(args: {
   };
 }
 
-/**
- * Apply a batch of lifecycle signals in order.
- */
 export function applyGovernorLifecycleBatch(
   state: GovernorRuntimeState,
   signals: readonly LifecycleSignal[],
@@ -429,5 +355,4 @@ export function formatGovernorObserveLogLine(record: GovernorObserveRecord): str
   return `cc-lhc governor_observe ${JSON.stringify(record)}`;
 }
 
-/** Expose sources type helper for tests. */
 export type { PolicyFieldSources };

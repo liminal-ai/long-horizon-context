@@ -1,13 +1,3 @@
-/**
- * F2: a rebuilt transcript orphaned by a kill between its write and the switch.
- *
- * The rebuilt session is recorded against its thread as NOT YET ACCEPTED before
- * its file is written, and promoted at the switch. Every reader treats an
- * unaccepted session as the thread's — never as its current session — so a
- * `cc-lhc -c` that picks the orphan as the newest transcript lands on the
- * thread's current session. Orphans from before the record existed are
- * recognized by their rebuild prefix.
- */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -60,7 +50,6 @@ const OLD = "11111111-1111-4111-8111-111111111111";
 const CURRENT = "22222222-2222-4222-8222-222222222222";
 const ORPHAN = "33333333-3333-4333-8333-333333333333";
 const OTHER_CURRENT = "44444444-4444-4444-8444-444444444444";
-/** Alder's re-review counterexample, unchanged (ALDER-REREVIEW-043.md). */
 const ALDER_FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "../fixtures/alder-043-short-tail-orphan.jsonl");
 const ALDER_ORPHAN = "11111111-1111-4111-8111-111111111111";
 const ALDER_B_SIGNATURES = [
@@ -104,7 +93,6 @@ function clock(): { nowFn: () => Date } {
   };
 }
 
-/** A thread whose registry current is CURRENT (moved on from OLD). */
 async function seedThread(f: Fixture, threadId: string, first = OLD, current = CURRENT): Promise<void> {
   await bindLaunchThread({
     sessionId: first,
@@ -141,7 +129,6 @@ const VIEW: SessionThreadView = {
   ],
 } as unknown as SessionThreadView;
 
-/** A rebuilt transcript exactly as Smart Compact writes it, with no record. */
 async function writeUnrecordedRebuild(f: Fixture, sessionId: string, view: SessionThreadView = VIEW): Promise<string> {
   const written = await actualWriteRebuiltRollout({
     view,
@@ -153,7 +140,6 @@ async function writeUnrecordedRebuild(f: Fixture, sessionId: string, view: Sessi
   return written.rolloutPath;
 }
 
-/** The replay signatures capture recorded for the turns the rebuild replays. */
 function capturedSignatures(path: string): string[] {
   const lines = readFileSync(path, "utf8")
     .split("\n")
@@ -173,7 +159,6 @@ describe("the rebuilt session is recorded before it is written", () => {
     });
     expect(reserved.ok).toBe(true);
     expect(lookupSessionLineage(f.lineageDbPath, ORPHAN)).toMatchObject({ threadId: "th_p", accepted: false });
-    // The F3 sweep sees it as a rebuilt session.
     expect(rebuiltSessionRows(f.lineageDbPath)).toEqual([
       expect.objectContaining({ sessionId: ORPHAN, threadId: "th_p", accepted: false }),
     ]);
@@ -277,7 +262,6 @@ describe("the rebuilt session is recorded before it is written", () => {
       );
       expect(outcome.kind).toBe("rebuilt");
       expect(atWrite).toEqual([{ fileExists: false, accepted: false, threadId: "th_cm" }]);
-      // Nothing after the write accepts it: only the switch does.
       if (outcome.kind !== "rebuilt") throw new Error("unreachable");
       expect(lookupSessionLineage(f.lineageDbPath, outcome.handoff.rebuilt.sessionId)?.accepted).toBe(false);
     } finally {
@@ -317,7 +301,6 @@ describe("the rebuilt session is recorded before it is written", () => {
       killOldChild: async () => ({ kind: "terminated", pid: 1 }),
       awaitReplacementCaptureReady: async () => "ready",
       reconcileCapture: () => {},
-      // The production port's lineage half: promotion at the switch.
       registerSuccessLineage: (handoff) =>
         registerRebuiltSessionLineage({
           newSessionId: handoff.rebuilt.sessionId,
@@ -394,12 +377,10 @@ describe("no reader treats an unaccepted session as current", () => {
   it("legacy import (thread-alias) makes the last ACCEPTED session current and never aliases the reservation", async () => {
     const f = fixture("import");
     const c = clock();
-    // Pre-registry lineage only: the registry has never seen this thread.
     recordSessionThread(f.lineageDbPath, OLD, "th_legacy", c, { prefix: { kind: "none" } });
     recordSessionThread(f.lineageDbPath, CURRENT, "th_legacy", c, { prefix: VERIFIED });
     recordSessionThread(f.lineageDbPath, ORPHAN, "th_legacy", c, { prefix: VERIFIED, accepted: false });
 
-    // Entering through the orphan itself imports the thread from its accepted sessions.
     const threadId = await resolveLaunchThread({
       sessionId: ORPHAN,
       registryPath: f.registryPath,
@@ -410,7 +391,6 @@ describe("no reader treats an unaccepted session as current", () => {
     expect(
       await resolveLaunchThread({ sessionId: OLD, registryPath: f.registryPath, lineageDbPath: f.lineageDbPath }),
     ).toBe("th_legacy");
-    // Still not an alias: the reservation resolves only through its record.
     const { threads } = await import("lhc");
     const aliased = await threads.resolveAlias({ alias: claudeSessionAlias(ORPHAN), registryPath: f.registryPath });
     expect(aliased.ok).toBe(false);
@@ -420,7 +400,6 @@ describe("no reader treats an unaccepted session as current", () => {
     const f = fixture("discard");
     const c = clock();
     recordSessionThread(f.lineageDbPath, OLD, "th_d", c, { prefix: { kind: "none" } });
-    // Reserved, then the handoff failed and the current session was rebound later.
     recordSessionThread(f.lineageDbPath, ORPHAN, "th_d", c, { prefix: VERIFIED, accepted: false });
     recordSessionThread(f.lineageDbPath, CURRENT, "th_d", c, { prefix: VERIFIED });
 
@@ -430,7 +409,6 @@ describe("no reader treats an unaccepted session as current", () => {
       lineageDbPath: f.lineageDbPath,
     });
     expect(artifacts.map((a) => a.sessionId)).toEqual([ORPHAN]);
-    // The current session is never an artifact, even if a stray record says unaccepted.
     recordSessionThread(f.lineageDbPath, CURRENT, "th_d", c, { prefix: VERIFIED, accepted: false });
     expect(
       unacceptedSwapArtifacts({ threadId: "th_d", currentSessionId: CURRENT, lineageDbPath: f.lineageDbPath }).map(
@@ -505,7 +483,6 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
       expect(opened.expectedSession).toEqual({ sessionId: CURRENT, source: "current_alias" });
       expect(opened.discardedSwapArtifacts.map((a) => a.sessionId)).toEqual([ORPHAN]);
       expect(logs.some((m) => m.includes(`landing on its current session ${CURRENT}`))).toBe(true);
-      // The orphan never became current.
       expect(await currentSessionAlias("th_c", f.registryPath)).toBe(claudeSessionAlias(CURRENT));
     } finally {
       opened.lease.release();
@@ -530,7 +507,6 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
     } finally {
       opened.lease.release();
     }
-    // Explicitly asking for the never-written session also lands on the current one.
     const direct = await openLaunchThread({
       expectedSession: { sessionId: ORPHAN, source: "explicit_resume" },
       registryPath: f.registryPath,
@@ -596,7 +572,6 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
     await seedThread(f, "th_b", "77777777-7777-4777-8777-777777777777", OTHER_CURRENT);
     const path = await writeUnrecordedRebuild(f, ORPHAN);
     utimesSync(path, now - 60, now - 60);
-    // Both threads recorded the same replayed turns: no single thread is identified.
     const signatures = capturedSignatures(path);
     appendThreadSignatures(f.lineageDbPath, "th_a", signatures);
     appendThreadSignatures(f.lineageDbPath, "th_b", signatures);
@@ -643,7 +618,6 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
     const path = join(f.projectDir, `${ALDER_ORPHAN}.jsonl`);
     writeFileSync(path, readFileSync(ALDER_FIXTURE));
     utimesSync(path, now - 60, now - 60);
-    // Alder's lineage: A's bounded window has aged the tail out; B holds exactly the two replayed lines.
     appendThreadSignatures(
       f.lineageDbPath,
       "th_actual_A",
@@ -651,7 +625,6 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
     );
     appendThreadSignatures(f.lineageDbPath, "th_unrelated_B", ALDER_B_SIGNATURES);
 
-    // B matches 2 of 2: the old rules linked it. It is only a possible match now.
     expect(await identifyUnlinkedRebuild({ rolloutPath: path, lineageDbPath: f.lineageDbPath })).toEqual({
       possibleThreadIds: ["th_unrelated_B"],
     });
@@ -688,10 +661,8 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
     expect(await unlinkedRebuildLaunchGuidance({ ...args, sessionId: ORPHAN, rolloutPath: orphan })).not.toContain(
       "Possible matches",
     );
-    // A captured session (the thread's own current one) is not an orphan.
     const current = writeTranscript(f, CURRENT, now - 300);
     expect(await unlinkedRebuildLaunchGuidance({ ...args, sessionId: CURRENT, rolloutPath: current })).toBeNull();
-    // An unaccepted reservation resolves through its record, not guidance.
     await reserveRebuiltSessionLineage({
       newSessionId: ORPHAN,
       threadId: "th_known",
@@ -699,7 +670,6 @@ describe("cc-lhc -c with the orphan as the newest transcript", () => {
       lineageDbPath: f.lineageDbPath,
     });
     expect(await unlinkedRebuildLaunchGuidance({ ...args, sessionId: ORPHAN, rolloutPath: orphan })).toBeNull();
-    // An ordinary unknown session (no rebuild prefix) is not an orphan either.
     const plain = join(f.projectDir, "88888888-8888-4888-8888-888888888888.jsonl");
     writeFileSync(plain, `${JSON.stringify({ type: "user", uuid: "u1", message: { role: "user", content: "hi" } })}\n`);
     expect(
@@ -785,7 +755,6 @@ describe("F3 launch sweep and an unaccepted reservation", () => {
     const f = fixture("sweep-own");
     await seedThread(f, "th_crashed");
     await seedThread(f, "th_busy", "77777777-7777-4777-8777-777777777777", OTHER_CURRENT);
-    // The crashed wrapper's handoff reserved and wrote a rebuild an hour ago, then died holding its lease.
     await reserveRebuiltSessionLineage({
       newSessionId: ORPHAN,
       threadId: "th_crashed",
@@ -795,7 +764,6 @@ describe("F3 launch sweep and an unaccepted reservation", () => {
     writeTranscript(f, ORPHAN, hourAgo);
     writeTranscript(f, CURRENT, Date.now() / 1000 - 300);
     writeLease(f, "th_crashed", DEAD);
-    // Another thread's old rebuild whose owner is live stays protected.
     const busyOrphan = "99999999-9999-4999-8999-999999999999";
     await reserveRebuiltSessionLineage({
       newSessionId: busyOrphan,
@@ -806,7 +774,6 @@ describe("F3 launch sweep and an unaccepted reservation", () => {
     writeTranscript(f, busyOrphan, hourAgo);
     writeLease(f, "th_busy", LIVE);
 
-    // The launch order in run(): take the thread's lease (reclaiming the dead one), then sweep.
     const plan = await resolveLaunchSession(["--resume", CURRENT], {
       cwd: f.cwd,
       discoverDeps: { projectsRoot: f.projectsRoot },

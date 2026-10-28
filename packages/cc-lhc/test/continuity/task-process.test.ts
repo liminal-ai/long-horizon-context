@@ -1,12 +1,3 @@
-/**
- * LIM-149 TC-4.5d unit surface: Claude's task-output markers as the only
- * source of terminal outcomes, fail-closed liveness (an indeterminate probe
- * never advances state; disappearance is never an outcome), retained-host
- * settling that only ever signals an exact identity, the exit-record reader
- * and the task-process pin over the native addon (Linux, macOS, Windows).
- * Real-process cases use this test's own children with real signals — the
- * same process.kill(pid, signal) route node-pty's UnixTerminal.kill performs.
- */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -40,7 +31,6 @@ function scratch(): string {
   return dir;
 }
 
-/** Spawn a real child of this process that opens `path` and holds it for ~20s. */
 function spawnHolder(path: string): Promise<number> {
   const child = spawn(process.execPath, [
     "-e",
@@ -122,7 +112,6 @@ describe("parseTaskOutputMarker", () => {
     expect(parseTaskOutputMarker(f("run.output", "still running\n"))).toBeNull();
     expect(parseTaskOutputMarker(f("empty.output", ""))).toBeNull();
     expect(parseTaskOutputMarker(join(dir, "missing.output"))).toBeNull();
-    // Marker text quoted mid-stream is not a trailing marker.
     expect(parseTaskOutputMarker(f("quoted.output", "[exited with code 0] mentioned\nmore output\n"))).toBeNull();
   });
 });
@@ -143,7 +132,6 @@ describe("reconcileAdoptedShells", () => {
       expect(report.reconciled[0]).toMatchObject({ launchId: SHELL_ID, outcome });
       expect(report.reconciled[0]?.evidence).toContain(needle);
       expect(store.getItem(T, SHELL_ID)?.terminal?.outcome).toBe(outcome);
-      // Idempotent: nothing new on a second pass.
       expect(reconcileAdoptedShells(store, T).reconciled).toEqual([]);
       store.close();
     }
@@ -196,7 +184,6 @@ describe("reconcileAdoptedShells", () => {
     const report = reconcileAdoptedShells(store, T, { probeIdentity: probe });
     expect(report).toEqual({ reconciled: [], unsupervised: [] });
     expect(store.getItem(T, SHELL_ID)?.state).toBe("active");
-    // Both gone, still no marker: supervision is provably lost → unknown.
     const later = reconcileAdoptedShells(store, T, { probeIdentity: () => gone });
     expect(later.unsupervised).toEqual([SHELL_ID]);
     expect(store.getItem(T, SHELL_ID)?.state).toBe("unknown");
@@ -313,19 +300,12 @@ describe("terminateRetainedHostReal (real processes, real signals)", () => {
         retainedAtMs: 1,
       };
       expect(await terminateRetainedHostReal(staleRecord)).toBe(true);
-      // The real process at that pid was never signalled.
       const after = probeProcessIdentityNative(pid);
       expect(after.ok && after.identity.starttime === probed.identity.starttime).toBe(true);
     },
   );
 });
 
-/**
- * The suite-wide CC_LHC_IDENTITY_ADDON stub has no holder lookup or exit
- * reader; these cases go to the real compiled addon (the same bypass
- * test/runtime/native-identity.test.ts uses), so every native lane proves
- * its own platform path.
- */
 const realControl = createProcessControl({ env: {} });
 const realIdentity = createExactIdentityReader({ env: {} });
 const realFind = (parent: number, path: string) => realControl.findChildHoldingFile(parent, path);

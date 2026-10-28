@@ -1,12 +1,3 @@
-/**
- * Prebuild target manifest (targets.json at the package root).
- *
- * Single source of truth for which platform/arch pairs ship prebuilt addon
- * artifacts. The loader consults it before touching the filesystem so an
- * unsupported target fails explicitly, and CI reads the same file to drive
- * the build matrix (jq-friendly plain JSON).
- */
-
 import { readFileSync } from "node:fs";
 
 export const TARGETS_MANIFEST_FILENAME = "targets.json";
@@ -22,7 +13,6 @@ export interface PrebuildTarget {
 export interface TargetsManifest {
   name: string;
   napiVersion: number;
-  /** Addon artifact filename, identical for every target. */
   artifact: string;
   targets: PrebuildTarget[];
 }
@@ -35,7 +25,6 @@ export function isSupportedTarget(manifest: TargetsManifest, platform: string, a
   return manifest.targets.some((t) => t.platform === platform && t.arch === arch);
 }
 
-/** Strict parse; throws with a reason on any malformed manifest. */
 export function parseTargetsManifest(raw: unknown): TargetsManifest {
   if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error("targets manifest: not an object");

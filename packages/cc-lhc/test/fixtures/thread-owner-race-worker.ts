@@ -1,16 +1,3 @@
-/**
- * Concurrency worker: one thread-owner acquisition attempt against a shared
- * home, using the production-default identity probe (the suite's stub addon
- * via CC_LHC_IDENTITY_ADDON, inherited through the environment).
- * Prints exactly one line: `WON <token>` or `LOST <ErrorName>`.
- *
- * A winner keeps its lease and stays alive until the parent creates the
- * `race-stop` file (cooperative shutdown — tsx runs the worker as a
- * grandchild, so signalling the spawned wrapper would orphan the real
- * process and leak its stdio pipes), so every concurrent loser observes a
- * live owner. A 30s safety timer guarantees exit even if the parent dies.
- */
-
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 

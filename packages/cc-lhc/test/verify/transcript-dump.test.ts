@@ -68,10 +68,8 @@ describe("dumpRolloutLines", () => {
         '{"type":"mode","mode":"normal"}',
         '{"type":"user","isSidechain":true,"message":{"role":"user","content":"sidechain"}}',
         '{"type":"user","isMeta":true,"message":{"role":"user","content":"meta"}}',
-        // content-classified meta (no isMeta flag) — the /exit lines from the 230k certification
         '{"type":"user","message":{"role":"user","content":"<command-name>/exit</command-name>"}}',
         '{"type":"user","message":{"role":"user","content":"<local-command-stdout>See ya!</local-command-stdout>"}}',
-        // synthetic resume line claude appends when resuming onto a user-final rollout
         '{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"No response requested."}]}}',
         '{"type":"user","message":{"role":"user","content":"real prompt"}}',
         '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"Read","input":{"path":"/x"}}]}}',
@@ -87,22 +85,13 @@ describe("dumpRolloutLines", () => {
     expect(dump).not.toContain("No response requested.");
     expect(dump).toContain("[user]\nreal prompt");
     expect(dump).toContain('[tool call · Read · t1]\n{"path":"/x"}');
-    // array content normalizes through the intake stringification (plain JSON.stringify)
     expect(dump).toContain(`[tool result · t1]\n${JSON.stringify([{ type: "text", text: "body" }])}`);
   });
 });
 
 describe("rebuild faithfulness invariant", () => {
   it("a rebuilt rollout dumps identically to the thread view it was built from", () => {
-    // The certification core: native re-emission must round-trip — the
-    // canonical dump of buildRolloutLines(view) equals the dump of the view
-    // itself. Any lossy rendering (bracket labels, dropped ids, flattened
-    // blocks) in rebuild breaks this equality.
     const view: SessionThreadView = { threadId: "th", entries: toolHeavyEntries };
-    // Faithfulness of native text/tool re-emission uses unsigned_visible so
-    // non-empty thinking is retained for the dump comparison. Production
-    // SELECTED arm is signed_verbatim (see thinking-ladder); omit is exercised
-    // explicitly below as the retained alternate.
     const rebuilt = buildRolloutLines({
       entries: view.entries,
       newSessionId: "sid",
@@ -119,8 +108,6 @@ describe("rebuild faithfulness invariant", () => {
     });
     expect(dumpRolloutLines(omitted.map((entry) => entry.line))).not.toContain("[assistant thinking]");
 
-    // Omit-arm projection: pure signed-empty entry alone yields no lines;
-    // adjacent text/tool/result retained with parent chain integrity.
     const pureSignedEmpty = buildRolloutLines({
       entries: [
         {

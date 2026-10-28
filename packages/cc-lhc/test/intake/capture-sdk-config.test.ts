@@ -1,7 +1,3 @@
-/**
- * LIM-117 AR-6: both captureSdkConfig branches share identical view.profiles
- * and construct an SDK that actually resolves the host profiles.
- */
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -1,10 +1,3 @@
-/**
- * Exact file identity against the real compiled addon (LIM-145 Windows
- * background-shell adoption). Skipped without an artifact unless
- * CC_LHC_NATIVE_REQUIRE_ADDON=1; the native-platforms matrix sets it, so the
- * Windows lanes are the real proof of the Win32 file-id path.
- */
-
 import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -101,7 +94,6 @@ describe.skipIf(!addonLoad.ok)("native file identity (compiled addon, production
     appendFileSync(path, "line 2\n");
     const again = readExactFileIdentity(path);
     expect(again.ok && exactFileIdentitiesEqual(first.identity, again.identity)).toBe(true);
-    // A seam-built reader with production defaults agrees with the default reader.
     const seamRead = createExactFileIdentityReader()(path);
     expect(seamRead.ok && exactFileIdentitiesEqual(first.identity, seamRead.identity)).toBe(true);
   });
@@ -113,7 +105,6 @@ describe.skipIf(!addonLoad.ok)("native file identity (compiled addon, production
     const original = readExactFileIdentity(path);
     expect(original.ok).toBe(true);
     if (!original.ok) return;
-    // Hold the original under another name so its object cannot be recycled, then reuse the path.
     const held = join(dir, "task.output.held");
     renameSync(path, held);
     writeFileSync(path, "replacement\n");

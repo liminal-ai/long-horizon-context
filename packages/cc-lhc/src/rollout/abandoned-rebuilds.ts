@@ -1,27 +1,3 @@
-/**
- * Launch-time move-aside of abandoned rebuilt transcripts.
- *
- * Smart Compact writes a rebuilt Claude session file into
- * ~/.claude/projects/<cwd-key>/ and registers it in host lineage with a
- * verified rebuilt-prefix fence. A swap killed before acceptance leaves that
- * file behind: never current, never an alias, owned by nobody. Claude's own
- * picker still lists it. This sweep moves such files (never deletes) into
- * $CC_LHC_HOME/abandoned-rebuilds/<cwd-key>/ and drops their sessions-index
- * entry.
- *
- * Conservative: every question the sweep cannot answer keeps the file. The
- * verdict is one small function (`abandonedRebuildVerdict`) over injectable
- * facts.
- *
- * A rebuilt session reserved as NOT YET ACCEPTED (recorded before its file is
- * written) is among the rebuilt sessions swept. It is neither the thread's
- * current session nor its pending acceptance (`cc_pending_current_session`
- * holds only swaps already accepted), so it is moved aside exactly when its
- * handoff is dead — no live or indeterminate thread owner, no live descriptor —
- * and it is older than the viability window. While its handoff's owner is live
- * it is kept. A reservation whose file was never written has nothing to move.
- */
-
 import { copyFileSync, existsSync, lstatSync, mkdirSync, renameSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 
@@ -34,10 +10,6 @@ import {
 import { encodeProjectPath } from "./discover.js";
 import { removeSessionsIndexEntry } from "./sessions-index.js";
 
-/**
- * A rebuilt file younger than this may belong to an in-flight handoff: every
- * spawn/viability attempt of one swap plus the capture-ready wait.
- */
 export const ABANDONED_REBUILD_MIN_AGE_MS =
   DEFAULT_REPLACEMENT_ATTEMPTS * (DEFAULT_CHILD_LIVENESS_TIMEOUT_MS + DEFAULT_CHILD_STABLE_WINDOW_MS) +
   DEFAULT_CAPTURE_READY_TIMEOUT_MS;
@@ -49,25 +21,16 @@ export interface RebuiltTranscript {
   mtimeMs: number;
 }
 
-/** Three-way answers: anything but a definite answer keeps the file. */
 export type AliasKnowledge = "known" | "unknown" | "indeterminate";
 export type OwnerLiveness = "none" | "live" | "dead" | "indeterminate";
 
 export interface AbandonedRebuildFacts {
   nowMs: number;
   minAgeMs?: number;
-  /** Is this session an alias of any thread in the registry? */
   aliasKnowledge(sessionId: string): Promise<AliasKnowledge>;
-  /**
-   * The thread's current Claude session per registry. null = the thread has
-   * no current Claude alias (unimported legacy thread, other host) — which
-   * leaves acceptance unprovable, so the file is kept.
-   */
   currentSessionOf(threadId: string): Promise<{ ok: true; sessionId: string | null } | { ok: false }>;
-  /** Acceptance recorded host-side but not yet in the registry. */
   pendingCurrentSessionOf(threadId: string): { ok: true; sessionId: string | null } | { ok: false };
   ownerOf(threadId: string): OwnerLiveness;
-  /** Sessions named by a live or indeterminate runtime descriptor. */
   descriptorSessionIds: ReadonlySet<string>;
 }
 
@@ -106,7 +69,6 @@ export interface AbandonedRebuildSweepInput {
   home: string;
   projectsRoot: string;
   cwd: string;
-  /** Rebuilt sessions from host lineage (verified prefix fence). */
   rebuiltSessions: ReadonlyArray<{ sessionId: string; threadId: string }>;
   facts: AbandonedRebuildFacts;
 }
@@ -142,7 +104,7 @@ export async function sweepAbandonedRebuilds(input: AbandonedRebuildSweepInput):
       if (!st.isFile()) continue;
       mtimeMs = st.mtimeMs;
     } catch {
-      continue; // not in this project dir
+      continue;
     }
     let verdict: AbandonedRebuildVerdict;
     try {

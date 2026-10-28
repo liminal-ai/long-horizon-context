@@ -1,24 +1,3 @@
-/**
- * Carried-work management for the replacement session (LIM-146 AC-2.6).
- *
- * Every operation addresses one logical item by its launch id in the parent's
- * continuity record and re-verifies the item's identity before touching
- * anything outside the database:
- *
- *  - status: the item as recorded, plus whether its verified identity still
- *    holds now and (for a parent-relaunched Monitor) whether that exact
- *    process is live. Reads nothing else.
- *  - output: a bounded byte range of the one artifact the item owns — the
- *    adopted shell's output file or the parent's relaunch output — read only
- *    after that file's recorded identity re-verifies. Never a child handle.
- *  - stop: only for a parent-relaunched Monitor whose exact process identity
- *    was recorded at spawn; the pid is re-read through the native probe and
- *    signalled only on exact equality, then the item is closed `stopped`.
- *
- * Missing, changed, unverifiable, foreign (another thread), or unsupported
- * identity refuses without reading a file or signalling a process.
- */
-
 import { spawnSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
@@ -56,7 +35,6 @@ export interface ManagePorts {
   statPath?: (path: string) => PathFact;
   readFileIdentity?: AdapterContext["readFileIdentity"];
   probeIdentity?: ProbeProcessIdentity;
-  /** Signal the exact-verified relaunched process; default sends the platform's termination. */
   signal?: (pid: number, platform: NodeJS.Platform) => { ok: true } | { ok: false; reason: string };
   nowMs?: () => number;
 }
@@ -66,13 +44,10 @@ export interface ItemStatus {
   family: ContinuityItem["family"];
   label: string;
   state: ContinuityItem["state"];
-  /** Null once cleanup removed the item's tracking and only the durable result remains. */
   carryMode: ContinuityItem["carryMode"] | null;
   generation: number;
   operations: readonly ContinuityOperation[];
-  /** Does the recorded identity still name the same work right now? */
   identity: IdentityCheck;
-  /** The exact recorded process: a parent-relaunched Monitor, or an adopted shell's discovered task (LIM-149). */
   process: "live" | "exited" | "identity_changed" | "indeterminate" | null;
   terminal: ContinuityItem["terminal"];
 }
@@ -80,7 +55,6 @@ export interface ItemStatus {
 export type StatusResult = { ok: true; status: ItemStatus } | { ok: false; reason: ManageRefusal; detail: string };
 
 export interface OutputRange {
-  /** Byte offset to start from; negative counts from the end (tail). */
   offset?: number;
   maxBytes?: number;
 }
@@ -109,12 +83,6 @@ function contextOf(ports: ManagePorts): AdapterContext {
   };
 }
 
-/**
- * Re-verify the item's recorded identity now, from the identity's own facts:
- * an output file must still be the same file object; an agent transcript or
- * workflow script/journal must still exist at its recorded path; a scheduled
- * time and a monitor's launch reference are durable facts and stay verified.
- */
 function checkIdentity(item: ContinuityItem, ports: ManagePorts): IdentityCheck {
   const recorded = item.verifiedIdentity;
   if (recorded === null) return "none";
@@ -142,8 +110,6 @@ function checkIdentity(item: ContinuityItem, ports: ManagePorts): IdentityCheck 
 }
 
 function checkProcess(item: ContinuityItem, ports: ManagePorts): ItemStatus["process"] {
-  // Parent-relaunched Monitor process, or the adopted shell's discovered
-  // task process (LIM-149) — both are exact recorded identities.
   const proc = item.relaunch?.process ?? item.continuation?.taskProcess ?? null;
   if (proc === null) return null;
   const probed = (ports.probeIdentity ?? probeProcessIdentityNative)(proc.pid);
@@ -161,7 +127,6 @@ export function itemStatus(
 ): StatusResult {
   const item = store.getItem(threadId, launchId);
   if (item === null) {
-    // Tracking may have been cleaned up; the durable result still answers (AC-2.10).
     const result = store.getResult(threadId, launchId);
     if (result === null) return refuse("unknown_item", `no carried item ${launchId} in this session's record`);
     return { ok: true, status: statusFromResult(result) };
@@ -183,7 +148,6 @@ export function itemStatus(
   };
 }
 
-/** A cleaned-up item's status: what its durable result holds, and nothing the record no longer tracks. */
 function statusFromResult(result: CarriedResult): ItemStatus {
   return {
     launchId: result.launchId,
@@ -199,7 +163,6 @@ function statusFromResult(result: CarriedResult): ItemStatus {
   };
 }
 
-/** Read `[offset, offset+maxBytes)` of a file the caller has already verified it may read. */
 function readBounded(path: string, requestedOffset: number, maxBytes: number): OutputResult {
   let fd: number;
   try {
@@ -244,7 +207,6 @@ function validRange(range: OutputRange): { offset: number; maxBytes: number } | 
   return { offset, maxBytes };
 }
 
-/** The one artifact an item owns for `output`, with the identity it must still have. */
 function ownedArtifact(item: ContinuityItem): { path: string; identity: VerifiedIdentity } | null {
   if (item.relaunch !== null) return { path: item.relaunch.outputPath, identity: item.relaunch.output };
   const id = item.verifiedIdentity;
@@ -261,8 +223,6 @@ export function readItemOutput(
 ): OutputResult {
   const item = store.getItem(threadId, launchId);
   const valid = validRange(range);
-  // The CC-LHC-owned copy is the parent's own file: what remains after
-  // cleanup, and where a carried subagent's saved final text is kept (F4).
   const readOwnedCopy = (result: CarriedResult): OutputResult => {
     if (result.artifact?.kind !== "owned_copy") {
       return refuse("unsupported", `${result.family} ${launchId} left no parent-readable output`);
@@ -289,7 +249,6 @@ export function readItemOutput(
   if (valid === null)
     return refuse("range_invalid", `offset must be an integer and max in 1..${OUTPUT_MAX_BYTES_CEILING}`);
   const { offset: requestedOffset, maxBytes } = valid;
-  // Re-verify the file's identity before opening it: a replaced or reused path is not this item's output.
   const current = verifyOutputFile(contextOf(ports), artifact.path);
   if (isRefusal(current)) {
     return current.reason === "output_file_missing"
@@ -302,12 +261,10 @@ export function readItemOutput(
   return readBounded(artifact.path, requestedOffset, maxBytes);
 }
 
-/** Exported for cleanup: the item's owned output and the identity it must still have. */
 export function ownedOutputOf(item: ContinuityItem): { path: string; identity: VerifiedIdentity } | null {
   return ownedArtifact(item);
 }
 
-/** Platform termination of one exact-verified process the parent started detached (a group leader on POSIX). */
 export function signalRelaunched(pid: number, platform: NodeJS.Platform): { ok: true } | { ok: false; reason: string } {
   try {
     if (platform === "win32") {
@@ -374,10 +331,6 @@ export function stopItem(
     return refuse("process_identity_changed", `pid ${proc.pid} is now a different process; nothing signalled`);
   }
   const signalled = (ports.signal ?? signalRelaunched)(proc.pid, ports.platform ?? process.platform);
-  // A failed signal is a refusal only while the exact process still runs.
-  // taskkill /T exits non-zero when one process in the tree is already gone or
-  // cannot be terminated, even though the root was killed; re-verify before
-  // telling the caller nothing was stopped.
   if (!signalled.ok && stillRunningAfterFailedSignal(ports.probeIdentity ?? probeProcessIdentityNative, proc)) {
     return refuse("signal_failed", signalled.reason);
   }

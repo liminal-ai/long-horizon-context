@@ -7,7 +7,6 @@ import { mapRolloutLine } from "./map.js";
 export const MAX_THREAD_SIGNATURES = 500;
 
 export interface ReplayDedupeState {
-  /** Replay-prefix skip window; cleared permanently on first novel event. */
   replayWindowActive: boolean;
   seen: Set<string>;
 }
@@ -30,7 +29,6 @@ function stablePayloadString(payload: MessageEventInput["payload"]): string {
   }
 }
 
-/** sha256(kind + normalized payload) for one mapped intake event. */
 export function eventContentSignature(event: MessageEventInput): string {
   const normalized = `${event.eventKind}|${stablePayloadString(event.payload)}`;
   return createHash("sha256").update(normalized).digest("hex");

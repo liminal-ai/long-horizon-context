@@ -1,8 +1,4 @@
 #!/usr/bin/env node
-/**
- * Lightweight replacement child: writes its own process.pid to a test-only
- * manifest, renders immediately, and stays viable for handoff.
- */
 import { writeFileSync } from "node:fs";
 
 const manifestPath = process.argv[2];

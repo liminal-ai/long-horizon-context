@@ -1,32 +1,3 @@
-// Leader-key modal command entry.
-//
-// Default posture is PASSTHROUGH: every stdin byte forwards to the pty
-// untouched. No freshness tracking, no slash detection, no withholding — the
-// wrapper no longer estimates Claude Code's input-box state (the shadow-count
-// estimator died; it inferred state it did not own). The only state kept in
-// passthrough is escape-sequence and bracketed-paste tracking, so the leader
-// byte is recognized only as a real keypress — never inside a paste and never
-// inside an in-flight terminal response (the Warp lesson: control sequences
-// must reach the child verbatim).
-//
-// On the leader keypress the wrapper goes MODAL: stdin drives our own
-// one-line editor and nothing forwards to the pty; run.ts holds pty output
-// for the duration and renders the panel on the ALTERNATE SCREEN (panel.ts) —
-// this module emits no terminal bytes of its own, it only evolves state.
-// Enter executes a command (mode becomes EXECUTING until the command
-// settles), Esc/ctrl-C/leader cancel. While EXECUTING the same three keys
-// DETACH — the panel closes and output resumes while the command keeps
-// running — in every encoding a terminal may deliver them (raw byte, kitty
-// CSI-u, xterm modifyOtherKeys, Windows Terminal win32 input). A stuck command must never hold the screen
-// hostage: the freeze this fixed was a kitty terminal (claude pushes kitty
-// disambiguate mode) sending ctrl-C as CSI 99;5u, which the executing gate
-// dropped — leaving NO working escape key. Ambiguity about "whose input box
-// is this" cannot exist by construction — while modal, it is ours.
-//
-// Leader default is ctrl-] (0x1d), telnet's escape-to-control-channel
-// precedent. Ctrl-G was rejected: BEL (0x07) TERMINATES OSC sequences, so a
-// BEL on stdin inside an OSC response is protocol, not a keypress.
-
 import type { BandAllocationId } from "../governor/band-allocation.js";
 import { PRODUCT_PRESET_IDS } from "../governor/band-allocation.js";
 import { readonlyBodyLineCount } from "./panel.js";
@@ -50,7 +21,7 @@ import {
   parsePanelCommand,
 } from "./panel-commands.js";
 
-export const DEFAULT_LEADER_BYTE = 0x1d; // ctrl-]
+export const DEFAULT_LEADER_BYTE = 0x1d;
 export {
   isReadonlyRoute,
   MODAL_ASCII_NOTE,
@@ -70,11 +41,6 @@ export {
  */
 const FORBIDDEN_LEADER_BYTES = new Set([0x00, 0x03, 0x07, 0x09, 0x0a, 0x0d, 0x1b]);
 
-/**
- * Resolve CC_LHC_LEADER into a single control byte. Accepts a literal control
- * character, caret notation ("^]"), or hex ("0x1d"). Anything else — or a
- * forbidden byte — warns and falls back to ctrl-].
- */
 export function resolveLeaderByte(raw: string | undefined, warn: (message: string) => void = () => {}): number {
   if (raw === undefined || raw === "") return DEFAULT_LEADER_BYTE;
   let byte: number | null = null;
@@ -93,12 +59,6 @@ export function resolveLeaderByte(raw: string | undefined, warn: (message: strin
 export type EscapeTracking =
   | { kind: "pending_esc" }
   | { kind: "csi"; params: string }
-  /**
-   * Passthrough-only: a numeric CSI prefix HELD (not yet forwarded) because it
-   * may encode the leader — Claude pushes kitty disambiguate mode, while
-   * Windows Terminal emits six-field win32 input events after CSI ?9001h. The
-   * held bytes forward intact when the sequence classifies as anything else.
-   */
   | { kind: "csi_candidate"; params: string }
   | { kind: "string_term" }
   | { kind: "string_term_esc" }
@@ -114,7 +74,6 @@ export type InputMode = "passthrough" | "modal" | "executing" | "notifier";
  */
 export const HAZARDOUS_COMMANDS = ["/resume", "/clear", "/compact"] as const;
 
-/** Straight-line match only: the typed line IS the command (optional args). */
 export function matchHazardousCommand(line: string): string | null {
   const trimmed = line.trim();
   for (const command of HAZARDOUS_COMMANDS) {
@@ -123,46 +82,24 @@ export function matchHazardousCommand(line: string): string | null {
   return null;
 }
 
-/** Cap on tracked line length; an over-long line is not a slash command. */
 const HAZARD_LINE_CAP = 200;
 
 export interface InputState {
   mode: InputMode;
   leaderByte: number;
-  /** In-flight escape sequence on stdin (terminal responses, mouse, kitty keys). */
   escape: EscapeTracking | null;
-  /** Inside a bracketed paste (CSI 200~ … 201~): the leader byte is literal content. */
   inPaste: boolean;
-  /** Modal line-editor buffer. */
   line: string;
-  /** Escape-sequence bytes held while modal until the sequence classifies (forward vs consume). */
   heldSeq: number[];
-  /** Receipt/notice lines the panel shows above the prompt (help, unknown, command receipts). */
   panelRows: string[];
-  /** Notifier: straight-line shadow of the current typed line (never edited). */
   hazardLine: string;
-  /**
-   * Notifier: editing/cursor/history/paste/non-ASCII/escape activity seen this
-   * line — the line is no longer provably straight, so Enter passes through.
-   * Clears at the next line boundary (forwarded Enter or ctrl-C).
-   */
   hazardPoisoned: boolean;
-  /** Notifier feature switch (off: zero recognition, pure passthrough). */
   notifierEnabled: boolean;
-  /** Exact Enter bytes held while the notifier overlay is up (raw or encoded CSI). */
   heldEnter: number[];
-  /** The recognized command shown in the overlay. */
   notifierCommand: string;
-  /** Control Panel route. Ignored while passthrough/notifier. */
   route: PanelRoute;
-  /**
-   * Selected row in the slash-command suggestion menu. The menu itself is
-   * derived from the line through the command registry — this is the only
-   * state it needs, so there is no second command list to drift.
-   */
   suggestionIndex: number;
   viewport: PanelViewport;
-  /** Live Home/Help/Introduction snapshot supplied by run.ts. */
   panelView: PanelViewSnapshot | null;
 }
 
@@ -171,12 +108,8 @@ export type InputAction =
   | { kind: "exit_modal" }
   | { kind: "execute"; commandLine: string }
   | { kind: "notifier_open"; command: string }
-  /** Forward the exact held Enter bytes once; the overlay closes. */
   | { kind: "notifier_continue"; enterBytes: number[] }
-  /** Forward nothing; Claude's typed input line is untouched. */
   | { kind: "notifier_return" }
-  /** The operator answered the pre-swap confirmation. Only `yes` compacts. */
-  /** Allocation selector applied a product preset; run.ts maps it at session scope. */
   | { kind: "select_allocation"; id: BandAllocationId };
 
 export interface InputResult {
@@ -209,17 +142,11 @@ export function createInputState(
   };
 }
 
-/**
- * The suggestion menu is open exactly when the Home line reads as a slash
- * command with at least one registry match. Nothing else can open it, so
- * ordinary typing never grows a menu.
- */
 export function suggestionsOpen(state: InputState): boolean {
   if (state.mode !== "modal" || state.route !== "home") return false;
   return commandSuggestions(state.line).length > 0;
 }
 
-/** The suggestion the menu currently has selected, or null when closed. */
 export function selectedSuggestion(state: InputState): { name: string; usage: string; description: string } | null {
   const suggestions = commandSuggestions(state.line);
   if (suggestions.length === 0 || state.mode !== "modal" || state.route !== "home") return null;
@@ -227,26 +154,16 @@ export function selectedSuggestion(state: InputState): { name: string; usage: st
   return suggestions[index] ?? null;
 }
 
-/** Editing the line re-derives the menu; selection returns to its first row. */
 function withLine(state: InputState, line: string): InputState {
   return { ...state, line, suggestionIndex: 0 };
 }
 
-/**
- * Tab, and Enter on a partial command: put the selected command on the line
- * and stop there. Completion never executes — the user still presses Enter on
- * a command they can read.
- */
 function completeSuggestion(state: InputState): StepOutcome {
   const suggestion = selectedSuggestion(state);
   if (suggestion === null) return { state };
   return { state: withLine(state, completeCommandLine(state.line, suggestion.name)) };
 }
 
-/**
- * Reset to passthrough after a completed command with nothing to show; run.ts
- * then leaves the alt screen and flushes the held pty output.
- */
 export function finishExecuting(state: InputState): InputState {
   return {
     ...createInputState(state.leaderByte, { notifierEnabled: state.notifierEnabled }),
@@ -254,13 +171,6 @@ export function finishExecuting(state: InputState): InputState {
   };
 }
 
-/**
- * Settle a command by putting its receipt lines into the panel above a fresh
- * prompt, back in modal mode with the screen still held. The panel owns the
- * alternate screen, so receipts stay readable whatever the main-screen TUI is
- * doing; the user dismisses with one keypress (Esc/ctrl-C/leader/Enter-on-
- * empty), which leaves the alt screen and flushes the held output.
- */
 export function showReceipts(state: InputState, lines: string[]): InputState {
   return {
     ...state,
@@ -273,7 +183,6 @@ export function showReceipts(state: InputState, lines: string[]): InputState {
   };
 }
 
-/** Resize clamps scroll/selection; it never resets route or starts a command. */
 export function clampPanelViewport(state: InputState, _cols: number, rows: number): InputState {
   if (state.mode === "passthrough" || state.mode === "notifier") {
     return state;
@@ -289,8 +198,6 @@ export function clampPanelViewport(state: InputState, _cols: number, rows: numbe
     const scrollOffset = Math.max(0, Math.min(max, state.viewport.scrollOffset));
     return { ...state, viewport: { scrollOffset, selectedIndex: homeSelectedActionIndex(scrollOffset) } };
   }
-  // Read-only routes clamp against the WRAPPED line count for this size, not
-  // the row count: a resize that wraps Help must not strand its last lines.
   const body = readonlyBodyLineCount(state, _cols, safeRows);
   const visible = Math.max(1, safeRows - 4);
   const maxScroll = Math.max(0, body - visible);
@@ -298,12 +205,6 @@ export function clampPanelViewport(state: InputState, _cols: number, rows: numbe
   return { ...state, viewport: { ...state.viewport, scrollOffset } };
 }
 
-/**
- * Receipts from a command that settled AFTER the user detached and reopened
- * the panel: land them above the prompt they are looking at, labelled so the
- * late arrival is legible, without clobbering the line they may be typing.
- * (A settle in passthrough still goes to the wrapper log — run.ts decides.)
- */
 export function showLateReceipts(state: InputState, label: string, lines: string[]): InputState {
   return {
     ...state,
@@ -311,7 +212,6 @@ export function showLateReceipts(state: InputState, label: string, lines: string
   };
 }
 
-/** Cancel any modal/executing UI unconditionally (held-output overflow path). */
 export function forceResetInput(state: InputState): InputState {
   if (state.mode === "passthrough") return state;
   return finishExecuting(state);
@@ -339,23 +239,13 @@ function kittyKeyPressCode(params: string): number | null {
   return code;
 }
 
-/**
- * Kitty keycode for a control byte: 0x01-0x1a is ctrl+letter (byte+96, the
- * lowercase codepoint), 0x1b-0x1f is ctrl+punctuation (byte+64). Default
- * leader ctrl-] (0x1d) is keycode 93.
- */
 export function kittyLeaderCode(leaderByte: number): number {
   return leaderByte <= 0x1a ? leaderByte + 96 : leaderByte + 64;
 }
 
-/**
- * True when a CSI ...u parameter string is the kitty encoding of the leader:
- * matching keycode, ctrl-only modifier (field 5, optional :event suffix),
- * press or repeat — releases and ctrl+alt/other chords are not claimed.
- */
 export function isKittyLeaderParams(params: string, leaderByte: number): boolean {
   const fields = params.split(";");
-  const code = Number.parseInt(fields[0] ?? "", 10); // tolerates :alternate suffixes
+  const code = Number.parseInt(fields[0] ?? "", 10);
   if (!Number.isFinite(code) || code !== kittyLeaderCode(leaderByte)) return false;
   const [modifierPart, eventPart] = (fields[1] ?? "").split(":");
   if (Number.parseInt(modifierPart ?? "", 10) !== 5) return false;
@@ -373,12 +263,10 @@ export function isModifyOtherKeysLeaderParams(params: string, leaderByte: number
   const fields = params.split(";");
   if (fields.length !== 3) return false;
   const code = fields[2] ?? "";
-  // Exact digits only: "93:3" or other suffixed third fields are NOT this key.
   if (!/^\d+$/.test(code)) return false;
   return fields[0] === "27" && fields[1] === "5" && Number.parseInt(code, 10) === kittyLeaderCode(leaderByte);
 }
 
-/** Windows Terminal win32-input-mode key event: CSI Vk;Sc;Uc;Kd;Cs;Rc _. */
 export interface Win32KeyEvent {
   virtualKey: number;
   scanCode: number;
@@ -388,11 +276,6 @@ export interface Win32KeyEvent {
   repeatCount: number;
 }
 
-/**
- * Parse the six-field sequence emitted after an application enables Windows
- * Terminal's win32 input mode (CSI ?9001h). The final `_` is handled by the
- * caller. Empty fields are protocol zeroes; every other field must be decimal.
- */
 export function parseWin32KeyParams(params: string): Win32KeyEvent | null {
   const fields = params.split(";");
   if (fields.length !== 6 || fields.some((field) => !/^\d*$/.test(field))) return null;
@@ -414,21 +297,18 @@ export function isWin32LeaderParams(params: string, leaderByte: number): boolean
   return event?.keyDown === true && event.unicodeChar === leaderByte;
 }
 
-/** Key-only modifier events do not edit Claude's input line. */
 function isWin32ModifierEvent(event: Win32KeyEvent): boolean {
   return (
-    event.virtualKey === 0x10 || // shift
-    event.virtualKey === 0x11 || // control
-    event.virtualKey === 0x12 || // alt/menu
-    event.virtualKey === 0x5b || // left Windows
-    event.virtualKey === 0x5c || // right Windows
-    (event.virtualKey >= 0xa0 && event.virtualKey <= 0xa5) // left/right shift/control/alt
+    event.virtualKey === 0x10 ||
+    event.virtualKey === 0x11 ||
+    event.virtualKey === 0x12 ||
+    event.virtualKey === 0x5b ||
+    event.virtualKey === 0x5c ||
+    (event.virtualKey >= 0xa0 && event.virtualKey <= 0xa5)
   );
 }
 
-/** CSI finals for cursor/navigation keys — user keys, dropped while modal. */
 function isNavigationCsi(finalByte: number): boolean {
-  // A/B/C/D arrows, E/F/H home-end variants, ~ (del/pgup/pgdn/…)
   return (
     finalByte === 0x41 ||
     finalByte === 0x42 ||
@@ -441,7 +321,6 @@ function isNavigationCsi(finalByte: number): boolean {
   );
 }
 
-/** SGR mouse reports (CSI < … M/m) — dropped while modal; the screen is frozen. */
 function isMouseCsi(params: string, finalByte: number): boolean {
   return (finalByte === 0x4d || finalByte === 0x6d) && params.startsWith("<");
 }
@@ -449,7 +328,6 @@ function isMouseCsi(params: string, finalByte: number): boolean {
 type ModalKey =
   | { kind: "enter" }
   | { kind: "cancel" }
-  /** Tab, in any encoding the terminal uses: complete, never execute. */
   | { kind: "complete" }
   | { kind: "backspace" }
   | { kind: "clear" }
@@ -464,15 +342,6 @@ interface StepOutcome {
   actions?: InputAction[];
 }
 
-// ---------------------------------------------------------------------------
-// Passthrough
-// ---------------------------------------------------------------------------
-
-/**
- * Advance escape/paste tracking for one forwarded byte. Passthrough never
- * withholds: this exists solely so the leader byte is not misread as a
- * keypress inside a sequence or a paste.
- */
 function trackForwardedEscapeByte(byte: number, state: InputState): InputState {
   const mode = state.escape;
   if (mode === null) return state;
@@ -481,8 +350,6 @@ function trackForwardedEscapeByte(byte: number, state: InputState): InputState {
       if (byte === 0x5b) return { ...state, escape: { kind: "csi", params: "" } };
       if (isStringTermIntroducer(byte)) return { ...state, escape: { kind: "string_term" } };
       if (byte === 0x4d) return { ...state, escape: { kind: "legacy_mouse", remaining: 3 } };
-      // Another ESC: the pending one was a bare keypress; this one may
-      // introduce a sequence — stay pending.
       if (byte === 0x1b) return state;
       return { ...state, escape: null };
     case "csi":
@@ -524,22 +391,12 @@ function enterModal(state: InputState): StepOutcome {
   };
 }
 
-/** Param chars a held encoded-key sequence can contain: digits, ';', ':'. */
 function isCandidateParamByte(byte: number): boolean {
   return (byte >= 0x30 && byte <= 0x39) || byte === 0x3b || byte === 0x3a;
 }
 
 const CSI_CANDIDATE_PARAMS_CAP = 32;
 
-/**
- * Passthrough escape handling. ESC and a following numeric CSI prefix are
- * HELD until the sequence classifies: the kitty-encoded leader must be
- * swallowed whole (a half-forwarded sequence would corrupt the child's
- * parser), and everything else forwards intact the moment it is ruled out.
- * A truly bare Esc (or a stalled candidate) is flushed by run.ts's ~50ms
- * timer via resolveBareEsc — kitty terminals never send a bare ESC, so the
- * delay only exists on legacy input.
- */
 function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
   const mode = state.escape;
   if (mode === null) return { state, toPty: Buffer.from([byte]) };
@@ -551,8 +408,6 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
         return { state: { ...state, escape: { kind: "csi_candidate", params: "" }, heldSeq: held } };
       }
       if (isStringTermIntroducer(byte)) {
-        // OSC/DCS/PM/APC on stdin is a terminal response in flight — protocol,
-        // not editing: the hazard shadow stays clean.
         return {
           state: { ...state, escape: { kind: "string_term" }, heldSeq: [] },
           toPty: Buffer.from(held),
@@ -565,12 +420,8 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
         };
       }
       if (byte === 0x1b) {
-        // The held ESC (if still held — a timer flush may have sent it
-        // already) was a bare keypress: forward it; hold the new one.
         return { state: hazardPoison({ ...state, heldSeq: [0x1b] }), toPty: Buffer.from(state.heldSeq) };
       }
-      // Bare Esc keypress followed by a normal byte: forward both. A leader
-      // here stays suppressed for this chunk (leader-again recovers).
       return { state: hazardPoison({ ...state, escape: null, heldSeq: [] }), toPty: Buffer.from(held) };
 
     case "csi_candidate": {
@@ -581,13 +432,9 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
           (byte === 0x7e && isModifyOtherKeysLeaderParams(mode.params, state.leaderByte)) ||
           (byte === 0x5f && isWin32LeaderParams(mode.params, state.leaderByte));
         if (isLeaderKey && !state.inPaste) {
-          // Encoded leader press/repeat (kitty CSI-u or xterm modifyOtherKeys):
-          // enter modal, swallow the sequence — nothing of it reaches the child.
           return enterModal({ ...state, escape: null, heldSeq: [] });
         }
         if (byte === 0x75 && isKittyPlainEnterParams(mode.params) && !state.inPaste) {
-          // Kitty-encoded plain Enter is a line submit: intercept exactly like
-          // raw \r (holding the whole sequence), else forward + clean boundary.
           const cleared = { ...state, escape: null, heldSeq: [] };
           const opened = maybeOpenNotifier(cleared, held);
           if (opened !== null) return opened;
@@ -632,9 +479,6 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
           },
         };
       }
-      // Not a kitty key shape (mouse '<', private '?', over-long, …): forward
-      // the held prefix and finish the sequence forwarded-as-it-comes. Poison
-      // is decided at the completing final byte (responses stay neutral).
       return {
         state: {
           ...state,
@@ -646,9 +490,6 @@ function passthroughEscapeByte(byte: number, state: InputState): StepOutcome {
     }
 
     default: {
-      // Streaming a forwarded sequence. Poison only when a COMPLETED sequence
-      // could be a keypress: CSI finals that are not protocol responses, and
-      // legacy mouse reports. String sequences (OSC/DCS…) are responses.
       const wasCsi = mode.kind === "csi";
       const wasMouse = mode.kind === "legacy_mouse";
       const nextState = trackForwardedEscapeByte(byte, state);
@@ -669,14 +510,12 @@ function passthroughByte(byte: number, state: InputState): StepOutcome {
     return passthroughEscapeByte(byte, state);
   }
   if (byte === 0x1b) {
-    // Held, not forwarded: this may head the kitty-encoded leader.
     return { state: { ...state, escape: { kind: "pending_esc" }, heldSeq: [0x1b] } };
   }
   if (!state.inPaste && byte === state.leaderByte) {
     return enterModal(state);
   }
   if (state.inPaste) {
-    // Pasted content: forwarded untouched, and the line is no longer straight.
     return { state: hazardPoison(state), toPty: Buffer.from([byte]) };
   }
   if (byte === 0x0d) {
@@ -685,20 +524,13 @@ function passthroughByte(byte: number, state: InputState): StepOutcome {
     return { state: hazardBoundary(state), toPty: Buffer.from([byte]) };
   }
   if (byte === 0x0a || byte === 0x03) {
-    // LF submit / ctrl-C (Claude clears its input line): clean boundary.
     return { state: hazardBoundary(state), toPty: Buffer.from([byte]) };
   }
   if (byte >= 0x20 && byte <= 0x7e) {
     return { state: hazardAppend(state, byte), toPty: Buffer.from([byte]) };
   }
-  // Backspace/TAB/other controls/non-ASCII: editing or content the shadow
-  // cannot model — forward untouched, line no longer provably straight.
   return { state: hazardPoison(state), toPty: Buffer.from([byte]) };
 }
-
-// ---------------------------------------------------------------------------
-// Modal / executing
-// ---------------------------------------------------------------------------
 
 function cancelModal(state: InputState): StepOutcome {
   if (state.mode === "notifier") return notifierResolve(state, false);
@@ -711,12 +543,6 @@ function cancelModal(state: InputState): StepOutcome {
   };
 }
 
-/**
- * Settle the notifier overlay. Continue forwards the exact held Enter once
- * (run.ts writes it); return forwards nothing and KEEPS the clean shadow line —
- * Claude's input box still holds the typed command, so a bare re-Enter
- * re-notifies instead of silently executing.
- */
 function notifierResolve(state: InputState, forward: boolean): StepOutcome {
   const base: InputState = {
     ...createInputState(state.leaderByte, { notifierEnabled: state.notifierEnabled }),
@@ -731,7 +557,6 @@ function notifierResolve(state: InputState, forward: boolean): StepOutcome {
   };
 }
 
-/** Hazard-shadow helpers: poison marks the line unprovable until a boundary. */
 function hazardPoison(state: InputState): InputState {
   if (!state.notifierEnabled || state.hazardPoisoned) return state;
   return { ...state, hazardPoisoned: true };
@@ -746,20 +571,13 @@ function hazardAppend(state: InputState, byte: number): InputState {
   return { ...state, hazardLine: state.hazardLine + String.fromCharCode(byte) };
 }
 
-/**
- * Terminal→app protocol traffic on stdin (responses to queries, focus events)
- * does NOT edit Claude's input line and must not poison the straight-line
- * shadow — under tmux these arrive constantly and would otherwise disable the
- * notifier entirely. Anything that could be a keypress still poisons.
- */
 function isNeutralPassthroughCsi(params: string, finalByte: number): boolean {
-  if (params.startsWith("?")) return true; // DA / DECRPM / kitty-query responses
-  if (finalByte === 0x52) return true; // CSI <row>;<col> R — cursor position report
-  if ((finalByte === 0x49 || finalByte === 0x4f) && params === "") return true; // focus in/out
+  if (params.startsWith("?")) return true;
+  if (finalByte === 0x52) return true;
+  if ((finalByte === 0x49 || finalByte === 0x4f) && params === "") return true;
   return false;
 }
 
-/** Kitty CSI-u plain Enter (keycode 13, no modifier, press/repeat). */
 function isKittyPlainEnterParams(params: string): boolean {
   const fields = params.split(";");
   if (Number.parseInt(fields[0] ?? "", 10) !== 13) return false;
@@ -769,7 +587,6 @@ function isKittyPlainEnterParams(params: string): boolean {
   return event === 1 || event === 2;
 }
 
-/** Hold this Enter behind the confirmation overlay, or null to pass through. */
 function maybeOpenNotifier(state: InputState, enterBytes: number[]): StepOutcome | null {
   if (!state.notifierEnabled || state.inPaste || state.hazardPoisoned) return null;
   const command = matchHazardousCommand(state.hazardLine);
@@ -833,13 +650,9 @@ function submitCommandText(state: InputState, text: string): StepOutcome {
   if (parsed.kind === "route") return openRoute(state, parsed.route);
   if (parsed.kind === "invalid") return reprompt(state, [parsed.message]);
   if (parsed.kind === "needs_slash") {
-    // A real command typed without its slash: say the rule once. Running it
-    // anyway would teach a grammar the panel does not have.
     return reprompt(state, [MODAL_UNKNOWN_HINT]);
   }
   if (parsed.kind === "unknown") {
-    // Two short rows, never the whole vocabulary: the dump used to truncate
-    // off the screen edge. The full list lives in /help.
     return reprompt(state, [`${MODAL_UNKNOWN_PREFIX}${text}`, MODAL_UNKNOWN_HINT]);
   }
   return {
@@ -856,26 +669,16 @@ function submitModalLine(state: InputState): StepOutcome {
     if (state.viewport.selectedIndex >= 0) return activateHomeAction(state);
     return cancelModal(state);
   }
-  // A half-typed command completes instead of running: Enter only executes a
-  // command the user can already read in full on the line.
   if (exactCommandName(trimmed) === null && commandSuggestions(trimmed).length > 0) {
     return completeSuggestion(state);
   }
   return submitCommandText(state, trimmed);
 }
 
-/**
- * Handle a completed escape sequence while modal/executing. Kitty CSI-u keys
- * are OUR editor's keys (consumed); navigation/mouse are user keys aimed at a
- * frozen screen (dropped); everything else is presumed protocol traffic —
- * terminal responses belong to the child, so the held bytes forward verbatim.
- */
 function classifyModalCsi(params: string, finalByte: number, state: InputState): { key: ModalKey; forward: boolean } {
   if (finalByte === 0x5f) {
     const event = parseWin32KeyParams(params);
     if (event !== null) {
-      // Win32 input events belong to our modal editor. Consume releases and
-      // modifier-only events, and map key-down events by their resolved Uc.
       if (!event.keyDown || isWin32ModifierEvent(event)) return { key: { kind: "none" }, forward: false };
       if (!state.inPaste && (event.unicodeChar === state.leaderByte || event.unicodeChar === 0x03)) {
         return { key: { kind: "cancel" }, forward: false };
@@ -886,7 +689,6 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
         return { key: { kind: "backspace" }, forward: false };
       }
       if (event.unicodeChar === 0x15) return { key: { kind: "clear" }, forward: false };
-      // Tab: Windows Terminal reports VK_TAB with Uc 0x09.
       if (event.unicodeChar === 0x09 || event.virtualKey === 0x09) {
         return { key: { kind: "complete" }, forward: false };
       }
@@ -902,14 +704,8 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
     (finalByte === 0x75 && isKittyLeaderParams(params, state.leaderByte)) ||
     (finalByte === 0x7e && isModifyOtherKeysLeaderParams(params, state.leaderByte));
   if (encodedLeader && !state.inPaste) {
-    // Encoded leader-again: same cancel as raw 0x1d (detach while executing).
     return { key: { kind: "cancel" }, forward: false };
   }
-  // Encoded ctrl-C — the leader matchers are generic ctrl-byte matchers, so
-  // byte 0x03 reuses them (kitty keycode 99, ctrl-only modifier). Without
-  // this, a kitty-protocol terminal (claude pushes kitty disambiguate mode)
-  // had NO working detach key while a command executed: raw 0x03 never
-  // arrives there, and CSI 99;5u fell through to "none" — the freeze repro.
   const encodedCtrlC =
     (finalByte === 0x75 && isKittyLeaderParams(params, 0x03)) ||
     (finalByte === 0x7e && isModifyOtherKeysLeaderParams(params, 0x03));
@@ -918,8 +714,6 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
   }
   if (finalByte === 0x75) {
     const key = kittyKeyPressCode(params);
-    // Kitty encodes Tab as keycode 9; it is our completion key, not the
-    // child's — consumed here, never forwarded.
     if (key === 9) return { key: { kind: "complete" }, forward: false };
     if (key === 13) return { key: { kind: "enter" }, forward: false };
     if (key === 27) return { key: { kind: "cancel" }, forward: false };
@@ -939,18 +733,12 @@ function classifyModalCsi(params: string, finalByte: number, state: InputState):
 
 function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
   if (state.mode === "notifier") {
-    // Only two answers exist: Enter continues (forward the held Enter once),
-    // cancel-family returns (forward nothing). Everything else is dropped.
     if (key.kind === "enter") return notifierResolve(state, true);
     if (key.kind === "cancel") return notifierResolve(state, false);
     if (key.kind === "text" && key.value.toLowerCase() === "n") return notifierResolve(state, false);
     return { state };
   }
   if (state.mode === "executing") {
-    // Cancel-family keys DETACH a running command (Esc, ctrl-C, leader — any
-    // encoding): the panel closes and output resumes; the command keeps
-    // running and its receipt lands late (reopened panel or wrapper log).
-    // Editor keys stay dropped — there is no line to edit while executing.
     if (key.kind === "cancel") return cancelModal(state);
     return { state };
   }
@@ -991,8 +779,6 @@ function applyModalKey(key: ModalKey, state: InputState): StepOutcome {
     case "up":
     case "down": {
       const delta = key.kind === "up" ? -1 : 1;
-      // While the menu is open the arrows belong to it. The Home cursor keeps
-      // its position untouched and takes the arrows back when the line clears.
       const suggestions = commandSuggestions(state.line);
       if (suggestions.length > 0) {
         const max = suggestions.length - 1;
@@ -1021,9 +807,6 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
         return { state: { ...state, escape: { kind: "csi", params: "" }, heldSeq: held } };
       }
       if (isStringTermIntroducer(byte)) {
-        // A string sequence (OSC/DCS/…) on stdin is a terminal response in
-        // flight to the child: forward the held introducer now and stream the
-        // rest through as it arrives.
         return {
           state: { ...state, escape: { kind: "string_term" }, heldSeq: [] },
           toPty: Buffer.from(held),
@@ -1032,10 +815,6 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
       if (byte === 0x4d) {
         return { state: { ...state, escape: { kind: "legacy_mouse", remaining: 3 }, heldSeq: held } };
       }
-      // Any other byte resolves the held ESC as a bare Esc keypress — this
-      // works across chunk boundaries, so a sequence split after its ESC is
-      // never misread. Modal or executing, Esc cancels/detaches and the
-      // current byte belongs to passthrough.
       const cleared: InputState = { ...state, escape: null, heldSeq: [] };
       const cancelled = cancelModal(cleared);
       const after = passthroughByte(byte, cancelled.state);
@@ -1062,14 +841,6 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
     }
 
     case "string_term":
-      // Escape hatch for the wedge repro: a raw ctrl-C or leader byte CANNOT
-      // occur inside a legal OSC/DCS/PM/APC payload (BEL and ESC are the only
-      // controls those strings admit), so seeing one proves this "sequence"
-      // was a user keypress burst (alt-], a truncated response) — without the
-      // hatch every later key forwarded to the child as presumed protocol and
-      // the modal wedged with no escape at all. Close the introducer already
-      // sent to the child with ST (a bare ST is a no-op for a parser that is
-      // not inside a string), consume the byte, and cancel/detach.
       if (byte === 0x03 || byte === state.leaderByte) {
         const hatch = cancelModal({ ...state, escape: null, heldSeq: [] });
         return { state: hatch.state, toPty: Buffer.from([0x1b, 0x5c]), actions: hatch.actions ?? [] };
@@ -1080,8 +851,6 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
       return { state, toPty: Buffer.from([byte]) };
 
     case "string_term_esc":
-      // Same hatch one byte deeper: the string's ESC is already forwarded, so
-      // a lone backslash completes ST for the child.
       if (byte === 0x03 || byte === state.leaderByte) {
         const hatch = cancelModal({ ...state, escape: null, heldSeq: [] });
         return { state: hatch.state, toPty: Buffer.from([0x5c]), actions: hatch.actions ?? [] };
@@ -1096,7 +865,6 @@ function modalEscapeByte(byte: number, state: InputState): StepOutcome {
     }
 
     case "csi_candidate":
-      // Passthrough-only tracking state; modal builds its own held CSI. Drop.
       return { state: { ...state, escape: null, heldSeq: [] } };
   }
 }
@@ -1105,16 +873,10 @@ function modalByte(byte: number, state: InputState): StepOutcome {
   if (state.escape !== null) return modalEscapeByte(byte, state);
 
   if (byte === 0x1b) {
-    // Held, not forwarded: a lone-ESC chunk is a cancel keypress (detected
-    // after the chunk loop); ESC followed by more bytes is a sequence.
     return { state: { ...state, escape: { kind: "pending_esc" }, heldSeq: [byte] } };
   }
 
   if (state.inPaste) {
-    // Pasted content while modal: printables append; a pasted newline is
-    // literal content with no line to live in, so it is dropped rather than
-    // treated as a submit; control bytes (including the leader) are ignored —
-    // except ctrl-C, kept as the escape hatch if a paste never closes.
     if (byte === 0x03) return cancelModal(state);
     if (state.mode === "modal" && state.route === "home" && byte >= 0x20 && byte <= 0x7e) {
       return { state: withLine(state, state.line + String.fromCharCode(byte)) };
@@ -1123,22 +885,15 @@ function modalByte(byte: number, state: InputState): StepOutcome {
   }
 
   if (byte === 0x03) {
-    // Modal: cancel. Executing: DETACH — the modal UI is torn down and output
-    // resumes, but the in-flight command keeps running (the single-flight
-    // guard still serializes); its receipt lands late — in a reopened panel
-    // or the wrapper log. This is the escape hatch for a hung command.
     return cancelModal(state);
   }
 
   if (byte === state.leaderByte) {
-    // Leader-again dismisses in every mode — while executing it detaches,
-    // same as Esc and ctrl-C (a running command must never trap the screen).
     return cancelModal(state);
   }
 
   if (state.mode === "notifier") {
     if (byte === 0x0d || byte === 0x0a) return notifierResolve(state, true);
-    // 'n' is a natural "no": treat it as return; other keys are dropped.
     if (byte === 0x6e || byte === 0x4e) return notifierResolve(state, false);
     return { state };
   }
@@ -1159,13 +914,8 @@ function modalByte(byte: number, state: InputState): StepOutcome {
   if (byte >= 0x20 && byte <= 0x7e) {
     return { state: withLine(state, state.line + String.fromCharCode(byte)) };
   }
-  // Remaining C0 controls and non-ASCII bytes: the editor is ASCII-only.
   return { state };
 }
-
-// ---------------------------------------------------------------------------
-// Chunk loop
-// ---------------------------------------------------------------------------
 
 export function processInputChunk(chunk: Buffer, state: InputState): InputResult {
   let current = state;
@@ -1179,32 +929,13 @@ export function processInputChunk(chunk: Buffer, state: InputState): InputResult
     if (outcome.actions !== undefined) actions.push(...outcome.actions);
   }
 
-  // A pending ESC deliberately SURVIVES the chunk boundary: whether it was a
-  // bare keypress or the head of a split sequence is decided by the NEXT byte
-  // (see the pending_esc cases above). While pending, leader recognition is
-  // suppressed — mis-suppressing for one chunk is harmless (leader-again
-  // recovers). Bounded ambiguity for a truly bare Esc while modal is run.ts's
-  // job: it arms a short timer and calls resolveBareEsc.
   return { state: current, toPty, actions };
 }
 
-/**
- * Resolve a pending ESC that no further byte has resolved (run.ts calls this
- * from a ~50ms timer): it was a bare Esc keypress. Modal → cancel; executing
- * → detach (the command keeps running). Null when nothing is pending or the
- * state has since moved on.
- */
 export function resolveBareEsc(
   state: InputState,
 ): { state: InputState; actions: InputAction[]; toPty?: Buffer } | null {
   if (state.mode === "passthrough") {
-    // Passthrough holds a bare ESC (and any numeric CSI prefix after it) in
-    // case it heads the kitty-encoded leader; a stall means the bytes were a
-    // real keypress, a slow terminal, or protocol traffic. Flush them to the
-    // child unchanged but RESUME tracking exactly as if they had streamed
-    // through unheld — a stalled paste-opener prefix (ESC[200) must still
-    // complete into inPaste when its ~ arrives, or a literal leader in the
-    // pasted body would open the modal and eat bytes.
     if (state.heldSeq.length === 0) return null;
     if (state.escape?.kind === "pending_esc") {
       return { state: { ...state, heldSeq: [] }, actions: [], toPty: Buffer.from(state.heldSeq) };

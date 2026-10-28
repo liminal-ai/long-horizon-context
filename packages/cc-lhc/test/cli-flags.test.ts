@@ -1,8 +1,3 @@
-/**
- * TC-3.2a/TC-3.2b: the first standalone `--` ends CC-LHC parsing; every later
- * token forwards to Claude unchanged. Exercises the real production parser
- * used by src/cli.ts, not a copy.
- */
 import { describe, expect, it } from "vitest";
 
 import { isLhcVersionArgv, parseWrapperArgv } from "../src/cli-args.js";
@@ -89,7 +84,6 @@ describe("--lhc-version argv form", () => {
     const result = parseWrapperArgv(["--lhc-version", "--model", "opus"], ENV);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.message).toContain("Unknown cc-lhc flag: --lhc-version");
-    // Ordinary --version is Claude's, forwarded (TC-3.1c).
     expect(parsedOrThrow(["--version"]).claudeArgv).toEqual(["--version"]);
   });
 });

@@ -25,9 +25,7 @@ afterEach(() => {
   for (const d of dirs.splice(0)) {
     try {
       rmSync(d, { recursive: true, force: true });
-    } catch {
-      // best effort
-    }
+    } catch {}
   }
 });
 
@@ -80,7 +78,6 @@ describe("governor durable receipt store", () => {
     expect(durable.receipt.captureGeneration).toBe(3);
     store1.close();
 
-    // Restart: reopen the same file and inspect.
     const store2 = openGovernorReceiptStore(dbPath);
     const listed = store2.listBySession("sess-a");
     expect(listed.length).toBeGreaterThanOrEqual(1);
@@ -151,7 +148,6 @@ describe("governor durable receipt store", () => {
       droppedInputBytes: 3,
     });
 
-    // Same native facts, different in-memory observeSequence (restart).
     const replayObserve = {
       ...settled,
       observeSequence: 999,
@@ -164,7 +160,6 @@ describe("governor durable receipt store", () => {
     expect(second.receipt.handoffOutcome?.kind).toBe("handoff_success");
     expect(store.listBySession("sess")).toHaveLength(1);
 
-    // Close/reopen + replay: row count unchanged.
     store.close();
     const reopened = openGovernorReceiptStore(dbPath);
     const third = reopened.appendObserve({ observe: settled, sessionId: "sess", threadId: "th" });
@@ -210,20 +205,17 @@ describe("governor durable receipt store", () => {
     dirs.push(dir);
     const dbPath = join(dir, "cc-lhc.sqlite");
 
-    // Lineage opens first (same file).
     const lineage = openLineageDatabase(dbPath);
     const store = openGovernorReceiptStore(dbPath);
     const settled = settledWouldCompact();
     const result = store.appendObserve({ observe: settled, sessionId: "s", threadId: "t" });
     expect(result.inserted).toBe(true);
 
-    // Concurrent second connection appends must not throw SQLITE_BUSY instantly.
     const store2 = openGovernorReceiptStore(dbPath);
     const again = store2.appendObserve({ observe: settled, sessionId: "s", threadId: "t" });
     expect(again.inserted).toBe(false);
     expect(again.receipt.receiptId).toBe(result.receipt.receiptId);
 
-    // busy_timeout is set on a raw open path for the store schema init.
     const probe = new DatabaseSync(dbPath);
     probe.exec("PRAGMA busy_timeout = 10000");
     const mode = probe.prepare("PRAGMA journal_mode").get() as { journal_mode: string };
@@ -240,7 +232,6 @@ describe("governor durable receipt store", () => {
     dirs.push(dir);
     const dbPath = join(dir, "cc-lhc.sqlite");
     const settled = settledWouldCompact();
-    // Seed schema.
     const seed = openGovernorReceiptStore(dbPath);
     seed.close();
 
@@ -262,9 +253,6 @@ describe("governor durable receipt store", () => {
       });
     `;
 
-    // Resolve built-ish path: use file URL of compiled-free TS via vitest runtime — run sequential
-    // same-process concurrent-style opens instead if workers cannot load TS.
-    // Same-process multi-connection race:
     const a = openGovernorReceiptStore(dbPath);
     const b = openGovernorReceiptStore(dbPath);
     const r1 = a.appendObserve({ observe: settled, sessionId: "race", threadId: "th" });

@@ -38,7 +38,6 @@ describe("governor observe-state fold", () => {
       { kind: "turn_settled", reason: "end_turn" },
     ];
     const first = applyGovernorLifecycleBatch(state, signals, resolved);
-    // Open-turn may emit would_compact (threshold) then settled also emits.
     const settled = first.observes.filter((o) => o.observePhase === "settled_seam");
     expect(settled).toHaveLength(1);
     expect(settled[0]?.decision).toBe("would_compact");
@@ -47,8 +46,6 @@ describe("governor observe-state fold", () => {
     expect(settled[0]?.hostCapability).toBe("capability_limited");
     expect(settled[0]?.pressure.nextRequestPressureTokens).toBe(510_000);
 
-    // A second settled seam at the same pressure is still executable: a seam
-    // that never started a mutation costs the next one nothing.
     const second = applyGovernorLifecycleBatch(first.state, [{ kind: "turn_settled", reason: "end_turn" }], resolved);
     expect(second.observes).toHaveLength(1);
     expect(second.observes[0]?.decision).toBe("would_compact");
@@ -151,7 +148,6 @@ describe("governor observe-state fold", () => {
     expect(open[0]?.decision).toBe("would_compact");
     expect(open[0]?.wouldMutate).toBe(false);
     expect(open[0]?.reason).toMatch(/open turn|mid-agentic-turn/i);
-    // No handoff cue while open.
     expect(r.observes.every((o) => o.wouldMutate === false)).toBe(true);
   });
 
@@ -160,7 +156,6 @@ describe("governor observe-state fold", () => {
       captureGeneration: 1,
     });
     const resolved = armed();
-    // Provider total just below upper (360k).
     const afterSampling = applyGovernorLifecycleBatch(
       state,
       [
@@ -173,7 +168,6 @@ describe("governor observe-state fold", () => {
       ],
       resolved,
     );
-    // Below threshold open classification may be suppressed (turn_open noise).
     expect(afterSampling.observes.every((o) => o.decision !== "would_compact" || o.wouldMutate === false)).toBe(true);
 
     const afterEstimate = applyGovernorLifecycleBatch(
@@ -294,7 +288,6 @@ describe("governor observe-state fold", () => {
     expect(settled[0]?.decision).toBe("would_compact");
     expect(settled[0]?.wouldMutate).toBe(true);
     expect(settled[0]?.pressure.nextRequestPressureTokens).toBe(370_000);
-    // Provider total never includes estimate.
     expect(settled[0]?.providerContextTotal).toBe(350_000);
   });
 
@@ -320,7 +313,6 @@ describe("governor observe-state fold", () => {
     const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0];
     expect(settled?.decision).toBe("would_compact");
     expect(settled?.wouldMutate).toBe(true);
-    // Kept as a receipt diagnostic, stripped of authority.
     expect(settled?.inputEpoch).toBe(1);
     expect(settled?.inputEpochAtTurnOpen).toBe(0);
   });

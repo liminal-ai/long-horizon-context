@@ -1,30 +1,3 @@
-/**
- * Settling carried subagents and relaunched Monitors (beads 7uo, gorilla F4).
- *
- * Neither family can close from the replacement's rollout: a carried
- * subagent's old host is paused or gone, so it never finishes and no task
- * notice ever arrives; a relaunched Monitor is the parent's own detached
- * process, so Claude never learns of it. Both settle here, at the one seam
- * that already runs on the next real prompt (`cc-lhc tasks hook`):
- *
- *  - subagent: its saved transcript is read once. A final assistant message
- *    (last conversational record, `end_turn`/`stop_sequence`, no `tool_use`,
- *    not a synthetic API error) closes the item `completed` and its text is
- *    kept as a CC-LHC-owned copy (served by `cc-lhc tasks output <key>`);
- *    anything else — no final message, unreadable, unknown shape — closes it
- *    `killed`. Its transcript and metadata are first copied into the current
- *    session's folder (helper-transfer.ts), since Claude resumes a helper
- *    only from there; the notice offers SendMessage only when that copy
- *    succeeded, and otherwise says to start the helper again. The old host is
- *    never kept running for it.
- *  - Monitor: every line it wrote to its relaunch output is offered once as an
- *    event (delivered when the rollout shows it, advancing a byte offset); the
- *    item closes `completed` once its recorded exact process identity is
- *    kernel-proven gone. An indeterminate probe, or no recorded identity,
- *    decides nothing.
- *  - session end: the wrapper stops every still-live relaunched Monitor of
- *    its thread, identity-gated, and records it `stopped`.
- */
 import {
   closeSync,
   fsyncSync,
@@ -46,31 +19,25 @@ import { type HelperTransfer, subagentsDirOf, sweepPartialCopies, transferHelper
 import { type ManagePorts, readItemOutput, signalRelaunched, stillRunningAfterFailedSignal } from "./manage.js";
 import type { CarriedResult, ContinuityItem, ContinuityStore } from "./store.js";
 
-/** The continuity directory beside a lineage database (the wrapper's `monitorOutputDir`). */
 export function continuityDirOf(dbPath: string): string {
   return join(dirname(dbPath), "continuity");
 }
 
-/** The notice a carried subagent without a final result is delivered with, once its transcript is in this session. */
 export function interruptedNotice(agentId: string): string {
   return `subagent ${agentId} was interrupted by the compaction; resume it with SendMessage(${agentId})`;
 }
 
-/** The notice when its transcript could not be brought into this session: it cannot be resumed. */
 export function interruptedRestartNotice(agentId: string, reason: string): string {
   return `subagent ${agentId} was interrupted by the compaction and cannot be resumed here (${reason}); start it again if its work is still needed`;
 }
 
 const INTERRUPTED_PREFIX = "subagent ";
 const FINAL_EVIDENCE = "final result in the saved subagent transcript";
-/** Transcripts larger than this are read from their tail only; the final message is at the end. */
 const TRANSCRIPT_TAIL_BYTES = 8 * 1024 * 1024;
-/** One event read window; a line longer than this is delivered in window-sized pieces. */
 export const EVENT_READ_BYTES = 64 * 1024;
 
 export type AgentFinalResult = { kind: "final"; text: string } | { kind: "none"; reason: string };
 
-/** Up to the last `TRANSCRIPT_TAIL_BYTES` of a file, starting at a line boundary; null when unreadable. */
 export function readTranscriptTail(path: string): string | null {
   let fd: number;
   try {
@@ -118,17 +85,6 @@ function textOf(content: unknown): string[] {
   return out;
 }
 
-/**
- * The final result of a Claude Code 2.1.x subagent transcript
- * (`<sessionDir>/subagents/agent-<id>.jsonl`): one JSON record per line; an
- * assistant API message is split across consecutive `assistant` records
- * sharing `message.id`, the last carrying `message.stop_reason`. The agent
- * finished only when the last `user`/`assistant` record is such a closing
- * record with stop reason `end_turn` (or `stop_sequence`), no `tool_use`
- * block, and is not a synthetic API-error message. Everything else — a
- * trailing tool call or tool result, a torn last line, an unknown shape — is
- * no final result. Never throws.
- */
 export function parseAgentFinalResult(text: string | null): AgentFinalResult {
   if (text === null) return { kind: "none", reason: "transcript unreadable" };
   const conversation: Array<Record<string, unknown>> = [];
@@ -158,7 +114,6 @@ export function parseAgentFinalResult(text: string | null): AgentFinalResult {
   if (last.isApiErrorMessage === true || message.model === "<synthetic>") {
     return { kind: "none", reason: "last assistant message is a synthetic error" };
   }
-  // The final API message: the trailing assistant records sharing its id.
   const blocks: Array<Record<string, unknown>> = [last];
   if (typeof message.id === "string") {
     for (let i = conversation.length - 2; i >= 0; i--) {
@@ -176,7 +131,6 @@ export function parseAgentFinalResult(text: string | null): AgentFinalResult {
   return { kind: "final", text: blocks.flatMap((r) => textOf(record(r.message)?.content)).join("\n\n") };
 }
 
-/** Write the subagent's final text as a CC-LHC-owned copy (0600, fsynced, renamed into place). */
 export function writeResultText(
   target: string,
   text: string,
@@ -199,22 +153,18 @@ export function writeResultText(
   } catch (cause) {
     try {
       unlinkSync(temp);
-    } catch {
-      // already gone
-    }
+    } catch {}
     throw cause;
   }
   return { bytes: bytes.length, truncated: all.length > bytes.length };
 }
 
 export interface SettleCarriedDeps {
-  /** Where owned copies live (`continuityDirOf(dbPath)`). */
   continuityDir: string;
   readTranscript?: (path: string) => string | null;
   writeText?: (target: string, text: string) => { bytes: number; truncated: boolean };
   probeIdentity?: ProbeProcessIdentity;
   nowMs?: () => number;
-  /** The current (replacement) session's folder, from the hook's transcript path; unknown means no resume offer. */
   sessionDir?: string;
   transfer?: (input: { agentId: string; fromDir: string; toDir: string }) => HelperTransfer;
 }
@@ -226,7 +176,6 @@ export interface SettleCarriedReport {
 
 function carriedAndHandedOver(store: ContinuityStore, item: ContinuityItem): boolean {
   if (item.state === "terminal" || item.generation === 0) return false;
-  // Only once the replacement is live and the handoff generation closed.
   return store.getGeneration(item.threadId, item.generation)?.state === "closed";
 }
 
@@ -241,11 +190,6 @@ function processFate(
   return probed.identity.bootId === proc.bootId && probed.identity.starttime === proc.starttime ? "live" : "gone";
 }
 
-/**
- * Settle the thread's carried subagents and exited relaunched Monitors. Runs
- * from the next-prompt hook; each item closes at most once (terminal is
- * absorbing), so the resulting durable result is delivered exactly once.
- */
 export function settleCarriedWork(
   store: ContinuityStore,
   threadId: string,
@@ -291,15 +235,11 @@ export function settleCarriedWork(
         } else if (copy !== null) {
           try {
             unlinkSync(target);
-          } catch {
-            // best effort: our own file
-          }
+          } catch {}
         }
         if (closed?.applied === true) report.agents.push({ launchId: item.launchId, outcome: "completed" });
         continue;
       }
-      // Resumable only from the current session's folder: copy it there
-      // first, and offer SendMessage only when the copy is in place.
       let moved: HelperTransfer;
       if (deps.sessionDir === undefined) {
         moved = { ok: false, agentId: identity.agentId, reason: "the current session folder is unknown" };
@@ -342,7 +282,6 @@ export function settleCarriedWork(
   return report;
 }
 
-/** Read up to `maxBytes` of an owned copy; null when unreadable. */
 function readHead(path: string, maxBytes: number): string | null {
   let fd: number;
   try {
@@ -361,11 +300,6 @@ function readHead(path: string, maxBytes: number): string | null {
   }
 }
 
-/**
- * The detail line a pending subagent result is delivered with: the bounded
- * start of its saved final text plus where the full text is, or its
- * interrupted notice. Other families carry no detail.
- */
 export function carriedResultDetails(
   results: readonly CarriedResult[],
   readText: (path: string, maxBytes: number) => string | null = readHead,
@@ -394,13 +328,6 @@ export function carriedResultDetails(
   return details;
 }
 
-/**
- * Undelivered lines of every relaunched Monitor's output, from its delivered
- * offset, re-verified through the item's recorded output identity (`output`).
- * A trailing unterminated line is offered only once the Monitor is terminal
- * (no more of it can come); a window with no newline at all is offered whole
- * so one very long line can never stall delivery.
- */
 export function pendingMonitorEvents(
   store: ContinuityStore,
   threadId: string,
@@ -449,13 +376,6 @@ export interface StopMonitorsReport {
   kept: Array<{ launchId: string; reason: string }>;
 }
 
-/**
- * Session end: a relaunched Monitor is the parent's own detached process and
- * must not outlive the session. Each still-active one is signalled only while
- * its live identity matches the record exactly, then recorded `stopped`; one
- * already gone is recorded as exited; an indeterminate probe or a failed
- * signal changes nothing.
- */
 export function stopRelaunchedMonitors(
   store: ContinuityStore,
   threadId: string,
@@ -468,9 +388,6 @@ export function stopRelaunchedMonitors(
   for (const item of store.listItems(threadId)) {
     if (item.family !== "monitor" || item.relaunch?.process == null) continue;
     const proc = item.relaunch.process;
-    // A terminal record does not prove the process ended (a Monitor recorded
-    // failed while its relaunch kept running): it is stopped all the same,
-    // identity-gated, and its terminal record is left as it is.
     const terminal = item.state === "terminal";
     if (item.state !== "active" && !terminal) continue;
     const fate = processFate(probe, proc);
@@ -492,8 +409,6 @@ export function stopRelaunchedMonitors(
       continue;
     }
     const signalled = signal(proc.pid, ports.platform ?? process.platform);
-    // The same rule as `cc-lhc tasks stop` (long-horizon-context-bnk): a failed
-    // signal keeps the Monitor only while the exact process still runs.
     if (!signalled.ok && stillRunningAfterFailedSignal(probe, proc)) {
       report.kept.push({ launchId: item.launchId, reason: signalled.reason });
       ports.log?.(
