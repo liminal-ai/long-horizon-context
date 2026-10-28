@@ -1,12 +1,3 @@
-# Per-package typecheck + test checks on every pull request.
-#
-# One job per package (lhc, claude-lhc, cc-lhc) so each check reports its
-# own package result and stays small enough for a hosted runner. The
-# full native-platform matrix stays in native-platforms.yml (push to
-# main); the cc-lhc job here still compiles the native addon on Linux
-# because parts of its suite (e.g. the relaunched-Monitor continuity
-# tests) only pass with a real addon present.
-
 name: pr-checks
 
 on:
@@ -123,11 +114,6 @@ jobs:
         run: pnpm --filter cc-lhc run typecheck
 
       - name: Test cc-lhc (compiled addon mandatory)
-        # Same invocation as native-platforms.yml: the Story 0
-        # process-destructive proof stays in its dedicated job there
-        # (it is nondeterministic inside the concurrent broad suite),
-        # and pnpm run would forward "--" literally, so the exclusions
-        # need an explicit vitest call.
         run: pnpm --filter cc-lhc exec vitest run --exclude "test/package/**" --exclude test/story0/process-capability/production-path.test.ts
         env:
           CC_LHC_NATIVE_REQUIRE_ADDON: "1"
