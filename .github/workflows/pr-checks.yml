@@ -11,6 +11,35 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  root:
+    name: root lint and typecheck
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout (recursive submodules)
+        uses: actions/checkout@v7
+        with:
+          submodules: recursive
+
+      - name: Install pnpm 11.8.0
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.8.0
+
+      - name: Install build Node 24.18.0
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24.18.0
+          cache: pnpm
+
+      - name: Install workspace (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint (biome check)
+        run: pnpm run lint
+
+      - name: Typecheck all packages
+        run: pnpm typecheck
+
   lhc:
     name: lhc
     runs-on: ubuntu-24.04
