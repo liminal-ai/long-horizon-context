@@ -63,6 +63,10 @@ export function readViewSnapshot(db: DatabaseSync): ViewSnapshot | null {
   };
 }
 
+export function dropStoredViewPast(db: DatabaseSync, keepThroughEventOrder: number): void {
+  db.prepare(`DELETE FROM thread_view WHERE compact_point > ?`).run(keepThroughEventOrder);
+}
+
 export function readStoredView(db: DatabaseSync): StoredView | null {
   const header = db
     .prepare(

@@ -5,6 +5,7 @@ import {
   enqueue,
   supersedeQueued,
   WORK_KIND_REGISTRY,
+  type WorkItemRecord,
   type WorkKind,
   type WorkSourceRef,
 } from "../../shared-tech/work-queue/index.js";
@@ -41,7 +42,7 @@ export interface CascadeOutcome {
   superseded: string[];
 }
 
-interface ChainSubject {
+export interface ChainSubject {
   subjectKind: SubjectKind;
   subjectId: string;
 }
@@ -113,11 +114,15 @@ function rebuildKindFor(derivationType: string): WorkKind {
   return kind;
 }
 
+interface CascadeRunOutcome extends CascadeOutcome {
+  queuedWork: WorkItemRecord[];
+}
+
 function runCascade(
   transaction: DbWriteTransaction,
   dropSubjects: readonly ChainSubject[],
   clearSubjects: readonly ChainSubject[],
-): CascadeOutcome {
+): CascadeRunOutcome {
   const readDerivations = transaction.db.prepare(
     `SELECT derivation_type, source_version FROM derivation
      WHERE subject_kind = ? AND subject_id = ? ORDER BY derivation_type`,
@@ -173,20 +178,20 @@ function runCascade(
     })),
   ]);
 
-  const queued = [...groups.values()]
+  const queuedWork = [...groups.values()]
     .sort((left, right) => REBUILD_KIND_ORDER[left.kind] - REBUILD_KIND_ORDER[right.kind])
-    .map((group) => {
-      const item = enqueue(transaction, {
+    .map((group) =>
+      enqueue(transaction, {
         owner: WORK_KIND_REGISTRY[group.kind].owner,
         kind: group.kind,
         sourceRef: sourceRefFor(group.subject),
         sourceVersion: group.maxSourceVersion + 1,
         derivations: group.derivations,
-      });
-      return { workItemId: item.workItemId, kind: group.kind };
-    });
+      }),
+    );
+  const queued = queuedWork.map((item) => ({ workItemId: item.workItemId, kind: item.kind }));
 
-  return { cleared, dropped, queued, superseded };
+  return { cleared, dropped, queued, queuedWork, superseded };
 }
 
 export function cascadeFromMessage(transaction: DbWriteTransaction, messageId: string): CascadeOutcome {
@@ -201,4 +206,12 @@ export function cascadeMessageDelete(transaction: DbWriteTransaction, messageId:
   const counterpart = pairedCounterpartSubject(transaction.db, messageId);
   if (counterpart !== undefined) upward.push(counterpart);
   return runCascade(transaction, own === undefined ? [] : [own], upward);
+}
+
+export function cascadeRollback(
+  transaction: DbWriteTransaction,
+  drop: readonly ChainSubject[],
+  clear: readonly ChainSubject[],
+): WorkItemRecord[] {
+  return runCascade(transaction, drop, clear).queuedWork;
 }

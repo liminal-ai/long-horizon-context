@@ -399,6 +399,7 @@ fn default_payload(kind: EventKind) -> Map<String, Value> {
             "waitForUser": false,
         }),
         EventKind::TurnEnd => json!({}),
+        EventKind::Rollback => json!({"keepThroughEventOrder": 0}),
     };
     value.as_object().expect("payload object").clone()
 }
@@ -491,6 +492,7 @@ pub fn valid_event_for_kind(kind: EventKind) -> MessageEventInput {
             CompactContinuationMarkerOverrides::default(),
         ),
         EventKind::TurnEnd => valid_event(kind::TURN_END, TurnEndOverrides::default()),
+        EventKind::Rollback => panic!("Rust intake does not accept rollback"),
     }
 }
 

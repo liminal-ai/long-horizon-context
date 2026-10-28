@@ -43,6 +43,7 @@ fn golden_payload_keys(kind: EventKind) -> &'static [&'static str] {
             "waitForUser",
         ],
         EventKind::TurnEnd => &[],
+        EventKind::Rollback => &["keepThroughEventOrder"],
     }
 }
 

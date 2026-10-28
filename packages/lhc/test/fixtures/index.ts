@@ -35,6 +35,7 @@ const defaultPayloads: { [K in EventKind]: () => EventByKind<K>["payload"] } = {
     waitForUser: false,
   }),
   turn_end: () => ({}),
+  rollback: () => ({ keepThroughEventOrder: 0 }),
 };
 
 export function validEvent<K extends EventKind>(

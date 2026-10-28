@@ -44,6 +44,8 @@ pub enum EventKind {
     CompactContinuationMarker,
     #[serde(rename = "turn_end")]
     TurnEnd,
+    #[serde(rename = "rollback")]
+    Rollback,
 }
 
 impl EventKind {
@@ -59,6 +61,7 @@ impl EventKind {
             EventKind::ToolResult => "tool_result",
             EventKind::CompactContinuationMarker => "compact_continuation_marker",
             EventKind::TurnEnd => "turn_end",
+            EventKind::Rollback => "rollback",
         }
     }
 
@@ -364,6 +367,16 @@ pub struct TurnEndPayload {
     pub ended_at: Option<String>,
 }
 
+/// TS `RollbackPayload`. Read-only in this port: Rust intake refuses the
+/// `rollback` kind, and reads honor the `deleted_at` stamps TS intake writes.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RollbackPayload {
+    pub keep_through_event_order: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 /// TS `EventRecord = MessageEventInput & { eventOrder; recordedAt }`.
 ///
 /// Closed tagged union on `eventKind` (snake_case values matching [`EventKind`]).
@@ -461,6 +474,15 @@ pub enum EventRecord {
         event_order: i64,
         recorded_at: String,
     },
+    #[serde(rename = "rollback", rename_all = "camelCase")]
+    Rollback {
+        idempotency_key: String,
+        actor: String,
+        harness: String,
+        payload: RollbackPayload,
+        event_order: i64,
+        recorded_at: String,
+    },
 }
 
 impl EventRecord {
@@ -476,6 +498,7 @@ impl EventRecord {
             EventRecord::ToolResult { .. } => EventKind::ToolResult,
             EventRecord::CompactContinuationMarker { .. } => EventKind::CompactContinuationMarker,
             EventRecord::TurnEnd { .. } => EventKind::TurnEnd,
+            EventRecord::Rollback { .. } => EventKind::Rollback,
         }
     }
 
@@ -490,7 +513,8 @@ impl EventRecord {
             | EventRecord::ToolCall { event_order, .. }
             | EventRecord::ToolResult { event_order, .. }
             | EventRecord::CompactContinuationMarker { event_order, .. }
-            | EventRecord::TurnEnd { event_order, .. } => *event_order,
+            | EventRecord::TurnEnd { event_order, .. }
+            | EventRecord::Rollback { event_order, .. } => *event_order,
         }
     }
 
@@ -505,7 +529,8 @@ impl EventRecord {
             | EventRecord::ToolCall { recorded_at, .. }
             | EventRecord::ToolResult { recorded_at, .. }
             | EventRecord::CompactContinuationMarker { recorded_at, .. }
-            | EventRecord::TurnEnd { recorded_at, .. } => recorded_at.as_str(),
+            | EventRecord::TurnEnd { recorded_at, .. }
+            | EventRecord::Rollback { recorded_at, .. } => recorded_at.as_str(),
         }
     }
 
@@ -520,7 +545,8 @@ impl EventRecord {
             | EventRecord::ToolCall { actor, .. }
             | EventRecord::ToolResult { actor, .. }
             | EventRecord::CompactContinuationMarker { actor, .. }
-            | EventRecord::TurnEnd { actor, .. } => actor.as_str(),
+            | EventRecord::TurnEnd { actor, .. }
+            | EventRecord::Rollback { actor, .. } => actor.as_str(),
         }
     }
 
@@ -535,7 +561,8 @@ impl EventRecord {
             | EventRecord::ToolCall { harness, .. }
             | EventRecord::ToolResult { harness, .. }
             | EventRecord::CompactContinuationMarker { harness, .. }
-            | EventRecord::TurnEnd { harness, .. } => harness.as_str(),
+            | EventRecord::TurnEnd { harness, .. }
+            | EventRecord::Rollback { harness, .. } => harness.as_str(),
         }
     }
 
@@ -570,6 +597,9 @@ impl EventRecord {
             }
             | EventRecord::TurnEnd {
                 idempotency_key, ..
+            }
+            | EventRecord::Rollback {
+                idempotency_key, ..
             } => idempotency_key.as_str(),
         }
     }
@@ -587,7 +617,8 @@ impl EventRecord {
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
             | EventRecord::CompactContinuationMarker { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -602,7 +633,8 @@ impl EventRecord {
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
             | EventRecord::CompactContinuationMarker { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -618,7 +650,8 @@ impl EventRecord {
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
             | EventRecord::CompactContinuationMarker { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -633,7 +666,8 @@ impl EventRecord {
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
             | EventRecord::CompactContinuationMarker { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -648,7 +682,8 @@ impl EventRecord {
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
             | EventRecord::CompactContinuationMarker { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -663,7 +698,8 @@ impl EventRecord {
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
             | EventRecord::CompactContinuationMarker { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -678,7 +714,8 @@ impl EventRecord {
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
             | EventRecord::CompactContinuationMarker { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -693,7 +730,8 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolResult { .. }
             | EventRecord::CompactContinuationMarker { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -708,7 +746,8 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
             | EventRecord::CompactContinuationMarker { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -723,7 +762,8 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
-            | EventRecord::TurnEnd { .. } => None,
+            | EventRecord::TurnEnd { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 
@@ -738,7 +778,8 @@ impl EventRecord {
             | EventRecord::ThinkingLevelChange { .. }
             | EventRecord::ToolCall { .. }
             | EventRecord::ToolResult { .. }
-            | EventRecord::CompactContinuationMarker { .. } => None,
+            | EventRecord::CompactContinuationMarker { .. }
+            | EventRecord::Rollback { .. } => None,
         }
     }
 }

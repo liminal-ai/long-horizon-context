@@ -9,7 +9,12 @@ import {
 } from "../../shared-tech/index.js";
 import type { WorkItemRecord } from "../../shared-tech/work-queue/index.js";
 import type { ThreadRef } from "../../threads/index.js";
-import { create as createTurn, TurnStateCorruptionError } from "../../turns/index.js";
+import {
+  applyRollback,
+  create as createTurn,
+  RollbackAnchorError,
+  TurnStateCorruptionError,
+} from "../../turns/index.js";
 import type { BatchResult, EventRecord, MessageEventInput } from "../index.js";
 import { extractPayloadBlobs } from "./blobs.js";
 import { validateEvents, validateThreadRef } from "./validate.js";
@@ -109,17 +114,23 @@ export async function runMessageEvents(
               eventOrder: lastOrder,
               recordedAt,
             } as typeof event & { eventOrder: number; recordedAt: string };
-            const turnOutcome = createTurn(transaction, recordedEvent);
-            turnTransitions.push(...turnOutcome.transitions);
-            queuedItems.push(...turnOutcome.queuedWork);
-            const created = createMessage(transaction, recordedEvent, turnOutcome.turnId);
-            queuedItems.push(...created.queuedWork);
-            const entry: BatchResult["events"][number] = {
-              idempotencyKey: event.idempotencyKey,
-              outcome: "recorded",
-            };
-            if (created.message !== null) entry.messageId = created.message.messageId;
-            eventResults.push(entry);
+            if (recordedEvent.eventKind === "rollback") {
+              const outcome = applyRollback(transaction, recordedEvent);
+              queuedItems.push(...outcome.queuedWork);
+              eventResults.push({ idempotencyKey: event.idempotencyKey, outcome: "recorded" });
+            } else {
+              const turnOutcome = createTurn(transaction, recordedEvent);
+              turnTransitions.push(...turnOutcome.transitions);
+              queuedItems.push(...turnOutcome.queuedWork);
+              const created = createMessage(transaction, recordedEvent, turnOutcome.turnId);
+              queuedItems.push(...created.queuedWork);
+              const entry: BatchResult["events"][number] = {
+                idempotencyKey: event.idempotencyKey,
+                outcome: "recorded",
+              };
+              if (created.message !== null) entry.messageId = created.message.messageId;
+              eventResults.push(entry);
+            }
           }
           walkHook?.(transaction.db, index);
         }
@@ -143,7 +154,7 @@ export async function runMessageEvents(
     );
     return result.ok ? result.value : result;
   } catch (cause) {
-    if (cause instanceof TurnStateCorruptionError) {
+    if (cause instanceof TurnStateCorruptionError || cause instanceof RollbackAnchorError) {
       return {
         ok: false,
         error: {
