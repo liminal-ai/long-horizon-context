@@ -31,6 +31,19 @@ export type TurnEndPayload = {
   endedAt?: string;
 };
 
+/**
+ * A host rollback. Every live message recorded after `keepThroughEventOrder`
+ * is hidden under the deleted contract in the same batch, and its content
+ * stays in the record. Hide-only: a later rollback never unhides. The anchor
+ * must sit below this event's own order, and `0` hides everything. Hosts map
+ * their rewind reference to an event order first, e.g. with
+ * `listEventKeysByPrefix` over their capture keys.
+ */
+export type RollbackPayload = {
+  keepThroughEventOrder: number;
+  reason?: string;
+};
+
 export type StepScoped = {
   stepIndex?: number;
 };
@@ -98,7 +111,8 @@ export type MessageEventInput =
   | BaseEvent<"tool_call", ToolCallPayload>
   | BaseEvent<"tool_result", ToolResultPayload>
   | BaseEvent<"compact_continuation_marker", CompactContinuationMarkerPayload>
-  | BaseEvent<"turn_end", TurnEndPayload>;
+  | BaseEvent<"turn_end", TurnEndPayload>
+  | BaseEvent<"rollback", RollbackPayload>;
 
 export type EventKind = MessageEventInput["eventKind"];
 

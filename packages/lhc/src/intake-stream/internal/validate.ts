@@ -12,6 +12,7 @@ export const EVENT_KINDS = [
   "tool_result",
   "compact_continuation_marker",
   "turn_end",
+  "rollback",
 ] as const;
 
 const SERVER_GENERATED_FIELDS = ["eventOrder", "recordedAt", "threadEventId", "schemaVersion"] as const;
@@ -66,6 +67,10 @@ const TurnEndPayloadSchema = Schema.Struct({
   outcomeReason: Schema.optional(Schema.String),
   startedAt: Schema.optional(Schema.String),
   endedAt: Schema.optional(Schema.String),
+});
+const RollbackPayloadSchema = Schema.Struct({
+  keepThroughEventOrder: Schema.Number.pipe(Schema.int(), Schema.nonNegative()),
+  reason: Schema.optional(Schema.String),
 });
 const ModelChangePayloadSchema = Schema.Struct({
   previousModel: NonEmptyString,
@@ -232,6 +237,9 @@ function validateOneEvent(event: unknown, index: number): ErrorResult | undefine
   switch (envelope.right.eventKind) {
     case "turn_end":
       issue = decodeIssue(TurnEndPayloadSchema, payload);
+      break;
+    case "rollback":
+      issue = decodeIssue(RollbackPayloadSchema, payload);
       break;
     case "assistant_text":
       issue = decodeIssue(AssistantTextPayloadSchema, payload);

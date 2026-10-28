@@ -164,6 +164,7 @@ export function projectEvent(event: RecordedEvent, estimator: TokenEstimator): P
       };
     }
     case "turn_end":
+    case "rollback":
       return null;
   }
 }

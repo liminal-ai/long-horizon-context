@@ -15,6 +15,7 @@ const ALL_KINDS: readonly EventKind[] = [
   "tool_result",
   "compact_continuation_marker",
   "turn_end",
+  "rollback",
 ];
 
 const GOLDEN_PAYLOAD_KEYS: Record<EventKind, string[]> = {
@@ -28,6 +29,7 @@ const GOLDEN_PAYLOAD_KEYS: Record<EventKind, string[]> = {
   tool_result: ["toolCallId", "content", "isError"],
   compact_continuation_marker: ["kind", "continuationTurnId", "cause", "action", "newUserRequest", "waitForUser"],
   turn_end: [],
+  rollback: ["keepThroughEventOrder"],
 };
 
 describe("FC-0.4: fixture builders", () => {

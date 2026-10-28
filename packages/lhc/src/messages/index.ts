@@ -48,7 +48,7 @@ export interface Block {
 export interface MessageRecord {
   messageId: string;
   sourceEventOrder: number;
-  kind: Exclude<EventKind, "turn_end">;
+  kind: Exclude<EventKind, "turn_end" | "rollback">;
   blocks: Block[];
   tokenEstimate: number;
   actor: string;
@@ -65,7 +65,7 @@ export type RecordedEvent = EventRecord;
 
 export type MessageCreated = {
   messageId: string;
-  kind: Exclude<EventKind, "turn_end">;
+  kind: Exclude<EventKind, "turn_end" | "rollback">;
   toolCallId?: string;
 } | null;
 
@@ -81,7 +81,7 @@ export function create(
 ): MessageCreateResult {
   const projected = projectEvent(recordedEvent, resolveInstanceTokenEstimator("messages.create"));
   if (projected === null) return { message: null, queuedWork: [] };
-  const kind = recordedEvent.eventKind as Exclude<EventKind, "turn_end">;
+  const kind = recordedEvent.eventKind as Exclude<EventKind, "turn_end" | "rollback">;
   const messageId = `m${recordedEvent.eventOrder}`;
   const row: Parameters<typeof insertMessage>[1] = {
     messageId,
