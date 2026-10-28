@@ -42,7 +42,16 @@ import {
   markReady,
   newDescriptorPath,
 } from "../../src/runtime/descriptor.js";
-import { LAUNCH_IDS, LAUNCHES, type ReapTarget, reapProcesses, toolResult, toolUse, trackForReap } from "./helpers.js";
+import {
+  hasRealAddonForReap,
+  LAUNCH_IDS,
+  LAUNCHES,
+  type ReapTarget,
+  reapProcesses,
+  toolResult,
+  toolUse,
+  trackForReap,
+} from "./helpers.js";
 
 const T = "th_f4";
 const SESSION = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
@@ -461,41 +470,46 @@ describe("parseAgentFinalResult", () => {
 });
 
 describe("F4 relaunched Monitor: events delivered once each, terminal after exit, stopped at session end", () => {
-  it("each event line is delivered exactly once across prompts; the item ends completed once the process exited", async () => {
-    const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
-    const events = (context: string) => context.split("\n").filter((l) => l.startsWith("event "));
-    appendFileSync(s.outputPath, "build 1 started\nbuild 1 ");
-    const first = events(s.prompt());
-    expect(first).toEqual([`event ${LAUNCH_IDS.monitor}@16 · monitor · monitor "CI watch" (mon-1) · build 1 started`]);
-    expect(s.store.deliveredEventOffset(T, LAUNCH_IDS.monitor)).toBe(16);
-    expect(itemOf(s.store, LAUNCH_IDS.monitor).state).toBe("active");
+  it.skipIf(!hasRealAddonForReap())(
+    "each event line is delivered exactly once across prompts; the item ends completed once the process exited",
+    async () => {
+      const s = session({ monitorCommand: "sleep 30", transcript: FINAL_TRANSCRIPT });
+      const events = (context: string) => context.split("\n").filter((l) => l.startsWith("event "));
+      appendFileSync(s.outputPath, "build 1 started\nbuild 1 ");
+      const first = events(s.prompt());
+      expect(first).toEqual([
+        `event ${LAUNCH_IDS.monitor}@16 · monitor · monitor "CI watch" (mon-1) · build 1 started`,
+      ]);
+      expect(s.store.deliveredEventOffset(T, LAUNCH_IDS.monitor)).toBe(16);
+      expect(itemOf(s.store, LAUNCH_IDS.monitor).state).toBe("active");
 
-    appendFileSync(s.outputPath, "passed\nbuild 2 started\n");
-    const second = events(s.prompt());
-    expect(second.map((l) => l.split(" · ").at(-1))).toEqual(["build 1 passed", "build 2 started"]);
-    expect(events(s.prompt())).toEqual([]);
+      appendFileSync(s.outputPath, "passed\nbuild 2 started\n");
+      const second = events(s.prompt());
+      expect(second.map((l) => l.split(" · ").at(-1))).toEqual(["build 1 passed", "build 2 started"]);
+      expect(events(s.prompt())).toEqual([]);
 
-    // The relaunched process exits: a trailing unterminated line is final now, and the item closes.
-    appendFileSync(s.outputPath, "watch ended");
-    // Through the reaper: it stops the whole tree and waits for every process in it.
-    // A bare kill of the pid ends only Git Bash on Windows; its `sleep` child keeps
-    // the output file open and the temp dir cannot be removed (CI run 35920735874).
-    await reapProcesses(
-      pids.splice(
-        pids.findIndex((t) => t.pid === s.pid),
-        1,
-      ),
-    );
-    await waitGone(s.pid);
-    const last = s.prompt();
-    expect(events(last).map((l) => l.split(" · ").at(-1))).toEqual(["watch ended"]);
-    expect(last).toContain(`result ${LAUNCH_IDS.monitor} · monitor · monitor "CI watch" (mon-1) · completed`);
-    expect(itemOf(s.store, LAUNCH_IDS.monitor)).toMatchObject({
-      state: "terminal",
-      terminal: { outcome: "completed" },
-    });
-    expect(s.prompt()).not.toContain(LAUNCH_IDS.monitor);
-  });
+      // The relaunched process exits: a trailing unterminated line is final now, and the item closes.
+      appendFileSync(s.outputPath, "watch ended");
+      // Through the reaper: it stops the whole tree and waits for every process in it.
+      // A bare kill of the pid ends only Git Bash on Windows; its `sleep` child keeps
+      // the output file open and the temp dir cannot be removed (CI run 35920735874).
+      await reapProcesses(
+        pids.splice(
+          pids.findIndex((t) => t.pid === s.pid),
+          1,
+        ),
+      );
+      await waitGone(s.pid);
+      const last = s.prompt();
+      expect(events(last).map((l) => l.split(" · ").at(-1))).toEqual(["watch ended"]);
+      expect(last).toContain(`result ${LAUNCH_IDS.monitor} · monitor · monitor "CI watch" (mon-1) · completed`);
+      expect(itemOf(s.store, LAUNCH_IDS.monitor)).toMatchObject({
+        state: "terminal",
+        terminal: { outcome: "completed" },
+      });
+      expect(s.prompt()).not.toContain(LAUNCH_IDS.monitor);
+    },
+  );
 
   it("a failed stop signal keeps the Monitor only while the exact process still runs (win32 taskkill /T)", () => {
     // taskkill /T /F exits non-zero when one process in the tree is already
