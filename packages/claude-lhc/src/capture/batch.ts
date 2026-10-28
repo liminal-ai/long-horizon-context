@@ -49,7 +49,9 @@ export class ToolBatch {
     if (message.type === "assistant") {
       if (message.parent_tool_use_id !== null) return [];
       const inner = message.message as unknown as Block;
-      const calls = (Array.isArray(inner["content"]) ? (inner["content"] as Block[]) : []).filter((b) => b["type"] === "tool_use");
+      const calls = (Array.isArray(inner["content"]) ? (inner["content"] as Block[]) : []).filter(
+        (b) => b["type"] === "tool_use",
+      );
       if (calls.length === 0) return [];
       this.#start(String(inner["id"] ?? ""));
       return this.#add(calls);
@@ -58,7 +60,12 @@ export class ToolBatch {
       const content = message.message.content;
       if (!Array.isArray(content)) return [];
       for (const block of content as unknown as Block[]) {
-        if (block["type"] === "tool_result" && typeof block["tool_use_id"] === "string" && this.#settled.has(block["tool_use_id"])) this.#settled.set(block["tool_use_id"], true);
+        if (
+          block["type"] === "tool_result" &&
+          typeof block["tool_use_id"] === "string" &&
+          this.#settled.has(block["tool_use_id"])
+        )
+          this.#settled.set(block["tool_use_id"], true);
       }
     }
     return [];

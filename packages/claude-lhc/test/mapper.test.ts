@@ -1,7 +1,13 @@
 import { describe, expect, test } from "vitest";
 import { compactCommand, mapPrompt, mapSdkMessage, stringifyToolResultContent } from "../src/capture/mapper.ts";
 
-const prompt = (text: string) => ({ type: "user", message: { role: "user", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "" }) as never;
+const prompt = (text: string) =>
+  ({
+    type: "user",
+    message: { role: "user", content: [{ type: "text", text }] },
+    parent_tool_use_id: null,
+    session_id: "",
+  }) as never;
 
 describe("mapPrompt", () => {
   test("a prompt into a closed turn is user_prompt", () => {
@@ -15,7 +21,9 @@ describe("mapPrompt", () => {
     expect((event?.payload as { text: string }).text).toBe("[user steer] faster");
   });
   test("task notifications are runtime notes", () => {
-    expect(mapPrompt(prompt("<task-notification>done</task-notification>"), "u3", false)[0]?.eventKind).toBe("runtime_note");
+    expect(mapPrompt(prompt("<task-notification>done</task-notification>"), "u3", false)[0]?.eventKind).toBe(
+      "runtime_note",
+    );
   });
   test("/compact is the manual compact command", () => {
     expect(compactCommand(prompt("/compact"))).toEqual({ args: "" });
@@ -26,7 +34,8 @@ describe("mapPrompt", () => {
 
 describe("the mid-turn continuation input", () => {
   test("is recorded as a runtime note, never as a prompt, even though it lands in an open turn", () => {
-    const note = "[runtime note] Context was compacted in the middle of this turn. The turn is still in progress: the 5 tool calls already made in this turn (Read ×5) and their results are recorded above, up to the compact continuation marker. Continue the task from exactly that point.";
+    const note =
+      "[runtime note] Context was compacted in the middle of this turn. The turn is still in progress: the 5 tool calls already made in this turn (Read ×5) and their results are recorded above, up to the compact continuation marker. Continue the task from exactly that point.";
     const events = mapPrompt(prompt(note), "u9", true);
     expect(events).toHaveLength(1);
     expect(events[0]?.eventKind).toBe("runtime_note");
@@ -37,23 +46,48 @@ describe("the mid-turn continuation input", () => {
 
 describe("content blocks", () => {
   const png = { type: "image", source: { type: "base64", media_type: "image/png", data: "iVBORw0KGgo=" } };
-  const pdf = { type: "document", source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQ=" }, title: "spec.pdf" };
+  const pdf = {
+    type: "document",
+    source: { type: "base64", media_type: "application/pdf", data: "JVBERi0xLjQ=" },
+    title: "spec.pdf",
+  };
   test("a prompt with an attached image sends the native content array as blocks; text stays the text", () => {
-    const message = { type: "user", message: { role: "user", content: [png, { type: "text", text: "what is this?" }] }, parent_tool_use_id: null, session_id: "" } as never;
+    const message = {
+      type: "user",
+      message: { role: "user", content: [png, { type: "text", text: "what is this?" }] },
+      parent_tool_use_id: null,
+      session_id: "",
+    } as never;
     const [event] = mapPrompt(message, "u9", false);
     expect(event?.eventKind).toBe("user_prompt");
     expect(event?.payload).toEqual({ text: "what is this?", blocks: [png, { type: "text", text: "what is this?" }] });
   });
   test("an image-only prompt is still a prompt", () => {
-    const message = { type: "user", message: { role: "user", content: [png] }, parent_tool_use_id: null, session_id: "" } as never;
+    const message = {
+      type: "user",
+      message: { role: "user", content: [png] },
+      parent_tool_use_id: null,
+      session_id: "",
+    } as never;
     expect(mapPrompt(message, "u10", false)).toHaveLength(1);
   });
   test("a Read of a PNG or PDF sends the tool result's native content array; text-only results stay strings", () => {
-    const result = mapSdkMessage({ type: "user", uuid: "r9", parent_tool_use_id: null, message: { role: "user", content: [
-      { type: "tool_result", tool_use_id: "toolu_png", content: [png] },
-      { type: "tool_result", tool_use_id: "toolu_pdf", content: [pdf, { type: "text", text: "3 pages" }] },
-      { type: "tool_result", tool_use_id: "toolu_txt", content: [{ type: "text", text: "plain" }] },
-    ] } } as never, undefined);
+    const result = mapSdkMessage(
+      {
+        type: "user",
+        uuid: "r9",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            { type: "tool_result", tool_use_id: "toolu_png", content: [png] },
+            { type: "tool_result", tool_use_id: "toolu_pdf", content: [pdf, { type: "text", text: "3 pages" }] },
+            { type: "tool_result", tool_use_id: "toolu_txt", content: [{ type: "text", text: "plain" }] },
+          ],
+        },
+      } as never,
+      undefined,
+    );
     expect(result.events.map((e) => e.payload)).toEqual([
       { toolCallId: "toolu_png", isError: false, content: "", blocks: [png] },
       { toolCallId: "toolu_pdf", isError: false, content: "3 pages", blocks: [pdf, { type: "text", text: "3 pages" }] },
@@ -63,29 +97,76 @@ describe("content blocks", () => {
   test("redacted thinking and server-side tool blocks ride verbatim on their events", () => {
     const redacted = { type: "redacted_thinking", data: "EqQB" };
     const use = { type: "server_tool_use", id: "srvtoolu_1", name: "web_search", input: { query: "lhc" } };
-    const found = { type: "web_search_tool_result", tool_use_id: "srvtoolu_1", content: [{ type: "web_search_result", title: "T", url: "https://x", encrypted_content: "ENC" }] };
-    const failed = { type: "web_search_tool_result", tool_use_id: "srvtoolu_2", content: { type: "web_search_tool_result_error", error_code: "max_uses_exceeded" } };
-    const result = mapSdkMessage({ type: "assistant", uuid: "a9", parent_tool_use_id: null, message: { model: "claude-sonnet-5", content: [redacted, use, found, failed, { type: "text", text: "done" }] } } as never, undefined);
-    expect(result.events.map((e) => e.eventKind)).toEqual(["assistant_thinking", "tool_call", "tool_result", "tool_result", "assistant_text"]);
+    const found = {
+      type: "web_search_tool_result",
+      tool_use_id: "srvtoolu_1",
+      content: [{ type: "web_search_result", title: "T", url: "https://x", encrypted_content: "ENC" }],
+    };
+    const failed = {
+      type: "web_search_tool_result",
+      tool_use_id: "srvtoolu_2",
+      content: { type: "web_search_tool_result_error", error_code: "max_uses_exceeded" },
+    };
+    const result = mapSdkMessage(
+      {
+        type: "assistant",
+        uuid: "a9",
+        parent_tool_use_id: null,
+        message: { model: "claude-sonnet-5", content: [redacted, use, found, failed, { type: "text", text: "done" }] },
+      } as never,
+      undefined,
+    );
+    expect(result.events.map((e) => e.eventKind)).toEqual([
+      "assistant_thinking",
+      "tool_call",
+      "tool_result",
+      "tool_result",
+      "assistant_text",
+    ]);
     expect((result.events[0]?.payload as { text: string; block: unknown }).text).toBe("");
     expect((result.events[0]?.payload as { block: unknown }).block).toEqual(redacted);
-    expect(result.events[1]?.payload).toMatchObject({ toolCallId: "srvtoolu_1", toolName: "web_search", arguments: { query: "lhc" }, block: use });
-    expect(result.events[2]?.payload).toEqual({ toolCallId: "srvtoolu_1", content: "", isError: false, blocks: [found] });
-    expect(result.events[3]?.payload).toEqual({ toolCallId: "srvtoolu_2", content: "", isError: true, blocks: [failed] });
+    expect(result.events[1]?.payload).toMatchObject({
+      toolCallId: "srvtoolu_1",
+      toolName: "web_search",
+      arguments: { query: "lhc" },
+      block: use,
+    });
+    expect(result.events[2]?.payload).toEqual({
+      toolCallId: "srvtoolu_1",
+      content: "",
+      isError: false,
+      blocks: [found],
+    });
+    expect(result.events[3]?.payload).toEqual({
+      toolCallId: "srvtoolu_2",
+      content: "",
+      isError: true,
+      blocks: [failed],
+    });
   });
 });
 
 describe("mapSdkMessage", () => {
   const usage = { input_tokens: 2, cache_creation_input_tokens: 100, cache_read_input_tokens: 900, output_tokens: 5 };
   test("assistant blocks map in order with provenance and usage; context tokens are input + cache", () => {
-    const result = mapSdkMessage({
-      type: "assistant", uuid: "a1", session_id: "s", parent_tool_use_id: null,
-      message: { model: "claude-sonnet-5", usage, content: [
-        { type: "thinking", thinking: "", signature: "sig" },
-        { type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "x" } },
-        { type: "text", text: "done" },
-      ] },
-    } as never, undefined);
+    const result = mapSdkMessage(
+      {
+        type: "assistant",
+        uuid: "a1",
+        session_id: "s",
+        parent_tool_use_id: null,
+        message: {
+          model: "claude-sonnet-5",
+          usage,
+          content: [
+            { type: "thinking", thinking: "", signature: "sig" },
+            { type: "tool_use", id: "toolu_1", name: "Read", input: { file_path: "x" } },
+            { type: "text", text: "done" },
+          ],
+        },
+      } as never,
+      undefined,
+    );
     expect(result.events.map((e) => e.eventKind)).toEqual(["assistant_thinking", "tool_call", "assistant_text"]);
     expect(result.events[0]?.idempotencyKey).toBe("claude-lhc:a1:0:assistant_thinking");
     expect((result.events[0]?.payload as { signature: string; model: string }).signature).toBe("sig");
@@ -93,30 +174,99 @@ describe("mapSdkMessage", () => {
     expect(result.contextTokens).toBe(1002);
   });
   test("subagent output is skipped", () => {
-    expect(mapSdkMessage({ type: "assistant", uuid: "a2", parent_tool_use_id: "toolu_task", message: { content: [{ type: "text", text: "x" }] } } as never, undefined).events).toEqual([]);
+    expect(
+      mapSdkMessage(
+        {
+          type: "assistant",
+          uuid: "a2",
+          parent_tool_use_id: "toolu_task",
+          message: { content: [{ type: "text", text: "x" }] },
+        } as never,
+        undefined,
+      ).events,
+    ).toEqual([]);
   });
   test("tool results map by tool_use_id with stringified content", () => {
-    const result = mapSdkMessage({ type: "user", uuid: "r1", parent_tool_use_id: null, message: { role: "user", content: [{ type: "tool_result", tool_use_id: "toolu_1", content: [{ type: "text", text: "a" }, { type: "text", text: "b" }], is_error: true }] } } as never, undefined);
+    const result = mapSdkMessage(
+      {
+        type: "user",
+        uuid: "r1",
+        parent_tool_use_id: null,
+        message: {
+          role: "user",
+          content: [
+            {
+              type: "tool_result",
+              tool_use_id: "toolu_1",
+              content: [
+                { type: "text", text: "a" },
+                { type: "text", text: "b" },
+              ],
+              is_error: true,
+            },
+          ],
+        },
+      } as never,
+      undefined,
+    );
     expect(result.events[0]?.payload).toEqual({ toolCallId: "toolu_1", content: "a\nb", isError: true });
     expect(stringifyToolResultContent({ k: 1 })).toBe('{"k":1}');
   });
   test("CLI-injected user text (task notification, hook output) is a system runtime note, never a prompt", () => {
-    const result = mapSdkMessage({ type: "user", uuid: "n1", parent_tool_use_id: null, session_id: "s", message: { role: "user", content: [{ type: "text", text: "<task-notification>agent done</task-notification>" }] } } as never, undefined);
+    const result = mapSdkMessage(
+      {
+        type: "user",
+        uuid: "n1",
+        parent_tool_use_id: null,
+        session_id: "s",
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "<task-notification>agent done</task-notification>" }],
+        },
+      } as never,
+      undefined,
+    );
     expect(result.events.map((e) => e.eventKind)).toEqual(["runtime_note"]);
     expect(result.events[0]?.actor).toBe("system");
     expect(result.events[0]?.idempotencyKey).toBe("claude-lhc:n1:0:runtime_note");
     expect(result.turnEnd).toBe(false);
-    const hook = mapSdkMessage({ type: "user", uuid: "n2", parent_tool_use_id: null, message: { role: "user", content: "<user-prompt-submit-hook>lint ok</user-prompt-submit-hook>" } } as never, undefined);
+    const hook = mapSdkMessage(
+      {
+        type: "user",
+        uuid: "n2",
+        parent_tool_use_id: null,
+        message: { role: "user", content: "<user-prompt-submit-hook>lint ok</user-prompt-submit-hook>" },
+      } as never,
+      undefined,
+    );
     expect((hook.events[0]?.payload as { text: string }).text.startsWith("<user-prompt-submit-hook>")).toBe(true);
   });
   test("replayed user messages on resume are skipped", () => {
-    expect(mapSdkMessage({ type: "user", uuid: "r2", isReplay: true, parent_tool_use_id: null, message: { role: "user", content: [{ type: "text", text: "old prompt" }] } } as never, undefined).events).toEqual([]);
+    expect(
+      mapSdkMessage(
+        {
+          type: "user",
+          uuid: "r2",
+          isReplay: true,
+          parent_tool_use_id: null,
+          message: { role: "user", content: [{ type: "text", text: "old prompt" }] },
+        } as never,
+        undefined,
+      ).events,
+    ).toEqual([]);
   });
   test("result closes the turn", () => {
-    const result = mapSdkMessage({ type: "result", subtype: "success", is_error: false, uuid: "x", session_id: "s" } as never, "2026-09-03T00:00:00.000Z");
+    const result = mapSdkMessage(
+      { type: "result", subtype: "success", is_error: false, uuid: "x", session_id: "s" } as never,
+      "2026-09-03T00:00:00.000Z",
+    );
     expect(result.turnEnd).toBe(true);
     expect((result.events[0]?.payload as { outcome: string; startedAt: string }).outcome).toBe("completed");
-    expect(mapSdkMessage({ type: "result", subtype: "error_during_execution", is_error: true, uuid: "y" } as never, undefined).events[0]?.payload).toMatchObject({ outcome: "aborted" });
+    expect(
+      mapSdkMessage(
+        { type: "result", subtype: "error_during_execution", is_error: true, uuid: "y" } as never,
+        undefined,
+      ).events[0]?.payload,
+    ).toMatchObject({ outcome: "aborted" });
   });
 });
-
