@@ -87,7 +87,7 @@ describe("TC-4.1a Default allocation and core provenance", () => {
     expect(mutationCoreProfile("default")).toBe("continuation");
     expect(compactConstruction(BUILTIN_CONTEXT_POLICY)).toEqual({
       profile: "continuation",
-      params: { lowerBound: 180_000 },
+      params: { lowerBound: BUILTIN_CONTEXT_POLICY.lowerBoundTokens },
     });
 
     expect(ACCEPTED_BOUNDED_CORE_SOURCE_COMMIT).toBe("1cfce5d5b45258150278a5699657a2481de5a48e");

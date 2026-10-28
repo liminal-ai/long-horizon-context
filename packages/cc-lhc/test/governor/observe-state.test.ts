@@ -18,6 +18,8 @@ function armed(): ResolvedContextPolicy {
   return { policy, sources, fallbacks: [] };
 }
 
+const TRIGGER_TOKENS = BUILTIN_CONTEXT_POLICY.upperBoundTokens;
+
 describe("governor observe-state fold", () => {
   it("emits one observe record per turn_settled; duplicate settle does not double-trigger", () => {
     const state = createGovernorRuntimeState({
@@ -30,7 +32,7 @@ describe("governor observe-state fold", () => {
         kind: "sampling_observed",
         samplingId: "m1",
         providerUsage: {
-          input_tokens: 400_000,
+          input_tokens: TRIGGER_TOKENS + 40_000,
           cache_creation_input_tokens: 50_000,
           cache_read_input_tokens: 60_000,
         },
@@ -41,10 +43,10 @@ describe("governor observe-state fold", () => {
     const settled = first.observes.filter((o) => o.observePhase === "settled_seam");
     expect(settled).toHaveLength(1);
     expect(settled[0]?.decision).toBe("would_compact");
-    expect(settled[0]?.providerContextTotal).toBe(510_000);
+    expect(settled[0]?.providerContextTotal).toBe(TRIGGER_TOKENS + 150_000);
     expect(settled[0]?.wouldMutate).toBe(true);
     expect(settled[0]?.hostCapability).toBe("capability_limited");
-    expect(settled[0]?.pressure.nextRequestPressureTokens).toBe(510_000);
+    expect(settled[0]?.pressure.nextRequestPressureTokens).toBe(TRIGGER_TOKENS + 150_000);
 
     const second = applyGovernorLifecycleBatch(first.state, [{ kind: "turn_settled", reason: "end_turn" }], resolved);
     expect(second.observes).toHaveLength(1);
@@ -65,7 +67,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "request-1",
-          providerUsage: { input_tokens: 600_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 240_000 },
         },
         { kind: "sampling_observed", samplingId: "request-2" },
         { kind: "turn_settled", reason: "end_turn" },
@@ -74,7 +76,7 @@ describe("governor observe-state fold", () => {
     );
     const settledMissing = missing.observes.filter((o) => o.observePhase === "settled_seam");
     expect(settledMissing[0]?.decision).toBe("would_compact");
-    expect(settledMissing[0]?.providerContextTotal).toBe(600_000);
+    expect(settledMissing[0]?.providerContextTotal).toBe(TRIGGER_TOKENS + 240_000);
     expect(settledMissing[0]?.pressure.providerBaseFreshness).toBe("last_known");
 
     const invalid = applyGovernorLifecycleBatch(
@@ -84,7 +86,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "request-1",
-          providerUsage: { input_tokens: 600_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 240_000 },
         },
         {
           kind: "sampling_observed",
@@ -97,7 +99,7 @@ describe("governor observe-state fold", () => {
     );
     const settledInvalid = invalid.observes.filter((o) => o.observePhase === "settled_seam")[0];
     expect(settledInvalid?.decision).toBe("would_compact");
-    expect(settledInvalid?.providerContextTotal).toBe(600_000);
+    expect(settledInvalid?.providerContextTotal).toBe(TRIGGER_TOKENS + 240_000);
     expect(settledInvalid?.pressure.providerBaseFreshness).toBe("last_known");
 
     const replaced = applyGovernorLifecycleBatch(
@@ -107,7 +109,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "request-1",
-          providerUsage: { input_tokens: 600_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 240_000 },
         },
         {
           kind: "sampling_observed",
@@ -135,7 +137,7 @@ describe("governor observe-state fold", () => {
           kind: "sampling_observed",
           samplingId: "m1",
           providerUsage: {
-            input_tokens: 400_000,
+            input_tokens: TRIGGER_TOKENS + 40_000,
             cache_creation_input_tokens: 0,
             cache_read_input_tokens: 0,
           },
@@ -163,7 +165,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 350_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS - 10_000 },
         },
       ],
       resolved,
@@ -187,9 +189,9 @@ describe("governor observe-state fold", () => {
     );
     expect(openWould).toHaveLength(1);
     expect(openWould[0]?.wouldMutate).toBe(false);
-    expect(openWould[0]?.providerContextTotal).toBe(350_000);
+    expect(openWould[0]?.providerContextTotal).toBe(TRIGGER_TOKENS - 10_000);
     expect(openWould[0]?.pressure.estimateTokens).toBe(20_000);
-    expect(openWould[0]?.pressure.nextRequestPressureTokens).toBe(370_000);
+    expect(openWould[0]?.pressure.nextRequestPressureTokens).toBe(TRIGGER_TOKENS + 10_000);
     expect(openWould[0]?.pressure.estimateDomain).toBe("source_labelled_estimate");
   });
 
@@ -272,7 +274,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 350_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS - 10_000 },
         },
         {
           kind: "post_measurement_estimate",
@@ -287,8 +289,8 @@ describe("governor observe-state fold", () => {
     expect(settled).toHaveLength(1);
     expect(settled[0]?.decision).toBe("would_compact");
     expect(settled[0]?.wouldMutate).toBe(true);
-    expect(settled[0]?.pressure.nextRequestPressureTokens).toBe(370_000);
-    expect(settled[0]?.providerContextTotal).toBe(350_000);
+    expect(settled[0]?.pressure.nextRequestPressureTokens).toBe(TRIGGER_TOKENS + 10_000);
+    expect(settled[0]?.providerContextTotal).toBe(TRIGGER_TOKENS - 10_000);
   });
 
   it("input typed during the turn does not suppress the settled decision", () => {
@@ -304,7 +306,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 600_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 240_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
@@ -329,7 +331,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 600_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 240_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
@@ -350,7 +352,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 600_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 240_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
@@ -369,7 +371,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 600_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 240_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
@@ -389,7 +391,7 @@ describe("governor observe-state fold", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 600_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 240_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],

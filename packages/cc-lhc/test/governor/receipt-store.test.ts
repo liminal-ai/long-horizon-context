@@ -19,6 +19,8 @@ function armed(): ResolvedContextPolicy {
   return { policy, sources, fallbacks: [] };
 }
 
+const TRIGGER_TOKENS = BUILTIN_CONTEXT_POLICY.upperBoundTokens;
+
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -40,7 +42,7 @@ function settledWouldCompact() {
         kind: "sampling_observed",
         samplingId: "s1",
         providerUsage: {
-          input_tokens: 200_000,
+          input_tokens: TRIGGER_TOKENS - 160_000,
           cache_creation_input_tokens: 100_000,
           cache_read_input_tokens: 80_000,
         },
@@ -73,7 +75,7 @@ describe("governor durable receipt store", () => {
     expect(durable.inserted).toBe(true);
     expect(durable.receipt.decision).toBe("would_compact");
     expect(durable.receipt.wouldMutate).toBe(true);
-    expect(durable.receipt.pressure.nextRequestPressureTokens).toBe(385_000);
+    expect(durable.receipt.pressure.nextRequestPressureTokens).toBe(TRIGGER_TOKENS + 25_000);
     expect(durable.receipt.handoffOutcome?.kind).toBe("scheduled");
     expect(durable.receipt.captureGeneration).toBe(3);
     store1.close();
@@ -84,7 +86,7 @@ describe("governor durable receipt store", () => {
     const last = listed[listed.length - 1]!;
     expect(last.receiptId).toBe(durable.receipt.receiptId);
     expect(last.pressure.estimateDomain).toBe("source_labelled_estimate");
-    expect(last.observe.providerContextTotal).toBe(380_000);
+    expect(last.observe.providerContextTotal).toBe(TRIGGER_TOKENS + 20_000);
     expect(last.observe.pressure.estimateTokens).toBe(5_000);
 
     const attached = store2.attachHandoffOutcome(last.receiptId, {
@@ -118,7 +120,7 @@ describe("governor durable receipt store", () => {
         {
           kind: "sampling_observed",
           samplingId: "s1",
-          providerUsage: { input_tokens: 500_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 140_000 },
         },
       ],
       armed(),

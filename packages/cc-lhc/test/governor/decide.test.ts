@@ -53,7 +53,7 @@ describe("decideGovernor", () => {
     const d = decideGovernor(
       baseInput({
         providerContext: {
-          inputTokens: 260_000,
+          inputTokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens - 100_000,
           cacheCreationInputTokens: 50_000,
           cacheReadInputTokens: 50_000,
           total: BUILTIN_CONTEXT_POLICY.upperBoundTokens,
@@ -61,17 +61,17 @@ describe("decideGovernor", () => {
       }),
     );
     expect(d.kind).toBe("would_compact");
-    expect(d.providerContextTotal).toBe(360_000);
+    expect(d.providerContextTotal).toBe(BUILTIN_CONTEXT_POLICY.upperBoundTokens);
   });
 
   it("post-measurement estimate can cross the threshold without double-counting into provider total", () => {
     const d = decideGovernor(
       baseInput({
         providerContext: {
-          inputTokens: 350_000,
+          inputTokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens - 10_000,
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: 0,
-          total: 350_000,
+          total: BUILTIN_CONTEXT_POLICY.upperBoundTokens - 10_000,
         },
         postMeasurementEstimate: {
           tokens: 20_000,
@@ -81,10 +81,10 @@ describe("decideGovernor", () => {
       }),
     );
     expect(d.kind).toBe("would_compact");
-    expect(d.providerContextTotal).toBe(350_000);
-    expect(d.pressure.providerBaseTokens).toBe(350_000);
+    expect(d.providerContextTotal).toBe(BUILTIN_CONTEXT_POLICY.upperBoundTokens - 10_000);
+    expect(d.pressure.providerBaseTokens).toBe(BUILTIN_CONTEXT_POLICY.upperBoundTokens - 10_000);
     expect(d.pressure.estimateTokens).toBe(20_000);
-    expect(d.pressure.nextRequestPressureTokens).toBe(370_000);
+    expect(d.pressure.nextRequestPressureTokens).toBe(BUILTIN_CONTEXT_POLICY.upperBoundTokens + 10_000);
     expect(d.pressure.estimateDomain).toBe("source_labelled_estimate");
   });
 
@@ -197,10 +197,10 @@ describe("decideGovernor", () => {
   it("repeated settled seams at the same pressure keep producing an executable decision", () => {
     const at = baseInput({
       providerContext: {
-        inputTokens: 400_000,
+        inputTokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens + 40_000,
         cacheCreationInputTokens: 0,
         cacheReadInputTokens: 0,
-        total: 400_000,
+        total: BUILTIN_CONTEXT_POLICY.upperBoundTokens + 40_000,
       },
     });
     for (let seam = 0; seam < 3; seam += 1) {

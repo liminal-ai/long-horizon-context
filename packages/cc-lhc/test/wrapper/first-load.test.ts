@@ -5,6 +5,8 @@ import { PassThrough } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { formatTokensShort } from "../../src/commands/context-mutation.js";
+import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import {
@@ -323,11 +325,13 @@ describe("first-load Control Panel on the managed launch path", () => {
       await waitFor(() => panelText(first.out()).includes(PANEL_TITLE), "onboarding panel");
       const shown = panelText(first.out());
       expect(shown).toContain("Welcome to CC-LHC");
-      expect(shown).toContain("target 180k after /smart-compact · trigger 360k");
+      expect(shown).toContain(
+        `target ${formatTokensShort(BUILTIN_CONTEXT_POLICY.lowerBoundTokens)} after /smart-compact · trigger ${formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens)}`,
+      );
       expect(shown).toContain("Claude native auto-compact off");
       expect(shown).toContain("reopen this panel any time with ctrl-] · press Esc to continue to Claude");
-      expect(shown).toContain("target 180k");
-      expect(shown).toContain("trigger 360k");
+      expect(shown).toContain(`target ${formatTokensShort(BUILTIN_CONTEXT_POLICY.lowerBoundTokens)}`);
+      expect(shown).toContain(`trigger ${formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens)}`);
       expect(first.out().startsWith(ALT_SCREEN_ENTER)).toBe(true);
       expect(readShownVersion(marker)).toBe(ONBOARDING_VERSION);
       expect(first.logLines.join("\n")).toContain(`Control Panel opened at launch (onboarding v${ONBOARDING_VERSION})`);

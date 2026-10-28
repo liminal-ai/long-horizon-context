@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 
+import { formatTokensShort } from "../src/commands/context-mutation.js";
+import { BUILTIN_CONTEXT_POLICY } from "../src/governor/config.js";
 import { CC_LHC_HELP, isLhcHelpArgv } from "../src/help.js";
 import { PANEL_COMMANDS } from "../src/wrapper/panel-commands.js";
 
@@ -42,6 +44,12 @@ describe("cc-lhc help surface", () => {
     for (const command of PANEL_COMMANDS) {
       expect(panelSection, `cc-lhc --lhc-help omits ${command.name}`).toContain(command.name);
     }
+  });
+
+  it("advertises the built-in compact bounds from the policy constant", () => {
+    expect(CC_LHC_HELP).toContain(`at the ${formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens)} trigger`);
+    expect(CC_LHC_HELP).toContain(`toward a ${formatTokensShort(BUILTIN_CONTEXT_POLICY.lowerBoundTokens)} target`);
+    expect(CC_LHC_HELP).toContain(`(${formatTokensShort(BUILTIN_CONTEXT_POLICY.minRunwayTokens)} minimum runway)`);
   });
 
   it("advertises no capture-disabled or observe-only mode", () => {

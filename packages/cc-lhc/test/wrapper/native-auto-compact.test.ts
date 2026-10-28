@@ -5,6 +5,8 @@ import { PassThrough } from "node:stream";
 import type { Lhc } from "lhc";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { formatTokensShort } from "../../src/commands/context-mutation.js";
+import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import type { CaptureSession, CaptureSessionDeps } from "../../src/intake/session.js";
 import { emptyCaptureStats } from "../../src/stats.js";
 import {
@@ -388,8 +390,8 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
         live.stdin.write(leader);
         await waitFor(() => panelText(live.terminalOutput.join("")).includes(PANEL_TITLE), "panel home");
         const home = panelText(live.terminalOutput.join(""));
-        expect(home).toContain("target 180k");
-        expect(home).toContain("trigger 360k");
+        expect(home).toContain(`target ${formatTokensShort(BUILTIN_CONTEXT_POLICY.lowerBoundTokens)}`);
+        expect(home).toContain(`trigger ${formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens)}`);
         expect(home).not.toContain("window ");
         expect(home).toContain(
           native === "disabled"
@@ -403,7 +405,9 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
         await waitFor(() => panelText(live.terminalOutput.join("")).includes("Latest provider context"), "status");
         const status = panelText(live.terminalOutput.join(""));
         expect(status).toContain("Latest provider context: not observed yet");
-        expect(status).toContain("180,000-token target · 360,000-token trigger");
+        expect(status).toContain(
+          `${BUILTIN_CONTEXT_POLICY.lowerBoundTokens.toLocaleString("en-US")}-token target · ${BUILTIN_CONTEXT_POLICY.upperBoundTokens.toLocaleString("en-US")}-token trigger`,
+        );
         expect(status).not.toContain("window");
         expect(status).toContain(
           native === "disabled"
@@ -413,10 +417,16 @@ describe("run: Control Panel advisory for an explicit --autocompact (AC-1.7)", (
 
         live.terminalOutput.length = 0;
         live.stdin.write(Buffer.from("/details\r"));
-        await waitFor(() => panelText(live.terminalOutput.join("")).includes("target 180,000"), "details rows");
+        await waitFor(
+          () =>
+            panelText(live.terminalOutput.join("")).includes(
+              `target ${BUILTIN_CONTEXT_POLICY.lowerBoundTokens.toLocaleString("en-US")}`,
+            ),
+          "details rows",
+        );
         const details = panelText(live.terminalOutput.join(""));
-        expect(details).toContain("target 180,000");
-        expect(details).toContain("trigger 360,000");
+        expect(details).toContain(`target ${BUILTIN_CONTEXT_POLICY.lowerBoundTokens.toLocaleString("en-US")}`);
+        expect(details).toContain(`trigger ${BUILTIN_CONTEXT_POLICY.upperBoundTokens.toLocaleString("en-US")}`);
         expect(details).toMatch(/Family\s+claude-2026/);
         expect(details).toContain(
           native === "disabled"

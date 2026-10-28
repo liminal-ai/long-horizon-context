@@ -1,3 +1,5 @@
+import { formatTokensShort } from "./commands/context-mutation.js";
+import { BUILTIN_CONTEXT_POLICY } from "./governor/config.js";
 import { readBuildIdentity } from "./version.js";
 
 export const CC_LHC_HELP = `cc-lhc ${readBuildIdentity().version} — Long Horizon Context wrapper for Claude Code
@@ -13,8 +15,8 @@ Usage:
   cc-lhc --lhc-help
   cc-lhc --lhc-version
 
-Smart Compact is always active: it runs automatically at the 360k trigger
-toward a 180k target (50k minimum runway) and cannot be turned off. cc-lhc
+Smart Compact is always active: it runs automatically at the ${formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens)} trigger
+toward a ${formatTokensShort(BUILTIN_CONTEXT_POLICY.lowerBoundTokens)} target (${formatTokensShort(BUILTIN_CONTEXT_POLICY.minRunwayTokens)} minimum runway) and cannot be turned off. cc-lhc
 assumes a 1M-window model. Override the built-in policy with user/project
 config or /bounds.
 

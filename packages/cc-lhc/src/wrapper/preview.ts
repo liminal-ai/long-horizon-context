@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type ContinuityStore, openContinuityStore } from "../continuity/store.js";
+import { BUILTIN_CONTEXT_POLICY } from "../governor/config.js";
 import {
   type ActionableCondition,
   firstLoadMarkerPath,
@@ -163,8 +164,8 @@ export function createPreviewHome(): PreviewHome {
 export function previewPanelView(fixture: PreviewFixture, home: PreviewHome): PanelViewSnapshot {
   return buildPanelViewSnapshot({
     providerContextTokens: null,
-    targetTokens: 180_000,
-    triggerTokens: 360_000,
+    targetTokens: BUILTIN_CONTEXT_POLICY.lowerBoundTokens,
+    triggerTokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens,
     nativeAutoCompact: fixture.nativeAutoCompact,
     captureHealth: "ready",
     profile: "default",
@@ -212,8 +213,8 @@ export function renderPreview(
     shownVersion: readShownVersion(marker),
     version: ONBOARDING_VERSION,
     facts: {
-      targetTokens: 180_000,
-      triggerTokens: 360_000,
+      targetTokens: BUILTIN_CONTEXT_POLICY.lowerBoundTokens,
+      triggerTokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens,
       nativeAutoCompact: fixture.nativeAutoCompact,
       leaderByte,
     },
