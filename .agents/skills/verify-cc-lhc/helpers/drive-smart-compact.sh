@@ -28,6 +28,10 @@ find "$ISO_HOME/.claude/projects" -name '*.jsonl' | sort >"$EVIDENCE_DIR/compact
 cp "$ISO_HOME/.cc-lhc/wrapper.log" "$EVIDENCE_DIR/smart-compact-wrapper.log" 2>/dev/null || true
 
 NEW_FILES="$(comm -13 "$EVIDENCE_DIR/compact-before.txt" "$EVIDENCE_DIR/compact-after.txt")"
+if [ "$RC" != "0" ]; then
+  fail "smart-compact run rc=$RC (new transcript written: $([ -n "$NEW_FILES" ] && echo yes || echo no))"
+  finish smart-compact; exit $?
+fi
 if [ -n "$NEW_FILES" ]; then
   pass "Smart Compact wrote a new session transcript: $NEW_FILES"
   echo "$NEW_FILES" | head -1 | xargs -I{} sh -c 'grep -lq "'"$CODEWORD"'" "{}"' \
