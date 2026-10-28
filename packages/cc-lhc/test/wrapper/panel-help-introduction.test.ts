@@ -5,6 +5,8 @@ import { PassThrough } from "node:stream";
 import { StringDecoder } from "node:string_decoder";
 import { afterEach, describe, expect, it } from "vitest";
 
+import { formatTokensShort } from "../../src/commands/context-mutation.js";
+import { BUILTIN_CONTEXT_POLICY } from "../../src/governor/config.js";
 import { createInputState, DEFAULT_LEADER_BYTE, type InputState, processInputChunk } from "../../src/wrapper/modal.js";
 import { ENTER_ALT_SCREEN, PANEL_PROMPT, renderPanel } from "../../src/wrapper/panel.js";
 import {
@@ -335,8 +337,8 @@ describe("TC-2.2a Introduction presents the mental model", () => {
     expect(unknown).toContain("CC-LHC runs /smart-compact automatically at the active trigger");
     expect(unknown).toContain("Use /status to see the current target and trigger.");
     expect(unknown).not.toMatch(/compaction is (on|off)/i);
-    expect(unknown).not.toContain("180k");
-    expect(unknown).not.toContain("360k");
+    expect(unknown).not.toContain(formatTokensShort(BUILTIN_CONTEXT_POLICY.lowerBoundTokens));
+    expect(unknown).not.toContain(formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens));
   });
 });
 
@@ -353,8 +355,8 @@ describe("TC-2.2b Introduction uses current values", () => {
     expect(lines).toContain("42k");
     expect(lines).toContain("77k");
     expect(lines).toContain("Historical");
-    expect(lines).not.toContain("180k");
-    expect(lines).not.toContain("360k");
+    expect(lines).not.toContain(formatTokensShort(BUILTIN_CONTEXT_POLICY.lowerBoundTokens));
+    expect(lines).not.toContain(formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens));
   });
 });
 
@@ -416,8 +418,8 @@ describe("TC-2.2c Values refresh after selection", () => {
     (stdin as unknown as PassThrough).write(Buffer.from([DEFAULT_LEADER_BYTE]));
     const shown = (from = 0): string => panelText(out.slice(from));
     await waitFor(() => out.includes(ENTER_ALT_SCREEN) && shown().includes("Allocation Default"), "home default");
-    expect(shown()).toContain("target 180k");
-    expect(shown()).toContain("trigger 360k");
+    expect(shown()).toContain(`target ${formatTokensShort(BUILTIN_CONTEXT_POLICY.lowerBoundTokens)}`);
+    expect(shown()).toContain(`trigger ${formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens)}`);
     expect(shown()).not.toContain("window ");
     (stdin as unknown as PassThrough).write(
       Buffer.from("\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\x1b[B\r"),
@@ -427,8 +429,13 @@ describe("TC-2.2c Values refresh after selection", () => {
     await waitFor(() => shown().includes("Allocation Historical"), "preset applied");
     const afterSelect = out.length;
     (stdin as unknown as PassThrough).write(Buffer.from("/help\r"));
-    await waitFor(() => shown(afterSelect).includes("Active target 180k"), "help after select");
-    expect(shown(afterSelect)).toContain("trigger 360k · Historical");
+    await waitFor(
+      () => shown(afterSelect).includes(`Active target ${formatTokensShort(BUILTIN_CONTEXT_POLICY.lowerBoundTokens)}`),
+      "help after select",
+    );
+    expect(shown(afterSelect)).toContain(
+      `trigger ${formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens)} · Historical`,
+    );
     const afterHelpEnter = out.length;
     (stdin as unknown as PassThrough).write(Buffer.from("\r"));
     await waitFor(() => shown(afterHelpEnter).includes("Commands"), "home after help");
@@ -443,7 +450,7 @@ describe("TC-2.2c Values refresh after selection", () => {
     await waitFor(() => shown(afterBounds).includes("target 100k"), "help after bounds");
     expect(shown(afterBounds)).toContain("trigger 200k");
     expect(shown(afterBounds)).toContain("Historical");
-    expect(shown(afterBounds)).not.toContain("trigger 360k");
+    expect(shown(afterBounds)).not.toContain(`trigger ${formatTokensShort(BUILTIN_CONTEXT_POLICY.upperBoundTokens)}`);
     const afterSecondHelpEnter = out.length;
     (stdin as unknown as PassThrough).write(Buffer.from("\r"));
     await waitFor(() => shown(afterSecondHelpEnter).includes("Commands"), "home after second help");

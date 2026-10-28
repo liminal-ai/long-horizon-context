@@ -1417,6 +1417,7 @@ describe("LIM-64 production wrapper path", () => {
 });
 
 describe("LIM-144 built-in 1M policy at the trigger through the production wrapper path (TC-4.1a)", () => {
+  const TRIGGER_TOKENS = BUILTIN_CONTEXT_POLICY.upperBoundTokens;
   const ONE_MILLION_RESOLVED = {
     policy: BUILTIN_CONTEXT_POLICY,
     sources: POLICY.sources,
@@ -1567,7 +1568,7 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
       decision: "would_compact",
       observePhase: "settled_seam",
       pressure: total,
-      upperBoundTokens: 360_000,
+      upperBoundTokens: TRIGGER_TOKENS,
     });
     expect(rig.spawned).toHaveLength(2);
     const rows = wouldMutateRows(rig.receiptDb);
@@ -1575,19 +1576,19 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
     expect(rows[0]!.handoffOutcome).toMatchObject({ kind: "handoff_success", newSessionId: REBUILT_ID });
   }
 
-  it("359,999 provider tokens at a settled seam stay below the 360k trigger: no mutation, no replacement", async () => {
+  it(`${(TRIGGER_TOKENS - 1).toLocaleString("en-US")} provider tokens at a settled seam stay below the built-in trigger: no mutation, no replacement`, async () => {
     const rig = launchOneMillionRig();
     await rig.ready();
     rig.signal(BOUND_SIGNALS);
-    rig.signal([...sampled(359_999), ...SETTLED]);
+    rig.signal([...sampled(TRIGGER_TOKENS - 1), ...SETTLED]);
     await waitFor(() => rig.observes.some((o) => o.observePhase === "settled_seam"), "settled observe");
     const settled = rig.observes.filter((o) => o.observePhase === "settled_seam");
     expect(settled).toHaveLength(1);
     expect(settled[0]).toMatchObject({
       decision: "below_threshold",
       wouldMutate: false,
-      pressure: 359_999,
-      upperBoundTokens: 360_000,
+      pressure: TRIGGER_TOKENS - 1,
+      upperBoundTokens: TRIGGER_TOKENS,
     });
     expect(rig.observes.some((o) => o.wouldMutate)).toBe(false);
     expect(wouldMutateRows(rig.receiptDb)).toHaveLength(0);
@@ -1598,42 +1599,42 @@ describe("LIM-144 built-in 1M policy at the trigger through the production wrapp
     expect(rig.spawned).toHaveLength(1);
   }, 20_000);
 
-  it("exactly 360,000 provider tokens at a settled seam produce exactly one Smart Compact handoff", async () => {
+  it(`exactly ${TRIGGER_TOKENS.toLocaleString("en-US")} provider tokens at a settled seam produce exactly one Smart Compact handoff`, async () => {
     const rig = launchOneMillionRig();
     await rig.ready();
     rig.signal(BOUND_SIGNALS);
-    rig.signal([...sampled(360_000), ...SETTLED]);
-    await expectOneHandoff(rig, 360_000);
+    rig.signal([...sampled(TRIGGER_TOKENS), ...SETTLED]);
+    await expectOneHandoff(rig, TRIGGER_TOKENS);
     await rig.finish();
   }, 20_000);
 
-  it("360,001 provider tokens at a settled seam produce exactly one Smart Compact handoff", async () => {
+  it(`${(TRIGGER_TOKENS + 1).toLocaleString("en-US")} provider tokens at a settled seam produce exactly one Smart Compact handoff`, async () => {
     const rig = launchOneMillionRig();
     await rig.ready();
     rig.signal(BOUND_SIGNALS);
-    rig.signal([...sampled(360_001), ...SETTLED]);
-    await expectOneHandoff(rig, 360_001);
+    rig.signal([...sampled(TRIGGER_TOKENS + 1), ...SETTLED]);
+    await expectOneHandoff(rig, TRIGGER_TOKENS + 1);
     await rig.finish();
   }, 20_000);
 
-  it("an open turn at exactly 360,000 does not mutate; the same pressure mutates once at settlement", async () => {
+  it(`an open turn at exactly ${TRIGGER_TOKENS.toLocaleString("en-US")} does not mutate; the same pressure mutates once at settlement`, async () => {
     const rig = launchOneMillionRig();
     await rig.ready();
     rig.signal(BOUND_SIGNALS);
-    rig.signal(sampled(360_000));
+    rig.signal(sampled(TRIGGER_TOKENS));
     await waitFor(() => rig.observes.length >= 1, "open-turn observe");
     expect(rig.observes[0]).toMatchObject({
       observePhase: "open_turn",
       wouldMutate: false,
-      pressure: 360_000,
-      upperBoundTokens: 360_000,
+      pressure: TRIGGER_TOKENS,
+      upperBoundTokens: TRIGGER_TOKENS,
     });
     expect(wouldMutateRows(rig.receiptDb)).toHaveLength(0);
     expect(rig.results).toHaveLength(0);
     expect(rig.spawned).toHaveLength(1);
 
     rig.signal(SETTLED);
-    await expectOneHandoff(rig, 360_000);
+    await expectOneHandoff(rig, TRIGGER_TOKENS);
     await rig.finish();
   }, 20_000);
 });

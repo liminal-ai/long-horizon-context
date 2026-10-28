@@ -23,6 +23,8 @@ function armed(over: Partial<ResolvedContextPolicy["policy"]> = {}): ResolvedCon
   return { policy, sources, fallbacks: [] };
 }
 
+const TRIGGER_TOKENS = BUILTIN_CONTEXT_POLICY.upperBoundTokens;
+
 const dirs: string[] = [];
 afterEach(() => {
   for (const d of dirs.splice(0)) {
@@ -80,7 +82,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 400_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 40_000 },
         },
       ],
       armed(),
@@ -99,7 +101,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 400_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 40_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
@@ -140,7 +142,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
         {
           kind: "sampling_observed",
           samplingId: "m1",
-          providerUsage: { input_tokens: 355_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS - 5_000 },
         },
         {
           kind: "post_measurement_estimate",
@@ -153,8 +155,8 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
     );
     const settled = r.observes.filter((o) => o.observePhase === "settled_seam")[0]!;
     expect(settled.decision).toBe("would_compact");
-    expect(settled.providerContextTotal).toBe(355_000);
-    expect(settled.pressure.nextRequestPressureTokens).toBe(365_000);
+    expect(settled.providerContextTotal).toBe(TRIGGER_TOKENS - 5_000);
+    expect(settled.pressure.nextRequestPressureTokens).toBe(TRIGGER_TOKENS + 5_000);
     expect(settled.postMeasurementEstimate.source).toBe("host_byte_estimate");
   });
 
@@ -187,7 +189,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
       {
         kind: "sampling_observed",
         samplingId: "m",
-        providerUsage: { input_tokens: 500_000 },
+        providerUsage: { input_tokens: TRIGGER_TOKENS + 140_000 },
       },
       { kind: "turn_settled", reason: "end_turn" },
     ];
@@ -240,7 +242,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
         {
           kind: "sampling_observed",
           samplingId: "m",
-          providerUsage: { input_tokens: 500_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 140_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
@@ -263,7 +265,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
         {
           kind: "sampling_observed",
           samplingId: "m",
-          providerUsage: { input_tokens: 400_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 40_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
@@ -303,7 +305,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
           {
             kind: "sampling_observed",
             samplingId: "a",
-            providerUsage: { input_tokens: 400_000 },
+            providerUsage: { input_tokens: TRIGGER_TOKENS + 40_000 },
           },
           { kind: "turn_settled", reason: "end_turn" },
         ],
@@ -314,7 +316,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
         {
           kind: "sampling_observed",
           samplingId: "b",
-          providerUsage: { input_tokens: 405_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 45_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],
@@ -344,7 +346,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
       },
       {
         kind: "post_measurement_estimate",
-        tokens: 250_000,
+        tokens: TRIGGER_TOKENS - 110_000,
         source: "lhc_token_estimate",
       },
       { kind: "turn_settled", reason: "end_turn" },
@@ -387,7 +389,7 @@ describe("LIM-64 capability-limited governance replay matrix", () => {
         {
           kind: "sampling_observed",
           samplingId: "m",
-          providerUsage: { input_tokens: 400_000 },
+          providerUsage: { input_tokens: TRIGGER_TOKENS + 40_000 },
         },
         { kind: "turn_settled", reason: "end_turn" },
       ],

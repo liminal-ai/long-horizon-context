@@ -224,7 +224,7 @@ describe("settled-segment catch-up at the mutation seam", () => {
 });
 
 describe("built-in target reaches view construction (TC-1.2b, TC-1.2c)", () => {
-  it("passes the built-in target of 180,000 directly, with no multiplier", async () => {
+  it("passes the built-in target directly, with no multiplier", async () => {
     const sdk = sdkMock(0);
     const writeSpy = vi.spyOn(writeRebuilt, "writeRebuiltRollout").mockResolvedValue(REBUILT);
     const policy = BUILTIN_CONTEXT_POLICY;
@@ -233,7 +233,7 @@ describe("built-in target reaches view construction (TC-1.2b, TC-1.2c)", () => {
       runtimeWith(sdk),
     );
     expect(outcome.kind).toBe("rebuilt");
-    const expected = { profile: "continuation", params: { lowerBound: 180_000 } };
+    const expected = { profile: "continuation", params: { lowerBound: BUILTIN_CONTEXT_POLICY.lowerBoundTokens } };
     expect(sdk.threadView.previewCompact).toHaveBeenCalledWith(expect.anything(), expected);
     expect(sdk.threadView.compact).toHaveBeenCalledWith(expect.anything(), expected);
     writeSpy.mockRestore();

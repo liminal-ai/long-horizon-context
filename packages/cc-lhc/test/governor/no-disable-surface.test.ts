@@ -93,7 +93,12 @@ describe("no Smart Compact disable surface (TC-1.5d)", () => {
     const input: GovernorInput = {
       policy: { ...BUILTIN_CONTEXT_POLICY, autoCompact: false, enabled: false } as never,
       turnOpen: false,
-      providerContext: { inputTokens: 400_000, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, total: 400_000 },
+      providerContext: {
+        inputTokens: BUILTIN_CONTEXT_POLICY.upperBoundTokens + 40_000,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0,
+        total: BUILTIN_CONTEXT_POLICY.upperBoundTokens + 40_000,
+      },
       providerContextFreshness: "current_sampling",
       postMeasurementEstimate: { tokens: 0, source: "lhc_token_estimate", domain: "source_labelled_estimate" },
       operationInFlight: false,
