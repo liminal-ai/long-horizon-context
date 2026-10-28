@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -19,14 +19,14 @@ const MAIN = (() => {
 })();
 const RUN = process.env.VERIFY_RUN_DIR ?? join(MAIN, ".pstack/runs/verify-claude-lhc");
 const SCRATCH_ROOT = process.env.VERIFY_SCRATCH_ROOT ?? join(process.env.XDG_STATE_HOME || join(homedir(), ".local/state"), "verify-claude-lhc/scratch");
-for (let d = resolve(SCRATCH_ROOT); d !== dirname(d); d = dirname(d)) {
+mkdirSync(SCRATCH_ROOT, { recursive: true });
+for (let d = realpathSync(SCRATCH_ROOT); d !== dirname(d); d = dirname(d)) {
   const found = ["CLAUDE.md", "AGENTS.md"].map((f) => join(d, f)).find(existsSync);
   if (found) {
     console.log(`VERIFY-CLAUDE-LHC preflight: FAIL scratch root ${SCRATCH_ROOT} sits under ${found}; Claude would load it from the session cwd. Set VERIFY_SCRATCH_ROOT outside any repo.`);
     process.exit(1);
   }
 }
-mkdirSync(SCRATCH_ROOT, { recursive: true });
 mkdirSync(join(RUN, "proof"), { recursive: true });
 const EVIDENCE = process.env.VERIFY_CLAUDE_LHC_EVIDENCE ?? mkdtempSync(join(RUN, "proof", "evidence-"));
 mkdirSync(EVIDENCE, { recursive: true });
