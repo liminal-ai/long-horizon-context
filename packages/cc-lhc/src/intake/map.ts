@@ -74,8 +74,12 @@ function emptyStats(): MapStats {
   return { sidechain: 0, unknown: 0, meta: 0, image: 0 };
 }
 
+export function rolloutKeyPrefix(uuid: string): string {
+  return `cc-lhc:rollout:${uuid}:`;
+}
+
 export function idempotencyKey(uuid: string, blockIndex: number, kind: EventKind): string {
-  return `cc-lhc:rollout:${uuid}:${blockIndex}:${kind}`;
+  return `${rolloutKeyPrefix(uuid)}${blockIndex}:${kind}`;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -470,6 +474,63 @@ export function mapRolloutLine(item: RolloutLineItem, lineIndex = 0): MapResult 
 
   stats.unknown += 1;
   return { events: [], stats };
+}
+
+export interface RolloutChain {
+  parents: Map<string, { parent: string | null; live: boolean }>;
+  tip: string | null;
+}
+
+export type ChainStep = { kind: "append" } | { kind: "rewind"; keptUuid: string | null; hopUuid: string };
+
+export function createRolloutChain(): RolloutChain {
+  return { parents: new Map(), tip: null };
+}
+
+function opensUserTurn(item: RolloutLineItem): boolean {
+  if (!isUserLine(item)) return false;
+  const content = item.message?.content;
+  return !contentBlocks(content).some((block) => block.type === "tool_result");
+}
+
+// Claude Code 2.1.310 writes a rewind ("Restore conversation") as nothing on
+// disk until the next prompt, which then names an earlier record as its parent.
+// Parallel tool calls stay linear, so only a user turn opener can branch.
+export function foldRolloutChain(chain: RolloutChain, item: RolloutLineItem, live: boolean): ChainStep {
+  const uuid = item.uuid;
+  if (item.isSidechain === true || typeof uuid !== "string" || uuid === "") return { kind: "append" };
+  const parent = typeof item.parentUuid === "string" && item.parentUuid !== "" ? item.parentUuid : null;
+  const rewound =
+    chain.tip !== null &&
+    item.parentUuid !== undefined &&
+    parent !== chain.tip &&
+    (parent === null || chain.parents.has(parent)) &&
+    opensUserTurn(item);
+  chain.parents.set(uuid, { parent, live });
+  chain.tip = uuid;
+  return rewound ? { kind: "rewind", keptUuid: parent, hopUuid: uuid } : { kind: "append" };
+}
+
+export function liveAncestry(chain: RolloutChain, from: string | null): string[] {
+  const ancestry: string[] = [];
+  let cursor = from;
+  while (cursor !== null) {
+    const entry = chain.parents.get(cursor);
+    if (entry === undefined || !entry.live) break;
+    ancestry.push(cursor);
+    cursor = entry.parent;
+  }
+  return ancestry;
+}
+
+export function rewindRollbackEvent(hopUuid: string, keepThroughEventOrder: number): MessageEventInput {
+  return {
+    eventKind: "rollback",
+    idempotencyKey: idempotencyKey(hopUuid, 0, "rollback"),
+    actor: "user",
+    harness: HARNESS,
+    payload: { keepThroughEventOrder, reason: "claude_rewind" },
+  };
 }
 
 export function mapRolloutLines(items: readonly RolloutLineItem[]): MapResult & { events: MessageEventInput[] } {

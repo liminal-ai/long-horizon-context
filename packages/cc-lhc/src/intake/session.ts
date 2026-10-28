@@ -3,7 +3,6 @@ import { basename } from "node:path";
 import {
   createDeterministicInferenceCallbacks,
   initLhc,
-  inspect,
   type Lhc,
   type MessageEventInput,
   type OpResult,
@@ -70,6 +69,14 @@ import {
   safeLoadThreadSignatures,
   safeRecordSessionThread,
 } from "./lineage-db.js";
+import {
+  type ChainStep,
+  createRolloutChain,
+  foldRolloutChain,
+  liveAncestry,
+  rewindRollbackEvent,
+  rolloutKeyPrefix,
+} from "./map.js";
 import { captureThreadRef, defaultRegistryPath, defaultThreadFilePath } from "./paths.js";
 import {
   type ContinuityHandle,
@@ -430,6 +437,8 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     (deps.continueCapture?.priorGeneration !== undefined ? deps.continueCapture.priorGeneration + 1 : 1);
   let captureHealth: CaptureGenerationState = createCaptureGeneration(genSeed);
   let runtimeSettings: ClaudeRuntimeSettings = {};
+  const chain = createRolloutChain();
+  let rewindFloor: number | undefined;
 
   const publishLifecycle = (signals: readonly LifecycleSignal[]): void => {
     if (userOnLifecycle === undefined || signals.length === 0) return;
@@ -501,6 +510,54 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
     if (outcome === "recorded") stats.segmentEnds = (stats.segmentEnds ?? 0) + 1;
     log(`cc-lhc segment: ${reason} ${outcome} (line ${lineUuid})`);
     return true;
+  };
+
+  // A rewind past every live keyed record (the session root, or a rebuilt
+  // prefix whose lines carry no capture keys) keeps what the thread held at bind.
+  const resolveRewindAnchor = async (sdkRef: Lhc, ref: ThreadRef, keptUuid: string | null): Promise<number | null> => {
+    for (const uuid of liveAncestry(chain, keptUuid)) {
+      let keepThrough = -1;
+      let cursor: string | null = null;
+      do {
+        const page = await sdkRef.intakeStream.listEventKeysByPrefix(ref, {
+          prefix: rolloutKeyPrefix(uuid),
+          ...(cursor === null ? {} : { cursor }),
+        });
+        if (!page.ok) {
+          logError(`cc-lhc rewind: key lookup ${page.error.code}: ${page.error.reason}`);
+          return null;
+        }
+        if (page.value.capExhausted) return null;
+        for (const key of page.value.keys) keepThrough = Math.max(keepThrough, key.eventOrder);
+        cursor = page.value.cursor;
+      } while (cursor !== null);
+      if (keepThrough >= 0) return keepThrough;
+    }
+    return rewindFloor ?? null;
+  };
+
+  const appendRewindRollback = async (
+    sdkRef: Lhc,
+    ref: ThreadRef,
+    step: Extract<ChainStep, { kind: "rewind" }>,
+  ): Promise<void> => {
+    const keepThrough = await resolveRewindAnchor(sdkRef, ref, step.keptUuid);
+    if (keepThrough === null) {
+      degradeAndEmit("rewind_anchor:unresolved");
+      return;
+    }
+    const event = rewindRollbackEvent(step.hopUuid, keepThrough);
+    const result = normalizeFlushResult(
+      (await flush(sdkRef, ref, [], [event], stats, log, logError, dedupeState, persistSignatures, (why) =>
+        degradeAndEmit(why),
+      )) as FlushBatchResult | boolean | undefined,
+      [event],
+    );
+    if (!result.ok) return;
+    log(
+      `cc-lhc rewind: ${step.hopUuid} returns to ${step.keptUuid ?? "the session root"}; ` +
+        `rollback keeps through event ${keepThrough} (${result.eventOutcomes[0]?.outcome ?? "skipped"})`,
+    );
   };
 
   const enqueueEmissions = (emissions: WatcherEmission[]): Promise<void> => {
@@ -700,7 +757,9 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
             if (tokenFamily.modelId !== previousModel) noteFamilyChange(previousFamily);
 
             let segmentCandidate: SegmentCandidate | null = null;
+            let chainStep: ChainStep = { kind: "append" };
             if (emission.kind === "line") {
+              chainStep = foldRolloutChain(chain, emission.item, true);
               const turnSignal = classifyTurnSignal(emission.item);
               if (turnSignal === "opens") turnOpen = true;
               if (turnSignal === "closes") turnOpen = false;
@@ -762,6 +821,10 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
                 fullyReplayDropped: false,
               });
               continue;
+            }
+
+            if (chainStep.kind === "rewind" && !commitFailed) {
+              if ((await commitBatch()) !== null) await appendRewindRollback(sdk, threadRef, chainStep);
             }
 
             const filtered =
@@ -871,6 +934,7 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
           reason: `prefix_boundary:malformed_line:${detail(cause)}`,
         };
       }
+      foldRolloutChain(chain, emission.item, false);
       const observed = observeWatcherEmission(emission, i, {
         generation: captureHealth.generation,
         suppressRuntimeLifecycle: true,
@@ -1077,6 +1141,19 @@ export function startCaptureSession(deps: CaptureSessionDeps = {}): CaptureSessi
         );
       }
 
+      if (stopped) {
+        continuity.close();
+        return;
+      }
+
+      if (sdk !== undefined && threadRef !== undefined) {
+        try {
+          const frontier = await sdk.intakeStream.threadFrontier(threadRef);
+          if (frontier.ok) rewindFloor = frontier.value.lastEventOrder;
+        } catch (cause) {
+          logError(`cc-lhc rewind: thread frontier unreadable: ${detail(cause)}`);
+        }
+      }
       if (stopped) {
         continuity.close();
         return;

@@ -81,6 +81,7 @@ function harness(
   const lifecycle: LifecycleSignal[] = [];
   const outcome = options.outcome ?? (() => "recorded" as const);
   const sdk = {
+    intakeStream: { threadFrontier: async () => ({ ok: true as const, value: { lastEventOrder: 0 } }) },
     threadView: {
       hostMetadata: async () => ({
         ok: true as const,
