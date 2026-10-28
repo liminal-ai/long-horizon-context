@@ -2,11 +2,10 @@
 
 ## Issue tracking
 
-This project uses bd (beads) for issue tracking — all LHC-related work (SDK, ports, hosts) is tracked here, not in markdown TODO lists.
+This project tracks work in the Linear project long-horizon-context (P-LH-14, team LH), not in markdown TODO lists.
 
-- Run `bd prime` for workflow context and command guidance.
-- Use `bd ready`, `bd show <id>`, `bd update <id> --claim`, and `bd close <id>`.
-- The Dolt database is machine-local; `.beads/issues.jsonl` is the git-visible auto-export.
+- Beads retired on 2026-10-27. The last export is in git history at 5262b595 (`.beads/issues.jsonl`).
+- Do not use bd or recreate `.beads/`.
 
 ## Persistent memory
 
