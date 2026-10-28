@@ -26,7 +26,7 @@ export function projectView(
   const lines: NativeEntry[] = [];
   let parent: string | null = null;
   let model = stamp.model;
-  const openCalls = new Map<string, true>();
+  const openCalls = new Set<string>();
 
   const base = (): NativeEntry => ({
     parentUuid: parent, isSidechain: false, userType: "external", entrypoint: "sdk-ts",
@@ -45,7 +45,7 @@ export function projectView(
     push({ ...base(), type: "user", message: { role: "user", content: [{ tool_use_id: toolCallId, type: "tool_result", content, is_error: isError }] } });
   };
   const settleOpenCalls = (): void => {
-    for (const id of [...openCalls.keys()]) toolResult(id, DANGLING_RESULT, true);
+    for (const id of [...openCalls]) toolResult(id, DANGLING_RESULT, true);
   };
 
   for (const entry of view.entries) {
@@ -62,7 +62,7 @@ export function projectView(
     const id = `msg_${randomUUID().replace(/-/g, "")}`;
     const requestId = `req_${randomUUID().replace(/-/g, "")}`;
     for (const [index, block] of blocks.entries()) {
-      if (block["type"] === "tool_use") openCalls.set(String(block["id"]), true);
+      if (block["type"] === "tool_use") openCalls.add(String(block["id"]));
       push({
         ...base(), type: "assistant", apiBlockIndex: index, requestId,
         message: { model: entry.model ?? model, id, type: "message", role: "assistant", content: [block], stop_reason: stop, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } },

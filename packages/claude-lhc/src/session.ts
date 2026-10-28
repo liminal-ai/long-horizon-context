@@ -193,7 +193,6 @@ export class ClaudeLhcSession {
   #turnOpen = false;
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
-  #pendingApprovals = 0;
   #pendingCompact: CompactTrigger | null = null;
   #compacting = false;
   #batch = new ToolBatch();
@@ -372,16 +371,11 @@ export class ClaudeLhcSession {
       canUseTool: async (toolName, toolInput, callbackOptions) => {
         if (RETRIEVAL_TOOL_NAMES.includes(toolName)) return { behavior: "allow", updatedInput: toolInput };
         const { signal, ...rest } = callbackOptions;
-        this.#pendingApprovals += 1;
-        try {
-          return (await this.#io.request(
-            "canUseTool",
-            { toolName, input: toolInput, ...rest },
-            signal,
-          )) as PermissionResult;
-        } finally {
-          this.#pendingApprovals -= 1;
-        }
+        return (await this.#io.request(
+          "canUseTool",
+          { toolName, input: toolInput, ...rest },
+          signal,
+        )) as PermissionResult;
       },
       onUserDialog: async (request, callbackOptions) =>
         (await this.#io.request("onUserDialog", { request }, callbackOptions.signal)) as UserDialogResult,
@@ -638,26 +632,26 @@ export class ClaudeLhcSession {
     const startedAt = Date.now();
     const preTokens = this.#lastContextTokens;
     const previous = this.#gen;
-    this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, "compacting"));
+    this.#io.emit(this.#syntheticStatus(previous.sessionId, "compacting"));
     try {
       const { next, postTokens } = await this.#rebuild(trigger, preTokens);
-      this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
-      this.#emitSynthetic(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
+      this.#io.emit(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
+      this.#io.emit(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
       this.#lastContextTokens = 0;
-      if (heldResult !== undefined) this.#emitSynthetic({ ...heldResult, session_id: next.sessionId } as SDKMessage);
-      else if (trigger === "manual") this.#emitSynthetic(this.#syntheticResult(next.sessionId, startedAt, ""));
+      if (heldResult !== undefined) this.#io.emit({ ...heldResult, session_id: next.sessionId } as SDKMessage);
+      else if (trigger === "manual") this.#io.emit(this.#syntheticResult(next.sessionId, startedAt, ""));
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
       this.#io.log(`compact (${trigger}) failed: ${reason}`);
       await this.#lhc.logging
         .write(this.#thread, { level: "warning", message: `[lhc compact:${trigger}] failed: ${reason}` })
         .catch(() => undefined);
-      this.#emitSynthetic(
+      this.#io.emit(
         this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }),
       );
       if (heldResult !== undefined) this.#io.emit(heldResult);
       else if (trigger === "manual")
-        this.#emitSynthetic(this.#syntheticResult(previous.sessionId, startedAt, `LHC compact failed: ${reason}`));
+        this.#io.emit(this.#syntheticResult(previous.sessionId, startedAt, `LHC compact failed: ${reason}`));
     } finally {
       this.#compacting = false;
     }
@@ -670,7 +664,7 @@ export class ClaudeLhcSession {
     this.#compacting = true;
     const startedAt = Date.now();
     const preTokens = this.#lastContextTokens;
-    this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, "compacting"));
+    this.#io.emit(this.#syntheticStatus(previous.sessionId, "compacting"));
     let target: Generation = previous;
     try {
       const openTurn = await this.#openTurnId();
@@ -689,8 +683,8 @@ export class ClaudeLhcSession {
       ]);
       const { next, postTokens } = await this.#rebuild(trigger, preTokens);
       target = next;
-      this.#emitSynthetic(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
-      this.#emitSynthetic(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
+      this.#io.emit(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
+      this.#io.emit(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
       this.#lastContextTokens = 0;
       if (this.#swap !== null) this.#swap.sessionId = next.sessionId;
       this.#io.log(
@@ -704,7 +698,7 @@ export class ClaudeLhcSession {
       await this.#lhc.logging
         .write(this.#thread, { level: "warning", message: `[lhc compact:${trigger}] mid-turn failed: ${reason}` })
         .catch(() => undefined);
-      this.#emitSynthetic(
+      this.#io.emit(
         this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }),
       );
       this.#midTurnFailed = true;
@@ -818,15 +812,11 @@ export class ClaudeLhcSession {
     }
   }
 
-  #childCwd(): string {
-    return this.#cwd;
-  }
-
   async #startProjectedGeneration(): Promise<Generation> {
     const view = await this.#lhc.threadView.getSessionThreadView(this.#thread);
     if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);
     const sessionId = randomUUID();
-    const cwd = this.#childCwd();
+    const cwd = this.#cwd;
     const entries = projectView(view.value, {
       sessionId,
       cwd,
@@ -854,10 +844,6 @@ export class ClaudeLhcSession {
       `generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries at ${dest}`,
     );
     return next;
-  }
-
-  #emitSynthetic(message: SDKMessage): void {
-    this.#io.emit(message);
   }
 
   #syntheticStatus(sessionId: string, status: "compacting" | null, outcome: Record<string, unknown> = {}): SDKMessage {
