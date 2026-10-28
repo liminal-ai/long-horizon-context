@@ -207,7 +207,7 @@ pnpm exec vitest run \
 
 ## 6. Future propagation readiness only
 
-No Linear stories, beads, branches, or implementation work are authorized here. Separate **shared parity** (consume frozen contract/runtime) from **host integration** (seams, one-writer, crash model).
+No Linear stories, branches, or implementation work are authorized here. Separate **shared parity** (consume frozen contract/runtime) from **host integration** (seams, one-writer, crash model).
 
 | Surface | Shared prerequisites | Host capability questions |
 |---|---|---|
