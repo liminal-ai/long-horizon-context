@@ -94,7 +94,8 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `resume-unknown` | `start{resume: <random>}` | one `error` frame: `no LHC thread holds the Claude session ...`, exit 1 | zero thread files created |
 | `resume-empty` | start, stop, `start{resume: gen1}` on a thread with 0 served entries | stderr `(fresh native session)`, exit 0 | no projected file, 1 thread |
 | `rollback` | seeded KEEP + REMOVED turns, `start{resume: gen1, resumeSessionAt: <KEEP uuid>}` | stderr `rollback to <uuid>: kept through event N`, exit 0 | projected file keeps KEEP, drops REMOVED; 1 thread |
-| `rollback-unknown-anchor` | same seed, `resumeSessionAt: <never captured>` | stderr `rollback to <uuid> skipped: ...`, exit 0 | projected file unchanged (KEEP and REMOVED) |
+| `rollback-unknown-anchor` | same seed, `resumeSessionAt: <uuid in no transcript>` | one `error` frame: `rollback to <uuid> refused: ...`, exit 1 | no projected file written |
+| `rollback-synthetic-anchor` | same seed plus a native transcript with a `<synthetic>` notice between the turns, `resumeSessionAt: <notice uuid>`, `/compact`, restart | stderr `kept through event N at nearest captured ancestor <KEEP uuid>` | none of the 3 projected files carries REMOVED; the rollback file keeps KEEP |
 | `rollback-compact` | 12 heavy turns, `/compact`, rollback behind the compact point, `/compact`, restart | stderr `[lhc compact:auto]` at the rollback start | none of the 3 projected files carries removed text |
 | `thread-start` | seeded thread, `start{sessionId: <fresh>}`, `start{resume: gen1}`, `start{sessionId: gen1}` | new thread, old alias resumes the old thread, reused id gets one `error` frame and exit 1 | 2 threads |
 | `rollback-live` | two real turns, rollback to the first, one more turn (live only) | continued answer names KEEP-ALPHA only, turn succeeds | frames + `answer.txt` |
@@ -191,7 +192,7 @@ All executable, all runnable from a clean shell (paths resolve from the
 script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
-- `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|resume-empty|rollback|rollback-unknown-anchor|rollback-compact|thread-start|turn|rollback-live|all>`;
+- `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|resume-empty|rollback|rollback-unknown-anchor|rollback-synthetic-anchor|rollback-compact|thread-start|turn|rollback-live|all>`;
   env `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (live gate), `CLAUDE_LHC_SIDECAR`
   (drive another build's `dist/sidecar.js`).

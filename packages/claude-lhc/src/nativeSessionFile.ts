@@ -100,11 +100,9 @@ export async function writeProjectedSession(input: {
 }
 
 /**
- * The user and assistant lines above `uuid` in the native transcript that holds
- * it, nearest first, by parentUuid. The resumed session's file is read first;
- * any other transcript under the project dir may hold an older generation's line.
- * Empty when no top-level transcript carries the uuid (subagent lines live in
- * their own files).
+ * User and assistant lines above `uuid` by parentUuid, nearest first. An older
+ * generation's file may hold the line. Subagent lines live in their own files,
+ * so they have no ancestors here.
  */
 export async function nativeAncestors(input: {
   readonly uuid: string;
@@ -122,7 +120,8 @@ export async function nativeAncestors(input: {
     for (const raw of body.split("\n")) {
       try {
         const line = JSON.parse(raw) as Record<string, unknown>;
-        if (typeof line["uuid"] === "string") lines.set(line["uuid"], { parent: line["parentUuid"], type: line["type"] });
+        if (typeof line["uuid"] === "string")
+          lines.set(line["uuid"], { parent: line["parentUuid"], type: line["type"] });
       } catch {}
     }
     if (!lines.has(input.uuid)) continue;

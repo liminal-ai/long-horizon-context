@@ -301,11 +301,46 @@ const drives = {
     try {
       const { gen1 } = await seedCaptured(scratch, PA_TURNS);
       const unknown = randomUUID();
-      const { s, gen } = await startAndStop(scratch, "rollback-unknown-anchor", { resume: gen1, resumeSessionAt: unknown }, evidenceDir);
-      const projected = scratch.projected(gen) ?? "";
-      assert(s.logHas(`rollback to ${unknown} skipped: no captured event carries that message uuid`), "no skipped-anchor log line");
-      assert(projected.includes("KEEP-TURN") && projected.includes("REMOVED-TURN"), "an unknown anchor changed the projected view");
-      return `resumeSessionAt:${unknown.slice(0, 8)} (never captured) -> logged skip, current view projected (keep=yes removed=yes), exit=0`;
+      const s = new Sidecar(scratch, "rollback-unknown-anchor");
+      s.send({ type: "start", options: baseOptions(scratch, { resume: gen1, resumeSessionAt: unknown }) });
+      const code = await s.exited;
+      s.saveEvidence(evidenceDir);
+      assert(code === 1, `expected exit 1, got ${code}`);
+      assert(s.error?.includes(`rollback to ${unknown} refused`), `unexpected error frame: ${s.error}`);
+      assert(scratch.projectedFiles().length === 0, "a refused rollback still projected a file");
+      return `resumeSessionAt:${unknown.slice(0, 8)} (in no transcript) -> exit=1 error="rollback ... refused", nothing projected`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async "rollback-synthetic-anchor"(evidenceDir) {
+    const scratch = new Scratch("rollback-synthetic-anchor");
+    try {
+      const { gen1, anchors } = await seedCaptured(scratch, PA_TURNS);
+      const native = await import(join(DIST, "nativeSessionFile.js"));
+      const synthetic = randomUUID();
+      const lines = [
+        ["user", randomUUID(), PA_TURNS[0][0]],
+        ["assistant", anchors[0], PA_TURNS[0][1]],
+        ["user", randomUUID(), "FAILED prompt"],
+        ["assistant", synthetic, "API Error: 401", "<synthetic>"],
+        ["user", randomUUID(), PA_TURNS[1][0]],
+        ["assistant", anchors[1], PA_TURNS[1][1]],
+      ].map(([type, uuid, text, model], i, all) =>
+        JSON.stringify({ parentUuid: i === 0 ? null : all[i - 1][1], isSidechain: false, type, uuid, sessionId: gen1, message: { role: type, content: [{ type: "text", text }], ...(model ? { model } : {}) } }));
+      const file = native.nativeSessionPath({ sessionId: gen1, cwd: scratch.cwd, env: { CLAUDE_CONFIG_DIR: scratch.claudeHome } });
+      mkdirSync(dirname(file), { recursive: true });
+      writeFileSync(file, `${lines.join("\n")}\n`);
+      const { s, gen } = await startAndStop(scratch, "rollback", { resume: gen1, resumeSessionAt: synthetic }, evidenceDir);
+      assert(s.logHas(`rollback to ${synthetic}: kept through event`) && s.logHas(`at nearest captured ancestor ${anchors[0]}`), "the synthetic anchor did not resolve to the kept assistant message");
+      const { compacted } = await compactOnce(scratch, "compact", { resume: gen }, evidenceDir);
+      const { gen: restarted } = await startAndStop(scratch, "restart", { resume: compacted }, evidenceDir);
+      const files = { rollback: scratch.projected(gen) ?? "", compact: scratch.projected(compacted) ?? "", restart: scratch.projected(restarted) ?? "" };
+      for (const [label, text] of Object.entries(files)) {
+        writeFileSync(join(evidenceDir, `${label}.projected.jsonl`), text);
+        assert(!text.includes("REMOVED-TURN"), `${label} projected file carries the removed turn`);
+      }
+      assert(files.rollback.includes("KEEP-TURN answer one"), "the rollback projection lost the kept turn");
+      return `resumeSessionAt:<synthetic notice> -> kept through its nearest captured ancestor; removed text absent after start, /compact, restart`;
     } finally { scratch.cleanup(); }
   },
 
@@ -426,7 +461,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "rollback", "rollback-unknown-anchor", "rollback-compact", "thread-start", "turn", "rollback-live"]
+      ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "rollback", "rollback-unknown-anchor", "rollback-synthetic-anchor", "rollback-compact", "thread-start", "turn", "rollback-live"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;

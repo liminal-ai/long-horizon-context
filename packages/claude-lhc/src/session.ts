@@ -265,7 +265,9 @@ export class ClaudeLhcSession {
       this.#thread = threadRef(threadId);
       await this.#settleOpenTurn("session restarted");
       const keptTail =
-        typeof resumeSessionAt === "string" && resumeSessionAt !== "" ? await this.#rollBack(resumeSessionAt, resume) : null;
+        typeof resumeSessionAt === "string" && resumeSessionAt !== ""
+          ? await this.#rollBack(resumeSessionAt, resume)
+          : null;
       if (keptTail !== null && keptTail >= this.#autoCompactTrigger) await this.#compactAfterRollback(keptTail);
       else await this.#startProjectedGeneration();
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);

@@ -12,8 +12,16 @@
 - `resumeSessionAt` never reaches the CLI. Projected lines carry fresh
   uuids, and the CLI fails a turn whose `resumeSessionAt` names no line in
   the resumed file (`No message found with message.uuid of: ...`).
-- An anchor no captured event carries (a subagent message, a synthetic
-  message) is skipped with a logged reason. The current view is projected.
+- An anchor no captured event carries (a `<synthetic>` notice, a subagent
+  message) resolves to its nearest captured ancestor. The sidecar follows
+  `parentUuid` in the native transcript that holds the anchor, the resumed
+  session's file first. Prompts are captured under the host's prompt uuid,
+  which the CLI writes on the prompt line, so a failed turn's notice keeps
+  through its own prompt.
+- When neither the anchor nor any ancestor resolves (a uuid in no transcript,
+  a subagent line in its own sidechain file), the start is refused with one
+  `error` frame, `rollback to <uuid> refused: ...`, and exit 1. Nothing is
+  projected, so removed text never reaches the CLI.
 - When the rollback leaves the served tail at or past the compact trigger
   (a rollback behind the compact point drops the stored view), the sidecar
   compacts before projecting. A failed compact projects the uncompacted
@@ -37,6 +45,7 @@ removed turn, the CLI rejected the forwarded uuid, and the sidecar died with
 ```sh
 .agents/skills/verify-claude-lhc/drive.mjs rollback
 .agents/skills/verify-claude-lhc/drive.mjs rollback-unknown-anchor
+.agents/skills/verify-claude-lhc/drive.mjs rollback-synthetic-anchor
 .agents/skills/verify-claude-lhc/drive.mjs rollback-compact
 .agents/skills/verify-claude-lhc/drive.mjs thread-start
 CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs rollback-live
@@ -46,8 +55,14 @@ CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs rollback-live
 turn under real capture keys (the built `capture/mapper.js`), then starts
 with `resume: gen1, resumeSessionAt: <KEEP assistant uuid>`. It passes when
 the projected file keeps the KEEP turn and drops the REMOVED turn.
-`rollback-compact` seeds 12 heavy turns, compacts, rolls back behind the
-compact point, sends `/compact`, and restarts. It passes when the start
+`rollback-unknown-anchor` passes when a uuid in no transcript gets the
+refusal frame and no projected file. `rollback-synthetic-anchor` writes the
+native transcript the CLI would hold, with a `<synthetic>` notice after an
+uncaptured prompt, rolls back to the notice, then compacts and restarts. It
+passes when the start keeps through the KEEP assistant message and no
+projected file carries REMOVED. `rollback-compact` seeds 12 heavy turns,
+compacts, rolls back behind the compact point, sends `/compact`, and
+restarts. It passes when the start
 compacted (`[lhc compact:auto]`) and none of the three projected files
 carries removed text. `rollback-live` takes two real turns, rolls back to
 the first, and asks for every codeword. It passes when the answer names

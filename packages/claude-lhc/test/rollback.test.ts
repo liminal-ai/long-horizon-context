@@ -138,17 +138,32 @@ async function servedText(threadId: string): Promise<string> {
 }
 
 const nativeEnv = () => ({ CLAUDE_CONFIG_DIR: claudeHome });
-const nativeFiles = () => readdirSync(nativeProjectDir({ cwd: dir, env: nativeEnv() }), { recursive: true }).map(String);
+const nativeFiles = () =>
+  readdirSync(nativeProjectDir({ cwd: dir, env: nativeEnv() }), { recursive: true }).map(String);
 
 type NativeLine = { uuid: string; type: "user" | "assistant" | "attachment"; text?: string; model?: string };
 
-function appendNative(sessionId: string, lines: NativeLine[], path = nativeSessionPath({ sessionId, cwd: dir, env: nativeEnv() })) {
+function appendNative(
+  sessionId: string,
+  lines: NativeLine[],
+  path = nativeSessionPath({ sessionId, cwd: dir, env: nativeEnv() }),
+) {
   mkdirSync(dirname(path), { recursive: true });
   const existing = existsSync(path) ? readFileSync(path, "utf8").trim().split("\n").filter(Boolean) : [];
   let parentUuid: string | null = existing.length === 0 ? null : JSON.parse(existing.at(-1)!).uuid;
   const body = lines.map(({ uuid, type, text, model }) => {
-    const message = type === "attachment" ? undefined : { role: type, content: [{ type: "text", text }], ...(model ? { model } : {}) };
-    const line = JSON.stringify({ parentUuid, isSidechain: false, type, uuid, sessionId, ...(message ? { message } : {}) });
+    const message =
+      type === "attachment"
+        ? undefined
+        : { role: type, content: [{ type: "text", text }], ...(model ? { model } : {}) };
+    const line = JSON.stringify({
+      parentUuid,
+      isSidechain: false,
+      type,
+      uuid,
+      sessionId,
+      ...(message ? { message } : {}),
+    });
     parentUuid = uuid;
     return line;
   });
