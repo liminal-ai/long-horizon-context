@@ -141,7 +141,7 @@ lookalikes. Unknown `--lhc-*` flags before `--` exit with status 2.
   loudly; nothing latches and LHC compaction continues. Capture that is degraded or still catching up does not
   block the seam: the wrapper rebuilds capture state from the persisted
   transcript and re-evaluates the moment it is ready. Built-in policy targets
-  180k, triggers at 360k, reserves 50k runway, and leaves automatic prune off.
+  120k, triggers at 700k, reserves 50k runway, and leaves automatic prune off.
 - **Forward-only construction.** The settled seam is read once, before any SDK
   work, and never re-read: input arriving, a turn opening, or capture changing
   generation appends to a thread whose settled history the snapshot already
@@ -367,7 +367,7 @@ holds, so they may differ from what the provider counts for the same content
 (and may coincidentally be equal); the two are labelled wherever they appear,
 and no fixed ratio or direction between them is assumed.
 
-There is one built-in policy: 180k target, 360k trigger, 50k minimum runway.
+There is one built-in policy: 120k target, 700k trigger, 50k minimum runway.
 cc-lhc assumes a 1M-window model. Override it through user config
 (`$XDG_CONFIG_HOME/cc-lhc/config.json` or `~/.config/cc-lhc/config.json`),
 project config (`.cc-lhc.json`), launch flags, or `/bounds`. Explicit user,
