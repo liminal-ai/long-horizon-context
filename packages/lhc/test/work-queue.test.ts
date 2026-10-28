@@ -134,11 +134,7 @@ describe("Flow 2 (SDK): message-owned work queueing", () => {
     const original = validEvent("user_prompt");
     await send(filePath, [original]);
 
-    const result = await send(filePath, [
-      original,
-      validEvent("assistant_text"),
-      validEvent("turn_end"),
-    ]);
+    const result = await send(filePath, [original, validEvent("assistant_text"), validEvent("turn_end")]);
 
     expect(result.events).toEqual([
       {
