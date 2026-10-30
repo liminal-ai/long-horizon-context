@@ -36,8 +36,25 @@ mkdirSync(join(RUN, "proof"), { recursive: true });
 const EVIDENCE = process.env.VERIFY_CLAUDE_LHC_EVIDENCE ?? mkdtempSync(join(RUN, "proof", "evidence-"));
 mkdirSync(EVIDENCE, { recursive: true });
 
+const PAUSE = new Int32Array(new SharedArrayBuffer(4));
+
+// The claude CLI a sidecar spawns can still write claude-home/.claude.json after the sidecar exits.
+function waitForGroupExit(pgid, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      process.kill(-pgid, 0);
+    } catch {
+      return;
+    }
+    if (Date.now() > deadline) return;
+    Atomics.wait(PAUSE, 0, 0, 50);
+  }
+}
+
 class Scratch {
   constructor(label) {
+    this.groups = [];
     this.dir = mkdtempSync(join(SCRATCH_ROOT, `verify-claude-lhc-${label}-`));
     this.lhcHome = join(this.dir, "lhc");
     this.claudeHome = join(this.dir, "claude-home");
@@ -58,6 +75,7 @@ class Scratch {
     return file === undefined ? null : readFileSync(join(this.claudeHome, "projects", file), "utf8");
   }
   cleanup() {
+    for (const pgid of this.groups) waitForGroupExit(pgid);
     if (process.env.VERIFY_KEEP_SCRATCH === "1") console.log(`VERIFY-CLAUDE-LHC kept scratch: ${this.dir}`);
     else rmSync(this.dir, { recursive: true, force: true });
   }
@@ -76,6 +94,7 @@ class Sidecar {
       env.HOME = scratch.home;
     }
     this.child = spawn(process.execPath, [ENTRY], { stdio: ["pipe", "pipe", "pipe"], env, detached: true });
+    scratch.groups.push(this.child.pid);
     this.exited = new Promise((r) => this.child.on("exit", (code) => { this.exitCode = code; r(code); this.notify(); }));
     createInterface({ input: this.child.stderr }).on("line", (l) => { this.stderr.push(l); this.notify(); });
     createInterface({ input: this.child.stdout }).on("line", (l) => {
@@ -227,7 +246,8 @@ async function callInScratchEnv(scratch, fn, args, { live = false } = {}) {
   }
   const entry = JSON.stringify(pathToFileURL(join(DIST, "index.js")).href);
   const script = `const lib = await import(${entry}); process.stdout.write(JSON.stringify(await lib[${JSON.stringify(fn)}](...${JSON.stringify(args)})));`;
-  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: scratch.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: scratch.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  scratch.groups.push(child.pid);
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", (c) => { stdout += c; });

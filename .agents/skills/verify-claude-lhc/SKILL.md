@@ -234,8 +234,10 @@ exist in the evidence dir — a cleanup that eats the proof fails the run.
 
 ## Cleanup
 
-Drives self-clean their scratch homes unless `VERIFY_KEEP_SCRATCH=1`,
-which prints each kept dir as `VERIFY-CLAUDE-LHC kept scratch: <dir>`.
+Drives self-clean their scratch homes once every process group the drive
+started has exited, because the `claude` CLI writes
+`claude-home/.claude.json` after its sidecar exits. `VERIFY_KEEP_SCRATCH=1`
+keeps them and prints each kept dir as `VERIFY-CLAUDE-LHC kept scratch: <dir>`.
 Remove kept scratch with the helper, never a raw `rm`:
 
 ```sh
