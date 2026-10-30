@@ -8,8 +8,9 @@ convenient entry point is incomplete when this map lists others.
 | Feature | Drive | Proves |
 | --- | --- | --- |
 | [Start and capture](start-and-capture.md) | `start` (+ live `turn`) | a `start` mints one LHC thread bound to the requested session id; a live turn is captured before forwarding |
-| [Compact](compact.md) | `compact` | `/compact` emits the native frame order, mints a new generation from the rebuilt view, writes its projection |
-| [Restart and projection](restart-projection.md) | `restart`, `resume-unknown` | `start{resume}` restarts onto the thread's own projected file as a fresh generation; unknown ids fail clean |
+| [Compact](compact.md) | `compact`, `compact-policy`, `window-shrink` | `/compact` emits the native frame order, mints a new generation from the rebuilt view, writes its projection; a served context past the trigger after the window shrinks compacts before the next prompt |
+| [Restart and projection](restart-projection.md) | `restart`, `resume-unknown`, `resume-empty` | `start{resume}` restarts onto the thread's own projected file as a fresh generation; unknown ids fail clean |
+| [Host rollback](host-rollback.md) | `rollback`, `rollback-unknown-anchor`, `rollback-restart`, `rollback-synthetic-anchor`, `rollback-compact`, `thread-start` (+ live `rollback-live`, `rollback-live-compact`) | `start{resume, resumeSessionAt}` records a core rollback before projecting, refuses an unresolved anchor with no write, and stays rolled back across compact and restart |
 | [Rollback-shaped start](rollback-shaped-start.md) | `resume-superseded-alias` | `start{resume: <superseded alias>}` resolves to the same thread and current served view — observed, not assumed |
 
 Run everything seeded: `../drive.mjs all` (from this directory:

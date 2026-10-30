@@ -38,7 +38,7 @@ One JSON object per line on stdin (driver to sidecar) and stdout (sidecar to dri
 
 Driver frames:
 
-- `start` — the SDK options with non-serialisable members removed, plus the sidecar-only `lhc` block, `{ home, compact?: { trigger, target }, forceRebuildFailure? }`, which never reaches the SDK. `lhc.home` is required. A start without it fails with one `error` frame naming `lhc.home`, before any store is created.
+- `start` — the SDK options with non-serialisable members removed, plus the sidecar-only `lhc` block, `{ home, compact?: { trigger, target }, forceRebuildFailure? }`, which never reaches the SDK. `lhc.home` is required. A start without it fails with one `error` frame naming `lhc.home`, before any store is created. A `resume` start may carry `resumeSessionAt`, a host rollback to that message. The sidecar records it in LHC and never forwards it (see Capture and generations).
 - `user` — one SDK user message.
 - `req` — a query control: `setModel`, `setPermissionMode`, `setMaxThinkingTokens`, or `interrupt`, with an id the sidecar answers.
 - `res` — the driver's answer to a sidecar request.
@@ -62,7 +62,7 @@ The child Claude session runs with the operator's own Claude home and login (`CL
 
 One t3code thread is one LHC thread and a succession of Agent SDK generations. Exactly one generation is live. Prompts go only to the live generation, and forwarded messages come only from it. Generations change in two cases. Both project the LHC served view into a native session file under the effective Claude home (`projects/<key>/<uuid>.jsonl`, written by `src/nativeSessionFile.ts`), then resume by UUID:
 
-- **Restart**: `start` with `resume` naming any alias of the thread.
+- **Restart**: `start` with `resume` naming any alias of the thread. With `resumeSessionAt`, the sidecar first resolves the message to a core event order through its capture keys (`src/rollbackAnchor.ts`), walking native `parentUuid` links to the nearest captured ancestor when capture never recorded the message, and appends the core `rollback` event. The projection then ends at that message. An anchor that resolves nowhere fails the start with one `error` frame, `rollback anchor <id> not found`, before anything is written. A thread with no served entries starts a fresh native session under the new id instead of resuming an empty file. A fresh start whose `sessionId` already names a thread fails before a thread is created.
 - **Compact**: manual (`/compact` prompt) or automatic (below). `threadView.compact` installs the view, a continuation marker starts the next turn, and the old generation closes once the new one exists.
 
 Long native turns are folded into canonical turns at safe points (`src/capture/segment-fold.ts`). Claude runs one native turn as many wire messages. Once the open canonical turn's estimate reaches the segment threshold (half the full share of the view target), the sidecar closes the canonical turn with an ordinary `turn_end` after a tool result that leaves no tool call outstanding. The native turn is untouched. Only the canonical bookkeeping moves, so later serving can split the run.
@@ -79,6 +79,8 @@ The thread owns two numbers, both in provider-billed tokens, stored on its `thre
 The host sends the pair as `lhc.compact`. A new thread stores it, and a create without it fails. A resumed thread keeps its stored pair and logs `compact policy from thread: trigger <t> target <g>` when the host sent another. A thread with no stored pair stores the host's, and a resume with neither fails. The sidecar holds no built-in numbers of its own.
 
 The effective pair is the stored pair capped to the live context window. The sidecar reads `getContextUsage().rawMaxTokens` when each generation's query starts and after each `setModel`. A trigger above 80% of the window drops to 80%, and the target to at most half of that, logged as `compact policy capped to window <w>: trigger <t> target <g>`. The stored pair never changes. With no window known, the pair stays as stored.
+
+The same read takes `getContextUsage().totalTokens`, the served context the CLI counts for the live generation. When a thread grew on a larger window and then resumes on, or switches to, a smaller one, that count can sit at or past the effective trigger before any prompt. The sidecar then queues an auto compact. A resume runs it before `start` returns. After `setModel`, it runs when the next prompt arrives, before the prompt reaches the CLI, or at the next safe tool boundary when a turn is open. A rollback whose kept tail is at or past the trigger compacts before it projects.
 
 The rebuild compacts with the core `continuation` profile's band shares. Before compacting, the sidecar waits up to 45 seconds (`DERIVATION_WAIT_MS`) for queued derivations, so bands assemble from renderings rather than truncated excerpts.
 
