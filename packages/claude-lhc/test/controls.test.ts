@@ -8,10 +8,12 @@ interface FakeQuery {
   options: Record<string, unknown>;
   prompt: AsyncIterable<unknown>;
   calls: Array<[method: string, ...args: unknown[]]>;
+  readsAfter: number[];
 }
 
 const queries: FakeQuery[] = [];
 let contextUsage: () => Promise<unknown> = async () => ({ rawMaxTokens: 1_000_000 });
+const delays: Record<string, number> = {};
 const answers: Record<string, unknown> = {
   mcpServerStatus: [{ name: "late", status: "connected" }],
   setMcpServers: { added: ["late"], removed: [], errors: {} },
@@ -24,19 +26,22 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
     ...real,
     renameSession: async () => {},
     query: ({ prompt, options }: { prompt: AsyncIterable<unknown>; options: Record<string, unknown> }) => {
-      const fake: FakeQuery = { options, prompt, calls: [] };
+      const fake: FakeQuery = { options, prompt, calls: [], readsAfter: [] };
       queries.push(fake);
       const never = new Promise<IteratorResult<never>>(() => {});
       const base = {
         [Symbol.asyncIterator]: () => ({ next: () => never }),
-        getContextUsage: () => contextUsage(),
+        getContextUsage: () => {
+          fake.readsAfter.push(fake.calls.length);
+          return contextUsage();
+        },
         close: () => {},
       };
       return new Proxy(base, {
         get(target, key) {
           if (key in target) return target[key as keyof typeof target];
           return async (...args: unknown[]) => {
-            await new Promise((resolve) => setTimeout(resolve, 5));
+            await new Promise((resolve) => setTimeout(resolve, delays[String(key)] ?? 5));
             fake.calls.push([String(key), ...args]);
             return answers[String(key)];
           };
@@ -137,17 +142,57 @@ describe("replay controls", () => {
     expect(next.options["permissionMode"]).toBe("plan");
     expect(next.calls).toEqual([
       ["setMcpServers", { ...LATE, [RETRIEVAL_SERVER_NAME]: retrievalOf(next) }],
-      ["applyFlagSettings", { effortLevel: "low", ultracode: true }],
+      ["applyFlagSettings", { effortLevel: "low" }],
+      ["applyFlagSettings", { ultracode: true }],
       ["toggleMcpServer", "late", true],
       ["setPermissionMode", "plan"],
     ]);
     expect(logs).toContain(
-      `generation ${(next.options["resume"] ?? next.options["sessionId"]) as string}: replayed setMcpServers, applyFlagSettings, toggleMcpServer, setPermissionMode`,
+      `generation ${(next.options["resume"] ?? next.options["sessionId"]) as string}: replayed setMcpServers, applyFlagSettings, applyFlagSettings, toggleMcpServer, setPermissionMode`,
     );
 
     expect(await session.control("mcpServerStatus", {})).toEqual(answers["mcpServerStatus"]);
     expect(methods(next).at(-1)).toBe("mcpServerStatus");
     expect(methods(queries[0]!)).not.toContain("mcpServerStatus");
+  });
+
+  test("replay keeps the host's order across controls that touch the same setting", async () => {
+    const session = await started();
+    await session.control("applyFlagSettings", { settings: { model: "model-a", effortLevel: "high" } });
+    await session.control("setModel", { model: "model-b" });
+    await session.control("applyFlagSettings", { settings: { effortLevel: "low" } });
+    await session.control("applyFlagSettings", { settings: { effortLevel: null } });
+
+    await session.pushUser(prompt("/compact"));
+
+    expect(queries[1]!.calls).toEqual([
+      ["applyFlagSettings", { model: "model-a" }],
+      ["setModel", "model-b"],
+      ["applyFlagSettings", { effortLevel: null }],
+    ]);
+  });
+
+  test("the new generation reads its window after the replay", async () => {
+    const session = await started();
+    await session.control("setMcpServers", { servers: LATE });
+    await session.control("setModel", { model: "claude-sonnet-4-5" });
+    await session.pushUser(prompt("/compact"));
+    expect(queries[1]!.readsAfter[0]).toBe(2);
+  });
+
+  test("a control sent while the replay waits reaches the new generation", async () => {
+    const session = await started();
+    await session.control("setMcpServers", { servers: LATE });
+    delays["setMcpServers"] = 200;
+    try {
+      const compacted = session.pushUser(prompt("/compact"));
+      await vi.waitFor(() => expect(queries).toHaveLength(2));
+      await session.control("setPermissionMode", { mode: "plan" });
+      await compacted;
+    } finally {
+      delete delays["setMcpServers"];
+    }
+    expect(methods(queries[1]!)).toEqual(["setMcpServers", "setPermissionMode"]);
   });
 
   test("setMcpServers keeps the retrieval server under its own name", async () => {
@@ -170,6 +215,22 @@ describe("replay controls", () => {
     }
     expect(queries).toHaveLength(2);
     expect(logs.some((line) => line.endsWith("replayed MCP server(s) failed: late"))).toBe(true);
+  });
+});
+
+describe("window after a model change", () => {
+  test("a flag setting that names a model rereads the window and caps the pair", async () => {
+    const session = await started();
+    contextUsage = async () => ({ rawMaxTokens: 200_000 });
+    await session.control("applyFlagSettings", { settings: { model: "claude-sonnet-4-5" } });
+    expect(logs).toContain("compact policy capped to window 200000: trigger 160000 target 80000");
+  });
+
+  test("a flag setting without a model leaves the window alone", async () => {
+    const session = await started();
+    contextUsage = async () => ({ rawMaxTokens: 200_000 });
+    await session.control("applyFlagSettings", { settings: { effortLevel: "low" } });
+    expect(logs.some((line) => line.startsWith("compact policy capped"))).toBe(false);
   });
 });
 

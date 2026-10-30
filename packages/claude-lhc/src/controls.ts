@@ -15,12 +15,17 @@ type Row<M extends keyof Controls> =
       kind: "forward-and-replay";
       params: Params<Args<M>>;
       slot?: (args: Args<M>) => string;
-      merge?: (earlier: Args<M>, later: Args<M>) => Args<M>;
+      remainder?: (earlier: Args<M>, later: Args<M>) => Args<M> | null;
     }
   | { kind: "forward" | "sidecar"; params: Params<Args<M>> }
   | { kind: "refuse" };
 
 const byServer = ([serverName]: readonly [string, ...unknown[]]): string => serverName;
+
+function keysNotIn<T extends object>(earlier: T, later: object): T | null {
+  const rest = Object.fromEntries(Object.entries(earlier).filter(([key]) => !Object.hasOwn(later, key)));
+  return Object.keys(rest).length === 0 ? null : (rest as T);
+}
 
 export const CONTROLS = {
   setModel: { kind: "forward-and-replay", params: [{ optional: "model" }] },
@@ -30,13 +35,19 @@ export const CONTROLS = {
   applyFlagSettings: {
     kind: "forward-and-replay",
     params: ["settings"],
-    merge: ([earlier], [later]) => [{ ...earlier, ...later }],
+    remainder: ([earlier], [later]) => {
+      const rest = keysNotIn(earlier, later);
+      return rest === null ? null : [rest];
+    },
   },
   updateSettings: {
     kind: "forward-and-replay",
     params: ["source", "settings"],
     slot: ([source]) => source,
-    merge: ([, earlier], [source, later]) => [source, { ...earlier, ...later }],
+    remainder: ([source, earlier], [, later]) => {
+      const rest = keysNotIn(earlier, later);
+      return rest === null ? null : [source, rest];
+    },
   },
   toggleMcpServer: { kind: "forward-and-replay", params: ["serverName", "enabled"], slot: byServer },
   setMcpPermissionModeOverride: { kind: "forward-and-replay", params: ["serverName", "mode"], slot: byServer },
@@ -74,8 +85,11 @@ export type ControlCall =
 
 interface ReplayRow {
   slot?: (args: readonly unknown[]) => string;
-  merge?: (earlier: readonly unknown[], later: readonly unknown[]) => readonly unknown[];
+  remainder?: (earlier: readonly unknown[], later: readonly unknown[]) => readonly unknown[] | null;
 }
+
+const slotOf = (call: ControlCall): string =>
+  `${call.method}:${(CONTROLS[call.method] as ReplayRow).slot?.(call.args) ?? ""}`;
 
 export function parseControl(method: string, params: unknown): ControlCall {
   if (!Object.hasOwn(CONTROLS, method)) throw new Error(`unknown control ${method}`);
@@ -92,20 +106,25 @@ export function parseControl(method: string, params: unknown): ControlCall {
 }
 
 export class ReplayLedger {
-  readonly #calls = new Map<string, ControlCall>();
+  #entries: Array<{ seq: number; call: ControlCall }> = [];
+  #seq = 0;
 
-  record(call: ControlCall): void {
-    const row = CONTROLS[call.method] as ReplayRow;
-    const slot = `${call.method}:${row.slot?.(call.args) ?? ""}`;
-    const earlier = this.#calls.get(slot);
-    this.#calls.delete(slot);
-    this.#calls.set(
-      slot,
-      earlier !== undefined && row.merge !== undefined ? { ...call, args: row.merge(earlier.args, call.args) } : call,
-    );
+  get seq(): number {
+    return this.#seq;
   }
 
-  inLastCallOrder(): readonly ControlCall[] {
-    return [...this.#calls.values()];
+  record(call: ControlCall): void {
+    const { remainder } = CONTROLS[call.method] as ReplayRow;
+    const slot = slotOf(call);
+    this.#entries = this.#entries.flatMap((entry) => {
+      if (slotOf(entry.call) !== slot) return [entry];
+      const rest = remainder?.(entry.call.args, call.args) ?? null;
+      return rest === null ? [] : [{ ...entry, call: { ...entry.call, args: rest } }];
+    });
+    this.#entries.push({ seq: ++this.#seq, call });
+  }
+
+  recordedAfter(seq: number): readonly ControlCall[] {
+    return this.#entries.filter((entry) => entry.seq > seq).map((entry) => entry.call);
   }
 }

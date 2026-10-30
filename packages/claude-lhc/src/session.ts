@@ -339,7 +339,8 @@ export class ClaudeLhcSession {
     }
     const value = await this.#invoke(gen, call);
     if (call.kind === "forward-and-replay") this.#replay.record(call);
-    if (call.method === "setModel") await this.#checkServedContext(gen);
+    if (call.method === "setModel" || (call.method === "applyFlagSettings" && Object.hasOwn(first as object, "model")))
+      await this.#checkServedContext(gen);
     return value;
   }
 
@@ -350,21 +351,25 @@ export class ClaudeLhcSession {
   }
 
   async #replayControls(gen: Generation): Promise<void> {
-    const calls = this.#replay.inLastCallOrder();
-    for (const call of calls) {
-      try {
-        const value = await this.#invoke(gen, call);
-        const failed = call.method === "setMcpServers" ? Object.keys((value as McpSetServersResult).errors) : [];
-        if (failed.length > 0)
-          this.#io.log(`generation ${gen.sessionId}: replayed MCP server(s) failed: ${failed.join(", ")}`);
-      } catch (cause) {
-        this.#io.log(
-          `generation ${gen.sessionId}: ${call.method} not replayed: ${cause instanceof Error ? cause.message : String(cause)}`,
-        );
+    const replayed: string[] = [];
+    let seen = 0;
+    for (let calls = this.#replay.recordedAfter(seen); calls.length > 0; calls = this.#replay.recordedAfter(seen)) {
+      seen = this.#replay.seq;
+      for (const call of calls) {
+        replayed.push(call.method);
+        try {
+          const value = await this.#invoke(gen, call);
+          const failed = call.method === "setMcpServers" ? Object.keys((value as McpSetServersResult).errors) : [];
+          if (failed.length > 0)
+            this.#io.log(`generation ${gen.sessionId}: replayed MCP server(s) failed: ${failed.join(", ")}`);
+        } catch (cause) {
+          this.#io.log(
+            `generation ${gen.sessionId}: ${call.method} not replayed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
+        }
       }
     }
-    if (calls.length > 0)
-      this.#io.log(`generation ${gen.sessionId}: replayed ${calls.map((call) => call.method).join(", ")}`);
+    if (replayed.length > 0) this.#io.log(`generation ${gen.sessionId}: replayed ${replayed.join(", ")}`);
   }
 
   async #setCompactPolicy(gen: Generation, value: unknown): Promise<void> {
@@ -439,8 +444,8 @@ export class ClaudeLhcSession {
     const q = query({ prompt: input, options });
     gen = { sessionId, query: q, input, retrieval, superseded: false };
     void this.#pump(gen);
-    this.#windowRead = this.#readWindow(gen);
     await this.#replayControls(gen);
+    this.#windowRead = this.#readWindow(gen);
     return gen;
   }
 

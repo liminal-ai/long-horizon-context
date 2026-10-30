@@ -11,9 +11,11 @@
   `setMcpServers`, `applyFlagSettings`, `updateSettings`,
   `toggleMcpServer` and `setMcpPermissionModeOverride` go to the live
   generation, and again to every generation a compact starts, before
-  that generation takes a prompt. A later call replaces the
-  earlier one in its slot. `applyFlagSettings` and `updateSettings` merge
-  instead, as the SDK does. The new generation logs `generation <id>:
+  that generation takes a prompt. Calls replay in the order the host made
+  them. A later call drops an earlier call to the same method and target.
+  For `applyFlagSettings` and `updateSettings` it drops only the keys it
+  sets again, so the replay ends on the settings the live generation has.
+  A control that arrives while the replay runs is replayed too. The new generation logs `generation <id>:
   replayed <methods>`. `setMcpServers` always carries the LHC retrieval
   server under its own name.
 - Forward: `interrupt`, `stopTask`, `backgroundTasks`,
@@ -31,7 +33,8 @@
   control. It stores the pair on the thread's `thread_metadata` row, logs
   `compact policy set on thread: trigger <t> target <g>`, caps it to the
   live window as [compact.md](compact.md) describes, and runs the same served-context
-  check a `setModel` runs. A bad pair answers `setCompactPolicy
+  check a `setModel` runs. An `applyFlagSettings` that sets `model` runs
+  that check too. A bad pair answers `setCompactPolicy
   params.policy must be ...` and leaves the row alone.
 
 ## How to get to it (user POV)
