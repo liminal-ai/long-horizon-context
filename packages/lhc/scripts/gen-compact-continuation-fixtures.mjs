@@ -1077,7 +1077,7 @@ const manifest = {
   contractVersion: V,
   contractId: "lhc.compact_continuation",
   description:
-    "Table-driven parity fixtures for the compact-continuation state machine (LIM-60). TypeScript and Rust consumers must match expected decisions exactly.",
+    "Table-driven parity fixtures for the compact-continuation state machine (LIM-60). Consumers must match expected decisions exactly.",
   cases: manifestCases,
   requiredCoverage,
 };

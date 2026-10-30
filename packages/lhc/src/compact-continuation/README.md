@@ -183,14 +183,14 @@ material.
 enforces explicit cancellation and visibility-boundary invariants, but it does
 not reject ordinary source progress.
 
-## Oracle effects vs residual (LIM-62 parity)
+## Oracle effects vs residual
 
 Oracle `effects` list the **prescribed protocol** for a completed seam
 classification. Runtime residual and durable stage/writer/boundary state record
 **what actually completed** on interrupted or repair paths (e.g. deferring
 `release_writer` while a pending boundary is still owned). Residual/durable
 state is the truth surface for hosts; effects must not be treated as
-already-applied facts. Rust parity must preserve both without collapsing them.
+already-applied facts. Consumers must preserve both without collapsing them.
 
 ## Empty open turn
 

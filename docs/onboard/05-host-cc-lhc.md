@@ -530,7 +530,4 @@ recognize `type: "summary"` for older rollouts), and the record's appended
 amendment carries the passing canary (d) rerun on 2.1.235. The native-summary
 paragraphs above describe current behavior.
 
-The TypeScript SDK remains the contract source. The
-`turns.backfillRenderingLabels` operation has no counterpart in the Rust
-or Python ports yet. That port-parity gap does not weaken this
-host's certification.
+The TypeScript SDK remains the contract source.

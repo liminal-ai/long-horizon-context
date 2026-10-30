@@ -1,11 +1,9 @@
-import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve as resolvePath } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { health } from "../inspect/index.js";
 import { messageEvents } from "../intake-stream/index.js";
 import {
-  CURRENT_THREAD_SCHEMA_VERSION,
   createDbReadTransaction,
   type ErrorCode,
   type ErrorResult,
@@ -193,24 +191,19 @@ export async function copyThread(input: CopyThreadInput): Promise<OpResult<CopyT
   };
 }
 
-export type ForkHost = "cc-lhc" | "claude-lhc" | "codex-lhc" | "grok" | "hermes";
-export const FORK_HOSTS: readonly ForkHost[] = ["cc-lhc", "claude-lhc", "codex-lhc", "grok", "hermes"];
+export type ForkHost = "cc-lhc" | "claude-lhc" | "hermes";
+export const FORK_HOSTS: readonly ForkHost[] = ["cc-lhc", "claude-lhc", "hermes"];
 
 export const SOURCE_ONLY_HOSTS: readonly ForkHost[] = ["hermes"];
 export function isSourceOnlyHost(host: ForkHost): boolean {
   return SOURCE_ONLY_HOSTS.includes(host);
 }
 
-export type HostBinding = { kind: "alias"; alias: string } | { kind: "file"; fileName: string };
-
-export const RUST_HOST_THREAD_SCHEMA_VERSION = 13;
-export const FILE_HOST_THREAD_SCHEMA_VERSION: number = CURRENT_THREAD_SCHEMA_VERSION;
+export type HostBinding = { kind: "alias"; alias: string };
 
 export const HOST_PROVIDERS: Readonly<Record<ForkHost, string>> = {
   "cc-lhc": "anthropic",
   "claude-lhc": "anthropic",
-  "codex-lhc": "openai",
-  grok: "xai",
   hermes: "hermes",
 };
 
@@ -244,36 +237,6 @@ export function handoffCompactOptions(lowerBound?: number): { profile: string; p
   return lowerBound === undefined ? { profile: HANDOFF_PROFILE } : { profile: HANDOFF_PROFILE, params: { lowerBound } };
 }
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-export function forkThreadId(host: ForkHost, given: { newId?: string; sessionId?: string }): OpResult<string> {
-  switch (host) {
-    case "codex-lhc": {
-      if (given.newId !== undefined && given.sessionId !== undefined && given.newId !== given.sessionId) {
-        return callerError(
-          "invalid_thread_alias",
-          `host codex-lhc keys the record by its rollout uuid: --new-id ${given.newId} and --session-id ${given.sessionId} must agree`,
-        );
-      }
-      const id = given.newId ?? given.sessionId ?? randomUUID();
-      if (!UUID_RE.test(id))
-        return callerError("invalid_thread_alias", `host codex-lhc needs a uuid thread id, got ${id}`);
-      return { ok: true, value: id };
-    }
-    case "grok":
-      return { ok: true, value: given.newId ?? randomUUID() };
-    default:
-      return { ok: true, value: given.newId ?? generateThreadId() };
-  }
-}
-
-function encodeForPath(id: string, unsafe: RegExp): string {
-  return id.replace(unsafe, (ch) => `%${ch.charCodeAt(0).toString(16).toUpperCase().padStart(2, "0")}`);
-}
-const CODEX_UNSAFE = /[^A-Za-z0-9-]/g;
-const GROK_UNSAFE = /[^A-Za-z0-9_-]/g;
-const HERMES_SAFE = /^[A-Za-z0-9_-]+$/;
-
 export function hostBinding(host: ForkHost, sessionId?: string): OpResult<HostBinding> {
   if (sessionId === undefined || sessionId.trim() === "") {
     return callerError("invalid_thread_alias", `host ${host} binds by session id; none given`);
@@ -283,22 +246,8 @@ export function hostBinding(host: ForkHost, sessionId?: string): OpResult<HostBi
       return { ok: true, value: { kind: "alias", alias: `claude-code:${sessionId}` } };
     case "claude-lhc":
       return { ok: true, value: { kind: "alias", alias: `t3code-lhc:${sessionId}` } };
-    case "codex-lhc":
-      return { ok: true, value: { kind: "file", fileName: `${encodeForPath(sessionId, CODEX_UNSAFE)}.sqlite` } };
-    case "grok":
-      return {
-        ok: true,
-        value: { kind: "file", fileName: `grok-${encodeForPath(sessionId, GROK_UNSAFE)}.sqlite` },
-      };
-    case "hermes": {
-      if (!HERMES_SAFE.test(sessionId)) {
-        return callerError(
-          "invalid_thread_alias",
-          `host hermes names the file after the session verbatim; ${sessionId} is not path-safe`,
-        );
-      }
-      return { ok: true, value: { kind: "file", fileName: `${sessionId}.sqlite` } };
-    }
+    case "hermes":
+      return callerError("invalid_thread_alias", `host ${host} is a source only; it cannot be a bind target`);
     default:
       return callerError("invalid_thread_alias", `unknown host ${String(host)}; one of ${FORK_HOSTS.join(", ")}`);
   }
@@ -314,22 +263,13 @@ export interface BindHostInput {
 export async function bindHost(input: BindHostInput): Promise<OpResult<HostBinding>> {
   const binding = hostBinding(input.host, input.sessionId);
   if (!binding.ok) return binding;
-  switch (binding.value.kind) {
-    case "alias": {
-      const registration: { alias: string; threadId: string; registryPath?: string } = {
-        alias: binding.value.alias,
-        threadId: input.threadId,
-      };
-      if (input.registryPath !== undefined) registration.registryPath = input.registryPath;
-      const bound = await registerCurrentAlias(registration);
-      return bound.ok ? binding : bound;
-    }
-    case "file":
-      return callerError(
-        "file_bound_host",
-        `host ${input.host} binds by file name ${binding.value.fileName}; choose it at copy time`,
-      );
-  }
+  const registration: { alias: string; threadId: string; registryPath?: string } = {
+    alias: binding.value.alias,
+    threadId: input.threadId,
+  };
+  if (input.registryPath !== undefined) registration.registryPath = input.registryPath;
+  const bound = await registerCurrentAlias(registration);
+  return bound.ok ? binding : bound;
 }
 
 export interface IdentityNoteInput {

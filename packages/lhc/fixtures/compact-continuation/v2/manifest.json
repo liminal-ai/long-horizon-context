@@ -1,7 +1,7 @@
 {
   "contractVersion": "2.0.0",
   "contractId": "lhc.compact_continuation",
-  "description": "Table-driven parity fixtures for the compact-continuation state machine (LIM-60). TypeScript and Rust consumers must match expected decisions exactly.",
+  "description": "Table-driven parity fixtures for the compact-continuation state machine (LIM-60). Consumers must match expected decisions exactly.",
   "cases": [
     {
       "file": "cases/no_authoritative_provider_usage.json",

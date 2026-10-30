@@ -4,7 +4,7 @@
 
 - `lhc thread health --home H --thread-id ID [--json]` — read-only derivation report: one line of `ready= pending= failed= blocked= repairable=` counts, or the full report with `--json`. A thread with failures still exits 0.
 - `lhc thread export --home H --thread-id ID [--out FILE]` — writes the kept history as one JSON object (`threadId`, `turns`) to stdout or `--out`. With `--out`, stdout is `<path> turns=<n>`.
-- Cross-home verbs: `copy` places a thread in another home, and `fork` runs copy, identity note, repair, compact, and bind in that order. Fork skips repair with `--no-repair`, compacts only when the two hosts use different providers (`--compact` forces it, `--no-compact` suppresses it), and binds only alias hosts such as `cc-lhc` and `claude-lhc`.
+- Cross-home verbs: `copy` places a thread in another home, and `fork` runs copy, identity note, repair, compact, and bind in that order. Fork skips repair with `--no-repair`, compacts only when the two hosts use different providers (`--compact` forces it, `--no-compact` suppresses it), and binds the target host's alias. Targets are `cc-lhc` and `claude-lhc`; `hermes` is a source only.
 - In-place verbs: `bind`, `note`, and `repair` update the thread already in `--home`. Full flags: run `node packages/lhc/bin/lhc` with no args.
 
 ## How to get to it (user POV)
@@ -23,7 +23,7 @@ node packages/lhc/bin/lhc thread health --home <printed-dir> --thread-id th_unkn
 node .agents/skills/verify-lhc/helpers/cleanup.mjs <printed-dir>
 ```
 
-Exit codes: 0 for a successful verb, which prints one stdout line. 2 for a refusal: `thread_not_found` (as in the last health line above), `mid_turn`, `path_exists`, `thread_exists`, `alias_bound_to_other_thread`, `file_bound_host`, `host_schema_behind` (a fork into `codex-lhc` or `grok` while the thread schema is ahead of lhc-rs), `invalid_thread_alias`, or `compact_refused`. 1 for a usage error, such as a missing `--token-family`, and every other failure. No args or `--help` exits 0 and prints the usage block.
+Exit codes: 0 for a successful verb, which prints one stdout line. 2 for a refusal: `thread_not_found` (as in the last health line above), `mid_turn`, `path_exists`, `thread_exists`, `alias_bound_to_other_thread`, `invalid_thread_alias`, or `compact_refused`. 1 for a usage error, such as a missing `--token-family`, and every other failure. No args or `--help` exits 0 and prints the usage block.
 
 ## Gotchas
 

@@ -11,7 +11,6 @@ export type ErrorCode =
   | "alias_bound_to_other_thread"
   | "mid_turn"
   | "thread_exists"
-  | "file_bound_host"
   | "invalid_event"
   | "empty_batch"
   | "turn_state_corrupt"

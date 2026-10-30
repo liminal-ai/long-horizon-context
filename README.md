@@ -59,22 +59,14 @@ model request and response cycle.
 | Implementation | Role | Current status |
 | --- | --- | --- |
 | [`lhc`](packages/lhc) | TypeScript SDK and contract source | Repository SDK and contract source; not published as a standalone registry package |
-| [`lhc-rs`](packages/lhc-rs) | Host-agnostic Rust port | Certified against the TypeScript contract; consumed by the Codex and Grok forks |
-| [`lhc-py`](packages/lhc-py) | Python port | Certified against the TypeScript contract; consumed by Hermes |
-
-Port certification proves the contract surface owned by that port. It does not
-imply that every implementation is published to a package registry or already
-contains every later feature from another port.
 
 ## Host integrations
 
 | Host | Integration | Distribution |
 | --- | --- | --- |
-| Codex CLI | Native Rust integration in the maintained [`codex-lhc`](https://github.com/liminal-ai/codex-lhc) fork | Fork release |
-| Grok Build | Native Rust integration in the maintained [`grok-build-lhc`](https://github.com/liminal-ai/grok-build-lhc) fork | Fork release |
 | Claude Code | [`cc-lhc`](packages/cc-lhc), a closed-host PTY wrapper | Public npm package and GitHub bundles |
 | Claude Code (in t3code) | [`claude-lhc`](packages/claude-lhc), an Agent SDK sidecar that records into LHC and projects native sessions from the served view | Public npm package |
-| Hermes Agent | Native Python integration in the maintained [`hermes-lhc`](https://github.com/liminal-ai/hermes-lhc) fork using `context.engine: lhc` | Fork installation |
+| Hermes Agent | Python integration in the [`hermes-lhc`](https://github.com/liminal-ai/hermes-lhc) fork using `context.engine: lhc`. This repository no longer carries its Python port. | Fork installation |
 
 Hosts do not have identical capabilities. The integration surface determines
 how each host captures events, exposes retrieval, and replaces its working
@@ -201,7 +193,7 @@ the durable work queue.
 
 The workspace development floor is Node.js 24.17 or later with pnpm 11.8.0.
 This is higher than the packaged cc-lhc runtime floor because the complete
-workspace also builds the SDK, ports, and tests.
+workspace also builds the SDK and tests.
 
 ```sh
 git clone https://github.com/liminal-ai/long-horizon-context.git
