@@ -1,72 +1,163 @@
 # claude-lhc
 
-Claude Code sidecar for t3code's LHC provider instance. Runs the Claude Agent SDK (pinned 0.3.170,
-the version t3code installs) against the Claude Code binary t3code points it at, records every
-native message into an LHC thread as the primary record, and forwards the raw SDK stream to the
-driver unchanged over JSONL stdio. The native session is a projection of the LHC served view: every
-restart and every compact mints a fresh native session id from that view.
+claude-lhc is the Claude Agent SDK's `query()` with LHC underneath. A host imports `query` from
+`claude-lhc` where it would import it from `@anthropic-ai/claude-agent-sdk`, and gets the same
+message stream and the same `Query` methods. Behind that call a sidecar process runs the SDK
+against the Claude Code CLI, records every native message into an LHC thread before it forwards
+the message, and compacts from that thread. Each compact and each restart starts a fresh Claude
+session projected from the thread's served view.
 
-- `src/protocol.ts` — the wire: `start`, `user`, `req`/`res`, `abort`, `msg`, `error`.
-- `src/session.ts` — generations, capture-before-forward, manual/auto compact, projection swap.
-- `src/capture/mapper.ts` — SDK messages → LHC intake events (cc-lhc's rules on the wire shapes).
-- `src/projection/project.ts` — LHC served view → native transcript lines.
-- `src/nativeSessionFile.ts` — write those lines into the effective Claude home (`projects/<key>/<uuid>.jsonl`) before `query({resume})`. No `sessionStore`.
-- `src/lhcHome.ts` — the store at the host's `lhc.home`, aliases `t3code-lhc:<session id>`.
-- `src/compactPolicy.ts` — the thread's stored compact pair, capped to the live context window.
-- `src/inference/claudeCli.ts` — derivations through `claude -p --no-session-persistence`.
-- `bin/claude-lhc` — convenience wrapper (`exec node dist/sidecar.js`). T3 spawns `process.execPath` with the compiled JS entry.
+This README is the host contract. Every name below matches the SDK unless it sits under `lhc`.
 
-## Install
+## Use it
 
-The T3 Code fork installs the sidecar from npm; nothing in this repo needs building:
+```ts
+import { query } from "claude-lhc";
 
-```sh
-npm install claude-lhc@0.1.1
+const q = query({
+	prompt: input, // string | AsyncIterable<SDKUserMessage>, as in the SDK
+	options: {
+		cwd,
+		model: "claude-sonnet-5",
+		permissionMode: "default",
+		canUseTool,
+		lhc: { home: "/var/lib/my-host/lhc", compact: { trigger: 700_000, target: 140_000 } },
+	},
+});
+for await (const message of q) handle(message);
 ```
 
-Point t3code at the compiled entry with `CLAUDE_LHC_SIDECAR=<prefix>/node_modules/claude-lhc/dist/sidecar.js`
-(the fork's setup script does this). Node 24.3 or later. The package bundles the `lhc` core; it
-is not published separately.
+`query` has the SDK's signature, so it type-checks where `typeof query` from
+`@anthropic-ai/claude-agent-sdk` is expected (`test/client.test.ts`). `examples/consumer.ts` is a
+complete host that starts, answers, compacts, restarts, rolls back and closes.
 
-## Configuration
+The package also exports `forkSession`, `getSessionMessages` and `getSubagentMessages`. They take
+the SDK's arguments plus `lhc: { home }`.
 
-- **Claude home:** the same login and settings as Claude Code (`CLAUDE_CONFIG_DIR`, else `~/.claude`).
-- **LHC home:** the start frame's `lhc.home`, required. There is no default. A start without it
-  fails with an error frame naming `lhc.home`.
-- **Compact policy:** the start frame's `lhc.compact`, `{ trigger, target }` in provider-billed
-  tokens, positive integers with the target below the trigger. A new thread stores it on its
-  thread header and requires it. A resumed thread keeps its stored pair and logs
-  `compact policy from thread` when the host sent another. A thread with no stored pair stores the
-  host's. Each generation and each `setModel` reads the live window with `getContextUsage`. A
-  trigger above 80% of that window drops to 80%, and the target to at most half of that. The
-  stored pair never changes. The `setCompactPolicy` control replaces the stored pair on a live thread.
-- **`CLAUDE_LHC_NO_INFERENCE=1`:** skip summary derivations (tests and previews).
-- **`T3CODE_THREAD_ID`:** set by the t3code driver and passed through to Claude Code.
+## The `lhc` block
+
+`options.lhc` never reaches the SDK.
+
+- `home` is the LHC store directory, with `registry.sqlite` and `threads/`. It is required and has
+  no default. A start without it fails the stream with `lhc.home is required`.
+- `compact` is `{ trigger, target }` in provider-billed tokens, positive integers with the target
+  below the trigger. A new thread stores it on its thread header and requires it. A resumed
+  thread keeps its stored pair and logs `compact policy from thread` when the host sent another.
+  Each generation and each `setModel` reads the live window with `getContextUsage`. A trigger
+  above 80% of that window drops to 80%, and the target drops to at most half of that. The stored
+  pair never changes. The `setCompactPolicy` control replaces the stored pair on a live thread.
+- `spawn` is `{ command, args?, env? }`, the command that runs the sidecar. The default is
+  `node <this package>/dist/sidecar.js`. Pass it when the host stages and pins its own copy of the
+  sidecar. claude-lhc does no pinning or staging of its own.
+
+## Options
+
+The client sends every other SDK option to the sidecar, which passes it to the SDK.
+
+- `canUseTool` and `onUserDialog` run in the host. The sidecar asks for each answer over the wire.
+- `stderr` gets the sidecar's log lines and the client's own notices.
+- `abortController` closes the query when it aborts.
+- `env` is the Claude process's environment, as in the SDK. It is also the sidecar's environment
+  unless `lhc.spawn.env` is set. The sidecar writes projected sessions under the
+  `CLAUDE_CONFIG_DIR` it names, else `~/.claude`.
+- `hooks`, `onElicitation`, `sessionStore`, `sessionStoreFlush`, `spawnClaudeCodeProcess` and
+  in-process (`type: "sdk"`) MCP servers cannot cross a process boundary. The client drops each
+  one and names it on `stderr`.
+- `resume` takes any session id the thread has had, the first one included.
+- `resumeSessionAt` is a host rollback. The sidecar records a core `rollback` event at that
+  message and starts from the kept view. A message it cannot place fails the start with
+  `rollback anchor <uuid> not found`.
+
+### Permission mode
+
+claude-lhc passes `permissionMode` to the SDK only when the host sends it. On Agent SDK 0.3.312,
+an omitted `permissionMode` can start the Claude CLI in `auto` mode (`Options.permissionMode`
+JSDoc in `sdk.d.ts`). To get a fixed mode, send `permissionMode` in the start options. claude-lhc
+does not pick a default, which matches the SDK.
+
+### Claude binary
+
+claude-lhc always starts an external `claude` through `pathToClaudeCodeExecutable`, default
+`claude` on `PATH`. It never uses the SDK's bundled binary, and the workspace does not install it.
+SDK 0.3.312 expects CLI 2.1.312. Pin a CLI close to that version.
+
+## Query methods
+
+The returned object is the SDK's `Query`: an async generator of `SDKMessage` plus its methods,
+and `setCompactPolicy(policy)`. `CONTROLS` in `src/controls.ts` decides what each method does,
+and a new SDK method fails the typecheck until it has a row.
+
+- `setModel`, `setPermissionMode`, `setMaxThinkingTokens`, `setMcpServers`, `applyFlagSettings`,
+  `updateSettings`, `toggleMcpServer` and `setMcpPermissionModeOverride` go to the live
+  generation. Every generation a compact starts gets them again, in the host's order, before it
+  takes a prompt.
+- `interrupt`, `stopTask`, `backgroundTasks`, `getContextUsage`, `mcpServerStatus`, `readFile` and
+  the other read and reload methods go to the live generation only.
+- `rewindFiles`, `reinitialize` and `seedReadState` reject with `<method> is refused`, because
+  each changes the Claude session outside the LHC record. The session stays usable.
+- `setCompactPolicy({ trigger, target })` stores a new pair on the thread.
+- `streamInput(stream)` sends more user messages. `close()` ends the sidecar and its Claude
+  process, and the stream returns no more messages. With a string prompt, or once the prompt
+  iterable ends, the client closes the sidecar after the last turn's `result`.
+
+## Session ids
+
+A compact and a restart each mint a new Claude session id. The stream carries the live id in
+`session_id`, as in the SDK. claude-lhc resolves any id the thread has had, so a host that keeps
+the first id can still resume, fork and read history with it. A host that reads Claude's
+session files directly sees only the generation that file belongs to. Use `getSessionMessages`
+instead.
+
+## Environment
+
+- `CLAUDE_LHC_NO_INFERENCE=1` in the sidecar's environment skips summary derivations, for tests
+  and previews.
+- `T3CODE_THREAD_ID` in the sidecar's environment passes through to Claude Code when `options.env`
+  does not set it.
+
+## Wire
+
+Hosts that are not in Node can speak the sidecar's JSONL wire directly. `src/protocol.ts` defines
+the frames: `start`, `user`, `req` and `res`, `abort`, `msg`, and `error`. `src/client.ts` is the
+reference client. Closing the sidecar's stdin closes it.
+
+## Source map
+
+- `src/client.ts` is `query()`, the client side of the wire.
+- `src/sidecar.ts` is the sidecar entry. `bin/claude-lhc.js` runs it.
+- `src/protocol.ts` defines the wire frames and the `lhc` block.
+- `src/controls.ts` maps each `Query` method to forward, replay, refuse or transport.
+- `src/session.ts` runs generations, capture-before-forward, compact and the projection swap.
+- `src/capture/mapper.ts` maps SDK messages to LHC intake events.
+- `src/projection/project.ts` turns the LHC served view into native transcript lines.
+- `src/nativeSessionFile.ts` writes those lines into the Claude home before `query({ resume })`.
+- `src/lhcHome.ts` opens the store at `lhc.home` and keeps the session id aliases.
+- `src/compactPolicy.ts` holds the thread's compact pair and its cap to the live window.
 
 ## Build from source
 
-Build (required; `dist/` is not in git):
+`dist/` is not in git. Build both packages:
 
 ```sh
 pnpm --filter lhc build && pnpm --filter claude-lhc build
 ```
 
-Then run `node packages/claude-lhc/dist/sidecar.js` (or `node packages/claude-lhc/bin/claude-lhc.js`). Bun is not used.
+Node 24.3 or later. Bun is not used.
 
 ## Thinking replay after compact
 
 The projected session replays the tail's thinking blocks with their signatures
 (`SELECTED_THINKING_REBUILD_ARM` in `src/projection/project.ts`, mirroring cc-lhc).
-The API binds a thinking block to the exact history it was produced over; a compact
+The API binds a thinking block to the exact history it was produced over, and a compact
 rewrites that history. Accounts created on or after 2026-08-31, and later models for all
 accounts, reject that shape with a prefix-mismatch 400 on the first request after a
 compact. Older accounts accept it today. If a thread hits that 400, set the arm to `omit`
-and rebuild the sidecar; no data is lost.
+and rebuild the sidecar. No data is lost.
 Reference: https://platform.claude.com/docs/en/build-with-claude/preserved-thinking
 
 ## Publishing
 
 `node scripts/assemble-npm-package.mjs --source-sha <commit>` writes `build/claude-lhc-npm`
-(dist, bin, README, LICENSE, and the `lhc` core bundled under node_modules); `npm pack` it for
-the tarball. `.github/workflows/publish-claude-lhc-<version>.yml` rebuilds that tarball from the
+(dist, bin, README, LICENSE, and the `lhc` core bundled under node_modules). Run `npm pack` on it
+for the tarball. `.github/workflows/publish-claude-lhc-<version>.yml` rebuilds that tarball from the
 pinned commit, checks its sha256 against the reviewed hash, and publishes it (dispatch only).

@@ -1,12 +1,12 @@
 # Host: claude-lhc
 
-Last verified against code: 2026-10-27, package version 0.1.1. Precedence when facts disagree: code, then the package README (`packages/claude-lhc/README.md`), then this document.
+Last verified against code: 2026-10-30, package version 0.1.1. Precedence when facts disagree: code, then the package README (`packages/claude-lhc/README.md`), then this document.
 
 This document builds on the vocabulary in [01-core-concepts.md](01-core-concepts.md) and [02-domain-design.md](02-domain-design.md). Record, event, derivation, view, band, and retrieval keep their SDK meanings here.
 
 ## Host position
 
-`claude-lhc` (`packages/claude-lhc`) is a sidecar process, not a wrapper a person runs. t3code's Claude LHC provider spawns it. It runs the Claude Agent SDK (pinned `@anthropic-ai/claude-agent-sdk` 0.3.170) against the Claude Code binary t3code points it at, records every native message into an LHC thread as the primary record, and forwards the raw SDK stream to the t3code driver unchanged.
+`claude-lhc` (`packages/claude-lhc`) is the Claude Agent SDK's `query()` with LHC underneath. A host imports `query` from `claude-lhc` instead of `@anthropic-ai/claude-agent-sdk` and gets the same message stream and `Query` methods. The client spawns a sidecar process. The sidecar runs the Agent SDK (`@anthropic-ai/claude-agent-sdk` 0.3.312) against the Claude Code binary the host names, records every native message into an LHC thread as the primary record, and forwards the raw SDK stream to the client unchanged. The package README is the host contract.
 
 The native Claude session is a projection of the LHC served view. Every restart and every compact writes a fresh native session file from that view, under a fresh session id, and resumes it. The native session file is never the record. The LHC thread is.
 
@@ -14,21 +14,15 @@ This host differs from [cc-lhc](05-host-cc-lhc.md) in position. cc-lhc owns the 
 
 ## Launch
 
-t3code spawns the sidecar as `process.execPath` running the compiled entry, `dist/sidecar.js`. It never spawns the `bin/claude-lhc` shell wrapper. That wrapper exists for humans on PATH.
+A host calls `query({ prompt, options })` from the package entry, `dist/index.js`, with an `lhc` block in the options. By default the client spawns `process.execPath` running the package's own `dist/sidecar.js`. A host that stages and pins its own copy passes `lhc.spawn: { command, args?, env? }`. `close()` closes the sidecar's stdin. The `bin/claude-lhc` wrapper exists for humans on PATH.
 
-From source, build the core first, then the sidecar (`dist/` is not in git):
+From source, build the core first, then the package (`dist/` is not in git):
 
 ```sh
 pnpm --filter lhc build && pnpm --filter claude-lhc build
-node packages/claude-lhc/dist/sidecar.js
 ```
 
-From npm, the T3 Code fork installs the published package and points t3code at the entry:
-
-```sh
-npm install claude-lhc@0.1.1
-CLAUDE_LHC_SIDECAR=<prefix>/node_modules/claude-lhc/dist/sidecar.js
-```
+Hosts that are not in Node can spawn `node packages/claude-lhc/dist/sidecar.js` and speak the wire below. `src/client.ts` is the reference client.
 
 Node 24.3 or later. The package bundles the `lhc` core. The core is not published separately. The sidecar reads frames from stdin until stdin closes, then it closes the session and exits 0. SIGTERM exits 0. A crash sends an `error` frame and exits 1. Diagnostics go to stderr with a `[claude-lhc]` prefix. Frames are handled strictly in arrival order.
 

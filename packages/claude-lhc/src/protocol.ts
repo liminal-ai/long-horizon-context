@@ -1,5 +1,5 @@
 /**
- * Wire protocol between the t3code Claude driver and the claude-lhc sidecar.
+ * Wire protocol between a host client (`client.ts` is the reference) and the claude-lhc sidecar.
  * One JSON object per line on stdin (driver → sidecar) and stdout (sidecar → driver).
  *
  * The native Claude Agent SDK stream is forwarded unchanged inside `msg`. The two
