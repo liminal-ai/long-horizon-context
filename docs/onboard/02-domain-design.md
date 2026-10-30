@@ -409,7 +409,7 @@ The `compactContinuation` domain (`compact-continuation/`, contract machinery in
 
 Crash recovery is part of the surface. A host that restarts reads the writer claim (`getCompactContinuationWriterClaim`), any pending boundary (`getPendingCompactContinuationBoundary`, status `pending`, `complete`, or `failed_repairable`), and the stored attempt intent (`getCompactContinuationAttemptIntent`), then re-enters with the same attempt id. Stage history is append-only (`listCompactContinuationStages`). The host reports its own validation back through `recordCompactContinuationHostValidation`. The full protocol is documented in the header of `compact-continuation/index.ts`. Read it before wiring a host.
 
-Capability differs by host, by design. The Codex fork runs the full continuation state machine. Claude Code has no mid-turn request-replacement seam, so cc-lhc never calls this domain: it measures and classifies pressure, receipts open-turn crossings without mutating, and compacts at settled boundaries. Do not infer parity from shared fixtures. The cross-host capability matrix is [`docs/compact-continuation-certification.md`](../compact-continuation-certification.md).
+Capability differs by host, by design. No host in this repository runs the full continuation state machine. Claude Code has no mid-turn request-replacement seam, so cc-lhc never calls this domain: it measures and classifies pressure, receipts open-turn crossings without mutating, and compacts at settled boundaries. Do not infer parity from shared fixtures. [`docs/compact-continuation-certification.md`](../compact-continuation-certification.md) records the 2026-08 cross-host certification, from before the Rust and Python ports were removed.
 
 ## Retrieval
 

@@ -27,10 +27,9 @@ export const MAX_RETRIEVAL_IDS_PER_CALL = 32;
 
 /** Documented worst case for one call's whole model-visible result:
  *  bodies ≤ 8,000 (budget ceiling) + ≤32 sections/footers/receipts with
- *  clamped echoes. Conservative analytic derivation (2026-08-08, rs R6):
- *  8,000 + 85 + 97 + 960 + 4,704 + 7,680 = 21,526. Constant matches the
- *  rs port (`MAX_RETRIEVAL_OUTPUT_TOKENS`); the static proof lives in
- *  lhc-rs retrieval::format tests. Documentation, not runtime enforcement. */
+ *  clamped echoes. Conservative analytic derivation (2026-08-08):
+ *  8,000 + 85 + 97 + 960 + 4,704 + 7,680 = 21,526. Documentation, not
+ *  runtime enforcement. */
 export const MAX_RETRIEVAL_OUTPUT_TOKENS = 22_000;
 
 export interface RetrievalOptions {

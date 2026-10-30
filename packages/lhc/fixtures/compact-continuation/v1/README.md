@@ -1,8 +1,7 @@
 # Compact-continuation parity fixtures (v1)
 
-Tracked, versioned fixtures for LIM-60. TypeScript (this package) and Rust
-(`packages/lhc-rs`, LIM-62) must produce byte-identical `expected` decisions
-for every case.
+Tracked, versioned fixtures for LIM-60. The TypeScript implementation must
+produce the `expected` decision for every case.
 
 ## Layout
 
@@ -35,8 +34,8 @@ v1/
 | `"reject"` | `input` is intentionally invalid; validation must fail. |
 
 Parity covers **both** input validation and the total oracle. A rejected input
-may still carry `expected` total-oracle output so direct typed callers (and
-ports that evaluate without re-validating) pin residual refuse behavior.
+may still carry `expected` total-oracle output so direct typed callers that
+evaluate without re-validating pin residual refuse behavior.
 
 `expected` is the full pure-oracle output: `outcome`, `terminalState`,
 `transitionPath`, `effects`, and `receipt` (including `residual`, skip/refuse codes).
@@ -61,22 +60,16 @@ ports that evaluate without re-validating) pin residual refuse behavior.
 ```
 
 Each manifest entry's `inputValidation` must match the corresponding case file.
-Rust consumers (LIM-62) should branch on this field for validation expectation,
-not on coverage-tag strings.
+Consumers branch on this field for validation expectation, not on coverage-tag
+strings.
 
 ## Closed-shape inputs
 
 v1 legal inputs (`inputValidation: "accept"`) are **closed-shape**: unknown
 fields on every contract-owned input object and discriminated-union branch are
-rejected (`deny_unknown_fields` equivalent for Rust). Cases marked `"reject"`
-document intentional validation failures and are not required to be valid
-`CompactContinuationInput`. Receipt closed-shape may be tightened in the Rust
-port story; input closure is mandatory for accepted inputs now.
-
-**Rust closed unions:** naive `#[serde(deny_unknown_fields)]` on
-internally-tagged or boolean-discriminated enums does **not** enforce
-per-variant closed shape. LIM-62 must use per-variant closed structs and/or
-custom validation equivalent to the TypeScript validator and parity tests.
+rejected. Cases marked `"reject"` document intentional validation failures
+and are not required to be valid `CompactContinuationInput`. Input closure is
+mandatory for accepted inputs.
 
 ## Regenerating
 

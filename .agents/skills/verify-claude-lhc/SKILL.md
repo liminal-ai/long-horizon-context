@@ -278,4 +278,4 @@ The seeded drives run `packages/claude-lhc/dist/sidecar.js`, which loads `packag
 
 - **Reruns every drive:** a change in `packages/claude-lhc/` outside `test/`, `scripts/` and Markdown, in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries either resolves, or to `drive.mjs`. A change to the root `package.json` or `pnpm-workspace.yaml`, or to the Node or pnpm version `.github/workflows/pr-checks.yml` pins, counts too. A rebase onto a trunk that changed any of these counts.
 - **Reruns only `turn`:** a change only in `packages/claude-lhc/scripts/`.
-- **Carries:** a change only in `packages/cc-lhc*`, `lhc-py`, `lhc-rs` or `lhc-triage`, the two packages' `test/`, or text in this skill and its `features/` that changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. `doctor.sh` and `check-links.mjs` always rerun.
+- **Carries:** a change only in `packages/cc-lhc*` or `lhc-triage`, the two packages' `test/`, or text in this skill and its `features/` that changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. `doctor.sh` and `check-links.mjs` always rerun.

@@ -30,7 +30,6 @@ hosts: ${FORK_HOSTS.join(", ")}; source only: ${SOURCE_ONLY_HOSTS.join(", ")} (h
 --source-file PATH may replace --source-home/--source-thread-id. Exit 0 ok, 2 refused, 1 error.
 fork order: copy, identity note, repair, compact, bind. It compacts under the "handoff" profile when the
 source and target hosts use different providers; --compact forces it, --no-compact suppresses it.
-codex-lhc keys the record by its rollout uuid (--new-id and --session-id are one value, minted when absent).
 --token-family is required for note, repair, and fork. Known slugs: ${Object.keys(FAMILIES_CATALOG.families).sort().join(", ")}.
 `;
 
@@ -40,8 +39,6 @@ const REFUSAL_CODES = new Set([
   "thread_exists",
   "thread_not_found",
   "alias_bound_to_other_thread",
-  "file_bound_host",
-  "host_schema_behind",
   "invalid_thread_alias",
   "compact_refused",
 ]);
@@ -191,8 +188,7 @@ async function bind(flags: Flags): Promise<string> {
   };
   const sessionId = str(flags, "session-id");
   if (sessionId !== undefined) input.sessionId = sessionId;
-  const binding = unwrap(await threads.bindHost(input));
-  return binding.kind === "alias" ? binding.alias : binding.kind;
+  return unwrap(await threads.bindHost(input)).alias;
 }
 
 async function note(flags: Flags): Promise<string> {
@@ -254,25 +250,13 @@ async function fork(flags: Flags): Promise<string> {
   const host = hostOf(flags);
   const sourceHost = hostOf(flags, "source-host");
   const choice = compactChoice(flags);
-  const given: { newId?: string; sessionId?: string } = {};
-  const newId = str(flags, "new-id");
-  const sessionFlag = str(flags, "session-id");
-  if (newId !== undefined) given.newId = newId;
-  if (sessionFlag !== undefined) given.sessionId = sessionFlag;
-  const threadId = unwrap(threads.forkThreadId(host, given));
-  const sessionId = sessionFlag ?? (host === "codex-lhc" ? threadId : undefined);
+  const threadId = str(flags, "new-id") ?? generateThreadIdForCli();
+  const sessionId = str(flags, "session-id");
   const binding = unwrap(threads.hostBinding(host, sessionId));
-  if (binding.kind === "file" && threads.FILE_HOST_THREAD_SCHEMA_VERSION > threads.RUST_HOST_THREAD_SCHEMA_VERSION) {
-    throw new CliRefusal(
-      "host_schema_behind",
-      `host ${host} opens threads through lhc-rs, which reads thread schema ${threads.RUST_HOST_THREAD_SCHEMA_VERSION}; a copy lands at schema ${threads.FILE_HOST_THREAD_SCHEMA_VERSION}`,
-    );
-  }
-  const fileName = binding.kind === "file" ? binding.fileName : `${threadId}.sqlite`;
   const source = sourceRef(flags);
   const copyInput: threads.CopyThreadInput = {
     source,
-    filePath: join(threadsDirOf(home), fileName),
+    filePath: join(threadsDirOf(home), `${threadId}.sqlite`),
     registryPath: registryOf(home),
     newThreadId: threadId,
   };
@@ -311,13 +295,10 @@ async function fork(flags: Flags): Promise<string> {
     compactText = `compact=${receipt.totalTokens} (${plan.reason})`;
   }
 
-  if (binding.kind === "alias") {
-    const bindInput: threads.BindHostInput = { threadId: copied.threadId, registryPath: registryOf(home), host };
-    if (sessionId !== undefined) bindInput.sessionId = sessionId;
-    unwrap(await threads.bindHost(bindInput));
-  }
-  const bound = binding.kind === "alias" ? binding.alias : binding.fileName;
-  return `${copied.threadId} ${copied.filePath} ${bound} ${repairText} ${compactText}`;
+  const bindInput: threads.BindHostInput = { threadId: copied.threadId, registryPath: registryOf(home), host };
+  if (sessionId !== undefined) bindInput.sessionId = sessionId;
+  unwrap(await threads.bindHost(bindInput));
+  return `${copied.threadId} ${copied.filePath} ${binding.alias} ${repairText} ${compactText}`;
 }
 
 export async function main(argv: readonly string[]): Promise<number> {

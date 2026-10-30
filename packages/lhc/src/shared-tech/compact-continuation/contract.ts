@@ -582,6 +582,3 @@ export const COMPACT_CONTINUATION_INVARIANTS = [
 export type CompactContinuationInvariantId = (typeof COMPACT_CONTINUATION_INVARIANTS)[number];
 
 export const COMPACT_CONTINUATION_INPUT_CLOSED_SHAPE = true as const;
-
-export const COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE =
-  "per-variant closed structs required; deny_unknown_fields on enum derive is insufficient" as const;

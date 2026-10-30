@@ -133,7 +133,7 @@ All under [helpers/](helpers/), plain node ESM, importing the built SDK from `pa
 - `helpers/round-trip.mjs` — create/append/compact/serve + CLI health. Flags: `--keep`, `--home DIR`.
 - `helpers/retrieval.mjs` — `getTurns`/`getMessages` served + unserved assertions.
 - `helpers/rollback.mjs` — rollback behind the compact point, append, recompact, CLI export. Flag: `--keep`.
-- `helpers/compact-policy.mjs` — get, set, refuse and copy the compact pair, and a refused fork into `codex-lhc`. Flag: `--migrate FILE` backs up a real thread file and migrates the copy.
+- `helpers/compact-policy.mjs` — get, set, refuse, copy and fork the compact pair. Flag: `--migrate FILE` backs up a real thread file and migrates the copy.
 - `helpers/cleanup.mjs` — removes `--keep` homes. Args: one or more printed dirs.
 - `helpers/check-links.mjs` — every relative link and `helpers/*.mjs` path in this skill resolves on disk.
 

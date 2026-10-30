@@ -15,7 +15,6 @@ import {
   COMPACT_CONTINUATION_OUTCOME_KINDS,
   COMPACT_CONTINUATION_REACHABLE_REFUSE_CODES,
   COMPACT_CONTINUATION_REFUSE_CODES,
-  COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE,
   COMPACT_CONTINUATION_SKIP_CODES,
   COMPACT_CONTINUATION_STATES,
   COMPACT_CONTINUATION_TRANSITION_ORDER,
@@ -246,7 +245,6 @@ describe("compact-continuation contract surface", () => {
     expect(COMPACT_CONTINUATION_INVARIANTS).toContain("preserve_tool_install_failure_includes_preserve_effect");
     expect(COMPACT_CONTINUATION_MARKER_IDEMPOTENCY_PREFIX).toBe("lhc.compact_continuation:");
     expect(compactContinuationMarkerIdempotencyKey("t3")).toBe("lhc.compact_continuation:t3");
-    expect(COMPACT_CONTINUATION_RUST_CLOSED_UNION_NOTE).toMatch(/per-variant closed structs/);
     const _seam = null as CompactContinuationSeam | null;
     const _usage = null as ProviderUsageAuthority | null;
     const _work = null as WorkContinuation | null;

@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { readdirSync } from "node:fs";
 import { backup, DatabaseSync } from "node:sqlite";
 import { LHC_BIN, fail, makeSdk, seedThread, tempHome, unwrap } from "./lib.mjs";
 
@@ -81,17 +80,16 @@ async function seeded(sdk, store) {
   if (carried?.trigger !== 700000 || carried?.target !== 140000) fail(`copy carried ${JSON.stringify(carried)}`);
   console.log(`copy ${copied.threadId} policy=${JSON.stringify(carried)}`);
 
-  const filesBefore = readdirSync(`${store.home}/threads`).length;
   const fork = spawnSync(
     process.execPath,
-    [LHC_BIN, "thread", "fork", "--source-file", filePath, "--source-host", "cc-lhc", "--home", store.home, "--host", "codex-lhc", "--token-family", "o200k", "--no-repair"],
+    [LHC_BIN, "thread", "fork", "--source-file", filePath, "--source-host", "cc-lhc", "--home", store.home, "--host", "claude-lhc", "--session-id", "verify-fork", "--token-family", "o200k", "--no-repair"],
     { encoding: "utf8" },
   );
-  if (fork.status !== 2 || !fork.stderr.startsWith("host_schema_behind: ")) {
-    fail(`fork into codex-lhc: exit ${fork.status} stderr ${fork.stderr.trim()}`);
-  }
-  if (readdirSync(`${store.home}/threads`).length !== filesBefore) fail("refused fork left a file behind");
-  console.log(`fork into codex-lhc refused: ${fork.stderr.trim()}`);
+  if (fork.status !== 0) fail(`fork into claude-lhc: exit ${fork.status} stderr ${fork.stderr.trim()}`);
+  const [forkedId, forkedPath] = fork.stdout.trim().split(" ");
+  const forked = unwrap(await sdk.threads.getCompactPolicy({ filePath: forkedPath }), "getCompactPolicy fork");
+  if (forked?.trigger !== 700000 || forked?.target !== 140000) fail(`fork carried ${JSON.stringify(forked)}`);
+  console.log(`fork ${forkedId} policy=${JSON.stringify(forked)}`);
   console.log("verify-lhc compact-policy: PASS");
 }
 

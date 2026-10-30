@@ -20,7 +20,7 @@ Provider-neutral state machine for **LHC-owned context relief at a settled model
 2. It gathers **pre-decision facts** and **attempt results** into `CompactContinuationInput`.
 3. It uses this oracle to **classify** the completed seam and emit the durable receipt.
 
-Fixtures pin oracle outputs for TypeScript/Rust parity. Do not implement host I/O here.
+Fixtures pin oracle outputs. Do not implement host I/O here.
 
 ## Settled owner rulings (normative)
 
