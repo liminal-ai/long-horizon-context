@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
   type HookJSONOutput,
+  type McpSdkServerConfigWithInstance,
+  type McpSetServersResult,
   type Options,
   type PermissionMode,
   type PermissionResult,
@@ -42,10 +44,11 @@ import {
   storeCompactPolicy,
   windowFromUsage,
 } from "./compactPolicy.js";
+import { type ControlCall, parseControl, ReplayLedger } from "./controls.js";
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
 import { writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
-import { parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
+import { parseCompactPolicy, parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
 import { type RollbackAnchor, resolveRollbackAnchor } from "./rollbackAnchor.js";
 import { abortSummaryWorkers } from "./summaryWorker.js";
@@ -148,6 +151,7 @@ interface Generation {
   readonly sessionId: string;
   readonly query: Query;
   readonly input: InputQueue;
+  readonly retrieval: McpSdkServerConfigWithInstance;
   superseded: boolean;
 }
 
@@ -177,6 +181,8 @@ export class ClaudeLhcSession {
   #claudeBin = "claude";
   #env: NodeJS.ProcessEnv = process.env;
   #gen: Generation | null = null;
+  readonly #replay = new ReplayLedger();
+  readonly #replaying = new Set<Promise<unknown>>();
   #turnOpen = false;
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
@@ -270,7 +276,7 @@ export class ClaudeLhcSession {
     this.#thread = threadRef(this.#threadId, this.#home);
     this.#compactPolicy = { stored: await storeCompactPolicy(this.#thread, compact), window: null };
     await bindSession(this.#threadId, first, this.#home);
-    this.#gen = this.#startGeneration(first, {
+    this.#gen = await this.#startGeneration(first, {
       sessionId: first,
       title: nativeLhcTitle(this.#threadId),
     });
@@ -314,40 +320,86 @@ export class ClaudeLhcSession {
   async control(method: string, params: unknown): Promise<unknown> {
     const gen = this.#gen;
     if (gen === null) throw new Error("no live generation");
-    const record = (params ?? {}) as Record<string, unknown>;
-    switch (method) {
-      case "setModel": {
-        const model = typeof record["model"] === "string" ? record["model"] : undefined;
-        this.#model = model;
-        this.#observeLaterModel(model);
-        await gen.query.setModel(model);
-        this.#windowRead = this.#readWindow(gen);
-        const read = await this.#windowRead;
-        if (read !== null && this.#pendingCompact === "auto") this.#pendingCompact = null;
-        const served = this.#servedPastTrigger(read);
-        if (served !== null && this.#pendingCompact === null) {
-          this.#lastContextTokens = served;
-          this.#pendingCompact = "auto";
+    const call = parseControl(method, params);
+    if (call.kind === "sidecar") {
+      await this.#setCompactPolicy(gen, call.args[0]);
+      return undefined;
+    }
+    const value = await (call.kind === "forward-and-replay" ? this.#recorded(gen, call) : this.#invoke(gen, call));
+    const [first] = call.args;
+    switch (call.method) {
+      case "setModel":
+        this.#model = typeof first === "string" ? first : undefined;
+        this.#observeLaterModel(first);
+        break;
+      case "setPermissionMode":
+        this.#permissionMode = first as PermissionMode;
+        break;
+      case "setMaxThinkingTokens":
+        this.#maxThinkingTokens = typeof first === "number" ? first : null;
+        break;
+    }
+    if (call.method === "setModel" || (call.method === "applyFlagSettings" && Object.hasOwn(first as object, "model")))
+      await this.#checkServedContext(gen);
+    return value;
+  }
+
+  async #invoke(gen: Generation, { method, args }: ControlCall): Promise<unknown> {
+    const sent =
+      method === "setMcpServers" ? [{ ...(args[0] as object), [RETRIEVAL_SERVER_NAME]: gen.retrieval }] : args;
+    return Reflect.apply(gen.query[method as keyof Query] as (...a: unknown[]) => unknown, gen.query, sent);
+  }
+
+  #recorded(gen: Generation, call: ControlCall): Promise<unknown> {
+    const sent = this.#invoke(gen, call).then((value) => {
+      this.#replay.record(call);
+      return value;
+    });
+    this.#replaying.add(sent);
+    return sent.finally(() => this.#replaying.delete(sent));
+  }
+
+  async #replayControls(gen: Generation): Promise<void> {
+    const replayed: string[] = [];
+    let seen = 0;
+    for (;;) {
+      await Promise.allSettled(this.#replaying);
+      const calls = this.#replay.recordedAfter(seen);
+      if (calls.length === 0) break;
+      seen = this.#replay.seq;
+      for (const call of calls) {
+        replayed.push(call.method);
+        try {
+          const value = await this.#invoke(gen, call);
+          const failed = call.method === "setMcpServers" ? Object.keys((value as McpSetServersResult).errors) : [];
+          if (failed.length > 0)
+            this.#io.log(`generation ${gen.sessionId}: replayed MCP server(s) failed: ${failed.join(", ")}`);
+        } catch (cause) {
+          this.#io.log(
+            `generation ${gen.sessionId}: ${call.method} not replayed: ${cause instanceof Error ? cause.message : String(cause)}`,
+          );
         }
-        return undefined;
       }
-      case "setPermissionMode": {
-        const mode = record["mode"] as PermissionMode;
-        this.#permissionMode = mode;
-        await gen.query.setPermissionMode(mode);
-        return undefined;
-      }
-      case "setMaxThinkingTokens": {
-        const value = record["maxThinkingTokens"];
-        this.#maxThinkingTokens = typeof value === "number" ? value : null;
-        await gen.query.setMaxThinkingTokens(this.#maxThinkingTokens);
-        return undefined;
-      }
-      case "interrupt":
-        await gen.query.interrupt();
-        return undefined;
-      default:
-        throw new Error(`unknown control ${method}`);
+    }
+    if (replayed.length > 0) this.#io.log(`generation ${gen.sessionId}: replayed ${replayed.join(", ")}`);
+  }
+
+  async #setCompactPolicy(gen: Generation, value: unknown): Promise<void> {
+    const stored = await storeCompactPolicy(this.#thread, parseCompactPolicy(value, "setCompactPolicy params.policy"));
+    this.#compactPolicy = { ...this.#compactPolicy, stored };
+    this.#io.log(`compact policy set on thread: trigger ${stored.trigger} target ${stored.target}`);
+    this.#logCappedPolicy();
+    await this.#checkServedContext(gen);
+  }
+
+  async #checkServedContext(gen: Generation): Promise<void> {
+    this.#windowRead = this.#readWindow(gen);
+    const read = await this.#windowRead;
+    if (read !== null && this.#pendingCompact === "auto") this.#pendingCompact = null;
+    const served = this.#servedPastTrigger(read);
+    if (served !== null && this.#pendingCompact === null) {
+      this.#lastContextTokens = served;
+      this.#pendingCompact = "auto";
     }
   }
 
@@ -365,8 +417,9 @@ export class ClaudeLhcSession {
     abortSummaryWorkers();
   }
 
-  #startGeneration(sessionId: string, extra: Partial<Options>): Generation {
+  async #startGeneration(sessionId: string, extra: Partial<Options>): Promise<Generation> {
     const input = new InputQueue();
+    const retrieval = createRetrievalServer(this.#lhc, () => this.#thread);
     let gen: Generation | null = null;
     const options: Options = {
       ...(this.#base as Options),
@@ -375,10 +428,7 @@ export class ClaudeLhcSession {
       ...(typeof this.#maxThinkingTokens === "number" ? { maxThinkingTokens: this.#maxThinkingTokens } : {}),
       env: this.#env,
       pathToClaudeCodeExecutable: this.#claudeBin,
-      mcpServers: {
-        ...((this.#base as Options).mcpServers ?? {}),
-        [RETRIEVAL_SERVER_NAME]: createRetrievalServer(this.#lhc, () => this.#thread),
-      },
+      mcpServers: { ...((this.#base as Options).mcpServers ?? {}), [RETRIEVAL_SERVER_NAME]: retrieval },
       allowedTools: [...((this.#base as Options).allowedTools ?? []), ...RETRIEVAL_TOOL_NAMES],
       canUseTool: async (toolName, toolInput, callbackOptions) => {
         if (RETRIEVAL_TOOL_NAMES.includes(toolName)) return { behavior: "allow", updatedInput: toolInput };
@@ -404,8 +454,9 @@ export class ClaudeLhcSession {
       ...extra,
     };
     const q = query({ prompt: input, options });
-    gen = { sessionId, query: q, input, superseded: false };
+    gen = { sessionId, query: q, input, retrieval, superseded: false };
     void this.#pump(gen);
+    await this.#replayControls(gen);
     this.#windowRead = this.#readWindow(gen);
     return gen;
   }
@@ -436,14 +487,18 @@ export class ClaudeLhcSession {
     if (window !== this.#compactPolicy.window) {
       this.#compactPolicy = { ...this.#compactPolicy, window };
       this.#io.log(`context window ${window} for model ${this.#model ?? "(default)"}`);
-      const { stored } = this.#compactPolicy;
-      const { trigger, target } = this.#effectiveCompactPolicy();
-      if (trigger !== stored.trigger || target !== stored.target)
-        this.#io.log(`compact policy capped to window ${window}: trigger ${trigger} target ${target}`);
+      this.#logCappedPolicy();
     }
     return typeof totalTokens === "number" && Number.isSafeInteger(totalTokens) && totalTokens >= 0
       ? totalTokens
       : null;
+  }
+
+  #logCappedPolicy(): void {
+    const { stored, window } = this.#compactPolicy;
+    const { trigger, target } = this.#effectiveCompactPolicy();
+    if (trigger !== stored.trigger || target !== stored.target)
+      this.#io.log(`compact policy capped to window ${window}: trigger ${trigger} target ${target}`);
   }
 
   #servedPastTrigger(served: number | null): number | null {
@@ -941,7 +996,7 @@ export class ClaudeLhcSession {
     const dest = entries.length === 0 ? null : await writeProjectedSession({ sessionId, cwd, entries, env: this.#env });
     if (dest !== null) await labelNativeSession(sessionId, title, cwd, this.#io);
     await bindSession(this.#threadId, sessionId, this.#home);
-    const next = this.#startGeneration(sessionId, dest === null ? { sessionId, title } : { resume: sessionId });
+    const next = await this.#startGeneration(sessionId, dest === null ? { sessionId, title } : { resume: sessionId });
     const old = this.#gen;
     this.#gen = next;
     if (old !== null) {
