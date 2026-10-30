@@ -38,7 +38,8 @@ export type ErrorCode =
   | "compact_continuation_attempt_conflict"
   | "unsettled_capture_seam"
   | "forced_boundary_thread"
-  | "compact_continuation_parts_thread";
+  | "compact_continuation_parts_thread"
+  | "invalid_compact_policy";
 
 export interface ErrorResult {
   errorClass: ErrorClass;

@@ -41,6 +41,7 @@ const REFUSAL_CODES = new Set([
   "thread_not_found",
   "alias_bound_to_other_thread",
   "file_bound_host",
+  "host_schema_behind",
   "invalid_thread_alias",
   "compact_refused",
 ]);
@@ -261,6 +262,12 @@ async function fork(flags: Flags): Promise<string> {
   const threadId = unwrap(threads.forkThreadId(host, given));
   const sessionId = sessionFlag ?? (host === "codex-lhc" ? threadId : undefined);
   const binding = unwrap(threads.hostBinding(host, sessionId));
+  if (binding.kind === "file" && threads.FILE_HOST_THREAD_SCHEMA_VERSION > threads.RUST_HOST_THREAD_SCHEMA_VERSION) {
+    throw new CliRefusal(
+      "host_schema_behind",
+      `host ${host} opens threads through lhc-rs, which reads thread schema ${threads.RUST_HOST_THREAD_SCHEMA_VERSION}; a copy lands at schema ${threads.FILE_HOST_THREAD_SCHEMA_VERSION}`,
+    );
+  }
   const fileName = binding.kind === "file" ? binding.fileName : `${threadId}.sqlite`;
   const source = sourceRef(flags);
   const copyInput: threads.CopyThreadInput = {
@@ -309,7 +316,7 @@ async function fork(flags: Flags): Promise<string> {
     if (sessionId !== undefined) bindInput.sessionId = sessionId;
     unwrap(await threads.bindHost(bindInput));
   }
-  const bound = binding.kind === "alias" ? binding.alias : binding.kind === "file" ? binding.fileName : "none";
+  const bound = binding.kind === "alias" ? binding.alias : binding.fileName;
   return `${copied.threadId} ${copied.filePath} ${bound} ${repairText} ${compactText}`;
 }
 

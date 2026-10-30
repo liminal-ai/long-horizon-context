@@ -14,6 +14,7 @@ export const THREAD_SCHEMA_VERSION_10 = 10;
 export const THREAD_SCHEMA_VERSION_11 = 11;
 export const THREAD_SCHEMA_VERSION_12 = 12;
 export const THREAD_SCHEMA_VERSION_13 = 13;
+export const THREAD_SCHEMA_VERSION_14 = 14;
 
 const OLD_DERIVATION_TYPE = "smooth_turn_compression";
 const NEW_DERIVATION_TYPE = "detailed_turn_compression";
@@ -545,6 +546,15 @@ function migrateContentBlobsV13(db: DatabaseSync): void {
   migrateTurnParts(db);
 }
 
+function migrateCompactPolicyV14(db: DatabaseSync): void {
+  const columns = (db.prepare(`PRAGMA table_info(thread_metadata)`).all() as Array<{ name: string }>).map(
+    (c) => c.name,
+  );
+  for (const column of ["compact_trigger_tokens", "compact_target_tokens"]) {
+    if (!columns.includes(column)) db.exec(`ALTER TABLE thread_metadata ADD COLUMN ${column} INTEGER;`);
+  }
+}
+
 export function migrateThreadSchema(db: DatabaseSync): void {
   let version = getSchemaVersion(db);
   if (version >= CURRENT_THREAD_SCHEMA_VERSION) {
@@ -606,6 +616,10 @@ export function migrateThreadSchema(db: DatabaseSync): void {
     if (version === THREAD_SCHEMA_VERSION_12) {
       migrateContentBlobsV13(db);
       version = THREAD_SCHEMA_VERSION_13;
+    }
+    if (version === THREAD_SCHEMA_VERSION_13) {
+      migrateCompactPolicyV14(db);
+      version = THREAD_SCHEMA_VERSION_14;
     }
     if (version !== CURRENT_THREAD_SCHEMA_VERSION) {
       throw new Error(`unsupported thread schema version ${version}`);

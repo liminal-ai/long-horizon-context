@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -206,7 +206,6 @@ describe("threads.hostBinding / bindHost", () => {
       ok: true,
       value: { kind: "alias", alias: "t3code-lhc:s1" },
     });
-    expect(threads.hostBinding("pi-lhc")).toEqual({ ok: true, value: { kind: "none" } });
     expect(threads.hostBinding("codex-lhc", "019f-uuid")).toEqual({
       ok: true,
       value: { kind: "file", fileName: "019f-uuid.sqlite" },
@@ -263,8 +262,6 @@ describe("threads.hostBinding / bindHost", () => {
 
     const file = await threads.bindHost({ threadId, registryPath: target.registry, host: "grok", sessionId: "g" });
     expect(!file.ok && file.error.code).toBe("file_bound_host");
-    const none = await threads.bindHost({ threadId, registryPath: target.registry, host: "pi-lhc" });
-    expect(none).toEqual({ ok: true, value: { kind: "none" } });
     const hermes = await threads.bindHost({ threadId, registryPath: target.registry, host: "hermes", sessionId: "h" });
     expect(!hermes.ok && hermes.error.code).toBe("file_bound_host");
   });
@@ -421,7 +418,6 @@ describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
     expect(threads.HOST_PROVIDERS).toEqual({
       "cc-lhc": "anthropic",
       "claude-lhc": "anthropic",
-      "pi-lhc": "pi",
       "codex-lhc": "openai",
       grok: "xai",
       hermes: "hermes",
@@ -435,8 +431,6 @@ describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
     });
     expect(threads.forkCompactPlan("codex-lhc", "cc-lhc")).toEqual({ compact: true, reason: "openai -> anthropic" });
     expect(threads.forkCompactPlan("cc-lhc", "grok")).toEqual({ compact: true, reason: "anthropic -> xai" });
-    expect(threads.forkCompactPlan("pi-lhc", "pi-lhc")).toEqual({ compact: false, reason: "same provider pi" });
-    expect(threads.forkCompactPlan("cc-lhc", "pi-lhc")).toEqual({ compact: true, reason: "anthropic -> pi" });
     expect(threads.forkCompactPlan("cc-lhc", "cc-lhc", "always")).toEqual({ compact: true, reason: "forced" });
     expect(threads.forkCompactPlan("cc-lhc", "grok", "never")).toEqual({ compact: false, reason: "suppressed" });
     expect(threads.handoffCompactOptions()).toEqual({ profile: "handoff" });
@@ -468,8 +462,8 @@ describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
     expect(cc.ok && cc.value.startsWith("th_")).toBe(true);
   });
 
-  it("a copy lands at the thread schema the Rust hosts accept (P3)", async () => {
-    expect(threads.FILE_HOST_THREAD_SCHEMA_VERSION).toBe(threads.RUST_HOST_THREAD_SCHEMA_VERSION);
+  it("a copy lands at the current thread schema, which can run ahead of lhc-rs (P3)", async () => {
+    expect(threads.FILE_HOST_THREAD_SCHEMA_VERSION).toBeGreaterThan(threads.RUST_HOST_THREAD_SCHEMA_VERSION);
     const source = await idleSource();
     const target = targetHome();
     const copied = await threads.copyThread({
@@ -479,7 +473,7 @@ describe("fork across hosts: compact rule, id policy, Rust ceilings", () => {
       newThreadId: "0f0e0d0c-0b0a-4908-8706-050403020101",
     });
     if (!copied.ok) throw new Error(copied.error.reason);
-    expect(userVersion(copied.value.filePath)).toBe(threads.RUST_HOST_THREAD_SCHEMA_VERSION);
+    expect(userVersion(copied.value.filePath)).toBe(threads.FILE_HOST_THREAD_SCHEMA_VERSION);
   });
 
   it("a Rust-created registry takes a copy and an alias, keeps its rows, gains the alias tables (P2)", async () => {
@@ -721,11 +715,13 @@ describe("lhc thread CLI", () => {
         "--source-file",
         midPath,
         "--source-host",
-        "pi-lhc",
+        "cc-lhc",
         "--home",
         target.home,
         "--host",
-        "pi-lhc",
+        "cc-lhc",
+        "--session-id",
+        "uuid-mid",
         "--new-id",
         "th_mid",
         "--no-repair",
@@ -832,15 +828,22 @@ describe("lhc thread CLI", () => {
       expect(await main([...common, "--source-host", "cc-lhc", "--host", "hermes", "--session-id", "h"])).toBe(1);
       expect(c.err.at(-1)).toMatch(/^usage: host hermes is a source only/);
 
-      const codex = await main([...common, "--source-host", "cc-lhc", "--host", "codex-lhc"]);
-      expect(codex).toBe(0);
-      const line = c.out.at(-1) as string;
-      const [id, filePath, fileName] = line.split(" ");
-      expect(UUID.test(id as string)).toBe(true);
-      expect(fileName).toBe(`${id}.sqlite`);
-      expect(filePath).toBe(join(target.threadsDir, `${id}.sqlite`));
-      expect(line).toContain("compact=");
-      expect(line).toContain("(anthropic -> openai)");
+      const rustSession = "0f0e0d0c-0b0a-4908-8706-050403020102";
+      const filesBefore = readdirSync(target.threadsDir);
+      for (const rustHost of ["codex-lhc", "grok"]) {
+        const refused = await main([
+          ...common,
+          "--source-host",
+          "cc-lhc",
+          "--host",
+          rustHost,
+          "--session-id",
+          rustSession,
+        ]);
+        expect(refused).toBe(2);
+        expect(c.err.at(-1)).toMatch(new RegExp(`^host_schema_behind: host ${rustHost} opens threads through lhc-rs`));
+      }
+      expect(readdirSync(target.threadsDir)).toEqual(filesBefore);
 
       const disagree = await main([
         ...common,

@@ -297,6 +297,7 @@ export {
   DEFAULT_VISIBILITY,
 } from "./thread-view/index.js";
 export type {
+  CompactPolicy,
   ThreadAliasBinding,
   ThreadAliasLookup,
   ThreadAliasRegistration,

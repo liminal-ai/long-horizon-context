@@ -1,6 +1,12 @@
 import { existsSync } from "node:fs";
 import type { DatabaseSync } from "node:sqlite";
-import { createDbReadTransaction, type ErrorResult, type OpResult, storageFailure } from "../shared-tech/index.js";
+import {
+  createDbReadTransaction,
+  createDbWriteTransaction,
+  type ErrorResult,
+  type OpResult,
+  storageFailure,
+} from "../shared-tech/index.js";
 import { type CopyThreadInput, copyThread } from "./fork.js";
 import { createThreadFile, deleteThreadFile, generateThreadId, openThreadDatabase } from "./internal/create.js";
 
@@ -219,6 +225,53 @@ export async function info(ref: ThreadRef): Promise<OpResult<ThreadFileInfo>> {
     return result.ok ? result.value : result;
   } catch (cause) {
     return storageFailure(`thread info read failed: ${detail(cause)}`);
+  }
+}
+
+export interface CompactPolicy {
+  trigger: number;
+  target: number;
+}
+
+export async function getCompactPolicy(ref: ThreadRef): Promise<OpResult<CompactPolicy | null>> {
+  try {
+    return await createDbReadTransaction(ref, (transaction) => {
+      const row = transaction.db
+        .prepare(`SELECT compact_trigger_tokens, compact_target_tokens FROM thread_metadata WHERE id = 1`)
+        .get() as { compact_trigger_tokens: number | null; compact_target_tokens: number | null } | undefined;
+      if (row?.compact_trigger_tokens == null || row.compact_target_tokens == null) return null;
+      return { trigger: row.compact_trigger_tokens, target: row.compact_target_tokens };
+    });
+  } catch (cause) {
+    return storageFailure(`compact policy read failed: ${detail(cause)}`);
+  }
+}
+
+function compactPolicyRefusal(policy: CompactPolicy): string | null {
+  const positive = (n: number): boolean => Number.isSafeInteger(n) && n > 0;
+  if (!positive(policy.trigger) || !positive(policy.target)) {
+    return `trigger and target must be positive integers; received trigger ${policy.trigger}, target ${policy.target}`;
+  }
+  if (policy.target >= policy.trigger) {
+    return `target must be below trigger; received trigger ${policy.trigger}, target ${policy.target}`;
+  }
+  return null;
+}
+
+export async function setCompactPolicy(ref: ThreadRef, policy: CompactPolicy): Promise<OpResult<CompactPolicy>> {
+  const refusal = compactPolicyRefusal(policy);
+  if (refusal !== null) {
+    return { ok: false, error: { errorClass: "caller_error", code: "invalid_compact_policy", reason: refusal } };
+  }
+  try {
+    return await createDbWriteTransaction(ref, (transaction) => {
+      transaction.db
+        .prepare(`UPDATE thread_metadata SET compact_trigger_tokens = ?, compact_target_tokens = ? WHERE id = 1`)
+        .run(policy.trigger, policy.target);
+      return { trigger: policy.trigger, target: policy.target };
+    });
+  } catch (cause) {
+    return storageFailure(`compact policy write failed: ${detail(cause)}`);
   }
 }
 
