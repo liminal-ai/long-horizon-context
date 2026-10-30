@@ -195,6 +195,7 @@ export class ClaudeLhcSession {
   #midTurnFailed = false;
   #swap: { stoppedAt: number; sessionId: string } | null = null;
   #heldPrompts: SDKUserMessage[] = [];
+  #heldUntilContinuedTurnEnds = false;
   #model: string | undefined;
   #permissionMode: PermissionMode | undefined;
   #maxThinkingTokens: number | null | undefined;
@@ -290,9 +291,11 @@ export class ClaudeLhcSession {
       else await this.#compact("manual");
       return;
     }
-    if (this.#compacting) {
+    if (this.#compacting || this.#heldUntilContinuedTurnEnds) {
       this.#heldPrompts.push(message);
-      this.#io.log(`holding a prompt during compact (${this.#heldPrompts.length} held)`);
+      this.#io.log(
+        `holding a prompt ${this.#compacting ? "during compact" : "until the continued turn ends"} (${this.#heldPrompts.length} held)`,
+      );
       return;
     }
     const gen = this.#gen;
@@ -406,6 +409,8 @@ export class ClaudeLhcSession {
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    if (this.#heldPrompts.length > 0)
+      this.#io.log(`closing with ${this.#heldPrompts.length} held prompt(s) never sent`);
     const gen = this.#gen;
     this.#gen = null;
     this.#stopping = null;
@@ -676,9 +681,11 @@ export class ClaudeLhcSession {
     }
     this.#turnOpen = false;
     this.#turnStartedAt = undefined;
+    this.#heldUntilContinuedTurnEnds = false;
     const trigger = this.#dueCompact();
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
+    await this.#replayHeld();
   }
 
   async #maybeSegment(message: SDKMessage, events: readonly MessageEventInput[]): Promise<void> {
@@ -875,7 +882,9 @@ export class ClaudeLhcSession {
     const uuid = randomUUID();
     const note = { ...this.#continuationNote(), uuid };
     target.input.push({ message: note, before: async () => this.#intake(mapPrompt(note, uuid, true)) });
-    await this.#replayHeld();
+    this.#heldUntilContinuedTurnEnds = this.#heldPrompts.length > 0;
+    if (this.#heldUntilContinuedTurnEnds)
+      this.#io.log(`${this.#heldPrompts.length} held prompt(s) wait for the continued turn to end`);
   }
 
   async #replayHeld(): Promise<void> {
