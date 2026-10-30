@@ -14,6 +14,7 @@ interface FakeQuery {
 const queries: FakeQuery[] = [];
 let contextUsage: () => Promise<unknown> = async () => ({ rawMaxTokens: 1_000_000 });
 const delays: Record<string, number> = {};
+const failures: Record<string, string> = {};
 const answers: Record<string, unknown> = {
   mcpServerStatus: [{ name: "late", status: "connected" }],
   setMcpServers: { added: ["late"], removed: [], errors: {} },
@@ -42,6 +43,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
           if (key in target) return target[key as keyof typeof target];
           return async (...args: unknown[]) => {
             await new Promise((resolve) => setTimeout(resolve, delays[String(key)] ?? 5));
+            if (failures[String(key)] !== undefined) throw new Error(failures[String(key)]);
             fake.calls.push([String(key), ...args]);
             return answers[String(key)];
           };
@@ -58,12 +60,14 @@ const { RETRIEVAL_SERVER_NAME } = await import("../src/retrieval.ts");
 let dir = "";
 let home = "";
 let logs: string[] = [];
+let emitted: Array<Record<string, unknown>> = [];
 const savedNoInference = process.env.CLAUDE_LHC_NO_INFERENCE;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "claude-lhc-controls-"));
   home = join(dir, "lhc");
   logs = [];
+  emitted = [];
   queries.length = 0;
   contextUsage = async () => ({ rawMaxTokens: 1_000_000 });
   process.env.CLAUDE_LHC_NO_INFERENCE = "1";
@@ -76,7 +80,7 @@ afterEach(() => {
 
 async function started(compact = { trigger: 700_000, target: 140_000 }) {
   const session = new ClaudeLhcSession({
-    emit(): void {},
+    emit: (message) => emitted.push(message as never),
     request: async () => ({}),
     end(): void {},
     fail(): void {},
@@ -102,6 +106,24 @@ const prompt = (text: string) =>
 
 const LATE = { late: { type: "http", url: "http://127.0.0.1:1/mcp" } };
 const methods = (fake: FakeQuery) => fake.calls.map(([method]) => method);
+const liveAfterCompact = (): FakeQuery => {
+  const boundary = emitted.filter((message) => message["subtype"] === "compact_boundary").at(-1);
+  const live = queries.find(
+    (fake) => (fake.options["resume"] ?? fake.options["sessionId"]) === boundary?.["session_id"],
+  );
+  if (live === undefined) throw new Error("no generation matches the compact boundary");
+  return live;
+};
+const firstPrompt = async (fake: FakeQuery) => fake.prompt[Symbol.asyncIterator]().next();
+
+async function expectSwapped(session: InstanceType<typeof ClaudeLhcSession>): Promise<FakeQuery> {
+  const live = liveAfterCompact();
+  await session.pushUser(prompt("AFTER-SWAP"));
+  expect(JSON.stringify((await firstPrompt(live)).value)).toContain("AFTER-SWAP");
+  expect(await firstPrompt(queries[0]!)).toEqual({ done: true, value: undefined });
+  return live;
+}
+
 const retrievalOf = (fake: FakeQuery) => (fake.options["mcpServers"] as Record<string, unknown>)[RETRIEVAL_SERVER_NAME];
 
 describe("forward controls", () => {
@@ -110,10 +132,12 @@ describe("forward controls", () => {
     expect(await session.control("mcpServerStatus", {})).toEqual(answers["mcpServerStatus"]);
     expect(await session.control("backgroundTasks", { toolUseId: "toolu_1" })).toBe(false);
     await session.control("readFile", { path: "a.txt", options: { maxBytes: 10 } });
+    await session.control("readMcpResource", { serverName: "late", uri: "ui://late/widget" });
     expect(queries[0]!.calls).toEqual([
       ["mcpServerStatus"],
       ["backgroundTasks", "toolu_1"],
       ["readFile", "a.txt", { maxBytes: 10 }],
+      ["readMcpResource", "late", "ui://late/widget"],
     ]);
   });
 
@@ -121,8 +145,7 @@ describe("forward controls", () => {
     const session = await started();
     await session.control("stopTask", { taskId: "task-1" });
     await session.pushUser(prompt("/compact"));
-    expect(queries).toHaveLength(2);
-    expect(queries[1]!.calls).toEqual([]);
+    expect((await expectSwapped(session)).calls).toEqual([]);
   });
 });
 
@@ -138,7 +161,7 @@ describe("replay controls", () => {
 
     await session.pushUser(prompt("/compact"));
 
-    const next = queries[1]!;
+    const next = liveAfterCompact();
     expect(next.options["permissionMode"]).toBe("plan");
     expect(next.calls).toEqual([
       ["setMcpServers", { ...LATE, [RETRIEVAL_SERVER_NAME]: retrievalOf(next) }],
@@ -165,7 +188,7 @@ describe("replay controls", () => {
 
     await session.pushUser(prompt("/compact"));
 
-    expect(queries[1]!.calls).toEqual([
+    expect(liveAfterCompact().calls).toEqual([
       ["applyFlagSettings", { model: "model-a" }],
       ["setModel", "model-b"],
       ["applyFlagSettings", { effortLevel: null }],
@@ -177,7 +200,7 @@ describe("replay controls", () => {
     await session.control("setMcpServers", { servers: LATE });
     await session.control("setModel", { model: "claude-sonnet-4-5" });
     await session.pushUser(prompt("/compact"));
-    expect(queries[1]!.readsAfter[0]).toBe(2);
+    expect(liveAfterCompact().readsAfter[0]).toBe(2);
   });
 
   test("a control sent while the replay waits reaches the new generation", async () => {
@@ -192,7 +215,7 @@ describe("replay controls", () => {
     } finally {
       delete delays["setMcpServers"];
     }
-    expect(methods(queries[1]!)).toEqual(["setMcpServers", "setPermissionMode"]);
+    expect(methods(liveAfterCompact())).toEqual(["setMcpServers", "setPermissionMode"]);
   });
 
   test("a control still in flight on the old generation when the replay ends reaches the new one", async () => {
@@ -209,7 +232,25 @@ describe("replay controls", () => {
       delete delays["setMcpServers"];
       delete delays["applyFlagSettings"];
     }
-    expect(queries[1]!.calls).toContainEqual(["applyFlagSettings", { effortLevel: "low" }]);
+    expect(liveAfterCompact().calls).toContainEqual(["applyFlagSettings", { effortLevel: "low" }]);
+  });
+
+  test("a failed setModel or setPermissionMode changes nothing a compact carries", async () => {
+    const session = await started();
+    failures["setModel"] = "model not available";
+    failures["setPermissionMode"] = "mode not allowed";
+    try {
+      await expect(session.control("setModel", { model: "claude-nope" })).rejects.toThrow("model not available");
+      await expect(session.control("setPermissionMode", { mode: "plan" })).rejects.toThrow("mode not allowed");
+    } finally {
+      delete failures["setModel"];
+      delete failures["setPermissionMode"];
+    }
+    await session.pushUser(prompt("/compact"));
+    const live = await expectSwapped(session);
+    expect(live.options["model"]).toBe("claude-sonnet-4-6");
+    expect(live.options["permissionMode"]).toBeUndefined();
+    expect(live.calls).toEqual([]);
   });
 
   test("setMcpServers keeps the retrieval server under its own name", async () => {
@@ -230,7 +271,7 @@ describe("replay controls", () => {
     } finally {
       answers["setMcpServers"] = { added: ["late"], removed: [], errors: {} };
     }
-    expect(queries).toHaveLength(2);
+    await expectSwapped(session);
     expect(logs.some((line) => line.endsWith("replayed MCP server(s) failed: late"))).toBe(true);
   });
 });
@@ -265,6 +306,14 @@ describe("refused and malformed controls", () => {
     expect(methods(queries[0]!)).toEqual(["mcpServerStatus"]);
   });
 
+  test.each(["close", "streamInput"])("%s is transport, not a control", async (method) => {
+    const session = await started();
+    await expect(session.control(method, {})).rejects.toThrow(
+      `${method} is not a control: the client handles it on the sidecar's stdio`,
+    );
+    expect(queries[0]!.calls).toEqual([]);
+  });
+
   test("an unknown method and a missing parameter are refused before the SDK", async () => {
     const session = await started();
     await expect(session.control("forkSession", {})).rejects.toThrow("unknown control forkSession");
@@ -286,8 +335,9 @@ describe("setCompactPolicy", () => {
     const session = await started({ trigger: 150_000, target: 40_000 });
     await session.control("setCompactPolicy", { policy: { trigger: 700_000, target: 300_000 } });
     expect(await stored(session)).toEqual({ trigger: 700_000, target: 300_000 });
-    expect(logs).toContain("compact policy set on thread: trigger 700000 target 300000");
-    expect(logs.at(-1)).toBe("compact policy capped to window 200000: trigger 160000 target 80000");
+    const set = logs.indexOf("compact policy set on thread: trigger 700000 target 300000");
+    expect(set).toBeGreaterThanOrEqual(0);
+    expect(logs.indexOf("compact policy capped to window 200000: trigger 160000 target 80000")).toBeGreaterThan(set);
   });
 
   test("a trigger below the served context queues a compact before the next prompt", async () => {
@@ -300,12 +350,11 @@ describe("setCompactPolicy", () => {
     expect(logs).toContain(
       "served context 300000 tokens is at or past the compact trigger 200000; compacting before the next prompt",
     );
-    expect(queries).toHaveLength(1);
+    expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
 
     await session.pushUser(prompt("NEXT-PROMPT"));
     expect(logs.find((line) => line.startsWith("[lhc compact:auto]"))).toContain("(target 60000)");
-    expect(queries).toHaveLength(2);
-    const delivered = await queries[1]!.prompt[Symbol.asyncIterator]().next();
+    const delivered = await firstPrompt(liveAfterCompact());
     expect(JSON.stringify(delivered.value)).toContain("NEXT-PROMPT");
   });
 

@@ -1,4 +1,4 @@
-import type { Query } from "@anthropic-ai/claude-agent-sdk";
+import type { Query, SDKMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { CompactPolicy } from "./compactPolicy.js";
 
 export interface LhcControls {
@@ -18,7 +18,10 @@ type Row<M extends keyof Controls> =
       remainder?: (earlier: Args<M>, later: Args<M>) => Args<M> | null;
     }
   | { kind: "forward" | "sidecar"; params: Params<Args<M>> }
-  | { kind: "refuse" };
+  | { kind: "refuse" | "transport" };
+
+type QueryMethod = Exclude<keyof Query, keyof AsyncGenerator<SDKMessage, void>>;
+type Table = { [M in QueryMethod]: Row<M> } & { [M in keyof LhcControls]: Row<M> };
 
 const byServer = ([serverName]: readonly [string, ...unknown[]]): string => serverName;
 
@@ -67,13 +70,18 @@ export const CONTROLS = {
   reloadPlugins: { kind: "forward", params: [{ optional: "options" }] },
   reloadSkills: { kind: "forward", params: [] },
   reloadOutputStyles: { kind: "forward", params: [] },
+  readMcpResource: { kind: "forward", params: ["serverName", "uri"] },
+  usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET: { kind: "forward", params: [{ optional: "opts" }] },
 
   rewindFiles: { kind: "refuse" },
   reinitialize: { kind: "refuse" },
   seedReadState: { kind: "refuse" },
 
+  streamInput: { kind: "transport" },
+  close: { kind: "transport" },
+
   setCompactPolicy: { kind: "sidecar", params: ["policy"] },
-} as const satisfies { [M in keyof Controls]?: Row<M> };
+} as const satisfies Table;
 
 export type ControlMethod = keyof typeof CONTROLS;
 type MethodOf<K> = { [M in ControlMethod]: (typeof CONTROLS)[M]["kind"] extends K ? M : never }[ControlMethod];
@@ -96,6 +104,8 @@ export function parseControl(method: string, params: unknown): ControlCall {
   const row = CONTROLS[method as ControlMethod];
   if (row.kind === "refuse")
     throw new Error(`${method} is refused: it changes the Claude session outside the LHC record`);
+  if (row.kind === "transport")
+    throw new Error(`${method} is not a control: the client handles it on the sidecar's stdio`);
   const record = typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
   const args = row.params.map((param: string | { optional: string }) => {
     if (typeof param !== "string") return record[param.optional];

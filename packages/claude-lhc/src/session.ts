@@ -325,6 +325,7 @@ export class ClaudeLhcSession {
       await this.#setCompactPolicy(gen, call.args[0]);
       return undefined;
     }
+    const value = await (call.kind === "forward-and-replay" ? this.#recorded(gen, call) : this.#invoke(gen, call));
     const [first] = call.args;
     switch (call.method) {
       case "setModel":
@@ -338,7 +339,6 @@ export class ClaudeLhcSession {
         this.#maxThinkingTokens = typeof first === "number" ? first : null;
         break;
     }
-    const value = await (call.kind === "forward-and-replay" ? this.#recorded(gen, call) : this.#invoke(gen, call));
     if (call.method === "setModel" || (call.method === "applyFlagSettings" && Object.hasOwn(first as object, "model")))
       await this.#checkServedContext(gen);
     return value;

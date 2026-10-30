@@ -22,8 +22,15 @@
 - Forward: `interrupt`, `stopTask`, `backgroundTasks`,
   `initializationResult`, `supportedCommands`, `supportedModels`,
   `supportedAgents`, `mcpServerStatus`, `getContextUsage`, `accountInfo`,
-  `readFile`, `reconnectMcpServer`, `reloadPlugins`, `reloadSkills` and
-  `reloadOutputStyles` go to the live generation only.
+  `readFile`, `reconnectMcpServer`, `reloadPlugins`, `reloadSkills`,
+  `reloadOutputStyles`, `readMcpResource` and
+  `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET` go to the
+  live generation only.
+- Transport: `close` and `streamInput` are not controls. A client handles
+  them on the sidecar's stdio (closing stdin, sending `user` frames). As a
+  `req` they answer `<method> is not a control`. The table covers every
+  `Query` method, so a new SDK method fails the typecheck until it gets a
+  row.
 - Refuse: `rewindFiles`, `reinitialize` and `seedReadState` answer `res`
   `ok: false` with `<method> is refused: it changes the Claude session
   outside the LHC record`. An unknown method answers `unknown control
