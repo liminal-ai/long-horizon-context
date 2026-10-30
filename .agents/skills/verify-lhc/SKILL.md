@@ -1,6 +1,6 @@
 ---
 name: verify-lhc
-description: Verify core lhc (Long Horizon Context SDK) end to end: thread round trip through the SDK and lhc CLI, retrieval (getTurns/getMessages), and host rollback. Use when asked to verify, smoke-test, or regression-check packages/lhc.
+description: Verify core lhc (Long Horizon Context SDK) end to end: thread round trip through the SDK and lhc CLI, retrieval (getTurns/getMessages), host rollback, and the thread's compact policy. Use when asked to verify, smoke-test, or regression-check packages/lhc.
 ---
 
 # verify-lhc
@@ -13,6 +13,7 @@ Surface facts (from the code, re-check if a drive breaks):
 - Seeding is `threads.newThread` then `intakeStream.messageEvents` then `work.drain` (manual mode). Events need `eventKind`, unique `idempotencyKey`, `actor`, `harness`, and a per-kind `payload`.
 - Deterministic inference: `createDeterministicInferenceCallbacks()` with `tokenFamily: "o200k"`, `mode: "manual"`. No network, no real model.
 - Serving is `threadView.getLlmRequestContext` / `getSessionThreadView`; compact is `threadView.compact`; retrieval is `retrieval.getTurns` / `getMessages` by `t…` / `m…` id.
+- The compact policy is `threads.getCompactPolicy` / `threads.setCompactPolicy`, two nullable columns on `thread_metadata` (thread schema 14). Opening a schema-13 file through the SDK or the CLI migrates it in place.
 - A host rollback is one `rollback` intake event with payload `{ keepThroughEventOrder }`. Every served view and the CLI export drop what was recorded after the anchor, except that the open turn survives as an empty turn; `messages.list({ includeDeleted: true })` still shows hidden messages as `deleted: true`.
 
 ## Launch
@@ -39,7 +40,7 @@ If doctor fails on a missing dist, run the Launch build. Do not drive on a faile
 
 ## Drive
 
-Three seeded drives. Each prints one `PASS` line and exits non-zero on any failed assertion.
+Four seeded drives. Each prints one `PASS` line and exits non-zero on any failed assertion.
 
 Round trip — create, append, compact, serve ([features/thread-round-trip.md](features/thread-round-trip.md)):
 
@@ -68,6 +69,16 @@ node .agents/skills/verify-lhc/helpers/rollback.mjs
 - User-only check: after the rollback, the served views and the `lhc thread export` file hold the kept turn and the new turn in order, and no discarded text, including text that sat behind the compact point.
 - Outcome check: the record still holds the four hidden messages under the deleted contract. Any refused rollback batch exits 3 with `verify-lhc rollback: UNSUPPORTED (this build has no rollback event)`. A build from before the event (PR #25) gives that result, and so does an anchor at or past the rollback's own event order.
 
+Compact policy: read, set, refuse, copy ([features/compact-policy.md](features/compact-policy.md)):
+
+```sh
+node .agents/skills/verify-lhc/helpers/compact-policy.mjs
+node .agents/skills/verify-lhc/helpers/compact-policy.mjs --migrate <schema-13 thread file>
+```
+
+- User-only check: a new thread reads `null`, and after `setCompactPolicy` it and its copy read back the same pair.
+- Outcome check: `--migrate` backs up a real thread file into the temp home, opens the copy, and shows `user_version` 14, a `null` policy and the source's event count. The source is opened read-only and never changes.
+
 CLI thread ops against an existing home are covered in [features/cli-thread-ops.md](features/cli-thread-ops.md). Use `--keep` on the round trip to leave its home in place for manual CLI poking:
 
 ```sh
@@ -87,11 +98,12 @@ node .agents/skills/verify-lhc/helpers/doctor.mjs > "$EVIDENCE/doctor.txt" 2>&1
 node .agents/skills/verify-lhc/helpers/round-trip.mjs > "$EVIDENCE/round-trip.txt" 2>&1
 node .agents/skills/verify-lhc/helpers/retrieval.mjs > "$EVIDENCE/retrieval.txt" 2>&1
 node .agents/skills/verify-lhc/helpers/rollback.mjs > "$EVIDENCE/rollback.txt" 2>&1
+node .agents/skills/verify-lhc/helpers/compact-policy.mjs > "$EVIDENCE/compact-policy.txt" 2>&1
 node .agents/skills/verify-lhc/helpers/check-links.mjs > "$EVIDENCE/check-links.txt" 2>&1
 grep -h PASS "$EVIDENCE"/*.txt
 ```
 
-Pass lines: `verify-lhc doctor: PASS`, `verify-lhc round-trip: PASS`, `verify-lhc retrieval: PASS`, `verify-lhc rollback: PASS`, `verify-lhc check-links: PASS`. For a lane or PR, also record `git rev-parse HEAD` beside the logs. Terminal screenshots of these runs satisfy the plan's `.png` evidence names where a harness captures them.
+Pass lines: `verify-lhc doctor: PASS`, `verify-lhc round-trip: PASS`, `verify-lhc retrieval: PASS`, `verify-lhc rollback: PASS`, `verify-lhc compact-policy: PASS`, `verify-lhc check-links: PASS`. For a lane or PR, also record `git rev-parse HEAD` beside the logs. Terminal screenshots of these runs satisfy the plan's `.png` evidence names where a harness captures them.
 
 Regression companion (existing checks, not a substitute for the drives):
 
@@ -121,6 +133,7 @@ All under [helpers/](helpers/), plain node ESM, importing the built SDK from `pa
 - `helpers/round-trip.mjs` — create/append/compact/serve + CLI health. Flags: `--keep`, `--home DIR`.
 - `helpers/retrieval.mjs` — `getTurns`/`getMessages` served + unserved assertions.
 - `helpers/rollback.mjs` — rollback behind the compact point, append, recompact, CLI export. Flag: `--keep`.
+- `helpers/compact-policy.mjs` — get, set, refuse and copy the compact pair, and a refused fork into `codex-lhc`. Flag: `--migrate FILE` backs up a real thread file and migrates the copy.
 - `helpers/cleanup.mjs` — removes `--keep` homes. Args: one or more printed dirs.
 - `helpers/check-links.mjs` — every relative link and `helpers/*.mjs` path in this skill resolves on disk.
 

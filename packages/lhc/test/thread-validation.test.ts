@@ -39,7 +39,7 @@ describe("thread file validation is WAL-aware", () => {
 
     const walOnly = openDatabase(filePath);
     walOnly.exec("PRAGMA wal_autocheckpoint = 0;");
-    walOnly.exec("PRAGMA user_version = 13;");
+    walOnly.exec("PRAGMA user_version = 14;");
     try {
       expect(mainFileUserVersion(filePath)).toBe(0);
       const opened = openThreadDatabase(filePath);
@@ -128,13 +128,13 @@ describe("invalid thread-file candidates keep their exact classification", () =>
         db.exec("CREATE TABLE unrelated (x); PRAGMA user_version = 99;");
         db.close();
       },
-      "schema version 99, expected 1..13",
+      "schema version 99, expected 1..14",
     ],
     [
       "missing-table",
       (path) => {
         const db = new DatabaseSync(path);
-        db.exec("CREATE TABLE unrelated (x); PRAGMA user_version = 13;");
+        db.exec("CREATE TABLE unrelated (x); PRAGMA user_version = 14;");
         db.close();
       },
       "no thread_metadata table",
@@ -143,7 +143,7 @@ describe("invalid thread-file candidates keep their exact classification", () =>
       "missing-metadata-row",
       (path) => {
         const db = new DatabaseSync(path);
-        db.exec("CREATE TABLE thread_metadata (id INTEGER PRIMARY KEY, thread_id TEXT); PRAGMA user_version = 13;");
+        db.exec("CREATE TABLE thread_metadata (id INTEGER PRIMARY KEY, thread_id TEXT); PRAGMA user_version = 14;");
         db.close();
       },
       "no thread metadata row",

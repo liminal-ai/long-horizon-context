@@ -31,7 +31,9 @@ function threadSchemaStatements(threadId: string, createdAt: string): string[] {
       thread_id TEXT NOT NULL,
       created_at TEXT NOT NULL,
       token_estimator TEXT NOT NULL,
-      parts_activated_at TEXT
+      parts_activated_at TEXT,
+      compact_trigger_tokens INTEGER,
+      compact_target_tokens INTEGER
     );`,
     `INSERT INTO thread_metadata (id, thread_id, created_at, token_estimator)
      VALUES (1, '${threadId}', '${createdAt}', '${TOKEN_ESTIMATOR_ID}');`,
