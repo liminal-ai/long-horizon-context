@@ -1,6 +1,6 @@
 ---
 name: verify-claude-lhc
-description: "Drive packages/claude-lhc (the Claude Code sidecar for t3code) over its JSONL stdio protocol and prove capture, compact, and projection. Use when verifying a claude-lhc change: start, turn, compact, window shrink, restart/projection, host rollback, or rollback-shaped start."
+description: "Drive packages/claude-lhc (the Claude Code sidecar for t3code) over its JSONL stdio protocol and prove capture, compact, and projection. Use when verifying a claude-lhc change: start, turn, compact, window shrink, restart/projection, host rollback, rollback-shaped start, or session controls."
 ---
 
 # Verify claude-lhc
@@ -12,6 +12,7 @@ wire a driver (t3code) speaks to it: one JSON object per line on stdin
 `packages/claude-lhc/src/protocol.ts` (frames), `src/sidecar.ts` (entry,
 strict arrival order, stdin close = shutdown), `src/session.ts`
 (generations, capture-before-forward, compact, projection swap),
+`src/controls.ts` (the control table: replay, forward, refuse),
 `src/lhcHome.ts` (home/aliases), `src/compactPolicy.ts` (thread compact
 policy and window cap), `src/rollbackAnchor.ts` (host rollback anchor to
 core event order), `src/nativeSessionFile.ts` (projected
@@ -103,16 +104,21 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `rollback-synthetic-anchor` | native transcript with a `<synthetic>` notice, rollback to it, `/compact`, restart | `via <KEEP uuid> (nearest captured ancestor of <notice>)` | no projected file carries REMOVED |
 | `rollback-compact` | 12 heavy turns, 2000/1000 policy, `/compact`, rollback behind the compact point, `/compact`, restart | `[lhc compact:auto]` on the rollback start | no projected file carries REMOVED or text past the anchor |
 | `window-shrink` | 20 large turns, resume on `claude-sonnet-5`, `setModel` `claude-sonnet-4-6`, stop, resume on `claude-sonnet-4-6` | `setModel` logs the 160000 cap and the `served context` queue line with no compact; the 200k resume logs `served context`, `[lhc compact:auto] ... (target 80000)`, then `resumed thread` | two generation lines on the 200k resume: the oversized projection and the compacted one |
+| `controls` | `start` → `setMcpServers{late}` (local echo MCP server) → `applyFlagSettings{model}` → `/compact` → `mcpServerStatus`, `getContextUsage` | after the swap the late server is `connected` with `ping`, and the usage model is the flag model | stderr `generation <gen2>: replayed setMcpServers, applyFlagSettings` |
+| `controls-refused` | `rewindFiles`, `reinitialize`, `seedReadState`, `forkSession`, then `mcpServerStatus` → stdin close | each answers one failed `res` naming the method; `mcpServerStatus` still answers; no `error` frame, exit 0 | the CLI never got the refused calls (the `res` comes from the sidecar's table) |
+| `set-compact-policy` | start on `claude-sonnet-4-6`, `setCompactPolicy` with a bad pair, then 700000/140000 | the bad pair fails naming `setCompactPolicy params.policy`; stderr `compact policy set on thread` and the 160000/80000 cap | the thread file's `thread_metadata` row holds 700000/140000, saved as `thread_metadata.txt` |
 | `turn` | real tool turn + recall via `scripts/standalone.ts` (live only, `CLAUDE_LHC_LIVE=1`) | standalone `RESULT: PASS` | native files only under the throwaway `CLAUDE_CONFIG_DIR`, none under real `~/.claude/projects`. Fails intermittently; see Known failure below |
 | `rollback-live` | two real turns (KEEP-ALPHA, REMOVED-BRAVO), restart with `resumeSessionAt` at the first turn's last message, ask for the second word (live only) | the turn succeeds and the answer lacks REMOVED-BRAVO | `transcript.jsonl`, `answer.txt` |
 | `rollback-live-compact` | as `rollback-live`, with `/compact` after the rollback and before the question (live only) | as `rollback-live`, plus a `compact_boundary` after `/compact` | `transcript.jsonl`, `answer.txt` |
+| `controls-live` | real turn, `setMcpServers{late}`, `/compact`, ask Claude to call `mcp__late__ping` (live only) | the turn after the swap succeeds in the new generation | `mcp__late__ping` returns `pong from late`; `transcript.jsonl` |
 
 Feature files (user POV, harness steps, gotchas):
 [start-and-capture.md](features/start-and-capture.md),
 [compact.md](features/compact.md),
 [restart-projection.md](features/restart-projection.md),
 [host-rollback.md](features/host-rollback.md),
-[rollback-shaped-start.md](features/rollback-shaped-start.md). Index:
+[rollback-shaped-start.md](features/rollback-shaped-start.md),
+[controls.md](features/controls.md). Index:
 [features/README.md](features/README.md).
 
 User-only vs outcome, per the proof standard: a user-only check gets only
@@ -260,10 +266,11 @@ All executable, all runnable from a clean shell (paths resolve from the
 script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
-- `drive.mjs` — the seeded drives. `drive.mjs <start|start-no-home|compact|compact-policy|restart|resume-superseded-alias|resume-unknown|resume-empty|thread-start|rollback|rollback-unknown-anchor|rollback-restart|rollback-synthetic-anchor|rollback-compact|window-shrink|turn|rollback-live|rollback-live-compact|all>`;
+- `drive.mjs` — the seeded drives. `drive.mjs <start|start-no-home|compact|compact-policy|restart|resume-superseded-alias|resume-unknown|resume-empty|thread-start|rollback|rollback-unknown-anchor|rollback-restart|rollback-synthetic-anchor|rollback-compact|window-shrink|controls|controls-refused|set-compact-policy|turn|rollback-live|rollback-live-compact|controls-live|all>`;
   env `VERIFY_RUN_DIR`, `VERIFY_SCRATCH_ROOT`, `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn runs the isolated live
-  standalone, and the `rollback-live` drives run real turns, instead of SKIP).
+  standalone, and the `rollback-live` drives and `controls-live` run real
+  turns, instead of SKIP).
 - `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <dir>...`.
 - `check-links.mjs` — frontmatter, required sections, feature-file H2s,
   relative links, helper executability. `check-links.mjs` (no args);

@@ -3,6 +3,8 @@ import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import { createServer } from "node:http";
+import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -187,6 +189,35 @@ async function seedCaptured(scratch, turns) {
   };
   return { gen1, threadId, anchors, eventCount };
 }
+
+async function startEchoMcp(name) {
+  const require = createRequire(join(REPO, "packages/claude-lhc/package.json"));
+  const { McpServer } = await import(require.resolve("@modelcontextprotocol/sdk/server/mcp.js"));
+  const { StreamableHTTPServerTransport } = await import(require.resolve("@modelcontextprotocol/sdk/server/streamableHttp.js"));
+  const http = createServer(async (request, response) => {
+    const server = new McpServer({ name, version: "1.0.0" });
+    server.tool("ping", "Reply pong", async () => ({ content: [{ type: "text", text: `pong from ${name}` }] }));
+    const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+    response.on("close", () => { transport.close(); server.close(); });
+    await server.connect(transport);
+    await transport.handleRequest(request, response);
+  });
+  await new Promise((r) => http.listen(0, "127.0.0.1", r));
+  return { config: { type: "http", url: `http://127.0.0.1:${http.address().port}/mcp` }, close: () => http.close() };
+}
+
+async function compactNow(s) {
+  const before = s.msgs().length;
+  s.send(userFrame("/compact"));
+  await s.waitFor(() => s.msgs().slice(before).some((m) => m.type === "result"), "compact result frame", 180_000);
+  const boundary = s.msgs().slice(before).find((m) => m.type === "system" && m.subtype === "compact_boundary");
+  assert(boundary, "no compact_boundary after /compact");
+  return boundary.session_id;
+}
+
+const lateServer = (res) => (res.ok ? res.value : []).find((server) => server.name === "late");
+const REFUSED_CONTROLS = { rewindFiles: { userMessageId: randomUUID() }, reinitialize: {}, seedReadState: { path: "a.txt", mtime: 1 } };
+const FLAG_MODEL = "claude-sonnet-4-6";
 
 const PA_TURNS = [["KEEP-TURN prompt one", "KEEP-TURN answer one"], ["REMOVED-TURN prompt two", "REMOVED-TURN answer two"]];
 const FILLER = " filler".repeat(400);
@@ -598,6 +629,129 @@ const drives = {
     } finally { scratch.cleanup(); }
   },
 
+  async controls(evidenceDir) {
+    const scratch = new Scratch("controls");
+    const late = await startEchoMcp("late");
+    const s = new Sidecar(scratch, "controls");
+    try {
+      const sid1 = randomUUID();
+      s.send({ type: "start", options: baseOptions(scratch, { sessionId: sid1 }) });
+      await s.waitFor(() => s.logHas(`as generation ${sid1}`), "created-thread log line");
+      const set = await s.control(1, "setMcpServers", { servers: { late: late.config } });
+      assert(set.ok && set.value.added.includes("late") && Object.keys(set.value.errors).length === 0, `setMcpServers: ${JSON.stringify(set)}`);
+      const flag = await s.control(2, "applyFlagSettings", { settings: { model: FLAG_MODEL } });
+      assert(flag.ok, `applyFlagSettings: ${flag.error}`);
+      const sid2 = await compactNow(s);
+      const status = await s.control(3, "mcpServerStatus", {});
+      const usage = await s.control(4, "getContextUsage", { opts: { detail: "summary" } });
+      const code = await s.stop();
+      const server = lateServer(status);
+      assert(sid2 !== sid1, "the compact did not start a new generation");
+      assert(server?.status === "connected" && server.tools?.some((t) => t.name === "ping"), `the late server after the swap: ${JSON.stringify(server)}`);
+      assert(usage.ok && usage.value.model === FLAG_MODEL, `the flag model after the swap: ${usage.ok ? usage.value.model : usage.error}`);
+      assert(s.logHas(`generation ${sid2}: replayed setMcpServers, applyFlagSettings`), "no replay line for the new generation");
+      assert(code === 0 && !s.error, `sidecar exited ${code} ${s.error ?? ""}`);
+      return `generation ${sid1.slice(0, 8)} -> ${sid2.slice(0, 8)}; late server ${server.status} with ${server.tools.map((t) => t.name).join(",")}; flag model ${usage.value.model}`;
+    } finally {
+      if (s.exitCode === undefined) await s.stop();
+      s.saveEvidence(evidenceDir);
+      late.close();
+      scratch.cleanup();
+    }
+  },
+
+  async "controls-refused"(evidenceDir) {
+    const scratch = new Scratch("controls-refused");
+    const s = new Sidecar(scratch, "controls-refused");
+    try {
+      const sid = randomUUID();
+      s.send({ type: "start", options: baseOptions(scratch, { sessionId: sid }) });
+      await s.waitFor(() => s.logHas(`as generation ${sid}`), "created-thread log line");
+      const sent = [...Object.entries(REFUSED_CONTROLS), ["forkSession", {}]];
+      const answers = [];
+      for (const [i, [method, params]] of sent.entries()) answers.push([method, await s.control(i + 1, method, params)]);
+      const status = await s.control(sent.length + 1, "mcpServerStatus", {});
+      const code = await s.stop();
+      for (const [method, res] of answers) assert(!res.ok && res.error.includes(method), `${method} answered ${JSON.stringify(res)}`);
+      assert(answers.filter(([, res]) => res.error.includes("refused")).length === 3, "the three refused methods did not say refused");
+      assert(status.ok, `mcpServerStatus after the refusals: ${status.error}`);
+      assert(!s.frames.some((f) => f.type === "error") && code === 0, `the session did not stay usable: exit ${code} ${s.error ?? ""}`);
+      return answers.map(([method, res]) => `${method}: ${res.error}`).join("; ");
+    } finally {
+      if (s.exitCode === undefined) await s.stop();
+      s.saveEvidence(evidenceDir);
+      scratch.cleanup();
+    }
+  },
+
+  async "set-compact-policy"(evidenceDir) {
+    const scratch = new Scratch("set-compact-policy");
+    const s = new Sidecar(scratch, "set-compact-policy");
+    try {
+      const sid = randomUUID();
+      s.send({ type: "start", options: baseOptions(scratch, { sessionId: sid, model: "claude-sonnet-4-6" }) });
+      await s.waitFor(() => s.logHas(`as generation ${sid}`) && s.logHas("context window "), "created-thread and window lines");
+      const bad = await s.control(1, "setCompactPolicy", { policy: { trigger: 1000, target: 1000 } });
+      const set = await s.control(2, "setCompactPolicy", { policy: { trigger: 700000, target: 140000 } });
+      const code = await s.stop();
+      assert(!bad.ok && bad.error.startsWith("setCompactPolicy params.policy must be"), `the bad pair answered ${JSON.stringify(bad)}`);
+      assert(set.ok, `setCompactPolicy: ${set.error}`);
+      assert(s.logHas("compact policy set on thread: trigger 700000 target 140000"), "no `compact policy set on thread` line");
+      const capped = s.stderr.find((l) => l.includes("compact policy capped to window"));
+      assert(capped?.endsWith("trigger 160000 target 80000"), `no cap to the 200k window: ${capped}`);
+      assert(code === 0, `sidecar exited ${code}`);
+      const db = new DatabaseSync(join(scratch.lhcHome, "threads", scratch.threads()[0]), { readOnly: true });
+      const row = db.prepare("SELECT compact_trigger_tokens, compact_target_tokens FROM thread_metadata").get();
+      db.close();
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "thread_metadata.txt"), `${JSON.stringify(row)}\n`);
+      assert(row.compact_trigger_tokens === 700000 && row.compact_target_tokens === 140000, `thread row holds ${JSON.stringify(row)}`);
+      return `row trigger=${row.compact_trigger_tokens} target=${row.compact_target_tokens}; live pair capped to 160000/80000; bad pair refused`;
+    } finally {
+      if (s.exitCode === undefined) await s.stop();
+      s.saveEvidence(evidenceDir);
+      scratch.cleanup();
+    }
+  },
+
+  async "controls-live"(evidenceDir) {
+    const gate = liveAuth();
+    if (gate.skip) return gate;
+    const scratch = new Scratch("controls-live");
+    scratch.home = join(scratch.dir, "home");
+    mkdirSync(scratch.home, { recursive: true });
+    const late = await startEchoMcp("late");
+    const s = new Sidecar(scratch, "controls-live", { live: true });
+    try {
+      const sid1 = randomUUID();
+      s.send({ type: "start", options: baseOptions(scratch, { sessionId: sid1, env: { ...process.env, HOME: scratch.home, CLAUDE_CONFIG_DIR: scratch.claudeHome } }) });
+      await s.waitFor(() => s.logHas(`as generation ${sid1}`), "created-thread log line");
+      const warm = await liveTurn(s, "Reply with just OK.");
+      const set = await s.control(1, "setMcpServers", { servers: { late: late.config } });
+      assert(set.ok && Object.keys(set.value.errors).length === 0, `setMcpServers: ${JSON.stringify(set)}`);
+      const sid2 = await compactNow(s);
+      const before = s.msgs().length;
+      const ask = await liveTurn(s, "Call the ping tool of the MCP server named late, then reply with exactly the text it returned.");
+      const code = await s.stop();
+      const turn = s.msgs().slice(before);
+      const used = turn.flatMap((m) => (m.type === "assistant" ? m.message.content : [])).find((b) => b.type === "tool_use" && b.name === "mcp__late__ping");
+      const output = turn.flatMap((m) => (m.type === "user" && Array.isArray(m.message?.content) ? m.message.content : [])).find((b) => b.type === "tool_result" && b.tool_use_id === used?.id);
+      assert(warm.result?.subtype === "success", `the first turn failed: ${JSON.stringify(warm.result)}`);
+      assert(ask.result?.subtype === "success" && ask.result.session_id === sid2, `the turn after /compact failed or ran outside ${sid2}: ${JSON.stringify(ask.result)}`);
+      assert(used, "Claude did not call mcp__late__ping after the swap");
+      assert(JSON.stringify(output?.content ?? "").includes("pong from late") && output.is_error !== true, `the tool call failed: ${JSON.stringify(output)}`);
+      assert(code === 0, `sidecar exited ${code}`);
+      return `mcp__late__ping answered "pong from late" in generation ${sid2.slice(0, 8)}; reply "${String(ask.result.result).trim()}"`;
+    } finally {
+      if (s.exitCode === undefined) await s.stop();
+      s.saveEvidence(evidenceDir);
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "transcript.jsonl"), s.frames.map((f) => JSON.stringify(f)).join("\n") + "\n");
+      late.close();
+      scratch.cleanup();
+    }
+  },
+
   async "rollback-live"(evidenceDir) {
     const gate = liveAuth();
     return gate.skip ? gate : liveRollback(evidenceDir, "rollback-live", { compactAfterRollback: false });
@@ -656,7 +810,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "window-shrink", "turn", "rollback-live", "rollback-live-compact"]
+      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "window-shrink", "controls", "controls-refused", "set-compact-policy", "turn", "rollback-live", "rollback-live-compact", "controls-live"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;

@@ -39,7 +39,7 @@ is not published separately.
   `compact policy from thread` when the host sent another. A thread with no stored pair stores the
   host's. Each generation and each `setModel` reads the live window with `getContextUsage`. A
   trigger above 80% of that window drops to 80%, and the target to at most half of that. The
-  stored pair never changes.
+  stored pair never changes. The `setCompactPolicy` control replaces the stored pair on a live thread.
 - **`CLAUDE_LHC_NO_INFERENCE=1`:** skip summary derivations (tests and previews).
 - **`T3CODE_THREAD_ID`:** set by the t3code driver and passed through to Claude Code.
 
