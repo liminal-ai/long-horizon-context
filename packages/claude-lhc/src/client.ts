@@ -150,7 +150,7 @@ export function query({
   let nextControlId = 0;
   let closed = false;
   let stdinOpen = true;
-  let turnPending = false;
+  let unanswered = 0;
   let inputDone = false;
 
   const startFrame = encodeFrame({ type: "start", options: toWireOptions(options, stderr) as WireOptions });
@@ -220,8 +220,8 @@ export function query({
     switch (frame.type) {
       case "msg":
         if (frame.message.type === "result") {
-          turnPending = false;
-          if (inputDone) endStdin();
+          unanswered = Math.max(0, unanswered - 1);
+          if (inputDone && unanswered === 0) endStdin();
         }
         messages.push(frame.message);
         return;
@@ -275,7 +275,7 @@ export function query({
 
   const pushUser = (message: SDKUserMessage): void => {
     if (closed) throw new Error("claude-lhc sidecar is closed");
-    turnPending = true;
+    unanswered += 1;
     send({ type: "user", message });
   };
 
@@ -288,7 +288,7 @@ export function query({
 
   const endInput = (): void => {
     inputDone = true;
-    if (!turnPending) endStdin();
+    if (unanswered === 0) endStdin();
   };
 
   const close = (): void => {
@@ -308,17 +308,19 @@ export function query({
     messages.discard();
   };
 
-  child.stdin?.write(startFrame);
   options.abortController?.signal.addEventListener("abort", close, { once: true });
-  if (typeof prompt === "string") {
-    pushUser({ type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null });
-    endInput();
-  } else {
-    streamInput(prompt)
-      .catch((cause) =>
-        stderr(`claude-lhc prompt stream failed: ${cause instanceof Error ? cause.message : String(cause)}`),
-      )
-      .finally(endInput);
+  if (options.abortController?.signal.aborted) close();
+  else {
+    child.stdin?.write(startFrame);
+    if (typeof prompt === "string") {
+      pushUser({ type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null });
+      endInput();
+    } else {
+      streamInput(prompt).then(endInput, (cause) => {
+        messages.fail(cause instanceof Error ? cause : new Error(String(cause)));
+        close();
+      });
+    }
   }
 
   const controls = Object.fromEntries(

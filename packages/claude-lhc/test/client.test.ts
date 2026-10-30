@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -122,6 +122,30 @@ describe("query through the sidecar", () => {
     expect(replyText(messages)).toBe("echo: last");
   });
 
+  test("an input that yields several prompts and ends gets every reply", async () => {
+    const prompts = (async function* () {
+      for (const text of ["one", "slow:two", "three"])
+        yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as const;
+    })();
+    const { q } = start(prompts);
+    const messages: SDKMessage[] = [];
+    for await (const message of q) messages.push(message);
+    expect(replyText(messages)).toBe("echo: oneecho: slow:twoecho: three");
+  });
+
+  test("an input that throws fails the stream with its error", async () => {
+    const prompts = (async function* () {
+      yield { type: "user", message: { role: "user", content: "first" }, parent_tool_use_id: null } as const;
+      throw new Error("the host's input broke");
+    })();
+    const { q } = start(prompts);
+    await expect(
+      (async () => {
+        for await (const _ of q);
+      })(),
+    ).rejects.toThrow("the host's input broke");
+  });
+
   test("streamInput feeds more prompts into the open session", async () => {
     const input = new Input();
     const { q } = start(input);
@@ -210,6 +234,14 @@ describe("controls", () => {
 });
 
 describe("start options", () => {
+  test("an abortController aborted before query() starts nothing", async () => {
+    const abortController = new AbortController();
+    abortController.abort();
+    const { q } = start("never sent", { abortController });
+    expect(await q.next()).toEqual({ done: true, value: undefined });
+    expect(existsSync(join(dir, "lhc"))).toBe(false);
+  });
+
   test("a start without lhc.home fails the stream with the sidecar's error", async () => {
     const { q } = start("hi", { lhc: { home: "" } });
     await expect(untilResult(q)).rejects.toThrow("lhc.home is required");
