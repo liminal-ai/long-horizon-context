@@ -141,6 +141,18 @@ credential env, so the same command can run it in one shell and SKIP it
 in another, such as a delegated verifier's. Record which one each run got.
 Never report the live turn as passed from a deterministic run.
 
+### Which `claude` binary
+
+Every drive spawns an external `claude`, not the SDK's bundled one. The
+sidecar always sets `pathToClaudeCodeExecutable`, default `claude` on
+`PATH` (`src/session.ts`), the drives pass `CLAUDE_BIN` or `claude`, and
+`pnpm-workspace.yaml` stops the SDK's platform binaries from installing.
+The pinned SDK, `@anthropic-ai/claude-agent-sdk` 0.3.312, names
+`claudeCodeVersion` 2.1.312 in its `package.json`. The installed CLI can
+differ, and `doctor.sh` prints its path and version. Record that version
+with every live result, because a CLI that does not match the SDK is a
+cause to rule out before a live FAIL counts as a regression.
+
 ### Known failure: lost reply after a mid-turn `/compact`
 
 Until the product bug ([LH-212](https://linear.app/limhealth/issue/LH-212/three-host-and-core-bugs-confirmed-during-the-lhc-catch-up), item 1) is fixed, the live `turn` drive intermittently
