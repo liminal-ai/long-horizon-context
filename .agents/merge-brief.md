@@ -5,4 +5,5 @@
 - A verdict drives the change through the verify skill for each package it touches: `verify-lhc` for `packages/lhc`, `verify-claude-lhc` for `packages/claude-lhc`, `verify-cc-lhc` for `packages/cc-lhc` and `packages/cc-lhc-native`. Each skill's Re-verification section says which lanes a rebase or small change may carry.
 - Review bots and their lanes are in `.github/REVIEW_RULES.md`. Codex must review the head commit. After a push, or when its review names no commit, comment `@codex review` on the PR.
 - Authorized exception: a Codex review stuck at "running" may be waived with `--waive codex=<reason>` only when an independent verdict already covers the head, and the reason names the stuck run and that verdict ([#35](https://github.com/liminal-ai/long-horizon-context/pull/35)).
+- Owners stop at code-ready on a pushed branch. Only the lead merges, retargets, rebases a chain or force-pushes a shared branch, even where a playbook lets owners merge.
 - A change to `AGENTS.md` or `CLAUDE.md` needs Lee's approval of the exact text (`~/lim-v2/AGENTS.md`).

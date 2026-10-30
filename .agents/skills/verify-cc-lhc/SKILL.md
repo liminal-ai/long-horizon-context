@@ -180,4 +180,4 @@ Every seeded drive runs `packages/cc-lhc/dist/bin.js` with the staged `cc-lhc-na
 - **Reruns every drive:** a change in `packages/cc-lhc/`, `packages/cc-lhc-native/` or `packages/lhc/` outside `test/` and Markdown, to `oneshot-claude.mjs`, to the lockfile entries those packages resolve, or to `helpers/lib.sh`. A rebase onto a trunk that changed any of these counts.
 - **Reruns `drive-rebuild.sh` and `drive-smart-compact.sh`:** a change to `helpers/seed-thread.mjs` or `test/fixtures/claude-2.1.226-model-fallback-sequence.jsonl`.
 - **Reruns one drive:** a change to its `drive-*.sh`.
-- **Carries:** a change only in `packages/claude-lhc`, `lhc-py`, `lhc-rs` or `lhc-triage`, other `packages/cc-lhc/test/` files, or text in this skill and its `features/` that changes no lane's commands. `doctor.sh` and `link-check.mjs` always rerun.
+- **Carries:** a change only in `packages/claude-lhc`, `lhc-py`, `lhc-rs` or `lhc-triage`, other `packages/cc-lhc/test/` files, or text in this skill and its `features/` that changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. `doctor.sh` and `link-check.mjs` always rerun.

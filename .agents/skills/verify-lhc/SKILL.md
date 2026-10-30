@@ -130,4 +130,4 @@ Every lane here runs only `packages/lhc`, through its built `dist/` and `bin/lhc
 
 - **Reruns every lane:** a change in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries lhc resolves, or to `helpers/lib.mjs`. A rebase onto a trunk that changed any of these counts.
 - **Reruns one lane:** a change to that lane's helper or its block in Drive.
-- **Carries:** a change only in other packages, `packages/lhc/test/`, or text in this skill and its `features/` that changes no lane's commands. `doctor.mjs` and `check-links.mjs` always rerun.
+- **Carries:** a change only in other packages, `packages/lhc/test/`, or text in this skill and its `features/` that changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. `doctor.mjs` and `check-links.mjs` always rerun.
