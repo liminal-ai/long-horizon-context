@@ -98,3 +98,44 @@ export async function writeProjectedSession(input: {
   }
   return dest;
 }
+
+/**
+ * User and assistant lines above `uuid` by parentUuid, nearest first. An older
+ * generation's file may hold the line. Subagent lines live in their own files,
+ * so they have no ancestors here.
+ */
+export async function nativeAncestors(input: {
+  readonly uuid: string;
+  readonly sessionId: string;
+  readonly cwd: string;
+  readonly env?: NodeJS.ProcessEnv;
+}): Promise<string[]> {
+  const dir = nativeProjectDir(input);
+  const resumed = `${input.sessionId}.jsonl`;
+  const names = await NodeFS.promises.readdir(dir).catch(() => [] as string[]);
+  for (const name of [resumed, ...names.filter((n) => n.endsWith(".jsonl") && n !== resumed)]) {
+    const body = await NodeFS.promises.readFile(NodePath.join(dir, name), "utf8").catch(() => "");
+    if (!body.includes(input.uuid)) continue;
+    const lines = new Map<string, { parent: unknown; type: unknown }>();
+    for (const raw of body.split("\n")) {
+      try {
+        const line = JSON.parse(raw) as Record<string, unknown>;
+        if (typeof line["uuid"] === "string")
+          lines.set(line["uuid"], { parent: line["parentUuid"], type: line["type"] });
+      } catch {}
+    }
+    if (!lines.has(input.uuid)) continue;
+    const ancestors: string[] = [];
+    const seen = new Set([input.uuid]);
+    let parent = lines.get(input.uuid)?.parent;
+    while (typeof parent === "string" && !seen.has(parent)) {
+      seen.add(parent);
+      const line = lines.get(parent);
+      if (line === undefined) break;
+      if (line.type === "user" || line.type === "assistant") ancestors.push(parent);
+      parent = line.parent;
+    }
+    return ancestors;
+  }
+  return [];
+}

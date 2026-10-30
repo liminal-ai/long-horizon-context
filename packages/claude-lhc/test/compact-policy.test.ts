@@ -5,12 +5,14 @@ import { threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 let contextUsage: () => Promise<unknown> = async () => ({ rawMaxTokens: 1_000_000 });
+const prompts: AsyncIterable<unknown>[] = [];
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const real = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
   return {
     ...real,
     renameSession: async () => {},
-    query: () => {
+    query: ({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+      prompts.push(prompt);
       const never = new Promise<IteratorResult<never>>(() => {});
       return {
         [Symbol.asyncIterator]() {
@@ -37,6 +39,7 @@ beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "claude-lhc-compact-policy-"));
   home = join(dir, "lhc");
   logs = [];
+  prompts.length = 0;
   contextUsage = async () => ({ rawMaxTokens: 1_000_000 });
   process.env.CLAUDE_LHC_NO_INFERENCE = "1";
 });
@@ -64,6 +67,14 @@ const start = (s: InstanceType<typeof ClaudeLhcSession>, lhc: unknown, extra: Re
     lhc,
     ...extra,
   } as never);
+
+const prompt = (text: string) =>
+  ({
+    type: "user",
+    message: { role: "user", content: [{ type: "text", text }] },
+    parent_tool_use_id: null,
+    session_id: "",
+  }) as never;
 
 const compactPrompt = {
   type: "user",
@@ -253,5 +264,71 @@ describe("compact policy against the live window", () => {
     );
     await s.pushUser(compactPrompt);
     expect(logs.find((line) => line.startsWith("[lhc compact:manual]"))).toContain("(target 140000)");
+  });
+});
+
+describe("served context after the window shrinks", () => {
+  const SERVED =
+    "served context 300000 tokens is at or past the compact trigger 160000; compacting before the next prompt";
+  const servedThenCompacted = (window: number) => {
+    let reads = 0;
+    return async () => ({ rawMaxTokens: window, totalTokens: reads++ === 0 ? 300_000 : 40_000 });
+  };
+
+  test("a resume onto a smaller window compacts the projection before start returns", async () => {
+    const first = session();
+    await start(first, { home, compact: { trigger: 700_000, target: 140_000 } });
+    await first.close();
+    const resume = await resumable(first.threadId);
+    logs = [];
+    prompts.length = 0;
+    contextUsage = servedThenCompacted(200_000);
+
+    await start(session(), { home }, { resume });
+
+    const served = logs.indexOf(SERVED);
+    const compacted = logs.findIndex((line) => line.startsWith("[lhc compact:auto]"));
+    const resumed = logs.findIndex((line) => line.startsWith("resumed thread"));
+    expect(served).toBeGreaterThanOrEqual(0);
+    expect(compacted).toBeGreaterThan(served);
+    expect(resumed).toBeGreaterThan(compacted);
+    expect(logs[compacted]).toContain("(target 80000)");
+    expect(prompts).toHaveLength(2);
+  });
+
+  test("a resume whose served context fits the smaller window does not compact", async () => {
+    const first = session();
+    await start(first, { home, compact: { trigger: 700_000, target: 140_000 } });
+    await first.close();
+    const resume = await resumable(first.threadId);
+    logs = [];
+    contextUsage = async () => ({ rawMaxTokens: 200_000, totalTokens: 100_000 });
+
+    await start(session(), { home }, { resume });
+
+    expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
+  });
+
+  test("setModel to a smaller window queues a compact that runs before the next prompt goes out", async () => {
+    const s = session();
+    contextUsage = async () => ({ rawMaxTokens: 1_000_000, totalTokens: 300_000 });
+    await start(s, { home, compact: { trigger: 700_000, target: 140_000 } });
+    await vi.waitFor(() => expect(logs).toContain("context window 1000000 for model claude-sonnet-4-6"));
+    expect(logs.some((line) => line.startsWith("served context"))).toBe(false);
+    contextUsage = servedThenCompacted(200_000);
+
+    await s.control("setModel", { model: "claude-sonnet-4-5" });
+
+    expect(logs).toContain(SERVED);
+    expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
+    expect(prompts).toHaveLength(1);
+
+    await s.pushUser(prompt("NEXT-PROMPT"));
+
+    expect(logs.find((line) => line.startsWith("[lhc compact:auto]"))).toContain("(target 80000)");
+    expect(prompts).toHaveLength(2);
+    expect(await prompts[0]![Symbol.asyncIterator]().next()).toEqual({ done: true, value: undefined });
+    const delivered = await prompts[1]![Symbol.asyncIterator]().next();
+    expect(JSON.stringify(delivered.value)).toContain("NEXT-PROMPT");
   });
 });
