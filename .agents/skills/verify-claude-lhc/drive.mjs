@@ -255,6 +255,8 @@ async function liveRollback(evidenceDir, label, { compactAfterRollback }) {
     after.send({ type: "start", options: liveOptions({ resume: gen1, resumeSessionAt: kept.lastAssistantUuid }) });
     await after.waitFor(() => after.logHas("resumed thread"), "resumed-thread log line");
     assert(after.logHas(`rollback to event`) && after.logHas(`via ${kept.lastAssistantUuid}`), "no rollback log line naming the kept message");
+    const projected = scratch.projected(generationFrom(after)) ?? "";
+    assert(projected.includes("KEEP-ALPHA") && !projected.includes("REMOVED-BRAVO"), "the rollback projection does not end at the kept turn");
     if (compactAfterRollback) {
       const before = after.msgs().length;
       after.send(userFrame("/compact"));
@@ -264,6 +266,7 @@ async function liveRollback(evidenceDir, label, { compactAfterRollback }) {
     const ask = await liveTurn(after, "What was the second secret word I asked you to remember? If there was none, say NONE. Reply with the word only.");
     assert((await after.stop()) === 0, "rollback sidecar did not exit 0");
     const answer = String(ask.result?.result ?? "");
+    mkdirSync(evidenceDir, { recursive: true });
     writeFileSync(join(evidenceDir, "answer.txt"), `${JSON.stringify(ask.result, null, 2)}\n`);
     assert(ask.result?.subtype === "success" && ask.result.is_error !== true, `the continued turn failed: ${JSON.stringify(ask.result?.errors ?? answer)}`);
     assert(!answer.includes("REMOVED-BRAVO"), `the continued answer knows the removed turn: ${answer}`);

@@ -88,8 +88,10 @@ none of the three projected files carries removed text.
 
 `rollback-live` takes two real turns that set KEEP-ALPHA and then
 REMOVED-BRAVO, rolls back to the first turn's last assistant message, and
-asks for the second word. It passes when the turn succeeds and the answer
-does not contain REMOVED-BRAVO. `rollback-live-compact` sends `/compact`
+asks for the second word. It passes when the CLI wrote the first prompt
+under the host's uuid, the rollback's projected file keeps KEEP-ALPHA and
+drops REMOVED-BRAVO, the turn succeeds, and the answer does not contain
+REMOVED-BRAVO. `rollback-live-compact` sends `/compact`
 after the rollback and before the question. Both save
 `transcript.jsonl` (every frame of both sidecars) and `answer.txt`. A lane
 that repeats the drive copies each run's `transcript.jsonl` out before the
