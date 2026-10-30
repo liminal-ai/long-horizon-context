@@ -11,11 +11,24 @@
   `system/status` (`null`, `compact_result: "success"`) →
   `system/compact_boundary` (new session id, `compact_metadata`) →
   `result`.
-- Auto compact (provider context at or above `autoCompactWindow`) at a
+- Compact policy: a new thread stores the start's `lhc.compact` pair on
+  its `thread_metadata` row. A resume keeps the stored pair and logs
+  `compact policy from thread: trigger <t> target <g>` when the host sent
+  another. A thread with no stored pair stores the host's. A start with
+  neither fails (`compactPolicy.ts`).
+- Window cap: each generation and each `setModel` read
+  `getContextUsage().rawMaxTokens`. A trigger above 80% of the window
+  drops to 80% and the target to at most half of that, logged as
+  `compact policy capped to window <w>: trigger <t> target <g>`. The
+  stored row never changes. A failed read logs `context window read
+  failed` and keeps the pair.
+- Auto compact (provider context at or above the effective trigger) at a
   settled tool boundary: live only, covered by
   `packages/claude-lhc/scripts/midturn.ts`. Deferred `/compact` during an
   open turn and held-prompt replay: live only, covered by
-  `packages/claude-lhc/scripts/standalone.ts`.
+  `packages/claude-lhc/scripts/standalone.ts`. `midturn.ts` sets its
+  calibrated pair with `threads.setCompactPolicy` before the resume,
+  because a resume keeps the stored pair.
 - Failed rebuild (e.g. start option `lhc.forceRebuildFailure`): status
   `compact_result: "failed"` with `compact_error`, old generation kept.
 
@@ -38,7 +51,18 @@ different from gen1. Outcome half: `<claude
 home>/projects/<key>/<gen2>.jsonl` exists in the isolated Claude home and
 the store still holds exactly one thread.
 
-The seeded drive compacts an empty view (0 tokens, 0 bands content). It
+```sh
+.agents/skills/verify-claude-lhc/drive.mjs compact-policy
+```
+
+User-only half: the resume that sent 300000/100000 logs `compact policy
+from thread: trigger 700000 target 140000` and exits 0. Outcome half:
+`compact-policy/thread_metadata.txt` holds the row, still 700000/140000.
+The seed waits for `context window <w> for model <m>`, which shows
+`getContextUsage` answers on a seeded start before any prompt and with no
+credential.
+
+The seeded `compact` drive compacts an empty view (0 tokens, 0 bands content). It
 proves the boundary/projection/generation-swap plumbing deterministically;
 summarization quality over real turns is the live standalone proof's job.
 
@@ -54,7 +78,12 @@ summarization quality over real turns is the live standalone proof's job.
 - Known failure: after a mid-turn `/compact`, the continued turn and the
   replayed held prompt sometimes return one result instead of two, so the
   live `turn` drive fails intermittently. See Known failure in [SKILL.md](../SKILL.md).
-- With `T3CODE_LHC_NO_INFERENCE=1` the view is built from deterministic
+- No `system/init` arrives before the first prompt, so the window read
+  does not wait for `init`. It goes out when the query is created, and the
+  SDK holds it until the CLI has initialized.
+- The default drive model `claude-sonnet-5` reports a 1000000 window, so
+  the seeded drives never cap. `claude-sonnet-4-6` reports 200000.
+- With `CLAUDE_LHC_NO_INFERENCE=1` the view is built from deterministic
   callbacks. Band text is a marker such as `smoothed(<digest>:<first 40
   chars>)`, not a model summary.
 - `post_tokens` in the boundary is the rebuilt view's token count, not the
