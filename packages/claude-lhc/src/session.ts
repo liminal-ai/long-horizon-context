@@ -194,7 +194,7 @@ export class ClaudeLhcSession {
   #maxThinkingTokens: number | null | undefined;
   #claudeCodeVersion = FALLBACK_CLAUDE_CODE_VERSION;
   #compactPolicy: ResolvedCompactPolicy = { stored: { trigger: 0, target: 0 }, window: null };
-  #windowRead: Promise<void> = Promise.resolve();
+  #windowRead: Promise<number | null> = Promise.resolve(null);
   #windowReads = 0;
   #forceRebuildFailure = false;
   #tokenFamily: ResolvedTokenFamily = seedTokenFamilyFromStartModel("");
@@ -254,11 +254,8 @@ export class ClaudeLhcSession {
       if (keptTail !== null && keptTail >= this.#effectiveCompactPolicy().trigger)
         await this.#compactAtStart(keptTail, "after rollback");
       else await this.#startProjectedGeneration();
-      await this.#windowRead;
-      if (this.#pendingCompact !== null) {
-        this.#pendingCompact = null;
-        await this.#compactAtStart(this.#lastContextTokens, "before the first prompt");
-      }
+      const served = this.#servedPastShrunkTrigger(await this.#windowRead);
+      if (served !== null) await this.#compactAtStart(served, "before the first prompt");
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);
       return;
     }
@@ -296,11 +293,10 @@ export class ClaudeLhcSession {
     }
     const gen = this.#gen;
     if (gen === null) throw new Error("no live generation");
-    if (!this.#turnOpen && this.#pendingCompact !== null) {
-      const trigger = this.#pendingCompact;
+    if (!this.#turnOpen && this.#pendingCompact === "auto") {
       this.#pendingCompact = null;
       this.#heldPrompts.push(message);
-      await this.#compact(trigger);
+      await this.#compact("auto");
       return;
     }
     // The CLI writes the prompt line under the host's uuid; capturing under it lets a rollback walk resolve it.
@@ -329,7 +325,11 @@ export class ClaudeLhcSession {
         this.#observeLaterModel(model);
         await gen.query.setModel(model);
         this.#windowRead = this.#readWindow(gen);
-        await this.#windowRead;
+        const served = this.#servedPastShrunkTrigger(await this.#windowRead);
+        if (served !== null && this.#pendingCompact === null) {
+          this.#lastContextTokens = served;
+          this.#pendingCompact = "auto";
+        }
         return undefined;
       }
       case "setPermissionMode": {
@@ -415,7 +415,7 @@ export class ClaudeLhcSession {
     return capCompactPolicyToWindow(this.#compactPolicy);
   }
 
-  async #readWindow(gen: Generation): Promise<void> {
+  async #readWindow(gen: Generation): Promise<number | null> {
     const read = ++this.#windowReads;
     const stale = (): boolean => read !== this.#windowReads || this.#closed;
     let rawMaxTokens: unknown;
@@ -425,14 +425,14 @@ export class ClaudeLhcSession {
     } catch (cause) {
       if (!stale())
         this.#keepWindow(`context window read failed: ${cause instanceof Error ? cause.message : String(cause)}`);
-      return;
+      return null;
     }
-    if (stale()) return;
+    if (stale()) return null;
     const window = windowFromUsage(rawMaxTokens);
     if (window === null) {
       const shown = typeof rawMaxTokens === "string" ? JSON.stringify(rawMaxTokens) : String(rawMaxTokens);
       this.#keepWindow(`context window read returned rawMaxTokens ${shown}, not a usable window`);
-      return;
+      return null;
     }
     if (window !== this.#compactPolicy.window) {
       this.#compactPolicy = { ...this.#compactPolicy, window };
@@ -442,18 +442,18 @@ export class ClaudeLhcSession {
       if (trigger !== stored.trigger || target !== stored.target)
         this.#io.log(`compact policy capped to window ${window}: trigger ${trigger} target ${target}`);
     }
-    this.#queueCompactIfServedOver(totalTokens);
+    return typeof totalTokens === "number" && Number.isSafeInteger(totalTokens) && totalTokens >= 0
+      ? totalTokens
+      : null;
   }
 
-  #queueCompactIfServedOver(totalTokens: unknown): void {
-    if (typeof totalTokens !== "number" || !Number.isSafeInteger(totalTokens) || totalTokens < 0) return;
-    this.#lastContextTokens = totalTokens;
+  #servedPastShrunkTrigger(served: number | null): number | null {
     const { trigger } = this.#effectiveCompactPolicy();
-    if (totalTokens < trigger || this.#pendingCompact !== null) return;
-    this.#pendingCompact = "auto";
+    if (served === null || trigger === this.#compactPolicy.stored.trigger || served < trigger) return null;
     this.#io.log(
-      `served context ${totalTokens} tokens is at or past the compact trigger ${trigger}; compacting before the next prompt`,
+      `served context ${served} tokens is at or past the compact trigger ${trigger}; compacting before the next prompt`,
     );
+    return served;
   }
 
   #keepWindow(reason: string): void {

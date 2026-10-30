@@ -23,14 +23,16 @@
   stored row never changes. A failed read logs `context window read
   failed` and keeps the pair.
 - Window shrink: the same read takes `getContextUsage().totalTokens`, the
-  served context the CLI counts for the live generation. When it is at or
-  past the effective trigger, the sidecar logs `served context <n> tokens
-  is at or past the compact trigger <t>; compacting before the next
-  prompt` and queues an auto compact. A resume onto a smaller window runs
-  it before start returns, so the oversized projection never takes a
-  prompt. A `setModel` to a smaller window runs it when the next prompt
-  arrives, before that prompt reaches the CLI, or at the next safe tool
-  boundary when a turn is open.
+  served context the CLI counts for the live generation. On a resume and
+  after a `setModel`, when the window capped the stored trigger and that
+  count is at or past the capped trigger, the sidecar logs `served context
+  <n> tokens is at or past the compact trigger <t>; compacting before the
+  next prompt`. A resume compacts before start returns, so the oversized
+  projection never takes a prompt. A `setModel` queues an auto compact
+  that runs when the next prompt arrives, before that prompt reaches the
+  CLI, or at the next safe tool boundary when a turn is open. A trigger
+  the window did not cap is left to the turn-end and tool-boundary checks,
+  as before.
 - Auto compact (provider context at or above the effective trigger) at a
   settled tool boundary: live only, covered by
   `packages/claude-lhc/scripts/midturn.ts`. Deferred `/compact` during an

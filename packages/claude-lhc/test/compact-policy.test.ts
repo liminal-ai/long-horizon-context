@@ -309,6 +309,20 @@ describe("served context after the window shrinks", () => {
     expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
   });
 
+  test("a served context past a trigger the window did not cap leaves the resume to the turn-end check", async () => {
+    const first = session();
+    await start(first, { home, compact: { trigger: 50_000, target: 20_000 } });
+    await first.close();
+    const resume = await resumable(first.threadId);
+    logs = [];
+    contextUsage = async () => ({ rawMaxTokens: 200_000, totalTokens: 60_000 });
+
+    await start(session(), { home }, { resume });
+
+    expect(logs.some((line) => line.startsWith("served context"))).toBe(false);
+    expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
+  });
+
   test("setModel to a smaller window queues a compact that runs before the next prompt goes out", async () => {
     const s = session();
     contextUsage = async () => ({ rawMaxTokens: 1_000_000, totalTokens: 300_000 });
