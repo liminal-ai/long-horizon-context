@@ -14,7 +14,11 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 
 const assistantBlocks = (m: Record<string, unknown>) => (m["message"] as SDKAssistantMessage["message"]).content;
 const ENTRY = resolve(HERE, "../dist/sidecar.js");
-const LHC_HOME = process.env.T3CODE_LHC_HOME ?? resolve(HERE, "../../../../home/t3code-lhc");
+const LHC_HOME = process.env.CLAUDE_LHC_HOME;
+if (LHC_HOME === undefined || LHC_HOME === "") {
+  console.log("RESULT: FAIL — set CLAUDE_LHC_HOME to a throwaway LHC store directory");
+  process.exit(1);
+}
 const SECRET = ["amber", "birch", "cedar", "fjord", "glade", "kestrel", "lagoon", "marble"][
   Math.floor(Math.random() * 8)
 ]!;
@@ -40,7 +44,7 @@ class Sidecar {
   constructor(label: string) {
     this.child = spawn(process.execPath, [ENTRY], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, T3CODE_LHC_HOME: LHC_HOME },
+      env: process.env,
       windowsHide: true,
     });
     this.exited = new Promise((r) =>
@@ -154,7 +158,7 @@ const baseOptions = (extra: Record<string, unknown>) => ({
   permissionMode: process.env.PERMISSION_MODE ?? "default",
   ...(process.env.PERMISSION_MODE === "bypassPermissions" ? { allowDangerouslySkipPermissions: true } : {}),
   includePartialMessages: true,
-  settings: { autoCompactWindow: 300000, lhcLowerBound: 180000 },
+  lhc: { home: LHC_HOME, compact: { trigger: 700_000, target: 140_000 } },
   env: process.env,
   additionalDirectories: [cwd],
   ...extra,

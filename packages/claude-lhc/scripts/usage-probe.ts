@@ -4,11 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { contextTokens, Sidecar, type Wire } from "./lib/sidecar.ts";
 
-const LHC_HOME = process.env.T3CODE_LHC_HOME ?? join(import.meta.dir, "../../../../home/t3code-lhc");
+const LHC_HOME = process.env.CLAUDE_LHC_HOME;
+if (LHC_HOME === undefined || LHC_HOME === "")
+  throw new Error("set CLAUDE_LHC_HOME to a throwaway LHC store directory");
 const N = Number(process.env.N ?? 4);
 for (let i = 1; i <= N; i++) {
   const cwd = mkdtempSync(join(tmpdir(), "usage-probe-"));
-  const s = new Sidecar(`probe${i}`, LHC_HOME, true);
+  const s = new Sidecar(`probe${i}`, true);
   s.send({
     type: "start",
     options: {
@@ -24,7 +26,7 @@ for (let i = 1; i <= N; i++) {
       env: process.env,
       ...(process.env.STRICT === "1" ? { strictMcpConfig: true, mcpServers: {} } : {}),
       sessionId: randomUUID(),
-      settings: { autoCompactWindow: 300_000, lhcLowerBound: 180_000 },
+      lhc: { home: LHC_HOME, compact: { trigger: 300_000, target: 180_000 } },
     },
   });
   const t = await s.turn("Reply with just the word: ready");

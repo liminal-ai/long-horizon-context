@@ -1,23 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { homedir } from "node:os";
 import { basename, join } from "node:path";
 import { createDeterministicInferenceCallbacks, initLhc, type Lhc, type ThreadRef, threads } from "lhc";
 import { createSummaryWorkerModelCall, summaryWorkerAssignments } from "./summaryWorker.js";
 
 export const ALIAS_HOST = "t3code-lhc";
 
-export function lhcHome(): string {
-  const override = process.env.T3CODE_LHC_HOME;
-  return override !== undefined && override.trim() !== "" ? override : join(homedir(), ".t3code-lhc");
-}
-
-export function registryPath(home = lhcHome()): string {
+export function registryPath(home: string): string {
   mkdirSync(home, { recursive: true });
   return join(home, "registry.sqlite");
 }
 
-export function newThreadFilePath(home = lhcHome()): string {
+export function newThreadFilePath(home: string): string {
   const dir = join(home, "threads");
   mkdirSync(dir, { recursive: true });
   return join(dir, `${randomUUID()}.sqlite`);
@@ -27,7 +21,7 @@ export function sessionAlias(sessionId: string): string {
   return `${ALIAS_HOST}:${sessionId}`;
 }
 
-export function threadRef(threadId: string, home = lhcHome()): ThreadRef {
+export function threadRef(threadId: string, home: string): ThreadRef {
   return { threadId, registryPath: registryPath(home) };
 }
 
@@ -38,7 +32,7 @@ export interface LhcInstanceOptions {
 }
 
 export function createLhc(options: LhcInstanceOptions): Lhc {
-  if (process.env.T3CODE_LHC_NO_INFERENCE === "1") {
+  if (process.env.CLAUDE_LHC_NO_INFERENCE === "1") {
     return initLhc({
       mode: "background",
       inferenceCallbacks: createDeterministicInferenceCallbacks(),
@@ -56,7 +50,7 @@ export function createLhc(options: LhcInstanceOptions): Lhc {
   });
 }
 
-export async function createThread(cwd: string, home = lhcHome()): Promise<string> {
+export async function createThread(cwd: string, home: string): Promise<string> {
   const created = await threads.newThread({
     filePath: newThreadFilePath(home),
     cwd,
@@ -67,7 +61,7 @@ export async function createThread(cwd: string, home = lhcHome()): Promise<strin
   return created.value.threadId;
 }
 
-export async function bindSession(threadId: string, sessionId: string, home = lhcHome()): Promise<void> {
+export async function bindSession(threadId: string, sessionId: string, home: string): Promise<void> {
   const bound = await threads.registerCurrentAlias({
     alias: sessionAlias(sessionId),
     threadId,
@@ -76,7 +70,7 @@ export async function bindSession(threadId: string, sessionId: string, home = lh
   if (!bound.ok) throw new Error(`LHC alias registration failed: ${bound.error.reason}`);
 }
 
-export async function resolveSession(sessionId: string, home = lhcHome()): Promise<string | null> {
+export async function resolveSession(sessionId: string, home: string): Promise<string | null> {
   const resolved = await threads.resolveAlias({ alias: sessionAlias(sessionId), registryPath: registryPath(home) });
   if (resolved.ok) return resolved.value.threadId;
   if (resolved.error.code === "alias_not_found") return null;

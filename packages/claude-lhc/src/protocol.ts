@@ -14,11 +14,17 @@ import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
 /**
  * SDK `Options` with the non-serialisable members removed, plus the sidecar's own
  * `lhc` block, which never reaches the SDK:
+ *   lhc.home — the LHC store directory (registry and thread files). Required.
+ *   lhc.compact — the compact policy a new thread stores. A resumed thread keeps its own.
  *   lhc.forceRebuildFailure — every compact rebuild throws before touching LHC
  *   (proof scripts exercise the failure path with a live model; never set by t3code).
  */
-export type WireOptions = Record<string, unknown> & { lhc?: SidecarOptions };
-export type SidecarOptions = { forceRebuildFailure?: boolean };
+export type WireOptions = Record<string, unknown> & { lhc: SidecarOptions };
+export type SidecarOptions = {
+  home: string;
+  compact?: { trigger: number; target: number };
+  forceRebuildFailure?: boolean;
+};
 
 export type DriverControlMethod = "setModel" | "setPermissionMode" | "setMaxThinkingTokens" | "interrupt";
 export type SidecarRequestMethod = "canUseTool" | "onUserDialog";
@@ -60,4 +66,30 @@ export function decodeFrame<T>(line: string): T | null {
   const trimmed = line.trim();
   if (trimmed === "") return null;
   return JSON.parse(trimmed) as T;
+}
+
+export function parseSidecarOptions(value: unknown): SidecarOptions {
+  const block = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const home = block["home"];
+  if (typeof home !== "string" || home.trim() === "") {
+    throw new Error("lhc.home is required: pass the LHC store directory in the start options");
+  }
+  const compact = block["compact"];
+  return {
+    home,
+    ...(compact !== undefined ? { compact: parseCompact(compact) } : {}),
+    ...(block["forceRebuildFailure"] === true ? { forceRebuildFailure: true } : {}),
+  };
+}
+
+function parseCompact(value: unknown): { trigger: number; target: number } {
+  const record = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
+  const { trigger, target } = record;
+  const positive = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 0;
+  if (!positive(trigger) || !positive(target) || target >= trigger) {
+    throw new Error(
+      `lhc.compact must be { trigger, target } with positive integers and target below trigger; received ${JSON.stringify(value)}`,
+    );
+  }
+  return { trigger, target };
 }

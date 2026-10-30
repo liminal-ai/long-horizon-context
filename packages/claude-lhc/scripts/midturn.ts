@@ -8,7 +8,9 @@ import { contextTokens, describe, fail, log, Sidecar, type Wire } from "./lib/si
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const BUILDER = resolve(HERE, "../../../..");
-const LHC_HOME = process.env.T3CODE_LHC_HOME ?? join(BUILDER, "home/t3code-lhc");
+const LHC_HOME = process.env.CLAUDE_LHC_HOME;
+if (LHC_HOME === undefined || LHC_HOME === "")
+  throw new Error("set CLAUDE_LHC_HOME to a throwaway LHC store directory");
 const OUT = process.env.MIDTURN_OUT ?? join(BUILDER, "cp-midturn");
 const PASSES = Number(process.env.PASSES ?? 3);
 const FAIL_REBUILD = process.env.FAIL_REBUILD === "1";
@@ -44,6 +46,7 @@ const baseOptions = (cwd: string, extra: Record<string, unknown>) => ({
   includePartialMessages: process.env.PARTIAL !== "0",
   env: process.env,
   additionalDirectories: [cwd],
+  lhc: { home: LHC_HOME },
   ...extra,
 });
 const bare = (m: Wire) => m["type"] !== "stream_event";
@@ -64,10 +67,13 @@ for (let pass = 1; pass <= PASSES; pass++) {
   for (const [i, v] of VALUES.entries())
     writeFileSync(join(cwd, `value-${i + 1}.txt`), `VALUE_${i + 1}=${v}\n${filler(VALUE_CHARS, 11 + i)}\n`);
   const first = randomUUID();
-  const a = new Sidecar(`p${pass}-A`, LHC_HOME, true);
+  const a = new Sidecar(`p${pass}-A`, true);
   a.send({
     type: "start",
-    options: baseOptions(cwd, { sessionId: first, settings: { autoCompactWindow: 300_000, lhcLowerBound: 180_000 } }),
+    options: baseOptions(cwd, {
+      sessionId: first,
+      lhc: { home: LHC_HOME, compact: { trigger: 300_000, target: 180_000 } },
+    }),
   });
   const ready = await a.settledReady();
   const B = ready.context;
@@ -85,17 +91,20 @@ for (let pass = 1; pass <= PASSES; pass++) {
   if (S <= 0 || S > 20_000 || C1 <= B) fail(`calibration off: baseline ${B}, per-read ${S}, after filler ${C1}`);
   await a.stop();
 
-  const b = new Sidecar(`p${pass}-B`, LHC_HOME, false);
   const lowerBound = Math.min(180_000, Math.max(1, Math.floor(trigger * 0.4)));
+  const seeded = await threads.resolveAlias({ alias: `t3code-lhc:${first}`, registryPath });
+  if (!seeded.ok) fail(`pass ${pass}: alias resolution failed: ${seeded.error.reason}`);
+  const policy = await threads.setCompactPolicy(
+    { threadId: seeded.value.threadId, registryPath },
+    { trigger, target: lowerBound < trigger ? lowerBound : Math.max(1, trigger - 1) },
+  );
+  if (!policy.ok) fail(`pass ${pass}: compact policy write failed: ${policy.error.reason}`);
+  const b = new Sidecar(`p${pass}-B`, false);
   b.send({
     type: "start",
     options: baseOptions(cwd, {
       resume: first,
-      settings: {
-        autoCompactWindow: trigger,
-        lhcLowerBound: lowerBound < trigger ? lowerBound : Math.max(1, trigger - 1),
-      },
-      ...(FAIL_REBUILD ? { lhc: { forceRebuildFailure: true } } : {}),
+      lhc: { home: LHC_HOME, ...(FAIL_REBUILD ? { forceRebuildFailure: true } : {}) },
     }),
   });
   const warm = await b.settledReady();

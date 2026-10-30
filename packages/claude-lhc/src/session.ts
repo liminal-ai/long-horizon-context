@@ -34,10 +34,18 @@ import {
   segmentEndEvent,
   segmentThresholdTokens,
 } from "./capture/segment-fold.js";
+import {
+  type CompactPolicy,
+  effectiveCompactPolicy,
+  type ResolvedCompactPolicy,
+  resumeCompactPolicy,
+  storeCompactPolicy,
+  windowFromUsage,
+} from "./compactPolicy.js";
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
 import { writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
-import type { SidecarOptions, SidecarRequestMethod, WireOptions } from "./protocol.js";
+import { parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
 import { abortSummaryWorkers } from "./summaryWorker.js";
 import {
@@ -142,29 +150,6 @@ interface Generation {
   superseded: boolean;
 }
 
-function requireFiniteSetting(value: unknown, name: string): number {
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    throw new Error(`${name} is required and must be a finite number`);
-  }
-  return value;
-}
-
-export function takeHostCompactSettings(settings: Record<string, unknown>): {
-  autoCompactTrigger: number;
-  lhcLowerBound: number;
-  childSettings: Record<string, unknown>;
-} {
-  const autoCompactTrigger = requireFiniteSetting(settings["autoCompactWindow"], "autoCompactWindow");
-  const lhcLowerBound = requireFiniteSetting(settings["lhcLowerBound"], "lhcLowerBound");
-  if (lhcLowerBound >= autoCompactTrigger) {
-    throw new Error("lhcLowerBound must be less than autoCompactWindow");
-  }
-  const childSettings = { ...settings };
-  delete childSettings["autoCompactWindow"];
-  delete childSettings["lhcLowerBound"];
-  return { autoCompactTrigger, lhcLowerBound, childSettings };
-}
-
 export function formatCompactRuntimeNote(args: {
   trigger: CompactTrigger;
   preTokens: number;
@@ -183,6 +168,7 @@ export function formatCompactRuntimeNote(args: {
 export class ClaudeLhcSession {
   readonly #io: SessionIO;
   #base: Record<string, unknown> = {};
+  #home = "";
   #lhc!: Lhc;
   #thread!: ThreadRef;
   #threadId = "";
@@ -206,9 +192,8 @@ export class ClaudeLhcSession {
   #permissionMode: PermissionMode | undefined;
   #maxThinkingTokens: number | null | undefined;
   #claudeCodeVersion = FALLBACK_CLAUDE_CODE_VERSION;
-  #autoCompactTrigger = 0;
+  #compactPolicy: ResolvedCompactPolicy = { stored: { trigger: 0, target: 0 }, window: null };
   #forceRebuildFailure = false;
-  #viewTarget = 0;
   #tokenFamily: ResolvedTokenFamily = seedTokenFamilyFromStartModel("");
   #lastModelId: string | null = null;
   #closed = false;
@@ -228,25 +213,17 @@ export class ClaudeLhcSession {
       canUseTool: _c,
       onUserDialog: _d,
       sessionStore: _s,
-      settings,
       env,
       lhc,
       ...rest
     } = wire as Record<string, unknown>;
-    const sidecarOptions = (typeof lhc === "object" && lhc !== null ? lhc : {}) as SidecarOptions;
+    const sidecarOptions = parseSidecarOptions(lhc);
+    this.#home = sidecarOptions.home;
     this.#forceRebuildFailure = sidecarOptions.forceRebuildFailure === true;
     if (this.#forceRebuildFailure)
       this.#io.log("start option lhc.forceRebuildFailure: every compact rebuild will fail (proof mode)");
-    const settingsRecord =
-      typeof settings === "object" && settings !== null ? { ...(settings as Record<string, unknown>) } : {};
-    const compact = takeHostCompactSettings(settingsRecord);
-    this.#autoCompactTrigger = compact.autoCompactTrigger;
-    this.#viewTarget = compact.lhcLowerBound;
     this.#env = claudeChildEnv(env as NodeJS.ProcessEnv | undefined);
-    this.#base = {
-      ...rest,
-      ...(Object.keys(compact.childSettings).length > 0 ? { settings: compact.childSettings } : {}),
-    };
+    this.#base = rest;
     if (typeof rest["cwd"] === "string") this.#cwd = rest["cwd"];
     if (typeof rest["pathToClaudeCodeExecutable"] === "string") this.#claudeBin = rest["pathToClaudeCodeExecutable"];
     if (typeof rest["model"] === "string") this.#model = rest["model"];
@@ -258,20 +235,25 @@ export class ClaudeLhcSession {
     this.#lhc = createLhc({ claudeBin: this.#claudeBin, env: this.#env, tokenFamily: this.#tokenFamily.family });
 
     if (typeof resume === "string" && resume !== "") {
-      const threadId = await resolveSession(resume);
+      const threadId = await resolveSession(resume, this.#home);
       if (threadId === null) throw new Error(`no LHC thread holds the Claude session ${resume}`);
       this.#threadId = threadId;
-      this.#thread = threadRef(threadId);
+      this.#thread = threadRef(threadId, this.#home);
+      const stored = await resumeCompactPolicy(this.#thread, sidecarOptions.compact, (line) => this.#io.log(line));
+      this.#compactPolicy = { stored, window: null };
       await this.#settleOpenTurn("session restarted");
       await this.#startProjectedGeneration();
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);
       return;
     }
 
+    const compact = sidecarOptions.compact;
+    if (compact === undefined) throw new Error("lhc.compact is required to create a thread");
     const first = typeof sessionId === "string" && sessionId !== "" ? sessionId : randomUUID();
-    this.#threadId = await createThread(this.#cwd);
-    this.#thread = threadRef(this.#threadId);
-    await bindSession(this.#threadId, first);
+    this.#threadId = await createThread(this.#cwd, this.#home);
+    this.#thread = threadRef(this.#threadId, this.#home);
+    this.#compactPolicy = { stored: await storeCompactPolicy(this.#thread, compact), window: null };
+    await bindSession(this.#threadId, first, this.#home);
     this.#gen = this.#startGeneration(first, {
       sessionId: first,
       title: nativeLhcTitle(this.#threadId),
@@ -317,6 +299,7 @@ export class ClaudeLhcSession {
         this.#model = model;
         this.#observeLaterModel(model);
         await gen.query.setModel(model);
+        await this.#readWindow(gen);
         return undefined;
       }
       case "setPermissionMode": {
@@ -394,13 +377,39 @@ export class ClaudeLhcSession {
     const q = query({ prompt: input, options });
     gen = { sessionId, query: q, input, superseded: false };
     void this.#pump(gen);
+    void this.#readWindow(gen);
     return gen;
+  }
+
+  #effectiveCompactPolicy(): CompactPolicy {
+    return effectiveCompactPolicy(this.#compactPolicy);
+  }
+
+  async #readWindow(gen: Generation): Promise<void> {
+    let window: number | null;
+    try {
+      window = windowFromUsage((await gen.query.getContextUsage({ detail: "summary" })).rawMaxTokens);
+    } catch (cause) {
+      if (gen.superseded || this.#closed) return;
+      const { trigger, target } = this.#effectiveCompactPolicy();
+      this.#io.log(
+        `context window read failed: ${cause instanceof Error ? cause.message : String(cause)}; compact policy stays trigger ${trigger} target ${target}`,
+      );
+      return;
+    }
+    if (gen.superseded || this.#closed || window === null || window === this.#compactPolicy.window) return;
+    this.#compactPolicy = { ...this.#compactPolicy, window };
+    this.#io.log(`context window ${window} for model ${this.#model ?? "(default)"}`);
+    const { stored } = this.#compactPolicy;
+    const { trigger, target } = this.#effectiveCompactPolicy();
+    if (trigger !== stored.trigger || target !== stored.target)
+      this.#io.log(`compact policy capped to window ${window}: trigger ${trigger} target ${target}`);
   }
 
   #midTurnDue(): CompactTrigger | null {
     if (this.#compacting || this.#stopping !== null || this.#closed || this.#midTurnFailed) return null;
     if (this.#pendingCompact !== null) return this.#pendingCompact;
-    return this.#lastContextTokens >= this.#autoCompactTrigger ? "auto" : null;
+    return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger ? "auto" : null;
   }
 
   #onPostToolUse(gen: Generation | null, hookInput: PostToolUseHookInput): HookJSONOutput {
@@ -566,7 +575,7 @@ export class ClaudeLhcSession {
   async #maybeSegment(message: SDKMessage, events: readonly MessageEventInput[]): Promise<void> {
     const candidate = foldSegmentEvents(this.#segmentFold, events);
     if (candidate === null || !this.#turnOpen || this.#compacting || this.#stopping !== null) return;
-    const threshold = segmentThresholdTokens(this.#viewTarget, CONTINUATION_FULL_SHARE_PERCENT);
+    const threshold = segmentThresholdTokens(this.#effectiveCompactPolicy().target, CONTINUATION_FULL_SHARE_PERCENT);
     const metadata = await this.#lhc.threadView.hostMetadata(this.#thread);
     if (!metadata.ok) {
       this.#io.log(`segment: host metadata ${metadata.error.code}: ${metadata.error.reason}`);
@@ -590,7 +599,7 @@ export class ClaudeLhcSession {
       this.#pendingCompact = null;
       return trigger;
     }
-    return this.#lastContextTokens >= this.#autoCompactTrigger ? "auto" : null;
+    return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger ? "auto" : null;
   }
 
   async #intake(events: readonly MessageEventInput[]): Promise<void> {
@@ -751,7 +760,7 @@ export class ClaudeLhcSession {
     if (this.#forceRebuildFailure)
       throw new Error("rebuild failure forced by the start option lhc.forceRebuildFailure");
     await this.#awaitDerivations();
-    const lowerBound = this.#viewTarget;
+    const lowerBound = this.#effectiveCompactPolicy().target;
     const opts = { profile: "continuation", params: { lowerBound } };
     const preview = await this.#lhc.threadView.previewCompact(this.#thread, opts);
     if (!preview.ok) throw new Error(`compact preview error: ${preview.error.reason}`);
@@ -831,7 +840,7 @@ export class ClaudeLhcSession {
       env: this.#env,
     });
     await labelNativeSession(sessionId, nativeLhcTitle(this.#threadId), cwd, this.#io);
-    await bindSession(this.#threadId, sessionId);
+    await bindSession(this.#threadId, sessionId, this.#home);
     const next = this.#startGeneration(sessionId, { resume: sessionId });
     const old = this.#gen;
     this.#gen = next;

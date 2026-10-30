@@ -186,17 +186,14 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
 });
 
 describe("session wiring", () => {
-  const saved = { home: process.env.T3CODE_LHC_HOME, noInf: process.env.T3CODE_LHC_NO_INFERENCE };
+  const saved = process.env.CLAUDE_LHC_NO_INFERENCE;
   beforeEach(() => {
     captured.length = 0;
-    process.env.T3CODE_LHC_HOME = join(dir, "home");
-    process.env.T3CODE_LHC_NO_INFERENCE = "1";
+    process.env.CLAUDE_LHC_NO_INFERENCE = "1";
   });
   afterEach(() => {
-    if (saved.home === undefined) delete process.env.T3CODE_LHC_HOME;
-    else process.env.T3CODE_LHC_HOME = saved.home;
-    if (saved.noInf === undefined) delete process.env.T3CODE_LHC_NO_INFERENCE;
-    else process.env.T3CODE_LHC_NO_INFERENCE = saved.noInf;
+    if (saved === undefined) delete process.env.CLAUDE_LHC_NO_INFERENCE;
+    else process.env.CLAUDE_LHC_NO_INFERENCE = saved;
   });
 
   async function startSession(requests: string[], extra: Record<string, unknown> = {}) {
@@ -215,7 +212,7 @@ describe("session wiring", () => {
       cwd: dir,
       model: "claude-opus-5-5",
       permissionMode: "default",
-      settings: { autoCompactWindow: 500_000, lhcLowerBound: 180_000 },
+      lhc: { home: join(dir, "home"), compact: { trigger: 500_000, target: 180_000 } },
       mcpServers: {
         "t3-code": { type: "http", url: "http://127.0.0.1:1/mcp", headers: { Authorization: "Bearer x" } },
       },
@@ -255,7 +252,7 @@ describe("session wiring", () => {
     const first = await startSession([]);
     const threadId = first.threadId;
     const { bindSession, threadRef } = await import("../src/lhcHome.ts");
-    const ref = threadRef(threadId);
+    const ref = threadRef(threadId, join(dir, "home"));
     const sent = await lhc.intakeStream.messageEvents(ref, [
       event("user_prompt", { text: "the codeword is OTTER-LANTERN-77" }),
       event("assistant_text", { text: "got it" }),
@@ -263,7 +260,7 @@ describe("session wiring", () => {
     ] as never);
     if (!sent.ok) throw new Error(sent.error.reason);
     const rebuilt = "22222222-2222-4222-8222-222222222222";
-    await bindSession(threadId, rebuilt);
+    await bindSession(threadId, rebuilt, join(dir, "home"));
     captured.length = 0;
     const resumed = await startSession([], { resume: rebuilt });
     expect(resumed.threadId).toBe(threadId);
