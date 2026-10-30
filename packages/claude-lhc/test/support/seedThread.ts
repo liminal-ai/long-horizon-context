@@ -6,7 +6,7 @@ import { bindSession, createLhc, createThread, threadRef } from "../../src/lhcHo
 
 export const SEED_POLICY = { trigger: 500_000, target: 180_000 };
 
-export const seedLhc = () => createLhc({ claudeBin: "claude", env: {}, tokenFamily: "claude-2026" });
+export const seedLhc = () => createLhc({ mode: "manual", claudeBin: "claude", env: {}, tokenFamily: "claude-2026" });
 
 const userMessage = (text: string): SDKUserMessage =>
   ({
@@ -44,13 +44,23 @@ export async function seedThread(home: string, cwd: string): Promise<{ gen1: str
 }
 
 export async function captureTurn(home: string, threadId: string, prompt: string, answer: string): Promise<string> {
-  const uuid = randomUUID();
+  const [uuid] = await captureReplies(home, threadId, prompt, [answer]);
+  return uuid!;
+}
+
+export async function captureReplies(
+  home: string,
+  threadId: string,
+  prompt: string,
+  answers: string[],
+): Promise<string[]> {
+  const uuids = answers.map(() => randomUUID());
   await intake(home, threadId, [
     ...mapPrompt(userMessage(prompt), randomUUID(), false),
-    ...mapSdkMessage(assistantMessage(uuid, answer), undefined).events,
+    ...answers.flatMap((answer, i) => mapSdkMessage(assistantMessage(uuids[i]!, answer), undefined).events),
     ...mapSdkMessage(resultMessage(), undefined).events,
   ]);
-  return uuid;
+  return uuids;
 }
 
 export async function capturePrompt(home: string, threadId: string, prompt: string): Promise<void> {

@@ -41,8 +41,8 @@ export async function forkSession(
   const forkId = copied.value.threadId;
   const fork = threadRef(forkId, home);
   if (anchor !== null) await appendRollback(lhc, fork, anchor, `fork upToMessageId ${anchor.anchor}`);
-  const repaired = await lhc.threads.repairDerivations({ ref: fork });
-  if (!repaired.ok) throw new Error(`LHC derivation repair failed: ${repaired.error.reason}`);
+  const drained = await lhc.work.drain(fork);
+  if (!drained.ok) throw new Error(`LHC derivation drain failed: ${drained.error.reason}`);
 
   const view = await lhc.threadView.getSessionThreadView(fork);
   if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);

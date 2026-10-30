@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Options, getSessionMessages as sdkSessionMessages } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { captureTurn, seedThread } from "./support/seedThread.ts";
+import { captureTurn, seedLhc, seedThread } from "./support/seedThread.ts";
 
 const opened: Options[] = [];
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
@@ -28,6 +28,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
 
 const { getSessionMessages, getSubagentMessages } = await import("../src/index.ts");
 const { ClaudeLhcSession } = await import("../src/session.ts");
+const { threadRef } = await import("../src/lhcHome.ts");
 const { nativeProjectDir, nativeSessionPath } = await import("../src/nativeSessionFile.ts");
 
 let dir = "";
@@ -59,6 +60,7 @@ const store = () => ({ lhc: { home } });
 async function compactedThread(): Promise<{ gen1: string; current: string }> {
   const { gen1, threadId } = await seedThread(home, cwd);
   await captureTurn(home, threadId, "FIRST-PROMPT", "FIRST-ANSWER");
+  await seedLhc().work.drain(threadRef(threadId, home));
   const session = new ClaudeLhcSession({
     emit(): void {},
     request: async () => ({}),

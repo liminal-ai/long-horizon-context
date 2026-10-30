@@ -219,8 +219,7 @@ const lateServer = (res) => (res.ok ? res.value : []).find((server) => server.na
 const REFUSED_CONTROLS = { rewindFiles: { userMessageId: randomUUID() }, reinitialize: {}, seedReadState: { path: "a.txt", mtime: 1 } };
 const FLAG_MODEL = "claude-sonnet-4-6";
 
-// The exported functions run in the host's process; call them from a child so each call sees only the drive's isolated homes.
-async function hostCall(scratch, fn, args, { live = false } = {}) {
+async function callInScratchEnv(scratch, fn, args, { live = false } = {}) {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: scratch.claudeHome, CLAUDE_LHC_NO_INFERENCE: "1" };
   if (live) {
     delete env.CLAUDE_LHC_NO_INFERENCE;
@@ -791,7 +790,7 @@ const drives = {
       const { gen1, threadId, anchors } = await seedCaptured(scratch, PA_TURNS);
       const policy = { lhc: { home: scratch.lhcHome, compact: { trigger: 700000, target: 140000 } } };
       await startAndStop(scratch, "seed-policy", { ...policy, resume: gen1 }, evidenceDir);
-      const forked = await hostCall(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: anchors[0] }]);
+      const forked = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: anchors[0] }]);
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "fork-result.json"), `${JSON.stringify(forked, null, 2)}\n`);
       assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
@@ -823,8 +822,8 @@ const drives = {
       const { gen1 } = await seedCaptured(scratch, PA_TURNS);
       const { compacted } = await compactOnce(scratch, "compact", { resume: gen1 }, evidenceDir);
       const store = { lhc: { home: scratch.lhcHome }, dir: scratch.cwd };
-      const viaFirst = await hostCall(scratch, "getSessionMessages", [gen1, store]);
-      const viaCurrent = await hostCall(scratch, "getSessionMessages", [compacted, store]);
+      const viaFirst = await callInScratchEnv(scratch, "getSessionMessages", [gen1, store]);
+      const viaCurrent = await callInScratchEnv(scratch, "getSessionMessages", [compacted, store]);
       const agentId = `a${randomUUID().replace(/-/g, "").slice(0, 16)}`;
       const native = await import(join(DIST, "nativeSessionFile.js"));
       const subagents = join(native.nativeProjectDir({ cwd: scratch.cwd, env: { CLAUDE_CONFIG_DIR: scratch.claudeHome } }), compacted, "subagents");
@@ -833,7 +832,7 @@ const drives = {
       const line = (uuid, parentUuid, type, text) => JSON.stringify({ parentUuid, isSidechain: true, agentId, type, uuid, sessionId: compacted, cwd: scratch.cwd, message: { role: type, content: [{ type: "text", text }] } });
       writeFileSync(join(subagents, `agent-${agentId}.jsonl`), `${line(first, null, "user", "AGENT-TASK")}\n${line(randomUUID(), first, "assistant", "AGENT-REPLY")}\n`);
       writeFileSync(join(subagents, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: "toolu_after_compact" }));
-      const agent = await hostCall(scratch, "getSubagentMessages", [gen1, agentId, store]);
+      const agent = await callInScratchEnv(scratch, "getSubagentMessages", [gen1, agentId, store]);
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "history.json"), `${JSON.stringify({ gen1, compacted, viaFirst: viaFirst.value, agent: agent.value }, null, 2)}\n`);
       assert(viaFirst.code === 0 && viaCurrent.code === 0 && agent.code === 0, `library call failed: ${viaFirst.error ?? viaCurrent.error ?? agent.error}`);
@@ -865,7 +864,7 @@ const drives = {
       const removed = await liveTurn(first, "Remember the second secret word REMOVED-BRAVO. Reply with just OK.");
       assert((await first.stop()) === 0, "turn sidecar did not exit 0");
       assert(kept.result?.subtype === "success" && removed.result?.subtype === "success" && kept.lastAssistantUuid, "a seed turn failed");
-      const forked = await hostCall(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: kept.lastAssistantUuid }], { live: true });
+      const forked = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: kept.lastAssistantUuid }], { live: true });
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "fork-result.json"), `${JSON.stringify(forked, null, 2)}\n`);
       assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
@@ -919,7 +918,7 @@ const drives = {
       const agentFile = scratch.projectedFiles().find((f) => f.includes(`${compacted}/subagents/`) && /agent-[^/]+\.jsonl$/.test(f));
       assert(agentFile, `no subagent transcript under the compacted generation ${compacted}`);
       const agentId = /agent-([^/]+)\.jsonl$/.exec(agentFile)[1];
-      const messages = await hostCall(scratch, "getSubagentMessages", [gen1, agentId, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd }], { live: true });
+      const messages = await callInScratchEnv(scratch, "getSubagentMessages", [gen1, agentId, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd }], { live: true });
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "subagent-messages.json"), `${JSON.stringify({ gen1, compacted, agentId, ...messages }, null, 2)}\n`);
       assert(messages.code === 0, `getSubagentMessages failed: ${messages.error ?? messages.stderr}`);

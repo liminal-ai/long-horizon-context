@@ -12,7 +12,8 @@
   resolves any of the source thread's session ids, resolves
   `upToMessageId` with the host-rollback resolver (`src/rollbackAnchor.ts`),
   copies the thread with core `copyThread`, appends a core `rollback` on
-  the copy, repairs derivations, projects the copy into a new session file
+  the copy, drains the derivation work the copy carries and the rollback
+  queued, projects the copy into a new session file
   under `dir` (default the thread's cwd), and binds the new session id last
   (`src/fork.ts`). It returns `{ sessionId, headMessageId }`, where
   `headMessageId` is the last line of that file. An empty thread forks with
@@ -61,7 +62,7 @@ CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs fork-live
 CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs subagent-live
 ```
 
-Every drive calls the library from a child node process (`hostCall`), with
+Every drive calls the library from a child node process (`callInScratchEnv`), with
 `CLAUDE_CONFIG_DIR` and, for the live drives, `HOME` inside scratch.
 
 `fork` seeds a KEEP turn and a REMOVED turn, stores a 700000/140000 policy
@@ -97,8 +98,10 @@ messages with a `parent_tool_use_id` from the stream. Evidence:
 
 - Rebuild `packages/claude-lhc` before a run. The drives import
   `dist/index.js`.
-- `forkSession` repairs derivations with real inference unless
+- `forkSession` drains queued derivation work with real inference unless
   `CLAUDE_LHC_NO_INFERENCE=1`. The seeded drives set it. The live drives do
   not, so a source with pending derivations makes the fork call Claude.
+  Derivations that already failed on the source stay failed on the fork;
+  `lhc thread repair` fixes them on either thread.
 - The SDK finds a subagent transcript only beside its parent session's
   `.jsonl`. A fixture needs both files.

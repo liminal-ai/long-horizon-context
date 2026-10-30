@@ -31,7 +31,6 @@ export type SidecarOptions = {
   compact?: { trigger: number; target: number };
   forceRebuildFailure?: boolean;
 };
-/** The `lhc` block the exported session functions take beside the SDK's own options. */
 export type LhcStore = { lhc: Pick<SidecarOptions, "home"> };
 
 export type SidecarRequestMethod = "canUseTool" | "onUserDialog";
