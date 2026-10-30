@@ -17,6 +17,7 @@ export function query({ prompt, options }: { prompt: AsyncIterable<SDKUserMessag
 
   async function* stream(): AsyncGenerator<SDKMessage, void> {
     let initialized = false;
+    await new Promise((resolve) => setTimeout(resolve, 300));
     for await (const user of prompt) {
       if (closed) return;
       if (!initialized) {

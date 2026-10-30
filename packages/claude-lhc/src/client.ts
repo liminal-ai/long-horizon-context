@@ -150,8 +150,6 @@ export function query({
   let nextControlId = 0;
   let closed = false;
   let stdinOpen = true;
-  let unanswered = 0;
-  let inputDone = false;
 
   const startFrame = encodeFrame({ type: "start", options: toWireOptions(options, stderr) as WireOptions });
   const child: ChildProcess = spawn(command.command, [...(command.args ?? [])], {
@@ -219,10 +217,6 @@ export function query({
   const onFrame = (frame: SidecarFrame): void => {
     switch (frame.type) {
       case "msg":
-        if (frame.message.type === "result") {
-          unanswered = Math.max(0, unanswered - 1);
-          if (inputDone && unanswered === 0) endStdin();
-        }
         messages.push(frame.message);
         return;
       case "req":
@@ -275,7 +269,6 @@ export function query({
 
   const pushUser = (message: SDKUserMessage): void => {
     if (closed) throw new Error("claude-lhc sidecar is closed");
-    unanswered += 1;
     send({ type: "user", message });
   };
 
@@ -287,8 +280,7 @@ export function query({
   };
 
   const endInput = (): void => {
-    inputDone = true;
-    if (unanswered === 0) endStdin();
+    if (stdinOpen) send({ type: "end" });
   };
 
   const close = (): void => {

@@ -194,6 +194,8 @@ export class ClaudeLhcSession {
   #midTurnFailed = false;
   #swap: { stoppedAt: number; sessionId: string } | null = null;
   #heldPrompts: SDKUserMessage[] = [];
+  #unanswered = 0;
+  #inputEnded = false;
   #heldUntilContinuedTurnEnds = false;
   #model: string | undefined;
   #permissionMode: PermissionMode | undefined;
@@ -284,17 +286,35 @@ export class ClaudeLhcSession {
   }
 
   async pushUser(message: SDKUserMessage): Promise<void> {
+    if (compactCommand(message) === null) this.#unanswered += 1;
+    await this.#push(message);
+    this.#endIfIdle();
+  }
+
+  endInput(): void {
+    this.#inputEnded = true;
+    this.#endIfIdle();
+  }
+
+  #endIfIdle(): void {
+    if (this.#inputEnded && this.#unanswered === 0 && !this.#compacting && !this.#closed) this.#io.end();
+  }
+
+  async #push(message: SDKUserMessage): Promise<void> {
     if (this.#closed) return;
     if (compactCommand(message) !== null) {
-      if (this.#turnOpen || this.#compacting) this.#pendingCompact = "manual";
+      if (this.#turnOpen || this.#compacting || this.#unanswered > 0) this.#pendingCompact = "manual";
       else await this.#compact("manual");
       return;
     }
-    if (this.#compacting || this.#heldUntilContinuedTurnEnds) {
+    if (this.#compacting || this.#heldUntilContinuedTurnEnds || this.#pendingCompact === "manual") {
       this.#heldPrompts.push(message);
-      this.#io.log(
-        `holding a prompt ${this.#compacting ? "during compact" : "until the continued turn ends"} (${this.#heldPrompts.length} held)`,
-      );
+      const until = this.#compacting
+        ? "during compact"
+        : this.#heldUntilContinuedTurnEnds
+          ? "until the continued turn ends"
+          : "until the queued /compact runs";
+      this.#io.log(`holding a prompt ${until} (${this.#heldPrompts.length} held)`);
       return;
     }
     const gen = this.#gen;
@@ -681,10 +701,12 @@ export class ClaudeLhcSession {
     this.#turnOpen = false;
     this.#turnStartedAt = undefined;
     this.#heldUntilContinuedTurnEnds = false;
+    this.#unanswered = Math.max(0, this.#unanswered - 1);
     const trigger = this.#dueCompact();
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
     await this.#replayHeld();
+    this.#endIfIdle();
   }
 
   async #maybeSegment(message: SDKMessage, events: readonly MessageEventInput[]): Promise<void> {
@@ -877,7 +899,7 @@ export class ClaudeLhcSession {
     const held = this.#heldPrompts.splice(0);
     if (held.length > 0)
       this.#io.log(`replaying ${held.length} held prompt(s) into generation ${this.#gen?.sessionId}`);
-    for (const message of held) await this.pushUser(message);
+    for (const message of held) await this.#push(message);
   }
 
   #compactBoundary(

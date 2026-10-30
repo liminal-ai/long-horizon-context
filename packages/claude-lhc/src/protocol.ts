@@ -9,7 +9,9 @@
  * method name, `params` maps its SDK parameter names to values, and the `res` value is
  * what the SDK returned. `CONTROLS` in `controls.ts` lists every method claude-lhc
  * forwards, replays into later generations, or refuses, plus the LHC control
- * `setCompactPolicy` (`{ policy: { trigger, target } }`). Closing stdin closes the sidecar.
+ * `setCompactPolicy` (`{ policy: { trigger, target } }`). An `end` frame says the host's input
+ * ended: the sidecar exits once every prompt sent before it has its result. Closing stdin
+ * closes the sidecar at once.
  */
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ControlMethod } from "./controls.js";
@@ -38,6 +40,7 @@ export type SidecarRequestMethod = "canUseTool" | "onUserDialog";
 export type DriverFrame =
   | { type: "start"; options: WireOptions }
   | { type: "user"; message: SDKUserMessage }
+  | { type: "end" }
   | { type: "req"; id: number; method: ControlMethod; params: unknown }
   | { type: "res"; id: number; ok: true; value: unknown }
   | { type: "res"; id: number; ok: false; error: string }

@@ -133,6 +133,34 @@ describe("query through the sidecar", () => {
     expect(replyText(messages)).toBe("echo: oneecho: slow:twoecho: three");
   });
 
+  test("an input that ends after a /compact deferred into an open turn still ends", async () => {
+    const prompts = (async function* () {
+      for (const text of ["slow:one", "/compact"])
+        yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as const;
+    })();
+    const { q } = start(prompts);
+    const messages: SDKMessage[] = [];
+    for await (const message of q) messages.push(message);
+    expect(replyText(messages)).toBe("echo: slow:one");
+    expect(messages.filter((m) => m.type === "result")).toHaveLength(1);
+    expect(messages.some((m) => m.type === "system" && m.subtype === "compact_boundary")).toBe(true);
+  });
+
+  test("a /compact sent right after a prompt runs after that turn and before the next prompt", async () => {
+    const prompts = (async function* () {
+      for (const text of ["one", "/compact", "two"])
+        yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as const;
+    })();
+    const { q } = start(prompts);
+    const messages: SDKMessage[] = [];
+    for await (const message of q) messages.push(message);
+    expect(replyText(messages)).toBe("echo: oneecho: two");
+    const boundary = messages.findIndex((m) => m.type === "system" && m.subtype === "compact_boundary");
+    const second = messages.findIndex((m) => m.type === "assistant" && replyText([m]) === "echo: two");
+    expect(boundary).toBeGreaterThan(-1);
+    expect(second).toBeGreaterThan(boundary);
+  });
+
   test("an input that throws fails the stream with its error", async () => {
     const prompts = (async function* () {
       yield { type: "user", message: { role: "user", content: "first" }, parent_tool_use_id: null } as const;

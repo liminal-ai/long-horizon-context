@@ -20,8 +20,9 @@
   named on `stderr`.
 - `close()` closes the sidecar's stdin, drops unread messages, and kills
   the sidecar if it is still running after 5 seconds. A string prompt, or
-  a prompt iterable that ends, closes stdin after the last turn's
-  `result`.
+  a prompt iterable that ends, sends an `end` frame. The sidecar exits
+  once every prompt sent before it has its `result`, and the stream
+  ends.
 - `examples/consumer.ts` is a host built on `query()`.
 
 ## How to get to it (user POV)

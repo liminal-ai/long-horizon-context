@@ -98,7 +98,8 @@ and a new SDK method fails the typecheck until it has a row.
 - `setCompactPolicy({ trigger, target })` stores a new pair on the thread.
 - `streamInput(stream)` sends more user messages. `close()` ends the sidecar and its Claude
   process, and the stream returns no more messages. With a string prompt, or once the prompt
-  iterable ends, the client closes the sidecar after the last turn's `result`.
+  iterable ends, the client sends an `end` frame, and the sidecar exits once every prompt has
+  its `result`.
 
 ## Session ids
 
@@ -118,7 +119,7 @@ instead.
 ## Wire
 
 Hosts that are not in Node can speak the sidecar's JSONL wire directly. `src/protocol.ts` defines
-the frames: `start`, `user`, `req` and `res`, `abort`, `msg`, and `error`. `src/client.ts` is the
+the frames: `start`, `user`, `end`, `req` and `res`, `abort`, `msg`, and `error`. `src/client.ts` is the
 reference client. Closing the sidecar's stdin closes it.
 
 ## Source map

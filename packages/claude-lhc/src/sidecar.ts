@@ -68,6 +68,9 @@ function handle(frame: DriverFrame): void {
     case "user":
       serial(() => session.pushUser(frame.message));
       return;
+    case "end":
+      serial(async () => session.endInput());
+      return;
     case "req":
       serial(async () => {
         try {
