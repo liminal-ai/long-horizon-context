@@ -512,7 +512,7 @@ describe("prompts held during a mid-turn compact", () => {
   };
   const answer = (text: string): SDKMessage => assistantMessage(randomUUID(), [{ type: "text", text }]);
 
-  async function heldDuringMidTurnCompact(heldTexts: string[]) {
+  async function heldDuringMidTurnCompact(heldTexts: string[], lhcOptions: Record<string, unknown> = {}) {
     const frames: Frame[] = [];
     const timeline: string[] = [];
     const logs: string[] = [];
@@ -534,13 +534,14 @@ describe("prompts held during a mid-turn compact", () => {
       cwd: dir,
       model: "claude-sonnet-5",
       env: { CLAUDE_CONFIG_DIR: claudeHome },
-      lhc: { home, compact: COMPACT },
+      lhc: { home, compact: COMPACT, ...lhcOptions },
       sessionId: randomUUID(),
     });
     await session.pushUser(userMessage("WORK-PROMPT"));
-    await fed[0]![Symbol.asyncIterator]().next();
+    const first = fed[0]![Symbol.asyncIterator]();
+    await first.next();
     await stopMidTurn(session, frames, 0);
-    const cli = fed[1]![Symbol.asyncIterator]();
+    const cli = fed.length > 1 ? fed.at(-1)![Symbol.asyncIterator]() : first;
     expect(textOf((await cli.next()).value)).toContain("Context was compacted in the middle of this turn");
     const delivered = async (): Promise<SDKUserMessage | undefined> => {
       const next = await cli.next();
@@ -551,6 +552,8 @@ describe("prompts held during a mid-turn compact", () => {
   }
 
   async function stopMidTurn(session: ClaudeLhcSession, frames: Frame[], gen: number): Promise<void> {
+    const settled = () => frames.filter((frame) => frame["subtype"] === "status" && "compact_result" in frame).length;
+    const settledBefore = settled();
     const toolUseId = `toolu_${gen}`;
     const toolTurn = randomUUID();
     streams[gen]!(assistantMessage(toolTurn, [{ type: "tool_use", id: toolUseId, name: "Read", input: {} }]));
@@ -570,7 +573,7 @@ describe("prompts held during a mid-turn compact", () => {
     );
     expect(stop).toMatchObject({ continue: false });
     streams[gen]!({ ...(resultMessage() as object), terminal_reason: "hook_stopped" } as unknown as SDKMessage);
-    await vi.waitFor(() => expect(fed).toHaveLength(gen + 2));
+    await vi.waitFor(() => expect(settled()).toBe(settledBefore + 1));
   }
 
   const stillWaiting = async (next: Promise<unknown>): Promise<boolean> =>
@@ -610,15 +613,33 @@ describe("prompts held during a mid-turn compact", () => {
     expect(textOf(await delivered())).toBe("LATER-PROMPT");
   });
 
-  test("an interrupted continued turn still sends the held prompt, once", async () => {
-    const { session, delivered } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
+  test("an interrupted continued turn sends the held prompt once, after the interrupted turn's result", async () => {
+    const { session, timeline, delivered } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
     const held = delivered();
-
     await session.control("interrupt", {});
-    streams[1]!({ ...(resultMessage(true) as object), subtype: "error_during_execution" } as unknown as SDKMessage);
+    expect(await stillWaiting(held)).toBe(true);
+
+    const interrupted = { ...(resultMessage(true) as object), subtype: "error_during_execution" } as SDKMessage;
+    streams[1]!(interrupted);
 
     expect(textOf(await held)).toBe("HELD-PROMPT");
+    expect(timeline).toEqual([`result ${String(interrupted.uuid)}`, "claude got HELD-PROMPT"]);
     streams[1]!(resultMessage());
+    expect(await stillWaiting(delivered())).toBe(true);
+  });
+
+  test("after a failed mid-turn rebuild the held prompt goes once to the old generation, after the continued turn's result", async () => {
+    const { timeline, delivered } = await heldDuringMidTurnCompact(["HELD-PROMPT"], { forceRebuildFailure: true });
+    expect(fed).toHaveLength(1);
+    const held = delivered();
+    expect(await stillWaiting(held)).toBe(true);
+
+    const continued = resultMessage();
+    streams[0]!(continued);
+
+    expect(textOf(await held)).toBe("HELD-PROMPT");
+    expect(timeline).toEqual([`result ${String(continued.uuid)}`, "claude got HELD-PROMPT"]);
+    streams[0]!(resultMessage());
     expect(await stillWaiting(delivered())).toBe(true);
   });
 
