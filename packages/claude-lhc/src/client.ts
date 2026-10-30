@@ -89,6 +89,11 @@ class MessageQueue {
     this.#wake?.();
   }
 
+  discard(): void {
+    this.#items.length = 0;
+    this.end();
+  }
+
   fail(cause: Error): void {
     if (this.#ended) return;
     this.#failure = cause;
@@ -300,7 +305,7 @@ export function query({
       clearTimeout(term);
       clearTimeout(kill);
     });
-    messages.end();
+    messages.discard();
   };
 
   child.stdin?.write(startFrame);

@@ -366,6 +366,21 @@ async function liveRollback(evidenceDir, label, { compactAfterRollback }) {
   }
 }
 
+function scratchProcesses(scratch) {
+  return readdirSync("/proc").filter((pid) => {
+    if (!/^\d+$/.test(pid)) return false;
+    try { return readFileSync(`/proc/${pid}/environ`, "utf8").includes(scratch.dir); } catch { return false; }
+  });
+}
+
+async function until(pred, what, timeoutMs = 60_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!pred()) {
+    if (Date.now() > deadline) throw new Error(`timeout waiting for ${what}`);
+    await new Promise((r) => setTimeout(r, 100));
+  }
+}
+
 const drives = {
   async start(evidenceDir) {
     const scratch = new Scratch("start");
@@ -993,6 +1008,75 @@ const drives = {
     return gate.skip ? gate : liveRollback(evidenceDir, "rollback-live-compact", { compactAfterRollback: true });
   },
 
+  async client(evidenceDir) {
+    const scratch = new Scratch("client");
+    const stderr = [];
+    const { query } = await import(join(DIST, "index.js"));
+    const silent = { async *[Symbol.asyncIterator]() { await new Promise(() => {}); } };
+    let q;
+    try {
+      const sid = randomUUID();
+      const options = baseOptions(scratch, { sessionId: sid, model: "claude-sonnet-4-6" });
+      const t0 = Date.now();
+      q = query({ prompt: silent, options: { ...options, env: { ...options.env, CLAUDE_LHC_NO_INFERENCE: "1" }, stderr: (d) => stderr.push(d) } });
+      await until(() => stderr.join("").includes(`as generation ${sid}`), "created-thread log line from the default sidecar");
+      const readyMs = Date.now() - t0;
+      const usage = await q.getContextUsage();
+      assert(typeof usage?.rawMaxTokens === "number", `getContextUsage answered ${JSON.stringify(usage)}`);
+      const refused = await q.rewindFiles("x").then(() => "resolved", (e) => e.message);
+      assert(refused.startsWith("rewindFiles is refused"), `rewindFiles answered ${refused}`);
+      await q.setCompactPolicy({ trigger: 700000, target: 140000 });
+      assert(stderr.join("").includes("compact policy set on thread: trigger 700000 target 140000"), "no `compact policy set on thread` line");
+      assert(scratchProcesses(scratch).length > 0, "no sidecar or claude process carries the scratch env before close");
+      q.close();
+      const end = await Promise.race([q.next(), new Promise((r) => setTimeout(() => r("timeout"), 15_000))]);
+      assert(end !== "timeout" && end.done, `the stream did not end after close(): ${JSON.stringify(end)}`);
+      await until(() => scratchProcesses(scratch).length === 0, "the sidecar and its claude to exit after close()", 15_000);
+      const db = new DatabaseSync(join(scratch.lhcHome, "threads", scratch.threads()[0]), { readOnly: true });
+      const row = db.prepare("SELECT compact_trigger_tokens, compact_target_tokens FROM thread_metadata").get();
+      db.close();
+      assert(scratch.threads().length === 1, `expected 1 thread file, got ${scratch.threads().length}`);
+      assert(row.compact_trigger_tokens === 700000 && row.compact_target_tokens === 140000, `thread row holds ${JSON.stringify(row)}`);
+      return `query() to created-thread ${readyMs}ms; getContextUsage window ${usage.rawMaxTokens}; rewindFiles refused; setCompactPolicy stored 700000/140000; close() ended the stream and every scratch process`;
+    } finally {
+      q?.close();
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "client.stderr.log"), stderr.join(""));
+      scratch.cleanup();
+    }
+  },
+
+  async consumer(evidenceDir) {
+    const gate = liveAuth();
+    if (gate.skip) return gate;
+    const scratch = new Scratch("consumer");
+    const home = join(scratch.dir, "home");
+    mkdirSync(home, { recursive: true });
+    const realKeyPrefix = scratch.dir.replace(/[^a-zA-Z0-9]/g, "-");
+    const realProjects = join(homedir(), ".claude", "projects");
+    try {
+      const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: scratch.claudeHome, DISABLE_AUTOUPDATER: "1" };
+      delete env.CLAUDE_LHC_NO_INFERENCE;
+      const child = spawn(process.execPath, ["--import", "tsx", "examples/consumer.ts", join(scratch.dir, "work")], { cwd: join(REPO, "packages/claude-lhc"), env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (c) => { stdout += c; });
+      child.stderr.on("data", (c) => { stderr += c; });
+      const code = await new Promise((r) => {
+        const timer = setTimeout(() => { process.kill(-child.pid, "SIGKILL"); r("timeout"); }, 15 * 60_000);
+        child.on("exit", (c) => { clearTimeout(timer); r(c); });
+      });
+      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "consumer.stdout.log"), stdout);
+      writeFileSync(join(evidenceDir, "consumer.stderr.log"), stderr);
+      const leaked = existsSync(realProjects) ? readdirSync(realProjects).filter((d) => d.startsWith(realKeyPrefix)) : [];
+      assert(leaked.length === 0, `ISOLATION BREACH: ${leaked.join(", ")} written under ${realProjects}`);
+      assert(code === 0 && stdout.includes("CONSUMER: PASS"), `consumer exit=${code}: ${stdout.trim().split("\n").at(-2) ?? "(no stdout)"}`);
+      return `CONSUMER: PASS auth=${gate.auth}; ${stdout.split("\n").filter((l) => / ok /.test(l)).length} steps ok`;
+    } finally { scratch.cleanup(); }
+  },
+
   async turn(evidenceDir) {
     if (process.env.CLAUDE_LHC_LIVE !== "1") {
       return { skip: "needs a real model turn; set CLAUDE_LHC_LIVE=1 to run packages/claude-lhc/scripts/standalone.ts under a throwaway HOME/CLAUDE_CONFIG_DIR" };
@@ -1041,7 +1125,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "controls", "controls-refused", "set-compact-policy", "fork", "history", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live"]
+      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "consumer"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;
