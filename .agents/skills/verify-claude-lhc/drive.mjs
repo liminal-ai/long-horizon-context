@@ -629,6 +629,23 @@ const drives = {
     } finally { scratch.cleanup(); }
   },
 
+  async "rollback-projected-anchor"(evidenceDir) {
+    const scratch = new Scratch("rollback-projected-anchor");
+    try {
+      const { gen1 } = await seedCaptured(scratch, PA_TURNS);
+      const { compacted } = await compactOnce(scratch, "compact", { resume: gen1 }, evidenceDir);
+      const lines = (scratch.projected(compacted) ?? "").trim().split("\n").map((l) => JSON.parse(l));
+      const anchor = lines.find((l) => JSON.stringify(l.message).includes("KEEP-TURN answer one"));
+      assert(anchor?.lhcSource, "the compacted projection's KEEP line records no capture key");
+      const { s, gen } = await startAndStop(scratch, "rollback", { resume: compacted, resumeSessionAt: anchor.uuid }, evidenceDir);
+      const projected = scratch.projected(gen) ?? "";
+      writeFileSync(join(evidenceDir, "projected.jsonl"), projected);
+      assert(s.stderr.some((l) => /rollback to event \d+ via /.test(l) && l.endsWith(`via ${anchor.uuid}`)), "no `rollback to event <n> via <projected uuid>` log line");
+      assert(projected.includes("KEEP-TURN answer one") && !projected.includes("REMOVED-TURN"), "the rollback to a projected line does not end at KEEP");
+      return `resumeSessionAt:<projected KEEP line after /compact> -> resolved through ${anchor.lhcSource.slice(0, 30)}..., projected keep=yes removed=no`;
+    } finally { scratch.cleanup(); }
+  },
+
   async "window-shrink"(evidenceDir) {
     const scratch = new Scratch("window-shrink");
     try {
@@ -812,7 +829,20 @@ const drives = {
       assert(forkThread && forkThread !== threadId, `resuming the fork did not open a separate thread (${forkThread})`);
       assert(fork.s.logHas("compact policy from thread: trigger 700000 target 140000"), "the fork did not carry the source's compact policy");
       assert(rows.threads.length === 2 && rows.threads.every((t) => t.trigger === 700000 && t.target === 140000), `thread rows: ${JSON.stringify(rows.threads)}`);
-      return `fork at KEEP -> thread ${forkThread} ends at KEEP (fork file and resume), source ${threadId} keeps REMOVED, both rows 700000/140000`;
+      const history = await callInScratchEnv(scratch, "getSessionMessages", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd }]);
+      const projectedKeep = history.value?.find((m) => JSON.stringify(m.message).includes("KEEP-TURN answer one"))?.uuid;
+      assert(projectedKeep && projectedKeep !== anchors[0], "the restarted source's history has no projected KEEP line");
+      const again = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: projectedKeep }]);
+      assert(again.code === 0, `forkSession at a history id failed: ${again.error ?? again.stderr}`);
+      const againFile = scratch.projected(again.value.sessionId) ?? "";
+      writeFileSync(join(evidenceDir, "projected-history-fork.jsonl"), againFile);
+      assert(againFile.includes("KEEP-TURN answer one") && !againFile.includes("REMOVED-TURN"), "the fork at a history id does not end at KEEP");
+      const head = await startAndStop(scratch, "resume-fork-at-head", { resume: sessionId, resumeSessionAt: headMessageId }, evidenceDir);
+      assert(head.s.stderr.some((l) => l.includes(`via ${headMessageId}`)), "resumeSessionAt the fork's headMessageId did not resolve");
+      await compactOnce(scratch, "compact-source", { resume: gen1 }, evidenceDir);
+      const afterCompact = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd }]);
+      assert(afterCompact.code === 0, `forkSession right after a /compact failed: ${afterCompact.error ?? afterCompact.stderr}`);
+      return `fork at KEEP -> thread ${forkThread} ends at KEEP (fork file and resume), source ${threadId} keeps REMOVED, both rows 700000/140000; a fork at the projected history id ends at KEEP; resumeSessionAt headMessageId resolves; a fork right after /compact succeeds`;
     } finally { scratch.cleanup(); }
   },
 
@@ -991,7 +1021,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "window-shrink", "controls", "controls-refused", "set-compact-policy", "fork", "history", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live"]
+      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "controls", "controls-refused", "set-compact-policy", "fork", "history", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;

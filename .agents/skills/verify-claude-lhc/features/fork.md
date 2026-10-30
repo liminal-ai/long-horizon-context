@@ -36,12 +36,16 @@
   launched after a compact is found through the first session id. An agent
   under another thread's session is not returned.
 
+- Every projected line records the capture key of its source message in
+  `lhcSource`. So a message id `getSessionMessages` returns after a
+  restart, compact or fork works as `upToMessageId`, and a fork's
+  `headMessageId` works as `resumeSessionAt` (a host rollback to the fork's
+  first turn).
+- `copyThread` requeues any derivation claim it copies, so a fork taken
+  while the source's summary worker holds a lease still drains at once.
+
 Known limits, with no code change planned:
 
-- `headMessageId` names a projected line, which has no capture key. A
-  start with `resumeSessionAt: <headMessageId>` is refused with `rollback
-  anchor <uuid> not found`, so a host rollback to a fork's first turn fails
-  safe.
 - `getSessionMessages` returns the current generation only. Turns a compact
   folded into a summary come back as that summary.
 
@@ -73,6 +77,12 @@ session id whose file ends at `headMessageId`, and the fork's resume logs
 `projected-fork.jsonl` keeps KEEP and drops REMOVED,
 `projected-source.jsonl` keeps REMOVED, and `thread-rows.txt` shows two
 threads, both 700000/140000.
+
+The drive then reads the restarted source through `getSessionMessages`,
+forks at the projected KEEP line's id (`projected-history-fork.jsonl` ends
+at KEEP), and resumes the first fork with `resumeSessionAt:
+<headMessageId>`, which must resolve. Last it sends `/compact` to the source and
+forks it again, which must succeed.
 
 `history` seeds two turns, compacts, then reads through gen1, a session id
 with no file of its own. It passes when `getSessionMessages(gen1)` returns
