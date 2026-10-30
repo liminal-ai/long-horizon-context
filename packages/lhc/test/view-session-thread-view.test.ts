@@ -9,7 +9,9 @@ import {
 import {
   boundaryTokens,
   conversationTurn,
+  derivedThreadFixture,
   eventBatch,
+  openRaw,
   seedViewBoundary,
   type TempStore,
   tempStore,
@@ -384,5 +386,84 @@ describe("runtime_note entries", () => {
     });
     if (note?.role !== "user") return;
     expect(note.sourceMessages).toHaveLength(1);
+  });
+});
+
+describe("band entries", () => {
+  it("each band names the last message it covers, in band order, ending at the compact point", async () => {
+    const fixture = await derivedThreadFixture(store);
+    const compacted = await fixture.sdk.threadView.compact(
+      { filePath: fixture.filePath },
+      { params: { lowerBound: 400, percentages: { full: 25, smooth: 16, detailed: 10, brief: 49 } } },
+    );
+    if (!compacted.ok) throw new Error(compacted.error.reason);
+
+    const view = await fixture.sdk.threadView.getSessionThreadView({ filePath: fixture.filePath });
+    if (!view.ok) throw new Error(view.error.reason);
+    const bands = messageEntries(view.value.entries).filter(
+      (entry) => entry.role === "user" && entry.content.startsWith("[context · "),
+    );
+    expect(bands.length).toBeGreaterThan(1);
+    const db = openRaw(fixture.filePath);
+    try {
+      const orderOf = db.prepare("SELECT source_event_order AS o FROM message WHERE message_id = ?");
+      const orders = bands.map((band) => {
+        expect(band.sourceMessages).toHaveLength(1);
+        return Number((orderOf.get(band.sourceMessages[0]!.messageId) as { o: number }).o);
+      });
+      expect(orders).toEqual([...orders].sort((a, b) => a - b));
+      expect(new Set(orders).size).toBe(orders.length);
+      const lastCovered = db
+        .prepare(
+          "SELECT max(source_event_order) AS o FROM message WHERE deleted_at IS NULL AND source_event_order <= ?",
+        )
+        .get(compacted.value.compactPoint) as { o: number };
+      expect(orders.at(-1)).toBe(Number(lastCovered.o));
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe("gap-run band entries", () => {
+  it("a band of turns left out of view names the last message of its last turn", async () => {
+    const filler = " filler".repeat(400);
+    for (let i = 0; i < 12; i += 1) {
+      const sent = await sdk.intakeStream.messageEvents({ filePath }, [
+        validEvent("user_prompt", { payload: { text: `PROMPT-${i}${filler}` } }),
+        validEvent("assistant_text", { payload: { text: `ANSWER-${i}${filler}` } }),
+        validEvent("turn_end"),
+      ]);
+      if (!sent.ok) throw new Error(sent.error.reason);
+    }
+    await sdk.work.drain({ filePath });
+    const compacted = await sdk.threadView.compact(
+      { filePath },
+      { profile: "continuation", params: { lowerBound: 1000 } },
+    );
+    if (!compacted.ok) throw new Error(compacted.error.reason);
+
+    const view = await sdk.threadView.getSessionThreadView({ filePath });
+    if (!view.ok) throw new Error(view.error.reason);
+    const gap = messageEntries(view.value.entries).find(
+      (entry) => entry.role === "user" && entry.content.includes("not in view; use get-turns"),
+    );
+    expect(gap).toBeDefined();
+    if (gap?.role !== "user") return;
+    const lastTurn = /turns? \S+–(\S+) not in view|turn (\S+) not in view/.exec(gap.content);
+    const turnId = lastTurn?.[1] ?? lastTurn?.[2];
+    if (turnId === undefined) throw new Error(`no turn id in ${gap.content}`);
+    const db = openRaw(filePath);
+    try {
+      const expected = db
+        .prepare(
+          "SELECT message_id FROM message WHERE turn_id = ? AND deleted_at IS NULL ORDER BY source_event_order DESC LIMIT 1",
+        )
+        .get(turnId) as { message_id: string } | undefined;
+      expect(expected).toBeDefined();
+      expect(gap.sourceMessages.map((source) => source.messageId)).toEqual([expected!.message_id]);
+    } finally {
+      db.close();
+    }
   });
 });

@@ -204,6 +204,31 @@ describe("forkSession", () => {
     expect(projected(forked.sessionId)).not.toContain("LATER-PART");
   });
 
+  test("a summary band's id from getSessionMessages anchors a fork and a rollback at the end of that band", async () => {
+    const { gen1, threadId } = await seedThread(home, cwd);
+    const filler = " filler".repeat(400);
+    for (let i = 0; i < 12; i += 1) await captureTurn(home, threadId, `PROMPT-${i}${filler}`, `ANSWER-${i}${filler}`);
+    const policy = await threads.setCompactPolicy(threadRef(threadId, home), { trigger: 2000, target: 1000 });
+    if (!policy.ok) throw new Error(policy.error.reason);
+    await compact(gen1, threadId);
+    const bands = (await getSessionMessages(gen1, store())).filter((message) =>
+      JSON.stringify(message.message).includes("[context · "),
+    );
+    expect(bands.length).toBeGreaterThan(1);
+    await captureTurn(home, threadId, "TAIL-PROMPT", "TAIL-ANSWER");
+
+    const forked = await forkSession(gen1, { ...store(), upToMessageId: bands[0]!.uuid });
+    expect(projected(forked.sessionId)).toContain("ANSWER-10");
+    expect(projected(forked.sessionId)).not.toContain("ANSWER-11");
+    expect(projected(forked.sessionId)).not.toContain("TAIL-ANSWER");
+
+    const last = bands.at(-1)!.uuid;
+    const rolled = await resume(gen1, { resumeSessionAt: last });
+    expect(rolled.logs).toContainEqual(expect.stringMatching(`via ${last}$`));
+    expect(rolled.projected).toContain("ANSWER-11");
+    expect(rolled.projected).not.toContain("TAIL-ANSWER");
+  });
+
   test("resumeSessionAt a fork's headMessageId rolls the fork back to where it was cut", async () => {
     const { gen1, kept } = await twoTurns();
     const forked = await forkSession(gen1, { ...store(), upToMessageId: kept });
