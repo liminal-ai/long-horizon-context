@@ -57,7 +57,5 @@ cost.
   through `lhc.spawn`, with the Agent SDK replaced by
   `test/support/fakeSdk.ts` through a Node resolve hook. They prove the
   client and the wire, not the CLI. The drives above cover the CLI.
-- `consumer` compacts between turns, so the known mid-turn `/compact`
-  failure does not apply to it.
 - The prompt iterable keeps the sidecar open. A host that never ends it
   must call `close()`.
