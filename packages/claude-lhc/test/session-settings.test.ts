@@ -1,67 +1,6 @@
 import { describe, expect, test } from "vitest";
-import { ClaudeLhcSession, formatCompactRuntimeNote, takeHostCompactSettings } from "../src/session.ts";
+import { formatCompactRuntimeNote } from "../src/session.ts";
 import { seedTokenFamilyFromStartModel } from "../src/token-family.ts";
-
-const silentIo = {
-  emit(): void {},
-  request: async () => ({}),
-  end(): void {},
-  fail(): void {},
-  log(): void {},
-};
-
-describe("takeHostCompactSettings", () => {
-  test("missing autoCompactWindow is rejected with the setting named", () => {
-    expect(() => takeHostCompactSettings({})).toThrow(/autoCompactWindow/);
-    expect(() => takeHostCompactSettings({ lhcLowerBound: 180_000 })).toThrow(
-      "autoCompactWindow is required and must be a finite number",
-    );
-  });
-
-  test("missing lhcLowerBound is rejected with the setting named", () => {
-    expect(() => takeHostCompactSettings({ autoCompactWindow: 500_000 })).toThrow(
-      "lhcLowerBound is required and must be a finite number",
-    );
-  });
-
-  test("non-finite values are rejected with the setting named", () => {
-    expect(() => takeHostCompactSettings({ autoCompactWindow: Number.NaN, lhcLowerBound: 180_000 })).toThrow(
-      /autoCompactWindow/,
-    );
-    expect(() =>
-      takeHostCompactSettings({ autoCompactWindow: 500_000, lhcLowerBound: Number.POSITIVE_INFINITY }),
-    ).toThrow(/lhcLowerBound/);
-  });
-
-  test("bound >= trigger is rejected naming lhcLowerBound", () => {
-    expect(() => takeHostCompactSettings({ autoCompactWindow: 150_000, lhcLowerBound: 150_000 })).toThrow(
-      "lhcLowerBound must be less than autoCompactWindow",
-    );
-    expect(() => takeHostCompactSettings({ autoCompactWindow: 150_000, lhcLowerBound: 180_000 })).toThrow(
-      /lhcLowerBound/,
-    );
-  });
-
-  test("child settings no longer contain lhcLowerBound or autoCompactWindow", () => {
-    const input = { autoCompactWindow: 500_000, lhcLowerBound: 180_000, other: true };
-    const taken = takeHostCompactSettings(input);
-    expect(taken.autoCompactTrigger).toBe(500_000);
-    expect(taken.lhcLowerBound).toBe(180_000);
-    expect(taken.childSettings).toEqual({ other: true });
-    expect(taken.childSettings).not.toHaveProperty("lhcLowerBound");
-    expect(taken.childSettings).not.toHaveProperty("autoCompactWindow");
-    expect(input).toEqual({ autoCompactWindow: 500_000, lhcLowerBound: 180_000, other: true });
-  });
-});
-
-describe("start() rejects invalid compact settings", () => {
-  test("rejects bound >= trigger", async () => {
-    const session = new ClaudeLhcSession(silentIo);
-    await expect(session.start({ settings: { autoCompactWindow: 150_000, lhcLowerBound: 180_000 } })).rejects.toThrow(
-      "lhcLowerBound must be less than autoCompactWindow",
-    );
-  });
-});
 
 describe("compact runtime note", () => {
   test("appends family slug and source to the existing note text", () => {

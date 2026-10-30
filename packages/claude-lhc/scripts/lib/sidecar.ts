@@ -74,10 +74,10 @@ export class Sidecar {
   error: string | null = null;
   exited: Promise<number | null>;
   #waiters: Array<() => void> = [];
-  constructor(label: string, lhcHome: string, quiet = false) {
+  constructor(label: string, quiet = false) {
     this.child = spawn(process.execPath, [ENTRY], {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, T3CODE_LHC_HOME: lhcHome },
+      env: process.env,
       windowsHide: true,
     });
     this.exited = new Promise((r) =>

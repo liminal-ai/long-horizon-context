@@ -38,7 +38,7 @@ One JSON object per line on stdin (driver to sidecar) and stdout (sidecar to dri
 
 Driver frames:
 
-- `start` — the SDK options with non-serialisable members removed, plus an optional sidecar-only `lhc` block that never reaches the SDK.
+- `start` — the SDK options with non-serialisable members removed, plus the sidecar-only `lhc` block, `{ home, compact?: { trigger, target }, forceRebuildFailure? }`, which never reaches the SDK. `lhc.home` is required. A start without it fails with one `error` frame naming `lhc.home`, before any store is created.
 - `user` — one SDK user message.
 - `req` — a query control: `setModel`, `setPermissionMode`, `setMaxThinkingTokens`, or `interrupt`, with an id the sidecar answers.
 - `res` — the driver's answer to a sidecar request.
@@ -71,12 +71,16 @@ Projection replays the tail's thinking blocks with their signatures (`SELECTED_T
 
 ## Compact numbers
 
-Two numbers, both required, both in provider-billed tokens. They arrive in the forwarded settings and are stripped before the settings reach Claude:
+The thread owns two numbers, both in provider-billed tokens, stored on its `thread_metadata` row (`src/compactPolicy.ts`):
 
-- `autoCompactWindow` — the auto-compact trigger. When provider-reported context reaches or exceeds it, a compact is due.
-- `lhcLowerBound` — the rebuilt view size, passed to `threadView.compact` as the profile lower bound. It must be below the trigger, or `start` fails naming both.
+- `trigger` — the auto-compact trigger. When provider-reported context reaches or exceeds the effective trigger, a compact is due.
+- `target` — the rebuilt view size, passed to `threadView.compact` as the profile lower bound. It must be below the trigger.
 
-The rebuild compacts with the core `continuation` profile's band shares. The sidecar holds no built-in numbers of its own: t3code's Claude LHC instance form owns both values. Before compacting, the sidecar waits up to 45 seconds (`DERIVATION_WAIT_MS`) for queued derivations, so bands assemble from renderings rather than truncated excerpts.
+The host sends the pair as `lhc.compact`. A new thread stores it, and a create without it fails. A resumed thread keeps its stored pair and logs `compact policy from thread: trigger <t> target <g>` when the host sent another. A thread with no stored pair stores the host's, and a resume with neither fails. The sidecar holds no built-in numbers of its own.
+
+The effective pair is the stored pair capped to the live context window. The sidecar reads `getContextUsage().rawMaxTokens` when each generation's query starts and after each `setModel`. A trigger above 80% of the window drops to 80%, and the target to at most half of that, logged as `compact policy capped to window <w>: trigger <t> target <g>`. The stored pair never changes. With no window known, the pair stays as stored.
+
+The rebuild compacts with the core `continuation` profile's band shares. Before compacting, the sidecar waits up to 45 seconds (`DERIVATION_WAIT_MS`) for queued derivations, so bands assemble from renderings rather than truncated excerpts.
 
 A compact that falls due while a turn is open does not wait for the turn to end. The next safe tool boundary stops the live query (a PostToolUse hook returns `continue: false`, after every tool call of the current assistant message has its result). LHC closes the turn on the canonical `context_compact_continue` boundary, the view is rebuilt and projected into a new generation, and a continuation input — recorded as a runtime note, never a prompt — resumes the task there. The stopped query's own result never reaches the driver. The driver sees one turn with a `compact_boundary` in the middle and one result, from the new session. A failed mid-turn compact gets no second try before the turn ends; the turn-end path tries once more. Prompts that arrive during a compact swap are held and replayed into the new generation.
 
@@ -88,11 +92,11 @@ One call serves at most 8,000 tokens and 48,000 bytes of item text, at most 32 i
 
 ## Inference lane
 
-The SDK instance runs in background mode, so derivations drain while the thread idles. Derivations run through the summary worker (`src/summaryWorker.ts`): one Agent SDK query per derivation, no tools, one turn, session persistence off, the core's default assignments under provider name `claude-lhc-sdk`. At most 3 derivation queries run at once. The inference timeout is 90 seconds. `T3CODE_LHC_NO_INFERENCE=1` swaps in deterministic callbacks instead — capture and serving continue, summary derivations do not run. The tokenizer family is resolved from the start-option model before the SDK instance is built (`src/token-family.ts`).
+The SDK instance runs in background mode, so derivations drain while the thread idles. Derivations run through the summary worker (`src/summaryWorker.ts`): one Agent SDK query per derivation, no tools, one turn, session persistence off, the core's default assignments under provider name `claude-lhc-sdk`. At most 3 derivation queries run at once. The inference timeout is 90 seconds. `CLAUDE_LHC_NO_INFERENCE=1` swaps in deterministic callbacks instead — capture and serving continue, summary derivations do not run. The tokenizer family is resolved from the start-option model before the SDK instance is built (`src/token-family.ts`).
 
 ## State
 
-LHC state lives under `~/.t3code-lhc` (override `T3CODE_LHC_HOME`), created on demand:
+LHC state lives under the host's `lhc.home`, created on demand. There is no default location:
 
 | Path | Purpose |
 | --- | --- |

@@ -12,7 +12,8 @@ wire a driver (t3code) speaks to it: one JSON object per line on stdin
 `packages/claude-lhc/src/protocol.ts` (frames), `src/sidecar.ts` (entry,
 strict arrival order, stdin close = shutdown), `src/session.ts`
 (generations, capture-before-forward, compact, projection swap),
-`src/lhcHome.ts` (home/aliases), `src/nativeSessionFile.ts` (projected
+`src/lhcHome.ts` (home/aliases), `src/compactPolicy.ts` (thread compact
+policy and window cap), `src/nativeSessionFile.ts` (projected
 native session files). The repo's own live proof is
 `packages/claude-lhc/scripts/standalone.ts`; this skill adds deterministic
 drives that need no model.
@@ -27,9 +28,9 @@ Interview facts, from the code:
 - Observe: stdout frames, stderr log lines (`[claude-lhc] ...`), the LHC
   store (`registry.sqlite` + `threads/*.sqlite`), and projected native
   files under `<claude home>/projects/<key>/<session id>.jsonl`.
-- Isolate: full isolation is env-only — fresh `T3CODE_LHC_HOME`,
-  `CLAUDE_CONFIG_DIR`, and cwd per drive. Two drives can run side by side.
-  Deterministic inference is `T3CODE_LHC_NO_INFERENCE=1`
+- Isolate: a fresh `lhc.home` in the start frame, a fresh
+  `CLAUDE_CONFIG_DIR`, and a fresh cwd per drive. Two drives can run side
+  by side. Deterministic inference is `CLAUDE_LHC_NO_INFERENCE=1`
   (`createDeterministicInferenceCallbacks` in `src/lhcHome.ts`).
 
 ## Launch
@@ -56,13 +57,14 @@ sidecar owns no port and writes only inside its isolated homes.
 To launch by hand (same env discipline):
 
 ```sh
-T3CODE_LHC_HOME="$SCRATCH/t3code-lhc" CLAUDE_CONFIG_DIR="$SCRATCH/claude-home" \
-  T3CODE_LHC_NO_INFERENCE=1 node packages/claude-lhc/dist/sidecar.js
+CLAUDE_CONFIG_DIR="$SCRATCH/claude-home" CLAUDE_LHC_NO_INFERENCE=1 \
+  node packages/claude-lhc/dist/sidecar.js
 ```
 
 then write one `{"type":"start","options":{...}}` line. Options must carry
-`cwd`, `settings: {autoCompactWindow, lhcLowerBound}` (lower bound below
-the trigger), and normally `model` + `pathToClaudeCodeExecutable`.
+`cwd`, `lhc: {home: "$SCRATCH/lhc", compact: {trigger, target}}` (target
+below the trigger; a resume may omit `compact`), and normally `model` +
+`pathToClaudeCodeExecutable`.
 
 ## Doctor
 
@@ -86,7 +88,9 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | Drive | Wire path | User-only check | Outcome check |
 | --- | --- | --- | --- |
 | `start` | `start{sessionId}` → stdin close | startup log names the requested generation, no error frame, clean exit | `registry.sqlite` exists, exactly 1 `threads/*.sqlite` |
+| `start-no-home` | `start` with `lhc.compact` and no `lhc.home` | one `error` frame starting `lhc.home `, exit 1 | no store directory created |
 | `compact` | `start` → `user:"/compact"` | frames in native order `status:compacting > status:null:success > boundary > result`, boundary carries a new session id | projected `<gen2>.jsonl` written under the isolated Claude home; still 1 thread |
+| `compact-policy` | seed with `lhc.compact` 700000/140000 (waits for the `context window` line), stop, `start{resume: gen2}` with 300000/100000 | stderr `compact policy from thread: trigger 700000 target 140000`, exit 0 | the thread file's `thread_metadata` row holds 700000/140000, saved as `thread_metadata.txt`; the seed's `context window <w>` line shows `getContextUsage` answered with no model call |
 | `restart` | seed, stop, `start{resume: gen2}` | stderr `resumed thread ... via <gen2> as generation <gen3>`, exit 0 | projected `<gen3>.jsonl` exists with lines; thread count unchanged (the "you see" bar: restarts onto its own projected file, one thread) |
 | `resume-superseded-alias` | seed, stop, `start{resume: gen1}` (superseded alias) | same-thread resume line via the old alias, fresh generation, exit 0 | 1 thread, new projected file. Observed semantics: any alias resumes the **current** served view — not gen1-era history; see [rollback-shaped-start.md](features/rollback-shaped-start.md) |
 | `resume-unknown` | `start{resume: <random>}` | one `error` frame: `no LHC thread holds the Claude session ...`, exit 1 | zero thread files created |
@@ -119,7 +123,7 @@ CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs turn
 ```
 
 The drive makes one fresh scratch dir and runs standalone with `HOME`,
-`CLAUDE_CONFIG_DIR`, `T3CODE_LHC_HOME` and `TMPDIR` (so the standalone cwd)
+`CLAUDE_CONFIG_DIR`, `CLAUDE_LHC_HOME` and `TMPDIR` (so the standalone cwd)
 all inside it. The scratch dir sits under the scratch root (see Evidence),
 outside `~/lim-v2`, so Claude's upward `CLAUDE.md`/`AGENTS.md` lookup from
 the session cwd finds no repo or parent instructions. Auth comes from env only: one of `ANTHROPIC_API_KEY`,
@@ -134,8 +138,10 @@ fails the drive as an isolation breach). Evidence:
 `turn/standalone.stdout.log` and `turn/standalone.stderr.log`.
 
 Never run `pnpm --filter claude-lhc standalone` by hand from a normal
-shell: it writes into the real Claude home, and without
-`T3CODE_LHC_HOME` into `../home/t3code-lhc` outside the checkout.
+shell: it writes into the real Claude home. Without `CLAUDE_LHC_HOME`
+it fails at once. Standalone sends `lhc.compact` 700000/140000, so on a
+200k-window model (`MODEL=claude-sonnet-4-6`) its stderr shows
+`compact policy capped to window 200000: trigger 160000 target 80000`.
 Whether `turn` runs depends on the shell's `CLAUDE_LHC_LIVE` and
 credential env, so the same command can run it in one shell and SKIP it
 in another, such as a delegated verifier's. Record which one each run got.
@@ -210,7 +216,7 @@ Proof standard: exercise the real wire path (frames a driver sends), never
 internal setters; capture action and resulting state (frames + store +
 projected files), not just the final line; mocks only at the existing
 production boundary — here deterministic inference
-(`T3CODE_LHC_NO_INFERENCE=1`), which is a shipped mode, not a test hook.
+(`CLAUDE_LHC_NO_INFERENCE=1`), which is a shipped mode, not a test hook.
 Lane screenshots (`u2-restart.png`, `u2-rollback-shape.png` in the plan)
 are captures of these drives' terminal output at the PR head, taken by the
 lane runner; the transcripts above are the machine-checkable evidence.
@@ -242,7 +248,7 @@ All executable, all runnable from a clean shell (paths resolve from the
 script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
-- `drive.mjs` — the seeded drives. `drive.mjs <start|compact|restart|resume-superseded-alias|resume-unknown|turn|all>`;
+- `drive.mjs` — the seeded drives. `drive.mjs <start|start-no-home|compact|compact-policy|restart|resume-superseded-alias|resume-unknown|turn|all>`;
   env `VERIFY_RUN_DIR`, `VERIFY_SCRATCH_ROOT`, `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn runs the isolated live
   standalone instead of SKIP).

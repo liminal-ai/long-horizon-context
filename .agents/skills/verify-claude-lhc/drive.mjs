@@ -2,6 +2,7 @@
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -35,7 +36,7 @@ mkdirSync(EVIDENCE, { recursive: true });
 class Scratch {
   constructor(label) {
     this.dir = mkdtempSync(join(SCRATCH_ROOT, `verify-claude-lhc-${label}-`));
-    this.lhcHome = join(this.dir, "t3code-lhc");
+    this.lhcHome = join(this.dir, "lhc");
     this.claudeHome = join(this.dir, "claude-home");
     this.cwd = join(this.dir, "cwd");
     mkdirSync(this.cwd, { recursive: true });
@@ -66,9 +67,8 @@ class Sidecar {
       stdio: ["pipe", "pipe", "pipe"],
       env: {
         ...process.env,
-        T3CODE_LHC_HOME: scratch.lhcHome,
         CLAUDE_CONFIG_DIR: scratch.claudeHome,
-        T3CODE_LHC_NO_INFERENCE: "1",
+        CLAUDE_LHC_NO_INFERENCE: "1",
       },
     });
     this.exited = new Promise((r) => this.child.on("exit", (code) => { this.exitCode = code; r(code); this.notify(); }));
@@ -117,7 +117,7 @@ const baseOptions = (scratch, extra) => ({
   settingSources: ["user", "project", "local"],
   permissionMode: "bypassPermissions",
   allowDangerouslySkipPermissions: true,
-  settings: { autoCompactWindow: 300000, lhcLowerBound: 180000 },
+  lhc: { home: scratch.lhcHome, compact: { trigger: 300000, target: 180000 } },
   env: { ...process.env, CLAUDE_CONFIG_DIR: scratch.claudeHome },
   ...extra,
 });
@@ -131,11 +131,11 @@ function assert(cond, reason) { if (!cond) throw new Error(reason); }
 
 const LIVE_AUTH_VARS = ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_AUTH_TOKEN"];
 
-async function seedCompacted(scratch, evidenceDir) {
+async function seedCompacted(scratch, evidenceDir, extra = {}, ready = (s, sid1) => s.logHas(`as generation ${sid1}`)) {
   const sid1 = randomUUID();
   const s = new Sidecar(scratch, "seed");
-  s.send({ type: "start", options: baseOptions(scratch, { sessionId: sid1 }) });
-  await s.waitFor(() => s.logHas(`as generation ${sid1}`), "created-thread log line");
+  s.send({ type: "start", options: baseOptions(scratch, { sessionId: sid1, ...extra }) });
+  await s.waitFor(() => ready(s, sid1), "created-thread log line");
   s.send(userFrame("/compact"));
   await s.waitFor(() => s.msgs().some((m) => m.type === "result"), "compact result frame");
   const boundary = s.msgs().find((m) => m.type === "system" && m.subtype === "compact_boundary");
@@ -237,6 +237,45 @@ const drives = {
     } finally { scratch.cleanup(); }
   },
 
+  async "start-no-home"(evidenceDir) {
+    const scratch = new Scratch("start-no-home");
+    try {
+      const s = new Sidecar(scratch, "start-no-home");
+      s.send({ type: "start", options: baseOptions(scratch, { sessionId: randomUUID(), lhc: { compact: { trigger: 300000, target: 180000 } } }) });
+      const code = await s.exited;
+      s.saveEvidence(evidenceDir);
+      const errors = s.frames.filter((f) => f.type === "error");
+      assert(code === 1, `expected exit 1, got ${code}`);
+      assert(errors.length === 1 && errors[0].message.startsWith("lhc.home "), `expected one error frame naming lhc.home, got ${JSON.stringify(errors)}`);
+      assert(!existsSync(scratch.lhcHome), "a store directory was created without lhc.home");
+      return `exit=1 errorFrames=1 "${errors[0].message}" store=absent`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async "compact-policy"(evidenceDir) {
+    const scratch = new Scratch("compact-policy");
+    try {
+      const created = { trigger: 700000, target: 140000 };
+      const { sid2, seed } = await seedCompacted(scratch, evidenceDir, { lhc: { home: scratch.lhcHome, compact: created } },
+        (s, sid1) => s.logHas(`as generation ${sid1}`) && s.logHas("context window "));
+      const window = /context window (\d+) for model/.exec(seed.stderr.join("\n"))?.[1];
+      const s = new Sidecar(scratch, "compact-policy");
+      s.send({ type: "start", options: baseOptions(scratch, { resume: sid2, lhc: { home: scratch.lhcHome, compact: { trigger: 300000, target: 100000 } } }) });
+      await s.waitFor(() => s.logHas("resumed thread"), "resumed-thread log line");
+      const code = await s.stop();
+      s.saveEvidence(evidenceDir);
+      assert(code === 0, `resume sidecar exited ${code}`);
+      assert(s.logHas(`compact policy from thread: trigger ${created.trigger} target ${created.target}`), "no `compact policy from thread` line on resume with a different pair");
+      assert(scratch.threads().length === 1, "store does not hold exactly one thread");
+      const db = new DatabaseSync(join(scratch.lhcHome, "threads", scratch.threads()[0]), { readOnly: true });
+      const row = db.prepare("SELECT thread_id, compact_trigger_tokens, compact_target_tokens FROM thread_metadata").get();
+      db.close();
+      writeFileSync(join(evidenceDir, "thread_metadata.txt"), `${JSON.stringify(row)}\n`);
+      assert(row.compact_trigger_tokens === created.trigger && row.compact_target_tokens === created.target, `thread row holds ${JSON.stringify(row)}`);
+      return `row trigger=${row.compact_trigger_tokens} target=${row.compact_target_tokens} after a resume that sent 300000/100000; window=${window} read with no model call`;
+    } finally { scratch.cleanup(); }
+  },
+
   async turn(evidenceDir) {
     if (process.env.CLAUDE_LHC_LIVE !== "1") {
       return { skip: "needs a real model turn; set CLAUDE_LHC_LIVE=1 to run packages/claude-lhc/scripts/standalone.ts under a throwaway HOME/CLAUDE_CONFIG_DIR" };
@@ -251,8 +290,8 @@ const drives = {
     const realKeyPrefix = scratch.dir.replace(/[^a-zA-Z0-9]/g, "-");
     const realProjects = join(homedir(), ".claude", "projects");
     try {
-      const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: scratch.claudeHome, T3CODE_LHC_HOME: scratch.lhcHome, TMPDIR: scratch.cwd, DISABLE_AUTOUPDATER: "1" };
-      delete env.T3CODE_LHC_NO_INFERENCE;
+      const env = { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: scratch.claudeHome, CLAUDE_LHC_HOME: scratch.lhcHome, TMPDIR: scratch.cwd, DISABLE_AUTOUPDATER: "1" };
+      delete env.CLAUDE_LHC_NO_INFERENCE;
       const child = spawn(process.execPath, ["--import", "tsx", "scripts/standalone.ts"], { cwd: join(REPO, "packages/claude-lhc"), env, stdio: ["ignore", "pipe", "pipe"], detached: true });
       let stdout = "";
       let stderr = "";
@@ -283,7 +322,7 @@ async function main() {
     process.exit(1);
   }
   const which = process.argv[2] ?? "all";
-  const names = which === "all" ? ["start", "compact", "restart", "resume-superseded-alias", "resume-unknown", "turn"] : [which];
+  const names = which === "all" ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "turn"] : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;
   for (const name of names) {

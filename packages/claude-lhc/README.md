@@ -11,7 +11,8 @@ restart and every compact mints a fresh native session id from that view.
 - `src/capture/mapper.ts` — SDK messages → LHC intake events (cc-lhc's rules on the wire shapes).
 - `src/projection/project.ts` — LHC served view → native transcript lines.
 - `src/nativeSessionFile.ts` — write those lines into the effective Claude home (`projects/<key>/<uuid>.jsonl`) before `query({resume})`. No `sessionStore`.
-- `src/lhcHome.ts` — host `t3code-lhc`: `~/.t3code-lhc` (`T3CODE_LHC_HOME`), aliases `t3code-lhc:<session id>`.
+- `src/lhcHome.ts` — the store at the host's `lhc.home`, aliases `t3code-lhc:<session id>`.
+- `src/compactPolicy.ts` — the thread's stored compact pair, capped to the live context window.
 - `src/inference/claudeCli.ts` — derivations through `claude -p --no-session-persistence`.
 - `bin/claude-lhc` — convenience wrapper (`exec node dist/sidecar.js`). T3 spawns `process.execPath` with the compiled JS entry.
 
@@ -30,11 +31,16 @@ is not published separately.
 ## Configuration
 
 - **Claude home:** the same login and settings as Claude Code (`CLAUDE_CONFIG_DIR`, else `~/.claude`).
-- **LHC home:** `~/.t3code-lhc`, or `T3CODE_LHC_HOME`.
-- **Compact settings** (the t3code Claude LHC instance form; both required, provider-billed tokens):
-  `autoCompactWindow` (compact trigger) and `lhcLowerBound` (rebuilt view size), with the lower bound
-  below the trigger.
-- **`T3CODE_LHC_NO_INFERENCE=1`:** skip summary derivations (tests and previews).
+- **LHC home:** the start frame's `lhc.home`, required. There is no default. A start without it
+  fails with an error frame naming `lhc.home`.
+- **Compact policy:** the start frame's `lhc.compact`, `{ trigger, target }` in provider-billed
+  tokens, positive integers with the target below the trigger. A new thread stores it on its
+  thread header and requires it. A resumed thread keeps its stored pair and logs
+  `compact policy from thread` when the host sent another. A thread with no stored pair stores the
+  host's. Each generation and each `setModel` reads the live window with `getContextUsage`. A
+  trigger above 80% of that window drops to 80%, and the target to at most half of that. The
+  stored pair never changes.
+- **`CLAUDE_LHC_NO_INFERENCE=1`:** skip summary derivations (tests and previews).
 - **`T3CODE_THREAD_ID`:** set by the t3code driver and passed through to Claude Code.
 
 ## Build from source

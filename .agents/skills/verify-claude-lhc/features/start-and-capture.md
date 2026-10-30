@@ -19,8 +19,9 @@
 
 You are a driver (t3code). Spawn `node packages/claude-lhc/dist/sidecar.js`,
 write one line `{"type":"start","options":{...}}` where options carry the
-session's `cwd`, compact settings (`autoCompactWindow` above
-`lhcLowerBound`, both required), model, and Claude executable. Then write
+session's `cwd`, the `lhc` block (`home`, the store directory, and
+`compact`, `{trigger, target}` with the target below the trigger; both
+required to create a thread), model, and Claude executable. Then write
 `{"type":"user","message":{...}}` lines and read `msg` frames back. Answer
 any `req` frame with a `res` or the turn stalls.
 
@@ -32,14 +33,14 @@ any `req` frame with a `res` or the turn stalls.
 
 User-only half: stderr logs `created thread <id> as generation <requested
 id>`, no `error` frame, stdin close exits 0. Outcome half: the isolated
-`T3CODE_LHC_HOME` holds `registry.sqlite` and exactly one
+`lhc.home` holds `registry.sqlite` and exactly one
 `threads/*.sqlite`.
 
 The capture half of a real turn needs the model and is **live only**:
 `packages/claude-lhc/scripts/standalone.ts` (turn 1 reads a seeded `notes.txt`
 and must answer with its secret word, with >= 1 observed tool call).
 Run it as `CLAUDE_LHC_LIVE=1 drive.mjs turn`, which runs standalone under
-a throwaway `HOME`/`CLAUDE_CONFIG_DIR`/`T3CODE_LHC_HOME` with env-only
+a throwaway `HOME`/`CLAUDE_CONFIG_DIR`/`CLAUDE_LHC_HOME` with env-only
 auth, and SKIPs when no env credential is set (see the skill's Live turn
 section). Without `CLAUDE_LHC_LIVE=1` it prints SKIP.
 

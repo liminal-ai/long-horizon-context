@@ -4,8 +4,7 @@ import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
 const home = mkdtempSync(join(tmpdir(), "claude-lhc-segment-"));
-process.env.T3CODE_LHC_HOME = home;
-process.env.T3CODE_LHC_NO_INFERENCE = "1";
+process.env.CLAUDE_LHC_NO_INFERENCE = "1";
 const { createLhc, createThread, threadRef } = await import("../src/lhcHome.ts");
 const { segmentEndEvent } = await import("../src/capture/segment-fold.ts");
 const { HARNESS } = await import("../src/capture/mapper.ts");
