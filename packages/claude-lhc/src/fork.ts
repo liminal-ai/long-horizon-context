@@ -35,6 +35,7 @@ export async function forkSession(
     source,
     filePath: newThreadFilePath(home),
     registryPath: registryPath(home),
+    cwd,
     ...(options.title !== undefined ? { title: options.title } : {}),
   });
   if (!copied.ok) throw new Error(`LHC thread copy failed: ${copied.error.code}: ${copied.error.reason}`);

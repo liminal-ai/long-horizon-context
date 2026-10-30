@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
@@ -115,6 +115,16 @@ describe("forkSession", () => {
     expect(resumed.threadId).toBe(await resolveSession(forked.sessionId, home));
     expect(resumed.projected).toContain("KEEP-ANSWER");
     expect(resumed.projected).not.toContain("LATER");
+  });
+
+  test("a fork into another dir records that dir, so a fork of the fork lands there too", async () => {
+    const { gen1 } = await twoTurns();
+    const elsewhere = mkdtempSync(join(dir, "elsewhere-"));
+
+    const first = await forkSession(gen1, { ...store(), dir: elsewhere });
+    const second = await forkSession(first.sessionId, store());
+
+    expect(existsSync(nativeSessionPath({ sessionId: second.sessionId, cwd: elsewhere, env: process.env }))).toBe(true);
   });
 
   test("forking leaves the source thread, its aliases and its served view unchanged", async () => {
