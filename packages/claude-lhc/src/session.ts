@@ -324,7 +324,9 @@ export class ClaudeLhcSession {
         this.#observeLaterModel(model);
         await gen.query.setModel(model);
         this.#windowRead = this.#readWindow(gen);
-        const served = this.#servedPastShrunkTrigger(await this.#windowRead);
+        const read = await this.#windowRead;
+        if (read !== null && this.#pendingCompact === "auto") this.#pendingCompact = null;
+        const served = this.#servedPastShrunkTrigger(read);
         if (served !== null && this.#pendingCompact === null) {
           this.#lastContextTokens = served;
           this.#pendingCompact = "auto";
@@ -902,6 +904,7 @@ export class ClaudeLhcSession {
     await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
 
     const next = await this.#startProjectedGeneration();
+    if (this.#pendingCompact === "auto") this.#pendingCompact = null;
     return { next, postTokens };
   }
 

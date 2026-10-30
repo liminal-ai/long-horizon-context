@@ -323,6 +323,39 @@ describe("served context after the window shrinks", () => {
     expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
   });
 
+  test("a setModel back to a larger window before the next prompt drops the queued compact", async () => {
+    const s = session();
+    contextUsage = async () => ({ rawMaxTokens: 1_000_000, totalTokens: 300_000 });
+    await start(s, { home, compact: { trigger: 700_000, target: 140_000 } });
+    await vi.waitFor(() => expect(logs).toContain("context window 1000000 for model claude-sonnet-4-6"));
+    contextUsage = async () => ({ rawMaxTokens: 200_000, totalTokens: 300_000 });
+    await s.control("setModel", { model: "claude-sonnet-4-5" });
+    expect(logs).toContain(SERVED);
+    contextUsage = async () => ({ rawMaxTokens: 1_000_000, totalTokens: 300_000 });
+
+    await s.control("setModel", { model: "claude-sonnet-5" });
+    await s.pushUser(prompt("NEXT-PROMPT"));
+
+    expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
+    expect(prompts).toHaveLength(1);
+    expect(JSON.stringify((await prompts[0]![Symbol.asyncIterator]().next()).value)).toContain("NEXT-PROMPT");
+  });
+
+  test("a /compact after the shrink satisfies the queued compact", async () => {
+    const s = session();
+    contextUsage = async () => ({ rawMaxTokens: 1_000_000, totalTokens: 300_000 });
+    await start(s, { home, compact: { trigger: 700_000, target: 140_000 } });
+    await vi.waitFor(() => expect(logs).toContain("context window 1000000 for model claude-sonnet-4-6"));
+    contextUsage = servedThenCompacted(200_000);
+    await s.control("setModel", { model: "claude-sonnet-4-5" });
+
+    await s.pushUser(compactPrompt);
+    await s.pushUser(prompt("NEXT-PROMPT"));
+
+    expect(logs.filter((line) => line.startsWith("[lhc compact"))).toHaveLength(1);
+    expect(prompts).toHaveLength(2);
+  });
+
   test("setModel to a smaller window queues a compact that runs before the next prompt goes out", async () => {
     const s = session();
     contextUsage = async () => ({ rawMaxTokens: 1_000_000, totalTokens: 300_000 });

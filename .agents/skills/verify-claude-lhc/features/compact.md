@@ -30,9 +30,10 @@
   next prompt`. A resume compacts before start returns, so the oversized
   projection never takes a prompt. A `setModel` queues an auto compact
   that runs when the next prompt arrives, before that prompt reaches the
-  CLI, or at the next safe tool boundary when a turn is open. A trigger
-  the window did not cap is left to the turn-end and tool-boundary checks,
-  as before.
+  CLI, or at the next safe tool boundary when a turn is open. A later
+  `setModel` whose window read succeeds decides the queue anew, and any
+  finished compact clears it. A trigger the window did not cap is left to
+  the turn-end and tool-boundary checks, as before.
 - Auto compact (provider context at or above the effective trigger) at a
   settled tool boundary: live only, covered by
   `packages/claude-lhc/scripts/midturn.ts`. Deferred `/compact` during an
