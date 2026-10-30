@@ -1,11 +1,3 @@
-/**
- * A host that uses claude-lhc where it would use the Claude Agent SDK: start, answer, compact,
- * restart, fork, roll back and close, against a real model. Prints `CONSUMER: PASS` when every
- * step passes. The host's environment is the Claude environment, so run it with an isolated
- * HOME and CLAUDE_CONFIG_DIR and auth from env, as verify-claude-lhc's `consumer` drive does.
- *
- *   node --import tsx examples/consumer.ts <work dir>
- */
 import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
