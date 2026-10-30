@@ -1,67 +1,59 @@
 import type { Query } from "@anthropic-ai/claude-agent-sdk";
 import type { CompactPolicy } from "./compactPolicy.js";
 
-/** Controls claude-lhc adds to the SDK `Query`. */
 export interface LhcControls {
   setCompactPolicy(policy: CompactPolicy): Promise<void>;
 }
 
 type Controls = Query & LhcControls;
 type Args<M extends keyof Controls> = Controls[M] extends (...args: infer A) => unknown ? A : never;
-/** The method's SDK parameter names in order. A name ending in `?` may be left out of `params`. */
-type ParamNames<A extends readonly unknown[]> = { [K in keyof A]-?: undefined extends A[K] ? `${string}?` : string };
+type Param<T> = undefined extends T ? { optional: string } : string;
+type Params<A extends readonly unknown[]> = { [K in keyof A]-?: Param<A[K]> };
 
-/**
- * replay: forwarded to the live generation and sent again to every later one, because a compact
- * swap starts a new Claude session. A call replaces the earlier call in its slot, or merges into it.
- * forward: sent to the live generation as it is.
- * refuse: changes the Claude session outside the LHC record.
- * lhc: handled by claude-lhc, with no `Query` method behind it.
- */
 type Row<M extends keyof Controls> =
   | {
-      kind: "replay";
-      params: ParamNames<Args<M>>;
+      kind: "forward-and-replay";
+      params: Params<Args<M>>;
       slot?: (args: Args<M>) => string;
       merge?: (earlier: Args<M>, later: Args<M>) => Args<M>;
     }
-  | { kind: "forward" | "lhc"; params: ParamNames<Args<M>> }
+  | { kind: "forward" | "sidecar"; params: Params<Args<M>> }
   | { kind: "refuse" };
 
 const byServer = ([serverName]: readonly [string, ...unknown[]]): string => serverName;
 
 export const CONTROLS = {
-  setModel: { kind: "replay", params: ["model?"] },
-  setPermissionMode: { kind: "replay", params: ["mode"] },
-  setMaxThinkingTokens: { kind: "replay", params: ["maxThinkingTokens", "thinkingDisplay?"] },
-  setMcpServers: { kind: "replay", params: ["servers"] },
+  setModel: { kind: "forward-and-replay", params: [{ optional: "model" }] },
+  setPermissionMode: { kind: "forward-and-replay", params: ["mode"] },
+  setMaxThinkingTokens: { kind: "forward-and-replay", params: ["maxThinkingTokens", { optional: "thinkingDisplay" }] },
+  setMcpServers: { kind: "forward-and-replay", params: ["servers"] },
   applyFlagSettings: {
-    kind: "replay",
+    kind: "forward-and-replay",
     params: ["settings"],
     merge: ([earlier], [later]) => [{ ...earlier, ...later }],
   },
   updateSettings: {
-    kind: "replay",
+    kind: "forward-and-replay",
     params: ["source", "settings"],
     slot: ([source]) => source,
     merge: ([, earlier], [source, later]) => [source, { ...earlier, ...later }],
   },
-  toggleMcpServer: { kind: "replay", params: ["serverName", "enabled"], slot: byServer },
-  setMcpPermissionModeOverride: { kind: "replay", params: ["serverName", "mode"], slot: byServer },
+  toggleMcpServer: { kind: "forward-and-replay", params: ["serverName", "enabled"], slot: byServer },
+  setMcpPermissionModeOverride: { kind: "forward-and-replay", params: ["serverName", "mode"], slot: byServer },
 
   interrupt: { kind: "forward", params: [] },
   stopTask: { kind: "forward", params: ["taskId"] },
-  backgroundTasks: { kind: "forward", params: ["toolUseId?"] },
+  backgroundTasks: { kind: "forward", params: [{ optional: "toolUseId" }] },
   initializationResult: { kind: "forward", params: [] },
   supportedCommands: { kind: "forward", params: [] },
   supportedModels: { kind: "forward", params: [] },
   supportedAgents: { kind: "forward", params: [] },
   mcpServerStatus: { kind: "forward", params: [] },
-  getContextUsage: { kind: "forward", params: ["opts?"] },
+  getContextUsage: { kind: "forward", params: [{ optional: "opts" }] },
   accountInfo: { kind: "forward", params: [] },
-  readFile: { kind: "forward", params: ["path", "options?"] },
+  readFile: { kind: "forward", params: ["path", { optional: "options" }] },
   reconnectMcpServer: { kind: "forward", params: ["serverName"] },
-  reloadPlugins: { kind: "forward", params: ["options?"] },
+  reloadPlugins: { kind: "forward", params: [{ optional: "options" }] },
   reloadSkills: { kind: "forward", params: [] },
   reloadOutputStyles: { kind: "forward", params: [] },
 
@@ -69,17 +61,16 @@ export const CONTROLS = {
   reinitialize: { kind: "refuse" },
   seedReadState: { kind: "refuse" },
 
-  setCompactPolicy: { kind: "lhc", params: ["policy"] },
+  setCompactPolicy: { kind: "sidecar", params: ["policy"] },
 } as const satisfies { [M in keyof Controls]?: Row<M> };
 
 export type ControlMethod = keyof typeof CONTROLS;
 type MethodOf<K> = { [M in ControlMethod]: (typeof CONTROLS)[M]["kind"] extends K ? M : never }[ControlMethod];
-export type QueryControlMethod = MethodOf<"replay" | "forward">;
+export type QueryControlMethod = MethodOf<"forward-and-replay" | "forward">;
 
-/** A host control with its params mapped onto the method's positional arguments. */
 export type ControlCall =
-  | { kind: "replay" | "forward"; method: QueryControlMethod; args: readonly unknown[] }
-  | { kind: "lhc"; method: MethodOf<"lhc">; args: readonly unknown[] };
+  | { kind: "forward-and-replay" | "forward"; method: QueryControlMethod; args: readonly unknown[] }
+  | { kind: "sidecar"; method: MethodOf<"sidecar">; args: readonly unknown[] };
 
 interface ReplayRow {
   slot?: (args: readonly unknown[]) => string;
@@ -92,15 +83,14 @@ export function parseControl(method: string, params: unknown): ControlCall {
   if (row.kind === "refuse")
     throw new Error(`${method} is refused: it changes the Claude session outside the LHC record`);
   const record = typeof params === "object" && params !== null ? (params as Record<string, unknown>) : {};
-  const args = row.params.map((name: string) => {
-    const key = name.endsWith("?") ? name.slice(0, -1) : name;
-    if (key === name && record[key] === undefined) throw new Error(`${method} needs params.${key}`);
-    return record[key];
+  const args = row.params.map((param: string | { optional: string }) => {
+    if (typeof param !== "string") return record[param.optional];
+    if (record[param] === undefined) throw new Error(`${method} needs params.${param}`);
+    return record[param];
   });
   return { kind: row.kind, method, args } as ControlCall;
 }
 
-/** The replay calls a new generation needs, in the order the host last made them. */
 export class ReplayLedger {
   readonly #calls = new Map<string, ControlCall>();
 
@@ -115,7 +105,7 @@ export class ReplayLedger {
     );
   }
 
-  calls(): readonly ControlCall[] {
+  inLastCallOrder(): readonly ControlCall[] {
     return [...this.#calls.values()];
   }
 }

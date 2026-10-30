@@ -320,7 +320,7 @@ export class ClaudeLhcSession {
     const gen = this.#gen;
     if (gen === null) throw new Error("no live generation");
     const call = parseControl(method, params);
-    if (call.kind === "lhc") {
+    if (call.kind === "sidecar") {
       await this.#setCompactPolicy(gen, call.args[0]);
       return undefined;
     }
@@ -338,7 +338,7 @@ export class ClaudeLhcSession {
         break;
     }
     const value = await this.#invoke(gen, call);
-    if (call.kind === "replay") this.#replay.record(call);
+    if (call.kind === "forward-and-replay") this.#replay.record(call);
     if (call.method === "setModel") await this.#checkServedContext(gen);
     return value;
   }
@@ -350,7 +350,7 @@ export class ClaudeLhcSession {
   }
 
   async #replayControls(gen: Generation): Promise<void> {
-    const calls = this.#replay.calls();
+    const calls = this.#replay.inLastCallOrder();
     for (const call of calls) {
       try {
         const value = await this.#invoke(gen, call);
