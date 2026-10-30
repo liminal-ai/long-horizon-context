@@ -66,7 +66,32 @@ async function served(threadId: string): Promise<string> {
   return JSON.stringify(view.value.entries);
 }
 
-async function resume(sessionId: string): Promise<{ threadId: string; projected: string }> {
+async function resume(
+  sessionId: string,
+  extra: Record<string, unknown> = {},
+): Promise<{ threadId: string; projected: string; logs: string[] }> {
+  const logs: string[] = [];
+  const session = new ClaudeLhcSession({
+    emit(): void {},
+    request: async () => ({}),
+    end(): void {},
+    fail(): void {},
+    log: (line: string) => logs.push(line),
+  });
+  await session.start({
+    resume: sessionId,
+    cwd,
+    model: "claude-sonnet-5",
+    env: { ...process.env },
+    lhc: { home },
+    ...extra,
+  });
+  await session.close();
+  return { threadId: session.threadId, projected: projected(opened.at(-1)!.resume!), logs };
+}
+
+async function compact(sessionId: string, threadId: string): Promise<void> {
+  await seedLhc().work.drain(threadRef(threadId, home));
   const session = new ClaudeLhcSession({
     emit(): void {},
     request: async () => ({}),
@@ -75,8 +100,20 @@ async function resume(sessionId: string): Promise<{ threadId: string; projected:
     log(): void {},
   });
   await session.start({ resume: sessionId, cwd, model: "claude-sonnet-5", env: { ...process.env }, lhc: { home } });
+  await session.pushUser({
+    type: "user",
+    message: { role: "user", content: "/compact" },
+    parent_tool_use_id: null,
+    session_id: "",
+  });
   await session.close();
-  return { threadId: session.threadId, projected: projected(opened.at(-1)!.resume!) };
+}
+
+async function historyUuid(sessionId: string, text: string): Promise<string> {
+  const messages = await getSessionMessages(sessionId, store());
+  const found = messages.find((message) => JSON.stringify(message.message).includes(text));
+  if (found === undefined) throw new Error(`no ${text} in the history of ${sessionId}`);
+  return found.uuid;
 }
 
 async function twoTurns() {
@@ -125,6 +162,48 @@ describe("forkSession", () => {
     const second = await forkSession(first.sessionId, store());
 
     expect(existsSync(nativeSessionPath({ sessionId: second.sessionId, cwd: elsewhere, env: process.env }))).toBe(true);
+  });
+
+  describe("at a message id read from getSessionMessages", () => {
+    const forkAtHistory = async (sessionId: string) => {
+      const forked = await forkSession(sessionId, {
+        ...store(),
+        upToMessageId: await historyUuid(sessionId, "KEEP-ANSWER"),
+      });
+      expect(projected(forked.sessionId)).toContain("KEEP-ANSWER");
+      expect(projected(forked.sessionId)).not.toContain("LATER");
+    };
+
+    test("after a restart", async () => {
+      const { gen1 } = await twoTurns();
+      await resume(gen1);
+      await forkAtHistory(gen1);
+    });
+
+    test("after a compact", async () => {
+      const { gen1, threadId } = await twoTurns();
+      await compact(gen1, threadId);
+      await forkAtHistory(gen1);
+    });
+
+    test("after a fork", async () => {
+      const { gen1 } = await twoTurns();
+      const whole = await forkSession(gen1, store());
+      await forkAtHistory(whole.sessionId);
+    });
+  });
+
+  test("resumeSessionAt a fork's headMessageId rolls the fork back to where it was cut", async () => {
+    const { gen1, kept } = await twoTurns();
+    const forked = await forkSession(gen1, { ...store(), upToMessageId: kept });
+    const forkThread = (await resolveSession(forked.sessionId, home))!;
+    await captureTurn(home, forkThread, "FORK-PROMPT", "FORK-ANSWER");
+
+    const rolled = await resume(forked.sessionId, { resumeSessionAt: forked.headMessageId });
+
+    expect(rolled.logs).toContainEqual(expect.stringMatching(`^rollback to event \\d+ via ${forked.headMessageId}$`));
+    expect(rolled.projected).toContain("KEEP-ANSWER");
+    expect(rolled.projected).not.toContain("FORK-ANSWER");
   });
 
   test("forking leaves the source thread, its aliases and its served view unchanged", async () => {

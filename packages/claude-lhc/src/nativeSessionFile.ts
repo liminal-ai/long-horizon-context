@@ -10,7 +10,7 @@ import * as NodeFS from "node:fs";
 import * as NodeOS from "node:os";
 import * as NodePath from "node:path";
 
-import type { NativeEntry } from "./projection/project.js";
+import { type NativeEntry, PROJECTED_SOURCE_FIELD } from "./projection/project.js";
 
 const PROJECT_KEY_CAP = 200;
 
@@ -99,38 +99,50 @@ export async function writeProjectedSession(input: {
   return dest;
 }
 
-export async function nativeMessageAncestors(input: {
+export interface NativeChainLine {
+  readonly uuid: string;
+  readonly source: string | null;
+}
+
+export async function nativeMessageChain(input: {
   readonly uuid: string;
   readonly sessionId: string;
   readonly cwd: string;
   readonly env?: NodeJS.ProcessEnv;
-}): Promise<string[]> {
+}): Promise<NativeChainLine[]> {
   const dir = nativeProjectDir(input);
   const resumed = `${input.sessionId}.jsonl`;
   const names = await NodeFS.promises.readdir(dir).catch(() => [] as string[]);
   for (const name of [resumed, ...names.filter((n) => n.endsWith(".jsonl") && n !== resumed)]) {
     const body = await NodeFS.promises.readFile(NodePath.join(dir, name), "utf8").catch(() => "");
     if (!body.includes(input.uuid)) continue;
-    const lines = new Map<string, { parent: unknown; type: unknown }>();
+    const lines = new Map<string, { parent: unknown; type: unknown; source: unknown }>();
     for (const raw of body.split("\n")) {
       try {
         const line = JSON.parse(raw) as Record<string, unknown>;
         if (typeof line["uuid"] === "string")
-          lines.set(line["uuid"], { parent: line["parentUuid"], type: line["type"] });
+          lines.set(line["uuid"], {
+            parent: line["parentUuid"],
+            type: line["type"],
+            source: line[PROJECTED_SOURCE_FIELD],
+          });
       } catch {}
     }
-    if (!lines.has(input.uuid)) continue;
-    const ancestors: string[] = [];
+    const anchor = lines.get(input.uuid);
+    if (anchor === undefined) continue;
+    const sourceOf = (line: { source: unknown }): string | null =>
+      typeof line.source === "string" ? line.source : null;
+    const chain: NativeChainLine[] = [{ uuid: input.uuid, source: sourceOf(anchor) }];
     const seen = new Set([input.uuid]);
-    let parent = lines.get(input.uuid)?.parent;
+    let parent = anchor.parent;
     while (typeof parent === "string" && !seen.has(parent)) {
       seen.add(parent);
       const line = lines.get(parent);
       if (line === undefined) break;
-      if (line.type === "user" || line.type === "assistant") ancestors.push(parent);
+      if (line.type === "user" || line.type === "assistant") chain.push({ uuid: parent, source: sourceOf(line) });
       parent = line.parent;
     }
-    return ancestors;
+    return chain;
   }
   return [];
 }

@@ -420,6 +420,28 @@ describe("host rollback on resume", () => {
     expect(projectedText(options)).not.toContain("REMOVED");
   });
 
+  test("a projected line right after a compact resolves through the capture key it records", async () => {
+    const { gen1, threadId } = await seedThread();
+    await captureTurn(threadId, "KEEP-PROMPT", "KEEP-ANSWER");
+    await captureTurn(threadId, "REMOVED-PROMPT", "REMOVED-ANSWER");
+    const live = await startSession({ resume: gen1 });
+    await live.session.pushUser(userMessage("/compact"));
+    const compacted = opened.at(-1)!;
+    await live.session.close();
+    const lines = projectedText(compacted)
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line) as { uuid: string; message: unknown });
+    const anchor = lines.find((line) => JSON.stringify(line.message).includes("KEEP-ANSWER"))!.uuid;
+
+    const { logs, options } = await startSession({ resume: compacted.resume, resumeSessionAt: anchor });
+
+    expect(logs).toContainEqual(expect.stringMatching(new RegExp(`^rollback to event \\d+ via ${anchor}$`)));
+    const projected = projectedText(options);
+    expect(projected).toContain("KEEP-ANSWER");
+    expect(projected).not.toContain("REMOVED");
+  });
+
   test("a repeat rollback to an anchor that is already the visible tail writes nothing", async () => {
     const { gen1, threadId } = await seedThread();
     const kept = await captureTurn(threadId, "KEEP-PROMPT", "KEEP-ANSWER");
