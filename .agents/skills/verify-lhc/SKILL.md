@@ -69,14 +69,14 @@ node .agents/skills/verify-lhc/helpers/rollback.mjs
 - User-only check: after the rollback, the served views and the `lhc thread export` file hold the kept turn and the new turn in order, and no discarded text, including text that sat behind the compact point.
 - Outcome check: the record still holds the four hidden messages under the deleted contract. Any refused rollback batch exits 3 with `verify-lhc rollback: UNSUPPORTED (this build has no rollback event)`. A build from before the event (PR #25) gives that result, and so does an anchor at or past the rollback's own event order.
 
-Compact policy: read, set, refuse, copy ([features/compact-policy.md](features/compact-policy.md)):
+Compact policy: read, set, refuse, copy, fork ([features/compact-policy.md](features/compact-policy.md)):
 
 ```sh
 node .agents/skills/verify-lhc/helpers/compact-policy.mjs
 node .agents/skills/verify-lhc/helpers/compact-policy.mjs --migrate <schema-13 thread file>
 ```
 
-- User-only check: a new thread reads `null`, and after `setCompactPolicy` it and its copy read back the same pair.
+- User-only check: a new thread reads `null`, and after `setCompactPolicy` it, its copy and its fork read back the same pair.
 - Outcome check: `--migrate` backs up a real thread file into the temp home, opens the copy, and shows `user_version` 14, a `null` policy and the source's event count. The source is opened read-only and never changes.
 
 CLI thread ops against an existing home are covered in [features/cli-thread-ops.md](features/cli-thread-ops.md). Use `--keep` on the round trip to leave its home in place for manual CLI poking:
