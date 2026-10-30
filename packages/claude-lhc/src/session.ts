@@ -182,6 +182,7 @@ export class ClaudeLhcSession {
   #env: NodeJS.ProcessEnv = process.env;
   #gen: Generation | null = null;
   readonly #replay = new ReplayLedger();
+  readonly #replaying = new Set<Promise<unknown>>();
   #turnOpen = false;
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
@@ -337,8 +338,7 @@ export class ClaudeLhcSession {
         this.#maxThinkingTokens = typeof first === "number" ? first : null;
         break;
     }
-    const value = await this.#invoke(gen, call);
-    if (call.kind === "forward-and-replay") this.#replay.record(call);
+    const value = await (call.kind === "forward-and-replay" ? this.#recorded(gen, call) : this.#invoke(gen, call));
     if (call.method === "setModel" || (call.method === "applyFlagSettings" && Object.hasOwn(first as object, "model")))
       await this.#checkServedContext(gen);
     return value;
@@ -350,10 +350,22 @@ export class ClaudeLhcSession {
     return Reflect.apply(gen.query[method as keyof Query] as (...a: unknown[]) => unknown, gen.query, sent);
   }
 
+  #recorded(gen: Generation, call: ControlCall): Promise<unknown> {
+    const sent = this.#invoke(gen, call).then((value) => {
+      this.#replay.record(call);
+      return value;
+    });
+    this.#replaying.add(sent);
+    return sent.finally(() => this.#replaying.delete(sent));
+  }
+
   async #replayControls(gen: Generation): Promise<void> {
     const replayed: string[] = [];
     let seen = 0;
-    for (let calls = this.#replay.recordedAfter(seen); calls.length > 0; calls = this.#replay.recordedAfter(seen)) {
+    for (;;) {
+      await Promise.allSettled(this.#replaying);
+      const calls = this.#replay.recordedAfter(seen);
+      if (calls.length === 0) break;
       seen = this.#replay.seq;
       for (const call of calls) {
         replayed.push(call.method);

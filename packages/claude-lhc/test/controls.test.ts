@@ -195,6 +195,23 @@ describe("replay controls", () => {
     expect(methods(queries[1]!)).toEqual(["setMcpServers", "setPermissionMode"]);
   });
 
+  test("a control still in flight on the old generation when the replay ends reaches the new one", async () => {
+    const session = await started();
+    await session.control("setMcpServers", { servers: LATE });
+    delays["setMcpServers"] = 50;
+    delays["applyFlagSettings"] = 300;
+    try {
+      const compacted = session.pushUser(prompt("/compact"));
+      await vi.waitFor(() => expect(queries).toHaveLength(2));
+      await session.control("applyFlagSettings", { settings: { effortLevel: "low" } });
+      await compacted;
+    } finally {
+      delete delays["setMcpServers"];
+      delete delays["applyFlagSettings"];
+    }
+    expect(queries[1]!.calls).toContainEqual(["applyFlagSettings", { effortLevel: "low" }]);
+  });
+
   test("setMcpServers keeps the retrieval server under its own name", async () => {
     const session = await started();
     await session.control("setMcpServers", {

@@ -15,7 +15,8 @@
   them. A later call drops an earlier call to the same method and target.
   For `applyFlagSettings` and `updateSettings` it drops only the keys it
   sets again, so the replay ends on the settings the live generation has.
-  A control that arrives while the replay runs is replayed too. The new generation logs `generation <id>:
+  The swap waits for replay controls still in flight on the old
+  generation, and a control that lands during the replay is replayed too. The new generation logs `generation <id>:
   replayed <methods>`. `setMcpServers` always carries the LHC retrieval
   server under its own name.
 - Forward: `interrupt`, `stopTask`, `backgroundTasks`,
