@@ -101,7 +101,7 @@ const manifest = {
   },
   homepage: "https://github.com/liminal-ai/long-horizon-context/tree/main/packages/claude-lhc",
   bugs: { url: "https://github.com/liminal-ai/long-horizon-context/issues" },
-  keywords: ["long-horizon-context", "claude-code", "t3code", "sidecar"],
+  keywords: ["long-horizon-context", "claude-code", "claude-agent-sdk"],
   publishConfig: { access: "public" },
   ...(sourceSha === null ? {} : { gitHead: sourceSha }),
 };
