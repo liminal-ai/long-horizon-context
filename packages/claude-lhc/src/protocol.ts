@@ -18,8 +18,11 @@ import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk"
  *   lhc.compact — the compact policy a new thread stores. A resumed thread keeps its own.
  *   lhc.forceRebuildFailure — every compact rebuild throws before touching LHC
  *   (proof scripts exercise the failure path with a live model; never set by t3code).
+ * `resumeSessionAt` is a host rollback to that message. The sidecar records it in LHC
+ * and never forwards it: projected lines carry fresh uuids, and the CLI fails a turn
+ * whose resumeSessionAt names no line in the resumed file.
  */
-export type WireOptions = Record<string, unknown> & { lhc: SidecarOptions };
+export type WireOptions = Record<string, unknown> & { lhc: SidecarOptions; resumeSessionAt?: string };
 export type SidecarOptions = {
   home: string;
   compact?: { trigger: number; target: number };

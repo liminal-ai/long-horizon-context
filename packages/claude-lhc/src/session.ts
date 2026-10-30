@@ -47,6 +47,7 @@ import { writeProjectedSession } from "./nativeSessionFile.js";
 import { projectView } from "./projection/project.js";
 import { parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
+import { type RollbackAnchor, resolveRollbackAnchor } from "./rollbackAnchor.js";
 import { abortSummaryWorkers } from "./summaryWorker.js";
 import {
   formatTokenFamilyLog,
@@ -193,7 +194,7 @@ export class ClaudeLhcSession {
   #maxThinkingTokens: number | null | undefined;
   #claudeCodeVersion = FALLBACK_CLAUDE_CODE_VERSION;
   #compactPolicy: ResolvedCompactPolicy = { stored: { trigger: 0, target: 0 }, window: null };
-  #windowRead: Promise<void> = Promise.resolve();
+  #windowRead: Promise<number | null> = Promise.resolve(null);
   #windowReads = 0;
   #forceRebuildFailure = false;
   #tokenFamily: ResolvedTokenFamily = seedTokenFamilyFromStartModel("");
@@ -211,6 +212,7 @@ export class ClaudeLhcSession {
   async start(wire: WireOptions): Promise<void> {
     const {
       resume,
+      resumeSessionAt,
       sessionId,
       canUseTool: _c,
       onUserDialog: _d,
@@ -241,10 +243,17 @@ export class ClaudeLhcSession {
       if (threadId === null) throw new Error(`no LHC thread holds the Claude session ${resume}`);
       this.#threadId = threadId;
       this.#thread = threadRef(threadId, this.#home);
+      const anchor =
+        typeof resumeSessionAt === "string" && resumeSessionAt !== ""
+          ? await this.#resolveAnchor(resumeSessionAt, resume)
+          : null;
       const stored = await resumeCompactPolicy(this.#thread, sidecarOptions.compact, (line) => this.#io.log(line));
       this.#compactPolicy = { stored, window: null };
       await this.#settleOpenTurn("session restarted");
+      if (anchor !== null) await this.#rollBack(anchor);
       await this.#startProjectedGeneration();
+      const served = this.#servedPastTrigger(await this.#windowRead);
+      if (served !== null) await this.#compactBeforeFirstPrompt(served);
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);
       return;
     }
@@ -252,6 +261,11 @@ export class ClaudeLhcSession {
     const compact = sidecarOptions.compact;
     if (compact === undefined) throw new Error("lhc.compact is required to create a thread");
     const first = typeof sessionId === "string" && sessionId !== "" ? sessionId : randomUUID();
+    const holder = await resolveSession(first, this.#home);
+    if (holder !== null)
+      throw new Error(
+        `Claude session ${first} already names LHC thread ${holder}; a fresh start needs a new session id`,
+      );
     this.#threadId = await createThread(this.#cwd, this.#home);
     this.#thread = threadRef(this.#threadId, this.#home);
     this.#compactPolicy = { stored: await storeCompactPolicy(this.#thread, compact), window: null };
@@ -277,11 +291,17 @@ export class ClaudeLhcSession {
     }
     const gen = this.#gen;
     if (gen === null) throw new Error("no live generation");
-    const uuid = randomUUID();
+    if (!this.#turnOpen && this.#pendingCompact === "auto") {
+      this.#pendingCompact = null;
+      this.#heldPrompts.push(message);
+      await this.#compact("auto");
+      return;
+    }
+    const promptUuid = message.uuid ?? randomUUID();
     gen.input.push({
-      message,
+      message: { ...message, uuid: promptUuid },
       before: async () => {
-        const events = mapPrompt(message, uuid, this.#turnOpen);
+        const events = mapPrompt(message, promptUuid, this.#turnOpen);
         if (!this.#turnOpen && events.some((event) => event.eventKind === "user_prompt")) {
           this.#turnOpen = true;
           this.#turnStartedAt = new Date().toISOString();
@@ -302,7 +322,13 @@ export class ClaudeLhcSession {
         this.#observeLaterModel(model);
         await gen.query.setModel(model);
         this.#windowRead = this.#readWindow(gen);
-        await this.#windowRead;
+        const read = await this.#windowRead;
+        if (read !== null && this.#pendingCompact === "auto") this.#pendingCompact = null;
+        const served = this.#servedPastTrigger(read);
+        if (served !== null && this.#pendingCompact === null) {
+          this.#lastContextTokens = served;
+          this.#pendingCompact = "auto";
+        }
         return undefined;
       }
       case "setPermissionMode": {
@@ -388,31 +414,45 @@ export class ClaudeLhcSession {
     return capCompactPolicyToWindow(this.#compactPolicy);
   }
 
-  async #readWindow(gen: Generation): Promise<void> {
+  async #readWindow(gen: Generation): Promise<number | null> {
     const read = ++this.#windowReads;
     const stale = (): boolean => read !== this.#windowReads || this.#closed;
     let rawMaxTokens: unknown;
+    let totalTokens: unknown;
     try {
-      ({ rawMaxTokens } = await gen.query.getContextUsage({ detail: "summary" }));
+      ({ rawMaxTokens, totalTokens } = await gen.query.getContextUsage({ detail: "summary" }));
     } catch (cause) {
       if (!stale())
         this.#keepWindow(`context window read failed: ${cause instanceof Error ? cause.message : String(cause)}`);
-      return;
+      return null;
     }
-    if (stale()) return;
+    if (stale()) return null;
     const window = windowFromUsage(rawMaxTokens);
     if (window === null) {
       const shown = typeof rawMaxTokens === "string" ? JSON.stringify(rawMaxTokens) : String(rawMaxTokens);
       this.#keepWindow(`context window read returned rawMaxTokens ${shown}, not a usable window`);
-      return;
+      return null;
     }
-    if (window === this.#compactPolicy.window) return;
-    this.#compactPolicy = { ...this.#compactPolicy, window };
-    this.#io.log(`context window ${window} for model ${this.#model ?? "(default)"}`);
-    const { stored } = this.#compactPolicy;
-    const { trigger, target } = this.#effectiveCompactPolicy();
-    if (trigger !== stored.trigger || target !== stored.target)
-      this.#io.log(`compact policy capped to window ${window}: trigger ${trigger} target ${target}`);
+    if (window !== this.#compactPolicy.window) {
+      this.#compactPolicy = { ...this.#compactPolicy, window };
+      this.#io.log(`context window ${window} for model ${this.#model ?? "(default)"}`);
+      const { stored } = this.#compactPolicy;
+      const { trigger, target } = this.#effectiveCompactPolicy();
+      if (trigger !== stored.trigger || target !== stored.target)
+        this.#io.log(`compact policy capped to window ${window}: trigger ${trigger} target ${target}`);
+    }
+    return typeof totalTokens === "number" && Number.isSafeInteger(totalTokens) && totalTokens >= 0
+      ? totalTokens
+      : null;
+  }
+
+  #servedPastTrigger(served: number | null): number | null {
+    const { trigger } = this.#effectiveCompactPolicy();
+    if (served === null || served < trigger) return null;
+    this.#io.log(
+      `served context ${served} tokens is at or past the compact trigger ${trigger}; compacting before the next prompt`,
+    );
+    return served;
   }
 
   #keepWindow(reason: string): void {
@@ -622,6 +662,54 @@ export class ClaudeLhcSession {
     if (!result.ok) throw new Error(`LHC intake refused: ${result.error.code}: ${result.error.reason}`);
   }
 
+  async #resolveAnchor(anchorId: string, resumed: string): Promise<RollbackAnchor> {
+    const anchor = await resolveRollbackAnchor({
+      lhc: this.#lhc,
+      thread: this.#thread,
+      anchor: anchorId,
+      sessionId: resumed,
+      cwd: this.#cwd,
+      env: this.#env,
+    });
+    if (anchor === null) throw new Error(`rollback anchor ${anchorId} not found`);
+    return anchor;
+  }
+
+  async #rollBack({ anchor, keepThroughEventOrder, via }: RollbackAnchor): Promise<void> {
+    const target = `rollback to event ${keepThroughEventOrder} via ${via}${via === anchor ? "" : ` (nearest captured ancestor of ${anchor})`}`;
+    const later = await this.#lhc.messages.list(this.#thread, { from: keepThroughEventOrder + 1, limit: 1 });
+    if (!later.ok) throw new Error(`LHC message read failed: ${later.error.reason}`);
+    if (later.value.length === 0) {
+      this.#io.log(`${target} skipped: the anchor is already the visible tail`);
+      return;
+    }
+    await this.#intake([
+      {
+        eventKind: "rollback",
+        idempotencyKey: `claude-lhc:rollback:${randomUUID()}`,
+        actor: "system",
+        harness: HARNESS,
+        payload: { keepThroughEventOrder, reason: `host resumeSessionAt ${anchor}` },
+      },
+    ]);
+    this.#io.log(target);
+  }
+
+  async #compactBeforeFirstPrompt(served: number): Promise<void> {
+    try {
+      await this.#rebuild("auto", served);
+    } catch (cause) {
+      const reason = cause instanceof Error ? cause.message : String(cause);
+      this.#io.log(`compact before the first prompt failed: ${reason}; serving the uncompacted view`);
+      await this.#lhc.logging
+        .write(this.#thread, {
+          level: "warning",
+          message: `[lhc compact:auto] before the first prompt failed: ${reason}`,
+        })
+        .catch(() => undefined);
+    }
+  }
+
   async #settleOpenTurn(reason: string): Promise<void> {
     const turns = await this.#lhc.turns.listTurns(this.#thread);
     if (!turns.ok) throw new Error(`LHC turns read failed: ${turns.error.reason}`);
@@ -729,8 +817,8 @@ export class ClaudeLhcSession {
     } finally {
       this.#compacting = false;
     }
-    const note = this.#continuationNote();
     const uuid = randomUUID();
+    const note = { ...this.#continuationNote(), uuid };
     target.input.push({ message: note, before: async () => this.#intake(mapPrompt(note, uuid, true)) });
     await this.#replayHeld();
   }
@@ -818,6 +906,7 @@ export class ClaudeLhcSession {
     await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
 
     const next = await this.#startProjectedGeneration();
+    if (this.#pendingCompact === "auto") this.#pendingCompact = null;
     return { next, postTokens };
   }
 
@@ -848,15 +937,11 @@ export class ClaudeLhcSession {
       permissionMode: this.#permissionMode ?? "default",
       model: this.#model ?? "claude-sonnet-5",
     });
-    const dest = await writeProjectedSession({
-      sessionId,
-      cwd,
-      entries,
-      env: this.#env,
-    });
-    await labelNativeSession(sessionId, nativeLhcTitle(this.#threadId), cwd, this.#io);
+    const title = nativeLhcTitle(this.#threadId);
+    const dest = entries.length === 0 ? null : await writeProjectedSession({ sessionId, cwd, entries, env: this.#env });
+    if (dest !== null) await labelNativeSession(sessionId, title, cwd, this.#io);
     await bindSession(this.#threadId, sessionId, this.#home);
-    const next = this.#startGeneration(sessionId, { resume: sessionId });
+    const next = this.#startGeneration(sessionId, dest === null ? { sessionId, title } : { resume: sessionId });
     const old = this.#gen;
     this.#gen = next;
     if (old !== null) {
@@ -865,7 +950,7 @@ export class ClaudeLhcSession {
       old.query.close();
     }
     this.#io.log(
-      `generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries at ${dest}`,
+      `generation ${sessionId}: ${entries.length} projected lines from ${view.value.entries.length} served entries ${dest === null ? "(fresh native session)" : `at ${dest}`}`,
     );
     return next;
   }

@@ -10,7 +10,8 @@
   (`threads.resolveAlias`, via `resolveSession`), and the new generation
   is projected from the thread's **current** served view. There is no
   per-alias history point; an old id is a name for the whole thread, not
-  a rollback target.
+  a rollback target. A host rollback is a separate start field,
+  `resumeSessionAt`; see [host-rollback.md](host-rollback.md).
 
 ## How to get to it (user POV)
 
@@ -46,16 +47,17 @@ git, so worktrees do not have it). It resumed through an old alias with a
 `resumeSessionAt` host uuid and recorded: the alias resolved to the same
 thread, `intakeCount` 0, the projected file held both the kept turn and
 the turn the host meant to remove, and the host uuid did not appear in
-the projection. That agrees with current code: `packages/claude-lhc`
-never sends the core `rollback` intake event (see verify-lhc's
-`features/rollback.md`) and passes `resumeSessionAt` through to the SDK
-untouched.
+the projection. That was the code before host rollback landed:
+`packages/claude-lhc` sent no core `rollback` intake event and passed
+`resumeSessionAt` through to the SDK untouched. The sidecar now records
+that rollback and keeps the uuid from the CLI; see
+[host-rollback.md](host-rollback.md).
 
 ## Gotchas
 
 - Do not describe this as rollback support. It is alias resolution with a
   stale name; the served view is not versioned by alias. A host rewind
-  through claude-lhc is not honored today.
+  goes through `resumeSessionAt` ([host-rollback.md](host-rollback.md)).
 - The fresh generation becomes the thread's **current** alias
   (`registerCurrentAlias`). A driver still holding gen2 can also resume
   afterward — aliases accumulate, none is revoked by a rollback-shaped

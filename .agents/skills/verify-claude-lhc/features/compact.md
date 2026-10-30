@@ -22,6 +22,18 @@
   `compact policy capped to window <w>: trigger <t> target <g>`. The
   stored row never changes. A failed read logs `context window read
   failed` and keeps the pair.
+- Window shrink: the same read takes `getContextUsage().totalTokens`, the
+  served context the CLI counts for the live generation. On a resume and
+  after a `setModel`, when that count is at or past the effective trigger,
+  the sidecar logs `served context <n> tokens is at or past the compact
+  trigger <t>; compacting before the next prompt`. A resume compacts
+  before start returns, so an oversized projection never takes a prompt.
+  A `setModel` queues an auto compact that runs when the next prompt
+  arrives, before that prompt reaches the CLI, or at the next safe tool
+  boundary when a turn is open. A later `setModel` whose window read
+  succeeds decides the queue anew, and any finished compact clears it. No
+  other window read compacts. A failed read leaves the decision to the
+  turn-end and tool-boundary checks.
 - Auto compact (provider context at or above the effective trigger) at a
   settled tool boundary: live only, covered by
   `packages/claude-lhc/scripts/midturn.ts`. Deferred `/compact` during an
@@ -61,6 +73,19 @@ from thread: trigger 700000 target 140000` and exits 0. Outcome half:
 The seed waits for `context window <w> for model <m>`, which shows
 `getContextUsage` answers on a seeded start before any prompt and with no
 credential.
+
+```sh
+.agents/skills/verify-claude-lhc/drive.mjs window-shrink
+```
+
+The drive seeds 20 large turns, resumes on `claude-sonnet-5` (1M window,
+no compact), then sends `setModel` `claude-sonnet-4-6` (200k). User-only
+half: the cap line `trigger 160000 target 80000`, the `served context`
+queue line, and no compact yet. It stops, resumes on `claude-sonnet-4-6`,
+and passes when stderr shows `served context`, then `[lhc compact:auto]
+... (target 80000)`, then `resumed thread`, with two generation lines.
+The CLI counts the projection with no credential, so the drive needs no
+model call.
 
 The seeded `compact` drive compacts an empty view (0 tokens, 0 bands content). It
 proves the boundary/projection/generation-swap plumbing deterministically;
