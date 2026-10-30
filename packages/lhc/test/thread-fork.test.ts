@@ -4,7 +4,13 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
-import { initLhc, intakeStream, threads } from "../src/index.js";
+import {
+  createDeterministicInferenceCallbacks,
+  type InferenceCallbacks,
+  initLhc,
+  intakeStream,
+  threads,
+} from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   o200k,
@@ -193,6 +199,52 @@ describe("threads.copyThread", () => {
       registryPath: target.registry,
     });
     expect(idle.ok).toBe(true);
+  });
+});
+
+describe("threads.copyThread and a source worker's lease", () => {
+  it("a copy taken while the source holds a derivation lease drains without waiting for the lease", async () => {
+    const source = await idleSource();
+    const deterministic = createDeterministicInferenceCallbacks();
+    let entered = (): void => {};
+    let release = (): void => {};
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gated = Object.fromEntries(
+      Object.entries(deterministic).map(([operation, call]) => [
+        operation,
+        async (...args: unknown[]) => {
+          entered();
+          await gate;
+          return (call as (...input: unknown[]) => unknown)(...args);
+        },
+      ]),
+    ) as unknown as InferenceCallbacks;
+    const worker = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: gated });
+    const held = worker.work.drain({ filePath: source.filePath });
+    await started;
+    try {
+      const target = targetHome();
+      const copied = await threads.copyThread({
+        source: { filePath: source.filePath },
+        filePath: join(target.threadsDir, "leased.sqlite"),
+        registryPath: target.registry,
+      });
+      if (!copied.ok) throw new Error(copied.error.reason);
+      const sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: deterministic });
+      const drained = await sdk.work.drain({ filePath: copied.value.filePath });
+      expect(drained.ok && drained.value.stoppedBecause).toBe("empty");
+      expect(drained.ok && drained.value.ran.length).toBeGreaterThan(0);
+      const status = await sdk.threadView.status({ filePath: copied.value.filePath });
+      expect(status.ok && status.value.derivation.pending).toBe(0);
+    } finally {
+      release();
+      await held;
+    }
   });
 });
 

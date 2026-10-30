@@ -75,6 +75,14 @@ function openTurnMemberCount(db: DatabaseSync): number {
   return row.n;
 }
 
+function releaseCopiedClaims(db: DatabaseSync): void {
+  db.prepare(
+    `UPDATE work_item SET status = 'queued', claimed_at = NULL, claim_expires_at = NULL,
+       payload = json_set(payload, '$.claimExpired', json('true'))
+     WHERE status = 'claimed'`,
+  ).run();
+}
+
 export async function copyThread(input: CopyThreadInput): Promise<OpResult<CopyThreadReceipt>> {
   if (input.filePath.trim() === "") {
     return callerError("invalid_thread_ref", "filePath must be a non-empty path; received a blank string");
@@ -150,6 +158,7 @@ export async function copyThread(input: CopyThreadInput): Promise<OpResult<CopyT
     if (rekeyed) {
       copyDb.prepare("UPDATE thread_metadata SET thread_id = ? WHERE id = 1").run(threadId);
     }
+    releaseCopiedClaims(copyDb);
   } catch (cause) {
     copyDb.close();
     deleteThreadFile(input.filePath);
