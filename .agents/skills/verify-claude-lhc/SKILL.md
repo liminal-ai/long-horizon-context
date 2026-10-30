@@ -136,11 +136,14 @@ fails the drive as an isolation breach). Evidence:
 Never run `pnpm --filter claude-lhc standalone` by hand from a normal
 shell: it writes into the real Claude home, and without
 `T3CODE_LHC_HOME` into `../home/t3code-lhc` outside the checkout.
+Whether `turn` runs depends on the shell's `CLAUDE_LHC_LIVE` and
+credential env, so the same command can run it in one shell and SKIP it
+in another, such as a delegated verifier's. Record which one each run got.
 Never report the live turn as passed from a deterministic run.
 
 ### Known failure: lost reply after a mid-turn `/compact`
 
-Until the product bug is fixed, the live `turn` drive intermittently
+Until the product bug ([LH-212](https://linear.app/limhealth/issue/LH-212/three-host-and-core-bugs-confirmed-during-the-lhc-catch-up), item 1) is fixed, the live `turn` drive intermittently
 FAILs with `timeout waiting for results for the compacted turn and the
 held prompt`. After the mid-turn `/compact` swap, the continued turn and
 the replayed held prompt produce one `result` frame where standalone
@@ -254,6 +257,6 @@ seeded `restart`/`resume-superseded-alias` drives therefore resume a compacted t
 
 The seeded drives run `packages/claude-lhc/dist/sidecar.js`, which loads `packages/lhc/dist`. The live `turn` also runs `scripts/standalone.ts` and a real `claude`.
 
-- **Reruns every drive:** a change in `packages/claude-lhc/` outside `test/`, `scripts/` and Markdown, in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries either resolves, or to `drive.mjs`. A rebase onto a trunk that changed any of these counts.
+- **Reruns every drive:** a change in `packages/claude-lhc/` outside `test/`, `scripts/` and Markdown, in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries either resolves, or to `drive.mjs`. A change to the root `package.json` or `pnpm-workspace.yaml`, or to the Node or pnpm version `.github/workflows/pr-checks.yml` pins, counts too. A rebase onto a trunk that changed any of these counts.
 - **Reruns only `turn`:** a change only in `packages/claude-lhc/scripts/`.
 - **Carries:** a change only in `packages/cc-lhc*`, `lhc-py`, `lhc-rs` or `lhc-triage`, the two packages' `test/`, or text in this skill and its `features/` that changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. `doctor.sh` and `check-links.mjs` always rerun.
