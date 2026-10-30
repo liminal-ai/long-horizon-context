@@ -10,15 +10,19 @@ export interface ResolvedCompactPolicy {
 const TRIGGER_WINDOW_SHARE = 0.8;
 const TARGET_TRIGGER_SHARE = 0.5;
 
+const maxTrigger = (window: number): number => Math.floor(window * TRIGGER_WINDOW_SHARE);
+const maxTarget = (trigger: number): number => Math.floor(trigger * TARGET_TRIGGER_SHARE);
+
 export function capCompactPolicyToWindow({ stored, window }: ResolvedCompactPolicy): CompactPolicy {
   if (window === null) return stored;
-  const maxTrigger = Math.floor(window * TRIGGER_WINDOW_SHARE);
-  if (stored.trigger <= maxTrigger) return stored;
-  return { trigger: maxTrigger, target: Math.min(stored.target, Math.floor(maxTrigger * TARGET_TRIGGER_SHARE)) };
+  const trigger = maxTrigger(window);
+  if (stored.trigger <= trigger) return stored;
+  return { trigger, target: Math.min(stored.target, maxTarget(trigger)) };
 }
 
 export function windowFromUsage(rawMaxTokens: unknown): number | null {
-  return typeof rawMaxTokens === "number" && Number.isFinite(rawMaxTokens) && rawMaxTokens > 0 ? rawMaxTokens : null;
+  if (typeof rawMaxTokens !== "number" || !Number.isSafeInteger(rawMaxTokens)) return null;
+  return maxTarget(maxTrigger(rawMaxTokens)) >= 1 ? rawMaxTokens : null;
 }
 
 export async function storeCompactPolicy(ref: ThreadRef, policy: CompactPolicy): Promise<CompactPolicy> {

@@ -3,7 +3,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { capCompactPolicyToWindow } from "../src/compactPolicy.ts";
 
 let contextUsage: () => Promise<unknown> = async () => ({ rawMaxTokens: 1_000_000 });
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
@@ -210,14 +209,49 @@ describe("compact policy against the live window", () => {
     );
   });
 
-  test("capCompactPolicyToWindow caps a trigger above 80% of the window and halves the target", () => {
-    const stored = { trigger: 700_000, target: 140_000 };
-    expect(capCompactPolicyToWindow({ stored, window: 200_000 })).toEqual({ trigger: 160_000, target: 80_000 });
-    expect(capCompactPolicyToWindow({ stored, window: 1_000_000 })).toEqual(stored);
-    expect(capCompactPolicyToWindow({ stored, window: null })).toEqual(stored);
-    expect(capCompactPolicyToWindow({ stored: { trigger: 700_000, target: 50_000 }, window: 200_000 })).toEqual({
-      trigger: 160_000,
-      target: 50_000,
+  test("a capped trigger keeps a stored target already below half of it", async () => {
+    contextUsage = async () => ({ rawMaxTokens: 200_000 });
+    await start(session(), { home, compact: { trigger: 700_000, target: 50_000 } });
+    await vi.waitFor(() =>
+      expect(logs).toContain("compact policy capped to window 200000: trigger 160000 target 50000"),
+    );
+  });
+
+  test("setModel returns only after its window read lands", async () => {
+    const s = session();
+    await start(s, { home, compact: { trigger: 700_000, target: 140_000 } });
+    await vi.waitFor(() => expect(logs).toContain("context window 1000000 for model claude-sonnet-4-6"));
+    let answerModelRead: (usage: unknown) => void = () => {};
+    contextUsage = () => new Promise((resolve) => (answerModelRead = resolve));
+    let returned = false;
+    const switched = s.control("setModel", { model: "claude-sonnet-4-5" }).then(() => {
+      returned = true;
     });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(returned).toBe(false);
+    answerModelRead({ rawMaxTokens: 200_000 });
+    await switched;
+    expect(logs).toContain("compact policy capped to window 200000: trigger 160000 target 80000");
+  });
+
+  test.each([
+    1,
+    2,
+    1.5,
+    0,
+    -200_000,
+    "200000",
+    Number.NaN,
+  ])("a rawMaxTokens of %s is no window and leaves the pair as stored", async (rawMaxTokens) => {
+    contextUsage = async () => ({ rawMaxTokens });
+    const s = session();
+    await start(s, { home, compact: { trigger: 700_000, target: 140_000 } });
+    await vi.waitFor(() =>
+      expect(logs).toContain(
+        `context window read returned rawMaxTokens ${typeof rawMaxTokens === "string" ? JSON.stringify(rawMaxTokens) : String(rawMaxTokens)}, not a usable window; compact policy stays trigger 700000 target 140000`,
+      ),
+    );
+    await s.pushUser(compactPrompt);
+    expect(logs.find((line) => line.startsWith("[lhc compact:manual]"))).toContain("(target 140000)");
   });
 });

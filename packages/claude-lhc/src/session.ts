@@ -391,24 +391,33 @@ export class ClaudeLhcSession {
   async #readWindow(gen: Generation): Promise<void> {
     const read = ++this.#windowReads;
     const stale = (): boolean => read !== this.#windowReads || this.#closed;
-    let window: number | null;
+    let rawMaxTokens: unknown;
     try {
-      window = windowFromUsage((await gen.query.getContextUsage({ detail: "summary" })).rawMaxTokens);
+      ({ rawMaxTokens } = await gen.query.getContextUsage({ detail: "summary" }));
     } catch (cause) {
-      if (stale()) return;
-      const { trigger, target } = this.#effectiveCompactPolicy();
-      this.#io.log(
-        `context window read failed: ${cause instanceof Error ? cause.message : String(cause)}; compact policy stays trigger ${trigger} target ${target}`,
-      );
+      if (!stale())
+        this.#keepWindow(`context window read failed: ${cause instanceof Error ? cause.message : String(cause)}`);
       return;
     }
-    if (stale() || window === null || window === this.#compactPolicy.window) return;
+    if (stale()) return;
+    const window = windowFromUsage(rawMaxTokens);
+    if (window === null) {
+      const shown = typeof rawMaxTokens === "string" ? JSON.stringify(rawMaxTokens) : String(rawMaxTokens);
+      this.#keepWindow(`context window read returned rawMaxTokens ${shown}, not a usable window`);
+      return;
+    }
+    if (window === this.#compactPolicy.window) return;
     this.#compactPolicy = { ...this.#compactPolicy, window };
     this.#io.log(`context window ${window} for model ${this.#model ?? "(default)"}`);
     const { stored } = this.#compactPolicy;
     const { trigger, target } = this.#effectiveCompactPolicy();
     if (trigger !== stored.trigger || target !== stored.target)
       this.#io.log(`compact policy capped to window ${window}: trigger ${trigger} target ${target}`);
+  }
+
+  #keepWindow(reason: string): void {
+    const { trigger, target } = this.#effectiveCompactPolicy();
+    this.#io.log(`${reason}; compact policy stays trigger ${trigger} target ${target}`);
   }
 
   #midTurnDue(): CompactTrigger | null {
