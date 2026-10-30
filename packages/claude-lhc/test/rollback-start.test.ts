@@ -503,6 +503,180 @@ describe("capture uuids", () => {
   });
 });
 
+describe("prompts held during a mid-turn compact", () => {
+  type Frame = Record<string, unknown>;
+  const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  const textOf = (message: SDKUserMessage | undefined): string => {
+    const content = message?.message.content;
+    return typeof content === "string" ? content : JSON.stringify(content);
+  };
+  const answer = (text: string): SDKMessage => assistantMessage(randomUUID(), [{ type: "text", text }]);
+
+  async function heldDuringMidTurnCompact(heldTexts: string[]) {
+    const frames: Frame[] = [];
+    const timeline: string[] = [];
+    const logs: string[] = [];
+    let compacts = 0;
+    const session: ClaudeLhcSession = new ClaudeLhcSession({
+      emit(message): void {
+        const frame = message as unknown as Frame;
+        frames.push(frame);
+        if (frame["type"] === "result") timeline.push(`result ${String(frame["uuid"])}`);
+        if (frame["subtype"] === "status" && frame["status"] === "compacting" && compacts++ === 0)
+          for (const text of heldTexts) void session.pushUser(userMessage(text));
+      },
+      request: async () => ({}),
+      end(): void {},
+      fail(): void {},
+      log: (line: string) => logs.push(line),
+    });
+    await session.start({
+      cwd: dir,
+      model: "claude-sonnet-5",
+      env: { CLAUDE_CONFIG_DIR: claudeHome },
+      lhc: { home, compact: COMPACT },
+      sessionId: randomUUID(),
+    });
+    await session.pushUser(userMessage("WORK-PROMPT"));
+    await fed[0]![Symbol.asyncIterator]().next();
+    await stopMidTurn(session, frames, 0);
+    const cli = fed[1]![Symbol.asyncIterator]();
+    expect(textOf((await cli.next()).value)).toContain("Context was compacted in the middle of this turn");
+    const delivered = async (): Promise<SDKUserMessage | undefined> => {
+      const next = await cli.next();
+      if (!next.done) timeline.push(`claude got ${textOf(next.value)}`);
+      return next.done ? undefined : next.value;
+    };
+    return { session, frames, timeline, logs, cli, delivered };
+  }
+
+  async function stopMidTurn(session: ClaudeLhcSession, frames: Frame[], gen: number): Promise<void> {
+    const toolUseId = `toolu_${gen}`;
+    const toolTurn = randomUUID();
+    streams[gen]!(assistantMessage(toolTurn, [{ type: "tool_use", id: toolUseId, name: "Read", input: {} }]));
+    await vi.waitFor(() => expect(frames.some((frame) => frame["uuid"] === toolTurn)).toBe(true));
+    await session.pushUser(userMessage("/compact"));
+    const postToolUse = opened[gen]!.hooks!.PostToolUse![0]!.hooks[0]!;
+    const stop = await postToolUse(
+      {
+        hook_event_name: "PostToolUse",
+        tool_name: "Read",
+        tool_input: {},
+        tool_response: "",
+        tool_use_id: toolUseId,
+      } as never,
+      toolUseId,
+      { signal: new AbortController().signal },
+    );
+    expect(stop).toMatchObject({ continue: false });
+    streams[gen]!({ ...(resultMessage() as object), terminal_reason: "hook_stopped" } as unknown as SDKMessage);
+    await vi.waitFor(() => expect(fed).toHaveLength(gen + 2));
+  }
+
+  const stillWaiting = async (next: Promise<unknown>): Promise<boolean> =>
+    (await Promise.race([next.then(() => false), sleep(250).then(() => true)])) === true;
+
+  test("the held prompt reaches Claude after the continued turn's result and gets a result of its own", async () => {
+    const { timeline, delivered } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
+    const held = delivered();
+    expect(await stillWaiting(held)).toBe(true);
+
+    const continued = resultMessage();
+    streams[1]!(answer("CONTINUED"));
+    streams[1]!(continued);
+    expect(textOf(await held)).toBe("HELD-PROMPT");
+    const heldAnswered = resultMessage();
+    streams[1]!(answer("HELD-ANSWER"));
+    streams[1]!(heldAnswered);
+
+    await vi.waitFor(() =>
+      expect(timeline).toEqual([
+        `result ${String(continued.uuid)}`,
+        "claude got HELD-PROMPT",
+        `result ${String(heldAnswered.uuid)}`,
+      ]),
+    );
+  });
+
+  test("a prompt sent while held prompts wait queues behind them", async () => {
+    const { session, delivered } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
+    await session.pushUser(userMessage("LATER-PROMPT"));
+    const first = delivered();
+    expect(await stillWaiting(first)).toBe(true);
+
+    streams[1]!(resultMessage());
+
+    expect(textOf(await first)).toBe("HELD-PROMPT");
+    expect(textOf(await delivered())).toBe("LATER-PROMPT");
+  });
+
+  test("an interrupted continued turn still sends the held prompt, once", async () => {
+    const { session, delivered } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
+    const held = delivered();
+
+    await session.control("interrupt", {});
+    streams[1]!({ ...(resultMessage(true) as object), subtype: "error_during_execution" } as unknown as SDKMessage);
+
+    expect(textOf(await held)).toBe("HELD-PROMPT");
+    streams[1]!(resultMessage());
+    expect(await stillWaiting(delivered())).toBe(true);
+  });
+
+  test("a second mid-turn compact keeps the held prompt waiting for the turn it continues", async () => {
+    const { session, frames, cli } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
+    await stopMidTurn(session, frames, 1);
+    expect((await cli.next()).done).toBe(true);
+    const third = fed[2]![Symbol.asyncIterator]();
+    expect(textOf((await third.next()).value)).toContain("Context was compacted in the middle of this turn");
+    const held = third.next();
+    expect(await stillWaiting(held)).toBe(true);
+
+    streams[2]!(resultMessage());
+
+    expect(textOf((await held).value)).toBe("HELD-PROMPT");
+    expect(await stillWaiting(third.next())).toBe(true);
+  });
+
+  test("closing while a prompt is held sends nothing more and logs the unsent prompt", async () => {
+    const { session, logs, delivered } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
+
+    await session.close();
+    streams[1]!(resultMessage());
+
+    expect(await delivered()).toBeUndefined();
+    expect(logs).toContain("closing with 1 held prompt(s) never sent");
+  });
+
+  test("a /compact with no open turn sends the held prompt as soon as the compact ends", async () => {
+    const results: Frame[] = [];
+    const session: ClaudeLhcSession = new ClaudeLhcSession({
+      emit(message): void {
+        const frame = message as unknown as Frame;
+        if (frame["type"] === "result") results.push(frame);
+        if (frame["subtype"] === "status" && frame["status"] === "compacting")
+          void session.pushUser(userMessage("HELD-PROMPT"));
+      },
+      request: async () => ({}),
+      end(): void {},
+      fail(): void {},
+      log(): void {},
+    });
+    await session.start({
+      cwd: dir,
+      model: "claude-sonnet-5",
+      env: { CLAUDE_CONFIG_DIR: claudeHome },
+      lhc: { home, compact: COMPACT },
+      sessionId: randomUUID(),
+    });
+
+    await session.pushUser(userMessage("/compact"));
+
+    expect(results).toHaveLength(1);
+    const cli = fed.at(-1)![Symbol.asyncIterator]();
+    expect(textOf((await cli.next()).value)).toBe("HELD-PROMPT");
+  });
+});
+
 describe("thread start", () => {
   const threadFiles = () => readdirSync(join(home, "threads")).length;
 
