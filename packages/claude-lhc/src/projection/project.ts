@@ -98,12 +98,18 @@ export function projectView(
       continue;
     }
     settleOpenCalls();
-    const blocks = entry.content.map((part) => nativeBlock(part, arm)).filter((b): b is NativeEntry => b !== null);
+    const aligned = entry.sourceMessages.length === entry.content.length;
+    const blocks = entry.content
+      .map((part, i) => ({
+        block: nativeBlock(part, arm),
+        source: aligned ? (entry.sourceMessages[i]?.idempotencyKey ?? null) : source,
+      }))
+      .filter((b): b is { block: NativeEntry; source: string | null } => b.block !== null);
     if (blocks.length === 0) continue;
-    const stop = blocks.some((b) => b["type"] === "tool_use") ? "tool_use" : "end_turn";
+    const stop = blocks.some(({ block }) => block["type"] === "tool_use") ? "tool_use" : "end_turn";
     const id = `msg_${randomUUID().replace(/-/g, "")}`;
     const requestId = `req_${randomUUID().replace(/-/g, "")}`;
-    for (const [index, block] of blocks.entries()) {
+    for (const [index, { block, source: blockSource }] of blocks.entries()) {
       if (block["type"] === "tool_use") openCalls.add(String(block["id"]));
       push(
         {
@@ -122,7 +128,7 @@ export function projectView(
             usage: { input_tokens: 0, output_tokens: 0 },
           },
         },
-        source,
+        blockSource,
       );
     }
   }

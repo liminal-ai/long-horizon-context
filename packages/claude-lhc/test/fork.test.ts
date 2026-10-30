@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Options } from "@anthropic-ai/claude-agent-sdk";
 import { threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { capturePrompt, captureTurn, SEED_POLICY, seedLhc, seedThread } from "./support/seedThread.ts";
+import { capturePrompt, captureReplies, captureTurn, SEED_POLICY, seedLhc, seedThread } from "./support/seedThread.ts";
 
 const opened: Options[] = [];
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
@@ -191,6 +191,17 @@ describe("forkSession", () => {
       const whole = await forkSession(gen1, store());
       await forkAtHistory(whole.sessionId);
     });
+  });
+
+  test("a history id on one block of a multi-message assistant entry cuts after that block", async () => {
+    const { gen1, threadId } = await seedThread(home, cwd);
+    await captureReplies(home, threadId, "SPLIT-PROMPT", ["KEEP-PART", "LATER-PART"]);
+    await resume(gen1);
+
+    const forked = await forkSession(gen1, { ...store(), upToMessageId: await historyUuid(gen1, "KEEP-PART") });
+
+    expect(projected(forked.sessionId)).toContain("KEEP-PART");
+    expect(projected(forked.sessionId)).not.toContain("LATER-PART");
   });
 
   test("resumeSessionAt a fork's headMessageId rolls the fork back to where it was cut", async () => {
