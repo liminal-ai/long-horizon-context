@@ -69,7 +69,8 @@ function openTurnMemberCount(db: DatabaseSync): number {
   const row = db
     .prepare(
       `SELECT count(*) AS n FROM message m JOIN turns t ON t.turn_id = m.turn_id
-       WHERE t.status = 'open' AND m.kind <> 'runtime_note' AND m.deleted_at IS NULL`,
+       WHERE t.status = 'open' AND m.kind NOT IN ('runtime_note', 'compact_continuation_marker')
+         AND m.deleted_at IS NULL`,
     )
     .get() as { n: number };
   return row.n;

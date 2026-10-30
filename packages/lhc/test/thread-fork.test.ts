@@ -164,7 +164,7 @@ describe("threads.copyThread", () => {
     expect(!exists.ok && exists.error.code).toBe("path_exists");
   });
 
-  it("refuses a mid-turn source and leaves no file; allowed explicitly; runtime notes do not count", async () => {
+  it("refuses a mid-turn source and leaves no file; allowed explicitly; runtime notes and compact markers do not count", async () => {
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);
@@ -192,7 +192,10 @@ describe("threads.copyThread", () => {
     expect(allowed.ok).toBe(true);
 
     const source = await idleSource();
-    await send(source.filePath, [validEvent("runtime_note", { payload: { text: "[lhc compact:auto] ..." } })]);
+    await send(source.filePath, [
+      validEvent("runtime_note", { payload: { text: "[lhc compact:auto] ..." } }),
+      validEvent("compact_continuation_marker"),
+    ]);
     const idle = await threads.copyThread({
       source: { filePath: source.filePath },
       filePath: join(target.threadsDir, "noted.sqlite"),
