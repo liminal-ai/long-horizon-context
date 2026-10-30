@@ -193,6 +193,8 @@ export class ClaudeLhcSession {
   #maxThinkingTokens: number | null | undefined;
   #claudeCodeVersion = FALLBACK_CLAUDE_CODE_VERSION;
   #compactPolicy: ResolvedCompactPolicy = { stored: { trigger: 0, target: 0 }, window: null };
+  #windowRead: Promise<void> = Promise.resolve();
+  #windowReads = 0;
   #forceRebuildFailure = false;
   #tokenFamily: ResolvedTokenFamily = seedTokenFamilyFromStartModel("");
   #lastModelId: string | null = null;
@@ -299,7 +301,8 @@ export class ClaudeLhcSession {
         this.#model = model;
         this.#observeLaterModel(model);
         await gen.query.setModel(model);
-        await this.#readWindow(gen);
+        this.#windowRead = this.#readWindow(gen);
+        await this.#windowRead;
         return undefined;
       }
       case "setPermissionMode": {
@@ -377,7 +380,7 @@ export class ClaudeLhcSession {
     const q = query({ prompt: input, options });
     gen = { sessionId, query: q, input, superseded: false };
     void this.#pump(gen);
-    void this.#readWindow(gen);
+    this.#windowRead = this.#readWindow(gen);
     return gen;
   }
 
@@ -386,18 +389,20 @@ export class ClaudeLhcSession {
   }
 
   async #readWindow(gen: Generation): Promise<void> {
+    const read = ++this.#windowReads;
+    const stale = (): boolean => read !== this.#windowReads || this.#closed;
     let window: number | null;
     try {
       window = windowFromUsage((await gen.query.getContextUsage({ detail: "summary" })).rawMaxTokens);
     } catch (cause) {
-      if (gen.superseded || this.#closed) return;
+      if (stale()) return;
       const { trigger, target } = this.#effectiveCompactPolicy();
       this.#io.log(
         `context window read failed: ${cause instanceof Error ? cause.message : String(cause)}; compact policy stays trigger ${trigger} target ${target}`,
       );
       return;
     }
-    if (gen.superseded || this.#closed || window === null || window === this.#compactPolicy.window) return;
+    if (stale() || window === null || window === this.#compactPolicy.window) return;
     this.#compactPolicy = { ...this.#compactPolicy, window };
     this.#io.log(`context window ${window} for model ${this.#model ?? "(default)"}`);
     const { stored } = this.#compactPolicy;
@@ -759,6 +764,7 @@ export class ClaudeLhcSession {
   async #rebuild(trigger: CompactTrigger, preTokens: number): Promise<{ next: Generation; postTokens: number }> {
     if (this.#forceRebuildFailure)
       throw new Error("rebuild failure forced by the start option lhc.forceRebuildFailure");
+    await this.#windowRead;
     await this.#awaitDerivations();
     const lowerBound = this.#effectiveCompactPolicy().target;
     const opts = { profile: "continuation", params: { lowerBound } };

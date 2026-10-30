@@ -66,6 +66,13 @@ const start = (s: InstanceType<typeof ClaudeLhcSession>, lhc: unknown, extra: Re
     ...extra,
   } as never);
 
+const compactPrompt = {
+  type: "user",
+  message: { role: "user", content: [{ type: "text", text: "/compact" }] },
+  parent_tool_use_id: null,
+  session_id: "",
+} as never;
+
 async function storedPolicy(threadId: string) {
   const read = await threads.getCompactPolicy(threadRef(threadId, home));
   if (!read.ok) throw new Error(read.error.reason);
@@ -168,6 +175,27 @@ describe("compact policy against the live window", () => {
     await s.control("setModel", { model: "claude-sonnet-4-5" });
     expect(logs).toContain("context window 200000 for model claude-sonnet-4-5");
     expect(logs).toContain("compact policy capped to window 200000: trigger 160000 target 80000");
+  });
+
+  test("a /compact sent before the first window read lands still rebuilds to the capped target", async () => {
+    contextUsage = () => new Promise((resolve) => setTimeout(() => resolve({ rawMaxTokens: 200_000 }), 200));
+    const s = session();
+    await start(s, { home, compact: { trigger: 700_000, target: 140_000 } });
+    await s.pushUser(compactPrompt);
+    expect(logs.find((line) => line.startsWith("[lhc compact:manual]"))).toContain("(target 80000)");
+  });
+
+  test("an older window read that answers late does not undo the cap from setModel", async () => {
+    let answerStartupRead: (usage: unknown) => void = () => {};
+    contextUsage = () => new Promise((resolve) => (answerStartupRead = resolve));
+    const s = session();
+    await start(s, { home, compact: { trigger: 700_000, target: 140_000 } });
+    contextUsage = async () => ({ rawMaxTokens: 200_000 });
+    await s.control("setModel", { model: "claude-sonnet-4-5" });
+    answerStartupRead({ rawMaxTokens: 1_000_000 });
+    await s.pushUser(compactPrompt);
+    expect(logs).not.toContain("context window 1000000 for model claude-sonnet-4-5");
+    expect(logs.find((line) => line.startsWith("[lhc compact:manual]"))).toContain("(target 80000)");
   });
 
   test("with no window known the pair stays as stored", async () => {
