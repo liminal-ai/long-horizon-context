@@ -249,3 +249,11 @@ seeded `restart`/`resume-superseded-alias` drives therefore resume a compacted t
 (>= 1 served entry), which exits 0. Recorded in
 [restart-projection.md](features/restart-projection.md) Gotchas — do not
 "fix" the drive to hide it; it is current-code behavior to observe.
+
+## Re-verification
+
+The seeded drives run `packages/claude-lhc/dist/sidecar.js`, which loads `packages/lhc/dist`. The live `turn` also runs `scripts/standalone.ts` and a real `claude`.
+
+- **Reruns every drive:** a change in `packages/claude-lhc/` outside `test/`, `scripts/` and Markdown, in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries either resolves, or to `drive.mjs`. A rebase onto a trunk that changed any of these counts.
+- **Reruns only `turn`:** a change only in `packages/claude-lhc/scripts/`.
+- **Carries:** a change only in `packages/cc-lhc*`, `lhc-py`, `lhc-rs` or `lhc-triage`, the two packages' `test/`, or text in this skill and its `features/` that changes no lane's commands. `doctor.sh` and `check-links.mjs` always rerun.
