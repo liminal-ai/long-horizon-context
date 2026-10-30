@@ -73,7 +73,7 @@ class Sidecar {
       delete env.CLAUDE_LHC_NO_INFERENCE;
       env.HOME = scratch.home;
     }
-    this.child = spawn(process.execPath, [ENTRY], { stdio: ["pipe", "pipe", "pipe"], env });
+    this.child = spawn(process.execPath, [ENTRY], { stdio: ["pipe", "pipe", "pipe"], env, detached: true });
     this.exited = new Promise((r) => this.child.on("exit", (code) => { this.exitCode = code; r(code); this.notify(); }));
     createInterface({ input: this.child.stderr }).on("line", (l) => { this.stderr.push(l); this.notify(); });
     createInterface({ input: this.child.stdout }).on("line", (l) => {
@@ -107,7 +107,9 @@ class Sidecar {
   async stop() {
     this.child.stdin.end();
     const code = await Promise.race([this.exited, new Promise((r) => setTimeout(() => r("timeout"), 10_000))]);
-    if (code === "timeout") this.child.kill("SIGKILL");
+    if (code === "timeout") {
+      try { process.kill(-this.child.pid, "SIGKILL"); } catch {}
+    }
     return code;
   }
   saveEvidence(dir) {
@@ -272,6 +274,7 @@ async function liveRollback(evidenceDir, label, { compactAfterRollback }) {
     assert(!answer.includes("REMOVED-BRAVO"), `the continued answer knows the removed turn: ${answer}`);
     return `rolled back to ${kept.lastAssistantUuid.slice(0, 8)}${compactAfterRollback ? ", /compact" : ""}; answer "${answer.trim()}"`;
   } finally {
+    for (const s of sidecars) if (s.exitCode === undefined) await s.stop();
     mkdirSync(evidenceDir, { recursive: true });
     for (const s of sidecars) s.saveEvidence(evidenceDir);
     writeFileSync(join(evidenceDir, "transcript.jsonl"), sidecars.flatMap((s) => s.frames.map((f) => JSON.stringify({ sidecar: s.label, ...f }))).join("\n") + "\n");
