@@ -299,12 +299,11 @@ export class ClaudeLhcSession {
       await this.#compact("auto");
       return;
     }
-    // The CLI writes the prompt line under the host's uuid; capturing under it lets a rollback walk resolve it.
-    const uuid = message.uuid ?? randomUUID();
+    const promptUuid = message.uuid ?? randomUUID();
     gen.input.push({
       message,
       before: async () => {
-        const events = mapPrompt(message, uuid, this.#turnOpen);
+        const events = mapPrompt(message, promptUuid, this.#turnOpen);
         if (!this.#turnOpen && events.some((event) => event.eventKind === "user_prompt")) {
           this.#turnOpen = true;
           this.#turnStartedAt = new Date().toISOString();

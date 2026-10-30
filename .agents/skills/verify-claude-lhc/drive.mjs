@@ -129,9 +129,9 @@ const baseOptions = (scratch, extra) => ({
   env: { ...process.env, CLAUDE_CONFIG_DIR: scratch.claudeHome },
   ...extra,
 });
-const userFrame = (text) => ({
+const userFrame = (text, uuid) => ({
   type: "user",
-  message: { type: "user", message: { role: "user", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "" },
+  message: { type: "user", message: { role: "user", content: [{ type: "text", text }] }, parent_tool_use_id: null, session_id: "", ...(uuid ? { uuid } : {}) },
 });
 const generationFrom = (s) => /as generation (\S+)/.exec(s.stderr.join("\n"))?.[1];
 const threadIdFrom = (s) => /created thread (\S+)|resumed thread (\S+)/.exec(s.stderr.join("\n"))?.slice(1).find(Boolean);
@@ -221,9 +221,9 @@ function liveAuth() {
   return { auth };
 }
 
-async function liveTurn(s, text) {
+async function liveTurn(s, text, uuid) {
   const before = s.msgs().length;
-  s.send(userFrame(text));
+  s.send(userFrame(text, uuid));
   await s.waitFor(() => s.msgs().slice(before).some((m) => m.type === "result"), `result for "${text}"`, 180_000);
   const turn = s.msgs().slice(before);
   const assistants = turn.filter((m) => m.type === "assistant" && m.parent_tool_use_id === null);
@@ -242,9 +242,12 @@ async function liveRollback(evidenceDir, label, { compactAfterRollback }) {
     sidecars.push(first);
     first.send({ type: "start", options: liveOptions({ sessionId: gen1 }) });
     await first.waitFor(() => first.logHas(`as generation ${gen1}`), "created-thread log line");
-    const kept = await liveTurn(first, "Remember the secret word KEEP-ALPHA. Reply with just OK.");
+    const keptPromptUuid = randomUUID();
+    const kept = await liveTurn(first, "Remember the secret word KEEP-ALPHA. Reply with just OK.", keptPromptUuid);
     const removed = await liveTurn(first, "Remember the second secret word REMOVED-BRAVO. Reply with just OK.");
     assert((await first.stop()) === 0, "turn sidecar did not exit 0");
+    const nativeLines = (scratch.projected(gen1) ?? "").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+    assert(nativeLines.some((l) => l.type === "user" && l.uuid === keptPromptUuid), "the CLI did not write the prompt line under the host's prompt uuid, so a rollback walk cannot resolve through it");
     assert(kept.result?.subtype === "success" && removed.result?.subtype === "success", "a seed turn failed");
     assert(kept.lastAssistantUuid, "no assistant uuid on the kept turn");
     const after = new Sidecar(scratch, "after-rollback", { live: true });

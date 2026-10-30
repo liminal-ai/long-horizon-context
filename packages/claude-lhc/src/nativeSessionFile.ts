@@ -99,12 +99,7 @@ export async function writeProjectedSession(input: {
   return dest;
 }
 
-/**
- * User and assistant lines above `uuid` by parentUuid, nearest first. An older
- * generation's file may hold the line. Subagent lines live in their own files,
- * so they have no ancestors here.
- */
-export async function nativeAncestors(input: {
+export async function nativeMessageAncestors(input: {
   readonly uuid: string;
   readonly sessionId: string;
   readonly cwd: string;

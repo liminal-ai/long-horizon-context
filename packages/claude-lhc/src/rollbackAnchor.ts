@@ -1,6 +1,6 @@
 import type { Lhc, ThreadRef } from "lhc";
 import { messageKeyPrefix } from "./capture/mapper.js";
-import { nativeAncestors } from "./nativeSessionFile.js";
+import { nativeMessageAncestors } from "./nativeSessionFile.js";
 
 export interface RollbackAnchor {
   readonly anchor: string;
@@ -8,22 +8,23 @@ export interface RollbackAnchor {
   readonly via: string;
 }
 
-/**
- * The core event order a host rollback keeps through. An anchor capture never
- * recorded (a synthetic notice, a subagent line) resolves through its native
- * parentUuid chain to the nearest captured ancestor.
- */
-export async function resolveRollbackAnchor(input: {
+type AnchorLookup = {
   readonly lhc: Lhc;
   readonly thread: ThreadRef;
   readonly anchor: string;
   readonly sessionId: string;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
-}): Promise<RollbackAnchor | null> {
+};
+
+export async function resolveRollbackAnchor(input: AnchorLookup): Promise<RollbackAnchor | null> {
   const direct = await capturedThrough(input.lhc, input.thread, input.anchor);
   if (direct !== null) return { anchor: input.anchor, keepThroughEventOrder: direct, via: input.anchor };
-  const ancestors = await nativeAncestors({
+  return nearestCapturedAncestor(input);
+}
+
+async function nearestCapturedAncestor(input: AnchorLookup): Promise<RollbackAnchor | null> {
+  const ancestors = await nativeMessageAncestors({
     uuid: input.anchor,
     sessionId: input.sessionId,
     cwd: input.cwd,
