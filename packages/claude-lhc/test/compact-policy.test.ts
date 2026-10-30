@@ -309,18 +309,37 @@ describe("served context after the window shrinks", () => {
     expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
   });
 
-  test("a served context past a trigger the window did not cap leaves the resume to the turn-end check", async () => {
+  test("a served context past a trigger the window did not cap still compacts at resume", async () => {
     const first = session();
-    await start(first, { home, compact: { trigger: 50_000, target: 20_000 } });
+    await start(first, { home, compact: { trigger: 150_000, target: 40_000 } });
     await first.close();
     const resume = await resumable(first.threadId);
     logs = [];
-    contextUsage = async () => ({ rawMaxTokens: 200_000, totalTokens: 60_000 });
+    let reads = 0;
+    contextUsage = async () => ({ rawMaxTokens: 200_000, totalTokens: reads++ === 0 ? 250_000 : 30_000 });
 
     await start(session(), { home }, { resume });
 
-    expect(logs.some((line) => line.startsWith("served context"))).toBe(false);
-    expect(logs.some((line) => line.startsWith("[lhc compact"))).toBe(false);
+    expect(logs.some((line) => line.startsWith("compact policy capped"))).toBe(false);
+    expect(logs).toContain(
+      "served context 250000 tokens is at or past the compact trigger 150000; compacting before the next prompt",
+    );
+    expect(logs.find((line) => line.startsWith("[lhc compact:auto]"))).toContain("(target 40000)");
+  });
+
+  test("a setModel whose served context is past an uncapped trigger queues a compact", async () => {
+    const s = session();
+    contextUsage = async () => ({ rawMaxTokens: 1_000_000, totalTokens: 100_000 });
+    await start(s, { home, compact: { trigger: 150_000, target: 40_000 } });
+    await vi.waitFor(() => expect(logs).toContain("context window 1000000 for model claude-sonnet-4-6"));
+    let reads = 0;
+    contextUsage = async () => ({ rawMaxTokens: 200_000, totalTokens: reads++ === 0 ? 250_000 : 30_000 });
+
+    await s.control("setModel", { model: "claude-sonnet-4-5" });
+    await s.pushUser(prompt("NEXT-PROMPT"));
+
+    expect(logs.find((line) => line.startsWith("[lhc compact:auto]"))).toContain("(target 40000)");
+    expect(prompts).toHaveLength(2);
   });
 
   test("a setModel back to a larger window before the next prompt drops the queued compact", async () => {

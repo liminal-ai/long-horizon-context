@@ -24,16 +24,16 @@
   failed` and keeps the pair.
 - Window shrink: the same read takes `getContextUsage().totalTokens`, the
   served context the CLI counts for the live generation. On a resume and
-  after a `setModel`, when the window capped the stored trigger and that
-  count is at or past the capped trigger, the sidecar logs `served context
-  <n> tokens is at or past the compact trigger <t>; compacting before the
-  next prompt`. A resume compacts before start returns, so the oversized
-  projection never takes a prompt. A `setModel` queues an auto compact
-  that runs when the next prompt arrives, before that prompt reaches the
-  CLI, or at the next safe tool boundary when a turn is open. A later
-  `setModel` whose window read succeeds decides the queue anew, and any
-  finished compact clears it. A trigger the window did not cap is left to
-  the turn-end and tool-boundary checks, as before.
+  after a `setModel`, when that count is at or past the effective trigger,
+  the sidecar logs `served context <n> tokens is at or past the compact
+  trigger <t>; compacting before the next prompt`. A resume compacts
+  before start returns, so an oversized projection never takes a prompt.
+  A `setModel` queues an auto compact that runs when the next prompt
+  arrives, before that prompt reaches the CLI, or at the next safe tool
+  boundary when a turn is open. A later `setModel` whose window read
+  succeeds decides the queue anew, and any finished compact clears it. No
+  other window read compacts. A failed read leaves the decision to the
+  turn-end and tool-boundary checks.
 - Auto compact (provider context at or above the effective trigger) at a
   settled tool boundary: live only, covered by
   `packages/claude-lhc/scripts/midturn.ts`. Deferred `/compact` during an

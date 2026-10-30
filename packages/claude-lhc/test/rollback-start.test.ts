@@ -13,6 +13,7 @@ import { ClaudeLhcSession } from "../src/session.ts";
 const opened: Options[] = [];
 const fed: AsyncIterable<SDKUserMessage>[] = [];
 const streams: Array<(message: SDKMessage) => void> = [];
+let windowTokens = 1_000_000;
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const real = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
   return {
@@ -36,7 +37,14 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
             },
           };
         },
-        getContextUsage: async () => ({ rawMaxTokens: 1_000_000 }),
+        getContextUsage: async () => {
+          const resumed =
+            options.resume === undefined
+              ? null
+              : nativeSessionPath({ sessionId: options.resume, cwd: options.cwd!, env: options.env ?? {} });
+          const served = resumed !== null && existsSync(resumed) ? readFileSync(resumed, "utf8").length : 0;
+          return { rawMaxTokens: windowTokens, totalTokens: Math.ceil(served / 4) };
+        },
         interrupt: async () => {},
         close: () => {},
       };
@@ -55,6 +63,7 @@ beforeEach(() => {
   opened.length = 0;
   fed.length = 0;
   streams.length = 0;
+  windowTokens = 1_000_000;
   dir = mkdtempSync(join(tmpdir(), "claude-lhc-rollback-"));
   home = join(dir, "lhc-home");
   claudeHome = join(dir, "claude-home");
@@ -216,7 +225,7 @@ describe("host rollback on resume", () => {
     expect(projected).toContain("KEEP-ANSWER");
     expect(projected).not.toContain("REMOVED");
     expect(await servedText(threadId)).not.toContain("REMOVED");
-    expect(logs.some((line) => /^rollback to event \d+ via /.test(line) && line.includes(`via ${kept};`))).toBe(true);
+    expect(logs).toContainEqual(expect.stringMatching(new RegExp(`^rollback to event \\d+ via ${kept}$`)));
   });
 
   test("an anchor on a multi-block message keeps every block of that message and drops what followed", async () => {
@@ -361,7 +370,7 @@ describe("host rollback on resume", () => {
     expect(await eventKeys(threadId)).toBe(events);
   });
 
-  test("rollback before compact: a kept tail past the trigger compacts before projecting", async () => {
+  test("rollback before compact: a kept view past the trigger compacts before the first prompt", async () => {
     const { gen1, threadId } = await seedThread();
     const filler = " filler".repeat(400);
     const anchors: string[] = [];
@@ -374,21 +383,57 @@ describe("host rollback on resume", () => {
     const compactBefore = await startSession({ resume: gen1 });
     await compactBefore.session.pushUser(userMessage("/compact"));
     await compactBefore.session.close();
-    const before = await lhc().threadView.describe(ref(threadId));
-    if (!before.ok || before.value === null) throw new Error("the seed compact stored no view");
 
     const { session, logs, options } = await startSession({ resume: gen1, resumeSessionAt: anchors[1] });
 
-    expect(logs.some((line) => line.startsWith("[lhc compact:auto]"))).toBe(true);
-    const after = await lhc().threadView.describe(ref(threadId));
-    if (!after.ok || after.value === null) throw new Error("no view stored after the rollback");
-    expect(after.value.compactPoint).toBeLessThan(before.value.compactPoint);
+    const order = ["rollback to event", "[lhc compact:auto]", "resumed thread"].map((t) =>
+      logs.findIndex((line) => line.startsWith(t)),
+    );
+    expect(order[0]).toBeGreaterThanOrEqual(0);
+    expect(order[1]).toBeGreaterThan(order[0]!);
+    expect(order[2]).toBeGreaterThan(order[1]!);
+    expect(projectedText(options)).toContain("KEEP-ANSWER-1");
+    expect(projectedText(options)).toContain("[context ·");
     expect(projectedText(options)).not.toContain("REMOVED");
     expect(projectedText(options)).not.toContain("KEEP-ANSWER-2");
 
     await session.pushUser(userMessage("/compact"));
     expect(projectedText(opened.at(-1)!)).not.toContain("REMOVED");
     expect(await servedText(threadId)).not.toContain("REMOVED");
+  });
+
+  test("a rollback compacts with the pair capped to the live window", async () => {
+    const { gen1, threadId } = await seedThread();
+    const filler = " filler".repeat(400);
+    const anchors: string[] = [];
+    for (let i = 0; i < 4; i += 1)
+      anchors.push(await captureTurn(threadId, `KEEP-PROMPT-${i}${filler}`, `KEEP-ANSWER-${i}${filler}`));
+    await captureTurn(threadId, `REMOVED-PROMPT${filler}`, `REMOVED-ANSWER${filler}`);
+    const policy = await threads.setCompactPolicy(ref(threadId), SMALL_COMPACT);
+    if (!policy.ok) throw new Error(policy.error.reason);
+    windowTokens = 2_000;
+
+    const { logs, options } = await startSession({ resume: gen1, resumeSessionAt: anchors[3] });
+
+    expect(logs).toContain("compact policy capped to window 2000: trigger 1600 target 800");
+    expect(logs.find((line) => line.startsWith("[lhc compact:auto]"))).toContain("(target 800)");
+    expect(projectedText(options)).not.toContain("REMOVED");
+  });
+
+  test("a repeat rollback to an anchor that is already the visible tail writes nothing", async () => {
+    const { gen1, threadId } = await seedThread();
+    const kept = await captureTurn(threadId, "KEEP-PROMPT", "KEEP-ANSWER");
+    await captureTurn(threadId, "REMOVED-PROMPT", "REMOVED-ANSWER");
+    const first = await startSession({ resume: gen1, resumeSessionAt: kept });
+    await first.session.close();
+    const events = await eventKeys(threadId);
+
+    const { logs, options } = await startSession({ resume: gen1, resumeSessionAt: kept });
+
+    expect(logs).toContainEqual(expect.stringMatching(/skipped: the anchor is already the visible tail$/));
+    expect(await eventKeys(threadId)).toBe(events);
+    expect(projectedText(options)).toContain("KEEP-ANSWER");
+    expect(projectedText(options)).not.toContain("REMOVED");
   });
 
   test("a kept tail under the trigger projects without compacting", async () => {

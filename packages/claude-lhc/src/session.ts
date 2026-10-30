@@ -250,12 +250,10 @@ export class ClaudeLhcSession {
       const stored = await resumeCompactPolicy(this.#thread, sidecarOptions.compact, (line) => this.#io.log(line));
       this.#compactPolicy = { stored, window: null };
       await this.#settleOpenTurn("session restarted");
-      const keptTail = anchor === null ? null : await this.#rollBack(anchor);
-      if (keptTail !== null && keptTail >= this.#effectiveCompactPolicy().trigger)
-        await this.#compactAtStart(keptTail, "after rollback");
-      else await this.#startProjectedGeneration();
-      const served = this.#servedPastShrunkTrigger(await this.#windowRead);
-      if (served !== null) await this.#compactAtStart(served, "before the first prompt");
+      if (anchor !== null) await this.#rollBack(anchor);
+      await this.#startProjectedGeneration();
+      const served = this.#servedPastTrigger(await this.#windowRead);
+      if (served !== null) await this.#compactBeforeFirstPrompt(served);
       this.#io.log(`resumed thread ${threadId} via ${resume} as generation ${this.#gen?.sessionId}`);
       return;
     }
@@ -326,7 +324,7 @@ export class ClaudeLhcSession {
         this.#windowRead = this.#readWindow(gen);
         const read = await this.#windowRead;
         if (read !== null && this.#pendingCompact === "auto") this.#pendingCompact = null;
-        const served = this.#servedPastShrunkTrigger(read);
+        const served = this.#servedPastTrigger(read);
         if (served !== null && this.#pendingCompact === null) {
           this.#lastContextTokens = served;
           this.#pendingCompact = "auto";
@@ -448,9 +446,9 @@ export class ClaudeLhcSession {
       : null;
   }
 
-  #servedPastShrunkTrigger(served: number | null): number | null {
+  #servedPastTrigger(served: number | null): number | null {
     const { trigger } = this.#effectiveCompactPolicy();
-    if (served === null || trigger === this.#compactPolicy.stored.trigger || served < trigger) return null;
+    if (served === null || served < trigger) return null;
     this.#io.log(
       `served context ${served} tokens is at or past the compact trigger ${trigger}; compacting before the next prompt`,
     );
@@ -677,7 +675,14 @@ export class ClaudeLhcSession {
     return anchor;
   }
 
-  async #rollBack({ anchor, keepThroughEventOrder, via }: RollbackAnchor): Promise<number> {
+  async #rollBack({ anchor, keepThroughEventOrder, via }: RollbackAnchor): Promise<void> {
+    const target = `rollback to event ${keepThroughEventOrder} via ${via}${via === anchor ? "" : ` (nearest captured ancestor of ${anchor})`}`;
+    const later = await this.#lhc.messages.list(this.#thread, { from: keepThroughEventOrder + 1, limit: 1 });
+    if (!later.ok) throw new Error(`LHC message read failed: ${later.error.reason}`);
+    if (later.value.length === 0) {
+      this.#io.log(`${target} skipped: the anchor is already the visible tail`);
+      return;
+    }
     await this.#intake([
       {
         eventKind: "rollback",
@@ -687,24 +692,21 @@ export class ClaudeLhcSession {
         payload: { keepThroughEventOrder, reason: `host resumeSessionAt ${anchor}` },
       },
     ]);
-    const status = await this.#lhc.threadView.status(this.#thread);
-    if (!status.ok) throw new Error(`LHC view status failed: ${status.error.reason}`);
-    this.#io.log(
-      `rollback to event ${keepThroughEventOrder} via ${via}${via === anchor ? "" : ` (nearest captured ancestor of ${anchor})`}; served tail ${status.value.tailTokens} tokens`,
-    );
-    return status.value.tailTokens;
+    this.#io.log(target);
   }
 
-  async #compactAtStart(preTokens: number, when: string): Promise<void> {
+  async #compactBeforeFirstPrompt(served: number): Promise<void> {
     try {
-      await this.#rebuild("auto", preTokens);
+      await this.#rebuild("auto", served);
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
-      this.#io.log(`compact ${when} failed: ${reason}; serving the uncompacted view`);
+      this.#io.log(`compact before the first prompt failed: ${reason}; serving the uncompacted view`);
       await this.#lhc.logging
-        .write(this.#thread, { level: "warning", message: `[lhc compact:auto] ${when} failed: ${reason}` })
+        .write(this.#thread, {
+          level: "warning",
+          message: `[lhc compact:auto] before the first prompt failed: ${reason}`,
+        })
         .catch(() => undefined);
-      if (this.#gen === null) await this.#startProjectedGeneration();
     }
   }
 

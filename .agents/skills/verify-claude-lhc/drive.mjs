@@ -453,7 +453,7 @@ const drives = {
       writeFileSync(join(evidenceDir, "projected.jsonl"), projected);
       assert(projected.includes("KEEP-TURN answer one"), "projected file lost the kept turn");
       assert(!projected.includes("REMOVED-TURN"), "projected file still carries the removed turn: the host rollback was ignored");
-      assert(s.stderr.some((l) => /rollback to event \d+ via /.test(l) && l.includes(`via ${anchors[0]};`)), "no `rollback to event <n> via <anchor>` log line");
+      assert(s.stderr.some((l) => /rollback to event \d+ via /.test(l) && l.endsWith(`via ${anchors[0]}`)), "no `rollback to event <n> via <anchor>` log line");
       assert(scratch.threads().length === 1, "rollback forked the store");
       return `resume:gen1 resumeSessionAt:keep-anchor -> thread ${threadId} gen=${gen.slice(0, 8)} projected keep=yes removed=no threads=1`;
     } finally { scratch.cleanup(); }

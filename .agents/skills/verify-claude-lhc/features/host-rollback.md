@@ -30,17 +30,29 @@
   exit 1. The anchor resolves before the thread's open turn is settled or
   its compact policy is stored, so a refused start writes no event and
   projects nothing.
-- When the rollback leaves the served tail at or past the effective
-  compact trigger (a rollback behind the compact point drops the stored
-  view), the sidecar compacts before projecting. A failed compact projects
-  the uncompacted view and logs why.
-- Rollback is hide-only. Repeating the same anchor on a later open hides
-  nothing new. A plain restart after a rollback serves the kept view
-  through any alias of the thread.
+- After the rollback the sidecar projects the kept view and reads the live
+  window. When the served context is at or past the effective trigger (a
+  rollback behind the compact point drops the stored view), it compacts
+  with the pair capped to that window before the first prompt. A failed
+  compact keeps the uncompacted view and logs why.
+- Rollback is hide-only. When the anchor is already the last live message,
+  the start logs `rollback to event <n> via <uuid> skipped: the anchor is
+  already the visible tail` and writes no event. A plain restart after a
+  rollback serves the kept view through any alias of the thread.
 - Rollback to thread start is a new thread. T3 starts without `resume`
   under a fresh session id, and the old thread keeps every alias it had.
   A fresh start that reuses a bound session id is refused before any
   thread is created, so no alias names two threads.
+
+Known limits, with no code change planned:
+
+- On a thread captured before host rollback landed, prompts and mid-turn
+  continuation notes were captured under a random uuid, not the one the
+  CLI wrote. A prompt anchor there resolves to the assistant message
+  before it, so the rollback also removes that prompt.
+- An uncaptured anchor whose `parentUuid` chain leaves the file that holds
+  it, or reaches a projected line (projection writes fresh uuids), resolves
+  nowhere. The start is refused and writes nothing.
 
 ## How to get to it (user POV)
 
@@ -85,8 +97,9 @@ through the KEEP assistant message and no projected file carries REMOVED.
 
 `rollback-compact` seeds 12 heavy turns under a 2000/1000 policy,
 compacts, rolls back behind the compact point, sends `/compact`, and
-restarts. It passes when the start compacted (`[lhc compact:auto]`) and
-none of the three projected files carries removed text.
+restarts. It passes when the rollback start compacted
+(`[lhc compact:auto]`) and none of the three projected files carries
+removed text.
 
 `rollback-live` takes two real turns that set KEEP-ALPHA and then
 REMOVED-BRAVO, rolls back to the first turn's last assistant message, and
