@@ -5,13 +5,14 @@ import { dirname, join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { mapPrompt, mapSdkMessage } from "../src/capture/mapper.ts";
+import { mapPrompt, mapSdkMessage, messageKeyPrefix } from "../src/capture/mapper.ts";
 import { createLhc, resolveSession, threadRef } from "../src/lhcHome.ts";
 import { nativeProjectDir, nativeSessionPath } from "../src/nativeSessionFile.ts";
 import { ClaudeLhcSession } from "../src/session.ts";
 
 const opened: Options[] = [];
 const fed: AsyncIterable<SDKUserMessage>[] = [];
+const streams: Array<(message: SDKMessage) => void> = [];
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const real = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
   return {
@@ -20,10 +21,20 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
     query: ({ prompt, options }: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => {
       opened.push(options);
       fed.push(prompt);
-      const never = new Promise<IteratorResult<never>>(() => {});
+      const queued: SDKMessage[] = [];
+      let wake: (() => void) | null = null;
+      streams.push((message) => {
+        queued.push(message);
+        wake?.();
+      });
       return {
         [Symbol.asyncIterator]() {
-          return { next: () => never };
+          return {
+            next: async (): Promise<IteratorResult<SDKMessage>> => {
+              while (queued.length === 0) await new Promise<void>((resolve) => (wake = resolve));
+              return { value: queued.shift()!, done: false };
+            },
+          };
         },
         getContextUsage: async () => ({ rawMaxTokens: 1_000_000 }),
         interrupt: async () => {},
@@ -43,6 +54,7 @@ const savedNoInference = process.env.CLAUDE_LHC_NO_INFERENCE;
 beforeEach(() => {
   opened.length = 0;
   fed.length = 0;
+  streams.length = 0;
   dir = mkdtempSync(join(tmpdir(), "claude-lhc-rollback-"));
   home = join(dir, "lhc-home");
   claudeHome = join(dir, "claude-home");
@@ -404,6 +416,45 @@ describe("host rollback on resume", () => {
     expect(projected).not.toContain("REMOVED");
     const afterOld = await startSession({ resume: gen1 });
     expect(projectedText(afterOld.options)).not.toContain("REMOVED");
+  });
+});
+
+describe("capture uuids", () => {
+  const capturedUnder = async (threadId: string, uuid: string | undefined): Promise<boolean> => {
+    if (uuid === undefined) return false;
+    const keys = await lhc().intakeStream.listEventKeysByPrefix(ref(threadId), { prefix: messageKeyPrefix(uuid) });
+    return keys.ok && keys.value.keys.length > 0;
+  };
+
+  test("a uuid-less prompt and the mid-turn continuation note reach the CLI under the uuid they were captured with", async () => {
+    const { session } = await startSession({ sessionId: randomUUID() });
+    await session.pushUser(userMessage("WORK-PROMPT"));
+    const prompt = await fed[0]![Symbol.asyncIterator]().next();
+    expect(await capturedUnder(session.threadId, prompt.value?.uuid)).toBe(true);
+
+    const toolTurn = randomUUID();
+    streams[0]!(assistantMessage(toolTurn, [{ type: "tool_use", id: "toolu_mid", name: "Read", input: {} }]));
+    await vi.waitFor(async () => expect(await capturedUnder(session.threadId, toolTurn)).toBe(true));
+    await session.pushUser(userMessage("/compact"));
+    const postToolUse = opened[0]!.hooks!.PostToolUse![0]!.hooks[0]!;
+    const stop = await postToolUse(
+      {
+        hook_event_name: "PostToolUse",
+        tool_name: "Read",
+        tool_input: {},
+        tool_response: "",
+        tool_use_id: "toolu_mid",
+      } as never,
+      "toolu_mid",
+      { signal: new AbortController().signal },
+    );
+    expect(stop).toMatchObject({ continue: false });
+    streams[0]!({ ...(resultMessage() as object), terminal_reason: "hook_stopped" } as unknown as SDKMessage);
+
+    await vi.waitFor(() => expect(fed).toHaveLength(2));
+    const note = await fed[1]![Symbol.asyncIterator]().next();
+    expect(JSON.stringify(note.value)).toContain("Context was compacted in the middle of this turn");
+    expect(await capturedUnder(session.threadId, note.value?.uuid)).toBe(true);
   });
 });
 

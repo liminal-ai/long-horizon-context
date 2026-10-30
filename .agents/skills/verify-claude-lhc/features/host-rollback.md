@@ -19,9 +19,11 @@
   message) resolves to its nearest captured ancestor. The sidecar follows
   `parentUuid` in the native transcript that holds the anchor, the resumed
   session's file first, and logs `via <ancestor> (nearest captured
-  ancestor of <anchor>)`. Prompts are captured under the host's prompt
-  uuid, which the CLI writes on the prompt line, so a failed turn's notice
-  keeps through its own prompt.
+  ancestor of <anchor>)`. Every prompt the sidecar sends goes to the CLI
+  under the uuid capture recorded: the host's uuid when it set one, a fresh
+  one otherwise, and the mid-turn continuation note's own. The CLI writes
+  the prompt line under that uuid, so a failed turn's notice keeps through
+  its own prompt or continuation note.
 - When neither the anchor nor any ancestor resolves (a uuid in no
   transcript, a subagent line in its own sidechain file), the start is
   refused with one `error` frame, `rollback anchor <uuid> not found`, and

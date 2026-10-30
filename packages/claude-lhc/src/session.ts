@@ -301,7 +301,7 @@ export class ClaudeLhcSession {
     }
     const promptUuid = message.uuid ?? randomUUID();
     gen.input.push({
-      message,
+      message: { ...message, uuid: promptUuid },
       before: async () => {
         const events = mapPrompt(message, promptUuid, this.#turnOpen);
         if (!this.#turnOpen && events.some((event) => event.eventKind === "user_prompt")) {
@@ -815,8 +815,8 @@ export class ClaudeLhcSession {
     } finally {
       this.#compacting = false;
     }
-    const note = this.#continuationNote();
     const uuid = randomUUID();
+    const note = { ...this.#continuationNote(), uuid };
     target.input.push({ message: note, before: async () => this.#intake(mapPrompt(note, uuid, true)) });
     await this.#replayHeld();
   }
