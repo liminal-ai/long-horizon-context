@@ -134,3 +134,20 @@ export async function nativeMessageAncestors(input: {
   }
   return [];
 }
+
+export async function nativeAgentSessions(agentId: string, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
+  const projects = NodePath.join(effectiveClaudeHome(env), "projects");
+  const transcript = `agent-${agentId}.jsonl`;
+  const holders: string[] = [];
+  for (const project of await NodeFS.promises.readdir(projects).catch(() => [] as string[])) {
+    const projectDir = NodePath.join(projects, project);
+    const sessions = await NodeFS.promises.readdir(projectDir, { withFileTypes: true }).catch(() => []);
+    for (const session of sessions) {
+      if (!session.isDirectory()) continue;
+      const subagents = NodePath.join(projectDir, session.name, "subagents");
+      const tree = await NodeFS.promises.readdir(subagents, { recursive: true }).catch(() => [] as string[]);
+      if (tree.some((entry) => NodePath.basename(entry) === transcript)) holders.push(session.name);
+    }
+  }
+  return holders;
+}

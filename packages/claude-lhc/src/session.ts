@@ -47,10 +47,10 @@ import {
 import { type ControlCall, parseControl, ReplayLedger } from "./controls.js";
 import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
 import { writeProjectedSession } from "./nativeSessionFile.js";
-import { projectView } from "./projection/project.js";
+import { FALLBACK_CLAUDE_CODE_VERSION, FALLBACK_PROJECTION_MODEL, projectView } from "./projection/project.js";
 import { parseCompactPolicy, parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
-import { type RollbackAnchor, resolveRollbackAnchor } from "./rollbackAnchor.js";
+import { appendRollback, type RollbackAnchor, resolveRollbackAnchor } from "./rollbackAnchor.js";
 import { abortSummaryWorkers } from "./summaryWorker.js";
 import {
   formatTokenFamilyLog,
@@ -95,7 +95,6 @@ async function labelNativeSession(sessionId: string, title: string, cwd: string,
 
 const CONTINUATION_FULL_SHARE_PERCENT = 30;
 const DERIVATION_WAIT_MS = 45_000;
-const FALLBACK_CLAUDE_CODE_VERSION = "2.1.259";
 const MID_TURN_STOP_REASON = "lhc mid-turn compact";
 const HOOK_STOPPED = "hook_stopped";
 
@@ -737,24 +736,11 @@ export class ClaudeLhcSession {
     return anchor;
   }
 
-  async #rollBack({ anchor, keepThroughEventOrder, via }: RollbackAnchor): Promise<void> {
+  async #rollBack(rollback: RollbackAnchor): Promise<void> {
+    const { anchor, keepThroughEventOrder, via } = rollback;
     const target = `rollback to event ${keepThroughEventOrder} via ${via}${via === anchor ? "" : ` (nearest captured ancestor of ${anchor})`}`;
-    const later = await this.#lhc.messages.list(this.#thread, { from: keepThroughEventOrder + 1, limit: 1 });
-    if (!later.ok) throw new Error(`LHC message read failed: ${later.error.reason}`);
-    if (later.value.length === 0) {
-      this.#io.log(`${target} skipped: the anchor is already the visible tail`);
-      return;
-    }
-    await this.#intake([
-      {
-        eventKind: "rollback",
-        idempotencyKey: `claude-lhc:rollback:${randomUUID()}`,
-        actor: "system",
-        harness: HARNESS,
-        payload: { keepThroughEventOrder, reason: `host resumeSessionAt ${anchor}` },
-      },
-    ]);
-    this.#io.log(target);
+    const recorded = await appendRollback(this.#lhc, this.#thread, rollback, `host resumeSessionAt ${anchor}`);
+    this.#io.log(recorded ? target : `${target} skipped: the anchor is already the visible tail`);
   }
 
   async #compactBeforeFirstPrompt(served: number): Promise<void> {
@@ -999,7 +985,7 @@ export class ClaudeLhcSession {
       cwd,
       version: this.#claudeCodeVersion,
       permissionMode: this.#permissionMode ?? "default",
-      model: this.#model ?? "claude-sonnet-5",
+      model: this.#model ?? FALLBACK_PROJECTION_MODEL,
     });
     const title = nativeLhcTitle(this.#threadId);
     const dest = entries.length === 0 ? null : await writeProjectedSession({ sessionId, cwd, entries, env: this.#env });

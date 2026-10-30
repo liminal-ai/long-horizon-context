@@ -1,5 +1,6 @@
+import { randomUUID } from "node:crypto";
 import type { Lhc, ThreadRef } from "lhc";
-import { messageKeyPrefix } from "./capture/mapper.js";
+import { HARNESS, messageKeyPrefix } from "./capture/mapper.js";
 import { nativeMessageAncestors } from "./nativeSessionFile.js";
 
 export interface RollbackAnchor {
@@ -51,4 +52,26 @@ async function capturedThrough(lhc: Lhc, thread: ThreadRef, uuid: string): Promi
     cursor = page.value.cursor;
   } while (cursor !== null);
   return last;
+}
+
+export async function appendRollback(
+  lhc: Lhc,
+  thread: ThreadRef,
+  { keepThroughEventOrder }: RollbackAnchor,
+  reason: string,
+): Promise<boolean> {
+  const later = await lhc.messages.list(thread, { from: keepThroughEventOrder + 1, limit: 1 });
+  if (!later.ok) throw new Error(`LHC message read failed: ${later.error.reason}`);
+  if (later.value.length === 0) return false;
+  const sent = await lhc.intakeStream.messageEvents(thread, [
+    {
+      eventKind: "rollback",
+      idempotencyKey: `claude-lhc:rollback:${randomUUID()}`,
+      actor: "system",
+      harness: HARNESS,
+      payload: { keepThroughEventOrder, reason },
+    },
+  ]);
+  if (!sent.ok) throw new Error(`LHC intake refused: ${sent.error.code}: ${sent.error.reason}`);
+  return true;
 }

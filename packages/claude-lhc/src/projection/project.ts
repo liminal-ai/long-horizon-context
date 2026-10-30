@@ -12,6 +12,9 @@ export interface ProjectionStamp {
 
 export type NativeEntry = Record<string, unknown>;
 
+export const FALLBACK_CLAUDE_CODE_VERSION = "2.1.259";
+export const FALLBACK_PROJECTION_MODEL = "claude-sonnet-5";
+
 export type ThinkingRebuildArm = "signed_verbatim" | "omit";
 export const SELECTED_THINKING_REBUILD_ARM: ThinkingRebuildArm = "signed_verbatim";
 
