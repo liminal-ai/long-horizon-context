@@ -36,7 +36,7 @@ import {
 } from "./capture/segment-fold.js";
 import {
   type CompactPolicy,
-  effectiveCompactPolicy,
+  capCompactPolicyToWindow,
   type ResolvedCompactPolicy,
   resumeCompactPolicy,
   storeCompactPolicy,
@@ -382,7 +382,7 @@ export class ClaudeLhcSession {
   }
 
   #effectiveCompactPolicy(): CompactPolicy {
-    return effectiveCompactPolicy(this.#compactPolicy);
+    return capCompactPolicyToWindow(this.#compactPolicy);
   }
 
   async #readWindow(gen: Generation): Promise<void> {

@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import { effectiveCompactPolicy } from "../src/compactPolicy.ts";
+import { capCompactPolicyToWindow } from "../src/compactPolicy.ts";
 
 let contextUsage: () => Promise<unknown> = async () => ({ rawMaxTokens: 1_000_000 });
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
@@ -182,12 +182,12 @@ describe("compact policy against the live window", () => {
     );
   });
 
-  test("effectiveCompactPolicy caps a trigger above 80% of the window and halves the target", () => {
+  test("capCompactPolicyToWindow caps a trigger above 80% of the window and halves the target", () => {
     const stored = { trigger: 700_000, target: 140_000 };
-    expect(effectiveCompactPolicy({ stored, window: 200_000 })).toEqual({ trigger: 160_000, target: 80_000 });
-    expect(effectiveCompactPolicy({ stored, window: 1_000_000 })).toEqual(stored);
-    expect(effectiveCompactPolicy({ stored, window: null })).toEqual(stored);
-    expect(effectiveCompactPolicy({ stored: { trigger: 700_000, target: 50_000 }, window: 200_000 })).toEqual({
+    expect(capCompactPolicyToWindow({ stored, window: 200_000 })).toEqual({ trigger: 160_000, target: 80_000 });
+    expect(capCompactPolicyToWindow({ stored, window: 1_000_000 })).toEqual(stored);
+    expect(capCompactPolicyToWindow({ stored, window: null })).toEqual(stored);
+    expect(capCompactPolicyToWindow({ stored: { trigger: 700_000, target: 50_000 }, window: 200_000 })).toEqual({
       trigger: 160_000,
       target: 50_000,
     });

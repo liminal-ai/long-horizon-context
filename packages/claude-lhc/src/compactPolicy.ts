@@ -2,24 +2,19 @@ import { type CompactPolicy, type ThreadRef, threads } from "lhc";
 
 export type { CompactPolicy };
 
-/** The thread's stored pair and the live model's context window, when known. */
 export interface ResolvedCompactPolicy {
   readonly stored: CompactPolicy;
   readonly window: number | null;
 }
 
 const TRIGGER_WINDOW_SHARE = 0.8;
+const TARGET_TRIGGER_SHARE = 0.5;
 
-/**
- * Claude Code's own auto-compact is off, so a trigger at or above the window lets the
- * context overflow before LHC compacts. Such a trigger drops to 80% of the window, and
- * the target to at most half of that.
- */
-export function effectiveCompactPolicy({ stored, window }: ResolvedCompactPolicy): CompactPolicy {
+export function capCompactPolicyToWindow({ stored, window }: ResolvedCompactPolicy): CompactPolicy {
   if (window === null) return stored;
   const maxTrigger = Math.floor(window * TRIGGER_WINDOW_SHARE);
   if (stored.trigger <= maxTrigger) return stored;
-  return { trigger: maxTrigger, target: Math.min(stored.target, Math.floor(maxTrigger / 2)) };
+  return { trigger: maxTrigger, target: Math.min(stored.target, Math.floor(maxTrigger * TARGET_TRIGGER_SHARE)) };
 }
 
 export function windowFromUsage(rawMaxTokens: unknown): number | null {
@@ -32,7 +27,6 @@ export async function storeCompactPolicy(ref: ThreadRef, policy: CompactPolicy):
   return stored.value;
 }
 
-/** On resume the thread's pair wins. A thread from before the pair existed takes the host's. */
 export async function resumeCompactPolicy(
   ref: ThreadRef,
   host: CompactPolicy | undefined,
