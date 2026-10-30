@@ -100,7 +100,7 @@ pnpm --filter lhc run typecheck
 pnpm --filter lhc exec vitest run test/retrieval.test.ts test/threads.test.ts
 ```
 
-`pnpm --filter lhc run test -- <files>` ignores the files and runs the whole suite. Tests that spawn tsx open a socket at `$TMPDIR/tsx-<uid>/<pid>.pipe`, which fails with `listen EINVAL` past the 107-byte socket path limit. A `TMPDIR` under the run folder is too long, so use a short one such as `~/.local/state/verify-lhc-tmp`.
+`pnpm --filter lhc run test -- <files>` ignores the files and runs the whole suite. Tests that spawn tsx open a socket at `$TMPDIR/tsx-<uid>/<pid>.pipe`, which fails with `listen EINVAL` once that path passes 108 bytes. A `TMPDIR` under the run folder can push it past, so use a short one such as `~/.local/state/verify-lhc-tmp`.
 
 ## Cleanup
 
