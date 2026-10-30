@@ -4,12 +4,15 @@
  *
  * The native Claude Agent SDK stream is forwarded unchanged inside `msg`. The two
  * adapter callbacks that cannot cross a process boundary (`canUseTool`,
- * `onUserDialog`) become `req`/`res` pairs originated by the sidecar; the query
- * controls (`setModel`, `setPermissionMode`, `setMaxThinkingTokens`, `interrupt`)
- * become `req`/`res` pairs originated by the driver. Closing stdin closes the
- * sidecar.
+ * `onUserDialog`) become `req`/`res` pairs originated by the sidecar. The SDK `Query`
+ * controls become `req`/`res` pairs originated by the driver: `method` is the `Query`
+ * method name, `params` maps its SDK parameter names to values, and the `res` value is
+ * what the SDK returned. `CONTROLS` in `controls.ts` lists every method claude-lhc
+ * forwards, replays into later generations, or refuses, plus the LHC control
+ * `setCompactPolicy` (`{ policy: { trigger, target } }`). Closing stdin closes the sidecar.
  */
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type { ControlMethod } from "./controls.js";
 
 /**
  * SDK `Options` with the non-serialisable members removed, plus the sidecar's own
@@ -29,13 +32,12 @@ export type SidecarOptions = {
   forceRebuildFailure?: boolean;
 };
 
-export type DriverControlMethod = "setModel" | "setPermissionMode" | "setMaxThinkingTokens" | "interrupt";
 export type SidecarRequestMethod = "canUseTool" | "onUserDialog";
 
 export type DriverFrame =
   | { type: "start"; options: WireOptions }
   | { type: "user"; message: SDKUserMessage }
-  | { type: "req"; id: number; method: DriverControlMethod; params: unknown }
+  | { type: "req"; id: number; method: ControlMethod; params: unknown }
   | { type: "res"; id: number; ok: true; value: unknown }
   | { type: "res"; id: number; ok: false; error: string }
   | { type: "abort"; id: number };
@@ -80,18 +82,18 @@ export function parseSidecarOptions(value: unknown): SidecarOptions {
   const compact = block["compact"];
   return {
     home,
-    ...(compact !== undefined ? { compact: parseCompact(compact) } : {}),
+    ...(compact !== undefined ? { compact: parseCompactPolicy(compact, "lhc.compact") } : {}),
     ...(block["forceRebuildFailure"] === true ? { forceRebuildFailure: true } : {}),
   };
 }
 
-function parseCompact(value: unknown): { trigger: number; target: number } {
+export function parseCompactPolicy(value: unknown, field: string): { trigger: number; target: number } {
   const record = typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
   const { trigger, target } = record;
   const positive = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n > 0;
   if (!positive(trigger) || !positive(target) || target >= trigger) {
     throw new Error(
-      `lhc.compact must be { trigger, target } with positive integers and target below trigger; received ${JSON.stringify(value)}`,
+      `${field} must be { trigger, target } with positive integers and target below trigger; received ${JSON.stringify(value)}`,
     );
   }
   return { trigger, target };
