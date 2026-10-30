@@ -107,7 +107,7 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `controls` | `start` → `setMcpServers{late}` (local echo MCP server) → `applyFlagSettings{model}` → `/compact` → `mcpServerStatus`, `getContextUsage` | after the swap the late server is `connected` with `ping`, and the usage model is the flag model | stderr `generation <gen2>: replayed setMcpServers, applyFlagSettings` |
 | `controls-refused` | `rewindFiles`, `reinitialize`, `seedReadState`, `forkSession`, then `mcpServerStatus` → stdin close | each answers one failed `res` naming the method; `mcpServerStatus` still answers; no `error` frame, exit 0 | the CLI never got the refused calls (the `res` comes from the sidecar's table) |
 | `set-compact-policy` | start on `claude-sonnet-4-6`, `setCompactPolicy` with a bad pair, then 700000/140000 | the bad pair fails naming `setCompactPolicy params.policy`; stderr `compact policy set on thread` and the 160000/80000 cap | the thread file's `thread_metadata` row holds 700000/140000, saved as `thread_metadata.txt` |
-| `turn` | real tool turn + recall via `scripts/standalone.ts` (live only, `CLAUDE_LHC_LIVE=1`) | standalone `RESULT: PASS` | native files only under the throwaway `CLAUDE_CONFIG_DIR`, none under real `~/.claude/projects`. Fails intermittently; see Known failure below |
+| `turn` | real tool turn + recall via `scripts/standalone.ts` (live only, `CLAUDE_LHC_LIVE=1`) | standalone `RESULT: PASS` | native files only under the throwaway `CLAUDE_CONFIG_DIR`, none under real `~/.claude/projects`. |
 | `rollback-live` | two real turns (KEEP-ALPHA, REMOVED-BRAVO), restart with `resumeSessionAt` at the first turn's last message, ask for the second word (live only) | the turn succeeds and the answer lacks REMOVED-BRAVO | `transcript.jsonl`, `answer.txt` |
 | `rollback-live-compact` | as `rollback-live`, with `/compact` after the rollback and before the question (live only) | as `rollback-live`, plus a `compact_boundary` after `/compact` | `transcript.jsonl`, `answer.txt` |
 | `controls-live` | real turn, `setMcpServers{late}`, `/compact`, ask Claude to call `mcp__late__ping` (live only) | the turn after the swap succeeds in the new generation | `mcp__late__ping` returns `pong from late`; `transcript.jsonl` |
@@ -132,6 +132,9 @@ Every drive above runs both halves; do not weaken a drive to one half.
 Not deterministic; `all` runs it only with `CLAUDE_LHC_LIVE=1`. The repo
 proof `packages/claude-lhc/scripts/standalone.ts` covers start → tool turn
 → `/compact` → deferred compact → restart-recall against the real model.
+In the deferred compact step it sends a prompt while the compact runs and
+waits for two `result` frames, the continued turn's and then the held
+prompt's own.
 It inherits the caller's env, and `src/nativeSessionFile.ts` writes native
 session files and project memory under `CLAUDE_CONFIG_DIR`, else
 `~/.claude`. Run it only through the harness, which isolates it:
@@ -176,27 +179,6 @@ The pinned SDK, `@anthropic-ai/claude-agent-sdk` 0.3.312, names
 differ, and `doctor.sh` prints its path and version. Record that version
 with every live result, because a CLI that does not match the SDK is a
 cause to rule out before a live FAIL counts as a regression.
-
-### Known failure: lost reply after a mid-turn `/compact`
-
-Until the product bug ([LH-212](https://linear.app/limhealth/issue/LH-212/three-host-and-core-bugs-confirmed-during-the-lhc-catch-up), item 1) is fixed, the live `turn` drive intermittently
-FAILs with `timeout waiting for results for the compacted turn and the
-held prompt`. After the mid-turn `/compact` swap, the continued turn and
-the replayed held prompt produce one `result` frame where standalone
-waits for two; every earlier step passes. Record so far, all on
-2026-10-28: 5 of 7 live runs failed this way. Of the isolated `drive.mjs
-turn` runs, both with scratch in `/tmp` failed, the one in the run folder
-passed, and both under the XDG scratch root failed, so scratch location
-does not explain it. It has not been bisected against the claude-lhc
-cleanup (PR #20).
-
-- Report a live FAIL with that message as this known failure, by name,
-  and still as FAIL. Never as PASS or SKIP.
-- Any other live FAIL is a new finding.
-- One live PASS does not show the bug is gone.
-- Do not weaken standalone's two-result wait to pass it.
-- Delete this entry in the PR that fixes the bug, with repeated passing
-  live `turn` runs as its proof.
 
 ### Rollback-shaped start (PA prototype method)
 

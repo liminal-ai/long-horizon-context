@@ -96,13 +96,16 @@ summarization quality over real turns is the live standalone proof's job.
 - A `/compact` sent while a turn is open does not run immediately: it
   pends to the next safe tool boundary or the turn end. The seeded drive
   sends it idle, where it runs at once.
-- Prompts sent while a compact is running are held and replayed
-  (`#replayHeld`), not dropped, into whichever generation is current when
-  the rebuild finishes. After a failed rebuild that is the old generation.
-  Live-covered, not seeded.
-- Known failure: after a mid-turn `/compact`, the continued turn and the
-  replayed held prompt sometimes return one result instead of two, so the
-  live `turn` drive fails intermittently. See Known failure in [SKILL.md](../SKILL.md).
+- Prompts sent while a compact is running are held, not dropped, and go
+  to whichever generation is current, after a failed rebuild the old one.
+  A `/compact` between turns sends them as soon as it ends. A mid-turn
+  compact keeps them until the continued turn's `result` (success, error
+  or interrupt), then sends them as their own turn, so you get two
+  results. A prompt that arrives while they wait queues behind them, a
+  second mid-turn compact keeps them waiting, and stdin close drops them
+  with `closing with <n> held prompt(s) never sent`. Unit-covered in
+  `packages/claude-lhc/test/rollback-start.test.ts` and live-covered by
+  `turn`, not seeded.
 - No `system/init` arrives before the first prompt, so the window read
   does not wait for `init`. It goes out when the query is created, and the
   SDK holds it until the CLI has initialized.
