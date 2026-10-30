@@ -17,7 +17,9 @@ export async function forkSession(
   const sourceId = await resolveSession(sessionId, home);
   if (sourceId === null) throw new Error(`no LHC thread holds the Claude session ${sessionId}`);
   const source = threadRef(sourceId, home);
-  const cwd = options.dir ?? (await threadCwd(sourceId, home));
+  const sourceCwd = (await threadCwd(sourceId, home)) ?? options.dir;
+  if (sourceCwd === undefined) throw new Error(`LHC thread ${sourceId} has no cwd; pass dir`);
+  const cwd = options.dir ?? sourceCwd;
   const env = process.env;
   const lhc = createLhc({
     mode: "manual",
@@ -28,7 +30,9 @@ export async function forkSession(
 
   const upTo = options.upToMessageId;
   const anchor =
-    upTo === undefined ? null : await resolveRollbackAnchor({ lhc, thread: source, anchor: upTo, sessionId, cwd, env });
+    upTo === undefined
+      ? null
+      : await resolveRollbackAnchor({ lhc, thread: source, anchor: upTo, sessionId, cwd: sourceCwd, env });
   if (upTo !== undefined && anchor === null) throw new Error(`rollback anchor ${upTo} not found`);
 
   const copied = await threads.copyThread({
@@ -64,9 +68,8 @@ export async function forkSession(
   return typeof head === "string" ? { sessionId: forkSessionId, headMessageId: head } : { sessionId: forkSessionId };
 }
 
-async function threadCwd(threadId: string, home: string): Promise<string> {
+async function threadCwd(threadId: string, home: string): Promise<string | undefined> {
   const info = await threads.resolve({ threadId, registryPath: registryPath(home) });
   if (!info.ok) throw new Error(`LHC registry read failed: ${info.error.reason}`);
-  if (info.value.cwd === undefined) throw new Error(`LHC thread ${threadId} has no cwd; pass dir`);
   return info.value.cwd;
 }

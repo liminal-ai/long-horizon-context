@@ -10,7 +10,8 @@
   as the SDK does.
 - `forkSession(sessionId, { lhc, dir?, upToMessageId?, title? })`
   resolves any of the source thread's session ids, resolves
-  `upToMessageId` with the host-rollback resolver (`src/rollbackAnchor.ts`),
+  `upToMessageId` with the host-rollback resolver (`src/rollbackAnchor.ts`)
+  against the source thread's own project,
   copies the thread with core `copyThread`, appends a core `rollback` on
   the copy, drains the derivation work the copy carries and the rollback
   queued, projects the copy into a new session file

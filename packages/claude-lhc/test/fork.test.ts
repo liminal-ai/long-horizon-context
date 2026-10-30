@@ -206,6 +206,25 @@ describe("forkSession", () => {
     expect(rolled.projected).not.toContain("FORK-ANSWER");
   });
 
+  test("a fork into another dir at a history id resolves the anchor in the source's project", async () => {
+    const { gen1 } = await twoTurns();
+    await resume(gen1);
+    const elsewhere = mkdtempSync(join(dir, "elsewhere-"));
+
+    const forked = await forkSession(gen1, {
+      ...store(),
+      dir: elsewhere,
+      upToMessageId: await historyUuid(gen1, "KEEP-ANSWER"),
+    });
+
+    const file = readFileSync(
+      nativeSessionPath({ sessionId: forked.sessionId, cwd: elsewhere, env: process.env }),
+      "utf8",
+    );
+    expect(file).toContain("KEEP-ANSWER");
+    expect(file).not.toContain("LATER");
+  });
+
   test("forking leaves the source thread, its aliases and its served view unchanged", async () => {
     const { gen1, threadId, kept } = await twoTurns();
     const before = await served(threadId);
