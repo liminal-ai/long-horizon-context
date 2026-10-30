@@ -38,7 +38,17 @@ async function nearestCapturedAncestor(input: AnchorLookup): Promise<RollbackAnc
 }
 
 async function capturedThrough(lhc: Lhc, thread: ThreadRef, uuid: string): Promise<number | null> {
-  const keys = await lhc.intakeStream.listEventKeysByPrefix(thread, { prefix: messageKeyPrefix(uuid) });
-  if (!keys.ok) throw new Error(`LHC anchor lookup failed: ${keys.error.reason}`);
-  return keys.value.keys.length === 0 ? null : Math.max(...keys.value.keys.map((key) => key.eventOrder));
+  let last: number | null = null;
+  let cursor: string | null = null;
+  do {
+    const page = await lhc.intakeStream.listEventKeysByPrefix(thread, {
+      prefix: messageKeyPrefix(uuid),
+      ...(cursor === null ? {} : { cursor }),
+    });
+    if (!page.ok) throw new Error(`LHC anchor lookup failed: ${page.error.reason}`);
+    if (page.value.capExhausted) throw new Error(`LHC anchor lookup for ${uuid} passed the capture key cap`);
+    for (const key of page.value.keys) last = Math.max(last ?? key.eventOrder, key.eventOrder);
+    cursor = page.value.cursor;
+  } while (cursor !== null);
+  return last;
 }

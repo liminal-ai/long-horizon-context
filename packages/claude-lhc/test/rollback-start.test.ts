@@ -227,6 +227,20 @@ describe("host rollback on resume", () => {
     expect(projected).not.toContain("REMOVED");
   });
 
+  test("an anchor whose capture keys span several key pages keeps its last block", async () => {
+    const { gen1, threadId } = await seedThread();
+    const anchor = randomUUID();
+    const blocks = Array.from({ length: 300 }, (_, i) => ({ type: "text", text: `KEEP-BLOCK-${i}-END` }));
+    await capture(threadId, "KEEP-PROMPT", [assistantMessage(anchor, blocks)]);
+    await captureTurn(threadId, "REMOVED-PROMPT", "REMOVED-ANSWER");
+
+    const { options } = await startSession({ resume: gen1, resumeSessionAt: anchor });
+
+    const projected = projectedText(options);
+    expect(projected).toContain("KEEP-BLOCK-299-END");
+    expect(projected).not.toContain("REMOVED");
+  });
+
   test("ancestor walk: a synthetic notice anchor keeps through its turn's prompt across compact and restart", async () => {
     const { gen1, threadId } = await seedThread();
     await captureTurn(threadId, "KEEP-PROMPT", "KEEP-ANSWER");
