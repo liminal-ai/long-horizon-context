@@ -19,7 +19,23 @@ export interface SidecarCommand {
   env?: NodeJS.ProcessEnv;
 }
 
-export type LhcOptions = SidecarOptions & { spawn?: SidecarCommand };
+/**
+ * What `lhc.spawnProcess` receives: the command, args and env that `lhc.spawn` names (or the
+ * default). `signal` aborts only after `close()`'s stdin-EOF grace, as the Agent SDK's does, so a
+ * host may hand it to `spawn()`. The shape is assignable to the SDK's `SpawnOptions`.
+ */
+export interface SidecarSpawnOptions {
+  command: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  signal: AbortSignal;
+}
+
+export type LhcOptions = SidecarOptions & {
+  spawn?: SidecarCommand;
+  /** Spawns the sidecar in place of Node's `spawn`, so the host owns the process. Never sent on the wire. */
+  spawnProcess?: (options: SidecarSpawnOptions) => ChildProcess;
+};
 export type LhcQueryOptions = Options & { lhc?: LhcOptions };
 export type LhcQuery = Query & LhcControls;
 
@@ -39,6 +55,17 @@ export function defaultSidecarCommand(): SidecarCommand {
   return { command: process.execPath, args: [fileURLToPath(new URL("./sidecar.js", import.meta.url))] };
 }
 
+export function spawnSidecar(
+  command: SidecarCommand,
+  spawnProcess: LhcOptions["spawnProcess"],
+  signal = new AbortController().signal,
+): ChildProcess {
+  const args = [...(command.args ?? [])];
+  const env = command.env ?? process.env;
+  if (spawnProcess !== undefined) return spawnProcess({ command: command.command, args, env, signal });
+  return spawn(command.command, args, { stdio: ["pipe", "pipe", "pipe"], env, windowsHide: true });
+}
+
 function toWireOptions(options: LhcQueryOptions, note: (line: string) => void): Record<string, unknown> {
   const wire: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(options)) {
@@ -48,7 +75,7 @@ function toWireOptions(options: LhcQueryOptions, note: (line: string) => void): 
       continue;
     }
     if (key === "lhc") {
-      const { spawn: _spawn, ...lhc } = value as LhcOptions;
+      const { spawn: _spawn, spawnProcess: _spawnProcess, ...lhc } = value as LhcOptions;
       wire[key] = lhc;
     } else if (key === "mcpServers") {
       wire[key] = wireMcpServers(value as NonNullable<Options["mcpServers"]>, note);
@@ -133,7 +160,8 @@ function controlParams(method: ControlMethod, args: readonly unknown[]): Record<
 
 /**
  * The Agent SDK's `query`, run through the claude-lhc sidecar. `options.lhc` is the sidecar's
- * LHC block; `options.lhc.spawn` replaces the default `node <this package>/dist/sidecar.js`.
+ * LHC block; `options.lhc.spawn` replaces the default `node <this package>/dist/sidecar.js`, and
+ * `options.lhc.spawnProcess` replaces the spawn itself.
  */
 export function query({
   prompt,
@@ -152,6 +180,7 @@ export function query({
   }
   const stderr = (line: string): void => options.stderr?.(`${line}\n`);
   const command = options.lhc?.spawn ?? defaultSidecarCommand();
+  const forceClose = new AbortController();
   const messages = new MessageQueue();
   const pendingControls = new Map<number, { resolve: (value: unknown) => void; reject: (cause: Error) => void }>();
   const inflightRequests = new Map<number, AbortController>();
@@ -160,11 +189,7 @@ export function query({
   let stdinOpen = true;
 
   const startFrame = encodeFrame({ type: "start", options: toWireOptions(options, stderr) as WireOptions });
-  const child: ChildProcess = spawn(command.command, [...(command.args ?? [])], {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: command.env ?? process.env,
-    windowsHide: true,
-  });
+  const child = spawnSidecar(command, options.lhc?.spawnProcess, forceClose.signal);
 
   const send = (frame: DriverFrame): void => {
     if (!stdinOpen || child.stdin === null || child.stdin.destroyed) throw new Error("claude-lhc sidecar is closed");
@@ -296,7 +321,9 @@ export function query({
     closed = true;
     endStdin();
     const term = setTimeout(() => {
-      if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM");
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      forceClose.abort();
+      child.kill("SIGTERM");
     }, CLOSE_GRACE_MS).unref();
     const kill = setTimeout(() => {
       if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
