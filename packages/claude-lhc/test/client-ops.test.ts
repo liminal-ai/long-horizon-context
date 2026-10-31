@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -167,6 +168,25 @@ describe("a failed operation", () => {
       `no LHC thread holds the Claude session ${unknown}`,
     );
     expect(existsSync(join(opHome, "projects"))).toBe(false);
+  });
+
+  test("the sidecar answers a failed operation with an error frame and exits 1", async () => {
+    await capturedThread();
+    const unknown = randomUUID();
+    const frame = { type: "op", id: 7, method: "getSessionMessages", args: [unknown, { lhc: { home } }] };
+
+    const ran = spawnSync(process.execPath, ["--import", "tsx", SIDECAR], {
+      input: `${JSON.stringify(frame)}\n`,
+      encoding: "utf8",
+    });
+
+    expect(ran.status).toBe(1);
+    expect(
+      ran.stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line)),
+    ).toEqual([{ type: "res", id: 7, ok: false, error: `no LHC thread holds the Claude session ${unknown}` }]);
   });
 
   test("a sidecar that exits with no result rejects with its exit and stderr", async () => {

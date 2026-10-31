@@ -150,6 +150,15 @@ the first id can still resume, fork and read history with it. A host that reads 
 session files directly sees only the generation that file belongs to. Use `getSessionMessages`
 instead.
 
+An id no LHC thread holds is not a claude-lhc session. `forkSession`, `getSessionMessages` and
+`getSubagentMessages` reject it with `no LHC thread holds the Claude session <id>`, and never read
+a stock transcript under it. To sort many ids, call `inspectSessions(sessionIds, { lhc: { home } })`
+from `claude-lhc/client`. It runs in one sidecar and answers each id, in order, with
+`{ kind: "managed", threadId, currentSessionId }` or `{ kind: "unknown" }`. A registry it cannot
+read rejects the whole call with `LHC registry read failed: ...`, and so does a store directory
+it cannot search or a `home` that is a file. Only a missing store answers `unknown` for every
+id, and it creates no file.
+
 ## Environment
 
 - `CLAUDE_LHC_NO_INFERENCE=1` in the sidecar's environment skips summary derivations, for tests
@@ -160,12 +169,19 @@ instead.
 ## Wire
 
 Hosts that are not in Node can speak the sidecar's JSONL wire directly. `src/protocol.ts` defines
-the frames: `start`, `user`, `end`, `req` and `res`, `abort`, `msg`, and `error`. `src/client.ts` is the
+the frames: `start`, `user`, `end`, `req` and `res`, `abort`, `msg`, `error`, and `op`. `src/client.ts` is the
 reference client. Closing the sidecar's stdin closes it.
+
+A sidecar whose first frame is `op` runs one store operation instead of a session. The frame
+names the `method` (`forkSession`, `getSessionMessages`, `getSubagentMessages` or
+`inspectSessions`) and its `args`. The sidecar answers with one `res` frame carrying the same
+`id`, then exits 0 on success and 1 on failure. `src/client/operations.ts` is the reference.
 
 ## Source map
 
 - `src/client.ts` is `query()`, the client side of the wire.
+- `src/client/` is the `claude-lhc/client` entry: `query()` and the store operations, each run in
+  a short-lived sidecar through an `op` frame.
 - `src/sidecar.ts` is the sidecar entry. `bin/claude-lhc.js` runs it.
 - `src/protocol.ts` defines the wire frames and the `lhc` block.
 - `src/controls.ts` maps each `Query` method to forward, replay, refuse or transport.

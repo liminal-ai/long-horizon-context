@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
   createDeterministicInferenceCallbacks,
@@ -9,13 +9,16 @@ import {
   type ThreadRef,
   threads,
 } from "lhc";
+import type { SessionInspection } from "./protocol.js";
 import { createSummaryWorkerModelCall, summaryWorkerAssignments } from "./summaryWorker.js";
 
 export const ALIAS_HOST = "t3code-lhc";
 
+const registryFile = (home: string): string => join(home, "registry.sqlite");
+
 export function registryPath(home: string): string {
   mkdirSync(home, { recursive: true });
-  return join(home, "registry.sqlite");
+  return registryFile(home);
 }
 
 export function newThreadFilePath(home: string): string {
@@ -79,8 +82,19 @@ export async function bindSession(threadId: string, sessionId: string, home: str
   if (!bound.ok) throw new Error(`LHC alias registration failed: ${bound.error.reason}`);
 }
 
+function registryExists(home: string): boolean {
+  try {
+    statSync(registryFile(home));
+    return true;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw new Error(`LHC registry read failed: ${(cause as Error).message}`);
+  }
+}
+
 async function lookupSession(sessionId: string, home: string): Promise<ThreadAliasResolution | null> {
-  const resolved = await threads.resolveAlias({ alias: sessionAlias(sessionId), registryPath: registryPath(home) });
+  if (!registryExists(home)) return null;
+  const resolved = await threads.resolveAlias({ alias: sessionAlias(sessionId), registryPath: registryFile(home) });
   if (resolved.ok) return resolved.value;
   if (resolved.error.code === "alias_not_found") return null;
   throw new Error(`LHC registry read failed: ${resolved.error.reason}`);
@@ -90,9 +104,15 @@ export async function resolveSession(sessionId: string, home: string): Promise<s
   return (await lookupSession(sessionId, home))?.threadId ?? null;
 }
 
-export async function currentSession(sessionId: string, home: string): Promise<string | null> {
+export async function inspectSession(sessionId: string, home: string): Promise<SessionInspection> {
   const found = await lookupSession(sessionId, home);
-  if (found === null) return null;
+  if (found === null) return { kind: "unknown" };
   const current = found.currentAlias;
-  return current?.startsWith(`${ALIAS_HOST}:`) ? current.slice(ALIAS_HOST.length + 1) : sessionId;
+  const currentSessionId = current?.startsWith(`${ALIAS_HOST}:`) ? current.slice(ALIAS_HOST.length + 1) : sessionId;
+  return { kind: "managed", threadId: found.threadId, currentSessionId };
+}
+
+export async function currentSession(sessionId: string, home: string): Promise<string | null> {
+  const found = await inspectSession(sessionId, home);
+  return found.kind === "managed" ? found.currentSessionId : null;
 }

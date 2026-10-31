@@ -6,6 +6,7 @@ import {
   decodeFrame,
   encodeFrame,
   type OperationFrame,
+  type SessionInspection,
   type SidecarFrame,
   type WireForkOptions,
   type WireSessionMessagesOptions,
@@ -62,7 +63,6 @@ function operate<T>(frame: OperationFrame, command: SidecarCommand = defaultSide
 
 const wireStore = ({ lhc }: LhcOperationStore): WireForkOptions["lhc"] => ({ home: lhc.home });
 
-/** claude-lhc's `forkSession`, run in a short-lived sidecar with `options.env` and `options.pathToClaudeCodeExecutable`. */
 export function forkSession(sessionId: string, options: LhcForkSessionOptions): Promise<LhcForkSessionResult> {
   return operate(
     { type: "op", id: 1, method: "forkSession", args: [sessionId, { ...options, lhc: wireStore(options) }] },
@@ -70,7 +70,6 @@ export function forkSession(sessionId: string, options: LhcForkSessionOptions): 
   );
 }
 
-/** claude-lhc's `getSessionMessages`, run in a short-lived sidecar that reads under `options.env`'s Claude home. */
 export function getSessionMessages(sessionId: string, options: LhcSessionMessagesOptions): Promise<SessionMessage[]> {
   return operate(
     { type: "op", id: 1, method: "getSessionMessages", args: [sessionId, { ...options, lhc: wireStore(options) }] },
@@ -78,7 +77,6 @@ export function getSessionMessages(sessionId: string, options: LhcSessionMessage
   );
 }
 
-/** claude-lhc's `getSubagentMessages`, run in a short-lived sidecar that reads under `options.env`'s Claude home. */
 export function getSubagentMessages(
   sessionId: string,
   agentId: string,
@@ -91,6 +89,17 @@ export function getSubagentMessages(
       method: "getSubagentMessages",
       args: [sessionId, agentId, { ...options, lhc: wireStore(options) }],
     },
+    options.lhc.spawn,
+  );
+}
+
+/** One sidecar start for the whole batch. Rejects with a store error when the registry cannot be read. */
+export function inspectSessions(
+  sessionIds: readonly string[],
+  options: LhcOperationStore,
+): Promise<SessionInspection[]> {
+  return operate(
+    { type: "op", id: 1, method: "inspectSessions", args: [[...sessionIds], { lhc: wireStore(options) }] },
     options.lhc.spawn,
   );
 }
