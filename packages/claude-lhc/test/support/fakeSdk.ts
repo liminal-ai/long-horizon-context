@@ -23,26 +23,51 @@ export function query({ prompt, options }: { prompt: AsyncIterable<SDKUserMessag
   const sessionId = options.sessionId ?? options.resume ?? randomUUID();
   const model = options.model ?? "claude-sonnet-5";
   let closed = false;
+  let wake: (() => void) | undefined;
+  const notify = (): void => {
+    wake?.();
+    wake = undefined;
+  };
 
+  // Like the CLI, it reads each prompt as soon as it arrives and reports it queued, then runs the
+  // prompts one turn at a time.
   async function* stream(): AsyncGenerator<SDKMessage, void> {
-    let initialized = false;
     await new Promise((resolve) => setTimeout(resolve, 300));
-    for await (const user of prompt) {
-      if (closed) return;
-      if (!initialized) {
+    const out: SDKMessage[] = [];
+    const waiting: SDKUserMessage[] = [];
+    let inputDone = false;
+    let initialized = false;
+    void (async () => {
+      for await (const user of prompt) {
+        if (closed) break;
+        if (!initialized)
+          out.push({
+            type: "system",
+            subtype: "init",
+            session_id: sessionId,
+            uuid: randomUUID(),
+            model,
+            claude_code_version: "2.1.312",
+            tools: [],
+            mcp_servers: [],
+          } as unknown as SDKMessage);
         initialized = true;
-        yield {
-          type: "system",
-          subtype: "init",
-          session_id: sessionId,
-          uuid: randomUUID(),
-          model,
-          claude_code_version: "2.1.312",
-          tools: [],
-          mcp_servers: [],
-        } as unknown as SDKMessage;
+        waiting.push(user);
+        out.push(lifecycle(sessionId, user, "queued"));
+        notify();
       }
-      yield lifecycle(sessionId, user, "queued");
+      inputDone = true;
+      notify();
+    })();
+    for (;;) {
+      while (out.length > 0) yield out.shift() as SDKMessage;
+      if (closed) return;
+      const user = waiting.shift();
+      if (user === undefined) {
+        if (inputDone) return;
+        await new Promise<void>((resolve) => (wake = resolve));
+        continue;
+      }
       yield lifecycle(sessionId, user, "started");
       const text = textOf(user);
       let reply = `echo: ${text}`;
@@ -61,6 +86,7 @@ export function query({ prompt, options }: { prompt: AsyncIterable<SDKUserMessag
         );
         reply = `tool decision: ${decision?.behavior ?? "none"}`;
       }
+      while (out.length > 0) yield out.shift() as SDKMessage;
       yield {
         type: "assistant",
         uuid: randomUUID(),
@@ -84,6 +110,7 @@ export function query({ prompt, options }: { prompt: AsyncIterable<SDKUserMessag
     getContextUsage: async () => ({ rawMaxTokens: 1_000_000, totalTokens: 0 }),
     close: () => {
       closed = true;
+      notify();
     },
   });
   return new Proxy(base, {

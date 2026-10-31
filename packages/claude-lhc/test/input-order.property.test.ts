@@ -7,6 +7,7 @@ import { expect, test, vi } from "vitest";
 import { ClaudeLhcSession } from "../src/session.ts";
 
 interface Turn {
+  id: number;
   labels: string[];
   uuids: string[];
   stage: "begin" | "tool" | "finish";
@@ -139,11 +140,15 @@ interface Run {
   ended: boolean;
   failed: string | null;
   actions: string[];
-  sentDuringCompact: number;
+  problems: string[];
+  promptsDuringCompact: number;
   midTurnStops: number;
   steersSent: number;
   steersFolded: number;
   dueWithQueued: number;
+  severalHeldInOneCompact: number;
+  pendingAutoSends: Array<{ input: number; sentAt: number }>;
+  compactsBehindHeld: number;
   started: string[];
 }
 
@@ -151,7 +156,7 @@ async function runOnce(seed: number): Promise<Run> {
   const random = prng(seed);
   const dir = mkdtempSync(join(tmpdir(), "claude-lhc-input-order-"));
   clis.length = 0;
-  const inputs = Array.from({ length: 1 + Math.floor(random() * 6) }, (_, i) =>
+  const inputs = Array.from({ length: 1 + Math.floor(random() * 8) }, (_, i) =>
     random() < 0.35 ? "/compact" : `P${i}`,
   );
   const run: Run = {
@@ -161,18 +166,51 @@ async function runOnce(seed: number): Promise<Run> {
     ended: false,
     failed: null,
     actions: [],
-    sentDuringCompact: 0,
+    problems: [],
+    promptsDuringCompact: 0,
     midTurnStops: 0,
     steersSent: 0,
     steersFolded: 0,
     dueWithQueued: 0,
+    severalHeldInOneCompact: 0,
+    pendingAutoSends: [],
+    compactsBehindHeld: 0,
     started: [],
   };
   const heavyRate = random() < 0.5 ? 0.6 : 0.2;
-  const compacting = (): boolean => {
-    const statuses = run.frames.filter((m) => (m as { subtype?: string }).subtype === "status");
-    return (statuses.at(-1) as { status?: string } | undefined)?.status === "compacting";
+  const host = (["eager", "slow", "during compacts", "during turns"] as const)[Math.floor(random() * 4)];
+  const statusAt = (): number[] =>
+    run.frames.flatMap((m, i) => ((m as { subtype?: string }).subtype === "status" ? [i] : []));
+  const compactingSince = (): number | null => {
+    const last = statusAt().at(-1);
+    return last !== undefined && (run.frames[last] as { status?: string }).status === "compacting" ? last : null;
   };
+  const stops: number[] = [];
+  const compactingMidTurn = (): boolean => {
+    const since = compactingSince();
+    if (since === null) return false;
+    const before = statusAt().at(-2) ?? -1;
+    return stops.some((at) => at > before && at <= since);
+  };
+  const lastIndex = (match: (m: SDKMessage) => boolean): number => {
+    for (let i = run.frames.length - 1; i >= 0; i--) if (match(run.frames[i] as SDKMessage)) return i;
+    return -1;
+  };
+  const autoCompactPending = (): boolean => {
+    const reading = lastIndex((m) => m.type === "assistant");
+    const usage = (run.frames[reading] as { message?: { usage?: { input_tokens: number } } } | undefined)?.message
+      ?.usage;
+    return (
+      usage !== undefined &&
+      usage.input_tokens >= COMPACT.trigger &&
+      reading > lastIndex((m) => m.type === "system" && m.subtype === "compact_boundary")
+    );
+  };
+  const heldBy = new Map<number, number>();
+  const held = new Set<number>();
+  const heldMidTurn = new Set<number>();
+  const steerTurn = new Map<string, number>();
+  let turns = 0;
   let stoppedLabels: string[] = [];
   let serial: Promise<void> = Promise.resolve();
   const frame = (work: () => Promise<void>): void => {
@@ -214,6 +252,7 @@ async function runOnce(seed: number): Promise<Run> {
       trace(`cli ${clis.indexOf(cli)} starts ${text.slice(0, 30)}`);
       if (!text.includes(CONTINUATION)) run.started.push(text);
       cli.turn = {
+        id: ++turns,
         labels: text.includes(CONTINUATION) ? stoppedLabels : [text],
         uuids: [next.uuid ?? ""],
         stage: "begin",
@@ -228,15 +267,6 @@ async function runOnce(seed: number): Promise<Run> {
       return;
     }
     if (turn.stage === "tool") {
-      if (random() < 0.5)
-        for (const steer of cli.pulled.splice(0)) {
-          cli.emit(lifecycle(cli, steer.uuid, "started"));
-          run.started.push(textOf(steer));
-          trace(`cli ${clis.indexOf(cli)} folds ${textOf(steer)}`);
-          turn.labels.push(textOf(steer));
-          turn.uuids.push(steer.uuid ?? "");
-          run.steersFolded += 1;
-        }
       const toolUseId = `toolu_${randomUUID()}`;
       cli.emit(assistant(cli, [{ type: "tool_use", id: toolUseId, name: "Read", input: {} }], turn.heavy));
       await settle();
@@ -254,6 +284,7 @@ async function runOnce(seed: number): Promise<Run> {
       );
       if (turn.heavy && cli.pulled.length > 0) run.dueWithQueued += 1;
       if ((answer as { continue?: boolean }).continue === false) {
+        stops.push(run.frames.length);
         stoppedLabels = turn.labels;
         run.midTurnStops += 1;
         cli.turn = null;
@@ -261,7 +292,17 @@ async function runOnce(seed: number): Promise<Run> {
         for (const uuid of turn.uuids) cli.emit(lifecycle(cli, uuid, "completed"));
         return;
       }
-      turn.stage = "finish";
+      // Like the CLI, it starts queued prompts with the tool result, after PostToolUse.
+      if (random() < 0.5)
+        for (const steer of cli.pulled.splice(0)) {
+          cli.emit(lifecycle(cli, steer.uuid, "started"));
+          run.started.push(textOf(steer));
+          trace(`cli ${clis.indexOf(cli)} folds ${textOf(steer)}`);
+          turn.labels.push(textOf(steer));
+          turn.uuids.push(steer.uuid ?? "");
+          if (steerTurn.get(textOf(steer)) === turn.id) run.steersFolded += 1;
+        }
+      turn.stage = random() < 0.5 ? "tool" : "finish";
       return;
     }
     cli.emit(assistant(cli, [{ type: "text", text: `answer:${turn.labels.join("+")}` }], turn.heavy));
@@ -274,23 +315,58 @@ async function runOnce(seed: number): Promise<Run> {
   const trace = (what: string): void => {
     if (process.env.INPUT_ORDER_DEBUG !== undefined) console.log(`[seed ${seed}] ${what}`);
   };
+  // A prompt is held when it is sent during a compact or behind a /compact that has no result yet. A
+  // steer is any other prompt sent while a CLI turn runs.
   const sendOne = (): void => {
-    const text = inputs[sent++] as string;
-    if (compacting()) run.sentDuringCompact += 1;
-    else if (text !== "/compact" && live()?.turn != null) run.steersSent += 1;
-    frame(() => session.pushUser({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null }));
+    const input = sent++;
+    const text = inputs[input] as string;
+    const since = compactingSince();
+    const answered = answeredInputs(run.frames).length;
+    const behind = inputs.slice(answered, input).includes("/compact");
+    if (text === "/compact") {
+      if ([...heldMidTurn].some((prompt) => prompt >= answered)) run.compactsBehindHeld += 1;
+    } else if (since !== null) {
+      held.add(input);
+      run.promptsDuringCompact += 1;
+      heldBy.set(input, since);
+      if ([...heldBy.values()].filter((at) => at === since).length === 2) run.severalHeldInOneCompact += 1;
+      if (compactingMidTurn()) heldMidTurn.add(input);
+    } else if (behind) held.add(input);
+    else if (live()?.turn != null) {
+      run.steersSent += 1;
+      steerTurn.set(text, live()?.turn?.id ?? 0);
+      if (autoCompactPending()) run.pendingAutoSends.push({ input, sentAt: run.frames.length });
+    }
+    send(text);
+  };
+  // As the sidecar does, the frame starts the push and lets the next frame through.
+  const send = (text: string): void => {
+    frame(async () => {
+      void session
+        .pushUser({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null })
+        .catch((cause) => {
+          run.failed ??= cause instanceof Error ? cause.message : String(cause);
+        });
+    });
   };
 
   const actions = (): Array<[string, () => Promise<void>]> => {
     const out: Array<[string, () => Promise<void>]> = [];
-    if (sent < inputs.length) out.push(["send", async () => sendOne()]);
-    if (inputs.length - sent >= 2)
-      out.push([
-        "burst",
-        async () => {
-          for (let n = 2 + Math.floor(random() * 2); n > 0 && sent < inputs.length; n--) sendOne();
-        },
-      ]);
+    const cli = live();
+    const idle = cli === undefined || (cli.turn === null && cli.pulled.length === 0);
+    const typing =
+      host === "eager" ||
+      (host === "slow" && random() < 0.4) ||
+      (host === "during compacts" && (compactingSince() !== null || (idle && random() < 0.3))) ||
+      (host === "during turns" && ((cli?.turn != null && compactingSince() === null) || (idle && random() < 0.3)));
+    if (sent < inputs.length && typing) out.push(["send", async () => sendOne()]);
+    const burst: [string, () => Promise<void>] = [
+      "burst",
+      async () => {
+        for (let n = 2 + Math.floor(random() * 2); n > 0 && sent < inputs.length; n--) sendOne();
+      },
+    ];
+    if (inputs.length - sent >= 2 && typing) out.push(burst);
     if (sent >= inputs.length && !endSent)
       out.push([
         "end",
@@ -299,7 +375,6 @@ async function runOnce(seed: number): Promise<Run> {
           frame(async () => session.endInput());
         },
       ]);
-    const cli = live();
     if (cli !== undefined && !cli.pulling)
       out.push([
         "pull",
@@ -307,6 +382,9 @@ async function runOnce(seed: number): Promise<Run> {
           cli.pulling = true;
           void cli.input.next().then((next) => {
             if (!next.done) {
+              const text = textOf(next.value);
+              if (held.has(inputs.indexOf(text)) && (cli.turn !== null || cli.pulled.length > 0))
+                run.problems.push(`${text}, held for a compact, reached a CLI that was still busy`);
               cli.pulled.push(next.value);
               cli.emit(lifecycle(cli, next.value.uuid, "queued"));
             }
@@ -345,24 +423,43 @@ async function runOnce(seed: number): Promise<Run> {
   return run;
 }
 
+const boundaryTrigger = (message: SDKMessage): string | null =>
+  message.type === "system" && message.subtype === "compact_boundary"
+    ? (message as unknown as { compact_metadata: { trigger: string } }).compact_metadata.trigger
+    : null;
+
 // Each result answers its own input, or, for a steer the CLI folded into a running turn, shares that
-// turn's result. Flattened in order, the answered inputs must be exactly the inputs.
+// turn's result. Each answered input carries the index of the frame that answered it.
+function answeredInputs(frames: readonly SDKMessage[]): Array<{ input: string; at: number }> {
+  return frames.flatMap((message, at) => {
+    if (message.type !== "result") return [];
+    const text = String((message as unknown as { result: unknown }).result);
+    return (text === "" ? ["/compact"] : text.replace(/^answer:/, "").split("+")).map((input) => ({ input, at }));
+  });
+}
+
+// An answered prompt sent while an automatic compact was pending, whose answer came after an automatic swap.
+const answeredAcrossAutoSwap = (run: Run): number => {
+  const answers = answeredInputs(run.frames);
+  return run.pendingAutoSends.filter(({ input, sentAt }) => {
+    const answeredAt = answers[input]?.at ?? -1;
+    return run.frames.some((m, i) => i >= sentAt && i < answeredAt && boundaryTrigger(m) === "auto");
+  }).length;
+};
+
 function violations(run: Run): string[] {
-  const out: string[] = [];
-  const answered: string[] = [];
-  const results: string[] = [];
-  for (const message of run.frames) {
-    if (message.type === "system" && message.subtype === "compact_boundary") {
-      const trigger = (message as unknown as { compact_metadata: { trigger: string } }).compact_metadata.trigger;
-      if (trigger === "manual" && run.inputs[answered.length] !== "/compact")
-        out.push(`a /compact ran while input ${answered.length} (${run.inputs[answered.length]}) had no result`);
-    }
-    if (message.type === "result") {
-      const text = String((message as unknown as { result: unknown }).result);
-      results.push(text);
-      answered.push(...(text === "" ? ["/compact"] : text.replace(/^answer:/, "").split("+")));
-    }
-  }
+  const out: string[] = [...run.problems];
+  const answers = answeredInputs(run.frames);
+  const answered = answers.map(({ input }) => input);
+  const results = run.frames.flatMap((m) =>
+    m.type === "result" ? [String((m as unknown as { result: unknown }).result)] : [],
+  );
+  run.frames.forEach((message, i) => {
+    if (boundaryTrigger(message) !== "manual") return;
+    const pending = answers.filter(({ at }) => at < i).length;
+    if (run.inputs[pending] !== "/compact")
+      out.push(`a /compact ran while input ${pending} (${run.inputs[pending]}) had no result`);
+  });
   if (run.failed !== null) out.push(`sidecar failed: ${run.failed}`);
   if (!run.ended) out.push(`the session never ended after end (results ${JSON.stringify(results)})`);
   if (JSON.stringify(answered) !== JSON.stringify(run.inputs))
@@ -385,24 +482,26 @@ test("every input is answered in input order, a steer may share its turn's resul
     steersSent: 0,
     steersFolded: 0,
     dueWithQueued: 0,
+    severalHeldInOneCompact: 0,
+    promptsAcrossPendingAutoSwap: 0,
+    compactsBehindHeld: 0,
   };
   try {
     const base = Number(process.env.INPUT_ORDER_SEED ?? 1);
     for (let seed = base; seed < base + RUNS; seed++) {
       const run = await runOnce(seed);
       const problems = violations(run);
-      const boundaries = run.frames.flatMap((m) =>
-        m.type === "system" && m.subtype === "compact_boundary"
-          ? [(m as unknown as { compact_metadata: { trigger: string } }).compact_metadata.trigger]
-          : [],
-      );
+      const boundaries = run.frames.map(boundaryTrigger);
       seen.midTurnStops += run.midTurnStops;
       seen.autoBoundaries += boundaries.filter((t) => t === "auto").length;
       seen.manualBoundaries += boundaries.filter((t) => t === "manual").length;
-      seen.promptsDuringCompact += run.sentDuringCompact;
+      seen.promptsDuringCompact += run.promptsDuringCompact;
       seen.steersSent += run.steersSent;
       seen.steersFolded += run.steersFolded;
       seen.dueWithQueued += run.dueWithQueued;
+      seen.severalHeldInOneCompact += run.severalHeldInOneCompact;
+      seen.promptsAcrossPendingAutoSwap += answeredAcrossAutoSwap(run);
+      seen.compactsBehindHeld += run.compactsBehindHeld;
       if (problems.length > 0) failures.push({ seed, inputs: run.inputs, problems, actions: run.actions.join(" ") });
     }
   } finally {
