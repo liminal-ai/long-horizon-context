@@ -137,7 +137,7 @@ describe("inspectSessions", () => {
 
   test("a mixed batch of 500 ids answers in order from one sidecar start", async () => {
     const seeded = await Promise.all([1, 2, 3].map(() => seedThread(home, cwd)));
-    const ids = Array.from({ length: 500 }, () => randomUUID());
+    const ids: string[] = Array.from({ length: 500 }, () => randomUUID());
     const managed = new Map(seeded.map((thread, i) => [i * 200, thread] as const));
     for (const [at, thread] of managed) ids[at] = thread.gen1;
 
