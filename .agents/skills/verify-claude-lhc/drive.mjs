@@ -239,15 +239,14 @@ const lateServer = (res) => (res.ok ? res.value : []).find((server) => server.na
 const REFUSED_CONTROLS = { rewindFiles: { userMessageId: randomUUID() }, reinitialize: {}, seedReadState: { path: "a.txt", mtime: 1 } };
 const FLAG_MODEL = "claude-sonnet-4-6";
 
-// withEnv passes the host's env as the operation's env inside the child, so a credential never lands in argv.
-async function callInScratchEnv(scratch, fn, args, { live = false, entry = "index.js", withEnv = false } = {}) {
+async function callInScratchEnv(scratch, fn, args, { live = false, entry = "index.js", childEnvAsOpEnv = false } = {}) {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: scratch.claudeHome, CLAUDE_LHC_NO_INFERENCE: "1" };
   if (live) {
     delete env.CLAUDE_LHC_NO_INFERENCE;
     env.HOME = scratch.home;
   }
   const url = JSON.stringify(pathToFileURL(join(DIST, entry)).href);
-  const call = withEnv ? `const args = ${JSON.stringify(args)}; args.at(-1).env = { ...process.env };` : `const args = ${JSON.stringify(args)};`;
+  const call = childEnvAsOpEnv ? `const args = ${JSON.stringify(args)}; args.at(-1).env = { ...process.env };` : `const args = ${JSON.stringify(args)};`;
   const script = `const lib = await import(${url}); ${call} process.stdout.write(JSON.stringify(await lib[${JSON.stringify(fn)}](...args)));`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: scratch.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
   scratch.groups.push(child.pid);
@@ -1153,7 +1152,7 @@ const drives = {
       const removed = await liveTurn(first, "Remember the second secret word REMOVED-BRAVO. Reply with just OK.");
       assert((await first.stop()) === 0, "turn sidecar did not exit 0");
       assert(kept.result?.subtype === "success" && removed.result?.subtype === "success" && kept.lastAssistantUuid, "a seed turn failed");
-      const forked = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: kept.lastAssistantUuid }], { live: true, entry: "client/index.js", withEnv: true });
+      const forked = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: kept.lastAssistantUuid }], { live: true, entry: "client/index.js", childEnvAsOpEnv: true });
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "fork-result.json"), `${JSON.stringify(forked, null, 2)}\n`);
       assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
