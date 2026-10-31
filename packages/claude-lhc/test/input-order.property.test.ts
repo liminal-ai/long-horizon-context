@@ -143,7 +143,8 @@ interface Run {
   midTurnStops: number;
   steersSent: number;
   steersFolded: number;
-  requeued: number;
+  dueWithQueued: number;
+  started: string[];
 }
 
 async function runOnce(seed: number): Promise<Run> {
@@ -164,8 +165,10 @@ async function runOnce(seed: number): Promise<Run> {
     midTurnStops: 0,
     steersSent: 0,
     steersFolded: 0,
-    requeued: 0,
+    dueWithQueued: 0,
+    started: [],
   };
+  const heavyRate = random() < 0.5 ? 0.6 : 0.2;
   const compacting = (): boolean => {
     const statuses = run.frames.filter((m) => (m as { subtype?: string }).subtype === "status");
     return (statuses.at(-1) as { status?: string } | undefined)?.status === "compacting";
@@ -187,7 +190,7 @@ async function runOnce(seed: number): Promise<Run> {
       run.failed ??= message;
     },
     log: (line) => {
-      if (line.startsWith("requeued ")) run.requeued += 1;
+      if (process.env.INPUT_ORDER_DEBUG !== undefined) console.log(`[seed ${seed}] ${line.slice(0, 160)}`);
     },
   });
   await session.start({
@@ -208,11 +211,13 @@ async function runOnce(seed: number): Promise<Run> {
       if (next === undefined) return;
       const text = textOf(next);
       cli.emit(lifecycle(cli, next.uuid, "started"));
+      trace(`cli ${clis.indexOf(cli)} starts ${text.slice(0, 30)}`);
+      if (!text.includes(CONTINUATION)) run.started.push(text);
       cli.turn = {
         labels: text.includes(CONTINUATION) ? stoppedLabels : [text],
         uuids: [next.uuid ?? ""],
         stage: "begin",
-        heavy: random() < 0.25,
+        heavy: random() < heavyRate,
         tool: random() < 0.6,
       };
     }
@@ -226,6 +231,8 @@ async function runOnce(seed: number): Promise<Run> {
       if (random() < 0.5)
         for (const steer of cli.pulled.splice(0)) {
           cli.emit(lifecycle(cli, steer.uuid, "started"));
+          run.started.push(textOf(steer));
+          trace(`cli ${clis.indexOf(cli)} folds ${textOf(steer)}`);
           turn.labels.push(textOf(steer));
           turn.uuids.push(steer.uuid ?? "");
           run.steersFolded += 1;
@@ -245,6 +252,7 @@ async function runOnce(seed: number): Promise<Run> {
         toolUseId,
         { signal: new AbortController().signal },
       );
+      if (turn.heavy && cli.pulled.length > 0) run.dueWithQueued += 1;
       if ((answer as { continue?: boolean }).continue === false) {
         stoppedLabels = turn.labels;
         run.midTurnStops += 1;
@@ -257,26 +265,33 @@ async function runOnce(seed: number): Promise<Run> {
       return;
     }
     cli.emit(assistant(cli, [{ type: "text", text: `answer:${turn.labels.join("+")}` }], turn.heavy));
+    if (turn.heavy && cli.pulled.length > 0) run.dueWithQueued += 1;
     cli.turn = null;
     cli.emit(result(cli, `answer:${turn.labels.join("+")}`));
     for (const uuid of turn.uuids) cli.emit(lifecycle(cli, uuid, "completed"));
   };
 
+  const trace = (what: string): void => {
+    if (process.env.INPUT_ORDER_DEBUG !== undefined) console.log(`[seed ${seed}] ${what}`);
+  };
+  const sendOne = (): void => {
+    const text = inputs[sent++] as string;
+    if (compacting()) run.sentDuringCompact += 1;
+    else if (text !== "/compact" && live()?.turn != null) run.steersSent += 1;
+    frame(() => session.pushUser({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null }));
+  };
+
   const actions = (): Array<[string, () => Promise<void>]> => {
     const out: Array<[string, () => Promise<void>]> = [];
-    if (sent < inputs.length)
+    if (sent < inputs.length) out.push(["send", async () => sendOne()]);
+    if (inputs.length - sent >= 2)
       out.push([
-        "send",
+        "burst",
         async () => {
-          const text = inputs[sent++] as string;
-          if (compacting()) run.sentDuringCompact += 1;
-          else if (text !== "/compact" && live()?.turn != null) run.steersSent += 1;
-          frame(() =>
-            session.pushUser({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null }),
-          );
+          for (let n = 2 + Math.floor(random() * 2); n > 0 && sent < inputs.length; n--) sendOne();
         },
       ]);
-    else if (!endSent)
+    if (sent >= inputs.length && !endSent)
       out.push([
         "end",
         async () => {
@@ -352,6 +367,9 @@ function violations(run: Run): string[] {
   if (!run.ended) out.push(`the session never ended after end (results ${JSON.stringify(results)})`);
   if (JSON.stringify(answered) !== JSON.stringify(run.inputs))
     out.push(`results ${JSON.stringify(results)} for inputs ${JSON.stringify(run.inputs)}`);
+  const prompts = run.inputs.filter((input) => input !== "/compact");
+  if (JSON.stringify(run.started) !== JSON.stringify(prompts))
+    out.push(`the CLIs started ${JSON.stringify(run.started)}, not the send order ${JSON.stringify(prompts)}`);
   return out;
 }
 
@@ -366,7 +384,7 @@ test("every input is answered in input order, a steer may share its turn's resul
     promptsDuringCompact: 0,
     steersSent: 0,
     steersFolded: 0,
-    requeued: 0,
+    dueWithQueued: 0,
   };
   try {
     const base = Number(process.env.INPUT_ORDER_SEED ?? 1);
@@ -384,7 +402,7 @@ test("every input is answered in input order, a steer may share its turn's resul
       seen.promptsDuringCompact += run.sentDuringCompact;
       seen.steersSent += run.steersSent;
       seen.steersFolded += run.steersFolded;
-      seen.requeued += run.requeued;
+      seen.dueWithQueued += run.dueWithQueued;
       if (problems.length > 0) failures.push({ seed, inputs: run.inputs, problems, actions: run.actions.join(" ") });
     }
   } finally {

@@ -557,6 +557,7 @@ export class ClaudeLhcSession {
 
   #midTurnDue(): CompactTrigger | null {
     if (this.#compacting || this.#stopping !== null || this.#closed || this.#midTurnFailed) return null;
+    if (this.#cliHoldsUnstarted()) return null;
     if (this.#autoCompactDue) return "auto";
     return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger ? "auto" : null;
   }
@@ -723,7 +724,11 @@ export class ClaudeLhcSession {
     this.#turnOpen = false;
     this.#turnStartedAt = undefined;
     for (const [uuid, sent] of this.#sent) if (sent.started || !this.#lifecycleSeen) this.#sent.delete(uuid);
-    const trigger = this.#dueCompact();
+    let trigger = this.#dueCompact();
+    if (trigger !== null && this.#cliHoldsUnstarted()) {
+      this.#autoCompactDue = true;
+      trigger = null;
+    }
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
     await this.#advance();
@@ -920,12 +925,10 @@ export class ClaudeLhcSession {
     target.input.push({ message: note, before: async () => this.#intake(mapPrompt(note, uuid, true)) });
   }
 
-  #requeueUnstarted(): void {
-    const unstarted = [...this.#sent].filter(([, sent]) => !sent.started);
-    if (unstarted.length === 0) return;
-    for (const [uuid] of unstarted) this.#sent.delete(uuid);
-    this.#inputs.unshift(...unstarted.map(([, sent]): QueuedInput => ({ kind: "prompt", message: sent.message })));
-    this.#io.log(`requeued ${unstarted.length} prompt(s) the replaced generation had not started`);
+  // The CLI starts a queued prompt as soon as its turn ends, so replacing its generation then would run
+  // that prompt twice. Automatic compacts wait until the CLI holds no unstarted prompt.
+  #cliHoldsUnstarted(): boolean {
+    return this.#lifecycleSeen && [...this.#sent.values()].some((sent) => !sent.started);
   }
 
   #compactBoundary(
@@ -1044,9 +1047,7 @@ export class ClaudeLhcSession {
     this.#gen = next;
     if (old !== null) {
       old.superseded = true;
-      const drained = old.input.drain();
-      if (this.#lifecycleSeen) this.#requeueUnstarted();
-      else for (const item of drained) next.input.push(item);
+      for (const item of old.input.drain()) next.input.push(item);
       old.query.close();
     }
     this.#io.log(

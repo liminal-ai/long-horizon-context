@@ -98,9 +98,10 @@ summarization quality over real turns is the live standalone proof's job.
   steer, which the CLI may fold into the running turn (one shared
   `result`) or run as its own turn. The sidecar follows each prompt
   through the CLI's `command_lifecycle` frames: a turn's `result`
-  answers the prompts the CLI started, and a prompt the CLI had not
-  started when a compact replaces the generation goes back to the head
-  of the queue (`requeued <n> prompt(s) ...`). A CLI that sends no
+  answers the prompts the CLI started. The CLI starts a queued prompt
+  as soon as its turn ends, so an automatic compact waits until the CLI
+  holds no unstarted prompt, and a steer never straddles a generation
+  swap. A CLI that sends no
   lifecycle frames gets the plain rule that a `result` answers every
   sent prompt.
 - A `/compact` waits until every earlier input is answered, then

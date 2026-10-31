@@ -68,9 +68,22 @@ const lifecycle = (uuid: string | undefined, state: string): SDKMessage =>
     session_id: "",
   }) as unknown as SDKMessage;
 
-test("prompts the CLI had not started move to the new generation in the order they were sent", async () => {
+const result = (text: string): SDKMessage =>
+  ({
+    type: "result",
+    subtype: "success",
+    is_error: false,
+    result: text,
+    uuid: randomUUID(),
+    session_id: "",
+  }) as unknown as SDKMessage;
+
+test("an automatic compact waits until the CLI holds no prompt it has not started", async () => {
+  const results: string[] = [];
   const session = new ClaudeLhcSession({
-    emit(): void {},
+    emit(message: SDKMessage): void {
+      if (message.type === "result") results.push(String((message as unknown as { result: unknown }).result));
+    },
     request: async () => ({}),
     end(): void {},
     fail(message: string): void {
@@ -104,29 +117,19 @@ test("prompts the CLI had not started move to the new generation in the order th
       usage: { input_tokens: 5_000, output_tokens: 1 },
     },
   } as unknown as SDKMessage);
-  first.emit({
-    type: "result",
-    subtype: "success",
-    is_error: false,
-    result: "answer A",
-    uuid: randomUUID(),
-    session_id: "",
-  } as unknown as SDKMessage);
+  first.emit(result("answer A"));
+  await vi.waitFor(() => expect(results).toEqual(["answer A"]));
+  expect(generations).toHaveLength(1);
 
-  await vi.waitFor(() => expect(generations.length).toBe(2), { timeout: 10_000 });
-  const second = generations[1] as Generation;
-  const next = (await second.input.next()).value as SDKUserMessage;
-  expect(next.message.content).toBe("B");
-  second.emit(lifecycle(next.uuid, "started"));
-  second.emit({
-    type: "result",
-    subtype: "success",
-    is_error: false,
-    result: "answer B",
-    uuid: randomUUID(),
-    session_id: "",
-  } as unknown as SDKMessage);
-  const after = (await second.input.next()).value as SDKUserMessage;
-  expect(after.message.content).toBe("C");
+  first.emit(lifecycle(b.uuid, "started"));
+  first.emit(result("answer B"));
+  const c = (await first.input.next()).value as SDKUserMessage;
+  expect([a, b, c].map((m) => m.message.content)).toEqual(["A", "B", "C"]);
+  first.emit(lifecycle(c.uuid, "queued"));
+  first.emit(lifecycle(c.uuid, "started"));
+  first.emit(result("answer C"));
+
+  await vi.waitFor(() => expect(generations).toHaveLength(2), { timeout: 10_000 });
+  expect(results).toEqual(["answer A", "answer B", "answer C"]);
   await session.close();
 });
