@@ -559,7 +559,8 @@ export class ClaudeLhcSession {
 
   #midTurnDue(): CompactTrigger | null {
     if (this.#compacting || this.#stopping !== null || this.#closed || this.#midTurnFailed) return null;
-    if (this.#pendingCompact !== null) return this.#pendingCompact;
+    if (this.#pendingCompact === "auto" || (this.#pendingCompact === "manual" && this.#inFlight <= 1))
+      return this.#pendingCompact;
     return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger ? "auto" : null;
   }
 
@@ -721,8 +722,8 @@ export class ClaudeLhcSession {
     this.#heldUntilContinuedTurnEnds = false;
     this.#inFlight = Math.max(0, this.#inFlight - 1);
     const trigger = this.#dueCompact();
-    const owed = this.#compactResultsOwed;
-    this.#compactResultsOwed = 0;
+    const owed = this.#pendingCompact === "manual" ? 0 : this.#compactResultsOwed;
+    this.#compactResultsOwed -= owed;
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
     const outcome = this.#compactFailure === null ? "" : `LHC compact failed: ${this.#compactFailure}`;
@@ -754,7 +755,7 @@ export class ClaudeLhcSession {
 
   #dueCompact(): "manual" | "auto" | null {
     if (this.#compacting) return null;
-    if (this.#pendingCompact !== null) {
+    if (this.#pendingCompact === "auto" || (this.#pendingCompact === "manual" && this.#inFlight === 0)) {
       const trigger = this.#pendingCompact;
       this.#pendingCompact = null;
       return trigger;

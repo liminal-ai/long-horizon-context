@@ -189,6 +189,24 @@ describe("query through the sidecar", () => {
     expect(results[1]).toMatchObject({ result: expect.stringContaining("LHC compact failed") });
   });
 
+  test("a /compact sent after two prompts waits for both of their turns", async () => {
+    const prompts = (async function* () {
+      for (const text of ["slow:one", "two", "/compact"])
+        yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as const;
+    })();
+    const { q } = start(prompts);
+    const messages: SDKMessage[] = [];
+    for await (const message of q) messages.push(message);
+    const results = messages.flatMap((m, i) => (m.type === "result" ? [i] : []));
+    const two = messages.findIndex((m) => m.type === "assistant" && replyText([m]) === "echo: two");
+    const boundary = messages.findIndex((m) => m.type === "system" && m.subtype === "compact_boundary");
+    expect(results).toHaveLength(3);
+    expect(boundary).toBeGreaterThan(two);
+    expect(results[1]).toBeGreaterThan(two);
+    expect(results[2]).toBeGreaterThan(boundary);
+    expect(messages[results[2] ?? -1]).toMatchObject({ result: "" });
+  });
+
   test("two /compact inputs sent during a turn each get a result", async () => {
     const prompts = (async function* () {
       for (const text of ["slow:one", "/compact", "/compact"])
