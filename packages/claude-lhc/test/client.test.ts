@@ -246,8 +246,7 @@ describe("query through the sidecar", () => {
     const messages: SDKMessage[] = [];
     for await (const message of q) messages.push(message);
     const at = (match: (m: SDKMessage) => boolean): number => messages.findIndex(match);
-    const queued = (uuid: string) =>
-      at((m) => (m as unknown as { command_uuid?: string; state?: string }).command_uuid === uuid && "state" in m);
+    const queued = (uuid: string) => at((m) => (m as unknown as { command_uuid?: string }).command_uuid === uuid);
     const answered = (text: string) => at((m) => m.type === "result" && "result" in m && m.result === `echo: ${text}`);
     expect(messages.filter((m) => m.type === "result")).toHaveLength(3);
     expect(queued(one)).toBeGreaterThan(at((m) => m.type === "system" && m.subtype === "compact_boundary"));
