@@ -17,9 +17,14 @@ import {
   threadRef,
 } from "./lhcHome.js";
 import { nativeSessionPath, writeProjectedSession } from "./nativeSessionFile.js";
-import { FALLBACK_CLAUDE_CODE_VERSION, FALLBACK_PROJECTION_MODEL, projectView } from "./projection/project.js";
+import {
+  FALLBACK_CLAUDE_CODE_VERSION,
+  FALLBACK_PROJECTION_MODEL,
+  PROJECTED_SOURCE_FIELD,
+  projectView,
+} from "./projection/project.js";
 import { type LhcStore, type OperationEnv, parseSidecarOptions } from "./protocol.js";
-import { appendRollback, resolveRollbackAnchor } from "./rollbackAnchor.js";
+import { appendRollback, eventCursor, resolveRollbackAnchor } from "./rollbackAnchor.js";
 import { seedTokenFamilyFromStartModel } from "./token-family.js";
 
 export async function forkSession(
@@ -79,8 +84,13 @@ export async function forkSession(
       await renameSession(forkSessionId, title, { dir: cwd });
     }
     await bindSession(forkId, forkSessionId, home);
-    const head = entries.at(-1)?.["uuid"];
-    return typeof head === "string" ? { sessionId: forkSessionId, headMessageId: head } : { sessionId: forkSessionId };
+    const head = entries
+      .map((entry) => entry[PROJECTED_SOURCE_FIELD])
+      .filter((key) => typeof key === "string")
+      .at(-1);
+    return typeof head === "string"
+      ? { sessionId: forkSessionId, headMessageId: eventCursor(forkId, head) }
+      : { sessionId: forkSessionId };
   } catch (cause) {
     await threads.discardCopy({ threadId: forkId, registryPath: registryPath(home) });
     await rm(nativeSessionPath({ sessionId: forkSessionId, cwd, env }), { force: true });

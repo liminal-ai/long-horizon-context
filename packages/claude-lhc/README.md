@@ -32,8 +32,10 @@ for await (const message of q) handle(message);
 complete host that starts, answers, compacts, forks, restarts, rolls back and closes.
 
 The package also exports `forkSession`, `getSessionMessages` and `getSubagentMessages`. They take
-the SDK's arguments plus `lhc: { home }`. `forkSession` also returns `headMessageId`, the last
-message the fork keeps, and ignores `sessionStore`.
+the SDK's arguments plus `lhc: { home }`. `forkSession` also returns `headMessageId`, a cursor
+for the last message the fork keeps, and ignores `sessionStore`. Pass it as `resumeSessionAt` or
+`upToMessageId` on the fork. It names the fork's own record, not a transcript line, so it keeps
+working after the fork's session files are gone.
 
 A strict `tsc` without `skipLibCheck` reports errors inside the Agent SDK's own `sdk.d.ts`
 (`ZodPreprocess` takes the wrong number of type arguments). A bare import of

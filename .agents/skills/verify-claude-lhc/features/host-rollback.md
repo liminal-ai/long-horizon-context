@@ -33,6 +33,13 @@
   anchor's own line for that key before it walks ancestors, so a rollback to
   a line of a restarted, compacted or forked generation resolves and logs
   `via <that line's uuid>`. A summary band line cuts at the end of that band.
+- A `claude-lhc-cursor:<thread>:<capture key>` anchor, the form a fork's
+  `headMessageId` takes, resolves from the store alone, before any native
+  file is read. It keeps through the event its key names. A cursor that
+  names another thread fails the start with `rollback cursor <cursor> names
+  LHC thread <other>, not <this>`, and a key the thread never recorded fails
+  it as `rollback anchor <cursor> not found`. Either refusal comes before the
+  open turn is settled, so it writes nothing.
 - When neither the anchor nor any ancestor resolves (a uuid in no
   transcript, a subagent line in its own sidechain file), the start is
   refused with one `error` frame, `rollback anchor <uuid> not found`, and
