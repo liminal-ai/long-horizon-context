@@ -16,9 +16,10 @@
   only, answers each id in order with `{ kind: "managed", threadId,
   currentSessionId }` or `{ kind: "unknown" }`, from one sidecar start
   (`src/history.ts`, `inspectSession` in `src/lhcHome.ts`). A superseded
-  id names the thread's current generation. A registry it cannot read
-  rejects the whole call with `LHC registry read failed: ...`. An absent
-  store answers `unknown` and creates no file.
+  id names the thread's current generation. A registry it cannot read,
+  a store directory it cannot search, or a `home` that is a file rejects
+  the whole call with `LHC registry read failed: ...`. Only a missing
+  store answers `unknown`, and it creates no file.
 - `forkSession(sessionId, { lhc, dir?, upToMessageId?, title?, sessionStore? })`
   resolves any of the source thread's session ids, resolves
   `upToMessageId` with the host-rollback resolver (`src/rollbackAnchor.ts`)

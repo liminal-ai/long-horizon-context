@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import {
   createDeterministicInferenceCallbacks,
@@ -82,7 +82,18 @@ export async function bindSession(threadId: string, sessionId: string, home: str
   if (!bound.ok) throw new Error(`LHC alias registration failed: ${bound.error.reason}`);
 }
 
+function registryExists(home: string): boolean {
+  try {
+    statSync(registryFile(home));
+    return true;
+  } catch (cause) {
+    if ((cause as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw new Error(`LHC registry read failed: ${(cause as Error).message}`);
+  }
+}
+
 async function lookupSession(sessionId: string, home: string): Promise<ThreadAliasResolution | null> {
+  if (!registryExists(home)) return null;
   const resolved = await threads.resolveAlias({ alias: sessionAlias(sessionId), registryPath: registryFile(home) });
   if (resolved.ok) return resolved.value;
   if (resolved.error.code === "alias_not_found") return null;

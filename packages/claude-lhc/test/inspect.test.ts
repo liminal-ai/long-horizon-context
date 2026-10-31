@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -160,6 +160,23 @@ describe("inspectSessions", () => {
     writeFileSync(join(home, "registry.sqlite"), "not a sqlite database\n".repeat(64));
 
     await expect(inspect([gen1, randomUUID()])).rejects.toThrow(/^LHC registry read failed: /);
+  });
+
+  test("a store directory that cannot be searched fails the whole call with a store error", async () => {
+    const { gen1 } = await seedThread(home, cwd);
+    chmodSync(home, 0o000);
+    try {
+      await expect(inspect([gen1])).rejects.toThrow(/^LHC registry read failed: .*EACCES/);
+    } finally {
+      chmodSync(home, 0o755);
+    }
+  });
+
+  test("a store path that is a file fails the whole call with a store error", async () => {
+    const notADir = join(dir, "lhc-file");
+    writeFileSync(notADir, "");
+
+    await expect(inspect([randomUUID()], notADir)).rejects.toThrow(/^LHC registry read failed: .*ENOTDIR/);
   });
 
   test("an absent store answers unknown and creates no file", async () => {

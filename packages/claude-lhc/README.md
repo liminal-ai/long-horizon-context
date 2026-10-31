@@ -155,8 +155,9 @@ An id no LHC thread holds is not a claude-lhc session. `forkSession`, `getSessio
 a stock transcript under it. To sort many ids, call `inspectSessions(sessionIds, { lhc: { home } })`
 from `claude-lhc/client`. It runs in one sidecar and answers each id, in order, with
 `{ kind: "managed", threadId, currentSessionId }` or `{ kind: "unknown" }`. A registry it cannot
-read rejects the whole call with `LHC registry read failed: ...`. An absent store answers
-`unknown` for every id and creates no file.
+read rejects the whole call with `LHC registry read failed: ...`, and so does a store directory
+it cannot search or a `home` that is a file. Only a missing store answers `unknown` for every
+id, and it creates no file.
 
 ## Environment
 
