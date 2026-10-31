@@ -920,9 +920,8 @@ export class ClaudeLhcSession {
     target.input.push({ message: note, before: async () => this.#intake(mapPrompt(note, uuid, true)) });
   }
 
-  #requeueUnstarted(moved: ReadonlySet<string | undefined>): void {
-    if (!this.#lifecycleSeen) return;
-    const unstarted = [...this.#sent].filter(([uuid, sent]) => !sent.started && !moved.has(uuid));
+  #requeueUnstarted(): void {
+    const unstarted = [...this.#sent].filter(([, sent]) => !sent.started);
     if (unstarted.length === 0) return;
     for (const [uuid] of unstarted) this.#sent.delete(uuid);
     this.#inputs.unshift(...unstarted.map(([, sent]): QueuedInput => ({ kind: "prompt", message: sent.message })));
@@ -1045,9 +1044,9 @@ export class ClaudeLhcSession {
     this.#gen = next;
     if (old !== null) {
       old.superseded = true;
-      const moved = old.input.drain();
-      for (const item of moved) next.input.push(item);
-      this.#requeueUnstarted(new Set(moved.map((item) => item.message.uuid)));
+      const drained = old.input.drain();
+      if (this.#lifecycleSeen) this.#requeueUnstarted();
+      else for (const item of drained) next.input.push(item);
       old.query.close();
     }
     this.#io.log(
