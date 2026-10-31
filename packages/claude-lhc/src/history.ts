@@ -5,9 +5,11 @@ import {
   getSubagentMessages as readSubagentMessages,
   type SessionMessage,
 } from "@anthropic-ai/claude-agent-sdk";
-import { currentSession, resolveSession } from "./lhcHome.js";
+import { currentSession, inspectSession, resolveSession } from "./lhcHome.js";
 import { nativeAgentSessions } from "./nativeSessionFile.js";
-import { type LhcStore, type OperationEnv, parseSidecarOptions } from "./protocol.js";
+import { type LhcStore, type OperationEnv, parseSidecarOptions, type SessionInspection } from "./protocol.js";
+
+const unknownSession = (sessionId: string): Error => new Error(`no LHC thread holds the Claude session ${sessionId}`);
 
 export async function getSessionMessages(
   sessionId: string,
@@ -15,7 +17,8 @@ export async function getSessionMessages(
 ): Promise<SessionMessage[]> {
   const { lhc, env: _env, pathToClaudeCodeExecutable: _bin, ...read } = options;
   const current = await currentSession(sessionId, parseSidecarOptions(lhc).home);
-  return readSessionMessages(current ?? sessionId, read);
+  if (current === null) throw unknownSession(sessionId);
+  return readSessionMessages(current, read);
 }
 
 export async function getSubagentMessages(
@@ -26,9 +29,16 @@ export async function getSubagentMessages(
   const { lhc, env, pathToClaudeCodeExecutable: _bin, ...read } = options;
   const { home } = parseSidecarOptions(lhc);
   const threadId = await resolveSession(sessionId, home);
-  if (threadId === null) return readSubagentMessages(sessionId, agentId, read);
+  if (threadId === null) throw unknownSession(sessionId);
   for (const holder of await nativeAgentSessions(agentId, env)) {
     if ((await resolveSession(holder, home)) === threadId) return readSubagentMessages(holder, agentId, read);
   }
   return [];
+}
+
+export async function inspectSessions(sessionIds: readonly string[], options: LhcStore): Promise<SessionInspection[]> {
+  const { home } = parseSidecarOptions(options.lhc);
+  const answers: SessionInspection[] = [];
+  for (const sessionId of sessionIds) answers.push(await inspectSession(sessionId, home));
+  return answers;
 }

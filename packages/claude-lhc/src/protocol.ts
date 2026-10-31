@@ -14,8 +14,9 @@
  * closes the sidecar at once.
  *
  * A sidecar whose first frame is `op` runs one store operation instead of a session:
- * `forkSession`, `getSessionMessages` or `getSubagentMessages` with the SDK's arguments,
- * answered by one `res` frame with the same id, then exit.
+ * `forkSession`, `getSessionMessages` or `getSubagentMessages` with the SDK's arguments, or
+ * `inspectSessions` with a list of session ids, answered by one `res` frame with the same id,
+ * then exit.
  */
 import type {
   ForkSessionOptions,
@@ -53,6 +54,9 @@ export type LhcStore = { lhc: Pick<SidecarOptions, "home"> };
  */
 export type OperationEnv = { env?: NodeJS.ProcessEnv; pathToClaudeCodeExecutable?: string };
 
+/** What the store knows of one session id: the thread holding it and that thread's current session id. */
+export type SessionInspection = { kind: "managed"; threadId: string; currentSessionId: string } | { kind: "unknown" };
+
 export type WireForkOptions = Omit<ForkSessionOptions, "sessionStore"> & LhcStore & OperationEnv;
 export type WireSessionMessagesOptions = Omit<GetSessionMessagesOptions, "sessionStore"> & LhcStore & OperationEnv;
 export type WireSubagentMessagesOptions = Omit<GetSubagentMessagesOptions, "sessionStore"> & LhcStore & OperationEnv;
@@ -61,6 +65,7 @@ export type OperationFrame = { type: "op"; id: number } & (
   | { method: "forkSession"; args: [sessionId: string, options: WireForkOptions] }
   | { method: "getSessionMessages"; args: [sessionId: string, options: WireSessionMessagesOptions] }
   | { method: "getSubagentMessages"; args: [sessionId: string, agentId: string, options: WireSubagentMessagesOptions] }
+  | { method: "inspectSessions"; args: [sessionIds: string[], options: LhcStore] }
 );
 
 export type SidecarRequestMethod = "canUseTool" | "onUserDialog";

@@ -6,6 +6,7 @@ import {
   decodeFrame,
   encodeFrame,
   type OperationFrame,
+  type SessionInspection,
   type SidecarFrame,
   type WireForkOptions,
   type WireSessionMessagesOptions,
@@ -91,6 +92,17 @@ export function getSubagentMessages(
       method: "getSubagentMessages",
       args: [sessionId, agentId, { ...options, lhc: wireStore(options) }],
     },
+    options.lhc.spawn,
+  );
+}
+
+/** One sidecar start for the whole batch. Rejects with a store error when the registry cannot be read. */
+export function inspectSessions(
+  sessionIds: readonly string[],
+  options: LhcOperationStore,
+): Promise<SessionInspection[]> {
+  return operate(
+    { type: "op", id: 1, method: "inspectSessions", args: [[...sessionIds], { lhc: wireStore(options) }] },
     options.lhc.spawn,
   );
 }

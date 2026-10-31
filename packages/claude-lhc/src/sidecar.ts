@@ -1,7 +1,7 @@
 import { createInterface } from "node:readline";
 import { forkSession } from "./fork.js";
 import { createSidecar, type Sidecar } from "./frames.js";
-import { getSessionMessages, getSubagentMessages } from "./history.js";
+import { getSessionMessages, getSubagentMessages, inspectSessions } from "./history.js";
 import { decodeFrame, encodeFrame, type OperationEnv, type OperationFrame, type SidecarFrame } from "./protocol.js";
 
 const log = (line: string): void => {
@@ -34,6 +34,8 @@ function runOperation(frame: OperationFrame): Promise<unknown> {
       return getSessionMessages(...frame.args);
     case "getSubagentMessages":
       return getSubagentMessages(...frame.args);
+    case "inspectSessions":
+      return inspectSessions(...frame.args);
   }
 }
 
