@@ -9,6 +9,7 @@ import {
   type SessionThreadViewEntry,
   type SessionThreadViewEntrySource,
 } from "../../shared-tech/index.js";
+import { readTurnSteps } from "../../turns/index.js";
 import { readBoundaryPosition } from "./boundary.js";
 import { isEmptyThinkingHusk, type TailRenderContext, toolNamesByCallId, toolResultSessionContent } from "./render.js";
 import type { TailMessageRow } from "./snapshot.js";
@@ -72,7 +73,7 @@ type DatabaseHandle = Parameters<typeof readViewSnapshot>[0];
 
 const GAP_RUN_SEPARATOR = "–";
 
-function coveredScope(subject: ArrangedSubject): { where: string; params: Array<string | number> } {
+function coveredScope(db: DatabaseHandle, subject: ArrangedSubject): { where: string; params: Array<string | number> } {
   if (subject.subjectKind === "chunk") {
     return { where: "m.turn_id IN (SELECT turn_id FROM chunk_member WHERE chunk_id = ?)", params: [subject.subjectId] };
   }
@@ -84,26 +85,32 @@ function coveredScope(subject: ArrangedSubject): { where: string; params: Array<
       params: [first, last],
     };
   }
-  if (subject.part !== undefined) {
-    return {
-      where: "m.turn_id = ? AND m.step_index BETWEEN ? AND ?",
-      params: [subject.subjectId, subject.part.fromStep, subject.part.toStep],
-    };
+  const partEnd =
+    subject.part === undefined
+      ? undefined
+      : readTurnSteps(db, subject.subjectId).steps.find((step) => step.index === subject.part?.toStep)?.lastOrder;
+  if (partEnd !== undefined) {
+    return { where: "m.turn_id = ? AND m.source_event_order <= ?", params: [subject.subjectId, partEnd] };
   }
   return { where: "m.turn_id = ?", params: [subject.subjectId] };
 }
 
-function bandLastSource(db: DatabaseHandle, subjects: readonly ArrangedSubject[]): SessionThreadViewEntrySource[] {
+function bandLastSource(
+  db: DatabaseHandle,
+  subjects: readonly ArrangedSubject[],
+  compactPoint: number,
+): SessionThreadViewEntrySource[] {
   let last: { message_id: string; source_event_order: number | bigint; idempotency_key: string | null } | undefined;
   for (const subject of subjects) {
-    const { where, params } = coveredScope(subject);
+    const { where, params } = coveredScope(db, subject);
     const row = db
       .prepare(
         `SELECT m.message_id, m.source_event_order, e.idempotency_key FROM message m
          JOIN event e ON e.event_order = m.source_event_order
-         WHERE m.deleted_at IS NULL AND ${where} ORDER BY m.source_event_order DESC LIMIT 1`,
+         WHERE m.deleted_at IS NULL AND m.source_event_order <= ? AND ${where}
+         ORDER BY m.source_event_order DESC LIMIT 1`,
       )
-      .get(...params) as typeof last;
+      .get(compactPoint, ...params) as typeof last;
     if (row !== undefined && (last === undefined || Number(row.source_event_order) > Number(last.source_event_order)))
       last = row;
   }
@@ -379,7 +386,7 @@ export function buildSessionThreadView(db: Parameters<typeof readViewSnapshot>[0
     const subjects = arrangedSubjects(db, snapshot.viewId);
     for (const band of snapshot.bands) {
       const covered = subjects.filter((subject) => subject.band === band.band);
-      entries.push(bandUserMessage(band.band, band.renderedText, bandLastSource(db, covered)));
+      entries.push(bandUserMessage(band.band, band.renderedText, bandLastSource(db, covered, compactPoint)));
     }
   }
   entries.push(...tailEntriesOf(tailRows, boundaryPosition, load));
