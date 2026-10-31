@@ -91,7 +91,7 @@ describe("projectView", () => {
         ],
       },
       stamp,
-      "omit",
+      { arm: "omit" },
     );
     expect(lines).toHaveLength(1);
     expect(firstBlock(lines[0])?.["type"]).toBe("text");

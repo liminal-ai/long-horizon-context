@@ -27,6 +27,7 @@ import {
   type MessageEventInput,
   type ThreadRef,
 } from "lhc";
+import { harvestAttachments, readAttachments } from "./capture/attachments.js";
 import { ToolBatch } from "./capture/batch.js";
 import { compactCommand, HARNESS, mapPrompt, mapSdkMessage } from "./capture/mapper.js";
 import {
@@ -45,7 +46,7 @@ import {
   windowFromUsage,
 } from "./compactPolicy.js";
 import { type ControlCall, parseControl, ReplayLedger } from "./controls.js";
-import { bindSession, createLhc, createThread, resolveSession, threadRef } from "./lhcHome.js";
+import { bindSession, createLhc, createThread, currentSession, resolveSession, threadRef } from "./lhcHome.js";
 import { writeProjectedSession } from "./nativeSessionFile.js";
 import { FALLBACK_CLAUDE_CODE_VERSION, FALLBACK_PROJECTION_MODEL, projectView } from "./projection/project.js";
 import { parseCompactPolicy, parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
@@ -271,6 +272,7 @@ export class ClaudeLhcSession {
       this.#compactPolicy = { stored, window: null };
       await this.#settleOpenTurn("session restarted");
       if (anchor !== null) await this.#rollBack(anchor);
+      await this.#harvest((await currentSession(resume, this.#home)) ?? resume);
       await this.#startProjectedGeneration();
       const served = this.#servedPastTrigger(await this.#windowRead);
       if (served !== null) await this.#compactBeforeFirstPrompt(served);
@@ -718,6 +720,7 @@ export class ClaudeLhcSession {
         `${stamp()} wire after stop: ${message.type}${message.type === "result" ? `/${message.subtype} terminal=${String((message as unknown as Record<string, unknown>)["terminal_reason"])}` : ""}`,
       );
     if (message.type === "result") {
+      if (this.#gen !== null) await this.#harvest(this.#gen.sessionId);
       const stopped = (message as unknown as Record<string, unknown>)["terminal_reason"] === HOOK_STOPPED;
       const trigger = this.#stopping;
       this.#stopping = null;
@@ -1070,18 +1073,28 @@ export class ClaudeLhcSession {
     }
   }
 
+  async #harvest(sessionId: string): Promise<void> {
+    const source = { home: this.#home, threadId: this.#threadId, sessionId, cwd: this.#cwd, env: this.#env };
+    await harvestAttachments(source, (line) => this.#io.log(line));
+  }
+
   async #startProjectedGeneration(): Promise<Generation> {
+    if (this.#gen !== null) await this.#harvest(this.#gen.sessionId);
     const view = await this.#lhc.threadView.getSessionThreadView(this.#thread);
     if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);
     const sessionId = randomUUID();
     const cwd = this.#cwd;
-    const entries = projectView(view.value, {
-      sessionId,
-      cwd,
-      version: this.#claudeCodeVersion,
-      permissionMode: this.#permissionMode ?? "default",
-      model: this.#model ?? FALLBACK_PROJECTION_MODEL,
-    });
+    const entries = projectView(
+      view.value,
+      {
+        sessionId,
+        cwd,
+        version: this.#claudeCodeVersion,
+        permissionMode: this.#permissionMode ?? "default",
+        model: this.#model ?? FALLBACK_PROJECTION_MODEL,
+      },
+      { attachments: await readAttachments(this.#home, this.#threadId) },
+    );
     const title = nativeLhcTitle(this.#threadId);
     const dest = entries.length === 0 ? null : await writeProjectedSession({ sessionId, cwd, entries, env: this.#env });
     if (dest !== null) await labelNativeSession(sessionId, title, cwd, this.#io);
