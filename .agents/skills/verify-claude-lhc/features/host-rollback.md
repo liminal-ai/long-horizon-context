@@ -24,11 +24,15 @@
   one otherwise, and the mid-turn continuation note's own. The CLI writes
   the prompt line under that uuid, so a failed turn's notice keeps through
   its own prompt or continuation note.
-- A projected line has a fresh uuid, so no capture key carries it. Each
-  projected line records its source message's capture key in `lhcSource`,
-  and the resolver reads the anchor's own line for that key before it walks
-  ancestors. A rollback to any line of a restarted, compacted or forked
-  generation therefore resolves, and logs `via <that line's uuid>`.
+- A projected line has a fresh uuid, so no capture key carries it. A
+  projected line that comes from a recorded message records that message's
+  capture key in `lhcSource`: a user prompt, an assistant block, a tool result, a runtime note, or a
+  summary band (which names the last message it covers). A synthetic
+  result the projection adds for an unanswered tool call has no source and
+  no `lhcSource`; it resolves through its parent assistant line. The resolver reads the
+  anchor's own line for that key before it walks ancestors, so a rollback to
+  a line of a restarted, compacted or forked generation resolves and logs
+  `via <that line's uuid>`. A summary band line cuts at the end of that band.
 - When neither the anchor nor any ancestor resolves (a uuid in no
   transcript, a subagent line in its own sidechain file), the start is
   refused with one `error` frame, `rollback anchor <uuid> not found`, and

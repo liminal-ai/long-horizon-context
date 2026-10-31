@@ -8,7 +8,7 @@
   `lhc: { home }`, the host's LHC store. They run in the host's process,
   not in the sidecar, and read `CLAUDE_CONFIG_DIR` from the process env
   as the SDK does.
-- `forkSession(sessionId, { lhc, dir?, upToMessageId?, title? })`
+- `forkSession(sessionId, { lhc, dir?, upToMessageId?, title?, sessionStore? })`
   resolves any of the source thread's session ids, resolves
   `upToMessageId` with the host-rollback resolver (`src/rollbackAnchor.ts`)
   against the source thread's own project,
@@ -18,14 +18,20 @@
   under `dir` (default the thread's cwd), and binds the new session id last
   (`src/fork.ts`). It returns `{ sessionId, headMessageId }`, where
   `headMessageId` is the last line of that file. An empty thread forks with
-  no file and no `headMessageId`.
+  no file and no `headMessageId`. A step that fails after the copy discards
+  the copy (core `discardCopy`) and its session file before the error
+  returns. An untitled fork takes the SDK's default title, the source
+  session's title plus ` (fork)`. `sessionStore` is accepted for the SDK's
+  shape and ignored: the LHC store is `lhc.home`.
 - The copy is a separate LHC thread. The source thread, its aliases and its
   served view do not change. The copy keeps the source's stored compact
   policy, because the policy lives on the thread header that `copyThread`
   backs up.
 - A fork is refused with no copy when the source is mid-turn (`LHC thread
   copy failed: mid_turn: ...`), when the anchor resolves nowhere (`rollback
-  anchor <uuid> not found`), or when no thread holds the session id.
+  anchor <uuid> not found`), or when no thread holds the session id. Mid-turn
+  includes an open turn that continues a turn a mid-turn compact ended. An
+  idle compact between turns does not block a fork.
 - `getSessionMessages(sessionId, { lhc, ...sdk options })` resolves the
   session id to its thread's current generation and returns the SDK's read
   of that file (`src/history.ts`). A host that kept only a thread's first
@@ -34,14 +40,19 @@
 - `getSubagentMessages(sessionId, agentId, { lhc, ...sdk options })` finds
   `agent-<agentId>.jsonl` under any generation of the thread
   (`nativeAgentSessions` in `src/nativeSessionFile.ts`), so an agent
-  launched after a compact is found through the first session id. An agent
-  under another thread's session is not returned.
+  launched after a compact is found through the first session id. When the
+  same agent id has a transcript under more than one generation, the newest
+  by mtime is read. An agent under another thread's session is not
+  returned.
 
-- Every projected line records the capture key of its source message in
-  `lhcSource`. So a message id `getSessionMessages` returns after a
-  restart, compact or fork works as `upToMessageId`, and a fork's
-  `headMessageId` works as `resumeSessionAt` (a host rollback to the fork's
-  first turn).
+- A projected line that comes from a recorded message records that
+  message's capture key in `lhcSource`: a user prompt, an assistant block, a tool result, a runtime note, or a
+  summary band (which names the last message it covers). A synthetic
+  result the projection adds for an unanswered tool call has no source and
+  no `lhcSource`; it resolves through its parent assistant line. So a message id
+  `getSessionMessages` returns after a restart, compact or fork works as
+  `upToMessageId`, and a fork's `headMessageId` works as `resumeSessionAt`
+  (a host rollback to the fork's first turn).
 - `copyThread` requeues any derivation claim it copies, so a fork taken
   while the source's summary worker holds a lease still drains at once.
 
