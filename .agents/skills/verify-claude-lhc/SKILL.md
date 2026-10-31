@@ -108,12 +108,14 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `rollback-compact` | 12 heavy turns, 2000/1000 policy, `/compact`, rollback behind the compact point, `/compact`, restart | `[lhc compact:auto]` on the rollback start | no projected file carries REMOVED or text past the anchor |
 | `rollback-projected-anchor` | captured KEEP + REMOVED turns, `/compact`, `start{resume: <compacted>, resumeSessionAt: <projected KEEP line>}` | stderr `rollback to event <n> via <projected uuid>`, exit 0 | the compacted file's KEEP line carries `lhcSource`; `projected.jsonl` keeps KEEP, drops REMOVED |
 | `window-shrink` | 20 large turns, resume on `claude-sonnet-5`, `setModel` `claude-sonnet-4-6`, stop, resume on `claude-sonnet-4-6` | `setModel` logs the 160000 cap and the `served context` queue line with no compact; the 200k resume logs `served context`, `[lhc compact:auto] ... (target 80000)`, then `resumed thread` | two generation lines on the 200k resume: the oversized projection and the compacted one |
+| `compact-above-base` | fresh `start` → `getContextUsage` (the base prompt `b`), seed 8 large turns, `start{resume: gen1}` with `b + 40000`/20000, `getContextUsage`, stop, `start{resume: <compacted>}` | the resume logs `served context` and `[lhc compact:auto] ... (target 20000)` before `resumed thread`; the restart logs neither | the first reading after the compact is under the trigger, and the restart reads the same count. The PASS line gives `b` and each reading |
 | `controls` | `start` → `setMcpServers{late}` (local echo MCP server) → `applyFlagSettings{model}` → `/compact` → `mcpServerStatus`, `getContextUsage` | after the swap the late server is `connected` with `ping`, and the usage model is the flag model | stderr `generation <gen2>: replayed setMcpServers, applyFlagSettings` |
 | `controls-refused` | `rewindFiles`, `reinitialize`, `seedReadState`, `forkSession`, then `mcpServerStatus` → stdin close | each answers one failed `res` naming the method; `mcpServerStatus` still answers; no `error` frame, exit 0 | the CLI never got the refused calls (the `res` comes from the sidecar's table) |
 | `set-compact-policy` | start on `claude-sonnet-4-6`, `setCompactPolicy` with a bad pair, then 700000/140000 | the bad pair fails naming `setCompactPolicy params.policy`; stderr `compact policy set on thread` and the 160000/80000 cap | the thread file's `thread_metadata` row holds 700000/140000, saved as `thread_metadata.txt` |
 | `fork` | captured KEEP + REMOVED turns, resume with a 700000/140000 policy, `forkSession(gen1, {upToMessageId: <KEEP uuid>})` from a host process, `start{resume: <fork>}`, `start{resume: gen1}` | `headMessageId` is the fork file's last line; the fork's resume logs `compact policy from thread: trigger 700000 target 140000` | fork file and fork resume keep KEEP, drop REMOVED; source resume keeps REMOVED; `thread-rows.txt` has 2 threads, both 700000/140000; a second fork at the restarted source's projected KEEP id (from `getSessionMessages`) ends at KEEP; `start{resume: <fork>, resumeSessionAt: <headMessageId>}` resolves; a fork right after a `/compact` succeeds |
 | `history` | captured turns, `/compact`, `getSessionMessages(gen1)` and `getSubagentMessages(gen1, <agent>)` from a host process | both calls exit 0 | `getSessionMessages(gen1)` reads the compacted generation (gen1 has no file) and equals `getSessionMessages(<compacted>)`; a subagent fixture under the compacted generation comes back with its `parent_tool_use_id` |
 | `client` | `query()` from `dist/index.js` with the default sidecar, an input that never yields, `getContextUsage`, `rewindFiles`, `setCompactPolicy` 700000/140000, `close()` | the created-thread line reaches the `stderr` callback; `getContextUsage` answers a window; `rewindFiles` rejects `rewindFiles is refused`; after `close()` the stream ends | the thread row holds 700000/140000; no process with the scratch dir in its environment is left (sidecar and `claude` both exited) |
+| `packed-install` | `assemble:npm`, `npm pack`, `npm install <tarball>` in a scratch project, `query()` from the installed `claude-lhc` with the default sidecar, `getContextUsage`, `close()` (not in `all`: needs the npm registry) | `claude-lhc` resolves to the installed `dist/index.js`, the created-thread line reaches `stderr`, `getContextUsage` answers a window | the tarball bundles `node_modules/lhc`; 1 thread file; no scratch process left; `packed-install.log` holds every command and its output |
 | `turn` | real tool turn + recall via `scripts/standalone.ts` (live only, `CLAUDE_LHC_LIVE=1`) | standalone `RESULT: PASS` | native files only under the throwaway `CLAUDE_CONFIG_DIR`, none under real `~/.claude/projects`. |
 | `rollback-live` | two real turns (KEEP-ALPHA, REMOVED-BRAVO), restart with `resumeSessionAt` at the first turn's last message, ask for the second word (live only) | the turn succeeds and the answer lacks REMOVED-BRAVO | `transcript.jsonl`, `answer.txt` |
 | `rollback-live-compact` | as `rollback-live`, with `/compact` after the rollback and before the question (live only) | as `rollback-live`, plus a `compact_boundary` after `/compact` | `transcript.jsonl`, `answer.txt` |
@@ -222,8 +224,8 @@ root. Default evidence dir is a fresh
 `VERIFY_CLAUDE_LHC_EVIDENCE=<dir>`). Per drive it holds
 `<drive>/<label>.frames.jsonl` (every stdout frame) and
 `<label>.stderr.log`; the root `summary.json` records status, detail, and
-wall time per drive (the perf probe: cold head time is the baseline;
-budget is all seeded drives together inside 10 minutes warm).
+wall time per drive. That wall time is the perf probe, and
+`.agents/merge-brief.md` names the bar a verdict holds it to.
 
 Proof standard: exercise the real wire path (frames a driver sends), never
 internal setters; capture action and resulting state (frames + store +
@@ -250,7 +252,16 @@ Remove kept scratch with the helper, never a raw `rm`:
 ```
 
 It refuses anything that is not a `verify-claude-lhc-*` dir under the
-scratch root, and never touches the evidence dir. Sidecars are stopped by closing
+scratch root, and never touches the evidence dir.
+
+Remove only the scratch you created, by the path you recorded when you
+created it: a drive's `kept scratch` line, the path your own `mktemp`
+printed, or the path you gave `git worktree add`. Never pick dirs by a name or glob match. Other
+agents' drives share the scratch root, and their dirs carry the same
+`verify-claude-lhc-*` prefix. Pass `cleanup.sh` only recorded paths. It
+reaches only the scratch root. A run's own scratch outside it, such as
+`.pstack/runs/<run>/scratch/<id>/`, follows the same rule: remove each
+recorded path, never a parent another agent writes to. Sidecars are stopped by closing
 stdin (the harness owns every process it started); never kill by process
 name — a user's real sidecar may share it. Note the one non-isolated
 artifact: `labelNativeSession` may log a harmless `native title ... failed`
@@ -263,12 +274,12 @@ All executable, all runnable from a clean shell (paths resolve from the
 script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
-- `drive.mjs` — the seeded drives. `drive.mjs <start|start-no-home|compact|compact-policy|restart|resume-superseded-alias|resume-unknown|resume-empty|thread-start|rollback|rollback-unknown-anchor|rollback-restart|rollback-synthetic-anchor|rollback-compact|rollback-projected-anchor|window-shrink|controls|controls-refused|set-compact-policy|fork|history|client|turn|rollback-live|rollback-live-compact|controls-live|fork-live|subagent-live|prompt-order-live|consumer|all>`;
+- `drive.mjs` — the seeded drives. `drive.mjs <start|start-no-home|compact|compact-policy|restart|resume-superseded-alias|resume-unknown|resume-empty|thread-start|rollback|rollback-unknown-anchor|rollback-restart|rollback-synthetic-anchor|rollback-compact|rollback-projected-anchor|window-shrink|compact-above-base|controls|controls-refused|set-compact-policy|fork|history|client|packed-install|turn|rollback-live|rollback-live-compact|controls-live|fork-live|subagent-live|prompt-order-live|consumer|all>`;
   env `VERIFY_RUN_DIR`, `VERIFY_SCRATCH_ROOT`, `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn runs the isolated live
   standalone, and the `rollback-live`, `controls-live`, `fork-live`,
   `subagent-live`, `prompt-order-live` and `consumer` drives run real turns, instead of SKIP).
-- `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <dir>...`.
+- `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <recorded dir>...`.
 - `check-links.mjs` — frontmatter, required sections, feature-file H2s,
   relative links, helper executability. `check-links.mjs` (no args);
   pass line `VERIFY-CLAUDE-LHC check-links: PASS`.
@@ -280,7 +291,9 @@ Package gates beside the drives: `pnpm --filter claude-lhc test` and
 
 The seeded drives run `packages/claude-lhc/dist/sidecar.js`, which loads `packages/lhc/dist`, and the fork and history drives also import `packages/claude-lhc/dist/index.js`. The live `turn` also runs `scripts/standalone.ts` and a real `claude`.
 
-- **Reruns every drive:** a change in `packages/claude-lhc/` outside `test/`, `scripts/` and Markdown, in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries either resolves, or to `drive.mjs`. A change to the root `package.json` or `pnpm-workspace.yaml`, or to the Node or pnpm version `.github/workflows/pr-checks.yml` pins, counts too. A rebase onto a trunk that changed any of these counts.
-- **Reruns only `turn`:** a change only in `packages/claude-lhc/scripts/`.
-- **Reruns only `consumer`:** a change only in `packages/claude-lhc/examples/`.
+- **Reruns every drive, the live drives included:** a change in `packages/claude-lhc/` outside `test/`, `scripts/` and Markdown, in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries either resolves, or to `drive.mjs`. A change to the root `package.json` or `pnpm-workspace.yaml`, or to the Node or pnpm version `.github/workflows/pr-checks.yml` pins, counts too. A rebase onto a trunk that changed any of these counts, and so does a merge-result check after such a trunk change, a core change in `packages/lhc/` included.
+- **The live drives:** `turn`, `rollback-live`, `rollback-live-compact`, `controls-live`, `fork-live`, `subagent-live`, `prompt-order-live` and `consumer`. `drive.mjs all` runs them only with `CLAUDE_LHC_LIVE=1` and env auth, and prints SKIP for each otherwise. A rerun this section requires is `CLAUDE_LHC_LIVE=1 drive.mjs all`. A run whose live drives print SKIP covers the seeded drives only, and a verdict records the live drives as skipped, not passed. A live FAIL counts as a regression only when base passes the same drive more often in the same number of runs, so record the pass counts for both.
+- **Reruns only `turn` (live):** a change only in `packages/claude-lhc/scripts/`, except `assemble-npm-package.mjs`.
+- **Reruns only `consumer` (live):** a change only in `packages/claude-lhc/examples/`.
+- **Reruns `packed-install`:** a change to `scripts/assemble-npm-package.mjs`, to either package's `package.json`, or to `packages/claude-lhc/bin/`, on top of what the rules above rerun. `all` does not run it, so name it.
 - **Carries:** a change only in `packages/cc-lhc*` or `lhc-triage`, the two packages' `test/`, or text in this skill and its `features/` that changes no lane's setup, actions, assertions, expected outcomes, evidence or cleanup. `doctor.sh` and `check-links.mjs` always rerun.

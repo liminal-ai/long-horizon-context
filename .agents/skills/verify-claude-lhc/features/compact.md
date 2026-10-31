@@ -87,6 +87,19 @@ and passes when stderr shows `served context`, then `[lhc compact:auto]
 The CLI counts the projection with no credential, so the drive needs no
 model call.
 
+```sh
+.agents/skills/verify-claude-lhc/drive.mjs compact-above-base
+```
+
+The drive reads the base prompt `b` on a fresh start, seeds 8 large
+turns, and resumes with trigger `b + 40000` and target 20000. User-only
+half: the resume logs `served context` and `[lhc compact:auto] ...
+(target 20000)` before `resumed thread`, and a restart onto the compacted
+generation logs neither. Outcome half: `getContextUsage` after the
+compact reads under the trigger. It is the one seeded compaction drive
+whose first reading after a compact sits under the trigger, as it does
+with production values.
+
 The seeded `compact` drive compacts an empty view (0 tokens, 0 bands content). It
 proves the boundary/projection/generation-swap plumbing deterministically;
 summarization quality over real turns is the live standalone proof's job.
@@ -133,6 +146,31 @@ summarization quality over real turns is the live standalone proof's job.
   count. Unit-covered in
   `packages/claude-lhc/test/rollback-start.test.ts` and live-covered by
   `turn` and `prompt-order-live`, not seeded.
+- Compact settings in the drives. The first reading after any compact
+  is the CLI's base prompt plus the rebuilt view. The base prompt is
+  about 34000 tokens as `compact-above-base` counts it with no
+  credential, and about 37000 on a live session. With a trigger at or
+  under that reading, every compact leaves the session already past the
+  trigger, and the next automatic compact waits for new context (stderr
+  `waits for new context`). Before that wait existed, a 1000-token
+  trigger in `prompt-order-live` compacted at every tool boundary, the
+  repeated compacts seen while building PR #47.
+  - `rollback-compact` (`SMALL_COMPACT`, 2000/1000) runs under the base
+    prompt on purpose. It needs any rolled-back view to compact at
+    start, and it sends no prompt, so the state after the compact never
+    matters to it.
+  - `prompt-order-live` cases 2 and 3 (`FILLER_POLICY`, 45000/500) set
+    the trigger about 8000 tokens over the base prompt, so a single
+    20000-token `filler.txt` read crosses it. The 500 target sits under
+    the base prompt. It only keeps the rebuilt view small, so the first
+    reading after the compact lands back under the trigger.
+  - Every other drive uses 300000/180000 or 700000/140000 (160000/80000
+    on a 200k model), above the base prompt.
+  - `compact-above-base` derives its trigger from the measured base
+    prompt.
+
+  A new compaction drive sets its trigger above the base prompt plus its
+  target, or says here why it does not.
 - No `system/init` arrives before the first prompt, so the window read
   does not wait for `init`. It goes out when the query is created, and the
   SDK holds it until the CLI has initialized.

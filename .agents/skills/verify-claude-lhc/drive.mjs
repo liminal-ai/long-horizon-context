@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -275,6 +275,7 @@ function threadRows(scratch) {
 const PA_TURNS = [["KEEP-TURN prompt one", "KEEP-TURN answer one"], ["REMOVED-TURN prompt two", "REMOVED-TURN answer two"]];
 const FILLER = " filler".repeat(400);
 const SMALL_COMPACT = { trigger: 2000, target: 1000 };
+const bigWords = (i) => Array.from({ length: 5000 }, (_, j) => `w${(i * 7919 + j * 104729) % 99991}`).join(" ");
 
 async function startAndStop(scratch, label, options, evidenceDir) {
   const s = new Sidecar(scratch, label);
@@ -715,8 +716,7 @@ const drives = {
   async "window-shrink"(evidenceDir) {
     const scratch = new Scratch("window-shrink");
     try {
-      const words = (i) => Array.from({ length: 5000 }, (_, j) => `w${(i * 7919 + j * 104729) % 99991}`).join(" ");
-      const turns = Array.from({ length: 20 }, (_, i) => [`BIG-TURN prompt ${i} ${words(i)}`, `BIG-TURN answer ${i}`]);
+      const turns = Array.from({ length: 20 }, (_, i) => [`BIG-TURN prompt ${i} ${bigWords(i)}`, `BIG-TURN answer ${i}`]);
       const { gen1 } = await seedCaptured(scratch, turns);
       const policy = { lhc: { home: scratch.lhcHome, compact: { trigger: 700000, target: 140000 } } };
       const wide = new Sidecar(scratch, "set-model");
@@ -742,6 +742,46 @@ const drives = {
       assert(narrow.stderr[order[1]].includes("(target 80000)"), "the resume compact did not use the capped target");
       assert(gens.length === 2, `expected the oversized projection and the compacted one, got ${gens.length} generation line(s)`);
       return `setModel 1M->200k queued a compact (${/served context (\d+)/.exec(queued)[1]} tokens >= 160000); resume onto 200k compacted before start returned, target 80000`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async "compact-above-base"(evidenceDir) {
+    const scratch = new Scratch("compact-above-base");
+    const usageOf = async (s, id) => {
+      const res = await s.control(id, "getContextUsage", { opts: { detail: "summary" } });
+      assert(res.ok && Number.isSafeInteger(res.value.totalTokens), `getContextUsage answered ${JSON.stringify(res)}`);
+      return res.value.totalTokens;
+    };
+    try {
+      const fresh = new Sidecar(scratch, "base-prompt");
+      const sid = randomUUID();
+      fresh.send({ type: "start", options: baseOptions(scratch, { sessionId: sid }) });
+      await fresh.waitFor(() => fresh.logHas(`as generation ${sid}`), "created-thread log line");
+      const base = await usageOf(fresh, 1);
+      assert((await fresh.stop()) === 0, "base-prompt sidecar did not exit 0");
+      fresh.saveEvidence(evidenceDir);
+      const policy = { trigger: base + 40000, target: 20000 };
+      const { gen1 } = await seedCaptured(scratch, Array.from({ length: 8 }, (_, i) => [`BIG-TURN prompt ${i} ${bigWords(i)}`, `BIG-TURN answer ${i}`]));
+      const first = new Sidecar(scratch, "resume-compact");
+      first.send({ type: "start", options: baseOptions(scratch, { resume: gen1, lhc: { home: scratch.lhcHome, compact: policy } }) });
+      await first.waitFor(() => first.logHas("resumed thread"), "resumed-thread log line");
+      const served = first.stderr.find((l) => l.includes(`is at or past the compact trigger ${policy.trigger}; compacting before the next prompt`));
+      const compactLine = first.stderr.find((l) => l.includes("[lhc compact:auto]"));
+      const after = await usageOf(first, 1);
+      const compacted = generationFrom(first);
+      assert((await first.stop()) === 0, "resume sidecar did not exit 0");
+      first.saveEvidence(evidenceDir);
+      assert(served && compactLine?.includes(`(target ${policy.target})`), "the resume past the trigger did not compact to the target before start returned");
+      assert(after < policy.trigger, `the first reading after the compact, ${after} tokens, is past the trigger ${policy.trigger}`);
+      const again = new Sidecar(scratch, "restart");
+      again.send({ type: "start", options: baseOptions(scratch, { resume: compacted }) });
+      await again.waitFor(() => again.logHas("resumed thread"), "restart resumed-thread log line");
+      const restarted = await usageOf(again, 1);
+      assert((await again.stop()) === 0, "restart sidecar did not exit 0");
+      again.saveEvidence(evidenceDir);
+      assert(!again.logHas("served context") && !again.logHas("[lhc compact"), "the restart onto the compacted view compacted again");
+      assert(restarted === after, `the restart reads ${restarted} tokens, not the ${after} the compacted generation served`);
+      return `base prompt ${base} tokens; trigger ${policy.trigger} target ${policy.target}; ${/served context (\d+)/.exec(served)[1]} -> ${after} tokens after the compact, ${restarted} on restart, no second compact`;
     } finally { scratch.cleanup(); }
   },
 
@@ -1080,6 +1120,48 @@ const drives = {
     }
   },
 
+  async "packed-install"(evidenceDir) {
+    const scratch = new Scratch("packed-install");
+    const assembled = join(REPO, "build", basename(scratch.dir));
+    const project = join(scratch.dir, "project");
+    const log = [];
+    const run = (cmd, args, cwd, env = process.env) => {
+      log.push(`$ ${cmd} ${args.join(" ")}`);
+      log.push(execFileSync(cmd, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 180_000, killSignal: "SIGKILL" }).trim());
+      return log.at(-1);
+    };
+    try {
+      run("pnpm", ["--filter", "claude-lhc", "assemble:npm", "--out", assembled], REPO);
+      const tarball = join(scratch.dir, run("npm", ["pack", "--pack-destination", scratch.dir, "--silent"], assembled).split("\n").at(-1));
+      mkdirSync(project, { recursive: true });
+      writeFileSync(join(project, "package.json"), `${JSON.stringify({ name: "packed-install-check", private: true, type: "module" })}\n`);
+      run("npm", ["install", "--no-audit", "--no-fund", tarball], project);
+      writeFileSync(join(project, "check.mjs"), [
+        `import { query } from "claude-lhc";`,
+        `const [cwd, lhcHome, claudeHome] = process.argv.slice(2);`,
+        `const stderr = [];`,
+        `const q = query({ prompt: { async *[Symbol.asyncIterator]() { await new Promise(() => {}); } }, options: { cwd, model: "claude-sonnet-5", pathToClaudeCodeExecutable: process.env.CLAUDE_BIN ?? "claude", env: { ...process.env, CLAUDE_CONFIG_DIR: claudeHome }, stderr: (d) => stderr.push(d), lhc: { home: lhcHome, compact: { trigger: 700000, target: 140000 } } } });`,
+        `const usage = await q.getContextUsage();`,
+        `q.close();`,
+        `for await (const _ of q) {}`,
+        `process.stdout.write(JSON.stringify({ entry: import.meta.resolve("claude-lhc"), created: /created thread \\S+/.exec(stderr.join(""))?.[0] ?? null, window: usage?.rawMaxTokens ?? null }));`,
+      ].join("\n"));
+      const out = JSON.parse(run(process.execPath, ["check.mjs", scratch.cwd, scratch.lhcHome, scratch.claudeHome], project, { ...process.env, CLAUDE_LHC_NO_INFERENCE: "1" }));
+      await until(() => scratchProcesses(scratch).length === 0, "the packed sidecar and its claude to exit after close()", 15_000);
+      assert(out.entry === pathToFileURL(join(project, "node_modules/claude-lhc/dist/index.js")).href, `claude-lhc resolved to ${out.entry}, not the installed tarball`);
+      assert(existsSync(join(project, "node_modules/claude-lhc/node_modules/lhc/dist/index.js")), "the tarball does not bundle the lhc core");
+      assert(out.created && typeof out.window === "number", `the packed query() did not start a thread and answer getContextUsage: ${JSON.stringify(out)}`);
+      assert(scratch.threads().length === 1, `expected 1 thread file, got ${scratch.threads().length}`);
+      return `${basename(tarball)} installed in a scratch project; query() from its dist/index.js ran the default sidecar: ${out.created}, window ${out.window}`;
+    } finally {
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "packed-install.log"), `${log.join("\n")}\n`);
+      rmSync(assembled, { recursive: true, force: true });
+      try { rmdirSync(dirname(assembled)); } catch {}
+      scratch.cleanup();
+    }
+  },
+
   async "prompt-order-live"(evidenceDir) {
     const gate = liveAuth();
     if (gate.skip) return gate;
@@ -1221,7 +1303,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "consumer"]
+      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "compact-above-base", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "consumer"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;
