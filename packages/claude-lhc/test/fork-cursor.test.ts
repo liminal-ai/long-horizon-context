@@ -176,6 +176,24 @@ describe("a fork's headMessageId", () => {
     expect(rolled.projected).not.toContain("SECOND-FORK-ANSWER");
   });
 
+  test("from before the cursor, the fork file's last line uuid, still works as resumeSessionAt", async () => {
+    const { forked, forkThread } = await forkAtKeep();
+    const file = readFileSync(nativeSessionPath({ sessionId: forked.sessionId, cwd, env: process.env }), "utf8");
+    const legacyHead = file
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line).uuid)
+      .filter((uuid) => typeof uuid === "string")
+      .at(-1) as string;
+    await captureTurn(home, forkThread, "FORK-PROMPT", "FORK-ANSWER");
+
+    const rolled = await run(forked.sessionId, { resumeSessionAt: legacyHead });
+
+    expect(rolled.logs).toContainEqual(expect.stringMatching(`^rollback to event \\d+ via ${legacyHead}$`));
+    expect(rolled.projected).toContain("KEEP-ANSWER");
+    expect(rolled.projected).not.toContain("FORK-ANSWER");
+  });
+
   test("an empty fork has none", async () => {
     const { gen1 } = await seedThread(home, cwd);
 
