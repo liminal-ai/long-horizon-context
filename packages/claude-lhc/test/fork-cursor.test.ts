@@ -176,6 +176,23 @@ describe("a fork's headMessageId", () => {
     expect(rolled.projected).not.toContain("SECOND-FORK-ANSWER");
   });
 
+  test("from before the cursor, the fork file's last line uuid, still works as resumeSessionAt and upToMessageId", async () => {
+    const { forked, forkThread } = await forkAtKeep();
+    const file = readFileSync(nativeSessionPath({ sessionId: forked.sessionId, cwd, env: process.env }), "utf8");
+    const legacyHead = JSON.parse(file.trim().split("\n").at(-1)!).uuid as string;
+    await captureTurn(home, forkThread, "FORK-PROMPT", "FORK-ANSWER");
+
+    const again = await forkSession(forked.sessionId, { ...store(), upToMessageId: legacyHead });
+    const rolled = await run(forked.sessionId, { resumeSessionAt: legacyHead });
+
+    const forkOfFork = readFileSync(nativeSessionPath({ sessionId: again.sessionId, cwd, env: process.env }), "utf8");
+    expect(forkOfFork).toContain("KEEP-ANSWER");
+    expect(forkOfFork).not.toContain("FORK-ANSWER");
+    expect(rolled.logs).toContainEqual(expect.stringMatching(`^rollback to event \\d+ via `));
+    expect(rolled.projected).toContain("KEEP-ANSWER");
+    expect(rolled.projected).not.toContain("FORK-ANSWER");
+  });
+
   test("an empty fork has none", async () => {
     const { gen1 } = await seedThread(home, cwd);
 
