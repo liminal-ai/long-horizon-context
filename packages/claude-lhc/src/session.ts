@@ -557,7 +557,6 @@ export class ClaudeLhcSession {
 
   #midTurnDue(): CompactTrigger | null {
     if (this.#compacting || this.#stopping !== null || this.#closed || this.#midTurnFailed) return null;
-    if (this.#cliHoldsUnstarted()) return null;
     if (this.#autoCompactDue) return "auto";
     return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger ? "auto" : null;
   }
@@ -568,6 +567,14 @@ export class ClaudeLhcSession {
     this.#batch.settle(hookInput.tool_use_id);
     const trigger = this.#midTurnDue();
     if (trigger === null) return proceed;
+    if (this.#cliHoldsUnstarted()) {
+      // Prompts sent from now on wait in the sidecar, so only the steers the CLI already holds delay the compact.
+      this.#autoCompactDue = true;
+      this.#io.log(
+        `${stamp()} compact (${trigger}) due mid-turn; waiting for the CLI to start a prompt it holds, and holding later prompts`,
+      );
+      return proceed;
+    }
     const unsettled = this.#batch.unsettled();
     if (unsettled.length > 0) {
       this.#io.log(

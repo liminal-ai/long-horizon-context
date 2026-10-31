@@ -51,6 +51,14 @@ A strict `tsc` without `skipLibCheck` reports errors inside the Agent SDK's own 
   Each generation and each `setModel` reads the live window with `getContextUsage`. A trigger
   above 80% of that window drops to 80%, and the target drops to at most half of that. The stored
   pair never changes. The `setCompactPolicy` control replaces the stored pair on a live thread.
+- The trigger does not cap a single request. The sidecar learns the context size from each
+  response, so the first request past the trigger can exceed it by one tool result. A steer that
+  the CLI holds but has not started adds one more request, because the automatic compact waits
+  until the CLI starts it. Replacing the generation earlier would run the steer twice. Prompts sent
+  after the compact falls due wait in the sidecar, so they add nothing. In a fake-CLI test with a
+  200000-token window, which caps the trigger at 160000, and a 50000-token tool result at each
+  step, the largest request was 180000 tokens without a steer and 230000 with one, past the
+  window. The provider can refuse such a request.
 - `spawn` is `{ command, args?, env? }`, the command that runs the sidecar. The default is
   `node <this package>/dist/sidecar.js`. Pass it when the host stages and pins its own copy of the
   sidecar. claude-lhc does no pinning or staging of its own.
@@ -122,12 +130,12 @@ and a new SDK method fails the typecheck until it has a row.
   process, and the stream returns no more messages. With a string prompt, or once the prompt
   iterable ends, the client sends an `end` frame, and the sidecar exits once every prompt has
   its `result`.
-- Results come in input order. A prompt sent during a running turn, with no compact running or
-  queued, goes straight to the CLI as a steer, as in the SDK. The CLI may fold it into the running
-  turn, which then answers both with one `result`, or run it as its own turn. A `/compact` waits
+- Results come in input order. A prompt sent during a running turn, with no compact running,
+  queued or due, goes straight to the CLI as a steer, as in the SDK. The CLI may fold it into the
+  running turn, which then answers both with one `result`, or run it as its own turn. A `/compact` waits
   until every earlier input is answered, compacts, and emits its own `result` after the
   `compact_boundary`. Prompts sent while a compact runs, or behind a queued `/compact`, wait in the
-  sidecar and run in order afterwards.
+  sidecar and go to the CLI one at a time afterwards, each after the previous `result`.
 
 ## Session ids
 
