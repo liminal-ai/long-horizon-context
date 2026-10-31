@@ -381,6 +381,37 @@ async function until(pred, what, timeoutMs = 60_000) {
   }
 }
 
+const lifecycleAt = (msgs, uuid, state) => msgs.findIndex((m) => m.type === "command_lifecycle" && m.command_uuid === uuid && (state === undefined || m.state === state));
+const resultsIn = (msgs) => msgs.flatMap((m, i) => (m.type === "result" ? [i] : []));
+const boundaryAt = (msgs, trigger, from = 0) => msgs.findIndex((m, i) => i >= from && m.type === "system" && m.subtype === "compact_boundary" && m.compact_metadata?.trigger === trigger);
+// The CLI's own prompt is about 37000 tokens. Reading filler.txt (about 20000 tokens) carries the next request past
+// 45000, while a view rebuilt to 500 tokens lands back under it.
+const FILLER_POLICY = { trigger: 45000, target: 500 };
+const FILLER_FILE = Array.from({ length: 1000 }, (_, i) => `line ${i}: harbor lantern meadow orchard quarry ridge saddle timber valley willow anchor`).join("\n");
+const AFTER_READ = "Use the Read tool to read filler.txt. Only after you have its contents, use the Bash tool to run `sleep 4; echo <the word that follows \"line 999:\">`";
+const PENDING_TURN = `${AFTER_READ}. Then reply with just DONE.`;
+const HELD_TURN = `${AFTER_READ}. Then use the Bash tool to run \`echo third\`. Then reply with just DONE.`;
+
+async function livePromptOrder(evidenceDir, label, compact, act) {
+  const scratch = new Scratch(label);
+  scratch.home = join(scratch.dir, "home");
+  mkdirSync(scratch.home, { recursive: true });
+  const s = new Sidecar(scratch, label, { live: true });
+  try {
+    const sid = randomUUID();
+    s.send({ type: "start", options: baseOptions(scratch, { sessionId: sid, lhc: { home: scratch.lhcHome, compact }, env: { ...process.env, HOME: scratch.home, CLAUDE_CONFIG_DIR: scratch.claudeHome } }) });
+    await s.waitFor(() => s.logHas(`as generation ${sid}`), "created-thread log line");
+    writeFileSync(join(scratch.cwd, "filler.txt"), `${FILLER_FILE}\n`);
+    const detail = await act(s);
+    assert(s.exitCode === 0 && s.error === null, `sidecar exited ${s.exitCode} with error ${s.error}`);
+    return detail;
+  } finally {
+    if (s.exitCode === undefined) await s.stop();
+    s.saveEvidence(evidenceDir);
+    scratch.cleanup();
+  }
+}
+
 const drives = {
   async start(evidenceDir) {
     const scratch = new Scratch("start");
@@ -1049,6 +1080,68 @@ const drives = {
     }
   },
 
+  async "prompt-order-live"(evidenceDir) {
+    const gate = liveAuth();
+    if (gate.skip) return gate;
+    const together = await livePromptOrder(join(evidenceDir, "held-one-at-a-time"), "held-one-at-a-time", { trigger: 300000, target: 180000 }, async (s) => {
+      const [one, two] = [randomUUID(), randomUUID()];
+      s.send(userFrame("/compact"));
+      s.send(userFrame("Reply with exactly the word ONE.", one));
+      s.send(userFrame("Reply with exactly the word TWO.", two));
+      s.send({ type: "end" });
+      await s.waitFor(() => s.exitCode !== undefined, "every input answered", 600_000);
+      const m = s.msgs();
+      const results = resultsIn(m);
+      assert(results.length === 3, `expected 3 results, got ${results.length}`);
+      assert(String(m[results[1]].result).includes("ONE") && String(m[results[2]].result).includes("TWO"), `results ${JSON.stringify(results.map((i) => m[i].result))}`);
+      assert(lifecycleAt(m, one) > boundaryAt(m, "manual"), "ONE reached the CLI before the /compact ended");
+      assert(lifecycleAt(m, two) > results[1], "TWO reached the CLI before ONE had its result");
+      return "TWO reached the CLI after ONE's result";
+    });
+    const pending = await livePromptOrder(join(evidenceDir, "pending-across-swap"), "pending-across-swap", FILLER_POLICY, async (s) => {
+      const [steer, queued] = [randomUUID(), randomUUID()];
+      const toolCalls = () => s.msgs().filter((m) => m.type === "assistant" && m.message.content.some((b) => b.type === "tool_use")).length;
+      s.send(userFrame(PENDING_TURN));
+      await s.waitFor(() => toolCalls() >= 2, "the tool call whose request is past the trigger", 180_000);
+      s.send(userFrame("Also reply with the word PENDING.", steer));
+      await s.waitFor(() => s.logHas("compact (auto) due mid-turn"), "the compact falling due", 180_000);
+      s.send(userFrame("Reply with exactly the word QUEUED.", queued));
+      s.send({ type: "end" });
+      await s.waitFor(() => s.exitCode !== undefined, "every input answered", 900_000);
+      const m = s.msgs();
+      const starts = m.filter((x) => x.type === "command_lifecycle" && x.command_uuid === steer && x.state === "started").length;
+      const pendingResult = resultsIn(m).find((i) => String(m[i].result).includes("PENDING"));
+      const queuedResult = resultsIn(m).find((i) => String(m[i].result).includes("QUEUED"));
+      assert(starts === 1, `the prompt sent while the compact was pending started ${starts} times`);
+      assert(pendingResult !== undefined, "the prompt sent while the compact was pending got no answer");
+      assert(boundaryAt(m, "auto") > -1 && boundaryAt(m, "auto") < pendingResult, "no automatic compact before the pending prompt's answer");
+      assert(queuedResult !== undefined && queuedResult > pendingResult && !String(m[queuedResult].result).includes("PENDING"), "the prompt sent after the compact fell due did not get a result of its own after the pending one");
+      assert(lifecycleAt(m, queued, "started") > pendingResult, "the prompt sent after the compact fell due reached the CLI before the turn ended");
+      const path = s.logHas("waiting for the CLI to start a prompt it holds") ? "the CLI held it and the compact waited" : "the sidecar held it";
+      return `the pending prompt started once, ${path}; the prompt sent after the compact fell due got its own result`;
+    });
+    const behindHeld = await livePromptOrder(join(evidenceDir, "compact-behind-held"), "compact-behind-held", FILLER_POLICY, async (s) => {
+      const held = randomUUID();
+      s.send(userFrame(HELD_TURN));
+      await s.waitFor(() => s.msgs().some((m) => m.subtype === "status" && m.status === "compacting"), "a mid-turn compact", 180_000);
+      const compactingAt = s.msgs().length - 1;
+      s.send(userFrame("Reply with exactly the word HELD.", held));
+      s.send(userFrame("/compact"));
+      s.send({ type: "end" });
+      await s.waitFor(() => s.exitCode !== undefined, "every input answered", 900_000);
+      const m = s.msgs();
+      const continued = resultsIn(m).find((i) => i > compactingAt);
+      const heldResult = resultsIn(m).find((i) => i > lifecycleAt(m, held, "started") && String(m[i].result).includes("HELD"));
+      const manual = boundaryAt(m, "manual");
+      assert(lifecycleAt(m, held, "started") > continued, "the held prompt started before the continued turn's result");
+      assert(heldResult !== undefined, "the held prompt got no result of its own");
+      assert(manual > heldResult, "the /compact ran before the held prompt's result");
+      assert(m[resultsIn(m).at(-1)].result === "", "the /compact's own result is not last");
+      return "the /compact ran after the held prompt's result";
+    });
+    return `${together}; ${pending}; ${behindHeld}`;
+  },
+
   async consumer(evidenceDir) {
     const gate = liveAuth();
     if (gate.skip) return gate;
@@ -1128,7 +1221,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "consumer"]
+      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "consumer"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;

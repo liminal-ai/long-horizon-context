@@ -190,6 +190,7 @@ export class ClaudeLhcSession {
   #turnOpen = false;
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
+  #compactFloor: number | "unread" | null = null;
   #autoCompactDue = false;
   #compacting = false;
   #batch = new ToolBatch();
@@ -303,6 +304,10 @@ export class ClaudeLhcSession {
       this.#inputs.push({ kind: "prompt", message });
     else await this.#send(message);
     await this.#advance();
+  }
+
+  acceptUser(message: SDKUserMessage): void {
+    void this.pushUser(message).catch((cause) => this.#io.fail(cause instanceof Error ? cause.message : String(cause)));
   }
 
   endInput(): void {
@@ -557,9 +562,15 @@ export class ClaudeLhcSession {
 
   #midTurnDue(): CompactTrigger | null {
     if (this.#compacting || this.#stopping !== null || this.#closed || this.#midTurnFailed) return null;
-    if (this.#cliHoldsUnstarted()) return null;
     if (this.#autoCompactDue) return "auto";
-    return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger ? "auto" : null;
+    return this.#pastTrigger() ? "auto" : null;
+  }
+
+  // The first reading after a compact measures the rebuilt view. When that alone is past the trigger,
+  // compacting again on it would only rebuild the same view, so the next compact waits for new context.
+  #pastTrigger(): boolean {
+    const floor = typeof this.#compactFloor === "number" ? this.#compactFloor : -1;
+    return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger && this.#lastContextTokens > floor;
   }
 
   #onPostToolUse(gen: Generation | null, hookInput: PostToolUseHookInput): HookJSONOutput {
@@ -568,6 +579,13 @@ export class ClaudeLhcSession {
     this.#batch.settle(hookInput.tool_use_id);
     const trigger = this.#midTurnDue();
     if (trigger === null) return proceed;
+    if (this.#cliHoldsUnstarted()) {
+      this.#autoCompactDue = true;
+      this.#io.log(
+        `${stamp()} compact (${trigger}) due mid-turn; waiting for the CLI to start a prompt it holds, and holding later prompts`,
+      );
+      return proceed;
+    }
     const unsettled = this.#batch.unsettled();
     if (unsettled.length > 0) {
       this.#io.log(
@@ -713,7 +731,7 @@ export class ClaudeLhcSession {
       this.#midTurnFailed = false;
     }
     const mapped = mapSdkMessage(message, this.#turnStartedAt);
-    if (mapped.contextTokens !== undefined) this.#lastContextTokens = mapped.contextTokens;
+    if (mapped.contextTokens !== undefined) this.#readContext(mapped.contextTokens);
     if (mapped.events.length > 0 && (this.#turnOpen || !mapped.turnEnd)) await this.#intake(mapped.events);
     if (mapped.turnEnd) resetSegmentFold(this.#segmentFold);
     else if (mapped.events.length > 0) await this.#maybeSegment(message, mapped.events);
@@ -732,6 +750,17 @@ export class ClaudeLhcSession {
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
     await this.#advance();
+  }
+
+  #readContext(tokens: number): void {
+    this.#lastContextTokens = tokens;
+    if (this.#compactFloor !== "unread") return;
+    this.#compactFloor = tokens;
+    const { trigger } = this.#effectiveCompactPolicy();
+    if (tokens >= trigger)
+      this.#io.log(
+        `served context ${tokens} tokens after the compact is at or past the trigger ${trigger}; the next automatic compact waits for new context`,
+      );
   }
 
   #onCommandLifecycle({ command_uuid, state }: { command_uuid: string; state: string }): void {
@@ -768,7 +797,7 @@ export class ClaudeLhcSession {
       this.#autoCompactDue = false;
       return "auto";
     }
-    return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger ? "auto" : null;
+    return this.#pastTrigger() ? "auto" : null;
   }
 
   async #intake(events: readonly MessageEventInput[]): Promise<void> {
@@ -1008,6 +1037,7 @@ export class ClaudeLhcSession {
 
     const next = await this.#startProjectedGeneration();
     this.#autoCompactDue = false;
+    this.#compactFloor = "unread";
     return { next, postTokens };
   }
 

@@ -101,7 +101,16 @@ summarization quality over real turns is the live standalone proof's job.
   answers the prompts the CLI started. The CLI starts a queued prompt
   as soon as its turn ends, so an automatic compact waits until the CLI
   holds no unstarted prompt, and a steer never straddles a generation
-  swap. A CLI that sends no
+  swap. From the tool boundary where that wait starts, later prompts
+  queue in the sidecar, so only the steers the CLI already holds delay
+  the compact (stderr `waiting for the CLI to start a prompt it holds`).
+  The sidecar does not limit that wait; it ends when the CLI starts the
+  steer. Claude Code 2.1.310 started a queued steer with the next tool
+  result in 9 of 9 live runs, so the compact ran one request later.
+  `packages/claude-lhc/test/steer-headroom.test.ts` measures that
+  request on a fake CLI that starts the steer the same way. A compact
+  whose rebuilt view is still past the trigger compacts again only after
+  a larger request (stderr `waits for new context`). A CLI that sends no
   lifecycle frames gets the plain rule that a `result` answers every
   sent prompt.
 - A `/compact` waits until every earlier input is answered, then
@@ -110,13 +119,20 @@ summarization quality over real turns is the live standalone proof's job.
   The seeded drive sends `/compact` idle, where it runs at once.
 - Prompts sent while a compact is running, or behind a queued
   `/compact`, wait in the sidecar's queue and go to whichever generation
-  is current, after a failed rebuild the old one. After a mid-turn
+  is current, after a failed rebuild the old one, one at a time, each
+  after the previous `result`. The sidecar starts each prompt frame and
+  reads the next one at once, so a `/compact` that starts from a prompt
+  frame does not hold back the frames behind it. After a mid-turn
   compact they wait for the continued turn's `result` (success, error or
   interrupt), then run as their own turns. stdin close drops them with `closing with <n> held
   prompt(s) never sent`. `packages/claude-lhc/test/input-order.property.test.ts`
-  checks the order on random interleavings, steers included. Unit-covered in
+  checks the order on random interleavings, steers included, through the
+  sidecar's frame dispatch (`src/frames.ts`). It runs 60 seeds by default.
+  For more, run `INPUT_ORDER_RUNS=300 pnpm --filter claude-lhc exec vitest
+  run test/input-order.property.test.ts`; its timeout grows with the seed
+  count. Unit-covered in
   `packages/claude-lhc/test/rollback-start.test.ts` and live-covered by
-  `turn`, not seeded.
+  `turn` and `prompt-order-live`, not seeded.
 - No `system/init` arrives before the first prompt, so the window read
   does not wait for `init`. It goes out when the query is created, and the
   SDK holds it until the CLI has initialized.

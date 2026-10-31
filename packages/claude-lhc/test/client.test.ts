@@ -28,9 +28,11 @@ class Input implements AsyncIterable<SDKUserMessage> {
   #ended = false;
   #wake: (() => void) | undefined;
 
-  push(text: string): void {
-    this.#items.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null });
+  push(text: string): string {
+    const uuid = randomUUID();
+    this.#items.push({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null, uuid });
     this.#wake?.();
+    return uuid;
   }
 
   end(): void {
@@ -232,6 +234,24 @@ describe("query through the sidecar", () => {
     expect(boundary).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(boundary);
     expect(messages.filter((m) => m.type === "result")).toHaveLength(3);
+  });
+
+  test("prompts sent behind a /compact reach Claude one at a time, each after the previous result", async () => {
+    const input = new Input();
+    const { q } = start(input);
+    input.push("/compact");
+    const one = input.push("slow:one");
+    const two = input.push("two");
+    input.end();
+    const messages: SDKMessage[] = [];
+    for await (const message of q) messages.push(message);
+    const at = (match: (m: SDKMessage) => boolean): number => messages.findIndex(match);
+    const queued = (uuid: string) => at((m) => (m as unknown as { command_uuid?: string }).command_uuid === uuid);
+    const answered = (text: string) => at((m) => m.type === "result" && "result" in m && m.result === `echo: ${text}`);
+    expect(messages.filter((m) => m.type === "result")).toHaveLength(3);
+    expect(queued(one)).toBeGreaterThan(at((m) => m.type === "system" && m.subtype === "compact_boundary"));
+    expect(queued(two)).toBeGreaterThan(answered("slow:one"));
+    expect(answered("two")).toBeGreaterThan(queued(two));
   });
 
   test("an input that throws fails the stream with its error", async () => {

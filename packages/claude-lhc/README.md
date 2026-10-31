@@ -51,6 +51,19 @@ A strict `tsc` without `skipLibCheck` reports errors inside the Agent SDK's own 
   Each generation and each `setModel` reads the live window with `getContextUsage`. A trigger
   above 80% of that window drops to 80%, and the target drops to at most half of that. The stored
   pair never changes. The `setCompactPolicy` control replaces the stored pair on a live thread.
+- The trigger does not cap a single request. The sidecar learns the context size from each
+  response, so the first request past the trigger can exceed it by one tool result. While the CLI
+  holds a steer it has not started, the automatic compact waits, because replacing the generation
+  then would run the steer twice. The sidecar puts no limit on that wait. It ends when the CLI
+  starts the steer. Prompts sent after the compact falls due wait in the sidecar, so they cannot
+  extend it. In 9 live runs on Claude Code 2.1.310, the CLI started a queued steer with the next
+  tool result every time, so the compact ran one request later. A fake-CLI test with a
+  200000-token window, which caps the trigger at 160000, and a 50000-token tool result at each
+  step shows that request's cost: the largest request was 180000 tokens without a steer and
+  230000 with one, past the window. The provider can refuse such a request.
+- A compact that leaves the served context at or past the trigger, as when the trigger is below the
+  CLI's own prompt of about 37000 tokens, logs `the next automatic compact waits for new context`.
+  The next automatic compact then waits for a request larger than the first one after the compact.
 - `spawn` is `{ command, args?, env? }`, the command that runs the sidecar. The default is
   `node <this package>/dist/sidecar.js`. Pass it when the host stages and pins its own copy of the
   sidecar. claude-lhc does no pinning or staging of its own.
@@ -122,12 +135,12 @@ and a new SDK method fails the typecheck until it has a row.
   process, and the stream returns no more messages. With a string prompt, or once the prompt
   iterable ends, the client sends an `end` frame, and the sidecar exits once every prompt has
   its `result`.
-- Results come in input order. A prompt sent during a running turn, with no compact running or
-  queued, goes straight to the CLI as a steer, as in the SDK. The CLI may fold it into the running
-  turn, which then answers both with one `result`, or run it as its own turn. A `/compact` waits
+- Results come in input order. A prompt sent during a running turn, with no compact running,
+  queued or due, goes straight to the CLI as a steer, as in the SDK. The CLI may fold it into the
+  running turn, which then answers both with one `result`, or run it as its own turn. A `/compact` waits
   until every earlier input is answered, compacts, and emits its own `result` after the
   `compact_boundary`. Prompts sent while a compact runs, or behind a queued `/compact`, wait in the
-  sidecar and run in order afterwards.
+  sidecar and go to the CLI one at a time afterwards, each after the previous `result`.
 
 ## Session ids
 
