@@ -241,7 +241,7 @@ a.prompt("Without using tools: what is the secret word? Reply with only the word
 await a.waitFor(
   () => a.messages.slice(midMark).filter((m) => m["type"] === "result").length >= 2,
   180_000,
-  "results for the compacted turn and the held prompt",
+  "results for the /compact and the held prompt",
 );
 const afterMid = a.messages.slice(midMark);
 const midBoundary = afterMid.find((m) => m["type"] === "system" && m["subtype"] === "compact_boundary");

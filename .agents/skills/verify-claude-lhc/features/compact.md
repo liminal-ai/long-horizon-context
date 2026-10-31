@@ -36,8 +36,8 @@
   turn-end and tool-boundary checks.
 - Auto compact (provider context at or above the effective trigger) at a
   settled tool boundary: live only, covered by
-  `packages/claude-lhc/scripts/midturn.ts`. Deferred `/compact` during an
-  open turn and held-prompt replay: live only, covered by
+  `packages/claude-lhc/scripts/midturn.ts`. A `/compact` sent during an
+  open turn and the queued-prompt replay: live only, covered by
   `packages/claude-lhc/scripts/standalone.ts`. `midturn.ts` sets its
   calibrated pair with `threads.setCompactPolicy` before the resume,
   because a resume keeps the stored pair.
@@ -93,17 +93,28 @@ summarization quality over real turns is the live standalone proof's job.
 
 ## Gotchas
 
-- A `/compact` sent while a turn is open does not run immediately: it
-  pends to the next safe tool boundary or the turn end. The seeded drive
-  sends it idle, where it runs at once.
-- Prompts sent while a compact is running are held, not dropped, and go
-  to whichever generation is current, after a failed rebuild the old one.
-  A `/compact` between turns sends them as soon as it ends. A mid-turn
-  compact keeps them until the continued turn's `result` (success, error
-  or interrupt), then sends them as their own turn, so you get two
-  results. A prompt that arrives while they wait queues behind them, a
-  second mid-turn compact keeps them waiting, and stdin close drops them
-  with `closing with <n> held prompt(s) never sent`. Unit-covered in
+- Results come in input order. A prompt sent during a running turn,
+  with nothing queued, compacting or due, goes straight to the CLI as a
+  steer, which the CLI may fold into the running turn (one shared
+  `result`) or run as its own turn. The sidecar follows each prompt
+  through the CLI's `command_lifecycle` frames: a turn's `result`
+  answers the prompts the CLI started. The CLI starts a queued prompt
+  as soon as its turn ends, so an automatic compact waits until the CLI
+  holds no unstarted prompt, and a steer never straddles a generation
+  swap. A CLI that sends no
+  lifecycle frames gets the plain rule that a `result` answers every
+  sent prompt.
+- A `/compact` waits until every earlier input is answered, then
+  compacts and emits its own synthetic `result`. It never compacts
+  mid-turn. Only an automatic compact stops a turn at a tool boundary.
+  The seeded drive sends `/compact` idle, where it runs at once.
+- Prompts sent while a compact is running, or behind a queued
+  `/compact`, wait in the sidecar's queue and go to whichever generation
+  is current, after a failed rebuild the old one. After a mid-turn
+  compact they wait for the continued turn's `result` (success, error or
+  interrupt), then run as their own turns. stdin close drops them with `closing with <n> held
+  prompt(s) never sent`. `packages/claude-lhc/test/input-order.property.test.ts`
+  checks the order on random interleavings, steers included. Unit-covered in
   `packages/claude-lhc/test/rollback-start.test.ts` and live-covered by
   `turn`, not seeded.
 - No `system/init` arrives before the first prompt, so the window read

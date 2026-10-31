@@ -10,8 +10,16 @@
     "types": ["node"],
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
-    "verbatimModuleSyntax": true
+    "verbatimModuleSyntax": true,
+    "paths": { "claude-lhc": ["./src/index.ts"] }
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "scripts/standalone.ts", "scripts/midturn.ts", "scripts/lib/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "scripts/standalone.ts",
+    "scripts/midturn.ts",
+    "scripts/lib/**/*.ts",
+    "examples/**/*.ts"
+  ],
   "exclude": ["dist", "scripts/spikes", "scripts/usage-probe.ts"]
 }

@@ -99,6 +99,11 @@ const MID_TURN_STOP_REASON = "lhc mid-turn compact";
 const HOOK_STOPPED = "hook_stopped";
 
 type CompactTrigger = "manual" | "auto";
+type QueuedInput = { kind: "prompt"; message: SDKUserMessage } | { kind: "compact" };
+interface SentPrompt {
+  message: SDKUserMessage;
+  started: boolean;
+}
 const stamp = (): string => new Date().toISOString().slice(11, 23);
 
 interface QueuedPrompt {
@@ -185,7 +190,7 @@ export class ClaudeLhcSession {
   #turnOpen = false;
   #turnStartedAt: string | undefined;
   #lastContextTokens = 0;
-  #pendingCompact: CompactTrigger | null = null;
+  #autoCompactDue = false;
   #compacting = false;
   #batch = new ToolBatch();
   #turnToolCalls = new Map<string, number>();
@@ -193,8 +198,11 @@ export class ClaudeLhcSession {
   #stopping: CompactTrigger | null = null;
   #midTurnFailed = false;
   #swap: { stoppedAt: number; sessionId: string } | null = null;
-  #heldPrompts: SDKUserMessage[] = [];
-  #heldUntilContinuedTurnEnds = false;
+  readonly #inputs: QueuedInput[] = [];
+  readonly #sent = new Map<string, SentPrompt>();
+  #lifecycleSeen = false;
+  #advancing = false;
+  #inputEnded = false;
   #model: string | undefined;
   #permissionMode: PermissionMode | undefined;
   #maxThinkingTokens: number | null | undefined;
@@ -219,6 +227,7 @@ export class ClaudeLhcSession {
     const {
       resume,
       resumeSessionAt,
+      resumeDropsTurn,
       sessionId,
       canUseTool: _c,
       onUserDialog: _d,
@@ -227,6 +236,10 @@ export class ClaudeLhcSession {
       lhc,
       ...rest
     } = wire as Record<string, unknown>;
+    if (resumeDropsTurn !== undefined)
+      throw new Error(
+        "resumeDropsTurn is refused: claude-lhc rolls back in its own record, so send resumeSessionAt alone",
+      );
     const sidecarOptions = parseSidecarOptions(lhc);
     this.#home = sidecarOptions.home;
     this.#forceRebuildFailure = sidecarOptions.forceRebuildFailure === true;
@@ -285,27 +298,50 @@ export class ClaudeLhcSession {
 
   async pushUser(message: SDKUserMessage): Promise<void> {
     if (this.#closed) return;
-    if (compactCommand(message) !== null) {
-      if (this.#turnOpen || this.#compacting) this.#pendingCompact = "manual";
-      else await this.#compact("manual");
-      return;
+    if (compactCommand(message) !== null) this.#inputs.push({ kind: "compact" });
+    else if (this.#inputs.length > 0 || this.#compacting || this.#stopping !== null || this.#autoCompactDue)
+      this.#inputs.push({ kind: "prompt", message });
+    else await this.#send(message);
+    await this.#advance();
+  }
+
+  endInput(): void {
+    this.#inputEnded = true;
+    this.#endIfIdle();
+  }
+
+  #endIfIdle(): void {
+    if (this.#inputEnded && this.#inputs.length === 0 && this.#sent.size === 0 && !this.#compacting && !this.#closed)
+      this.#io.end();
+  }
+
+  // Hosts pair results with inputs in order, so a queued input starts only once every earlier one has its
+  // result. A prompt sent while nothing is queued goes straight to the CLI, which may fold it into the running turn.
+  async #advance(): Promise<void> {
+    if (this.#advancing) return;
+    this.#advancing = true;
+    try {
+      while (!this.#closed && this.#sent.size === 0 && !this.#compacting && this.#stopping === null) {
+        const next = this.#inputs.shift();
+        if (next === undefined) break;
+        if (next.kind === "compact") await this.#compact("manual");
+        else await this.#send(next.message);
+      }
+    } finally {
+      this.#advancing = false;
     }
-    if (this.#compacting || this.#heldUntilContinuedTurnEnds) {
-      this.#heldPrompts.push(message);
-      this.#io.log(
-        `holding a prompt ${this.#compacting ? "during compact" : "until the continued turn ends"} (${this.#heldPrompts.length} held)`,
-      );
-      return;
+    this.#endIfIdle();
+  }
+
+  async #send(message: SDKUserMessage): Promise<void> {
+    if (this.#autoCompactDue && !this.#turnOpen) {
+      this.#autoCompactDue = false;
+      await this.#compact("auto");
     }
     const gen = this.#gen;
     if (gen === null) throw new Error("no live generation");
-    if (!this.#turnOpen && this.#pendingCompact === "auto") {
-      this.#pendingCompact = null;
-      this.#heldPrompts.push(message);
-      await this.#compact("auto");
-      return;
-    }
     const promptUuid = message.uuid ?? randomUUID();
+    this.#sent.set(promptUuid, { message: { ...message, uuid: promptUuid }, started: false });
     gen.input.push({
       message: { ...message, uuid: promptUuid },
       before: async () => {
@@ -397,19 +433,19 @@ export class ClaudeLhcSession {
   async #checkServedContext(gen: Generation): Promise<void> {
     this.#windowRead = this.#readWindow(gen);
     const read = await this.#windowRead;
-    if (read !== null && this.#pendingCompact === "auto") this.#pendingCompact = null;
+    if (read !== null) this.#autoCompactDue = false;
     const served = this.#servedPastTrigger(read);
-    if (served !== null && this.#pendingCompact === null) {
+    if (served !== null) {
       this.#lastContextTokens = served;
-      this.#pendingCompact = "auto";
+      this.#autoCompactDue = true;
     }
   }
 
   async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
-    if (this.#heldPrompts.length > 0)
-      this.#io.log(`closing with ${this.#heldPrompts.length} held prompt(s) never sent`);
+    const unsent = this.#inputs.filter((input) => input.kind === "prompt").length;
+    if (unsent > 0) this.#io.log(`closing with ${unsent} held prompt(s) never sent`);
     const gen = this.#gen;
     this.#gen = null;
     this.#stopping = null;
@@ -521,7 +557,8 @@ export class ClaudeLhcSession {
 
   #midTurnDue(): CompactTrigger | null {
     if (this.#compacting || this.#stopping !== null || this.#closed || this.#midTurnFailed) return null;
-    if (this.#pendingCompact !== null) return this.#pendingCompact;
+    if (this.#cliHoldsUnstarted()) return null;
+    if (this.#autoCompactDue) return "auto";
     return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger ? "auto" : null;
   }
 
@@ -540,7 +577,7 @@ export class ClaudeLhcSession {
     }
     this.#stopping = trigger;
     this.#swap = { stoppedAt: Date.now(), sessionId: "" };
-    if (this.#pendingCompact === trigger) this.#pendingCompact = null;
+    this.#autoCompactDue = false;
     this.#io.log(
       `${stamp()} compact (${trigger}) due mid-turn; stopping generation ${gen.sessionId} at the safe boundary after PostToolUse ${hookInput.tool_name} ${hookInput.tool_use_id} (batch of ${this.#batch.size} settled)`,
     );
@@ -630,6 +667,12 @@ export class ClaudeLhcSession {
       );
       this.#swap = null;
     }
+    if ((message as { type: string }).type === "command_lifecycle") {
+      this.#onCommandLifecycle(message as unknown as { command_uuid: string; state: string });
+      this.#io.emit(message);
+      await this.#advance();
+      return;
+    }
     if (message.type === "system" && message.subtype === "init") {
       this.#claudeCodeVersion = message.claude_code_version;
       const pending = (message.mcp_servers ?? [])
@@ -680,11 +723,23 @@ export class ClaudeLhcSession {
     }
     this.#turnOpen = false;
     this.#turnStartedAt = undefined;
-    this.#heldUntilContinuedTurnEnds = false;
-    const trigger = this.#dueCompact();
+    for (const [uuid, sent] of this.#sent) if (sent.started || !this.#lifecycleSeen) this.#sent.delete(uuid);
+    let trigger = this.#dueCompact();
+    if (trigger !== null && this.#cliHoldsUnstarted()) {
+      this.#autoCompactDue = true;
+      trigger = null;
+    }
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
-    await this.#replayHeld();
+    await this.#advance();
+  }
+
+  #onCommandLifecycle({ command_uuid, state }: { command_uuid: string; state: string }): void {
+    this.#lifecycleSeen = true;
+    const sent = this.#sent.get(command_uuid);
+    if (sent === undefined) return;
+    if (state === "started") sent.started = true;
+    else if (state === "completed" || state === "cancelled") this.#sent.delete(command_uuid);
   }
 
   async #maybeSegment(message: SDKMessage, events: readonly MessageEventInput[]): Promise<void> {
@@ -707,12 +762,11 @@ export class ClaudeLhcSession {
     );
   }
 
-  #dueCompact(): "manual" | "auto" | null {
+  #dueCompact(): "auto" | null {
     if (this.#compacting) return null;
-    if (this.#pendingCompact !== null) {
-      const trigger = this.#pendingCompact;
-      this.#pendingCompact = null;
-      return trigger;
+    if (this.#autoCompactDue) {
+      this.#autoCompactDue = false;
+      return "auto";
     }
     return this.#lastContextTokens >= this.#effectiveCompactPolicy().trigger ? "auto" : null;
   }
@@ -814,7 +868,6 @@ export class ClaudeLhcSession {
     } finally {
       this.#compacting = false;
     }
-    await this.#replayHeld();
   }
 
   async #compactMidTurn(trigger: CompactTrigger): Promise<void> {
@@ -867,17 +920,15 @@ export class ClaudeLhcSession {
     }
     const uuid = randomUUID();
     const note = { ...this.#continuationNote(), uuid };
+    for (const [id, sent] of this.#sent) if (sent.started || !this.#lifecycleSeen) this.#sent.delete(id);
+    this.#sent.set(uuid, { message: note, started: false });
     target.input.push({ message: note, before: async () => this.#intake(mapPrompt(note, uuid, true)) });
-    this.#heldUntilContinuedTurnEnds = this.#heldPrompts.length > 0;
-    if (this.#heldUntilContinuedTurnEnds)
-      this.#io.log(`${this.#heldPrompts.length} held prompt(s) wait for the continued turn to end`);
   }
 
-  async #replayHeld(): Promise<void> {
-    const held = this.#heldPrompts.splice(0);
-    if (held.length > 0)
-      this.#io.log(`replaying ${held.length} held prompt(s) into generation ${this.#gen?.sessionId}`);
-    for (const message of held) await this.pushUser(message);
+  // The CLI starts a queued prompt as soon as its turn ends, so replacing its generation then would run
+  // that prompt twice. Automatic compacts wait until the CLI holds no unstarted prompt.
+  #cliHoldsUnstarted(): boolean {
+    return this.#lifecycleSeen && [...this.#sent.values()].some((sent) => !sent.started);
   }
 
   #compactBoundary(
@@ -956,7 +1007,7 @@ export class ClaudeLhcSession {
     await this.#lhc.logging.write(this.#thread, { level: "info", message: summary }).catch(() => undefined);
 
     const next = await this.#startProjectedGeneration();
-    if (this.#pendingCompact === "auto") this.#pendingCompact = null;
+    this.#autoCompactDue = false;
     return { next, postTokens };
   }
 

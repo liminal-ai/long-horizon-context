@@ -47,7 +47,6 @@ requirePath(join(lhcRoot, "dist", "index.js"), "lhc dist");
 rmSync(outputRoot, { recursive: true, force: true });
 mkdirSync(join(outputRoot, "bin"), { recursive: true });
 
-const jsOnly = (source) => !/\.(?:d\.ts|d\.ts\.map|js\.map)$/.test(source);
 const jsAndTypes = (source) => !/\.(?:d\.ts\.map|js\.map)$/.test(source);
 cpSync(join(packageRoot, "dist"), join(outputRoot, "dist"), { recursive: true, filter: jsAndTypes });
 cpSync(join(packageRoot, "bin", "claude-lhc.js"), join(outputRoot, "bin", "claude-lhc.js"));
@@ -55,7 +54,7 @@ cpSync(join(packageRoot, "README.md"), join(outputRoot, "README.md"));
 cpSync(join(repoRoot, "LICENSE"), join(outputRoot, "LICENSE"));
 
 const bundledLhcRoot = join(outputRoot, "node_modules", "lhc");
-cpSync(join(lhcRoot, "dist"), join(bundledLhcRoot, "dist"), { recursive: true, filter: jsOnly });
+cpSync(join(lhcRoot, "dist"), join(bundledLhcRoot, "dist"), { recursive: true, filter: jsAndTypes });
 writeFileSync(
   join(bundledLhcRoot, "package.json"),
   `${JSON.stringify(
@@ -65,6 +64,7 @@ writeFileSync(
       private: true,
       type: "module",
       main: "./dist/index.js",
+      types: lhcManifest.types,
       exports: lhcManifest.exports,
       engines: claudeManifest.engines,
     },
@@ -101,7 +101,7 @@ const manifest = {
   },
   homepage: "https://github.com/liminal-ai/long-horizon-context/tree/main/packages/claude-lhc",
   bugs: { url: "https://github.com/liminal-ai/long-horizon-context/issues" },
-  keywords: ["long-horizon-context", "claude-code", "t3code", "sidecar"],
+  keywords: ["long-horizon-context", "claude-code", "claude-agent-sdk"],
   publishConfig: { access: "public" },
   ...(sourceSha === null ? {} : { gitHead: sourceSha }),
 };

@@ -1,12 +1,12 @@
 # Host: claude-lhc
 
-Last verified against code: 2026-10-27, package version 0.1.1. Precedence when facts disagree: code, then the package README (`packages/claude-lhc/README.md`), then this document.
+Last verified against code: 2026-10-30, package version 0.1.1. Precedence when facts disagree: code, then the package README (`packages/claude-lhc/README.md`), then this document.
 
 This document builds on the vocabulary in [01-core-concepts.md](01-core-concepts.md) and [02-domain-design.md](02-domain-design.md). Record, event, derivation, view, band, and retrieval keep their SDK meanings here.
 
 ## Host position
 
-`claude-lhc` (`packages/claude-lhc`) is a sidecar process, not a wrapper a person runs. t3code's Claude LHC provider spawns it. It runs the Claude Agent SDK (pinned `@anthropic-ai/claude-agent-sdk` 0.3.170) against the Claude Code binary t3code points it at, records every native message into an LHC thread as the primary record, and forwards the raw SDK stream to the t3code driver unchanged.
+`claude-lhc` (`packages/claude-lhc`) is the Claude Agent SDK's `query()` with LHC underneath. A host imports `query` from `claude-lhc` instead of `@anthropic-ai/claude-agent-sdk` and gets the same message stream and `Query` methods. The client spawns a sidecar process. The sidecar runs the Agent SDK (`@anthropic-ai/claude-agent-sdk` 0.3.312) against the Claude Code binary the host names, records every native message into an LHC thread as the primary record, and forwards the raw SDK stream to the client unchanged. The package README is the host contract.
 
 The native Claude session is a projection of the LHC served view. Every restart and every compact writes a fresh native session file from that view, under a fresh session id, and resumes it. The native session file is never the record. The LHC thread is.
 
@@ -14,21 +14,15 @@ This host differs from [cc-lhc](05-host-cc-lhc.md) in position. cc-lhc owns the 
 
 ## Launch
 
-t3code spawns the sidecar as `process.execPath` running the compiled entry, `dist/sidecar.js`. It never spawns the `bin/claude-lhc` shell wrapper. That wrapper exists for humans on PATH.
+A host calls `query({ prompt, options })` from the package entry, `dist/index.js`, with an `lhc` block in the options. By default the client spawns `process.execPath` running the package's own `dist/sidecar.js`. A host that stages and pins its own copy passes `lhc.spawn: { command, args?, env? }`. `close()` closes the sidecar's stdin. The `bin/claude-lhc` wrapper exists for humans on PATH.
 
-From source, build the core first, then the sidecar (`dist/` is not in git):
+From source, build the core first, then the package (`dist/` is not in git):
 
 ```sh
 pnpm --filter lhc build && pnpm --filter claude-lhc build
-node packages/claude-lhc/dist/sidecar.js
 ```
 
-From npm, the T3 Code fork installs the published package and points t3code at the entry:
-
-```sh
-npm install claude-lhc@0.1.1
-CLAUDE_LHC_SIDECAR=<prefix>/node_modules/claude-lhc/dist/sidecar.js
-```
+Hosts that are not in Node can spawn `node packages/claude-lhc/dist/sidecar.js` and speak the wire below. `src/client.ts` is the reference client.
 
 Node 24.3 or later. The package bundles the `lhc` core. The core is not published separately. The sidecar reads frames from stdin until stdin closes, then it closes the session and exits 0. SIGTERM exits 0. A crash sends an `error` frame and exits 1. Diagnostics go to stderr with a `[claude-lhc]` prefix. Frames are handled strictly in arrival order.
 
@@ -38,8 +32,9 @@ One JSON object per line on stdin (driver to sidecar) and stdout (sidecar to dri
 
 Driver frames:
 
-- `start` — the SDK options with non-serialisable members removed, plus the sidecar-only `lhc` block, `{ home, compact?: { trigger, target }, forceRebuildFailure? }`, which never reaches the SDK. `lhc.home` is required. A start without it fails with one `error` frame naming `lhc.home`, before any store is created. A `resume` start may carry `resumeSessionAt`, a host rollback to that message. The sidecar records it in LHC and never forwards it (see Capture and generations).
-- `user` — one SDK user message.
+- `start` — the SDK options with non-serialisable members removed, plus the sidecar-only `lhc` block, `{ home, compact?: { trigger, target }, forceRebuildFailure? }`, which never reaches the SDK. `lhc.home` is required. A start without it fails with one `error` frame naming `lhc.home`, before any store is created. A `resume` start may carry `resumeSessionAt`, a host rollback to that message. The sidecar records it in LHC and never forwards it (see Capture and generations). A start that carries `resumeDropsTurn` fails with `resumeDropsTurn is refused`, because that option validates the CLI's own transcript, which a projected session does not share.
+- `user` — one SDK user message. Results come in input order. A prompt sent during a running turn, with no compact running or queued, goes straight to the CLI as a steer: the CLI may fold it into the running turn (one shared `result`) or run it as its own turn. The sidecar follows each prompt through the CLI's `command_lifecycle` frames, so a `result` answers the prompts the CLI started. An automatic compact waits until the CLI holds no prompt it has not started, because the CLI starts a queued prompt as soon as its turn ends. A `/compact` waits until every earlier input is answered, compacts, and emits its own synthetic `result`. Prompts sent while a compact runs, or behind a queued `/compact`, wait in the sidecar's queue.
+- `end` — the host's input ended. The sidecar exits 0 once every prompt sent before it has its `result`.
 - `req` — a session control with an id the sidecar answers. `method` is an SDK `Query` method name, and `params` maps that method's SDK parameter names to values, as in `{ "method": "setMcpServers", "params": { "servers": { ... } } }`. The answer is the SDK's return value. `CONTROLS` in `src/controls.ts` marks each method. Replay methods (`setModel`, `setPermissionMode`, `setMaxThinkingTokens`, `setMcpServers`, `applyFlagSettings`, `updateSettings`, `toggleMcpServer`, `setMcpPermissionModeOverride`) go to the live generation and again to every generation a compact starts, before it takes a prompt. Forward methods go to the live generation only. `close` and `streamInput` are transport: closing stdin and sending `user` frames. `rewindFiles`, `reinitialize` and `seedReadState` are refused by name, because each changes the Claude session outside the LHC record. The LHC control `setCompactPolicy`, `{ policy: { trigger, target } }`, stores a new pair on the thread (see Compact numbers).
 - `res` — the driver's answer to a sidecar request.
 - `abort` — reserved. The sidecar currently ignores incoming abort frames; it cancels its own requests through their AbortSignal and sends its own `abort` frame instead.
@@ -84,7 +79,7 @@ The same read takes `getContextUsage().totalTokens`, the served context the CLI 
 
 The rebuild compacts with the core `continuation` profile's band shares. Before compacting, the sidecar waits up to 45 seconds (`DERIVATION_WAIT_MS`) for queued derivations, so bands assemble from renderings rather than truncated excerpts.
 
-A compact that falls due while a turn is open does not wait for the turn to end. The next safe tool boundary stops the live query (a PostToolUse hook returns `continue: false`, after every tool call of the current assistant message has its result). LHC closes the turn on the canonical `context_compact_continue` boundary, the view is rebuilt and projected into a new generation, and a continuation input — recorded as a runtime note, never a prompt — resumes the task there. The stopped query's own result never reaches the driver. The driver sees one turn with a `compact_boundary` in the middle and one result, from the new session. A failed mid-turn compact gets no second try before the turn ends; the turn-end path tries once more. Prompts that arrive during a compact swap are held and replayed into the new generation.
+An automatic compact that falls due while a turn is open does not wait for the turn to end. The next safe tool boundary stops the live query (a PostToolUse hook returns `continue: false`, after every tool call of the current assistant message has its result). LHC closes the turn on the canonical `context_compact_continue` boundary, the view is rebuilt and projected into a new generation, and a continuation input — recorded as a runtime note, never a prompt — resumes the task there. The stopped query's own result never reaches the driver. The driver sees one turn with a `compact_boundary` in the middle and one result, from the new session. A failed mid-turn compact gets no second try before the turn ends; the turn-end path tries once more. Only an automatic compact stops a turn this way. A `/compact` input waits for the turn's result like any other input.
 
 ## Retrieval
 

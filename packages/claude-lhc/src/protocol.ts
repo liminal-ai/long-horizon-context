@@ -1,15 +1,17 @@
 /**
- * Wire protocol between the t3code Claude driver and the claude-lhc sidecar.
- * One JSON object per line on stdin (driver → sidecar) and stdout (sidecar → driver).
+ * Wire protocol between a host client (`client.ts` is the reference) and the claude-lhc sidecar.
+ * One JSON object per line on stdin (client → sidecar) and stdout (sidecar → client).
  *
  * The native Claude Agent SDK stream is forwarded unchanged inside `msg`. The two
  * adapter callbacks that cannot cross a process boundary (`canUseTool`,
  * `onUserDialog`) become `req`/`res` pairs originated by the sidecar. The SDK `Query`
- * controls become `req`/`res` pairs originated by the driver: `method` is the `Query`
+ * controls become `req`/`res` pairs originated by the client: `method` is the `Query`
  * method name, `params` maps its SDK parameter names to values, and the `res` value is
  * what the SDK returned. `CONTROLS` in `controls.ts` lists every method claude-lhc
  * forwards, replays into later generations, or refuses, plus the LHC control
- * `setCompactPolicy` (`{ policy: { trigger, target } }`). Closing stdin closes the sidecar.
+ * `setCompactPolicy` (`{ policy: { trigger, target } }`). An `end` frame says the host's input
+ * ended: the sidecar exits once every prompt sent before it has its result. Closing stdin
+ * closes the sidecar at once.
  */
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { ControlMethod } from "./controls.js";
@@ -23,7 +25,8 @@ import type { ControlMethod } from "./controls.js";
  *   (proof scripts exercise the failure path with a live model; never set by t3code).
  * `resumeSessionAt` is a host rollback to that message. The sidecar records it in LHC
  * and never forwards it: projected lines carry fresh uuids, and the CLI fails a turn
- * whose resumeSessionAt names no line in the resumed file.
+ * whose resumeSessionAt names no line in the resumed file. `resumeDropsTurn` is refused: it
+ * validates the CLI's own transcript, which a projected session does not share.
  */
 export type WireOptions = Record<string, unknown> & { lhc: SidecarOptions; resumeSessionAt?: string };
 export type SidecarOptions = {
@@ -38,6 +41,7 @@ export type SidecarRequestMethod = "canUseTool" | "onUserDialog";
 export type DriverFrame =
   | { type: "start"; options: WireOptions }
   | { type: "user"; message: SDKUserMessage }
+  | { type: "end" }
   | { type: "req"; id: number; method: ControlMethod; params: unknown }
   | { type: "res"; id: number; ok: true; value: unknown }
   | { type: "res"; id: number; ok: false; error: string }
