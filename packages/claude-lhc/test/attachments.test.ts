@@ -141,20 +141,21 @@ describe("harvestAttachments", () => {
   });
 });
 
-test("a harvest that cannot write its store is logged and the turn still settles", async () => {
+test("a store that cannot be written or read is logged, and the turn and the next resume go on", async () => {
   process.env.CLAUDE_LHC_NO_INFERENCE = "1";
   generations.length = 0;
   const frames: SDKMessage[] = [];
   const logs: string[] = [];
-  const session = new ClaudeLhcSession({
-    emit: (message) => frames.push(message),
+  const io = {
+    emit: (message: SDKMessage) => void frames.push(message),
     request: async () => ({}),
     end(): void {},
     fail(message: string): void {
       throw new Error(message);
     },
-    log: (line) => logs.push(line),
-  });
+    log: (line: string) => void logs.push(line),
+  };
+  const session = new ClaudeLhcSession(io);
   const { cwd, env } = source(gen1.sessionId);
   await session.start({
     cwd,
@@ -183,4 +184,12 @@ test("a harvest that cannot write its store is logged and the turn still settles
     expect.stringMatching(new RegExp(`^attachments: harvest from ${gen1.sessionId} failed: `)),
   );
   await session.close();
+
+  const resumed = new ClaudeLhcSession(io);
+  await resumed.start({ cwd, model: "claude-sonnet-5", resume: gen1.sessionId, env, lhc: { home: join(dir, "lhc") } });
+  expect(generations).toHaveLength(2);
+  expect(logs).toContainEqual(
+    expect.stringMatching(/^attachments: read for thread \S+ failed: .*; projecting without them$/),
+  );
+  await resumed.close();
 });

@@ -48,7 +48,12 @@ import {
 import { type ControlCall, parseControl, ReplayLedger } from "./controls.js";
 import { bindSession, createLhc, createThread, currentSession, resolveSession, threadRef } from "./lhcHome.js";
 import { writeProjectedSession } from "./nativeSessionFile.js";
-import { FALLBACK_CLAUDE_CODE_VERSION, FALLBACK_PROJECTION_MODEL, projectView } from "./projection/project.js";
+import {
+  type AttachmentsByAnchor,
+  FALLBACK_CLAUDE_CODE_VERSION,
+  FALLBACK_PROJECTION_MODEL,
+  projectView,
+} from "./projection/project.js";
 import { parseCompactPolicy, parseSidecarOptions, type SidecarRequestMethod, type WireOptions } from "./protocol.js";
 import { createRetrievalServer, RETRIEVAL_SERVER_NAME, RETRIEVAL_TOOL_NAMES } from "./retrieval.js";
 import { appendRollback, type RollbackAnchor, resolveRollbackAnchor } from "./rollbackAnchor.js";
@@ -1086,6 +1091,17 @@ export class ClaudeLhcSession {
     }
   }
 
+  async #storedAttachments(): Promise<AttachmentsByAnchor> {
+    try {
+      return await readAttachments(this.#home, this.#threadId);
+    } catch (cause) {
+      this.#io.log(
+        `attachments: read for thread ${this.#threadId} failed: ${cause instanceof Error ? cause.message : String(cause)}; projecting without them`,
+      );
+      return new Map();
+    }
+  }
+
   async #startProjectedGeneration(): Promise<Generation> {
     if (this.#gen !== null) await this.#harvest(this.#gen.sessionId);
     const view = await this.#lhc.threadView.getSessionThreadView(this.#thread);
@@ -1101,7 +1117,7 @@ export class ClaudeLhcSession {
         permissionMode: this.#permissionMode ?? "default",
         model: this.#model ?? FALLBACK_PROJECTION_MODEL,
       },
-      { attachments: await readAttachments(this.#home, this.#threadId) },
+      { attachments: await this.#storedAttachments() },
     );
     const title = nativeLhcTitle(this.#threadId);
     const dest = entries.length === 0 ? null : await writeProjectedSession({ sessionId, cwd, entries, env: this.#env });
