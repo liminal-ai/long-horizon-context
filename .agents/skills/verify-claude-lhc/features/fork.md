@@ -11,7 +11,7 @@
   summary workers and rollback lookups. From the package entry they run
   in the host's process. From `claude-lhc/client` each runs in a
   short-lived sidecar (`lhc.spawn` or the default), which takes the
-  operation's `CLAUDE_CONFIG_DIR` as its own.
+  operation's `CLAUDE_CONFIG_DIR`, `HOME` and `USERPROFILE` as its own.
 - `forkSession(sessionId, { lhc, dir?, upToMessageId?, title?, sessionStore? })`
   resolves any of the source thread's session ids, resolves
   `upToMessageId` with the host-rollback resolver (`src/rollbackAnchor.ts`)

@@ -115,6 +115,21 @@ describe("forkSession from the client entry", () => {
     expect(readFileSync(marker, "utf8").trim().split("\n")).toContain(`${bin} from-operation-env`);
   });
 
+  test("an operation env with HOME and no CLAUDE_CONFIG_DIR writes under that HOME's .claude", async () => {
+    const { gen1 } = await capturedThread();
+    const userHome = join(dir, "operation user");
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: userHome, USERPROFILE: userHome };
+    delete env.CLAUDE_CONFIG_DIR;
+
+    const fork = await forkSession(gen1, { env, ...store() });
+
+    const claudeHome = join(userHome, ".claude");
+    expect(
+      existsSync(nativeSessionPath({ sessionId: fork.sessionId, cwd, env: { CLAUDE_CONFIG_DIR: claudeHome } })),
+    ).toBe(true);
+    expect(existsSync(join(hostHome, "projects"))).toBe(false);
+  });
+
   test("with no env or binary, runs against the sidecar's own Claude home", async () => {
     const { gen1 } = await capturedThread();
 

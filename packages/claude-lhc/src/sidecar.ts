@@ -13,11 +13,16 @@ const exit = async (code: number): Promise<void> => {
   process.exit(code);
 };
 
-// The SDK's session readers and renameSession take no env: they read CLAUDE_CONFIG_DIR from process.env.
+const CLAUDE_HOME_VARS = ["CLAUDE_CONFIG_DIR", "HOME", "USERPROFILE"] as const;
+
+// The SDK's session readers and renameSession take no env: they find the Claude home from
+// process.env's CLAUDE_CONFIG_DIR, else os.homedir(), which reads HOME or USERPROFILE.
 function adoptOperationClaudeHome({ env }: OperationEnv): void {
   if (env === undefined) return;
-  if (env.CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-  else process.env.CLAUDE_CONFIG_DIR = env.CLAUDE_CONFIG_DIR;
+  for (const name of CLAUDE_HOME_VARS) {
+    if (env[name] !== undefined) process.env[name] = env[name];
+    else if (name === "CLAUDE_CONFIG_DIR") delete process.env[name];
+  }
 }
 
 function runOperation(frame: OperationFrame): Promise<unknown> {
