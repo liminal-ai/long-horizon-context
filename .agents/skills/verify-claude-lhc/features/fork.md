@@ -153,10 +153,14 @@ operation's `env`, and asks the fork and then the source to list every
 secret word. It passes when the fork's answer has KEEP-ALPHA and lacks
 REMOVED-BRAVO, and the source's answer has both. Evidence:
 `fork-result.json`, `answers.json`, `transcript.jsonl`. The earlier
-question, "what was the second secret word", drew NONE from the source in 2
-of 12 runs on L1's trunk and head with the source's served view intact
-(`.pstack/runs/lhc-claude-driver/proof/L1/fork-live-investigation/report.md`
-in the t3code-v2 main checkout). The list question passed 6 of 6 runs at
+question, "what was the second secret word", drew NONE from the source in 3
+of 12 runs across L1's trunk and head (head 4 of 6, trunk 5 of 6;
+`.pstack/runs/lhc-claude-driver/proof/L1/fork-live-investigation/report.md`
+in the t3code-v2 main checkout). Failing and passing runs show the same
+signature on trunk and head, the same projected entry counts and the same
+token counts, and a code audit found no write path from a fork to its
+source. The runs kept no prompt contents, so that evidence does not prove
+the source's view was intact. The list question passed 6 of 6 runs at
 L4's head.
 
 `subagent-live` takes one real turn, sends `/compact`, then asks Claude to
