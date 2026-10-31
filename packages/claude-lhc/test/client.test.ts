@@ -176,6 +176,19 @@ describe("query through the sidecar", () => {
     expect(results[3]).toBeGreaterThan(boundaries[1] ?? -1);
   });
 
+  test("a deferred /compact whose rebuild fails says so in its result", async () => {
+    const prompts = (async function* () {
+      for (const text of ["slow:one", "/compact"])
+        yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as const;
+    })();
+    const { q } = start(prompts, { lhc: { home: join(dir, "lhc"), forceRebuildFailure: true } });
+    const messages: SDKMessage[] = [];
+    for await (const message of q) messages.push(message);
+    const results = messages.filter((m) => m.type === "result");
+    expect(results).toHaveLength(2);
+    expect(results[1]).toMatchObject({ result: expect.stringContaining("LHC compact failed") });
+  });
+
   test("two /compact inputs sent during a turn each get a result", async () => {
     const prompts = (async function* () {
       for (const text of ["slow:one", "/compact", "/compact"])

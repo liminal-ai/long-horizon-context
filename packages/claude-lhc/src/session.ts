@@ -196,6 +196,7 @@ export class ClaudeLhcSession {
   #heldPrompts: SDKUserMessage[] = [];
   #inFlight = 0;
   #compactResultsOwed = 0;
+  #compactFailure: string | null = null;
   #inputEnded = false;
   #heldUntilContinuedTurnEnds = false;
   #model: string | undefined;
@@ -724,7 +725,9 @@ export class ClaudeLhcSession {
     this.#compactResultsOwed = 0;
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
-    for (let i = 0; i < owed; i++) this.#io.emit(this.#syntheticResult(this.#gen?.sessionId ?? "", Date.now(), ""));
+    const outcome = this.#compactFailure === null ? "" : `LHC compact failed: ${this.#compactFailure}`;
+    for (let i = 0; i < owed; i++)
+      this.#io.emit(this.#syntheticResult(this.#gen?.sessionId ?? "", Date.now(), outcome));
     await this.#replayHeld();
     this.#endIfIdle();
   }
@@ -836,6 +839,7 @@ export class ClaudeLhcSession {
     this.#io.emit(this.#syntheticStatus(previous.sessionId, "compacting"));
     try {
       const { next, postTokens } = await this.#rebuild(trigger, preTokens);
+      this.#compactFailure = null;
       this.#io.emit(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
       this.#io.emit(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
       this.#lastContextTokens = 0;
@@ -843,6 +847,7 @@ export class ClaudeLhcSession {
       else if (trigger === "manual") this.#io.emit(this.#syntheticResult(next.sessionId, startedAt, ""));
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
+      this.#compactFailure = reason;
       this.#io.log(`compact (${trigger}) failed: ${reason}`);
       await this.#lhc.logging
         .write(this.#thread, { level: "warning", message: `[lhc compact:${trigger}] failed: ${reason}` })
@@ -883,6 +888,7 @@ export class ClaudeLhcSession {
         },
       ]);
       const { next, postTokens } = await this.#rebuild(trigger, preTokens);
+      this.#compactFailure = null;
       target = next;
       this.#io.emit(this.#syntheticStatus(previous.sessionId, null, { compact_result: "success" }));
       this.#io.emit(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
@@ -893,6 +899,7 @@ export class ClaudeLhcSession {
       );
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
+      this.#compactFailure = reason;
       this.#io.log(
         `mid-turn compact (${trigger}) failed: ${reason}; continuing the turn in generation ${previous.sessionId} uncompacted`,
       );
