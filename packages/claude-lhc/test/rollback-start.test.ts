@@ -680,8 +680,19 @@ describe("prompts held during a mid-turn compact", () => {
     expect(textOf((await cli.next()).value)).toContain("Context was compacted in the middle of this turn");
     const pending = cli.next();
     expect(await stillWaiting(pending)).toBe(true);
-    streams[1]!(resultMessage());
+    const continued = resultMessage();
+    streams[1]!(continued);
     expect(textOf((await pending).value)).toBe("PENDING-PROMPT");
+    const pendingAnswered = resultMessage();
+    streams[1]!(answer("PENDING-ANSWER"));
+    streams[1]!(pendingAnswered);
+
+    await vi.waitFor(() =>
+      expect(frames.filter((frame) => frame["type"] === "result").map((frame) => frame["uuid"])).toEqual([
+        continued.uuid,
+        pendingAnswered.uuid,
+      ]),
+    );
   });
 
   test("a /compact sent while a held prompt waits runs after that prompt's result", async () => {

@@ -23,10 +23,12 @@ interface FakeCli {
   pulled: SDKUserMessage[];
   turn: Turn | null;
   closed: boolean;
+  context: number;
   emit(message: SDKMessage): void;
 }
 
 const clis: FakeCli[] = [];
+let startingContext = 1_000;
 vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
   const real = await importOriginal<typeof import("@anthropic-ai/claude-agent-sdk")>();
   return {
@@ -43,6 +45,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
         pulled: [],
         turn: null,
         closed: false,
+        context: startingContext,
         emit(message) {
           queued.push(message);
           wake?.();
@@ -93,8 +96,10 @@ const textOf = (message: SDKUserMessage): string => {
   return typeof content === "string" ? content : content.map((block) => ("text" in block ? block.text : "")).join("");
 };
 
-const assistant = (cli: FakeCli, content: unknown[], heavy: boolean): SDKMessage =>
-  ({
+// Each request carries more context than the one before it in the same CLI.
+const assistant = (cli: FakeCli, content: unknown[], heavy: boolean): SDKMessage => {
+  cli.context += heavy ? 50_000 : 200;
+  return {
     type: "assistant",
     uuid: randomUUID(),
     session_id: cli.sessionId,
@@ -104,9 +109,10 @@ const assistant = (cli: FakeCli, content: unknown[], heavy: boolean): SDKMessage
       model: "claude-sonnet-5",
       role: "assistant",
       content,
-      usage: { input_tokens: heavy ? 60_000 : 1_000, output_tokens: 10 },
+      usage: { input_tokens: cli.context, output_tokens: 10 },
     },
-  }) as unknown as SDKMessage;
+  } as unknown as SDKMessage;
+};
 
 const result = (cli: FakeCli, text: string, extra: Record<string, unknown> = {}): SDKMessage =>
   ({
@@ -145,6 +151,7 @@ interface Run {
   midTurnStops: number;
   steersSent: number;
   steersFolded: number;
+  promptsWhileStopping: number;
   dueWithQueued: number;
   severalHeldInOneCompact: number;
   pendingAutoSends: Array<{ input: number; sentAt: number }>;
@@ -171,6 +178,7 @@ async function runOnce(seed: number): Promise<Run> {
     midTurnStops: 0,
     steersSent: 0,
     steersFolded: 0,
+    promptsWhileStopping: 0,
     dueWithQueued: 0,
     severalHeldInOneCompact: 0,
     pendingAutoSends: [],
@@ -178,6 +186,8 @@ async function runOnce(seed: number): Promise<Run> {
     started: [],
   };
   const heavyRate = random() < 0.5 ? 0.6 : 0.2;
+  // Some hosts run a system prompt larger than the trigger, so even a rebuilt view starts past it.
+  startingContext = random() < 0.2 ? COMPACT.trigger + 5_000 : 1_000;
   const host = (["eager", "slow", "during compacts", "during turns"] as const)[Math.floor(random() * 4)];
   const statusAt = (): number[] =>
     run.frames.flatMap((m, i) => ((m as { subtype?: string }).subtype === "status" ? [i] : []));
@@ -333,12 +343,12 @@ async function runOnce(seed: number): Promise<Run> {
       heldBy.set(input, since);
       if ([...heldBy.values()].filter((at) => at === since).length === 2) run.severalHeldInOneCompact += 1;
       if (compactingMidTurn()) heldMidTurn.add(input);
+    } else if (live()?.turn?.stage === "stopped") {
+      held.add(input);
+      run.promptsWhileStopping += 1;
     } else if (behind) held.add(input);
-    else if (live()?.turn != null) {
-      run.steersSent += 1;
-      steerTurn.set(text, live()?.turn?.id ?? 0);
-      if (autoCompactPending()) run.pendingAutoSends.push({ input, sentAt: run.frames.length });
-    }
+    else if (live()?.turn != null && autoCompactPending())
+      run.pendingAutoSends.push({ input, sentAt: run.frames.length });
     send(text);
   };
   const send = (text: string): void =>
@@ -382,8 +392,13 @@ async function runOnce(seed: number): Promise<Run> {
           void cli.input.next().then((next) => {
             if (!next.done) {
               const text = textOf(next.value);
-              if (held.has(inputs.indexOf(text)) && (cli.turn !== null || cli.pulled.length > 0))
+              const input = inputs.indexOf(text);
+              if (held.has(input) && (cli.turn !== null || cli.pulled.length > 0))
                 run.problems.push(`${text}, held for a compact, reached a CLI that was still busy`);
+              else if (input >= 0 && cli.turn !== null) {
+                run.steersSent += 1;
+                steerTurn.set(text, cli.turn.id);
+              }
               cli.pulled.push(next.value);
               cli.emit(lifecycle(cli, next.value.uuid, "queued"));
             }
@@ -456,6 +471,17 @@ function violations(run: Run): string[] {
     if (run.inputs[pending] !== "/compact")
       out.push(`a /compact ran while input ${pending} (${run.inputs[pending]}) had no result`);
   });
+  let readings: number[] | null = null;
+  for (const message of run.frames) {
+    const usage = (message as { message?: { usage?: { input_tokens: number } } }).message?.usage;
+    if (message.type === "assistant" && usage !== undefined) readings?.push(usage.input_tokens);
+    const trigger = boundaryTrigger(message);
+    if (trigger === "auto" && readings !== null && !readings.slice(1).some((r) => r > (readings?.[0] ?? 0)))
+      out.push(
+        `an automatic compact ran with no new context since the previous one (readings ${JSON.stringify(readings)})`,
+      );
+    if (trigger !== null) readings = [];
+  }
   if (run.failed !== null) out.push(`sidecar failed: ${run.failed}`);
   if (!run.ended) out.push(`the session never ended after end (results ${JSON.stringify(results)})`);
   if (JSON.stringify(answered) !== JSON.stringify(run.inputs))
@@ -478,6 +504,7 @@ test("every input is answered in input order, a steer may share its turn's resul
     steersSent: 0,
     steersFolded: 0,
     dueWithQueued: 0,
+    promptsWhileStopping: 0,
     severalHeldInOneCompact: 0,
     promptsAcrossPendingAutoSwap: 0,
     compactsBehindHeld: 0,
@@ -495,6 +522,7 @@ test("every input is answered in input order, a steer may share its turn's resul
       seen.steersSent += run.steersSent;
       seen.steersFolded += run.steersFolded;
       seen.dueWithQueued += run.dueWithQueued;
+      seen.promptsWhileStopping += run.promptsWhileStopping;
       seen.severalHeldInOneCompact += run.severalHeldInOneCompact;
       seen.promptsAcrossPendingAutoSwap += answeredAcrossAutoSwap(run);
       seen.compactsBehindHeld += run.compactsBehindHeld;
