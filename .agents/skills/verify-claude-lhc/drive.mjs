@@ -1570,7 +1570,6 @@ const drives = {
       const failed = [...report.stock, ...report.lhc, ...report.lhcAfterCompact].find((r) => r.subtype !== "success" || r.is_error);
       assert(failed === undefined, `${failed?.label} did not succeed: ${failed?.subtype}`);
       const low = (rows) => rows.filter((r) => r.label.includes("-resume-") && !(r.cache_fraction >= 0.8));
-      assert(low(report.stock).length === 0, `stock resumes below 0.8 (${low(report.stock).map((r) => `${r.label} ${r.cache_fraction}`).join(", ")}): the endpoint is the limiter, so rerun before judging claude-lhc`);
       if (lastLhc !== undefined && resumes >= 2) {
         const [first, second] = [proxy.body("lhc-resume-1"), proxy.body("lhc-resume-2")];
         assert(first && second, "no captured request for an LHC resume");
@@ -1578,6 +1577,7 @@ const drives = {
         report.reminder = { resume1Index: at, resume2Index: environmentReminderAt(second), sameText: at >= 0 && messageText(first.messages[at]) === messageText(second.messages[at]) };
       }
       save();
+      assert(low(report.stock).length === 0, `stock resumes below 0.8 (${low(report.stock).map((r) => `${r.label} ${r.cache_fraction} of ${r.total_input_tokens} input tokens`).join(", ")}): the endpoint is the limiter, or the prompt is under the model's minimum cacheable length, so rerun at the default size before judging claude-lhc`);
       const lhcLow = low([...report.lhc, ...report.lhcAfterCompact]);
       assert(lhcLow.length === 0, `LHC resumes below 0.8: ${lhcLow.map((r) => `${r.label} ${r.cache_fraction?.toFixed(4)}`).join(", ")}`);
       if (report.reminder !== undefined)
