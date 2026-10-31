@@ -121,11 +121,12 @@ and a new SDK method fails the typecheck until it has a row.
   process, and the stream returns no more messages. With a string prompt, or once the prompt
   iterable ends, the client sends an `end` frame, and the sidecar exits once every prompt has
   its `result`.
-- Each input gets one `result`, in input order. Inputs run from one queue: a prompt or a
-  `/compact` starts only once every earlier input has its `result`. A `/compact` sent while a turn
-  runs compacts after that turn's `result`, and its own `result` follows the `compact_boundary`.
-  A prompt sent during a turn waits in the sidecar until the turn's `result`, so it never joins
-  the running turn.
+- Results come in input order. A prompt sent during a running turn, with no compact running or
+  queued, goes straight to the CLI as a steer, as in the SDK. The CLI may fold it into the running
+  turn, which then answers both with one `result`, or run it as its own turn. A `/compact` waits
+  until every earlier input is answered, compacts, and emits its own `result` after the
+  `compact_boundary`. Prompts sent while a compact runs, or behind a queued `/compact`, wait in the
+  sidecar and run in order afterwards.
 
 ## Session ids
 

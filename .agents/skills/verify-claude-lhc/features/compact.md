@@ -93,20 +93,27 @@ summarization quality over real turns is the live standalone proof's job.
 
 ## Gotchas
 
-- Inputs run in order from one queue. A prompt or a `/compact` starts
-  only once every earlier input has its `result`, so each input gets one
-  `result` in input order. A `/compact` sent while a turn runs waits for
-  that turn's `result`, then compacts and emits its own synthetic
-  `result`. It never compacts mid-turn. Only an automatic compact stops
-  a turn at a tool boundary. The seeded drive sends `/compact` idle,
-  where it runs at once.
-- Prompts sent while a turn runs or a compact is running wait in the
-  queue, not in the CLI, and go to whichever generation is current, after
-  a failed rebuild the old one. After a mid-turn compact they wait for
-  the continued turn's `result` (success, error or interrupt), then run
-  as their own turns. stdin close drops them with `closing with <n> held
+- Results come in input order. A prompt sent during a running turn,
+  with nothing queued, compacting or due, goes straight to the CLI as a
+  steer, which the CLI may fold into the running turn (one shared
+  `result`) or run as its own turn. The sidecar follows each prompt
+  through the CLI's `command_lifecycle` frames: a turn's `result`
+  answers the prompts the CLI started, and a prompt the CLI had not
+  started when a compact replaces the generation goes back to the head
+  of the queue (`requeued <n> prompt(s) ...`). A CLI that sends no
+  lifecycle frames gets the plain rule that a `result` answers every
+  sent prompt.
+- A `/compact` waits until every earlier input is answered, then
+  compacts and emits its own synthetic `result`. It never compacts
+  mid-turn. Only an automatic compact stops a turn at a tool boundary.
+  The seeded drive sends `/compact` idle, where it runs at once.
+- Prompts sent while a compact is running, or behind a queued
+  `/compact`, wait in the sidecar's queue and go to whichever generation
+  is current, after a failed rebuild the old one. After a mid-turn
+  compact they wait for the continued turn's `result` (success, error or
+  interrupt), then run as their own turns. stdin close drops them with `closing with <n> held
   prompt(s) never sent`. `packages/claude-lhc/test/input-order.property.test.ts`
-  checks the order on random interleavings. Unit-covered in
+  checks the order on random interleavings, steers included. Unit-covered in
   `packages/claude-lhc/test/rollback-start.test.ts` and live-covered by
   `turn`, not seeded.
 - No `system/init` arrives before the first prompt, so the window read
