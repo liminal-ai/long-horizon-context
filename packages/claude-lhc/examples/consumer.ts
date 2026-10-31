@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
-import { forkSession, type LhcQuery, type LhcQueryOptions, query } from "claude-lhc";
+import { forkSession, type LhcQuery, type LhcQueryOptions, query } from "claude-lhc/client";
 
 const work = resolve(process.argv[2] ?? "");
 if (process.argv[2] === undefined) throw new Error("usage: consumer.ts <work dir>");

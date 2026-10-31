@@ -2,12 +2,16 @@
 
 ## Sub-features
 
-- The package entry (`packages/claude-lhc/src/index.ts`, `exports` in
-  `package.json`) exports `forkSession`, `getSessionMessages` and
-  `getSubagentMessages` with the Agent SDK's signatures. Each also takes
-  `lhc: { home }`, the host's LHC store. They run in the host's process,
-  not in the sidecar, and read `CLAUDE_CONFIG_DIR` from the process env
-  as the SDK does.
+- The package entry (`packages/claude-lhc/src/index.ts`) and the
+  `claude-lhc/client` entry (`src/client/index.ts`) export
+  `forkSession`, `getSessionMessages` and `getSubagentMessages` with the
+  Agent SDK's signatures. Each also takes `lhc: { home }`, the host's LHC
+  store, and an optional `env` and `pathToClaudeCodeExecutable`, which
+  replace the process env and `claude` on `PATH` for the Claude home,
+  summary workers and rollback lookups. From the package entry they run
+  in the host's process. From `claude-lhc/client` each runs in a
+  short-lived sidecar (`lhc.spawn` or the default), which takes the
+  operation's `CLAUDE_CONFIG_DIR`, `HOME` and `USERPROFILE` as its own.
 - `forkSession(sessionId, { lhc, dir?, upToMessageId?, title?, sessionStore? })`
   resolves any of the source thread's session ids, resolves
   `upToMessageId` with the host-rollback resolver (`src/rollbackAnchor.ts`)
@@ -60,6 +64,10 @@ Known limits, with no code change planned:
 
 - `getSessionMessages` returns the current generation only. Turns a compact
   folded into a summary come back as that summary.
+- From the package entry, the SDK's own session reads and `renameSession`
+  still use the host process's `CLAUDE_CONFIG_DIR`, because they take no
+  env. A host whose operation `env` names another Claude home uses
+  `claude-lhc/client`.
 
 ## How to get to it (user POV)
 
@@ -74,12 +82,14 @@ compact, even though the host stored only the first session id.
 ```sh
 .agents/skills/verify-claude-lhc/drive.mjs fork
 .agents/skills/verify-claude-lhc/drive.mjs history
+.agents/skills/verify-claude-lhc/drive.mjs client-ops
 CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs fork-live
 CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs subagent-live
 ```
 
-Every drive calls the library from a child node process (`callInScratchEnv`), with
+Every drive calls the library from a child node process, with
 `CLAUDE_CONFIG_DIR` and, for the live drives, `HOME` inside scratch.
+`client-ops` is the exception for `CLAUDE_CONFIG_DIR`: its host has none.
 
 `fork` seeds a KEEP turn and a REMOVED turn, stores a 700000/140000 policy
 through a resume, forks at the KEEP assistant message, then resumes the fork
@@ -103,6 +113,21 @@ and `getSubagentMessages(gen1)`
 finds a subagent transcript written under the compacted generation, with
 `parent_tool_use_id` from its `.meta.json`. The transcript is a fixture of
 the CLI's file; `subagent-live` drives a real one.
+
+`client-ops` seeds a KEEP turn and a REMOVED turn, compacts, and writes
+a subagent fixture under the compacted generation. Its host process has
+no `CLAUDE_CONFIG_DIR` and a scratch `HOME`, and imports
+`dist/client/index.js`. It passes the scratch Claude home only in each
+operation's `env`. It forks gen1 at KEEP, reads the fork and gen1 through
+`getSessionMessages`, reads the subagent through `getSubagentMessages`,
+and forks an unknown id. User-only half: each call answers, and the
+unknown id rejects with `no LHC thread holds the Claude session <id>`.
+Outcome half: `projected-fork.jsonl` sits under the operation's Claude
+home, keeps KEEP, drops REMOVED and ends at `headMessageId`, and the
+host's own `~/.claude/projects` does not exist. Last it runs the same fork
+in-process from `dist/index.js`. The PASS line gives both fork times, so
+a reader sees the cost of the sidecar start. Evidence:
+`client-ops.json`, `client-ops.stderr.log`.
 
 `fork-live` takes two real turns that set KEEP-ALPHA and then
 REMOVED-BRAVO, forks at the first turn's last assistant message, and asks

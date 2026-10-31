@@ -256,6 +256,66 @@ async function callInScratchEnv(scratch, fn, args, { live = false } = {}) {
   return { code, stderr, value: code === 0 ? JSON.parse(stdout) : undefined, error: /Error: (.+)/.exec(stderr)?.[1] };
 }
 
+async function writeSubagentFixture(scratch, sessionId, toolUseId) {
+  const agentId = `a${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+  const native = await import(join(DIST, "nativeSessionFile.js"));
+  const subagents = join(native.nativeProjectDir({ cwd: scratch.cwd, env: { CLAUDE_CONFIG_DIR: scratch.claudeHome } }), sessionId, "subagents");
+  mkdirSync(subagents, { recursive: true });
+  const first = randomUUID();
+  const line = (uuid, parentUuid, type, text) => JSON.stringify({ parentUuid, isSidechain: true, agentId, type, uuid, sessionId, cwd: scratch.cwd, message: { role: type, content: [{ type: "text", text }] } });
+  writeFileSync(join(subagents, `agent-${agentId}.jsonl`), `${line(first, null, "user", "AGENT-TASK")}\n${line(randomUUID(), first, "assistant", "AGENT-REPLY")}\n`);
+  writeFileSync(join(subagents, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId }));
+  return agentId;
+}
+
+const CLIENT_OPS_SCRIPT = `
+const [clientEntry, rootEntry, gen1, compacted, agentId, anchor, home, cwd, claudeHome] = process.argv.slice(1);
+const client = await import(clientEntry);
+const env = { ...process.env, CLAUDE_CONFIG_DIR: claudeHome };
+const store = { lhc: { home }, dir: cwd, env };
+const timed = async (call) => { const t0 = performance.now(); const value = await call(); return { value, ms: Math.round(performance.now() - t0) }; };
+const fork = await timed(() => client.forkSession(gen1, { ...store, upToMessageId: anchor }));
+const forkMessages = await client.getSessionMessages(fork.value.sessionId, store);
+const viaFirst = await client.getSessionMessages(gen1, store);
+const agent = await client.getSubagentMessages(gen1, agentId, store);
+const unknown = crypto.randomUUID();
+const refused = await client.forkSession(unknown, store).then(() => null, (e) => e.message);
+process.env.CLAUDE_CONFIG_DIR = claudeHome;
+const root = await import(rootEntry);
+const inProcess = await timed(() => root.forkSession(gen1, { ...store, upToMessageId: anchor }));
+process.stdout.write(JSON.stringify({ entry: import.meta.resolve(clientEntry), fork, forkMessages, viaFirst, agent, unknown, refused, inProcessForkMs: inProcess.ms }));
+`;
+
+function hostEnvThatExposesLeaks(hostHome) {
+  const env = { ...process.env, HOME: hostHome, CLAUDE_LHC_NO_INFERENCE: "1" };
+  delete env.CLAUDE_CONFIG_DIR;
+  return env;
+}
+
+async function runClientOps(scratch, hostHome, args) {
+  const env = hostEnvThatExposesLeaks(hostHome);
+  const entries = [join(DIST, "client/index.js"), join(DIST, "index.js")].map((p) => pathToFileURL(p).href);
+  const child = spawn(process.execPath, ["--input-type=module", "-e", CLIENT_OPS_SCRIPT, ...entries, ...args], { cwd: scratch.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  scratch.groups.push(child.pid);
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (c) => { stdout += c; });
+  child.stderr.on("data", (c) => { stderr += c; });
+  const code = await new Promise((r) => child.on("exit", r));
+  return { code, stderr, value: code === 0 ? JSON.parse(stdout) : undefined };
+}
+
+const FORBIDDEN_CLIENT_MODULE = /\/node_modules\/(?:lhc|effect|js-tiktoken|@anthropic-ai\/claude-agent-sdk)\//;
+
+async function bundleInstalledClient(project, evidenceDir) {
+  const { build } = await import(createRequire(join(REPO, "packages/claude-lhc/package.json")).resolve("esbuild"));
+  writeFileSync(join(project, "client-entry.mjs"), `export * from "claude-lhc/client";\n`);
+  const result = await build({ entryPoints: ["client-entry.mjs"], absWorkingDir: project, bundle: true, platform: "node", format: "esm", write: false, metafile: true, logLevel: "silent" });
+  mkdirSync(evidenceDir, { recursive: true });
+  writeFileSync(join(evidenceDir, "installed-client-meta.json"), `${JSON.stringify(result.metafile, null, 2)}\n`);
+  return Object.keys(result.metafile.inputs).map((input) => resolve(project, input)).filter((path) => FORBIDDEN_CLIENT_MODULE.test(path));
+}
+
 function threadRows(scratch) {
   const registry = new DatabaseSync(join(scratch.lhcHome, "registry.sqlite"), { readOnly: true });
   const threads = registry.prepare("SELECT thread_id, file_path FROM threads ORDER BY created_at").all();
@@ -952,6 +1012,34 @@ const drives = {
     } finally { scratch.cleanup(); }
   },
 
+  async "client-ops"(evidenceDir) {
+    const scratch = new Scratch("client-ops");
+    try {
+      const { gen1, anchors } = await seedCaptured(scratch, PA_TURNS);
+      const { compacted } = await compactOnce(scratch, "compact", { resume: gen1 }, evidenceDir);
+      const agentId = await writeSubagentFixture(scratch, compacted, "toolu_after_compact");
+      const hostHome = join(scratch.dir, "host-home");
+      mkdirSync(hostHome, { recursive: true });
+      const ops = await runClientOps(scratch, hostHome, [gen1, compacted, agentId, anchors[0], scratch.lhcHome, scratch.cwd, scratch.claudeHome]);
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "client-ops.json"), `${JSON.stringify({ gen1, compacted, agentId, code: ops.code, ...ops.value }, null, 2)}\n`);
+      writeFileSync(join(evidenceDir, "client-ops.stderr.log"), ops.stderr);
+      assert(ops.code === 0, `the client host exited ${ops.code}: ${ops.stderr.trim().split("\n").at(-1)}`);
+      const { entry, fork, forkMessages, viaFirst, agent, unknown, refused, inProcessForkMs } = ops.value;
+      assert(entry === pathToFileURL(join(DIST, "client/index.js")).href, `the host imported ${entry}`);
+      const forkFile = scratch.projected(fork.value.sessionId) ?? "";
+      writeFileSync(join(evidenceDir, "projected-fork.jsonl"), forkFile);
+      assert(forkFile.includes("KEEP-TURN answer one") && !forkFile.includes("REMOVED-TURN"), "the fork in the operation's Claude home does not end at KEEP");
+      assert(fork.value.headMessageId === JSON.parse(forkFile.trim().split("\n").filter((l) => JSON.parse(l).uuid).at(-1)).uuid, "headMessageId is not the fork file's last message");
+      assert(!existsSync(join(hostHome, ".claude", "projects")), "an operation wrote under the host's own Claude home");
+      assert(JSON.stringify(forkMessages).includes("KEEP-TURN answer one") && !JSON.stringify(forkMessages).includes("REMOVED-TURN"), "getSessionMessages(fork) does not read the fork");
+      assert(viaFirst.length > 0 && viaFirst.every((m) => m.session_id === compacted), "getSessionMessages(gen1) did not read the compacted generation");
+      assert(agent.length === 2 && agent[0].parent_tool_use_id === "toolu_after_compact", `getSubagentMessages(gen1): ${JSON.stringify(agent)}`);
+      assert(refused === `no LHC thread holds the Claude session ${unknown}`, `forkSession of an unknown id answered ${refused}`);
+      return `forkSession from claude-lhc/client in ${fork.ms}ms (in-process ${inProcessForkMs}ms) wrote its projection under the operation's CLAUDE_CONFIG_DIR only; getSessionMessages and getSubagentMessages read across generations; an unknown id rejects by name`;
+    } finally { scratch.cleanup(); }
+  },
+
   async history(evidenceDir) {
     const scratch = new Scratch("history");
     try {
@@ -960,14 +1048,7 @@ const drives = {
       const store = { lhc: { home: scratch.lhcHome }, dir: scratch.cwd };
       const viaFirst = await callInScratchEnv(scratch, "getSessionMessages", [gen1, store]);
       const viaCurrent = await callInScratchEnv(scratch, "getSessionMessages", [compacted, store]);
-      const agentId = `a${randomUUID().replace(/-/g, "").slice(0, 16)}`;
-      const native = await import(join(DIST, "nativeSessionFile.js"));
-      const subagents = join(native.nativeProjectDir({ cwd: scratch.cwd, env: { CLAUDE_CONFIG_DIR: scratch.claudeHome } }), compacted, "subagents");
-      mkdirSync(subagents, { recursive: true });
-      const first = randomUUID();
-      const line = (uuid, parentUuid, type, text) => JSON.stringify({ parentUuid, isSidechain: true, agentId, type, uuid, sessionId: compacted, cwd: scratch.cwd, message: { role: type, content: [{ type: "text", text }] } });
-      writeFileSync(join(subagents, `agent-${agentId}.jsonl`), `${line(first, null, "user", "AGENT-TASK")}\n${line(randomUUID(), first, "assistant", "AGENT-REPLY")}\n`);
-      writeFileSync(join(subagents, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: "toolu_after_compact" }));
+      const agentId = await writeSubagentFixture(scratch, compacted, "toolu_after_compact");
       const agent = await callInScratchEnv(scratch, "getSubagentMessages", [gen1, agentId, store]);
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "history.json"), `${JSON.stringify({ gen1, compacted, viaFirst: viaFirst.value, agent: agent.value }, null, 2)}\n`);
@@ -1152,7 +1233,11 @@ const drives = {
       assert(existsSync(join(project, "node_modules/claude-lhc/node_modules/lhc/dist/index.js")), "the tarball does not bundle the lhc core");
       assert(out.created && typeof out.window === "number", `the packed query() did not start a thread and answer getContextUsage: ${JSON.stringify(out)}`);
       assert(scratch.threads().length === 1, `expected 1 thread file, got ${scratch.threads().length}`);
-      return `${basename(tarball)} installed in a scratch project; query() from its dist/index.js ran the default sidecar: ${out.created}, window ${out.window}`;
+      const installed = JSON.parse(readFileSync(join(project, "node_modules/claude-lhc/package.json"), "utf8"));
+      assert(installed.sideEffects === false && installed.exports?.["./client"], `the installed manifest lacks sideEffects: false or ./client: ${JSON.stringify({ sideEffects: installed.sideEffects, exports: installed.exports })}`);
+      const forbidden = await bundleInstalledClient(project, evidenceDir);
+      assert(forbidden.length === 0, `the installed claude-lhc/client bundles ${forbidden.join(", ")}`);
+      return `${basename(tarball)} installed in a scratch project; query() from its dist/index.js ran the default sidecar: ${out.created}, window ${out.window}; the installed claude-lhc/client bundles with no lhc, effect, js-tiktoken or Agent SDK module`;
     } finally {
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "packed-install.log"), `${log.join("\n")}\n`);
@@ -1303,7 +1388,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "compact-above-base", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "consumer"]
+      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "compact-above-base", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client-ops", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "consumer"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;

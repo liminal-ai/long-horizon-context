@@ -19,7 +19,9 @@ core event order), `src/nativeSessionFile.ts` (projected
 native session files), `src/index.ts` (the package entry: `forkSession`
 in `src/fork.ts`, `getSessionMessages` and `getSubagentMessages` in
 `src/history.ts`, which run in the host's process), `src/client.ts` (the SDK-shaped `query()` that
-spawns the sidecar and speaks the wire for a host). The repo's own live proof is
+spawns the sidecar and speaks the wire for a host), `src/client/` (the
+`claude-lhc/client` entry: `query()` plus the same three store operations,
+each run in a short-lived sidecar whose first frame is `op`). The repo's own live proof is
 `packages/claude-lhc/scripts/standalone.ts`; this skill adds deterministic
 drives that need no model.
 
@@ -29,7 +31,10 @@ Interview facts, from the code:
   or `bin/claude-lhc.js`). No port, no server.
 - Run: build first (`dist/` is not in git).
 - Drive: spawn the sidecar, write frames, read frames. `canUseTool` /
-  `onUserDialog` arrive as sidecar `req` frames and must be answered.
+  `onUserDialog` arrive as sidecar `req` frames and must be answered. A
+  first frame `{"type":"op","id":1,"method":"forkSession","args":[...]}`
+  runs one store operation instead: one `res` frame, then exit 0, or exit
+  1 when the operation failed.
 - Observe: stdout frames, stderr log lines (`[claude-lhc] ...`), the LHC
   store (`registry.sqlite` + `threads/*.sqlite`), and projected native
   files under `<claude home>/projects/<key>/<session id>.jsonl`.
@@ -114,8 +119,9 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `set-compact-policy` | start on `claude-sonnet-4-6`, `setCompactPolicy` with a bad pair, then 700000/140000 | the bad pair fails naming `setCompactPolicy params.policy`; stderr `compact policy set on thread` and the 160000/80000 cap | the thread file's `thread_metadata` row holds 700000/140000, saved as `thread_metadata.txt` |
 | `fork` | captured KEEP + REMOVED turns, resume with a 700000/140000 policy, `forkSession(gen1, {upToMessageId: <KEEP uuid>})` from a host process, `start{resume: <fork>}`, `start{resume: gen1}` | `headMessageId` is the fork file's last line; the fork's resume logs `compact policy from thread: trigger 700000 target 140000` | fork file and fork resume keep KEEP, drop REMOVED; source resume keeps REMOVED; `thread-rows.txt` has 2 threads, both 700000/140000; a second fork at the restarted source's projected KEEP id (from `getSessionMessages`) ends at KEEP; `start{resume: <fork>, resumeSessionAt: <headMessageId>}` resolves; a fork right after a `/compact` succeeds |
 | `history` | captured turns, `/compact`, `getSessionMessages(gen1)` and `getSubagentMessages(gen1, <agent>)` from a host process | both calls exit 0 | `getSessionMessages(gen1)` reads the compacted generation (gen1 has no file) and equals `getSessionMessages(<compacted>)`; a subagent fixture under the compacted generation comes back with its `parent_tool_use_id` |
+| `client-ops` | captured KEEP + REMOVED turns, `/compact`, a subagent fixture under the compacted generation, then from a host process with no `CLAUDE_CONFIG_DIR` and a scratch `HOME`: `forkSession(gen1, {upToMessageId: <KEEP uuid>, env})`, `getSessionMessages`, `getSubagentMessages` and a fork of an unknown id from `dist/client/index.js`, then the same fork from `dist/index.js` in-process | each call answers; the unknown id rejects `no LHC thread holds the Claude session <id>` | the fork file sits under the `CLAUDE_CONFIG_DIR` named only in the operation's `env`, ends at KEEP and at `headMessageId`; nothing under the host's own `~/.claude`; `getSessionMessages(gen1)` reads the compacted generation; the subagent comes back with its `parent_tool_use_id`. The PASS line gives the client's and the in-process fork time |
 | `client` | `query()` from `dist/index.js` with the default sidecar, an input that never yields, `getContextUsage`, `rewindFiles`, `setCompactPolicy` 700000/140000, `close()` | the created-thread line reaches the `stderr` callback; `getContextUsage` answers a window; `rewindFiles` rejects `rewindFiles is refused`; after `close()` the stream ends | the thread row holds 700000/140000; no process with the scratch dir in its environment is left (sidecar and `claude` both exited) |
-| `packed-install` | `assemble:npm`, `npm pack`, `npm install <tarball>` in a scratch project, `query()` from the installed `claude-lhc` with the default sidecar, `getContextUsage`, `close()` (not in `all`: needs the npm registry) | `claude-lhc` resolves to the installed `dist/index.js`, the created-thread line reaches `stderr`, `getContextUsage` answers a window | the tarball bundles `node_modules/lhc`; 1 thread file; no scratch process left; `packed-install.log` holds every command and its output |
+| `packed-install` | `assemble:npm`, `npm pack`, `npm install <tarball>` in a scratch project, `query()` from the installed `claude-lhc` with the default sidecar, `getContextUsage`, `close()`, then an esbuild bundle of the installed `claude-lhc/client` with a metafile (not in `all`: needs the npm registry) | `claude-lhc` resolves to the installed `dist/index.js`, the created-thread line reaches `stderr`, `getContextUsage` answers a window | the tarball bundles `node_modules/lhc`; the installed manifest has `"sideEffects": false` and `./client`; `installed-client-meta.json` names no module from `lhc`, `effect`, `js-tiktoken` or the Agent SDK; 1 thread file; no scratch process left; `packed-install.log` holds every command and its output |
 | `turn` | real tool turn + recall via `scripts/standalone.ts` (live only, `CLAUDE_LHC_LIVE=1`) | standalone `RESULT: PASS` | native files only under the throwaway `CLAUDE_CONFIG_DIR`, none under real `~/.claude/projects`. |
 | `rollback-live` | two real turns (KEEP-ALPHA, REMOVED-BRAVO), restart with `resumeSessionAt` at the first turn's last message, ask for the second word (live only) | the turn succeeds and the answer lacks REMOVED-BRAVO | `transcript.jsonl`, `answer.txt` |
 | `rollback-live-compact` | as `rollback-live`, with `/compact` after the rollback and before the question (live only) | as `rollback-live`, plus a `compact_boundary` after `/compact` | `transcript.jsonl`, `answer.txt` |
@@ -123,7 +129,7 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `fork-live` | two real turns (KEEP-ALPHA, REMOVED-BRAVO), `forkSession` at the first turn's last message, ask the fork and then the source for the second word (live only) | both turns succeed; the fork's answer lacks REMOVED-BRAVO and the source's has it | `fork-result.json`, `answers.json`, `transcript.jsonl` |
 | `subagent-live` | one real turn, `/compact`, a turn that launches a subagent, `getSubagentMessages(gen1, <agent>)` (live only) | the subagent turn succeeds | the agent transcript sits under the compacted generation; `subagent-messages.json` holds its messages, launched by a tool call from the stream |
 | `prompt-order-live` | three live sidecars: `/compact` then ONE and TWO sent behind it; a turn on a 45000/500 policy that reads an 88000-character `filler.txt` and then runs Bash, with PENDING sent after the Bash call and QUEUED sent once the compact falls due; a turn that does the same and then runs a second Bash, with HELD and `/compact` sent during its mid-turn compact (live only) | every input answered and the sidecar exits 0 | TWO's first `command_lifecycle` comes after ONE's `result`; PENDING starts once and its `result` comes after an automatic boundary, and QUEUED gets its own later `result`; the manual boundary comes after HELD's `result`. Frames and stderr per case |
-| `consumer` | `examples/consumer.ts` through `query()`: two secret-word turns, `/compact`, close, `forkSession` at the first turn and resume the fork, restart the source by its first session id, rollback to the first turn (live only) | `CONSUMER: PASS`, one `ok` line per step | the fork and rollback answers have only the first word and the source restart after the fork has both; `consumer.stdout.log`, `consumer.stderr.log`; no `~/.claude/projects` entry for the scratch dir |
+| `consumer` | `examples/consumer.ts` through `query()` and `forkSession` from `claude-lhc/client`: two secret-word turns, `/compact`, close, `forkSession` at the first turn and resume the fork, restart the source by its first session id, rollback to the first turn (live only) | `CONSUMER: PASS`, one `ok` line per step | the fork and rollback answers have only the first word and the source restart after the fork has both; `consumer.stdout.log`, `consumer.stderr.log`; no `~/.claude/projects` entry for the scratch dir |
 
 Feature files (user POV, harness steps, gotchas):
 [start-and-capture.md](features/start-and-capture.md),
@@ -281,7 +287,7 @@ All executable, all runnable from a clean shell (paths resolve from the
 script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
-- `drive.mjs` — the seeded drives. `drive.mjs <start|start-no-home|compact|compact-policy|restart|resume-superseded-alias|resume-unknown|resume-empty|thread-start|rollback|rollback-unknown-anchor|rollback-restart|rollback-synthetic-anchor|rollback-compact|rollback-projected-anchor|window-shrink|compact-above-base|controls|controls-refused|set-compact-policy|fork|history|client|packed-install|turn|rollback-live|rollback-live-compact|controls-live|fork-live|subagent-live|prompt-order-live|consumer|all>`;
+- `drive.mjs` — the seeded drives. `drive.mjs <start|start-no-home|compact|compact-policy|restart|resume-superseded-alias|resume-unknown|resume-empty|thread-start|rollback|rollback-unknown-anchor|rollback-restart|rollback-synthetic-anchor|rollback-compact|rollback-projected-anchor|window-shrink|compact-above-base|controls|controls-refused|set-compact-policy|fork|history|client-ops|client|packed-install|turn|rollback-live|rollback-live-compact|controls-live|fork-live|subagent-live|prompt-order-live|consumer|all>`;
   env `VERIFY_RUN_DIR`, `VERIFY_SCRATCH_ROOT`, `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn runs the isolated live
   standalone, and the `rollback-live`, `controls-live`, `fork-live`,
@@ -296,7 +302,7 @@ Package gates beside the drives: `pnpm --filter claude-lhc test` and
 
 ## Re-verification
 
-The seeded drives run `packages/claude-lhc/dist/sidecar.js`, which loads `packages/lhc/dist`, and the fork and history drives also import `packages/claude-lhc/dist/index.js`. The live `turn` also runs `scripts/standalone.ts` and a real `claude`.
+The seeded drives run `packages/claude-lhc/dist/sidecar.js`, which loads `packages/lhc/dist`, the fork and history drives also import `packages/claude-lhc/dist/index.js`, and `client-ops` imports `dist/client/index.js` and `dist/index.js`. The live `turn` also runs `scripts/standalone.ts` and a real `claude`.
 
 - **Reruns every drive, the live drives included:** a change in `packages/claude-lhc/` outside `test/`, `scripts/` and Markdown, in `packages/lhc/` outside `test/` and Markdown, to the lockfile entries either resolves, or to `drive.mjs`. A change to the root `package.json` or `pnpm-workspace.yaml`, or to the Node or pnpm version `.github/workflows/pr-checks.yml` pins, counts too. A rebase onto a trunk that changed any of these counts, and so does a merge-result check after such a trunk change, a core change in `packages/lhc/` included.
 - **The live drives:** `turn`, `rollback-live`, `rollback-live-compact`, `controls-live`, `fork-live`, `subagent-live`, `prompt-order-live` and `consumer`. `drive.mjs all` runs them only with `CLAUDE_LHC_LIVE=1` and env auth, and prints SKIP for each otherwise. A rerun this section requires is `CLAUDE_LHC_LIVE=1 drive.mjs all`. A run whose live drives print SKIP covers the seeded drives only, and a verdict records the live drives as skipped, not passed. A live FAIL counts as a regression only when base passes the same drive more often in the same number of runs, so record the pass counts for both.

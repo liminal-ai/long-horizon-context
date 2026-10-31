@@ -7,13 +7,13 @@ import {
 } from "@anthropic-ai/claude-agent-sdk";
 import { currentSession, resolveSession } from "./lhcHome.js";
 import { nativeAgentSessions } from "./nativeSessionFile.js";
-import { type LhcStore, parseSidecarOptions } from "./protocol.js";
+import { type LhcStore, type OperationEnv, parseSidecarOptions } from "./protocol.js";
 
 export async function getSessionMessages(
   sessionId: string,
-  options: GetSessionMessagesOptions & LhcStore,
+  options: GetSessionMessagesOptions & LhcStore & OperationEnv,
 ): Promise<SessionMessage[]> {
-  const { lhc, ...read } = options;
+  const { lhc, env: _env, pathToClaudeCodeExecutable: _bin, ...read } = options;
   const current = await currentSession(sessionId, parseSidecarOptions(lhc).home);
   return readSessionMessages(current ?? sessionId, read);
 }
@@ -21,13 +21,13 @@ export async function getSessionMessages(
 export async function getSubagentMessages(
   sessionId: string,
   agentId: string,
-  options: GetSubagentMessagesOptions & LhcStore,
+  options: GetSubagentMessagesOptions & LhcStore & OperationEnv,
 ): Promise<SessionMessage[]> {
-  const { lhc, ...read } = options;
+  const { lhc, env, pathToClaudeCodeExecutable: _bin, ...read } = options;
   const { home } = parseSidecarOptions(lhc);
   const threadId = await resolveSession(sessionId, home);
   if (threadId === null) return readSubagentMessages(sessionId, agentId, read);
-  for (const holder of await nativeAgentSessions(agentId)) {
+  for (const holder of await nativeAgentSessions(agentId, env)) {
     if ((await resolveSession(holder, home)) === threadId) return readSubagentMessages(holder, agentId, read);
   }
   return [];

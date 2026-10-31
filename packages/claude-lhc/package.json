@@ -10,8 +10,14 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js"
+    },
+    "./package.json": "./package.json"
   },
+  "sideEffects": false,
   "bin": {
     "claude-lhc": "./bin/claude-lhc.js"
   },
@@ -34,6 +40,7 @@
   },
   "devDependencies": {
     "@types/node": "^24.12.4",
+    "esbuild": "^0.28.0",
     "tsx": "^4.22.4",
     "typescript": "^5.9.3",
     "vitest": "^4.1.8"

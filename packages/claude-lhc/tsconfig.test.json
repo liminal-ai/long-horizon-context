@@ -11,7 +11,7 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
-    "paths": { "claude-lhc": ["./src/index.ts"] }
+    "paths": { "claude-lhc": ["./src/index.ts"], "claude-lhc/client": ["./src/client/index.ts"] }
   },
   "include": [
     "src/**/*.ts",
