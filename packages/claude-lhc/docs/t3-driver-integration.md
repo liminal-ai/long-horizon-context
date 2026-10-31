@@ -71,8 +71,20 @@ and its subagent lookup at `getSubagentMessages`. Each takes the SDK's arguments
 `lhc: { home }`. `forkSession` reads `CLAUDE_CONFIG_DIR` from `process.env`, so a custom Claude
 home still runs in T3's history worker.
 
+An import change alone is not enough. Pass `lhc` through each of these call paths:
+
+- The history worker. `decodeHistoryOptions` in `apps/server/src/claudeHistoryWorker.ts:5` decodes
+  the options with a `Schema.Struct` that keeps only `dir`, `includeSystemMessages` and
+  `upToMessageId`. It strips unknown keys, so `lhc` never reaches the worker's `forkSession`. Add
+  `lhc` to that struct.
+- The in-process `getSessionMessages` call at `ClaudeAdapterV2.ts:1334`, which reads the fork's
+  head message. Add `lhc` to its options.
+- The in-process `getSubagentMessages` call at `ClaudeAdapterV2.ts:1366`, the subagent lookup.
+  Add `lhc` to its options.
+
 Evidence. PR #45 adds the three functions. `getSessionMessages` and `getSubagentMessages` resolve
-any session id the thread has had, so T3's stored first id keeps working after a compact.
+any session id the thread has had, so T3's stored first id keeps working after a compact. The
+call paths above come from C6's audit of T3's call sites.
 
 ## Sidecar staging
 
