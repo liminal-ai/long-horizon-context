@@ -472,6 +472,18 @@ describe("host-owned spawn", () => {
     expect(hook.calls[0]?.args).toEqual(fakeSidecar().args);
   });
 
+  test("a host child whose stderr is not a pipe still answers queries and operations", async () => {
+    const hook = recordingSpawn(({ command, args, env }) =>
+      spawn(command, args, { env, stdio: ["pipe", "pipe", "ignore"] }),
+    );
+    const { q } = start("just once", { lhc: { home: join(dir, "lhc"), spawnProcess: hook.spawnProcess } });
+    expect(replyText(await untilResult(q))).toBe("echo: just once");
+    const inspected = await inspectSessions([randomUUID()], {
+      lhc: { home: join(dir, "lhc"), spawn: fakeSidecar(), spawnProcess: hook.spawnProcess },
+    });
+    expect(inspected).toEqual([{ kind: "unknown" }]);
+  });
+
   test("an exit of the host's child ends the iterator with the exit error", async () => {
     const hook = recordingSpawn();
     const { q } = start(new Input(), { lhc: { home: join(dir, "lhc"), spawnProcess: hook.spawnProcess } });

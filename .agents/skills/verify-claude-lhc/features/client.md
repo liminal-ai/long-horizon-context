@@ -9,6 +9,16 @@
 - `options.lhc` is the sidecar's `lhc` block. `options.lhc.spawn`
   (`{ command, args?, env? }`) replaces the default
   `node <package>/dist/sidecar.js`.
+- `options.lhc.spawnProcess` (`({ command, args, env, signal }) =>
+  ChildProcess`) replaces Node's `spawn`, so the host owns the sidecar
+  process, for example to put it in its own scope or process group. It
+  gets the command, args and env that `lhc.spawn` names, or the default,
+  once per `query()` and once per store operation, and never crosses the
+  wire. Its `signal` aborts only when `close()` gives up waiting for the
+  sidecar to exit on stdin EOF (5 seconds), together with the client's
+  own SIGTERM, as the Agent SDK's `spawnClaudeCodeProcess` signal does. An
+  operation's signal never aborts. The client reads the returned child's
+  stdio, `exit`, `close` and `error` exactly as it reads its own.
 - Every row of `CONTROLS` except `close` and `streamInput` is a method
   that sends a `req` frame and resolves with the `res` value. A failed
   `res` rejects with its error.
@@ -34,7 +44,8 @@
   the Agent SDK. `package.json` sets `"sideEffects": false`, and
   `assemble:npm` carries it into the tarball.
 - Each client store operation spawns the sidecar (`lhc.spawn` or the
-  default), sends one `op` frame and closes stdin. The sidecar answers
+  default, through `lhc.spawnProcess` when set), sends one `op` frame and
+  closes stdin. The sidecar answers
   one `res` frame and exits. A failed operation rejects with the
   sidecar's error. A sidecar that exits with no `res` rejects with its
   exit code and the last 20 lines of its stderr. See
@@ -61,13 +72,17 @@ CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs consumer
 `client` imports the workspace's `packages/claude-lhc/dist/index.js`, so
 it proves the default sidecar path of a built checkout, where `lhc`
 resolves through the workspace link. It does not prove a packed install.
-It waits for the
+It spawns the sidecar through a recording `lhc.spawnProcess` that
+calls Node's `spawn` with what it receives. It waits for the
 created-thread line on the `stderr` callback, calls `getContextUsage`,
 `rewindFiles` and `setCompactPolicy`, then `close()`. It passes when the
-stream ends, the thread row holds 700000/140000, and no process carrying
-the scratch dir in its environment is left. Its detail line reports the
-time from `query()` to the created-thread line, the client's start
-cost.
+hook ran once with the default command and the host's own environment
+and an unaborted signal, the stream ends, the thread row holds
+700000/140000, and no process carrying the scratch dir in its
+environment is left. Its detail line reports the time from `query()` to
+the created-thread line, the client's start cost, and whether the spawn
+signal aborted. The store-operation drives (`history`, `client-ops`)
+keep covering the client's own Node spawn.
 
 `packed-install` is the publish check. It runs `pnpm --filter claude-lhc
 assemble:npm` (`scripts/assemble-npm-package.mjs`) into a scratch dir
@@ -95,6 +110,9 @@ describes it.
   own module (`import.meta.url`). A host that bundles `claude-lhc/client`
   moves that module, so it passes `lhc.spawn` to every `query()` and
   store operation.
+- A `spawnProcess` child whose stderr is not a pipe still works, but the
+  `stderr` callback and an operation's exit error then carry none of the
+  sidecar's log lines.
 - `test/client-entry.test.ts` bundles `src/client/index.ts` with a
   metafile and fails on a forbidden module. It also bundles the root
   entry and expects the engine there, which proves the check can fail.

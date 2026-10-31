@@ -1246,12 +1246,21 @@ const drives = {
     try {
       const sid = randomUUID();
       const options = baseOptions(scratch, { sessionId: sid, model: "claude-sonnet-4-6" });
+      const spawned = [];
+      const spawnProcess = (o) => {
+        spawned.push(o);
+        return spawn(o.command, o.args, { env: o.env, stdio: ["pipe", "pipe", "pipe"] });
+      };
       const t0 = Date.now();
       process.env.CLAUDE_LHC_NO_INFERENCE = "1";
       process.env.VERIFY_CLAUDE_LHC_SCRATCH = scratch.dir;
-      q = query({ prompt: silent, options: { ...options, stderr: (d) => stderr.push(d) } });
+      q = query({ prompt: silent, options: { ...options, lhc: { ...options.lhc, spawnProcess }, stderr: (d) => stderr.push(d) } });
       await until(() => stderr.join("").includes(`as generation ${sid}`), "created-thread log line from the default sidecar");
       const readyMs = Date.now() - t0;
+      assert(spawned.length === 1, `lhc.spawnProcess ran ${spawned.length} times`);
+      const [hooked] = spawned;
+      assert(hooked.command === process.execPath && hooked.args.length === 1 && hooked.args[0] === join(DIST, "sidecar.js"), `lhc.spawnProcess got ${hooked.command} ${hooked.args.join(" ")}, not the default sidecar`);
+      assert(hooked.env === process.env && !hooked.signal.aborted, "lhc.spawnProcess got another env or an aborted signal");
       const usage = await q.getContextUsage();
       assert(typeof usage?.rawMaxTokens === "number", `getContextUsage answered ${JSON.stringify(usage)}`);
       const refused = await q.rewindFiles("x").then(() => "resolved", (e) => e.message);
@@ -1264,12 +1273,13 @@ const drives = {
       const end = await Promise.race([q.next(), new Promise((r) => setTimeout(() => r("timeout"), 15_000))]);
       assert(end !== "timeout" && end.done, `the stream did not end after close(): ${JSON.stringify(end)}`);
       await until(() => scratchProcesses(scratch).length === 0, "the sidecar and its claude to exit after close()", 15_000);
+      const forced = hooked.signal.aborted ? "aborted after the stdin grace" : "never aborted";
       const db = new DatabaseSync(join(scratch.lhcHome, "threads", scratch.threads()[0]), { readOnly: true });
       const row = db.prepare("SELECT compact_trigger_tokens, compact_target_tokens FROM thread_metadata").get();
       db.close();
       assert(scratch.threads().length === 1, `expected 1 thread file, got ${scratch.threads().length}`);
       assert(row.compact_trigger_tokens === 700000 && row.compact_target_tokens === 140000, `thread row holds ${JSON.stringify(row)}`);
-      return `query() to created-thread ${readyMs}ms; getContextUsage window ${usage.rawMaxTokens}; rewindFiles refused; setCompactPolicy stored 700000/140000; close() ended the stream and every scratch process`;
+      return `query() to created-thread ${readyMs}ms through lhc.spawnProcess (1 call, default sidecar, spawn signal ${forced}); getContextUsage window ${usage.rawMaxTokens}; rewindFiles refused; setCompactPolicy stored 700000/140000; close() ended the stream and every scratch process`;
     } finally {
       q?.close();
       mkdirSync(evidenceDir, { recursive: true });
