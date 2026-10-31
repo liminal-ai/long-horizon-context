@@ -133,7 +133,15 @@ describe("query through the sidecar", () => {
     expect(replyText(messages)).toBe("echo: oneecho: slow:twoecho: three");
   });
 
-  test("an input that ends after a /compact deferred into an open turn still ends", async () => {
+  test("a large final result reaches the client before the sidecar exits", async () => {
+    const { q } = start("big:1800000");
+    const messages: SDKMessage[] = [];
+    for await (const message of q) messages.push(message);
+    expect(replyText(messages)).toHaveLength(1_800_000);
+    expect(messages.at(-1)).toMatchObject({ type: "result", subtype: "success" });
+  });
+
+  test("a /compact deferred into an open turn gets its own result after the compact", async () => {
     const prompts = (async function* () {
       for (const text of ["slow:one", "/compact"])
         yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as const;
@@ -142,8 +150,22 @@ describe("query through the sidecar", () => {
     const messages: SDKMessage[] = [];
     for await (const message of q) messages.push(message);
     expect(replyText(messages)).toBe("echo: slow:one");
-    expect(messages.filter((m) => m.type === "result")).toHaveLength(1);
-    expect(messages.some((m) => m.type === "system" && m.subtype === "compact_boundary")).toBe(true);
+    const results = messages.flatMap((m, i) => (m.type === "result" ? [i] : []));
+    const boundary = messages.findIndex((m) => m.type === "system" && m.subtype === "compact_boundary");
+    expect(results).toHaveLength(2);
+    expect(boundary).toBeGreaterThan(-1);
+    expect(results[1]).toBeGreaterThan(boundary);
+  });
+
+  test("two /compact inputs sent during a turn each get a result", async () => {
+    const prompts = (async function* () {
+      for (const text of ["slow:one", "/compact", "/compact"])
+        yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as const;
+    })();
+    const { q } = start(prompts);
+    const messages: SDKMessage[] = [];
+    for await (const message of q) messages.push(message);
+    expect(messages.filter((m) => m.type === "result")).toHaveLength(3);
   });
 
   test("a /compact sent right after a prompt runs after that turn and before the next prompt", async () => {
@@ -159,6 +181,7 @@ describe("query through the sidecar", () => {
     const second = messages.findIndex((m) => m.type === "assistant" && replyText([m]) === "echo: two");
     expect(boundary).toBeGreaterThan(-1);
     expect(second).toBeGreaterThan(boundary);
+    expect(messages.filter((m) => m.type === "result")).toHaveLength(3);
   });
 
   test("an input that throws fails the stream with its error", async () => {
@@ -265,14 +288,32 @@ describe("start options", () => {
   test("an abortController aborted before query() starts nothing", async () => {
     const abortController = new AbortController();
     abortController.abort();
-    const { q } = start("never sent", { abortController });
+    const marker = join(dir, "spawned");
+    const { q } = start("never sent", {
+      abortController,
+      lhc: {
+        home: join(dir, "lhc"),
+        spawn: {
+          command: process.execPath,
+          args: ["-e", `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "")`],
+        },
+      },
+    });
     expect(await q.next()).toEqual({ done: true, value: undefined });
-    expect(existsSync(join(dir, "lhc"))).toBe(false);
+    await expect(q.supportedModels()).rejects.toThrow("claude-lhc sidecar is closed");
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(existsSync(marker)).toBe(false);
   });
 
   test("a start without lhc.home fails the stream with the sidecar's error", async () => {
     const { q } = start("hi", { lhc: { home: "" } });
     await expect(untilResult(q)).rejects.toThrow("lhc.home is required");
+  });
+
+  test("resumeDropsTurn is refused by name before anything is written", async () => {
+    const { q } = start("hi", { resumeDropsTurn: randomUUID() });
+    await expect(untilResult(q)).rejects.toThrow("resumeDropsTurn is refused");
+    expect(existsSync(join(dir, "lhc"))).toBe(false);
   });
 
   test("lhc.spawn runs the host's command", async () => {

@@ -543,7 +543,8 @@ describe("prompts held during a mid-turn compact", () => {
       emit(message): void {
         const frame = message as unknown as Frame;
         frames.push(frame);
-        if (frame["type"] === "result") timeline.push(`result ${String(frame["uuid"])}`);
+        if (frame["type"] === "result")
+          timeline.push(frame["num_turns"] === 0 ? "/compact result" : `result ${String(frame["uuid"])}`);
         if (frame["subtype"] === "status" && frame["status"] === "compacting" && compacts++ === 0)
           for (const text of heldTexts) void session.pushUser(userMessage(text));
       },
@@ -617,6 +618,7 @@ describe("prompts held during a mid-turn compact", () => {
     await vi.waitFor(() =>
       expect(timeline).toEqual([
         `result ${String(continued.uuid)}`,
+        "/compact result",
         "claude got HELD-PROMPT",
         `result ${String(heldAnswered.uuid)}`,
       ]),
@@ -645,7 +647,7 @@ describe("prompts held during a mid-turn compact", () => {
     streams[1]!(interrupted);
 
     expect(textOf(await held)).toBe("HELD-PROMPT");
-    expect(timeline).toEqual([`result ${String(interrupted.uuid)}`, "claude got HELD-PROMPT"]);
+    expect(timeline).toEqual([`result ${String(interrupted.uuid)}`, "/compact result", "claude got HELD-PROMPT"]);
     streams[1]!(resultMessage());
     expect(await stillWaiting(delivered())).toBe(true);
   });
@@ -660,7 +662,7 @@ describe("prompts held during a mid-turn compact", () => {
     streams[0]!(continued);
 
     expect(textOf(await held)).toBe("HELD-PROMPT");
-    expect(timeline).toEqual([`result ${String(continued.uuid)}`, "claude got HELD-PROMPT"]);
+    expect(timeline).toEqual([`result ${String(continued.uuid)}`, "/compact result", "claude got HELD-PROMPT"]);
     streams[0]!(resultMessage());
     expect(await stillWaiting(delivered())).toBe(true);
   });

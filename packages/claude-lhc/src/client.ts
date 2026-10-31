@@ -142,6 +142,14 @@ export function query({
   prompt: string | AsyncIterable<SDKUserMessage>;
   options?: LhcQueryOptions;
 }): LhcQuery {
+  if (options.abortController?.signal.aborted) {
+    const ended = new MessageQueue();
+    ended.end();
+    const refuse = async (): Promise<never> => {
+      throw new Error("claude-lhc sidecar is closed");
+    };
+    return queryHandle(ended, refuse, refuse, () => {});
+  }
   const stderr = (line: string): void => options.stderr?.(`${line}\n`);
   const command = options.lhc?.spawn ?? defaultSidecarCommand();
   const messages = new MessageQueue();
@@ -301,20 +309,26 @@ export function query({
   };
 
   options.abortController?.signal.addEventListener("abort", close, { once: true });
-  if (options.abortController?.signal.aborted) close();
-  else {
-    child.stdin?.write(startFrame);
-    if (typeof prompt === "string") {
-      pushUser({ type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null });
-      endInput();
-    } else {
-      streamInput(prompt).then(endInput, (cause) => {
-        messages.fail(cause instanceof Error ? cause : new Error(String(cause)));
-        close();
-      });
-    }
+  child.stdin?.write(startFrame);
+  if (typeof prompt === "string") {
+    pushUser({ type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null });
+    endInput();
+  } else {
+    streamInput(prompt).then(endInput, (cause) => {
+      messages.fail(cause instanceof Error ? cause : new Error(String(cause)));
+      close();
+    });
   }
 
+  return queryHandle(messages, control, streamInput, close);
+}
+
+function queryHandle(
+  messages: MessageQueue,
+  control: (method: ControlMethod, args: readonly unknown[]) => Promise<unknown>,
+  streamInput: (stream: AsyncIterable<SDKUserMessage>) => Promise<void>,
+  close: () => void,
+): LhcQuery {
   const controls = Object.fromEntries(
     (Object.keys(CONTROLS) as ControlMethod[])
       .filter((method) => CONTROLS[method].kind !== "transport")

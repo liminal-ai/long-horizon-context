@@ -25,7 +25,8 @@ import type { ControlMethod } from "./controls.js";
  *   (proof scripts exercise the failure path with a live model; never set by t3code).
  * `resumeSessionAt` is a host rollback to that message. The sidecar records it in LHC
  * and never forwards it: projected lines carry fresh uuids, and the CLI fails a turn
- * whose resumeSessionAt names no line in the resumed file.
+ * whose resumeSessionAt names no line in the resumed file. `resumeDropsTurn` is refused: it
+ * validates the CLI's own transcript, which a projected session does not share.
  */
 export type WireOptions = Record<string, unknown> & { lhc: SidecarOptions; resumeSessionAt?: string };
 export type SidecarOptions = {

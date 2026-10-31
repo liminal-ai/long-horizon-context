@@ -28,6 +28,12 @@ not moved or rewritten.
 Send `lhc.compact` as `{ trigger: 700000, target: 140000 }` when T3 creates a thread, and only
 then. A per-thread edit in T3's UI is optional. It would call `setCompactPolicy`.
 
+Today T3 has an `autoCompactWindow` provider setting that defaults to empty
+(`packages/contracts/src/settings.ts:742`). When it is set, T3 writes it into the SDK `settings` on
+every query open (`ClaudeAdapterV2.ts:1545`). The LHC driver sends `lhc.compact` at thread creation
+instead, and does not send `autoCompactWindow`. The sidecar turns off the CLI's own compact, so
+that setting has no effect under LHC.
+
 Evidence. PR #39 stores the pair on the thread header. PR #40 reads it from `lhc.compact` on
 creation, keeps the stored pair on resume, and caps it to the live window. The `compact-policy`
 drive shows a resume keeps 700000/140000 when the host sends another pair. PR #43 adds
@@ -81,6 +87,15 @@ An import change alone is not enough. Pass `lhc` through each of these call path
   head message. Add `lhc` to its options.
 - The in-process `getSubagentMessages` call at `ClaudeAdapterV2.ts:1366`, the subagent lookup.
   Add `lhc` to its options.
+- The fork options builder at `ClaudeAdapterV2.ts:11155`. It builds `ForkSessionOptions` from
+  `dir` and `upToMessageId` only. Add `lhc` there, so the fork reaches the history worker and
+  `forkSession` with it.
+
+The subagent lookup also needs the right Claude home. `getSubagentMessages` runs in T3's server
+process (`ClaudeAdapterV2.ts:1366`), but T3 runs custom-home work in the history worker
+(`ClaudeAdapterV2.ts:901`). claude-lhc's `getSubagentMessages` scans the `CLAUDE_CONFIG_DIR` of the
+process it runs in (`nativeSessionFile.ts:150`). For an instance with a custom Claude home, run the
+lookup in the worker too, or the lookup searches the server's home and finds nothing.
 
 Evidence. PR #45 adds the three functions. The live `consumer` drive forks a thread through
 `forkSession` at the first of two turns, resumes the fork through `query()`, and the fork no
@@ -92,6 +107,11 @@ call paths above come from C6's audit of T3's call sites.
 
 T3 stages and pins the sidecar package, then passes `lhc.spawn` with the command that runs the
 staged `dist/sidecar.js`.
+
+`lhc.spawn` is a command, `{ command, args?, env? }`. It returns no `ChildProcess` handle. T3's
+`spawnClaudeCodeProcess` path expects one (`ClaudeAdapterV2.ts:1020`), and uses it to track the
+Claude process's exit and to release port discovery. The LHC driver needs another way to do that
+work, because the client drops `spawnClaudeCodeProcess` and owns the sidecar process itself.
 
 Evidence. This PR adds `lhc.spawn`. `test/client.test.ts` runs every case through a host spawn
 command, and shows a missing command fails the stream with `claude-lhc sidecar failed to start`.

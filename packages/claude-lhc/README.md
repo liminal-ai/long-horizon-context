@@ -32,7 +32,12 @@ for await (const message of q) handle(message);
 complete host that starts, answers, compacts, forks, restarts, rolls back and closes.
 
 The package also exports `forkSession`, `getSessionMessages` and `getSubagentMessages`. They take
-the SDK's arguments plus `lhc: { home }`.
+the SDK's arguments plus `lhc: { home }`. `forkSession` also returns `headMessageId`, the last
+message the fork keeps, and ignores `sessionStore`.
+
+A strict `tsc` without `skipLibCheck` reports errors inside the Agent SDK's own `sdk.d.ts`
+(`ZodPreprocess` takes the wrong number of type arguments). A bare import of
+`@anthropic-ai/claude-agent-sdk` shows the same errors, so set `skipLibCheck` as the SDK requires.
 
 ## The `lhc` block
 
@@ -52,17 +57,33 @@ the SDK's arguments plus `lhc: { home }`.
 
 ## Options
 
-The client sends every other SDK option to the sidecar, which passes it to the SDK.
+The client sends the SDK options to the sidecar, except the ones it handles itself (listed
+below). The sidecar passes them to the SDK with these changes:
+
+- It removes `resume`, `resumeSessionAt` and `sessionId`. Each generation starts from its own
+  session id and projected session file.
+- It replaces `env` with a copy that sets `DISABLE_AUTO_COMPACT=1`, so the CLI's own compact never
+  runs.
+- It sets `title` to `[LHC] <thread id>` on a new thread.
+- It adds the `lhc` retrieval MCP server to `mcpServers` and its two tools to `allowedTools`.
+- It sets `pathToClaudeCodeExecutable` to `claude` when the host sends none.
+- It refuses `resumeDropsTurn` with `resumeDropsTurn is refused`. That option validates the CLI's
+  own transcript, which a projected session does not share. Send `resumeSessionAt` alone.
+
+The client handles these options itself:
 
 - `canUseTool` and `onUserDialog` run in the host. The sidecar asks for each answer over the wire.
 - `stderr` gets the sidecar's log lines and the client's own notices.
-- `abortController` closes the query when it aborts.
-- `env` is the Claude process's environment, as in the SDK. It is also the sidecar's environment
-  unless `lhc.spawn.env` is set. The sidecar writes projected sessions under the
+- `abortController` closes the query when it aborts. An already aborted controller starts nothing.
+- `env` is the base of the Claude process's environment, as in the SDK. It is also the sidecar's
+  environment unless `lhc.spawn.env` is set. The sidecar writes projected sessions under the
   `CLAUDE_CONFIG_DIR` it names, else `~/.claude`.
 - `hooks`, `onElicitation`, `sessionStore`, `sessionStoreFlush`, `spawnClaudeCodeProcess` and
   in-process (`type: "sdk"`) MCP servers cannot cross a process boundary. The client drops each
   one and names it on `stderr`.
+
+The sidecar reads the session options itself:
+
 - `resume` takes any session id the thread has had, the first one included.
 - `resumeSessionAt` is a host rollback. The sidecar records a core `rollback` event at that
   message and starts from the kept view. A message it cannot place fails the start with
@@ -100,6 +121,8 @@ and a new SDK method fails the typecheck until it has a row.
   process, and the stream returns no more messages. With a string prompt, or once the prompt
   iterable ends, the client sends an `end` frame, and the sidecar exits once every prompt has
   its `result`.
+- Each input gets one `result`, as in the SDK. A `/compact` sent while a turn runs waits for that
+  turn, and its `result` follows the `compact_boundary`. Prompts sent after it wait for it.
 
 ## Session ids
 

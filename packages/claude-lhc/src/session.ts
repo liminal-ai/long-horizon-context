@@ -195,6 +195,7 @@ export class ClaudeLhcSession {
   #swap: { stoppedAt: number; sessionId: string } | null = null;
   #heldPrompts: SDKUserMessage[] = [];
   #inFlight = 0;
+  #compactResultsOwed = 0;
   #inputEnded = false;
   #heldUntilContinuedTurnEnds = false;
   #model: string | undefined;
@@ -221,6 +222,7 @@ export class ClaudeLhcSession {
     const {
       resume,
       resumeSessionAt,
+      resumeDropsTurn,
       sessionId,
       canUseTool: _c,
       onUserDialog: _d,
@@ -229,6 +231,10 @@ export class ClaudeLhcSession {
       lhc,
       ...rest
     } = wire as Record<string, unknown>;
+    if (resumeDropsTurn !== undefined)
+      throw new Error(
+        "resumeDropsTurn is refused: claude-lhc rolls back in its own record, so send resumeSessionAt alone",
+      );
     const sidecarOptions = parseSidecarOptions(lhc);
     this.#home = sidecarOptions.home;
     this.#forceRebuildFailure = sidecarOptions.forceRebuildFailure === true;
@@ -310,8 +316,10 @@ export class ClaudeLhcSession {
     if (this.#closed) return;
     if (compactCommand(message) !== null) {
       if (this.#compacting) this.#heldPrompts.push(message);
-      else if (this.#turnOpen || this.#inFlight > 0) this.#pendingCompact = "manual";
-      else await this.#compact("manual");
+      else if (this.#turnOpen || this.#inFlight > 0) {
+        this.#pendingCompact = "manual";
+        this.#compactResultsOwed += 1;
+      } else await this.#compact("manual");
       return;
     }
     if (this.#compacting || this.#heldUntilContinuedTurnEnds || this.#pendingCompact === "manual") {
@@ -713,6 +721,8 @@ export class ClaudeLhcSession {
     const trigger = this.#dueCompact();
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
+    for (; this.#compactResultsOwed > 0; this.#compactResultsOwed -= 1)
+      this.#io.emit(this.#syntheticResult(this.#gen?.sessionId ?? "", Date.now(), ""));
     await this.#replayHeld();
     this.#endIfIdle();
   }

@@ -57,6 +57,7 @@ async function shutdown(code: number): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
   await session.close().catch(() => undefined);
+  await new Promise<void>((resolve) => process.stdout.write("", () => resolve()));
   process.exit(code);
 }
 
