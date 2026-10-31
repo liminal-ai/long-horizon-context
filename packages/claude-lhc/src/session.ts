@@ -868,10 +868,8 @@ export class ClaudeLhcSession {
     return open.turnId;
   }
 
-  // A host /compact settles as the CLI settles one: lifecycle frames for its uuid around the compact, and a
-  // result that carries the uuid and local_command "compact". A failed compact is still a success result
-  // whose text is the error, as stock Claude Code 2.1.312 sends it.
-  async #compact(trigger: CompactTrigger, heldResult?: SDKMessage, command?: string): Promise<void> {
+  // A failed compact is still a success result whose text is the error, as stock Claude Code 2.1.312 sends it.
+  async #compact(trigger: CompactTrigger, heldResult?: SDKMessage, commandUuid?: string): Promise<void> {
     if (this.#gen === null || this.#compacting) {
       if (heldResult !== undefined) this.#io.emit(heldResult);
       return;
@@ -880,7 +878,7 @@ export class ClaudeLhcSession {
     const startedAt = Date.now();
     const preTokens = this.#lastContextTokens;
     const previous = this.#gen;
-    if (command !== undefined) this.#io.emit(this.#commandLifecycle(command, "started"));
+    if (commandUuid !== undefined) this.#io.emit(this.#commandLifecycle(commandUuid, "started"));
     this.#io.emit(this.#syntheticStatus(previous.sessionId, "compacting"));
     try {
       const { next, postTokens } = await this.#rebuild(trigger, preTokens);
@@ -888,7 +886,8 @@ export class ClaudeLhcSession {
       this.#io.emit(this.#compactBoundary(trigger, preTokens, postTokens, startedAt, next.sessionId));
       this.#lastContextTokens = 0;
       if (heldResult !== undefined) this.#io.emit({ ...heldResult, session_id: next.sessionId } as SDKMessage);
-      else if (command !== undefined) this.#io.emit(this.#compactResult(next.sessionId, startedAt, "", command));
+      else if (commandUuid !== undefined)
+        this.#io.emit(this.#compactResult(next.sessionId, startedAt, "", commandUuid));
     } catch (cause) {
       const reason = cause instanceof Error ? cause.message : String(cause);
       this.#io.log(`compact (${trigger}) failed: ${reason}`);
@@ -899,19 +898,19 @@ export class ClaudeLhcSession {
         this.#syntheticStatus(previous.sessionId, null, { compact_result: "failed", compact_error: reason }),
       );
       if (heldResult !== undefined) this.#io.emit(heldResult);
-      else if (command !== undefined)
+      else if (commandUuid !== undefined)
         this.#io.emit(
           this.#compactResult(
             previous.sessionId,
             startedAt,
             `Error during compaction: LHC compact failed: ${reason}`,
-            command,
+            commandUuid,
           ),
         );
     } finally {
       this.#compacting = false;
     }
-    if (command !== undefined) this.#io.emit(this.#commandLifecycle(command, "completed"));
+    if (commandUuid !== undefined) this.#io.emit(this.#commandLifecycle(commandUuid, "completed"));
   }
 
   async #compactMidTurn(trigger: CompactTrigger): Promise<void> {

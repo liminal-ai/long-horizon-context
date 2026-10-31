@@ -59,7 +59,6 @@ afterEach(() => {
 type Frame = Record<string, unknown>;
 type StockCase = "success" | "failed" | "queued";
 
-// Captured from a plain SDK query() on Claude Code 2.1.312, the CLI version SDK 0.3.312 pins.
 const stockLines = readFileSync(new URL("./fixtures/stock-compact.jsonl", import.meta.url), "utf8")
   .split("\n")
   .filter(Boolean)
@@ -75,10 +74,11 @@ function stock(name: StockCase): { sent: { text: string; uuid: string }[]; frame
 
 const COMPACT_ERROR_PREFIX = "Error during compaction: ";
 
-// What a host settles a /compact by. Lifecycle frames of ordinary prompts, init, assistant and user frames come
-// from the CLI, not from LHC's compact, so they are left out. Session ids differ by design (LHC mints a new
-// generation), compact_metadata carries the CLI's own token counts, and costs, timings and run counters vary.
-function settlement(frames: readonly Frame[], labels: ReadonlyMap<string, string>, compactUuid: string): Frame[] {
+function compactSettlementFields(
+  frames: readonly Frame[],
+  labels: ReadonlyMap<string, string>,
+  compactUuid: string,
+): Frame[] {
   const label = (uuid: unknown): unknown => (typeof uuid === "string" ? (labels.get(uuid) ?? "<unknown>") : uuid);
   const reason = (text: unknown): unknown =>
     typeof text === "string" && text.startsWith(COMPACT_ERROR_PREFIX) ? `${COMPACT_ERROR_PREFIX}<reason>` : text;
@@ -123,7 +123,7 @@ function stockSettlement(name: StockCase): Frame[] {
   const { sent, frames } = stock(name);
   const compact = sent.find((input) => input.text === "/compact");
   if (compact === undefined) throw new Error(`stock case ${name} sent no /compact`);
-  return settlement(frames, new Map(sent.map((input) => [input.uuid, input.text])), compact.uuid);
+  return compactSettlementFields(frames, new Map(sent.map((input) => [input.uuid, input.text])), compact.uuid);
 }
 
 const user = (text: string): SDKUserMessage => ({
@@ -210,7 +210,7 @@ test("an idle /compact settles like stock: lifecycle around it and a result carr
     [prompt.uuid as string, String(prompt.message.content)],
     [compact.uuid as string, "/compact"],
   ]);
-  expect(settlement(frames, labels, compact.uuid as string)).toEqual(stockSettlement("success"));
+  expect(compactSettlementFields(frames, labels, compact.uuid as string)).toEqual(stockSettlement("success"));
   const boundary = frames.find((frame) => frame["subtype"] === "compact_boundary");
   expect(boundary?.["session_id"]).toBe(generations[1]?.options.resume ?? generations[1]?.options.sessionId);
   expect(results(frames)[1]?.["session_id"]).toBe(boundary?.["session_id"]);
@@ -233,7 +233,7 @@ test("a failed rebuild settles like a failed stock compact, with the error as th
     [prompt.uuid as string, String(prompt.message.content)],
     [compact.uuid as string, "/compact"],
   ]);
-  expect(settlement(frames, labels, compact.uuid as string)).toEqual(stockSettlement("failed"));
+  expect(compactSettlementFields(frames, labels, compact.uuid as string)).toEqual(stockSettlement("failed"));
   expect(generations).toHaveLength(1);
   await session.close();
 });
@@ -259,7 +259,7 @@ test("a /compact queued behind a running prompt settles in input order, before t
   const labels = new Map(
     [alpha, compact, bravo].map((input) => [input.uuid as string, String(input.message.content)] as const),
   );
-  expect(settlement(frames, labels, compact.uuid as string)).toEqual(stockSettlement("queued"));
+  expect(compactSettlementFields(frames, labels, compact.uuid as string)).toEqual(stockSettlement("queued"));
   await session.close();
 });
 
