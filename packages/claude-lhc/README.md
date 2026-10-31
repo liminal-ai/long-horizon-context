@@ -168,12 +168,19 @@ read rejects the whole call with `LHC registry read failed: ...`. An absent stor
 ## Wire
 
 Hosts that are not in Node can speak the sidecar's JSONL wire directly. `src/protocol.ts` defines
-the frames: `start`, `user`, `end`, `req` and `res`, `abort`, `msg`, and `error`. `src/client.ts` is the
+the frames: `start`, `user`, `end`, `req` and `res`, `abort`, `msg`, `error`, and `op`. `src/client.ts` is the
 reference client. Closing the sidecar's stdin closes it.
+
+A sidecar whose first frame is `op` runs one store operation instead of a session. The frame
+names the `method` (`forkSession`, `getSessionMessages`, `getSubagentMessages` or
+`inspectSessions`) and its `args`. The sidecar answers with one `res` frame carrying the same
+`id`, then exits 0 on success and 1 on failure. `src/client/operations.ts` is the reference.
 
 ## Source map
 
 - `src/client.ts` is `query()`, the client side of the wire.
+- `src/client/` is the `claude-lhc/client` entry: `query()` and the store operations, each run in
+  a short-lived sidecar through an `op` frame.
 - `src/sidecar.ts` is the sidecar entry. `bin/claude-lhc.js` runs it.
 - `src/protocol.ts` defines the wire frames and the `lhc` block.
 - `src/controls.ts` maps each `Query` method to forward, replay, refuse or transport.
