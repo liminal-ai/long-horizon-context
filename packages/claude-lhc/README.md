@@ -121,8 +121,11 @@ and a new SDK method fails the typecheck until it has a row.
   process, and the stream returns no more messages. With a string prompt, or once the prompt
   iterable ends, the client sends an `end` frame, and the sidecar exits once every prompt has
   its `result`.
-- Each input gets one `result`, as in the SDK. A `/compact` sent while a turn runs waits for that
-  turn, and its `result` follows the `compact_boundary`. Prompts sent after it wait for it.
+- Each input gets one `result`, in input order. Inputs run from one queue: a prompt or a
+  `/compact` starts only once every earlier input has its `result`. A `/compact` sent while a turn
+  runs compacts after that turn's `result`, and its own `result` follows the `compact_boundary`.
+  A prompt sent during a turn waits in the sidecar until the turn's `result`, so it never joins
+  the running turn.
 
 ## Session ids
 

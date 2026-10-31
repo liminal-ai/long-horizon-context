@@ -36,8 +36,8 @@
   turn-end and tool-boundary checks.
 - Auto compact (provider context at or above the effective trigger) at a
   settled tool boundary: live only, covered by
-  `packages/claude-lhc/scripts/midturn.ts`. Deferred `/compact` during an
-  open turn and held-prompt replay: live only, covered by
+  `packages/claude-lhc/scripts/midturn.ts`. A `/compact` sent during an
+  open turn and the queued-prompt replay: live only, covered by
   `packages/claude-lhc/scripts/standalone.ts`. `midturn.ts` sets its
   calibrated pair with `threads.setCompactPolicy` before the resume,
   because a resume keeps the stored pair.
@@ -93,22 +93,20 @@ summarization quality over real turns is the live standalone proof's job.
 
 ## Gotchas
 
-- A `/compact` sent while a turn is open, or while an earlier prompt has
-  no `result` yet, does not run immediately: it pends to the next safe
-  tool boundary or the turn end, and prompts sent after it are held until
-  it runs. That turn's `result` comes after the `compact_boundary`, and
-  the `/compact`'s own synthetic `result` follows it, so each input has
-  one `result`. A `/compact` that arrives
-  while a compact runs waits in the held queue, in order with the prompts
-  around it. The seeded drive sends it idle, where it runs at once.
-- Prompts sent while a compact is running are held, not dropped, and go
-  to whichever generation is current, after a failed rebuild the old one.
-  A `/compact` between turns sends them as soon as it ends. A mid-turn
-  compact keeps them until the continued turn's `result` (success, error
-  or interrupt), then sends them as their own turn, so you get two
-  results. A prompt that arrives while they wait queues behind them, a
-  second mid-turn compact keeps them waiting, and stdin close drops them
-  with `closing with <n> held prompt(s) never sent`. Unit-covered in
+- Inputs run in order from one queue. A prompt or a `/compact` starts
+  only once every earlier input has its `result`, so each input gets one
+  `result` in input order. A `/compact` sent while a turn runs waits for
+  that turn's `result`, then compacts and emits its own synthetic
+  `result`. It never compacts mid-turn. Only an automatic compact stops
+  a turn at a tool boundary. The seeded drive sends `/compact` idle,
+  where it runs at once.
+- Prompts sent while a turn runs or a compact is running wait in the
+  queue, not in the CLI, and go to whichever generation is current, after
+  a failed rebuild the old one. After a mid-turn compact they wait for
+  the continued turn's `result` (success, error or interrupt), then run
+  as their own turns. stdin close drops them with `closing with <n> held
+  prompt(s) never sent`. `packages/claude-lhc/test/input-order.property.test.ts`
+  checks the order on random interleavings. Unit-covered in
   `packages/claude-lhc/test/rollback-start.test.ts` and live-covered by
   `turn`, not seeded.
 - No `system/init` arrives before the first prompt, so the window read

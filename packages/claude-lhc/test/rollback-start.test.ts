@@ -114,6 +114,14 @@ const assistantMessage = (uuid: string, content: Array<Record<string, unknown>>)
     message: { id: `msg_${uuid}`, model: "claude-sonnet-5", role: "assistant", content },
   }) as unknown as SDKMessage;
 
+const pastTrigger = (message: SDKMessage): SDKMessage => {
+  const inner = (message as unknown as { message: Record<string, unknown> }).message;
+  return {
+    ...message,
+    message: { ...inner, usage: { input_tokens: COMPACT.trigger + 1, output_tokens: 1 } },
+  } as SDKMessage;
+};
+
 const toolResultMessage = (toolUseId: string, text: string): SDKMessage =>
   ({
     type: "user",
@@ -500,9 +508,10 @@ describe("capture uuids", () => {
     expect(await capturedUnder(session.threadId, prompt.value?.uuid)).toBe(true);
 
     const toolTurn = randomUUID();
-    streams[0]!(assistantMessage(toolTurn, [{ type: "tool_use", id: "toolu_mid", name: "Read", input: {} }]));
+    streams[0]!(
+      pastTrigger(assistantMessage(toolTurn, [{ type: "tool_use", id: "toolu_mid", name: "Read", input: {} }])),
+    );
     await vi.waitFor(async () => expect(await capturedUnder(session.threadId, toolTurn)).toBe(true));
-    await session.pushUser(userMessage("/compact"));
     const postToolUse = opened[0]!.hooks!.PostToolUse![0]!.hooks[0]!;
     const stop = await postToolUse(
       {
@@ -543,8 +552,7 @@ describe("prompts held during a mid-turn compact", () => {
       emit(message): void {
         const frame = message as unknown as Frame;
         frames.push(frame);
-        if (frame["type"] === "result")
-          timeline.push(frame["num_turns"] === 0 ? "/compact result" : `result ${String(frame["uuid"])}`);
+        if (frame["type"] === "result") timeline.push(`result ${String(frame["uuid"])}`);
         if (frame["subtype"] === "status" && frame["status"] === "compacting" && compacts++ === 0)
           for (const text of heldTexts) void session.pushUser(userMessage(text));
       },
@@ -563,7 +571,7 @@ describe("prompts held during a mid-turn compact", () => {
     await session.pushUser(userMessage("WORK-PROMPT"));
     const first = fed[0]![Symbol.asyncIterator]();
     await first.next();
-    await stopMidTurn(session, frames, 0);
+    await stopMidTurn(frames, 0);
     const cli = fed.length > 1 ? fed.at(-1)![Symbol.asyncIterator]() : first;
     expect(textOf((await cli.next()).value)).toContain("Context was compacted in the middle of this turn");
     const delivered = async (): Promise<SDKUserMessage | undefined> => {
@@ -574,14 +582,15 @@ describe("prompts held during a mid-turn compact", () => {
     return { session, frames, timeline, logs, cli, delivered };
   }
 
-  async function stopMidTurn(session: ClaudeLhcSession, frames: Frame[], gen: number): Promise<void> {
+  async function stopMidTurn(frames: Frame[], gen: number): Promise<void> {
     const settled = () => frames.filter((frame) => frame["subtype"] === "status" && "compact_result" in frame).length;
     const settledBefore = settled();
     const toolUseId = `toolu_${gen}`;
     const toolTurn = randomUUID();
-    streams[gen]!(assistantMessage(toolTurn, [{ type: "tool_use", id: toolUseId, name: "Read", input: {} }]));
+    streams[gen]!(
+      pastTrigger(assistantMessage(toolTurn, [{ type: "tool_use", id: toolUseId, name: "Read", input: {} }])),
+    );
     await vi.waitFor(() => expect(frames.some((frame) => frame["uuid"] === toolTurn)).toBe(true));
-    await session.pushUser(userMessage("/compact"));
     const postToolUse = opened[gen]!.hooks!.PostToolUse![0]!.hooks[0]!;
     const stop = await postToolUse(
       {
@@ -618,7 +627,6 @@ describe("prompts held during a mid-turn compact", () => {
     await vi.waitFor(() =>
       expect(timeline).toEqual([
         `result ${String(continued.uuid)}`,
-        "/compact result",
         "claude got HELD-PROMPT",
         `result ${String(heldAnswered.uuid)}`,
       ]),
@@ -634,7 +642,12 @@ describe("prompts held during a mid-turn compact", () => {
     streams[1]!(resultMessage());
 
     expect(textOf(await first)).toBe("HELD-PROMPT");
-    expect(textOf(await delivered())).toBe("LATER-PROMPT");
+    const later = delivered();
+    expect(await stillWaiting(later)).toBe(true);
+
+    streams[1]!(resultMessage());
+
+    expect(textOf(await later)).toBe("LATER-PROMPT");
   });
 
   test("an interrupted continued turn sends the held prompt once, after the interrupted turn's result", async () => {
@@ -647,7 +660,7 @@ describe("prompts held during a mid-turn compact", () => {
     streams[1]!(interrupted);
 
     expect(textOf(await held)).toBe("HELD-PROMPT");
-    expect(timeline).toEqual([`result ${String(interrupted.uuid)}`, "/compact result", "claude got HELD-PROMPT"]);
+    expect(timeline).toEqual([`result ${String(interrupted.uuid)}`, "claude got HELD-PROMPT"]);
     streams[1]!(resultMessage());
     expect(await stillWaiting(delivered())).toBe(true);
   });
@@ -662,14 +675,14 @@ describe("prompts held during a mid-turn compact", () => {
     streams[0]!(continued);
 
     expect(textOf(await held)).toBe("HELD-PROMPT");
-    expect(timeline).toEqual([`result ${String(continued.uuid)}`, "/compact result", "claude got HELD-PROMPT"]);
+    expect(timeline).toEqual([`result ${String(continued.uuid)}`, "claude got HELD-PROMPT"]);
     streams[0]!(resultMessage());
     expect(await stillWaiting(delivered())).toBe(true);
   });
 
   test("a second mid-turn compact keeps the held prompt waiting for the turn it continues", async () => {
-    const { session, frames, cli } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
-    await stopMidTurn(session, frames, 1);
+    const { frames, cli } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
+    await stopMidTurn(frames, 1);
     expect((await cli.next()).done).toBe(true);
     const third = fed[2]![Symbol.asyncIterator]();
     expect(textOf((await third.next()).value)).toContain("Context was compacted in the middle of this turn");
