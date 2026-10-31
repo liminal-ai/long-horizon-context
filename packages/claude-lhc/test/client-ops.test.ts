@@ -95,7 +95,9 @@ describe("forkSession from the client entry", () => {
     const path = nativeSessionPath({ sessionId: fork.sessionId, cwd, env: { CLAUDE_CONFIG_DIR: opHome } });
     const lines = linesOf(path);
     expect(JSON.stringify(lines)).toContain("FIRST-ANSWER");
-    expect(fork.headMessageId).toBe(lines.filter((line) => typeof line["uuid"] === "string").at(-1)?.["uuid"]);
+    const lastSource = lines.filter((line) => typeof line["lhcSource"] === "string").at(-1)?.["lhcSource"];
+    expect(fork.headMessageId).toMatch(/^claude-lhc-cursor:th_[0-9a-f]+:/);
+    expect(fork.headMessageId?.endsWith(`:${lastSource}`)).toBe(true);
     expect(existsSync(join(hostHome, "projects"))).toBe(false);
     expect((await getSessionMessages(fork.sessionId, { env: opEnv(), ...store() })).length).toBeGreaterThan(0);
   });

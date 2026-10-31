@@ -18,7 +18,15 @@ type AnchorLookup = {
   readonly env: NodeJS.ProcessEnv;
 };
 
+const CURSOR_PREFIX = "claude-lhc-cursor:";
+
+/** A rollback anchor that names a core event by its intake key, so it outlives every native projection. */
+export function eventCursor(threadId: string, idempotencyKey: string): string {
+  return `${CURSOR_PREFIX}${threadId}:${idempotencyKey}`;
+}
+
 export async function resolveRollbackAnchor(input: AnchorLookup): Promise<RollbackAnchor | null> {
+  if (input.anchor.startsWith(CURSOR_PREFIX)) return resolveCursor(input);
   const direct = await capturedThrough(input.lhc, input.thread, input.anchor);
   if (direct !== null) return { anchor: input.anchor, keepThroughEventOrder: direct, via: input.anchor };
   const chain = await nativeMessageChain({
@@ -34,6 +42,16 @@ export async function resolveRollbackAnchor(input: AnchorLookup): Promise<Rollba
     if (order !== null) return { anchor: input.anchor, keepThroughEventOrder: order, via: line.uuid };
   }
   return null;
+}
+
+async function resolveCursor({ lhc, thread, anchor }: AnchorLookup): Promise<RollbackAnchor | null> {
+  const body = anchor.slice(CURSOR_PREFIX.length);
+  const split = body.indexOf(":");
+  const threadId = split > 0 ? body.slice(0, split) : "";
+  const own = "threadId" in thread ? thread.threadId : null;
+  if (threadId !== own) throw new Error(`rollback cursor ${anchor} names LHC thread ${threadId}, not ${own}`);
+  const order = await recordedOrder(lhc, thread, body.slice(split + 1));
+  return order === null ? null : { anchor, keepThroughEventOrder: order, via: anchor };
 }
 
 async function recordedOrder(lhc: Lhc, thread: ThreadRef, key: string): Promise<number | null> {
