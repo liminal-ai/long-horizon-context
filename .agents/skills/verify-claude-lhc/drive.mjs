@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import { createServer } from "node:http";
+import { createServer, request as httpRequest } from "node:http";
+import { request as httpsRequest } from "node:https";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
@@ -82,17 +83,15 @@ class Scratch {
 }
 
 class Sidecar {
-  constructor(scratch, label, { live = false } = {}) {
+  constructor(scratch, label, { live = false, inference = live } = {}) {
     this.label = label;
     this.frames = [];
     this.stderr = [];
     this.error = null;
     this.waiters = [];
     const env = { ...process.env, CLAUDE_CONFIG_DIR: scratch.claudeHome, CLAUDE_LHC_NO_INFERENCE: "1" };
-    if (live) {
-      delete env.CLAUDE_LHC_NO_INFERENCE;
-      env.HOME = scratch.home;
-    }
+    if (inference) delete env.CLAUDE_LHC_NO_INFERENCE;
+    if (live) env.HOME = scratch.home;
     this.child = spawn(process.execPath, [ENTRY], { stdio: ["pipe", "pipe", "pipe"], env, detached: true });
     scratch.groups.push(this.child.pid);
     this.exited = new Promise((r) => this.child.on("exit", (code) => { this.exitCode = code; r(code); this.notify(); }));
@@ -483,6 +482,140 @@ const FILLER_FILE = Array.from({ length: 1000 }, (_, i) => `line ${i}: harbor la
 const AFTER_READ = "Use the Read tool to read filler.txt. Only after you have its contents, use the Bash tool to run `sleep 4; echo <the word that follows \"line 999:\">`";
 const PENDING_TURN = `${AFTER_READ}. Then reply with just DONE.`;
 const HELD_TURN = `${AFTER_READ}. Then use the Bash tool to run \`echo third\`. Then reply with just DONE.`;
+
+// The diagnosis's procedure (proof/prototypes/p-cache-diagnosis/run.mjs in lhc-claude-driver): a thread grown by
+// one pasted fixture, then resumed with one short prompt per sidecar, every /v1/messages body saved by a proxy.
+const CACHE_LINE = "maple river stone cloud field\n";
+const CACHE_GROWTH = (lines) =>
+  `The following is pasted reference context. Retain it as context only. Do not summarize, analyze, or use tools. Reply only OK.\n<reference>\n${CACHE_LINE.repeat(lines)}</reference>\nReply only OK.`;
+const CACHE_RESUME = "Reply only OK.";
+const cacheFraction = (u = {}) => {
+  const total = (u.input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0) + (u.cache_read_input_tokens ?? 0);
+  return total === 0 ? null : (u.cache_read_input_tokens ?? 0) / total;
+};
+const messageText = (m) => (typeof m?.content === "string" ? m.content : (m?.content ?? []).map((b) => b.text ?? "").join(""));
+const environmentReminderAt = (body) =>
+  body.messages.findIndex((m) => m.role === "system" && messageText(m).startsWith("<system-reminder>") && messageText(m).includes("# Environment"));
+
+async function captureProxy(evidenceDir) {
+  const upstream = new URL(process.env.ANTHROPIC_BASE_URL ?? "https://api.anthropic.com");
+  const secrets = Object.entries(process.env).filter(([k, v]) => /TOKEN|KEY|SECRET|PASSWORD/.test(k) && v.length > 5).map(([, v]) => v);
+  mkdirSync(join(evidenceDir, "requests"), { recursive: true });
+  const proxy = { label: "startup", requests: [] };
+  const server = createServer(async (req, res) => {
+    const chunks = [];
+    for await (const c of req) chunks.push(c);
+    const body = Buffer.concat(chunks);
+    if (req.url.startsWith("/v1/messages")) {
+      const text = body.toString();
+      const file = `requests/${String(proxy.requests.length + 1).padStart(3, "0")}-${proxy.label}.json`;
+      if (secrets.some((secret) => text.includes(secret))) proxy.requests.push({ label: proxy.label, path: req.url, refused: "body holds a credential value" });
+      else {
+        writeFileSync(join(evidenceDir, file), text);
+        proxy.requests.push({ label: proxy.label, path: req.url, file });
+      }
+    }
+    const incoming = new URL(req.url, "http://localhost");
+    const target = new URL(upstream);
+    target.pathname = upstream.pathname.replace(/\/$/, "") + incoming.pathname;
+    target.search = incoming.search;
+    const headers = { ...req.headers, host: upstream.host, "content-length": body.length };
+    delete headers.connection;
+    delete headers["transfer-encoding"];
+    const forward = (upstream.protocol === "https:" ? httpsRequest : httpRequest)(target, { method: req.method, headers }, (r) => {
+      res.writeHead(r.statusCode, r.headers);
+      r.pipe(res);
+    });
+    forward.on("error", () => { res.writeHead(502); res.end(); });
+    forward.end(body);
+  });
+  await new Promise((r) => server.listen(0, "127.0.0.1", r));
+  proxy.url = `http://127.0.0.1:${server.address().port}`;
+  proxy.close = () => new Promise((r) => { server.closeAllConnections(); server.close(r); });
+  proxy.body = (label) => {
+    const bodies = proxy.requests.filter((q) => q.label === label && q.file).map((q) => JSON.parse(readFileSync(join(evidenceDir, q.file), "utf8")));
+    return bodies.filter((b) => Array.isArray(b.messages)).sort((a, b) => b.messages.length - a.messages.length)[0];
+  };
+  return proxy;
+}
+
+const cacheOptions = (scratch, proxy, extra) => ({
+  cwd: scratch.cwd,
+  model: process.env.MODEL ?? "claude-sonnet-5",
+  pathToClaudeCodeExecutable: process.env.CLAUDE_BIN ?? "claude",
+  settingSources: [],
+  tools: [],
+  thinking: { type: "disabled" },
+  includePartialMessages: true,
+  permissionMode: "bypassPermissions",
+  allowDangerouslySkipPermissions: true,
+  env: { ...process.env, HOME: scratch.home, CLAUDE_CONFIG_DIR: scratch.claudeHome, ANTHROPIC_BASE_URL: proxy.url, DISABLE_AUTOUPDATER: "1" },
+  ...extra,
+});
+
+function cacheRow(label, t0, firstToken, result, extra = {}) {
+  return {
+    label,
+    ...extra,
+    query_to_first_token_ms: firstToken === undefined ? null : Math.round(firstToken - t0),
+    result_wall_ms: Math.round(performance.now() - t0),
+    subtype: result?.subtype,
+    is_error: result?.is_error,
+    usage: result?.usage,
+    total_input_tokens: (result?.usage?.input_tokens ?? 0) + (result?.usage?.cache_creation_input_tokens ?? 0) + (result?.usage?.cache_read_input_tokens ?? 0),
+    cache_fraction: cacheFraction(result?.usage),
+  };
+}
+
+async function stockCacheTurn(sdk, scratch, proxy, label, prompt, start) {
+  proxy.label = label;
+  const t0 = performance.now();
+  let firstToken;
+  const q = sdk.query({
+    prompt: (async function* () { yield { type: "user", message: { role: "user", content: prompt }, parent_tool_use_id: null }; await new Promise(() => {}); })(),
+    options: cacheOptions(scratch, proxy, start),
+  });
+  try {
+    for await (const m of q) {
+      if (firstToken === undefined && m.type === "stream_event" && m.event?.delta?.type === "text_delta" && m.event.delta.text) firstToken = performance.now();
+      if (m.type === "result") return { row: cacheRow(label, t0, firstToken, m), sessionId: m.session_id };
+    }
+    throw new Error(`${label}: stream ended with no result`);
+  } finally { q.close(); }
+}
+
+async function lhcCacheTurn(scratch, proxy, sidecars, label, prompts, start) {
+  proxy.label = label;
+  const t0 = performance.now();
+  const s = new Sidecar(scratch, label, { live: true, inference: false });
+  sidecars.push(s);
+  s.send({ type: "start", options: cacheOptions(scratch, proxy, { ...start, lhc: { home: scratch.lhcHome, compact: { trigger: 700000, target: 140000 } } }) });
+  await s.waitFor(() => s.logHas("created thread") || s.logHas("resumed thread"), `${label} start log line`, 120_000);
+  const started = performance.now();
+  const rows = [];
+  for (const [i, prompt] of prompts.entries()) {
+    proxy.label = i === 0 ? label : `${label}-${i}`;
+    const before = s.msgs().length;
+    const turnStart = i === 0 ? t0 : performance.now();
+    s.send(userFrame(prompt));
+    let firstToken;
+    await s.waitFor(() => {
+      const turn = s.msgs().slice(before);
+      if (firstToken === undefined && turn.some((m) => m.type === "stream_event" && m.event?.delta?.type === "text_delta" && m.event.delta.text)) firstToken = performance.now();
+      return turn.some((m) => m.type === "result");
+    }, `${proxy.label} result`, 600_000);
+    const result = s.msgs().slice(before).find((m) => m.type === "result");
+    const store = join(scratch.lhcHome, "attachments", `${threadIdFrom(s)}.jsonl`);
+    rows.push(cacheRow(proxy.label, turnStart, firstToken, result, {
+      ...(i === 0 && start.resume ? { query_to_resumed_ms: Math.round(started - t0) } : {}),
+      session_id: result?.session_id,
+      attachment_store_bytes: existsSync(store) ? statSync(store).size : 0,
+    }));
+  }
+  assert((await s.stop()) === 0, `${label} sidecar did not exit 0`);
+  rows[0].harvests = s.stderr.filter((l) => l.includes("attachments: "));
+  return rows;
+}
 
 async function livePromptOrder(evidenceDir, label, compact, act) {
   const scratch = new Scratch(label);
@@ -1389,6 +1522,78 @@ const drives = {
     return `${together}; ${pending}; ${behindHeld}`;
   },
 
+  async "resume-cache-live"(evidenceDir) {
+    const gate = liveAuth();
+    if (gate.skip) return gate;
+    const lines = Number(process.env.RESUME_CACHE_LINES ?? 8000);
+    const resumes = Number(process.env.RESUME_CACHE_RESUMES ?? 2);
+    const sides = (process.env.RESUME_CACHE_SIDES ?? "stock,lhc").split(",");
+    const compact = process.env.RESUME_CACHE_COMPACT === "1";
+    const proxy = await captureProxy(evidenceDir);
+    const report = { model: process.env.MODEL ?? "claude-sonnet-5", auth: gate.auth, lines, resumes, compact, stock: [], lhc: [], lhcAfterCompact: [] };
+    const save = () => writeFileSync(join(evidenceDir, "results.json"), `${JSON.stringify({ ...report, requests: proxy.requests }, null, 2)}\n`);
+    const scratches = [];
+    const sidecars = [];
+    const scratchFor = (side) => {
+      const scratch = new Scratch(`resume-cache-${side}`);
+      scratch.home = join(scratch.dir, "home");
+      mkdirSync(scratch.home, { recursive: true });
+      scratches.push(scratch);
+      return scratch;
+    };
+    try {
+      if (sides.includes("stock")) {
+        const sdk = await import(pathToFileURL(createRequire(join(REPO, "packages/claude-lhc/package.json")).resolve("@anthropic-ai/claude-agent-sdk")).href);
+        const scratch = scratchFor("stock");
+        const sessionId = randomUUID();
+        report.stock.push((await stockCacheTurn(sdk, scratch, proxy, "stock-growth", CACHE_GROWTH(lines), { sessionId })).row);
+        for (let i = 1; i <= resumes; i += 1) {
+          report.stock.push((await stockCacheTurn(sdk, scratch, proxy, `stock-resume-${i}`, CACHE_RESUME, { resume: sessionId })).row);
+          save();
+        }
+      }
+      let lastLhc;
+      if (sides.includes("lhc")) {
+        const scratch = scratchFor("lhc");
+        report.lhc.push(...(await lhcCacheTurn(scratch, proxy, sidecars, "lhc-growth", [CACHE_GROWTH(lines)], { sessionId: randomUUID() })));
+        for (let i = 1; i <= resumes; i += 1) {
+          report.lhc.push(...(await lhcCacheTurn(scratch, proxy, sidecars, `lhc-resume-${i}`, [CACHE_RESUME], { resume: report.lhc.at(-1).session_id })));
+          save();
+        }
+        if (compact) {
+          report.lhcAfterCompact.push(...(await lhcCacheTurn(scratch, proxy, sidecars, "lhc-compact", ["/compact", CACHE_RESUME], { resume: report.lhc.at(-1).session_id })));
+          for (let i = 1; i <= 2; i += 1)
+            report.lhcAfterCompact.push(...(await lhcCacheTurn(scratch, proxy, sidecars, `lhc-compact-resume-${i}`, [CACHE_RESUME], { resume: report.lhcAfterCompact.at(-1).session_id })));
+        }
+        lastLhc = report.lhc;
+      }
+      const failed = [...report.stock, ...report.lhc, ...report.lhcAfterCompact].find((r) => r.subtype !== "success" || r.is_error);
+      assert(failed === undefined, `${failed?.label} did not succeed: ${failed?.subtype}`);
+      const low = (rows) => rows.filter((r) => r.label.includes("-resume-") && !(r.cache_fraction >= 0.8));
+      assert(low(report.stock).length === 0, `stock resumes below 0.8 (${low(report.stock).map((r) => `${r.label} ${r.cache_fraction}`).join(", ")}): the endpoint is the limiter, so rerun before judging claude-lhc`);
+      if (lastLhc !== undefined && resumes >= 2) {
+        const [first, second] = [proxy.body("lhc-resume-1"), proxy.body("lhc-resume-2")];
+        assert(first && second, "no captured request for an LHC resume");
+        const at = environmentReminderAt(first);
+        report.reminder = { resume1Index: at, resume2Index: environmentReminderAt(second), sameText: at >= 0 && messageText(first.messages[at]) === messageText(second.messages[at]) };
+      }
+      save();
+      const lhcLow = low([...report.lhc, ...report.lhcAfterCompact]);
+      assert(lhcLow.length === 0, `LHC resumes below 0.8: ${lhcLow.map((r) => `${r.label} ${r.cache_fraction?.toFixed(4)}`).join(", ")}`);
+      if (report.reminder !== undefined)
+        assert(report.reminder.resume1Index >= 0 && report.reminder.resume2Index === report.reminder.resume1Index && report.reminder.sameText, `the historical environment reminder moved between LHC resumes: ${JSON.stringify(report.reminder)}`);
+      const fractions = (rows) => rows.filter((r) => r.label.includes("-resume-")).map((r) => r.cache_fraction.toFixed(3)).join("/");
+      return `auth=${gate.auth} lines=${lines}; stock resumes ${fractions(report.stock) || "not run"}; LHC resumes ${fractions(report.lhc) || "not run"}${compact ? `, after /compact ${fractions(report.lhcAfterCompact)}` : ""}${report.reminder ? `; environment reminder held at messages[${report.reminder.resume1Index}]` : ""}`;
+    } finally {
+      for (const s of sidecars) if (s.exitCode === undefined) await s.stop();
+      mkdirSync(evidenceDir, { recursive: true });
+      for (const s of sidecars) s.saveEvidence(evidenceDir);
+      save();
+      await proxy.close();
+      for (const scratch of scratches) scratch.cleanup();
+    }
+  },
+
   async consumer(evidenceDir) {
     const gate = liveAuth();
     if (gate.skip) return gate;
@@ -1468,7 +1673,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "compact-above-base", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client-ops", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "consumer"]
+      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "compact-above-base", "controls", "controls-refused", "set-compact-policy", "fork", "history", "client-ops", "client", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live", "prompt-order-live", "resume-cache-live", "consumer"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;
