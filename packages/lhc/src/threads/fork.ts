@@ -3,6 +3,7 @@ import { dirname, resolve as resolvePath } from "node:path";
 import { backup, DatabaseSync } from "node:sqlite";
 import { health } from "../inspect/index.js";
 import { messageEvents } from "../intake-stream/index.js";
+import { CONTEXT_COMPACT_CONTINUE_REASON } from "../shared-tech/compact-continuation/contract.js";
 import {
   createDbReadTransaction,
   type ErrorCode,
@@ -65,15 +66,23 @@ function readSourceHeader(db: DatabaseSync): SourceHeader {
   return { threadId: row.thread_id, createdAt: row.created_at, schema: version.user_version };
 }
 
-function openTurnMemberCount(db: DatabaseSync): number {
-  const row = db
+function openTurnActivity(db: DatabaseSync): string | null {
+  const members = db
     .prepare(
       `SELECT count(*) AS n FROM message m JOIN turns t ON t.turn_id = m.turn_id
        WHERE t.status = 'open' AND m.kind NOT IN ('runtime_note', 'compact_continuation_marker')
          AND m.deleted_at IS NULL`,
     )
     .get() as { n: number };
-  return row.n;
+  if (members.n > 0) return `its open turn holds ${members.n} member(s)`;
+  const continuing = db
+    .prepare(
+      `SELECT 1 FROM turns WHERE outcome_reason = ? AND turn_order =
+         (SELECT max(turn_order) FROM turns WHERE status = 'closed' AND deleted_at IS NULL)
+       AND EXISTS (SELECT 1 FROM turns WHERE status = 'open' AND deleted_at IS NULL)`,
+    )
+    .get(CONTEXT_COMPACT_CONTINUE_REASON);
+  return continuing === undefined ? null : "its open turn continues a turn a compact interrupted";
 }
 
 function releaseCopiedClaims(db: DatabaseSync): void {
@@ -146,13 +155,13 @@ export async function copyThread(input: CopyThreadInput): Promise<OpResult<CopyT
     }
     copySchema = copied.schema;
     if (input.requireIdle !== false) {
-      const members = openTurnMemberCount(copyDb);
-      if (members > 0) {
+      const activity = openTurnActivity(copyDb);
+      if (activity !== null) {
         copyDb.close();
         deleteThreadFile(input.filePath);
         return callerError(
           "mid_turn",
-          `source ${header.threadId} is mid-turn: its open turn holds ${members} member(s); retry when the turn has ended`,
+          `source ${header.threadId} is mid-turn: ${activity}; retry when the turn has ended`,
         );
       }
     }
@@ -199,6 +208,38 @@ export async function copyThread(input: CopyThreadInput): Promise<OpResult<CopyT
       schema: { source: header.schema, copy: copySchema },
     },
   };
+}
+
+export interface DiscardCopyInput {
+  threadId: string;
+  registryPath?: string;
+}
+
+export async function discardCopy(input: DiscardCopyInput): Promise<OpResult<void>> {
+  let registry: DatabaseSync | undefined;
+  let filePath: string;
+  try {
+    registry = openRegistryForWrite(resolveRegistryPath(input.registryPath));
+    const row = selectThreadRow(registry, input.threadId);
+    if (row === undefined) return callerError("thread_not_found", `thread ${input.threadId} is not registered`);
+    const bound = registry.prepare("SELECT alias FROM thread_alias WHERE thread_id = ? LIMIT 1").get(input.threadId) as
+      | { alias: string }
+      | undefined;
+    if (bound !== undefined) {
+      return callerError(
+        "invalid_thread_ref",
+        `thread ${input.threadId} is bound to ${bound.alias}; only an unbound copy can be discarded`,
+      );
+    }
+    registry.prepare("DELETE FROM threads WHERE thread_id = ?").run(input.threadId);
+    filePath = row.filePath;
+  } catch (cause) {
+    return storageFailure(`copied thread discard failed: ${detail(cause)}`);
+  } finally {
+    registry?.close();
+  }
+  deleteThreadFile(filePath);
+  return { ok: true, value: undefined };
 }
 
 export type ForkHost = "cc-lhc" | "claude-lhc" | "hermes";
