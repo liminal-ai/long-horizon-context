@@ -315,7 +315,8 @@ export class ClaudeLhcSession {
   async #push(message: SDKUserMessage): Promise<void> {
     if (this.#closed) return;
     if (compactCommand(message) !== null) {
-      if (this.#compacting) this.#heldPrompts.push(message);
+      if (this.#compacting || (this.#heldPrompts.length > 0 && !this.#heldUntilContinuedTurnEnds))
+        this.#heldPrompts.push(message);
       else if (this.#turnOpen || this.#inFlight > 0) {
         this.#pendingCompact = "manual";
         this.#compactResultsOwed += 1;

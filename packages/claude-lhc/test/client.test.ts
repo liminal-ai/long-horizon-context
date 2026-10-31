@@ -157,6 +157,22 @@ describe("query through the sidecar", () => {
     expect(results[1]).toBeGreaterThan(boundary);
   });
 
+  test("a /compact sent after a held prompt runs after that prompt's turn", async () => {
+    const prompts = (async function* () {
+      for (const text of ["slow:one", "/compact", "two", "/compact"])
+        yield { type: "user", message: { role: "user", content: text }, parent_tool_use_id: null } as const;
+    })();
+    const { q } = start(prompts);
+    const messages: SDKMessage[] = [];
+    for await (const message of q) messages.push(message);
+    const boundaries = messages.flatMap((m, i) => (m.type === "system" && m.subtype === "compact_boundary" ? [i] : []));
+    const two = messages.findIndex((m) => m.type === "assistant" && replyText([m]) === "echo: two");
+    expect(messages.filter((m) => m.type === "result")).toHaveLength(4);
+    expect(boundaries).toHaveLength(2);
+    expect(two).toBeGreaterThan(boundaries[0] ?? -1);
+    expect(boundaries[1]).toBeGreaterThan(two);
+  });
+
   test("two /compact inputs sent during a turn each get a result", async () => {
     const prompts = (async function* () {
       for (const text of ["slow:one", "/compact", "/compact"])
