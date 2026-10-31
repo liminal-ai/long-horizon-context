@@ -150,6 +150,14 @@ the first id can still resume, fork and read history with it. A host that reads 
 session files directly sees only the generation that file belongs to. Use `getSessionMessages`
 instead.
 
+An id no LHC thread holds is not a claude-lhc session. `forkSession`, `getSessionMessages` and
+`getSubagentMessages` reject it with `no LHC thread holds the Claude session <id>`, and never read
+a stock transcript under it. To sort many ids, call `inspectSessions(sessionIds, { lhc: { home } })`
+from `claude-lhc/client`. It runs in one sidecar and answers each id, in order, with
+`{ kind: "managed", threadId, currentSessionId }` or `{ kind: "unknown" }`. A registry it cannot
+read rejects the whole call with `LHC registry read failed: ...`. An absent store answers
+`unknown` for every id and creates no file.
+
 ## Environment
 
 - `CLAUDE_LHC_NO_INFERENCE=1` in the sidecar's environment skips summary derivations, for tests

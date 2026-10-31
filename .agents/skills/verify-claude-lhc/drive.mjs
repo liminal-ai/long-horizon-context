@@ -239,14 +239,14 @@ const lateServer = (res) => (res.ok ? res.value : []).find((server) => server.na
 const REFUSED_CONTROLS = { rewindFiles: { userMessageId: randomUUID() }, reinitialize: {}, seedReadState: { path: "a.txt", mtime: 1 } };
 const FLAG_MODEL = "claude-sonnet-4-6";
 
-async function callInScratchEnv(scratch, fn, args, { live = false } = {}) {
+async function callInScratchEnv(scratch, fn, args, { live = false, entry = "index.js" } = {}) {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: scratch.claudeHome, CLAUDE_LHC_NO_INFERENCE: "1" };
   if (live) {
     delete env.CLAUDE_LHC_NO_INFERENCE;
     env.HOME = scratch.home;
   }
-  const entry = JSON.stringify(pathToFileURL(join(DIST, "index.js")).href);
-  const script = `const lib = await import(${entry}); process.stdout.write(JSON.stringify(await lib[${JSON.stringify(fn)}](...${JSON.stringify(args)})));`;
+  const url = JSON.stringify(pathToFileURL(join(DIST, entry)).href);
+  const script = `const lib = await import(${url}); process.stdout.write(JSON.stringify(await lib[${JSON.stringify(fn)}](...${JSON.stringify(args)})));`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: scratch.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
   scratch.groups.push(child.pid);
   let stdout = "";
@@ -255,6 +255,29 @@ async function callInScratchEnv(scratch, fn, args, { live = false } = {}) {
   child.stderr.on("data", (c) => { stderr += c; });
   const code = await new Promise((r) => child.on("exit", r));
   return { code, stderr, value: code === 0 ? JSON.parse(stdout) : undefined, error: /Error: (.+)/.exec(stderr)?.[1] };
+}
+
+function countedSidecar(scratch) {
+  const log = join(scratch.dir, "sidecar-starts.log");
+  const hook = join(scratch.dir, "count-start.mjs");
+  writeFileSync(hook, `import { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(log)}, process.pid + "\\n");\n`);
+  return { spawn: { command: process.execPath, args: ["--import", pathToFileURL(hook).href, ENTRY] }, starts: () => (existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").length : 0) };
+}
+
+async function inspectThroughClient(scratch, ids, home = scratch.lhcHome, options = {}) {
+  const counted = countedSidecar(scratch);
+  const res = await callInScratchEnv(scratch, "inspectSessions", [ids, { lhc: { home, spawn: counted.spawn } }], { ...options, entry: "client/index.js" });
+  const starts = counted.starts();
+  rmSync(join(scratch.dir, "sidecar-starts.log"), { force: true });
+  return { ...res, starts };
+}
+
+async function writeStockSession(scratch, sessionId, prompt) {
+  const native = await import(join(DIST, "nativeSessionFile.js"));
+  const path = native.nativeSessionPath({ sessionId, cwd: scratch.cwd, env: { CLAUDE_CONFIG_DIR: scratch.claudeHome } });
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, `${JSON.stringify({ parentUuid: null, isSidechain: false, type: "user", uuid: randomUUID(), sessionId, cwd: scratch.cwd, message: { role: "user", content: prompt } })}\n`);
+  return path;
 }
 
 async function writeSubagentFixture(scratch, sessionId, toolUseId) {
@@ -1080,7 +1103,32 @@ const drives = {
       assert(JSON.stringify(viaFirst.value) === JSON.stringify(viaCurrent.value), "gen1 and the compacted id read different messages");
       assert(JSON.stringify(viaFirst.value).includes("REMOVED-TURN answer two"), "the current generation lost a turn");
       assert(agent.value.length === 2 && agent.value[0].parent_tool_use_id === "toolu_after_compact", `getSubagentMessages(gen1): ${JSON.stringify(agent.value)}`);
-      return `getSessionMessages(gen1) reads compacted gen ${compacted.slice(0, 8)} (${viaFirst.value.length} messages; gen1 has no file); getSubagentMessages(gen1) finds an agent under the compacted gen`;
+
+      const plain = randomUUID();
+      const stockFile = await writeStockSession(scratch, plain, "STOCK-PROMPT");
+      const plainAgent = await writeSubagentFixture(scratch, plain, "toolu_stock");
+      const stockMessages = await callInScratchEnv(scratch, "getSessionMessages", [plain, store]);
+      const stockAgent = await callInScratchEnv(scratch, "getSubagentMessages", [plain, plainAgent, store]);
+      const byName = `no LHC thread holds the Claude session ${plain}`;
+      const inspected = await inspectThroughClient(scratch, [gen1, compacted, plain]);
+      const corrupt = join(scratch.dir, "corrupt-lhc");
+      mkdirSync(corrupt);
+      writeFileSync(join(corrupt, "registry.sqlite"), "not a sqlite database\n".repeat(64));
+      const unreadable = await inspectThroughClient(scratch, [gen1], corrupt);
+      const absent = join(scratch.dir, "absent-lhc");
+      const empty = await inspectThroughClient(scratch, [gen1, plain], absent);
+      writeFileSync(join(evidenceDir, "unknown-alias.json"), `${JSON.stringify({ plain, stockFile: existsSync(stockFile), getSessionMessages: { code: stockMessages.code, error: stockMessages.error, value: stockMessages.value }, getSubagentMessages: { code: stockAgent.code, error: stockAgent.error, value: stockAgent.value } }, null, 2)}\n`);
+      writeFileSync(join(evidenceDir, "inspect.json"), `${JSON.stringify({ ids: [gen1, compacted, plain], inspected, unreadable: { code: unreadable.code, error: unreadable.error, starts: unreadable.starts }, absent: { ...empty, storeExists: existsSync(absent) } }, null, 2)}\n`);
+      assert(stockMessages.code !== 0 && stockMessages.error === byName && stockMessages.value === undefined, `getSessionMessages of an unknown id with a stock file answered ${stockMessages.error ?? JSON.stringify(stockMessages.value)}`);
+      assert(stockAgent.code !== 0 && stockAgent.error === byName && stockAgent.value === undefined, `getSubagentMessages of an unknown id with a stock subagent answered ${stockAgent.error ?? JSON.stringify(stockAgent.value)}`);
+      assert(inspected.code === 0 && inspected.starts === 1, `inspectSessions exited ${inspected.code} after ${inspected.starts} sidecar starts: ${inspected.error}`);
+      const [first, current, unknown] = inspected.value;
+      assert(first.kind === "managed" && current.kind === "managed" && first.threadId === current.threadId, `gen1 and the compacted id: ${JSON.stringify(inspected.value)}`);
+      assert(first.currentSessionId === compacted && current.currentSessionId === compacted, `the current session is not the compacted generation: ${JSON.stringify(inspected.value)}`);
+      assert(unknown.kind === "unknown", `the stock id inspected as ${JSON.stringify(unknown)}`);
+      assert(unreadable.code !== 0 && /^LHC registry read failed: /.test(unreadable.error ?? ""), `an unreadable registry answered ${unreadable.error ?? JSON.stringify(unreadable.value)}`);
+      assert(empty.code === 0 && empty.value.every((a) => a.kind === "unknown") && !existsSync(absent), `an absent store answered ${JSON.stringify(empty.value)} and exists=${existsSync(absent)}`);
+      return `getSessionMessages(gen1) reads compacted gen ${compacted.slice(0, 8)} (${viaFirst.value.length} messages; gen1 has no file); getSubagentMessages(gen1) finds an agent under the compacted gen; an unknown id fails by name with a stock file under it; inspectSessions answers managed, managed, unknown from 1 sidecar start, a store error for an unreadable registry, and unknown for an absent store with no file created`;
     } finally { scratch.cleanup(); }
   },
 
@@ -1164,7 +1212,13 @@ const drives = {
       assert(messages.value.length > 0, "getSubagentMessages with the first session id returned nothing");
       const launchIds = s.msgs().flatMap((m) => (m.type === "assistant" ? m.message.content : [])).filter((b) => b.type === "tool_use").map((b) => b.id);
       assert(launchIds.includes(messages.value[0].parent_tool_use_id), `parent_tool_use_id ${messages.value[0].parent_tool_use_id} is not a tool call from the stream`);
-      return `agent ${agentId} launched in compacted gen ${compacted.slice(0, 8)}; getSubagentMessages(gen1) returned ${messages.value.length} messages, launch ${messages.value[0].parent_tool_use_id}`;
+      const ids = [gen1, compacted, randomUUID()];
+      const inspected = await inspectThroughClient(scratch, ids, scratch.lhcHome, { live: true });
+      writeFileSync(join(evidenceDir, "inspect.json"), `${JSON.stringify({ ids, ...inspected }, null, 2)}\n`);
+      assert(inspected.code === 0 && inspected.starts === 1, `inspectSessions exited ${inspected.code} after ${inspected.starts} sidecar starts: ${inspected.error}`);
+      const [first, current, unknown] = inspected.value;
+      assert(first.kind === "managed" && current.kind === "managed" && first.threadId === current.threadId && unknown.kind === "unknown", `inspectSessions answered ${JSON.stringify(inspected.value)}`);
+      return `agent ${agentId} launched in compacted gen ${compacted.slice(0, 8)}; getSubagentMessages(gen1) returned ${messages.value.length} messages, launch ${messages.value[0].parent_tool_use_id}; inspectSessions(gen1, compacted, random) answered managed, managed, unknown on thread ${first.threadId} from 1 sidecar start`;
     } finally {
       if (s && s.exitCode === undefined) await s.stop();
       if (s) s.saveEvidence(evidenceDir);

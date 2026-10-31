@@ -12,6 +12,13 @@
   in the host's process. From `claude-lhc/client` each runs in a
   short-lived sidecar (`lhc.spawn` or the default), which takes the
   operation's `CLAUDE_CONFIG_DIR`, `HOME` and `USERPROFILE` as its own.
+- `inspectSessions(sessionIds, { lhc: { home } })`, from `claude-lhc/client`
+  only, answers each id in order with `{ kind: "managed", threadId,
+  currentSessionId }` or `{ kind: "unknown" }`, from one sidecar start
+  (`src/history.ts`, `inspectSession` in `src/lhcHome.ts`). A superseded
+  id names the thread's current generation. A registry it cannot read
+  rejects the whole call with `LHC registry read failed: ...`. An absent
+  store answers `unknown` and creates no file.
 - `forkSession(sessionId, { lhc, dir?, upToMessageId?, title?, sessionStore? })`
   resolves any of the source thread's session ids, resolves
   `upToMessageId` with the host-rollback resolver (`src/rollbackAnchor.ts`)
@@ -40,7 +47,9 @@
   session id to its thread's current generation and returns the SDK's read
   of that file (`src/history.ts`). A host that kept only a thread's first
   session id reads what the thread serves now. A session id no LHC thread
-  holds reads as the SDK reads it.
+  holds rejects with `no LHC thread holds the Claude session <id>`, even
+  when a stock transcript sits under it. `getSubagentMessages` does the
+  same.
 - `getSubagentMessages(sessionId, agentId, { lhc, ...sdk options })` finds
   `agent-<agentId>.jsonl` under any generation of the thread
   (`nativeAgentSessions` in `src/nativeSessionFile.ts`), so an agent
@@ -112,7 +121,14 @@ the compacted generation's messages, the same as reading the compacted id,
 and `getSubagentMessages(gen1)`
 finds a subagent transcript written under the compacted generation, with
 `parent_tool_use_id` from its `.meta.json`. The transcript is a fixture of
-the CLI's file; `subagent-live` drives a real one.
+the CLI's file; `subagent-live` drives a real one. Then it writes a stock
+session and subagent under a random id. Both readers must reject that id
+by name with no value (`unknown-alias.json`). Last it calls
+`inspectSessions` from `dist/client/index.js` through a sidecar that logs
+each start: `[gen1, compacted, random]` must answer managed, managed,
+unknown on one thread, with the compacted id current, from one start. A
+registry of garbage must fail with `LHC registry read failed: `, and an
+absent store must answer unknown and still not exist (`inspect.json`).
 
 `client-ops` seeds a KEEP turn and a REMOVED turn, compacts, and writes
 a subagent fixture under the compacted generation. Its host process has
@@ -138,8 +154,10 @@ answer lacks REMOVED-BRAVO and the source's answer has it. Evidence:
 `subagent-live` takes one real turn, sends `/compact`, then asks Claude to
 launch a subagent. It passes when the agent's transcript sits under the
 compacted generation and `getSubagentMessages(gen1, agentId)` returns its
-messages with a `parent_tool_use_id` from the stream. Evidence:
-`subagent-messages.json`.
+messages with a `parent_tool_use_id` from the stream, and
+`inspectSessions([gen1, compacted, random])` from `claude-lhc/client`
+answers managed, managed, unknown on one thread from one sidecar start.
+Evidence: `subagent-messages.json`, `inspect.json`.
 
 ## Gotchas
 
