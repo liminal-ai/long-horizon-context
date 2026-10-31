@@ -26,11 +26,25 @@
   a prompt iterable that ends, sends an `end` frame. The sidecar exits
   once every prompt sent before it has its `result`, and the stream
   ends.
-- `examples/consumer.ts` is a host built on `query()` and `forkSession`.
+- `claude-lhc/client` (`src/client/index.ts`, `exports["./client"]`) is
+  the entry a host bundles. It exports `query()` and the three store
+  operations, `forkSession`, `getSessionMessages` and
+  `getSubagentMessages`, and imports only Node builtins and SDK types, so
+  a bundle of it holds no module from `lhc`, `effect`, `js-tiktoken` or
+  the Agent SDK. `package.json` sets `"sideEffects": false`, and
+  `assemble:npm` carries it into the tarball.
+- Each client store operation spawns the sidecar (`lhc.spawn` or the
+  default), sends one `op` frame and closes stdin. The sidecar answers
+  one `res` frame and exits. A failed operation rejects with the
+  sidecar's error. A sidecar that exits with no `res` rejects with its
+  exit code and the last 20 lines of its stderr. See
+  [fork.md](fork.md) for what each operation does.
+- `examples/consumer.ts` is a host built on `query()` and `forkSession`
+  from `claude-lhc/client`.
 
 ## How to get to it (user POV)
 
-As a host, `import { query } from "claude-lhc"` and pass the SDK options
+As a host, `import { query } from "claude-lhc/client"` and pass the SDK options
 with an `lhc` block. Iterate the result for messages, call its methods
 for controls, and call `close()` when done. Nothing else is needed: no
 frames, no process handling.
@@ -39,6 +53,7 @@ frames, no process handling.
 
 ```sh
 .agents/skills/verify-claude-lhc/drive.mjs client
+.agents/skills/verify-claude-lhc/drive.mjs client-ops
 .agents/skills/verify-claude-lhc/drive.mjs packed-install
 CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs consumer
 ```
@@ -60,14 +75,29 @@ under `build/`, runs `npm pack` on it, installs the tarball in a scratch
 project, and imports `claude-lhc` there. It passes when the import
 resolves to the installed `dist/index.js`, the tarball bundles
 `node_modules/lhc`, and `query()` with the default sidecar creates a
-thread and answers `getContextUsage`. `all` leaves it out because
+thread and answers `getContextUsage`. It then bundles the installed
+`claude-lhc/client` with esbuild and saves the metafile as
+`installed-client-meta.json`. It passes only when the installed manifest
+has `"sideEffects": false` and `./client`, and the metafile names no
+module from `lhc`, `effect`, `js-tiktoken` or the Agent SDK. `all` leaves it out because
 `npm install` needs the registry.
 
 `consumer` runs `examples/consumer.ts` with `HOME` and
 `CLAUDE_CONFIG_DIR` inside its scratch dir and auth from env. It passes on
 `CONSUMER: PASS` and saves the example's stdout and stderr.
 
+`client-ops` drives the client's store operations; [fork.md](fork.md)
+describes it.
+
 ## Gotchas
+
+- The default sidecar command resolves `sidecar.js` beside the client's
+  own module (`import.meta.url`). A host that bundles `claude-lhc/client`
+  moves that module, so it passes `lhc.spawn` to every `query()` and
+  store operation.
+- `test/client-entry.test.ts` bundles `src/client/index.ts` with a
+  metafile and fails on a forbidden module. It also bundles the root
+  entry and expects the engine there, which proves the check can fail.
 
 - The unit tests (`test/client.test.ts`) run the real sidecar from source
   through `lhc.spawn`, with the Agent SDK replaced by
