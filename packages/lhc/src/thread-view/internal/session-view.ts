@@ -9,6 +9,7 @@ import {
   type SessionThreadViewEntry,
   type SessionThreadViewEntrySource,
 } from "../../shared-tech/index.js";
+import { readTurnSteps } from "../../turns/index.js";
 import { readBoundaryPosition } from "./boundary.js";
 import { isEmptyThinkingHusk, type TailRenderContext, toolNamesByCallId, toolResultSessionContent } from "./render.js";
 import type { TailMessageRow } from "./snapshot.js";
@@ -52,8 +53,75 @@ function parseModelRef(model: string): { provider: string; modelId: string } | n
   return { provider: model.slice(0, slash), modelId: model.slice(slash + 1) };
 }
 
-function bandUserMessage(band: Band, renderedText: string): SessionThreadViewEntry {
-  return { role: "user", content: `[context · ${band}]\n${renderedText}`, sourceMessages: [] };
+function bandUserMessage(
+  band: Band,
+  renderedText: string,
+  sourceMessages: SessionThreadViewEntrySource[],
+): SessionThreadViewEntry {
+  return { role: "user", content: `[context · ${band}]\n${renderedText}`, sourceMessages };
+}
+
+interface ArrangedSubject {
+  band: Band;
+  subjectKind: "chunk" | "turn";
+  subjectId: string;
+  derivationUsed?: string;
+  part?: { fromStep: number; toStep: number };
+}
+
+type DatabaseHandle = Parameters<typeof readViewSnapshot>[0];
+
+const GAP_RUN_SEPARATOR = "–";
+
+function coveredScope(db: DatabaseHandle, subject: ArrangedSubject): { where: string; params: Array<string | number> } {
+  if (subject.subjectKind === "chunk") {
+    return { where: "m.turn_id IN (SELECT turn_id FROM chunk_member WHERE chunk_id = ?)", params: [subject.subjectId] };
+  }
+  const [first, last] = subject.subjectId.split(GAP_RUN_SEPARATOR);
+  if (subject.derivationUsed === "gap" && first !== undefined && last !== undefined) {
+    return {
+      where: `m.turn_id IN (SELECT turn_id FROM turns WHERE turn_order BETWEEN
+        (SELECT turn_order FROM turns WHERE turn_id = ?) AND (SELECT turn_order FROM turns WHERE turn_id = ?))`,
+      params: [first, last],
+    };
+  }
+  const partEnd =
+    subject.part === undefined
+      ? undefined
+      : readTurnSteps(db, subject.subjectId).steps.find((step) => step.index === subject.part?.toStep)?.lastOrder;
+  if (partEnd !== undefined) {
+    return { where: "m.turn_id = ? AND m.source_event_order <= ?", params: [subject.subjectId, partEnd] };
+  }
+  return { where: "m.turn_id = ?", params: [subject.subjectId] };
+}
+
+function bandLastSource(
+  db: DatabaseHandle,
+  subjects: readonly ArrangedSubject[],
+  compactPoint: number,
+): SessionThreadViewEntrySource[] {
+  let last: { message_id: string; source_event_order: number | bigint; idempotency_key: string | null } | undefined;
+  for (const subject of subjects) {
+    const { where, params } = coveredScope(db, subject);
+    const row = db
+      .prepare(
+        `SELECT m.message_id, m.source_event_order, e.idempotency_key FROM message m
+         JOIN event e ON e.event_order = m.source_event_order
+         WHERE m.deleted_at IS NULL AND m.source_event_order <= ? AND ${where}
+         ORDER BY m.source_event_order DESC LIMIT 1`,
+      )
+      .get(compactPoint, ...params) as typeof last;
+    if (row !== undefined && (last === undefined || Number(row.source_event_order) > Number(last.source_event_order)))
+      last = row;
+  }
+  return last === undefined ? [] : [{ messageId: last.message_id, idempotencyKey: last.idempotency_key }];
+}
+
+function arrangedSubjects(db: DatabaseHandle, viewId: string): ArrangedSubject[] {
+  const row = db.prepare("SELECT arrangement_json FROM thread_view WHERE view_id = ?").get(viewId) as
+    | { arrangement_json: string }
+    | undefined;
+  return row === undefined ? [] : (JSON.parse(row.arrangement_json) as ArrangedSubject[]);
 }
 
 function thinkingSignatureOf(message: TailMessageRow): string | undefined {
@@ -315,8 +383,10 @@ export function buildSessionThreadView(db: Parameters<typeof readViewSnapshot>[0
 
   const entries: SessionThreadViewEntry[] = [];
   if (snapshot !== null) {
+    const subjects = arrangedSubjects(db, snapshot.viewId);
     for (const band of snapshot.bands) {
-      entries.push(bandUserMessage(band.band, band.renderedText));
+      const covered = subjects.filter((subject) => subject.band === band.band);
+      entries.push(bandUserMessage(band.band, band.renderedText, bandLastSource(db, covered, compactPoint)));
     }
   }
   entries.push(...tailEntriesOf(tailRows, boundaryPosition, load));

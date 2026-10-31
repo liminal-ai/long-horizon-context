@@ -502,6 +502,8 @@ export {
   type CopyThreadInput,
   type CopyThreadReceipt,
   copyThread,
+  type DiscardCopyInput,
+  discardCopy,
   exportHistory,
   FORK_HOSTS,
   type ForkCompactChoice,

@@ -48,7 +48,8 @@ rmSync(outputRoot, { recursive: true, force: true });
 mkdirSync(join(outputRoot, "bin"), { recursive: true });
 
 const jsOnly = (source) => !/\.(?:d\.ts|d\.ts\.map|js\.map)$/.test(source);
-cpSync(join(packageRoot, "dist"), join(outputRoot, "dist"), { recursive: true, filter: jsOnly });
+const jsAndTypes = (source) => !/\.(?:d\.ts\.map|js\.map)$/.test(source);
+cpSync(join(packageRoot, "dist"), join(outputRoot, "dist"), { recursive: true, filter: jsAndTypes });
 cpSync(join(packageRoot, "bin", "claude-lhc.js"), join(outputRoot, "bin", "claude-lhc.js"));
 cpSync(join(packageRoot, "README.md"), join(outputRoot, "README.md"));
 cpSync(join(repoRoot, "LICENSE"), join(outputRoot, "LICENSE"));
@@ -81,7 +82,9 @@ const manifest = {
   author: { name: "Lee Moore" },
   type: "module",
   bin: { "claude-lhc": "./bin/claude-lhc.js" },
-  main: "./dist/sidecar.js",
+  main: claudeManifest.main,
+  types: claudeManifest.types,
+  exports: claudeManifest.exports,
   files: ["bin", "dist", "README.md", "LICENSE"],
   bundledDependencies: ["lhc"],
   dependencies: {

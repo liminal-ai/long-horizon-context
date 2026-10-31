@@ -24,6 +24,15 @@
   one otherwise, and the mid-turn continuation note's own. The CLI writes
   the prompt line under that uuid, so a failed turn's notice keeps through
   its own prompt or continuation note.
+- A projected line has a fresh uuid, so no capture key carries it. A
+  projected line that comes from a recorded message records that message's
+  capture key in `lhcSource`: a user prompt, an assistant block, a tool result, a runtime note, or a
+  summary band (which names the last message it covers). A synthetic
+  result the projection adds for an unanswered tool call has no source and
+  no `lhcSource`; it resolves through its parent assistant line. The resolver reads the
+  anchor's own line for that key before it walks ancestors, so a rollback to
+  a line of a restarted, compacted or forked generation resolves and logs
+  `via <that line's uuid>`. A summary band line cuts at the end of that band.
 - When neither the anchor nor any ancestor resolves (a uuid in no
   transcript, a subagent line in its own sidechain file), the start is
   refused with one `error` frame, `rollback anchor <uuid> not found`, and
@@ -51,8 +60,8 @@ Known limits, with no code change planned:
   CLI wrote. A prompt anchor there resolves to the assistant message
   before it, so the rollback also removes that prompt.
 - An uncaptured anchor whose `parentUuid` chain leaves the file that holds
-  it, or reaches a projected line (projection writes fresh uuids), resolves
-  nowhere. The start is refused and writes nothing.
+  it, or reaches only lines projected before projected lines recorded
+  `lhcSource`, resolves nowhere. The start is refused and writes nothing.
 
 ## How to get to it (user POV)
 
@@ -70,6 +79,7 @@ removed turn and the CLI rejected the forwarded uuid.
 .agents/skills/verify-claude-lhc/drive.mjs rollback-restart
 .agents/skills/verify-claude-lhc/drive.mjs rollback-synthetic-anchor
 .agents/skills/verify-claude-lhc/drive.mjs rollback-compact
+.agents/skills/verify-claude-lhc/drive.mjs rollback-projected-anchor
 .agents/skills/verify-claude-lhc/drive.mjs thread-start
 CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs rollback-live
 CLAUDE_LHC_LIVE=1 .agents/skills/verify-claude-lhc/drive.mjs rollback-live-compact
@@ -100,6 +110,11 @@ compacts, rolls back behind the compact point, sends `/compact`, and
 restarts. It passes when the rollback start compacted
 (`[lhc compact:auto]`) and none of the three projected files carries
 removed text.
+
+`rollback-projected-anchor` compacts, then rolls back to the KEEP line of
+the compacted projection, a projected uuid with no capture key. It passes
+when that line records an `lhcSource`, the start logs `rollback to event
+<n> via <that uuid>`, and the projected file keeps KEEP and drops REMOVED.
 
 `rollback-live` takes two real turns that set KEEP-ALPHA and then
 REMOVED-BRAVO, rolls back to the first turn's last assistant message, and

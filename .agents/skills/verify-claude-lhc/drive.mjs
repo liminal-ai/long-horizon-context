@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createInterface } from "node:readline";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../../..");
@@ -36,8 +36,25 @@ mkdirSync(join(RUN, "proof"), { recursive: true });
 const EVIDENCE = process.env.VERIFY_CLAUDE_LHC_EVIDENCE ?? mkdtempSync(join(RUN, "proof", "evidence-"));
 mkdirSync(EVIDENCE, { recursive: true });
 
+const PAUSE = new Int32Array(new SharedArrayBuffer(4));
+
+// The claude CLI a sidecar spawns can still write claude-home/.claude.json after the sidecar exits.
+function waitForGroupExit(pgid, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    try {
+      process.kill(-pgid, 0);
+    } catch {
+      return;
+    }
+    if (Date.now() > deadline) return;
+    Atomics.wait(PAUSE, 0, 0, 50);
+  }
+}
+
 class Scratch {
   constructor(label) {
+    this.groups = [];
     this.dir = mkdtempSync(join(SCRATCH_ROOT, `verify-claude-lhc-${label}-`));
     this.lhcHome = join(this.dir, "lhc");
     this.claudeHome = join(this.dir, "claude-home");
@@ -58,6 +75,7 @@ class Scratch {
     return file === undefined ? null : readFileSync(join(this.claudeHome, "projects", file), "utf8");
   }
   cleanup() {
+    for (const pgid of this.groups) waitForGroupExit(pgid);
     if (process.env.VERIFY_KEEP_SCRATCH === "1") console.log(`VERIFY-CLAUDE-LHC kept scratch: ${this.dir}`);
     else rmSync(this.dir, { recursive: true, force: true });
   }
@@ -76,6 +94,7 @@ class Sidecar {
       env.HOME = scratch.home;
     }
     this.child = spawn(process.execPath, [ENTRY], { stdio: ["pipe", "pipe", "pipe"], env, detached: true });
+    scratch.groups.push(this.child.pid);
     this.exited = new Promise((r) => this.child.on("exit", (code) => { this.exitCode = code; r(code); this.notify(); }));
     createInterface({ input: this.child.stderr }).on("line", (l) => { this.stderr.push(l); this.notify(); });
     createInterface({ input: this.child.stdout }).on("line", (l) => {
@@ -218,6 +237,40 @@ async function compactNow(s) {
 const lateServer = (res) => (res.ok ? res.value : []).find((server) => server.name === "late");
 const REFUSED_CONTROLS = { rewindFiles: { userMessageId: randomUUID() }, reinitialize: {}, seedReadState: { path: "a.txt", mtime: 1 } };
 const FLAG_MODEL = "claude-sonnet-4-6";
+
+async function callInScratchEnv(scratch, fn, args, { live = false } = {}) {
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: scratch.claudeHome, CLAUDE_LHC_NO_INFERENCE: "1" };
+  if (live) {
+    delete env.CLAUDE_LHC_NO_INFERENCE;
+    env.HOME = scratch.home;
+  }
+  const entry = JSON.stringify(pathToFileURL(join(DIST, "index.js")).href);
+  const script = `const lib = await import(${entry}); process.stdout.write(JSON.stringify(await lib[${JSON.stringify(fn)}](...${JSON.stringify(args)})));`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: scratch.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
+  scratch.groups.push(child.pid);
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (c) => { stdout += c; });
+  child.stderr.on("data", (c) => { stderr += c; });
+  const code = await new Promise((r) => child.on("exit", r));
+  return { code, stderr, value: code === 0 ? JSON.parse(stdout) : undefined, error: /Error: (.+)/.exec(stderr)?.[1] };
+}
+
+function threadRows(scratch) {
+  const registry = new DatabaseSync(join(scratch.lhcHome, "registry.sqlite"), { readOnly: true });
+  const threads = registry.prepare("SELECT thread_id, file_path FROM threads ORDER BY created_at").all();
+  const aliases = registry.prepare("SELECT alias, thread_id FROM thread_alias ORDER BY alias").all();
+  registry.close();
+  return {
+    threads: threads.map(({ thread_id, file_path }) => {
+      const db = new DatabaseSync(file_path, { readOnly: true });
+      const row = db.prepare("SELECT compact_trigger_tokens AS trigger, compact_target_tokens AS target FROM thread_metadata").get();
+      db.close();
+      return { thread_id, ...row };
+    }),
+    aliases,
+  };
+}
 
 const PA_TURNS = [["KEEP-TURN prompt one", "KEEP-TURN answer one"], ["REMOVED-TURN prompt two", "REMOVED-TURN answer two"]];
 const FILLER = " filler".repeat(400);
@@ -596,6 +649,23 @@ const drives = {
     } finally { scratch.cleanup(); }
   },
 
+  async "rollback-projected-anchor"(evidenceDir) {
+    const scratch = new Scratch("rollback-projected-anchor");
+    try {
+      const { gen1 } = await seedCaptured(scratch, PA_TURNS);
+      const { compacted } = await compactOnce(scratch, "compact", { resume: gen1 }, evidenceDir);
+      const lines = (scratch.projected(compacted) ?? "").trim().split("\n").map((l) => JSON.parse(l));
+      const anchor = lines.find((l) => JSON.stringify(l.message).includes("KEEP-TURN answer one"));
+      assert(anchor?.lhcSource, "the compacted projection's KEEP line records no capture key");
+      const { s, gen } = await startAndStop(scratch, "rollback", { resume: compacted, resumeSessionAt: anchor.uuid }, evidenceDir);
+      const projected = scratch.projected(gen) ?? "";
+      writeFileSync(join(evidenceDir, "projected.jsonl"), projected);
+      assert(s.stderr.some((l) => /rollback to event \d+ via /.test(l) && l.endsWith(`via ${anchor.uuid}`)), "no `rollback to event <n> via <projected uuid>` log line");
+      assert(projected.includes("KEEP-TURN answer one") && !projected.includes("REMOVED-TURN"), "the rollback to a projected line does not end at KEEP");
+      return `resumeSessionAt:<projected KEEP line after /compact> -> resolved through ${anchor.lhcSource.slice(0, 30)}..., projected keep=yes removed=no`;
+    } finally { scratch.cleanup(); }
+  },
+
   async "window-shrink"(evidenceDir) {
     const scratch = new Scratch("window-shrink");
     try {
@@ -748,6 +818,167 @@ const drives = {
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "transcript.jsonl"), s.frames.map((f) => JSON.stringify(f)).join("\n") + "\n");
       late.close();
+    }
+  },
+
+  async fork(evidenceDir) {
+    const scratch = new Scratch("fork");
+    try {
+      const { gen1, threadId, anchors } = await seedCaptured(scratch, PA_TURNS);
+      const policy = { lhc: { home: scratch.lhcHome, compact: { trigger: 700000, target: 140000 } } };
+      await startAndStop(scratch, "seed-policy", { ...policy, resume: gen1 }, evidenceDir);
+      const forked = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: anchors[0] }]);
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "fork-result.json"), `${JSON.stringify(forked, null, 2)}\n`);
+      assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
+      const { sessionId, headMessageId } = forked.value;
+      const forkFile = scratch.projected(sessionId) ?? "";
+      assert(headMessageId === JSON.parse(forkFile.trim().split("\n").filter((l) => JSON.parse(l).uuid).at(-1)).uuid, "headMessageId is not the fork file's last message");
+      const fork = await startAndStop(scratch, "resume-fork", { resume: sessionId }, evidenceDir);
+      const source = await startAndStop(scratch, "resume-source", { resume: gen1 }, evidenceDir);
+      const files = { "projected-fork": scratch.projected(fork.gen) ?? "", "projected-source": scratch.projected(source.gen) ?? "" };
+      for (const [label, text] of Object.entries(files)) writeFileSync(join(evidenceDir, `${label}.jsonl`), text);
+      const rows = threadRows(scratch);
+      writeFileSync(join(evidenceDir, "thread-rows.txt"), `${JSON.stringify(rows, null, 2)}\n`);
+      for (const text of [forkFile, files["projected-fork"]]) {
+        assert(text.includes("KEEP-TURN answer one"), "the fork lost the turn it was cut at");
+        assert(!text.includes("REMOVED-TURN"), "the fork carries the turn after the fork point");
+      }
+      assert(files["projected-source"].includes("REMOVED-TURN answer two"), "the source lost a turn after the fork");
+      const forkThread = threadIdFrom(fork.s);
+      assert(forkThread && forkThread !== threadId, `resuming the fork did not open a separate thread (${forkThread})`);
+      assert(fork.s.logHas("compact policy from thread: trigger 700000 target 140000"), "the fork did not carry the source's compact policy");
+      assert(rows.threads.length === 2 && rows.threads.every((t) => t.trigger === 700000 && t.target === 140000), `thread rows: ${JSON.stringify(rows.threads)}`);
+      const history = await callInScratchEnv(scratch, "getSessionMessages", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd }]);
+      const projectedKeep = history.value?.find((m) => JSON.stringify(m.message).includes("KEEP-TURN answer one"))?.uuid;
+      assert(projectedKeep && projectedKeep !== anchors[0], "the restarted source's history has no projected KEEP line");
+      const again = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: projectedKeep }]);
+      assert(again.code === 0, `forkSession at a history id failed: ${again.error ?? again.stderr}`);
+      const againFile = scratch.projected(again.value.sessionId) ?? "";
+      writeFileSync(join(evidenceDir, "projected-history-fork.jsonl"), againFile);
+      assert(againFile.includes("KEEP-TURN answer one") && !againFile.includes("REMOVED-TURN"), "the fork at a history id does not end at KEEP");
+      const head = await startAndStop(scratch, "resume-fork-at-head", { resume: sessionId, resumeSessionAt: headMessageId }, evidenceDir);
+      assert(head.s.stderr.some((l) => l.includes(`via ${headMessageId}`)), "resumeSessionAt the fork's headMessageId did not resolve");
+      await compactOnce(scratch, "compact-source", { resume: gen1 }, evidenceDir);
+      const afterCompact = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd }]);
+      assert(afterCompact.code === 0, `forkSession right after a /compact failed: ${afterCompact.error ?? afterCompact.stderr}`);
+      return `fork at KEEP -> thread ${forkThread} ends at KEEP (fork file and resume), source ${threadId} keeps REMOVED, both rows 700000/140000; a fork at the projected history id ends at KEEP; resumeSessionAt headMessageId resolves; a fork right after /compact succeeds`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async history(evidenceDir) {
+    const scratch = new Scratch("history");
+    try {
+      const { gen1 } = await seedCaptured(scratch, PA_TURNS);
+      const { compacted } = await compactOnce(scratch, "compact", { resume: gen1 }, evidenceDir);
+      const store = { lhc: { home: scratch.lhcHome }, dir: scratch.cwd };
+      const viaFirst = await callInScratchEnv(scratch, "getSessionMessages", [gen1, store]);
+      const viaCurrent = await callInScratchEnv(scratch, "getSessionMessages", [compacted, store]);
+      const agentId = `a${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+      const native = await import(join(DIST, "nativeSessionFile.js"));
+      const subagents = join(native.nativeProjectDir({ cwd: scratch.cwd, env: { CLAUDE_CONFIG_DIR: scratch.claudeHome } }), compacted, "subagents");
+      mkdirSync(subagents, { recursive: true });
+      const first = randomUUID();
+      const line = (uuid, parentUuid, type, text) => JSON.stringify({ parentUuid, isSidechain: true, agentId, type, uuid, sessionId: compacted, cwd: scratch.cwd, message: { role: type, content: [{ type: "text", text }] } });
+      writeFileSync(join(subagents, `agent-${agentId}.jsonl`), `${line(first, null, "user", "AGENT-TASK")}\n${line(randomUUID(), first, "assistant", "AGENT-REPLY")}\n`);
+      writeFileSync(join(subagents, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general-purpose", toolUseId: "toolu_after_compact" }));
+      const agent = await callInScratchEnv(scratch, "getSubagentMessages", [gen1, agentId, store]);
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "history.json"), `${JSON.stringify({ gen1, compacted, viaFirst: viaFirst.value, agent: agent.value }, null, 2)}\n`);
+      assert(viaFirst.code === 0 && viaCurrent.code === 0 && agent.code === 0, `library call failed: ${viaFirst.error ?? viaCurrent.error ?? agent.error}`);
+      assert(scratch.projected(gen1) === null, "gen1 has a native file; the drive needs it to have none");
+      assert(viaFirst.value.length > 0 && viaFirst.value.every((m) => m.session_id === compacted), "getSessionMessages(gen1) did not read the compacted generation");
+      assert(JSON.stringify(viaFirst.value) === JSON.stringify(viaCurrent.value), "gen1 and the compacted id read different messages");
+      assert(JSON.stringify(viaFirst.value).includes("REMOVED-TURN answer two"), "the current generation lost a turn");
+      assert(agent.value.length === 2 && agent.value[0].parent_tool_use_id === "toolu_after_compact", `getSubagentMessages(gen1): ${JSON.stringify(agent.value)}`);
+      return `getSessionMessages(gen1) reads compacted gen ${compacted.slice(0, 8)} (${viaFirst.value.length} messages; gen1 has no file); getSubagentMessages(gen1) finds an agent under the compacted gen`;
+    } finally { scratch.cleanup(); }
+  },
+
+  async "fork-live"(evidenceDir) {
+    const gate = liveAuth();
+    if (gate.skip) return gate;
+    const scratch = new Scratch("fork-live");
+    scratch.home = join(scratch.dir, "home");
+    mkdirSync(scratch.home, { recursive: true });
+    const liveOptions = (extra) => baseOptions(scratch, { ...extra, env: { ...process.env, HOME: scratch.home, CLAUDE_CONFIG_DIR: scratch.claudeHome } });
+    const sidecars = [];
+    const ask = "What was the second secret word I asked you to remember? If there was none, say NONE. Reply with the word only.";
+    try {
+      const gen1 = randomUUID();
+      const first = new Sidecar(scratch, "turns", { live: true });
+      sidecars.push(first);
+      first.send({ type: "start", options: liveOptions({ sessionId: gen1 }) });
+      await first.waitFor(() => first.logHas(`as generation ${gen1}`), "created-thread log line");
+      const kept = await liveTurn(first, "Remember the secret word KEEP-ALPHA. Reply with just OK.");
+      const removed = await liveTurn(first, "Remember the second secret word REMOVED-BRAVO. Reply with just OK.");
+      assert((await first.stop()) === 0, "turn sidecar did not exit 0");
+      assert(kept.result?.subtype === "success" && removed.result?.subtype === "success" && kept.lastAssistantUuid, "a seed turn failed");
+      const forked = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: kept.lastAssistantUuid }], { live: true });
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "fork-result.json"), `${JSON.stringify(forked, null, 2)}\n`);
+      assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
+      const answers = {};
+      for (const [label, resume] of [["fork", forked.value.sessionId], ["source", gen1]]) {
+        const s = new Sidecar(scratch, `ask-${label}`, { live: true });
+        sidecars.push(s);
+        s.send({ type: "start", options: liveOptions({ resume }) });
+        await s.waitFor(() => s.logHas("resumed thread"), `${label} resumed-thread log line`);
+        const turn = await liveTurn(s, ask);
+        assert((await s.stop()) === 0, `${label} sidecar did not exit 0`);
+        assert(turn.result?.subtype === "success" && turn.result.is_error !== true, `the ${label} turn failed: ${JSON.stringify(turn.result?.errors ?? turn.result?.result)}`);
+        answers[label] = String(turn.result.result ?? "");
+      }
+      writeFileSync(join(evidenceDir, "answers.json"), `${JSON.stringify(answers, null, 2)}\n`);
+      assert(!answers.fork.includes("REMOVED-BRAVO"), `the fork knows the turn after the fork point: ${answers.fork}`);
+      assert(answers.source.includes("REMOVED-BRAVO"), `the source lost the second word: ${answers.source}`);
+      return `fork at the first turn answers "${answers.fork.trim()}"; source answers "${answers.source.trim()}"`;
+    } finally {
+      for (const s of sidecars) if (s.exitCode === undefined) await s.stop();
+      mkdirSync(evidenceDir, { recursive: true });
+      for (const s of sidecars) s.saveEvidence(evidenceDir);
+      writeFileSync(join(evidenceDir, "transcript.jsonl"), sidecars.flatMap((s) => s.frames.map((f) => JSON.stringify({ sidecar: s.label, ...f }))).join("\n") + "\n");
+      scratch.cleanup();
+    }
+  },
+
+  async "subagent-live"(evidenceDir) {
+    const gate = liveAuth();
+    if (gate.skip) return gate;
+    const scratch = new Scratch("subagent-live");
+    scratch.home = join(scratch.dir, "home");
+    mkdirSync(scratch.home, { recursive: true });
+    const liveOptions = (extra) => baseOptions(scratch, { ...extra, env: { ...process.env, HOME: scratch.home, CLAUDE_CONFIG_DIR: scratch.claudeHome } });
+    let s;
+    try {
+      const gen1 = randomUUID();
+      s = new Sidecar(scratch, "subagent", { live: true });
+      s.send({ type: "start", options: liveOptions({ sessionId: gen1 }) });
+      await s.waitFor(() => s.logHas(`as generation ${gen1}`), "created-thread log line");
+      const warm = await liveTurn(s, "Reply with just OK.");
+      assert(warm.result?.subtype === "success", "the first turn failed");
+      const before = s.msgs().length;
+      s.send(userFrame("/compact"));
+      await s.waitFor(() => s.msgs().slice(before).some((m) => m.type === "result"), "compact result", 180_000);
+      const compacted = s.msgs().slice(before).find((m) => m.type === "system" && m.subtype === "compact_boundary")?.session_id;
+      assert(compacted, "no compact_boundary after /compact");
+      const launched = await liveTurn(s, "Use your Agent tool (also called Task) to launch one general-purpose subagent whose whole job is to reply with the word SUBAGENT-PONG. When it returns, reply with just DONE.");
+      assert((await s.stop()) === 0, "sidecar did not exit 0");
+      assert(launched.result?.subtype === "success", `the subagent turn failed: ${JSON.stringify(launched.result?.result)}`);
+      const agentFile = scratch.projectedFiles().find((f) => f.includes(`${compacted}/subagents/`) && /agent-[^/]+\.jsonl$/.test(f));
+      assert(agentFile, `no subagent transcript under the compacted generation ${compacted}`);
+      const agentId = /agent-([^/]+)\.jsonl$/.exec(agentFile)[1];
+      const messages = await callInScratchEnv(scratch, "getSubagentMessages", [gen1, agentId, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd }], { live: true });
+      mkdirSync(evidenceDir, { recursive: true });
+      writeFileSync(join(evidenceDir, "subagent-messages.json"), `${JSON.stringify({ gen1, compacted, agentId, ...messages }, null, 2)}\n`);
+      assert(messages.code === 0, `getSubagentMessages failed: ${messages.error ?? messages.stderr}`);
+      assert(messages.value.length > 0, "getSubagentMessages with the first session id returned nothing");
+      const launchIds = s.msgs().flatMap((m) => (m.type === "assistant" ? m.message.content : [])).filter((b) => b.type === "tool_use").map((b) => b.id);
+      assert(launchIds.includes(messages.value[0].parent_tool_use_id), `parent_tool_use_id ${messages.value[0].parent_tool_use_id} is not a tool call from the stream`);
+      return `agent ${agentId} launched in compacted gen ${compacted.slice(0, 8)}; getSubagentMessages(gen1) returned ${messages.value.length} messages, launch ${messages.value[0].parent_tool_use_id}`;
+    } finally {
+      if (s && s.exitCode === undefined) await s.stop();
+      if (s) s.saveEvidence(evidenceDir);
       scratch.cleanup();
     }
   },
@@ -810,7 +1041,7 @@ async function main() {
   const which = process.argv[2] ?? "all";
   const names =
     which === "all"
-      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "window-shrink", "controls", "controls-refused", "set-compact-policy", "turn", "rollback-live", "rollback-live-compact", "controls-live"]
+      ? ["start", "start-no-home", "compact", "compact-policy", "restart", "resume-superseded-alias", "resume-unknown", "resume-empty", "thread-start", "rollback", "rollback-unknown-anchor", "rollback-restart", "rollback-synthetic-anchor", "rollback-compact", "rollback-projected-anchor", "window-shrink", "controls", "controls-refused", "set-compact-policy", "fork", "history", "turn", "rollback-live", "rollback-live-compact", "controls-live", "fork-live", "subagent-live"]
       : [which];
   const summary = { evidence: EVIDENCE, startedAt: new Date().toISOString(), drives: {} };
   let failed = false;

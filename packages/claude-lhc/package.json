@@ -4,6 +4,14 @@
   "private": true,
   "description": "Claude Code sidecar for t3code: runs the Claude Agent SDK, records into LHC, forwards the native stream over JSONL stdio.",
   "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "bin": {
     "claude-lhc": "./bin/claude-lhc.js"
   },

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { SessionAssistantPart, SessionThreadView, SessionThreadViewEntry } from "lhc";
+import type { SessionAssistantPart, SessionThreadView, SessionThreadViewEntry, SessionThreadViewMessage } from "lhc";
 
 export interface ProjectionStamp {
   sessionId: string;
@@ -11,6 +11,10 @@ export interface ProjectionStamp {
 }
 
 export type NativeEntry = Record<string, unknown>;
+
+export const PROJECTED_SOURCE_FIELD = "lhcSource";
+export const FALLBACK_CLAUDE_CODE_VERSION = "2.1.259";
+export const FALLBACK_PROJECTION_MODEL = "claude-sonnet-5";
 
 export type ThinkingRebuildArm = "signed_verbatim" | "omit";
 export const SELECTED_THINKING_REBUILD_ARM: ThinkingRebuildArm = "signed_verbatim";
@@ -39,32 +43,43 @@ export function projectView(
     gitBranch: stamp.gitBranch ?? "",
     timestamp: now,
   });
-  const push = (line: NativeEntry): void => {
+  const push = (line: NativeEntry, source: string | null): void => {
     const uuid = randomUUID();
-    lines.push({ ...line, uuid });
+    lines.push({ ...line, ...(source === null ? {} : { [PROJECTED_SOURCE_FIELD]: source }), uuid });
     parent = uuid;
   };
-  const userText = (content: string | NativeEntry[]): void =>
-    push({
-      ...base(),
-      type: "user",
-      message: { role: "user", content },
-      permissionMode: stamp.permissionMode,
-      promptSource: "sdk",
-    });
-  const toolResult = (toolCallId: string, content: string | NativeEntry[], isError: boolean): void => {
-    openCalls.delete(toolCallId);
-    push({
-      ...base(),
-      type: "user",
-      message: {
-        role: "user",
-        content: [{ tool_use_id: toolCallId, type: "tool_result", content, is_error: isError }],
+  const userText = (content: string | NativeEntry[], source: string | null): void =>
+    push(
+      {
+        ...base(),
+        type: "user",
+        message: { role: "user", content },
+        permissionMode: stamp.permissionMode,
+        promptSource: "sdk",
       },
-    });
+      source,
+    );
+  const toolResult = (
+    toolCallId: string,
+    content: string | NativeEntry[],
+    isError: boolean,
+    source: string | null,
+  ): void => {
+    openCalls.delete(toolCallId);
+    push(
+      {
+        ...base(),
+        type: "user",
+        message: {
+          role: "user",
+          content: [{ tool_use_id: toolCallId, type: "tool_result", content, is_error: isError }],
+        },
+      },
+      source,
+    );
   };
   const settleOpenCalls = (): void => {
-    for (const id of [...openCalls]) toolResult(id, DANGLING_RESULT, true);
+    for (const id of [...openCalls]) toolResult(id, DANGLING_RESULT, true, null);
   };
 
   for (const entry of view.entries) {
@@ -72,43 +87,57 @@ export function projectView(
       if (entry.kind === "model_change" && entry.modelId !== "") model = entry.modelId;
       continue;
     }
+    const source = sourceKey(entry);
     if (entry.role === "user") {
       settleOpenCalls();
-      userText(entry.blocks ?? entry.content);
+      userText(entry.blocks ?? entry.content, source);
       continue;
     }
     if (entry.role === "toolResult") {
-      toolResult(entry.toolCallId, entry.blocks ?? entry.content, entry.isError === true);
+      toolResult(entry.toolCallId, entry.blocks ?? entry.content, entry.isError === true, source);
       continue;
     }
     settleOpenCalls();
-    const blocks = entry.content.map((part) => nativeBlock(part, arm)).filter((b): b is NativeEntry => b !== null);
+    const aligned = entry.sourceMessages.length === entry.content.length;
+    const blocks = entry.content
+      .map((part, i) => ({
+        block: nativeBlock(part, arm),
+        source: aligned ? (entry.sourceMessages[i]?.idempotencyKey ?? null) : source,
+      }))
+      .filter((b): b is { block: NativeEntry; source: string | null } => b.block !== null);
     if (blocks.length === 0) continue;
-    const stop = blocks.some((b) => b["type"] === "tool_use") ? "tool_use" : "end_turn";
+    const stop = blocks.some(({ block }) => block["type"] === "tool_use") ? "tool_use" : "end_turn";
     const id = `msg_${randomUUID().replace(/-/g, "")}`;
     const requestId = `req_${randomUUID().replace(/-/g, "")}`;
-    for (const [index, block] of blocks.entries()) {
+    for (const [index, { block, source: blockSource }] of blocks.entries()) {
       if (block["type"] === "tool_use") openCalls.add(String(block["id"]));
-      push({
-        ...base(),
-        type: "assistant",
-        apiBlockIndex: index,
-        requestId,
-        message: {
-          model: entry.model ?? model,
-          id,
-          type: "message",
-          role: "assistant",
-          content: [block],
-          stop_reason: stop,
-          stop_sequence: null,
-          usage: { input_tokens: 0, output_tokens: 0 },
+      push(
+        {
+          ...base(),
+          type: "assistant",
+          apiBlockIndex: index,
+          requestId,
+          message: {
+            model: entry.model ?? model,
+            id,
+            type: "message",
+            role: "assistant",
+            content: [block],
+            stop_reason: stop,
+            stop_sequence: null,
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
         },
-      });
+        blockSource,
+      );
     }
   }
   settleOpenCalls();
   return lines;
+}
+
+function sourceKey(entry: SessionThreadViewMessage): string | null {
+  return entry.sourceMessages.at(-1)?.idempotencyKey ?? null;
 }
 
 function nativeBlock(part: SessionAssistantPart, arm: ThinkingRebuildArm): NativeEntry | null {

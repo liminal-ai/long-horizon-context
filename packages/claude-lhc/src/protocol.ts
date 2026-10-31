@@ -31,6 +31,7 @@ export type SidecarOptions = {
   compact?: { trigger: number; target: number };
   forceRebuildFailure?: boolean;
 };
+export type LhcStore = { lhc: Pick<SidecarOptions, "home"> };
 
 export type SidecarRequestMethod = "canUseTool" | "onUserDialog";
 

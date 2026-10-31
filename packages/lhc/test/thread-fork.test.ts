@@ -4,7 +4,14 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { main } from "../src/cli.js";
-import { initLhc, intakeStream, threads } from "../src/index.js";
+import {
+  CONTEXT_COMPACT_CONTINUE_REASON,
+  createDeterministicInferenceCallbacks,
+  type InferenceCallbacks,
+  initLhc,
+  intakeStream,
+  threads,
+} from "../src/index.js";
 import {
   createInferenceCallbacksDouble,
   o200k,
@@ -158,7 +165,7 @@ describe("threads.copyThread", () => {
     expect(!exists.ok && exists.error.code).toBe("path_exists");
   });
 
-  it("refuses a mid-turn source and leaves no file; allowed explicitly; runtime notes do not count", async () => {
+  it("refuses a mid-turn source and leaves no file; allowed explicitly; runtime notes and compact markers do not count", async () => {
     const filePath = store.threadPath();
     const created = await threads.newThread({ filePath, registryPath: store.registryPath });
     if (!created.ok) throw new Error(created.error.reason);
@@ -186,13 +193,122 @@ describe("threads.copyThread", () => {
     expect(allowed.ok).toBe(true);
 
     const source = await idleSource();
-    await send(source.filePath, [validEvent("runtime_note", { payload: { text: "[lhc compact:auto] ..." } })]);
+    await send(source.filePath, [
+      validEvent("runtime_note", { payload: { text: "[lhc compact:auto] ..." } }),
+      validEvent("compact_continuation_marker"),
+    ]);
     const idle = await threads.copyThread({
       source: { filePath: source.filePath },
       filePath: join(target.threadsDir, "noted.sqlite"),
       registryPath: target.registry,
     });
     expect(idle.ok).toBe(true);
+  });
+});
+
+describe("threads.copyThread idle check after a compact", () => {
+  it("refuses an open turn that continues a turn a mid-turn compact ended", async () => {
+    const filePath = store.threadPath();
+    const created = await threads.newThread({ filePath, registryPath: store.registryPath });
+    if (!created.ok) throw new Error(created.error.reason);
+    await send(filePath, [
+      validEvent("user_prompt", { payload: { text: "long task" } }),
+      validEvent("tool_call", { payload: { toolCallId: "c1", toolName: "bash", arguments: {} } }),
+      validEvent("tool_result", { payload: { toolCallId: "c1", content: "done" } }),
+      validEvent("turn_end", { payload: { outcomeReason: CONTEXT_COMPACT_CONTINUE_REASON } }),
+      validEvent("compact_continuation_marker"),
+      validEvent("runtime_note", { payload: { text: "[runtime note] continue the task" } }),
+    ]);
+    const target = targetHome();
+    const refused = await threads.copyThread({
+      source: { filePath },
+      filePath: join(target.threadsDir, "continuing.sqlite"),
+      registryPath: target.registry,
+    });
+    expect(!refused.ok && refused.error.code).toBe("mid_turn");
+    expect(!refused.ok && refused.error.reason).toContain("continues a turn a compact interrupted");
+    expect(existsSync(join(target.threadsDir, "continuing.sqlite"))).toBe(false);
+  });
+});
+
+describe("threads.discardCopy", () => {
+  it("removes an unbound copy's file and registry row, and refuses a bound thread", async () => {
+    const source = await idleSource();
+    const target = targetHome();
+    const copied = await threads.copyThread({
+      source: { filePath: source.filePath },
+      filePath: join(target.threadsDir, "discard.sqlite"),
+      registryPath: target.registry,
+    });
+    if (!copied.ok) throw new Error(copied.error.reason);
+    const bound = await threads.copyThread({
+      source: { filePath: source.filePath },
+      filePath: join(target.threadsDir, "bound.sqlite"),
+      registryPath: target.registry,
+    });
+    if (!bound.ok) throw new Error(bound.error.reason);
+    await threads.bindHost({
+      threadId: bound.value.threadId,
+      registryPath: target.registry,
+      host: "claude-lhc",
+      sessionId: "s1",
+    });
+
+    const discarded = await threads.discardCopy({ threadId: copied.value.threadId, registryPath: target.registry });
+    expect(discarded.ok).toBe(true);
+    expect(existsSync(copied.value.filePath)).toBe(false);
+    const listed = await threads.listThreads({ registryPath: target.registry });
+    expect(listed.ok && listed.value.map((t) => t.threadId)).toEqual([bound.value.threadId]);
+
+    const refused = await threads.discardCopy({ threadId: bound.value.threadId, registryPath: target.registry });
+    expect(!refused.ok && refused.error.reason).toContain("t3code-lhc:s1");
+    expect(existsSync(bound.value.filePath)).toBe(true);
+  });
+});
+
+describe("threads.copyThread and a source worker's lease", () => {
+  it("a copy taken while the source holds a derivation lease drains without waiting for the lease", async () => {
+    const source = await idleSource();
+    const deterministic = createDeterministicInferenceCallbacks();
+    let entered = (): void => {};
+    let release = (): void => {};
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const gated = Object.fromEntries(
+      Object.entries(deterministic).map(([operation, call]) => [
+        operation,
+        async (...args: unknown[]) => {
+          entered();
+          await gate;
+          return (call as (...input: unknown[]) => unknown)(...args);
+        },
+      ]),
+    ) as unknown as InferenceCallbacks;
+    const worker = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: gated });
+    const held = worker.work.drain({ filePath: source.filePath });
+    await started;
+    try {
+      const target = targetHome();
+      const copied = await threads.copyThread({
+        source: { filePath: source.filePath },
+        filePath: join(target.threadsDir, "leased.sqlite"),
+        registryPath: target.registry,
+      });
+      if (!copied.ok) throw new Error(copied.error.reason);
+      const sdk = initLhc({ tokenFamily: "o200k", mode: "manual", inferenceCallbacks: deterministic });
+      const drained = await sdk.work.drain({ filePath: copied.value.filePath });
+      expect(drained.ok && drained.value.stoppedBecause).toBe("empty");
+      expect(drained.ok && drained.value.ran.length).toBeGreaterThan(0);
+      const status = await sdk.threadView.status({ filePath: copied.value.filePath });
+      expect(status.ok && status.value.derivation.pending).toBe(0);
+    } finally {
+      release();
+      await held;
+    }
   });
 });
 
