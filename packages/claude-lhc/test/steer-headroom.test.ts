@@ -153,7 +153,7 @@ async function requestsUntilStop(steerAt: (step: number) => boolean): Promise<nu
   return requests;
 }
 
-test("a steer the CLI has not started delays the automatic compact by at most one more request", async () => {
+test("once the CLI starts a held steer with the next tool result, the compact runs one request later and later prompts cannot delay it", async () => {
   const quiet = await requestsUntilStop(() => false);
   const crossing = quiet.findIndex((tokens) => tokens >= TRIGGER);
   const once = await requestsUntilStop((step) => step === crossing);

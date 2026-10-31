@@ -166,8 +166,10 @@ async function runOnce(seed: number): Promise<Run> {
   const random = prng(seed);
   const dir = mkdtempSync(join(tmpdir(), "claude-lhc-input-order-"));
   clis.length = 0;
+  // A reactive host sends only prompts, one at a time, when a compact is pending, stops a turn or is deferred, or the CLI is idle.
+  const host = (["eager", "slow", "during compacts", "during turns", "reactive"] as const)[Math.floor(random() * 5)];
   const inputs = Array.from({ length: 1 + Math.floor(random() * 8) }, (_, i) =>
-    random() < 0.35 ? "/compact" : `P${i}`,
+    host !== "reactive" && random() < 0.35 ? "/compact" : `P${i}`,
   );
   const run: Run = {
     seed,
@@ -189,10 +191,9 @@ async function runOnce(seed: number): Promise<Run> {
     compactsBehindHeld: 0,
     started: [],
   };
-  const heavyRate = random() < 0.5 ? 0.6 : 0.2;
+  const heavyRate = host === "reactive" ? 0.8 : random() < 0.5 ? 0.6 : 0.2;
   // Some hosts run a system prompt larger than the trigger, so even a rebuilt view starts past it.
   startingContext = random() < 0.2 ? COMPACT.trigger + 5_000 : 1_000;
-  const host = (["eager", "slow", "during compacts", "during turns", "at stops"] as const)[Math.floor(random() * 5)];
   const statusAt = (): number[] =>
     run.frames.flatMap((m, i) => ((m as { subtype?: string }).subtype === "status" ? [i] : []));
   const compactingSince = (): number | null => {
@@ -275,7 +276,7 @@ async function runOnce(seed: number): Promise<Run> {
         uuids: [next.uuid ?? ""],
         stage: "begin",
         heavy: random() < heavyRate,
-        tool: random() < 0.6,
+        tool: random() < (host === "reactive" ? 0.9 : 0.6),
         afterTool: false,
       };
     }
@@ -292,6 +293,7 @@ async function runOnce(seed: number): Promise<Run> {
       );
       await settle();
       const hook = cli.options.hooks?.PostToolUse?.[0]?.hooks[0] as HookCallback;
+      const logsBefore = logs.length;
       const answer = await hook(
         {
           hook_event_name: "PostToolUse",
@@ -309,8 +311,11 @@ async function runOnce(seed: number): Promise<Run> {
         stoppedLabels = turn.labels;
         run.midTurnStops += 1;
         turn.stage = "stopped";
+        if (sent < inputs.length && random() < 0.5) sendOne();
         return;
       }
+      if (logs.slice(logsBefore).some((line) => line.includes("waiting for the CLI to start a prompt it holds")))
+        if (sent < inputs.length && random() < 0.5) sendOne();
       if (random() < 0.5)
         for (const steer of cli.pulled.splice(0)) {
           cli.emit(lifecycle(cli, steer.uuid, "started"));
@@ -384,8 +389,11 @@ async function runOnce(seed: number): Promise<Run> {
         (cli?.turn?.stage === "stopped" ||
           (cli?.turn != null && compactingSince() === null && random() < 0.25) ||
           (idle && (sent === 0 || random() < 0.05)))) ||
-      (host === "at stops" &&
-        (cli?.turn?.stage === "stopped" || deferredAt !== null || (idle && (sent === 0 || random() < 0.05))));
+      (host === "reactive" &&
+        (cli?.turn?.stage === "stopped" ||
+          (deferredAt !== null && !run.frames.slice(deferredAt).some((m) => boundaryTrigger(m) !== null)) ||
+          (cli?.turn != null && autoCompactPending() && random() < 0.5) ||
+          (idle && (sent === 0 || random() < 0.05))));
     if (sent < inputs.length && typing) out.push(["send", async () => sendOne()]);
     const burst: [string, () => Promise<void>] = [
       "burst",
@@ -393,7 +401,7 @@ async function runOnce(seed: number): Promise<Run> {
         for (let n = 2 + Math.floor(random() * 2); n > 0 && sent < inputs.length; n--) sendOne();
       },
     ];
-    if (inputs.length - sent >= 2 && typing) out.push(burst);
+    if (inputs.length - sent >= 2 && typing && host !== "reactive") out.push(burst);
     if (sent >= inputs.length && !endSent)
       out.push([
         "end",
