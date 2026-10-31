@@ -7,10 +7,20 @@
   `#compact("manual")`: builds/installs the continuation view, records a
   `compact_continuation_marker`, projects the view into a new native
   session file, and swaps generations (`session.ts`).
-- Frame contract, in native order: `system/status` (`compacting`) →
-  `system/status` (`null`, `compact_result: "success"`) →
-  `system/compact_boundary` (new session id, `compact_metadata`) →
-  `result`.
+- Frame contract, in native order: `command_lifecycle` `queued` for the
+  `/compact` prompt's uuid when it arrives, then `command_lifecycle`
+  `started` → `system/status` (`compacting`) → `system/status` (`null`,
+  `compact_result: "success"`) → `system/compact_boundary` (new session
+  id, `compact_metadata`) → `result` → `command_lifecycle` `completed`.
+  The `result` carries `user_message_uuid`, `user_message_uuids: [<uuid>]`
+  and `local_command: "compact"`, as a stock CLI's does, so a host pairs it
+  with the `/compact` it sent. A `/compact` sent without a uuid gets one
+  from the sidecar. `packages/claude-lhc/test/fixtures/stock-compact.jsonl`
+  holds the stock frames from Claude Code 2.1.312, and
+  `packages/claude-lhc/test/manual-compact.test.ts` compares the sidecar's
+  frames to them. LHC still mints a new session id at the boundary, where
+  stock keeps its own, and it sends no `init`, summary `user` frame or
+  `<local-command-stdout>` replay for the compact.
 - Compact policy: a new thread stores the start's `lhc.compact` pair on
   its `thread_metadata` row. A resume keeps the stored pair and logs
   `compact policy from thread: trigger <t> target <g>` when the host sent
@@ -43,6 +53,10 @@
   because a resume keeps the stored pair.
 - Failed rebuild (e.g. start option `lhc.forceRebuildFailure`): status
   `compact_result: "failed"` with `compact_error`, old generation kept.
+  The `result` is still `subtype: "success"` with `is_error: false`, and
+  its text starts `Error during compaction: `, the way stock Claude Code
+  2.1.312 answers a `/compact` whose summary request fails. A host reads
+  the failure from the status frame.
 
 ## How to get to it (user POV)
 
@@ -58,10 +72,17 @@ thread) never changed.
 .agents/skills/verify-claude-lhc/drive.mjs compact
 ```
 
-User-only half: the exact frame order above and a boundary session id
-different from gen1. Outcome half: `<claude
-home>/projects/<key>/<gen2>.jsonl` exists in the isolated Claude home and
-the store still holds exactly one thread.
+The drive sends `/compact` with its own uuid. User-only half: the exact
+frame order above, lifecycle included, a boundary session id different
+from gen1, and a result on gen2 that carries the uuid and
+`local_command: "compact"`. It then resumes the thread with
+`lhc.forceRebuildFailure` and sends a second `/compact` with a uuid. That
+one passes when the order is lifecycle `queued`, `started`, status
+`compacting`, status `failed`, `result`, lifecycle `completed`, and the
+result carries the uuid with text starting `Error during compaction: `.
+Its frames are `compact/failed-rebuild.frames.jsonl`. Outcome half:
+`<claude home>/projects/<key>/<gen2>.jsonl` exists in the isolated Claude
+home and the store still holds exactly one thread.
 
 ```sh
 .agents/skills/verify-claude-lhc/drive.mjs compact-policy
