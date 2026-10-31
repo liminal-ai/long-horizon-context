@@ -1,14 +1,37 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { threads } from "lhc";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { forkSession } from "../src/index.ts";
-import { resolveSession, threadRef } from "../src/lhcHome.ts";
-import { captureReplies, seedLhc, seedThread } from "./support/seedThread.ts";
+import { registryPath, resolveSession, threadRef } from "../src/lhcHome.ts";
+import { captureReplies, captureTurn, seedLhc, seedThread } from "./support/seedThread.ts";
+
+let failDrain = false;
+vi.mock("../src/lhcHome.ts", async (importOriginal) => {
+  const real = await importOriginal<typeof import("../src/lhcHome.ts")>();
+  return {
+    ...real,
+    createLhc: (options: Parameters<typeof real.createLhc>[0]) => {
+      const lhc = real.createLhc(options);
+      if (!failDrain) return lhc;
+      const drain = async () => ({
+        ok: false as const,
+        error: {
+          errorClass: "system_error" as const,
+          code: "storage_failure" as const,
+          reason: "forced drain failure",
+        },
+      });
+      return { ...lhc, work: { drain } };
+    },
+  };
+});
 
 let dir = "";
 const saved = { config: process.env.CLAUDE_CONFIG_DIR, noInference: process.env.CLAUDE_LHC_NO_INFERENCE };
 beforeEach(() => {
+  failDrain = false;
   dir = mkdtempSync(join(tmpdir(), "claude-lhc-fork-derivations-"));
   process.env.CLAUDE_CONFIG_DIR = join(dir, "claude-home");
   process.env.CLAUDE_LHC_NO_INFERENCE = "1";
@@ -41,4 +64,19 @@ test("a fork settles the derivation work it carries and its rollback queues, and
 
   expect(await pending(home, (await resolveSession(forked.sessionId, home))!)).toBe(0);
   expect(await pending(home, threadId)).toBe(queued);
+});
+
+test("a fork that fails after the copy leaves no copied thread, registry row or session file", async () => {
+  const home = join(dir, "lhc");
+  const { gen1, threadId } = await seedThread(home, dir);
+  await captureTurn(home, threadId, "KEEP-PROMPT", "KEEP-ANSWER");
+  failDrain = true;
+
+  await expect(forkSession(gen1, { lhc: { home }, dir })).rejects.toThrow("forced drain failure");
+
+  const listed = await threads.listThreads({ registryPath: registryPath(home) });
+  expect(listed.ok && listed.value.map((thread) => thread.threadId)).toEqual([threadId]);
+  expect(readdirSync(join(home, "threads")).filter((name) => name.endsWith(".sqlite"))).toHaveLength(1);
+  const projects = join(process.env.CLAUDE_CONFIG_DIR!, "projects");
+  expect(existsSync(projects) ? readdirSync(projects, { recursive: true }).map(String) : []).toEqual([]);
 });

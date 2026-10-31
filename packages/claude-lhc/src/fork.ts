@@ -1,12 +1,25 @@
 import { randomUUID } from "node:crypto";
-import { type ForkSessionOptions, type ForkSessionResult, renameSession } from "@anthropic-ai/claude-agent-sdk";
+import { rm } from "node:fs/promises";
+import {
+  type ForkSessionOptions,
+  type ForkSessionResult,
+  getSessionInfo,
+  renameSession,
+} from "@anthropic-ai/claude-agent-sdk";
 import { threads } from "lhc";
-import { bindSession, createLhc, newThreadFilePath, registryPath, resolveSession, threadRef } from "./lhcHome.js";
-import { writeProjectedSession } from "./nativeSessionFile.js";
+import {
+  bindSession,
+  createLhc,
+  currentSession,
+  newThreadFilePath,
+  registryPath,
+  resolveSession,
+  threadRef,
+} from "./lhcHome.js";
+import { nativeSessionPath, writeProjectedSession } from "./nativeSessionFile.js";
 import { FALLBACK_CLAUDE_CODE_VERSION, FALLBACK_PROJECTION_MODEL, projectView } from "./projection/project.js";
 import { type LhcStore, parseSidecarOptions } from "./protocol.js";
 import { appendRollback, resolveRollbackAnchor } from "./rollbackAnchor.js";
-import { nativeLhcTitle } from "./session.js";
 import { seedTokenFamilyFromStartModel } from "./token-family.js";
 
 export async function forkSession(
@@ -34,6 +47,7 @@ export async function forkSession(
       ? null
       : await resolveRollbackAnchor({ lhc, thread: source, anchor: upTo, sessionId, cwd: sourceCwd, env });
   if (upTo !== undefined && anchor === null) throw new Error(`rollback anchor ${upTo} not found`);
+  const title = options.title?.trim() ? options.title : await forkTitle(sessionId, home, sourceCwd);
 
   const copied = await threads.copyThread({
     source,
@@ -44,28 +58,40 @@ export async function forkSession(
   });
   if (!copied.ok) throw new Error(`LHC thread copy failed: ${copied.error.code}: ${copied.error.reason}`);
   const forkId = copied.value.threadId;
-  const fork = threadRef(forkId, home);
-  if (anchor !== null) await appendRollback(lhc, fork, anchor, `fork upToMessageId ${anchor.anchor}`);
-  const drained = await lhc.work.drain(fork);
-  if (!drained.ok) throw new Error(`LHC derivation drain failed: ${drained.error.reason}`);
-
-  const view = await lhc.threadView.getSessionThreadView(fork);
-  if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);
   const forkSessionId = randomUUID();
-  const entries = projectView(view.value, {
-    sessionId: forkSessionId,
-    cwd,
-    version: FALLBACK_CLAUDE_CODE_VERSION,
-    permissionMode: "default",
-    model: FALLBACK_PROJECTION_MODEL,
-  });
-  if (entries.length > 0) {
-    await writeProjectedSession({ sessionId: forkSessionId, cwd, entries, env });
-    await renameSession(forkSessionId, options.title ?? nativeLhcTitle(forkId), { dir: cwd });
+  try {
+    const fork = threadRef(forkId, home);
+    if (anchor !== null) await appendRollback(lhc, fork, anchor, `fork upToMessageId ${anchor.anchor}`);
+    const drained = await lhc.work.drain(fork);
+    if (!drained.ok) throw new Error(`LHC derivation drain failed: ${drained.error.reason}`);
+
+    const view = await lhc.threadView.getSessionThreadView(fork);
+    if (!view.ok) throw new Error(`LHC view read failed: ${view.error.reason}`);
+    const entries = projectView(view.value, {
+      sessionId: forkSessionId,
+      cwd,
+      version: FALLBACK_CLAUDE_CODE_VERSION,
+      permissionMode: "default",
+      model: FALLBACK_PROJECTION_MODEL,
+    });
+    if (entries.length > 0) {
+      await writeProjectedSession({ sessionId: forkSessionId, cwd, entries, env });
+      await renameSession(forkSessionId, title, { dir: cwd });
+    }
+    await bindSession(forkId, forkSessionId, home);
+    const head = entries.at(-1)?.["uuid"];
+    return typeof head === "string" ? { sessionId: forkSessionId, headMessageId: head } : { sessionId: forkSessionId };
+  } catch (cause) {
+    await threads.discardCopy({ threadId: forkId, registryPath: registryPath(home) });
+    await rm(nativeSessionPath({ sessionId: forkSessionId, cwd, env }), { force: true });
+    throw cause;
   }
-  await bindSession(forkId, forkSessionId, home);
-  const head = entries.at(-1)?.["uuid"];
-  return typeof head === "string" ? { sessionId: forkSessionId, headMessageId: head } : { sessionId: forkSessionId };
+}
+
+async function forkTitle(sessionId: string, home: string, dir: string): Promise<string> {
+  const current = (await currentSession(sessionId, home)) ?? sessionId;
+  const info = await getSessionInfo(current, { dir });
+  return `${info?.summary ?? "Forked session"} (fork)`;
 }
 
 async function threadCwd(threadId: string, home: string): Promise<string | undefined> {

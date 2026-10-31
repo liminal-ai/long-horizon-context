@@ -2,8 +2,9 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Options } from "@anthropic-ai/claude-agent-sdk";
-import { threads } from "lhc";
+import { DatabaseSync } from "node:sqlite";
+import { getSessionInfo, type Options } from "@anthropic-ai/claude-agent-sdk";
+import { type MessageEventInput, threads } from "lhc";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { capturePrompt, captureReplies, captureTurn, SEED_POLICY, seedLhc, seedThread } from "./support/seedThread.ts";
 
@@ -29,7 +30,7 @@ vi.mock("@anthropic-ai/claude-agent-sdk", async (importOriginal) => {
 
 const { forkSession, getSessionMessages } = await import("../src/index.ts");
 const { ClaudeLhcSession } = await import("../src/session.ts");
-const { resolveSession, threadRef } = await import("../src/lhcHome.ts");
+const { registryPath, resolveSession, threadRef } = await import("../src/lhcHome.ts");
 const { nativeSessionPath } = await import("../src/nativeSessionFile.ts");
 
 let dir = "";
@@ -259,6 +260,93 @@ describe("forkSession", () => {
     );
     expect(file).toContain("KEEP-ANSWER");
     expect(file).not.toContain("LATER");
+  });
+
+  test("an untitled fork takes the SDK default title and a titled fork keeps its own", async () => {
+    const { gen1, threadId } = await twoTurns();
+    await resume(gen1);
+
+    const untitled = await forkSession(gen1, store());
+    const titled = await forkSession(gen1, { ...store(), title: "Branch B" });
+
+    expect((await getSessionInfo(untitled.sessionId, { dir: cwd }))?.summary).toBe(`[LHC] ${threadId} (fork)`);
+    expect((await getSessionInfo(titled.sessionId, { dir: cwd }))?.summary).toBe("Branch B");
+  });
+
+  test("a fork at a part band keeps exactly the steps the band covers", async () => {
+    const { gen1, threadId } = await seedThread(home, cwd);
+    await captureTurn(home, threadId, "FIRST-PROMPT", "FIRST-ANSWER");
+    const lhc = seedLhc();
+    const ref = threadRef(threadId, home);
+    const event = (eventKind: MessageEventInput["eventKind"], payload: Record<string, unknown>): MessageEventInput =>
+      ({
+        eventKind,
+        idempotencyKey: `claude-lhc:${randomUUID()}:0:${eventKind}`,
+        actor: "test",
+        harness: "claude-lhc",
+        payload,
+      }) as MessageEventInput;
+    const step = (stepIndex: number, label: string) => [
+      event("assistant_text", { text: `STEP-${stepIndex} ${label.repeat(6)}`, stepIndex }),
+      event("tool_call", { toolCallId: `c${stepIndex}`, toolName: "read", arguments: { step: stepIndex }, stepIndex }),
+      event("tool_result", {
+        toolCallId: `c${stepIndex}`,
+        content: `RESULT-${stepIndex} ${label.repeat(6)}`,
+        stepIndex,
+      }),
+    ];
+    const sent = await lhc.intakeStream.messageEvents(ref, [
+      event("user_prompt", { text: "LONG-TASK" }),
+      ...step(0, "alpha "),
+      ...step(1, "bravo "),
+      ...step(2, "charlie "),
+    ]);
+    if (!sent.ok) throw new Error(sent.error.reason);
+    await lhc.work.drain(ref);
+    const file = (await threads.resolve({ threadId, registryPath: registryPath(home) })) as {
+      ok: true;
+      value: { filePath: string };
+    };
+    const db = new DatabaseSync(file.value.filePath, { readOnly: true });
+    const tailTokens = Number(
+      (
+        db
+          .prepare(
+            `SELECT COALESCE(SUM(token_estimate), 0) AS t FROM message WHERE source_event_order >
+           (SELECT MAX(source_event_order) FROM message WHERE step_index = 0)`,
+          )
+          .get() as { t: number }
+      ).t,
+    );
+    db.close();
+    const compacted = await lhc.threadView.compact(ref, {
+      params: {
+        lowerBound: tailTokens * 2,
+        percentages: { full: 50, smooth: 20, detailed: 15, brief: 15 },
+        newestClosedProtection: 0,
+      },
+    });
+    if (!compacted.ok) throw new Error(compacted.error.reason);
+    const toStep = compacted.value.parts?.[0]?.toStep;
+    expect(toStep).toBeLessThan(2);
+    const late = await lhc.intakeStream.messageEvents(ref, [
+      event("assistant_text", { text: "LATE-STEP-0", stepIndex: 0 }),
+      event("turn_end", {}),
+    ]);
+    if (!late.ok) throw new Error(late.error.reason);
+    await resume(gen1);
+    const band = (await getSessionMessages(gen1, store()))
+      .filter((message) => {
+        const text = JSON.stringify(message.message);
+        return text.includes("[context · ") && text.includes("alpha");
+      })
+      .at(-1)?.uuid;
+    expect(band).toBeDefined();
+
+    const forked = await forkSession(gen1, { ...store(), upToMessageId: band! });
+
+    expect(projected(forked.sessionId)).not.toContain(`STEP-${toStep! + 1}`);
+    expect(projected(forked.sessionId)).not.toContain("LATE-STEP-0");
   });
 
   test("forking leaves the source thread, its aliases and its served view unchanged", async () => {

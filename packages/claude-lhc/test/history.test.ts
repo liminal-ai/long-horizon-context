@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { type Options, getSessionMessages as sdkSessionMessages } from "@anthropic-ai/claude-agent-sdk";
@@ -88,7 +88,13 @@ function writeSession(sessionId: string, prompt: string): void {
   writeFileSync(path, `${JSON.stringify({ ...line, message: { role: "user", content: prompt } })}\n`);
 }
 
-function writeSubagent(sessionId: string, agentId: string, toolUseId: string, nested: string[] = []): void {
+function writeSubagent(
+  sessionId: string,
+  agentId: string,
+  toolUseId: string,
+  nested: string[] = [],
+  reply = "AGENT-REPLY",
+): string {
   const subagents = join(nativeProjectDir({ cwd, env: process.env }), sessionId, "subagents", ...nested);
   mkdirSync(subagents, { recursive: true });
   const first = randomUUID();
@@ -105,9 +111,10 @@ function writeSubagent(sessionId: string, agentId: string, toolUseId: string, ne
     });
   writeFileSync(
     join(subagents, `agent-${agentId}.jsonl`),
-    `${line(first, null, "user", "AGENT-TASK")}\n${line(randomUUID(), first, "assistant", "AGENT-REPLY")}\n`,
+    `${line(first, null, "user", "AGENT-TASK")}\n${line(randomUUID(), first, "assistant", reply)}\n`,
   );
   writeFileSync(join(subagents, `agent-${agentId}.meta.json`), JSON.stringify({ agentType: "general", toolUseId }));
+  return join(subagents, `agent-${agentId}.jsonl`);
 }
 
 describe("getSessionMessages", () => {
@@ -155,6 +162,26 @@ describe("getSubagentMessages", () => {
     const messages = await getSubagentMessages(gen1, agentId, store());
 
     expect(JSON.stringify(messages)).toContain("AGENT-REPLY");
+  });
+
+  test("an agent id under two generations reads the newest transcript", async () => {
+    const { gen1, current } = await compactedThread();
+    writeSession(gen1, "FIRST-PROMPT");
+    const agentId = `a${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const files = new Map(
+      [gen1, current].map((sessionId) => [sessionId, writeSubagent(sessionId, agentId, "toolu_x")]),
+    );
+    const projectDir = nativeProjectDir({ cwd, env: process.env });
+    const [listedFirst, listedSecond] = readdirSync(projectDir, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && files.has(entry.name))
+      .map((entry) => entry.name);
+    writeSubagent(listedFirst!, agentId, "toolu_x", [], "OLDER-REPLY");
+    writeSubagent(listedSecond!, agentId, "toolu_x", [], "NEWER-REPLY");
+    utimesSync(files.get(listedFirst!)!, new Date(Date.now() - 60_000), new Date(Date.now() - 60_000));
+
+    const messages = await getSubagentMessages(gen1, agentId, store());
+
+    expect(JSON.stringify(messages)).toContain("NEWER-REPLY");
   });
 
   test("a subagent another thread launched is not returned", async () => {

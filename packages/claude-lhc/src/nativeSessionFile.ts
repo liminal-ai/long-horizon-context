@@ -150,7 +150,7 @@ export async function nativeMessageChain(input: {
 export async function nativeAgentSessions(agentId: string, env: NodeJS.ProcessEnv = process.env): Promise<string[]> {
   const projects = NodePath.join(effectiveClaudeHome(env), "projects");
   const transcript = `agent-${agentId}.jsonl`;
-  const holders: string[] = [];
+  const holders: Array<{ session: string; mtimeMs: number }> = [];
   for (const project of await NodeFS.promises.readdir(projects).catch(() => [] as string[])) {
     const projectDir = NodePath.join(projects, project);
     const sessions = await NodeFS.promises.readdir(projectDir, { withFileTypes: true }).catch(() => []);
@@ -158,8 +158,11 @@ export async function nativeAgentSessions(agentId: string, env: NodeJS.ProcessEn
       if (!session.isDirectory()) continue;
       const subagents = NodePath.join(projectDir, session.name, "subagents");
       const tree = await NodeFS.promises.readdir(subagents, { recursive: true }).catch(() => [] as string[]);
-      if (tree.some((entry) => NodePath.basename(entry) === transcript)) holders.push(session.name);
+      const found = tree.find((entry) => NodePath.basename(entry) === transcript);
+      if (found === undefined) continue;
+      const stat = await NodeFS.promises.stat(NodePath.join(subagents, found)).catch(() => null);
+      holders.push({ session: session.name, mtimeMs: stat?.mtimeMs ?? 0 });
     }
   }
-  return holders;
+  return holders.sort((a, b) => b.mtimeMs - a.mtimeMs).map((holder) => holder.session);
 }
