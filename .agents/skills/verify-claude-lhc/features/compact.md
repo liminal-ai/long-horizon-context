@@ -104,8 +104,13 @@ summarization quality over real turns is the live standalone proof's job.
   swap. From the tool boundary where that wait starts, later prompts
   queue in the sidecar, so only the steers the CLI already holds delay
   the compact (stderr `waiting for the CLI to start a prompt it holds`).
-  `packages/claude-lhc/test/steer-headroom.test.ts` measures the cost:
-  one more request past the trigger. A CLI that sends no
+  The sidecar does not limit that wait; it ends when the CLI starts the
+  steer. Claude Code 2.1.310 started a queued steer with the next tool
+  result in 9 of 9 live runs, so the compact ran one request later.
+  `packages/claude-lhc/test/steer-headroom.test.ts` measures that
+  request on a fake CLI that starts the steer the same way. A compact
+  whose rebuilt view is still past the trigger compacts again only after
+  a larger request (stderr `waits for new context`). A CLI that sends no
   lifecycle frames gets the plain rule that a `result` answers every
   sent prompt.
 - A `/compact` waits until every earlier input is answered, then

@@ -120,7 +120,7 @@ exits non-zero on any FAIL. Waits are on frames/log lines, not sleeps.
 | `controls-live` | real turn, `setMcpServers{late}`, `/compact`, ask Claude to call `mcp__late__ping` (live only) | the turn after the swap succeeds in the new generation | `mcp__late__ping` returns `pong from late`; `transcript.jsonl` |
 | `fork-live` | two real turns (KEEP-ALPHA, REMOVED-BRAVO), `forkSession` at the first turn's last message, ask the fork and then the source for the second word (live only) | both turns succeed; the fork's answer lacks REMOVED-BRAVO and the source's has it | `fork-result.json`, `answers.json`, `transcript.jsonl` |
 | `subagent-live` | one real turn, `/compact`, a turn that launches a subagent, `getSubagentMessages(gen1, <agent>)` (live only) | the subagent turn succeeds | the agent transcript sits under the compacted generation; `subagent-messages.json` holds its messages, launched by a tool call from the stream |
-| `prompt-order-live` | three live sidecars: `/compact` then ONE and TWO sent behind it; a tool turn on a 1000/500 policy with a prompt sent after the first tool call; the same turn with HELD and `/compact` sent during its mid-turn compact (live only) | every input answered and the sidecar exits 0 | TWO's first `command_lifecycle` comes after ONE's `result`; the pending prompt starts once and is answered across an automatic compact; the manual boundary comes after HELD's `result`. Frames and stderr per case |
+| `prompt-order-live` | three live sidecars: `/compact` then ONE and TWO sent behind it; a turn on a 45000/500 policy that reads an 88000-character `filler.txt` and then runs Bash, with PENDING sent after the Bash call and QUEUED sent once the compact falls due; a turn that does the same and then runs a second Bash, with HELD and `/compact` sent during its mid-turn compact (live only) | every input answered and the sidecar exits 0 | TWO's first `command_lifecycle` comes after ONE's `result`; PENDING starts once and its `result` comes after an automatic boundary, and QUEUED gets its own later `result`; the manual boundary comes after HELD's `result`. Frames and stderr per case |
 | `consumer` | `examples/consumer.ts` through `query()`: two secret-word turns, `/compact`, close, `forkSession` at the first turn and resume the fork, restart the source by its first session id, rollback to the first turn (live only) | `CONSUMER: PASS`, one `ok` line per step | the fork and rollback answers have only the first word and the source restart after the fork has both; `consumer.stdout.log`, `consumer.stderr.log`; no `~/.claude/projects` entry for the scratch dir |
 
 Feature files (user POV, harness steps, gotchas):
@@ -263,11 +263,11 @@ All executable, all runnable from a clean shell (paths resolve from the
 script, not the cwd):
 
 - `doctor.sh` — read-only worth-driving check. `doctor.sh` (no args).
-- `drive.mjs` — the seeded drives. `drive.mjs <start|start-no-home|compact|compact-policy|restart|resume-superseded-alias|resume-unknown|resume-empty|thread-start|rollback|rollback-unknown-anchor|rollback-restart|rollback-synthetic-anchor|rollback-compact|rollback-projected-anchor|window-shrink|controls|controls-refused|set-compact-policy|fork|history|client|turn|rollback-live|rollback-live-compact|controls-live|fork-live|subagent-live|consumer|all>`;
+- `drive.mjs` — the seeded drives. `drive.mjs <start|start-no-home|compact|compact-policy|restart|resume-superseded-alias|resume-unknown|resume-empty|thread-start|rollback|rollback-unknown-anchor|rollback-restart|rollback-synthetic-anchor|rollback-compact|rollback-projected-anchor|window-shrink|controls|controls-refused|set-compact-policy|fork|history|client|turn|rollback-live|rollback-live-compact|controls-live|fork-live|subagent-live|prompt-order-live|consumer|all>`;
   env `VERIFY_RUN_DIR`, `VERIFY_SCRATCH_ROOT`, `VERIFY_CLAUDE_LHC_EVIDENCE`, `VERIFY_KEEP_SCRATCH=1`, `MODEL`,
   `CLAUDE_BIN`, `CLAUDE_LHC_LIVE=1` (turn runs the isolated live
   standalone, and the `rollback-live`, `controls-live`, `fork-live`,
-  `subagent-live` and `consumer` drives run real turns, instead of SKIP).
+  `subagent-live`, `prompt-order-live` and `consumer` drives run real turns, instead of SKIP).
 - `cleanup.sh` — remove kept scratch dirs. `cleanup.sh <dir>...`.
 - `check-links.mjs` — frontmatter, required sections, feature-file H2s,
   relative links, helper executability. `check-links.mjs` (no args);
