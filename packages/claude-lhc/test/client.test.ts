@@ -167,10 +167,13 @@ describe("query through the sidecar", () => {
     for await (const message of q) messages.push(message);
     const boundaries = messages.flatMap((m, i) => (m.type === "system" && m.subtype === "compact_boundary" ? [i] : []));
     const two = messages.findIndex((m) => m.type === "assistant" && replyText([m]) === "echo: two");
-    expect(messages.filter((m) => m.type === "result")).toHaveLength(4);
+    const results = messages.flatMap((m, i) => (m.type === "result" ? [i] : []));
+    expect(results).toHaveLength(4);
     expect(boundaries).toHaveLength(2);
     expect(two).toBeGreaterThan(boundaries[0] ?? -1);
     expect(boundaries[1]).toBeGreaterThan(two);
+    expect(results[2]).toBeGreaterThan(two);
+    expect(results[3]).toBeGreaterThan(boundaries[1] ?? -1);
   });
 
   test("two /compact inputs sent during a turn each get a result", async () => {

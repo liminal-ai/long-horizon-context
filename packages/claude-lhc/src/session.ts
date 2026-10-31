@@ -720,10 +720,11 @@ export class ClaudeLhcSession {
     this.#heldUntilContinuedTurnEnds = false;
     this.#inFlight = Math.max(0, this.#inFlight - 1);
     const trigger = this.#dueCompact();
+    const owed = this.#compactResultsOwed;
+    this.#compactResultsOwed = 0;
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);
-    for (; this.#compactResultsOwed > 0; this.#compactResultsOwed -= 1)
-      this.#io.emit(this.#syntheticResult(this.#gen?.sessionId ?? "", Date.now(), ""));
+    for (let i = 0; i < owed; i++) this.#io.emit(this.#syntheticResult(this.#gen?.sessionId ?? "", Date.now(), ""));
     await this.#replayHeld();
     this.#endIfIdle();
   }
