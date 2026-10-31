@@ -129,15 +129,13 @@ describe("getSessionMessages", () => {
     expect(JSON.stringify(messages)).toContain("FIRST-ANSWER");
   });
 
-  test("a session id no LHC thread holds reads as the SDK reads it", async () => {
+  test("a session id no LHC thread holds fails by name, even with a stock transcript under it", async () => {
     await seedThread(home, cwd);
     const plain = randomUUID();
     writeSession(plain, "PLAIN-PROMPT");
+    expect(await sdkSessionMessages(plain)).toHaveLength(1);
 
-    const messages = await getSessionMessages(plain, store());
-
-    expect(messages).toHaveLength(1);
-    expect(messages).toEqual(await sdkSessionMessages(plain));
+    await expect(getSessionMessages(plain, store())).rejects.toThrow(`no LHC thread holds the Claude session ${plain}`);
   });
 });
 
@@ -182,6 +180,18 @@ describe("getSubagentMessages", () => {
     const messages = await getSubagentMessages(gen1, agentId, store());
 
     expect(JSON.stringify(messages)).toContain("NEWER-REPLY");
+  });
+
+  test("a session id no LHC thread holds fails by name, even with a stock subagent under it", async () => {
+    await seedThread(home, cwd);
+    const plain = randomUUID();
+    writeSession(plain, "PLAIN-PROMPT");
+    const agentId = `a${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    writeSubagent(plain, agentId, "toolu_plain");
+
+    await expect(getSubagentMessages(plain, agentId, store())).rejects.toThrow(
+      `no LHC thread holds the Claude session ${plain}`,
+    );
   });
 
   test("a subagent another thread launched is not returned", async () => {
