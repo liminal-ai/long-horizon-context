@@ -37,9 +37,9 @@
   once every prompt sent before it has its `result`, and the stream
   ends.
 - `claude-lhc/client` (`src/client/index.ts`, `exports["./client"]`) is
-  the entry a host bundles. It exports `query()` and the three store
-  operations, `forkSession`, `getSessionMessages` and
-  `getSubagentMessages`, and imports only Node builtins and SDK types, so
+  the entry a host bundles. It exports `query()` and the four store
+  operations, `forkSession`, `getSessionMessages`, `getSubagentMessages`
+  and `inspectSessions`, and imports only Node builtins and SDK types, so
   a bundle of it holds no module from `lhc`, `effect`, `js-tiktoken` or
   the Agent SDK. `package.json` sets `"sideEffects": false`, and
   `assemble:npm` carries it into the tarball.
@@ -90,12 +90,24 @@ under `build/`, runs `npm pack` on it, installs the tarball in a scratch
 project, and imports `claude-lhc` there. It passes when the import
 resolves to the installed `dist/index.js`, the tarball bundles
 `node_modules/lhc`, and `query()` with the default sidecar creates a
-thread and answers `getContextUsage`. It then bundles the installed
-`claude-lhc/client` with esbuild and saves the metafile as
-`installed-client-meta.json`. It passes only when the installed manifest
-has `"sideEffects": false` and `./client`, and the metafile names no
-module from `lhc`, `effect`, `js-tiktoken` or the Agent SDK. `all` leaves it out because
-`npm install` needs the registry.
+thread and answers `getContextUsage`. It then bundles
+`export * from "claude-lhc/client"` in the scratch project with esbuild,
+which resolves the installed manifest's `./client` entry to
+`node_modules/claude-lhc/dist/client/index.js`, and saves the metafile as
+`installed-client-meta.json`. Its inputs list the installed
+`dist/client/` modules, and its output's `exports` list names `query`,
+`forkSession`, `getSessionMessages`, `getSubagentMessages` and
+`inspectSessions`. It passes only when the installed manifest has
+`"sideEffects": false` and `./client`, and the metafile names no module
+from `lhc`, `effect`, `js-tiktoken` or the Agent SDK. `all` leaves it out
+because `npm install` needs the registry.
+
+A release cut, such as 0.2.0, runs `packed-install` at the release head.
+The tarball's name carries the `packages/claude-lhc/package.json` version.
+Run it twice with `VERIFY_KEEP_SCRATCH=1`, hash each kept scratch dir's
+`claude-lhc-<version>.tgz` with `sha512sum`, and compare. Equal hashes show
+that the bytes a host vendors are reproducible from the commit. Remove both
+kept dirs with `cleanup.sh`.
 
 `consumer` runs `examples/consumer.ts` with `HOME` and
 `CLAUDE_CONFIG_DIR` inside its scratch dir and auth from env. It passes on
