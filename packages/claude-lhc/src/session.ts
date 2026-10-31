@@ -194,7 +194,7 @@ export class ClaudeLhcSession {
   #midTurnFailed = false;
   #swap: { stoppedAt: number; sessionId: string } | null = null;
   #heldPrompts: SDKUserMessage[] = [];
-  #unanswered = 0;
+  #inFlight = 0;
   #inputEnded = false;
   #heldUntilContinuedTurnEnds = false;
   #model: string | undefined;
@@ -286,7 +286,6 @@ export class ClaudeLhcSession {
   }
 
   async pushUser(message: SDKUserMessage): Promise<void> {
-    if (compactCommand(message) === null) this.#unanswered += 1;
     await this.#push(message);
     this.#endIfIdle();
   }
@@ -297,13 +296,21 @@ export class ClaudeLhcSession {
   }
 
   #endIfIdle(): void {
-    if (this.#inputEnded && this.#unanswered === 0 && !this.#compacting && !this.#closed) this.#io.end();
+    if (
+      this.#inputEnded &&
+      this.#inFlight === 0 &&
+      this.#heldPrompts.length === 0 &&
+      !this.#compacting &&
+      !this.#closed
+    )
+      this.#io.end();
   }
 
   async #push(message: SDKUserMessage): Promise<void> {
     if (this.#closed) return;
     if (compactCommand(message) !== null) {
-      if (this.#turnOpen || this.#compacting || this.#unanswered > 0) this.#pendingCompact = "manual";
+      if (this.#compacting) this.#heldPrompts.push(message);
+      else if (this.#turnOpen || this.#inFlight > 0) this.#pendingCompact = "manual";
       else await this.#compact("manual");
       return;
     }
@@ -326,6 +333,7 @@ export class ClaudeLhcSession {
       return;
     }
     const promptUuid = message.uuid ?? randomUUID();
+    this.#inFlight += 1;
     gen.input.push({
       message: { ...message, uuid: promptUuid },
       before: async () => {
@@ -701,7 +709,7 @@ export class ClaudeLhcSession {
     this.#turnOpen = false;
     this.#turnStartedAt = undefined;
     this.#heldUntilContinuedTurnEnds = false;
-    this.#unanswered = Math.max(0, this.#unanswered - 1);
+    this.#inFlight = Math.max(0, this.#inFlight - 1);
     const trigger = this.#dueCompact();
     if (trigger === null) this.#io.emit(message);
     else await this.#compact(trigger, message);

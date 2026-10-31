@@ -97,8 +97,9 @@ summarization quality over real turns is the live standalone proof's job.
   no `result` yet, does not run immediately: it pends to the next safe
   tool boundary or the turn end, and prompts sent after it are held until
   it runs. That turn's `result` comes after the `compact_boundary`, and
-  the `/compact` gets no `result` of its own. The seeded drive sends it
-  idle, where it runs at once.
+  the `/compact` gets no `result` of its own. A `/compact` that arrives
+  while a compact runs waits in the held queue, in order with the prompts
+  around it. The seeded drive sends it idle, where it runs at once.
 - Prompts sent while a compact is running are held, not dropped, and go
   to whichever generation is current, after a failed rebuild the old one.
   A `/compact` between turns sends them as soon as it ends. A mid-turn
