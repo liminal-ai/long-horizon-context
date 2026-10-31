@@ -268,8 +268,6 @@ async function writeSubagentFixture(scratch, sessionId, toolUseId) {
   return agentId;
 }
 
-// A host whose own env has no CLAUDE_CONFIG_DIR and whose HOME is in scratch, so an operation that ignores its env
-// writes under <hostHome>/.claude, where the drive looks for it.
 const CLIENT_OPS_SCRIPT = `
 const [clientEntry, rootEntry, gen1, compacted, agentId, anchor, home, cwd, claudeHome] = process.argv.slice(1);
 const client = await import(clientEntry);
@@ -288,9 +286,14 @@ const inProcess = await timed(() => root.forkSession(gen1, { ...store, upToMessa
 process.stdout.write(JSON.stringify({ entry: import.meta.resolve(clientEntry), fork, forkMessages, viaFirst, agent, unknown, refused, inProcessForkMs: inProcess.ms }));
 `;
 
-async function runClientOps(scratch, hostHome, args) {
+function hostEnvThatExposesLeaks(hostHome) {
   const env = { ...process.env, HOME: hostHome, CLAUDE_LHC_NO_INFERENCE: "1" };
   delete env.CLAUDE_CONFIG_DIR;
+  return env;
+}
+
+async function runClientOps(scratch, hostHome, args) {
+  const env = hostEnvThatExposesLeaks(hostHome);
   const entries = [join(DIST, "client/index.js"), join(DIST, "index.js")].map((p) => pathToFileURL(p).href);
   const child = spawn(process.execPath, ["--input-type=module", "-e", CLIENT_OPS_SCRIPT, ...entries, ...args], { cwd: scratch.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
   scratch.groups.push(child.pid);

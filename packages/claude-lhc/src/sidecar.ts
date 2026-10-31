@@ -13,14 +13,15 @@ const exit = async (code: number): Promise<void> => {
   process.exit(code);
 };
 
+// The SDK's session readers and renameSession take no env: they read CLAUDE_CONFIG_DIR from process.env.
+function adoptOperationClaudeHome({ env }: OperationEnv): void {
+  if (env === undefined) return;
+  if (env.CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR;
+  else process.env.CLAUDE_CONFIG_DIR = env.CLAUDE_CONFIG_DIR;
+}
+
 function runOperation(frame: OperationFrame): Promise<unknown> {
-  const { env } = frame.args[frame.args.length - 1] as OperationEnv;
-  // The SDK's session readers and renameSession take no env: they read CLAUDE_CONFIG_DIR from
-  // process.env. This process runs one operation, so it can take the operation's home as its own.
-  if (env !== undefined) {
-    if (env.CLAUDE_CONFIG_DIR === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-    else process.env.CLAUDE_CONFIG_DIR = env.CLAUDE_CONFIG_DIR;
-  }
+  adoptOperationClaudeHome(frame.args[frame.args.length - 1] as OperationEnv);
   switch (frame.method) {
     case "forkSession":
       return forkSession(...frame.args);
