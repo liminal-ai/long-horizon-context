@@ -12,8 +12,18 @@
  * `setCompactPolicy` (`{ policy: { trigger, target } }`). An `end` frame says the host's input
  * ended: the sidecar exits once every prompt sent before it has its result. Closing stdin
  * closes the sidecar at once.
+ *
+ * A sidecar whose first frame is `op` runs one store operation instead of a session:
+ * `forkSession`, `getSessionMessages` or `getSubagentMessages` with the SDK's arguments,
+ * answered by one `res` frame with the same id, then exit.
  */
-import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
+import type {
+  ForkSessionOptions,
+  GetSessionMessagesOptions,
+  GetSubagentMessagesOptions,
+  SDKMessage,
+  SDKUserMessage,
+} from "@anthropic-ai/claude-agent-sdk";
 import type { ControlMethod } from "./controls.js";
 
 /**
@@ -35,6 +45,23 @@ export type SidecarOptions = {
   forceRebuildFailure?: boolean;
 };
 export type LhcStore = { lhc: Pick<SidecarOptions, "home"> };
+/**
+ * What a store operation runs Claude with, in place of the host process's env and `claude` on PATH.
+ * The SDK's session readers take no env, so in the host's own process they still read
+ * CLAUDE_CONFIG_DIR from process.env; the `claude-lhc/client` operations run in a sidecar that
+ * takes the operation's home as its own.
+ */
+export type OperationEnv = { env?: NodeJS.ProcessEnv; pathToClaudeCodeExecutable?: string };
+
+export type WireForkOptions = Omit<ForkSessionOptions, "sessionStore"> & LhcStore & OperationEnv;
+export type WireSessionMessagesOptions = Omit<GetSessionMessagesOptions, "sessionStore"> & LhcStore & OperationEnv;
+export type WireSubagentMessagesOptions = Omit<GetSubagentMessagesOptions, "sessionStore"> & LhcStore & OperationEnv;
+
+export type OperationFrame = { type: "op"; id: number } & (
+  | { method: "forkSession"; args: [sessionId: string, options: WireForkOptions] }
+  | { method: "getSessionMessages"; args: [sessionId: string, options: WireSessionMessagesOptions] }
+  | { method: "getSubagentMessages"; args: [sessionId: string, agentId: string, options: WireSubagentMessagesOptions] }
+);
 
 export type SidecarRequestMethod = "canUseTool" | "onUserDialog";
 
@@ -68,7 +95,7 @@ export interface CanUseToolParams {
   agentID?: string;
 }
 
-export function encodeFrame(frame: DriverFrame | SidecarFrame): string {
+export function encodeFrame(frame: DriverFrame | OperationFrame | SidecarFrame): string {
   return `${JSON.stringify(frame)}\n`;
 }
 

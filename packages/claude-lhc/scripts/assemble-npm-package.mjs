@@ -85,6 +85,7 @@ const manifest = {
   main: claudeManifest.main,
   types: claudeManifest.types,
   exports: claudeManifest.exports,
+  sideEffects: claudeManifest.sideEffects,
   files: ["bin", "dist", "README.md", "LICENSE"],
   bundledDependencies: ["lhc"],
   dependencies: {

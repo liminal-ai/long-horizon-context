@@ -18,13 +18,13 @@ import {
 } from "./lhcHome.js";
 import { nativeSessionPath, writeProjectedSession } from "./nativeSessionFile.js";
 import { FALLBACK_CLAUDE_CODE_VERSION, FALLBACK_PROJECTION_MODEL, projectView } from "./projection/project.js";
-import { type LhcStore, parseSidecarOptions } from "./protocol.js";
+import { type LhcStore, type OperationEnv, parseSidecarOptions } from "./protocol.js";
 import { appendRollback, resolveRollbackAnchor } from "./rollbackAnchor.js";
 import { seedTokenFamilyFromStartModel } from "./token-family.js";
 
 export async function forkSession(
   sessionId: string,
-  options: ForkSessionOptions & LhcStore,
+  options: ForkSessionOptions & LhcStore & OperationEnv,
 ): Promise<ForkSessionResult & { headMessageId?: string }> {
   const { home } = parseSidecarOptions(options.lhc);
   const sourceId = await resolveSession(sessionId, home);
@@ -33,10 +33,10 @@ export async function forkSession(
   const sourceCwd = (await threadCwd(sourceId, home)) ?? options.dir;
   if (sourceCwd === undefined) throw new Error(`LHC thread ${sourceId} has no cwd; pass dir`);
   const cwd = options.dir ?? sourceCwd;
-  const env = process.env;
+  const env = options.env ?? process.env;
   const lhc = createLhc({
     mode: "manual",
-    claudeBin: "claude",
+    claudeBin: options.pathToClaudeCodeExecutable ?? "claude",
     env,
     tokenFamily: seedTokenFamilyFromStartModel(undefined).family,
   });
