@@ -54,7 +54,6 @@ export type LhcStore = { lhc: Pick<SidecarOptions, "home"> };
  */
 export type OperationEnv = { env?: NodeJS.ProcessEnv; pathToClaudeCodeExecutable?: string };
 
-/** What the store knows of one session id: the thread holding it and that thread's current session id. */
 export type SessionInspection = { kind: "managed"; threadId: string; currentSessionId: string } | { kind: "unknown" };
 
 export type WireForkOptions = Omit<ForkSessionOptions, "sessionStore"> & LhcStore & OperationEnv;
