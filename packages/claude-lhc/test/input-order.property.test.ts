@@ -7,7 +7,8 @@ import { expect, test, vi } from "vitest";
 import { ClaudeLhcSession } from "../src/session.ts";
 
 interface Turn {
-  label: string;
+  labels: string[];
+  uuids: string[];
   stage: "begin" | "tool" | "finish";
   heavy: boolean;
   tool: boolean;
@@ -118,6 +119,15 @@ const result = (cli: FakeCli, text: string, extra: Record<string, unknown> = {})
     ...extra,
   }) as unknown as SDKMessage;
 
+const lifecycle = (cli: FakeCli, uuid: string | undefined, state: string): SDKMessage =>
+  ({
+    type: "command_lifecycle",
+    command_uuid: uuid,
+    state,
+    uuid: randomUUID(),
+    session_id: cli.sessionId,
+  }) as unknown as SDKMessage;
+
 const settle = async (): Promise<void> => {
   for (let i = 0; i < 4; i++) await new Promise<void>((resolve) => setImmediate(resolve));
 };
@@ -131,6 +141,9 @@ interface Run {
   actions: string[];
   sentDuringCompact: number;
   midTurnStops: number;
+  steersSent: number;
+  steersFolded: number;
+  requeued: number;
 }
 
 async function runOnce(seed: number): Promise<Run> {
@@ -149,12 +162,15 @@ async function runOnce(seed: number): Promise<Run> {
     actions: [],
     sentDuringCompact: 0,
     midTurnStops: 0,
+    steersSent: 0,
+    steersFolded: 0,
+    requeued: 0,
   };
   const compacting = (): boolean => {
     const statuses = run.frames.filter((m) => (m as { subtype?: string }).subtype === "status");
     return (statuses.at(-1) as { status?: string } | undefined)?.status === "compacting";
   };
-  let stoppedLabel = "";
+  let stoppedLabels: string[] = [];
   let serial: Promise<void> = Promise.resolve();
   const frame = (work: () => Promise<void>): void => {
     serial = serial.then(work).catch((cause) => {
@@ -170,7 +186,9 @@ async function runOnce(seed: number): Promise<Run> {
     fail: (message) => {
       run.failed ??= message;
     },
-    log: () => {},
+    log: (line) => {
+      if (line.startsWith("requeued ")) run.requeued += 1;
+    },
   });
   await session.start({
     cwd: dir,
@@ -189,8 +207,10 @@ async function runOnce(seed: number): Promise<Run> {
       const next = cli.pulled.shift();
       if (next === undefined) return;
       const text = textOf(next);
+      cli.emit(lifecycle(cli, next.uuid, "started"));
       cli.turn = {
-        label: text.includes(CONTINUATION) ? stoppedLabel : text,
+        labels: text.includes(CONTINUATION) ? stoppedLabels : [text],
+        uuids: [next.uuid ?? ""],
         stage: "begin",
         heavy: random() < 0.25,
         tool: random() < 0.6,
@@ -198,11 +218,18 @@ async function runOnce(seed: number): Promise<Run> {
     }
     const turn = cli.turn;
     if (turn.stage === "begin") {
-      cli.emit(assistant(cli, [{ type: "text", text: `working on ${turn.label}` }], turn.heavy));
+      cli.emit(assistant(cli, [{ type: "text", text: `working on ${turn.labels.join("+")}` }], turn.heavy));
       turn.stage = turn.tool ? "tool" : "finish";
       return;
     }
     if (turn.stage === "tool") {
+      if (random() < 0.5)
+        for (const steer of cli.pulled.splice(0)) {
+          cli.emit(lifecycle(cli, steer.uuid, "started"));
+          turn.labels.push(textOf(steer));
+          turn.uuids.push(steer.uuid ?? "");
+          run.steersFolded += 1;
+        }
       const toolUseId = `toolu_${randomUUID()}`;
       cli.emit(assistant(cli, [{ type: "tool_use", id: toolUseId, name: "Read", input: {} }], turn.heavy));
       await settle();
@@ -219,18 +246,20 @@ async function runOnce(seed: number): Promise<Run> {
         { signal: new AbortController().signal },
       );
       if ((answer as { continue?: boolean }).continue === false) {
-        stoppedLabel = turn.label;
+        stoppedLabels = turn.labels;
         run.midTurnStops += 1;
         cli.turn = null;
         cli.emit(result(cli, "", { terminal_reason: "hook_stopped" }));
+        for (const uuid of turn.uuids) cli.emit(lifecycle(cli, uuid, "completed"));
         return;
       }
       turn.stage = "finish";
       return;
     }
-    cli.emit(assistant(cli, [{ type: "text", text: `answer:${turn.label}` }], turn.heavy));
+    cli.emit(assistant(cli, [{ type: "text", text: `answer:${turn.labels.join("+")}` }], turn.heavy));
     cli.turn = null;
-    cli.emit(result(cli, `answer:${turn.label}`));
+    cli.emit(result(cli, `answer:${turn.labels.join("+")}`));
+    for (const uuid of turn.uuids) cli.emit(lifecycle(cli, uuid, "completed"));
   };
 
   const actions = (): Array<[string, () => Promise<void>]> => {
@@ -241,6 +270,7 @@ async function runOnce(seed: number): Promise<Run> {
         async () => {
           const text = inputs[sent++] as string;
           if (compacting()) run.sentDuringCompact += 1;
+          else if (text !== "/compact" && live()?.turn != null) run.steersSent += 1;
           frame(() =>
             session.pushUser({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null }),
           );
@@ -261,7 +291,10 @@ async function runOnce(seed: number): Promise<Run> {
         async () => {
           cli.pulling = true;
           void cli.input.next().then((next) => {
-            if (!next.done) cli.pulled.push(next.value);
+            if (!next.done) {
+              cli.pulled.push(next.value);
+              cli.emit(lifecycle(cli, next.value.uuid, "queued"));
+            }
             cli.pulling = false;
           });
         },
@@ -273,9 +306,7 @@ async function runOnce(seed: number): Promise<Run> {
   try {
     let idle = 0;
     while (!run.ended && run.failed === null && idle < 150) {
-      const choices = actions().filter(([name]) => name !== "pull" || random() < 0.7);
-      const progress = choices.filter(([name]) => name !== "pull");
-      const pick = progress.length > 0 ? progress : choices;
+      const pick = actions();
       if (pick.length === 0) {
         idle += 1;
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -299,30 +330,44 @@ async function runOnce(seed: number): Promise<Run> {
   return run;
 }
 
+// Each result answers its own input, or, for a steer the CLI folded into a running turn, shares that
+// turn's result. Flattened in order, the answered inputs must be exactly the inputs.
 function violations(run: Run): string[] {
   const out: string[] = [];
-  const expected = run.inputs.map((input) => (input === "/compact" ? "" : `answer:${input}`));
+  const answered: string[] = [];
   const results: string[] = [];
   for (const message of run.frames) {
     if (message.type === "system" && message.subtype === "compact_boundary") {
       const trigger = (message as unknown as { compact_metadata: { trigger: string } }).compact_metadata.trigger;
-      if (trigger === "manual" && expected[results.length] !== "")
-        out.push(`a /compact ran while input ${results.length} (${run.inputs[results.length]}) had no result`);
+      if (trigger === "manual" && run.inputs[answered.length] !== "/compact")
+        out.push(`a /compact ran while input ${answered.length} (${run.inputs[answered.length]}) had no result`);
     }
-    if (message.type === "result") results.push(String((message as unknown as { result: unknown }).result));
+    if (message.type === "result") {
+      const text = String((message as unknown as { result: unknown }).result);
+      results.push(text);
+      answered.push(...(text === "" ? ["/compact"] : text.replace(/^answer:/, "").split("+")));
+    }
   }
   if (run.failed !== null) out.push(`sidecar failed: ${run.failed}`);
   if (!run.ended) out.push(`the session never ended after end (results ${JSON.stringify(results)})`);
-  if (JSON.stringify(results) !== JSON.stringify(expected))
+  if (JSON.stringify(answered) !== JSON.stringify(run.inputs))
     out.push(`results ${JSON.stringify(results)} for inputs ${JSON.stringify(run.inputs)}`);
   return out;
 }
 
-test("every input gets one result, in input order, and a /compact runs only after every earlier input is answered", async () => {
+test("every input is answered in input order, a steer may share its turn's result, and a /compact runs only after every earlier input is answered", async () => {
   const savedNoInference = process.env.CLAUDE_LHC_NO_INFERENCE;
   process.env.CLAUDE_LHC_NO_INFERENCE = "1";
   const failures: Array<{ seed: number; inputs: string[]; problems: string[]; actions: string }> = [];
-  const seen = { midTurnStops: 0, autoBoundaries: 0, manualBoundaries: 0, promptsDuringCompact: 0 };
+  const seen = {
+    midTurnStops: 0,
+    autoBoundaries: 0,
+    manualBoundaries: 0,
+    promptsDuringCompact: 0,
+    steersSent: 0,
+    steersFolded: 0,
+    requeued: 0,
+  };
   try {
     const base = Number(process.env.INPUT_ORDER_SEED ?? 1);
     for (let seed = base; seed < base + RUNS; seed++) {
@@ -337,6 +382,9 @@ test("every input gets one result, in input order, and a /compact runs only afte
       seen.autoBoundaries += boundaries.filter((t) => t === "auto").length;
       seen.manualBoundaries += boundaries.filter((t) => t === "manual").length;
       seen.promptsDuringCompact += run.sentDuringCompact;
+      seen.steersSent += run.steersSent;
+      seen.steersFolded += run.steersFolded;
+      seen.requeued += run.requeued;
       if (problems.length > 0) failures.push({ seed, inputs: run.inputs, problems, actions: run.actions.join(" ") });
     }
   } finally {
