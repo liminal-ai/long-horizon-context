@@ -74,7 +74,9 @@ grows past 500k tokens on a 1M-context model, and
   restart failure.
 - The SDK stream carries no attachment frame. The CLI writes
   attachments only to its native transcript, so the harvest reads that
-  file. Each harvest logs `attachments: <n> new from <session id> in <ms> ms`.
+  file, from where the last harvest in the same process stopped, so a turn
+  costs the bytes it appended. Each harvest logs
+  `attachments: <n> new from <session id> in <ms> ms (<bytes> bytes read)`.
   A failed harvest logs `attachments: harvest from <session id> failed: ...`
   and the turn goes on. Its only cost is a cache miss on the next resume.
 - On load the CLI sends an attachment line's stored `rendered` text with

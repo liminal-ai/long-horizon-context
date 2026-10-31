@@ -5,9 +5,9 @@ import { dirname, join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
+  AttachmentHarvester,
   type AttachmentSource,
   attachmentStorePath,
-  harvestAttachments,
   readAttachments,
 } from "../src/capture/attachments.ts";
 import { messageKeyPrefix } from "../src/capture/mapper.ts";
@@ -63,7 +63,7 @@ afterEach(() => rmSync(dir, { recursive: true, force: true }));
 describe("harvestAttachments", () => {
   test("anchors each attachment after the first prompt to that prompt in file order, and the snapshot after the reply to the reply", async () => {
     writeTranscript(gen1.sessionId, jsonl(gen1.lines));
-    const found = await harvestAttachments(source(gen1.sessionId));
+    const { found } = new AttachmentHarvester().harvest(source(gen1.sessionId));
 
     const prompt = gen1.lines.find((line) => line["type"] === "user");
     const reply = gen1.lines.find((line) => line["type"] === "assistant");
@@ -97,7 +97,7 @@ describe("harvestAttachments", () => {
 
   test("skips every projected line and anchors the resumed generation's own attachments to its new prompt", async () => {
     writeTranscript(gen2.sessionId, jsonl(gen2.lines));
-    await harvestAttachments(source(gen2.sessionId));
+    new AttachmentHarvester().harvest(source(gen2.sessionId));
 
     const projected = new Set(
       gen2.lines.filter((line) => PROJECTED_SOURCE_FIELD in line).map((line) => String(line["uuid"])),
@@ -110,33 +110,77 @@ describe("harvestAttachments", () => {
     expect(stored[0]?.anchor).toBe(messageKeyPrefix(String(prompt?.["uuid"])));
   });
 
-  test("a second harvest of the same transcript appends nothing", async () => {
+  test("an unchanged transcript reads no bytes, and an appended turn reads only its own bytes", () => {
+    const harvester = new AttachmentHarvester();
+    const prefix = jsonl(gen2.lines.slice(0, 10));
+    const path = writeTranscript(gen2.sessionId, prefix);
+    const first = harvester.harvest(source(gen2.sessionId));
+
+    expect(first.bytesRead).toBe(Buffer.byteLength(prefix));
+    expect(harvester.harvest(source(gen2.sessionId))).toEqual({ found: 0, bytesRead: 0 });
+    const appended = jsonl(gen2.lines.slice(10));
+    appendFileSync(path, appended);
+    const second = harvester.harvest(source(gen2.sessionId));
+    expect(second.bytesRead).toBe(Buffer.byteLength(appended));
+    const own = gen2.lines.filter((line) => line["type"] === "attachment" && !(PROJECTED_SOURCE_FIELD in line));
+    expect(first.found + second.found).toBe(own.length);
+    expect(second.found).toBeGreaterThan(0);
+  });
+
+  test("a later process harvesting the same transcript appends nothing", () => {
     writeTranscript(gen1.sessionId, jsonl(gen1.lines));
-    const first = await harvestAttachments(source(gen1.sessionId));
+    const first = new AttachmentHarvester().harvest(source(gen1.sessionId));
     const size = statSync(attachmentStorePath(join(dir, "lhc"), "thread-1")).size;
 
-    expect(first).toBeGreaterThan(0);
-    expect(await harvestAttachments(source(gen1.sessionId))).toBe(0);
+    expect(first.found).toBeGreaterThan(0);
+    expect(new AttachmentHarvester().harvest(source(gen1.sessionId)).found).toBe(0);
     expect(statSync(attachmentStorePath(join(dir, "lhc"), "thread-1")).size).toBe(size);
   });
 
-  test("a torn last line is skipped in the transcript and in the store, and the next harvest takes the line once it is whole", async () => {
+  test("a store write that fails is retried by the next harvest in the same process", () => {
+    const harvester = new AttachmentHarvester();
+    writeTranscript(gen1.sessionId, jsonl(gen1.lines));
+    mkdirSync(join(dir, "lhc"), { recursive: true });
+    writeFileSync(join(dir, "lhc", "attachments"), "a file where the store's directory goes");
+
+    expect(() => harvester.harvest(source(gen1.sessionId))).toThrow();
+    rmSync(join(dir, "lhc", "attachments"));
+    const retried = harvester.harvest(source(gen1.sessionId));
+    expect(retried.found).toBe(gen1.lines.filter((line) => line["type"] === "attachment").length);
+  });
+
+  test("a torn transcript tail is read once it is whole", async () => {
+    const harvester = new AttachmentHarvester();
     const body = jsonl(gen1.lines);
     const last = gen1.lines.filter((line) => line["type"] === "attachment").at(-1);
     const cut = body.indexOf(JSON.stringify(last)) + 40;
     const path = writeTranscript(gen1.sessionId, body.slice(0, cut));
-    const torn = await harvestAttachments(source(gen1.sessionId));
+    const torn = harvester.harvest(source(gen1.sessionId));
+
+    writeFileSync(path, body);
+    const whole = harvester.harvest(source(gen1.sessionId));
+    expect(whole.found).toBe(1);
+    expect(torn.bytesRead + whole.bytesRead).toBe(Buffer.byteLength(body) + (cut - body.lastIndexOf("\n", cut) - 1));
+    const stored = [...(await readAttachments(join(dir, "lhc"), "thread-1")).values()].flat();
+    expect(stored.at(-1)?.uuid).toBe(last?.["uuid"]);
+  });
+
+  test("a torn store tail left by a crashed process is skipped, and the next process appends after it", async () => {
+    const body = jsonl(gen1.lines);
+    const last = gen1.lines.filter((line) => line["type"] === "attachment").at(-1);
+    const path = writeTranscript(gen1.sessionId, body.slice(0, body.indexOf(JSON.stringify(last))));
+    const before = new AttachmentHarvester().harvest(source(gen1.sessionId)).found;
     appendFileSync(attachmentStorePath(join(dir, "lhc"), "thread-1"), '{"uuid":"torn","anch');
 
     writeFileSync(path, body);
-    expect(await harvestAttachments(source(gen1.sessionId))).toBe(1);
+    expect(new AttachmentHarvester().harvest(source(gen1.sessionId)).found).toBe(1);
     const stored = [...(await readAttachments(join(dir, "lhc"), "thread-1")).values()].flat();
-    expect(stored).toHaveLength(torn + 1);
+    expect(stored).toHaveLength(before + 1);
     expect(stored.at(-1)?.uuid).toBe(last?.["uuid"]);
   });
 
   test("a generation with no transcript yet harvests nothing", async () => {
-    expect(await harvestAttachments(source("no-such-session"))).toBe(0);
+    expect(new AttachmentHarvester().harvest(source("no-such-session"))).toEqual({ found: 0, bytesRead: 0 });
     expect((await readAttachments(join(dir, "lhc"), "thread-1")).size).toBe(0);
   });
 });

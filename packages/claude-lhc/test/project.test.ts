@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import type { SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import type { SessionThreadView } from "lhc";
 import { afterEach, describe, expect, test } from "vitest";
-import { harvestAttachments, readAttachments } from "../src/capture/attachments.ts";
+import { AttachmentHarvester, readAttachments } from "../src/capture/attachments.ts";
 import { mapPrompt, mapSdkMessage, messageKeyPrefix } from "../src/capture/mapper.ts";
 import { createThread, threadRef } from "../src/lhcHome.ts";
 import { nativeSessionPath } from "../src/nativeSessionFile.ts";
@@ -261,7 +261,7 @@ async function capturedThread(
   const transcript = nativeSessionPath(source);
   mkdirSync(dirname(transcript), { recursive: true });
   writeFileSync(transcript, jsonl(lines));
-  await harvestAttachments(source);
+  new AttachmentHarvester().harvest(source);
   return { view: view.value, attachments: await readAttachments(home, threadId) };
 }
 
