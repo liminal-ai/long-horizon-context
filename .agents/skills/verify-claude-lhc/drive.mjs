@@ -780,6 +780,7 @@ const drives = {
       assert((await again.stop()) === 0, "restart sidecar did not exit 0");
       again.saveEvidence(evidenceDir);
       assert(!again.logHas("served context") && !again.logHas("[lhc compact"), "the restart onto the compacted view compacted again");
+      assert(restarted === after, `the restart reads ${restarted} tokens, not the ${after} the compacted generation served`);
       return `base prompt ${base} tokens; trigger ${policy.trigger} target ${policy.target}; ${/served context (\d+)/.exec(served)[1]} -> ${after} tokens after the compact, ${restarted} on restart, no second compact`;
     } finally { scratch.cleanup(); }
   },
@@ -1126,7 +1127,7 @@ const drives = {
     const log = [];
     const run = (cmd, args, cwd, env = process.env) => {
       log.push(`$ ${cmd} ${args.join(" ")}`);
-      log.push(execFileSync(cmd, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim());
+      log.push(execFileSync(cmd, args, { cwd, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 180_000, killSignal: "SIGKILL" }).trim());
       return log.at(-1);
     };
     try {
