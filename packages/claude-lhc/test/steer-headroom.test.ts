@@ -84,8 +84,6 @@ const user = (text: string): SDKUserMessage => ({
   parent_tool_use_id: null,
 });
 
-// Runs one turn that reads a 50000-token tool result at every step, with the host steering at the steps
-// named, and returns the input size of every model request the turn made before the sidecar stopped it.
 async function requestsUntilStop(steerAt: (step: number) => boolean): Promise<number[]> {
   const seen = new Set<string>();
   const session = new ClaudeLhcSession({

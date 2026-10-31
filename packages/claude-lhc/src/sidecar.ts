@@ -67,13 +67,7 @@ function handle(frame: DriverFrame): void {
       serial(() => session.start(frame.options));
       return;
     case "user":
-      // A compact this prompt starts must not hold back the frames behind it. Prompts sent during the
-      // compact then queue in the session instead of reaching the CLI together once it ends.
-      serial(async () => {
-        void session
-          .pushUser(frame.message)
-          .catch((cause) => io.fail(cause instanceof Error ? cause.message : String(cause)));
-      });
+      serial(async () => session.acceptUser(frame.message));
       return;
     case "end":
       serial(async () => session.endInput());

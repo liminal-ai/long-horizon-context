@@ -384,9 +384,9 @@ async function until(pred, what, timeoutMs = 60_000) {
 const lifecycleAt = (msgs, uuid, state) => msgs.findIndex((m) => m.type === "command_lifecycle" && m.command_uuid === uuid && (state === undefined || m.state === state));
 const resultsIn = (msgs) => msgs.flatMap((m, i) => (m.type === "result" ? [i] : []));
 const boundaryAt = (msgs, trigger, from = 0) => msgs.findIndex((m, i) => i >= from && m.type === "system" && m.subtype === "compact_boundary" && m.compact_metadata?.trigger === trigger);
+const DUE_AT_FIRST_TOOL = { trigger: 1000, target: 500 };
 const TOOL_TURN = "Use the Bash tool to run `sleep 4; echo first`. After it finishes, use the Bash tool again to run `echo second`. Then reply with just DONE.";
 
-// One live sidecar per prompt-order case. A 1000/500 policy makes an automatic compact due at the first tool boundary.
 async function livePromptOrder(evidenceDir, label, compact, act) {
   const scratch = new Scratch(label);
   scratch.home = join(scratch.dir, "home");
@@ -1092,7 +1092,7 @@ const drives = {
       assert(lifecycleAt(m, two) > results[1], "TWO reached the CLI before ONE had its result");
       return "TWO reached the CLI after ONE's result";
     });
-    const pending = await livePromptOrder(join(evidenceDir, "pending-across-swap"), "pending-across-swap", { trigger: 1000, target: 500 }, async (s) => {
+    const pending = await livePromptOrder(join(evidenceDir, "pending-across-swap"), "pending-across-swap", DUE_AT_FIRST_TOOL, async (s) => {
       const steer = randomUUID();
       s.send(userFrame(TOOL_TURN));
       await s.waitFor(() => s.msgs().some((m) => m.type === "assistant" && m.message.content.some((b) => b.type === "tool_use")), "the first tool call", 180_000);
@@ -1110,7 +1110,7 @@ const drives = {
       const path = s.logHas("waiting for the CLI to start a prompt it holds") ? "the CLI held it, the compact waited for it" : "the sidecar held it until the compact";
       return `started once and answered across ${after.filter((m) => m.subtype === "compact_boundary").length} compact(s); ${path}`;
     });
-    const behindHeld = await livePromptOrder(join(evidenceDir, "compact-behind-held"), "compact-behind-held", { trigger: 1000, target: 500 }, async (s) => {
+    const behindHeld = await livePromptOrder(join(evidenceDir, "compact-behind-held"), "compact-behind-held", DUE_AT_FIRST_TOOL, async (s) => {
       const held = randomUUID();
       s.send(userFrame(TOOL_TURN));
       await s.waitFor(() => s.msgs().some((m) => m.subtype === "status" && m.status === "compacting"), "a mid-turn compact", 180_000);

@@ -290,7 +290,6 @@ async function runOnce(seed: number): Promise<Run> {
         turn.stage = "stopped";
         return;
       }
-      // Like the CLI, it starts queued prompts with the tool result, after PostToolUse.
       if (random() < 0.5)
         for (const steer of cli.pulled.splice(0)) {
           cli.emit(lifecycle(cli, steer.uuid, "started"));
@@ -320,8 +319,6 @@ async function runOnce(seed: number): Promise<Run> {
   const trace = (what: string): void => {
     if (process.env.INPUT_ORDER_DEBUG !== undefined) console.log(`[seed ${seed}] ${what}`);
   };
-  // A prompt is held when it is sent during a compact or behind a /compact that has no result yet. A
-  // steer is any other prompt sent while a CLI turn runs.
   const sendOne = (): void => {
     const input = sent++;
     const text = inputs[input] as string;
@@ -344,16 +341,10 @@ async function runOnce(seed: number): Promise<Run> {
     }
     send(text);
   };
-  // As the sidecar does, the frame starts the push and lets the next frame through.
-  const send = (text: string): void => {
-    frame(async () => {
-      void session
-        .pushUser({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null })
-        .catch((cause) => {
-          run.failed ??= cause instanceof Error ? cause.message : String(cause);
-        });
-    });
-  };
+  const send = (text: string): void =>
+    frame(async () =>
+      session.acceptUser({ type: "user", message: { role: "user", content: text }, parent_tool_use_id: null }),
+    );
 
   const actions = (): Array<[string, () => Promise<void>]> => {
     const out: Array<[string, () => Promise<void>]> = [];
@@ -436,8 +427,6 @@ const boundaryTrigger = (message: SDKMessage): string | null =>
     ? (message as unknown as { compact_metadata: { trigger: string } }).compact_metadata.trigger
     : null;
 
-// Each result answers its own input, or, for a steer the CLI folded into a running turn, shares that
-// turn's result. Each answered input carries the index of the frame that answered it.
 function answeredInputs(frames: readonly SDKMessage[]): Array<{ input: string; at: number }> {
   return frames.flatMap((message, at) => {
     if (message.type !== "result") return [];
@@ -446,7 +435,6 @@ function answeredInputs(frames: readonly SDKMessage[]): Array<{ input: string; a
   });
 }
 
-// An answered prompt sent while an automatic compact was pending, whose answer came after an automatic swap.
 const answeredAcrossAutoSwap = (run: Run): number => {
   const answers = answeredInputs(run.frames);
   return run.pendingAutoSends.filter(({ input, sentAt }) => {

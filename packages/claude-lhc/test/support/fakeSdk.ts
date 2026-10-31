@@ -29,8 +29,6 @@ export function query({ prompt, options }: { prompt: AsyncIterable<SDKUserMessag
     wake = undefined;
   };
 
-  // Like the CLI, it reads each prompt as soon as it arrives and reports it queued, then runs the
-  // prompts one turn at a time.
   async function* stream(): AsyncGenerator<SDKMessage, void> {
     await new Promise((resolve) => setTimeout(resolve, 300));
     const out: SDKMessage[] = [];

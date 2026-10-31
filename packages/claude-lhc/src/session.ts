@@ -305,6 +305,10 @@ export class ClaudeLhcSession {
     await this.#advance();
   }
 
+  acceptUser(message: SDKUserMessage): void {
+    void this.pushUser(message).catch((cause) => this.#io.fail(cause instanceof Error ? cause.message : String(cause)));
+  }
+
   endInput(): void {
     this.#inputEnded = true;
     this.#endIfIdle();
@@ -568,7 +572,6 @@ export class ClaudeLhcSession {
     const trigger = this.#midTurnDue();
     if (trigger === null) return proceed;
     if (this.#cliHoldsUnstarted()) {
-      // Prompts sent from now on wait in the sidecar, so only the steers the CLI already holds delay the compact.
       this.#autoCompactDue = true;
       this.#io.log(
         `${stamp()} compact (${trigger}) due mid-turn; waiting for the CLI to start a prompt it holds, and holding later prompts`,
