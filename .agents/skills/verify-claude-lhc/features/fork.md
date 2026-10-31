@@ -146,10 +146,17 @@ a reader sees the cost of the sidecar start. Evidence:
 `client-ops.json`, `client-ops.stderr.log`.
 
 `fork-live` takes two real turns that set KEEP-ALPHA and then
-REMOVED-BRAVO, forks at the first turn's last assistant message, and asks
-the fork and then the source for the second word. It passes when the fork's
-answer lacks REMOVED-BRAVO and the source's answer has it. Evidence:
-`fork-result.json`, `answers.json`, `transcript.jsonl`.
+REMOVED-BRAVO, forks at the first turn's last assistant message through
+`forkSession` from `dist/client/index.js`, with the host's env as the
+operation's `env`, and asks the fork and then the source to list every
+secret word. It passes when the fork's answer has KEEP-ALPHA and lacks
+REMOVED-BRAVO, and the source's answer has both. Evidence:
+`fork-result.json`, `answers.json`, `transcript.jsonl`. The earlier
+question, "what was the second secret word", drew NONE from the source in 2
+of 12 runs on L1's trunk and head with the source's served view intact
+(`.pstack/runs/lhc-claude-driver/proof/L1/fork-live-investigation/report.md`
+in the t3code-v2 main checkout). The list question passed 6 of 6 runs at
+L4's head.
 
 `subagent-live` takes one real turn, sends `/compact`, then asks Claude to
 launch a subagent. It passes when the agent's transcript sits under the

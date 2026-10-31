@@ -239,14 +239,16 @@ const lateServer = (res) => (res.ok ? res.value : []).find((server) => server.na
 const REFUSED_CONTROLS = { rewindFiles: { userMessageId: randomUUID() }, reinitialize: {}, seedReadState: { path: "a.txt", mtime: 1 } };
 const FLAG_MODEL = "claude-sonnet-4-6";
 
-async function callInScratchEnv(scratch, fn, args, { live = false, entry = "index.js" } = {}) {
+// withEnv passes the host's env as the operation's env inside the child, so a credential never lands in argv.
+async function callInScratchEnv(scratch, fn, args, { live = false, entry = "index.js", withEnv = false } = {}) {
   const env = { ...process.env, CLAUDE_CONFIG_DIR: scratch.claudeHome, CLAUDE_LHC_NO_INFERENCE: "1" };
   if (live) {
     delete env.CLAUDE_LHC_NO_INFERENCE;
     env.HOME = scratch.home;
   }
   const url = JSON.stringify(pathToFileURL(join(DIST, entry)).href);
-  const script = `const lib = await import(${url}); process.stdout.write(JSON.stringify(await lib[${JSON.stringify(fn)}](...${JSON.stringify(args)})));`;
+  const call = withEnv ? `const args = ${JSON.stringify(args)}; args.at(-1).env = { ...process.env };` : `const args = ${JSON.stringify(args)};`;
+  const script = `const lib = await import(${url}); ${call} process.stdout.write(JSON.stringify(await lib[${JSON.stringify(fn)}](...args)));`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { cwd: scratch.cwd, env, stdio: ["ignore", "pipe", "pipe"], detached: true });
   scratch.groups.push(child.pid);
   let stdout = "";
@@ -1140,7 +1142,7 @@ const drives = {
     mkdirSync(scratch.home, { recursive: true });
     const liveOptions = (extra) => baseOptions(scratch, { ...extra, env: { ...process.env, HOME: scratch.home, CLAUDE_CONFIG_DIR: scratch.claudeHome } });
     const sidecars = [];
-    const ask = "What was the second secret word I asked you to remember? If there was none, say NONE. Reply with the word only.";
+    const ask = "List every secret word I asked you to remember in this conversation, comma-separated, in the order I gave them. If there were none, say NONE. Reply with the words only.";
     try {
       const gen1 = randomUUID();
       const first = new Sidecar(scratch, "turns", { live: true });
@@ -1151,7 +1153,7 @@ const drives = {
       const removed = await liveTurn(first, "Remember the second secret word REMOVED-BRAVO. Reply with just OK.");
       assert((await first.stop()) === 0, "turn sidecar did not exit 0");
       assert(kept.result?.subtype === "success" && removed.result?.subtype === "success" && kept.lastAssistantUuid, "a seed turn failed");
-      const forked = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: kept.lastAssistantUuid }], { live: true });
+      const forked = await callInScratchEnv(scratch, "forkSession", [gen1, { lhc: { home: scratch.lhcHome }, dir: scratch.cwd, upToMessageId: kept.lastAssistantUuid }], { live: true, entry: "client/index.js", withEnv: true });
       mkdirSync(evidenceDir, { recursive: true });
       writeFileSync(join(evidenceDir, "fork-result.json"), `${JSON.stringify(forked, null, 2)}\n`);
       assert(forked.code === 0, `forkSession failed: ${forked.error ?? forked.stderr}`);
@@ -1167,9 +1169,9 @@ const drives = {
         answers[label] = String(turn.result.result ?? "");
       }
       writeFileSync(join(evidenceDir, "answers.json"), `${JSON.stringify(answers, null, 2)}\n`);
-      assert(!answers.fork.includes("REMOVED-BRAVO"), `the fork knows the turn after the fork point: ${answers.fork}`);
-      assert(answers.source.includes("REMOVED-BRAVO"), `the source lost the second word: ${answers.source}`);
-      return `fork at the first turn answers "${answers.fork.trim()}"; source answers "${answers.source.trim()}"`;
+      assert(answers.fork.includes("KEEP-ALPHA") && !answers.fork.includes("REMOVED-BRAVO"), `the fork does not end at the first turn: ${answers.fork}`);
+      assert(answers.source.includes("KEEP-ALPHA") && answers.source.includes("REMOVED-BRAVO"), `the source lost a word: ${answers.source}`);
+      return `fork from claude-lhc/client at the first turn answers "${answers.fork.trim()}"; source answers "${answers.source.trim()}"`;
     } finally {
       for (const s of sidecars) if (s.exitCode === undefined) await s.stop();
       mkdirSync(evidenceDir, { recursive: true });
