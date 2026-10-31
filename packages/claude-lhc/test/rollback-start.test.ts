@@ -582,7 +582,7 @@ describe("prompts held during a mid-turn compact", () => {
     return { session, frames, timeline, logs, cli, delivered };
   }
 
-  async function stopMidTurn(frames: Frame[], gen: number): Promise<void> {
+  async function stopMidTurn(frames: Frame[], gen: number, beforeResult?: () => Promise<void>): Promise<void> {
     const settled = () => frames.filter((frame) => frame["subtype"] === "status" && "compact_result" in frame).length;
     const settledBefore = settled();
     const toolUseId = `toolu_${gen}`;
@@ -604,6 +604,7 @@ describe("prompts held during a mid-turn compact", () => {
       { signal: new AbortController().signal },
     );
     expect(stop).toMatchObject({ continue: false });
+    await beforeResult?.();
     streams[gen]!({ ...(resultMessage() as object), terminal_reason: "hook_stopped" } as unknown as SDKMessage);
     await vi.waitFor(() => expect(settled()).toBe(settledBefore + 1));
   }
@@ -631,6 +632,86 @@ describe("prompts held during a mid-turn compact", () => {
         `result ${String(heldAnswered.uuid)}`,
       ]),
     );
+  });
+
+  test("two held prompts reach Claude one at a time, each after the previous result", async () => {
+    const { timeline, delivered } = await heldDuringMidTurnCompact(["HELD-1", "HELD-2"]);
+    const first = delivered();
+    streams[1]!(resultMessage());
+    expect(textOf(await first)).toBe("HELD-1");
+    const second = delivered();
+    expect(await stillWaiting(second)).toBe(true);
+
+    const firstAnswered = resultMessage();
+    streams[1]!(firstAnswered);
+
+    expect(textOf(await second)).toBe("HELD-2");
+    expect(timeline.slice(1)).toEqual([
+      "claude got HELD-1",
+      `result ${String(firstAnswered.uuid)}`,
+      "claude got HELD-2",
+    ]);
+  });
+
+  test("a prompt sent while a mid-turn compact is pending crosses the swap and gets a result of its own", async () => {
+    const frames: Frame[] = [];
+    const session = new ClaudeLhcSession({
+      emit: (message) => frames.push(message as unknown as Frame),
+      request: async () => ({}),
+      end(): void {},
+      fail(): void {},
+      log(): void {},
+    });
+    await session.start({
+      cwd: dir,
+      model: "claude-sonnet-5",
+      env: { CLAUDE_CONFIG_DIR: claudeHome },
+      lhc: { home, compact: COMPACT },
+      sessionId: randomUUID(),
+    });
+    await session.pushUser(userMessage("WORK-PROMPT"));
+    const old = fed[0]![Symbol.asyncIterator]();
+    await old.next();
+
+    await stopMidTurn(frames, 0, () => session.pushUser(userMessage("PENDING-PROMPT")));
+
+    expect((await old.next()).done).toBe(true);
+    const cli = fed[1]![Symbol.asyncIterator]();
+    expect(textOf((await cli.next()).value)).toContain("Context was compacted in the middle of this turn");
+    const pending = cli.next();
+    expect(await stillWaiting(pending)).toBe(true);
+    streams[1]!(resultMessage());
+    expect(textOf((await pending).value)).toBe("PENDING-PROMPT");
+  });
+
+  test("a /compact sent while a held prompt waits runs after that prompt's result", async () => {
+    const { session, frames, delivered } = await heldDuringMidTurnCompact(["HELD-PROMPT"]);
+    await session.pushUser(userMessage("/compact"));
+    const held = delivered();
+    const manual = () =>
+      frames.filter(
+        (frame) =>
+          frame["subtype"] === "compact_boundary" &&
+          (frame["compact_metadata"] as { trigger: string }).trigger === "manual",
+      ).length;
+
+    streams[1]!(resultMessage());
+    expect(textOf(await held)).toBe("HELD-PROMPT");
+    await sleep(250);
+    expect(manual()).toBe(0);
+
+    const heldAnswered = resultMessage();
+    streams[1]!(heldAnswered);
+
+    await vi.waitFor(() => expect(manual()).toBe(1));
+    const order = frames.flatMap((frame) =>
+      frame["type"] === "result"
+        ? [frame["uuid"] === heldAnswered.uuid ? "held prompt's result" : `result "${String(frame["result"])}"`]
+        : frame["subtype"] === "compact_boundary"
+          ? ["boundary"]
+          : [],
+    );
+    expect(order.slice(-3)).toEqual(["held prompt's result", "boundary", 'result ""']);
   });
 
   test("a prompt sent while held prompts wait queues behind them", async () => {

@@ -10,7 +10,7 @@ interface Turn {
   id: number;
   labels: string[];
   uuids: string[];
-  stage: "begin" | "tool" | "finish";
+  stage: "begin" | "tool" | "stopped" | "finish";
   heavy: boolean;
   tool: boolean;
 }
@@ -287,9 +287,7 @@ async function runOnce(seed: number): Promise<Run> {
         stops.push(run.frames.length);
         stoppedLabels = turn.labels;
         run.midTurnStops += 1;
-        cli.turn = null;
-        cli.emit(result(cli, "", { terminal_reason: "hook_stopped" }));
-        for (const uuid of turn.uuids) cli.emit(lifecycle(cli, uuid, "completed"));
+        turn.stage = "stopped";
         return;
       }
       // Like the CLI, it starts queued prompts with the tool result, after PostToolUse.
@@ -303,6 +301,13 @@ async function runOnce(seed: number): Promise<Run> {
           if (steerTurn.get(textOf(steer)) === turn.id) run.steersFolded += 1;
         }
       turn.stage = random() < 0.5 ? "tool" : "finish";
+      return;
+    }
+    if (turn.stage === "stopped") {
+      if (random() < 0.7) return;
+      cli.turn = null;
+      cli.emit(result(cli, "", { terminal_reason: "hook_stopped" }));
+      for (const uuid of turn.uuids) cli.emit(lifecycle(cli, uuid, "completed"));
       return;
     }
     cli.emit(assistant(cli, [{ type: "text", text: `answer:${turn.labels.join("+")}` }], turn.heavy));
@@ -358,7 +363,10 @@ async function runOnce(seed: number): Promise<Run> {
       host === "eager" ||
       (host === "slow" && random() < 0.4) ||
       (host === "during compacts" && (compactingSince() !== null || (idle && random() < 0.3))) ||
-      (host === "during turns" && ((cli?.turn != null && compactingSince() === null) || (idle && random() < 0.3)));
+      (host === "during turns" &&
+        (cli?.turn?.stage === "stopped" ||
+          (cli?.turn != null && compactingSince() === null && random() < 0.25) ||
+          (idle && (sent === 0 || random() < 0.05))));
     if (sent < inputs.length && typing) out.push(["send", async () => sendOne()]);
     const burst: [string, () => Promise<void>] = [
       "burst",
