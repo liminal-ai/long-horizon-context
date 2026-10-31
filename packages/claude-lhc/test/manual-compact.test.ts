@@ -74,8 +74,6 @@ function stock(name: StockCase): { sent: { text: string; uuid: string }[]; frame
 
 const COMPACT_ERROR_PREFIX = "Error during compaction: ";
 
-// Every field of a stock settlement frame is compared, or is named here with the reason it is not. Ids become
-// labels, and an error reason becomes <reason>, because the stock capture and these tests fail for different causes.
 const UNCOMPARED_FIELDS = new Map([
   ["uuid", "fresh for every frame"],
   ["session_id", "a generation id; the success case checks that the boundary and result name the new generation"],
@@ -99,16 +97,13 @@ const UNCOMPARED_COMPACT_METADATA = new Map([
   ["cumulative_dropped_tokens", "claude-lhc does not report it"],
 ]);
 
-// Settlement frames are the compact's lifecycle, the compact statuses, the boundary and every result. The
-// rest are a generation's own init, model output, and the CLI's replays of its summary and command output,
-// which a projected generation does not replay.
 function compactSettlementFields(
   frames: readonly Frame[],
   labels: ReadonlyMap<string, string>,
   compactUuid: string,
 ): Frame[] {
   const label = (uuid: unknown): unknown => (typeof uuid === "string" ? (labels.get(uuid) ?? "<unknown>") : uuid);
-  const reason = (text: unknown): unknown =>
+  const maskErrorReason = (text: unknown): unknown =>
     typeof text === "string" && text.startsWith(COMPACT_ERROR_PREFIX) ? `${COMPACT_ERROR_PREFIX}<reason>` : text;
   const compared = (fields: Frame, skip: ReadonlyMap<string, string>): Frame =>
     Object.fromEntries(Object.entries(fields).filter(([key]) => !skip.has(key)));
@@ -118,7 +113,7 @@ function compactSettlementFields(
     if (Array.isArray(fields["user_message_uuids"]))
       fields["user_message_uuids"] = fields["user_message_uuids"].map(label);
     if ("compact_error" in fields) fields["compact_error"] = "<reason>";
-    if ("result" in fields) fields["result"] = reason(fields["result"]);
+    if ("result" in fields) fields["result"] = maskErrorReason(fields["result"]);
     if ("compact_metadata" in fields)
       fields["compact_metadata"] = compared(fields["compact_metadata"] as Frame, UNCOMPARED_COMPACT_METADATA);
     return fields;
@@ -265,16 +260,19 @@ test("a /compact on a session with no turns settles like stock, plus the rebuild
     new Map([[compact.uuid as string, "/compact"]]),
     compact.uuid as string,
   );
-  // Stock finds no messages and settles at once, and its capture ended at the result. claude-lhc rebuilds even
-  // an empty served view into a new generation, so it adds the compact statuses and a boundary.
+  const completedAfterStockCaptureEnded = settled.pop();
   const rebuild = (frame: Frame): boolean => frame["subtype"] === "status" || frame["subtype"] === "compact_boundary";
-  expect(settled.filter((frame) => !rebuild(frame)).slice(0, -1)).toEqual(stockSettlement("empty"));
+  expect(settled.filter((frame) => !rebuild(frame))).toEqual(stockSettlement("empty"));
   expect(settled.filter(rebuild)).toEqual([
     { type: "system", subtype: "status", status: "compacting" },
     { type: "system", subtype: "status", status: null, compact_result: "success" },
     { type: "system", subtype: "compact_boundary", compact_metadata: { trigger: "manual" } },
   ]);
-  expect(settled.at(-1)).toEqual({ type: "command_lifecycle", command_uuid: "/compact", state: "completed" });
+  expect(completedAfterStockCaptureEnded).toEqual({
+    type: "command_lifecycle",
+    command_uuid: "/compact",
+    state: "completed",
+  });
   await session.close();
 });
 

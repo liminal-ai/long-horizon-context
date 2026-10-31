@@ -483,8 +483,6 @@ const AFTER_READ = "Use the Read tool to read filler.txt. Only after you have it
 const PENDING_TURN = `${AFTER_READ}. Then reply with just DONE.`;
 const HELD_TURN = `${AFTER_READ}. Then use the Bash tool to run \`echo third\`. Then reply with just DONE.`;
 
-// The diagnosis's procedure (proof/prototypes/p-cache-diagnosis/run.mjs in lhc-claude-driver): a thread grown by
-// one pasted fixture, then resumed with one short prompt per sidecar, every /v1/messages body saved by a proxy.
 const CACHE_LINE = "maple river stone cloud field\n";
 const CACHE_GROWTH = (lines) =>
   `The following is pasted reference context. Retain it as context only. Do not summarize, analyze, or use tools. Reply only OK.\n<reference>\n${CACHE_LINE.repeat(lines)}</reference>\nReply only OK.`;

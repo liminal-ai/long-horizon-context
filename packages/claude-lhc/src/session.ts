@@ -1074,8 +1074,16 @@ export class ClaudeLhcSession {
   }
 
   async #harvest(sessionId: string): Promise<void> {
+    const startedAt = performance.now();
     const source = { home: this.#home, threadId: this.#threadId, sessionId, cwd: this.#cwd, env: this.#env };
-    await harvestAttachments(source, (line) => this.#io.log(line));
+    try {
+      const found = await harvestAttachments(source);
+      this.#io.log(`attachments: ${found} new from ${sessionId} in ${Math.round(performance.now() - startedAt)} ms`);
+    } catch (cause) {
+      this.#io.log(
+        `attachments: harvest from ${sessionId} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
   }
 
   async #startProjectedGeneration(): Promise<Generation> {

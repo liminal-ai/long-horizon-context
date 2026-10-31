@@ -4,9 +4,8 @@ import { nativeSessionPath } from "../nativeSessionFile.js";
 import { anchorOf, type NativeEntry, PROJECTED_SOURCE_FIELD, type ProjectedAttachment } from "../projection/project.js";
 import { messageKeyPrefix } from "./mapper.js";
 
-// Projection writes these afresh for its own generation. The rest of an attachment line, `attachment` and the
-// `rendered` text the CLI sends in place of re-rendering it, is kept as the CLI wrote it.
-const ENVELOPE = new Set([
+// The CLI sends a stored attachment line's `rendered` text and re-renders only when it is missing.
+const RESTAMPED_FIELDS = new Set([
   "parentUuid",
   "isSidechain",
   "userType",
@@ -35,37 +34,31 @@ export function attachmentStorePath(home: string, threadId: string): string {
   return NodePath.join(home, "attachments", `${threadId}.jsonl`);
 }
 
-export async function harvestAttachments(source: AttachmentSource, log: (line: string) => void): Promise<number> {
-  const startedAt = performance.now();
-  try {
-    const store = attachmentStorePath(source.home, source.threadId);
-    const [native, stored] = await Promise.all([readJsonl(nativeSessionPath(source)), readJsonl(store)]);
-    const held = new Set(stored.records.map((record) => record["uuid"]));
-    const byUuid = new Map(native.records.map((line) => [line["uuid"], line]));
-    const found: StoredAttachment[] = [];
-    for (const line of native.records) {
-      const uuid = line["uuid"];
-      if (line["type"] !== "attachment" || PROJECTED_SOURCE_FIELD in line) continue;
-      if (typeof uuid !== "string" || held.has(uuid)) continue;
-      const anchor = anchorAbove(line, byUuid);
-      if (anchor === null) continue;
-      held.add(uuid);
-      found.push({ uuid, anchor, line: Object.fromEntries(Object.entries(line).filter(([k]) => !ENVELOPE.has(k))) });
-    }
-    if (found.length > 0) {
-      await NodeFS.promises.mkdir(NodePath.dirname(store), { recursive: true });
-      const body = found.map(({ uuid, anchor, line }) => `${JSON.stringify({ uuid, anchor, line })}\n`).join("");
-      await NodeFS.promises.appendFile(store, stored.torn ? `\n${body}` : body, { mode: 0o600 });
-    }
-    log(`attachments: ${found.length} new from ${source.sessionId} in ${Math.round(performance.now() - startedAt)} ms`);
-    return found.length;
-  } catch (cause) {
-    // A missed harvest costs a cache miss on the next resume, never the turn.
-    log(
-      `attachments: harvest from ${source.sessionId} failed: ${cause instanceof Error ? cause.message : String(cause)}`,
-    );
-    return 0;
+export async function harvestAttachments(source: AttachmentSource): Promise<number> {
+  const store = attachmentStorePath(source.home, source.threadId);
+  const [native, stored] = await Promise.all([readJsonl(nativeSessionPath(source)), readJsonl(store)]);
+  const held = new Set(stored.records.map((record) => record["uuid"]));
+  const byUuid = new Map(native.records.map((line) => [line["uuid"], line]));
+  const found: StoredAttachment[] = [];
+  for (const line of native.records) {
+    const uuid = line["uuid"];
+    if (line["type"] !== "attachment" || PROJECTED_SOURCE_FIELD in line) continue;
+    if (typeof uuid !== "string" || held.has(uuid)) continue;
+    const anchor = anchorAbove(line, byUuid);
+    if (anchor === null) continue;
+    held.add(uuid);
+    found.push({
+      uuid,
+      anchor,
+      line: Object.fromEntries(Object.entries(line).filter(([k]) => !RESTAMPED_FIELDS.has(k))),
+    });
   }
+  if (found.length > 0) {
+    await NodeFS.promises.mkdir(NodePath.dirname(store), { recursive: true });
+    const body = found.map(({ uuid, anchor, line }) => `${JSON.stringify({ uuid, anchor, line })}\n`).join("");
+    await NodeFS.promises.appendFile(store, stored.torn ? `\n${body}` : body, { mode: 0o600 });
+  }
+  return found.length;
 }
 
 export async function readAttachments(
@@ -85,8 +78,6 @@ export async function readAttachments(
   return byAnchor;
 }
 
-// The CLI chains each attachment under the message it follows, and writes each message under the uuid its
-// capture keys carry. A projected message carries its capture key in `lhcSource` instead.
 function anchorAbove(line: NativeEntry, byUuid: ReadonlyMap<unknown, NativeEntry>): string | null {
   const seen = new Set<unknown>();
   let parent = line["parentUuid"];
@@ -103,7 +94,6 @@ function anchorAbove(line: NativeEntry, byUuid: ReadonlyMap<unknown, NativeEntry
   return null;
 }
 
-// A writer that died mid-line leaves a torn last line, which every reader skips.
 async function readJsonl(path: string): Promise<{ records: NativeEntry[]; torn: boolean }> {
   const body = await NodeFS.promises.readFile(path, "utf8").catch((cause: NodeJS.ErrnoException) => {
     if (cause.code === "ENOENT") return "";

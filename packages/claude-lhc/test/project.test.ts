@@ -15,7 +15,7 @@ import {
   PROJECTED_SOURCE_FIELD,
   projectView,
 } from "../src/projection/project.ts";
-import { fixtureGenerations, jsonl, withoutEnvelope } from "./support/nativeFixture.ts";
+import { fixtureGenerations, jsonl, withoutRestampedFields } from "./support/nativeFixture.ts";
 import { seedLhc } from "./support/seedThread.ts";
 
 const stamp = { sessionId: "S", cwd: "/w", version: "2.1.259", permissionMode: "default", model: "claude-sonnet-5" };
@@ -222,7 +222,6 @@ function scratch(): string {
   return dir;
 }
 
-// Captures one native generation the way the session does: each prompt and reply under its line's uuid.
 async function capturedThread(
   lines: readonly NativeEntry[],
 ): Promise<{ view: SessionThreadView; attachments: AttachmentsByAnchor }> {
@@ -262,24 +261,22 @@ async function capturedThread(
   const transcript = nativeSessionPath(source);
   mkdirSync(dirname(transcript), { recursive: true });
   writeFileSync(transcript, jsonl(lines));
-  await harvestAttachments(source, () => {});
+  await harvestAttachments(source);
   return { view: view.value, attachments: await readAttachments(home, threadId) };
 }
 
-const conversation = (lines: readonly NativeEntry[]): NativeEntry[] =>
+const conversationAsBlocks = (lines: readonly NativeEntry[]): NativeEntry[] =>
   lines.flatMap((line) => {
     if (line["type"] === "attachment") {
-      const { [PROJECTED_SOURCE_FIELD]: _source, ...payload } = withoutEnvelope(line);
+      const { [PROJECTED_SOURCE_FIELD]: _source, ...payload } = withoutRestampedFields(line);
       return [payload];
     }
     if (line["type"] !== "user" && line["type"] !== "assistant") return [];
-    // The CLI sends a string prompt and a single text block the same way.
     const { content } = line["message"] as { content: unknown };
     return [{ type: line["type"], content: typeof content === "string" ? [{ type: "text", text: content }] : content }];
   });
 
-// Random per projection: line and message ids, the parent chain they form, and the projection time.
-const stable = (lines: readonly NativeEntry[]): NativeEntry[] =>
+const withoutPerProjectionIds = (lines: readonly NativeEntry[]): NativeEntry[] =>
   lines.map(({ uuid: _u, parentUuid: _p, timestamp: _t, requestId: _r, ...line }) => {
     const inner = line["message"] as Record<string, unknown> | undefined;
     if (inner?.["id"] === undefined) return line;
@@ -288,13 +285,13 @@ const stable = (lines: readonly NativeEntry[]): NativeEntry[] =>
   });
 
 describe("projectView with harvested attachments", () => {
-  const [gen1] = fixtureGenerations();
+  const { first: gen1 } = fixtureGenerations();
 
   test("the projected prefix reproduces generation one's native conversation, attachments in place", async () => {
     const { view, attachments } = await capturedThread(gen1.lines);
     const lines = projectView(view, stamp, { attachments });
 
-    expect(conversation(lines)).toEqual(conversation(gen1.lines));
+    expect(conversationAsBlocks(lines)).toEqual(conversationAsBlocks(gen1.lines));
     for (let i = 1; i < lines.length; i += 1) expect(lines[i]?.["parentUuid"]).toBe(lines[i - 1]?.["uuid"]);
     const attached = lines.filter((line) => line["type"] === "attachment");
     expect(attached.length).toBeGreaterThan(0);
@@ -310,7 +307,7 @@ describe("projectView with harvested attachments", () => {
     const { view, attachments } = await capturedThread(gen1.lines);
     const withAttachments = projectView(view, stamp, { attachments }).filter((line) => line["type"] !== "attachment");
 
-    expect(stable(withAttachments)).toEqual(stable(projectView(view, stamp)));
+    expect(withoutPerProjectionIds(withAttachments)).toEqual(withoutPerProjectionIds(projectView(view, stamp)));
   });
 
   test("a thread with no stored attachments projects as it did before attachments existed", async () => {
@@ -318,7 +315,9 @@ describe("projectView with harvested attachments", () => {
     const none = await readAttachments(scratch(), "no-such-thread");
 
     expect(none.size).toBe(0);
-    expect(stable(projectView(view, stamp, { attachments: none }))).toEqual(stable(projectView(view, stamp)));
+    expect(withoutPerProjectionIds(projectView(view, stamp, { attachments: none }))).toEqual(
+      withoutPerProjectionIds(projectView(view, stamp)),
+    );
   });
 
   test("an anchor that only a summary band holds gets no attachments, and a tail anchor keeps its own", () => {

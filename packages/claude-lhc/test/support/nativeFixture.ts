@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { NativeEntry } from "../../src/projection/project.ts";
 
-const ENVELOPE = new Set([
+const RESTAMPED_FIELDS = new Set([
   "parentUuid",
   "isSidechain",
   "userType",
@@ -19,9 +19,7 @@ export interface FixtureGeneration {
   readonly lines: NativeEntry[];
 }
 
-// test/fixtures/native-attachments.jsonl holds two generations of one thread, in order: the first native
-// transcript, then the transcript of its resume.
-export function fixtureGenerations(): [FixtureGeneration, FixtureGeneration] {
+export function fixtureGenerations(): { first: FixtureGeneration; resumed: FixtureGeneration } {
   const generations: FixtureGeneration[] = [];
   const body = readFileSync(new URL("../fixtures/native-attachments.jsonl", import.meta.url), "utf8");
   for (const raw of body.split("\n").filter(Boolean)) {
@@ -33,11 +31,11 @@ export function fixtureGenerations(): [FixtureGeneration, FixtureGeneration] {
   const [first, second] = generations;
   if (generations.length !== 2 || first === undefined || second === undefined)
     throw new Error(`native-attachments.jsonl holds ${generations.length} generations, not 2`);
-  return [first, second];
+  return { first, resumed: second };
 }
 
-export function withoutEnvelope(line: NativeEntry): NativeEntry {
-  return Object.fromEntries(Object.entries(line).filter(([key]) => !ENVELOPE.has(key)));
+export function withoutRestampedFields(line: NativeEntry): NativeEntry {
+  return Object.fromEntries(Object.entries(line).filter(([key]) => !RESTAMPED_FIELDS.has(key)));
 }
 
 export const jsonl = (lines: readonly NativeEntry[]): string =>

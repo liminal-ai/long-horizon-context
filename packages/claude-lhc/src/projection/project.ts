@@ -182,18 +182,16 @@ function anchorsOf(entry: SessionThreadViewMessage): Set<string> {
   return anchors;
 }
 
-// The served view opens with its summary bands. A message a band covers is not projected, so neither are
-// its attachments. Every other anchor's attachments follow the last entry that holds it.
 function lastFullFidelityHolders(
   entries: readonly SessionThreadViewEntry[],
   attachments: AttachmentsByAnchor,
 ): Map<string, number> {
   const holders = new Map<string, number>();
   if (attachments.size === 0) return holders;
-  let band = true;
+  let inLeadingBands = true;
   for (const [index, entry] of entries.entries()) {
-    band &&= "role" in entry && entry.role === "user" && SUMMARY_BAND.test(entry.content);
-    if (band || !("role" in entry)) continue;
+    inLeadingBands &&= "role" in entry && entry.role === "user" && SUMMARY_BAND.test(entry.content);
+    if (inLeadingBands || !("role" in entry)) continue;
     for (const anchor of anchorsOf(entry)) if (attachments.has(anchor)) holders.set(anchor, index);
   }
   return holders;
