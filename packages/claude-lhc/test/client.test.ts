@@ -1,14 +1,19 @@
+import { type ChildProcess, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { SDKMessage, SDKUserMessage, query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
+import type { SDKMessage, SDKUserMessage, SpawnOptions, query as sdkQuery } from "@anthropic-ai/claude-agent-sdk";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { inspectSessions, type SidecarSpawnOptions } from "../src/client/index.ts";
 import { type LhcQuery, type LhcQueryOptions, query } from "../src/index.ts";
 
 const sdkShaped: typeof sdkQuery = query;
+const sdkSpawnShaped = (options: SidecarSpawnOptions): SpawnOptions => options;
 void sdkShaped;
+void sdkSpawnShaped;
 
 const SIDECAR = fileURLToPath(new URL("../src/sidecar.ts", import.meta.url));
 const FAKE_SDK = fileURLToPath(new URL("./support/fakeSdkHooks.mjs", import.meta.url));
@@ -50,6 +55,28 @@ class Input implements AsyncIterable<SDKUserMessage> {
   }
 }
 
+const fakeSidecar = () => ({
+  command: process.execPath,
+  args: ["--import", "tsx", "--import", FAKE_SDK, SIDECAR],
+  env: { ...process.env, CLAUDE_LHC_NO_INFERENCE: "1" },
+});
+
+function recordingSpawn(run: (options: SidecarSpawnOptions) => ChildProcess = nodeSpawn) {
+  const calls: SidecarSpawnOptions[] = [];
+  const children: ChildProcess[] = [];
+  const spawnProcess = (options: SidecarSpawnOptions): ChildProcess => {
+    calls.push(options);
+    const child = run(options);
+    children.push(child);
+    return child;
+  };
+  return { calls, children, spawnProcess };
+}
+
+function nodeSpawn({ command, args, env }: SidecarSpawnOptions): ChildProcess {
+  return spawn(command, args, { env, stdio: ["pipe", "pipe", "pipe"] });
+}
+
 function start(prompt: string | AsyncIterable<SDKUserMessage>, extra: LhcQueryOptions = {}) {
   const stderr: string[] = [];
   const q = query({
@@ -63,11 +90,7 @@ function start(prompt: string | AsyncIterable<SDKUserMessage>, extra: LhcQueryOp
       lhc: {
         home: join(dir, "lhc"),
         compact: { trigger: 700_000, target: 140_000 },
-        spawn: {
-          command: process.execPath,
-          args: ["--import", "tsx", "--import", FAKE_SDK, SIDECAR],
-          env: { ...process.env, CLAUDE_LHC_NO_INFERENCE: "1" },
-        },
+        spawn: fakeSidecar(),
         ...extra.lhc,
       },
     },
@@ -422,5 +445,89 @@ describe("start options", () => {
     await q.supportedModels();
     expect(stderr.join("")).toContain("options.hooks cannot cross to the sidecar and is ignored");
     expect(stderr.join("")).toContain("options.spawnClaudeCodeProcess cannot cross to the sidecar and is ignored");
+  });
+});
+
+describe("host-owned spawn", () => {
+  test("lhc.spawnProcess gets lhc.spawn's command, args and env once, and the stream runs through its child", async () => {
+    const hook = recordingSpawn();
+    const sidecar = fakeSidecar();
+    const { q } = start("just once", {
+      lhc: { home: join(dir, "lhc"), spawn: sidecar, spawnProcess: hook.spawnProcess },
+    });
+    expect(replyText(await untilResult(q))).toBe("echo: just once");
+    expect(await q.next()).toEqual({ done: true, value: undefined });
+    expect(hook.calls).toHaveLength(1);
+    expect(hook.calls[0]).toMatchObject({ command: sidecar.command, args: sidecar.args, env: sidecar.env });
+    expect(hook.calls[0]?.signal.aborted).toBe(false);
+  });
+
+  test("a store operation spawns its sidecar once through lhc.spawnProcess", async () => {
+    const hook = recordingSpawn();
+    const inspected = await inspectSessions([randomUUID()], {
+      lhc: { home: join(dir, "lhc"), spawn: fakeSidecar(), spawnProcess: hook.spawnProcess },
+    });
+    expect(inspected).toEqual([{ kind: "unknown" }]);
+    expect(hook.calls).toHaveLength(1);
+    expect(hook.calls[0]?.args).toEqual(fakeSidecar().args);
+  });
+
+  test("a host child whose stderr is not a pipe still answers queries and operations", async () => {
+    const hook = recordingSpawn(({ command, args, env }) =>
+      spawn(command, args, { env, stdio: ["pipe", "pipe", "ignore"] }),
+    );
+    const { q } = start("just once", { lhc: { home: join(dir, "lhc"), spawnProcess: hook.spawnProcess } });
+    expect(replyText(await untilResult(q))).toBe("echo: just once");
+    const inspected = await inspectSessions([randomUUID()], {
+      lhc: { home: join(dir, "lhc"), spawn: fakeSidecar(), spawnProcess: hook.spawnProcess },
+    });
+    expect(inspected).toEqual([{ kind: "unknown" }]);
+  });
+
+  test("an exit of the host's child ends the iterator with the exit error", async () => {
+    const hook = recordingSpawn();
+    const { q } = start(new Input(), { lhc: { home: join(dir, "lhc"), spawnProcess: hook.spawnProcess } });
+    await q.supportedModels();
+    hook.children[0]?.kill("SIGKILL");
+    await expect(q.next()).rejects.toThrow("claude-lhc sidecar exited (code null, signal SIGKILL)");
+  });
+
+  test("close() aborts the spawn signal and signals the host's child only after the stdin grace", async () => {
+    const marker = join(dir, "sigterm");
+    const hook = recordingSpawn(({ env }) =>
+      spawn(
+        process.execPath,
+        [
+          "-e",
+          `process.on("SIGTERM", () => { require("node:fs").writeFileSync(${JSON.stringify(marker)}, ""); process.exit(0); });
+           process.stdin.resume();
+           setInterval(() => {}, 1000);`,
+        ],
+        { env, stdio: ["pipe", "pipe", "pipe"] },
+      ),
+    );
+    const { q } = start(new Input(), { lhc: { home: join(dir, "lhc"), spawnProcess: hook.spawnProcess } });
+    const child = hook.children[0] as ChildProcess;
+    const exited = once(child, "exit");
+    q.close();
+    expect(await q.next()).toEqual({ done: true, value: undefined });
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    expect(hook.calls[0]?.signal.aborted).toBe(false);
+    expect(existsSync(marker)).toBe(false);
+    await exited;
+    expect(hook.calls[0]?.signal.aborted).toBe(true);
+    expect(existsSync(marker)).toBe(true);
+  }, 15_000);
+
+  test("an abortController aborted before query() calls no spawnProcess", async () => {
+    const abortController = new AbortController();
+    abortController.abort();
+    const hook = recordingSpawn();
+    const { q } = start("never sent", {
+      abortController,
+      lhc: { home: join(dir, "lhc"), spawnProcess: hook.spawnProcess },
+    });
+    expect(await q.next()).toEqual({ done: true, value: undefined });
+    expect(hook.calls).toHaveLength(0);
   });
 });

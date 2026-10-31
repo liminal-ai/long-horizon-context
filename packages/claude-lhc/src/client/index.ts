@@ -1,4 +1,11 @@
-export { type LhcOptions, type LhcQuery, type LhcQueryOptions, query, type SidecarCommand } from "../client.js";
+export {
+  type LhcOptions,
+  type LhcQuery,
+  type LhcQueryOptions,
+  query,
+  type SidecarCommand,
+  type SidecarSpawnOptions,
+} from "../client.js";
 export type { SessionInspection } from "../protocol.js";
 export {
   forkSession,
