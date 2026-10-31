@@ -203,3 +203,6 @@ Reference: https://platform.claude.com/docs/en/build-with-claude/preserved-think
 (dist, bin, README, LICENSE, and the `lhc` core bundled under node_modules). Run `npm pack` on it
 for the tarball. `.github/workflows/publish-claude-lhc-<version>.yml` rebuilds that tarball from the
 pinned commit, checks its sha256 against the reviewed hash, and publishes it (dispatch only).
+`pnpm --filter claude-lhc pack` is not that tarball: it bundles no core. Before a release, run
+`.agents/skills/verify-claude-lhc/drive.mjs packed-install` from the repo root. It installs the
+assembled tarball in a scratch project and runs `query()` from it.
